@@ -276,8 +276,9 @@ pub fn validate_database_integrity(conn: &Connection) -> Result<()> {
         bail!("database integrity check failed: {source_integrity}");
     }
     let snapshot = IntegritySnapshot::create()?;
+    let snapshot_open_path = crate::core::fs::confined_database_open_path(&snapshot.path)?;
     let mut copy = Connection::open_with_flags(
-        &snapshot.path,
+        &snapshot_open_path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     {
@@ -324,13 +325,11 @@ pub fn open_locked(path: &Path, root: &Path) -> Result<LockedConnection> {
 ///
 /// Rejects incompatible, corrupt, changed, or foreign workspace databases.
 pub fn open(path: &Path, root: &Path) -> Result<Connection> {
-    if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
-        bail!("database must not be a symlink");
-    }
-    let before = super::cache::identity(path)?;
-    validate_database_header(path)?;
+    let open_path = crate::core::fs::confined_database_open_path(path)?;
+    let before = super::cache::identity(&open_path)?;
+    validate_database_header(&open_path)?;
     let conn = Connection::open_with_flags(
-        path,
+        &open_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     conn.execute_batch(

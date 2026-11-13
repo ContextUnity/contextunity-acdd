@@ -1069,8 +1069,9 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
                 }
             }
             if header.is_ok() {
+                let open_path = crate::core::fs::confined_database_open_path(&output_abs)?;
                 let conn = Connection::open_with_flags(
-                    &output_abs,
+                    &open_path,
                     OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
                 )
                 .and_then(|c| {
@@ -1149,7 +1150,9 @@ fn atomic_build(
     let mut ancestor = PathBuf::new();
     for part in parent.components() {
         ancestor.push(part);
-        if fs::symlink_metadata(&ancestor).is_ok_and(|m| m.file_type().is_symlink()) {
+        if !crate::core::fs::is_system_root_symlink(&ancestor)
+            && fs::symlink_metadata(&ancestor).is_ok_and(|m| m.file_type().is_symlink())
+        {
             bail!("output parent must not traverse a symlink");
         }
     }
@@ -2099,8 +2102,9 @@ fn delta_inner(
         .transpose()?;
     let generation_lock = crate::db::cache::exclusive_lock(db)?;
     let (schema_compatible, previous_adapter_path) = {
+        let open_path = crate::core::fs::confined_database_open_path(db)?;
         let probe = Connection::open_with_flags(
-            db,
+            &open_path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         let schema_compatible = probe

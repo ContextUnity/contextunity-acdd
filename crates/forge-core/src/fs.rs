@@ -153,10 +153,56 @@ pub fn checked_child(root: &Path, relative: &Path) -> std::io::Result<PathBuf> {
             Err(source) => return Err(source),
         }
     }
-    if target.exists() && !target.canonicalize()?.starts_with(root) {
-        return Err(path_error("path escapes workspace root"));
+    if target.exists() {
+        let canonical_root = root.canonicalize()?;
+        if !target.canonicalize()?.starts_with(&canonical_root) {
+            return Err(path_error("path escapes workspace root"));
+        }
     }
     Ok(target)
+}
+
+/// Returns `true` when `path` is a macOS OS-level root symlink (`/var`, `/tmp`, `/etc`
+/// aliasing `/private/...`) that system temp and workspace paths traverse legitimately.
+pub fn is_system_root_symlink(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        matches!(path.to_str(), Some("/var" | "/tmp" | "/etc"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// Validates that `path` and its existing ancestor directories do not traverse a
+/// non-system-root symlink, returning `path` with its parent canonicalized so
+/// `SQLITE_OPEN_NOFOLLOW` can enforce `O_NOFOLLOW` on the final file even under
+/// macOS `/var` -> `/private/var` or `/tmp` -> `/private/tmp` paths.
+pub fn confined_database_open_path(path: &Path) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    if fs::symlink_metadata(&absolute)?.file_type().is_symlink() {
+        bail!("database must not be a symlink");
+    }
+    let parent = absolute.parent().context("database path needs a parent")?;
+    let mut ancestor = PathBuf::new();
+    for part in parent.components() {
+        ancestor.push(part);
+        if !is_system_root_symlink(&ancestor)
+            && fs::symlink_metadata(&ancestor).is_ok_and(|m| m.file_type().is_symlink())
+        {
+            bail!("database parent must not traverse a symlink");
+        }
+    }
+    let file_name = absolute
+        .file_name()
+        .context("database path needs a file name")?;
+    Ok(parent.canonicalize()?.join(file_name))
 }
 
 /// Performs atomic write.
@@ -171,7 +217,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
     for c in parent.components() {
         current.push(c);
         match fs::symlink_metadata(&current) {
-            Ok(m) if m.file_type().is_symlink() => bail!(
+            Ok(m) if m.file_type().is_symlink() && !is_system_root_symlink(&current) => bail!(
                 "output parent must not traverse symlink: {}",
                 current.display()
             ),
@@ -301,5 +347,78 @@ mod tests {
         assert!(!is_valid_qualified_symbol_identifier("foo::::bar"));
         assert!(!is_valid_qualified_symbol_identifier("foo; rm -rf"));
         assert!(!is_valid_qualified_symbol_identifier("foo::bar bad"));
+    }
+
+    #[test]
+    fn test_is_system_root_symlink_only_exempts_macos_os_roots() {
+        assert!(!is_system_root_symlink(Path::new("/")));
+        assert!(!is_system_root_symlink(Path::new("/var/folders")));
+        assert!(!is_system_root_symlink(Path::new("/tmp/evil-link")));
+        assert_eq!(
+            is_system_root_symlink(Path::new("/var")),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(
+            is_system_root_symlink(Path::new("/tmp")),
+            cfg!(target_os = "macos")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_confined_database_open_path_canonicalizes_parent_and_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("forge_core_db_open_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let real_dir = base.join("real");
+        fs::create_dir_all(&real_dir).unwrap();
+        let db = real_dir.join("code-map.sqlite");
+        fs::write(&db, b"sqlite").unwrap();
+
+        let resolved = confined_database_open_path(&db).unwrap();
+        assert_eq!(resolved, db);
+
+        let symlink_file = base.join("alias.sqlite");
+        symlink(&db, &symlink_file).unwrap();
+        assert!(confined_database_open_path(&symlink_file).is_err());
+
+        let symlink_dir = base.join("link_dir");
+        symlink(&real_dir, &symlink_dir).unwrap();
+        assert!(confined_database_open_path(&symlink_dir.join("code-map.sqlite")).is_err());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_checked_child_allows_uncanonicalized_root_and_rejects_child_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("forge_core_checked_child_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let real_root = base.join("private_var/ws");
+        fs::create_dir_all(real_root.join("src")).unwrap();
+        fs::write(real_root.join("src/lib.rs"), b"pub fn ok() {}").unwrap();
+
+        let alias_root = base.join("var_ws");
+        symlink(&real_root, &alias_root).unwrap();
+        assert_eq!(
+            checked_child(&alias_root, Path::new("src/lib.rs")).unwrap(),
+            alias_root.join("src/lib.rs")
+        );
+
+        let outside = base.join("outside.rs");
+        fs::write(&outside, b"pub fn secret() {}").unwrap();
+        symlink(&outside, real_root.join("src/escape.rs")).unwrap();
+        assert!(checked_child(&alias_root, Path::new("src/escape.rs")).is_err());
+
+        let _ = fs::remove_dir_all(&base);
     }
 }

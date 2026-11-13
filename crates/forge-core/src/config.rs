@@ -575,7 +575,7 @@ pub fn resolve_file_path(
         for comp in p.components() {
             cur.push(comp);
             if let Ok(meta) = std::fs::symlink_metadata(&cur) {
-                if meta.file_type().is_symlink() {
+                if meta.file_type().is_symlink() && !crate::fs::is_system_root_symlink(&cur) {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         "path must not traverse a symlink",
@@ -586,9 +586,19 @@ pub fn resolve_file_path(
         if let Ok(rel) = p.strip_prefix(root) {
             return checked_child(root, rel);
         }
+        if let (Ok(can_p), Ok(can_root)) = (p.canonicalize(), root.canonicalize()) {
+            if let Ok(rel) = can_p.strip_prefix(&can_root) {
+                return checked_child(&can_root, rel);
+            }
+        }
         for lw in &adapter.linked_workspaces {
             if let Ok(rel) = p.strip_prefix(&lw.path) {
                 return checked_child(&lw.path, rel);
+            }
+            if let (Ok(can_p), Ok(can_lw)) = (p.canonicalize(), lw.path.canonicalize()) {
+                if let Ok(rel) = can_p.strip_prefix(&can_lw) {
+                    return checked_child(&can_lw, rel);
+                }
             }
         }
         return Err(std::io::Error::new(
@@ -678,9 +688,22 @@ pub fn check_root_scope(root: &Path, allow_broad: bool) -> std::io::Result<()> {
 
 /// Formats the adapter configuration for serialization into SQLite database metadata.
 pub fn policy(root: &Path, adapter: &Adapter) -> Value {
+    let canonical_root = root.canonicalize().ok();
+    let strip = |path: &Path| {
+        path.strip_prefix(root)
+            .ok()
+            .or_else(|| {
+                canonical_root
+                    .as_deref()
+                    .and_then(|can| path.strip_prefix(can).ok())
+            })
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned()
+    };
     json!({
-        "adapter_path": adapter.adapter_path.as_ref().map(|path| path.strip_prefix(root).unwrap_or(path).to_string_lossy()),
-        "roots": adapter.roots.iter().map(|p| p.strip_prefix(root).unwrap_or(p).to_string_lossy()).collect::<Vec<_>>(),
+        "adapter_path": adapter.adapter_path.as_ref().map(|path| strip(path)),
+        "roots": adapter.roots.iter().map(|p| strip(p)).collect::<Vec<_>>(),
         "sensitive": adapter.sensitive,
         "limits": &adapter.limits,
         "ignored_names": adapter.ignored_names,

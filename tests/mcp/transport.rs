@@ -2,7 +2,7 @@
 #[test]
 fn stdio_transport_smoke() {
     use crate::common::mcp_client::{StdioClient, StdioError, TransportEnd};
-    use serde_json::{json, Value};
+    use serde_json::json;
     use std::{
         fs, io,
         os::unix::process::ExitStatusExt,
@@ -52,6 +52,7 @@ fn stdio_transport_smoke() {
 
     #[cfg(target_os = "linux")]
     {
+        use serde_json::Value;
         use std::os::unix::fs::MetadataExt;
 
         let workspace = crate::common::Workspace::with_files(&[]);
@@ -101,6 +102,7 @@ fn stdio_transport_smoke() {
     #[derive(Debug, PartialEq, Eq)]
     enum ServerState {
         Absent,
+        #[cfg(target_os = "linux")]
         Zombie,
         Running,
     }
@@ -247,8 +249,12 @@ fn stdio_transport_smoke() {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
+        #[cfg(target_os = "linux")]
+        let exited = matches!(server_state, ServerState::Absent | ServerState::Zombie);
+        #[cfg(not(target_os = "linux"))]
+        let exited = matches!(server_state, ServerState::Absent);
         assert!(
-            matches!(server_state, ServerState::Absent | ServerState::Zombie),
+            exited,
             "{case}: server closed stdout but kept running: {server_state:?}"
         );
     }

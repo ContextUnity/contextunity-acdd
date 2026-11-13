@@ -224,3 +224,53 @@ for focused development on its native handoff seam.
 The milestone tests live in `tests/acdd/milestones/`. Run their default cases
 with `cargo test --test acdd milestones`; select an individual module with
 `cargo test --test acdd milestones::<module>::`.
+
+## Cross-checking macOS targets from Linux
+
+Use `rustup` with `zig cc` on Linux hosts to verify `#[cfg(target_os = "macos")]`
+compilation and strict Clippy across all crates and integration test targets
+before pushing changes that touch platform-gated code.
+
+1. Install the macOS target standard library and ensure `zig` (tested with
+   `0.15.2`) is active in `PATH`:
+
+   ```bash
+   rustup target add x86_64-apple-darwin
+   zig version
+   ```
+
+2. Create an executable wrapper (for example `/tmp/zig-macos-cc.sh`) that strips
+   `cc`-injected `--target=*-apple-darwin` and `-mmacosx-version-min=*` flags
+   before calling `zig cc -target x86_64-macos`:
+
+   ```bash
+   #!/usr/bin/env bash
+   args=()
+   for arg in "$@"; do
+     case "$arg" in
+       --target=x86_64-apple-darwin|--target=aarch64-apple-darwin) ;;
+       -mmacosx-version-min=*) ;;
+       *) args+=("$arg") ;;
+     esac
+   done
+   exec zig cc -target x86_64-macos "${args[@]}"
+   ```
+
+   Keep `-target x86_64-macos` without a single-component version suffix (such as
+   `x86_64-macos.14`), which `zig cc` rejects with
+   `InvalidOperatingSystemVersion`, and strip `--target=*-apple-darwin`, which
+   `zig cc` rejects with `UnknownOperatingSystem`.
+
+3. Mark the wrapper executable and run Clippy with `CC` and `CXX` pointing to it:
+
+   ```bash
+   chmod +x /tmp/zig-macos-cc.sh
+   CC=/tmp/zig-macos-cc.sh CXX=/tmp/zig-macos-cc.sh \
+     cargo clippy --workspace --all-targets --all-features --target x86_64-apple-darwin -- -D warnings
+   ```
+
+This local cross-check compiles C dependencies (`tree-sitter`, `zstd-sys`,
+`libsqlite3-sys`) and catches macOS-only `unused_mut`, `unused_imports`, and
+`dead_code` lints across all test binaries. Runtime execution of native macOS
+tests (such as `kqueue`, `proc_pidinfo`, and `KERN_PROCARGS2`) remains scoped to
+the `macos-15` runner in [.github/workflows/ci.yml](.github/workflows/ci.yml).

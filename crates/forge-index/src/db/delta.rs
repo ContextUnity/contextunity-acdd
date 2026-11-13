@@ -137,8 +137,9 @@ pub fn persist_delta(
     if crate::db::cache::identity(db)? != admitted_identity {
         bail!("database changed during delta admission");
     }
+    let open_path = crate::core::fs::confined_database_open_path(db)?;
     let mut conn = Connection::open_with_flags(
-        db,
+        &open_path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
     conn.set_prepared_statement_cache_capacity(128);

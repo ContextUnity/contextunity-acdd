@@ -195,8 +195,9 @@ impl Server {
             Ok(_) => {}
         }
         let _generation_lock = crate::db::cache::shared_lock(&self.db)?;
+        let open_path = crate::core::fs::confined_database_open_path(&self.db)?;
         let conn = rusqlite::Connection::open_with_flags(
-            &self.db,
+            &open_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         conn.execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; BEGIN DEFERRED")?;
@@ -864,14 +865,17 @@ async fn serve_session(
                 }
                 Some(()) = hangup.recv() => {
                     let result = (|| -> std::io::Result<()> {
-                        let mut exe = std::env::current_exe()?;
+                        let exe = std::env::current_exe()?;
                         #[cfg(target_os = "linux")]
-                        {
+                        let exe = {
                             use std::os::unix::ffi::{OsStrExt, OsStringExt};
-                            if let Some(path) = exe.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
-                                exe = std::ffi::OsString::from_vec(path.to_vec()).into();
+                            match exe.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
+                                Some(path) => std::path::PathBuf::from(
+                                    std::ffi::OsString::from_vec(path.to_vec()),
+                                ),
+                                None => exe,
                             }
-                        }
+                        };
                         let args: Vec<_> = std::env::args_os().skip(1).collect();
                         let mut command = std::process::Command::new(exe);
                         command.args(args).env(MCP_RELOAD_PARENT_ENV, initial_parent_pid.to_string());

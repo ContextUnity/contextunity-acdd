@@ -57,7 +57,9 @@ pub fn strip_root_path(path: &str, root: &Path) -> Option<String> {
         return None;
     }
     if p.ancestors().any(|component| {
-        std::fs::symlink_metadata(component).is_ok_and(|metadata| metadata.file_type().is_symlink())
+        !forge_core::fs::is_system_root_symlink(component)
+            && std::fs::symlink_metadata(component)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
     }) {
         return None;
     }

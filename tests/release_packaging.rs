@@ -110,6 +110,16 @@ fn release_declares_tag_and_nightly_builds_for_all_installer_targets() {
         }),
         "publication must depend on builds and distinguish rolling nightly"
     );
+    assert!(
+        jobs.get("prepare").is_some_and(|prepare| {
+            steps(prepare).iter().any(|step| {
+                step["run"].as_str().is_some_and(|run| {
+                    run.contains("releases/latest") && run.contains("should_build=false")
+                })
+            })
+        }),
+        "nightly workflow must skip rebuilding when the latest release matches main commit"
+    );
 }
 
 #[test]
