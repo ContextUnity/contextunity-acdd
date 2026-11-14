@@ -17,13 +17,14 @@ use std::{
 
 /// Discover standalone workflow documents without executing gates or opening a store.
 pub fn list_workflows(root: &Path) -> Result<Vec<PathBuf>> {
+    let root = root.canonicalize()?;
     let directory = root.join("docs/workflows");
     if !directory.exists() {
         return Ok(Vec::new());
     }
     let directory = directory.canonicalize()?;
     ensure!(
-        directory.starts_with(root.canonicalize()?),
+        directory.starts_with(&root),
         "WORKFLOW_PATH_INVALID: workflow directory escapes root"
     );
     let mut paths = Vec::new();
@@ -35,11 +36,11 @@ pub fn list_workflows(root: &Path) -> Result<Vec<PathBuf>> {
         ) {
             let canonical = path.canonicalize()?;
             ensure!(
-                canonical.starts_with(root.canonicalize()?),
+                canonical.starts_with(&root),
                 "WORKFLOW_PATH_INVALID: workflow escapes root"
             );
             if canonical.is_file() {
-                paths.push(path.strip_prefix(root)?.to_owned());
+                paths.push(path.strip_prefix(&root)?.to_owned());
             }
         }
     }
@@ -441,19 +442,29 @@ mod tests {
             );
         }
 
-        // Actual workflow resolver matches stem without `.workflow` cleanly.
+        // Actual workflow resolver matches stem without `.workflow` cleanly,
+        // including when root traverses a symlink (e.g. /var -> /private/var).
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("docs/workflows")).unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(real.join("docs/workflows")).unwrap();
         std::fs::write(
-            dir.path()
-                .join("docs/workflows/author-milestone.workflow.yaml"),
+            real.join("docs/workflows/author-milestone.workflow.yaml"),
             "version: 2\n",
         )
         .unwrap();
         assert_eq!(
-            resolve_workflow(dir.path(), "author-milestone").unwrap(),
+            resolve_workflow(&real, "author-milestone").unwrap(),
             PathBuf::from("docs/workflows/author-milestone.workflow.yaml")
         );
+        #[cfg(unix)]
+        {
+            let alias = dir.path().join("alias");
+            std::os::unix::fs::symlink(&real, &alias).unwrap();
+            assert_eq!(
+                resolve_workflow(&alias, "author-milestone").unwrap(),
+                PathBuf::from("docs/workflows/author-milestone.workflow.yaml")
+            );
+        }
 
         let plan_wf_path = Path::new("docs/workflows/author-plan.workflow.yaml");
         let plan_wf_yaml = std::fs::read_to_string(

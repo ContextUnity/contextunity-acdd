@@ -205,7 +205,10 @@ impl NativeHandoffHarness {
                         claim_revision: task.claim_revision,
                         contract_revision: task.contract_revision,
                         worker_id: worker,
-                        worktree: self.root().to_string_lossy().into_owned(),
+                        worktree: task
+                            .worktree
+                            .clone()
+                            .context("claimed task missing worktree")?,
                         commit: None,
                         candidate_baseline_head: None,
                         proof,
