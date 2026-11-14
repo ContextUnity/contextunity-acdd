@@ -25,5 +25,10 @@ gates:
             enum: [pass, reject]
           summary:
             type: string
+          findings:
+            type: object
+          step_findings:
+            type: array
+            items: {type: string}
     max_attempts: 2
     fail: build

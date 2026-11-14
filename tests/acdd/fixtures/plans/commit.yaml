@@ -2,7 +2,9 @@ version: 2
 inherit: none
 save: commit
 commands:
-  record: "touch forbidden-plan-command"
+  record:
+    command: "touch forbidden-plan-command"
+    output: { require_counts: false }
 gates:
   - tasks:
       gates:

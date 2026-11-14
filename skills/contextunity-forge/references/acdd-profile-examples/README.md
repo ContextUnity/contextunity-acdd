@@ -49,16 +49,16 @@ When an initiative spans multiple repositories (e.g. `commerce-backend`, `commer
                       └────────────────────────────────────────┘
 ```
 
-### Upfront Preflight Workflow Initialization (`workflow init`)
+### Upfront Milestone Initialization (`milestone init`)
 
 Before dispatching autonomous agent workers, the coordinator/orchestrator executes preflight initialization:
 
 ```bash
-contextunity-forge-mcp workflow init docs/milestones/060-hierarchical-acdd-gates-and-milestone-orchestration.md
+contextunity-forge-mcp milestone init docs/milestones/060-hierarchical-acdd-gates-and-milestone-orchestration.md
 ```
 
-**What `workflow init` executes BEFORE any agent is spawned**:
-1. **Host Skill Preflight Check**: Validates that all skills declared in `required_skills:` are physically present in `~/.agents/skills/` or `.agents/skills/`. Fails fast immediately (`WORKFLOW_PREFLIGHT_FAILED`) if a tool is missing, preventing agents from burning tokens in blind sessions.
+**What `milestone init` performs before dispatch**:
+1. **Host Skill Preflight Check**: Validates skills declared in `required_skills:` against repository and host installations. Preflight errors use `MILESTONE_PREFLIGHT_FAILED`.
 2. **Multi-Repo Path & Branch Validation**: Reads `repositories:` from manifest frontmatter, confirms all participant repositories exist, and checks that target base branches are clean.
 3. **Automated Base Worktree Scaffolding**: If not running in `--in-place` mode, atomically creates milestone base branches (`milestone/<id>`) and base worktrees (`.worktrees/<id>-<slug>`) across all declared repositories in a single operation.
 4. **SQLite Workflow Registration**: Admits tasks, registers participant repositories, and populates initial `gate_transitions` root state in `.forge/tasks.sqlite`.
@@ -67,7 +67,7 @@ contextunity-forge-mcp workflow init docs/milestones/060-hierarchical-acdd-gates
 
 ### The 4-Stage Multi-Repo Control Cycle:
 
-1. **Preflight Manifest Initialization (`workflow init`)**:
+1. **Preflight Manifest Initialization (`milestone init`)**:
    - Reads `repositories:` and `required_skills:` upfront.
    - Sets up worktrees and base branches automatically across backend, frontend, and infra.
 

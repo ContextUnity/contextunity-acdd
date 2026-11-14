@@ -1257,33 +1257,10 @@ pub(super) fn context_bundle(
             json!(guidance_slot_warnings),
         );
         guidance_map.insert("linked_milestones".into(), json!(linked_milestones));
-        let proof_template = if proof_schema.is_some() {
-            json!({"scheme_proof": {}})
-        } else {
-            match proof_kind {
-                Some(crate::tasks::profile::ProofKind::Contract) => json!({
-                    "contract_proof": {
-                        "seam_test_ref": "<indexed test file or symbol>",
-                        "red_exit_code": 101,
-                    }
-                }),
-                Some(crate::tasks::profile::ProofKind::Command) => json!({
-                    "command_proof": {
-                        "command": "<registered command with scoped test target>",
-                        "exit_code": 0,
-                        "tests_passed": 1,
-                        "tests_failed": 0,
-                    }
-                }),
-                Some(crate::tasks::profile::ProofKind::Review) => json!({
-                    "review_proof": {"decision": "pass", "contours": "<one result per configured contour>"}
-                }),
-                Some(crate::tasks::profile::ProofKind::Delivery) => {
-                    json!({"delivery_proof": {"delivered": true}})
-                }
-                _ => json!({}),
-            }
-        };
+        let proof_template = active_gate
+            .map(|gate| crate::tasks::gates::proof_template(gate, &profile))
+            .transpose()?
+            .unwrap_or_else(|| json!({}));
         guidance_map.insert(
             "expected_evidence_template".into(),
             json!({

@@ -61,9 +61,9 @@ pub struct IntegrationVerification {
     /// Process exit code.
     pub exit_code: i32,
     /// Passing test count.
-    pub tests_passed: u64,
+    pub tests_passed: Option<u64>,
     /// Failing test count.
-    pub tests_failed: u64,
+    pub tests_failed: Option<u64>,
     /// Optional registered command ID explicitly selected as the project linter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lint_command: Option<String>,
@@ -105,7 +105,7 @@ impl IntegrationEvidence {
         }
         if self.verification.command.trim().is_empty()
             || self.verification.exit_code != 0
-            || self.verification.tests_failed != 0
+            || self.verification.tests_failed.is_some_and(|n| n != 0)
         {
             bail!("HANDOFF_VERIFICATION_FAILED: successful repository verification is required");
         }
@@ -138,8 +138,8 @@ pub(super) struct VerificationCheck {
     pub command: String,
     pub status: String,
     pub exit_code: Option<i32>,
-    pub tests_passed: u64,
-    pub tests_failed: u64,
+    pub tests_passed: Option<u64>,
+    pub tests_failed: Option<u64>,
     pub stdout_sha256: String,
     pub stderr_sha256: String,
     pub duration_ms: i64,
@@ -147,7 +147,7 @@ pub(super) struct VerificationCheck {
 
 impl VerificationCheck {
     pub fn passed(&self) -> bool {
-        self.status == "completed" && self.exit_code == Some(0) && self.tests_failed == 0
+        self.status == "completed" && self.exit_code == Some(0) && self.tests_failed.is_none_or(|n| n == 0)
     }
 }
 
@@ -183,8 +183,8 @@ mod verification_check_tests {
             verification: IntegrationVerification {
                 command: "cargo test --all-targets".into(),
                 exit_code: 0,
-                tests_passed: 42,
-                tests_failed: 1,
+                tests_passed: Some(42),
+                tests_failed: Some(1),
                 lint_command: None,
                 project_command: Some("check_full_repo".into()),
             },
@@ -202,14 +202,14 @@ mod verification_check_tests {
             command: "test".into(),
             status: "completed".into(),
             exit_code: Some(0),
-            tests_passed: 1,
-            tests_failed: 1,
+            tests_passed: Some(1),
+            tests_failed: Some(1),
             stdout_sha256: String::new(),
             stderr_sha256: String::new(),
             duration_ms: 0,
         };
         assert!(!check.passed());
-        check.tests_failed = 0;
+        check.tests_failed = Some(0);
         assert!(check.passed());
         check.exit_code = Some(1);
         assert!(!check.passed());
@@ -265,7 +265,7 @@ mod verification_check_tests {
             run_milestone_check(root.path(), &store, "r/p/m", 5, "verify", "check", &command)
                 .unwrap();
         assert_eq!(check.exit_code, Some(0));
-        assert_eq!(check.tests_failed, 1);
+        assert_eq!(check.tests_failed, Some(1));
         assert!(!check.passed());
     }
 }
@@ -326,7 +326,7 @@ pub(super) fn run_milestone_check(
                 }
                 if output.exit_code != Some(0) {
                     status = "completed".to_owned();
-                    exit_code = output.exit_code.or(Some(1));
+                    exit_code = output.exit_code;
                     break;
                 }
             }
@@ -364,7 +364,7 @@ pub(super) fn run_milestone_check(
     {
         status = "output_invalid".to_owned();
     }
-    let (tests_passed, tests_failed) = (parsed.passed.unwrap_or(0), parsed.failed.unwrap_or(0));
+    let (tests_passed, tests_failed) = (parsed.passed, parsed.failed);
     if status == "timeout" {
         combined.extend_from_slice(
             format!(

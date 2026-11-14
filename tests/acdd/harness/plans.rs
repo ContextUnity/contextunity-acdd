@@ -1,4 +1,5 @@
-use crate::acdd::support::{git_command, init_git, Workspace};
+use crate::acdd::support::{git_command, git_head, init_git, Workspace};
+use clap::Parser;
 use contextunity_forge_mcp::{core::models::DocSection, engine::docs};
 
 /// Canonical plan documents extracted through the production Markdown indexer.
@@ -21,6 +22,26 @@ pub(crate) enum PlanFixture {
 }
 
 impl PlanHarness {
+    fn run(&self, root: &Workspace) -> anyhow::Result<serde_json::Value> {
+        let cli = contextunity_forge_mcp::cli::Cli::try_parse_from([
+            "forge",
+            "--root",
+            root.root().to_str().unwrap(),
+            "--format",
+            "json",
+            "plan",
+            "run",
+            "linear",
+            "--in-place",
+        ])?;
+        let mut output = Vec::new();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(cli.run_with_writer(&mut output))?;
+        Ok(serde_json::from_slice(&output)?)
+    }
+
     pub fn fixture(case: PlanFixture) -> Self {
         let source = match case {
             PlanFixture::PendingSubtask => include_str!("../fixtures/plans/pending-subtask.md"),
@@ -121,6 +142,114 @@ impl PlanHarness {
             source,
         }
     }
+}
+
+#[test]
+fn plans_exclude_configured_database_from_each_snapshot() {
+    let harness = PlanHarness::linear();
+    let root = harness.materialize(harness.path);
+    root.write(
+        "forge-mcp.yaml",
+        "acdd_profile: profiles/plan.yaml\ntasks_db: runtime/tasks.sqlite\nplans: [docs/plans]\n",
+    );
+    root.write(
+        "profiles/plan.yaml",
+        include_str!("../fixtures/plans/configured-snapshot.yaml"),
+    );
+    root.write("unrelated.txt", "preserved\n");
+    std::fs::create_dir_all(root.path("runtime")).unwrap();
+    let db = rusqlite::Connection::open(root.path("runtime/tasks.sqlite")).unwrap();
+    db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE activity (value TEXT); INSERT INTO activity VALUES ('live');").unwrap();
+    for suffix in ["", "-wal", "-shm"] {
+        assert!(root.path(format!("runtime/tasks.sqlite{suffix}")).exists());
+    }
+    root.write("runtime/tasks.sqlite-journal", "journal");
+    root.write("runtime/tasks.sqlite.lock", "lock");
+    let head = git_head(root.root());
+    let result = harness.run(&root).unwrap();
+    assert_eq!(result["status"], "completed");
+    assert_eq!(git_head(root.root()), head);
+    let refs = harness.snapshots(&root);
+    assert_eq!(refs.len(), 6, "{refs:?}");
+    let mut completed = 0;
+    let mut implemented = 0;
+    for reference in refs {
+        let name = reference.split_whitespace().last().unwrap();
+        let output = git_command(root.root(), &["ls-tree", "-r", "--name-only", name])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let tree = String::from_utf8(output.stdout).unwrap();
+        for suffix in ["", "-wal", "-shm", "-journal", ".lock"] {
+            assert!(
+                !tree
+                    .lines()
+                    .any(|p| p == format!("runtime/tasks.sqlite{suffix}")),
+                "{name}: {tree}"
+            );
+        }
+        assert!(tree.lines().any(|p| p == "unrelated.txt"));
+        let output = git_command(root.root(), &["show", &format!("{name}:src/first.rs")])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let source = String::from_utf8(output.stdout).unwrap();
+        implemented += usize::from(source.contains("implementation"));
+        let output = git_command(
+            root.root(),
+            &["show", &format!("{name}:docs/plans/linear.md")],
+        )
+        .output()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let plan = String::from_utf8(output.stdout).unwrap();
+        if plan.contains("**Status**: completed") {
+            assert!(plan.contains("**Evidence**:"));
+            completed += 1;
+        }
+    }
+    assert!(implemented >= 4);
+    assert!(completed >= 2);
+    assert_eq!(
+        std::fs::read_to_string(root.path("unrelated.txt")).unwrap(),
+        "preserved\n"
+    );
+}
+
+#[test]
+fn plans_reject_source_drift_and_external_database_configuration() {
+    let harness = PlanHarness::linear();
+    let root = harness.materialize(harness.path);
+    root.write(
+        "profiles/plan.yaml",
+        include_str!("../fixtures/plans/drift-snapshot.yaml"),
+    );
+    let head = git_head(root.root());
+    let error = harness.run(&root).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("PLAN_SOURCE_DRIFT"),
+        "{error:#}"
+    );
+    assert_eq!(git_head(root.root()), head);
+    root.write(harness.path, harness.source);
+    root.write("forge-mcp.yaml", "acdd_profile: profiles/plan.yaml\ntasks_db: ../external-tasks.sqlite\nplans: [docs/plans]\n");
+    let error = harness.run(&root).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("TASK_SCOPE_INVALID"),
+        "{error:#}"
+    );
 }
 
 #[test]

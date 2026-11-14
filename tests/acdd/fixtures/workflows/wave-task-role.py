@@ -5,13 +5,12 @@ import shutil
 import subprocess
 import sys
 
-fixture, executable, session, prompt, review = sys.argv[1:]
+fixture, executable, session, prompt = sys.argv[1:]
 root = Path.cwd()
 common = Path(subprocess.check_output(["git", "rev-parse", "--git-common-dir"], text=True).strip())
 primary = (root / common).resolve().parent
 control = root / ".forge/lifecycle"
 control.mkdir(parents=True, exist_ok=True)
-(control / "review-proof.json").write_text(review)
 runner = root / ".forge/runner_fixture"
 if not runner.exists():
     shutil.copy2(primary / ".forge/runner_fixture", runner)

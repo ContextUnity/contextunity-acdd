@@ -1,28 +1,28 @@
 # =============================================================================
 # ACDD PROFILE EXAMPLE: Pure Workflow (Zero Tasks)
 #
-# ADR 0021 Work Model 1: Workflow is a direct gate graph without tasks.
-# There is NO `tasks:` block. Gates execute sequentially, cyclically, or reactively
-# directly against repository state (e.g. CI/CD, polish loops, PR audits).
+# ADR 0021 Work Model 1: Pure gate graph without tasks.
+# Copy to docs/workflows/ to run as a standalone workflow.
 # =============================================================================
 
 version: 2
 inherit: none
-
-# Workflows use `save: log` (alias for logfile) as their primary persistence artifact:
-# Emits run traces into `.forge/runs/<workflow-run-id>.json` and SQLite gate_execution_traces.
-save: log
+save: none
 
 roles:
   builder:
     mode: subagent
     reuse_on_reject: true
+    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
+    prompt_template: 'Perform {stage} as {role} in {worktree}. Goal: {goal}. {role_guidance} Return a structured decision and proof.'
     models:
       - 'gpt-6.1-sol:medium'
 
   independent_reviewer:
     mode: subagent
     reuse_on_reject: true
+    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
+    prompt_template: 'Perform {stage} as {role} in {worktree}. Goal: {goal}. {role_guidance} Return a structured decision and proof.'
     models:
       - 'gpt-6.1-sol:xhigh'
 
@@ -34,9 +34,9 @@ commands:
 policies:
   default_review:
     independent_worker: true
-    require_all_contours: false
+    require_all_contours: true
 
-# Pure gate graph: NO `tasks:` container!
+# Pure gate sequence with cyclic repair:
 gates:
   - id: verify
     command: check_full_repo
@@ -44,13 +44,21 @@ gates:
 
   - id: polish
     role: builder
+    command: check_full_repo
+    max_attempts: 3
+    proof: &decision_proof
+      scheme:
+        type: object
+        required: [decision, summary]
+        properties:
+          decision: {type: string, enum: [pass, reject]}
+          summary: {type: string}
     pass: review
 
   - id: review
     role: independent_reviewer
     policy: default_review
     independent_from: polish
-    pass: verify
+    max_attempts: 3
+    proof: *decision_proof
     fail: polish
-    save:
-      immutable: true

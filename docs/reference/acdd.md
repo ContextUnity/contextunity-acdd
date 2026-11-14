@@ -22,6 +22,10 @@ ACDD separates *what* must be built from *how* work is governed and verified:
 Claiming a gate returns two complementary payloads ([ADR 0016](../adr/0016-lean-stage-tailored-task-context-bundles.md)):
 
 - **`workflow_guidance`**: Names the active `role`, operational instructions, acceptance criteria, `NO_PREFLIGHT_SUBAGENTS`, scoped verification commands (`scoped_commands`), and the exact expected evidence template (`expected_evidence_template`).
+
+Task claim templates and taskless role `expected_response.proof` use the same
+profile-resolved proof projection. Placeholder values describe the required
+shape and must be replaced with actual observations and review evidence.
 - **`context_bundle`**: Supplies only the artifacts required for the active gate:
   - **Contract and build gates**: Admitted write scope, indexed symbol signatures, external callers, covering tests, ADR invariant summaries, target RFC/blackboard messages, and the task's own inherited root-gate proof slice (such as its per-task `blueprint_synthesis` slice from `gate_transitions` with `subject = <full_task_id>`).
   - **Review gates**: The immutable candidate snapshot diff and claimed contract context.
@@ -46,6 +50,8 @@ ACDD applies one shared gate, proof, and guidance engine across three operationa
 Everything in an ACDD workflow is a **gate** declared under `gates:` in a YAML profile. Every gate has one primary driver:
 
 - **Agent gate** (`role: <role_id>`): Claimed by a worker session (`task claim` / `task_claim`) and completed via `task submit` / `task_submit` with the required typed proof. An agent gate may also bind a registered `command:` so `task verify` can observe compiler and test results on the worker's behalf.
+A gate with both `role` and `command` uses the role driver and also verifies the registered command. Taskless role stdout must contain one JSON object, optionally enclosed in a complete Markdown code fence. A `scheme_proof.decision` must agree with the outer decision. Rejections require nonempty structured findings, supplied at the top level or in schema-declared proof finding fields; duplicated findings must agree.
+
 - **Command gate** (`command: <command_id>`, no `role`): Executed deterministically by Forge (zero LLM tokens), parsing test counts and failure codes directly from command output.
 - **Container gate** (`gates: [...]`): Groups sequential child gates under a dotted hierarchical path (for example `blueprint_synthesis.synthesize` $\to$ `blueprint_synthesis.review`, or `seam.integrate` $\to$ `seam.review`).
 - **Task container** (`- tasks: { gates: [...] }`): Expands its child gate sequence for every admitted task, scheduled in topological DAG waves derived from `depends_on` / `task_depends_on`.
@@ -54,17 +60,24 @@ Everything in an ACDD workflow is a **gate** declared under `gates:` in a YAML p
 
 A profile gate can contain child gates. [`claim_nested_gate`](../../crates/forge-tasks/src/engine/claim.rs) resolves the persisted stage to its active leaf gate, applies that leaf's role and proof requirements, and accepts qualified child stage IDs. Passing a child advances the cursor to the next child.
 
-Any applicable (`when`) root gate positioned before `- tasks:` (`cursor.root_index < task_position`) executes with `subject = "milestone"` and blocks task claims (`MILESTONE_PRE_TASK_GATE_PENDING`) until it passes in `gate_transitions`. When a pre-task root gate passes with a `proof.scheme` payload containing `tasks: { "<task_ref>": { ... } }`, the engine fans out each task's slice into `gate_transitions` with `subject = <full_task_id>` (`<milestone_ref>:<task_ref>`) and automatically injects only that task's slice into `context_bundle` upon `task claim`. Claims expose the active gate path and breadcrumb in `workflow_guidance`; task-specific RFCs and gate-targeted blackboard messages appear there alongside active broadcasts, while the general `blackboard` field retains task, sibling, and milestone context.
+Each reachable applicable (`when`) root gate on the accepted route before `- tasks:` executes with `subject = "milestone"` and blocks task claims (`MILESTONE_PRE_TASK_GATE_PENDING`) until it passes in `gate_transitions`. After the reachable route passes, when an accepted pre-task root gate passes with a `proof.scheme` payload containing `tasks: { "<task_ref>": { ... } }`, the engine fans out each task's slice into `gate_transitions` with `subject = <full_task_id>` (`<milestone_ref>:<task_ref>`) and automatically injects only that task's slice into `context_bundle` upon `task claim`. Claims expose the active gate path and breadcrumb in `workflow_guidance`; task-specific RFCs and gate-targeted blackboard messages appear there alongside active broadcasts, while the general `blackboard` field retains task, sibling, and milestone context. Replaying persisted transitions preserves the accepted route: gates bypassed by routing do not block claims, while a missing reachable pass does.
 
 [`validate_seam_reachability`](../../crates/forge-tasks/src/engine/gates/seam.rs) checks the current test source against indexed call and import evidence, follows module imports and public re-exports, and permits up to four test-helper hops before requiring an admitted production target. When source drift invalidates an indexed route, the gate reports `TASK_SEAM_STALE` with an index-refresh action. A disconnected seam reports discovered calls, coverage, reached targets, and the reason traversal stopped. The task engine rejects disconnected contract seams and public signature changes whose indexed callers fall outside admitted scope.
 
 ### Independence, Routing, Conditions, and Persistence
 
-- **Independent Worker Enforcement (`independent_from`)**: For any gate declaring `independent_from`, claim and submission compare its `worker_id` against the accepted worker of that predecessor. Session metadata is optional and does not decide gate independence. Lifecycle metadata uses explicit in-process identity or `FORGE_AGENT_SESSION_ID`, without host scraping. Configured runners retain distinct real session fingerprints, isolated process groups, and rejection resumption.
+- **Independent Worker Enforcement (`independent_from`)**: For any gate declaring `independent_from`, claim and submission compare its `worker_id` against the accepted worker of that predecessor. Session metadata is optional and does not decide gate independence. Lifecycle metadata uses explicit in-process identity or `FORGE_AGENT_SESSION_ID`, without host scraping. Configured runners use distinct Forge session fingerprints and isolated process groups.
 - **Dispatch Directives**: Submission to an independent next gate returns a structured `dispatch` object derived from the active role and prior worker, along with the `[INDEPENDENT GATE DISPATCH REQUIRED]` directive and suggested worker `{task_slug}-{gate}`. The coordinator performs that dispatch; reading guidance launches no process. See [gate dispatch and evidence](tasks.md#gates-and-evidence).
-- **Failure & Loop Routing (`pass`, `fail`, `loop`)**: Passing advances sequentially or to the named `pass:` target; rejecting or failing routes to `fail:`. Declaring `loop: { scope: <gate>, symbols: <gate> }` on a review gate rewinds context back to the builder session (`reuse_on_reject: true`) with structured reviewer findings (`task_findings`) without losing session history or widening admitted scope or symbols.
-- **Conditional Gates (`when`) & Multi-Attempt Limits (`max_attempts`)**: Gates with `when: seam` run only when the task participates in cross-task seam dependencies. `max_attempts` caps automated retry loops before escalating to human or architect intervention.
+- **Failure & Loop Routing (`pass`, `fail`, `loop`)**: Passing advances sequentially or to the named `pass:` target; rejecting or failing routes to `fail:`. Declaring `loop: { scope: <gate>, symbols: <gate> }` on a review gate routes back to the builder with structured reviewer findings (`task_findings`). With `reuse_on_reject: true`, Forge supplies the accepted builder identity through `{session_id}` and `FORGE_AGENT_SESSION_ID`; this does not preserve provider conversation history or widen admitted scope or symbols.
+- **Conditional Gates (`when`) & Multi-Attempt Limits (`max_attempts`)**: Gates with `when: seam` run only when the task participates in cross-task seam dependencies. An explicit `max_attempts` limits failures at that gate; successful visits do not consume the budget. Omitting it leaves failure routing unbounded. Root milestone replay reconstructs the budget from the replayed observations. A timed-out or signal-interrupted root command stops execution with an error instead of following a failure route.
 - **Save & Immutability (`save`)**: Controls snapshot and commit semantics around a gate (`pre: snapshot`, `post: snapshot | commit`, `immutable: true` to reject working-tree tampering via `TASK_CANDIDATE_MISMATCH`, `git_commit_note: telemetry`, `receipt: true`, and `absorb: true` on terminal milestone handoff).
+
+Native milestone root gates capture declared snapshots before execution and after
+an accepted decision without moving `HEAD`. Immutable gates compare their input
+with the accepted snapshot in the same phase and reject changes during execution.
+Replayed observations remain bound to their authority, profile, candidate, and
+snapshot references; changed content requires fresh downstream observations and
+does not reopen accepted task receipts.
 
 ---
 
@@ -168,7 +181,7 @@ Phase 3: Post-Task Milestone Closure
   - `review`: Requires `review_proof` (`decision: pass | reject`, `contours`, optional `extended_scope_review` and `notes`).
   - `seam_test`: Requires `seam_test_proof` (`exit_code: 0`, `seam_test_refs`, optional test counts).
   - `delivery`: Requires `delivery_proof` (`delivered`, `commit_sha`, `receipt_id`).
-- **Roles (`roles`)**: All four roles use `mode: subagent` and `reuse_on_reject: true` so rejected workers resume with full context:
+- **Roles (`roles`)**: All four roles use `mode: subagent` and `reuse_on_reject: true`. Headless runners receive a retained Forge identity on rejection; that identity alone does not resume provider conversation state. Runner templates requesting unsupported provider conversation resumption are rejected during profile validation and before spawning:
   - `architect` (`sol-6.1:high`): Synthesizes the milestone blueprint, grounds decisions on `task_blackboard`, and performs milestone integration polish.
   - `contract_author` (`sol-6.1:high`): Designs each task's data flow, invariants, negative boundaries, and compiling runtime-red seam test, and posts a `build`-targeted `draft` to `task_blackboard`.
   - `builder` (`gpt6-luna:xhigh`): Implements approved contracts and joint seam integrations strictly inside admitted scope.
@@ -244,6 +257,10 @@ The [CLI orchestration commands](cli.md#structured-plans) share canonical profil
 
 [`run_standalone_workflow`](../../crates/forge-tasks/src/engine/orchestrator/workflow.rs) executes a workflow's taskless root graph with ephemeral observations and `save: none`. Commands reuse the existing output parser and supervised process executor. Agent roles receive distinct sessions and must return a structured decision with typed proof; rejections carry structured findings to the retained target session, and exit status alone cannot supply role acceptance. Task containers and persistent receipts are refused for these workflows.
 
+Command placeholders, including those on role-driven gates, use string fields from accepted producer decisions in observation order; the latest accepted observation wins when fields collide. Re-executing a gate invalidates its previous fields before its command is resolved, and rejected decisions supply none. Other producers' fields remain available. `plan_slug` and `plan_name` alias one another when only one is present. Unresolved placeholders and values containing unsafe path characters are rejected before command execution.
+
+Root command observations check the configured output counts and proof catalog. Contract proof checks the observed runtime failure and configured signature; seam proof checks observed test identities and counts. Commands that intentionally produce no test summary use `output.require_counts: false`.
+
 ### Standalone Artifact Authoring Workflows
 
 Before execution begins, teams can author new milestones, plans, or workflows under `docs/workflows/` (`inherit: none`, `save: none`):
@@ -252,7 +269,15 @@ Before execution begins, teams can author new milestones, plans, or workflows un
 - **`author-plan.workflow.yaml`**: `synthesize` (`role: architect`, inline `proof.scheme`) $\to$ `review` (`role: independent_reviewer`, `independent_from: synthesize`, `fail: synthesize`) $\to$ `preflight` (`command: validate_plan` running `contextunity-forge-mcp plan show {plan_name}`). Produces structured plans in `docs/plans/<slug>.md`.
 - **`author-workflow.workflow.yaml`**: `synthesize` (`role: architect`, inline `proof.scheme`) $\to$ `review` (`role: independent_reviewer`, `independent_from: synthesize`, `fail: synthesize`) $\to$ `preflight` (`command: validate_workflow` running `contextunity-forge-mcp workflow show {workflow_name}`). Produces standalone taskless workflows in `docs/workflows/<name>.workflow.yaml`.
 
+The milestone preflight initializes the authored manifest's tasks in the task
+store. The standalone workflow gates themselves do not create task rows or
+claims; `save: none` does not create synthetic `.forge/runs` logs.
+
 [`run_plan_workflow`](../../crates/forge-tasks/src/engine/orchestrator/plan.rs) projects indexed `doc_type: plan` sections to source-owned steps in validated dependency order. Snapshot persistence preserves HEAD and staged content, explicit execution profiles must be task-only and snapshot-only, delivery enforces the subtask completion/evidence guard, completed steps with evidence are not replayed, and concurrent source edits fail closed.
+
+Plan snapshots exclude the configured `tasks_db` and its SQLite journal, WAL,
+shared-memory, and lock sidecars, as well as `.forge`. Database paths remain
+subject to the workspace configuration's confinement checks.
 
 Milestone verification executes the exact current root command cursor. Handoff validates an independent role decision and Forge-observed command results bound to final authority, implementation, and explicit target-base content. See [milestone commands](cli.md#repository-milestones) and [global options](cli.md#global-options).
 

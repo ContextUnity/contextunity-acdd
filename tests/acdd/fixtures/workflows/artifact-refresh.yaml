@@ -1,0 +1,39 @@
+version: 2
+inherit: none
+save: none
+roles:
+  author:
+    runner: "python3 artifact-runner.py '{prompt}'"
+commands:
+  check:
+    command: "python3 artifact-check.py {plan_name} {plan_slug} {artifact_path} {prerequisite}"
+    output: { require_counts: false }
+gates:
+  - id: prerequisite
+    role: author
+    proof: &artifact_proof
+      scheme:
+        type: object
+        additionalProperties: true
+        properties:
+          prerequisite: {type: string}
+          plan_slug: {type: string}
+          artifact_path: {type: string}
+          removed: {type: string}
+  - id: synthesize
+    role: author
+    proof: *artifact_proof
+  - id: review
+    role: author
+    proof:
+      scheme:
+        type: object
+        required: [decision]
+        properties:
+          decision: {type: string, enum: [pass, reject]}
+    fail: synthesize
+    max_attempts: 2
+  - id: preflight
+    role: author
+    command: check
+    proof: none

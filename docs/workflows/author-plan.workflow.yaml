@@ -40,6 +40,7 @@ commands:
   validate_plan:
     command: "contextunity-forge-mcp plan show {plan_name}"
     timeout_seconds: 60
+    output: { require_counts: false }
 
 policies:
   default_review:

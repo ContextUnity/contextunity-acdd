@@ -3,8 +3,14 @@ version: 2
 inherit: none
 save: none
 commands:
-  first: "printf 'first\n' >> workflow-order.log"
-  second: "printf 'second\n' >> workflow-order.log"
+  first:
+    command: "printf 'first\n' >> workflow-order.log"
+    output:
+      require_counts: false
+  second:
+    command: "printf 'second\n' >> workflow-order.log"
+    output:
+      require_counts: false
 gates:
   - id: first
     command: first

@@ -212,6 +212,11 @@ supply verification and retry contours. Use the
 [ACDD domain profile examples catalog](references/acdd-profile-examples/README.md)
 for domain-specific starting points; verify examples against the live schema.
 Dedicated standalone authoring workflows (`author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, `author-workflow.workflow.yaml`) under `docs/workflows/` (and mirrored in `references/acdd-profile-examples/`) execute as taskless root-gate workflows (`inherit: none`, `save: none`) to synthesize, review, and preflight manifests, plans, and workflows before execution.
+The milestone preflight runs `milestone init --in-place`, which initializes the
+authored manifest's tasks; the workflow gates do not create tasks or claims.
+Standalone role runners return a structured decision and matching proof; a role's
+registered command is observed by Forge before acceptance. Bound repair loops
+with explicit `max_attempts` and use `independent_from` for reviewer separation.
 Custom profiles (never the embedded default profile) may also configure optional
 `roles.<name>.runner` and `roles.<name>.prompt_template` strings using `{task_id}`,
 `{stage}`, `{role}`, `{worktree}`, `{model}`, `{reasoning}`, `{role_guidance}`,
@@ -221,7 +226,8 @@ and `{goal}` slots; when configured, `task_claim` renders them in
 by comparing `worker_id` with the accepted predecessor's worker. Optional
 session metadata comes from an explicit in-process identity or a nonempty
 `FORGE_AGENT_SESSION_ID`; it does not decide gate independence. Configured role
-runners retain distinct session fingerprints for isolation and rejection resumption.
+runners retain distinct Forge session fingerprints for isolation and rejection
+feedback; retaining an identity does not resume a provider conversation.
 
 Explicit gate `tools` are requirements validated against enabled modules.
 Empty tool lists receive module-filtered advisory navigation tools for contract,

@@ -113,6 +113,16 @@ After a `fail` rewind, `rejection` gives
 `rejected_from`, the prior builder `worker_id` when reuse is enabled, and the
 persisted findings; it is null on clean forward runs. Reuse guidance adds
 `Return task to builder '{worker_id}' with review rejection findings to repair defects.`
+When a gate rejects itself before any accepted attempt, the findings remain
+available and the runner starts a fresh session. When an accepted worker is
+available for reuse, its stored session must also be available and consistent.
+For a command-driven task gate, the runner records the execution before routing
+an observed command or proof-compilation failure through the configured failure
+transition. Infrastructure and configuration errors remain errors. A later claim
+runs verification again unless it has valid evidence for that claim and candidate.
+Compiled command evidence must satisfy the gate's passing-proof rules, including
+required test counts. A contract run must satisfy its expected outcome for every
+command trace before any of its observations can be reused as passing evidence.
 If the instruction file is missing, does not name the `contextunity-forge` skill, that skill is not installed globally or in the repository, or `.gitignore` lacks the canonical protective rules, the response includes `TASK_GUIDANCE_MISSING` and inline steps.
 
 Scope paths are checked in both their owner's root and the task's claimed isolated
@@ -387,7 +397,7 @@ active task, stage, claim and contract revisions, worker, and worktree.
 
 When `proof:` is omitted on a gate in the profile, [`infer_gate_proof`](../../crates/forge-tasks/src/tasks/profile/normalize.rs) automatically infers the internal verification mode (`ProofKind`) from the gate's structural attributes (`receipt: true` $\implies$ `delivery`, `expected_failure` $\implies$ `contract`, `command` $\implies$ `command`, `policy` or `contours` $\implies$ `review`, otherwise `none`). Explicit `proof:` declarations are used for `seam_test`, `contract` (without inline `expected_failure`), reusable schemas from the top-level `proofs:` catalog (`proof: <catalog_name>`, e.g. `proof: blueprint`), or inline recursive schemas (`proof: { scheme: { ... } }`).
 
-Before any milestone task inside `- tasks:` can be claimed, all applicable (`when`) pre-task root gates (`cursor.root_index < task_position`, such as `blueprint_synthesis`: `synthesize` $\to$ `review`) must have an accepted pass transition in `gate_transitions` (`subject = "milestone"`), or `task_claim` fails closed with `MILESTONE_PRE_TASK_GATE_PENDING`. When a pre-task root gate passes and its validated `scheme_proof` contains a per-task dictionary `tasks: { "<task_ref>": { ... } }`, Forge automatically records a `gate_transitions` row per task with `subject = <full_task_id>` (`<milestone_ref>:<task_ref>`) containing strictly that task's proof slice, and injects that task-scoped slice into `context_bundle` upon `task_claim` and `task_manage(action="context")`.
+Before any milestone task inside `- tasks:` can be claimed, all reachable applicable (`when`) pre-task root gates on the accepted route (`cursor.root_index < task_position`, such as `blueprint_synthesis`: `synthesize` $\to$ `review`) must have an accepted pass transition in `gate_transitions` (`subject = "milestone"`), or `task_claim` fails closed with `MILESTONE_PRE_TASK_GATE_PENDING`. When a pre-task root gate passes and its validated `scheme_proof` contains a per-task dictionary `tasks: { "<task_ref>": { ... } }`, Forge automatically records a `gate_transitions` row per task with `subject = <full_task_id>` (`<milestone_ref>:<task_ref>`) containing strictly that task's proof slice, and injects that task-scoped slice into `context_bundle` upon `task_claim` and `task_manage(action="context")`. Replay of persisted transitions preserves the accepted route: gates bypassed by routing do not block claims, while a missing reachable pass does.
 
 When claiming a gate with `task_claim`, Forge returns tailored context bundles based on the gate's proof behavior:
 
@@ -409,6 +419,11 @@ test dependencies. Each ADR context item includes up to five `invariants_summary
 lines. `workflow_guidance.scoped_commands` combines registered command prefixes
 with the contract seam or indexed covering-test targets, while
 `expected_evidence_template` supplies the claim-bound evidence shape.
+Its proof values are placeholders: supply real command observations, test
+references, and review evidence. Review contours are keyed objects containing
+`applicable` and `evidence`; optional `notes` is a string. The default none
+proof is `{"none_proof":{}}` and seam test guidance includes exit code,
+references, and passed and failed counts.
 
 `evidence` is a direct JSON object bound to the active claim. The `commit` field can be omitted; Forge automatically captures the scoped candidate snapshot SHA on predecessor gates with snapshot persistence (`save: snapshot` / `save.post: snapshot`, e.g. `contract` and `build`), and inherits it on downstream gates (`review` and `deliver`). For example, a passing build submission contains:
 
@@ -440,6 +455,12 @@ For `proof: seam_test`, every `seam_test_refs` entry must match a durably observ
 passing test; aggregate counts alone do not establish coverage. The engine extracts
 individual test identities and outcomes according to declarative `commands.output.tests`
 rules configured in the active profile, without language or framework hardcoding in the core.
+Verification compiles the seam proof from persisted observations; zero-argument pass
+submission can reuse it after reopening the store. Each command must have normalized
+passed and failed counts, no failures, and individually passed identities matching
+its passed count. A configured passing summary with no failed-count match normalizes
+the failed count to zero; genuinely unavailable counts reject proof.
+Supplied proof counts and exit code must match the observation.
 References use `<target_source_path>::<test_name>` (e.g. `tests/runner_fixture.rs::seam_test`
 or member-qualified paths like `member/tests/runner_fixture.rs::seam_test`).
 Ignored and filtered tests do not count. Mixed executable test targets, count discrepancies

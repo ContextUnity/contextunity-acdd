@@ -201,6 +201,138 @@ impl Drop for RunnerProcess {
     }
 }
 
+// Tokenize trusted syntax before interpolation so inserted values cannot alter argv.
+fn command_words(template: &str) -> Result<Vec<String>, RunnerError> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut started = false;
+    let mut chars = template.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\0' {
+            return Err(RunnerError::InvalidCommand(
+                "NUL in command template".into(),
+            ));
+        }
+        match (quote, ch) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('\''), _) => word.push(ch),
+            (_, '\\') => {
+                let next = chars
+                    .next()
+                    .ok_or_else(|| RunnerError::InvalidCommand("trailing escape".into()))?;
+                if quote == Some('"') && !matches!(next, '$' | '`' | '"' | '\\' | '\n') {
+                    word.push('\\');
+                }
+                if next != '\n' {
+                    word.push(next);
+                    started = true;
+                }
+            }
+            (None, '\'' | '"') => {
+                quote = Some(ch);
+                started = true;
+            }
+            (None, ch) if ch.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            _ => {
+                word.push(ch);
+                started = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        return Err(RunnerError::InvalidCommand("unclosed command quote".into()));
+    }
+    if started {
+        words.push(word);
+    }
+    if words.first().is_none_or(String::is_empty) {
+        return Err(RunnerError::InvalidCommand("missing executable".into()));
+    }
+    Ok(words)
+}
+
+pub(crate) fn validate_runner_template(template: &str) -> Result<(), RunnerError> {
+    let words = command_words(template)?;
+    let unsupported_slot = ["{provider_session_id}", "{thread_id}", "{conversation_id}"]
+        .iter()
+        .any(|slot| template.contains(slot));
+    let unsupported_flag = words.iter().any(|word| {
+        ["--resume", "--continue"].iter().any(|flag| {
+            word == flag
+                || word
+                    .strip_prefix(flag)
+                    .is_some_and(|rest| rest.starts_with('='))
+        })
+    });
+    let codex_resume = words.iter().enumerate().any(|(index, word)| {
+        if !std::path::Path::new(word)
+            .file_name()
+            .is_some_and(|name| name == "codex")
+        {
+            return false;
+        }
+        let mut args = words[index + 1..].iter().map(String::as_str).peekable();
+        let mut next_command = || {
+            while let Some(arg) = args.next() {
+                if arg == "--" {
+                    return None;
+                }
+                if !arg.starts_with('-') {
+                    return Some(arg);
+                }
+                if matches!(
+                    arg,
+                    "-C" | "--cd"
+                        | "-m"
+                        | "--model"
+                        | "-c"
+                        | "--config"
+                        | "-p"
+                        | "--profile"
+                        | "-s"
+                        | "--sandbox"
+                        | "--enable"
+                        | "--disable"
+                        | "--add-dir"
+                        | "--output-schema"
+                        | "-o"
+                        | "--output-last-message"
+                        | "--color"
+                        | "--thread-source"
+                        | "--local-provider"
+                        | "-i"
+                        | "--image"
+                        | "-a"
+                        | "--ask-for-approval"
+                        | "--remote"
+                        | "--remote-auth-token-env"
+                        | "--cyber-access-program"
+                ) {
+                    args.next();
+                }
+            }
+            None
+        };
+        match next_command() {
+            Some("resume") => true,
+            Some("exec" | "e") => next_command() == Some("resume"),
+            _ => false,
+        }
+    });
+    if unsupported_slot || unsupported_flag || codex_resume {
+        return Err(RunnerError::InvalidCommand(
+            "provider conversation resumption is unsupported; Forge passes its retained identity via FORGE_AGENT_SESSION_ID or {session_id}, not provider conversation state".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 mod unix {
     use super::*;
@@ -219,67 +351,12 @@ mod unix {
 
     const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-    // Tokenize trusted syntax before interpolation so inserted values cannot alter argv.
-    fn command_words(template: &str) -> Result<Vec<String>, RunnerError> {
-        let mut words = Vec::new();
-        let mut word = String::new();
-        let mut quote = None;
-        let mut started = false;
-        let mut chars = template.chars().peekable();
-        while let Some(ch) = chars.next() {
-            if ch == '\0' {
-                return Err(RunnerError::InvalidCommand(
-                    "NUL in command template".into(),
-                ));
-            }
-            match (quote, ch) {
-                (Some('\''), '\'') | (Some('"'), '"') => quote = None,
-                (Some('\''), _) => word.push(ch),
-                (_, '\\') => {
-                    let next = chars
-                        .next()
-                        .ok_or_else(|| RunnerError::InvalidCommand("trailing escape".into()))?;
-                    if quote == Some('"') && !matches!(next, '$' | '`' | '"' | '\\' | '\n') {
-                        word.push('\\');
-                    }
-                    if next != '\n' {
-                        word.push(next);
-                        started = true;
-                    }
-                }
-                (None, '\'' | '"') => {
-                    quote = Some(ch);
-                    started = true;
-                }
-                (None, ch) if ch.is_whitespace() => {
-                    if started {
-                        words.push(std::mem::take(&mut word));
-                        started = false;
-                    }
-                }
-                _ => {
-                    word.push(ch);
-                    started = true;
-                }
-            }
-        }
-        if quote.is_some() {
-            return Err(RunnerError::InvalidCommand("unclosed command quote".into()));
-        }
-        if started {
-            words.push(word);
-        }
-        if words.first().is_none_or(String::is_empty) {
-            return Err(RunnerError::InvalidCommand("missing executable".into()));
-        }
-        Ok(words)
-    }
-
     pub(super) fn spawn(
         config: &RunnerConfig,
         context: &RunnerInvocationContext,
         session: RunnerSessionPolicy,
     ) -> Result<RunnerProcess, RunnerError> {
+        validate_runner_template(&config.runner)?;
         let words = command_words(&config.runner)?;
         let mut context = context.clone();
         context.session_id = prepare_session(&context.session_id, session)?;
@@ -291,7 +368,7 @@ mod unix {
                     prompt_template: None,
                 })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         if argv[0].is_empty() || argv.iter().any(|word| word.contains('\0')) {
             return Err(RunnerError::InvalidCommand(
                 "invalid executable or NUL in argument".into(),
@@ -323,7 +400,10 @@ mod unix {
     ) -> Result<String, RunnerError> {
         match policy {
             RunnerSessionPolicy::Resume => {
-                if identity.trim().is_empty() || identity.contains('\0') {
+                if identity.trim().is_empty()
+                    || identity.contains('\0')
+                    || identity == crate::store::UNKNOWN_SESSION_FINGERPRINT
+                {
                     return Err(RunnerError::InvalidSession(
                         "resume requires a nonblank session identity without NUL".into(),
                     ));

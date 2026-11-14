@@ -1,7 +1,7 @@
 use super::role::RoleObservations;
 use crate::{
     engine::gate_graph,
-    milestones::command_gate::{observe_command, resolve_command_plan},
+    milestones::command_gate::{observe_command_for_id, resolve_command_plan},
     tasks::profile::{
         validate_profile_document, GateDef, GateDriver, GateProfile, PersistenceAction, ProofDef,
         ProofKind,
@@ -106,7 +106,18 @@ pub fn read_workflow(root: &Path, path: &Path) -> Result<GateProfile> {
 }
 
 /// Execute root gates with ephemeral observations and the existing graph router.
-pub fn run_standalone_workflow(root: &Path, path: &Path) -> Result<Value> {
+pub fn run_standalone_workflow(root: &Path, path: &Path, goal: Option<&str>) -> Result<Value> {
+    let goal_text = match goal {
+        Some(raw) => {
+            let trimmed = raw.trim();
+            ensure!(
+                !trimmed.is_empty(),
+                "WORKFLOW_GOAL_INVALID: --goal cannot be blank"
+            );
+            trimmed.to_owned()
+        }
+        None => format!("Execute standalone workflow {}", path.display()),
+    };
     let profile = read_workflow(root, path)?;
     let cursors = gate_graph::collect_root_cursors(&profile)?;
     ensure!(
@@ -122,7 +133,7 @@ pub fn run_standalone_workflow(root: &Path, path: &Path) -> Result<Value> {
                 ensure!(cursor.gate.role.as_ref().and_then(|role| profile.roles.get(role)).and_then(crate::tasks::profile::RunnerConfig::from_role).is_some(), "WORKFLOW_RUNNER_REQUIRED: gate '{}' needs a configured runner", cursor.canonical_stage_id);
                 ensure!(!cursor.gate.receipt, "WORKFLOW_PROOF_REQUIRED: taskless workflow cannot create a task receipt");
             }
-            Some(GateDriver::Command) => ensure!(matches!(cursor.gate.proof.kind(), Some(ProofKind::None | ProofKind::Command)) && cursor.gate.expected_failure.is_none() && cursor.gate.independent_from.is_none() && cursor.gate.policy.is_none(), "WORKFLOW_PROOF_REQUIRED: gate '{}' needs typed proof handling beyond command execution", cursor.canonical_stage_id),
+            Some(GateDriver::Command) => ensure!(matches!(cursor.gate.proof.kind(), Some(ProofKind::None | ProofKind::Command | ProofKind::Contract | ProofKind::SeamTest)) && cursor.gate.independent_from.is_none(), "WORKFLOW_PROOF_REQUIRED: gate '{}' needs typed proof handling beyond command execution", cursor.canonical_stage_id),
             _ => anyhow::bail!("WORKFLOW_RUNNER_REQUIRED: gate '{}' has no executable driver", cursor.canonical_stage_id),
         }
         ensure!(
@@ -134,21 +145,17 @@ pub fn run_standalone_workflow(root: &Path, path: &Path) -> Result<Value> {
     }
     let paths = standalone_workflow_scope(path, &profile);
     let mut roles = RoleObservations::default();
-    let mut artifact_tokens = BTreeMap::<String, String>::new();
     let outcomes = run_gate_graph(root, &paths, &[], &cursors, |cursor, _| {
         roles.note_executed(&cursor.canonical_stage_id);
         if cursor.gate.driver() == Some(GateDriver::Agent) {
             let decision = roles.execute(
                 root,
                 &path.to_string_lossy(),
-                &format!("Execute standalone workflow {}", path.display()),
+                &goal_text,
                 &paths,
                 cursor,
                 &profile,
             )?;
-            if decision.passed {
-                collect_artifact_tokens(&decision.evidence, &mut artifact_tokens);
-            }
             return Ok(decision);
         }
         let name = cursor
@@ -165,30 +172,54 @@ pub fn run_standalone_workflow(root: &Path, path: &Path) -> Result<Value> {
             !plan.is_empty(),
             "WORKFLOW_COMMAND_MISSING: no command matched gate '{name}'"
         );
-        let mut passed = true;
         let mut observations = Vec::new();
         for (command_id, command, timeout) in plan {
-            let command = expand_workflow_placeholders(&command, &artifact_tokens)?;
-            let observation = observe_command(root, &command, timeout, definition.output())?;
-            passed &= observation["exit_code"] == 0 && observation["timed_out"] == false;
-            observations.push(json!({"command_id": command_id, "observation": observation}));
-            if !passed {
-                break;
-            }
+            let command = expand_workflow_placeholders(&command, &roles.artifact_tokens())?;
+            let observation = observe_command_for_id(
+                root,
+                &command_id,
+                &command,
+                timeout,
+                definition.output(),
+                cursor.gate.expected_failure.as_ref(),
+            )?;
+            ensure_command_completed(&observation, &cursor.canonical_stage_id)?;
+            observations.push((command_id, observation));
         }
+        let passed = crate::engine::evidence_compiler::evaluate_root_command_gate(
+            &cursor.gate,
+            &profile,
+            &observations,
+            cursor.gate.policy.as_deref().unwrap_or("seam-test-first"),
+            None,
+        )?;
         Ok(GateDecision {
             passed,
-            evidence: json!(observations),
+            evidence: json!(observations.iter().map(|(command_id, observation)| json!({"command_id": command_id, "observation": observation})).collect::<Vec<_>>()),
             findings: None,
         })
     })?;
     Ok(json!({"status":"completed", "path":path, "outcomes":outcomes}))
 }
 
+#[derive(Clone)]
 pub(super) struct GateDecision {
     pub passed: bool,
     pub evidence: Value,
     pub findings: Option<Value>,
+}
+
+/// Treat timeouts and signal termination as execution errors, not gate failures.
+pub(crate) fn ensure_command_completed(observation: &Value, gate: &str) -> Result<()> {
+    ensure!(
+        observation["timed_out"] != true && observation["status"] != "timeout",
+        "WORKFLOW_COMMAND_TIMEOUT: {gate}"
+    );
+    ensure!(
+        observation["exit_code"].as_i64().is_some(),
+        "WORKFLOW_COMMAND_INTERRUPTED: {gate}"
+    );
+    Ok(())
 }
 
 fn standalone_workflow_scope(path: &Path, profile: &GateProfile) -> Vec<String> {
@@ -242,27 +273,25 @@ pub(super) fn run_gate_graph(
         gate_graph::gate_condition_matches(cursor.when.as_deref(), paths, tasks, None, Some(root))
     };
     let mut next = cursors.iter().position(applicable);
-    let mut attempts = BTreeMap::<usize, u32>::new();
+    let mut visits = BTreeMap::<usize, u32>::new();
+    let mut failures = BTreeMap::<usize, u32>::new();
     let mut outcomes = Vec::new();
     while let Some(index) = next {
         let cursor = &cursors[index];
-        let used = attempts.entry(index).or_default();
+        let used = visits.entry(index).or_default();
         *used += 1;
-        ensure!(
-            *used <= cursor.gate.max_attempts.unwrap_or(1),
-            "WORKFLOW_ATTEMPTS_EXHAUSTED: {}",
-            cursor.canonical_stage_id
-        );
         let decision = execute(cursor, *used)?;
         outcomes.push(json!({"gate":cursor.canonical_stage_id,"attempt":used,"passed":decision.passed,"evidence":decision.evidence}));
         next = if decision.passed {
             gate_graph::resolve_pass_target(cursors, index, applicable)?
         } else {
+            let failed = failures.entry(index).or_default();
+            *failed += 1;
             let route = gate_graph::resolve_fail_target(
                 cursors,
                 index,
                 decision.findings.as_ref(),
-                *used,
+                *failed,
                 applicable,
             )?;
             ensure!(
@@ -284,7 +313,7 @@ pub(super) fn run_gate_graph(
     Ok(outcomes)
 }
 
-fn collect_artifact_tokens(evidence: &Value, tokens: &mut BTreeMap<String, String>) {
+pub(super) fn collect_artifact_tokens(evidence: &Value, tokens: &mut BTreeMap<String, String>) {
     let source = evidence
         .pointer("/proof/scheme_proof")
         .or_else(|| evidence.get("proof"))

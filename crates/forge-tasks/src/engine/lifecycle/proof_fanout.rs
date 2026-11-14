@@ -404,14 +404,16 @@ fn ready_pre_task_root_cursors(
     let scope = milestone_task_scope(&milestone_tasks);
     let cursors =
         applicable_pre_task_root_cursors(profile, task, &milestone_tasks, &scope, worktree)?;
+    let all_cursors = gate_graph::collect_root_cursors(profile)?;
     let milestone_identity = milestone_identity_for_task(workspace, task)?;
-    if cursors.is_empty()
-        || gate_graph::first_unpassed_root_cursor(&store.connection, &milestone_identity, &cursors)?
-            .is_some()
-    {
+    let (accepted, pending) =
+        gate_graph::accepted_root_route_where(&store.connection, &milestone_identity, &all_cursors, |candidate| {
+            cursors.iter().any(|cursor| cursor.canonical_stage_id == candidate.canonical_stage_id)
+        })?;
+    if pending.is_some() {
         return Ok((milestone_identity, milestone_tasks, Vec::new()));
     }
-    Ok((milestone_identity, milestone_tasks, cursors))
+    Ok((milestone_identity, milestone_tasks, accepted))
 }
 
 /// Read-only lookup of passed applicable pre-task root gate paths for task context assembly.
@@ -443,14 +445,18 @@ pub(in crate::engine) fn fan_out_pre_task_proofs_if_ready(
         return Ok(Vec::new());
     }
     let contract_matrix = store.list_contract_matrix(&milestone_identity)?;
+    let history = gate_graph::active_milestone_history(&store.connection, &milestone_identity)?;
     for cursor in &cursors {
+        let transition_id = history.iter().rev()
+            .find(|(_, path, _, _, _)| path == &cursor.canonical_stage_id)
+            .map(|row| row.0)
+            .context("MILESTONE_ROOT_GATE_TRANSITION_INVALID: accepted root gate has no active transition")?;
         let latest: Option<(String, String, String, String)> = store
             .connection
             .query_row(
                 "SELECT action, proof_payload, git_tree_sha, worker_id FROM gate_transitions
-                 WHERE milestone_id=?1 AND subject='milestone' AND gate_path=?2
-                 ORDER BY id DESC LIMIT 1",
-                rusqlite::params![milestone_identity, cursor.canonical_stage_id],
+                 WHERE id=?1",
+                [transition_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;

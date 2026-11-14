@@ -2,7 +2,7 @@
 # TEST WORKFLOW: Pure Workflow Model E2E Verification
 # Purpose: Autonomous verification of Model 1 (pure gate graph without tasks).
 # Invariants:
-#   1. save: log (emits structured run logs into .forge/runs/)
+#   1. save: none (ephemeral observations)
 #   2. Zero task table rows, zero task claims.
 #   3. Forward/cyclic rejection routing: verify (fail: polish) -> polish -> review.
 # =============================================================================
@@ -10,18 +10,22 @@
 version: 2
 inherit: none
 
-save: log
+save: none
 
 roles:
   builder:
     mode: subagent
     reuse_on_reject: true
+    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
+    prompt_template: 'Perform {stage} as {role} in {worktree}. Goal: {goal}. {role_guidance} Return a structured decision and proof.'
     models:
       - 'gpt-6.1-sol:medium'
 
   independent_reviewer:
     mode: subagent
     reuse_on_reject: true
+    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
+    prompt_template: 'Perform {stage} as {role} in {worktree}. Goal: {goal}. {role_guidance} Return a structured decision and proof.'
     models:
       - 'gpt-6.1-sol:xhigh'
 
@@ -43,12 +47,20 @@ gates:
   - id: polish
     role: builder
     command: check_full_repo
+    max_attempts: 3
+    proof: &decision_proof
+      scheme:
+        type: object
+        required: [decision, summary]
+        properties:
+          decision: {type: string, enum: [pass, reject]}
+          summary: {type: string}
     pass: review
 
   - id: review
     role: independent_reviewer
     policy: default_review
     independent_from: polish
+    max_attempts: 3
+    proof: *decision_proof
     fail: polish
-    save:
-      immutable: true

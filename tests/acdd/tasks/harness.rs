@@ -71,17 +71,18 @@ impl TaskHarness {
     }
 
     pub fn evidence_for_claim(claim: &Value, proof: Value) -> Evidence {
-        Evidence {
-            task_id: claim["task_id"].as_str().unwrap().into(),
-            stage: claim["stage"].as_str().unwrap().into(),
-            claim_revision: claim["claim_revision"].as_u64().unwrap(),
-            contract_revision: claim["contract_revision"].as_u64().unwrap(),
-            worker_id: claim["worker_id"].as_str().unwrap().into(),
-            worktree: claim["worktree"].as_str().unwrap().into(),
-            commit: None,
-            candidate_baseline_head: None,
-            proof,
-        }
+        let mut template = claim
+            .pointer("/workflow_guidance/expected_evidence_template")
+            .expect("claim must supply an evidence template")
+            .clone();
+        template
+            .as_object_mut()
+            .expect("evidence template must be an object")
+            .get_mut("proof")
+            .filter(|slot| slot.is_object())
+            .map(|slot| *slot = proof)
+            .expect("claim template proof must be an object");
+        serde_json::from_value(template).expect("claim evidence template must be valid")
     }
 
     pub fn attach(workspace: &Workspace, id: &str) -> Self {
@@ -396,32 +397,19 @@ impl TaskHarness {
                 "TASK_HARNESS_PROOF_UNAVAILABLE: production runner does not expose structured seam-test observations for gate '{}'",
                 gate_path
             ),
-            Some(ProofKind::Review) => self.evidence_from_task(claimed, passing_review_proof()),
-            Some(ProofKind::None) => self.evidence_from_task(claimed, json!({"none_proof":{}})),
-            None => anyhow::bail!(
-                "TASK_HARNESS_PROOF_UNAVAILABLE: gate '{}' has no proof definition",
-                claimed.stage
-            ),
+            Some(ProofKind::Review | ProofKind::None) | None => {
+                if self.in_memory {
+                    return Ok(projected_evidence(claimed, gate, &profile));
+                }
+                let context = Self::manage_task(self.root(), &self.id, tasks::ManageAction::Context)?;
+                let template = context.pointer("/workflow_guidance/expected_evidence_template")
+                    .ok_or_else(|| anyhow::anyhow!("TASK_HARNESS_PROOF_UNAVAILABLE: claim evidence template is absent"))?;
+                let evidence: Evidence = serde_json::from_value(template.clone())?;
+                anyhow::ensure!(evidence.claim_revision == claimed.claim_revision && evidence.contract_revision == claimed.contract_revision && evidence.stage == claimed.stage && evidence.worker_id == claimed.worker_id.as_deref().unwrap_or_default(), "TASK_HARNESS_PROOF_STALE: guidance is not bound to the current claim");
+                anyhow::ensure!(evidence.proof.as_object().is_some_and(|proof| proof.len() == 1), "TASK_HARNESS_PROOF_UNAVAILABLE: invalid proof template");
+                Ok(evidence)
+            },
         }
-    }
-
-    fn evidence_from_task(&self, claimed: &Task, proof: Value) -> anyhow::Result<Evidence> {
-        Ok(Evidence {
-            task_id: claimed.task_id.clone(),
-            stage: claimed.stage.clone(),
-            claim_revision: claimed.claim_revision,
-            contract_revision: claimed.contract_revision,
-            worker_id: claimed.worker_id.clone().ok_or_else(|| {
-                anyhow::anyhow!("TASK_HARNESS_CLAIM_MISSING: worker id is absent")
-            })?,
-            worktree: claimed
-                .worktree
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("TASK_HARNESS_CLAIM_MISSING: worktree is absent"))?,
-            commit: None,
-            candidate_baseline_head: None,
-            proof,
-        })
     }
 
     pub fn root(&self) -> &Path {

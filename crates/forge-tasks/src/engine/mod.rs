@@ -20,7 +20,7 @@ mod context;
 use context::context_bundle;
 pub mod blackboard;
 pub(crate) mod claim;
-mod evidence_compiler;
+pub(crate) mod evidence_compiler;
 pub(crate) mod gate_graph;
 pub mod gates;
 mod git_snapshot;

@@ -1,3 +1,4 @@
+use super::spawner::RunnerError;
 use crate::tasks::profile::RunnerConfig;
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -27,9 +28,16 @@ impl RunnerInvocationContext {
     ///
     /// Placeholder-looking text inside a substituted value remains literal. This
     /// renders text only; the process spawner owns safe argument transport.
-    pub fn render_runner(&self, config: &RunnerConfig) -> String {
+    pub fn render_runner(&self, config: &RunnerConfig) -> Result<String, RunnerError> {
+        for (slot, value) in [("model", &self.model), ("reasoning", &self.reasoning)] {
+            if config.runner.contains(&format!("{{{slot}}}")) && value.trim().is_empty() {
+                return Err(RunnerError::InvalidContext(format!(
+                    "runner references {{{slot}}} but its value is blank"
+                )));
+            }
+        }
         let worktree = self.worktree.to_string_lossy();
-        render_slots(
+        Ok(render_slots(
             &config.runner,
             &[
                 ("model", &self.model),
@@ -38,7 +46,7 @@ impl RunnerInvocationContext {
                 ("prompt", &self.prompt),
                 ("worktree", &worktree),
             ],
-        )
+        ))
     }
 
     /// Render taskless role guidance with the same single-pass token boundary.

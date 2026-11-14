@@ -574,34 +574,72 @@ pub(crate) fn observe_fixture_evidence(task: &contextunity_forge_mcp::db::tasks_
 pub(crate) fn unobserved_evidence(
     task: &contextunity_forge_mcp::db::tasks_store::Task,
 ) -> Evidence {
-    let stage = task.stage.as_str();
+    use contextunity_forge_mcp::core::tasks::profile;
+
+    let root = Path::new(
+        task.worktree
+            .as_deref()
+            .expect("claimed task has a worktree"),
+    );
+    let profile = if root == unconfigured_test_root() {
+        profile::compiled()
+    } else {
+        tasks::store_for_task(root, &task.task_id)
+            .expect("fixture task store must be available")
+            .profile_for_task(task)
+            .expect("fixture task profile must resolve")
+    };
+    let gate = profile.by_stage(&task.stage).unwrap_or_else(|| {
+        panic!(
+            "fixture task stage '{}' is absent from its profile",
+            task.stage
+        )
+    });
+    projected_evidence(task, gate, &profile)
+}
+
+pub(crate) fn projected_evidence(
+    task: &contextunity_forge_mcp::db::tasks_store::Task,
+    gate: &contextunity_forge_mcp::core::tasks::profile::GateDef,
+    profile: &contextunity_forge_mcp::core::tasks::profile::GateProfile,
+) -> Evidence {
+    let mut proof = contextunity_forge_mcp::core::tasks::gates::proof_template(gate, profile)
+        .expect("fixture gate proof template must project");
+    fn materialize(value: &mut Value, command: Option<&str>) {
+        match value {
+            Value::Object(fields) => fields
+                .values_mut()
+                .for_each(|value| materialize(value, command)),
+            Value::Array(items) => items
+                .iter_mut()
+                .for_each(|value| materialize(value, command)),
+            Value::String(text) => {
+                let replacement = match text.as_str() {
+                    "<indexed test>" | "<test reference>" => Some(DEFAULT_SEAM),
+                    "<registered command>" => Some(
+                        command.expect("command placeholder requires a registered gate command"),
+                    ),
+                    "<review evidence>" | "<value>" => Some("fixture evidence"),
+                    _ => None,
+                };
+                if let Some(replacement) = replacement {
+                    *text = replacement.to_owned();
+                }
+            }
+            _ => {}
+        }
+    }
+    materialize(&mut proof, gate.command.as_deref());
     Evidence {
         task_id: task.task_id.clone(),
         stage: task.stage.clone(),
         claim_revision: task.claim_revision,
         contract_revision: task.contract_revision,
-        worker_id: task.worker_id.clone().unwrap(),
-        worktree: task.worktree.clone().unwrap(),
-        // Snapshot and baseline hashes are engine-owned acceptance data, never test fixture input.
+        worker_id: task.worker_id.clone().expect("claimed task has a worker"),
+        worktree: task.worktree.clone().expect("claimed task has a worktree"),
         commit: None,
         candidate_baseline_head: None,
-        proof: match stage {
-            "contract" => {
-                json!({"contract_proof":{"seam_test_ref":"tests/acdd/tasks.rs","red_exit_code":101}})
-            }
-            "build" => {
-                json!({"command_proof":{"command":"rust-check-and-test","exit_code":0,"tests_passed":1,"tests_failed":0}})
-            }
-            "seam.integrate" => json!({"seam_test_proof":{
-                "exit_code":0,
-                "seam_test_refs":["tests/acdd/tasks.rs"],
-                "tests_passed":1,
-                "tests_failed":0
-            }}),
-            "review" => passing_review_proof(),
-            "deliver" => json!({"delivery_proof":{}}),
-            _ => json!({"none_proof":{}}),
-        },
+        proof,
     }
 }
 

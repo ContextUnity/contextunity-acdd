@@ -513,6 +513,12 @@ impl GateProfile {
     }
 
     fn validate_catalogs(&self) -> Result<()> {
+        for (name, role) in &self.roles {
+            if let Some(runner) = &role.runner {
+                crate::engine::orchestrator::spawner::validate_runner_template(runner)
+                    .with_context(|| format!("ACDD_PROFILE_INVALID: role '{name}' runner"))?;
+            }
+        }
         if self
             .scope_args_by_pattern
             .iter()

@@ -222,14 +222,52 @@ pub fn run_task_lifecycle(
             drop(store);
             // The existing compiler performs observed command verification or
             // derives delivery proof from the immutable accepted candidate.
-            engine::submit_zero_arg(
+            let submission = engine::submit_zero_arg(
                 root,
                 task_id,
                 &claimed.stage,
                 Action::Pass,
                 None,
                 Some(&session),
-            )?;
+            );
+            if let Err(error) = submission {
+                if gate.driver() != Some(GateDriver::Command)
+                    || error
+                        .downcast_ref::<engine::evidence_compiler::ObservedMechanicalFailure>()
+                        .is_none()
+                {
+                    return Err(error);
+                }
+                let findings = serde_json::json!({
+                    "kind": "command_failure",
+                    "message": error.to_string(),
+                });
+                let rejected = engine::submit_zero_arg(
+                    root,
+                    task_id,
+                    &claimed.stage,
+                    Action::Reject,
+                    Some(findings.clone()),
+                    Some(&session),
+                );
+                let state = registry.open(workspace)?.inspect(task_id)?;
+                if state.status != "in_progress" {
+                    observer(OrchestratorEvent::GateRejected {
+                        task_id: task_id.to_owned(),
+                        stage: claimed.stage.clone(),
+                        worker_id: worker.clone(),
+                        findings,
+                    });
+                }
+                rejected?;
+                if state.status == "exhausted" {
+                    bail!(
+                        "TASK_ATTEMPTS_EXHAUSTED: gate '{}' exhausted its configured attempts",
+                        claimed.stage
+                    );
+                }
+                continue;
+            }
             if gate.proof.kind() == Some(ProofKind::Delivery) {
                 let accepted = registry.open(workspace)?.inspect(task_id)?;
                 let receipt = accepted
@@ -259,17 +297,24 @@ fn handle_gate_rejection(
     if rejection.is_null() {
         return Ok(None);
     }
-    let worker = rejection["worker_id"]
-        .as_str()
-        .context("TASK_RESUME_IDENTITY_MISSING: rejected target has no accepted worker")?;
     let gates = details["gates"]
         .as_array()
         .context("TASK_RESUME_IDENTITY_MISSING: gate history missing")?;
     let record = gates
         .iter()
         .rev()
-        .find(|entry| entry["stage"] == stage && entry["state"] == "passed")
-        .context("TASK_RESUME_IDENTITY_MISSING: rejected target has no accepted claim")?;
+        .find(|entry| entry["stage"] == stage && entry["state"] == "passed");
+    if record.is_none()
+        && rejection["worker_id"].is_null()
+        && rejection["rejected_from"].as_str() == Some(stage)
+    {
+        return Ok(None);
+    }
+    let record =
+        record.context("TASK_RESUME_IDENTITY_MISSING: rejected target has no accepted claim")?;
+    let worker = rejection["worker_id"]
+        .as_str()
+        .context("TASK_RESUME_IDENTITY_MISSING: rejected target has no accepted worker")?;
     let revision = record["claim_revision"]
         .as_u64()
         .context("TASK_RESUME_IDENTITY_MISSING: accepted claim revision missing")?;

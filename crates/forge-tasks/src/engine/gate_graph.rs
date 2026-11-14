@@ -1,7 +1,47 @@
 use crate::tasks::profile::{GateDef, GateProfile};
 use anyhow::{bail, Context, Result};
-use rusqlite::OptionalExtension;
 use std::path::Path;
+
+pub(crate) type MilestoneObservation = (i64, String, String, String, serde_json::Value);
+
+/// Select the active native observation chain and retain subsequent manual transitions.
+pub(crate) fn active_milestone_history(
+    connection: &rusqlite::Connection,
+    milestone_identity: &str,
+) -> Result<Vec<MilestoneObservation>> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut statement = connection.prepare(
+        "SELECT id, gate_path, action, proof_kind, proof_payload FROM gate_transitions
+         WHERE milestone_id=?1 AND subject='milestone' ORDER BY id",
+    )?;
+    let rows = statement.query_map([milestone_identity], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?))
+    })?.map(|row| {
+        let (id, path, action, kind, payload) = row?;
+        Ok((id, path, action, kind, serde_json::from_str::<serde_json::Value>(&payload)?))
+    }).collect::<Result<Vec<_>>>()?;
+    let is_native = |row: &MilestoneObservation| {
+        row.3 == "orchestrator" || row.4.get("previous_observation").is_some()
+    };
+    let native: BTreeMap<_, _> = rows.iter().filter(|row| is_native(row)).map(|row| (row.0, &row.4)).collect();
+    let mut active = BTreeSet::new();
+    let mut next = native.last_key_value().map(|(&id, _)| id);
+    while let Some(id) = next {
+        let payload = native.get(&id).context("MILESTONE_CHECKPOINT_INVALID: missing predecessor observation")?;
+        active.insert(id);
+        next = match payload.get("previous_observation") {
+            Some(serde_json::Value::Null) => None,
+            Some(value) => Some(value.as_i64().filter(|previous| *previous > 0 && *previous < id).context("MILESTONE_CHECKPOINT_INVALID: predecessor must be an earlier observation")?),
+            None if payload["run_start"] == true => None,
+            None => native.range(..id).next_back().map(|(&id, _)| id),
+        };
+    }
+    let boundary = active.first().copied();
+    Ok(rows.into_iter().filter(|row| {
+        if is_native(row) { active.contains(&row.0) }
+        else { boundary.is_none_or(|start| row.0 >= start) }
+    }).collect())
+}
 
 #[derive(Debug, Clone)]
 struct ContainerSuccess {
@@ -135,27 +175,85 @@ pub(crate) fn ensure_root_gate_transitions_passed(
     Ok(())
 }
 
-/// Return the first cursor without a latest milestone-scoped pass transition.
+pub(crate) fn ensure_root_gate_transitions_passed_where(
+    connection: &rusqlite::Connection,
+    milestone_identity: &str,
+    cursors: &[GateCursor],
+    applicable: impl FnMut(&GateCursor) -> bool,
+) -> Result<()> {
+    if let Some(cursor) = accepted_root_route_where(connection, milestone_identity, cursors, applicable)?.1 {
+        bail!("MILESTONE_PRE_TASK_GATE_PENDING: milestone '{milestone_identity}' has not passed root gate '{}' (gate_path '{}', root_index {}).", cursor.canonical_stage_id, cursor.gate_path, cursor.root_index);
+    }
+    Ok(())
+}
+
+/// Replay milestone transitions in route order, retaining only the accepted prefix.
+pub(crate) fn accepted_root_route(
+    connection: &rusqlite::Connection,
+    milestone_identity: &str,
+    cursors: &[GateCursor],
+) -> Result<(Vec<GateCursor>, Option<GateCursor>)> {
+    accepted_root_route_where(connection, milestone_identity, cursors, |_| true)
+}
+
+pub(crate) fn accepted_root_route_where(
+    connection: &rusqlite::Connection,
+    milestone_identity: &str,
+    cursors: &[GateCursor],
+    applicable: impl FnMut(&GateCursor) -> bool,
+) -> Result<(Vec<GateCursor>, Option<GateCursor>)> {
+    let history = active_milestone_history(connection, milestone_identity)?;
+    accepted_root_route_from_history(&history, cursors, applicable)
+}
+
+pub(crate) fn accepted_root_route_from_history(
+    history: &[MilestoneObservation],
+    cursors: &[GateCursor],
+    mut applicable: impl FnMut(&GateCursor) -> bool,
+) -> Result<(Vec<GateCursor>, Option<GateCursor>)> {
+    let applicable_paths = cursors.iter().filter(|cursor| applicable(cursor))
+        .map(|cursor| cursor.canonical_stage_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let is_applicable = |cursor: &GateCursor| applicable_paths.contains(&cursor.canonical_stage_id);
+    let mut accepted: Vec<GateCursor> = Vec::new();
+    let mut current = cursors.iter().position(is_applicable);
+    let mut attempts = std::collections::HashMap::<String, u32>::new();
+    for (_, path, action, _, payload) in history {
+        if let Some(position) = accepted.iter().position(|cursor| cursor.canonical_stage_id == *path) {
+            accepted.truncate(position);
+            current = cursors.iter().position(|cursor| cursor.canonical_stage_id == *path);
+        }
+        let Some(index) = current else { continue };
+        if cursors[index].canonical_stage_id != *path { continue; }
+        match action.as_str() {
+            "pass" => {
+                accepted.push(cursors[index].clone());
+                current = resolve_pass_target(cursors, index, is_applicable)?;
+            }
+            "fail" => {
+                let count = attempts.entry(path.clone()).or_default();
+                *count += 1;
+                let route = resolve_fail_target(cursors, index, payload.get("findings").filter(|v| !v.is_null()), *count, is_applicable)?;
+                current = route.target.and_then(|target| cursors.iter().position(|cursor| cursor.canonical_stage_id == target.canonical_stage_id));
+                if let Some(target) = current {
+                    accepted.retain(|cursor| cursor.flat_index < cursors[target].flat_index);
+                } else {
+                    return Ok((Vec::new(), Some(cursors[index].clone())));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok((accepted, current.map(|index| cursors[index].clone())))
+}
+
+/// Return the first reachable cursor without an accepted milestone transition.
 pub(crate) fn first_unpassed_root_cursor(
     connection: &rusqlite::Connection,
     milestone_identity: &str,
     cursors: &[GateCursor],
 ) -> Result<Option<GateCursor>> {
-    for cursor in cursors {
-        let latest: Option<String> = connection
-            .query_row(
-                "SELECT action FROM gate_transitions
-                 WHERE milestone_id=?1 AND subject='milestone' AND gate_path=?2
-                 ORDER BY id DESC LIMIT 1",
-                rusqlite::params![milestone_identity, cursor.canonical_stage_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if latest.as_deref() != Some("pass") {
-            return Ok(Some(cursor.clone()));
-        }
-    }
-    Ok(None)
+    Ok(accepted_root_route(connection, milestone_identity, cursors)?.1)
 }
 
 fn collect_cursors_for_scope(

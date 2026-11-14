@@ -205,7 +205,7 @@ fn check_integration_evidence_cases(scenarios: &[&str]) {
                 .contract_findings
                 .push("Required outcome missing".into()),
             "verification-exit" => evidence.verification.exit_code = 1,
-            "verification-tests" => evidence.verification.tests_failed = 1,
+            "verification-tests" => evidence.verification.tests_failed = Some(1),
             "empty-command" => evidence.verification.command.clear(),
             "untracked" => fixture
                 .root

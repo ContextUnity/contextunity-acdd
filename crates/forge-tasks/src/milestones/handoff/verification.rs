@@ -101,7 +101,7 @@ pub(super) fn require_closed_verification(
     if payload["tests_failed"]
         .as_u64()
         .is_some_and(|failed| failed != 0)
-        || evidence.verification.tests_failed != 0
+        || evidence.verification.tests_failed.is_some_and(|n| n != 0)
     {
         bail!("HANDOFF_VERIFICATION_REQUIRED: recorded verification proof contains test failures for candidate {candidate_commit}");
     }
@@ -113,10 +113,10 @@ pub(super) fn require_closed_verification(
         bail!("HANDOFF_VERIFICATION_REQUIRED: recorded verification proof is missing required test counts");
     }
     if require_counts || command.output().is_some_and(|spec| spec.counts.is_some()) {
-        if payload["tests_passed"].as_u64() != Some(evidence.verification.tests_passed) {
+        if payload["tests_passed"].as_u64() != evidence.verification.tests_passed {
             bail!("HANDOFF_VERIFICATION_REQUIRED: submitted tests_passed does not match recorded verification");
         }
-        if payload["tests_failed"].as_u64() != Some(evidence.verification.tests_failed) {
+        if payload["tests_failed"].as_u64() != evidence.verification.tests_failed {
             bail!("HANDOFF_VERIFICATION_REQUIRED: submitted tests_failed does not match recorded verification");
         }
     }
@@ -277,7 +277,18 @@ fn execute_verification_at(
             });
         return Err(e);
     }
-    let action = if verification.passed() {
+    let proof_passed = if verification.passed() {
+        crate::engine::evidence_compiler::evaluate_root_command_gate(
+            &gate.gate,
+            &prepared.profile,
+            &[(command_id.to_owned(), serde_json::to_value(&verification)?)],
+            gate.gate.policy.as_deref().unwrap_or("seam-test-first"),
+            None,
+        )?
+    } else {
+        false
+    };
+    let action = if proof_passed {
         "pass"
     } else {
         "fail"
@@ -306,7 +317,7 @@ fn execute_verification_at(
             worker_id: "milestone_verification".to_owned(),
         })?;
     Ok(json!({
-        "status": if verification.passed() { "passed" } else { "failed" },
+        "status": if proof_passed { "passed" } else { "failed" },
         "binding": prepared.binding,
         "target_base": prepared.target,
         "candidate_head": prepared.commit,

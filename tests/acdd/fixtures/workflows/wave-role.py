@@ -9,35 +9,51 @@ with (root / ".forge/wave-roles.jsonl").open("a") as log:
     log.write(json.dumps(context) + "\n")
 if (root / ".forge/no-wave-decision").exists():
     sys.exit(0)
-if context["gate"] == "preflight":
-    task_slice = {
-        "layer": "fixture seam",
-        "summary": "Exercise the pre-task proof boundary.",
-        "exported_interfaces": [],
-        "negative_boundaries": [],
-        "incoming_seams": [],
-        "outgoing_seams": [],
-    }
-    tasks = {} if (root / ".forge/invalid-task-proof-map").exists() else {"first": task_slice}
-    print(json.dumps({
-        "gate": context["gate"],
-        "session_id": context["session_id"],
-        "decision": "pass",
-        "proof": {"scheme_proof": {
-            "cited_invariants": [],
-            "cited_symbols": [],
-            "global_negative_boundaries": [],
-            "blackboard_decision_id": "wave-blueprint",
-            "tasks": tasks,
-        }},
-    }))
-    sys.exit(0)
-if context["gate"] == "milestone_review" and (root / ".forge/stop-wave-review").exists():
+proof = context["expected_response"]["proof"]
+payload = next(iter(proof.values()), None)
+response = {"gate": context["gate"], "session_id": context["session_id"], "decision": "pass", "proof": proof}
+if context["gate"] == "blueprint_synthesis.review" and (root / ".forge/stop-blueprint-review").exists():
     sys.exit(17)
-proof = {"none_proof": {}}
-response = {"gate": context["gate"], "session_id": context["session_id"], "decision": "pass"}
+if context["gate"] == "blueprint_synthesis.review" and not (root / ".forge/blueprint-rejected").exists():
+    (root / ".forge/blueprint-rejected").touch()
+    response["decision"] = "reject"
+    response["findings"] = {"scope_findings": ["Revise the blueprint"]}
+if isinstance(payload, dict) and (root / ".forge/corrupt-blueprint-missing").exists() and "tasks" in payload:
+    del payload["blackboard_decision_id"]
+if isinstance(payload, dict) and (root / ".forge/corrupt-blueprint-tasks").exists() and "tasks" in payload:
+    payload["tasks"] = []
+if isinstance(payload, dict) and (root / ".forge/corrupt-blueprint-nested").exists() and "tasks" in payload:
+    payload["tasks"] = {"first": {"layer": 7}}
+def materialize(value, field="", placeholder_slice=False):
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            if field == "tasks" and key.startswith("<") and key.endswith(">"):
+                if "first" not in value and not (root / ".forge/invalid-task-proof-map").exists():
+                    result["first"] = materialize(item, placeholder_slice=True)
+            elif field == "tasks":
+                result[key] = item
+            else:
+                result[key] = materialize(item, key, placeholder_slice)
+        return result
+    if isinstance(value, list):
+        if placeholder_slice and field in ("incoming_seams", "outgoing_seams"):
+            endpoint = "source_task" if field == "incoming_seams" else "target_task"
+            example = {endpoint: "<value>", "contract_type": "seam_dependency",
+                       "contract_ref": "<value>", "specification": "<value>"}
+            value = [item for item in value if item != example]
+        return [materialize(item, field, placeholder_slice) for item in value]
+    if isinstance(value, str) and value.startswith("<") and value.endswith(">"):
+        return {"decision": response["decision"], "blackboard_decision_id": "wave-blueprint", "layer": "fixture seam",
+                "summary": "Exercise the pre-task proof boundary."}.get(field, "fixture value")
+    return value
+
+response["proof"] = materialize(proof)
+if (root / "root-proof.json").exists():
+    next(iter(response["proof"].values())).update(json.loads((root / "root-proof.json").read_text()))
 if context["gate"] == "milestone_review":
-    proof = {"scheme_proof": {"decision": "pass", "summary": "Reviewed fixture task scope and receipts"}}
+    if (root / ".forge/stop-wave-review").exists():
+        sys.exit(17)
     response["binding"] = context["subject_context"]["binding"]
     response["integration_review"] = {
         "worker_id": context["session_id"], "decision": "pass",
@@ -46,5 +62,4 @@ if context["gate"] == "milestone_review":
     }
     if (root / ".forge/stale-wave-review").exists():
         response["binding"]["implementation_digest"] = "stale"
-response["proof"] = proof
 print(json.dumps(response))

@@ -168,6 +168,59 @@ fn runner_preserves_arguments_and_uses_an_isolated_process_group() {
 }
 
 #[test]
+fn runner_requires_only_referenced_model_slots() {
+    let root = Workspace::new();
+    let base = invocation(root.root(), "quoted value {model}");
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/acdd/orchestrator/runner_fixture.py"
+    );
+    for (template, model, reasoning, valid) in [
+        ("'{prompt}'", "", "", true),
+        ("-m '{model}'", "", "high", false),
+        ("-m '{model}'", "   ", "high", false),
+        (
+            "-c 'model_reasoning_effort={reasoning}'",
+            "model",
+            "",
+            false,
+        ),
+        (
+            "-c 'model_reasoning_effort={reasoning}'",
+            "model",
+            "  ",
+            false,
+        ),
+        ("'{model}' '{reasoning}'", "model with spaces", "high", true),
+    ] {
+        let config = RunnerConfig {
+            runner: format!("python3 '{fixture}' inspect {template}"),
+            prompt_template: None,
+        };
+        let mut context = base.clone();
+        context.model = model.into();
+        context.reasoning = reasoning.into();
+        let result = spawn_role_runner(&config, &context, RunnerSessionPolicy::Resume);
+        if valid {
+            let (outcome, stdout, _) = capture(result.unwrap(), Duration::from_secs(5)).unwrap();
+            assert_eq!(outcome.exit_code, Some(0));
+            let observed: Value = serde_json::from_slice(&stdout).unwrap();
+            let expected = if model.is_empty() {
+                json!([base.prompt])
+            } else {
+                json!([model, reasoning])
+            };
+            assert_eq!(observed["argv"], expected);
+        } else {
+            assert!(
+                matches!(result, Err(RunnerError::InvalidContext(_))),
+                "{result:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn runner_rejects_malformed_command_templates() {
     let root = Workspace::new();
     let context = invocation(root.root(), "data");
@@ -229,7 +282,7 @@ fn runner_tokenizes_original_quotes_escapes_and_empty_arguments() {
 fn runner_rejects_blank_resume_session() {
     let root = Workspace::new();
     let mut context = invocation(root.root(), "data");
-    for session in ["", " \t\n"] {
+    for session in ["", " \t\n", forge_tasks::store::UNKNOWN_SESSION_FINGERPRINT] {
         context.session_id = session.into();
         let result = spawn_role_runner(
             &runner_config("inspect"),
@@ -241,6 +294,93 @@ fn runner_rejects_blank_resume_session() {
             "{result:?}"
         );
     }
+}
+
+#[test]
+fn unsupported_provider_resume_is_rejected_at_profile_and_spawn_boundaries() {
+    let root = Workspace::new();
+    let context = invocation(root.root(), "data");
+    let cases = [
+        "codex exec resume {session_id} {prompt}",
+        "codex resume {session_id} {prompt}",
+        "codex -C {worktree} exec -m {model} resume {session_id} {prompt}",
+        "codex --cd {worktree} --json resume {session_id} {prompt}",
+        "codex --remote unix://socket e --image file.png resume {session_id} {prompt}",
+        "codex exec --resume {prompt}",
+        "codex exec --continue {prompt}",
+        "codex exec --resume=latest {prompt}",
+        "codex exec {thread_id} {prompt}",
+        "codex exec {provider_session_id} {prompt}",
+        "codex exec {conversation_id} {prompt}",
+    ];
+    for runner in cases {
+        let document = serde_yaml::to_string(&json!({"agents": {"fixture": {
+            "models": ["test-model:high"], "reuse_on_reject": true, "runner": runner
+        }}}))
+        .unwrap();
+        let error = validate_profile_document(&document).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("provider conversation resumption is unsupported"),
+            "{runner}: {error:#}"
+        );
+        let config = RunnerConfig {
+            runner: runner.into(),
+            prompt_template: None,
+        };
+        let error = spawn_role_runner(&config, &context, RunnerSessionPolicy::Resume).unwrap_err();
+        assert!(
+            error.to_string().contains("FORGE_AGENT_SESSION_ID"),
+            "{runner}: {error}"
+        );
+    }
+    let ordinary = serde_yaml::to_string(&json!({"agents": {"fixture": {
+        "models": ["test-model:high"], "reuse_on_reject": true,
+        "runner": "codex -m resume exec -C {worktree} {prompt}"
+    }}}))
+    .unwrap();
+    assert!(validate_profile_document(&ordinary).is_ok());
+    let author = include_str!("../../../docs/workflows/author-milestone.workflow.yaml");
+    let profile = validate_profile_document(author).unwrap();
+    assert!(profile.roles["architect"].effective_reuse_on_reject());
+    assert!(profile.roles["architect"]
+        .runner
+        .as_ref()
+        .unwrap()
+        .starts_with("codex exec "));
+}
+
+#[test]
+fn codex_exec_shape_preserves_arguments_and_forge_identity() {
+    let root = Workspace::new();
+    let worktree = root.path("work tree");
+    fs::create_dir(&worktree).unwrap();
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/acdd/orchestrator/runner_fixture.py"
+    );
+    let config = RunnerConfig {
+        runner: format!("python3 '{fixture}' inspect exec -C \"{{worktree}}\" -m \"{{model}}\" -c model_reasoning_effort=\"{{reasoning}}\" \"{{prompt}}\""),
+        prompt_template: None,
+    };
+    let context = invocation(&worktree, "quoted 'prompt' with spaces");
+    let process = spawn_role_runner(&config, &context, RunnerSessionPolicy::Resume).unwrap();
+    let (outcome, stdout, _) = capture(process, Duration::from_secs(5)).unwrap();
+    let observed: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(outcome.exit_code, Some(0));
+    assert_eq!(
+        observed["argv"],
+        json!([
+            "exec",
+            "-C",
+            worktree.to_string_lossy(),
+            "-m",
+            context.model,
+            "-c",
+            format!("model_reasoning_effort={}", context.reasoning),
+            context.prompt
+        ])
+    );
+    assert_eq!(observed["forge_session"], context.session_id);
 }
 
 #[test]

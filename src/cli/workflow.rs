@@ -19,6 +19,9 @@ pub enum WorkflowCommand {
     Run {
         /// Workflow name or discovered root-relative path.
         selector: String,
+        /// Optional goal specification passed to workflow role prompts.
+        #[arg(long)]
+        goal: Option<String>,
     },
     /// Clear standalone workflow execution run logs in .forge/runs/ and traces.
     Clear {
@@ -35,9 +38,9 @@ pub fn run(root: &Path, command: WorkflowCommand) -> Result<Value> {
             let path = workflow::resolve_workflow(root, &selector)?;
             Ok(json!({"path":path, "profile":workflow::read_workflow(root, &path)?}))
         }
-        WorkflowCommand::Run { selector } => {
+        WorkflowCommand::Run { selector, goal } => {
             let path = workflow::resolve_workflow(root, &selector)?;
-            workflow::run_standalone_workflow(root, &path)
+            workflow::run_standalone_workflow(root, &path, goal.as_deref())
         }
         WorkflowCommand::Clear { selector } => {
             let (workflow_path, slug) = match workflow::resolve_workflow(root, &selector) {

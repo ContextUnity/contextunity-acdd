@@ -40,6 +40,7 @@ commands:
   validate_workflow:
     command: "contextunity-forge-mcp workflow show {workflow_name}"
     timeout_seconds: 60
+    output: { require_counts: false }
 
 policies:
   default_review:

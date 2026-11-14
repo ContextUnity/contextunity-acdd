@@ -121,7 +121,7 @@ fn runner_configuration_interpolates_runtime_context() {
             worktree: worktree.into(),
         };
         assert_eq!(
-            context.render_runner(&config),
+            context.render_runner(&config).unwrap(),
             expected,
             "runner configuration must interpolate runtime context for {session_id}"
         );

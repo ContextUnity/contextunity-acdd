@@ -2,7 +2,9 @@ version: 2
 inherit: none
 save: none
 commands:
-  attempt: "if test -f retry-marker; then printf 'retried\n' >> retry-result; else touch retry-marker; exit 7; fi"
+  attempt:
+    command: "if test -f retry-marker; then printf 'retried\n' >> retry-result; else touch retry-marker; exit 7; fi"
+    output: { require_counts: false }
 gates:
   - id: attempt
     command: attempt

@@ -168,7 +168,7 @@ output:
 }
 
 #[test]
-fn configured_test_names_are_reported_but_do_not_prove_a_seam() {
+fn configured_test_names_require_consistent_counts_and_no_failed_results() {
     let mut line_output = output_spec(false);
     line_output.tests = Some(profile::CommandTestsSpec {
         target: Some(r"^FILE (\S+)".into()),
@@ -198,16 +198,25 @@ fn configured_test_names_are_reported_but_do_not_prove_a_seam() {
             "printf 'FILE tests/example.rs\\nPASS invented\\nFAIL other\\n'",
             "tests/example.rs::invented",
             None,
+            false,
         ),
         (
-            pytest_output,
+            pytest_output.clone(),
             "printf 'tests/test_seam.py::test_custom_seam PASSED\\n1 passed in 0.05s\\n'",
             "tests/test_seam.py::test_custom_seam",
             Some(("tests/test_seam.py", "def test_custom_seam(): pass\n")),
+            true,
+        ),
+        (
+            pytest_output,
+            "printf 'tests/test_seam.py::test_custom_seam PASSED\\n'",
+            "tests/test_seam.py::test_custom_seam",
+            Some(("tests/test_seam.py", "def test_custom_seam(): pass\n")),
+            false,
         ),
     ];
     let harness = CommandGateHarness::new();
-    for (output, command, test_ref, source_file) in cases {
+    for (output, command, test_ref, source_file, expected_pass) in cases {
         harness.restore();
         harness.configure_check(command, Some(output), profile::ProofKind::SeamTest);
         if let Some((path, source)) = source_file {
@@ -228,7 +237,13 @@ fn configured_test_names_are_reported_but_do_not_prove_a_seam() {
             .execution_proof(run.run_id, &trace.command_id, trace.attempt_id)
             .unwrap()
             .unwrap();
-        assert_eq!(facts.passed_tests, BTreeSet::from([test_ref.to_owned()]));
+        if test_ref.contains("example.rs") {
+            assert!(facts.passed_tests.is_empty());
+        } else {
+            assert_eq!(facts.passed_tests, BTreeSet::from([test_ref.to_owned()]));
+            assert_eq!(facts.passed, expected_pass.then_some(1));
+            assert_eq!(facts.failed, expected_pass.then_some(0));
+        }
 
         evidence.proof = serde_json::json!({
             "seam_test_proof": {
@@ -238,12 +253,22 @@ fn configured_test_names_are_reported_but_do_not_prove_a_seam() {
                 "tests_failed": 0
             }
         });
-        let error = submit_unobserved_pass(&mut store, &evidence).unwrap_err();
-        assert!(
-            error.to_string().contains("TASK_AUTO_PROOF_UNAVAILABLE"),
-            "{test_ref}: {error:#}"
-        );
-        assert_eq!(store.inspect(&harness.id).unwrap().stage, task.stage);
+        if !expected_pass {
+            assert!(
+                compile_evidence_envelope(harness.root.root(), &harness.id, "contract").is_err()
+            );
+            let error = submit_unobserved_pass(&mut store, &evidence).unwrap_err();
+            assert!(
+                error.to_string().contains("TASK_AUTO_PROOF_UNAVAILABLE"),
+                "{error:#}"
+            );
+            assert_eq!(store.inspect(&harness.id).unwrap().stage, task.stage);
+        } else {
+            let compiled =
+                compile_evidence_envelope(harness.root.root(), &harness.id, "contract").unwrap();
+            assert_eq!(compiled["proof"]["seam_test_proof"]["tests_failed"], 0);
+            submit_unobserved_pass(&mut store, &evidence).unwrap();
+        }
     }
 }
 
@@ -317,126 +342,6 @@ fn observed_seam_submission_rejects_unexecuted_references() {
         );
         assert_eq!(store.inspect(&harness.id).unwrap().stage, task.stage);
     }
-}
-
-#[test]
-fn shipped_seam_command_reports_identities_without_authorizing_submission() {
-    let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
-    let mut fixture_profile =
-        profile::validate_profile_document(include_str!("../../../.forge/acdd/profile.yaml"))
-            .unwrap();
-    let integrate = fixture_profile.find_gate("seam.integrate").unwrap().clone();
-    fixture_profile.gates = vec![profile::GateDef {
-        proof: profile::ProofDef::Kind(profile::ProofKind::None),
-        tasks: Some(profile::TaskGateBlock {
-            gates: vec![
-                profile::GateDef {
-                    id: "seam".into(),
-                    proof: profile::ProofDef::Kind(profile::ProofKind::None),
-                    gates: vec![integrate],
-                    ..Default::default()
-                },
-                profile::GateDef {
-                    id: "deliver".into(),
-                    proof: profile::ProofDef::Kind(profile::ProofKind::Delivery),
-                    role: Some("builder".into()),
-                    receipt: true,
-                    auto_commit: false,
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        }),
-        ..Default::default()
-    }];
-    root.write("src/lib.rs", "pub fn example() {}\n");
-    root.write("tests/runner_fixture.rs", "#[test] fn seam_test() {}\n");
-    root.write(
-        "Cargo.toml",
-        "[package]\nname = \"shipped-seam-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-    );
-    root.write(".gitignore", ".forge/\ntarget/\nCargo.lock\n");
-    root.write("forge-mcp.yaml", "roots: [src, tests]\ndocs: [docs]\n");
-    root.write(
-        "docs/milestones/010-seam.md",
-        "---\nid: m-shipped-seam\ntitle: Shipped seam\nstatus: active\n---\n```yaml\ntask_ref: first\ntarget: Execute the shipped seam command\nproof_policy: seam-test-first\nscope: [tests/runner_fixture.rs]\n```\n",
-    );
-    root.write(
-        ".forge/acdd/profile.yaml",
-        &crate::acdd::support::standalone_profile_yaml(&fixture_profile),
-    );
-    super::support::commit_fixture_baseline(&root);
-    super::support::tasks::manage(
-        root.root(),
-        super::support::tasks::Manage {
-            action: super::support::tasks::ManageAction::Sync,
-            milestone_ref: Some("docs/milestones/010-seam.md".into()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let id = "forge-mcp/m-shipped-seam:first".to_owned();
-    let mut store = forge_tasks::engine::store_for_task(root.root(), &id).unwrap();
-    store
-        .claim(
-            &id,
-            "seam.integrate",
-            "command-builder",
-            root.root().to_str().unwrap(),
-            Some("test-session-command-builder"),
-        )
-        .unwrap();
-    let task = store.inspect(&id).unwrap();
-    let configured = store.profile_for_task(&task).unwrap();
-    let shipped =
-        profile::validate_profile_document(include_str!("../../../.forge/acdd/profile.yaml"))
-            .unwrap();
-    let command_name = shipped
-        .find_gate("seam.integrate")
-        .unwrap()
-        .command
-        .as_ref()
-        .unwrap()
-        .clone();
-    assert_eq!(
-        configured.commands[&command_name],
-        shipped.commands[&command_name]
-    );
-    drop(store);
-    let traces = execute_command_gate(
-        root.root(),
-        &id,
-        "tasks.seam.integrate",
-        &configured.commands[&command_name],
-        &["tests/runner_fixture.rs".into()],
-    )
-    .unwrap();
-    assert_eq!(traces.len(), 1);
-    assert_eq!(traces[0].exit_code, Some(0));
-    let mut store = forge_tasks::engine::store_for_task(root.root(), &id).unwrap();
-    let run = latest_run(&store, root.root(), &id, "tasks.seam.integrate");
-    let trace = store
-        .claim_bound_execution_traces(run.run_id)
-        .unwrap()
-        .pop()
-        .unwrap()
-        .trace;
-    let facts = store
-        .execution_proof(run.run_id, &trace.command_id, trace.attempt_id)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        facts.passed_tests,
-        BTreeSet::from(["tests/runner_fixture.rs::seam_test".to_owned()])
-    );
-    let (task, mut evidence) = unobserved_task_evidence(&store, &id);
-    evidence.proof = serde_json::json!({"seam_test_proof":{"exit_code":0,"seam_test_refs":["tests/runner_fixture.rs::seam_test"],"tests_passed":1,"tests_failed":0}});
-    let error = submit_unobserved_pass(&mut store, &evidence).unwrap_err();
-    assert!(
-        error.to_string().contains("TASK_AUTO_PROOF_UNAVAILABLE"),
-        "{error:#}"
-    );
-    assert_eq!(store.inspect(&id).unwrap().stage, task.stage);
 }
 
 #[test]

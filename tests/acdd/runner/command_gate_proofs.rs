@@ -479,3 +479,142 @@ fn command_gate_cleans_orchestration_environment_variables() {
         .expect("verification should succeed when env is scrubbed");
     assert_eq!(result["verification"]["exit_code"], 0, "{result}");
 }
+
+#[test]
+fn shipped_seam_verify_and_zero_argument_submit_persist_observed_proof() {
+    let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
+    let mut fixture_profile =
+        profile::validate_profile_document(include_str!("../../../.forge/acdd/profile.yaml"))
+            .unwrap();
+    let integrate = fixture_profile.find_gate("seam.integrate").unwrap().clone();
+    fixture_profile.gates = vec![profile::GateDef {
+        proof: profile::ProofDef::Kind(profile::ProofKind::None),
+        tasks: Some(profile::TaskGateBlock {
+            gates: vec![
+                profile::GateDef {
+                    id: "seam".into(),
+                    proof: profile::ProofDef::Kind(profile::ProofKind::None),
+                    gates: vec![integrate],
+                    ..Default::default()
+                },
+                profile::GateDef {
+                    id: "deliver".into(),
+                    proof: profile::ProofDef::Kind(profile::ProofKind::Delivery),
+                    role: Some("builder".into()),
+                    receipt: true,
+                    auto_commit: false,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+    root.write("src/lib.rs", "pub fn example() {}\n");
+    root.write("tests/runner_fixture.rs", "#[test] fn seam_test() {}\n");
+    root.write(
+        "Cargo.toml",
+        "[package]\nname = \"shipped-seam-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    root.write(".gitignore", ".forge/\ntarget/\nCargo.lock\n");
+    root.write("forge-mcp.yaml", "roots: [src, tests]\ndocs: [docs]\n");
+    root.write(
+        "docs/milestones/010-seam.md",
+        "---\nid: m-shipped-seam\ntitle: Shipped seam\nstatus: active\n---\n```yaml\ntask_ref: first\ntarget: Execute the shipped seam command\nproof_policy: seam-test-first\nscope: [tests/runner_fixture.rs]\n```\n",
+    );
+    root.write(
+        ".forge/acdd/profile.yaml",
+        &crate::acdd::support::standalone_profile_yaml(&fixture_profile),
+    );
+    super::support::commit_fixture_baseline(&root);
+    super::support::tasks::manage(
+        root.root(),
+        super::support::tasks::Manage {
+            action: super::support::tasks::ManageAction::Sync,
+            milestone_ref: Some("docs/milestones/010-seam.md".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let id = "forge-mcp/m-shipped-seam:first".to_owned();
+    let mut store = forge_tasks::engine::store_for_task(root.root(), &id).unwrap();
+    store
+        .claim(
+            &id,
+            "seam.integrate",
+            "command-builder",
+            root.root().to_str().unwrap(),
+            Some("test-session-command-builder"),
+        )
+        .unwrap();
+    let task = store.inspect(&id).unwrap();
+    let configured = store.profile_for_task(&task).unwrap();
+    let shipped =
+        profile::validate_profile_document(include_str!("../../../.forge/acdd/profile.yaml"))
+            .unwrap();
+    let command_name = shipped
+        .find_gate("seam.integrate")
+        .unwrap()
+        .command
+        .as_ref()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        configured.commands[&command_name],
+        shipped.commands[&command_name]
+    );
+    drop(store);
+    let verified = forge_tasks::engine::verify_task(root.root(), &id, None).unwrap();
+    assert_eq!(
+        verified["evidence"]["proof"]["seam_test_proof"]["tests_passed"], 1,
+        "{verified}"
+    );
+    let mut store = forge_tasks::engine::store_for_task(root.root(), &id).unwrap();
+    let run = latest_run(&store, root.root(), &id, "tasks.seam.integrate");
+    let trace = store
+        .claim_bound_execution_traces(run.run_id)
+        .unwrap()
+        .pop()
+        .unwrap()
+        .trace;
+    let facts = store
+        .execution_proof(run.run_id, &trace.command_id, trace.attempt_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        facts.passed_tests,
+        BTreeSet::from(["tests/runner_fixture.rs::seam_test".to_owned()])
+    );
+    let (_, mut evidence) = unobserved_task_evidence(&store, &id);
+    for proof in [
+        serde_json::json!({"exit_code":0,"seam_test_refs":[],"tests_passed":1,"tests_failed":0}),
+        serde_json::json!({"exit_code":0,"seam_test_refs":["tests/other.rs::seam_test"],"tests_passed":1,"tests_failed":0}),
+        serde_json::json!({"exit_code":0,"seam_test_refs":["tests/runner_fixture.rs::seam_test"],"tests_passed":2,"tests_failed":0}),
+        serde_json::json!({"exit_code":0,"seam_test_refs":["tests/runner_fixture.rs::seam_test"],"tests_passed":1}),
+    ] {
+        evidence.proof = serde_json::json!({"seam_test_proof":proof});
+        assert!(submit_unobserved_pass(&mut store, &evidence).is_err());
+    }
+    drop(store);
+    submit_zero_arg(
+        root.root(),
+        &id,
+        "seam.integrate",
+        Action::Pass,
+        None,
+        Some("test-session-command-builder"),
+    )
+    .unwrap();
+    let reopened = forge_tasks::engine::store_for_task(root.root(), &id).unwrap();
+    assert_eq!(reopened.inspect(&id).unwrap().stage, "deliver");
+    let (status, saved): (String, String) = reopened.connection.query_row(
+        "SELECT state, evidence FROM task_gates WHERE task_id=?1 AND gate=?2 ORDER BY revision DESC LIMIT 1",
+        [&id, "seam.integrate"], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert_eq!(status, "passed");
+    let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(
+        saved["proof"]["seam_test_proof"]["seam_test_refs"],
+        serde_json::json!(["tests/runner_fixture.rs::seam_test"])
+    );
+}

@@ -1,0 +1,16 @@
+version: 2
+inherit: none
+save: snapshot
+commands:
+  implement:
+    command: "printf 'implementation\n' >> src/first.rs"
+    output: { require_counts: false }
+gates:
+  - tasks:
+      gates:
+        - id: implement
+          command: implement
+          save: { pre: snapshot, post: snapshot }
+        - id: finish
+          receipt: true
+          save: snapshot

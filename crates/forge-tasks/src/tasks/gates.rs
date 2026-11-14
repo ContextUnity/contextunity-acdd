@@ -62,8 +62,148 @@ struct SeamTestProof {
 struct ReviewProof {
     decision: String,
     contours: std::collections::BTreeMap<String, ContourProof>,
+    #[serde(default, rename = "notes")]
+    _notes: Option<String>,
     #[serde(default)]
     extended_scope_review: Option<ExtendedScopeReview>,
+}
+
+/// Project the evidence shape used by both task claims and root roles.
+pub fn proof_template(
+    gate: &crate::tasks::profile::GateDef,
+    profile: &crate::tasks::profile::GateProfile,
+) -> Result<serde_json::Value> {
+    use serde_json::{json, Value};
+    let kind = gate.proof.kind();
+    let override_schema = kind.and_then(|kind| {
+        profile
+            .proofs
+            .get(kind.as_str())
+            .and_then(|entry| entry.schema.as_ref())
+    });
+    let mut result = match kind {
+        Some(ProofKind::Contract) => {
+            json!({"contract_proof":{"seam_test_ref":"<indexed test>","red_exit_code":101}})
+        }
+        Some(ProofKind::Command) => {
+            json!({"command_proof":{"command":"<registered command>","exit_code":0,"tests_passed":1,"tests_failed":0}})
+        }
+        Some(ProofKind::SeamTest) => {
+            json!({"seam_test_proof":{"exit_code":0,"seam_test_refs":["<test reference>"],"tests_passed":1,"tests_failed":0}})
+        }
+        Some(ProofKind::Review) => {
+            let contours: serde_json::Map<String, Value> = profile
+                .contour_set(gate.contours.as_deref())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, _)| {
+                    (
+                        name,
+                        json!({"applicable":true,"evidence":"<review evidence>"}),
+                    )
+                })
+                .collect();
+            json!({"review_proof":{"decision":"pass","contours":contours}})
+        }
+        Some(ProofKind::Delivery) => json!({"delivery_proof":{"delivered":true}}),
+        Some(ProofKind::None) => json!({"none_proof":{}}),
+        None => json!({"scheme_proof":{}}),
+    };
+    if let Some(kind) = kind {
+        if let Some(schema) = override_schema {
+            let key = format!("{}_proof", kind.as_str());
+            if schema.properties.contains_key(&key) || schema.required.contains(&key) {
+                merge_schema(&mut result, schema);
+            } else {
+                merge_schema(&mut result[&key], schema);
+            }
+        }
+    } else if let Some(schema) = gate.proof.resolve_schema(&profile.proofs) {
+        result["scheme_proof"] = schema_placeholder(schema);
+    }
+    Ok(result)
+}
+
+fn schema_placeholder(schema: &crate::tasks::profile::SchemaDef) -> serde_json::Value {
+    use serde_json::json;
+
+    if let Some(value) = schema
+        .const_value
+        .as_ref()
+        .or_else(|| schema.enum_values.first())
+    {
+        return value.clone();
+    }
+    match schema.schema_type.as_str() {
+        "object" => {
+            if schema.properties.is_empty() && schema.required.is_empty() {
+                if let Some(crate::tasks::profile::AdditionalPropertiesDef::Schema(entry)) =
+                    &schema.additional_properties
+                {
+                    return json!({ "<key>": schema_placeholder(entry) });
+                }
+            }
+            let mut value = json!({});
+            merge_schema(&mut value, schema);
+            value
+        }
+        "array" => json!(schema
+            .items
+            .as_ref()
+            .map(|item| vec![schema_placeholder(item)])
+            .unwrap_or_default()),
+        "string" => json!("<value>"),
+        "integer" | "number" => json!(0),
+        "boolean" => json!(false),
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn merge_schema(value: &mut serde_json::Value, schema: &crate::tasks::profile::SchemaDef) {
+    if schema.const_value.is_some() || !schema.enum_values.is_empty() {
+        *value = schema_placeholder(schema);
+        return;
+    }
+    if schema.schema_type != "object" || !value.is_object() {
+        *value = schema_placeholder(schema);
+        return;
+    }
+    let object = value.as_object_mut().expect("object checked above");
+    object.retain(|name, value| {
+        if schema.properties.contains_key(name) {
+            return true;
+        }
+        match &schema.additional_properties {
+            Some(crate::tasks::profile::AdditionalPropertiesDef::Boolean(false)) => false,
+            Some(crate::tasks::profile::AdditionalPropertiesDef::Schema(additional)) => {
+                additional.validate_value(value, "$").is_ok()
+            }
+            Some(crate::tasks::profile::AdditionalPropertiesDef::Boolean(true)) | None => true,
+        }
+    });
+    for (name, existing) in object.iter_mut() {
+        if let Some(child) = schema.properties.get(name) {
+            if child.schema_type == "object" {
+                merge_schema(existing, child);
+            } else if child.validate_value(existing, "$").is_err() {
+                *existing = schema_placeholder(child);
+            }
+        }
+    }
+    for name in &schema.required {
+        if let Some(child) = schema.properties.get(name) {
+            match object.get_mut(name) {
+                Some(existing) if child.schema_type == "object" => merge_schema(existing, child),
+                Some(existing) if child.const_value.is_some() || !child.enum_values.is_empty() => {
+                    *existing = schema_placeholder(child)
+                }
+                Some(_) => {}
+                None => {
+                    object.insert(name.clone(), schema_placeholder(child));
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -279,6 +419,14 @@ pub(crate) fn validate_observed_seam_test(
 ) -> Result<()> {
     let supplied: SeamTestProof = serde_json::from_value(supplied.clone())?;
     let actual: SeamTestProof = serde_json::from_value(actual.clone())?;
+    if supplied.exit_code != actual.exit_code
+        || supplied.tests_passed.is_none()
+        || supplied.tests_failed.is_none()
+        || supplied.tests_passed != actual.tests_passed
+        || supplied.tests_failed != actual.tests_failed
+    {
+        bail!("TASK_EVIDENCE_INVALID: seam test counts and exit code must match the claim-bound execution");
+    }
     if supplied
         .seam_test_refs
         .iter()
@@ -769,9 +917,56 @@ mod command_proof_tests {
 
 #[cfg(test)]
 mod profile_proof_boundary_tests {
-    use super::validate_gate_proof;
+    use super::{proof_template, validate_gate_proof};
     use crate::tasks::profile::parse_profile;
     use serde_json::json;
+
+    #[test]
+    fn projected_none_respects_catalog_payload_override() {
+        let profile = parse_profile("inherit: none\nproofs:\n  none:\n    schema:\n      type: object\n      required: [reason]\n      properties:\n        reason: { type: string }\ngates:\n  - id: info\n    proof: none\n").unwrap();
+        let gate = profile.find_gate("info").unwrap();
+        let proof = proof_template(gate, &profile).unwrap();
+        assert_eq!(proof, json!({"none_proof":{"reason":"<value>"}}));
+        validate_gate_proof(&proof, gate, &profile, true, "").unwrap();
+        assert!(validate_gate_proof(&json!({}), gate, &profile, true, "").is_err());
+        let default_profile = crate::tasks::profile::compiled();
+        let default_gate = crate::tasks::profile::GateDef::default();
+        assert_eq!(
+            proof_template(&default_gate, &default_profile).unwrap(),
+            json!({"none_proof":{}})
+        );
+        assert!(
+            validate_gate_proof(&json!({}), &default_gate, &default_profile, true, "").is_err()
+        );
+    }
+
+    #[test]
+    fn projected_review_and_seam_templates_validate_and_reject_corruption() {
+        let profile = crate::tasks::profile::compiled();
+        for (id, kind) in [
+            ("review", super::ProofKind::Review),
+            ("integrate", super::ProofKind::SeamTest),
+        ] {
+            let gate = crate::tasks::profile::GateDef {
+                proof: super::ProofDef::Kind(kind),
+                ..Default::default()
+            };
+            let mut proof = proof_template(&gate, &profile).unwrap();
+            if id == "review" {
+                proof["review_proof"]["notes"] = json!("reviewed");
+            }
+            validate_gate_proof(&proof, &gate, &profile, true, "").unwrap();
+            if id == "review" {
+                let mut unknown = proof.clone();
+                unknown["review_proof"]["unrelated"] = json!(true);
+                assert!(validate_gate_proof(&unknown, &gate, &profile, true, "").is_err());
+                proof["review_proof"]["contours"] = json!("invalid");
+            } else {
+                proof = json!({});
+            }
+            assert!(validate_gate_proof(&proof, &gate, &profile, true, "").is_err());
+        }
+    }
 
     #[test]
     fn omitted_proof_rejects_an_unrelated_evidence_envelope() {

@@ -2,13 +2,13 @@ use super::{
     role::RoleObservations,
     task_runner::{run_task_lifecycle, TaskRunOptions},
     types::OrchestratorEvent,
-    workflow::{run_gate_graph, GateDecision},
+    workflow::{ensure_command_completed, run_gate_graph, GateDecision},
 };
 use crate::{
-    engine::{self, gate_graph, Registry},
+    engine::{self, gate_graph, git_snapshot, Registry},
     milestones,
     tasks::{
-        profile::{GateDriver, ProofKind},
+        profile::{GateDriver, PersistenceAction, ProofKind},
         Milestone,
     },
 };
@@ -16,7 +16,6 @@ use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, VecDeque},
     fs,
     path::Path,
 };
@@ -119,56 +118,31 @@ pub fn run_milestone_waves(
     // candidate invalidates the remaining prefix and requires fresh observations.
     let mut history = {
         let store = registry.open(workspace)?;
-        let mut query = store.connection.prepare("SELECT id, gate_path, proof_payload FROM gate_transitions WHERE milestone_id=?1 AND subject='milestone' AND proof_kind='orchestrator' ORDER BY id")?;
-        let rows = query
-            .query_map([&identity], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?
-            .map(|row| {
-                let (id, gate, payload) = row?;
-                Ok((id, (gate, serde_json::from_str::<Value>(&payload)?)))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        // The latest observation links to the exact prefix actually used, so a
-        // refreshed suffix cannot be hidden behind its obsolete audit records.
-        let mut route = VecDeque::new();
-        let mut next = rows.last_key_value().map(|(&id, _)| id);
-        while let Some(id) = next {
-            let (gate, saved) = rows
-                .get(&id)
-                .context("MILESTONE_CHECKPOINT_INVALID: missing predecessor observation")?;
-            route.push_front((id, gate.clone(), saved.clone()));
-            next = match saved.get("previous_observation") {
-                Some(Value::Null) => None,
-                Some(value) => Some(value.as_i64().filter(|previous| *previous > 0 && *previous < id).context("MILESTONE_CHECKPOINT_INVALID: predecessor must be an earlier observation")?),
-                // Unlinked records follow their chronological start boundary.
-                None if saved["run_start"] == true => None,
-                None => rows.range(..id).next_back().map(|(&id, _)| id),
-            };
-        }
-        route
+        gate_graph::active_milestone_history(&store.connection, &identity)?
+            .into_iter().filter(|row| row.3 == "orchestrator")
+            .map(|(id, gate, _, _, payload)| (id, gate, payload)).collect::<std::collections::VecDeque<_>>()
     };
     let mut previous_observation = None;
+    let mut accepted_snapshot: Option<String> = None;
     let outcomes = run_gate_graph(&root, &scope, &active_tasks, &cursors, |cursor, attempt| {
         roles.note_executed(&cursor.canonical_stage_id);
         if !tasks_done && cursor.root_index > task_position {
-            gate_graph::ensure_root_gate_transitions_passed(
+            gate_graph::ensure_root_gate_transitions_passed_where(
                 &registry.open(workspace)?.connection,
                 &identity,
-                &pre_task_required,
+                &cursors,
+                |candidate| pre_task_required.iter().any(|cursor| cursor.canonical_stage_id == candidate.canonical_stage_id),
             )?;
             dispatch_waves(&root, &milestone, &waves, options, observer)?;
             tasks_done = true;
+            accepted_snapshot = None;
         }
         let binding = if tasks_done {
             milestones::handoff_context(&root, selector, &options.target_base)?["binding"].clone()
         } else {
             json!({"candidate_fingerprint":engine::candidate_fingerprint(&root)?})
         };
+        let before = engine::candidate_fingerprint(&root)?;
         let cached = history
             .front()
             .filter(|(_, gate, saved)| {
@@ -176,6 +150,21 @@ pub fn run_milestone_waves(
                     && saved["profile_digest"] == profile_digest
                     && saved["authority_digest"] == authority_digest
                     && saved["binding"] == binding
+                    && saved["input_binding"] == binding
+                    && saved["candidate_before"] == before
+                    && saved["candidate_after"] == before
+                    && [
+                        (cursor.gate.persistence.pre, "pre_snapshot"),
+                        (cursor.gate.persistence.post, "post_snapshot"),
+                    ].into_iter().all(|(action, key)| {
+                        action != Some(PersistenceAction::Snapshot)
+                            || key == "post_snapshot" && saved["passed"] == false
+                            || saved[key]["candidate_fingerprint"] == before
+                                && saved[key]["snapshot_ref"].as_str().is_some_and(|reference| {
+                                    crate::git::git_stdout(&root, &["rev-parse", "--verify", reference], "TASK_SNAPSHOT_FAILED")
+                                        .is_ok_and(|commit| saved[key]["snapshot_commit"] == commit)
+                                })
+                    })
             })
             .cloned();
         if cached.is_some() {
@@ -183,6 +172,17 @@ pub fn run_milestone_waves(
         } else {
             history.clear();
         }
+        if cursor.gate.persistence.immutable {
+            if let Some(prior) = &accepted_snapshot {
+                git_snapshot::ensure_root_candidate(prior, &before)?;
+            }
+        }
+        let snapshot_identity = format!("{}:{}:{}:{}", identity, profile_digest, authority_digest, cursor.canonical_stage_id);
+        let pre_snapshot = if cached.is_none() && cursor.gate.persistence.pre == Some(PersistenceAction::Snapshot) {
+            Some(git_snapshot::capture_root_snapshot(&root, &format!("{snapshot_identity}:pre"), &before)?)
+        } else {
+            cached.as_ref().and_then(|(_, _, saved)| saved.get("pre_snapshot").filter(|v| !v.is_null()).cloned())
+        };
         if cursor.gate.receipt || cursor.gate.proof.kind() == Some(ProofKind::Delivery) {
             ensure!(tasks_done, "MILESTONE_TASKS_INCOMPLETE");
             let current = milestones::handoff_context(&root, selector, &options.target_base)?;
@@ -213,11 +213,9 @@ pub fn run_milestone_waves(
                             .as_i64()
                             .context("HANDOFF_VERIFICATION_INVALID")?,
                     )?,
-                    tests_passed: check["tests_passed"]
-                        .as_u64()
+                    tests_passed: serde_json::from_value(check["tests_passed"].clone())
                         .context("HANDOFF_VERIFICATION_INVALID")?,
-                    tests_failed: check["tests_failed"]
-                        .as_u64()
+                    tests_failed: serde_json::from_value(check["tests_failed"].clone())
                         .context("HANDOFF_VERIFICATION_INVALID")?,
                     lint_command: None,
                     project_command: Some(
@@ -228,7 +226,14 @@ pub fn run_milestone_waves(
                     ),
                 },
             };
+            if cursor.gate.persistence.immutable {
+                git_snapshot::ensure_root_candidate(&before, &engine::candidate_fingerprint(&root)?)?;
+            }
             let result = milestones::handoff(&root, selector, None, &evidence)?;
+            if cursor.gate.persistence.post == Some(PersistenceAction::Snapshot) {
+                let after = engine::candidate_fingerprint(&root)?;
+                git_snapshot::capture_root_snapshot(&root, &format!("{snapshot_identity}:post"), &after)?;
+            }
             handoff = Some(result.clone());
             return Ok(GateDecision {
                 passed: true,
@@ -237,7 +242,7 @@ pub fn run_milestone_waves(
             });
         }
         let mut replayed = cached.is_some();
-        let mut decision = if let Some((id, _, saved)) = cached {
+        let mut decision = if let Some((id, _, saved)) = cached.clone() {
             previous_observation = Some(id);
             let decision = GateDecision {
                 passed: saved["passed"]
@@ -255,12 +260,17 @@ pub fn run_milestone_waves(
             }
             decision
         } else if cursor.gate.driver() == Some(GateDriver::Command) && tasks_done {
+            ensure!(
+                matches!(cursor.gate.proof.kind(), Some(ProofKind::None | ProofKind::Command)),
+                "MILESTONE_PROOF_REQUIRED: post-task verification cannot supply this proof"
+            );
             let result = milestones::execute_wave_verification(
                 &root,
                 selector,
                 &options.target_base,
                 &cursor.canonical_stage_id,
             )?;
+            ensure_command_completed(&result["verification"], &cursor.canonical_stage_id)?;
             let passed = result["status"] == "passed";
             if passed {
                 verification = Some(result.clone());
@@ -273,6 +283,10 @@ pub fn run_milestone_waves(
                 findings: None,
             }
         } else if cursor.gate.driver() == Some(GateDriver::Command) {
+            ensure!(
+                matches!(cursor.gate.proof.kind(), Some(ProofKind::None | ProofKind::Command | ProofKind::Contract | ProofKind::SeamTest)),
+                "MILESTONE_PROOF_REQUIRED: command execution cannot supply this proof"
+            );
             let name = cursor
                 .gate
                 .command
@@ -285,20 +299,25 @@ pub fn run_milestone_waves(
             let plan = milestones::resolve_command_plan(&root, name, command, &scope, &profile)?;
             ensure!(!plan.is_empty(), "MILESTONE_COMMAND_MISSING");
             let mut observations = Vec::new();
-            let mut passed = true;
-            for (_, command_str, timeout) in plan {
-                let result = milestones::command_gate::observe_command(
+            for (id, command_str, timeout) in plan {
+                let result = milestones::command_gate::observe_command_for_id(
                     &root,
+                    &id,
                     &command_str,
                     timeout,
                     command.output(),
+                    cursor.gate.expected_failure.as_ref(),
                 )?;
-                passed &= result["exit_code"] == 0 && result["timed_out"] == false;
-                observations.push(result);
-                if !passed {
-                    break;
-                }
+                ensure_command_completed(&result, &cursor.canonical_stage_id)?;
+                observations.push((id, result));
             }
+            let passed = crate::engine::evidence_compiler::evaluate_root_command_gate(
+                &cursor.gate,
+                &profile,
+                &observations,
+                cursor.gate.policy.as_deref().unwrap_or("seam-test-first"),
+                None,
+            )?;
             GateDecision {
                 passed,
                 evidence: json!(observations),
@@ -342,6 +361,16 @@ pub fn run_milestone_waves(
                 &profile,
             )?
         };
+        let after_execution = engine::candidate_fingerprint(&root)?;
+        if cursor.gate.persistence.immutable {
+            git_snapshot::ensure_root_candidate(&before, &after_execution)?;
+        }
+        let output_binding = if tasks_done {
+            milestones::handoff_context(&root, selector, &options.target_base)?["binding"].clone()
+        } else {
+            json!({"candidate_fingerprint":after_execution})
+        };
+        let after = engine::candidate_fingerprint(&root)?;
         if decision.passed && !tasks_done && cursor.root_index < task_position {
             let proof_validation = registry.open(workspace).and_then(|store| {
                 super::super::lifecycle::validate_pre_task_root_proof(
@@ -375,6 +404,15 @@ pub fn run_milestone_waves(
         } else if !decision.passed && cursor.gate.independent_from.is_some() {
             review = None;
         }
+        let post_snapshot = if decision.passed && cursor.gate.persistence.post == Some(PersistenceAction::Snapshot) {
+            let snapshot = if replayed {
+                cached.as_ref().and_then(|(_, _, saved)| saved.get("post_snapshot")).cloned().context("MILESTONE_CHECKPOINT_INVALID: missing post snapshot")?
+            } else {
+                git_snapshot::capture_root_snapshot(&root, &format!("{snapshot_identity}:post"), &after)?
+            };
+            accepted_snapshot = Some(after.clone());
+            Some(snapshot)
+        } else { None };
         if replayed {
             return Ok(decision);
         }
@@ -382,7 +420,7 @@ pub fn run_milestone_waves(
         let id = store.record_gate_transition(&crate::store::GateTransition {
             milestone_id:identity.clone(), subject:"milestone".into(), gate_path:cursor.canonical_stage_id.clone(),
             action:if decision.passed { "pass" } else { "fail" }.into(), proof_kind:"orchestrator".into(),
-            proof_payload:json!({"previous_observation":previous_observation,"profile_digest":profile_digest,"authority_digest":authority_digest,"binding":if tasks_done { milestones::handoff_context(&root, selector, &options.target_base)?["binding"].clone() } else {json!({"candidate_fingerprint":engine::candidate_fingerprint(&root)?})},"passed":decision.passed,"attempt":attempt,"evidence":decision.evidence,"findings":decision.findings}),
+            proof_payload:json!({"previous_observation":previous_observation,"profile_digest":profile_digest,"authority_digest":authority_digest,"input_binding":binding,"binding":output_binding,"candidate_before":before,"candidate_after":after,"pre_snapshot":pre_snapshot,"post_snapshot":post_snapshot,"root_snapshot_fingerprint":if post_snapshot.is_some() { Some(after) } else { None },"passed":decision.passed,"attempt":attempt,"evidence":decision.evidence,"findings":decision.findings}),
             git_tree_sha:crate::git::git_stdout(&root, &["rev-parse", "HEAD"], "MILESTONE_HEAD_REQUIRED")?,
             worker_id:decision.evidence["session_id"].as_str().unwrap_or(&options.task.worker_id).to_owned(),
         })?;
@@ -395,10 +433,11 @@ pub fn run_milestone_waves(
         Ok(decision)
     })?;
     if !tasks_done {
-        gate_graph::ensure_root_gate_transitions_passed(
+        gate_graph::ensure_root_gate_transitions_passed_where(
             &registry.open(workspace)?.connection,
             &identity,
-            &pre_task_required,
+            &cursors,
+            |candidate| pre_task_required.iter().any(|cursor| cursor.canonical_stage_id == candidate.canonical_stage_id),
         )?;
         dispatch_waves(&root, &milestone, &waves, options, observer)?;
     }

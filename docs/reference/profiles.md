@@ -7,6 +7,8 @@ doc_type: api
 
 An **ACDD Profile** (`profile.yaml`) defines the governance model for a task or milestone: its ordered verification gates, proof evaluation policies, review contours, worker role assignments, and recommended AI models.
 
+For root gates, `max_attempts` limits failures of that gate, not total visits: a pass does not spend the failure budget. Omit it for unbounded failure routing. Milestone execution replays persisted decisions to reconstruct visit numbers and failure counts.
+
 By separating workflow governance from code and task specifications, profiles allow teams to enforce strict multi-agent compliance (e.g. mandatory independent reviewer separation, TDD seam-first gates, and SHA-256 anti-tampering verification).
 
 The embedded profile uses three subagent roles: `contract_author` (`sol-6.1:high`), `builder` (`gpt6-luna:xhigh`), and `independent_reviewer` (`sol-6.1:xhigh`). The contract author targets a draft to `build` on the task blackboard. The independent reviewer keeps the same worker session through `review` and `deliver`, remaining distinct from the builder. Claim guidance includes `NO_PREFLIGHT_SUBAGENTS` so gates start without preflight agents.
@@ -96,8 +98,9 @@ stage, revisions, worker, and worktree.
 Detailed and `by_pattern` command definitions accept an optional `output`
 mapping. Its optional `counts` mapping contains `passed` and `failed` regular
 expressions. `require_counts` defaults to `true`. `noise` and
-`errors` are lists of regular expressions. (Seam test identities are supplied directly
-via `verify --test <test_ref>` rather than parsed via regex heuristics). The optional `tests` mapping defines declarative rules for
+`errors` are lists of regular expressions. Seam compilation requires individual test
+identities parsed from command output; `verify --test <test_ref>` selects execution
+but does not replace those observations. The optional `tests` mapping defines declarative rules for
 extracting individual test outcomes and source identities:
 `passed` (required pattern matching an individual passed test and capturing its name/ref in group 1),
 `failed` (optional pattern matching an individual failed test in group 1),
@@ -110,6 +113,8 @@ present and the failed pattern has no match, the failed count is zero. Missing
 required counts, malformed integers, overflow, and reported failures reject proof.
 Set `require_counts: false` for linters and documentation checks whose zero exit
 code proves success without a test count. Configure output rules to describe command counts and test identities.
+Root workflow, plan, and milestone command execution also uses these count rules;
+role-supplied executable proof must agree with observed command facts.
 
 The command runner parses complete output before filtering `noise` lines, prioritizing
 `errors` lines, and truncating diagnostics. Durable claim-bound facts retain the
@@ -145,8 +150,14 @@ Each gate declares a stable identifier (`id`). The `proof` field is optional bec
 5. Otherwise $\implies$ `none`: Informational step or container gate.
 
 An explicit `proof` declaration is used when overriding the inferred behavior, referencing a reusable schema in the top-level `proofs:` catalog, or attaching an inline JSON Schema directly to the gate:
+
+Proof guidance resolves catalog overrides before projecting the envelope. Schema
+proofs use `scheme_proof` and include required members recursively, with typed
+placeholders and the first declared enum or constant value. Built-in proofs use
+their named wrapper; review contours are objects keyed by configured contour.
+Replace placeholders with actual evidence before submission.
 - `proof: contract`: Explicitly marks a contract gate when it relies on task `proof_policy` rather than inline `expected_failure`.
-- `proof: seam_test`: Used on `seam.integrate` (`when: seam`) to verify element-by-element that every test identifier in `seam_test_refs` executed and passed (`exit_code == 0`) in the captured trace.
+- `proof: seam_test`: Used on `seam.integrate` (`when: seam`). Verification compiles proof from persisted per-test passing identities and matching passed/failed counts. Zero-argument pass submission reuses a valid claim-bound observation; aggregate counts alone cannot prove a seam.
 - `proof: <catalog_name>` (e.g. `proof: blueprint`): References a reusable schema declared under top-level `proofs.<catalog_name>.schema` (`ProofCatalogDef`), allowing multiple gates and inherited profiles to share the same schema definition.
 - `proof: { scheme: { ... } }`: Declares an inline recursive JSON Schema directly inside a single gate.
 
@@ -166,13 +177,15 @@ guidance:
 
 Review gates bind explicitly to these lenses using `contours: guidance.contours`. The review proof engine and `workflow_guidance` extract the structured criteria to drive reviewer checklists and evaluate evidence.
 
+A gate with both a role and a command is driven by the role; Forge also executes and verifies the registered command. A command without a role uses the command driver, while a gate with children uses the container driver when neither role nor command is present.
+
 ### 3. Worker Independence and Role Guidance
 
 - **`independent_from`**: At claim and submission, requires a `worker_id` different from the accepted worker of the named predecessor gate.
 - **`fail`**: Selects the failure target; **`pass`** selects the success target. **`loop`** maps finding classes to failure targets.
 - **`when`**: Selects a gate by scoped code, documentation, migration paths, concurrent seam mode, or AST public callable export.
 - **`need`**: Names required review sources. **`save`** controls persistence, and **`absorb`** controls working-tree absorption for delivery.
-- **`reuse_on_reject`**: If `true`, rejection guidance directs the task back to the original builder worker ID to remediate defects.
+- **`reuse_on_reject`**: If `true`, rejection guidance directs the task back to the original builder worker ID to remediate defects. The headless spawner passes the retained Forge identity as `FORGE_AGENT_SESSION_ID` or `{session_id}`; this does not resume a provider conversation. Profile validation and spawning reject templates that request unsupported provider conversation resumption.
 - **`mode`**: `subagent` or `inline` describe the intended role execution. Headless commands execute configured role runners as described in the [CLI reference](cli.md#headless-task-execution).
 - **`models`**: Ordered list of recommended LLM models and reasoning tiers for that specific role.
 - The embedded `independent_reviewer` owns both review and delivery, so continue the same reviewer session through those gates. Its `NO_PREFLIGHT_SUBAGENTS` workflow rule prohibits launching preliminary subagents before the active gate work.

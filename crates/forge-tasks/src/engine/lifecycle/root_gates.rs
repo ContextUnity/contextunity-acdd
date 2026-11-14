@@ -23,111 +23,25 @@ fn pending_root_gate_from_transitions(
     store: &TasksStore,
     milestone_identity: &str,
     cursors: &[gate_graph::GateCursor],
-    mut applicable: impl FnMut(&gate_graph::GateCursor) -> bool,
+    applicable: impl FnMut(&gate_graph::GateCursor) -> bool,
 ) -> Result<Option<gate_graph::GateCursor>> {
-    let applicable_indices = cursors
-        .iter()
-        .enumerate()
-        .filter_map(|(index, cursor)| applicable(cursor).then_some(index))
-        .collect::<Vec<_>>();
-    let Some(first_index) = applicable_indices.first().copied() else {
-        return Ok(None);
-    };
-    let applicable_paths = applicable_indices
-        .iter()
-        .map(|index| cursors[*index].canonical_stage_id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    let is_applicable = |candidate: &gate_graph::GateCursor| {
-        applicable_paths.contains(candidate.canonical_stage_id.as_str())
-    };
-
-    let path_placeholders = std::iter::repeat_n("?", applicable_indices.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let latest_transition_sql = format!(
-        "SELECT gate_path, action, proof_payload FROM gate_transitions
-         WHERE milestone_id=? AND subject='milestone' AND gate_path IN ({path_placeholders})
-         ORDER BY id DESC LIMIT 1"
-    );
-    let mut transition_values = Vec::with_capacity(applicable_indices.len() + 1);
-    transition_values.push(rusqlite::types::Value::Text(milestone_identity.to_owned()));
-    transition_values.extend(
-        applicable_indices
-            .iter()
-            .map(|index| rusqlite::types::Value::Text(cursors[*index].canonical_stage_id.clone())),
-    );
-    let latest: Option<(String, String, String)> = store
-        .connection
-        .query_row(
-            &latest_transition_sql,
-            rusqlite::params_from_iter(transition_values.iter()),
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .optional()?;
-    let Some((last_gate_path, action, payload)) = latest else {
-        return Ok(Some(cursors[first_index].clone()));
-    };
-    let current_index = applicable_indices
-        .iter()
-        .copied()
-        .find(|index| cursors[*index].canonical_stage_id == last_gate_path)
-        .context("MILESTONE_ROOT_GATE_TRANSITION_INVALID: latest gate path is not applicable")?;
-    let payload: Value = serde_json::from_str(&payload).with_context(|| {
-        format!(
-            "MILESTONE_ROOT_GATE_TRANSITION_INVALID: '{last_gate_path}' has malformed proof payload"
-        )
-    })?;
-    match action.as_str() {
-        "pass" => {
-            let Some(next_index) = gate_graph::resolve_pass_target(
-                cursors,
-                current_index,
-                is_applicable,
-            )?
-            else {
+    let history = gate_graph::active_milestone_history(&store.connection, milestone_identity)?;
+    let pending = gate_graph::accepted_root_route_from_history(
+        &history,
+        cursors,
+        applicable,
+    )?.1;
+    if let Some(cursor) = &pending {
+        if let Some(limit) = cursor.gate.max_attempts {
+            let failures = history.iter().filter(|(_, path, action, _, _)| {
+                path == &cursor.canonical_stage_id && action == "fail"
+            }).count();
+            if failures >= limit as usize {
                 return Ok(None);
-            };
-            Ok(Some(
-                cursors
-                    .get(next_index)
-                    .context("MILESTONE_ROOT_GATE_ROUTE_INVALID")?
-                    .clone(),
-            ))
-        }
-        "fail" => {
-            let attempts: i64 = store.connection.query_row(
-                "SELECT count(*) FROM gate_transitions
-                 WHERE milestone_id=?1 AND subject='milestone' AND gate_path=?2",
-                rusqlite::params![milestone_identity, last_gate_path],
-                |row| row.get(0),
-            )?;
-            let attempts_used = u32::try_from(attempts)
-                .context("MILESTONE_ROOT_GATE_ATTEMPT_COUNT_INVALID")?;
-            if attempts_used == 0 {
-                bail!("MILESTONE_ROOT_GATE_ATTEMPT_COUNT_INVALID");
             }
-            let findings = payload.get("findings").filter(|findings| !findings.is_null());
-            let route = gate_graph::resolve_fail_target(
-                cursors,
-                current_index,
-                findings,
-                attempts_used,
-                is_applicable,
-            )?;
-            let Some(target) = route.target.filter(|_| !route.exhausted) else {
-                return Ok(None);
-            };
-            let target_index = applicable_indices
-                .iter()
-                .copied()
-                .find(|index| cursors[*index].canonical_stage_id == target.canonical_stage_id)
-                .context("MILESTONE_ROOT_GATE_ROUTE_INVALID")?;
-            Ok(Some(cursors[target_index].clone()))
         }
-        _ => bail!(
-            "MILESTONE_ROOT_GATE_TRANSITION_INVALID: '{last_gate_path}' has unsupported action '{action}'"
-        ),
     }
+    Ok(pending)
 }
 
 fn pending_pre_task_root_gate(
@@ -149,9 +63,10 @@ fn pending_pre_task_root_gate(
     };
     let cursors =
         applicable_pre_task_root_cursors(&profile, task, milestone_tasks, scope, worktree)?;
+    let all_cursors = gate_graph::collect_root_cursors(&profile)?;
     let pending =
-        pending_root_gate_from_transitions(store, &milestone_identity, &cursors, |cursor| {
-            cursor.root_index < task_position
+        pending_root_gate_from_transitions(store, &milestone_identity, &all_cursors, |cursor| {
+            cursor.root_index < task_position && cursors.iter().any(|item| item.canonical_stage_id == cursor.canonical_stage_id)
         })?;
     Ok(PreTaskRootGateState {
         milestone_identity: milestone_identity.clone(),
@@ -824,14 +739,20 @@ pub(super) fn claim_root_gate(root: &Path, p: Claim) -> Result<Value> {
             if let Some(prior_snapshot) =
                 latest_accepted_root_snapshot(&ctx.store, &ctx.milestone_identity, &phase_paths)?
             {
-                ensure!(
-                    prior_snapshot == fingerprint,
-                    "TASK_CANDIDATE_MISMATCH: milestone '{}' root gate '{}' requires an immutable candidate; working tree differs from prior snapshot",
-                    ctx.milestone_identity,
-                    cursor.canonical_stage_id
-                );
+                super::super::git_snapshot::ensure_root_candidate(&prior_snapshot, &fingerprint)?;
             }
         }
+        let pre_snapshot = if cursor.gate.persistence.pre
+            == Some(crate::tasks::profile::PersistenceAction::Snapshot)
+        {
+            Some(super::super::git_snapshot::capture_root_snapshot(
+                &canonical_worktree,
+                &format!("{}:{}:pre", ctx.milestone_identity, cursor.canonical_stage_id),
+                &fingerprint,
+            )?)
+        } else {
+            None
+        };
         ctx.store
             .save_engine_checkpoint(&crate::store::GateCheckpoint {
                 breadcrumb: root_checkpoint_breadcrumb(&ctx.milestone_identity, &cursor),
@@ -848,6 +769,7 @@ pub(super) fn claim_root_gate(root: &Path, p: Claim) -> Result<Value> {
                     "worker_id": p.worker_id,
                     "worktree": canonical_worktree,
                     "candidate_fingerprint": fingerprint,
+                    "pre_snapshot": pre_snapshot,
                     "immutable": cursor.gate.persistence.immutable,
                 }),
             })?;
@@ -1190,22 +1112,12 @@ pub(in crate::engine) fn submit_root_gate(root: &Path, p: Submit) -> Result<Valu
                     cursor.canonical_stage_id
                 )
             })?;
-        ensure!(
-            claimed_fp == current_fp,
-            "TASK_CANDIDATE_MISMATCH: milestone '{}' root gate '{}' requires an immutable candidate; working tree differs from claimed snapshot",
-            ctx.milestone_identity,
-            cursor.canonical_stage_id
-        );
+        super::super::git_snapshot::ensure_root_candidate(claimed_fp, current_fp)?;
         let phase_paths = phase_root_gate_paths(&ctx, &cursor);
         if let Some(prior_snapshot) =
             latest_accepted_root_snapshot(&ctx.store, &ctx.milestone_identity, &phase_paths)?
         {
-            ensure!(
-                prior_snapshot == *current_fp,
-                "TASK_CANDIDATE_MISMATCH: milestone '{}' root gate '{}' requires an immutable candidate; working tree differs from prior snapshot",
-                ctx.milestone_identity,
-                cursor.canonical_stage_id
-            );
+            super::super::git_snapshot::ensure_root_candidate(&prior_snapshot, current_fp)?;
         }
     }
     if passed
@@ -1213,6 +1125,11 @@ pub(in crate::engine) fn submit_root_gate(root: &Path, p: Submit) -> Result<Valu
     {
         if let Some((_, ref fingerprint)) = current_snapshot {
             payload_map.insert("root_snapshot_fingerprint".into(), json!(fingerprint));
+            payload_map.insert("root_snapshot".into(), super::super::git_snapshot::capture_root_snapshot(
+                &canonical_worktree,
+                &format!("{}:{}:post", ctx.milestone_identity, cursor.canonical_stage_id),
+                fingerprint,
+            )?);
         }
     }
     let proof_payload = Value::Object(payload_map);
@@ -1317,10 +1234,12 @@ pub(super) fn ensure_pre_task_root_gates_passed(
     let cursors =
         applicable_pre_task_root_cursors(profile, task, &milestone_tasks, &scope, worktree)?;
     let milestone_identity = milestone_identity_for_task(workspace, task)?;
-    gate_graph::ensure_root_gate_transitions_passed(
+    let all_cursors = gate_graph::collect_root_cursors(profile)?;
+    gate_graph::ensure_root_gate_transitions_passed_where(
         &store.connection,
         &milestone_identity,
-        &cursors,
+        &all_cursors,
+        |candidate| cursors.iter().any(|cursor| cursor.canonical_stage_id == candidate.canonical_stage_id),
     )?;
     fan_out_pre_task_proofs_if_ready(store, workspace, task, profile, worktree)?;
     Ok(())

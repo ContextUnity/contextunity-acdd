@@ -303,22 +303,9 @@ pub fn execute_command_gate_with_options(
         let output = String::from_utf8_lossy(&complete_log).into_owned();
         let parsed = parse_command_output(&output, &command_str, commands.output())?;
         let stderr_text = String::from_utf8_lossy(&stderr);
-        let compilation_error = stderr_text.contains("could not compile")
-            || stderr_text.contains("error[E")
-            || stderr_text.lines().any(|line| {
-                let line = line.trim_start();
-                line.starts_with("error:") && !line.starts_with("error: test failed")
-            });
         let expected = gate.expected_failure.as_ref().is_some_and(|expected| {
             status == "completed"
-                && !compilation_error
-                && exit_code.is_some_and(|code| {
-                    code != 0
-                        && (expected.exit_codes.is_empty() || expected.exit_codes.contains(&code))
-                })
-                && expected.stderr_contains.as_ref().is_none_or(|signature| {
-                    !signature.trim().is_empty() && output.contains(signature)
-                })
+                && matches_expected_failure(expected, exit_code, &stderr_text, &output)
         });
         let test_executed = if explicit_test.is_some() {
             (parsed.passed.unwrap_or(0) + parsed.failed.unwrap_or(0)) > 0
@@ -405,7 +392,7 @@ pub fn execute_command_gate_with_options(
             duration_ms,
         };
         let seam_ref = explicit_test.map(str::to_owned).or(parsed.seam_ref);
-        let mut passed_tests = passed_test_references(
+        let passed_tests = passed_test_references(
             root,
             &output,
             &trace.command_id,
@@ -413,23 +400,6 @@ pub fn execute_command_gate_with_options(
             commands.output(),
         )
         .unwrap_or_default();
-        if let Some(test_ref) = explicit_test {
-            let symbol = test_ref
-                .split_once("::")
-                .map(|(_, s)| s.trim())
-                .unwrap_or(test_ref);
-            let actually_passed = status == "completed"
-                && exit_code == Some(0)
-                && parsed.failed.unwrap_or(0) == 0
-                && (passed_tests.contains(test_ref)
-                    || passed_tests.contains(symbol)
-                    || passed_tests
-                        .iter()
-                        .any(|t| t.ends_with(&format!("::{symbol}"))));
-            if actually_passed {
-                passed_tests.insert(test_ref.to_owned());
-            }
-        }
         let facts = crate::store::CommandExecutionProof {
             passed: parsed.passed,
             failed: parsed.failed,
@@ -552,10 +522,24 @@ pub(crate) fn observe_command(
     timeout: Duration,
     output: Option<&crate::tasks::profile::CommandOutputSpec>,
 ) -> Result<serde_json::Value> {
+    observe_command_for_id(root, "", command, timeout, output, None)
+}
+
+pub(crate) fn observe_command_for_id(
+    root: &Path,
+    command_id: &str,
+    command: &str,
+    timeout: Duration,
+    output: Option<&crate::tasks::profile::CommandOutputSpec>,
+    expected_failure: Option<&crate::tasks::profile::ExpectedFailure>,
+) -> Result<serde_json::Value> {
     let result = run_shell(root, command, timeout)?;
     let stdout = String::from_utf8_lossy(&result.stdout);
     let stderr = String::from_utf8_lossy(&result.stderr);
-    let parsed = parse_command_output(&format!("{stdout}\n{stderr}"), command, output)?;
+    let combined = format!("{stdout}\n{stderr}");
+    let parsed = parse_command_output(&combined, command, output)?;
+    let passed_tests = passed_test_references(root, &combined, command_id, command, output)?;
+    let compiler_error = has_compiler_error(&stderr);
     Ok(serde_json::json!({
         "command": command,
         "exit_code": result.exit_code,
@@ -563,8 +547,37 @@ pub(crate) fn observe_command(
         "duration_ms": result.duration_ms,
         "tests_passed": parsed.passed,
         "tests_failed": parsed.failed,
+        "passed_tests": passed_tests,
+        "seam_ref": parsed.seam_ref,
+        "compiler_error": compiler_error,
+        "expected_signature": expected_failure.is_some_and(|expected| matches_expected_failure(expected, result.exit_code, &stderr, &combined)),
         "diagnostic": parsed.diagnostic,
     }))
+}
+
+fn matches_expected_failure(
+    expected: &crate::tasks::profile::ExpectedFailure,
+    exit_code: Option<i32>,
+    stderr: &str,
+    output: &str,
+) -> bool {
+    !has_compiler_error(stderr)
+        && exit_code.is_some_and(|code| {
+            code != 0 && (expected.exit_codes.is_empty() || expected.exit_codes.contains(&code))
+        })
+        && expected
+            .stderr_contains
+            .as_ref()
+            .is_none_or(|signature| !signature.trim().is_empty() && output.contains(signature))
+}
+
+pub(crate) fn has_compiler_error(stderr: &str) -> bool {
+    stderr.contains("could not compile")
+        || stderr.contains("error[E")
+        || stderr.lines().any(|line| {
+            let line = line.trim_start();
+            line.starts_with("error:") && !line.starts_with("error: test failed")
+        })
 }
 
 fn expanded_command_paths(root: &Path, paths: &[String]) -> Result<Vec<String>> {
@@ -832,7 +845,10 @@ fn passed_test_references(
         }
     }
 
-    for test in failed.iter().chain(&ignored) {
+    if !failed.is_empty() {
+        return Ok(Default::default());
+    }
+    for test in &ignored {
         passed.remove(test);
     }
 

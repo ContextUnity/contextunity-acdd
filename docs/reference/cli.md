@@ -385,28 +385,31 @@ results include the path, steps and snapshots. A failure retains work for repair
 ```sh
 contextunity-forge-mcp --root PATH workflow list
 contextunity-forge-mcp --root PATH workflow show NAME
-contextunity-forge-mcp --root PATH --format json workflow run NAME
+contextunity-forge-mcp --root PATH --format json workflow run NAME [--goal TEXT]
 contextunity-forge-mcp --root PATH workflow clear NAME
 ```
 
 Workflows are validated profile documents in `docs/workflows/*.yaml` or `*.yml`.
 Select a workflow by its unique filename stem or discovered root-relative path.
-Discovery is read-only; missing, ambiguous, or escaping paths fail.
+Discovery is read-only and accepts a repository root reached through a symlink.
+Missing, ambiguous, escaping, or cyclic workflow paths fail.
 
 `workflow clear <selector>` resolves the workflow name or path (failing closed with `WORKFLOW_AMBIGUOUS` on multiple candidates), verifies that `.forge/runs` and its contents contain no symlinks (ADR 0005), deletes run logs matching `{slug}.log` or timestamp-delimited `{slug}-<timestamp>.log` / `{slug}_<timestamp>.log` while strictly preserving neighbor logs, and purges SQLite execution traces matching `{slug}#`.
 
 `workflow run` executes command-owned and agent-owned root gates in-place with `save: none`.
 It follows the profile's pass, failure, condition, and retry edges, drains both
 process streams, and terminates the owned POSIX process group on timeout.
-Each gate can set `max_attempts`; a gate without an explicit retry allowance
-executes at most once. Failed or exhausted gates prevent successor execution.
+Each gate can set `max_attempts` to bound failures; passing visits do not consume
+the limit. When omitted, retries along the configured failure route are unbounded.
+Failed or exhausted gates prevent successor execution.
 Output beyond the bounded capture fails proof collection.
 Successful JSON results contain `status: completed`, the selected `path`, and
 in-memory gate `outcomes`. Execution creates no task store, Git repository,
 snapshot, commit, or persistent execution log.
 
 Agent gates require a configured role runner. Prompts carry the profile, gate,
-goal, scope, actual independent session and structured findings. Runners send
+goal (supplied via `--goal` or defaulting to the workflow path; explicit blank
+`--goal` values fail closed with `WORKFLOW_GOAL_INVALID`), scope, actual independent session and structured findings. Runners send
 progress to stderr and exactly one JSON decision to stdout: `gate`, `session_id`,
 `decision` (`pass` or `reject`), typed `proof`, and structured `findings` on
 rejection. Exit zero without a decision cannot pass. Declared independence is

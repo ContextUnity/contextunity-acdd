@@ -50,6 +50,23 @@ impl WaveHarness {
         Self::build(in_place, true, true)
     }
 
+    pub fn with_nested_blueprint(in_place: bool) -> Self {
+        let mut harness = Self::with_blueprint_gate(in_place);
+        let mut profile = harness.read_profile();
+        profile.gates[0] = serde_json::from_value(json!({
+            "id": "blueprint_synthesis",
+            "gates": [
+                {"id": "synthesize", "role": "wave_role", "proof": "blueprint", "max_attempts": 3},
+                {"id": "review", "role": "wave_role", "independent_from": "synthesize",
+                 "proof": {"scheme": {"type": "object", "required": ["decision", "summary"],
+                     "properties": {"decision": {"type": "string"}, "summary": {"type": "string"}}}},
+                 "fail": "synthesize", "max_attempts": 3}
+            ]
+        })).unwrap();
+        harness.commit_profile(&profile, "nested blueprint fixture");
+        harness
+    }
+
     fn build(in_place: bool, single_task: bool, blueprint_gate: bool) -> Self {
         let mut profile = runner_profile(DEFAULT_SEAM, "");
         let verification_marker = std::env::temp_dir().join(format!(
@@ -73,7 +90,7 @@ impl WaveHarness {
         for role in profile.roles.values_mut() {
             role.guidance = Some("Exercise the real task gate protocol.".into());
             role.runner = Some(format!(
-                "python3 {} {} {} {{session_id}} '{{prompt}}' {}",
+                "python3 {} {} {} {{session_id}} '{{prompt}}'",
                 quote(concat!(
                     env!("CARGO_MANIFEST_DIR"),
                     "/tests/acdd/fixtures/workflows/wave-task-role.py"
@@ -82,8 +99,7 @@ impl WaveHarness {
                     env!("CARGO_MANIFEST_DIR"),
                     "/tests/acdd/orchestrator/lifecycle/role_fixture.py"
                 )),
-                quote(env!("CARGO_BIN_EXE_contextunity-forge-mcp")),
-                quote(&passing_review_proof().to_string())
+                quote(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
             ));
         }
         profile.roles.insert("wave_role".into(), serde_json::from_value(json!({"runner":format!("python3 {} '{{prompt}}'", quote(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/acdd/fixtures/workflows/wave-role.py"))),"guidance":"Exercise the real task gate protocol."})).unwrap());
@@ -150,11 +166,6 @@ impl WaveHarness {
             "the wave fixture keeps the inherited builder role when it binds a command"
         );
         fs::create_dir_all(task.root().join(".forge/lifecycle")).unwrap();
-        fs::write(
-            task.root().join(".forge/lifecycle/review-proof.json"),
-            serde_json::to_vec(&passing_review_proof()).unwrap(),
-        )
-        .unwrap();
         fs::write(task.root().join("src/second.rs"), "pub fn second() {}\n").unwrap();
         // Inputs needed by isolated child worktrees must be in their shared base.
         for args in [
@@ -275,9 +286,7 @@ impl WaveHarness {
         .unwrap();
         profile.commands.insert(
             "preflight".into(),
-            forge_tasks::tasks::profile::CommandDef::Script(
-                "printf seen >> .forge/preflight.log".into(),
-            ),
+            serde_json::from_value(json!({"command": "printf seen >> .forge/preflight.log", "output": {"require_counts": false}})).unwrap(),
         );
         profile.gates.insert(
             0,
@@ -320,7 +329,10 @@ impl WaveHarness {
         }
         profile.commands.insert(
             "observe-once".into(),
-            forge_tasks::tasks::profile::CommandDef::Script(command),
+            serde_json::from_value(
+                json!({"command": command, "output": {"require_counts": false}}),
+            )
+            .unwrap(),
         );
         profile.gates.insert(1, serde_json::from_value(json!({"id":"observe_once","command":"observe-once","proof":"none","max_attempts":2,"fail":"observe_once"})).unwrap());
         self.commit_profile(&profile, "partial-prefix observation fixture");
@@ -330,5 +342,26 @@ impl WaveHarness {
 impl Drop for WaveHarness {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.verification_marker);
+    }
+}
+
+#[test]
+fn malformed_blueprint_guidance_cannot_be_repaired_by_role_fixture() {
+    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    let h = WaveHarness::with_blueprint_gate(true);
+    for marker in [
+        "corrupt-blueprint-missing",
+        "corrupt-blueprint-tasks",
+        "corrupt-blueprint-nested",
+    ] {
+        fs::write(h.root().join(".forge").join(marker), "").unwrap();
+        let result = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {});
+        assert!(result.is_err(), "{marker}: malformed guidance must fail");
+        let passes: i64 = h.task.store.connection.query_row(
+            "SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND gate_path='preflight' AND action='pass'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(passes, 0, "{marker}: no malformed blueprint may pass");
+        fs::remove_file(h.root().join(".forge").join(marker)).unwrap();
     }
 }

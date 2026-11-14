@@ -92,6 +92,35 @@ Active hardening order and branch reality live in
     800–1,600 lines testing one tool or language surface) or hide test assertions in
     harness helpers just to hit an arbitrary 500/800-line ceiling.
 
+## External role processes
+
+External role fixtures substitute for an unavailable language model. They consume
+production role or claim guidance and submit through Forge; the engine still owns
+identity, state transitions, validation, and command observations. Mechanical
+gates run verification and submit without invented command results. Malformed
+scenario controls remain explicit and must not repair a broken emitted template.
+Disk-backed task harnesses obtain claim-bound evidence templates from task context.
+Tests that intentionally submit malformed evidence keep their mutations explicit.
+
+The shipped authoring workflow tests replace the external model command with
+[`author-runner.py`](../../tests/acdd/fixtures/workflows/author-runner.py).
+It reads the emitted proof template and produces a rejected draft and a repaired
+artifact. The tests put the directory containing
+`CARGO_BIN_EXE_contextunity-forge-mcp` on the child process `PATH`; the
+shipped `plan show`, `workflow show`, and `milestone init --in-place`
+preflights execute the real compiled CLI. Schema validation, routing, placeholder
+expansion, independent session identity, and persistence remain production
+behavior. The plan and workflow runs create no task database or `.forge/runs`
+logs. Milestone initialization creates the authored milestone's tasks, but no
+workflow-gate tasks, claims, or synthetic run logs.
+
+The polish test replaces the external model with
+[`polish-runner.py`](../../tests/acdd/fixtures/workflows/polish-runner.py)
+and the expensive repository verification body with a hermetic failing-then-passing
+command. Forge observes the command and validates the review and routing.
+ADR 0024 is absent from this repository; its lifecycle authority remains a gap,
+not an implemented decision.
+
 ## Existing harnesses
 
 Use the harness already owned by the suite. Do not invent a parallel framework or

@@ -2,7 +2,7 @@ use super::role::RoleObservations;
 use super::workflow::{run_gate_graph, GateDecision};
 use crate::{
     engine::{gate_graph, git_snapshot},
-    milestones::command_gate::{observe_command, resolve_command_plan},
+    milestones::command_gate::resolve_command_plan,
     tasks::{
         profile::{GateDriver, GateProfile, PersistenceAction, ProofKind},
         SubtaskSpec,
@@ -290,6 +290,7 @@ pub fn run_plan_workflow(
     explicit: bool,
 ) -> Result<Value> {
     let profile = plan_profile(profile, explicit)?;
+    let database = crate::engine::database_path(root)?;
     let cursors = gate_graph::collect_cursors(&profile)?;
     let profile_digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&profile)?));
     let path = crate::tasks::confined_path(root, &plan.path.to_string_lossy())?;
@@ -393,7 +394,12 @@ pub fn run_plan_workflow(
                 ensure!(
                     matches!(
                         cursor.gate.proof.kind(),
-                        Some(ProofKind::None | ProofKind::Command)
+                        Some(
+                            ProofKind::None
+                                | ProofKind::Command
+                                | ProofKind::Contract
+                                | ProofKind::SeamTest
+                        )
                     ),
                     "PLAN_PROOF_REQUIRED: {}",
                     cursor.canonical_stage_id
@@ -410,16 +416,28 @@ pub fn run_plan_workflow(
                     "PLAN_COMMAND_MISSING: no scoped command"
                 );
                 let mut observations = Vec::new();
-                let mut passed = true;
-                for (_, command, timeout) in commands {
-                    let observation =
-                        observe_command(root, &command, timeout, definition.output())?;
-                    passed &= observation["exit_code"] == 0 && observation["timed_out"] == false;
-                    observations.push(observation);
-                    if !passed {
-                        break;
-                    }
+                for (id, command, timeout) in commands {
+                    let observation = crate::milestones::command_gate::observe_command_for_id(
+                        root,
+                        &id,
+                        &command,
+                        timeout,
+                        definition.output(),
+                        cursor.gate.expected_failure.as_ref(),
+                    )?;
+                    super::workflow::ensure_command_completed(
+                        &observation,
+                        &cursor.canonical_stage_id,
+                    )?;
+                    observations.push((id, observation));
                 }
+                let passed = crate::engine::evidence_compiler::evaluate_root_command_gate(
+                    &cursor.gate,
+                    &profile,
+                    &observations,
+                    cursor.gate.policy.as_deref().unwrap_or("seam-test-first"),
+                    None,
+                )?;
                 Ok(GateDecision {
                     passed,
                     evidence: json!(observations),
@@ -476,7 +494,7 @@ pub fn run_plan_workflow(
             ))
         );
         let snapshot =
-            git_snapshot::create_named_snapshot(root, &root.join(".forge/tasks.sqlite"), &name);
+            git_snapshot::create_named_snapshot(root, &database, &name);
         match snapshot {
             Ok(snapshot) => snapshots.push(snapshot),
             Err(error) => {
@@ -510,6 +528,6 @@ fn gate_snapshot(root: &Path, path: &Path, step: &str, gate: &str, phase: &str) 
                 .context("PLAN_CLOCK_INVALID")?
         ))
     );
-    git_snapshot::create_named_snapshot(root, &root.join(".forge/tasks.sqlite"), &name)?;
+    git_snapshot::create_named_snapshot(root, &crate::engine::database_path(root)?, &name)?;
     Ok(())
 }

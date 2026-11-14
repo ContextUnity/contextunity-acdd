@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::ensure;
 use std::{
     fs::{File, OpenOptions},
     io::Write,
@@ -640,6 +641,29 @@ pub(super) fn capture_scoped_snapshot(
     capture_scoped_snapshot_excluding(worktree, task_id, scope, &[])
 }
 
+/// Persist a root candidate without moving HEAD or changing the caller's index.
+pub(super) fn capture_root_snapshot(worktree: &Path, identity: &str, expected: &str) -> Result<Value> {
+    let before = super::candidate_fingerprint(worktree)?;
+    ensure_root_candidate(expected, &before)?;
+    let (commit, head, kept) = capture_scoped_snapshot(worktree, identity, &[])?
+        .context("TASK_SNAPSHOT_FAILED: root snapshot requires a Git worktree")?;
+    ensure!(
+        before == super::candidate_fingerprint(worktree)?,
+        "TASK_CANDIDATE_MISMATCH: candidate changed while capturing root snapshot"
+    );
+    let tag = format!("{:x}", sha2::Sha256::digest(identity.as_bytes()));
+    let reference = format!("refs/forge/root-snapshots/{tag}/{commit}");
+    let output = crate::git::git_command(worktree, &["update-ref", &reference, &commit])?;
+    ensure!(output.status.success(), "TASK_SNAPSHOT_FAILED: could not publish root snapshot");
+    drop(kept);
+    Ok(json!({"snapshot_ref": reference, "snapshot_commit": commit, "head": head, "candidate_fingerprint": before}))
+}
+
+pub(super) fn ensure_root_candidate(expected: &str, actual: &str) -> Result<()> {
+    ensure!(expected == actual, "TASK_CANDIDATE_MISMATCH: immutable root gate candidate changed");
+    Ok(())
+}
+
 fn capture_scoped_snapshot_excluding(
     worktree: &Path,
     task_id: &str,
@@ -820,7 +844,9 @@ fn add_unscoped_snapshot_entries(
 
     for batch in paths.chunks(256) {
         let mut add = std::process::Command::new("git");
-        add.args(["add", "-A", "--"]);
+        // Paths were enumerated from tracked entries and non-ignored untracked
+        // entries. Tracked files can themselves reside under an ignored directory.
+        add.args(["add", "-f", "-A", "--"]);
         for path in batch {
             #[cfg(unix)]
             {

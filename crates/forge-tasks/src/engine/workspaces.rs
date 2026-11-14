@@ -427,12 +427,19 @@ fn rejected_workflow_context(
                 parsed_findings.as_ref(),
                 rejected_from,
             );
-            if resolved_target != stage
+            let matches_stage = |target: &str| {
+                target == stage
+                    || profile
+                        .index_of(target)
+                        .zip(profile.index_of(stage))
+                        .is_some_and(|(target_index, stage_index)| target_index == stage_index)
+            };
+            if !matches_stage(resolved_target)
                 && definition
                     .on_fail
                     .as_deref()
                     .or(definition.reject_to.as_deref())
-                    != Some(stage)
+                    .is_none_or(|target| !matches_stage(target))
             {
                 return None;
             }

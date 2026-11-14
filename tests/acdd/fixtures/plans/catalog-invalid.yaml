@@ -1,0 +1,23 @@
+version: 2
+inherit: none
+save: snapshot
+proofs:
+  command:
+    schema:
+      type: object
+      properties:
+        tests_passed: { type: integer, const: 2 }
+commands:
+  check:
+    command: "echo '1 passed; 0 failed'"
+    output:
+      counts: { passed: '(\d+) passed', failed: '(\d+) failed' }
+gates:
+  - tasks:
+      gates:
+        - id: check
+          command: check
+          proof: command
+        - id: finish
+          receipt: true
+          save: snapshot

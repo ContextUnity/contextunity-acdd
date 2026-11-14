@@ -72,14 +72,22 @@ if kind in ("contract", "command", "seamtest"):
     forge("submit", task_id, "--stage", stage, "--action", "pass")
 elif kind == "review":
     evidence = guidance["expected_evidence_template"]
-    evidence["proof"] = json.loads((control / "review-proof.json").read_text())
+    if (control / "corrupt-template").exists():
+        del evidence["proof"]["review_proof"]["decision"]
+    if (control / "wrong-wrapper").exists():
+        proof = evidence["proof"]
+        key, = proof
+        evidence["proof"] = {"wrong_proof": proof[key]}
     rejection_path = control / "reject.json"
     action = "pass"
     args = []
     if rejection_path.exists():
         findings = json.loads(rejection_path.read_text())
         rejection_path.rename(control / "rejected.json")
-        evidence["proof"]["review_proof"]["decision"] = "reject"
+        review = evidence["proof"]["review_proof"]
+        if not isinstance(review["decision"], str):
+            raise ValueError("review decision must be a string")
+        review["decision"] = "reject"
         action = "reject"
         args = ["--findings", json.dumps(findings)]
     forge(

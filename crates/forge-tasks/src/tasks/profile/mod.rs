@@ -1107,7 +1107,7 @@ pub enum GateDriver {
 }
 
 impl GateDef {
-    /// Resolve a gate's driver with command taking precedence over role when bound.
+    /// Resolve a gate's driver with role taking precedence; a bound command still requires verification.
     pub fn driver(&self) -> Option<GateDriver> {
         if self.role.is_some() {
             Some(GateDriver::Agent)
