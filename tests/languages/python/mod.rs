@@ -4,7 +4,7 @@ use crate::languages::harness::{
     fixture_workspace, query_scalar, query_strings, remove_fixture, ExtractorHarness,
 };
 use crate::languages::PersistedWorkspaceHarness;
-use contextunity_forge_mcp::{core::models::ReceiverHint, engine::ast};
+use contextunity_acdd::{core::models::ReceiverHint, engine::ast};
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -12,7 +12,7 @@ fn linked_python_roots() -> (PersistedWorkspaceHarness, PersistedWorkspaceHarnes
     let primary = fixture_workspace(&[]);
     let second = fixture_workspace(&[]);
     primary.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
         "roots: [src]\nlinked_workspaces:\n  - name: second\n    path: '{}'\n    roots: [src]\n",
         second.root().display()

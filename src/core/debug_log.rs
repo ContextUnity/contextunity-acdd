@@ -13,7 +13,7 @@ fn report_log_error(operation: &str, destination: &Path, error: &dyn std::fmt::D
 }
 
 fn write_entry(root: &Path, date: &str, entry: &DebugLogEntry<'_>) {
-    let directory = root.join(".forge");
+    let directory = root.join(".acdd");
     if let Err(error) = fs::create_dir_all(&directory) {
         report_log_error("create directory", &directory, &error);
         return;

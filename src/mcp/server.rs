@@ -111,7 +111,7 @@ pub struct Server {
     reader_evictor: Arc<crate::db::cache::IdleReader>,
     request_adapter: Option<RequestAdapter>,
     extraction_cache_dir: Option<PathBuf>,
-    pub(crate) invocation: Option<crate::forge_tasks::tasks::configuration::InvocationSettings>,
+    pub(crate) invocation: Option<crate::acdd_tasks::tasks::configuration::InvocationSettings>,
     pub(crate) session_fingerprint: Option<String>,
 }
 impl Server {
@@ -122,7 +122,7 @@ impl Server {
     }
     /// Creates a new instance.
     pub fn new(root: PathBuf, db: PathBuf) -> Self {
-        let invocation = crate::forge_tasks::tasks::configuration::current(&root)
+        let invocation = crate::acdd_tasks::tasks::configuration::current(&root)
             .map(|settings| (*settings).clone());
         let connection = Arc::new(Mutex::new(None));
         let reader_evictor = reader_evictor(&connection);
@@ -134,7 +134,7 @@ impl Server {
             request_adapter: None,
             extraction_cache_dir: None,
             invocation,
-            session_fingerprint: crate::forge_tasks::store::host_session_fingerprint(),
+            session_fingerprint: crate::acdd_tasks::store::host_session_fingerprint(),
         }
     }
 
@@ -147,7 +147,7 @@ impl Server {
     /// Retains immutable invocation settings for the lifetime of this server.
     pub fn with_invocation_settings(
         mut self,
-        settings: crate::forge_tasks::tasks::configuration::InvocationSettings,
+        settings: crate::acdd_tasks::tasks::configuration::InvocationSettings,
     ) -> Self {
         self.invocation = Some(settings.rebase(&self.root));
         self
@@ -268,7 +268,7 @@ impl Server {
             [],
             |r| r.get(0),
         )?;
-        if engine != "contextunity-forge-mcp-rust" {
+        if engine != "contextunity-acdd-rust" {
             anyhow::bail!("incompatible database engine");
         }
         let schema_version: String = conn.query_row(
@@ -859,9 +859,9 @@ fn normalize_milestone_digits(digits: &str) -> &str {
     }
 }
 
-const MCP_SESSION_ENV: &str = "CONTEXTUNITY_FORGE_MCP_SESSION";
+const MCP_SESSION_ENV: &str = "ACDD_MCP_SESSION";
 #[cfg(unix)]
-const MCP_RELOAD_PARENT_ENV: &str = "CONTEXTUNITY_FORGE_MCP_RELOAD_PARENT";
+const MCP_RELOAD_PARENT_ENV: &str = "ACDD_MCP_RELOAD_PARENT";
 
 fn resumed_initialize_params(server: &Server) -> Option<rmcp::model::InitializeRequestParams> {
     let raw = std::env::var(MCP_SESSION_ENV).ok()?;
@@ -918,7 +918,7 @@ pub async fn serve_with_settings(
     root: PathBuf,
     db: PathBuf,
     cache_dir: Option<PathBuf>,
-    settings: Option<crate::forge_tasks::tasks::configuration::InvocationSettings>,
+    settings: Option<crate::acdd_tasks::tasks::configuration::InvocationSettings>,
 ) -> Result<()> {
     #[cfg(unix)]
     {
@@ -931,7 +931,7 @@ pub async fn serve_with_settings(
             result = serve_session(root, db, cache_dir, settings, initial_parent_pid) => result,
             _ = parent_exited(initial_parent_pid) => {
                 eprintln!(
-                    "contextunity-forge-mcp: parent process ({initial_parent_pid}) exited; shutting down"
+                    "acdd: parent process ({initial_parent_pid}) exited; shutting down"
                 );
                 // Tokio's blocking stdin read cannot be cancelled; returning would hang
                 // runtime shutdown while another process still holds the input open.
@@ -949,7 +949,7 @@ async fn serve_session(
     root: PathBuf,
     db: PathBuf,
     cache_dir: Option<PathBuf>,
-    settings: Option<crate::forge_tasks::tasks::configuration::InvocationSettings>,
+    settings: Option<crate::acdd_tasks::tasks::configuration::InvocationSettings>,
     #[cfg(unix)] initial_parent_pid: u32,
 ) -> Result<()> {
     let mut server = Server::new(root, db);
@@ -1001,7 +1001,7 @@ async fn serve_session(
                             settings.configure_child(&mut command);
                         }
                         if let Some(cache_dir) = cache_dir.as_ref() {
-                            command.env("FORGE_EXTRACTION_CACHE_DIR", cache_dir);
+                            command.env("ACDD_EXTRACTION_CACHE_DIR", cache_dir);
                         }
                         Err(command.exec())
                     })();

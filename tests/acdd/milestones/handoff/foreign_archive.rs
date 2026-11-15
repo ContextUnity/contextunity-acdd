@@ -299,7 +299,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
     let verification = &meta["handoff"]["verification"];
     assert_eq!(
         verification["command"],
-        ": {scope_target} && test -x .forge/runner_fixture && .forge/runner_fixture"
+        ": {scope_target} && test -x .acdd/runner_fixture && .acdd/runner_fixture"
     );
     assert_eq!(verification["status"], "passed");
     assert_eq!(verification["tests_passed"], 1);
@@ -563,7 +563,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
         if journal_path.exists() {
             assert_eq!(
                 journal_path.parent(),
-                Some(root.path(".forge").as_path()),
+                Some(root.path(".acdd").as_path()),
                 "journal outside fixture .forge directory"
             );
             std::fs::remove_file(&journal_path).unwrap();

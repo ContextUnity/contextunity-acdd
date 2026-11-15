@@ -66,7 +66,7 @@ fn check_file_retirement_groups(groups: &[(bool, bool, &[&str])]) {
                         assert!(output.status.success());
                     }
                     if refresh {
-                        root.build_to(root.path(".forge/code-map.sqlite"));
+                        root.build_to(root.path(".acdd/code-map.sqlite"));
                     }
                     let result = submit_indexed_boundary(&root, "build", RETIREMENT_SEAM);
                     if matches!(case, "external-live" | "unadmitted-removed-caller") {
@@ -115,7 +115,7 @@ fn contract_rejects_retirement_without_baseline_caller_evidence() {
         tasks::manage(root.root(), serde_json::from_value(json!({"action":"extend_scope", "task_id":RETIREMENT_TASK, "paths":["src/other.rs"]})).unwrap()).unwrap();
         root.write("src/seam.rs", "use crate::other::route;\n#[test]\nfn test_connected() { let actual = route(); assert_eq!(actual, 2); }\n");
         commit_fixture_baseline(&root);
-        root.build_to(root.path(".forge/code-map.sqlite"));
+        root.build_to(root.path(".acdd/code-map.sqlite"));
         let snapshot = FixtureSnapshot::capture(&root);
 
         for staged in [false, true] {
@@ -128,7 +128,7 @@ fn contract_rejects_retirement_without_baseline_caller_evidence() {
                         .success());
                 }
                 if refresh {
-                    root.build_to(root.path(".forge/code-map.sqlite"));
+                    root.build_to(root.path(".acdd/code-map.sqlite"));
                 }
                 // Claim after the mutation, exactly as the production scenario
                 // does; checkpoint state may depend on staged and indexed files.
@@ -178,7 +178,7 @@ fn build_revalidates_legacy_empty_baseline_caller_evidence() {
             snapshot.restore(&root);
             root.remove("src/api.rs");
             if !indexed_target {
-                root.build_to(root.path(".forge/code-map.sqlite"));
+                root.build_to(root.path(".acdd/code-map.sqlite"));
             }
             let result = submit_indexed_boundary(&root, "build", RETIREMENT_SEAM);
             if indexed_target && !external_caller {

@@ -14,10 +14,10 @@ fn migration_reconciles_manifests_and_creation_selects_one_task() {
     store
         .delete(None, Some("docs/010-test.md"), true, 0)
         .unwrap();
-    let created = contextunity_forge_mcp::engine::tasks::manage(
+    let created = contextunity_acdd::engine::tasks::manage(
         root.root(),
-        contextunity_forge_mcp::engine::tasks::Manage {
-            action: contextunity_forge_mcp::engine::tasks::ManageAction::Create,
+        contextunity_acdd::engine::tasks::Manage {
+            action: contextunity_acdd::engine::tasks::ManageAction::Create,
             milestone_ref: Some("docs/010-test.md".into()),
             task_ref: Some("first".into()),
             ..Default::default()
@@ -149,4 +149,116 @@ fn milestone_init_imports_plan_metadata_and_rejects_duplicate_number() {
         ..milestone_init_options()
     });
     assert!(same_id.is_err());
+}
+
+#[test]
+fn in002_companion_runbooks_live_outside_milestone_discovery() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(milestone_engine::is_milestone_manifest_name(
+        "IN-002-rename-inventory.md"
+    ));
+    assert!(!milestone_engine::is_milestone_manifest_name(
+        "rename-inventory.md"
+    ));
+    assert!(!root
+        .join("docs/milestones/IN-002-rename-inventory.md")
+        .exists());
+    assert!(!root
+        .join("docs/milestones/IN-002-cutover-runbook.md")
+        .exists());
+    for relative in [
+        "docs/runbooks/in002-rename-inventory.md",
+        "docs/runbooks/in002-cutover-runbook.md",
+    ] {
+        let path = root.join(relative);
+        assert!(path.is_file(), "missing companion runbook {relative}");
+    }
+
+    let manifest_path = [
+        "docs/milestones/IN-002-contextunity-acdd-one-pass-rename.md",
+        "docs/milestones/archive/IN-002-contextunity-acdd-one-pass-rename.md",
+    ]
+    .into_iter()
+    .map(|rel| root.join(rel))
+    .find(|path| path.is_file())
+    .expect("read IN-002 manifest from active or archived milestones");
+    let manifest_text = std::fs::read_to_string(manifest_path).expect("read IN-002 manifest");
+    let parsed = Milestone::parse(&manifest_text, "forge-mcp").expect("parse IN-002 manifest");
+    assert_eq!(parsed.id, "IN-002-contextunity-acdd-one-pass-rename");
+
+    let task = |task_ref: &str| {
+        parsed
+            .tasks
+            .iter()
+            .find(|task| task.task_ref == task_ref)
+            .unwrap_or_else(|| panic!("missing task {task_ref}"))
+    };
+    let freeze = task("freeze-rename-and-cutover-contract");
+    assert!(freeze.depends_on.is_empty());
+    assert!(freeze
+        .scope
+        .contains(&"docs/runbooks/in002-rename-inventory.md".to_owned()));
+    assert!(freeze
+        .scope
+        .contains(&"docs/runbooks/in002-cutover-runbook.md".to_owned()));
+    assert!(freeze
+        .scope
+        .contains(&"tests/acdd/milestones/discovery/initialization.rs".to_owned()));
+
+    let runtime = task("rename-runtime-and-workspace");
+    assert_eq!(
+        runtime.depends_on,
+        vec!["freeze-rename-and-cutover-contract"]
+    );
+    assert!(runtime.scope.contains(&"crates/acdd-core/src/".to_owned()));
+
+    let distro = task("rename-distribution-and-guidance");
+    assert_eq!(distro.depends_on, vec!["rename-runtime-and-workspace"]);
+    assert!(distro.scope.contains(&"skills/".to_owned()));
+
+    let activate = task("activate-config-and-profile");
+    assert_eq!(
+        activate.depends_on,
+        vec!["rename-distribution-and-guidance"]
+    );
+    assert!(activate.scope.contains(&"acdd.yaml".to_owned()));
+    assert!(activate.scope.contains(&".acdd/profile.yaml".to_owned()));
+
+    let isolated = MilestoneHarness::configured_workspace();
+    let active_manifest = manifest_text.replacen("status: completed", "status: active", 1);
+    for skill in &parsed.required_skills {
+        isolated.write(
+            format!("skills/{skill}/SKILL.md"),
+            "# Required test skill\n",
+        );
+    }
+    isolated.write(
+        "docs/milestones/IN-002-contextunity-acdd-one-pass-rename.md",
+        &active_manifest,
+    );
+    isolated.write("docs/runbooks/in002-rename-inventory.md", "# Inventory\n");
+    isolated.write("docs/runbooks/in002-cutover-runbook.md", "# Cutover\n");
+    let listed = isolated
+        .run_cli(&["milestone", "list"])
+        .expect("milestone list ignores docs/runbooks/");
+    assert_eq!(listed["milestones"].as_array().unwrap().len(), 1);
+    let initialized = isolated
+        .run_cli(&[
+            "milestone",
+            "init",
+            "docs/milestones/IN-002-contextunity-acdd-one-pass-rename.md",
+            "--in-place",
+        ])
+        .expect("IN-002 manifest initializes cleanly alongside docs/runbooks/");
+    assert_eq!(
+        initialized["milestone_id"],
+        "IN-002-contextunity-acdd-one-pass-rename"
+    );
+
+    // Placing an uppercase TAG-NUM companion doc under docs/milestones/ breaks discovery/sync.
+    isolated.write(
+        "docs/milestones/IN-002-rename-inventory.md",
+        "# Companion\n",
+    );
+    assert!(isolated.run_cli(&["milestone", "list"]).is_err());
 }

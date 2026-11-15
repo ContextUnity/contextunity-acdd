@@ -380,13 +380,13 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
         assert!(coverage_item.get("doc_id").is_none(), "{operation}");
 
         let title = operation;
-        let discovery = Some(contextunity_forge_mcp::core::format::DiscoveryKind::Inspect);
-        let markdown = contextunity_forge_mcp::core::format::render_for_operation(
+        let discovery = Some(contextunity_acdd::core::format::DiscoveryKind::Inspect);
+        let markdown = contextunity_acdd::core::format::render_for_operation(
             &first,
-            contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+            contextunity_acdd::core::format::OutputFormat::Markdown,
             title,
             discovery,
-            contextunity_forge_mcp::core::format::OperationKind::Navigation,
+            contextunity_acdd::core::format::OperationKind::Navigation,
         );
         assert!(
             !markdown.contains("## documents\n\n```json"),
@@ -396,12 +396,12 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
         let mut full_page = options(1);
         full_page.detail = Detail::Full;
         let full_inspect = inspect(&full_page).unwrap();
-        let full_markdown = contextunity_forge_mcp::core::format::render_for_operation(
+        let full_markdown = contextunity_acdd::core::format::render_for_operation(
             &full_inspect,
-            contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+            contextunity_acdd::core::format::OutputFormat::Markdown,
             operation,
             discovery,
-            contextunity_forge_mcp::core::format::OperationKind::Navigation,
+            contextunity_acdd::core::format::OperationKind::Navigation,
         );
         assert!(
             full_markdown.contains("Distinct full-detail inspect content."),
@@ -1152,12 +1152,12 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
         },
     )
     .unwrap();
-    let markdown = contextunity_forge_mcp::core::format::render_for_operation(
+    let markdown = contextunity_acdd::core::format::render_for_operation(
         &all,
-        contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+        contextunity_acdd::core::format::OutputFormat::Markdown,
         "code_map_explain",
         None,
-        contextunity_forge_mcp::core::format::OperationKind::Navigation,
+        contextunity_acdd::core::format::OperationKind::Navigation,
     );
     assert!(markdown.contains("[proven call]"), "{markdown}");
     assert!(markdown.contains("[heuristic / candidate]"), "{markdown}");
@@ -1169,12 +1169,12 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
         markdown.contains("possible_calls"),
         "candidate relationships remain distinct from exact calls: {markdown}"
     );
-    let json = contextunity_forge_mcp::core::format::render_for_operation(
+    let json = contextunity_acdd::core::format::render_for_operation(
         &all,
-        contextunity_forge_mcp::core::format::OutputFormat::Json,
+        contextunity_acdd::core::format::OutputFormat::Json,
         "code_map_explain",
         None,
-        contextunity_forge_mcp::core::format::OperationKind::Navigation,
+        contextunity_acdd::core::format::OperationKind::Navigation,
     );
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&json).unwrap(),

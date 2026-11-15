@@ -64,7 +64,7 @@ fn typescript_package_exports_paths_respect_workspace_boundaries() {
     );
     workspace.delta(&["apps/one/tsconfig.json"]);
     let delta = workspace.open();
-    contextunity_forge_mcp::core::commitments::verify(&delta).unwrap();
+    contextunity_acdd::core::commitments::verify(&delta).unwrap();
     let changed_targets = persisted_call_paths(&delta, "apps/one/src/main.ts");
     assert_eq!(
         changed_targets,
@@ -173,6 +173,6 @@ fn pnpm_workspace_globs_select_declared_package_exports_and_delta() {
     workspace.delta(&["pnpm-workspace.yaml"]);
     assert_eq!(targets(), ["packages/tool/src/decoy.ts"]);
     let conn = workspace.open();
-    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    contextunity_acdd::core::commitments::verify(&conn).unwrap();
     drop(conn);
 }

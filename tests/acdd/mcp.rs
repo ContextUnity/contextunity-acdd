@@ -359,9 +359,9 @@ fn task_list_generation_and_continuation_matrix() {
         .expect("MCP payload should succeed");
     assert!(index_before["nodes"]["total"].as_u64().unwrap_or_default() > 0);
     workspace.write("src/lib.rs", "pub fn task_list_fixture_reindexed() {}\n");
-    workspace.build_to(workspace.root().join(".forge/index.sqlite"));
+    workspace.build_to(workspace.root().join(".acdd/index.sqlite"));
     crate::common::mcp_client::invalidate_mcp_connection_cache(
-        &workspace.root().join(".forge/index.sqlite"),
+        &workspace.root().join(".acdd/index.sqlite"),
     )
     .unwrap();
     let index_after = client

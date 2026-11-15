@@ -28,17 +28,11 @@ fn seam_scope_directory_prefix_treats_sql_wildcards_as_literal() {
         "tests/acdd/tasks.rs",
         "#[test]\nfn task_suite_is_present() { assert_eq!(1, 1); }\n",
     );
+    root.write("AGENTS.md", "# Instructions\nLoad the acdd skill.\n");
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
     root.write(
-        "AGENTS.md",
-        "# Instructions\nLoad the contextunity-forge skill.\n",
-    );
-    root.write(
-        ".agents/skills/contextunity-forge/SKILL.md",
-        "# ContextUnity Forge\n",
-    );
-    root.write(
-        "forge-mcp.yaml",
-        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     let milestone_ref = "docs/milestones/010-tiered-literal.md";
     let milestone_id = "m-tiered-literal";
@@ -54,7 +48,7 @@ fn seam_scope_directory_prefix_treats_sql_wildcards_as_literal() {
     ];
     root.write(milestone_ref, &milestone_source(cases[0].1, 1));
     commit_fixture_baseline(&root);
-    root.build_to(root.path(".forge/code-map.sqlite"));
+    root.build_to(root.path(".acdd/code-map.sqlite"));
     tasks::manage(
         root.root(),
         serde_json::from_value(json!({"action":"sync","milestone_ref":milestone_ref})).unwrap(),
@@ -103,7 +97,7 @@ None,
 None,
 "src/seam.rs::test_connected");
     std::fs::remove_file(root.root().join("src/api.rs")).unwrap();
-    root.build_to(root.path(".forge/code-map.sqlite"));
+    root.build_to(root.path(".acdd/code-map.sqlite"));
     let task_id = "forge-mcp/m-current-boundary:routing";
     TaskHarness::claim_at(root.root(), task_id, "contract", "contract-author").unwrap();
     let mut store = tasks::store_for_task(root.root(), task_id).unwrap();
@@ -120,7 +114,7 @@ None,
         if phase == "stub_unindexed" {
             root.write("src/api.rs", "pub fn route() -> usize { 0 }\n");
         } else if phase == "stub_indexed" {
-            root.build_to(root.path(".forge/code-map.sqlite"));
+            root.build_to(root.path(".acdd/code-map.sqlite"));
             observe_fixture_evidence(&claimed);
         }
         let result = store.submit(
@@ -144,7 +138,7 @@ None,
                 "{error}"
             );
             assert!(error.contains("create minimal file scaffolding"), "{error}");
-            assert!(error.contains("contextunity-forge-mcp build"), "{error}");
+            assert!(error.contains("acdd build"), "{error}");
         } else {
             assert!(!error.contains("do not exist yet"), "{error}");
             assert!(

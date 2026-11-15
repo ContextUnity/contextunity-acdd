@@ -9,8 +9,8 @@ fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_firs
     root.write("src/deferred.rs", "pub fn deferred() {}\n");
     root.write("src/seam.rs", "pub fn seam() {}\n");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     let spec = spec
         .replace(
@@ -27,14 +27,14 @@ fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_firs
         );
     root.write("docs/010-policy.md", &spec);
     let milestone = Milestone::parse(&spec, "forge-mcp").unwrap();
-    let mut store = TasksStore::open(&root.root().join(".forge/tasks.sqlite")).unwrap();
+    let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     store
         .sync(&milestone, "docs/010-policy.md", root.root())
         .unwrap();
 
     let direct_id = "forge-mcp/m-policy:direct";
     store = tasks::store_for_task(root.root(), direct_id).unwrap();
-    root.write(".forge/runner_fixture_green", "green\n");
+    root.write(".acdd/runner_fixture_green", "green\n");
 
     for (task_ref, proof_policy, zero_exit_allowed) in [
         ("direct", "direct-proof", true),
@@ -42,7 +42,7 @@ fn direct_proof_and_deferred_final_test_accept_zero_exit_code_and_seam_test_firs
         ("seam", "seam-test-first", false),
     ] {
         if !zero_exit_allowed {
-            std::fs::remove_file(root.root().join(".forge/runner_fixture_green")).unwrap();
+            std::fs::remove_file(root.root().join(".acdd/runner_fixture_green")).unwrap();
         }
         let task_id = format!("forge-mcp/m-policy:{task_ref}");
         store

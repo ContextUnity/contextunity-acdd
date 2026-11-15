@@ -2,36 +2,55 @@
 
 use crate::common::Workspace;
 use crate::harness::McpTestHarness;
-use contextunity_forge_mcp::engine::reader::ReadRequest;
-use forge_core::model::ReadMode;
-use forge_core::subsystems::{filter_subsystem_tools, SubsystemPreset, SubsystemRegistry};
+use acdd_core::model::ReadMode;
+use acdd_core::subsystems::{filter_subsystem_tools, SubsystemPreset, SubsystemRegistry};
+use contextunity_acdd::engine::reader::ReadRequest;
 use serde_json::{json, Value};
 
 fn read_response(client: &mut McpTestHarness, arguments: Value) -> Value {
     client
-        .call("forge_read", arguments)
+        .call("acdd_read", arguments)
         .expect("MCP transport")
         .1
 }
 
 fn read_tool(client: &mut McpTestHarness, arguments: Value) -> Value {
     client
-        .payload("forge_read", arguments)
+        .payload("acdd_read", arguments)
         .expect("MCP tool should succeed")
 }
 
 #[test]
-fn forge_read_symbol_alias_is_discoverable_in_mcp_schema() {
+fn acdd_read_symbol_alias_is_discoverable_in_mcp_schema() {
     let mut client = McpTestHarness::indexed(&[]).expect("MCP initialize");
     let list = client
         .request_value("tools/list", json!({}))
         .expect("tools/list");
-    let tool = list["result"]["tools"]
-        .as_array()
-        .unwrap()
+    let tools = list["result"]["tools"].as_array().unwrap();
+    assert!(
+        !tools.iter().any(|tool| tool["name"] == "forge_read"),
+        "forge_read must not be registered after one-pass rename"
+    );
+    for preserved in [
+        "code_map_search",
+        "code_map_inspect",
+        "code_map_impact",
+        "code_map_query",
+        "code_map_overview",
+        "ast_grep_search",
+        "forge_guide",
+        "session_checkpoint",
+        "task_list",
+    ] {
+        assert!(
+            tools.iter().any(|tool| tool["name"] == preserved),
+            "expected preserved MCP tool {preserved}"
+        );
+    }
+    let tool = tools
         .iter()
-        .find(|tool| tool["name"] == "forge_read")
-        .expect("forge_read tool");
+        .find(|tool| tool["name"] == "acdd_read")
+        .expect("acdd_read tool");
     let properties = &tool["inputSchema"]["properties"];
     assert!(properties["selector"].is_object(), "{tool}");
     assert!(properties["symbol"].is_object(), "{tool}");
@@ -43,7 +62,7 @@ fn forge_read_symbol_alias_is_discoverable_in_mcp_schema() {
 }
 
 #[test]
-fn forge_read_symbol_alias_matches_selector_with_and_without_path() {
+fn acdd_read_symbol_alias_matches_selector_with_and_without_path() {
     let mut client =
         McpTestHarness::indexed(&[("src/lib.rs", "pub fn unique_symbol() -> u32 {\n    42\n}\n")])
             .expect("MCP initialize");
@@ -67,7 +86,7 @@ fn forge_read_symbol_alias_matches_selector_with_and_without_path() {
 }
 
 #[test]
-fn forge_read_symbol_alias_preserves_ambiguity_and_path_disambiguation() {
+fn acdd_read_symbol_alias_preserves_ambiguity_and_path_disambiguation() {
     let mut client = McpTestHarness::indexed(&[
         ("first.py", "def repeated():\n    return 1\n"),
         ("second.py", "def repeated():\n    return 2\n"),
@@ -91,7 +110,7 @@ fn forge_read_symbol_alias_preserves_ambiguity_and_path_disambiguation() {
 }
 
 #[test]
-fn forge_read_symbol_alias_rejects_duplicate_selector_fields() {
+fn acdd_read_symbol_alias_rejects_duplicate_selector_fields() {
     let mut client = McpTestHarness::indexed(&[("src/lib.rs", "pub fn example() {}\n")])
         .expect("MCP initialize");
     for (selector, symbol) in [
@@ -121,7 +140,7 @@ fn forge_read_symbol_alias_rejects_duplicate_selector_fields() {
 }
 
 #[test]
-fn forge_read_symbol_alias_continues_digest_verified_source_pages() {
+fn acdd_read_symbol_alias_continues_digest_verified_source_pages() {
     let mut client = McpTestHarness::indexed(&[(
         "src/lib.rs", "pub fn paged_symbol() {\n    let x = 1;\n    let y = 2;\n    println!(\"{} {}\", x, y);\n}\n"
     )]).expect("MCP initialize");
@@ -147,7 +166,7 @@ fn forge_read_symbol_alias_continues_digest_verified_source_pages() {
 }
 
 #[test]
-fn forge_read_batch_snippet_exports_source() {
+fn acdd_read_batch_snippet_exports_source() {
     let (w, harness) =
         McpTestHarness::with_files(&[("values.py", "def value():\n    return 42\n")]);
     let mut client = harness.expect("MCP initialize");
@@ -162,13 +181,13 @@ fn forge_read_batch_snippet_exports_source() {
 }
 
 #[test]
-fn forge_read_validates_ranges_and_argument_names_at_the_mcp_seam() {
+fn acdd_read_validates_ranges_and_argument_names_at_the_mcp_seam() {
     let mut lines_content = String::new();
     for i in 1..=30 {
         lines_content.push_str(&format!("line {i}\n"));
     }
     let mut client = McpTestHarness::indexed(&[
-        ("forge-mcp.yaml", "profile: minimal\n"),
+        ("acdd.yaml", "profile: minimal\n"),
         ("notes.txt", lines_content.as_str()),
         ("src/lib.rs", "pub fn value() {}\n"),
         ("test.txt", "hello\n"),
@@ -253,7 +272,7 @@ fn forge_read_validates_ranges_and_argument_names_at_the_mcp_seam() {
     assert_eq!(rejected_json["error"]["fields"], json!(["line_count_max"]));
     let msg = rejected_json["error"]["message"].as_str().unwrap();
     assert!(
-        msg.contains("Valid supported parameters for 'forge_read'"),
+        msg.contains("Valid supported parameters for 'acdd_read'"),
         "expected parameter list in {msg}"
     );
     assert!(
@@ -272,10 +291,10 @@ fn forge_read_validates_ranges_and_argument_names_at_the_mcp_seam() {
 }
 
 #[test]
-fn forge_read_core_modes_and_cli_share_bounded_text_and_exports() {
+fn acdd_read_core_modes_and_cli_share_bounded_text_and_exports() {
     use crate::cli::run_cli_json;
     let w = Workspace::with_files(&[
-        ("forge-mcp.yaml", "profile: minimal\n"),
+        ("acdd.yaml", "profile: minimal\n"),
         ("notes.txt", "first\r\nПривіт 42\r\nthird\r\nfourth\r\n"),
     ]);
     let mut client = McpTestHarness::new(&w).expect("MCP initialize");
@@ -361,11 +380,11 @@ fn forge_read_core_modes_and_cli_share_bounded_text_and_exports() {
 }
 
 #[test]
-fn forge_read_handles_path_aliases_and_rejects_unsafe_paths() {
+fn acdd_read_handles_path_aliases_and_rejects_unsafe_paths() {
     let linked = Workspace::with_files(&[("secrets/token.txt", "linked-secret\n")]);
     let (w, harness) = McpTestHarness::with_files(&[
         (
-            "forge-mcp.yaml",
+            "acdd.yaml",
             &format!("profile: minimal\nsensitive: ['secrets/**', '.env*']\nlinked_workspaces:\n  - name: linked\n    path: {}\n", linked.root().display()),
         ),
         ("notes.txt", "safe\n"),
@@ -492,7 +511,7 @@ fn forge_read_handles_path_aliases_and_rejects_unsafe_paths() {
         std::fs::read_to_string(w.path("notes.txt")).expect("read notes.txt"),
         "safe\n"
     );
-    if forge_core::fs::is_case_insensitive_volume(w.root()) {
+    if acdd_core::fs::is_case_insensitive_volume(w.root()) {
         for args in [
             json!({"path": "notes.txt", "mode": "raw", "output_file": "NOTES.TXT"}),
             json!({"paths": ["notes.txt"], "mode": "outline", "output_file": "NOTES.TXT"}),
@@ -512,12 +531,10 @@ fn forge_read_handles_path_aliases_and_rejects_unsafe_paths() {
 }
 
 #[test]
-fn forge_read_delta_never_exposes_sensitive_sibling_through_git_pathspec() {
+fn acdd_read_delta_never_exposes_sensitive_sibling_through_git_pathspec() {
     use crate::cli::run_cli_json;
-    let w = Workspace::with_files(&[(
-        "forge-mcp.yaml",
-        "profile: minimal\nsensitive: ['secrets/**']\n",
-    )]);
+    let w =
+        Workspace::with_files(&[("acdd.yaml", "profile: minimal\nsensitive: ['secrets/**']\n")]);
     let paths = [
         ":(glob)**",
         "*",
@@ -577,11 +594,11 @@ fn forge_read_delta_never_exposes_sensitive_sibling_through_git_pathspec() {
 }
 
 #[test]
-fn forge_read_delta_uses_the_admitted_linked_git_context() {
+fn acdd_read_delta_uses_the_admitted_linked_git_context() {
     use crate::cli::run_cli_json;
     let linked = Workspace::with_files(&[]);
     let primary = Workspace::with_files(&[(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "profile: minimal\nsensitive: ['**/secrets/**']\nlinked_workspaces:\n  - name: linked\n    path: {}\n",
             linked.root().display()
@@ -620,7 +637,7 @@ fn forge_read_delta_uses_the_admitted_linked_git_context() {
                 args.extend(["--baseline", baseline]);
             }
             args.extend(["--", &alias]);
-            let (_, response) = client.call("forge_read", request).expect("MCP transport");
+            let (_, response) = client.call("acdd_read", request).expect("MCP transport");
             let output = run_cli_json(&primary, &args);
             let cli: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
             // Exercise both real transports before reporting a runtime-red failure.
@@ -645,7 +662,7 @@ fn forge_read_delta_uses_the_admitted_linked_git_context() {
     for baseline in ["primary-only", "--output=escaped", "missing-revision"] {
         let (_, response) = client
             .call(
-                "forge_read",
+                "acdd_read",
                 json!({"path":"[linked]/nested/notes.txt","mode":"delta","baseline":baseline}),
             )
             .expect("MCP transport");
@@ -667,7 +684,7 @@ fn forge_read_delta_uses_the_admitted_linked_git_context() {
     }
     let (_, response) = client
         .call(
-            "forge_read",
+            "acdd_read",
             json!({"path":"[linked]/nested/secrets/token.txt","mode":"delta"}),
         )
         .expect("MCP transport");
@@ -678,7 +695,7 @@ fn forge_read_delta_uses_the_admitted_linked_git_context() {
 }
 
 #[test]
-fn forge_read_enclosing_hints_resolve_exact_symbols_and_paths() {
+fn acdd_read_enclosing_hints_resolve_exact_symbols_and_paths() {
     let cases = [("distinct.py", "Second"), ("repeated.py", "First")];
     let mut files: Vec<_> = cases
         .iter()
@@ -751,13 +768,13 @@ fn forge_read_enclosing_hints_resolve_exact_symbols_and_paths() {
         "unexpected footer: {footer}"
     );
     assert!(
-        footer.contains("forge_read(path=\"calculator.py\", selector=\"compute_total\")"),
+        footer.contains("acdd_read(path=\"calculator.py\", selector=\"compute_total\")"),
         "unexpected footer: {footer}"
     );
 
     let (_, markdown_response) = client
         .call(
-            "forge_read",
+            "acdd_read",
             json!({"path":"calculator.py", "start_line":2, "line_count":2}),
         )
         .expect("MCP transport");
@@ -796,11 +813,11 @@ fn forge_read_enclosing_hints_resolve_exact_symbols_and_paths() {
 }
 
 #[test]
-fn forge_read_codemap_hints_and_outline_use_verified_graph_signals() {
+fn acdd_read_codemap_hints_and_outline_use_verified_graph_signals() {
     use crate::cli::run_cli_json;
     let (w, harness) = McpTestHarness::indexed_workspace(&[
         (
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "profile: minimal\nmodules: {codemap: true}\nroots: [.]\n",
         ),
         (
@@ -902,10 +919,10 @@ fn forge_read_codemap_hints_and_outline_use_verified_graph_signals() {
 }
 
 #[test]
-fn forge_read_docs_outline_keeps_hierarchy_and_filters_disabled_navigation() {
+fn acdd_read_docs_outline_keeps_hierarchy_and_filters_disabled_navigation() {
     let mut client = McpTestHarness::indexed(&[
         (
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "profile: minimal\nmodules: {docs: true}\nroots: [.]\ndocs: [docs]\n",
         ),
         (
@@ -937,7 +954,7 @@ fn forge_read_docs_outline_keeps_hierarchy_and_filters_disabled_navigation() {
         "{result}"
     );
     let (_, rejected) = client
-        .call("forge_read", json!({"path":"service.py","mode":"outline"}))
+        .call("acdd_read", json!({"path":"service.py","mode":"outline"}))
         .expect("MCP transport");
     assert_eq!(rejected["result"]["isError"], true, "{rejected}");
     assert!(
@@ -948,15 +965,15 @@ fn forge_read_docs_outline_keeps_hierarchy_and_filters_disabled_navigation() {
 }
 
 #[test]
-fn forge_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
-    use contextunity_forge_mcp::engine::tasks;
+fn acdd_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
+    use contextunity_acdd::engine::tasks;
     for with_command in [false, true] {
         let w = Workspace::with_files(&[(
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "profile: minimal\nmodules: {acdd: true, blackboard: true}\nroots: [.]\ndocs: [docs]\nmilestones: [docs/milestones]\n",
         )]);
         {
-            let profile = forge_tasks::tasks::profile::load_for_workspace(w.root()).unwrap();
+            let profile = acdd_tasks::tasks::profile::load_for_workspace(w.root()).unwrap();
             let mut profile = serde_json::to_value(profile.as_ref()).unwrap();
             profile["inherit"] = json!("none");
             if let Some(gates) = profile["gates"].as_array_mut() {
@@ -987,9 +1004,9 @@ fn forge_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
                 "reader-profile.yaml",
                 &serde_yaml::to_string(&profile).unwrap(),
             );
-            let mut config = std::fs::read_to_string(w.path("forge-mcp.yaml")).unwrap();
+            let mut config = std::fs::read_to_string(w.path("acdd.yaml")).unwrap();
             config.push_str("acdd_profile: reader-profile.yaml\n");
-            w.write("forge-mcp.yaml", &config);
+            w.write("acdd.yaml", &config);
         }
         w.write("allowed.txt", "allowed\n");
         w.write("other.txt", "other\n");
@@ -1042,8 +1059,8 @@ fn minimal_subsystems_filter_tools_and_check_batch_outline_admission() {
         ..Default::default()
     };
     assert_eq!(
-        filter_subsystem_tools(["forge_read", "get_doc", "code_map_explain"], &registry),
-        ["forge_read"]
+        filter_subsystem_tools(["acdd_read", "get_doc", "code_map_explain"], &registry),
+        ["acdd_read"]
     );
     // Minimal has no docs, no codemap
     let req = ReadRequest {
@@ -1053,7 +1070,7 @@ fn minimal_subsystems_filter_tools_and_check_batch_outline_admission() {
     };
     // Should fail because neither subsystem is enabled
     assert!(req
-        .requires_index(&forge_core::config::Adapter {
+        .requires_index(&acdd_core::config::Adapter {
             modules: registry.clone(),
             ..Default::default()
         })
@@ -1061,7 +1078,7 @@ fn minimal_subsystems_filter_tools_and_check_batch_outline_admission() {
 
     // Enable docs only
     registry.enabled.insert("docs".into());
-    let adapter_docs = forge_core::config::Adapter {
+    let adapter_docs = acdd_core::config::Adapter {
         modules: registry.clone(),
         ..Default::default()
     };
@@ -1083,7 +1100,7 @@ fn minimal_subsystems_filter_tools_and_check_batch_outline_admission() {
 
     // Enable codemap as well -> now both docs and codemap are enabled, mixed paths succeed
     registry.enabled.insert("codemap".into());
-    let adapter_both = forge_core::config::Adapter {
+    let adapter_both = acdd_core::config::Adapter {
         modules: registry,
         ..Default::default()
     };

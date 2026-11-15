@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Breaking changes
+
+- Renamed the distribution to `contextunity-acdd`, the executable and skill to `acdd`, and the MCP reader to `acdd_read`. Configuration and state use `acdd.yaml` and `.acdd/`; environment variables use the `ACDD_` prefix. Release archives use `contextunity-acdd-<target>.tar.gz`. Update integrations and move existing state as described in the cutover runbook; no legacy aliases are provided.
+
 ## [0.5.2] - 2026-11-13
 
 This release introduces reviewed pre-task `blueprint_synthesis` planning, recursive `inherit: default` profile overlays, conditional cross-task seam verification, and integrated post-task milestone closure (`verify` -> `polish` <-> `milestone_review` -> `handoff`). It also finalizes schema `v7` task-store alignment, removes legacy profile keywords, consolidates ACDD documentation under [`docs/reference/acdd.md`](docs/reference/acdd.md), and wires automated GitHub release notes from this file.
@@ -13,7 +17,7 @@ This release introduces reviewed pre-task `blueprint_synthesis` planning, recurs
 ### Added
 
 - **Reviewed `blueprint_synthesis` Pre-Task Gate**: Added the two-stage root `blueprint_synthesis` container (`synthesize` -> `review`) with reusable `proofs.blueprint` schema, grounded symbol/invariant citations, per-task slice fan-out into `gate_transitions` (`subject = <full_task_id>`), and automatic task-scoped injection on `task claim`.
-- **Recursive Profile Inheritance (`inherit: default` vs `inherit: none`)**: Repository overlays now merge `gates:` recursively by gate `id` and `- tasks:` container onto [`acdd.default.yaml`](crates/forge-tasks/src/tasks/acdd.default.yaml) before normalization, allowing compact project-level command bindings.
+- **Recursive Profile Inheritance (`inherit: default` vs `inherit: none`)**: Repository overlays now merge `gates:` recursively by gate `id` and `- tasks:` container onto `acdd.default.yaml` before normalization, allowing compact project-level command bindings.
 - **Conditional Seam & Post-Task Closure Pipeline**: Added the language-neutral `seam` container (`when: seam`: `seam.integrate` -> `seam.review`) inside `- tasks:` and aligned post-task milestone closure on `verify` -> `polish` <-> `milestone_review` -> `handoff`.
 - **Standalone Artifact Authoring Workflows**: Added taskless root-gate workflows (`author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, `author-workflow.workflow.yaml`) under `docs/workflows/` (with portable copies in `skills/contextunity-forge/references/acdd-profile-examples/`).
 - **ACDD Architecture & Walkthrough Documentation**: Added full documentation in [ACDD reference](docs/reference/acdd.md) and symlinked [canonical profile template](docs/reference/acdd_profile.yaml.example) to the Forge skill reference.
@@ -123,7 +127,7 @@ Initial public release of the pure-Rust `contextunity-forge-mcp` MCP server and 
 
 - **Initial Native Rust Forge Engine**: Released the standalone `contextunity-forge-mcp` MCP server and CLI featuring Tree-sitter AST indexing (`.forge/code-map.sqlite`), single-shot digest-verified symbol reads (`forge_read`), `ast_grep_search`, living documentation indexing, deterministic Merkle commitments, and SQLite task/milestone lifecycle management.
 
-[Unreleased]: https://github.com/ContextUnity/contextunity-forge-mcp/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.5.2...HEAD
 [0.5.2]: https://github.com/ContextUnity/contextunity-forge-mcp/compare/v0.5.1-alpha.2...v0.5.2
 [0.5.1-alpha.2]: https://github.com/ContextUnity/contextunity-forge-mcp/compare/v0.5.1-alpha.1...v0.5.1-alpha.2
 [0.5.1-alpha.1]: https://github.com/ContextUnity/contextunity-forge-mcp/compare/v0.5.0-alpha.1...v0.5.1-alpha.1

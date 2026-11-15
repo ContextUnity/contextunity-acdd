@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture tool responses for a quality-only Forge/Codebase study."""
+"""Capture tool responses for a quality-only ACDD/Codebase study."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class QualityMcpClient:
         env: dict[str, str] | None = None,
         binary_path: str,
     ) -> None:
-        if backend == "forge":
+        if backend == "acdd":
             command = [binary_path, "--root", str(workspace_root), "--db", str(db_path), "serve"]
         elif backend == "codebase":
             command = [binary_path]
@@ -54,7 +54,7 @@ class QualityMcpClient:
             {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "forge-codebase-quality-study", "version": "1"},
+                "clientInfo": {"name": "acdd-codebase-quality-study", "version": "1"},
             },
         )
         self.notify("notifications/initialized")
@@ -130,9 +130,9 @@ def run(
     profile: BenchmarkProfile,
     scenario_id: str | None = None,
 ) -> None:
-    temp_root = pathlib.Path(tempfile.mkdtemp(prefix="forge-codebase-quality-"))
+    temp_root = pathlib.Path(tempfile.mkdtemp(prefix="acdd-codebase-quality-"))
     try:
-        forge_db = temp_root / "forge-code-map.sqlite"
+        acdd_db = temp_root / "acdd-code-map.sqlite"
         codebase_cache = temp_root / "codebase-cache"
         codebase_source = temp_root / "codebase-source"
         profile_home = temp_root / "codebase-home"
@@ -172,14 +172,14 @@ def run(
             if configured.returncode:
                 raise RuntimeError(f"failed setting isolated Codebase {key}: {configured.stderr}")
 
-        forge_build = subprocess.run(
-            [profile.forge_binary, "--root", str(codebase_source), "--db", str(forge_db), "build"],
+        acdd_build = subprocess.run(
+            [profile.acdd_binary, "--root", str(codebase_source), "--db", str(acdd_db), "build"],
             capture_output=True,
             text=True,
             check=False,
         )
-        if forge_build.returncode:
-            raise RuntimeError(f"Forge index build failed: {forge_build.stderr[-2000:]}")
+        if acdd_build.returncode:
+            raise RuntimeError(f"ACDD index build failed: {acdd_build.stderr[-2000:]}")
 
         with QualityMcpClient("codebase", env=codebase_env, binary_path=profile.codebase_binary) as index_client:
             index_result = response_result(
@@ -202,13 +202,13 @@ def run(
         observations: list[dict[str, Any]] = []
         calls = 0
 
-        for backend in ("forge", "codebase"):
+        for backend in ("acdd", "codebase"):
             with QualityMcpClient(
                 backend,
-                db_path=forge_db if backend == "forge" else None,
-                workspace_root=str(codebase_source) if backend == "forge" else None,
+                db_path=acdd_db if backend == "acdd" else None,
+                workspace_root=str(codebase_source) if backend == "acdd" else None,
                 env=codebase_env if backend == "codebase" else None,
-                binary_path=profile.forge_binary if backend == "forge" else profile.codebase_binary,
+                binary_path=profile.acdd_binary if backend == "acdd" else profile.codebase_binary,
             ) as client:
                 for scenario in profile.scenarios:
                     if scenario_id and scenario["id"] != scenario_id:
@@ -243,10 +243,10 @@ def run(
                 "workspace_root": str(profile.workspace_root),
                 "profile": str(profile.path),
                 "profile_name": profile.name,
-                "source_snapshot": "current working-tree files copied to a temporary corpus; Forge may additionally follow enabled linked_workspaces from its adapter policy",
-                "source_scope": "same corpus copy policy as mcp_tool_comparison_benchmark.py; Forge follows forge-mcp.yaml roots, Codebase indexes in full mode",
+                "source_snapshot": "current working-tree files copied to a temporary corpus; ACDD may additionally follow enabled linked_workspaces from its adapter policy",
+                "source_scope": "same corpus copy policy as mcp_tool_comparison_benchmark.py; ACDD follows acdd.yaml roots, Codebase indexes in full mode",
                 "scope_note": profile.scope_note,
-                "forge_binary": profile.forge_binary,
+                "acdd_binary": profile.acdd_binary,
                 "codebase_binary": profile.codebase_binary,
                 "codebase_project": profile.project,
                 "repetitions_per_scenario_backend": repeats,

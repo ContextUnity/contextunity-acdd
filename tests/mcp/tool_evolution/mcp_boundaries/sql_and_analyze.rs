@@ -657,8 +657,7 @@ fn duplicates_query_preserves_whitespace_only_literal_lines_in_exact_clones() {
 
 #[test]
 fn checkpoint_crud_enforces_scope_and_uses_sqlite_instead_of_legacy_json() {
-    let (w, m) =
-        McpTestHarness::with_files(&[("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n")]);
+    let (w, m) = McpTestHarness::with_files(&[("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n")]);
     let mut m = m.expect("MCP initialize");
     assert!(m
         .payload("session_checkpoint", json!({"action":"list"}))
@@ -765,7 +764,7 @@ fn checkpoint_crud_enforces_scope_and_uses_sqlite_instead_of_legacy_json() {
             .contains(expected),
         "{rejection}"
     );
-    w.write(".forge/checkpoints.json", "{invalid JSON");
+    w.write(".acdd/checkpoints.json", "{invalid JSON");
     assert_eq!(
         m.payload("session_checkpoint", json!({"action":"list"}))
             .expect("MCP tool should succeed"),

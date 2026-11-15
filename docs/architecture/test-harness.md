@@ -69,7 +69,7 @@ Active hardening order and branch reality live in
      non-mutation.
    - Batch independent file-pair additions before running `delta` + cold parity
      checks instead of triggering $O(N^2)$ sequential cold rebuilds.
-   - Clean up temporary `.forge/cold-*` databases and reuse extraction caches when
+   - Clean up temporary `.acdd/cold-*` databases and reuse extraction caches when
      testing linker/database parity rather than parser cold-cache misses.
 8. **Real lifetime caching only.** Do not cache `Weak<Workspace>` when the caller
    drops the only `Arc<Workspace>` at the end of the test. Share read-only fixtures
@@ -95,7 +95,7 @@ Active hardening order and branch reality live in
 ## External role processes
 
 External role fixtures substitute for an unavailable language model. They consume
-production role or claim guidance and submit through Forge; the engine still owns
+production role or claim guidance and submit through ACDD; the engine still owns
 identity, state transitions, validation, and command observations. Mechanical
 gates run verification and submit without invented command results. Malformed
 scenario controls remain explicit and must not repair a broken emitted template.
@@ -106,18 +106,18 @@ The shipped authoring workflow tests replace the external model command with
 [`author-runner.py`](../../tests/acdd/fixtures/workflows/author-runner.py).
 It reads the emitted proof template and produces a rejected draft and a repaired
 artifact. The tests put the directory containing
-`CARGO_BIN_EXE_contextunity-forge-mcp` on the child process `PATH`; the
+`CARGO_BIN_EXE_acdd` on the child process `PATH`; the
 shipped `plan show`, `workflow show`, and `milestone init --in-place`
 preflights execute the real compiled CLI. Schema validation, routing, placeholder
 expansion, independent session identity, and persistence remain production
-behavior. The plan and workflow runs create no task database or `.forge/runs`
+behavior. The plan and workflow runs create no task database or `.acdd/runs`
 logs. Milestone initialization creates the authored milestone's tasks, but no
 workflow-gate tasks, claims, or synthetic run logs.
 
 The polish test replaces the external model with
 [`polish-runner.py`](../../tests/acdd/fixtures/workflows/polish-runner.py)
 and the expensive repository verification body with a hermetic failing-then-passing
-command. Forge observes the command and validates the review and routing.
+command. ACDD observes the command and validates the review and routing.
 ADR 0024 is absent from this repository; its lifecycle authority remains a gap,
 not an implemented decision.
 

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn configured_component_macros_follow_effective_rules_and_delta() {
     let workspace = HtmlWorkspaceHarness::new();
-    let manifest = ".forge/frameworks/atelier-macros.toml";
+    let manifest = ".acdd/frameworks/atelier-macros.toml";
     let source = |name: &str| {
         format!(
             "<script setup lang=\"ts\">\nconst input = {name}<{{title: string}}>();\nconst send = publishSignal<{{(event: 'ready'): void}}>();\ndeclareOutlet<{{default(props: {{item: string}}): unknown}}>();\nsend('ready');\n</script><template><p>{{{{input.title}}}}</p></template>\n"

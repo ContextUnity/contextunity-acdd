@@ -1,3 +1,3 @@
-//! Compact graph models re-exported from forge_core.
+//! Compact graph models re-exported from acdd_core.
 
-pub use forge_core::models::compact_graph::*;
+pub use acdd_core::models::compact_graph::*;

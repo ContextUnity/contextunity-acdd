@@ -10,13 +10,13 @@ owners:
   - src/cli/mod.rs
   - src/mcp/tools.rs
   - src/engine/pipeline.rs
-  - crates/forge-tasks/src/engine/orchestrator/task_runner.rs
+  - crates/acdd-tasks/src/engine/orchestrator/task_runner.rs
   - tests/
   - docs/reference/
   - docs/architecture/
   - docs/milestones/AR-001-borrowed-data-and-composable-execution.md
 invariants:
-  - 'INV-SCOPE-INTEGRITY: Exclude every Cargo.toml, Cargo.lock, build.rs, .forge/**, adapter/profile configuration, and dependency change from implementation scopes and extensions; this goal authorizes no protected-file exception.'
+  - 'INV-SCOPE-INTEGRITY: Exclude every Cargo.toml, Cargo.lock, build.rs, .acdd/**, adapter/profile configuration, and dependency change from implementation scopes and extensions; this goal authorizes no protected-file exception.'
   - 'INV-CORE-LEAF: Preserve existing crate dependency directions, core leaf isolation, and the frozen engine/database boundary; add no cross-layer imports or shared execution framework.'
   - 'INV-SURFACE-COMPATIBILITY: Preserve tool registration, CLI syntax, public Rust signatures, output defaults, errors, debug-log contents and success/error timing, serialized response bounds, and continuation identities.'
   - 'INV-OWNERSHIP-AT-BOUNDARIES: Borrow immutable policy and role configuration while their owners live; move consumed candidates and CLI results; allocate owned copies only where transport, retained debug data, or durable DTO lifetimes require ownership.'
@@ -25,7 +25,7 @@ invariants:
   - 'INV-TASK-AUTHORITY: Preserve profile-driven gate selection, genuine worker/session independence, active claims, retained rejection sessions, command observations, immutable candidates, and receipt-backed delivery; runner process success never substitutes for an accepted submission.'
   - 'INV-PROOF-BOUNDARY: Prove compatibility through real production callers and deterministic sensitivity mutations; distinguish supplemental ownership evidence from end-to-end proof and make no unmeasured latency, throughput, RSS, or whole-operation zero-allocation claim.'
 required_skills:
-  - contextunity-forge
+  - acdd
   - contract-planning
   - agent-instructions
 related_plans: []
@@ -50,7 +50,7 @@ Its first accepted task claim activates execution.
 The planned [IN-002 rename](IN-002-contextunity-acdd-one-pass-rename.md) overlaps
 these source owners. Neither contract is a semantic prerequisite for the other.
 The coordinator serializes their execution; they must not run concurrently.
-This contract targets the current Forge paths. If IN-002 lands first, re-ground
+This contract targets the current ACDD paths. If IN-002 lands first, re-ground
 and revise this contract's paths, identities, test commands, and citations before
 claiming any task. Do not introduce old/new-name compatibility scaffolding here.
 
@@ -94,12 +94,12 @@ this inspected baseline and are not permanent identities.
 | --- | --- | --- |
 | [`call_tool`](../../src/mcp/tools.rs), lines 1195–1340 | Consumes the RMCP request; validates format/fields, selects a worktree and adapter, dispatches through the existing router, enforces response policy, then logs when enabled. | Keep the ordering and router. Retain one request adapter snapshot, borrow its response policy during finalization, and remove redundant policy copies where owner lifetimes permit. |
 | [`responding_with_presentation`](../../src/mcp/tools.rs), lines 379–439 | Takes `run: impl FnOnce(&scanner::Adapter, &ResponsePolicy) -> anyhow::Result<Value>` and decorates Markdown before bounded rendering. | Reuse this existing middleware-style boundary; keep handlers and presentation metadata typed and local. |
-| [`run_selected`](../../src/cli/mod.rs), lines 1330–1941 | Owns CLI dispatch; bounded `task_list`/`forge_read` presentation passes `Ok(result.clone())` and retains the original for optional debug logging. | Move the result on the debug-disabled bounded path. Preserve an original snapshot only when enabled logging requires it; keep logging after successful rendering and preserve write/error behavior. |
+| [`run_selected`](../../src/cli/mod.rs), lines 1330–1941 | Owns CLI dispatch; bounded `task_list`/`acdd_read` presentation passes `Ok(result.clone())` and retains the original for optional debug logging. | Move the result on the debug-disabled bounded path. Preserve an original snapshot only when enabled logging requires it; keep logging after successful rendering and preserve write/error behavior. |
 | [`result_for_presented`](../../src/mcp/response.rs), lines 80–246 | Existing owning bounded-renderer API shared by CLI/MCP; preserves raw continuation data while trying compact/truncated renderings. | Reuse unchanged. Its internal raw/candidate copies are outside the optimization claim; removing them without equivalent continuation proof is forbidden. |
 | [`extract_candidate`](../../src/engine/pipeline.rs), lines 424–497 | Borrows a `BuildCandidate`, checks file metadata around a bounded read, then clones the candidate before `into_entry`. | Consume the candidate after its checks/cache-key use and move its path/language/digest into the existing `FileEntry`. Change only this private signature and its caller. |
 | [`extraction_worker`](../../src/engine/pipeline.rs), lines 700–795 | Owns `PipelineWork`, reuses one source string, prepares facts/storage, and transfers its `MemoryPermit` into the result item. | Destructure owned work and compose extraction/preparation without duplicating candidate strings or changing permit/cancellation ownership. |
-| [`run_task_lifecycle`](../../crates/forge-tasks/src/engine/orchestrator/task_runner.rs), lines 32–248 | `pub fn run_task_lifecycle(root: &Path, task_id: &str, options: &TaskRunOptions, observer: &mut dyn FnMut(OrchestratorEvent)) -> Result<Value>`; clones a selected role into a tuple despite retaining the owning profile. | Borrow the selected role and role ID during preparation/execution; allocate only at existing owned invocation/claim/event boundaries. Keep the public signature. |
-| [`render_role_prompt`](../../crates/forge-tasks/src/engine/orchestrator/spawner.rs), lines 77–111 | `pub fn render_role_prompt(claim: &Value) -> Result<String, RunnerError>` rejects incomplete/truncated authority. | Preserve and call this canonical borrowed producer unchanged. |
+| [`run_task_lifecycle`](../../crates/acdd-tasks/src/engine/orchestrator/task_runner.rs), lines 32–248 | `pub fn run_task_lifecycle(root: &Path, task_id: &str, options: &TaskRunOptions, observer: &mut dyn FnMut(OrchestratorEvent)) -> Result<Value>`; clones a selected role into a tuple despite retaining the owning profile. | Borrow the selected role and role ID during preparation/execution; allocate only at existing owned invocation/claim/event boundaries. Keep the public signature. |
+| [`render_role_prompt`](../../crates/acdd-tasks/src/engine/orchestrator/spawner.rs), lines 77–111 | `pub fn render_role_prompt(claim: &Value) -> Result<String, RunnerError>` rejects incomplete/truncated authority. | Preserve and call this canonical borrowed producer unchanged. |
 
 Depth-one impact confirms `extract_candidate` is called by `extraction_worker`;
 `run_task_lifecycle` feeds wave dispatch and isolated task execution and has
@@ -221,9 +221,9 @@ Blueprint slice:
   error taxonomy changes and new shared core definitions are unnecessary.
 - Symbol signatures: none added or modified. The parser seam is existing
   `snapshot_parses_frontmatter_identity_and_task_blocks` in
-  `crates/forge-tasks/src/milestones/contract.rs`.
-- Test seam: `cargo test -p forge-tasks --lib snapshot_parses_frontmatter_identity_and_task_blocks`;
-  `contextunity-forge-mcp validate docs/milestones/AR-001-borrowed-data-and-composable-execution.md --format json`.
+  `crates/acdd-tasks/src/milestones/contract.rs`.
+- Test seam: `cargo test -p acdd-tasks --lib snapshot_parses_frontmatter_identity_and_task_blocks`;
+  `acdd validate docs/milestones/AR-001-borrowed-data-and-composable-execution.md --format json`.
   Strict Clippy proves every registered stub compiles. Parser sensitivity: a
   disposable in-memory manifest fixture with a local dependency cycle must fail
   parsing; never corrupt the committed authority to demonstrate this.
@@ -358,7 +358,7 @@ contract_revision: 1
 depends_on:
   - freeze-ownership-and-seams
 scope:
-  - crates/forge-tasks/src/engine/orchestrator/task_runner.rs
+  - crates/acdd-tasks/src/engine/orchestrator/task_runner.rs
   - tests/acdd/orchestrator/lifecycle/borrowed_execution.rs
   - docs/reference/acdd.md
 symbols: []
@@ -386,7 +386,7 @@ Blueprint slice:
 - Test seam: proposed `tests/acdd/orchestrator/lifecycle/borrowed_execution.rs::task_dispatch_preserves_profile_authority`,
   run with `cargo test --test acdd acdd::orchestrator::lifecycle::borrowed_execution`;
   also run `cargo test --test acdd acdd::orchestrator::lifecycle` and
-  `cargo test -p forge-tasks --lib`. Reuse the canonical lifecycle fixtures and
+  `cargo test -p acdd-tasks --lib`. Reuse the canonical lifecycle fixtures and
   existing harness; add no second factory. Keep genuine process tests only for
   the runner-process boundary and preserve their platform constraints.
 - Sensitivity: treat a zero-exit runner with no gate submission as success,
@@ -431,7 +431,7 @@ architecture pages named in the implementation tasks. Submit resulting edits for
 independent review; repeat affected scans after later implementation changes.
 Follow [TESTS.md](../../TESTS.md#milestone-handoff-gate): commitment integrity,
 strict Clippy, `cargo test --all-targets`, and the separate
-`cargo test -p forge-tasks --lib`. Preserve trace-bound counts and report the
+`cargo test -p acdd-tasks --lib`. Preserve trace-bound counts and report the
 member-library count separately. Bind independent integration review and engine
 verification to the final content and selected target base before archival.
 This authoring gate does not claim or submit tasks, initialize implementation,

@@ -22,7 +22,7 @@ const RUNNER_COMPILE_ARGS: [&str; 4] = [
     "--test",
     "tests/runner_fixture.rs",
     "-o",
-    ".forge/runner_fixture",
+    ".acdd/runner_fixture",
 ];
 
 #[derive(PartialEq, Eq)]
@@ -75,7 +75,7 @@ impl FixtureSnapshot {
         );
         let (branches, forge_refs) = repository_refs(&path);
         validate_database_files(&path, true);
-        let connection = rusqlite::Connection::open(path.join(".forge/tasks.sqlite")).unwrap();
+        let connection = rusqlite::Connection::open(path.join(".acdd/tasks.sqlite")).unwrap();
         let (busy, _log, _checkpointed): (i64, i64, i64) = connection
             .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
@@ -85,7 +85,7 @@ impl FixtureSnapshot {
             busy, 0,
             "SQLite WAL checkpoint is busy; close fixture connections before snapshot/restore"
         );
-        let sqlite_bytes = fs::read(path.join(".forge/tasks.sqlite")).unwrap();
+        let sqlite_bytes = fs::read(path.join(".acdd/tasks.sqlite")).unwrap();
 
         // clean -x removes all ignored artifacts, including profile.yaml, command
         // traces and the runner. Preserve the baseline, not files from later rows.
@@ -111,10 +111,10 @@ impl FixtureSnapshot {
                 if !matches!(
                     relative.to_str(),
                     Some(
-                        ".forge/tasks.sqlite"
-                            | ".forge/tasks.sqlite-wal"
-                            | ".forge/tasks.sqlite-shm"
-                            | ".forge/tasks.sqlite-journal"
+                        ".acdd/tasks.sqlite"
+                            | ".acdd/tasks.sqlite-wal"
+                            | ".acdd/tasks.sqlite-shm"
+                            | ".acdd/tasks.sqlite-journal"
                     )
                 ) {
                     paths.insert(relative);
@@ -141,7 +141,7 @@ impl FixtureSnapshot {
             .collect();
         let preserve_runner = fixture_files
             .iter()
-            .any(|file| file.path == Path::new(".forge/runner_fixture"));
+            .any(|file| file.path == Path::new(".acdd/runner_fixture"));
         Self {
             #[cfg(unix)]
             root_identity: root_identity(&path),
@@ -183,20 +183,20 @@ impl FixtureSnapshot {
         // Handoff may leave the current branch dirty; discard its changes only
         // after verifying the fixture root, then reset the original branch.
         if self.preserve_runner {
-            assert_safe_path(&path, Path::new(".forge/runner_fixture"), false);
+            assert_safe_path(&path, Path::new(".acdd/runner_fixture"), false);
             git(
                 &path,
                 &[
                     "clean",
                     "-fdx",
                     "-e",
-                    ".forge/tasks.sqlite",
+                    ".acdd/tasks.sqlite",
                     "-e",
-                    ".forge/runner_fixture",
+                    ".acdd/runner_fixture",
                 ],
             );
         } else {
-            git(&path, &["clean", "-fdx", "-e", ".forge/tasks.sqlite"]);
+            git(&path, &["clean", "-fdx", "-e", ".acdd/tasks.sqlite"]);
         }
         git(
             &path,
@@ -248,10 +248,10 @@ impl FixtureSnapshot {
             );
         }
 
-        let db = path.join(".forge/tasks.sqlite");
-        assert_safe_path(&path, Path::new(".forge/tasks.sqlite"), false);
+        let db = path.join(".acdd/tasks.sqlite");
+        assert_safe_path(&path, Path::new(".acdd/tasks.sqlite"), false);
         for suffix in ["-wal", "-shm", "-journal"] {
-            let relative = PathBuf::from(format!(".forge/tasks.sqlite{suffix}"));
+            let relative = PathBuf::from(format!(".acdd/tasks.sqlite{suffix}"));
             assert_safe_path(&path, &relative, false);
             let auxiliary = path.join(relative);
             if auxiliary.exists() {
@@ -262,7 +262,7 @@ impl FixtureSnapshot {
             fs::remove_file(&db).unwrap();
         }
         fs::create_dir_all(db.parent().unwrap()).unwrap();
-        assert_safe_path(&path, Path::new(".forge/tasks.sqlite"), false);
+        assert_safe_path(&path, Path::new(".acdd/tasks.sqlite"), false);
         fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -276,7 +276,7 @@ impl FixtureSnapshot {
             fs::create_dir_all(dest.parent().unwrap()).unwrap();
             assert_safe_path(&path, &file.path, false);
             if dest.exists() {
-                if file.path == Path::new(".forge/runner_fixture")
+                if file.path == Path::new(".acdd/runner_fixture")
                     && fs::read(&dest).unwrap() == file.bytes
                     && fs::metadata(&dest).unwrap().permissions() == file.permissions
                 {
@@ -352,11 +352,11 @@ fn root_identity(path: &Path) -> (u64, u64) {
 }
 
 fn validate_database_files(root: &Path, database_must_exist: bool) {
-    assert_safe_path(root, Path::new(".forge/tasks.sqlite"), database_must_exist);
+    assert_safe_path(root, Path::new(".acdd/tasks.sqlite"), database_must_exist);
     for suffix in ["-wal", "-shm", "-journal"] {
         assert_safe_path(
             root,
-            Path::new(&format!(".forge/tasks.sqlite{suffix}")),
+            Path::new(&format!(".acdd/tasks.sqlite{suffix}")),
             false,
         );
     }
@@ -428,8 +428,8 @@ pub(crate) fn precompile_runner(root: &Workspace) {
     assert_safe_git_environment();
     let path = assert_fixture_root(root);
     assert_safe_path(&path, Path::new("tests/runner_fixture.rs"), true);
-    assert_safe_path(&path, Path::new(".forge/runner_fixture"), false);
-    assert_safe_path(&path, Path::new(".forge/acdd/profile.yaml"), true);
+    assert_safe_path(&path, Path::new(".acdd/runner_fixture"), false);
+    assert_safe_path(&path, Path::new(".acdd/profile.yaml"), true);
     let source = fs::read(path.join("tests/runner_fixture.rs")).unwrap();
     let mut environment: Vec<_> = std::env::vars_os().collect();
     environment.sort_unstable_by(|left, right| left.0.cmp(&right.0));
@@ -477,7 +477,7 @@ pub(crate) fn precompile_runner(root: &Workspace) {
                 "precompile fixture runner: {}",
                 String::from_utf8_lossy(&result.stderr)
             );
-            let runner = path.join(".forge/runner_fixture");
+            let runner = path.join(".acdd/runner_fixture");
             let artifact = RunnerArtifact {
                 bytes: fs::read(&runner).unwrap(),
                 permissions: fs::metadata(runner).unwrap().permissions(),
@@ -493,22 +493,22 @@ pub(crate) fn precompile_runner(root: &Workspace) {
     };
     drop(cache);
 
-    let runner_path = path.join(".forge/runner_fixture");
-    assert_safe_path(&path, Path::new(".forge/runner_fixture"), false);
+    let runner_path = path.join(".acdd/runner_fixture");
+    assert_safe_path(&path, Path::new(".acdd/runner_fixture"), false);
     fs::write(&runner_path, &artifact.bytes).unwrap();
     fs::set_permissions(runner_path, artifact.permissions).unwrap();
 
-    let profile_path = path.join(".forge/acdd/profile.yaml");
+    let profile_path = path.join(".acdd/profile.yaml");
     let mut profile: serde_yaml::Value =
         serde_yaml::from_slice(&fs::read(&profile_path).unwrap()).unwrap();
-    const COMPILE: &str = "rustc --test tests/runner_fixture.rs -o .forge/runner_fixture && ";
-    const READY: &str = "test -x .forge/runner_fixture && ";
+    const COMPILE: &str = "rustc --test tests/runner_fixture.rs -o .acdd/runner_fixture && ";
+    const READY: &str = "test -x .acdd/runner_fixture && ";
     for name in ["test", "rust-check-and-test", "check_full_repo"] {
         let Some(command) = profile["commands"][name]["command"].as_str() else {
             continue;
         };
         let updated = match command.matches(COMPILE).count() {
-            0 if command.contains(".forge/runner_fixture") => command.to_owned(),
+            0 if command.contains(".acdd/runner_fixture") => command.to_owned(),
             1 => command.replacen(COMPILE, READY, 1),
             _ => panic!("unexpected fixture command: {name}: {command}"),
         };

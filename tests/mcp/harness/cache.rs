@@ -1,6 +1,6 @@
 use crate::common::Workspace;
 use crate::sqlite_fixture::{IndexFixture, MetadataVersion};
-use contextunity_forge_mcp::db::writer::cache;
+use contextunity_acdd::db::writer::cache;
 use std::{
     collections::BTreeSet,
     fs,
@@ -45,7 +45,7 @@ impl Deref for CacheFixture {
 impl CacheFixture {
     pub fn new() -> Self {
         let workspace = Workspace::new();
-        workspace.write("forge-mcp.yaml", "roots: [src]\n");
+        workspace.write("acdd.yaml", "roots: [src]\n");
         workspace.write("requirements.txt", "requests>=2.0\n");
         workspace.write(
             "src/main.rs",
@@ -58,7 +58,7 @@ impl CacheFixture {
     }
 
     pub fn directory(&self) -> PathBuf {
-        self.path(".forge/extraction-cache")
+        self.path(".acdd/extraction-cache")
     }
 
     pub fn clear_cache(&self) {
@@ -75,7 +75,7 @@ impl CacheFixture {
                 index.seal();
             }
             RebuildCause::Adapter => {
-                self.write("forge-mcp.yaml", "roots: [src]\nadapter_version: changed\n");
+                self.write("acdd.yaml", "roots: [src]\nadapter_version: changed\n");
             }
             RebuildCause::ExplicitManifest | RebuildCause::ManifestDigest => {
                 self.write("requirements.txt", "requests>=2.1\n");

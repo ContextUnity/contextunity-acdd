@@ -12,9 +12,9 @@ impl MilestoneHarness {
         root.milestone_id = milestone.id;
         root.active_path = milestone_path.to_owned();
         root.write(
-            "forge-mcp.yaml",
+            "acdd.yaml",
             &format!(
-                "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/AGENTS.md\n{extra_config}"
+                "tasks_db: .acdd/tasks.sqlite\nagents_guidance: docs/AGENTS.md\n{extra_config}"
             ),
         );
         root.write("docs/AGENTS.md", "# Agent Guidance\n");
@@ -37,7 +37,7 @@ impl MilestoneHarness {
         )?)
     }
 
-    pub(crate) fn read_task(&self, id: &str) -> contextunity_forge_mcp::db::tasks_store::Task {
+    pub(crate) fn read_task(&self, id: &str) -> contextunity_acdd::db::tasks_store::Task {
         tasks::store_for_task(self.root(), id)
             .unwrap()
             .inspect(id)
@@ -84,12 +84,12 @@ impl MilestoneHarness {
     }
 
     pub(crate) fn store_in(&self, repository: &str, project: &str) -> TasksStore {
-        TasksStore::open_project(&self.path(".forge/tasks.sqlite"), repository, project).unwrap()
+        TasksStore::open_project(&self.path(".acdd/tasks.sqlite"), repository, project).unwrap()
     }
 
     pub(crate) fn sync_document(&self, path: &str, source: &str) -> (Milestone, TasksStore) {
         let milestone = Milestone::parse(source, "forge-mcp").unwrap();
-        let mut store = TasksStore::open(&self.path(".forge/tasks.sqlite")).unwrap();
+        let mut store = TasksStore::open(&self.path(".acdd/tasks.sqlite")).unwrap();
         store.sync(&milestone, path, self.root()).unwrap();
         (milestone, store)
     }
@@ -143,7 +143,7 @@ impl MilestoneHarness {
 
     pub(crate) fn persist_descriptor(
         store: &TasksStore,
-        task: &contextunity_forge_mcp::db::tasks_store::Task,
+        task: &contextunity_acdd::db::tasks_store::Task,
     ) {
         store
             .connection

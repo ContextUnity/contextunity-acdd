@@ -89,11 +89,11 @@ use serde_json::{json, Value};
 #[test]
 fn shared_mcp_harness_supports_server_rpc_and_cli_seams() {
     let workspace = Workspace::with_files(&[("service.py", "def entry(): return 1\n")]);
-    let database = workspace.path(".forge/index.sqlite");
+    let database = workspace.path(".acdd/index.sqlite");
     workspace.build_to(&database);
 
     let server =
-        in_process_server(&workspace).with_cache_dir(workspace.path(".forge/extraction-cache"));
+        in_process_server(&workspace).with_cache_dir(workspace.path(".acdd/extraction-cache"));
     let stored_nodes = server
         .read(|conn| Ok(json!(crate::sqlite_fixture::stored_node_count(conn)?)))
         .unwrap();

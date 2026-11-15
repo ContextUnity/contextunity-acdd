@@ -1,5 +1,5 @@
 #![cfg(feature = "lang-python")]
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::{
         commitments,
         semantic::{TypeExpr, ValueExpr, ValueFlowFacts},

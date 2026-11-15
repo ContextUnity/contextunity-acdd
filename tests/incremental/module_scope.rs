@@ -1,13 +1,13 @@
 #![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 
 use crate::common::Workspace;
-use contextunity_forge_mcp::{core::commitments, db::reader};
+use contextunity_acdd::{core::commitments, db::reader};
 use rusqlite::Connection;
 
 fn assert_cold_equivalent(workspace: &Workspace) {
     let incremental = workspace.open();
     commitments::verify(&incremental).unwrap();
-    let cold = workspace.path(".forge/cold.sqlite");
+    let cold = workspace.path(".acdd/cold.sqlite");
     workspace.build_to(&cold);
     let cold = reader::open(&cold, workspace.root()).unwrap();
     for query in [

@@ -14,7 +14,7 @@ fn mcp_and_cli_expose_evolution_tools_and_selector_errors() {
     .expect("MCP initialize");
     let cases = [
         (
-            "forge_read",
+            "acdd_read",
             serde_json::json!({"selector":"compute","format":"json"}),
         ),
         (
@@ -47,7 +47,7 @@ fn mcp_and_cli_expose_evolution_tools_and_selector_errors() {
     }
 
     let (_, default_snippet) = client
-        .call("forge_read", serde_json::json!({"selector":"compute"}))
+        .call("acdd_read", serde_json::json!({"selector":"compute"}))
         .expect("MCP transport");
     assert_eq!(
         default_snippet["result"]["isError"], false,
@@ -56,11 +56,11 @@ fn mcp_and_cli_expose_evolution_tools_and_selector_errors() {
     let default_text = default_snippet["result"]["content"][0]["text"]
         .as_str()
         .unwrap();
-    assert!(default_text.starts_with("# forge_read"), "{default_text}");
+    assert!(default_text.starts_with("# acdd_read"), "{default_text}");
 
     let (_, explicit_markdown) = client
         .call(
-            "forge_read",
+            "acdd_read",
             serde_json::json!({"selector":"compute","format":"markdown"}),
         )
         .expect("MCP transport");
@@ -75,7 +75,7 @@ fn mcp_and_cli_expose_evolution_tools_and_selector_errors() {
 
     let explicit_json = client
         .payload(
-            "forge_read",
+            "acdd_read",
             serde_json::json!({"selector":"compute","format":"json"}),
         )
         .expect("MCP tool should succeed");
@@ -141,7 +141,7 @@ fn source_search_and_stale_source_through_mcp() {
     w.write("service.py", "def OrderRevert():\n    return 'changed'\n");
     let (_, stale) = client
         .call(
-            "forge_read",
+            "acdd_read",
             serde_json::json!({"selector":"OrderRevert","format":"json"}),
         )
         .expect("MCP transport");
@@ -245,7 +245,7 @@ fn transitive_tests_exclude_unrelated_and_support_reverse_direction() {
 
 #[test]
 fn linked_source_is_exact_and_rejects_symlinks_and_traversal() {
-    use contextunity_forge_mcp::{
+    use contextunity_acdd::{
         core::response::{CoverageOptions, QueryOptions, ResponsePolicy, SourceOptions},
         db::symbols,
         engine::scanner,
@@ -253,7 +253,7 @@ fn linked_source_is_exact_and_rejects_symlinks_and_traversal() {
     let w = Workspace::with_files(&[]);
     let linked = Workspace::with_files(&[("lib.py", "def linked_fn():\n    return 7\n")]);
     w.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [.]\nlinked_workspaces:\n  - name: shared\n    path: {}\n",
             linked.root().display()
@@ -291,7 +291,7 @@ fn linked_source_is_exact_and_rejects_symlinks_and_traversal() {
 
 #[test]
 fn queries_bound_results_and_indexes_cover_edge_predicates() {
-    use contextunity_forge_mcp::{
+    use contextunity_acdd::{
         core::response::{QueryOptions, ResponsePolicy},
         db::symbols,
     };

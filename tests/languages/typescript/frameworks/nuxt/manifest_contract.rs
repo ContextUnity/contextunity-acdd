@@ -1,18 +1,18 @@
 #[cfg(feature = "lang-vue")]
 fn assert_nuxt_vue_pinia_manifest_family(family: &str, renamed: bool) {
-    use contextunity_forge_mcp::{core::commitments, db::reader};
+    use contextunity_acdd::{core::commitments, db::reader};
     use rusqlite::params;
     use serde_json::Value;
 
     let packs = [
         (
             "nuxt",
-            include_str!("../../../../../crates/forge-index/src/languages/manifests/nuxt.toml"),
+            include_str!("../../../../../crates/acdd-index/src/languages/manifests/nuxt.toml"),
         ),
         (
             "vue-runtime",
             include_str!(
-                "../../../../../crates/forge-index/src/languages/manifests/vue-runtime.toml"
+                "../../../../../crates/acdd-index/src/languages/manifests/vue-runtime.toml"
             ),
         ),
     ];
@@ -116,7 +116,7 @@ fn assert_nuxt_vue_pinia_manifest_family(family: &str, renamed: bool) {
                         let parsed: toml::Value = serde_json::from_value(value).unwrap();
                         format!("replace = true\n{}", toml::to_string(&parsed).unwrap())
                     };
-                    workspace.write(format!(".forge/frameworks/{name}.toml"), &text);
+                    workspace.write(format!(".acdd/frameworks/{name}.toml"), &text);
                 };
                 if renamed {
                     for (name, source) in packs {
@@ -396,8 +396,8 @@ fn assert_nuxt_vue_pinia_manifest_family(family: &str, renamed: bool) {
                     override_pack(name, source, true);
                 }
                 workspace.delta(&[
-                    ".forge/frameworks/nuxt.toml",
-                    ".forge/frameworks/vue-runtime.toml",
+                    ".acdd/frameworks/nuxt.toml",
+                    ".acdd/frameworks/vue-runtime.toml",
                 ]);
                 observe(false, true, false);
                 let parity = crate::languages::harness::cold_relations(&workspace);
@@ -409,8 +409,8 @@ fn assert_nuxt_vue_pinia_manifest_family(family: &str, renamed: bool) {
                     override_pack(name, source, false);
                 }
                 workspace.delta(&[
-                    ".forge/frameworks/nuxt.toml",
-                    ".forge/frameworks/vue-runtime.toml",
+                    ".acdd/frameworks/nuxt.toml",
+                    ".acdd/frameworks/vue-runtime.toml",
                 ]);
                 observe(true, true, false);
                 let parity = crate::languages::harness::cold_relations(&workspace);

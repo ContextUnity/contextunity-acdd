@@ -4,7 +4,7 @@ mod common;
 
 use anyhow::Result;
 use common::Workspace;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::{
         models::stable_hash64,
         response::{Detail, QueryOptions, ResponsePolicy},
@@ -71,12 +71,12 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     assert_eq!(first["nodes"]["items"][1]["via"]["id"], "a");
     assert_eq!(first["nodes"]["items"][1]["via"]["kind"], "calls");
     assert!(first["nodes"]["items"][1].get("evidence").is_none());
-    let markdown = contextunity_forge_mcp::core::format::render_for_operation(
+    let markdown = contextunity_acdd::core::format::render_for_operation(
         &first,
-        contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+        contextunity_acdd::core::format::OutputFormat::Markdown,
         "code_map_impact",
         None,
-        contextunity_forge_mcp::core::format::OperationKind::Navigation,
+        contextunity_acdd::core::format::OperationKind::Navigation,
     );
     assert!(markdown.contains("## Reached nodes"), "{markdown}");
     assert!(

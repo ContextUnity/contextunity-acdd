@@ -50,6 +50,6 @@ impl McpTestHarness {
         self.select("get_doc", "path_or_id", path, options)
     }
     pub fn source(&mut self, selector: &str, options: Value) -> HarnessResult<Value> {
-        self.select("forge_read", "selector", selector, options)
+        self.select("acdd_read", "selector", selector, options)
     }
 }

@@ -1,7 +1,7 @@
 use super::*;
 #[test]
 fn starlette_and_fastapi_pack_relations_are_exact() {
-    use contextunity_forge_mcp::core::commitments;
+    use contextunity_acdd::core::commitments;
 
     let workspace = fixture_workspace(&[
         (
@@ -9,8 +9,8 @@ fn starlette_and_fastapi_pack_relations_are_exact() {
             "[project]\nname='python-framework-packs'\ndependencies=['fastapi','starlette','shorekit']\n",
         ),
         (
-            ".forge/frameworks/starlette.toml",
-            include_str!("../../../../crates/forge-index/src/languages/manifests/starlette.toml"),
+            ".acdd/frameworks/starlette.toml",
+            include_str!("../../../../crates/acdd-index/src/languages/manifests/starlette.toml"),
         ),
         (
             "models.py",
@@ -184,9 +184,9 @@ fn starlette_and_fastapi_pack_relations_are_exact() {
     };
     observe(true);
 
-    let manifest = ".forge/frameworks/fastapi.toml";
+    let manifest = ".acdd/frameworks/fastapi.toml";
     let mut pack: toml::Value = toml::from_str(include_str!(
-        "../../../../crates/forge-index/src/languages/manifests/fastapi.toml"
+        "../../../../crates/acdd-index/src/languages/manifests/fastapi.toml"
     ))
     .unwrap();
     pack.as_table_mut()

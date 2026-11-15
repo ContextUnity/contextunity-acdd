@@ -81,15 +81,15 @@ def main() -> int:
         "host": {"platform": platform.platform(), "cpu_count": os.cpu_count(),
                  "rayon_num_threads": os.environ.get("RAYON_NUM_THREADS")},
         "policy": "sequential builds; fresh temporary databases; supplied isolated workspace",
-        "budget_policy": "comparison uses adaptive budget; matrix sets FORGE_MEMORY_BUDGET_MB",
+        "budget_policy": "comparison uses adaptive budget; matrix sets ACDD_MEMORY_BUDGET_MB",
     }
 
     def run(label: str, repetition: int, budget: int | None = None) -> dict[str, Any]:
-        previous = os.environ.pop("FORGE_MEMORY_BUDGET_MB", None)
+        previous = os.environ.pop("ACDD_MEMORY_BUDGET_MB", None)
         try:
             if budget is not None:
-                os.environ["FORGE_MEMORY_BUDGET_MB"] = str(budget)
-            with tempfile.TemporaryDirectory(prefix="forge-cold-budget-") as directory:
+                os.environ["ACDD_MEMORY_BUDGET_MB"] = str(budget)
+            with tempfile.TemporaryDirectory(prefix="acdd-cold-budget-") as directory:
                 work = Path(directory)
                 database = work / "index.sqlite"
                 timing = cold.run_build(binaries[label], workspace, database, work)
@@ -113,9 +113,9 @@ def main() -> int:
                 print(json.dumps({"binary": label, "budget_mb": budget, **timing}), file=sys.stderr, flush=True)
                 return result
         finally:
-            os.environ.pop("FORGE_MEMORY_BUDGET_MB", None)
+            os.environ.pop("ACDD_MEMORY_BUDGET_MB", None)
             if previous is not None:
-                os.environ["FORGE_MEMORY_BUDGET_MB"] = previous
+                os.environ["ACDD_MEMORY_BUDGET_MB"] = previous
 
     def save() -> None:
         report.update({key: cold.summarize_runs(rows) for key, rows in results.items() if rows})

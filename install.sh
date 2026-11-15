@@ -1,10 +1,10 @@
 #!/bin/sh
 # Install verified release companions without a compiler or language runtime.
 set -eu
-fail() { printf 'Forge installer: %s\n' "$*" >&2; exit 1; }
+fail() { printf 'ACDD installer: %s\n' "$*" >&2; exit 1; }
 
-LATEST_URL="https://github.com/ContextUnity/contextunity-forge-mcp/releases/latest/download"
-NIGHTLY_URL="https://github.com/ContextUnity/contextunity-forge-mcp/releases/download/nightly"
+LATEST_URL="https://github.com/ContextUnity/contextunity-acdd/releases/latest/download"
+NIGHTLY_URL="https://github.com/ContextUnity/contextunity-acdd/releases/download/nightly"
 
 channel=
 while [ "$#" -gt 0 ]; do
@@ -19,7 +19,7 @@ while [ "$#" -gt 0 ]; do
             ;;
         --help|-h)
             printf 'Usage: %s [--latest | --nightly]\n\n' "$0"
-            printf 'Install ContextUnity Forge MCP binary and companion skills.\n\n'
+            printf 'Install ContextUnity ACDD binary and companion skills.\n\n'
             printf 'Options:\n'
             printf '  --latest, -l   Install latest stable release (default)\n'
             printf '  --nightly, -n  Install latest nightly pre-release\n'
@@ -32,14 +32,14 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-if [ -n "${FORGE_RELEASE_BASE_URL:-}" ]; then
-    base="${FORGE_RELEASE_BASE_URL%/}"
-elif [ "$channel" = "nightly" ] || [ "${FORGE_RELEASE_CHANNEL:-}" = "nightly" ]; then
+if [ -n "${ACDD_RELEASE_BASE_URL:-}" ]; then
+    base="${ACDD_RELEASE_BASE_URL%/}"
+elif [ "$channel" = "nightly" ] || [ "${ACDD_RELEASE_CHANNEL:-}" = "nightly" ]; then
     base="$NIGHTLY_URL"
-elif [ "$channel" = "latest" ] || [ "${FORGE_RELEASE_CHANNEL:-}" = "latest" ]; then
+elif [ "$channel" = "latest" ] || [ "${ACDD_RELEASE_CHANNEL:-}" = "latest" ]; then
     base="$LATEST_URL"
 elif [ -t 0 ]; then
-    printf 'Select ContextUnity Forge MCP release channel:\n'
+    printf 'Select ContextUnity ACDD release channel:\n'
     printf '  1) latest (default)\n'
     printf '  2) nightly\n'
     printf 'Choice [1]: '
@@ -54,16 +54,16 @@ fi
 
 case $(uname -s) in Linux) os=unknown-linux-gnu ;; Darwin) os=apple-darwin ;; *) fail 'Unsupported operating system' ;; esac
 case $(uname -m) in x86_64) arch=x86_64 ;; aarch64|arm64) arch=aarch64 ;; *) fail 'Unsupported architecture' ;; esac
-asset=contextunity-forge-mcp-$arch-$os.tar.gz
+asset=contextunity-acdd-$arch-$os.tar.gz
 case $HOME in /*) ;; *) fail 'HOME must be an absolute path' ;; esac
 bin_dir=$HOME/.local/bin
-binary=$bin_dir/contextunity-forge-mcp
+binary=$bin_dir/acdd
 [ ! -e "$binary" ] || [ -f "$binary" ] || fail 'Executable destination must be a regular file, not a directory or special file'
 config=$PWD/.mcp.json
 [ ! -L "$config" ] || fail 'Refusing symlink .mcp.json'
 if [ -e "$config" ] && [ ! -f "$config" ]; then fail '.mcp.json must be a regular file'; fi
 umask 077
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/forge-install.XXXXXXXX")
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/acdd-install.XXXXXXXX")
 binary_stage=
 config_stage=
 cleanup() {
@@ -88,12 +88,12 @@ actual=${actual%% *}
 [ "$actual" = "$expected" ] || fail 'Archive SHA256 checksum mismatch'
 mkdir "$tmp/release"
 tar -xzf "$tmp/$asset" -C "$tmp/release"
-[ -f "$tmp/release/contextunity-forge-mcp" ] && [ ! -L "$tmp/release/contextunity-forge-mcp" ] || fail 'Archive has no regular executable'
+[ -f "$tmp/release/acdd" ] && [ ! -L "$tmp/release/acdd" ] || fail 'Archive has no regular executable'
 [ -f "$tmp/release/skills/install.sh" ] || fail 'Archive has no companion skill installer'
-# Parse complete JSON before durable changes; only the two owned Forge fields
+# Parse complete JSON before durable changes; only the two owned ACDD fields
 # change. Decode member names so Unicode-escaped keys have the same ownership.
 if [ -f "$config" ]; then cp "$config" "$tmp/client.json"; else printf '{}\n' > "$tmp/client.json"; fi
-LC_ALL=C FORGE_INSTALL_COMMAND=$binary awk '
+LC_ALL=C ACDD_INSTALL_COMMAND=$binary awk '
 function bad() { failed=1; exit 1 }
 function utf8(s, i,b,n,j,lo,hi,c) {
     for(i=1;i<=length(s);i++) {
@@ -149,7 +149,7 @@ function quote(s, i,c,n,out) {
     }
     return out "\""
 }
-function value(mode, c,start,out,k,raw,v,child,seenserver,seenforge,seencmd,seentype,count) {
+function value(mode, c,start,out,k,raw,v,child,seenserver,seenacdd,seencmd,seentype,count) {
     ws(); c=substr(doc,p,1)
     if(mode && c!="{") bad()
     if(c=="{") {
@@ -158,9 +158,9 @@ function value(mode, c,start,out,k,raw,v,child,seenserver,seenforge,seencmd,seen
             ws(); raw=str(); k=key; ws(); if(substr(doc,p++,1)!=":") bad()
             child=0
             if(mode==1 && k=="mcpServers"){ if(seenserver++) bad(); child=2 }
-            if(mode==2 && k=="contextunity-forge"){ if(seenforge++) bad(); child=3 }
+            if(mode==2 && k=="acdd"){ if(seenacdd++) bad(); child=3 }
             v=value(child)
-            if(mode==3 && k=="command"){ if(seencmd++) bad(); v=quote(ENVIRON["FORGE_INSTALL_COMMAND"]) }
+            if(mode==3 && k=="command"){ if(seencmd++) bad(); v=quote(ENVIRON["ACDD_INSTALL_COMMAND"]) }
             if(mode==3 && k=="type"){ if(seentype++) bad(); v="\"stdio\"" }
             out=out (count++ ? "," : "") raw ":" v
             ws(); c=substr(doc,p,1); if(c=="}") break
@@ -168,8 +168,8 @@ function value(mode, c,start,out,k,raw,v,child,seenserver,seenforge,seencmd,seen
         }
         p++
         if(mode==1 && !seenserver) out=out (count++ ? "," : "") "\"mcpServers\":" freshservers
-        if(mode==2 && !seenforge) out=out (count++ ? "," : "") "\"contextunity-forge\":" freshforge
-        if(mode==3 && !seencmd) out=out (count++ ? "," : "") "\"command\":" quote(ENVIRON["FORGE_INSTALL_COMMAND"])
+        if(mode==2 && !seenacdd) out=out (count++ ? "," : "") "\"acdd\":" freshacdd
+        if(mode==3 && !seencmd) out=out (count++ ? "," : "") "\"command\":" quote(ENVIRON["ACDD_INSTALL_COMMAND"])
         if(mode==3 && !seentype) out=out (count++ ? "," : "") "\"type\":\"stdio\""
         return out "}"
     }
@@ -191,19 +191,19 @@ BEGIN { for(i=0;i<256;i++) bytes[sprintf("%c",i)]=i }
 { doc=doc $0 "\n" }
 END {
     if(failed) exit 1
-    utf8(doc); utf8(ENVIRON["FORGE_INSTALL_COMMAND"])
-    freshforge="{\"type\":\"stdio\",\"command\":" quote(ENVIRON["FORGE_INSTALL_COMMAND"]) "}"
-    freshservers="{\"contextunity-forge\":" freshforge "}"
+    utf8(doc); utf8(ENVIRON["ACDD_INSTALL_COMMAND"])
+    freshacdd="{\"type\":\"stdio\",\"command\":" quote(ENVIRON["ACDD_INSTALL_COMMAND"]) "}"
+    freshservers="{\"acdd\":" freshacdd "}"
     p=1; result=value(1); ws(); if(p<=length(doc)) bad(); print result
 }' "$tmp/client.json" > "$tmp/client.new" || fail 'Invalid .mcp.json object; configuration is unchanged'
 existing=0
 [ ! -e "$binary" ] || existing=1
 mkdir -p "$bin_dir"
-binary_stage=$(mktemp "$bin_dir/.forge-binary.XXXXXXXX")
-cp "$tmp/release/contextunity-forge-mcp" "$binary_stage"
+binary_stage=$(mktemp "$bin_dir/.acdd-binary.XXXXXXXX")
+cp "$tmp/release/acdd" "$binary_stage"
 chmod 755 "$binary_stage"
 sh "$tmp/release/skills/install.sh"
-config_stage=$(mktemp "$PWD/.forge-client.XXXXXXXX")
+config_stage=$(mktemp "$PWD/.acdd-client.XXXXXXXX")
 cp "$tmp/client.new" "$config_stage"
 mv -f "$binary_stage" "$binary"; binary_stage=
 mv -f "$config_stage" "$config"; config_stage=

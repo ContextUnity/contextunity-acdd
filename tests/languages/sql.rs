@@ -81,14 +81,14 @@ const TABLE_RELATION_CASES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-use contextunity_forge_mcp::engine::ast;
+use contextunity_acdd::engine::ast;
 
 #[test]
 fn sql_profile_parses_without_tree_sitter_parser() {
     assert!(ast::parser("sql", "schema.sql").is_err());
-    let mut public_facts = contextunity_forge_mcp::core::models::Facts::default();
-    contextunity_forge_mcp::engine::languages::parse_file(
-        &contextunity_forge_mcp::engine::languages::sql::SQL,
+    let mut public_facts = contextunity_acdd::core::models::Facts::default();
+    contextunity_acdd::engine::languages::parse_file(
+        &contextunity_acdd::engine::languages::sql::SQL,
         "public.sql",
         "CREATE TABLE public_test (id INT)",
         "public",
@@ -105,7 +105,7 @@ fn sql_profile_parses_without_tree_sitter_parser() {
 fn embedded_sql_statements_classify_table_relations() {
     for &(sql, name, relation) in TABLE_RELATION_CASES {
         assert!(
-            contextunity_forge_mcp::engine::languages::sql::extract_embedded_sql_tables(sql)
+            contextunity_acdd::engine::languages::sql::extract_embedded_sql_tables(sql)
                 .contains(&(name.to_owned(), relation))
         );
     }
@@ -119,7 +119,7 @@ fn cte_scope_distinguishes_recursive_and_physical_tables() {
         ("WITH temporary(id) AS (SELECT * FROM orders) SELECT * FROM public.temporary", vec!["orders", "public.temporary"]),
         ("WITH first_cte AS (SELECT * FROM orders), second_cte(id) AS (SELECT * FROM first_cte) SELECT * FROM second_cte", vec!["orders"]),
     ] {
-        let actual = contextunity_forge_mcp::engine::languages::sql::extract_embedded_sql_tables(sql);
+        let actual = contextunity_acdd::engine::languages::sql::extract_embedded_sql_tables(sql);
         assert_eq!(actual.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), expected, "{sql}");
     }
 }
@@ -213,9 +213,9 @@ fn indexed_sql_workspace() -> crate::languages::PersistedWorkspaceHarness {
     #[cfg(feature = "lang-python")]
     workspace.write("factory_invalid.py", "from sqlalchemy.orm import declarative_base as make_base\nmake_base = object()\nBase = make_base()\nclass ReboundFactory(Base):\n    __tablename__ = 'factory_orders'\n");
     #[cfg(feature = "lang-python")]
-    workspace.write(".forge/frameworks/other-tables.toml", "[[semantic_rules]]\nid = 'other-table'\nnamespace = 'other.tables'\nscope = 'project'\noperation = { kind = 'class_attribute_to_table', language = 'python', attribute = 'table_name', container = 'Config' }\n");
+    workspace.write(".acdd/frameworks/other-tables.toml", "[[semantic_rules]]\nid = 'other-table'\nnamespace = 'other.tables'\nscope = 'project'\noperation = { kind = 'class_attribute_to_table', language = 'python', attribute = 'table_name', container = 'Config' }\n");
     #[cfg(feature = "lang-python")]
-    workspace.write(".forge/frameworks/standalone-default.toml", "[[semantic_rules]]\nid = 'default'\nnamespace = 'other.default'\nscope = 'project'\noperation = { kind = 'class_default_table', language = 'python', bases = ['fixture.CustomBase'] }\n");
+    workspace.write(".acdd/frameworks/standalone-default.toml", "[[semantic_rules]]\nid = 'default'\nnamespace = 'other.default'\nscope = 'project'\noperation = { kind = 'class_default_table', language = 'python', bases = ['fixture.CustomBase'] }\n");
     #[cfg(feature = "lang-python")]
     workspace.write(
         "shop/default.py",
@@ -455,18 +455,18 @@ fn django_defaults_require_real_model_provenance() {
 #[test]
 fn sql_impact_traversal_reaches_views_and_language_consumers() {
     let db = sql_baseline().open();
-    let page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
-        &contextunity_forge_mcp::core::response::ResponsePolicy::default(),
+    let page = contextunity_acdd::core::response::QueryOptions::resolve(
+        &contextunity_acdd::core::response::ResponsePolicy::default(),
         Some(100),
         0,
         None,
         None,
     )
     .unwrap();
-    let impact = contextunity_forge_mcp::db::traversal::traverse_with_options(
+    let impact = contextunity_acdd::db::traversal::traverse_with_options(
         &db,
         "schema.sql:table:orders",
-        &contextunity_forge_mcp::db::traversal::TraversalOptions {
+        &contextunity_acdd::db::traversal::TraversalOptions {
             depth: 1,
             inbound: true,
             mode: None,

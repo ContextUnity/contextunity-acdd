@@ -7,7 +7,7 @@ doc_type: architecture
 
 ## Architecture Overview
 
-ContextUnity Forge MCP separates code parsing, AST fact extraction, cross-file symbol linking, and storage graph generation into modular, decoupled layers.
+ContextUnity ACDD separates code parsing, AST fact extraction, cross-file symbol linking, and storage graph generation into modular, decoupled layers.
 
 ```text
 src/engine/
@@ -78,7 +78,7 @@ Decouples language-specific import and receiver resolutions from the core SQLite
 - Import resolution (e.g. Python `__init__.py` re-export chains, TypeScript `tsconfig.json` path mapping, Rust `use crate::` paths).
 - Receiver inference (method binding on class instances, struct instances, or prototypes).
 - Standard library and external package classification, ensuring third-party symbols are properly marked `external_origin` rather than leaking into `unresolved`.
-- Framework semantics come from typed `FrameworkManifest` data consumed by finite operations. Bundled tables live under `src/engine/languages/manifests/` and are embedded in the binary. Workspace manifests load from `.forge/frameworks/` and are available in their workspace. They merge project rules before bundled rules by default or with `extend: true`; `replace: true` selects the project table alone. Unknown top-level fields are rejected, so manifests cannot add opaque legacy string sections. Typed AST rules compile into grammar-specific `RuleIR` candidates; class receivers retain their borrowed linker rule lookup, and `semantic_rules` facts join through the shared linker. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
+- Framework semantics come from typed `FrameworkManifest` data consumed by finite operations. Bundled tables live under `src/engine/languages/manifests/` and are embedded in the binary. Workspace manifests load from `.acdd/frameworks/` and are available in their workspace. They merge project rules before bundled rules by default or with `extend: true`; `replace: true` selects the project table alone. Unknown top-level fields are rejected, so manifests cannot add opaque legacy string sections. Typed AST rules compile into grammar-specific `RuleIR` candidates; class receivers retain their borrowed linker rule lookup, and `semantic_rules` facts join through the shared linker. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
 - `DependencyRegistry` owns workspace dependency discovery and framework-manifest loading. JavaScript package metadata and TypeScript path mappings live in `languages/registries/`; Python dependency declarations are extracted in `python/dependencies.rs`. `LanguageProfile::manifest_filenames` continues to describe external package metadata inputs.
 
 ### 4. Three-Tier Language Architecture

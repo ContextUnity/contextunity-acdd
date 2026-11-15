@@ -6,7 +6,7 @@ use common::Workspace;
 use std::process::{Command, Output};
 
 fn check(workspace: &Workspace) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    Command::new(env!("CARGO_BIN_EXE_acdd"))
         .args(["docs", "check", "--root"])
         .arg(workspace.root())
         .output()
@@ -159,7 +159,7 @@ fn json_output_reports_success_and_failure() {
     let workspace = Workspace::new();
     workspace.write("README.md", "# Home\n");
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        Command::new(env!("CARGO_BIN_EXE_acdd"))
             .args(["docs", "check", "--format", "json", "--root"])
             .arg(workspace.root())
             .output()
@@ -181,7 +181,7 @@ fn json_output_reports_success_and_failure() {
         .contains("missing.md"));
 
     // Missing root with --format json outputs structured JSON
-    let missing_root_output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let missing_root_output = Command::new(env!("CARGO_BIN_EXE_acdd"))
         .args([
             "docs",
             "check",

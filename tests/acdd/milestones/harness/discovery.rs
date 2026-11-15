@@ -4,8 +4,8 @@ impl MilestoneHarness {
     pub(crate) fn configured_workspace() -> Self {
         let root = Self::workspace(DEFAULT_SEAM, "");
         root.write(
-            "forge-mcp.yaml",
-            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+            "acdd.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
         );
         root
     }
@@ -13,10 +13,10 @@ impl MilestoneHarness {
     pub(crate) fn parse_cli(
         &self,
         args: &[&str],
-    ) -> Result<contextunity_forge_mcp::cli::Cli, clap::Error> {
+    ) -> Result<contextunity_acdd::cli::Cli, clap::Error> {
         use clap::Parser;
         let root = self.root().to_string_lossy();
-        contextunity_forge_mcp::cli::Cli::try_parse_from(
+        contextunity_acdd::cli::Cli::try_parse_from(
             [
                 "contextunity-forge-mcp",
                 "--root",
@@ -40,7 +40,7 @@ impl MilestoneHarness {
 
     pub(crate) fn cli(&self, args: &[&str], input: Option<&str>) -> Output {
         use std::io::Write;
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_acdd"));
         command
             .args(["--format", "json", "--root", self.root().to_str().unwrap()])
             .args(args);

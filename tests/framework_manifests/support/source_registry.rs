@@ -11,7 +11,7 @@ impl FrameworkHarness {
         workspace.write_all(manifests);
         linked.write("requirements.txt", "fastapi\n");
         workspace.write(
-            "forge-mcp.yaml",
+            "acdd.yaml",
             &format!(
             "roots: [.]\nlinked_workspaces:\n  - name: '{name}'\n    path: '{}'\n    roots: [.]\n",
             linked.root().display()
@@ -37,7 +37,7 @@ impl FrameworkHarness {
         ])
         .unwrap();
         let adapter =
-            contextunity_forge_mcp::engine::scanner::load_adapter(workspace.root(), None).unwrap();
+            contextunity_acdd::engine::scanner::load_adapter(workspace.root(), None).unwrap();
         let disk =
             DependencyRegistry::try_collect_with_scan_config(workspace.root(), Some(&adapter))
                 .unwrap();

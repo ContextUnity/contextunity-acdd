@@ -53,7 +53,7 @@ fn task_settings_parses_various_commit_tracking_formats() {
         ("record_task_commits: false\n", false),
         ("", true),
     ] {
-        let settings: contextunity_forge_mcp::engine::tasks::TaskSettings =
+        let settings: contextunity_acdd::engine::tasks::TaskSettings =
             serde_yaml::from_str(yaml).unwrap();
         assert_eq!(settings.records_task_commits(), expected, "{yaml:?}");
     }

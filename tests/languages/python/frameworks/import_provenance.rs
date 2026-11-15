@@ -336,7 +336,7 @@ fn module_qualified_local_subclass_inherits_only_its_own_imported_framework_memb
 
     let linked = fixture_workspace(&[]);
     linked.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [.]\nlinked_workspaces:\n  - name: first\n    path: '{}'\n    roots: [.]\n  - name: second\n    path: '{}'\n    roots: [.]\n",
             first.root().display(),

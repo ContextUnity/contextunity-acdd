@@ -118,18 +118,18 @@ fn check_archived_predecessor_authority(root_mode: &str) {
         } else {
             "extensions/base/docs/milestones"
         };
-        root.write("forge-mcp.yaml", &format!("task_project: old\nmilestones: [docs/milestones, '{dir}']\nowners: {{extensions/base: old}}\naliases: {{old: forge-mcp, forge-mcp: other}}\n"));
+        root.write("acdd.yaml", &format!("task_project: old\nmilestones: [docs/milestones, '{dir}']\nowners: {{extensions/base: old}}\naliases: {{old: forge-mcp, forge-mcp: other}}\n"));
     } else {
         root.write(
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "task_project: old\naliases: {old: forge-mcp, forge-mcp: other}\n",
         );
     }
     for (authority, dependency, expected_ready) in cases {
         for rel in [
-            ".forge/tasks.sqlite",
-            ".forge/tasks.sqlite-wal",
-            ".forge/tasks.sqlite-shm",
+            ".acdd/tasks.sqlite",
+            ".acdd/tasks.sqlite-wal",
+            ".acdd/tasks.sqlite-shm",
             "docs/milestones/m2.md",
             "docs/milestones/archive/m-first.md",
             "extensions/base/docs/milestones/archive/m-first.md",
@@ -140,7 +140,7 @@ fn check_archived_predecessor_authority(root_mode: &str) {
             }
         }
         let mut deferred_archive = None;
-        let mut store = TasksStore::open(&root.root().join(".forge/tasks.sqlite")).unwrap();
+        let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
         if authority.ends_with("tombstone") {
             let identity = if authority == "foreign-tombstone" {
                 "forge-mcp/other/m-first"

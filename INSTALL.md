@@ -5,9 +5,9 @@ doc_type: guide
 
 # Installation, Workspace Setup, and Operational Guide
 
-ContextUnity Forge MCP is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and an Augmented Context-Driven Delivery (ACDD) task lifecycle state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (20 tools) and as a command-line interface (CLI).
+ContextUnity ACDD is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and an Augmented Context-Driven Delivery (ACDD) task lifecycle state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (20 tools) and as a command-line interface (CLI).
 
-This guide walks you through installing Forge MCP, configuring your workspace, selecting profiles, installing companion skills globally, establishing repository rules, authoring indexed documentation, and running milestones, plans, and workflows.
+This guide walks you through installing ACDD MCP, configuring your workspace, selecting profiles, installing companion skills globally, establishing repository rules, authoring indexed documentation, and running milestones, plans, and workflows.
 
 ---
 
@@ -25,10 +25,10 @@ The recommended installation method uses the zero-dependency installer script [`
 
 ```sh
 # Latest stable release (recommended)
-curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main/install.sh | sh
 
 # Nightly pre-release (active development & latest fixes)
-curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh -s -- --nightly
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main/install.sh | sh -s -- --nightly
 ```
 
 If you have already cloned the repository:
@@ -51,8 +51,8 @@ If you have already cloned the repository:
 
 | Variable | Description | Default |
 |---|---|---|
-| `FORGE_RELEASE_CHANNEL` | Release channel to install (`latest` or `nightly`) | Prompted in TTY, else `latest` |
-| `FORGE_RELEASE_BASE_URL` | Custom base URL for downloading `SHA256SUMS` and archive tarball (useful for air-gapped mirrors or specific tags) | GitHub Releases |
+| `ACDD_RELEASE_CHANNEL` | Release channel to install (`latest` or `nightly`) | Prompted in TTY, else `latest` |
+| `ACDD_RELEASE_BASE_URL` | Custom base URL for downloading `SHA256SUMS` and archive tarball (useful for air-gapped mirrors or specific tags) | GitHub Releases |
 | `AGENTS_SKILLS_DIR` | Canonical global skills hub directory | `~/.agents/skills` |
 
 #### Automated Execution Lifecycle
@@ -65,18 +65,18 @@ The installer performs the following operations atomically:
    - `x86_64-apple-darwin` (macOS Intel)
    - `aarch64-apple-darwin` (macOS Apple Silicon M-series)
 2. **Cryptographic Checksum Verification**: Downloads `SHA256SUMS` alongside the target archive, computing the actual SHA-256 digest using `sha256sum` or `shasum -a 256`. If the checksum does not match or the archive entry is missing, the installer halts immediately (fails closed).
-3. **Atomic Binary Installation**: Extracts the pre-compiled, stripped binary into a temporary file in `~/.local/bin/` with `0755` permissions and atomically moves it to `~/.local/bin/contextunity-forge-mcp`.
+3. **Atomic Binary Installation**: Extracts the pre-compiled, stripped binary into a temporary file in `~/.local/bin/` with `0755` permissions and atomically moves it to `~/.local/bin/acdd`.
 4. **Agent Skills Hub Sync**: Executes the companion `skills/install.sh` script, copying companion skills to `~/.agents/skills/` and symlinking them into detected agent directories (`.gemini`, `.codex`, `.claude`, `.cursor`).
-5. **Project MCP Configuration**: Updates or creates `$PWD/.mcp.json` using an embedded RFC 8259-compliant AWK parser, adding the `contextunity-forge` stdio server entry while preserving all other servers, formatting, and custom fields.
-6. **Live Process Reload**: If updating an existing installation, runs `contextunity-forge-mcp reload` to notify active MCP server sessions without requiring manual restarts.
+5. **Project MCP Configuration**: Updates or creates `$PWD/.mcp.json` using an embedded RFC 8259-compliant AWK parser, adding the `acdd` stdio server entry while preserving all other servers, formatting, and custom fields.
+6. **Live Process Reload**: If updating an existing installation, runs `acdd reload` to notify active MCP server sessions without requiring manual restarts.
 
 #### Installing a Specific Tag or Using a Mirror
 
-To install a specific version tag (e.g. `v0.5.2`) or download from an internal company mirror:
+To install a specific version tag (e.g. `<tag>`) or download from an internal company mirror:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh -o /tmp/forge-install.sh
-FORGE_RELEASE_BASE_URL="https://github.com/ContextUnity/contextunity-forge-mcp/releases/download/v0.5.2" sh /tmp/forge-install.sh
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main/install.sh -o /tmp/acdd-install.sh
+ACDD_RELEASE_BASE_URL="https://github.com/ContextUnity/contextunity-acdd/releases/download/<tag>" sh /tmp/acdd-install.sh
 ```
 
 #### Post-Installation & Verification
@@ -87,11 +87,11 @@ FORGE_RELEASE_BASE_URL="https://github.com/ContextUnity/contextunity-forge-mcp/r
    ```
 2. Verify binary execution:
    ```bash
-   contextunity-forge-mcp --version
+   acdd --version
    ```
 3. Verify MCP server response:
    ```bash
-   contextunity-forge-mcp query overview
+   acdd query overview
    ```
 
 ### Building from Source
@@ -99,8 +99,8 @@ FORGE_RELEASE_BASE_URL="https://github.com/ContextUnity/contextunity-forge-mcp/r
 Clone the repository and install the binary into your Cargo binary directory (`~/.cargo/bin`):
 
 ```bash
-git clone https://github.com/ContextUnity/contextunity-forge-mcp.git
-cd contextunity-forge-mcp
+git clone https://github.com/ContextUnity/contextunity-acdd.git
+cd contextunity-acdd
 
 # Standard build with default languages (Python, Rust, TypeScript, JavaScript, Vue, HTML, Protobuf, YAML, TOML)
 cargo install --path . --locked
@@ -113,21 +113,21 @@ Ensure `~/.cargo/bin` is in your shell `PATH`:
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-contextunity-forge-mcp --version
+acdd --version
 ```
 
 ### Connecting to AI Agent Clients (MCP stdio)
 
-Add `contextunity-forge` to your agent runtime's MCP configuration:
+Add `acdd` to your agent runtime's MCP configuration:
 
 #### Antigravity / Gemini CLI (`~/.gemini/antigravity/mcp_config.json` or project `.gemini/settings.json`)
 
 ```json
 {
   "mcpServers": {
-    "contextunity-forge": {
+    "acdd": {
       "type": "stdio",
-      "command": "contextunity-forge-mcp"
+      "command": "acdd"
     }
   }
 }
@@ -138,14 +138,14 @@ Add `contextunity-forge` to your agent runtime's MCP configuration:
 Add to `~/.codex/config.toml`:
 
 ```toml
-[mcp_servers.contextunity-forge]
-command = "contextunity-forge-mcp"
+[mcp_servers.acdd]
+command = "acdd"
 ```
 
 Or register via Codex CLI:
 
 ```bash
-codex mcp add contextunity-forge -- contextunity-forge-mcp
+codex mcp add acdd -- acdd
 ```
 
 #### Claude Desktop (`claude_desktop_config.json`)
@@ -153,8 +153,8 @@ codex mcp add contextunity-forge -- contextunity-forge-mcp
 ```json
 {
   "mcpServers": {
-    "contextunity-forge": {
-      "command": "contextunity-forge-mcp"
+    "acdd": {
+      "command": "acdd"
     }
   }
 }
@@ -165,37 +165,37 @@ codex mcp add contextunity-forge -- contextunity-forge-mcp
 ```json
 {
   "mcpServers": {
-    "contextunity-forge": {
-      "command": "contextunity-forge-mcp"
+    "acdd": {
+      "command": "acdd"
     }
   }
 }
 ```
 
 > [!NOTE]
-> Forge operates with the workspace directory as its working directory (`cwd`). If your client starts servers in a different directory, pass `--root /path/to/workspace` in `args` or set the environment variable `FORGE_WORKSPACE_ROOT`.
+> ACDD operates with the workspace directory as its working directory (`cwd`). If your client starts servers in a different directory, pass `--root /path/to/workspace` in `args` or set the environment variable `ACDD_WORKSPACE_ROOT`.
 > For complete client connection options and troubleshooting, see the canonical [MCP setup guide](docs/reference/mcp-setup.md).
 
 ---
 
-## 2. Workspace Initialization and `forge-mcp.yaml`
+## 2. Workspace Initialization and `acdd.yaml`
 
-`forge-mcp.yaml` located at the root of your project is the adapter configuration file. It declares which directories to index, where documentation lives, milestone and plan directories, task store paths, and output budgets.
+`acdd.yaml` located at the root of your project is the adapter configuration file. It declares which directories to index, where documentation lives, milestone and plan directories, task store paths, and output budgets.
 
 ### Quick Bootstrap
 
 Generate a starter adapter file automatically:
 
 ```bash
-contextunity-forge-mcp guide init
+acdd guide init
 ```
 
 ### Complete Configuration Schema
 
-A fully featured `forge-mcp.yaml` template:
+A fully featured `acdd.yaml` template:
 
 ```yaml
-# Source directories to parse and index into .forge/code-map.sqlite
+# Source directories to parse and index into .acdd/code-map.sqlite
 roots:
   - src
   - crates
@@ -228,11 +228,11 @@ sensitive:
 # Task lifecycle database and primary agent guidance routing file
 task_repository: "my-project"
 task_project: "my-project"
-tasks_db: ".forge/tasks.sqlite"
+tasks_db: ".acdd/tasks.sqlite"
 agents_guidance: "AGENTS.md"
 
-# Path to ACDD gate profile (defaults to .forge/acdd/profile.yaml if omitted)
-acdd_profile: ".forge/acdd/profile.yaml"
+# Path to ACDD gate profile (defaults to .acdd/profile.yaml if omitted)
+acdd_profile: ".acdd/profile.yaml"
 
 # Multi-repository linking: federate external repositories into unified code graph
 linked_workspaces:
@@ -257,55 +257,54 @@ response:
 > [!NOTE]
 > For the complete, exhaustive reference of all configuration fields (including `limits.memory_budget_mb`, `response.source_context`, `owners`, `aliases`, and `handoff_pruning`), see the canonical [Workspace configuration reference](docs/reference/configuration.md).
 
-### Recommendations for Tailoring `forge-mcp.yaml` to Your Repository
+### Recommendations for Tailoring `acdd.yaml` to Your Repository
 
 1. **Scope `roots` tightly**: Name only directories containing authored source code (e.g. `src`, `crates`, `frontend/src`). Avoid specifying the repository root `.` when possible to prevent indexing scratch scripts or unrelated files.
-2. **List documentation explicitly in `docs`**: Include your `README.md`, architecture docs, ADRs, and guides. Forge parses Markdown at `##` and `###` headings into indexed `DocSection` units for BM25 search and automatic symbol linkage.
-3. **Configure `ignore`**: Default exclusions automatically skip `.git`, `.forge`, `target`, `node_modules`, `.venv`, `dist`, `build`, and cache folders. Add any custom generated directories or build outputs. Remember that `ignore` matches literal directory basenames, not glob patterns.
+2. **List documentation explicitly in `docs`**: Include your `README.md`, architecture docs, ADRs, and guides. ACDD parses Markdown at `##` and `###` headings into indexed `DocSection` units for BM25 search and automatic symbol linkage.
+3. **Configure `ignore`**: Default exclusions automatically skip `.git`, `.acdd`, `target`, `node_modules`, `.venv`, `dist`, `build`, and cache folders. Add any custom generated directories or build outputs. Remember that `ignore` matches literal directory basenames, not glob patterns.
 4. **Protect secrets via `sensitive`**: Add patterns like `'.env*'`, `'secrets/**'`, or `'*.pem'`. Reader tools and export operations refuse access to matching paths.
-5. **Configure `linked_workspaces` for Multi-Repo architectures**: If your project relies on sibling libraries, configure `linked_workspaces`. Forge merges declarations and imports into the active code graph, allowing cross-repo symbol resolution and blast-radius impact analysis across project boundaries.
+5. **Configure `linked_workspaces` for Multi-Repo architectures**: If your project relies on sibling libraries, configure `linked_workspaces`. ACDD merges declarations and imports into the active code graph, allowing cross-repo symbol resolution and blast-radius impact analysis across project boundaries.
 
-### How to Verify that `forge-mcp.yaml` Works
+### How to Verify that `acdd.yaml` Works
 
 Run the following checks from your repository root:
 
 ```bash
 # 1. Validate configuration syntax, roots, and adapter paths
-contextunity-forge-mcp guide validate
+acdd guide validate
 
-# 2. Build or refresh the code graph in .forge/code-map.sqlite
-contextunity-forge-mcp scan
+# 2. Build or refresh the code graph in .acdd/code-map.sqlite
+acdd scan
 # Or full build:
-contextunity-forge-mcp build .
+acdd build .
 
 # 3. Query the graph overview to confirm language coverage and symbol counts
-contextunity-forge-mcp query overview
+acdd query overview
 
 # 4. Verify documentation indexing
-contextunity-forge-mcp docs search "setup"
+acdd docs search "setup"
 ```
 
 When connected to an AI agent via MCP, calling `code_map_overview` returns the same indexed workspace status, generation token, language breakdown, and document counts.
 
 ### Setting up `.gitignore`
 
-Forge uses `.forge/` for runtime caches, indexes, and SQLite databases while persisting committed gate profiles and framework manifests. Configure your `.gitignore` using the canonical pattern:
+ACDD uses `.acdd/` for runtime caches, indexes, and SQLite databases while persisting committed gate profiles and framework manifests. Configure your `.gitignore` using the canonical pattern:
 
 ```gitignore
-# Allow committed configuration and profiles inside .forge/
-!/.forge/
-!/.forge/acdd/
-!/.forge/acdd/**
-!/.forge/frameworks/
-!/.forge/frameworks/**
+# Allow committed configuration and profiles inside .acdd/
+!/.acdd/
+!/.acdd/profile.yaml
+!/.acdd/frameworks/
+!/.acdd/frameworks/**
 
 # Exclude local runtime state, indexes, and session logs
-.forge/*.sqlite*
-.forge/*.lock
-.forge/*.log
-.forge/*.jsonl
-.forge/tasks/
-.forge/checkpoints.json
+.acdd/*.sqlite*
+.acdd/*.lock
+.acdd/*.log
+.acdd/*.jsonl
+.acdd/tasks/
+.acdd/checkpoints.json
 ```
 
 ---
@@ -316,14 +315,14 @@ Profiles govern task lifecycle stages, verification rules, review contours, role
 
 ### Profile Resolution Order
 
-When an agent claims a task gate, Forge resolves the active profile in the following priority:
+When an agent claims a task gate, ACDD resolves the active profile in the following priority:
 1. **Task pin**: Specific profile pinned directly on the task (`path:sha256-prefix`).
 2. **Milestone pin**: Profile pinned on the containing milestone manifest.
-3. **Workspace configuration**: `acdd_profile` path declared in `forge-mcp.yaml`.
-4. **Repository default**: `.forge/acdd/profile.yaml` file if present.
+3. **Workspace configuration**: `acdd_profile` path declared in `acdd.yaml`.
+4. **Repository default**: `.acdd/profile.yaml` file if present.
 5. **Compiled built-in fallback**: The embedded default profile.
 
-If a profile is pinned with a SHA-256 hash prefix, Forge verifies the file digest on every claim and fails with `TASK_PROFILE_TAMPERED` if any unauthorized modification occurs.
+If a profile is pinned with a SHA-256 hash prefix, ACDD verifies the file digest on every claim and fails with `TASK_PROFILE_TAMPERED` if any unauthorized modification occurs.
 
 ### Built-in Profile
 
@@ -335,7 +334,7 @@ The built-in profile provides a 4-stage sequential lifecycle:
 
 ### Authoring a Custom Universal Profile (`version: 2`)
 
-Create `.forge/acdd/profile.yaml` to tailor commands, roles, and review contours to your technology stack:
+Create `.acdd/profile.yaml` to tailor commands, roles, and review contours to your technology stack:
 
 ```yaml
 version: 2
@@ -364,7 +363,7 @@ commands:
     description: "Run full-repository verification before milestone handoff."
     timeout_seconds: 1800
 
-# Overlay command bindings onto the embedded acdd.default.yaml gate tree
+# Overlay command bindings onto the embedded acdd.profile.yaml gate tree
 gates:
   - tasks:
       gates:
@@ -380,14 +379,14 @@ gates:
 ```
 
 > [!TIP]
-> Always validate custom profiles using `contextunity-forge-mcp validate --profile .forge/acdd/profile.yaml`.
-> See [ACDD Architecture & Default Profile Guide](docs/reference/acdd.md) and [ACDD Profiles Reference](docs/reference/profiles.md) for gate mechanics and inheritance details, or inspect [`skills/contextunity-forge/references/acdd_profile.yaml.example`](skills/contextunity-forge/references/acdd_profile.yaml.example) for a standalone `inherit: none` template.
+> Always validate custom profiles using `acdd validate --profile .acdd/profile.yaml`.
+> See [ACDD Architecture & Default Profile Guide](docs/reference/acdd.md) and [ACDD Profiles Reference](docs/reference/profiles.md) for gate mechanics and inheritance details, or inspect [`skills/acdd/references/acdd_profile.yaml.example`](skills/acdd/references/acdd_profile.yaml.example) for a standalone `inherit: none` template.
 
 ---
 
 ## 4. Global Skill Installation
 
-Companion skills equip coding agents with instructions and tool strategies for working with Forge, authoring tests, refactoring, and closing review findings.
+Companion skills equip coding agents with instructions and tool strategies for working with ACDD, authoring tests, refactoring, and closing review findings.
 
 The repository includes a zero-config installer script (`./skills/install.sh`):
 
@@ -396,7 +395,7 @@ The repository includes a zero-config installer script (`./skills/install.sh`):
 ./skills/install.sh
 
 # Or install specific skills selectively:
-./skills/install.sh contextunity-forge test-contract-seam close-review-findings
+./skills/install.sh acdd test-contract-seam close-review-findings
 ```
 
 ### What `skills/install.sh` Does
@@ -415,7 +414,7 @@ The repository includes a zero-config installer script (`./skills/install.sh`):
 
 | Skill | Purpose |
 |---|---|
-| [`contextunity-forge`](skills/contextunity-forge/SKILL.md) | Essential Forge operations: code navigation, symbol reads, task claims, blackboard, delivery |
+| [`acdd`](skills/acdd/SKILL.md) | Essential ACDD operations: code navigation, symbol reads, task claims, blackboard, delivery |
 | [`test-contract-seam`](skills/test-contract-seam/SKILL.md) | Authoring compiling, failing seam tests for `contract` gates |
 | [`close-review-findings`](skills/close-review-findings/SKILL.md) | Diagnosing review rejections and implementing evidence-closed fixes |
 | [`test-suite-refactor`](skills/test-suite-refactor/SKILL.md) | Refactoring test suites while maintaining production coverage |
@@ -426,24 +425,24 @@ The repository includes a zero-config installer script (`./skills/install.sh`):
 
 ## 5. Repository Rules Setup
 
-Configure agent routing and instruction files so AI assistants automatically use Forge MCP tools instead of raw filesystem operations.
+Configure agent routing and instruction files so AI assistants automatically use ACDD MCP tools instead of raw filesystem operations.
 
 ### Configuring `AGENTS.md`
 
-Place an `AGENTS.md` in your repository root based on [`skills/contextunity-forge/references/agents.md.example`](skills/contextunity-forge/references/agents.md.example):
+Place an `AGENTS.md` in your repository root based on [`skills/acdd/references/agents.md.example`](skills/acdd/references/agents.md.example):
 
-1. **Mandatory MCP Navigation**: Instruct agents to use `code_map_*`, `ast_grep_search`, and `forge_read` for code exploration.
-2. **Direct Single-Shot Symbol Reads**: Direct agents to call `forge_read(selector="SymbolName")` directly when a symbol name is known, avoiding multi-step search grep calls.
+1. **Mandatory MCP Navigation**: Instruct agents to use `code_map_*`, `ast_grep_search`, and `acdd_read` for code exploration.
+2. **Direct Single-Shot Symbol Reads**: Direct agents to call `acdd_read(selector="SymbolName")` directly when a symbol name is known, avoiding multi-step search grep calls.
 3. **Blackboard Context**: Mandate posting technical notes, findings, and blockers to `task_blackboard`.
 4. **Verification Seams**: Point agents to the active task profile and `TESTS.md` for exact verification commands.
 
 ### Configuring IDE / Agent Platform Rules
 
-#### Cursor (`.cursor/rules/forge.mdc`)
+#### Cursor (`.cursor/rules/acdd.mdc`)
 
 ```markdown
 ---
-description: Mandatory Code Navigation via ContextUnity Forge MCP
+description: Mandatory Code Navigation via ContextUnity ACDD
 globs: *
 alwaysApply: true
 ---
@@ -451,26 +450,26 @@ alwaysApply: true
 # Code Navigation Rules
 
 When working in this repository:
-- Use Forge MCP tools (`code_map_search`, `code_map_inspect`, `code_map_impact`, `ast_grep_search`) for symbols and code exploration.
-- Use `forge_read(selector="SymbolName")` for reading complete symbol implementations.
+- Use ACDD MCP tools (`code_map_search`, `code_map_inspect`, `code_map_impact`, `ast_grep_search`) for symbols and code exploration.
+- Use `acdd_read(selector="SymbolName")` for reading complete symbol implementations.
 - Use `ctx_shell` or standard execution for running builds and tests.
 ```
 
-#### Gemini / Antigravity (`.gemini/rules/forge.md`)
+#### Gemini / Antigravity (`.gemini/rules/acdd.md`)
 
 ```markdown
-# Mandatory Code Navigation via ContextUnity Forge MCP
+# Mandatory Code Navigation via ContextUnity ACDD
 
-- ALWAYS use Forge MCP tools (`code_map_search`, `code_map_inspect`, `code_map_impact`, `code_map_query`, `code_map_overview`) and `ast_grep_search` as primary tools for searching code and syntax patterns.
-- Use `forge_read` for reading files, outlines, and symbol implementations.
-- Native grep/read is only permitted as a fallback if Forge tools find no matches.
+- ALWAYS use ACDD MCP tools (`code_map_search`, `code_map_inspect`, `code_map_impact`, `code_map_query`, `code_map_overview`) and `ast_grep_search` as primary tools for searching code and syntax patterns.
+- Use `acdd_read` for reading files, outlines, and symbol implementations.
+- Native grep/read is only permitted as a fallback if ACDD tools find no matches.
 ```
 
 ---
 
 ## 6. Authoring Documentation for Indexing
 
-Forge indexes documentation into `.forge/code-map.sqlite` alongside code symbols, enabling BM25 full-text search (`search_docs`) and automatic bidirectional linking between code declarations and documentation sections.
+ACDD indexes documentation into `.acdd/code-map.sqlite` alongside code symbols, enabling BM25 full-text search (`search_docs`) and automatic bidirectional linking between code declarations and documentation sections.
 
 Follow these rules when writing documentation:
 
@@ -489,13 +488,13 @@ Common `doc_type` values: `architecture`, `guide`, `reference`, `plan`, `adr`, `
 
 ### 2. Heading Chunking (`##` and `###`)
 
-Forge splits documents at second-level (`##`) and third-level (`###`) headings into discrete `DocSection` records. Each section forms an independent BM25 search chunk. Keep headings descriptive and stable.
+ACDD splits documents at second-level (`##`) and third-level (`###`) headings into discrete `DocSection` records. Each section forms an independent BM25 search chunk. Keep headings descriptive and stable.
 
 ### 3. Symbol Linkage
 
 Reference exact code declarations to establish verified edges in the SQLite graph:
 - Use exact declaration names: `` `TokenValidator` `` or with explicit source paths: `` [`TokenValidator`](src/auth/token.rs) ``.
-- When an indexed declaration resolves uniquely, Forge creates a verified edge between the documentation section and the code entity.
+- When an indexed declaration resolves uniquely, ACDD creates a verified edge between the documentation section and the code entity.
 - Code inspections (`code_map_inspect`, `code_map_explain`) automatically surface linked documentation sections when inspecting governed symbols.
 
 ### 4. Verified Architectural Invariants (`INV-*`)
@@ -508,7 +507,7 @@ Declare architectural invariants using GitHub alert callouts containing `Invaria
 > INV-AUTH-EXPIRATION: [`validate_token`](src/auth/validator.rs)
 ```
 
-Forge marks the section with `is_invariant: true` and connects it to the governed declaration. During blast-radius impact analysis (`code_map_impact`) and symbol inspection, Forge highlights these architectural rules directly to agents.
+ACDD marks the section with `is_invariant: true` and connects it to the governed declaration. During blast-radius impact analysis (`code_map_impact`) and symbol inspection, ACDD highlights these architectural rules directly to agents.
 
 ---
 
@@ -522,28 +521,28 @@ Milestones represent committed units of architectural progress containing struct
 
 ```bash
 # Draft a new milestone manifest
-contextunity-forge-mcp milestone draft --num 045 --slug auth-refactor --title "Refactor Auth Pipeline"
+acdd milestone draft --num 045 --slug auth-refactor --title "Refactor Auth Pipeline"
 
 # Or initialize an existing milestone manifest into the task store:
-contextunity-forge-mcp milestone init docs/milestones/045-auth-refactor.md
+acdd milestone init docs/milestones/045-auth-refactor.md
 ```
 
 #### 2. Listing and Inspecting Milestones
 
 ```bash
 # List active milestones and completion progress
-contextunity-forge-mcp milestone list --status active
+acdd milestone list --status active
 
 # Show complete milestone contract and task definitions
-contextunity-forge-mcp milestone show 045 --full
+acdd milestone show 045 --full
 ```
 
 #### 3. Running Headless Milestone Execution
 
-Forge can orchestrate the entire milestone lifecycle through dependency waves:
+ACDD can orchestrate the entire milestone lifecycle through dependency waves:
 
 ```bash
-contextunity-forge-mcp milestone run 045 --target-base main
+acdd milestone run 045 --target-base main
 ```
 
 #### 4. Milestone Handoff and Verification
@@ -552,13 +551,13 @@ When all tasks in a milestone are delivered:
 
 ```bash
 # 1. Absorb uncommitted polish and generate exact content binding
-contextunity-forge-mcp milestone handoff-context 045 --target-base main > /tmp/045-binding.json
+acdd milestone handoff-context 045 --target-base main > /tmp/045-binding.json
 
 # 2. Run repository verification (executes profile check commands)
-contextunity-forge-mcp milestone verify 045 --target-base main
+acdd milestone verify 045 --target-base main
 
 # 3. Complete handoff with independent review evidence file
-contextunity-forge-mcp milestone handoff 045 --evidence-file .forge/integration-evidence.json
+acdd milestone handoff 045 --evidence-file .acdd/integration-evidence.json
 ```
 
 `handoff` verifies content digests, reuses verified command traces, archives the milestone manifest to `docs/milestones/archive/`, and cleans up task state.
@@ -573,13 +572,13 @@ Agents advance tasks through the state machine using atomic claims, proof verifi
 
 ```bash
 # List ready tasks in the active milestone
-contextunity-forge-mcp task list
+acdd task list
 ```
 
 #### 2. Claiming a Task Gate
 
 ```bash
-contextunity-forge-mcp task claim <task-id> --stage contract --worker agent-1 --worktree .
+acdd task claim <task-id> --stage contract --worker agent-1 --worktree .
 ```
 
 The claim response returns:
@@ -592,7 +591,7 @@ For automated gates (`contract`, `build`), run `task verify` to execute the regi
 
 ```bash
 # Verify failing contract seam test (exit code 101) or passing build (exit code 0)
-contextunity-forge-mcp task verify <task-id> --test tests/auth_test.rs::test_token_expiry
+acdd task verify <task-id> --test tests/auth_test.rs::test_token_expiry
 ```
 
 #### 4. Submitting Gate Evidence
@@ -601,7 +600,7 @@ After a successful `task verify`, submitting the gate passes automatically using
 
 ```bash
 # Submit passing transition (proof inferred from cached verification)
-contextunity-forge-mcp task submit <task-id> --stage contract --action pass
+acdd task submit <task-id> --stage contract --action pass
 ```
 
 Automated verification via `task verify` caches the execution trace in SQLite, allowing evidence-free submission. For manual or schema-driven gates that require explicit typed evidence payloads (such as independent `review`), see the [canonical evidence contract](docs/reference/tasks.md#gates-and-evidence).
@@ -612,10 +611,10 @@ Agents exchange notes, findings, and architectural decisions without cluttering 
 
 ```bash
 # Post technical note or review finding
-contextunity-forge-mcp task blackboard post <task-id> --topic notes --payload "Token validation logic split into validator.rs"
+acdd task blackboard post <task-id> --topic notes --payload "Token validation logic split into validator.rs"
 
 # Read messages for a task
-contextunity-forge-mcp task blackboard read <task-id>
+acdd task blackboard read <task-id>
 ```
 
 #### 6. Autonomous Scope Extension
@@ -623,17 +622,17 @@ contextunity-forge-mcp task blackboard read <task-id>
 When implementation legitimately requires modifying an unlisted file inside admitted roots:
 
 ```bash
-contextunity-forge-mcp task extend-scope <task-id> src/auth/utils.rs
+acdd task extend-scope <task-id> src/auth/utils.rs
 ```
 
 > [!NOTE]
-> Arguments are positional file paths. Paths must reside within the task's admitted `scope_roots` or frozen base roots. Scope extension fails closed if a path is exclusively locked by another active concurrent task or attempts to alter protected profile paths under `.forge/acdd/**`.
+> Arguments are positional file paths. Paths must reside within the task's admitted `scope_roots` or frozen base roots. Scope extension fails closed if a path is exclusively locked by another active concurrent task or attempts to alter protected profile paths under `.acdd/**`.
 
 ---
 
 ### Structured Plans and Standalone Workflows
 
-Beyond milestones, Forge supports executing documentation plans and root-gate workflows:
+Beyond milestones, ACDD supports executing documentation plans and root-gate workflows:
 
 #### Documentation Plans (`doc_type: plan`)
 
@@ -641,13 +640,13 @@ Execute structured multi-step plans without worktree branch isolation:
 
 ```bash
 # List plans in docs/plans/
-contextunity-forge-mcp plan list
+acdd plan list
 
 # Inspect plan steps and dependencies
-contextunity-forge-mcp plan show docs/plans/migration-plan.md
+acdd plan show docs/plans/migration-plan.md
 
 # Execute plan steps in dependency order
-contextunity-forge-mcp plan run docs/plans/migration-plan.md
+acdd plan run docs/plans/migration-plan.md
 ```
 
 #### Standalone Root-Gate Workflows
@@ -656,11 +655,11 @@ Execute lightweight taskless workflows with ephemeral observations from `docs/wo
 
 ```bash
 # List standalone workflows in docs/workflows/*.yaml
-contextunity-forge-mcp workflow list
+acdd workflow list
 
 # Inspect workflow graph
-contextunity-forge-mcp workflow show docs/workflows/ci-check.yaml
+acdd workflow show docs/workflows/ci-check.yaml
 
 # Execute workflow in the current workspace
-contextunity-forge-mcp workflow run docs/workflows/ci-check.yaml
+acdd workflow run docs/workflows/ci-check.yaml
 ```

@@ -55,7 +55,7 @@ fn task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite() {
 
 #[test]
 fn task_cli_submit_accepts_json_object_and_persists_gate_evidence() {
-    use contextunity_forge_mcp::core::tasks::profile::CommandDef;
+    use contextunity_acdd::core::tasks::profile::CommandDef;
     let mut profile = fixture_profile();
     profile.commands.insert(
         "task6-cli-check".into(),
@@ -137,7 +137,7 @@ fn task_cli_submit_accepts_json_object_and_persists_gate_evidence() {
     };
     let command_name = gate.command.as_deref().unwrap();
     let command = profile.commands.get(command_name).unwrap();
-    let trace = contextunity_forge_mcp::engine::milestones::execute_command_gate(
+    let trace = contextunity_acdd::engine::milestones::execute_command_gate(
         h.root(),
         &h.id,
         &gate_path,
@@ -179,7 +179,7 @@ fn gate_proof_validation_persists_only_the_typed_accepted_payload() {
     let mut h = TaskHarness::attach(&workspace, &task_id);
 
     let contours: serde_json::Map<String, serde_json::Value> =
-        contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS
+        contextunity_acdd::core::tasks::gates::REVIEW_CONTOURS
             .iter()
             .map(|name| {
                 (
@@ -257,7 +257,7 @@ fn gate_proof_validation_persists_only_the_typed_accepted_payload() {
 
 #[test]
 fn rejected_task_gates_require_typed_proof_and_persist_failing_evidence() {
-    use contextunity_forge_mcp::core::tasks::profile::ProofKind;
+    use contextunity_acdd::core::tasks::profile::ProofKind;
 
     let (root, _, milestone) = fixture(DEFAULT_SEAM);
     let task_id = milestone.task_id(&milestone.tasks[0]);
@@ -311,7 +311,7 @@ fn rejected_task_gates_require_typed_proof_and_persist_failing_evidence() {
         );
         if matches!(
             proof_kind,
-            Some(contextunity_forge_mcp::core::tasks::profile::ProofKind::Review)
+            Some(contextunity_acdd::core::tasks::profile::ProofKind::Review)
         ) {
             for invalid in [
                 json!({"review_proof":{"decision":"reject","contours":{}}}),

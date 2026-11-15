@@ -8,7 +8,7 @@ impl TaskHarness {
     pub fn task_list_workspace() -> Workspace {
         let workspace = Workspace::new();
         workspace.write(
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "roots: [src]\ndocs: []\ntasks_db: tasks.sqlite\n",
         );
         workspace
@@ -34,10 +34,7 @@ impl TaskHarness {
         specs: &[(&str, &str)],
     ) -> (Workspace, McpTestHarness, Vec<String>) {
         let workspace = Self::mcp_workspace();
-        workspace.write(
-            "forge-mcp.yaml",
-            "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
-        );
+        workspace.write("acdd.yaml", "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n");
         let mut manifest = MilestoneFixtureBuilder::new(&format!("m-{name}"))
             .title("Dispatch")
             .without_started_at()

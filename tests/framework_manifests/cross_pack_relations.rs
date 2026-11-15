@@ -601,7 +601,7 @@ fn django_include_deltas_preserve_owner_prefix_deletion_and_manifest_reclassific
     workspace.delta(&["shop/urls.py"]);
 
     workspace.write(
-        ".forge/frameworks/django.toml",
+        ".acdd/frameworks/django.toml",
         "[[route_decorators]]\ncallee = \"portal.expose\"\nmethod = \"PATCH\"\npath_argument = 0\n",
     );
     workspace.delta(&["app.py"]);

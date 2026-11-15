@@ -1,13 +1,13 @@
 #![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 
 use crate::common::Workspace;
-use contextunity_forge_mcp::{core::commitments, db::reader};
+use contextunity_acdd::{core::commitments, db::reader};
 use rusqlite::Connection;
 
 fn assert_cold_equivalent(workspace: &Workspace) {
     let incremental = workspace.open();
     commitments::verify(&incremental).unwrap();
-    let cold_path = workspace.path(".forge/cold.sqlite");
+    let cold_path = workspace.path(".acdd/cold.sqlite");
     workspace.build_to(&cold_path);
     let cold = reader::open(&cold_path, workspace.root()).unwrap();
     commitments::verify(&cold).unwrap();
@@ -218,7 +218,7 @@ fn linked_body_edit_preserves_cross_workspace_consumers() {
         "local/consumer.py",
         "from provider import value\ndef consume(): return value()\n",
     );
-    w.write("forge-mcp.yaml", &format!("roots: [local]\nlinked_workspaces:\n  - name: library\n    path: {}\n    roots: [src]\n", linked.root().display()));
+    w.write("acdd.yaml", &format!("roots: [local]\nlinked_workspaces:\n  - name: library\n    path: {}\n    roots: [src]\n", linked.root().display()));
     w.build();
     linked.write("src/provider.py", "def value(): return 2\n\n");
     let delta = w.delta(&["[library]/src/provider.py"]);

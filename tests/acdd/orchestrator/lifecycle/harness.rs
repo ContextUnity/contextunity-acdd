@@ -1,5 +1,5 @@
 use crate::acdd::{support::*, tasks::harness::TaskHarness};
-use forge_tasks::{
+use acdd_tasks::{
     engine::orchestrator::task_runner::TaskRunOptions,
     tasks::profile::{GateDef, ProofKind},
 };
@@ -18,21 +18,21 @@ impl LifecycleHarness {
     }
 
     pub fn with_profile(
-        configure: impl FnOnce(&mut forge_tasks::tasks::profile::GateProfile),
+        configure: impl FnOnce(&mut acdd_tasks::tasks::profile::GateProfile),
     ) -> Self {
         Self::with_profile_and_scope(&["src/lib.rs"], configure)
     }
 
     pub fn with_profile_and_scope(
         scope: &[&str],
-        configure: impl FnOnce(&mut forge_tasks::tasks::profile::GateProfile),
+        configure: impl FnOnce(&mut acdd_tasks::tasks::profile::GateProfile),
     ) -> Self {
         let mut profile = runner_profile(DEFAULT_SEAM, "");
         let fixture = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/acdd/orchestrator/lifecycle/role_fixture.py"
         );
-        let executable = env!("CARGO_BIN_EXE_contextunity-forge-mcp");
+        let executable = env!("CARGO_BIN_EXE_acdd");
         let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
         for role in profile.roles.values_mut() {
             role.guidance =
@@ -72,13 +72,13 @@ impl LifecycleHarness {
             .task_target("Execute the configured task lifecycle")
             .task_proof_policy("seam-test-first")
             .task_subtasks(&[
-                contextunity_forge_mcp::core::tasks::SubtaskSpec {
+                contextunity_acdd::core::tasks::SubtaskSpec {
                     subtask_ref: "verify".into(),
                     title: "Verify task behavior".into(),
                     status: "completed".into(),
                     evidence: Some("canonical task seam verified".into()),
                 },
-                contextunity_forge_mcp::core::tasks::SubtaskSpec {
+                contextunity_acdd::core::tasks::SubtaskSpec {
                     subtask_ref: "optional".into(),
                     title: "Explicitly cancelled work".into(),
                     status: "cancelled".into(),
@@ -87,7 +87,7 @@ impl LifecycleHarness {
             ])
             .build();
         let task = TaskHarness::disk_with_profile(&source, MANIFEST, profile);
-        fs::create_dir_all(task.root().join(".forge/lifecycle")).unwrap();
+        fs::create_dir_all(task.root().join(".acdd/lifecycle")).unwrap();
         fs::write(
             task.root().join("src/lib.rs"),
             "pub fn example() -> bool { true }\n",
@@ -103,7 +103,7 @@ impl LifecycleHarness {
     }
 
     pub fn records(&self) -> Vec<Value> {
-        fs::read_to_string(self.task.root().join(".forge/lifecycle/roles.jsonl"))
+        fs::read_to_string(self.task.root().join(".acdd/lifecycle/roles.jsonl"))
             .unwrap_or_default()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -113,26 +113,26 @@ impl LifecycleHarness {
     pub fn with_repairable_check() -> Self {
         let h = Self::with_profile(|profile| {
             profile.commands.insert("repairable-check".into(), serde_json::from_value(json!({
-                "command": "if test -e .forge/lifecycle/fail-check; then echo 'test result: FAILED. 0 passed; 1 failed'; exit 1; else .forge/runner_fixture; fi",
+                "command": "if test -e .acdd/lifecycle/fail-check; then echo 'test result: FAILED. 0 passed; 1 failed'; exit 1; else .acdd/runner_fixture; fi",
                 "output": {"require_counts": true, "seam_ref_pattern": "--seam-ref (\\S+)", "counts": {"passed": "(\\d+) passed", "failed": "(\\d+) failed"}}
             })).unwrap());
             let gate = profile.find_gate_mut("runtime-check").unwrap();
             gate.command = Some("repairable-check".into());
             gate.on_fail = Some("build".into());
         });
-        fs::write(h.root().join(".forge/lifecycle/fail-check"), "").unwrap();
+        fs::write(h.root().join(".acdd/lifecycle/fail-check"), "").unwrap();
         h
     }
 
     pub fn add_second_case(&mut self) -> String {
         let subtasks = [
-            contextunity_forge_mcp::core::tasks::SubtaskSpec {
+            contextunity_acdd::core::tasks::SubtaskSpec {
                 subtask_ref: "verify".into(),
                 title: "Verify task behavior".into(),
                 status: "completed".into(),
                 evidence: Some("canonical task seam verified".into()),
             },
-            contextunity_forge_mcp::core::tasks::SubtaskSpec {
+            contextunity_acdd::core::tasks::SubtaskSpec {
                 subtask_ref: "optional".into(),
                 title: "Explicitly cancelled work".into(),
                 status: "cancelled".into(),
@@ -178,7 +178,7 @@ impl LifecycleHarness {
 
     pub fn write_control(&self, name: &str, value: &Value) {
         fs::write(
-            self.task.root().join(".forge/lifecycle").join(name),
+            self.task.root().join(".acdd/lifecycle").join(name),
             serde_json::to_vec(value).unwrap(),
         )
         .unwrap();

@@ -6,8 +6,8 @@ const TASK_ID: &str = "forge-mcp/m-scope-sync:owner";
 fn scope_fixture() -> Workspace {
     let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     root.write("src/entry.rs", "pub fn entry() {}\n");
     root.write("tests/admitted.rs", "// admitted test source\n");

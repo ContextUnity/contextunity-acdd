@@ -18,7 +18,7 @@ fn root_relative_browser_assets_do_not_resolve_into_another_workspace() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     let linked = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [.]\nlinked_workspaces:\n  - name: assets\n    path: '{}'\n    roots: [.]\n",
             linked.root().display()
@@ -268,8 +268,7 @@ fn overview_attributes_disjoint_script_islands_without_claiming_template_lines()
             rusqlite::params!["11", "schema_version"],
         )
         .unwrap();
-    let error =
-        contextunity_forge_mcp::db::reader::open(&workspace.db(), workspace.root()).unwrap_err();
+    let error = contextunity_acdd::db::reader::open(&workspace.db(), workspace.root()).unwrap_err();
     assert!(
         error.to_string().contains("incompatible database schema"),
         "{error}"

@@ -5,7 +5,7 @@ title: Workspace configuration
 
 # Workspace configuration
 
-`forge-mcp.yaml` is optional. Without it, Forge scans the workspace root and excludes common build and cache directories. `guide init` writes a starter file. Put the adapter in the workspace root; `build` and `scan` can select another in-root file with `--adapter`.
+`acdd.yaml` is optional. Without it, ACDD scans the workspace root and excludes common build and cache directories. `guide init` writes a starter file. Put the adapter in the workspace root; `build` and `scan` can select another in-root file with `--adapter`.
 
 ## Indexing scope
 
@@ -33,7 +33,7 @@ linked_workspaces:
 
 `roots` and `docs` are literal, relative directories or paths inside the workspace. `milestones` and `plans` default to `docs/milestones` and `docs/plans` when omitted. Their `*` segments match one directory component (for example, `extensions/*/docs/milestones`). Markdown and MDX in admitted documentation locations, including milestone and plan documents, remain searchable and available for graph navigation; this does not change which configured directories task discovery reads. Non-document files in those directories stay outside the source index. `ignore` matches file or directory basenames. The scanner admits compiled source extensions and Markdown/MDX within these roots; scan roots do not define import or package roots. Unavailable linked workspaces are skipped. A linked entry with `enabled: false` is excluded; omission of `enabled` means true.
 
-The default basename exclusions cover `.git`, `.forge`, `target`, `node_modules`, `.venv`, `__pycache__`, `build`, `dist`, `coverage`, `.cache`, `.next`, `.nuxt`, `.svelte-kit`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, and `.gradle`. The scanner also honors `.gitignore` and skips symbolic links. Add project-specific generated directories with `ignore`; authored source under an excluded basename can be scoped explicitly with a different directory name.
+The default basename exclusions cover `.git`, `.acdd`, `target`, `node_modules`, `.venv`, `__pycache__`, `build`, `dist`, `coverage`, `.cache`, `.next`, `.nuxt`, `.svelte-kit`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, and `.gradle`. The scanner also honors `.gitignore` and skips symbolic links. Add project-specific generated directories with `ignore`; authored source under an excluded basename can be scoped explicitly with a different directory name.
 
 The index records linked paths under their configured workspace names. Changing source scope or linked-workspace settings causes the MCP server to rebuild or update its owned index on the next database read. CLI readers automatically build a missing or schema-incompatible index, but do not refresh existing indexed files after source changes; run `build` or `delta` to update CLI results.
 
@@ -55,7 +55,7 @@ limits:
   memory_budget_mb: 200
 ```
 
-`memory_budget_mb` must be a positive integer whose MiB-to-byte conversion fits in `u64`. When omitted, `FORGE_MEMORY_BUDGET_MB` supplies the same setting; when both are omitted, the builder chooses an adaptive budget from available memory. The YAML value takes precedence over the environment. The budget controls extraction batch sizing and the SQLite cache. Changing the budget preserves extracted facts and per-domain commitments, but an explicit YAML value is part of the workspace configuration fingerprint and can change the overall output root. An environment-only override is transient and leaves the adapter policy fingerprint unchanged. A single admitted file can exceed the budget because the builder must hold that file while parsing it, but source memory remains bounded by the configured batch and file-size limit.
+`memory_budget_mb` must be a positive integer whose MiB-to-byte conversion fits in `u64`. When omitted, `ACDD_MEMORY_BUDGET_MB` supplies the same setting; when both are omitted, the builder chooses an adaptive budget from available memory. The YAML value takes precedence over the environment. The budget controls extraction batch sizing and the SQLite cache. Changing the budget preserves extracted facts and per-domain commitments, but an explicit YAML value is part of the workspace configuration fingerprint and can change the overall output root. An environment-only override is transient and leaves the adapter policy fingerprint unchanged. A single admitted file can exceed the budget because the builder must hold that file while parsing it, but source memory remains bounded by the configured batch and file-size limit.
 
 ## Repository documentation admission
 
@@ -67,7 +67,7 @@ this indexing scope does not change task-discovery or authority rules.
 
 ## Source-only linked libraries
 
-Set `ignore` inside each linked entry to exclude that library's vendor directories and build outputs. A linked entry does not inherit the target library's `forge-mcp.yaml` settings. Keep the same roots and exclusions in the library's own adapter and its consumers.
+Set `ignore` inside each linked entry to exclude that library's vendor directories and build outputs. A linked entry does not inherit the target library's `acdd.yaml` settings. Keep the same roots and exclusions in the library's own adapter and its consumers.
 
 ```yaml
 linked_workspaces:
@@ -84,8 +84,8 @@ Ignore names are literal basenames, not glob patterns. Add a directory such as `
 
 ## Task storage
 
-Task operations read `forge-mcp.yaml`; an omitted `tasks_db` defaults to
-`.forge/tasks.sqlite`. Relative paths automatically resolve against the primary
+Task operations read `acdd.yaml`; an omitted `tasks_db` defaults to
+`.acdd/tasks.sqlite`. Relative paths automatically resolve against the primary
 worktree root in linked git worktrees (via `git rev-parse --git-common-dir`)
 or the local configuration directory in standalone workspaces, enabling zero-config
 cross-worktree task coordination without machine-specific absolute paths.
@@ -129,7 +129,7 @@ index publication lock; opening an initialized task store needs no writer lock.
 Set root `agents_guidance` to a path inside the root repository. It defaults to
 `AGENTS.md`. Claim and inspect include that path and stage-specific
 `workflow_guidance`. A `TASK_GUIDANCE_MISSING` warning is raised if the `agents_guidance`
-file is missing, does not reference `contextunity-forge`, the `contextunity-forge` skill
+file is missing, does not reference `acdd`, the `acdd` skill
 is not installed, or `.gitignore` lacks the canonical protective rules.
 
 Linked entries opt into the primary task store with `tasks.enabled: true`.
@@ -151,13 +151,13 @@ response:
     max_body_lines: 35
 ```
 
-`page_size` accepts 1–100; `max_output_bytes` accepts 1,024–98,304 and defaults to 98,304. Smaller configured byte limits remain authoritative; this repository's `forge-mcp.yaml` explicitly selects 65,536 bytes. The budget counts serialized UTF-8 content, response metadata, and JSON or Markdown escaping/framing. Overflowing paged collections retain whole records and update their pagination cursor to the number actually returned; a single record or required metadata that cannot fit returns an actionable bounded error. `code_map_inspect` and `code_map_explain` source previews default to 5 leading lines and 200 body lines. They accept 0–20 leading lines and 1–500 body lines; configured `source_context` values use those same bounds. This repository overrides the preview body limit to 35 in `forge-mcp.yaml`. `forge_read` uses the configured leading-line default but returns the complete selected symbol when its serialized response fits `max_output_bytes`; an explicit `max_body_lines` is normalized to at least one and limits the returned body. Oversized snippets page at complete-line boundaries; a single line that cannot fit returns a budget error and a local-file recovery hint. `detail` is `compact` or `full`. These settings control presentation and do not change extracted facts or require an index rebuild. Unknown response fields and out-of-range values are rejected.
+`page_size` accepts 1–100; `max_output_bytes` accepts 1,024–98,304 and defaults to 98,304. Smaller configured byte limits remain authoritative; this repository's `acdd.yaml` explicitly selects 65,536 bytes. The budget counts serialized UTF-8 content, response metadata, and JSON or Markdown escaping/framing. Overflowing paged collections retain whole records and update their pagination cursor to the number actually returned; a single record or required metadata that cannot fit returns an actionable bounded error. `code_map_inspect` and `code_map_explain` source previews default to 5 leading lines and 200 body lines. They accept 0–20 leading lines and 1–500 body lines; configured `source_context` values use those same bounds. This repository overrides the preview body limit to 35 in `acdd.yaml`. `acdd_read` uses the configured leading-line default but returns the complete selected symbol when its serialized response fits `max_output_bytes`; an explicit `max_body_lines` is normalized to at least one and limits the returned body. Oversized snippets page at complete-line boundaries; a single line that cannot fit returns a budget error and a local-file recovery hint. `detail` is `compact` or `full`. These settings control presentation and do not change extracted facts or require an index rebuild. Unknown response fields and out-of-range values are rejected.
 
-The root `forge-mcp.yaml` and the file selected with CLI `--adapter` are configuration rather than indexed sources. Nested files with that name and linked-workspace adapters remain ordinary YAML sources when admitted by their configured roots. A linked workspace's own adapter does not control the parent index.
+The root `acdd.yaml` and the file selected with CLI `--adapter` are configuration rather than indexed sources. Nested files with that name and linked-workspace adapters remain ordinary YAML sources when admitted by their configured roots. A linked workspace's own adapter does not control the parent index.
 
 ## Declarative ACDD profile and role configuration
 
-`handoff_pruning` is a project setting in `forge-mcp.yaml`, enabled by default
+`handoff_pruning` is a project setting in `acdd.yaml`, enabled by default
 for every workflow. Handoff removes terminal milestone tasks and their SQLite
 claims, gate evidence, revisions, subtasks, and blackboard messages, retaining a
 small tombstone and the durable archive manifest. Set `handoff_pruning: false`
@@ -169,40 +169,40 @@ The ACDD workflow engine supports declarative customization of gates, review con
 ### Loading precedence
 1. Task specification: `acdd_profile: "<path>:<sha256_prefix>"` in `task.spec.acdd_profile`
 2. Milestone frontmatter: `acdd_profile: "<path>:<sha256_prefix>"` in milestone YAML frontmatter
-3. Adapter path link in `forge-mcp.yaml` under `acdd_profile: "<path>"`
-4. Default repository path `.forge/acdd/profile.yaml`
-5. Embedded `acdd.default.yaml` (baseline defaults)
+3. Adapter path link in `acdd.yaml` under `acdd_profile: "<path>"`
+4. Default repository path `.acdd/profile.yaml`
+5. Embedded `acdd.profile.yaml` (baseline defaults)
 
 Profiles in linked workspaces are strictly **ignored**; only the active workspace root defines the ACDD profile.
 
-In `forge-mcp.yaml`, `acdd_profile` specifies a path link to the profile file (e.g. `acdd_profile: ".forge/acdd/profile.yaml"`), keeping the adapter decoupled from the profile specification.
+In `acdd.yaml`, `acdd_profile` specifies a path link to the profile file (e.g. `acdd_profile: ".acdd/profile.yaml"`), keeping the adapter decoupled from the profile specification.
 
-Any present or referenced configuration file with invalid YAML syntax or unrecognized fields fails closed with `ACDD_PROFILE_SCHEMA_INVALID` diagnostics. Task stage operations (claims, submissions, CLI/MCP stage arguments) validate that the stage exists in the active profile. If a task references a stage not defined in the active profile's `gates`, Forge fails closed with `TASK_STAGE_UNKNOWN`, naming the unrecognized stage and the active profile's available gates, advising to either migrate the task records or pin the intended profile via `acdd_profile: <path>:<sha256_prefix>`.
+Any present or referenced configuration file with invalid YAML syntax or unrecognized fields fails closed with `ACDD_PROFILE_SCHEMA_INVALID` diagnostics. Task stage operations (claims, submissions, CLI/MCP stage arguments) validate that the stage exists in the active profile. If a task references a stage not defined in the active profile's `gates`, ACDD fails closed with `TASK_STAGE_UNKNOWN`, naming the unrecognized stage and the active profile's available gates, advising to either migrate the task records or pin the intended profile via `acdd_profile: <path>:<sha256_prefix>`.
 
 ### Gate IDs, proof kinds, commands, and policies
 
-Each gate declares a stable `id`. The `proof` field is optional because [`infer_gate_proof`](../../crates/forge-tasks/src/tasks/profile/normalize.rs) automatically infers the internal verification mode (`ProofKind`) from the gate's structural attributes in priority order: `receipt: true` $\implies$ `delivery`, `expected_failure` $\implies$ `contract`, `command` $\implies$ `command`, `policy` or `contours` $\implies$ `review`, and otherwise `none`. Explicit `proof` values (`contract`, `command`, `seam_test`, `review`, `delivery`, `none`) override inference, `proof: <catalog_name>` references a reusable schema in the top-level `proofs:` catalog (`ProofCatalogDef`), and `proof: { scheme: ... }` defines an inline recursive JSON Schema on the gate; the submitted payload must then use `scheme_proof` and match that schema. When any pre-task root gate (`cursor.root_index < task_position`) passes with a `scheme_proof` containing `tasks: { "<task_ref>": { ... } }`, Forge writes a `gate_transitions` row per task (`subject = <full_task_id>`) and automatically injects only that task's slice into `context_bundle` upon `task claim`. Gate IDs contain ASCII letters, digits, `_`, and `-`, and task rows persist qualified leaf stage IDs directly in `stage`.
+Each gate declares a stable `id`. The `proof` field is optional because [`infer_gate_proof`](../../crates/acdd-tasks/src/tasks/profile/normalize.rs) automatically infers the internal verification mode (`ProofKind`) from the gate's structural attributes in priority order: `receipt: true` $\implies$ `delivery`, `expected_failure` $\implies$ `contract`, `command` $\implies$ `command`, `policy` or `contours` $\implies$ `review`, and otherwise `none`. Explicit `proof` values (`contract`, `command`, `seam_test`, `review`, `delivery`, `none`) override inference, `proof: <catalog_name>` references a reusable schema in the top-level `proofs:` catalog (`ProofCatalogDef`), and `proof: { scheme: ... }` defines an inline recursive JSON Schema on the gate; the submitted payload must then use `scheme_proof` and match that schema. When any pre-task root gate (`cursor.root_index < task_position`) passes with a `scheme_proof` containing `tasks: { "<task_ref>": { ... } }`, ACDD writes a `gate_transitions` row per task (`subject = <full_task_id>`) and automatically injects only that task's slice into `context_bundle` upon `task claim`. Gate IDs contain ASCII letters, digits, `_`, and `-`, and task rows persist qualified leaf stage IDs directly in `stage`.
 
 `commands` is a registry keyed by command ID. Each entry can be a shell command string, a `by_pattern` glob dispatcher, or an object with `command` and optional `description`. A command-proof gate accepts only a registered command ID or its registered command text. `policies` holds nested YAML settings; overrides merge recursively. Cognitive review contours live under `guidance.contour.<name>` (e.g. `guidance.contour.paths`, `guidance.contour.claims`), where each contour specifies criteria and descriptions; overrides merge per contour key. Role entries merge by role. Under `inherit: default` (the default when `inherit` is omitted), `gates:` merges recursively by gate `id` (and `- tasks:` container) with the embedded baseline before hierarchy normalization, so repository overlays only need to specify gate overrides such as `command` bindings; setting `inherit: none` compiles a standalone gate graph from scratch. References such as `fail`, `independent_from`, and `need` must name valid preceding gates; delivery `need` sources must be review-proof gates. When a nested container branch (such as `- id: seam` with `when: seam`) produces a newer candidate snapshot at `seam.integrate` and approves it at `seam.review`, `deliver` resolves the container prefix via `canonical_stage_id` and validates `seam.review` against the `seam.integrate` snapshot.
 
-Schema nodes support `object`, `array`, `string`, `integer`, `number`, `boolean`, and `null`. Objects can declare `properties`, `required`, `additionalProperties`, and `enum`; arrays require an `items` schema. The compiler rejects invalid fields, undefined required properties, invalid child schemas, unresolved gate references, and task profiles without a terminal delivery gate. See the [canonical profile example](acdd_profile.yaml.example) (symlinked from the Forge skill) for an executable multi-gate workflow.
+Schema nodes support `object`, `array`, `string`, `integer`, `number`, `boolean`, and `null`. Objects can declare `properties`, `required`, `additionalProperties`, and `enum`; arrays require an `items` schema. The compiler rejects invalid fields, undefined required properties, invalid child schemas, unresolved gate references, and task profiles without a terminal delivery gate. See the [canonical profile example](acdd_profile.yaml.example) (symlinked from the ACDD skill) for an executable multi-gate workflow.
 
 ### Profile pinning, SQLite metadata, and tampering protection
 
 Custom profiles pinned at planning time use the single-line string format combining file path and SHA-256 hash prefix:
 
 ```yaml
-acdd_profile: ".forge/acdd/profile.yaml:a1b2c3d"
+acdd_profile: ".acdd/profile.yaml:a1b2c3d"
 ```
 
 - **Format**: `<path>:<sha256_prefix>`, where `<path>` is the relative path to the profile file, followed by a colon and at least 7 lowercase hexadecimal characters representing the SHA-256 hash prefix of the file.
 - **SQLite Metadata**: During `task sync`, the pinned `<path>:<sha256_prefix>` is persisted into task metadata in SQLite.
-- **Integrity Validation**: On every gate claim and execution, Forge verifies that the file hash on disk matches the recorded prefix in SQLite. If mismatched or missing, Forge fails closed with `TASK_PROFILE_TAMPERED`.
-- **Targeted Loading**: Profile compilation strictly loads the targeted profile file (compiled over embedded defaults); neighbor files in `.forge/acdd/` are not implicitly merged.
-- **Protected scope**: Configuration paths under `.forge/acdd/**` are protected system paths and cannot be added dynamically via `extend_scope` (`TASK_SCOPE_PROTECTED`) during execution.
-- **Dirty system file prohibition**: During `task_claim`, gate execution, and `task_submit`, Forge checks worktree git status. If any file under `.forge/acdd/**` is dirty (modified, unstaged, staged, or untracked) and is not explicitly admitted in the active task's initial planning-time `task.spec.scope`, Forge fails closed with `TASK_SCOPE_VIOLATION`. Only tasks explicitly contracted to alter profiles at planning time (declaring the path in initial `scope`) can legally modify it during `build`.
+- **Integrity Validation**: On every gate claim and execution, ACDD verifies that the file hash on disk matches the recorded prefix in SQLite. If mismatched or missing, ACDD fails closed with `TASK_PROFILE_TAMPERED`.
+- **Targeted Loading**: Profile compilation strictly loads the targeted profile file (compiled over embedded defaults); neighbor files in `.acdd/` are not implicitly merged.
+- **Protected scope**: Configuration paths under `.acdd/**` are protected system paths and cannot be added dynamically via `extend_scope` (`TASK_SCOPE_PROTECTED`) during execution.
+- **Dirty system file prohibition**: During `task_claim`, gate execution, and `task_submit`, ACDD checks worktree git status. If any file under `.acdd/**` is dirty (modified, unstaged, staged, or untracked) and is not explicitly admitted in the active task's initial planning-time `task.spec.scope`, ACDD fails closed with `TASK_SCOPE_VIOLATION`. Only tasks explicitly contracted to alter profiles at planning time (declaring the path in initial `scope`) can legally modify it during `build`.
 - **Zero runtime backward compatibility boundary**: Zero backward compatibility applies strictly to SQLite runtime storage and active milestone manifests. Runtime code speaks exclusively clean entities (`command_proof`, clean gate tokens, canonical topics). Historical archive receipts in `docs/milestones/archive/` are historical artifacts exempt from active profile receipt schema validation.
-- **Delivery auto_commit, baseline HEAD consistency, and handoff navigation**: When `auto_commit: true` (default in profile), delivery automatically creates a Git commit from the candidate snapshot tree of the nearest predecessor gate with snapshot persistence (`save: snapshot` or `save.post: snapshot`, which is `build` in the default profile, whose candidate tree SHA is verified across all `need` review gates) plus the milestone receipt, with parent `HEAD`. Forge verifies that `git rev-parse HEAD` matches `candidate_baseline_head` (the exact commit SHA of HEAD captured when the candidate snapshot was created). If HEAD has diverged (i.e. unreviewed commits exist on the branch), delivery fails closed with `TASK_DELIVERY_COMMIT_FAILED`. Hooks are enforced. If `git commit` fails, the SQLite transaction rolls back atomically, leaving the task uncompleted at `deliver` with an explicit error, allowing the independent reviewer to reject the task with findings back to `fail` (e.g. `build`) or retry. The created delivery commit SHA is saved in the task's delivery receipt in SQLite. After branch integration, handoff validates content-bound final review/verification and immutable task proofs. Branch history may be rebased or squashed without preserving per-task landing SHAs. Task commit pointers are optional navigation: known or uniquely content-equivalent pointers are refreshed; unresolved pointers are omitted. `record_task_commits: false` (or `commit_tracking: off` / `milestone_only`) omits individual navigation pointers in both Markdown and SQLite. Accepted gate proofs and protected Git proof objects remain unchanged. See [handoff evidence](tasks.md#milestone-cli-lifecycle).
+- **Delivery auto_commit, baseline HEAD consistency, and handoff navigation**: When `auto_commit: true` (default in profile), delivery automatically creates a Git commit from the candidate snapshot tree of the nearest predecessor gate with snapshot persistence (`save: snapshot` or `save.post: snapshot`, which is `build` in the default profile, whose candidate tree SHA is verified across all `need` review gates) plus the milestone receipt, with parent `HEAD`. ACDD verifies that `git rev-parse HEAD` matches `candidate_baseline_head` (the exact commit SHA of HEAD captured when the candidate snapshot was created). If HEAD has diverged (i.e. unreviewed commits exist on the branch), delivery fails closed with `TASK_DELIVERY_COMMIT_FAILED`. Hooks are enforced. If `git commit` fails, the SQLite transaction rolls back atomically, leaving the task uncompleted at `deliver` with an explicit error, allowing the independent reviewer to reject the task with findings back to `fail` (e.g. `build`) or retry. The created delivery commit SHA is saved in the task's delivery receipt in SQLite. After branch integration, handoff validates content-bound final review/verification and immutable task proofs. Branch history may be rebased or squashed without preserving per-task landing SHAs. Task commit pointers are optional navigation: known or uniquely content-equivalent pointers are refreshed; unresolved pointers are omitted. `record_task_commits: false` (or `commit_tracking: off` / `milestone_only`) omits individual navigation pointers in both Markdown and SQLite. Accepted gate proofs and protected Git proof objects remain unchanged. See [handoff evidence](tasks.md#milestone-cli-lifecycle).
 
 ### Role and model configuration
 
@@ -218,7 +218,7 @@ An empty model list defaults to the active session model. Recommendations merge
 field-wise across profile overrides.
 
 ```yaml
-# .forge/acdd/profile.yaml
+# .acdd/profile.yaml
 roles:
   builder:
     models:
@@ -231,7 +231,7 @@ roles:
     guidance: "Run independent review on a dedicated high-reasoning model."
 ```
 
-During `task_claim` or `task_manage(inspect)`, Forge provides the resolved
+During `task_claim` or `task_manage(inspect)`, ACDD provides the resolved
 `role`, `mode` (`subagent` or `inline`), and `role_guide` in `workflow_guidance`. `role` specifies the active role
 identifier, `mode` specifies whether the role executes as an isolated subagent or inline in the current agent (with role guidance automatically adapted for inline execution), and `role_guide` combines advisory guidance with configured
 recommended models (e.g. `Recommended model: gpt6-luna:xhigh or sol-6.1:high.`).
@@ -243,35 +243,34 @@ When reuse is enabled, guidance adds the targeted step
 
 ### Repository gitignore and profile versioning
 
-Because declarative profiles and custom adapters live inside `.forge/` (including `.forge/acdd/profile.yaml`, other `.forge/acdd/**` files, and `.forge/frameworks/**` extensions), repositories must not exclude the entire `.forge/` directory in `.gitignore`. Ignore only Forge runtime state:
+Because declarative profiles and custom adapters live inside `.acdd/` (including `.acdd/profile.yaml`, other `.acdd/**` files, and `.acdd/frameworks/**` extensions), repositories must not exclude the entire `.acdd/` directory in `.gitignore`. Ignore only ACDD runtime state:
 
 ```gitignore
-!/.forge/
-!/.forge/acdd/
-!/.forge/acdd/**
-!/.forge/frameworks/
-!/.forge/frameworks/**
-.forge/*.sqlite*
-.forge/*.lock
-.forge/*.log
-.forge/*.jsonl
-.forge/tasks/
-.forge/checkpoints.json
+!/.acdd/
+!/.acdd/profile.yaml
+!/.acdd/frameworks/
+!/.acdd/frameworks/**
+.acdd/*.sqlite*
+.acdd/*.lock
+.acdd/*.log
+.acdd/*.jsonl
+.acdd/tasks/
+.acdd/checkpoints.json
 ```
 
-Place this active-rule block after all other project ignore patterns. The five negations restore `.forge/` and every path under the complete profile and framework trees; the final six patterns keep Forge runtime state ignored. Forge requires this exact final active-rule suffix and checks its effective matches during task guidance validation, so earlier wildcard ignores and negations cannot hide nested configuration files or expose runtime paths. Blank lines and comments may follow; another active pattern may not. Forge warns when `.gitignore` is missing, omits a rule, or has another active pattern after this block. A shallow exception such as `!.forge/*.yaml` does not restore nested configuration beneath an ignored `.forge/` directory. The canonical template is `skills/contextunity-forge/references/gitignore.example`.
+Place this active-rule block after all other project ignore patterns. The four negations restore `.acdd/`, its profile, and the framework tree; the final six patterns keep ACDD runtime state ignored. ACDD requires this exact final active-rule suffix and checks its effective matches during task guidance validation, so earlier wildcard ignores and negations cannot hide nested configuration files or expose runtime paths. Blank lines and comments may follow; another active pattern may not. ACDD warns when `.gitignore` is missing, omits a rule, or has another active pattern after this block. A shallow exception such as `!.acdd/*.yaml` does not restore nested configuration beneath an ignored `.acdd/` directory. The canonical template is `skills/acdd/references/gitignore.example`.
 
 ### Guidance file and skill reference validation
 
-Task operations require repository guidance (configured via `agents_guidance`, defaulting to `AGENTS.md`) and the `contextunity-forge` skill:
-- **Skill reference**: The guidance file must explicitly reference the `contextunity-forge` skill (exact token matching or contextual `contextunity-forge-mcp skill` mentions). Match visible Markdown text, including link labels; link destinations do not count.
-- **Skill installation**: The skill must be installed either in the repository (`.agents/skills/contextunity-forge/SKILL.md`) or globally (`~/.agents/skills/contextunity-forge/SKILL.md`).
-- **Profile tracking**: Keep `.forge/acdd/**` and `.forge/frameworks/**` trackable with the final protection block and six canonical runtime ignore rules above. Keep the block after all other active `.gitignore` rules.
+Task operations require repository guidance (configured via `agents_guidance`, defaulting to `AGENTS.md`) and the `acdd` skill:
+- **Skill reference**: The guidance file must explicitly reference the `acdd` skill (exact token matching or contextual `acdd skill` mentions). Match visible Markdown text, including link labels; link destinations do not count.
+- **Skill installation**: The skill must be installed either in the repository (`.agents/skills/acdd/SKILL.md`) or globally (`~/.agents/skills/acdd/SKILL.md`).
+- **Profile tracking**: Keep `.acdd/profile.yaml` and `.acdd/frameworks/**` trackable with the final protection block and six canonical runtime ignore rules above. Keep the block after all other active `.gitignore` rules.
 
 See [MCP tools](mcp-tools.md) for continuation arguments and [limits and freshness](../runbooks/limits-and-freshness.md) for computation budgets.
 ## Sensitive reader paths
 
-Configure `sensitive` in `forge-mcp.yaml` with workspace-relative gitignore-style
+Configure `sensitive` in `acdd.yaml` with workspace-relative gitignore-style
 patterns. The reader checks the requested path and the resolved workspace-relative
 path before reading or exporting content, including configured linked workspaces.
 Patterns apply to output destinations as well as inputs.

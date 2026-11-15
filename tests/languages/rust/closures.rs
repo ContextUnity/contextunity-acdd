@@ -324,7 +324,7 @@ fn tuple_destructuring_carries_real_external_receivers() {
             }
         }
         fn run_root_crate_import() {
-            use contextunity_forge_mcp::engine::ast;
+            use contextunity_acdd::engine::ast;
             let _ = ast::extract("test.rs", "rust", "fn main() {}");
         }
     "#;
@@ -338,12 +338,12 @@ fn tuple_destructuring_carries_real_external_receivers() {
     let facts = sources
         .iter()
         .map(|(path, source)| {
-            let parsed = contextunity_forge_mcp::engine::ast::extract(path, "rust", source)
+            let parsed = contextunity_acdd::engine::ast::extract(path, "rust", source)
                 .unwrap_or_else(|error| panic!("{path} (rust): {error}"));
             ((*path).to_owned(), parsed)
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    let seam_graph = contextunity_forge_mcp::engine::linker::link(&facts);
+    let seam_graph = contextunity_acdd::engine::linker::link(&facts);
     let file_path_cov = coverage(&seam_graph, "file.path");
     assert_eq!(
         file_path_cov.status, "external",
@@ -373,8 +373,6 @@ fn tuple_destructuring_carries_real_external_receivers() {
 #[test]
 fn walkdir_type_is_registered() {
     assert!(
-        contextunity_forge_mcp::engine::languages::rust::is_registered_rust_type(
-            "walkdir::WalkDir"
-        )
+        contextunity_acdd::engine::languages::rust::is_registered_rust_type("walkdir::WalkDir")
     );
 }

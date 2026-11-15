@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use std::path::Path;
 
 use crate::common::Workspace;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::response::{QueryOptions, ResponsePolicy},
     db::reader,
 };
@@ -41,7 +41,7 @@ fn delta_document_suffix_links_match_cold_after_edit_and_restore() {
     ] {
         workspace.write("docs/guide.md", source);
         workspace.delta(&["docs/guide.md"]);
-        let cold = workspace.path(".forge/cold.sqlite");
+        let cold = workspace.path(".acdd/cold.sqlite");
         workspace.build_to(&cold);
         assert_eq!(doc_edges(&workspace.db()), doc_edges(&cold));
     }
@@ -57,7 +57,7 @@ fn delta_and_cold_roots_match_after_document_rowid_changes() {
 
     workspace.write("docs/guide.md", "# Guide\nReplace the first token.\n");
     let delta = workspace.delta(&["docs/guide.md"]);
-    let cold = workspace.build_to(workspace.path(".forge/cold.sqlite"));
+    let cold = workspace.build_to(workspace.path(".acdd/cold.sqlite"));
 
     assert_eq!(
         delta["output_root"], cold["output_root"],
@@ -99,7 +99,7 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
         workspace.write("provider.py", source);
         let report = workspace.delta(&["provider.py"]);
         assert!(report["affected_owners"].as_u64().unwrap() > 1, "{report}");
-        let cold = workspace.path(".forge/cold.sqlite");
+        let cold = workspace.path(".acdd/cold.sqlite");
         workspace.build_to(&cold);
         assert_eq!(doc_edges(&workspace.db()), doc_edges(&cold));
     }
@@ -127,7 +127,7 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
         workspace.write("docs/guide.md", document);
         workspace.write("docs/other.md", other);
         let delta = workspace.delta(&["provider.py", "docs/guide.md", "docs/other.md"]);
-        let cold_path = workspace.path(".forge/cold.sqlite");
+        let cold_path = workspace.path(".acdd/cold.sqlite");
         let cold = workspace.build_to(&cold_path);
         assert_eq!(delta["output_root"], cold["output_root"], "current cold/delta facts must agree: {source} / {document}");
         assert_eq!(doc_edges(&workspace.db()), doc_edges(&cold_path));
@@ -162,7 +162,7 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
 
     let identity_workspace = Workspace::new();
     let linked = Workspace::new();
-    identity_workspace.write("forge-mcp.yaml", &format!("roots: [.]\ndocs: [docs]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [src, frontend]\n    docs: [docs]\n", linked.root().display()));
+    identity_workspace.write("acdd.yaml", &format!("roots: [.]\ndocs: [docs]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [src, frontend]\n    docs: [docs]\n", linked.root().display()));
     identity_workspace.write(
         "primary.py",
         "def validate(): return 1\ndef primary_only(): return 2\n",
@@ -478,7 +478,7 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
         &format!("{exact_doc}\nA harmless delta keeps the same explicit source claim.\n"),
     );
     let delta = identity_workspace.delta(&["docs/exact-file.md"]);
-    let cold_path = identity_workspace.path(".forge/cold-identities.sqlite");
+    let cold_path = identity_workspace.path(".acdd/cold-identities.sqlite");
     let cold_report = identity_workspace.build_to(&cold_path);
     assert_eq!(
         delta["output_root"], cold_report["output_root"],
@@ -578,7 +578,7 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
         &ResponsePolicy::default(),
         Some(100),
         0,
-        Some(contextunity_forge_mcp::core::response::Detail::Full),
+        Some(contextunity_acdd::core::response::Detail::Full),
         None,
     )
     .unwrap();
@@ -640,7 +640,7 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
             None => linked.remove("src/header.py"),
         }
         let report = identity_workspace.delta(&["[library]/src/header.py"]);
-        let cold_path = identity_workspace.path(".forge/cold-context.sqlite");
+        let cold_path = identity_workspace.path(".acdd/cold-context.sqlite");
         let cold_report = identity_workspace.build_to(&cold_path);
         assert_eq!(
             report["output_root"], cold_report["output_root"],
@@ -755,7 +755,7 @@ fn readme_only_delta_preserves_verified_code_links_without_component_claims() {
                 "# Package Updated\nSee `pkg` for details and [`simple`](pkg/simple.py#L1) for the implementation.\n",
             );
             let delta = workspace.delta(&["README.md"]);
-            let cold = workspace.path(".forge/cold.sqlite");
+            let cold = workspace.path(".acdd/cold.sqlite");
             let cold_report = workspace.build_to(&cold);
             assert_eq!(delta["output_root"], cold_report["output_root"]);
             assert_eq!(doc_edges(&workspace.db()), doc_edges(&cold));

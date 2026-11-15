@@ -1,7 +1,7 @@
 use clap::Parser;
-use contextunity_forge_mcp::engine::milestones::init_from_manifest;
-use contextunity_forge_mcp::engine::tasks::blackboard;
-use contextunity_forge_mcp::{
+use contextunity_acdd::engine::milestones::init_from_manifest;
+use contextunity_acdd::engine::tasks::blackboard;
+use contextunity_acdd::{
     core::tasks::{AcddErrorCode, ContractType, Milestone},
     db::tasks_store::TasksStore,
     engine::milestones::{
@@ -117,8 +117,8 @@ scope: [src/shared/nested.rs]
 fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
     let workspace = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
     workspace.write(
-        "forge-mcp.yaml",
-        "tasks_db: .forge/tasks.sqlite\ntask_repository: forge-mcp\nmilestones: [docs/milestones]\n",
+        "acdd.yaml",
+        "tasks_db: .acdd/tasks.sqlite\ntask_repository: forge-mcp\nmilestones: [docs/milestones]\n",
     );
     let secondary = workspace.root().join("secondary");
     std::fs::create_dir_all(&secondary).expect("secondary participant directory is created");
@@ -134,7 +134,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
     .expect_err("missing skills must fail preflight");
     assert!(missing.to_string().contains("MILESTONE_PREFLIGHT_FAILED"));
     assert!(
-        !workspace.root().join(".forge/tasks.sqlite").exists(),
+        !workspace.root().join(".acdd/tasks.sqlite").exists(),
         "skill preflight runs before SQLite initialization"
     );
     assert!(
@@ -147,13 +147,10 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
         "---\nname: fixture-skill\n---\n",
     );
     workspace.write(
-        "forge-mcp.yaml",
-        "tasks_db: .forge/tasks.sqlite\ntask_repository: forge-mcp\nmilestones: [docs/milestones]\nmodules:\n  profile: minimal\n",
+        "acdd.yaml",
+        "tasks_db: .acdd/tasks.sqlite\ntask_repository: forge-mcp\nmilestones: [docs/milestones]\nmodules:\n  profile: minimal\n",
     );
-    workspace.write(
-        ".forge/acdd/profile.yaml",
-        "modules:\n  required: [blackboard]\n",
-    );
+    workspace.write(".acdd/profile.yaml", "modules:\n  required: [blackboard]\n");
     let disabled_requirement = init_from_manifest(
         workspace.root(),
         Path::new("docs/milestones/001-preflight.md"),
@@ -164,7 +161,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
         .to_string()
         .contains("FEATURE_REQUIRED_BY_PROFILE"));
     assert!(
-        !workspace.root().join(".forge/tasks.sqlite").exists(),
+        !workspace.root().join(".acdd/tasks.sqlite").exists(),
         "profile module validation runs before SQLite initialization"
     );
     assert!(
@@ -173,8 +170,8 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
     );
 
     workspace.write(
-        "forge-mcp.yaml",
-        "tasks_db: .forge/tasks.sqlite\ntask_repository: forge-mcp\nmilestones: [docs/milestones]\n",
+        "acdd.yaml",
+        "tasks_db: .acdd/tasks.sqlite\ntask_repository: forge-mcp\nmilestones: [docs/milestones]\n",
     );
     let overflow_manifest = manifest.replace(
         "task_ref: first\n",
@@ -191,7 +188,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
         .to_string()
         .contains("revision exceeds SQLite integer range"));
     assert!(
-        !workspace.root().join(".forge/tasks.sqlite").exists(),
+        !workspace.root().join(".acdd/tasks.sqlite").exists(),
         "revision validation runs before SQLite initialization"
     );
     assert!(
@@ -209,13 +206,13 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
     assert_eq!(initialized["milestone_id"], "preflight-fixture");
     assert_eq!(initialized["in_place"], true);
     assert_eq!(initialized["contract_count"], 2);
-    assert!(workspace.root().join(".forge/tasks.sqlite").is_file());
+    assert!(workspace.root().join(".acdd/tasks.sqlite").is_file());
     assert!(
         !secondary.join(".worktrees").exists(),
         "in-place preflight validates participants without creating worktrees"
     );
     let store = TasksStore::open_project(
-        &workspace.root().join(".forge/tasks.sqlite"),
+        &workspace.root().join(".acdd/tasks.sqlite"),
         "forge-mcp",
         "forge-mcp",
     )
@@ -228,7 +225,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
         workspace.root(),
         BlackboardRequest {
             action: BlackboardAction::Read,
-            scope: Some(contextunity_forge_mcp::engine::tasks::BlackboardScope::Milestone),
+            scope: Some(contextunity_acdd::engine::tasks::BlackboardScope::Milestone),
             milestone_ref: Some("docs/milestones/001-preflight.md".into()),
             task_id: None,
             recipient_task_id: None,
@@ -325,7 +322,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
         workspace.root(),
         BlackboardRequest {
             action: BlackboardAction::Read,
-            scope: Some(contextunity_forge_mcp::engine::tasks::BlackboardScope::Task),
+            scope: Some(contextunity_acdd::engine::tasks::BlackboardScope::Task),
             milestone_ref: Some("docs/milestones/001-preflight.md".into()),
             task_id: Some(recipient.into()),
             recipient_task_id: None,
@@ -350,7 +347,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
     #[derive(Parser)]
     struct TaskCli {
         #[command(subcommand)]
-        command: contextunity_forge_mcp::cli::task::TaskCommand,
+        command: contextunity_acdd::cli::task::TaskCommand,
     }
     let parsed = TaskCli::try_parse_from([
         "forge",
@@ -369,7 +366,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
         "CLI targeted preflight note",
     ])
     .expect("task blackboard CLI exposes a separate recipient option");
-    let cli_post = contextunity_forge_mcp::cli::task::run(workspace.root(), parsed.command)
+    let cli_post = contextunity_acdd::cli::task::run(workspace.root(), parsed.command)
         .expect("CLI routes the recipient to the blackboard owner");
     let cli_inspected = blackboard(
         workspace.root(),
@@ -415,7 +412,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
     #[derive(Parser)]
     struct MilestoneCli {
         #[command(subcommand)]
-        command: contextunity_forge_mcp::cli::milestone::MilestoneCommand,
+        command: contextunity_acdd::cli::milestone::MilestoneCommand,
     }
     let parsed = MilestoneCli::try_parse_from([
         "forge",
@@ -428,7 +425,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
         "Exercise the public milestone draft command.",
     ])
     .expect("milestone draft options are part of the public CLI schema");
-    let draft = contextunity_forge_mcp::cli::milestone::run(workspace.root(), parsed.command)
+    let draft = contextunity_acdd::cli::milestone::run(workspace.root(), parsed.command)
         .expect("milestone draft command creates a numbered contract");
     assert_eq!(draft["id"], "m-draft-fixture");
     assert!(workspace
@@ -440,8 +437,8 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
         let atomic_workspace =
             crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
         atomic_workspace.write(
-            "forge-mcp.yaml",
-            "tasks_db: .forge/tasks.sqlite\ntask_repository: forge-mcp\nmilestones: [docs/milestones]\n",
+            "acdd.yaml",
+            "tasks_db: .acdd/tasks.sqlite\ntask_repository: forge-mcp\nmilestones: [docs/milestones]\n",
         );
         atomic_workspace.write(
             ".agents/skills/fixture-skill/SKILL.md",
@@ -452,7 +449,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
         crate::acdd::support::init_git(&atomic_secondary);
         atomic_workspace.write("docs/milestones/001-preflight.md", manifest);
 
-        let database = atomic_workspace.root().join(".forge/tasks.sqlite");
+        let database = atomic_workspace.root().join(".acdd/tasks.sqlite");
         let store = TasksStore::open_project(&database, "forge-mcp", "forge-mcp")
             .expect("the atomicity fixture initializes its task database");
         store

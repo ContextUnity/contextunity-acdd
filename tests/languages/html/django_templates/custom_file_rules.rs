@@ -10,7 +10,7 @@ fn custom_file_rules() {
         workspace.write("app/views.py", "from workshop.renderer import emit as paint\n\ndef page(request):\n    return paint('catalog/card.html', request)\n");
         const TARGET: &str = "app/views/catalog/card.html";
         workspace.write(TARGET, "<p>Custom</p>\n");
-        let path = format!(".forge/frameworks/previously_unknown.{extension}");
+        let path = format!(".acdd/frameworks/previously_unknown.{extension}");
         let mut pack = serde_json::json!({
             "semantic_rules":[{"id":"custom-file","namespace":"custom","scope":"project","activation":[],"operation":{"kind":"call_to_file","language":"python","callee":{"kind":"imported","module":"workshop.renderer","export":"emit"},"argument":0,"target":{"kind":"project_path_suffix","prefix":"views/","language":"html"},"relation":"renders_template"}}]
         });
@@ -96,7 +96,7 @@ fn custom_file_rules() {
         independent["semantic_rules"][0]["operation"]["callee"]["module"] =
             "independent.renderer".into();
         workspace.write(
-            ".forge/frameworks/another.toml",
+            ".acdd/frameworks/another.toml",
             &toml::to_string(&independent).unwrap(),
         );
         workspace.write("app/other.py", "from independent.renderer import emit as paint\n\ndef page(request):\n    return paint('catalog/card.html', request)\n");
@@ -104,7 +104,7 @@ fn custom_file_rules() {
         empty["replace"] = true.into();
         empty["semantic_rules"] = serde_json::json!([]);
         write_pack(&empty);
-        workspace.delta(&[&path, ".forge/frameworks/another.toml", "app/other.py"]);
+        workspace.delta(&[&path, ".acdd/frameworks/another.toml", "app/other.py"]);
         assert_edges("app/views.py", None);
         assert_edges("app/other.py", Some(TARGET));
 

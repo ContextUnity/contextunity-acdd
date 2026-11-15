@@ -17,7 +17,7 @@ impl FrameworkHarness {
                 disabled.root().display()
             ),
         );
-        let adapter = contextunity_forge_mcp::engine::scanner::load_adapter(
+        let adapter = contextunity_acdd::engine::scanner::load_adapter(
             workspace.root(),
             Some(&workspace.path("custom-adapter.yaml")),
         )

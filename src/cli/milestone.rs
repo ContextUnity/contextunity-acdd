@@ -1,6 +1,6 @@
+use acdd_tasks::milestones::{self, Init};
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use forge_tasks::milestones::{self, Init};
 use serde_json::Value;
 use std::{
     io::{self, IsTerminal, Read},
@@ -145,16 +145,16 @@ pub fn run(root: &Path, command: MilestoneCommand) -> Result<Value> {
             in_place,
             target_base,
         } => {
-            let session = forge_tasks::store::host_session_fingerprint().ok_or_else(|| {
+            let session = acdd_tasks::store::host_session_fingerprint().ok_or_else(|| {
                 anyhow::anyhow!(
                     "TASK_RUN_SESSION_REQUIRED: supply the genuine host session identity"
                 )
             })?;
-            forge_tasks::engine::orchestrator::waves::run_milestone_waves(
+            acdd_tasks::engine::orchestrator::waves::run_milestone_waves(
                 root,
                 &id,
-                &forge_tasks::engine::orchestrator::waves::MilestoneRunOptions {
-                    task: forge_tasks::engine::orchestrator::task_runner::TaskRunOptions {
+                &acdd_tasks::engine::orchestrator::waves::MilestoneRunOptions {
+                    task: acdd_tasks::engine::orchestrator::task_runner::TaskRunOptions {
                         worktree: root.canonicalize()?,
                         worker_id: "milestone-run-coordinator".into(),
                         session_fingerprint: session,

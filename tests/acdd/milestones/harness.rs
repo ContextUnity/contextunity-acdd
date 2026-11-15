@@ -177,19 +177,14 @@ impl MilestoneHarness {
 - {{id: deliver, role: independent_reviewer, proof: delivery, receipt_review: security_review, review_sources: [review, security_review], reject_to: candidate_final, auto_commit: true}}
 "#)).unwrap();
         root.write(
-            ".forge/acdd/profile.yaml",
+            ".acdd/profile.yaml",
             &crate::acdd::support::standalone_profile_yaml(&profile),
         );
         // Both callers vary src/ candidates; their runner and profile stay fixed
         // through every gate, whose real red/green executions remain enabled.
         super::super::snapshot::precompile_runner(&root);
         root.write(path, &contract.build());
-        root.stage_forced_paths(&[
-            "src/lib.rs",
-            "forge-mcp.yaml",
-            ".forge/acdd/profile.yaml",
-            path,
-        ]);
+        root.stage_forced_paths(&["src/lib.rs", "acdd.yaml", ".acdd/profile.yaml", path]);
         root.commit_staged("initialize review workflow");
         root.sync(path).unwrap();
         root
@@ -279,7 +274,7 @@ impl MilestoneHarness {
     }
 
     pub(super) fn handoff_journals(&self) -> Vec<std::path::PathBuf> {
-        std::fs::read_dir(self.path(".forge"))
+        std::fs::read_dir(self.path(".acdd"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .filter(|path| {
@@ -296,7 +291,7 @@ impl MilestoneHarness {
     }
 
     pub(super) fn archived_project(&self, path: &str, repository: &str, project: &str) -> String {
-        contextunity_forge_mcp::db::tasks_store::read_milestone_archive(
+        contextunity_acdd::db::tasks_store::read_milestone_archive(
             self.root(),
             &self.path(path),
             repository,
@@ -424,10 +419,7 @@ impl MilestoneHarness {
         harness.active_path = format!("docs/milestones/010-{}.md", id.trim_start_matches("m-"));
         harness.write("src/lib.rs", "pub fn finish() {}\n");
         harness.write(&harness.active_path, &builder.build());
-        commit_handoff_fixture_inputs(
-            &harness,
-            &["forge-mcp.yaml", "src/lib.rs", &harness.active_path],
-        );
+        commit_handoff_fixture_inputs(&harness, &["acdd.yaml", "src/lib.rs", &harness.active_path]);
         harness.sync(&harness.active_path).unwrap();
         harness
     }
@@ -456,11 +448,11 @@ impl MilestoneHarness {
     }
 }
 
-pub(super) const HANDOFF_CRASH_WORKER: &str = "FORGE_TEST_HANDOFF_CRASH_WORKER";
-pub(super) const HANDOFF_CRASH_ROOT: &str = "FORGE_TEST_HANDOFF_CRASH_ROOT";
-pub(super) const HANDOFF_CRASH_MILESTONE: &str = "FORGE_TEST_HANDOFF_CRASH_MILESTONE";
-pub(super) const HANDOFF_CRASH_COMMIT: &str = "FORGE_TEST_HANDOFF_CRASH_COMMIT";
-pub(super) const HANDOFF_CRASH_EVIDENCE: &str = "FORGE_TEST_HANDOFF_CRASH_EVIDENCE";
+pub(super) const HANDOFF_CRASH_WORKER: &str = "ACDD_TEST_HANDOFF_CRASH_WORKER";
+pub(super) const HANDOFF_CRASH_ROOT: &str = "ACDD_TEST_HANDOFF_CRASH_ROOT";
+pub(super) const HANDOFF_CRASH_MILESTONE: &str = "ACDD_TEST_HANDOFF_CRASH_MILESTONE";
+pub(super) const HANDOFF_CRASH_COMMIT: &str = "ACDD_TEST_HANDOFF_CRASH_COMMIT";
+pub(super) const HANDOFF_CRASH_EVIDENCE: &str = "ACDD_TEST_HANDOFF_CRASH_EVIDENCE";
 
 pub(super) fn read_fixture_evidence(path: &str) -> milestone_engine::IntegrationEvidence {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
@@ -491,24 +483,24 @@ pub(super) fn handoff_with_journal_capture(
     // This process is deliberately killed at a journal boundary; recovery must
     // be tested after a real SIGKILL rather than an in-process error.
     let crash = phase.as_str();
-    let wrapper = root.root().join(".forge/journal-git/git");
-    root.write(".forge/journal-git/git", r#"#!/bin/sh
-if [ "$FORGE_FIXTURE_CRASH" = committed ] && [ -d "$PWD/.forge/captured" ] && [ ! -f "$PWD/docs/milestones/010-close.md" ]; then
+    let wrapper = root.root().join(".acdd/journal-git/git");
+    root.write(".acdd/journal-git/git", r#"#!/bin/sh
+if [ "$ACDD_FIXTURE_CRASH" = committed ] && [ -d "$PWD/.acdd/captured" ] && [ ! -f "$PWD/docs/milestones/010-close.md" ]; then
   kill -KILL "$PPID"
   exit 0
 fi
 if [ "$1" = update-ref ] && [ "$2" = refs/notes/forge ]; then
-  mkdir -p "$PWD/.forge/captured"
-  for journal in "$PWD"/.forge/handoff-*.json; do
-    [ ! -f "$journal" ] || cp "$journal" "$PWD/.forge/captured/"
+  mkdir -p "$PWD/.acdd/captured"
+  for journal in "$PWD"/.acdd/handoff-*.json; do
+    [ ! -f "$journal" ] || cp "$journal" "$PWD/.acdd/captured/"
   done
-  if [ "$FORGE_FIXTURE_CRASH" = note ]; then
+  if [ "$ACDD_FIXTURE_CRASH" = note ]; then
     /usr/bin/git "$@" || exit $?
     kill -KILL "$PPID"
     exit 0
   fi
 fi
-if [ "$FORGE_FIXTURE_CRASH" = enrolled ] && [ -d "$PWD/.forge/captured" ]; then
+if [ "$ACDD_FIXTURE_CRASH" = enrolled ] && [ -d "$PWD/.acdd/captured" ]; then
   reference=
   sha=
   for arg do
@@ -521,8 +513,8 @@ if [ "$FORGE_FIXTURE_CRASH" = enrolled ] && [ -d "$PWD/.forge/captured" ]; then
       payload=$(/usr/bin/git show "$sha:checkpoint.json" 2>/dev/null)
       case "$payload" in *'"intent":"'*)
         /usr/bin/git "$@" || exit $?
-        printf 'intent\n' >> "$PWD/.forge/intent-count"
-        if [ "$(wc -l < "$PWD/.forge/intent-count")" -ge 2 ]; then kill -KILL "$PPID"; fi
+        printf 'intent\n' >> "$PWD/.acdd/intent-count"
+        if [ "$(wc -l < "$PWD/.acdd/intent-count")" -ge 2 ]; then kill -KILL "$PPID"; fi
         exit 0;;
       esac
     fi;;
@@ -546,7 +538,7 @@ exec /usr/bin/git "$@"
         .env(HANDOFF_CRASH_MILESTONE, milestone)
         .env(HANDOFF_CRASH_EVIDENCE, evidence)
         .env_remove(HANDOFF_CRASH_COMMIT)
-        .env("FORGE_FIXTURE_CRASH", crash)
+        .env("ACDD_FIXTURE_CRASH", crash)
         .env(
             "PATH",
             format!(
@@ -583,7 +575,7 @@ exec /usr/bin/git "$@"
         }
     }
     let output = child.wait_with_output().unwrap();
-    let captured = match std::fs::read_dir(root.root().join(".forge/captured")) {
+    let captured = match std::fs::read_dir(root.root().join(".acdd/captured")) {
         Ok(entries) => entries
             .map(|entry| entry.unwrap().path())
             .collect::<Vec<_>>(),
@@ -597,7 +589,7 @@ exec /usr/bin/git "$@"
             (journal["binding"]["milestone"] == milestone).then(|| {
                 (
                     root.root()
-                        .join(".forge")
+                        .join(".acdd")
                         .join(captured.file_name().unwrap()),
                     journal,
                 )

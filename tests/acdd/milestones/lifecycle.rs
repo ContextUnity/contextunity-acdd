@@ -1,5 +1,5 @@
 use super::*;
-use contextunity_forge_mcp::core::tasks::profile::ProofKind;
+use contextunity_acdd::core::tasks::profile::ProofKind;
 
 const OWNER_ALIAS_CATALOG: &str = include_str!("../fixtures/milestones/owner_aliases.json");
 

@@ -3,7 +3,7 @@
 mod common;
 
 use common::{mcp_client::run_cli, Workspace};
-use contextunity_forge_mcp::db::reader;
+use contextunity_acdd::db::reader;
 use std::{
     fs,
     process::{Command, Stdio},
@@ -22,7 +22,7 @@ fn cli(workspace: &Workspace, args: &[&str]) -> std::process::Output {
 }
 
 fn cli_with_explicit_roots(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    Command::new(env!("CARGO_BIN_EXE_acdd"))
         .args(args)
         .output()
         .unwrap()
@@ -116,7 +116,7 @@ fn corrupt_database(workspace: &Workspace, corruption: Corruption) {
 }
 
 fn assert_no_integrity_snapshot_for_current_process() {
-    let prefix = format!("contextunity-forge-integrity-{}-", std::process::id());
+    let prefix = format!("contextunity-acdd-integrity-{}-", std::process::id());
     let leftovers: Vec<_> = fs::read_dir(std::env::temp_dir())
         .unwrap()
         .filter_map(|entry| entry.ok())
@@ -176,7 +176,7 @@ fn cli_rejects_fifo_database_without_blocking() {
         .unwrap()
         .success());
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_acdd"))
         .args(["--root", workspace.root().to_str().unwrap(), "--db"])
         .arg(&fifo)
         .args(["query", "inspect", "sample.py:sample"])

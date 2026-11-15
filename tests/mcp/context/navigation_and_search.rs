@@ -7,13 +7,13 @@ fn mcp_navigation_is_independent_of_task_store_special_files() {
 
     for kind in ["Fifo", "Directory", "FifoAlias"] {
         let workspace = Workspace::new();
-        workspace.write("forge-mcp.yaml", "tasks_db: .forge/state.sqlite\n");
-        let target = workspace.path(".forge/state.sqlite");
+        workspace.write("acdd.yaml", "tasks_db: .acdd/state.sqlite\n");
+        let target = workspace.path(".acdd/state.sqlite");
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         match kind {
             "Directory" => std::fs::create_dir(&target).unwrap(),
             "Fifo" | "FifoAlias" => {
-                let fifo = workspace.path(".forge/pipe");
+                let fifo = workspace.path(".acdd/pipe");
                 let path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
                 // SAFETY: CString supplies a live, NUL-terminated path for this
                 // synchronous syscall; mkfifo retains no pointer and writes no
@@ -185,7 +185,7 @@ fn mcp_search_previews_and_impact_depth_defaults_are_bounded() {
     assert!(!names(&impact).iter().any(|name| name == "outer"));
     assert!(names(&generic_impact).iter().any(|name| name == "outer"));
 
-    let db = workspace.path(".forge/cli.sqlite");
+    let db = workspace.path(".acdd/cli.sqlite");
     let run_cli = |args: &[&str]| query_cli_with_database(&workspace, &db, args);
     let cli_impact = run_cli(&["query", "impact", "calls.py:target"]).expect("CLI should succeed");
     let cli_generic_impact =
@@ -206,7 +206,7 @@ fn cli_selector_commands_apply_workspace_path_scope() {
         ("other.py", "def target():\n    return 2\n"),
     ]);
 
-    let forge_dir = workspace.path(".forge");
+    let forge_dir = workspace.path(".acdd");
     let db = forge_dir.join("cli.sqlite");
     let run_cli = |args: &[&str]| query_cli_with_database(&workspace, &db, args);
     let mut mcp = harness.expect("MCP initialize");

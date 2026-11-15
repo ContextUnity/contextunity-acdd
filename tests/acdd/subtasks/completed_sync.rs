@@ -7,14 +7,14 @@ fn completed_tasks_sync_and_inspect_without_panic() {
     // This seam inspects retained SQLite status after archived-receipt resync.
     // Default pruning is covered by the milestone handoff seam.
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nhandoff_pruning: false\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nhandoff_pruning: false\n",
     );
     let spec = "---\nid: m-completed\ntitle: Completed Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: t1\ntarget: Deliver t1\nproof_policy: direct-proof\nscope: [src/]\n```\n";
     root.write("docs/milestones/010-completed.md", spec);
-    commit_handoff_fixture_inputs(&root, &["forge-mcp.yaml", "docs", "src"]);
+    commit_handoff_fixture_inputs(&root, &["acdd.yaml", "docs", "src"]);
     let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
-    let mut store = TasksStore::open(&root.root().join(".forge/tasks.sqlite")).unwrap();
+    let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     store
         .sync(&milestone, "docs/milestones/010-completed.md", root.root())
         .unwrap();
@@ -55,7 +55,7 @@ fn completed_tasks_sync_and_inspect_without_panic() {
         .as_ref()
         .unwrap()
         .matches_proofs(milestone_with_receipt.tasks[0].receipt.as_ref().unwrap()));
-    let mut reopened = TasksStore::open(&root.root().join(".forge/tasks.sqlite")).unwrap();
+    let mut reopened = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     assert_eq!(reopened.inspect(t1_id).unwrap().milestone_ref, archive_path);
     assert!(!reopened.milestone_tombstoned("m-completed").unwrap());
     reopened

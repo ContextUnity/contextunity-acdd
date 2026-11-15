@@ -5,7 +5,7 @@ title: Limits and index freshness
 
 # Limits and index freshness
 
-Forge bounds file admission, graph traversal, queries, and tool responses. A rejected request returns an error with the relevant limit; narrow the scope or page through results.
+ACDD bounds file admission, graph traversal, queries, and tool responses. A rejected request returns an error with the relevant limit; narrow the scope or page through results.
 
 ## Current limits
 
@@ -33,22 +33,22 @@ root. Explicit selection uses that branch's index and adapter/configuration;
 Git-linked worktrees share the task database, but their indexes and checkpoints
 remain worktree-local.
 
-The default database is `<root>/.forge/code-map.sqlite`; override it with `--db` or `FORGE_DB`. The default workspace is `.`; use `--root` or `FORGE_WORKSPACE_ROOT` for another root. `build` creates a full index. `delta` updates changed and deleted files. The MCP server validates workspace identity and adapter configuration on each request, then updates or rebuilds stale data. It reuses a successful source-inventory check for up to five seconds when the adapter digest and database identity remain valid, so an external source edit can remain unreflected during that interval. CLI indexed queries use the existing index, so refresh it with `build` or `delta` after source edits.
+The default database is `<root>/.acdd/code-map.sqlite`; override it with `--db` or `ACDD_DB`. The default workspace is `.`; use `--root` or `ACDD_WORKSPACE_ROOT` for another root. `build` creates a full index. `delta` updates changed and deleted files. The MCP server validates workspace identity and adapter configuration on each request, then updates or rebuilds stale data. It reuses a successful source-inventory check for up to five seconds when the adapter digest and database identity remain valid, so an external source edit can remain unreflected during that interval. CLI indexed queries use the existing index, so refresh it with `build` or `delta` after source edits.
 
-If a source file has changed since it was indexed, `forge_read` snippet mode rejects stale content by digest. Refresh the index and retry. Core text modes read the current file directly. Response settings such as page size and source preview length do not require a rebuild; changes to admitted roots, linked workspaces, or enabled language profiles do.
+If a source file has changed since it was indexed, `acdd_read` snippet mode rejects stale content by digest. Refresh the index and retry. Core text modes read the current file directly. Response settings such as page size and source preview length do not require a rebuild; changes to admitted roots, linked workspaces, or enabled language profiles do.
 
 ## Query and source safety
 
 `code_map_analyze` accepts one read-only `SELECT` or `WITH` statement and rejects write and administrative SQL. It runs against a read-only connection. Set `include_cycles=true` only when cycle findings are needed; cycle analysis has separate graph limits. A structural result is evidence from indexed source, not a guarantee about runtime behavior.
 
-Source bodies are omitted from inspect and explain MCP responses by default. Opt in through the configured preview settings or request `forge_read`. Inspect and explain previews default to 5 leading lines and the configured body limit (200 by default, constrained to 1–500); these preview defaults are unchanged. `forge_read` snippet mode defaults to the full selected symbol and returns it whenever the complete serialized response fits the configured 1,024–98,304 byte limit. Otherwise it pages at complete-line boundaries with accurate offsets; every continuation requires the previous page's explicit generation. A single oversized line returns a budget error and a local-file recovery hint, never partial code. An explicit `max_body_lines` value is normalized to at least one and honored. Indexed symbol source reads verify the indexed digest. Task-list continuations instead bind the selected task workspace, filters, and full task/subtask state; they are independent of code-index generations. See [MCP tools](../reference/mcp-tools.md) for the request fields.
+Source bodies are omitted from inspect and explain MCP responses by default. Opt in through the configured preview settings or request `acdd_read`. Inspect and explain previews default to 5 leading lines and the configured body limit (200 by default, constrained to 1–500); these preview defaults are unchanged. `acdd_read` snippet mode defaults to the full selected symbol and returns it whenever the complete serialized response fits the configured 1,024–98,304 byte limit. Otherwise it pages at complete-line boundaries with accurate offsets; every continuation requires the previous page's explicit generation. A single oversized line returns a budget error and a local-file recovery hint, never partial code. An explicit `max_body_lines` value is normalized to at least one and honored. Indexed symbol source reads verify the indexed digest. Task-list continuations instead bind the selected task workspace, filters, and full task/subtask state; they are independent of code-index generations. See [MCP tools](../reference/mcp-tools.md) for the request fields.
 
 MCP checkpoints remain local to the selected worktree. Git-linked worktrees do not share checkpoint files merely because their task database is shared.
 
-Local checkpoints live in `.forge/checkpoints.json`. A name must be 1–200 UTF-8 bytes and cannot contain `..`, `/`, `\`, or a NUL byte. `save` requires valid JSON content; `get` and `delete` report missing names as errors.
+Local checkpoints live in `.acdd/checkpoints.json`. A name must be 1–200 UTF-8 bytes and cannot contain `..`, `/`, `\`, or a NUL byte. `save` requires valid JSON content; `get` and `delete` report missing names as errors.
 ## Reader layer admission
 
-Use `forge_read(path="notes.txt", mode="lines")` for index-independent text.
+Use `acdd_read(path="notes.txt", mode="lines")` for index-independent text.
 `mode="raw"` preserves returned line endings; `mode="search"` accepts `pattern`,
 `regex`, and bounded `context`. Text modes return at most 48 KiB and mark
 `truncated`; narrow the line window or advance `start_line` when needed.

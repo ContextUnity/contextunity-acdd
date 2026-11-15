@@ -5,7 +5,7 @@ fn document_reference_identity_respects_workspace_and_match_tiers() {
     let mut regressions = Vec::new();
     let identity_ws = Workspace::with_files(&[]);
     let linked = Workspace::with_files(&[]);
-    identity_ws.write("forge-mcp.yaml", &format!("roots: [.]\ndocs: [docs]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [src, frontend]\n    docs: [docs]\n", linked.root().display()));
+    identity_ws.write("acdd.yaml", &format!("roots: [.]\ndocs: [docs]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [src, frontend]\n    docs: [docs]\n", linked.root().display()));
     identity_ws.write(
         "primary.py",
         "def validate(): return 1\ndef primary_only(): return 2\n",

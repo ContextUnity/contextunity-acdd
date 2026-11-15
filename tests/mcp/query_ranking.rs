@@ -1,10 +1,10 @@
-use contextunity_forge_mcp::db::reader;
+use contextunity_acdd::db::reader;
 
 #[cfg(feature = "lang-python")]
 #[test]
 fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
-    use contextunity_forge_mcp::core::response::{Detail, QueryOptions, ResponsePolicy};
-    use contextunity_forge_mcp::db::symbols;
+    use contextunity_acdd::core::response::{Detail, QueryOptions, ResponsePolicy};
+    use contextunity_acdd::db::symbols;
 
     let ws = crate::common::Workspace::with_files(&[
         (
@@ -31,7 +31,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         ("types.rs", "#[derive(Debug)]\nstruct Example {}\n"),
     ]);
     ws.build();
-    let db_path = ws.root().join(".forge/code-map.sqlite");
+    let db_path = ws.root().join(".acdd/code-map.sqlite");
     let conn = reader::open(&db_path, ws.root()).unwrap();
     let options = QueryOptions::resolve(
         &ResponsePolicy::default(),
@@ -313,7 +313,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     assert_eq!(removed_attribute["nodes"]["total"], 0);
     let incremental_root = crate::sqlite_fixture::output_root(&incremental).unwrap();
     drop(incremental);
-    let cold_path = ws.root().join(".forge/signature-cold.sqlite");
+    let cold_path = ws.root().join(".acdd/signature-cold.sqlite");
     ws.build_to(&cold_path);
     let cold = reader::open(&cold_path, ws.root()).unwrap();
     let cold_root = crate::sqlite_fixture::output_root(&cold).unwrap();
@@ -349,7 +349,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
         "def test_search_role():\n    \"\"\"Marks a test search result. Further details stay out.\"\"\"\n    from exact_z import rankterm\n    return rankterm()\n",
     );
     ws.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [.]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [.]\n",
             linked.root().display()
@@ -475,7 +475,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     assert_eq!(tail["nodes"]["has_more"], false);
 
     // Preserve reader JSON and render the ranked search through actual MCP Markdown.
-    use contextunity_forge_mcp::core::format::{self, OutputFormat};
+    use contextunity_acdd::core::format::{self, OutputFormat};
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&format::render(
             &exact,

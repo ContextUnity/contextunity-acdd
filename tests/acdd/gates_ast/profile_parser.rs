@@ -42,25 +42,25 @@ guidance:
     }
 
     let canonical_example = validate_profile_document(include_str!(
-        "../../../skills/contextunity-forge/references/acdd_profile.yaml.example"
+        "../../../skills/acdd/references/acdd_profile.yaml.example"
     ))
     .expect("the canonical profile example should satisfy production validators");
     assert_eq!(canonical_example.version, Some(2));
 
     let milestone_example = validate_profile_document(include_str!(
-        "../../../skills/contextunity-forge/references/acdd-profile-examples/profile-milestone.example.yaml"
+        "../../../skills/acdd/references/acdd-profile-examples/profile-milestone.example.yaml"
     ))
     .expect("the milestone profile example should satisfy production validators");
     assert_eq!(milestone_example.version, Some(2));
 
     let plan_example = validate_profile_document(include_str!(
-        "../../../skills/contextunity-forge/references/acdd-profile-examples/profile-plan.example.yaml"
+        "../../../skills/acdd/references/acdd-profile-examples/profile-plan.example.yaml"
     ))
     .expect("the plan profile example should satisfy production validators");
     assert_eq!(plan_example.version, Some(2));
 
     let workflow_example = validate_profile_document(include_str!(
-        "../../../skills/contextunity-forge/references/acdd-profile-examples/profile-workflow.example.yaml"
+        "../../../skills/acdd/references/acdd-profile-examples/profile-workflow.example.yaml"
     ))
     .expect("the workflow profile example should satisfy production validators");
     assert_eq!(workflow_example.version, Some(2));
@@ -68,43 +68,43 @@ guidance:
         (
             "documentation-graph-refactor.yaml",
             include_str!(
-                "../../../skills/contextunity-forge/references/acdd-profile-examples/documentation-graph-refactor.yaml"
+                "../../../skills/acdd/references/acdd-profile-examples/documentation-graph-refactor.yaml"
             ),
         ),
         (
             "fullstack-commerce-django-playwright.yaml",
             include_str!(
-                "../../../skills/contextunity-forge/references/acdd-profile-examples/fullstack-commerce-django-playwright.yaml"
+                "../../../skills/acdd/references/acdd-profile-examples/fullstack-commerce-django-playwright.yaml"
             ),
         ),
         (
             "infrastructure-deploy-database.yaml",
             include_str!(
-                "../../../skills/contextunity-forge/references/acdd-profile-examples/infrastructure-deploy-database.yaml"
+                "../../../skills/acdd/references/acdd-profile-examples/infrastructure-deploy-database.yaml"
             ),
         ),
         (
             "legacy-plans-to-milestones-migration.yaml",
             include_str!(
-                "../../../skills/contextunity-forge/references/acdd-profile-examples/legacy-plans-to-milestones-migration.yaml"
+                "../../../skills/acdd/references/acdd-profile-examples/legacy-plans-to-milestones-migration.yaml"
             ),
         ),
         (
             "multirepo-umbrella-cross-service.yaml",
             include_str!(
-                "../../../skills/contextunity-forge/references/acdd-profile-examples/multirepo-umbrella-cross-service.yaml"
+                "../../../skills/acdd/references/acdd-profile-examples/multirepo-umbrella-cross-service.yaml"
             ),
         ),
         (
             "seam-logger-and-event-telemetry.yaml",
             include_str!(
-                "../../../skills/contextunity-forge/references/acdd-profile-examples/seam-logger-and-event-telemetry.yaml"
+                "../../../skills/acdd/references/acdd-profile-examples/seam-logger-and-event-telemetry.yaml"
             ),
         ),
         (
             "test-suite-refactor.yaml",
             include_str!(
-                "../../../skills/contextunity-forge/references/acdd-profile-examples/test-suite-refactor.yaml"
+                "../../../skills/acdd/references/acdd-profile-examples/test-suite-refactor.yaml"
             ),
         ),
     ] {
@@ -301,7 +301,7 @@ gates:
     let milestone = Milestone::parse(
         r#"---
 id: m-linked
-required_skills: [contextunity-forge]
+required_skills: [acdd]
 repositories:
   - name: forge-mcp
   - name: tools
@@ -330,7 +330,7 @@ concurrency:
         "forge-mcp",
     )
     .expect("the production milestone parser should accept the task schema");
-    assert_eq!(milestone.required_skills, ["contextunity-forge"]);
+    assert_eq!(milestone.required_skills, ["acdd"]);
     assert_eq!(milestone.tasks[0].depends_on, ["m-upstream:producer"]);
     assert_eq!(milestone.tasks[0].extended_scope, ["tests/lib.rs"]);
 
@@ -341,7 +341,7 @@ concurrency:
     let filtered = filter_subsystem_tools(
         [
             "code_map_overview",
-            "forge_read",
+            "acdd_read",
             "task_list",
             "task_blackboard",
             "search_docs",
@@ -349,18 +349,17 @@ concurrency:
         ],
         &registry,
     );
-    assert_eq!(filtered, ["code_map_overview", "forge_read", "search_docs"]);
+    assert_eq!(filtered, ["code_map_overview", "acdd_read", "search_docs"]);
     assert!(
-        contextunity_forge_mcp::core::tasks::catalog::disabled_tool_error("task_list", &registry)
+        contextunity_acdd::core::tasks::catalog::disabled_tool_error("task_list", &registry)
             .is_some_and(|error| error.starts_with("FEATURE_DISABLED:"))
     );
 
     let profile_workspace = crate::common::Workspace::default();
-    profile_workspace.write("forge-mcp.yaml", "profile: minimal\n");
-    let minimal =
-        contextunity_forge_mcp::engine::scanner::load_adapter(profile_workspace.root(), None)
-            .unwrap()
-            .modules;
+    profile_workspace.write("acdd.yaml", "profile: minimal\n");
+    let minimal = contextunity_acdd::engine::scanner::load_adapter(profile_workspace.root(), None)
+        .unwrap()
+        .modules;
     assert!(
         ["codemap", "acdd", "blackboard", "docs", "checkpoints"]
             .iter()
@@ -369,55 +368,47 @@ concurrency:
     );
     assert_eq!(
         filter_subsystem_tools(
-            [
-                "forge_guide",
-                "task_list",
-                "code_map_overview",
-                "forge_read"
-            ],
+            ["forge_guide", "task_list", "code_map_overview", "acdd_read"],
             &minimal
         ),
-        ["forge_guide", "forge_read"]
+        ["forge_guide", "acdd_read"]
     );
     assert!(
-        contextunity_forge_mcp::core::tasks::catalog::disabled_tool_error("forge_read", &minimal)
+        contextunity_acdd::core::tasks::catalog::disabled_tool_error("acdd_read", &minimal)
             .is_none()
     );
 
-    profile_workspace.write("forge-mcp.yaml", "profile: full\n");
-    let full =
-        contextunity_forge_mcp::engine::scanner::load_adapter(profile_workspace.root(), None)
-            .unwrap()
-            .modules;
+    profile_workspace.write("acdd.yaml", "profile: full\n");
+    let full = contextunity_acdd::engine::scanner::load_adapter(profile_workspace.root(), None)
+        .unwrap()
+        .modules;
     assert!(["codemap", "acdd", "blackboard", "docs", "checkpoints"]
         .iter()
         .all(|module| full.is_enabled(module)));
 
     profile_workspace.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "profile: minimal\nmodules:\n  acdd: true\n  docs: true\n",
     );
-    let toggles =
-        contextunity_forge_mcp::engine::scanner::load_adapter(profile_workspace.root(), None)
-            .unwrap()
-            .modules;
+    let toggles = contextunity_acdd::engine::scanner::load_adapter(profile_workspace.root(), None)
+        .unwrap()
+        .modules;
     assert!(toggles.is_enabled("acdd"));
     assert!(toggles.is_enabled("docs"));
     assert!(!toggles.is_enabled("codemap"));
 
     profile_workspace.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "modules:\n  profile: navigator\n  enabled: [blackboard]\n",
     );
-    let legacy =
-        contextunity_forge_mcp::engine::scanner::load_adapter(profile_workspace.root(), None)
-            .unwrap()
-            .modules;
+    let legacy = contextunity_acdd::engine::scanner::load_adapter(profile_workspace.root(), None)
+        .unwrap()
+        .modules;
     assert!(legacy.is_enabled("codemap"));
     assert!(legacy.is_enabled("docs"));
     assert!(legacy.is_enabled("blackboard"));
 
-    let validated = contextunity_forge_mcp::cli::validate::run(
+    let validated = contextunity_acdd::cli::validate::run(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
         Some(std::path::Path::new(
             "docs/reference/acdd_profile.yaml.example",
@@ -427,8 +418,8 @@ concurrency:
     assert_eq!(validated["valid"], true);
 
     profile_workspace.write(
-        "forge-mcp.yaml",
-        "tasks_db: .forge/tasks.sqlite\nmilestones: [docs/milestones]\n",
+        "acdd.yaml",
+        "tasks_db: .acdd/tasks.sqlite\nmilestones: [docs/milestones]\n",
     );
     let valid_manifest = [(
         "docs/milestones/010-valid.md",
@@ -475,8 +466,7 @@ concurrency:
         for &(path, content) in manifests {
             profile_workspace.write(path, content);
         }
-        let result =
-            contextunity_forge_mcp::cli::validate::run(profile_workspace.root(), None).unwrap();
+        let result = contextunity_acdd::cli::validate::run(profile_workspace.root(), None).unwrap();
         assert_eq!(result["valid"], expected_valid, "{case}: {result}");
         if let Some(code) = diagnostic_code {
             let has_expected_diagnostic =

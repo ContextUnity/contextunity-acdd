@@ -19,7 +19,7 @@ fn search_preview_failures_preserve_hits_and_actionable_source_errors() {
                     rusqlite::params![2, 2, "resilient_hit", "a.py"],
                 )
                 .expect("set node boundary fixture");
-            contextunity_forge_mcp::core::commitments::seal(&connection)
+            contextunity_acdd::core::commitments::seal(&connection)
                 .expect("seal node boundary fixture");
         }
         let mut m = McpTestHarness::new(&w).expect("MCP initialize");
@@ -60,7 +60,7 @@ fn search_preview_failures_preserve_hits_and_actionable_source_errors() {
             assert!(hits[1]["source_preview"].is_object(), "{failure}: {result}");
         }
         if failure == "boundary" {
-            for tool in ["code_map_inspect", "code_map_explain", "forge_read"] {
+            for tool in ["code_map_inspect", "code_map_explain", "acdd_read"] {
                 let rejection = m
                     .text(
                         tool,
@@ -80,7 +80,7 @@ fn search_preview_failures_preserve_hits_and_actionable_source_errors() {
         if failure == "digest" || failure == "missing" {
             let (_, response) = m
                 .call(
-                    "forge_read",
+                    "acdd_read",
                     json!({"selector":"a.py:resilient_hit","format":"json"}),
                 )
                 .expect("MCP transport");
@@ -266,7 +266,7 @@ fn document_search_and_section_validation_boundaries() {
 
 #[test]
 fn ast_language_inference_and_actionable_diagnostics() {
-    use contextunity_forge_mcp::engine::languages;
+    use contextunity_acdd::engine::languages;
     let fixture = AnalysisFixture::indexed_files(&[
         (
             "app.py",

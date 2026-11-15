@@ -25,10 +25,10 @@ fn check_implicitly_public_trait_method_cases(cases: &[(&str, &str, &str, bool)]
                     .into_iter()
                     .filter(|gate| {
                         matches!(
-                        gate.proof.kind(),
-                        Some(contextunity_forge_mcp::core::tasks::profile::ProofKind::Contract)
-                            | Some(contextunity_forge_mcp::core::tasks::profile::ProofKind::Command)
-                    )
+                            gate.proof.kind(),
+                            Some(contextunity_acdd::core::tasks::profile::ProofKind::Contract)
+                                | Some(contextunity_acdd::core::tasks::profile::ProofKind::Command)
+                        )
                     })
                     .map(|gate| gate.id)
                     .collect()
@@ -178,24 +178,18 @@ mod tests {
         "tests/acdd/tasks.rs",
         "#[test]\nfn task_suite_is_present() { assert_eq!(1, 1); }\n",
     );
+    root.write("AGENTS.md", "# Instructions\nLoad the acdd skill.\n");
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
     root.write(
-        "AGENTS.md",
-        "# Instructions\nLoad the contextunity-forge skill.\n",
-    );
-    root.write(
-        ".agents/skills/contextunity-forge/SKILL.md",
-        "# ContextUnity Forge\n",
-    );
-    root.write(
-        "forge-mcp.yaml",
-        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     root.write(
             "docs/milestones/010-tiered.md",
             "---\nid: m-tiered-signature\ntitle: Tiered signature boundary\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: route-task\ntarget: Protect the exact public method signature\nproof_policy: seam-test-first\nscope: [src/routing.rs, tests/connected.rs, tests/acdd/tasks.rs]\nscope_roots: [src/, tests/]\n```\n",
         );
     commit_fixture_baseline(&root);
-    root.build_to(root.path(".forge/code-map.sqlite"));
+    root.build_to(root.path(".acdd/code-map.sqlite"));
     let original_caller_edges = boundary_caller_edge_count(
         &root,
         "method",
@@ -298,7 +292,7 @@ mod tests {
         root.write("tests/connected.rs", &connected_test);
 
         if refresh_index {
-            root.build_to(root.path(".forge/code-map.sqlite"));
+            root.build_to(root.path(".acdd/code-map.sqlite"));
             let refreshed_caller_edges = boundary_caller_edge_count(
                 &root,
                 "method",
@@ -359,24 +353,18 @@ fn signature_boundary_keeps_contract_acceptance_callers_after_symbol_rename_and_
         "tests/acdd/tasks.rs",
         "#[test]\nfn task_suite_is_present() { assert_eq!(1, 1); }\n",
     );
+    root.write("AGENTS.md", "# Instructions\nLoad the acdd skill.\n");
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
     root.write(
-        "AGENTS.md",
-        "# Instructions\nLoad the contextunity-forge skill.\n",
-    );
-    root.write(
-        ".agents/skills/contextunity-forge/SKILL.md",
-        "# ContextUnity Forge\n",
-    );
-    root.write(
-        "forge-mcp.yaml",
-        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     root.write(
         "docs/milestones/010-tiered-rename.md",
         "---\nid: m-tiered-rename\ntitle: Renamed API boundary\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: rename-fetch\ntarget: Preserve every caller when renaming a public API\nproof_policy: seam-test-first\nscope: [src/api.rs, tests/connected.rs, tests/acdd/tasks.rs]\nscope_roots: [src/, tests/]\n```\n",
     );
     commit_fixture_baseline(&root);
-    root.build_to(root.path(".forge/code-map.sqlite"));
+    root.build_to(root.path(".acdd/code-map.sqlite"));
     let baseline_edges = boundary_caller_edge_count(
         &root,
         "function",
@@ -450,7 +438,7 @@ fn signature_boundary_keeps_contract_acceptance_callers_after_symbol_rename_and_
         "pub fn fetch_by_id(id: usize) -> usize { id }\n#[cfg(test)]\nmod tests { use crate::api::fetch_by_id; #[test] fn test_connected() { let actual = fetch_by_id(1); assert_eq!(actual, 1); } }\n",
     );
     root.write("tests/connected.rs", "use tiered_rename_fixture::api::fetch_by_id;\n#[test]\nfn test_connected() { let actual = fetch_by_id(1); assert_eq!(actual, 1); }\n");
-    root.build_to(root.path(".forge/code-map.sqlite"));
+    root.build_to(root.path(".acdd/code-map.sqlite"));
     let old_edges_after_reindex = boundary_caller_edge_count(
         &root,
         "function",
@@ -531,17 +519,11 @@ fn signature_boundary_covers_public_callables_across_languages() {
         "tests/acdd/tasks.rs",
         "#[test]\nfn task_suite_is_present() { assert_eq!(1, 1); }\n",
     );
+    root.write("AGENTS.md", "# Instructions\nLoad the acdd skill.\n");
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
     root.write(
-        "AGENTS.md",
-        "# Instructions\nLoad the contextunity-forge skill.\n",
-    );
-    root.write(
-        ".agents/skills/contextunity-forge/SKILL.md",
-        "# ContextUnity Forge\n",
-    );
-    root.write(
-        "forge-mcp.yaml",
-        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     let milestone_ref = "docs/milestones/010-tiered-callables.md";
     root.write(
@@ -549,7 +531,7 @@ fn signature_boundary_covers_public_callables_across_languages() {
         "---\nid: m-tiered-callables\ntitle: Public callable signature boundaries\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: protect-callables\ntarget: Protect public callable signatures across supported languages\nproof_policy: seam-test-first\nscope: [src/routing.rs, src/api_typescript.ts, src/api_python.py, src/api_javascript.js, tests/connected.rs]\nscope_roots: [src/, tests/]\n```\n",
     );
     commit_fixture_baseline(&root);
-    root.build_to(root.path(".forge/code-map.sqlite"));
+    root.build_to(root.path(".acdd/code-map.sqlite"));
     let callable_cases = [
         (
             "TypeScript",
@@ -629,7 +611,7 @@ fn signature_boundary_covers_public_callables_across_languages() {
     {
         snapshot.restore(&root);
         root.write(api_path, changed_api);
-        root.build_to(root.path(".forge/code-map.sqlite"));
+        root.build_to(root.path(".acdd/code-map.sqlite"));
         assert!(
             boundary_caller_edge_count(
                 &root,

@@ -101,7 +101,7 @@ def main() -> int:
         "available_cpus": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count(),
         "environment": {
             key: os.environ[key]
-            for key in ("RAYON_NUM_THREADS", "MALLOC_ARENA_MAX", "FORGE_MEMORY_BUDGET_MB")
+            for key in ("RAYON_NUM_THREADS", "MALLOC_ARENA_MAX", "ACDD_MEMORY_BUDGET_MB")
             if key in os.environ
         },
         "binaries": {
@@ -116,14 +116,14 @@ def main() -> int:
     warm_caches = {}
     report["cache_priming"] = {}
     for name in args.warm_variant:
-        directory = resources.enter_context(tempfile.TemporaryDirectory(prefix="forge-warm-cache-"))
+        directory = resources.enter_context(tempfile.TemporaryDirectory(prefix="acdd-warm-cache-"))
         work = pathlib.Path(directory)
         warm_caches[name] = work / "extraction-cache"
         if started:
             time.sleep(args.pause_seconds)
         report["cache_priming"][name] = cold.run_build(
             variants[name], repo, work / "prime.sqlite", work,
-            extra_env={"FORGE_EXTRACTION_CACHE_DIR": str(warm_caches[name])},
+            extra_env={"ACDD_EXTRACTION_CACHE_DIR": str(warm_caches[name])},
         )
         started = True
     started = False
@@ -135,12 +135,12 @@ def main() -> int:
                 time.sleep(args.pause_seconds)
             started = True
             binary = variants[name]
-            with tempfile.TemporaryDirectory(prefix="forge-catalog-experiment-") as directory:
+            with tempfile.TemporaryDirectory(prefix="acdd-catalog-experiment-") as directory:
                 work = pathlib.Path(directory)
                 db = work / "index.sqlite"
                 timing = cold.run_build(
                     binary, repo, db, work,
-                    extra_env={"FORGE_EXTRACTION_CACHE_DIR": str(warm_caches.get(name, work / "extraction-cache"))},
+                    extra_env={"ACDD_EXTRACTION_CACHE_DIR": str(warm_caches.get(name, work / "extraction-cache"))},
                 )
                 build = json.loads((work / "build.stdout").read_text())
                 run = {

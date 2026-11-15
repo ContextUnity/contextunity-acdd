@@ -38,7 +38,7 @@ roles:
 
 commands:
   validate_plan:
-    command: "contextunity-forge-mcp plan show {plan_name}"
+    command: "acdd plan show {plan_name}"
     timeout_seconds: 60
     output: { require_counts: false }
 
@@ -57,7 +57,7 @@ gates:
       - code_map_overview
       - code_map_search
       - ast_grep_search
-      - forge_read
+      - acdd_read
       - get_doc
       - search_docs
       - task_blackboard
@@ -97,7 +97,7 @@ gates:
       - code_map_impact
       - code_map_search
       - ast_grep_search
-      - forge_read
+      - acdd_read
       - get_doc
       - search_docs
       - task_blackboard

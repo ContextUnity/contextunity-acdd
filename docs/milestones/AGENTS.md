@@ -27,7 +27,7 @@ owners:
 invariants:
   - 'INV-SLOT-NAME: Explicit, testable invariant statement.'
 required_skills:
-  - contextunity-forge
+  - acdd
   - agent-instructions
 related_plans: []
 ---
@@ -157,7 +157,7 @@ Before opening downstream parallel waves, the contract author and architect must
    - **Parent Module Entry Points**: For every greenfield source file introduced in a task's `scope:`, its parent module entry point (e.g. `mod.rs`, `lib.rs`) must either be pre-scaffolded in Task 0 or declared as a non-exclusive structural registration (`pub mod <slug>;`), preventing mid-flight module declaration lockouts.
    - **Cross-Subtask Semantic Domain Alignment**: Subtasks that manipulate distinct subsystems (e.g. claim guidance in `context.rs` vs. submit engine in `submit.rs` vs. CLI flags in `cli/task.rs`) must not be bundled into a task that lacks authority over those files. Each subtask must be strictly mapped to the task owning that subsystem.
    - **Storage Transaction Atomicity**: If a task updates multiple database tables or state stores (e.g. tasks, contract matrix, and blackboard), the task scope must contain the transaction coordinator (`src/db/tasks_store/mod.rs`), or the operation must be encapsulated in a single atomic storage method declared in the contract.
-   - **Preflight Enforcement**: This closure validation is executed automatically during `contextunity-forge-mcp milestone init` (as part of `INV-PREFLIGHT-MILESTONE-INIT`), validating that symbols, scopes, parent modules, and subtasks form a closed graph before any agent worktree is created.
+   - **Preflight Enforcement**: This closure validation is executed automatically during `acdd milestone init` (as part of `INV-PREFLIGHT-MILESTONE-INIT`), validating that symbols, scopes, parent modules, and subtasks form a closed graph before any agent worktree is created.
 4. **Unified Error Taxonomy & Diagnostics**:
    - Shared domain error enumerations, exit codes, and diagnostic identifiers must be declared upfront in shared core interface definitions or architectural specifications.
    - Downstream builders must not introduce competing ad-hoc error structures.
@@ -198,6 +198,6 @@ loop:
 
 During the milestone handoff stage:
 1. Execute the required milestone verification gate from `TESTS.md`.
-2. Run `contextunity-forge-mcp milestone handoff <id> ...` to archive the manifest and rewrite landed task receipts.
+2. Run `acdd milestone handoff <id> ...` to archive the manifest and rewrite landed task receipts.
 3. Stage the archived manifest in `archive/` and stage the removal of the active working manifest.
 4. Ensure obsolete or untracked pre-archive working manifest files (`docs/milestones/<id>-...md`) are unlinked so that branch integration and fast-forward landing into `main` remain completely clean.

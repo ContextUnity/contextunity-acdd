@@ -1,0 +1,4 @@
+acdd_profile: profiles/plan.yaml
+tasks_db: .acdd/tasks.sqlite
+plans:
+  - docs/plans

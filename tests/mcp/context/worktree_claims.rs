@@ -4,8 +4,8 @@ use super::*;
 fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
     let workspace = Workspace::with_files(&[
         (
-            "forge-mcp.yaml",
-            "roots:\n  - src\ntasks_db: .forge/tasks.sqlite\n",
+            "acdd.yaml",
+            "roots:\n  - src\ntasks_db: .acdd/tasks.sqlite\n",
         ),
         ("src/main.rs", "pub fn primary_func() {}\n"),
     ]);
@@ -18,7 +18,7 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         "pub fn semantic_worktree_func() {}\n",
     )
     .unwrap();
-    let selected_config = worktree_dir.join("forge-mcp.yaml");
+    let selected_config = worktree_dir.join("acdd.yaml");
     std::fs::write(&selected_config, "roots: [src]\n").unwrap();
 
     let mut client = McpTestHarness::new(&workspace).expect("MCP initialize");
@@ -47,13 +47,13 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
 
     // 2. Explicit worktree parameter -> scopes to worktree and auto-indexes
     let wt_str = worktree_dir.to_str().unwrap();
-    let selected_index = worktree_dir.join(".forge/code-map.sqlite");
+    let selected_index = worktree_dir.join(".acdd/code-map.sqlite");
     assert!(!selected_index.exists());
     let invalid_formats = [
         ("escaping string", json!("\0".repeat(2_000))),
         ("non-string", json!(false)),
     ];
-    let checkpoint_path = workspace.path(".forge/checkpoints.json");
+    let checkpoint_path = workspace.path(".acdd/checkpoints.json");
     let checkpoint_before = fs::read(&checkpoint_path).ok();
     let mut invalid_policy_failures = Vec::new();
     std::fs::write(
@@ -135,10 +135,7 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
             format!(".worktrees/{name}/src/lib.rs"),
             &format!("pub fn {symbol}() {{}}\n"),
         );
-        workspace.write(
-            format!(".worktrees/{name}/forge-mcp.yaml"),
-            "roots: [src]\n",
-        );
+        workspace.write(format!(".worktrees/{name}/acdd.yaml"), "roots: [src]\n");
     }
     for (alias, name, symbol) in [
         ("023", "023-sql-schema-topology", "schema_only"),
@@ -208,7 +205,7 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
     }
 
     // Active claims cannot redirect an omitted worktree selector.
-    let tasks_db_path = workspace.path(".forge/tasks.sqlite");
+    let tasks_db_path = workspace.path(".acdd/tasks.sqlite");
     std::fs::create_dir_all(tasks_db_path.parent().unwrap()).unwrap();
     let claims = rusqlite::Connection::open(&tasks_db_path).unwrap();
     claims
@@ -233,8 +230,8 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
     )
     .unwrap();
     workspace.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ntasks_db: .forge/tasks.sqlite\nresponse:\n  max_output_bytes: 1024\n",
+        "acdd.yaml",
+        "roots: [src]\ntasks_db: .acdd/tasks.sqlite\nresponse:\n  max_output_bytes: 1024\n",
     );
     let index_before_auto_rejection = fs::read(&selected_index).unwrap();
     let tasks_db_before_auto_rejection = fs::read(&tasks_db_path).unwrap();
@@ -280,10 +277,7 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         invalid_policy_failures.join("; ")
     );
     std::fs::write(&selected_config, "roots: [src]\n").unwrap();
-    workspace.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ntasks_db: .forge/tasks.sqlite\n",
-    );
+    workspace.write("acdd.yaml", "roots: [src]\ntasks_db: .acdd/tasks.sqlite\n");
 
     // Active claims never change the default server root.
     let overview_auto = client
@@ -403,10 +397,10 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         )
         .unwrap();
     let _alternate =
-        TaskClaimsFixture::worktrees_only(&workspace, ".forge/alternate-tasks.sqlite", &[&other]);
+        TaskClaimsFixture::worktrees_only(&workspace, ".acdd/alternate-tasks.sqlite", &[&other]);
     workspace.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ntasks_db: .forge/alternate-tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ntasks_db: .acdd/alternate-tasks.sqlite\n",
     );
     assert_eq!(
         get_workspace_root(
@@ -424,13 +418,13 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         (Some("{}\n"), &primary),
         (None, &primary),
         (
-            Some("roots: [src]\ntasks_db: .forge/alternate-tasks.sqlite\n"),
+            Some("roots: [src]\ntasks_db: .acdd/alternate-tasks.sqlite\n"),
             &primary,
         ),
     ] {
         match configuration {
-            Some(content) => workspace.write("forge-mcp.yaml", content),
-            None => workspace.remove("forge-mcp.yaml"),
+            Some(content) => workspace.write("acdd.yaml", content),
+            None => workspace.remove("acdd.yaml"),
         }
         assert_eq!(
             get_workspace_root(
@@ -445,11 +439,11 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
 
     #[cfg(unix)]
     {
-        let alias = workspace.path(".forge/alias-tasks.sqlite");
+        let alias = workspace.path(".acdd/alias-tasks.sqlite");
         std::os::unix::fs::symlink("alternate-tasks.sqlite", &alias).unwrap();
         workspace.write(
-            "forge-mcp.yaml",
-            "roots: [src]\ntasks_db: .forge/alias-tasks.sqlite\n",
+            "acdd.yaml",
+            "roots: [src]\ntasks_db: .acdd/alias-tasks.sqlite\n",
         );
         for (target, expected) in [
             ("alternate-tasks.sqlite", primary.clone()),
@@ -470,7 +464,7 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         }
     }
 
-    workspace.write("forge-mcp.yaml", "roots: [src]\ntasks_db: [invalid]\n");
+    workspace.write("acdd.yaml", "roots: [src]\ntasks_db: [invalid]\n");
     let (_, malformed) = client
         .call("code_map_overview", json!({}))
         .expect("MCP transport");
@@ -494,8 +488,8 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         1
     );
     workspace.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ntasks_db: .forge/alternate-tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ntasks_db: .acdd/alternate-tasks.sqlite\n",
     );
     assert_eq!(
         get_workspace_root(

@@ -3,7 +3,7 @@ use super::super::*;
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_destructured_composable_call_uses_indexed_return_member() {
-    use contextunity_forge_mcp::core::commitments;
+    use contextunity_acdd::core::commitments;
 
     let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
@@ -189,7 +189,7 @@ export const useUiStore = defineStore("ui", () => {
     let active_config = "export default defineNuxtConfig({components:false, modules:['@pinia/nuxt','@nuxtjs/i18n']});\n";
     w.write("nuxt.config.ts", active_config);
     w.write(
-        ".forge/frameworks/nuxt.toml",
+        ".acdd/frameworks/nuxt.toml",
         r##"replace=true
 [[syntax_rules]]
 id="configured-environment"

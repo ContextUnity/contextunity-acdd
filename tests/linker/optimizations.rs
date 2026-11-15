@@ -1,6 +1,6 @@
 #![cfg(feature = "lang-python")]
 
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::models::{Facts, Graph},
     engine::{ast, docs, linker},
 };

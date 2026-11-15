@@ -70,7 +70,7 @@ pub(crate) struct MilestoneFixtureTask {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) receipt: Option<Receipt>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) subtasks: Vec<contextunity_forge_mcp::core::tasks::SubtaskSpec>,
+    pub(crate) subtasks: Vec<contextunity_acdd::core::tasks::SubtaskSpec>,
     #[serde(skip)]
     pub(crate) narrative: Option<String>,
 }
@@ -227,7 +227,7 @@ impl MilestoneFixtureBuilder {
 
     pub(crate) fn task_subtasks(
         mut self,
-        subtasks: &[contextunity_forge_mcp::core::tasks::SubtaskSpec],
+        subtasks: &[contextunity_acdd::core::tasks::SubtaskSpec],
     ) -> Self {
         self.last_task().subtasks = subtasks.to_vec();
         self
@@ -311,7 +311,7 @@ mod milestone_fixture_tests {
                 .task("first", &["src/shared.rs"])
                 .task_target(content)
                 .task_invariants(&[content])
-                .task_subtasks(&[contextunity_forge_mcp::core::tasks::SubtaskSpec {
+                .task_subtasks(&[contextunity_acdd::core::tasks::SubtaskSpec {
                     subtask_ref: "child".into(),
                     title: content.into(),
                     status: "ready".into(),
@@ -350,7 +350,7 @@ mod milestone_fixture_tests {
             .task_invariants(&["reviewed: yes"])
             .task_proof_policy("direct-proof")
             .task_contract_revision(2)
-            .task_subtasks(&[contextunity_forge_mcp::core::tasks::SubtaskSpec {
+            .task_subtasks(&[contextunity_acdd::core::tasks::SubtaskSpec {
                 subtask_ref: "child".into(),
                 title: "Preserve task details".into(),
                 status: "ready".into(),

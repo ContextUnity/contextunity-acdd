@@ -1,7 +1,7 @@
 #![cfg(any(feature = "lang-python", feature = "lang-rust"))]
 
 use crate::languages::harness::ExtractorHarness;
-use contextunity_forge_mcp::engine::languages;
+use contextunity_acdd::engine::languages;
 
 fn assert_builtin_calls(path: &str, language: &str, names: &[&str], source: &str) {
     let profile = languages::require(language).unwrap();

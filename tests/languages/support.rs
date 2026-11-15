@@ -1,5 +1,5 @@
 use crate::common::Workspace;
-use contextunity_forge_mcp::{core::commitments, db::reader, engine::pipeline};
+use contextunity_acdd::{core::commitments, db::reader, engine::pipeline};
 use rusqlite::Connection;
 use std::{
     path::PathBuf,
@@ -24,8 +24,8 @@ pub(crate) fn fresh_cold(workspace: &Workspace) -> Connection {
 pub(crate) fn fresh_cold_database(workspace: &Workspace) -> PathBuf {
     static NEXT_COLD: AtomicU64 = AtomicU64::new(0);
     let sequence = NEXT_COLD.fetch_add(1, Ordering::Relaxed);
-    let database = workspace.path(format!(".forge/cold-{sequence}.sqlite"));
-    let cache = workspace.path(".forge/cold-cache");
+    let database = workspace.path(format!(".acdd/cold-{sequence}.sqlite"));
+    let cache = workspace.path(".acdd/cold-cache");
     assert!(!database.exists(), "cold database must be new");
     pipeline::build_with_cache_dir(workspace.root(), &database, None, &cache).unwrap();
     database

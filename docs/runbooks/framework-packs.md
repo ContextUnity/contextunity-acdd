@@ -11,7 +11,7 @@ operations; it does not add a parser or execute framework code.
 
 ## Extend or disable a pack
 
-1. Copy a verified example into the workspace's `.forge/frameworks/` directory,
+1. Copy a verified example into the workspace's `.acdd/frameworks/` directory,
    retaining the intended filename stem. Use `vue-runtime`, not `vue`, for the
    bundled Vue rules. Add only supported typed rule sections.
 2. Default merging retains other bundled rules and replaces matching identities

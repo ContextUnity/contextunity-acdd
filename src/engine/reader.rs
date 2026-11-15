@@ -1,12 +1,12 @@
 //! Layered reader shared by the CLI and MCP transports.
 
 use crate::core::response::{QueryOptions, SourceOptions};
-use anyhow::{bail, ensure, Context, Result};
-use forge_core::{
+use acdd_core::{
     config::{resolve_file_path, Adapter},
     model::{ReadBounds, ReadMode, ReadResult},
     subsystems::{disabled_read_mode_error, filter_subsystem_tools},
 };
+use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{params, Connection};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -57,7 +57,7 @@ pub fn strip_root_path(path: &str, root: &Path) -> Option<String> {
         return None;
     }
     if p.ancestors().any(|component| {
-        !forge_core::fs::is_system_root_symlink(component)
+        !acdd_core::fs::is_system_root_symlink(component)
             && std::fs::symlink_metadata(component)
                 .is_ok_and(|metadata| metadata.file_type().is_symlink())
     }) {
@@ -88,7 +88,7 @@ impl ReadRequest {
     /// Check subsystem admission before either transport opens the code index.
     pub fn requires_index(&self, adapter: &Adapter) -> Result<bool> {
         let mode = self.resolved_mode();
-        let is_md_path = forge_core::is_doc_path;
+        let is_md_path = acdd_core::is_doc_path;
         let mut target_paths = Vec::new();
         if let Some(p) = self.path.as_deref() {
             target_paths.push(p);
@@ -143,7 +143,7 @@ fn sensitive(adapter: &Adapter, root: &Path, path: &str) -> Result<()> {
     sensitive_with_case(
         adapter,
         path,
-        forge_core::fs::is_case_insensitive_volume(root),
+        acdd_core::fs::is_case_insensitive_volume(root),
     )
 }
 
@@ -158,7 +158,7 @@ fn admitted_file(root: &Path, adapter: &Adapter, path: &str) -> Result<std::path
     );
     ensure!(file.is_file(), "reader path must name a regular file");
     let file_str = file.to_string_lossy();
-    let file_ci = forge_core::fs::is_case_insensitive_volume(&file);
+    let file_ci = acdd_core::fs::is_case_insensitive_volume(&file);
     let relative = strip_root_path(&file_str, root).unwrap_or_else(|| {
         file.strip_prefix(root)
             .unwrap_or(&file)
@@ -172,7 +172,7 @@ fn admitted_file(root: &Path, adapter: &Adapter, path: &str) -> Result<std::path
                 .ok()
                 .map(|rel| rel.to_string_lossy().into_owned())
         }) {
-            let linked_ci = forge_core::fs::is_case_insensitive_volume(&linked.path) || file_ci;
+            let linked_ci = acdd_core::fs::is_case_insensitive_volume(&linked.path) || file_ci;
             sensitive_with_case(adapter, &relative, linked_ci)?;
         }
     }
@@ -185,17 +185,17 @@ fn admitted_file(root: &Path, adapter: &Adapter, path: &str) -> Result<std::path
     Ok(file)
 }
 
-fn active_task(root: &Path, adapter: &Adapter) -> Result<Option<forge_tasks::store::Task>> {
+fn active_task(root: &Path, adapter: &Adapter) -> Result<Option<acdd_tasks::store::Task>> {
     if !adapter.modules.is_enabled("acdd") {
         return Ok(None);
     }
-    let Ok(database) = forge_tasks::engine::database_path(root) else {
+    let Ok(database) = acdd_tasks::engine::database_path(root) else {
         return Ok(None);
     };
     if !std::fs::symlink_metadata(&database).is_ok_and(|m| m.file_type().is_file()) {
         return Ok(None);
     }
-    let store = forge_tasks::engine::store(root)?;
+    let store = acdd_tasks::engine::store(root)?;
     let tasks: Vec<_> = store
         .list(None, "in_progress", None)?
         .into_iter()
@@ -213,7 +213,7 @@ fn active_task(root: &Path, adapter: &Adapter) -> Result<Option<forge_tasks::sto
 }
 
 /// Read a file or symbol using already admitted graph state when available.
-pub fn forge_read_tool(
+pub fn acdd_read_tool(
     root: &Path,
     adapter: &Adapter,
     request: &ReadRequest,
@@ -245,11 +245,11 @@ pub fn forge_read_tool(
             let paths = &normalized_paths;
             if let Some(output) = &request.output_file {
                 sensitive(adapter, root, output)?;
-                let destination = forge_core::fs::checked_child(root, Path::new(output))?;
+                let destination = acdd_core::fs::checked_child(root, Path::new(output))?;
                 for p in paths {
                     if let Ok(input_res) = resolve_file_path(root, adapter, p) {
                         ensure!(
-                            !forge_core::fs::same_filesystem_path(&destination, &input_res),
+                            !acdd_core::fs::same_filesystem_path(&destination, &input_res),
                             "output_file must differ from any input file in paths"
                         );
                     }
@@ -262,7 +262,7 @@ pub fn forge_read_tool(
                 single_req.path = Some(p.clone());
                 single_req.paths = None;
                 single_req.output_file = None;
-                match forge_read_single(root, adapter, &single_req, page, source, conn) {
+                match acdd_read_single(root, adapter, &single_req, page, source, conn) {
                     Ok(mut val) => {
                         let content = exportable_content(&val).unwrap_or("");
                         markdown_sections.push(format!("### {p}\n\n{content}"));
@@ -288,14 +288,14 @@ pub fn forge_read_tool(
                 "content": aggregate_content,
             });
             if let Some(output) = &request.output_file {
-                let destination = forge_core::fs::checked_child(root, Path::new(output))?;
-                forge_core::fs::atomic_write(&destination, aggregate_content.as_bytes(), false)?;
+                let destination = acdd_core::fs::checked_child(root, Path::new(output))?;
+                acdd_core::fs::atomic_write(&destination, aggregate_content.as_bytes(), false)?;
                 response["output_file"] = json!(output);
             }
             return Ok(response);
         }
     }
-    forge_read_single(root, adapter, request, page, source, conn)
+    acdd_read_single(root, adapter, request, page, source, conn)
 }
 
 fn line_coordinates(start: usize, count: Option<usize>) -> Result<(i64, Option<i64>)> {
@@ -373,7 +373,7 @@ fn find_enclosing_symbol(
     }
 }
 
-fn forge_read_single(
+fn acdd_read_single(
     root: &Path,
     adapter: &Adapter,
     request: &ReadRequest,
@@ -521,7 +521,7 @@ fn forge_read_single(
             .scope
             .iter()
             .chain(&task.spec.extended_scope)
-            .any(|p| forge_tasks::tasks::path_matches_scope_entry(&path, p))
+            .any(|p| acdd_tasks::tasks::path_matches_scope_entry(&path, p))
         {
             "ALLOWED"
         } else {
@@ -542,7 +542,7 @@ fn forge_read_single(
                     other => other,
                 };
                 format!(
-                    "💡 Enclosing symbol: '{kind_label} {name}'. To read this entire symbol safely with verified digest, use forge_read(path=\"{path}\", selector=\"{name}\")"
+                    "💡 Enclosing symbol: '{kind_label} {name}'. To read this entire symbol safely with verified digest, use acdd_read(path=\"{path}\", selector=\"{name}\")"
                 )
             })
         } else {
@@ -573,14 +573,14 @@ fn forge_read_single(
     }
     if let Some(output) = &request.output_file {
         sensitive(adapter, root, output)?;
-        let destination = forge_core::fs::checked_child(root, Path::new(output))?;
+        let destination = acdd_core::fs::checked_child(root, Path::new(output))?;
         let input_res = resolve_file_path(root, adapter, &path)?;
         ensure!(
-            !forge_core::fs::same_filesystem_path(&destination, &input_res),
+            !acdd_core::fs::same_filesystem_path(&destination, &input_res),
             "output_file must differ from input"
         );
         let content = exportable_content(&value).context("read has no exportable content")?;
-        forge_core::fs::atomic_write(&destination, content.as_bytes(), false)?;
+        acdd_core::fs::atomic_write(&destination, content.as_bytes(), false)?;
         value["output_file"] = json!(output);
     }
     Ok(value)
@@ -611,7 +611,7 @@ pub fn extract_file_slice(
     };
     let matcher = pattern
         .filter(|_| request.regex)
-        .map(forge_tasks::regex::Regex::new)
+        .map(acdd_tasks::regex::Regex::new)
         .transpose()?;
     let context = request.context.unwrap_or(2).min(100);
     let mut prior: std::collections::VecDeque<(usize, String)> = std::collections::VecDeque::new();
@@ -682,7 +682,7 @@ pub fn compute_file_delta(
     root: &Path,
     file: &Path,
     baseline: Option<&str>,
-    task: Option<&forge_tasks::store::Task>,
+    task: Option<&acdd_tasks::store::Task>,
 ) -> Result<String> {
     // Resolve Git from the admitted physical file, including linked repositories.
     // Task authority remains bound to the primary workspace below.
@@ -693,8 +693,8 @@ pub fn compute_file_delta(
         .context("delta filename is not UTF-8")?;
     let task_baseline = if baseline.is_none() {
         task.map(|task| {
-            forge_tasks::engine::store(root).and_then(|store| {
-                forge_tasks::store::task_candidate_baseline(&store.connection, &task.task_id)
+            acdd_tasks::engine::store(root).and_then(|store| {
+                acdd_tasks::store::task_candidate_baseline(&store.connection, &task.task_id)
             })
         })
         .transpose()?
@@ -707,13 +707,13 @@ pub fn compute_file_delta(
         !revision.starts_with('-') && !revision.is_empty(),
         "invalid delta baseline"
     );
-    let resolved = forge_core::git::git_command(
+    let resolved = acdd_core::git::git_command(
         git_directory,
         &["rev-parse", "--verify", &format!("{revision}^{{commit}}")],
     )?;
     ensure!(resolved.status.success(), "delta baseline is not a commit");
     let commit = String::from_utf8(resolved.stdout)?;
-    let output = forge_core::git::git_command(
+    let output = acdd_core::git::git_command(
         git_directory,
         &[
             "--no-pager",
@@ -769,7 +769,7 @@ pub fn render_read_hints(
     adapter: &Adapter,
     path: &str,
     value: &Value,
-    task: Option<&forge_tasks::store::Task>,
+    task: Option<&acdd_tasks::store::Task>,
     out_of_scope: bool,
 ) -> Result<String> {
     let mut calls: Vec<(&str, String)> = Vec::new();
@@ -843,7 +843,7 @@ pub fn render_read_hints(
                 ),
             ));
         }
-        let profile = forge_tasks::tasks::profile::load_for_task(
+        let profile = acdd_tasks::tasks::profile::load_for_task(
             root,
             task.spec.acdd_profile.as_deref(),
             task.profile_pin.as_deref(),
@@ -899,7 +899,7 @@ pub fn render_read_hints(
 #[cfg(test)]
 mod tests {
     use super::sensitive_with_case;
-    use forge_core::config::Adapter;
+    use acdd_core::config::Adapter;
 
     #[test]
     fn sensitive_policy_honors_case_insensitive_volume_flag() {

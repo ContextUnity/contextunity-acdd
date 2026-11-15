@@ -1,8 +1,0 @@
-# Example .forge/frameworks/django.toml
-# Template identities are declared as data on a generic syntax rule.
-[[syntax_rules]]
-id = "template-symbols"
-language = "html"
-activation = [{ kind = "package", name = "django" }]
-display = { builtin = "builtin:django_template", library = "builtin:django_template_library" }
-operation = { kind = "template_symbols", requires_loader = false, tags = ["block", "include", "extends", "with", "endwith", "endblock", "if", "elif", "else", "endif", "for", "empty", "endfor", "autoescape", "endautoescape", "filter", "endfilter", "csrf_token", "url", "load"], filters = ["default", "date", "length", "json_script", "slugify", "escape", "escapejs", "safe", "upper", "lower", "urlencode", "linebreaks", "linebreaksbr", "truncatechars", "truncatewords", "striptags", "floatformat", "pluralize", "first", "last", "join"], libraries = ["i18n", "static", "l10n", "tz"], library_routes = { static = "static", trans = "i18n", translate = "i18n" } }

@@ -11,13 +11,13 @@ import time
 executable, session, prompt = sys.argv[1:]
 claim = json.loads(prompt.split("\n\nGate context:\n", 1)[1])
 root = Path(claim["worktree"])
-control = root / ".forge/lifecycle"
+control = root / ".acdd/lifecycle"
 guidance = claim["workflow_guidance"]
 record = {
     "stage": claim["stage"],
     "worker_id": claim["worker_id"],
     "session": session,
-    "environment_session": os.environ.get("FORGE_AGENT_SESSION_ID"),
+    "environment_session": os.environ.get("ACDD_AGENT_SESSION_ID"),
     "claim_revision": claim["claim_revision"],
     "rejection": guidance.get("rejection"),
     "prompt": prompt,
@@ -39,11 +39,11 @@ if mode == "sleep":
 def forge(*args):
     clean_env = dict(os.environ)
     for var in (
-        "FORGE_CONFIG",
-        "FORGE_PROFILE",
-        "FORGE_DB",
-        "FORGE_WORKSPACE_ROOT",
-        "FORGE_AGENT_SESSION_ID",
+        "ACDD_CONFIG",
+        "ACDD_PROFILE",
+        "ACDD_DB",
+        "ACDD_WORKSPACE_ROOT",
+        "ACDD_AGENT_SESSION_ID",
     ):
         clean_env.pop(var, None)
     result = subprocess.run(

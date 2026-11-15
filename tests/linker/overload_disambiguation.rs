@@ -1,7 +1,7 @@
 #![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 
 use crate::common::Workspace;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     db::reader,
     engine::{ast, linker},
 };
@@ -216,8 +216,8 @@ def caller(c: Category):
     );
 
     // Also inspect must succeed
-    let page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
-        &contextunity_forge_mcp::core::response::ResponsePolicy::default(),
+    let page = contextunity_acdd::core::response::QueryOptions::resolve(
+        &contextunity_acdd::core::response::ResponsePolicy::default(),
         Some(100),
         0,
         None,

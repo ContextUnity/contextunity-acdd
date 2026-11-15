@@ -5,7 +5,7 @@ title: Indexing architecture
 
 # Indexing architecture
 
-Forge builds a local SQLite graph from admitted source and Markdown. The CLI creates or updates the index; the MCP server checks freshness before reads. Readers resolve selectors and return bounded graph or document results.
+ACDD builds a local SQLite graph from admitted source and Markdown. The CLI creates or updates the index; the MCP server checks freshness before reads. Readers resolve selectors and return bounded graph or document results.
 
 ```text
 CLI build / scan / delta             MCP request
@@ -25,7 +25,7 @@ CLI build / scan / delta             MCP request
 
 > [!IMPORTANT]
 > Invariant: Every capability exposed through the MCP JSON-RPC protocol maintains
-> equivalent CLI command coverage under `contextunity-forge-mcp`. Both surfaces
+> equivalent CLI command coverage under `acdd`. Both surfaces
 > share the same underlying storage, analysis, and execution engines (see [ADR 0001](../adr/0001-dual-surface-parity.md)).
 
 - `src/cli/` owns command parsing, build commands, and command output.
@@ -33,11 +33,11 @@ CLI build / scan / delta             MCP request
 - `src/engine/scanner/` owns admitted file inventory, roots, ignores, linked workspaces, and scan limits.
 - `src/engine/languages/` and `src/engine/ast/` extract syntax facts for enabled language profiles. A `LanguageProfile` owns parsing and import normalization; a `LanguageLinker` owns language-specific import, receiver, and incremental-linking rules. The shared linker builds namespace indexes and graph edges through those contracts. `src/engine/docs.rs` extracts Markdown documents and heading sections.
 - `src/engine/linker/semantic_context.rs` exposes borrowed, read-only access to prebuilt language member indexes through `LanguageMemberLookup`. `src/engine/linker/framework_relations.rs` composes cross-language route and template relationships after ordinary reference resolution; its graph output joins through the common deterministic sort.
-- Each linking pass builds one borrowed [`LinkerInterner`](../../crates/forge-index/src/linker/interner.rs). Prepared semantic tables use `PathId`; common member keys and semantic target sets use `SymbolId`. Graph emission restores the existing string identities and ordering.
+- Each linking pass builds one borrowed [`LinkerInterner`](../../crates/acdd-index/src/linker/interner.rs). Prepared semantic tables use `PathId`; common member keys and semantic target sets use `SymbolId`. Graph emission restores the existing string identities and ordering.
 - The linker connects facts using indexed files and configured workspace boundaries. An edge may remain unresolved or external when its target cannot be established statically. During cold builds, the linker operates over a lightweight `SymbolCatalog` (`src/core/semantic.rs`, `src/engine/linker/compact.rs`), which decouples reference linking from heavy AST details and avoids workspace-wide fact maps.
 - Unmodified files reuse extracted facts across worktrees via a content-addressed binary `ExtractionCache` (`src/db/writer/cache.rs`), keyed by source digest, grammar ID, semantics version, and effective framework ruleset hash.
 - Cache encoding borrows record fields directly through binary codecs. Typed sidecars retain their existing V3 JSON-value overlays; V2 loading, checksums and malformed-payload rejection remain part of cache admission. Each extraction worker reuses its source buffer and validates length, source metadata and digest for every file.
-- [`NodeSemanticEntry`](../../crates/forge-core/src/typed_facts.rs) stores admitted bindings, rebindings and parameter types natively. Public node serialization overlays the original JSON fields, preserving parameter order and malformed raw values. [`ValueFlowFacts`](../../crates/forge-core/src/semantic.rs) allocates its boxed framework/template facts only for scopes that need them; serialization retains the existing flat fields.
+- [`NodeSemanticEntry`](../../crates/acdd-core/src/typed_facts.rs) stores admitted bindings, rebindings and parameter types natively. Public node serialization overlays the original JSON fields, preserving parameter order and malformed raw values. [`ValueFlowFacts`](../../crates/acdd-core/src/semantic.rs) allocates its boxed framework/template facts only for scopes that need them; serialization retains the existing flat fields.
 - `src/db/` stores generations, nodes, edges, documents, and source metadata; its readers implement selectors, traversal, search, and analysis. Local syntax facts use Zstandard-compressed JSON, reverse dependency lookups use the target index on `dependencies`, and repeated resolution evidence uses a shared dictionary.
 
 ## Documentation references and verification
@@ -53,23 +53,23 @@ that declaration resolves uniquely. Explicit source links confine resolution;
 unscoped claims use the document's workspace. A GitHub alert callout's
 `is_invariant` section flag is a separate discovery signal.
 
-For the current implementation, follow [`collect_documentation_paths`](../../crates/forge-index/src/scanner/mod.rs),
-[`extract_with_details`](../../crates/forge-index/src/docs.rs), and
-[`document_symbol_candidates`](../../crates/forge-index/src/linker/resolution/mod.rs).
+For the current implementation, follow [`collect_documentation_paths`](../../crates/acdd-index/src/scanner/mod.rs),
+[`extract_with_details`](../../crates/acdd-index/src/docs.rs), and
+[`document_symbol_candidates`](../../crates/acdd-index/src/linker/resolution/mod.rs).
 The incremental parity test
 [`source_delta_relinks_affected_docs_with_bare_suffix_references`](../../tests/incremental/doc_parity.rs#L70-L160)
 checks documentation links, invariant claims, diagnostics, and cold/delta
 parity. The [MCP documentation query contract](../reference/mcp-tools.md#documentation-queries)
 defines the candidate and verified-edge response distinction.
 
-A root workspace owns the index under its `.forge` directory by default. Linked workspaces add files to that same index when enabled and available. Each linked workspace has its own roots and ignore settings. A source root is an inventory boundary; it does not by itself declare an import prefix. Use the actual package and module structure when interpreting imports.
+A root workspace owns the index under its `.acdd` directory by default. Linked workspaces add files to that same index when enabled and available. Each linked workspace has its own roots and ignore settings. A source root is an inventory boundary; it does not by itself declare an import prefix. Use the actual package and module structure when interpreting imports.
 
 `build` creates a full index. `delta` updates it from changed and deleted files. `scan` reports admitted files without creating an index. The MCP server checks indexed ownership, source inventory, adapter configuration, and file changes before serving database-backed requests. When the indexed state is stale, it updates affected files or rebuilds as needed. CLI readers use the index already on disk; run `build` or `delta` after editing source before relying on CLI results.
 
 > [!IMPORTANT]
 > Invariant: `forge-owner-sha256-v2` commits sorted FTS5 instance postings for `node_search` and `doc_search`, plus each index's configuration rows. Verification derives each active document's per-column token counts from those postings and checks them against FTS5 document-size rows, which preserves ranking-length integrity without depending on shadow segment layout. Cold builds and deltas over identical admitted inputs retain the bit-identical root required by [ADR 0004](../adr/0004-deterministic-merkle-commitments.md); reindexing and vacuuming do not change it.
 
-A full build validates a staged database before publication. Forge readers hold a shared database lock during each query; the builder takes an exclusive lock before replacing the index. The MCP server reuses its SQLite connection between requests, starts a read transaction for each request, and discards the connection when the database identity changes. It reuses a successful source-inventory check for up to five seconds when the adapter digest and database identity remain valid. Adapter loading and database identity checks still occur during admission; see [performance guidance](performance.md) for the current boundary.
+A full build validates a staged database before publication. ACDD readers hold a shared database lock during each query; the builder takes an exclusive lock before replacing the index. The MCP server reuses its SQLite connection between requests, starts a read transaction for each request, and discards the connection when the database identity changes. It reuses a successful source-inventory check for up to five seconds when the adapter digest and database identity remain valid. Adapter loading and database identity checks still occur during admission; see [performance guidance](performance.md) for the current boundary.
 
 ## Resolving a query
 
@@ -81,7 +81,7 @@ Selectors must identify one target. For example, `package/settings.py:load_confi
 
 `DependencyRegistry` loads and validates bundled and workspace-local framework manifests before parallel extraction. It prepares merged typed rules for the effective project scopes and shares an immutable `Arc<LanguageContext>` across files; AST extraction uses `extract_typed_with_registry` in both the cold writer and delta paths. Profiles receive those rules through the existing extraction hooks, together with a per-file `RouteContext` for static router and controller prefixes. Extraction does not reread manifest files for each syntax node.
 
-Grammar-bound syntax classification and route/DI dispatch use numeric kind IDs in tables sized to the actual grammar. [`with_warm_parser`](../../crates/forge-index/src/languages/mod.rs) reuses thread-local parsers for ordinary files, Vue script islands and HTML JavaScript fragments, resetting and selecting the actual grammar before parsing. Embedded facts retain their original source offsets.
+Grammar-bound syntax classification and route/DI dispatch use numeric kind IDs in tables sized to the actual grammar. [`with_warm_parser`](../../crates/acdd-index/src/languages/mod.rs) reuses thread-local parsers for ordinary files, Vue script islands and HTML JavaScript fragments, resetting and selecting the actual grammar before parsing. Embedded facts retain their original source offsets.
 
 Class-hierarchy rules feed canonical Python receiver lookup through the inheritance index. Import provenance, method shadowing, and unknown external bases still bound resolution. Route and DI rules produce ordinary syntax facts and references. Configured route facts retain include modules, route names, and namespaces; static include-prefix composition runs before persistence, including after incremental fact hydration. Manifest digest changes invalidate the indexed rule snapshot so an update cannot retain extraction from an old rule set.
 
@@ -151,6 +151,6 @@ Delta compares resolution identities for non-component nodes as a sorted set of 
 
 Body edits refresh the changed owner's facts, call edges, coverage, and commitments. Consumer invalidation compares semantic return and field contracts, signatures, exports, and import identities rather than body-local positions. Changes to inferred factory types, scoped imports, or inference validity limits expand the consumer frontier; equivalent internal call changes retain the existing consumer links.
 
-`FORGE_PROFILE_LINKER=1` writes phase timings to stderr for namespace/export indexing, inheritance, semantic admission, value flow, reference linking, and graph sorting. It leaves graph facts and commitments unchanged.
+`ACDD_PROFILE_LINKER=1` writes phase timings to stderr for namespace/export indexing, inheritance, semantic admission, value flow, reference linking, and graph sorting. It leaves graph facts and commitments unchanged.
 
 Manifest `call_to_file` rules reuse the Python lexical import/literal owners and the shared linker composition pass. Core-owned semantic DTOs remain native in the owner-indexed `SemanticStore` during typed extraction and linking. Serialization overlays the existing `details.semantic_facts` slot; public extraction materializes that same representation. Compact navigation metadata omits parser-only flow and semantic payloads while full-facts serialization retains them. Legacy payloads hydrate at the compatibility boundary, retaining original values and invalid raw evidence. Actual module providers and call consumers share a typed project/path/projection identity, whose opaque dependency key feeds existing delta owner invalidation. Exact promotion aggregates every matching rule and namespace and requires one actual target plus canonical external-import proof.

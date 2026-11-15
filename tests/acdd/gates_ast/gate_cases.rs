@@ -155,13 +155,13 @@ impl GateAstHarness {
         let workspace =
             crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
         workspace.write("AGENTS.md", "# Rules\n");
-        workspace.write("forge-mcp.yaml", config);
+        workspace.write("acdd.yaml", config);
         let profile = if profile.starts_with("inherit:") {
             profile.to_owned()
         } else {
             format!("inherit: none\n{profile}")
         };
-        workspace.write(".forge/acdd/profile.yaml", &profile);
+        workspace.write(".acdd/profile.yaml", &profile);
         workspace.write(manifest_path, manifest);
         for (path, content) in files {
             workspace.write(path, content);
@@ -243,14 +243,14 @@ impl GateAstHarness {
         } else {
             format!("inherit: none\n{profile}")
         };
-        self.workspace.write(".forge/acdd/profile.yaml", &profile);
+        self.workspace.write(".acdd/profile.yaml", &profile);
         self.task = Some(TaskHarness::attach(&self.workspace, &self.id));
     }
 
     fn pass_gate(
         &mut self,
         stage: &str,
-    ) -> anyhow::Result<contextunity_forge_mcp::db::tasks_store::Task> {
+    ) -> anyhow::Result<contextunity_acdd::db::tasks_store::Task> {
         let worker = "worker";
         let session = TaskHarness::session_for(worker);
         let claim = self
@@ -261,27 +261,27 @@ impl GateAstHarness {
             .submit_evidence_in_session(&evidence, Some(&session))
     }
 
-    fn current_task(&self) -> anyhow::Result<contextunity_forge_mcp::db::tasks_store::Task> {
+    fn current_task(&self) -> anyhow::Result<contextunity_acdd::db::tasks_store::Task> {
         self.task().store.inspect(&self.id)
     }
 
     fn advance_to(
         &mut self,
         target: &str,
-    ) -> anyhow::Result<contextunity_forge_mcp::db::tasks_store::Task> {
+    ) -> anyhow::Result<contextunity_acdd::db::tasks_store::Task> {
         self.task_mut().advance_to(target)
     }
 
     fn advance_to_completion(
         &mut self,
-    ) -> anyhow::Result<contextunity_forge_mcp::db::tasks_store::Task> {
+    ) -> anyhow::Result<contextunity_acdd::db::tasks_store::Task> {
         self.task_mut().advance_to_completion()
     }
 
     fn recover(&mut self) -> anyhow::Result<()> {
         drop(self.task.take());
-        std::fs::remove_file(self.workspace.root().join(".forge/tasks.sqlite"))?;
-        contextunity_forge_mcp::engine::milestones::recovery::db_recover(self.workspace.root())?;
+        std::fs::remove_file(self.workspace.root().join(".acdd/tasks.sqlite"))?;
+        contextunity_acdd::engine::milestones::recovery::db_recover(self.workspace.root())?;
         self.task = Some(TaskHarness::attach(&self.workspace, &self.id));
         Ok(())
     }
@@ -441,7 +441,7 @@ fn case_public_api_condition_uses_extracted_rust_visibility() {
 
 fn case_durable_template_receipt_selects_canonical_candidate_and_review_paths() {
     use super::support::{json, Receipt};
-    use contextunity_forge_mcp::core::tasks::{
+    use contextunity_acdd::core::tasks::{
         gates::validate_durable_receipt_with_profile, profile::GateProfile,
     };
     let profile: GateProfile = serde_yaml::from_str("gate_templates:\n  code_cycle:\n    gates:\n      - {id: candidate, proof: command, sha_snapshot: true}\n      - {id: review, proof: none}\n      - {id: deliver, proof: delivery, review_sources: [review]}\n  docs_cycle:\n    gates:\n      - {id: candidate, proof: none, sha_snapshot: true}\n      - {id: review, proof: none}\n      - {id: deliver, proof: delivery, review_sources: [review]}\ngates:\n  - {id: code, use: code_cycle}\n  - {id: docs, use: docs_cycle}\n").unwrap();
@@ -488,10 +488,10 @@ fn case_specialized_delivery_receipt_retains_track_through_sync_and_recovery() {
         ["docs.candidate", "docs.review", "docs.deliver"]
     );
     drop(harness.task.take());
-    contextunity_forge_mcp::engine::tasks::manage(
+    contextunity_acdd::engine::tasks::manage(
         harness.workspace.root(),
-        contextunity_forge_mcp::engine::tasks::Manage {
-            action: contextunity_forge_mcp::engine::tasks::ManageAction::Sync,
+        contextunity_acdd::engine::tasks::Manage {
+            action: contextunity_acdd::engine::tasks::ManageAction::Sync,
             milestone_ref: Some("docs/milestones/010-tracks.md".into()),
             ..Default::default()
         },
@@ -505,7 +505,7 @@ fn case_specialized_delivery_receipt_retains_track_through_sync_and_recovery() {
         Some("docs.deliver")
     );
     drop(harness.task.take());
-    let handoff = contextunity_forge_mcp::engine::milestones::handoff_context(
+    let handoff = contextunity_acdd::engine::milestones::handoff_context(
         harness.workspace.root(),
         "m-tracks",
         "HEAD",
@@ -568,7 +568,7 @@ gates:
           need: [review, security]
           auto_commit: false
  "#;
-    contextunity_forge_mcp::core::tasks::profile::validate_profile_document(profile).unwrap();
+    contextunity_acdd::core::tasks::profile::validate_profile_document(profile).unwrap();
     let manifest = "---\nid: m-reviews\ntitle: Multiple reviews\nstatus: active\n---\n```yaml\ntask_ref: first\ntarget: Preserve review identities\nproof_policy: direct-proof\nscope: [src/]\n```\n";
     let mut harness = GateAstHarness::fixture(
         profile,

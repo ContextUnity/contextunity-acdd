@@ -1,18 +1,18 @@
 /// Implements ast support.
-pub use forge_index::ast;
+pub use acdd_index::ast;
 /// Implements docs support.
-pub use forge_index::docs;
+pub use acdd_index::docs;
 /// Implements languages support.
-pub use forge_index::languages;
+pub use acdd_index::languages;
 /// Implements linker support.
-pub use forge_index::linker;
+pub use acdd_index::linker;
 /// Implements milestone lifecycle support.
-pub use forge_tasks::milestones;
+pub use acdd_tasks::milestones;
 /// Indexing pipeline orchestration.
 pub mod pipeline;
 /// Shared layered file and symbol reader for CLI and MCP.
 pub mod reader;
 /// Implements scanner support.
-pub use forge_index::scanner;
+pub use acdd_index::scanner;
 /// Implements tasks support.
 pub mod tasks;

@@ -177,8 +177,8 @@ fn completed_cancellations_re_admit_and_restore_dependency_blockers() {
     workspace.write("src/consumer.rs", "pub fn consumer() {}\n");
     workspace.write("src/observer.rs", "pub fn observer() {}\n");
     workspace.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\nmilestones: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\nmilestones: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     completed_milestone.tasks[0].status = None;
     completed_milestone.tasks[0].receipt = None;
@@ -200,7 +200,7 @@ fn completed_cancellations_re_admit_and_restore_dependency_blockers() {
         );
     };
     write_manifest("docs/cancelled.md", &completed_milestone);
-    let db_path = workspace.root().join(".forge/tasks.sqlite");
+    let db_path = workspace.root().join(".acdd/tasks.sqlite");
     let mut store = TasksStore::open(&db_path).unwrap();
     store
         .sync(&completed_milestone, "docs/cancelled.md", workspace.root())

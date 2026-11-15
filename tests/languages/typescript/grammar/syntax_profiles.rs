@@ -224,7 +224,7 @@ function outside() { const arrow = () => this.mark(); arrow(); }"#,
 #[test]
 fn vue_profile_parser_reuse_tracks_the_selected_grammar() {
     let profile =
-        contextunity_forge_mcp::engine::languages::by_id("vue").expect("Vue profile is compiled");
+        contextunity_acdd::engine::languages::by_id("vue").expect("Vue profile is compiled");
     for (path, source, expected_name) in [
         (
             "First.vue",
@@ -238,11 +238,9 @@ fn vue_profile_parser_reuse_tracks_the_selected_grammar() {
         ),
         ("Third.js", "export function Third() { return 1; }", "Third"),
     ] {
-        let mut facts = contextunity_forge_mcp::core::models::Facts::default();
-        contextunity_forge_mcp::engine::languages::parse_file(
-            profile, path, source, path, &mut facts,
-        )
-        .expect("Vue profile parse failed");
+        let mut facts = contextunity_acdd::core::models::Facts::default();
+        contextunity_acdd::engine::languages::parse_file(profile, path, source, path, &mut facts)
+            .expect("Vue profile parse failed");
         assert!(facts.errors.is_empty(), "{path}: {:?}", facts.errors);
         assert!(facts
             .nodes

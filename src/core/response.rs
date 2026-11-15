@@ -1,3 +1,3 @@
-//! Response structures and policies re-exported from forge-core.
+//! Response structures and policies re-exported from acdd-core.
 
-pub use forge_core::response::*;
+pub use acdd_core::response::*;

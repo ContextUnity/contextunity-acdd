@@ -75,7 +75,7 @@ fn milestone_owner_and_depends_on_aliases_drive_sync_show_and_claim_gating() {
         assert_eq!(sync_other["tasks"][0]["task_id"], "other/BS-106:other-task");
 
         root.write("extensions/base/src/lib.rs", "pub fn extension() {}\n");
-        root.commit_fixture_inputs(&["AGENTS.md", "forge-mcp.yaml", "docs", "extensions"]);
+        root.commit_fixture_inputs(&["AGENTS.md", "acdd.yaml", "docs", "extensions"]);
         for (index, (milestone_id, task_ref, file, project)) in
             OWNER_ALIAS_TASKS.into_iter().enumerate()
         {
@@ -169,7 +169,7 @@ fn milestone_owner_and_depends_on_aliases_drive_sync_show_and_claim_gating() {
         let right = MilestoneHarness::workspace(DEFAULT_SEAM, "");
         for (linked, project) in [(&left, "left"), (&right, "right")] {
             linked.write(
-                "forge-mcp.yaml",
+                "acdd.yaml",
                 &format!("task_repository: linked\ntask_project: {project}\n"),
             );
             linked.write(
@@ -183,9 +183,9 @@ fn milestone_owner_and_depends_on_aliases_drive_sync_show_and_claim_gating() {
                     .build(),
             );
         }
-        let config = root.document("forge-mcp.yaml");
+        let config = root.document("acdd.yaml");
         root.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "{config}linked_workspaces:\n  - name: left\n    path: {}\n    tasks: {{enabled: true}}\n  - name: right\n    path: {}\n    tasks: {{enabled: true}}\n",
             left.root().display(),
@@ -213,7 +213,7 @@ const DEFAULT_ALIAS_CATALOG: &str = include_str!("../../fixtures/milestones/defa
 fn milestone_frontmatter_defaults_task_profile_and_accepts_tasks_alias() {
     let root = MilestoneHarness::from_catalog(DEFAULT_ALIAS_CATALOG);
     {
-        root.commit_fixture_inputs(&["AGENTS.md", "forge-mcp.yaml", "docs", "src"]);
+        root.commit_fixture_inputs(&["AGENTS.md", "acdd.yaml", "docs", "src"]);
         let synced = root.sync("001").unwrap();
         let task_id = "base/m-default:first";
         assert_eq!(synced["tasks"][0]["task_id"], task_id);
@@ -369,7 +369,7 @@ fn milestone_passport_topology_records_resolved_and_unresolved_dependencies() {
         if case_index > 0 {
             snapshot.restore(&topology);
         }
-        topology.write(".gitignore", ".forge/\n");
+        topology.write(".gitignore", ".acdd/\n");
         topology.write("src/lib.rs", "pub fn topology() {}\n");
         let mut profile = fixture_profile();
         profile.commands.insert(
@@ -381,9 +381,9 @@ fn milestone_passport_topology_records_resolved_and_unresolved_dependencies() {
             &crate::acdd::support::standalone_profile_yaml(&profile),
         );
         topology.write(
-            "forge-mcp.yaml",
+            "acdd.yaml",
             &format!(
-                "roots: [src]\ndocs: [docs]\nacdd_profile: profile.yaml\ntasks_db: .forge/tasks.sqlite\ntask_repository: topology-repo\ntask_project: {default}\nmilestones: [docs/milestones, 'extensions/*/docs/milestones']\nowners:\n  extensions/new: old\naliases: {aliases}\n"
+                "roots: [src]\ndocs: [docs]\nacdd_profile: profile.yaml\ntasks_db: .acdd/tasks.sqlite\ntask_repository: topology-repo\ntask_project: {default}\nmilestones: [docs/milestones, 'extensions/*/docs/milestones']\nowners:\n  extensions/new: old\naliases: {aliases}\n"
             ),
         );
         let manifest = |id: &str, state: &str, dependencies: &[String], task_status: &str| {
@@ -439,7 +439,7 @@ fn milestone_passport_topology_records_resolved_and_unresolved_dependencies() {
         );
         topology.commit_fixture_inputs(&[
             ".gitignore",
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "profile.yaml",
             "src",
             directory,

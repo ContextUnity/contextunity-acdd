@@ -41,7 +41,7 @@ optional fields as described under [SQL](#sql-and-checkpoints).
 Start with `code_map_overview` to confirm the selected workspace and indexed
 coverage. Reuse a sufficient search preview instead of fetching the same source
 again. Use `code_map_inspect` for one declaration summary and `code_map_explain`
-when relationship edges are needed. Use `forge_read` when source is absent
+when relationship edges are needed. Use `acdd_read` when source is absent
 from previews or a complete-symbol read is needed; it reads the complete body by
 default, with `max_body_lines` available to bound it. Use this instead of repeated
 `ctx_read` file chunks. Triage sections with `search_docs(query="...", include_excerpt=true)`,
@@ -92,20 +92,20 @@ modules; embedded gates therefore remain usable with navigation disabled.
 
 ### Layered file reader
 
-Use `forge_read(path: "notes.txt", mode: "lines")` or
-`contextunity-forge-mcp read notes.txt --mode lines`. CLI and MCP use the same
+Use `acdd_read(path: "notes.txt", mode: "lines")` or
+`acdd read notes.txt --mode lines`. CLI and MCP use the same
 reader and response budgets. `mode` accepts `auto` (default), `lines`, `raw`,
 `search`, `delta`, `outline`, and `snippet`. Auto selects snippet when `selector`
 is present, search when `pattern` is present, and lines otherwise.
 
 When a symbol's unique name is already known, use
-`forge_read(selector="SymbolName")` for a digest-verified symbol read. Add the
-owner path with `forge_read(path="src/lib.rs", selector="SymbolName")` to
+`acdd_read(selector="SymbolName")` for a digest-verified symbol read. Add the
+owner path with `acdd_read(path="src/lib.rs", selector="SymbolName")` to
 restrict resolution. The response contains the complete body when it fits;
 continue any source pages using the returned offset and generation. Search when
 the name is unknown or disambiguation is needed.
 MCP also accepts `symbol` as an alias for `selector`, for example
-`forge_read(symbol="SymbolName")`. Supplying both fields with non-null values
+`acdd_read(symbol="SymbolName")`. Supplying both fields with non-null values
 is rejected, including when either is an empty string; `null` is treated as
 absent. The alias has the same path restriction and source paging.
 
@@ -166,7 +166,7 @@ absent signals produce no hints. CLI flags use hyphens, for example
 | `code_map_overview` | Workspace, index, language and documentation summary; request `coverage_by_workspace` for persisted primary and linked workspace coverage counts. |
 | `code_map_search` | Search symbols by `pattern`; exact name or qualified-name matches have priority. When matching parameter or return types also exist, they appear in ranked results alongside exact names. Otherwise exact-name matches retain the exclusive default. Prefixes and natural-language terms use ranked FTS5 BM25 exploratory search. Hits include an indexed `signature` and `inspect_selector` arguments for `code_map_inspect` with `show_source:true`. Previews appear automatically when the total is at most three; set `include_preview:true` for larger result sets. Supports `include_docs`, `group_by_file`, prefix patterns such as `parse*`, and optional file or directory `path` scope. |
 | `code_map_inspect` | Resolve a `selector` and return a compact signature, docstring, receiver-aware container, call counts, and direct caller/callee preview. Paged `documented_in` citations retain one linked row per cited section, with full-detail content shown beneath its citation. Inspect Markdown omits its duplicate `documents` JSON page while JSON keeps both pages. Bounded `governing_invariants` add verified documentation context. Set `include_coverage=true` for paged resolution evidence. |
-| `forge_read` | Layered text, search, Git delta, Markdown/code outline, and digest-verified symbol reads by `path` or `selector`; optional confined `output_file` export. |
+| `acdd_read` | Layered text, search, Git delta, Markdown/code outline, and digest-verified symbol reads by `path` or `selector`; optional confined `output_file` export. |
 | `code_map_explain` | Explain direct inbound or outbound relationships for a `selector`; edge rows include both public endpoint IDs and direction relative to the selected node. Full detail also includes stored edge evidence. |
 | `code_map_impact` | Find inbound (default) or outbound dependencies for a `selector`, or analyze one Git change view (`staged`, `unstaged`, or `head`); provide exactly one of `selector` and `changes`. Selector results also page affected documentation and governing invariants. Depth defaults to one edge. |
 | `code_map_tests` | Find test relationships for a narrow `selector`; `direction` accepts `inbound` or `outbound`. Inbound results identify verified test cases and shortest exact `calls` paths, with a bounded lexical fallback when no call path exists. Markdown links graph-backed paths in producer order and shows only producer-supplied test roles. Outbound results follow exact `calls` edges. Results classify test cases, helpers, and fixtures; `possible_calls` do not establish coverage. |
@@ -184,7 +184,7 @@ absent signals produce no hints. CLI flags use hyphens, for example
 | `task_manage` | Create/sync specifications, inspect/context, delete, extend scope, manage subtasks, reset/reopen, verify the claimed command with `action: "verify"` and `task_id` (optional `timeout_seconds`), or atomically dispatch with `action: "next"`, `worker_id`, and `worktree`. Verify caches command proof without advancing the task; see [command verification](tasks.md#iterative-command-verification). Next returns the claimed gate with its context bundle, prioritizing independent delivery/review, the worker's unblocked parked work, then ordinary ready work by wave and task ID. See the [action schema](tasks.md#five-flat-mcp-tools). |
 | `task_blackboard` | Post, read, or inspect milestone-, task-, and subtask-scoped SQLite messages. `scope` selects the hierarchy level; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain it, with fail-closed resolution for omitted ambiguous context. `post` requires `topic` and `payload`, accepts optional `author`, and returns `{id}`. `read` accepts `topic`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first payload-free `{messages}` and `{pagination}` from the resolved context. `inspect` with `message_id` searches configured task workspaces and returns the first matching message including its payload, ignoring optional `scope`, `task_id`, `milestone_ref`, and `subtask_ref`; without `message_id`, it returns the scoped read page. |
 
-See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI parity, and the `contextunity-forge` skill for the task lifecycle.
+See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI parity, and the `acdd` skill for the task lifecycle.
 
 ## Built-in guide
 
@@ -350,7 +350,7 @@ For a Git change view, pass `changes:"staged"`, `changes:"unstaged"`, or `change
 and requested `max_body_lines` to 1–500. When omitted, their body limit uses
 `response.source_context.max_body_lines` (200 by default). Adapter
 `response.source_context.max_body_lines` values remain strictly validated from
-1 to 500. `forge_read` defaults to the complete selected symbol and honors
+1 to 500. `acdd_read` defaults to the complete selected symbol and honors
 an explicit `max_body_lines` limit normalized to at least one, without an
 implicit 500-line cap.
 All three tools clamp `leading_lines` above 20 to 20. Negative values and
@@ -363,13 +363,13 @@ including calls in the same MCP session. Missing tokens return an actionable
 error: provide that generation or restart at `source_offset=0`. Ordinary
 collection pagination also requires its explicit generation.
 
-`code_map_inspect`, `code_map_explain`, and `forge_read` include serialized
+`code_map_inspect`, `code_map_explain`, and `acdd_read` include serialized
 metadata and Markdown or JSON rendering in the configured byte limit.
-`forge_read` pages an oversized symbol to fit that serialized limit, with
+`acdd_read` pages an oversized symbol to fit that serialized limit, with
 truthful `next_source_offset`, `has_more`, and the active generation. Inspect and
 explain keep their configured preview line limits and 8 KiB source sub-budget;
 if the resulting response still exceeds the serialized limit after collection
-trimming, request fewer source lines, less detail, or `forge_read` instead.
+trimming, request fewer source lines, less detail, or `acdd_read` instead.
 Source pages contain only complete lines. A single line that cannot fit returns
 a clear budget error and a local-file recovery hint, never a partial line or a
 non-advancing cursor. Source reads still verify the on-disk digest and reject
@@ -377,7 +377,7 @@ stale generations.
 
 Code-map paged tools accept `limit` (default 30, range 1–100) and `offset`. Continue an ordinary page with its `next_offset` and `generation`; ordinary pages omit the repeated continuation text. A completed zero-result code-map page contains `total` and `items` without pagination fields. Computation and byte limits retain their truncation status and recovery hint, including when no items were returned. The response byte budget is configurable from 1,024 to 98,304 bytes; actual UTF-8 serialization, metadata, and JSON/Markdown escaping count toward it. Task-list pagination is separate: it always reports `total`, `limit`, `offset`, actual `returned`, `has_more`, and its task-view `generation`, with `next_offset` only when another page remains. When response trimming removes task or collection tails, it preserves whole records and advances to the actual returned offset. Task-view generations bind the selected workspace, task filters, and complete task/subtask state, not the code-index snapshot.
 
-Code source previews from `code_map_search` appear automatically when the total hit count is at most three. For larger results, set `include_preview:true`; each response attaches previews to at most three hits, with at most 20 lines and 12 KiB combined preview text. Every search hit includes an indexed signature and an `inspect_selector` object; pass that object as the arguments to `code_map_inspect` to request the source preview directly. Search previews and snippets check that on-disk source still matches the indexed digest. `forge_read` supports `leading_lines` from 0 to 20 and an explicit `max_body_lines` limit normalized to at least one; when omitted, it reads the complete selected symbol if the serialized response fits. If source changed, refresh the index before relying on the result.
+Code source previews from `code_map_search` appear automatically when the total hit count is at most three. For larger results, set `include_preview:true`; each response attaches previews to at most three hits, with at most 20 lines and 12 KiB combined preview text. Every search hit includes an indexed signature and an `inspect_selector` object; pass that object as the arguments to `code_map_inspect` to request the source preview directly. Search previews and snippets check that on-disk source still matches the indexed digest. `acdd_read` supports `leading_lines` from 0 to 20 and an explicit `max_body_lines` limit normalized to at least one; when omitted, it reads the complete selected symbol if the serialized response fits. If source changed, refresh the index before relying on the result.
 
 ## AST pattern capabilities
 
@@ -401,7 +401,7 @@ Unsupported fragments and invalid syntax produce an MCP tool error with the diag
 Markdown checkpoint lists show the returned full breadcrumbs and serialized
 byte sizes; save and delete display the actual action and breadcrumb. Get
 preserves the stored JSON value losslessly and does not interpret user fields
-such as `generation`, `freshness`, or `items` as Forge metadata.
+such as `generation`, `freshness`, or `items` as ACDD metadata.
 
 `code_map_query` accepts operations `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, `sql`, `untested`, `implementations`, and `duplicates`. Use `code_map_query(sql="SELECT count(*) FROM nodes")` to select SQL mode directly, or `code_map_query(operation="sql", selector="SELECT ...")`. A SELECT/WITH statement in `operation`, or in `query` when `operation` is omitted or blank, also selects SQL mode. In these inferred forms, the statement resolves from `sql`, then `query`, then `selector`, then SQL text in `operation`. With an explicit operation and no inferred form, the selector resolves from `target`, then `selector`, then `query`; `target` remains valid only for `untested` and `duplicates`. SQL accepts exactly one read-only `SELECT` or `WITH` statement. Writes and additional statements remain rejected, with the same query budgets and pagination. For structural cycle analysis, use `code_map_analyze` with `include_cycles=true`. Cycles are static graph findings.
 
@@ -441,7 +441,7 @@ project is rejected. Gate-transition checkpoints are engine-owned: `save` and
 the milestone verification cursor is reserved even before its first transition.
 The tool continues to read these rows with `get`. Scratchpad data is local
 session state, separate from the source index; the tool does not read or write
-`.forge/checkpoints.json`.
+`.acdd/checkpoints.json`.
 
 ## Syntax diagnostics on demand
 

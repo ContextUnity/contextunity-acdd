@@ -71,10 +71,10 @@ fn exact_symbol_search_uses_fts_candidates_and_keeps_scope_and_kind_filters() {
     let plan = serde_json::to_string(&plan).unwrap();
     assert!(plan.contains("node_search"), "{plan}");
     assert!(!plan.contains("SCAN n "), "{plan}");
-    let default: contextunity_forge_mcp::mcp::tools::SearchSymbols =
+    let default: contextunity_acdd::mcp::tools::SearchSymbols =
         serde_json::from_value(serde_json::json!({"pattern":"admit"})).unwrap();
     assert!(!default.exact);
-    let enabled: contextunity_forge_mcp::mcp::tools::SearchSymbols =
+    let enabled: contextunity_acdd::mcp::tools::SearchSymbols =
         serde_json::from_value(serde_json::json!({"pattern":"admit", "exact":true})).unwrap();
     assert!(enabled.exact);
 }

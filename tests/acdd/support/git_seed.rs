@@ -274,8 +274,8 @@ fn seed_git_workspace(
     workspace.write("tests/acdd/tasks.rs", TASK_SEAM_FIXTURE);
     workspace.write("src/lib.rs", "pub fn example() {}\n");
     workspace.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     workspace.write("docs/010-test.md", SPEC);
     workspace.write(".git/info/exclude", FIXTURE_EXCLUDE);

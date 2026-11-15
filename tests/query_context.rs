@@ -4,7 +4,7 @@
 #[allow(dead_code)]
 mod common;
 
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions},
     db::{reader, symbols, traversal, writer},
 };

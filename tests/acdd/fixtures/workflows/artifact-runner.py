@@ -21,6 +21,6 @@ elif gate == "review":
         Path("reviewed").touch()
         decision = "reject"
     payload["decision"] = decision
-print(json.dumps({"gate": gate, "session_id": os.environ["FORGE_AGENT_SESSION_ID"],
+print(json.dumps({"gate": gate, "session_id": os.environ["ACDD_AGENT_SESSION_ID"],
                   "decision": decision, "proof": proof,
                   "findings": {"issue": "repair"} if decision == "reject" else None}))

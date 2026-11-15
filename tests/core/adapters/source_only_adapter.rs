@@ -1,7 +1,7 @@
 #![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 
 use crate::common::{mcp_client::invalidate_mcp_connection_cache, Workspace};
-use contextunity_forge_mcp::{db::reader, mcp::server::Server};
+use contextunity_acdd::{db::reader, mcp::server::Server};
 use serde_json::{json, Value};
 
 fn inventory(server: &Server) -> Value {
@@ -51,13 +51,13 @@ fn source_only_scope_removes_bundles_without_hiding_consumer_sources() {
         "# Library API\nAuthored documentation.\n",
     );
     let config = "roots: ['.']\nlinked_workspaces:\n  - name: library\n    path: ../library\n    roots: [src, frontend, schema, tests]\n    docs: [docs]\n";
-    ws.write("app/forge-mcp.yaml", config);
+    ws.write("app/acdd.yaml", config);
     let root = ws.path("app");
-    let server = Server::new(root.clone(), root.join(".forge/code-map.sqlite"));
+    let server = Server::new(root.clone(), root.join(".acdd/code-map.sqlite"));
     assert!(inventory(&server)["bundled_facts"].as_i64().unwrap() > 0);
 
     let filtered = format!("ignore: [staticfiles, grid.bundle.js]\n{config}    ignore: [static, vendor, vendors, dist, build]\n");
-    ws.write("app/forge-mcp.yaml", &filtered);
+    ws.write("app/acdd.yaml", &filtered);
     let clean = inventory(&server);
     assert_eq!(clean["bundled_facts"], 0);
     let paths: Vec<_> = clean["files"]

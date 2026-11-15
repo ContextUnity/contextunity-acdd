@@ -18,7 +18,7 @@ DEFAULT_EXCLUDED_DIRECTORIES = {
     ".codebase-memory",
     ".codex",
     ".contextunity",
-    ".forge",
+    ".acdd",
     ".git",
     ".kilo",
     ".mypy_cache",
@@ -53,7 +53,7 @@ class BenchmarkProfile:
     name: str
     project: str
     workspace_root: pathlib.Path
-    forge_binary: str
+    acdd_binary: str
     codebase_binary: str
     scope_note: str
     excluded_directories: frozenset[str]
@@ -136,10 +136,10 @@ def load_profile(
             raise ValueError(f"duplicate scenario id: {scenario_id}")
         identifiers.add(scenario_id)
         scenario_name = _require_string(item.get("scenario"), f"{label}.scenario")
-        forge = _parse_call(item.get("forge"), f"{label}.forge", project)
+        acdd = _parse_call(item.get("acdd"), f"{label}.acdd", project)
         codebase = _parse_call(item.get("codebase"), f"{label}.codebase", project)
-        if forge is None and codebase is None:
-            raise ValueError(f"{label} must define a forge or codebase call")
+        if acdd is None and codebase is None:
+            raise ValueError(f"{label} must define an acdd or codebase call")
         match = item.get("match", "")
         if not isinstance(match, str):
             raise ValueError(f"{label}.match must be a string")
@@ -147,7 +147,7 @@ def load_profile(
             {
                 "id": scenario_id,
                 "scenario": scenario_name,
-                "forge": forge,
+                "acdd": acdd,
                 "codebase": codebase,
                 "match": match,
             }
@@ -168,7 +168,7 @@ def load_profile(
         name=name,
         project=project,
         workspace_root=workspace_root,
-        forge_binary=_binary_path(raw.get("forge_binary"), "contextunity-forge-mcp", path.parent),
+        acdd_binary=_binary_path(raw.get("acdd_binary"), "acdd", path.parent),
         codebase_binary=_binary_path(raw.get("codebase_binary"), "codebase-memory-mcp", path.parent),
         scope_note=scope_note,
         excluded_directories=frozenset(DEFAULT_EXCLUDED_DIRECTORIES | set(exclusions)),

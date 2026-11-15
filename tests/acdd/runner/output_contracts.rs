@@ -313,7 +313,7 @@ fn observed_seam_submission_rejects_unexecuted_references() {
             "--test",
             "tests/runner_fixture.rs",
             "-o",
-            ".forge/runner_fixture",
+            ".acdd/runner_fixture",
         ])
         .output()
         .unwrap();

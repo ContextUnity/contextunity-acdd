@@ -1,7 +1,7 @@
 //! In-process MCP transport shared by integration test suites.
 
 use crate::common::Workspace;
-use contextunity_forge_mcp::mcp::{response::BoundedWriter, server::Server};
+use contextunity_acdd::mcp::{response::BoundedWriter, server::Server};
 use rmcp::{
     model::{CallToolRequestParams, CallToolResponse, NumberOrString},
     service::{serve_directly, RequestContext},
@@ -140,7 +140,7 @@ impl McpTestHarness {
         session: &str,
     ) -> HarnessResult<Self> {
         let server = Server::new(root.to_path_buf(), database.to_path_buf())
-            .with_cache_dir(root.join(".forge/extraction-cache"))
+            .with_cache_dir(root.join(".acdd/extraction-cache"))
             .with_session_fingerprint(session.to_owned());
         Ok(Self {
             owned_runtime: None,
@@ -164,7 +164,7 @@ impl McpTestHarness {
         let (client, transport) = tokio::io::duplex(1024 * 1024);
         let (reader, writer) = tokio::io::split(transport);
         let server = Server::new(root.to_path_buf(), database.to_path_buf())
-            .with_cache_dir(root.join(".forge/extraction-cache"))
+            .with_cache_dir(root.join(".acdd/extraction-cache"))
             .with_session_fingerprint(session.to_owned());
         let (control_sender, control_receiver) = tokio::sync::oneshot::channel();
         let server_task = runtime.spawn(async move {
@@ -387,7 +387,7 @@ impl McpTestHarness {
                                     Self::await_server(&mut self.server_task, terminal, true).await?;
                                     return Err(HarnessError::Closed);
                                 }
-                                let limit = contextunity_forge_mcp::core::response::MAX_OUTPUT_BYTES;
+                                let limit = contextunity_acdd::core::response::MAX_OUTPUT_BYTES;
                                 if line.len() > limit {
                                     return Err(HarnessError::OversizedFrame {
                                         actual: line.len(),

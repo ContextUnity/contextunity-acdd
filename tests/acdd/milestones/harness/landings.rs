@@ -57,7 +57,7 @@ pub(crate) fn delivered(profile: DeliveredProfile<'_>) -> DeliveredBaseline {
         MilestoneHarness::git_at(root.root(), &["config", "maintenance.auto", "false"]).unwrap();
         MilestoneHarness::git_at(root.root(), &["config", "gc.auto", "0"]).unwrap();
     }
-    root.write("forge-mcp.yaml", profile.config);
+    root.write("acdd.yaml", profile.config);
     for (path, contents) in profile.files {
         root.write(path, &contents);
     }
@@ -135,7 +135,7 @@ pub(crate) fn delivered(profile: DeliveredProfile<'_>) -> DeliveredBaseline {
     let snapshot = root.checkpoint();
     let sqlite = profile
         .capture_sqlite
-        .then(|| std::fs::read(root.path(".forge/tasks.sqlite")).unwrap());
+        .then(|| std::fs::read(root.path(".acdd/tasks.sqlite")).unwrap());
     DeliveredBaseline {
         root,
         base,
@@ -151,7 +151,7 @@ pub(crate) fn delivered(profile: DeliveredProfile<'_>) -> DeliveredBaseline {
 
 impl MilestoneHarness {
     pub(crate) fn open_task_store(&self) -> anyhow::Result<TasksStore> {
-        TasksStore::open(&self.path(".forge/tasks.sqlite"))
+        TasksStore::open(&self.path(".acdd/tasks.sqlite"))
     }
 
     pub(crate) fn head(&self) -> String {

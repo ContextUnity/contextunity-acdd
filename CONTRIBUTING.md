@@ -1,6 +1,6 @@
-# Contributing to ContextUnity Forge MCP
+# Contributing to ContextUnity ACDD
 
-Thank you for your interest in contributing to **ContextUnity Forge MCP**! We welcome community contributions, bug reports, documentation enhancements, and feature proposals.
+Thank you for your interest in contributing to **ContextUnity ACDD**! We welcome community contributions, bug reports, documentation enhancements, and feature proposals.
 
 > [!NOTE]
 > - **Workflows and Plans**: Standalone root-gate workflows (`workflow run`) and structured documentation plans (`plan run`) are currently under active testing and validation.
@@ -12,7 +12,7 @@ Thank you for your interest in contributing to **ContextUnity Forge MCP**! We we
 
 ### Prerequisites
 
-To build and test Forge locally, ensure you have:
+To build and test ContextUnity ACDD locally, ensure you have:
 - **Rust Toolchain**: Stable Rust (edition 2021). Install via [rustup.rs](https://rustup.rs).
 - **C Compiler**: `gcc` or `clang` (required for compiling Tree-sitter parsers and bundled SQLite).
 - **Git**
@@ -22,8 +22,8 @@ To build and test Forge locally, ensure you have:
 Clone the repository and build the binary:
 
 ```bash
-git clone https://github.com/ContextUnity/contextunity-forge-mcp.git
-cd contextunity-forge-mcp
+git clone https://github.com/ContextUnity/contextunity-acdd.git
+cd contextunity-acdd
 
 # Build default profiles (Python, Rust, TS/JS, Vue, HTML, YAML, TOML, Protobuf)
 cargo build --locked
@@ -36,7 +36,7 @@ cargo build --locked --features all-languages
 
 ## Quality and Verification Standards
 
-Forge enforces strict code quality and verification gates on every contribution.
+ACDD enforces strict code quality and verification gates on every contribution.
 
 Before submitting a Pull Request, ensure all checks pass:
 
@@ -94,4 +94,4 @@ Before submitting a Pull Request, ensure all checks pass:
 
 ## License
 
-By contributing to ContextUnity Forge MCP, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+By contributing to ContextUnity ACDD, you agree that your contributions will be licensed under the [MIT License](LICENSE).

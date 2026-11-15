@@ -1,5 +1,5 @@
 use crate::common::Workspace;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::{
         commitments,
         models::{Facts, Node, NodeSemanticMeta},
@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 #[cfg(feature = "lang-python")]
 #[test]
 fn lean_symbol_catalog_retains_no_full_facts_in_memory() -> anyhow::Result<()> {
-    use contextunity_forge_mcp::{core::semantic::SymbolCatalog, engine::linker};
+    use contextunity_acdd::{core::semantic::SymbolCatalog, engine::linker};
     let stored_local_facts = |connection: &Connection, path: &str| -> anyhow::Result<Facts> {
         let blob: Vec<u8> = connection.query_row(
             "SELECT facts_blob FROM local_facts WHERE path=?1",
@@ -29,7 +29,7 @@ fn lean_symbol_catalog_retains_no_full_facts_in_memory() -> anyhow::Result<()> {
     };
 
     let workspace = Workspace::new();
-    workspace.write("forge-mcp.yaml", "roots: [src]\ndocs: [README.md]\n");
+    workspace.write("acdd.yaml", "roots: [src]\ndocs: [README.md]\n");
     workspace.write(
         "src/provider.py",
         "class Service:\n    '''Service documentation.'''\n    def run(self):\n        return 1\n",
@@ -72,12 +72,12 @@ fn lean_symbol_catalog_retains_no_full_facts_in_memory() -> anyhow::Result<()> {
     let catalog = SymbolCatalog::from_facts(full.clone());
     let actual = linker::link_catalog(&catalog);
 
-    let database = workspace.root().join(".forge/catalog.sqlite");
+    let database = workspace.root().join(".acdd/catalog.sqlite");
     let report = pipeline::build_with_cache_dir(
         workspace.root(),
         &database,
         None,
-        &workspace.path(".forge/extraction-cache"),
+        &workspace.path(".acdd/extraction-cache"),
     )?;
     let connection = Connection::open(database)?;
     let catalog_payload_tables: i64 = connection.query_row(
@@ -115,12 +115,12 @@ fn lean_symbol_catalog_retains_no_full_facts_in_memory() -> anyhow::Result<()> {
         "from django.urls import path\nfrom catalog.views import endpoint\nurlpatterns = [path('detail/', endpoint, name='detail')]\n",
     );
     routes.write("catalog/views.py", "def endpoint(): return 'handler'\n");
-    let route_database = routes.root().join(".forge/catalog.sqlite");
+    let route_database = routes.root().join(".acdd/catalog.sqlite");
     pipeline::build_with_cache_dir(
         routes.root(),
         &route_database,
         None,
-        &routes.path(".forge/extraction-cache"),
+        &routes.path(".acdd/extraction-cache"),
     )?;
     let route_connection = Connection::open(route_database)?;
     let route_handles: Vec<(String, String)> = route_connection
@@ -356,12 +356,12 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() -> anyh
     );
     workspace.write("src/util.py", "def helper() -> int:\n    return 42\n");
 
-    let cold_db = workspace.root().join(".forge/cold.sqlite");
+    let cold_db = workspace.root().join(".acdd/cold.sqlite");
     pipeline::build_with_cache_dir(
         workspace.root(),
         &cold_db,
         None,
-        &workspace.path(".forge/extraction-cache"),
+        &workspace.path(".acdd/extraction-cache"),
     )?;
     let cold_connection = Connection::open(&cold_db)?;
     let cold_details = node_details(&cold_connection, "execute")?;
@@ -377,12 +377,12 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() -> anyh
     )?;
     let delta_details = node_details(&cold_connection, "execute")?;
 
-    let fresh_db = workspace.root().join(".forge/fresh_cold.sqlite");
+    let fresh_db = workspace.root().join(".acdd/fresh_cold.sqlite");
     pipeline::build_with_cache_dir(
         workspace.root(),
         &fresh_db,
         None,
-        &workspace.path(".forge/extraction-cache"),
+        &workspace.path(".acdd/extraction-cache"),
     )?;
     let fresh_connection = Connection::open(&fresh_db)?;
     let fresh_details = node_details(&fresh_connection, "execute")?;
@@ -467,7 +467,7 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() -> anyh
 fn bundled_framework_manifests_are_fingerprinted_in_dependency_digest() -> anyhow::Result<()> {
     let workspace = Workspace::new();
     let adapter = scanner::load_adapter(workspace.root(), None)?;
-    let registry = contextunity_forge_mcp::engine::languages::dependency_registry::DependencyRegistry::collect_with_scan_config(
+    let registry = contextunity_acdd::engine::languages::dependency_registry::DependencyRegistry::collect_with_scan_config(
         workspace.root(),
         Some(&adapter),
     );

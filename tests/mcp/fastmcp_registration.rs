@@ -1,7 +1,7 @@
 #![cfg(feature = "lang-python")]
 
 use crate::common::Workspace;
-use contextunity_forge_mcp::{core::commitments, db::reader};
+use contextunity_acdd::{core::commitments, db::reader};
 
 #[test]
 fn fastmcp_tool_decorators_link_to_handlers_without_claiming_other_tool_methods() {
@@ -75,7 +75,7 @@ def after_rebind(): return 5
     assert_eq!(remaining["rows"]["items"][0]["total"], 2);
     let delta = workspace.open();
     commitments::verify(&delta).unwrap();
-    let cold_path = workspace.path(".forge/cold.sqlite");
+    let cold_path = workspace.path(".acdd/cold.sqlite");
     workspace.build_to(&cold_path);
     let cold = reader::open(&cold_path, workspace.root()).unwrap();
     commitments::verify(&cold).unwrap();

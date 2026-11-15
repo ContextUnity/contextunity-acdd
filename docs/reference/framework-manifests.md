@@ -9,11 +9,11 @@ Framework manifests provide declarative rules to existing language extraction an
 
 ## Bundled manifests
 
-Bundled manifest tables live in `src/engine/languages/manifests/`. The build automatically embeds regular TOML, YAML and YML files from that directory in a sorted inventory, using each filename stem as its identifier. Duplicate identifiers and invalid UTF-8 identities fail the build. When the dependency registry is constructed, Forge parses the embedded text into typed `FrameworkManifest` values. The `gridviewspec` table recognizes the declared Python distribution `grid-view-spec` and maps the verified `GridViewSpec` receiver to `grid_view_spec.types.spec.GridViewSpec`.
+Bundled manifest tables live in `src/engine/languages/manifests/`. The build automatically embeds regular TOML, YAML and YML files from that directory in a sorted inventory, using each filename stem as its identifier. Duplicate identifiers and invalid UTF-8 identities fail the build. When the dependency registry is constructed, ACDD parses the embedded text into typed `FrameworkManifest` values. The `gridviewspec` table recognizes the declared Python distribution `grid-view-spec` and maps the verified `GridViewSpec` receiver to `grid_view_spec.types.spec.GridViewSpec`.
 
-To ship another bundled manifest with Forge, add a supported file in that directory and rebuild the binary. No Rust catalogue entry is needed. Cargo tracks the directory and individual files; relative filenames and file bytes contribute to the existing language-profile fingerprint, so additions, removals, renames and edits invalidate cached extraction. Typed sections execute through the existing extraction hooks. Adding a table does not introduce new extraction semantics.
+To ship another bundled manifest with ACDD, add a supported file in that directory and rebuild the binary. No Rust catalogue entry is needed. Cargo tracks the directory and individual files; relative filenames and file bytes contribute to the existing language-profile fingerprint, so additions, removals, renames and edits invalidate cached extraction. Typed sections execute through the existing extraction hooks. Adding a table does not introduce new extraction semantics.
 
-The GridViewSpec hierarchy rules describe the verified public API of the specification, metadata, configuration, layout, block types, nested column/action/filter/card types, and Django host adapter. Concrete block rules include inherited `GridViewBlockBase` fields; dataclass fields support member reads, while the host adapter also exposes callable methods. Unknown members remain unresolved. See the [GridViewSpec example](../../skills/contextunity-forge/references/frameworks/gridviewspec.toml.example).
+The GridViewSpec hierarchy rules describe the verified public API of the specification, metadata, configuration, layout, block types, nested column/action/filter/card types, and Django host adapter. Concrete block rules include inherited `GridViewBlockBase` fields; dataclass fields support member reads, while the host adapter also exposes callable methods. Unknown members remain unresolved. See the [GridViewSpec example](../../skills/acdd/references/frameworks/gridviewspec.toml.example).
 
 In the verified package API, `GridViewAction` is a union alias. The manifest registers its real `GridViewActionBase` and export, overlay, link, button, select, and menu action classes with their respective members.
 
@@ -35,16 +35,16 @@ The Django pack also supplies verified Form/ModelForm inheritance members; it
 does not infer an arbitrary object's type from a method such as `save`.
 
 Annotated partial extensions are available for
-[Starlette](../../skills/contextunity-forge/references/frameworks/starlette.toml.example),
-[FastAPI](../../skills/contextunity-forge/references/frameworks/fastapi.toml.example),
-[Nuxt](../../skills/contextunity-forge/references/frameworks/nuxt.toml.example),
-[Vue/Pinia](../../skills/contextunity-forge/references/frameworks/vue-runtime.toml.example)
-and [HTMX](../../skills/contextunity-forge/references/frameworks/htmx.toml.example).
+[Starlette](../../skills/acdd/references/frameworks/starlette.toml.example),
+[FastAPI](../../skills/acdd/references/frameworks/fastapi.toml.example),
+[Nuxt](../../skills/acdd/references/frameworks/nuxt.toml.example),
+[Vue/Pinia](../../skills/acdd/references/frameworks/vue-runtime.toml.example)
+and [HTMX](../../skills/acdd/references/frameworks/htmx.toml.example).
 Their canonical filenames extend the corresponding bundle; they are not full
 replacement packs. See the [workspace verification runbook](../runbooks/framework-packs.md).
-The existing [Django](../../skills/contextunity-forge/references/frameworks/django.toml.example),
-[Alpine](../../skills/contextunity-forge/references/frameworks/alpinejs.toml.example)
-and [GridViewSpec](../../skills/contextunity-forge/references/frameworks/gridviewspec.toml.example)
+The existing [Django](../../skills/acdd/references/frameworks/django.toml.example),
+[Alpine](../../skills/acdd/references/frameworks/alpinejs.toml.example)
+and [GridViewSpec](../../skills/acdd/references/frameworks/gridviewspec.toml.example)
 examples complete the eight-pack set. The generic TOML/YAML examples below show
 illustrative APIs; the concrete pack examples use verified bundled identities.
 
@@ -53,12 +53,12 @@ illustrative APIs; the concrete pack examples use verified bundled identities.
 A project can provide or override framework manifest data under its workspace root:
 
 ```text
-<workspace>/.forge/frameworks/<framework-id>.toml
-<workspace>/.forge/frameworks/<framework-id>.yaml
-<workspace>/.forge/frameworks/<framework-id>.yml
+<workspace>/.acdd/frameworks/<framework-id>.toml
+<workspace>/.acdd/frameworks/<framework-id>.yaml
+<workspace>/.acdd/frameworks/<framework-id>.yml
 ```
 
-Forge uses the file stem as the framework identifier. Put the manifest in each workspace that needs it; linked workspaces have their own `.forge/frameworks/` directory. A project manifest activates for its workspace even when the package is not declared. Typed extraction rules use their declared activation, syntax, and canonical import checks to determine whether a rule applies.
+ACDD uses the file stem as the framework identifier. Put the manifest in each workspace that needs it; linked workspaces have their own `.acdd/frameworks/` directory. A project manifest activates for its workspace even when the package is not declared. Typed extraction rules use their declared activation, syntax, and canonical import checks to determine whether a rule applies.
 
 Use the typed operations supported by the current language hooks. For example, a project can declare template symbols without framework-specific top-level lists:
 
@@ -83,9 +83,9 @@ activation = [{ kind = "package", name = "django" }]
 operation = { kind = "template_symbols", requires_loader = false, tags = ["csrf_token", "url", "load"], filters = ["safe"], libraries = ["static"], library_routes = { static = "static" } }
 ```
 
-TOML, YAML and YML all deserialize into the same typed manifest. Unknown top-level fields, including the removed `receivers`, `builtins`, `filters`, and `routes` lists, fail validation. Use the bundled files and the generic [TOML](../../skills/contextunity-forge/references/frameworks/declarative-rules.toml.example) and [YAML](../../skills/contextunity-forge/references/frameworks/declarative-rules.yaml.example) examples as references.
+TOML, YAML and YML all deserialize into the same typed manifest. Unknown top-level fields, including the removed `receivers`, `builtins`, `filters`, and `routes` lists, fail validation. Use the bundled files and the generic [TOML](../../skills/acdd/references/frameworks/declarative-rules.toml.example) and [YAML](../../skills/acdd/references/frameworks/declarative-rules.yaml.example) examples as references.
 
-Project manifests are read and parsed while Forge collects the dependency registry for an index build or update. They are not compiled into the Forge binary. After adding or editing a manifest, rebuild or update the workspace index so its input digest and linker results include the change.
+Project manifests are read and parsed while ACDD collects the dependency registry for an index build or update. They are not compiled into the ACDD binary. After adding or editing a manifest, rebuild or update the workspace index so its input digest and linker results include the change.
 
 ## Dependency and configuration inputs
 
@@ -107,7 +107,7 @@ framework dependency. A collected filename does not imply support for every
 package-manager expression. Use the actual parsed declaration and nearest scope;
 nested and linked projects cannot borrow another project's package activation.
 
-Runtime rules are discovered only under each workspace's `.forge/frameworks/`.
+Runtime rules are discovered only under each workspace's `.acdd/frameworks/`.
 Adding a new filename there requires an index refresh, without a Rust edit or
 binary rebuild. Adding or changing an embedded pack under the package's manifest
 directory requires rebuilding the binary; automatic embedding does not make an
@@ -142,7 +142,7 @@ Route methods use uppercase letters, digits, or underscores; `ANY` represents an
 
 Omitting `handler_argument` still extracts a route from a matching call; it creates no `handles` edge. When an index is configured, a call without any valid positional handlers from that index does not register a route. Composed include routes retain the included module's handler lookup context while their `handles` edges originate at the composed route.
 
-The complete [TOML example](../../skills/contextunity-forge/references/frameworks/declarative-rules.toml.example) and equivalent [YAML example](../../skills/contextunity-forge/references/frameworks/declarative-rules.yaml.example) include an imported-call semantic rule and configured setup/result operations. Copy one into `.forge/frameworks/project-rules.toml` or `.forge/frameworks/project-rules.yaml` and substitute verified package and API identities for the illustrative names. Use a bundled filename stem when intentionally extending that bundle.
+The complete [TOML example](../../skills/acdd/references/frameworks/declarative-rules.toml.example) and equivalent [YAML example](../../skills/acdd/references/frameworks/declarative-rules.yaml.example) include an imported-call semantic rule and configured setup/result operations. Copy one into `.acdd/frameworks/project-rules.toml` or `.acdd/frameworks/project-rules.yaml` and substitute verified package and API identities for the illustrative names. Use a bundled filename stem when intentionally extending that bundle.
 
 Project typed rules take precedence over bundled rules with the same identity: ordered `bases` for class rules, `callee` plus `method` for route rules, and `callee` for DI rules. `replace = true` replaces the typed sections of the bundle. Unknown fields fail validation. Bases, providers, members, callees, and methods must be nonempty; callees cannot contain whitespace. Route argument positions are nonnegative integers below 32, and a route's handler argument must differ from its path argument. DI `argument` is a nonnegative positional index with no additional upper-bound validation. Syntax operations validate their own positional bounds.
 
@@ -156,11 +156,11 @@ Every manifest may omit rule sections and may provide any supported typed sectio
 
 The loader deserializes TOML and YAML into the same typed `FrameworkManifest`, rejects unknown top-level fields, and reports malformed syntax or values as build errors. TOML duplicate keys, duplicate tables, and key/table collisions fail through the TOML parser. A workspace may use only one file format for a given identifier; duplicate stems across files are rejected.
 
-An invalid or unreadable manifest aborts the build before index publication. Forge also rejects a symlinked `.forge` directory, a symlinked `frameworks` directory or manifest file, and files larger than 4 MiB. If there is no `.forge/frameworks/` directory, the workspace has no project manifests and uses eligible bundled tables.
+An invalid or unreadable manifest aborts the build before index publication. ACDD also rejects a symlinked `.acdd` directory, a symlinked `frameworks` directory or manifest file, and files larger than 4 MiB. If there is no `.acdd/frameworks/` directory, the workspace has no project manifests and uses eligible bundled tables.
 
 ## Compiled rules and coverage diagnostics
 
-During dependency collection, Forge prepares immutable grammar-specific route and DI `RuleIR` tables once per workspace and shares them across the effective project-scope `Arc<LanguageContext>` values. Collected file and embedded-island extraction use these prepared contexts by lookup without recompiling rules or acquiring a rule-cache lock. Direct bundled/manual registry callers retain bounded thread-local context reuse, and custom grammars retain their compilation fallback. Extraction selects route and DI candidates with the parsed node's `kind_id`; the existing language hooks still prove the callee, literal arguments, lexical owner and target. Class-hierarchy receivers retain their borrowed linker rule lookup. Matching a grammar kind alone does not establish a semantic binding.
+During dependency collection, ACDD prepares immutable grammar-specific route and DI `RuleIR` tables once per workspace and shares them across the effective project-scope `Arc<LanguageContext>` values. Collected file and embedded-island extraction use these prepared contexts by lookup without recompiling rules or acquiring a rule-cache lock. Direct bundled/manual registry callers retain bounded thread-local context reuse, and custom grammars retain their compilation fallback. Extraction selects route and DI candidates with the parsed node's `kind_id`; the existing language hooks still prove the callee, literal arguments, lexical owner and target. Class-hierarchy receivers retain their borrowed linker rule lookup. Matching a grammar kind alone does not establish a semantic binding.
 
 Preparation belongs to the effective dependency-registry generation and project scopes and distinguishes the actual Tree-sitter grammar. TypeScript and TSX cannot share a table merely because their profile identifier matches. Project merge, replacement and activation happen before preparation. Manifest changes recollect the registry and rebuild the prepared tables. JavaScript/TypeScript projection dispatch uses prepared callee/member/root candidate indices, preserving effective row order and distinct duplicate rules. Completed callback summaries are drained independently of whether a rule publishes a result. File-provider candidate indices select the target language; path and project checks remain authoritative.
 
@@ -170,7 +170,7 @@ Diagnostic groups and identity lists are sorted and deduplicated. Rule domains u
 
 ## Extending language support
 
-Typed project sections can add class receivers, route decorators, route calls, and DI calls without Rust changes when the existing language hooks support that syntax. New extraction semantics require code and writer-seam tests. To add a new programming language, implement and register a `LanguageProfile` with its grammar and extraction behavior, add its Cargo `lang-*` feature and parser dependency as needed, and provide a language linker when it needs custom resolution. The build script generates the compiled profile registry from enabled features. These code changes require a new Forge build; a project manifest cannot add them at runtime.
+Typed project sections can add class receivers, route decorators, route calls, and DI calls without Rust changes when the existing language hooks support that syntax. New extraction semantics require code and writer-seam tests. To add a new programming language, implement and register a `LanguageProfile` with its grammar and extraction behavior, add its Cargo `lang-*` feature and parser dependency as needed, and provide a language linker when it needs custom resolution. The build script generates the compiled profile registry from enabled features. These code changes require a new ACDD build; a project manifest cannot add them at runtime.
 
 SQL uses an always-available scanner profile without a Tree-sitter grammar or a Cargo language feature. It indexes SQL declarations and table references; AST pattern search is unavailable for SQL.
 
@@ -184,7 +184,7 @@ See [ADR 0013](../adr/0013-data-driven-framework-manifests.md) for the linker an
 
 `semantic_rules` adds a bounded two-phase relation to the existing language owners. The Python parser proves a direct imported alias and a static positional literal; the shared linker joins it to one actual HTML module in the nearest Python project. The target projection matches the complete directory prefix plus literal path at a path-segment boundary. Multiple distinct targets across all matching rules and namespaces remain ambiguous. No basename fallback or synthetic target is used.
 
-This complete TOML pack can be saved under any `.forge/frameworks/<name>.toml` filename:
+This complete TOML pack can be saved under any `.acdd/frameworks/<name>.toml` filename:
 
 ```toml
 [[semantic_rules]]
@@ -421,7 +421,7 @@ remain unresolved or ambiguous rather than falling back to another definition.
 1–128 unique, exact canonical file paths; linked paths use an enabled workspace
 qualifier such as `[api]/src/routes.py`. Paths reject traversal and absolute
 forms. This is an explicit application assertion whose correctness the author
-checks against the actual client/application registration chain; Forge does not
+checks against the actual client/application registration chain; ACDD does not
 infer an application graph or detect a valid path asserted for the wrong app.
 
 Without the field, or outside `request_owners`, ordinary URL/method matching is

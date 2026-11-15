@@ -7,7 +7,7 @@ fn contract_gate_proofs_require_runtime_red_and_reject_compile_or_signature_fail
     harness.configure_check("cargo test --lib", None, profile::ProofKind::Contract);
     harness
         .root
-        .write(".gitignore", ".forge/\ntarget/\nCargo.lock\n");
+        .write(".gitignore", ".acdd/\ntarget/\nCargo.lock\n");
     harness.root.write(
         "Cargo.toml",
         "[package]\nname = \"red-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
@@ -59,7 +59,7 @@ fn contract_gate_proofs_require_runtime_red_and_reject_compile_or_signature_fail
         "tests/acdd/runner.rs::command_gate_diagnostics_follow_the_proof_expectation_across_public_callers"
     );
     assert!(compile_evidence_envelope(harness.root.root(), &harness.id, "contract").is_ok());
-    assert!(!harness.root.root().join(".forge/task-traces").exists());
+    assert!(!harness.root.root().join(".acdd/task-traces").exists());
 
     harness.restore();
     harness.configure_check(
@@ -155,7 +155,7 @@ fn command_gate_diagnostics_follow_the_proof_expectation_across_public_callers()
         );
         let mut spec = output_spec(false);
         spec.seam_ref_pattern = Some(r"seam:(\S+)".into());
-        let store = forge_tasks::engine::store_for_task(harness.root.root(), &harness.id).unwrap();
+        let store = acdd_tasks::engine::store_for_task(harness.root.root(), &harness.id).unwrap();
         harness.configure_check_with_timeout(
             &command,
             Some(spec),
@@ -195,7 +195,7 @@ fn command_gate_diagnostics_follow_the_proof_expectation_across_public_callers()
                 client.finish().unwrap();
                 result
             }
-            _ => forge_tasks::engine::verify_task(harness.root.root(), &harness.id, None).unwrap(),
+            _ => acdd_tasks::engine::verify_task(harness.root.root(), &harness.id, None).unwrap(),
         };
         harness.executed += 1;
         let context = format!(
@@ -236,7 +236,7 @@ fn command_gate_diagnostics_follow_the_proof_expectation_across_public_callers()
             }
         } else {
             assert!(
-                !harness.root.root().join(".forge/task-traces").exists(),
+                !harness.root.root().join(".acdd/task-traces").exists(),
                 "{context}"
             );
         }
@@ -257,7 +257,7 @@ fn command_missing_registered_contract_command_fails_closed() {
     let mut configured = (*profile::load_for_workspace(harness.root.root()).unwrap()).clone();
     configured.find_gate_mut("contract").unwrap().command = None;
     harness.root.write(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         &super::support::standalone_profile_yaml(&configured),
     );
     let error = harness.verify().unwrap_err().to_string();
@@ -290,7 +290,7 @@ fn command_trace_preserves_inline_diagnostics_larger_than_two_kib_and_rejects_le
     drop(store);
 
     let connection =
-        rusqlite::Connection::open(harness.root.root().join(".forge/tasks.sqlite")).unwrap();
+        rusqlite::Connection::open(harness.root.root().join(".acdd/tasks.sqlite")).unwrap();
     let schema: String = connection
         .query_row(
             "SELECT sql FROM sqlite_master WHERE name='gate_execution_traces'",
@@ -301,7 +301,7 @@ fn command_trace_preserves_inline_diagnostics_larger_than_two_kib_and_rejects_le
     connection
         .execute_batch("DROP TABLE gate_execution_traces")
         .unwrap();
-    let current_constraint = format!("<= {}", forge_tasks::store::MAX_OUTPUT_SNIPPET_BYTES);
+    let current_constraint = format!("<= {}", acdd_tasks::store::MAX_OUTPUT_SNIPPET_BYTES);
     connection
         .execute_batch(&schema.replace(&current_constraint, "<= 2048"))
         .unwrap();
@@ -326,7 +326,7 @@ fn command_subset_execution_cannot_prove_an_entire_admitted_scope_plan() {
             ("src/*.rs".into(), "printf rust".into()),
             (
                 "src/*.md".into(),
-                "printf docs > .forge/docs-ran; exit 2".into(),
+                "printf docs > .acdd/docs-ran; exit 2".into(),
             ),
         ]),
         description: None,
@@ -335,7 +335,7 @@ fn command_subset_execution_cannot_prove_an_entire_admitted_scope_plan() {
     });
     configured.commands.insert("check".into(), command.clone());
     harness.root.write(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         &super::support::standalone_profile_yaml(&configured),
     );
     execute_command_gate(
@@ -349,7 +349,7 @@ fn command_subset_execution_cannot_prove_an_entire_admitted_scope_plan() {
     assert!(compile_evidence_envelope(harness.root.root(), &harness.id, "contract").is_err());
     let result = harness.verify().unwrap();
     assert!(result["evidence"].is_null(), "{result}");
-    assert!(harness.root.root().join(".forge/docs-ran").exists());
+    assert!(harness.root.root().join(".acdd/docs-ran").exists());
 }
 
 #[test]
@@ -413,7 +413,7 @@ fn store_reopen_preserves_durable_facts_and_output_policy_invalidation() {
         }
     }
     harness.root.write(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         &super::support::standalone_profile_yaml(&profile_mut),
     );
     drop(reopened);
@@ -431,20 +431,20 @@ fn store_reopen_preserves_durable_facts_and_output_policy_invalidation() {
 #[test]
 fn command_gate_cleans_orchestration_environment_variables() {
     let harness = CommandGateHarness::with_command(
-        "sh -c 'test -z \"$FORGE_CONFIG\" && test -z \"$FORGE_PROFILE\" && test -z \"$FORGE_DB\" && test -z \"$FORGE_WORKSPACE_ROOT\" && test -z \"$FORGE_AGENT_SESSION_ID\"'",
+        "sh -c 'test -z \"$ACDD_CONFIG\" && test -z \"$ACDD_PROFILE\" && test -z \"$ACDD_DB\" && test -z \"$ACDD_WORKSPACE_ROOT\" && test -z \"$ACDD_AGENT_SESSION_ID\"'",
         None,
     );
-    let original_config = std::env::var_os("FORGE_CONFIG");
-    let original_profile = std::env::var_os("FORGE_PROFILE");
-    let original_db = std::env::var_os("FORGE_DB");
-    let original_root = std::env::var_os("FORGE_WORKSPACE_ROOT");
-    let original_session = std::env::var_os("FORGE_AGENT_SESSION_ID");
+    let original_config = std::env::var_os("ACDD_CONFIG");
+    let original_profile = std::env::var_os("ACDD_PROFILE");
+    let original_db = std::env::var_os("ACDD_DB");
+    let original_root = std::env::var_os("ACDD_WORKSPACE_ROOT");
+    let original_session = std::env::var_os("ACDD_AGENT_SESSION_ID");
 
-    std::env::set_var("FORGE_CONFIG", "/outside/fake-config.yaml");
-    std::env::set_var("FORGE_PROFILE", "/outside/fake-profile.yaml");
-    std::env::set_var("FORGE_DB", "/outside/fake-db.sqlite");
-    std::env::set_var("FORGE_WORKSPACE_ROOT", "/outside/fake-root");
-    std::env::set_var("FORGE_AGENT_SESSION_ID", "ambient-session-id");
+    std::env::set_var("ACDD_CONFIG", "/outside/fake-config.yaml");
+    std::env::set_var("ACDD_PROFILE", "/outside/fake-profile.yaml");
+    std::env::set_var("ACDD_DB", "/outside/fake-db.sqlite");
+    std::env::set_var("ACDD_WORKSPACE_ROOT", "/outside/fake-root");
+    std::env::set_var("ACDD_AGENT_SESSION_ID", "ambient-session-id");
 
     struct ResetEnv {
         config: Option<std::ffi::OsString>,
@@ -459,11 +459,11 @@ fn command_gate_cleans_orchestration_environment_variables() {
                 Some(v) => std::env::set_var(key, v),
                 None => std::env::remove_var(key),
             };
-            restore("FORGE_CONFIG", &self.config);
-            restore("FORGE_PROFILE", &self.profile);
-            restore("FORGE_DB", &self.db);
-            restore("FORGE_WORKSPACE_ROOT", &self.root);
-            restore("FORGE_AGENT_SESSION_ID", &self.session);
+            restore("ACDD_CONFIG", &self.config);
+            restore("ACDD_PROFILE", &self.profile);
+            restore("ACDD_DB", &self.db);
+            restore("ACDD_WORKSPACE_ROOT", &self.root);
+            restore("ACDD_AGENT_SESSION_ID", &self.session);
         }
     }
     let _guard = ResetEnv {
@@ -484,8 +484,7 @@ fn command_gate_cleans_orchestration_environment_variables() {
 fn shipped_seam_verify_and_zero_argument_submit_persist_observed_proof() {
     let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
     let mut fixture_profile =
-        profile::validate_profile_document(include_str!("../../../.forge/acdd/profile.yaml"))
-            .unwrap();
+        profile::validate_profile_document(include_str!("../../../.acdd/profile.yaml")).unwrap();
     let integrate = fixture_profile.find_gate("seam.integrate").unwrap().clone();
     fixture_profile.gates = vec![profile::GateDef {
         proof: profile::ProofDef::Kind(profile::ProofKind::None),
@@ -516,14 +515,14 @@ fn shipped_seam_verify_and_zero_argument_submit_persist_observed_proof() {
         "Cargo.toml",
         "[package]\nname = \"shipped-seam-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
-    root.write(".gitignore", ".forge/\ntarget/\nCargo.lock\n");
-    root.write("forge-mcp.yaml", "roots: [src, tests]\ndocs: [docs]\n");
+    root.write(".gitignore", ".acdd/\ntarget/\nCargo.lock\n");
+    root.write("acdd.yaml", "roots: [src, tests]\ndocs: [docs]\n");
     root.write(
         "docs/milestones/010-seam.md",
         "---\nid: m-shipped-seam\ntitle: Shipped seam\nstatus: active\n---\n```yaml\ntask_ref: first\ntarget: Execute the shipped seam command\nproof_policy: seam-test-first\nscope: [tests/runner_fixture.rs]\n```\n",
     );
     root.write(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         &crate::acdd::support::standalone_profile_yaml(&fixture_profile),
     );
     super::support::commit_fixture_baseline(&root);
@@ -537,7 +536,7 @@ fn shipped_seam_verify_and_zero_argument_submit_persist_observed_proof() {
     )
     .unwrap();
     let id = "forge-mcp/m-shipped-seam:first".to_owned();
-    let mut store = forge_tasks::engine::store_for_task(root.root(), &id).unwrap();
+    let mut store = acdd_tasks::engine::store_for_task(root.root(), &id).unwrap();
     store
         .claim(
             &id,
@@ -550,8 +549,7 @@ fn shipped_seam_verify_and_zero_argument_submit_persist_observed_proof() {
     let task = store.inspect(&id).unwrap();
     let configured = store.profile_for_task(&task).unwrap();
     let shipped =
-        profile::validate_profile_document(include_str!("../../../.forge/acdd/profile.yaml"))
-            .unwrap();
+        profile::validate_profile_document(include_str!("../../../.acdd/profile.yaml")).unwrap();
     let command_name = shipped
         .find_gate("seam.integrate")
         .unwrap()
@@ -564,12 +562,12 @@ fn shipped_seam_verify_and_zero_argument_submit_persist_observed_proof() {
         shipped.commands[&command_name]
     );
     drop(store);
-    let verified = forge_tasks::engine::verify_task(root.root(), &id, None).unwrap();
+    let verified = acdd_tasks::engine::verify_task(root.root(), &id, None).unwrap();
     assert_eq!(
         verified["evidence"]["proof"]["seam_test_proof"]["tests_passed"], 1,
         "{verified}"
     );
-    let mut store = forge_tasks::engine::store_for_task(root.root(), &id).unwrap();
+    let mut store = acdd_tasks::engine::store_for_task(root.root(), &id).unwrap();
     let run = latest_run(&store, root.root(), &id, "tasks.seam.integrate");
     let trace = store
         .claim_bound_execution_traces(run.run_id)
@@ -605,7 +603,7 @@ fn shipped_seam_verify_and_zero_argument_submit_persist_observed_proof() {
         Some("test-session-command-builder"),
     )
     .unwrap();
-    let reopened = forge_tasks::engine::store_for_task(root.root(), &id).unwrap();
+    let reopened = acdd_tasks::engine::store_for_task(root.root(), &id).unwrap();
     assert_eq!(reopened.inspect(&id).unwrap().stage, "deliver");
     let (status, saved): (String, String) = reopened.connection.query_row(
         "SELECT state, evidence FROM task_gates WHERE task_id=?1 AND gate=?2 ORDER BY revision DESC LIMIT 1",

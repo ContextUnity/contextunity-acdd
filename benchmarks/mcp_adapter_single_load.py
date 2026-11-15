@@ -66,7 +66,7 @@ def main() -> int:
     parser.add_argument("--ttl-wait-seconds", type=float, default=5.1)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    config = args.root / "forge-mcp.yaml"
+    config = args.root / "acdd.yaml"
     if not config.is_file():
         parser.error(f"adapter file missing: {config}")
     if args.output.exists():
@@ -82,7 +82,7 @@ def main() -> int:
     fd = watch(config)
     try:
         with McpClient(
-            "forge",
+            "acdd",
             db_path=str(args.db),
             workspace_root=str(args.root),
             binary_path=str(args.binary),

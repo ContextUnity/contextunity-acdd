@@ -1,5 +1,5 @@
 use crate::acdd::support::Workspace;
-use contextunity_forge_mcp::forge_tasks::tasks::profile::{self, GateProfile};
+use contextunity_acdd::acdd_tasks::tasks::profile::{self, GateProfile};
 
 /// Shared root-gate profile construction for ADR 0021 workflow fixtures.
 /// Profile validation does not prove standalone workflow dispatch or execution.
@@ -82,7 +82,7 @@ impl WorkflowHarness {
 fn shipped_authoring_workflows_execute_repair_and_real_preflights() {
     use crate::acdd::support::MilestoneFixtureBuilder;
     fn authoring_command(root: &Workspace, args: &[&str]) -> std::process::Output {
-        let binary = std::path::Path::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+        let binary = std::path::Path::new(env!("CARGO_BIN_EXE_acdd"));
         let mut paths = vec![binary.parent().unwrap().to_path_buf()];
         paths.extend(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
@@ -100,7 +100,7 @@ fn shipped_authoring_workflows_execute_repair_and_real_preflights() {
         include_str!("../fixtures/workflows/author-runner.py"),
     );
     root.write("author-draft", "Чернетка\n");
-    root.write("forge-mcp.yaml", "plans: [docs/plans]\n");
+    root.write("acdd.yaml", "plans: [docs/plans]\n");
     assert!(std::process::Command::new("git")
         .args(["init", "-q"])
         .current_dir(root.root())
@@ -123,10 +123,11 @@ fn shipped_authoring_workflows_execute_repair_and_real_preflights() {
         let source =
             std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&path))
                 .unwrap();
-        let source = source.replace(
-            "codex exec -C \"{worktree}\" -m \"{model}\" -c model_reasoning_effort=\"{reasoning}\" \"{prompt}\"",
-            "python3 author-runner.py \"{prompt}\"",
-        );
+        let source = source
+            .replace(
+                "codex exec -C \"{worktree}\" -m \"{model}\" -c model_reasoning_effort=\"{reasoning}\" \"{prompt}\"",
+                "python3 author-runner.py \"{prompt}\"",
+            );
         root.write(&path, &source);
         root.write("author-final", final_content);
         if name == "plan" {
@@ -187,7 +188,7 @@ fn shipped_authoring_workflows_execute_repair_and_real_preflights() {
                 );
             }
             "milestone" => {
-                let db = rusqlite::Connection::open(root.path(".forge/tasks.sqlite")).unwrap();
+                let db = rusqlite::Connection::open(root.path(".acdd/tasks.sqlite")).unwrap();
                 let claims: i64 = db
                     .query_row("SELECT count(*) FROM task_claims", [], |r| r.get(0))
                     .unwrap();
@@ -202,9 +203,9 @@ fn shipped_authoring_workflows_execute_repair_and_real_preflights() {
             _ => unreachable!(),
         }
         if name != "milestone" {
-            assert!(!root.path(".forge/tasks.sqlite").exists(), "{name}");
+            assert!(!root.path(".acdd/tasks.sqlite").exists(), "{name}");
         }
-        assert!(!root.path(".forge/runs").exists(), "{name}");
+        assert!(!root.path(".acdd/runs").exists(), "{name}");
         std::fs::remove_file(root.path("rejected")).unwrap();
     }
 }
@@ -260,18 +261,18 @@ fn authoring_workflow_profiles_validate_cleanly_and_enforce_standalone_authoring
     let expected_commands = [
         (
             "docs/workflows/author-milestone.workflow.yaml",
-            "skills/contextunity-forge/references/acdd-profile-examples/author-milestone.workflow.yaml",
-            "contextunity-forge-mcp milestone init {manifest_path} --in-place",
+            "skills/acdd/references/acdd-profile-examples/author-milestone.workflow.yaml",
+            "acdd milestone init {manifest_path} --in-place",
         ),
         (
             "docs/workflows/author-plan.workflow.yaml",
-            "skills/contextunity-forge/references/acdd-profile-examples/author-plan.workflow.yaml",
-            "contextunity-forge-mcp plan show {plan_name}",
+            "skills/acdd/references/acdd-profile-examples/author-plan.workflow.yaml",
+            "acdd plan show {plan_name}",
         ),
         (
             "docs/workflows/author-workflow.workflow.yaml",
-            "skills/contextunity-forge/references/acdd-profile-examples/author-workflow.workflow.yaml",
-            "contextunity-forge-mcp workflow show {workflow_name}",
+            "skills/acdd/references/acdd-profile-examples/author-workflow.workflow.yaml",
+            "acdd workflow show {workflow_name}",
         ),
     ];
 
@@ -287,7 +288,7 @@ fn authoring_workflow_profiles_validate_cleanly_and_enforce_standalone_authoring
         );
         for candidate in [path, skill_path] {
             let parsed =
-                contextunity_forge_mcp::forge_tasks::engine::orchestrator::workflow::read_workflow(
+                contextunity_acdd::acdd_tasks::engine::orchestrator::workflow::read_workflow(
                     repo_root,
                     std::path::Path::new(candidate),
                 )
@@ -367,7 +368,7 @@ fn authoring_workflow_profiles_validate_cleanly_and_enforce_standalone_authoring
             .and_then(|name| name.strip_suffix(".workflow.yaml"))
             .unwrap();
         let resolved =
-            contextunity_forge_mcp::forge_tasks::engine::orchestrator::workflow::resolve_workflow(
+            contextunity_acdd::acdd_tasks::engine::orchestrator::workflow::resolve_workflow(
                 repo_root,
                 workflow_stem,
             )
@@ -390,7 +391,7 @@ fn authoring_workflow_profiles_validate_cleanly_and_enforce_standalone_authoring
 
 #[test]
 fn shipped_polish_workflows_validate_and_reject_invalid_definitions() {
-    use contextunity_forge_mcp::forge_tasks::engine::orchestrator::workflow;
+    use contextunity_acdd::acdd_tasks::engine::orchestrator::workflow;
     use std::path::Path;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -476,7 +477,7 @@ fn shipped_polish_workflows_validate_and_reject_invalid_definitions() {
 
 #[test]
 fn shipped_polish_workflow_repairs_failed_verification_and_reviews_independently() {
-    use contextunity_forge_mcp::forge_tasks::engine::orchestrator::workflow;
+    use contextunity_acdd::acdd_tasks::engine::orchestrator::workflow;
     use std::path::Path;
 
     let workspace = Workspace::new();
@@ -517,8 +518,8 @@ fn shipped_polish_workflow_repairs_failed_verification_and_reviews_independently
     assert_eq!(sessions[0]["gate"], "polish");
     assert_eq!(sessions[1]["gate"], "review");
     assert_ne!(sessions[0]["session"], sessions[1]["session"]);
-    assert!(!workspace.path(".forge/runs").exists());
-    assert!(!workspace.path(".forge/tasks.sqlite").exists());
+    assert!(!workspace.path(".acdd/runs").exists());
+    assert!(!workspace.path(".acdd/tasks.sqlite").exists());
 }
 
 #[test]
@@ -543,7 +544,7 @@ fn gate_driver_selects_role_before_command_and_containers() {
 #[cfg(unix)]
 #[test]
 fn workflow_discovery_and_execution_accept_a_symlinked_root_ancestor() {
-    use contextunity_forge_mcp::forge_tasks::engine::orchestrator::workflow;
+    use contextunity_acdd::acdd_tasks::engine::orchestrator::workflow;
     use std::{os::unix::fs::symlink, path::Path};
 
     let workspace = Workspace::new();
@@ -573,7 +574,7 @@ fn workflow_discovery_and_execution_accept_a_symlinked_root_ancestor() {
 #[cfg(unix)]
 #[test]
 fn workflow_discovery_rejects_escaping_and_cyclic_links() {
-    use contextunity_forge_mcp::forge_tasks::engine::orchestrator::workflow;
+    use contextunity_acdd::acdd_tasks::engine::orchestrator::workflow;
     use std::os::unix::fs::symlink;
 
     let workspace = WorkflowHarness::ordered().materialize();

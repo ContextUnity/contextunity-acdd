@@ -7,12 +7,12 @@ fn checkpoint_breadcrumb(subject: &str) -> String {
 }
 
 fn checkpoint_snapshot(workspace: &Workspace) -> Vec<u8> {
-    let store = contextunity_forge_mcp::engine::tasks::store(workspace.root()).unwrap();
+    let store = contextunity_acdd::engine::tasks::store(workspace.root()).unwrap();
     serde_json::to_vec(&store.list_checkpoints().unwrap()).unwrap()
 }
 
 fn checkpoint_payload(workspace: &Workspace, breadcrumb: &str) -> Option<Value> {
-    let store = contextunity_forge_mcp::engine::tasks::store(workspace.root()).unwrap();
+    let store = contextunity_acdd::engine::tasks::store(workspace.root()).unwrap();
     store
         .get_checkpoint(breadcrumb)
         .unwrap()
@@ -22,8 +22,8 @@ fn checkpoint_payload(workspace: &Workspace, breadcrumb: &str) -> Option<Value> 
 #[test]
 fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
     let (workspace, harness) = McpTestHarness::with_files(&[(
-        "forge-mcp.yaml",
-        "tasks_db: .forge/tasks.sqlite\ntask_project: checkpoint-fixture\n",
+        "acdd.yaml",
+        "tasks_db: .acdd/tasks.sqlite\ntask_project: checkpoint-fixture\n",
     )]);
     let mut client = harness.expect("MCP initialize");
     let page = json!({"total":2,"offset":0,"limit":2,"generation":"saved-snapshot","next_offset":null,"has_more":false,"items":[{"text":"x".repeat(60_000)},{"text":"y".repeat(60_000)}]});
@@ -338,11 +338,11 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
     assert!(cli_delete_text.contains("**action**: `\"delete\"`"));
     assert!(cli_delete_text.contains(&format!("**name**: `\"{cli_delete_breadcrumb}\"`")));
     assert_eq!(checkpoint_payload(&workspace, &cli_delete_breadcrumb), None);
-    assert!(!workspace.path(".forge/checkpoints.json").exists());
+    assert!(!workspace.path(".acdd/checkpoints.json").exists());
 
-    let shared_database = workspace.path(".forge/tasks.sqlite");
+    let shared_database = workspace.path(".acdd/tasks.sqlite");
     let other_workspace = Workspace::with_files(&[(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "tasks_db: {}\ntask_project: checkpoint-other\n",
             shared_database.display()

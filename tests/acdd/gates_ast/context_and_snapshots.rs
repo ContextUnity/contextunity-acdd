@@ -3,8 +3,8 @@ fn linked_milestone_context_reports_upstream_task_status_and_blockers() {
     let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
     root.write("src/lib.rs", "pub fn example() {}\n");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\nmilestones: [docs/milestones]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\nmilestones: [docs/milestones]\ntasks_db: .acdd/tasks.sqlite\n",
     );
 
     let upstream = r#"---
@@ -42,7 +42,7 @@ task_depends_on: [m-upstream:producer]
         "docs/milestones/010-upstream.md",
         "docs/milestones/020-consumer.md",
     ] {
-        contextunity_forge_mcp::engine::tasks::manage(
+        contextunity_acdd::engine::tasks::manage(
             root.root(),
             serde_json::from_value(serde_json::json!({
                 "action": "sync",
@@ -53,7 +53,7 @@ task_depends_on: [m-upstream:producer]
         .expect("fixture milestone should sync");
     }
 
-    let upstream_tasks = contextunity_forge_mcp::engine::tasks::list(
+    let upstream_tasks = contextunity_acdd::engine::tasks::list(
         root.root(),
         serde_json::from_value(serde_json::json!({
             "milestone_ref": "docs/milestones/010-upstream.md",
@@ -64,7 +64,7 @@ task_depends_on: [m-upstream:producer]
     )
     .expect("upstream task should be listable");
 
-    let context = contextunity_forge_mcp::engine::tasks::manage(
+    let context = contextunity_acdd::engine::tasks::manage(
         root.root(),
         serde_json::from_value(serde_json::json!({
             "action": "context",
@@ -92,7 +92,7 @@ task_depends_on: [m-upstream:producer]
     );
 
     let mut tool_profile: serde_yaml::Value = serde_yaml::from_str(include_str!(
-        "../../../crates/forge-tasks/src/tasks/acdd.default.yaml"
+        "../../../crates/acdd-tasks/src/tasks/acdd.profile.yaml"
     ))
     .expect("the embedded ACDD profile should deserialize for the context fixture");
     tool_profile["inherit"] = serde_yaml::Value::String("none".to_owned());
@@ -104,12 +104,12 @@ task_depends_on: [m-upstream:producer]
     ]);
     let tool_profile =
         serde_yaml::to_string(&tool_profile).expect("the tool context profile should serialize");
-    root.write(".forge/acdd/tool-profile.yaml", &tool_profile);
+    root.write(".acdd/tool-profile.yaml", &tool_profile);
     root.write(
-        "forge-mcp.yaml",
-        "profile: minimal\nacdd_profile: .forge/acdd/tool-profile.yaml\nroots: [src]\ndocs: [docs]\nmilestones: [docs/milestones]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "profile: minimal\nacdd_profile: .acdd/tool-profile.yaml\nroots: [src]\ndocs: [docs]\nmilestones: [docs/milestones]\ntasks_db: .acdd/tasks.sqlite\n",
     );
-    let minimal_error = contextunity_forge_mcp::engine::tasks::manage(
+    let minimal_error = contextunity_acdd::engine::tasks::manage(
         root.root(),
         serde_json::from_value(serde_json::json!({
             "action": "context",
@@ -120,23 +120,23 @@ task_depends_on: [m-upstream:producer]
     .expect_err("minimal must reject a gate that requires disabled code navigation");
     assert!(
         format!("{minimal_error:#}").contains(
-            "active gate 'contract' requires tool 'code_map_overview' from disabled Forge subsystem 'codemap'"
+            "active gate 'contract' requires tool 'code_map_overview' from disabled ACDD subsystem 'codemap'"
         ),
         "unexpected minimal-profile result: {minimal_error:#}"
     );
 
     for (preset, expected_tools) in [
-        ("minimal", serde_json::json!(["forge_read"])),
+        ("minimal", serde_json::json!(["acdd_read"])),
         (
             "orchestrator",
-            serde_json::json!(["forge_read", "task_blackboard"]),
+            serde_json::json!(["acdd_read", "task_blackboard"]),
         ),
     ] {
         root.write(
-            "forge-mcp.yaml",
-            &format!("profile: {preset}\nroots: [src]\ndocs: [docs]\nmilestones: [docs/milestones]\ntasks_db: .forge/tasks.sqlite\n"),
+            "acdd.yaml",
+            &format!("profile: {preset}\nroots: [src]\ndocs: [docs]\nmilestones: [docs/milestones]\ntasks_db: .acdd/tasks.sqlite\n"),
         );
-        let context = contextunity_forge_mcp::engine::tasks::manage(
+        let context = contextunity_acdd::engine::tasks::manage(
             root.root(),
             serde_json::from_value(serde_json::json!({
                 "action": "context",
@@ -166,10 +166,10 @@ task_depends_on: [m-upstream:producer]
     }
 
     root.write(
-        "forge-mcp.yaml",
-        "profile: minimal\nacdd_profile: .forge/acdd/tool-profile.yaml\nmodules:\n  codemap: true\n  docs: true\n  acdd: true\nroots: [src]\ndocs: [docs]\nmilestones: [docs/milestones]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "profile: minimal\nacdd_profile: .acdd/tool-profile.yaml\nmodules:\n  codemap: true\n  docs: true\n  acdd: true\nroots: [src]\ndocs: [docs]\nmilestones: [docs/milestones]\ntasks_db: .acdd/tasks.sqlite\n",
     );
-    let overridden_context = contextunity_forge_mcp::engine::tasks::manage(
+    let overridden_context = contextunity_acdd::engine::tasks::manage(
         root.root(),
         serde_json::from_value(serde_json::json!({
             "action": "context",
@@ -246,7 +246,7 @@ fn task_manage_named_snapshot_restores_worktree_and_guards_head_changes() {
     );
     assert!(snapshot.exists("runtime/tasks.sqlite"));
     assert_eq!(
-        snapshot.read(".forge/managed-state"),
+        snapshot.read(".acdd/managed-state"),
         "preserve Forge state\n"
     );
 

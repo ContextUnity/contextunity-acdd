@@ -10,7 +10,7 @@ The `docs/workflows/` directory contains standalone, taskless gate graph definit
 ## Overview
 
 > [!NOTE]
-> `contextunity-forge-mcp workflow run` executes a taskless workflow in the active workspace. `plan run` executes structured plans in-place. See the [CLI reference](../reference/cli.md#standalone-workflows) for the execution and persistence limits.
+> `acdd workflow run` executes a taskless workflow in the active workspace. `plan run` executes structured plans in-place. See the [CLI reference](../reference/cli.md#standalone-workflows) for the execution and persistence limits.
 
 Unlike **Milestones** (formal contractual releases with `blueprint_synthesis`, task DAG waves, and post-task closure gates) and **Plans** (in-place step-by-step operational manuals), a **Workflow** is a pure state machine of gates executed directly against repository state.
 

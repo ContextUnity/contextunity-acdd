@@ -11,10 +11,7 @@ use super::in_process_cli;
 #[test]
 fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
     let workspace = TaskHarness::mcp_workspace();
-    workspace.write(
-        "forge-mcp.yaml",
-        "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
-    );
+    workspace.write("acdd.yaml", "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n");
     workspace.write(
         "docs/milestones/UX-001-mcp-response-deduplication-and-agent-efficiency.md",
         &MilestoneFixtureBuilder::new("m-blackboard")
@@ -423,10 +420,7 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
 fn milestone_blackboard_lists_are_bounded_payload_free_and_inspectable() {
     let workspace = TaskHarness::mcp_workspace();
     fs::create_dir_all(workspace.root().join("docs/milestones")).unwrap();
-    workspace.write(
-        "forge-mcp.yaml",
-        "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
-    );
+    workspace.write("acdd.yaml", "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n");
     workspace.write(
         "docs/milestones/010-blackboard.md",
         "---\nid: m-blackboard\ntitle: Blackboard\ndoc_type: contract\nstatus: active\n---\n",

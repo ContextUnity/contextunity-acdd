@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn builtin_type_members_are_finite_and_type_specific() {
-    let profile = contextunity_forge_mcp::engine::languages::by_id("python").unwrap();
+    let profile = contextunity_acdd::engine::languages::by_id("python").unwrap();
     for (receiver, member) in [
         ("str", "strip"),
         ("list", "append"),

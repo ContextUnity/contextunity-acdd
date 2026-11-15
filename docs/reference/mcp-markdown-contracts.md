@@ -19,7 +19,7 @@ framing; this flag changes operation content, not the transport protocol.
 Every registered MCP tool advertises the same optional `format` selector with
 the exact string enum `markdown` and `json`; clients can omit it to receive the
 default. The shared CLI/MCP seam tests compare omitted and explicit Markdown,
-then compare parsed JSON for operations with CLI equivalents. `forge_read`
+then compare parsed JSON for operations with CLI equivalents. `acdd_read`
 shares its reader and bounded renderer with CLI `read`; core text/export tests
 compare parsed JSON across both transports. See
 [`stdio_compact_navigation_preserves_symbol_and_page_contracts`](../../tests/mcp/context.rs)
@@ -431,8 +431,8 @@ nonpaginated oversized-response error.
 ### Verified call-path fixture
 
 This illustrative fixture is created by the acceptance test at a temporary root;
-`/tmp/forge-orders-fixture` is its example root. Coordinates below refer to these
-exact fixture declarations, not declarations in the Forge repository.
+`/tmp/acdd-orders-fixture` is its example root. Coordinates below refer to these
+exact fixture declarations, not declarations in the ACDD repository.
 `src/orders.py` contains:
 
 ```python
@@ -456,7 +456,7 @@ After the producer verifies both calls and the test roles, render:
 
 ```markdown
 Discovery: graph — verified exact calls
-[test_order_processing](file:///tmp/forge-orders-fixture/tests/test_orders.py#L6) (test_case) -> [setup_mock_driver](file:///tmp/forge-orders-fixture/tests/test_orders.py#L3) (test_helper) -> [ProcessOrder](file:///tmp/forge-orders-fixture/src/orders.py#L1) (target)
+[test_order_processing](file:///tmp/acdd-orders-fixture/tests/test_orders.py#L6) (test_case) -> [setup_mock_driver](file:///tmp/acdd-orders-fixture/tests/test_orders.py#L3) (test_helper) -> [ProcessOrder](file:///tmp/acdd-orders-fixture/src/orders.py#L1) (target)
 ```
 
 The test resolves each link against its actual temporary root and verifies the
@@ -466,19 +466,19 @@ and has no fabricated breadcrumb. A node without a verified role has no role bad
 ### Governing rules and edge evidence
 
 This repository example uses the verified rule for
-[`document_symbol_candidates`](../../crates/forge-index/src/linker/resolution/mod.rs)
+[`document_symbol_candidates`](../../crates/acdd-index/src/linker/resolution/mod.rs)
 and its actual rule source:
 
 ```markdown
 > [!IMPORTANT] Governing Invariants
-> - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [Source](file:///home/oleksii/ContextUnity/projects/contextunity-forge-mcp/docs/AGENTS.md#L92)
+> - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [Source](file:///home/oleksii/ContextUnity/projects/acdd/docs/AGENTS.md#L92)
 ```
 
 For the live exact call to `diagnostic_reason`, the edge coordinate differs from
 the caller's declaration coordinate:
 
 ```markdown
-- [annotate_diagnostic_page](file:///home/oleksii/ContextUnity/projects/contextunity-forge-mcp/src/db/reader.rs#L2135) [proven call] — calls diagnostic_reason at [src/db/reader.rs:2145](file:///home/oleksii/ContextUnity/projects/contextunity-forge-mcp/src/db/reader.rs#L2145)
+- [annotate_diagnostic_page](file:///home/oleksii/ContextUnity/projects/acdd/src/db/reader.rs#L2135) [proven call] — calls diagnostic_reason at [src/db/reader.rs:2145](file:///home/oleksii/ContextUnity/projects/acdd/src/db/reader.rs#L2145)
 ```
 
 A `possible_calls` fixture renders `[heuristic / candidate]` and its actual

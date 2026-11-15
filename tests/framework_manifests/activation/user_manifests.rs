@@ -4,19 +4,63 @@ use super::*;
 #[test]
 fn framework_manifest_accepts_generic_typed_rules_and_formats() {
     let mut failures = Vec::new();
-    let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("skills/contextunity-forge/references/frameworks");
+    let examples =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/acdd/references/frameworks");
     for (name, extension, example) in [
-        ("django","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/django.toml.example")),
-        ("starlette","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/starlette.toml.example")),
-        ("fastapi","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/fastapi.toml.example")),
-        ("nuxt","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/nuxt.toml.example")),
-        ("vue-runtime","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/vue-runtime.toml.example")),
-        ("htmx","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/htmx.toml.example")),
-        ("alpinejs","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/alpinejs.toml.example")),
-        ("gridviewspec","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/gridviewspec.toml.example")),
-        ("declarative-rules","toml",include_str!("../../../skills/contextunity-forge/references/frameworks/declarative-rules.toml.example")),
-        ("declarative-rules","yaml",include_str!("../../../skills/contextunity-forge/references/frameworks/declarative-rules.yaml.example")),
+        (
+            "django",
+            "toml",
+            include_str!("../../../skills/acdd/references/frameworks/django.toml.example"),
+        ),
+        (
+            "starlette",
+            "toml",
+            include_str!("../../../skills/acdd/references/frameworks/starlette.toml.example"),
+        ),
+        (
+            "fastapi",
+            "toml",
+            include_str!("../../../skills/acdd/references/frameworks/fastapi.toml.example"),
+        ),
+        (
+            "nuxt",
+            "toml",
+            include_str!("../../../skills/acdd/references/frameworks/nuxt.toml.example"),
+        ),
+        (
+            "vue-runtime",
+            "toml",
+            include_str!("../../../skills/acdd/references/frameworks/vue-runtime.toml.example"),
+        ),
+        (
+            "htmx",
+            "toml",
+            include_str!("../../../skills/acdd/references/frameworks/htmx.toml.example"),
+        ),
+        (
+            "alpinejs",
+            "toml",
+            include_str!("../../../skills/acdd/references/frameworks/alpinejs.toml.example"),
+        ),
+        (
+            "gridviewspec",
+            "toml",
+            include_str!("../../../skills/acdd/references/frameworks/gridviewspec.toml.example"),
+        ),
+        (
+            "declarative-rules",
+            "toml",
+            include_str!(
+                "../../../skills/acdd/references/frameworks/declarative-rules.toml.example"
+            ),
+        ),
+        (
+            "declarative-rules",
+            "yaml",
+            include_str!(
+                "../../../skills/acdd/references/frameworks/declarative-rules.yaml.example"
+            ),
+        ),
     ] {
         let path = examples.join(format!("{name}.{extension}.example"));
         let identity = if name == "declarative-rules" {
@@ -24,7 +68,7 @@ fn framework_manifest_accepts_generic_typed_rules_and_formats() {
         } else {
             name
         };
-        let manifest = format!(".forge/frameworks/{identity}.{extension}");
+        let manifest = format!(".acdd/frameworks/{identity}.{extension}");
         let result =
             FrameworkHarness::from_manifests(&[(&manifest, example)]).and_then(|harness| {
                 harness.link_sources(&[("index.html", "html", "<p>Example manifest</p>")])
@@ -74,7 +118,7 @@ fn framework_manifest_accepts_generic_typed_rules_and_formats() {
         let mut sources =
             VirtualWorkspace::from_files(&[("index.html", "<p>Strict residual schema</p>")]);
         sources.write(
-            ".forge/frameworks/strict.toml",
+            ".acdd/frameworks/strict.toml",
             &toml::to_string(&pack).unwrap(),
         );
         if sources.index().is_ok() {
@@ -120,7 +164,7 @@ syntax_rules:
             ("index.html", "{% csrf_token %}{{ value|safe }}\n"),
         ]);
         sources.write(
-            format!(".forge/frameworks/django.{extension}"),
+            format!(".acdd/frameworks/django.{extension}"),
             complete_manifest,
         );
         let indexed = match sources.index() {
@@ -160,7 +204,7 @@ syntax_rules:
             } else {
                 format!("{legacy_section}: []\n")
             };
-            let manifest_path = format!(".forge/frameworks/django.{extension}");
+            let manifest_path = format!(".acdd/frameworks/django.{extension}");
             if FrameworkHarness::from_manifests(&[(manifest_path.as_str(), manifest.as_str())])
                 .is_ok()
             {
@@ -172,7 +216,7 @@ syntax_rules:
     }
 
     let empty =
-        FrameworkHarness::from_manifests(&[(".forge/frameworks/django.toml", "enabled = false\n")])
+        FrameworkHarness::from_manifests(&[(".acdd/frameworks/django.toml", "enabled = false\n")])
             .and_then(|harness| {
                 harness.link_sources(&[(
                     "index.html",
@@ -185,7 +229,7 @@ syntax_rules:
     }
 
     let undeclared =
-        FrameworkHarness::from_manifests(&[(".forge/frameworks/django.toml", complete_toml)])
+        FrameworkHarness::from_manifests(&[(".acdd/frameworks/django.toml", complete_toml)])
             .unwrap();
     undeclared
         .link_sources(&[("index.html", "html", "<p>No framework declaration</p>\n")])
@@ -272,15 +316,15 @@ fn invalid_user_framework_manifest_fails_before_index_publication() {
     ];
 
     for (invalid_kind, extension, manifest) in invalid_manifests {
-        let manifest_path = format!(".forge/frameworks/django.{extension}");
+        let manifest_path = format!(".acdd/frameworks/django.{extension}");
         let workspace = FrameworkHarness::persisted(&[]);
         workspace.write(manifest_path.as_str(), manifest.as_str());
         workspace.write_all(&project_files);
-        let result = contextunity_forge_mcp::engine::pipeline::build_with_cache_dir(
+        let result = contextunity_acdd::engine::pipeline::build_with_cache_dir(
             workspace.root(),
             &workspace.db(),
             None,
-            &workspace.path(".forge/extraction-cache"),
+            &workspace.path(".acdd/extraction-cache"),
         );
         if result.is_ok() || workspace.db().exists() {
             failures.push(format!("a declared Django project with {invalid_kind} in its .{extension} manifest was accepted or published index"));

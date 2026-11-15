@@ -1,5 +1,5 @@
 use anyhow::{ensure, Result};
-use contextunity_forge_benchmarks::BenchmarkWorkspace;
+use contextunity_acdd_benchmarks::BenchmarkWorkspace;
 use rusqlite::Connection;
 use serde_json::json;
 use std::{path::Path, process::Command, time::Instant};
@@ -14,7 +14,7 @@ fn doc_edges(db: &Path) -> Result<Vec<(String, String, String)>> {
 }
 
 fn profile() -> Result<()> {
-    let baseline = std::env::var("FORGE_BASELINE_BIN")?;
+    let baseline = std::env::var("ACDD_BASELINE_BIN")?;
     let old = BenchmarkWorkspace::new();
     let new = BenchmarkWorkspace::new();
     for workspace in [&old, &new] {

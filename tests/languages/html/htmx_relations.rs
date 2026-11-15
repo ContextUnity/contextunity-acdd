@@ -1,5 +1,5 @@
 use super::*;
-use contextunity_forge_mcp::engine::languages::html::extract_html_file;
+use contextunity_acdd::engine::languages::html::extract_html_file;
 
 #[test]
 fn htmx_and_alpine_relations_follow_exact_targets_and_effective_rules() {
@@ -209,11 +209,11 @@ fn assert_htmx_and_alpine_relations(renamed_phase: bool) {
     let packs = [
         (
             "htmx",
-            include_str!("../../../crates/forge-index/src/languages/manifests/htmx.toml"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/htmx.toml"),
         ),
         (
             "alpinejs",
-            include_str!("../../../crates/forge-index/src/languages/manifests/alpinejs.toml"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/alpinejs.toml"),
         ),
     ];
     if !renamed_phase {
@@ -243,7 +243,7 @@ fn assert_htmx_and_alpine_relations(renamed_phase: bool) {
             observe(true, true, false, state);
         }
         for (name, source) in packs {
-            let path = format!(".forge/frameworks/{name}.toml");
+            let path = format!(".acdd/frameworks/{name}.toml");
             let mut pack: toml::Value = toml::from_str(source).unwrap();
             pack.as_table_mut()
                 .unwrap()
@@ -273,7 +273,7 @@ fn assert_htmx_and_alpine_relations(renamed_phase: bool) {
             renamed
         };
         for (name, source) in packs {
-            let path = format!(".forge/frameworks/{name}.toml");
+            let path = format!(".acdd/frameworks/{name}.toml");
             let mut pack: toml::Value = toml::from_str(&rename(source)).unwrap();
             pack.as_table_mut()
                 .unwrap()
@@ -315,7 +315,7 @@ fn assert_htmx_and_alpine_relations(renamed_phase: bool) {
 
 #[test]
 fn parameterized_htmx_requests_resolve_to_backend_route_endpoints() {
-    let mut probe_facts = contextunity_forge_mcp::core::models::Facts::default();
+    let mut probe_facts = contextunity_acdd::core::models::Facts::default();
     let _ = extract_html_file(
         "channels/settings.html",
         "<div></div>",
@@ -586,8 +586,8 @@ urlpatterns = [
 
     // HTMX framework pack override with replace=true and empty syntax rules
     let htmx_pack_src =
-        include_str!("../../../crates/forge-index/src/languages/manifests/htmx.toml");
-    let override_path = ".forge/frameworks/htmx.toml";
+        include_str!("../../../crates/acdd-index/src/languages/manifests/htmx.toml");
+    let override_path = ".acdd/frameworks/htmx.toml";
     let mut pack: toml::Value = toml::from_str(htmx_pack_src).unwrap();
     pack.as_table_mut()
         .unwrap()

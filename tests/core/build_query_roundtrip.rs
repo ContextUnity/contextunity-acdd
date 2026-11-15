@@ -1,5 +1,5 @@
 use crate::common::Workspace;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::response::{QueryOptions, ResponsePolicy},
     db::{reader, writer},
 };

@@ -1,5 +1,5 @@
 use crate::acdd::tasks::harness::TaskHarness;
-use contextunity_forge_mcp::db::tasks_store::TasksStore;
+use contextunity_acdd::db::tasks_store::TasksStore;
 use rusqlite::{params, types::Value as SqlValue};
 use serde_json::Value;
 use std::path::Path;
@@ -33,19 +33,19 @@ pub(crate) struct BlackboardSchema {
 
 impl TaskHarness {
     pub fn install_delivery_sql_abort(root: &Path) -> anyhow::Result<()> {
-        rusqlite::Connection::open(root.join(".forge/tasks.sqlite"))?.execute_batch("CREATE TRIGGER reject_delivery_gate BEFORE INSERT ON task_gates WHEN NEW.gate='deliver' BEGIN SELECT RAISE(ABORT,'forced delivery sqlite failure'); END;")?;
+        rusqlite::Connection::open(root.join(".acdd/tasks.sqlite"))?.execute_batch("CREATE TRIGGER reject_delivery_gate BEFORE INSERT ON task_gates WHEN NEW.gate='deliver' BEGIN SELECT RAISE(ABORT,'forced delivery sqlite failure'); END;")?;
         Ok(())
     }
 
     pub fn remove_delivery_sql_abort(root: &Path) -> anyhow::Result<()> {
-        rusqlite::Connection::open(root.join(".forge/tasks.sqlite"))?
+        rusqlite::Connection::open(root.join(".acdd/tasks.sqlite"))?
             .execute_batch("DROP TRIGGER reject_delivery_gate;")?;
         Ok(())
     }
 
     pub fn database_task_count(root: &Path) -> anyhow::Result<i64> {
         Ok(
-            rusqlite::Connection::open(root.join(".forge/tasks.sqlite"))?.query_row(
+            rusqlite::Connection::open(root.join(".acdd/tasks.sqlite"))?.query_row(
                 "SELECT COUNT(*) FROM tasks",
                 [],
                 |row| row.get(0),
@@ -106,7 +106,7 @@ impl TaskHarness {
     pub fn persisted_descriptor(
         store: &TasksStore,
         id: &str,
-    ) -> anyhow::Result<contextunity_forge_mcp::db::tasks_store::Task> {
+    ) -> anyhow::Result<contextunity_acdd::db::tasks_store::Task> {
         let text: String = store.connection.query_row(
             "SELECT descriptor FROM tasks WHERE task_id=?1",
             [id],
@@ -187,7 +187,7 @@ impl TaskHarness {
         method: (&str, &str),
         caller: (&str, &str),
     ) -> anyhow::Result<i64> {
-        let sql = rusqlite::Connection::open(root.join(".forge/code-map.sqlite"))?;
+        let sql = rusqlite::Connection::open(root.join(".acdd/code-map.sqlite"))?;
         Ok(sql.query_row("SELECT COUNT(*) FROM edges edge JOIN nodes target ON target.node_hash=edge.dst_hash JOIN path_dictionary tp ON tp.path_id=target.path_id JOIN nodes caller ON caller.node_hash=edge.src_hash JOIN path_dictionary cp ON cp.path_id=caller.path_id WHERE edge.kind='calls' AND target.name=?1 AND target.kind='method' AND tp.path=?2 AND caller.name=?3 AND cp.path=?4 AND caller.is_test=0", params![method.1, method.0, caller.1, caller.0], |row| row.get(0))?)
     }
 
@@ -331,7 +331,7 @@ impl TaskHarness {
 
     pub fn read_only_descriptor(root: &Path, id: &str) -> anyhow::Result<Value> {
         let sql = rusqlite::Connection::open_with_flags(
-            root.join(".forge/tasks.sqlite"),
+            root.join(".acdd/tasks.sqlite"),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
         let descriptor: String = sql.query_row(

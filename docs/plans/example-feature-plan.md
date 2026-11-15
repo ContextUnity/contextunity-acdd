@@ -13,7 +13,7 @@ This plan demonstrates the **Plan Model** defined in [ADR 0021](../adr/0021-work
 
 ## Execution Characteristics
 
-- **In-Place**: Executed via `contextunity-forge-mcp plan run docs/plans/example-feature-plan.md --in-place`.
+- **In-Place**: Executed via `acdd plan run docs/plans/example-feature-plan.md --in-place`.
 - **Zero Root Milestone Gates**: Skips `blueprint_synthesis` and `handoff`; executes steps directly through `build -> review -> deliver`.
 - **Persistence**: Uses `save: snapshot` (never auto-commits to Git).
 - **Archiving**: Completed plans can be moved to `docs/plans/archive/`.
@@ -23,7 +23,7 @@ This plan demonstrates the **Plan Model** defined in [ADR 0021](../adr/0021-work
 ## 1. Step 1: Core Type Extraction
 
 - **Target**: Extract and decouple shared value structures.
-- **Scope**: `crates/forge-core/src/types.rs`
+- **Scope**: `crates/acdd-core/src/types.rs`
 - **Subtasks**:
   - [x] Define clean DTO model
   - [x] Wire serde serialization
@@ -32,7 +32,7 @@ This plan demonstrates the **Plan Model** defined in [ADR 0021](../adr/0021-work
 ## 2. Step 2: Engine Integration
 
 - **Target**: Wire the extracted types into the pipeline.
-- **Scope**: `crates/forge-tasks/src/engine/`
+- **Scope**: `crates/acdd-tasks/src/engine/`
 - **Subtasks**:
   - [ ] Replace legacy references
   - [ ] Verify unit tests pass

@@ -4,7 +4,7 @@ pub(crate) fn file_backed_blackboard_fixture() -> (crate::common::Workspace, Tas
 {
     let root = crate::common::Workspace::new();
     let milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
-    let mut store = TasksStore::open(&root.path(".forge/tasks.sqlite")).unwrap();
+    let mut store = TasksStore::open(&root.path(".acdd/tasks.sqlite")).unwrap();
     store
         .sync(&milestone, "docs/010-test.md", root.root())
         .unwrap();
@@ -16,7 +16,7 @@ pub(crate) fn sync_blackboard_tasks(
     path: &str,
     milestone: &Milestone,
 ) -> (TasksStore, String, String) {
-    let mut store = TasksStore::open(&root.root().join(".forge/tasks.sqlite")).unwrap();
+    let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     store.sync(milestone, path, root.root()).unwrap();
     let first = milestone.task_id(&milestone.tasks[0]);
     let second = milestone.task_id(&milestone.tasks[1]);
@@ -26,7 +26,7 @@ pub(crate) fn sync_blackboard_tasks(
 #[test]
 fn cancelled_milestone_blackboard_pruning_is_project_scoped() {
     let root = crate::common::Workspace::new();
-    let database_path = root.root().join(".forge/tasks.sqlite");
+    let database_path = root.root().join(".acdd/tasks.sqlite");
     let initialized = TasksStore::open_project(&database_path, "primary", "app").unwrap();
     drop(initialized);
 

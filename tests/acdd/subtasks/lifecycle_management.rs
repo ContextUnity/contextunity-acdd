@@ -19,7 +19,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
     let mut modified_task = task.clone();
     modified_task
         .subtasks
-        .push(contextunity_forge_mcp::core::tasks::SubtaskSpec {
+        .push(contextunity_acdd::core::tasks::SubtaskSpec {
             subtask_ref: "sub-2".into(),
             title: "Additional spike".into(),
             status: "completed".into(),
@@ -35,12 +35,12 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
     let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
     root.write("src/lib.rs", "pub fn core() {}\n");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     root.write("docs/010-subtasks.md", spec);
 
-    let mut store = TasksStore::open(&root.root().join(".forge/tasks.sqlite")).unwrap();
+    let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     store
         .sync(&milestone, "docs/010-subtasks.md", root.root())
         .unwrap();
@@ -146,7 +146,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
     );
 
     // Repeated sync: verify that re-syncing from milestone doc does NOT overwrite live SQLite progress
-    let mut store = TasksStore::open(&root.root().join(".forge/tasks.sqlite")).unwrap();
+    let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     store
         .sync(&milestone, "docs/010-subtasks.md", root.root())
         .unwrap();
@@ -170,7 +170,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
     drop(store);
 
     // Deliver the task and prove subtasks are rendered into durable milestone markdown.
-    let mut store = TasksStore::open(&root.root().join(".forge/tasks.sqlite")).unwrap();
+    let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     store
         .subtask_update(
             task_id,
@@ -218,7 +218,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
     }));
 
     // Post-delivery immutability: modifying subtasks on a completed task fails with TASK_TERMINAL
-    let mut store = TasksStore::open(&root.root().join(".forge/tasks.sqlite")).unwrap();
+    let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     let add_post_err = store
         .subtask_add(task_id, "sub-4", "Late addition")
         .unwrap_err();
@@ -243,7 +243,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
     assert_eq!(reopened_milestone.tasks[0].subtasks.len(), 3);
 
     // After reopening, adding and updating subtasks works cleanly
-    let mut store = TasksStore::open(&root.root().join(".forge/tasks.sqlite")).unwrap();
+    let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     let sub4 = store
         .subtask_add(task_id, "sub-4", "Audit findings subtask")
         .unwrap();

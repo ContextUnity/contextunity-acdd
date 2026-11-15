@@ -1,6 +1,6 @@
 use super::super::support::*;
-use contextunity_forge_mcp::core::tasks::profile::{GateDef, GateProfile};
-use contextunity_forge_mcp::db::tasks_store::Task;
+use contextunity_acdd::core::tasks::profile::{GateDef, GateProfile};
+use contextunity_acdd::db::tasks_store::Task;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -196,7 +196,7 @@ impl TaskHarness {
     pub fn executable_gates(&self) -> anyhow::Result<Vec<GateDef>> {
         let profile = self.profile()?;
         let task = self.store.inspect(&self.id)?;
-        forge_tasks::engine::executable_task_gates(&profile, &task)
+        acdd_tasks::engine::executable_task_gates(&profile, &task)
     }
 
     /// Choose a deterministic worker identity from the production-resolved gate definition.
@@ -325,7 +325,7 @@ impl TaskHarness {
     }
 
     pub fn evidence_for_gate(&self, claimed: &Task) -> anyhow::Result<Evidence> {
-        use contextunity_forge_mcp::core::tasks::profile::ProofKind;
+        use contextunity_acdd::core::tasks::profile::ProofKind;
 
         let profile = self.profile()?;
         let (gate_path, gate) = profile
@@ -443,6 +443,6 @@ impl TaskHarness {
     }
 
     pub fn recovery_workspace() -> Workspace {
-        Self::workspace_with_file("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n")
+        Self::workspace_with_file("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n")
     }
 }

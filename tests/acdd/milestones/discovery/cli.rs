@@ -16,12 +16,12 @@ fn milestone_cli_smoke_parses_arguments_and_reports_exit_codes() {
     let missing_id = run(&["show"]);
     assert_eq!(missing_id.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&missing_id.stderr).contains("<ID>"));
-    root.write(".forge/cli-handoff-evidence.json", "{}");
+    root.write(".acdd/cli-handoff-evidence.json", "{}");
     let malformed = run(&[
         "handoff",
         "m-cli-missing",
         "--evidence-file",
-        root.path(".forge/cli-handoff-evidence.json")
+        root.path(".acdd/cli-handoff-evidence.json")
             .to_str()
             .unwrap(),
     ]);

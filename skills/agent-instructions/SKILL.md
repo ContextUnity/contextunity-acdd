@@ -39,8 +39,8 @@ locations, and stricter gates. It must not weaken the shared skill's safety,
 authorization, or evidence requirements. Do not depend on an enclosing workspace
 `AGENTS.md`: agents start from an individual Git repository.
 
-For Forge-managed tasks, route entry through `contextunity-forge` and the active
-task's workflow guidance. Forge owns gate and evidence semantics; repository
+For ACDD-managed tasks, route entry through `acdd` and the active
+task's workflow guidance. ACDD owns gate and evidence semantics; repository
 instructions own commands, test lanes, and permissions. A local ACDD reference
 links the engine contract and records owner-specific constraints. For other
 task engines, route to their admitted contract. Load specialized skills for

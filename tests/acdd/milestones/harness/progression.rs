@@ -56,7 +56,7 @@ impl MilestoneHarness {
         };
         let store = store.or(owned_store.as_ref()).unwrap();
 
-        use contextunity_forge_mcp::core::tasks::profile::ProofKind;
+        use contextunity_acdd::core::tasks::profile::ProofKind;
         let harness = TaskHarness::attach(self, &task_id);
         let mut submissions = Vec::new();
         loop {
@@ -145,12 +145,12 @@ impl MilestoneHarness {
         topic: &str,
         payload: &str,
     ) -> Value {
-        contextunity_forge_mcp::forge_tasks::engine::blackboard::blackboard(self.root(),
+        contextunity_acdd::acdd_tasks::engine::blackboard::blackboard(self.root(),
             serde_json::from_value(json!({"action":"post", "task_id":task_id, "author":author, "topic":topic, "payload":payload})).unwrap(), "cli").unwrap()
     }
 
     pub(crate) fn read_task_messages(&self, task_id: &str) -> Value {
-        contextunity_forge_mcp::forge_tasks::engine::blackboard::blackboard(
+        contextunity_acdd::acdd_tasks::engine::blackboard::blackboard(
             self.root(),
             serde_json::from_value(json!({"action":"read", "task_id":task_id})).unwrap(),
             "cli",

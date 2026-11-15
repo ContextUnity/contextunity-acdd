@@ -1,5 +1,5 @@
 use crate::acdd::{support::*, tasks::harness::TaskHarness};
-use forge_tasks::{
+use acdd_tasks::{
     engine::orchestrator::{task_runner::TaskRunOptions, waves::MilestoneRunOptions},
     tasks::profile::GateDef,
 };
@@ -16,12 +16,12 @@ pub(super) fn selected_settings(
     config: &str,
     profile: &str,
     database: &str,
-) -> forge_tasks::tasks::configuration::InvocationSettings {
-    forge_tasks::tasks::configuration::InvocationSettings::new(
+) -> acdd_tasks::tasks::configuration::InvocationSettings {
+    acdd_tasks::tasks::configuration::InvocationSettings::new(
         root.to_owned(),
         Some(root.join(config)),
         std::sync::Arc::new(
-            forge_tasks::tasks::profile::validate_profile_document(
+            acdd_tasks::tasks::profile::validate_profile_document(
                 &fs::read_to_string(root.join(profile)).unwrap(),
             )
             .unwrap(),
@@ -78,7 +78,7 @@ impl WaveHarness {
                 .as_nanos()
         ));
         match profile.commands.get_mut("check_full_repo") {
-            Some(forge_tasks::tasks::profile::CommandDef::Detailed { command, .. }) => {
+            Some(acdd_tasks::tasks::profile::CommandDef::Detailed { command, .. }) => {
                 command.push_str(&format!(
                     " && printf verified > '{}'",
                     verification_marker.display()
@@ -99,7 +99,7 @@ impl WaveHarness {
                     env!("CARGO_MANIFEST_DIR"),
                     "/tests/acdd/orchestrator/lifecycle/role_fixture.py"
                 )),
-                quote(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+                quote(env!("CARGO_BIN_EXE_acdd"))
             ));
         }
         profile.roles.insert("wave_role".into(), serde_json::from_value(json!({"runner":format!("python3 {} '{{prompt}}'", quote(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/acdd/fixtures/workflows/wave-role.py"))),"guidance":"Exercise the real task gate protocol."})).unwrap());
@@ -121,8 +121,8 @@ impl WaveHarness {
         let mut verify = profile.find_gate("verify").unwrap().clone();
         verify.role = None;
         verify.command = Some("check_full_repo".into());
-        verify.proof = forge_tasks::tasks::profile::ProofDef::Kind(
-            forge_tasks::tasks::profile::ProofKind::Command,
+        verify.proof = acdd_tasks::tasks::profile::ProofDef::Kind(
+            acdd_tasks::tasks::profile::ProofKind::Command,
         );
         let verify_again: GateDef = serde_json::from_value(
             json!({"id":"verify_again","command":"rust-check-and-test","proof":"command"}),
@@ -165,7 +165,7 @@ impl WaveHarness {
             Some("builder"),
             "the wave fixture keeps the inherited builder role when it binds a command"
         );
-        fs::create_dir_all(task.root().join(".forge/lifecycle")).unwrap();
+        fs::create_dir_all(task.root().join(".acdd/lifecycle")).unwrap();
         fs::write(task.root().join("src/second.rs"), "pub fn second() {}\n").unwrap();
         // Inputs needed by isolated child worktrees must be in their shared base.
         for args in [
@@ -199,26 +199,26 @@ impl WaveHarness {
         self.task.root()
     }
 
-    pub(super) fn read_profile(&self) -> forge_tasks::tasks::profile::GateProfile {
-        let path = self.root().join(".forge/acdd/profile.yaml");
-        forge_tasks::tasks::profile::validate_profile_document(&fs::read_to_string(&path).unwrap())
+    pub(super) fn read_profile(&self) -> acdd_tasks::tasks::profile::GateProfile {
+        let path = self.root().join(".acdd/profile.yaml");
+        acdd_tasks::tasks::profile::validate_profile_document(&fs::read_to_string(&path).unwrap())
             .unwrap()
     }
 
     pub(super) fn commit_profile(
         &mut self,
-        profile: &forge_tasks::tasks::profile::GateProfile,
+        profile: &acdd_tasks::tasks::profile::GateProfile,
         message: &str,
     ) {
         profile.validate().unwrap();
-        let path = self.root().join(".forge/acdd/profile.yaml");
+        let path = self.root().join(".acdd/profile.yaml");
         fs::write(
             path,
             format!("inherit: none\n{}", serde_yaml::to_string(profile).unwrap()),
         )
         .unwrap();
         for args in [
-            vec!["add", "-f", ".forge/acdd/profile.yaml"],
+            vec!["add", "-f", ".acdd/profile.yaml"],
             vec!["commit", "-m", message],
         ] {
             assert!(git_command(self.root(), &args).status().unwrap().success());
@@ -227,8 +227,8 @@ impl WaveHarness {
     }
 
     pub fn with_blueprint_synthesis_root_gates(&mut self) {
-        let path = self.root().join(".forge/acdd/profile.yaml");
-        let mut profile = forge_tasks::tasks::profile::validate_profile_document(
+        let path = self.root().join(".acdd/profile.yaml");
+        let mut profile = acdd_tasks::tasks::profile::validate_profile_document(
             &fs::read_to_string(&path).unwrap(),
         )
         .unwrap();
@@ -279,14 +279,14 @@ impl WaveHarness {
     }
 
     pub fn pre_task_checks(&mut self, stop: bool) {
-        let path = self.root().join(".forge/acdd/profile.yaml");
-        let mut profile = forge_tasks::tasks::profile::validate_profile_document(
+        let path = self.root().join(".acdd/profile.yaml");
+        let mut profile = acdd_tasks::tasks::profile::validate_profile_document(
             &fs::read_to_string(&path).unwrap(),
         )
         .unwrap();
         profile.commands.insert(
             "preflight".into(),
-            serde_json::from_value(json!({"command": "printf seen >> .forge/preflight.log", "output": {"require_counts": false}})).unwrap(),
+            serde_json::from_value(json!({"command": "printf seen >> .acdd/preflight.log", "output": {"require_counts": false}})).unwrap(),
         );
         profile.gates.insert(
             0,
@@ -296,7 +296,7 @@ impl WaveHarness {
         if stop {
             profile.commands.insert(
                 "stop-before-tasks".into(),
-                forge_tasks::tasks::profile::CommandDef::Script("exit 31".into()),
+                acdd_tasks::tasks::profile::CommandDef::Script("exit 31".into()),
             );
             profile.gates.insert(
                 1,
@@ -311,14 +311,14 @@ impl WaveHarness {
 
     pub fn partial_pre_task_checks(&mut self, retry: bool) {
         self.pre_task_checks(true);
-        let path = self.root().join(".forge/acdd/profile.yaml");
-        let mut profile = forge_tasks::tasks::profile::validate_profile_document(
+        let path = self.root().join(".acdd/profile.yaml");
+        let mut profile = acdd_tasks::tasks::profile::validate_profile_document(
             &fs::read_to_string(&path).unwrap(),
         )
         .unwrap();
-        let mut command = "printf seen >> .forge/second-preflight.log; if [ ! -e .forge/preflight-mutation-done ]; then printf '\\n// initial pre-task output\\n' >> src/lib.rs; touch .forge/preflight-mutation-done; fi".to_owned();
+        let mut command = "printf seen >> .acdd/second-preflight.log; if [ ! -e .acdd/preflight-mutation-done ]; then printf '\\n// initial pre-task output\\n' >> src/lib.rs; touch .acdd/preflight-mutation-done; fi".to_owned();
         if retry {
-            command.push_str("; if [ ! -e .forge/preflight-retry-done ]; then touch .forge/preflight-retry-done; exit 17; fi");
+            command.push_str("; if [ ! -e .acdd/preflight-retry-done ]; then touch .acdd/preflight-retry-done; exit 17; fi");
             let stop = profile
                 .gates
                 .iter_mut()
@@ -347,14 +347,14 @@ impl Drop for WaveHarness {
 
 #[test]
 fn malformed_blueprint_guidance_cannot_be_repaired_by_role_fixture() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let h = WaveHarness::with_blueprint_gate(true);
     for marker in [
         "corrupt-blueprint-missing",
         "corrupt-blueprint-tasks",
         "corrupt-blueprint-nested",
     ] {
-        fs::write(h.root().join(".forge").join(marker), "").unwrap();
+        fs::write(h.root().join(".acdd").join(marker), "").unwrap();
         let result = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {});
         assert!(result.is_err(), "{marker}: malformed guidance must fail");
         let passes: i64 = h.task.store.connection.query_row(
@@ -362,6 +362,6 @@ fn malformed_blueprint_guidance_cannot_be_repaired_by_role_fixture() {
             [], |row| row.get(0),
         ).unwrap();
         assert_eq!(passes, 0, "{marker}: no malformed blueprint may pass");
-        fs::remove_file(h.root().join(".forge").join(marker)).unwrap();
+        fs::remove_file(h.root().join(".acdd").join(marker)).unwrap();
     }
 }

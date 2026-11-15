@@ -31,9 +31,8 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
         .unwrap();
     assert_eq!(enrolled.claim_revision, still_claimed.claim_revision);
     assert_eq!(enrolled.worker_id, still_claimed.worker_id);
-    let database = fixture.root.root().join(".forge/tasks.sqlite");
-    let writer =
-        contextunity_forge_mcp::db::tasks_store::recovery::lock_database(&database).unwrap();
+    let database = fixture.root.root().join(".acdd/tasks.sqlite");
+    let writer = contextunity_acdd::db::tasks_store::recovery::lock_database(&database).unwrap();
     let manifest = fixture.root.root().join("docs/milestones/010-test.md");
     let original = std::fs::read_to_string(&manifest).unwrap();
     std::fs::write(
@@ -64,11 +63,9 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
     let task_id = fixture.id;
     let task_id = &task_id;
     let checkpoint_ref = format!("refs/forge/state/forge-mcp/{}", task_id.replace(':', "/"));
-    let checkpoint = contextunity_forge_mcp::db::tasks_store::recovery::read_checkpoint(
-        root.root(),
-        &checkpoint_ref,
-    )
-    .unwrap();
+    let checkpoint =
+        contextunity_acdd::db::tasks_store::recovery::read_checkpoint(root.root(), &checkpoint_ref)
+            .unwrap();
     let before = tasks::store(root.root())
         .unwrap()
         .inspect_details(task_id)
@@ -112,7 +109,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
     ] {
         let mut state = serde_json::to_value(&checkpoint).unwrap();
         state[field] = replacement;
-        let mut mutation = contextunity_forge_mcp::core::git::git_checkpoint(
+        let mut mutation = contextunity_acdd::core::git::git_checkpoint(
             root.root(),
             &checkpoint_ref,
             &serde_json::to_vec(&state).unwrap(),
@@ -121,7 +118,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
         .unwrap();
         if field == "intent" {
             assert!(
-                contextunity_forge_mcp::engine::milestones::show(root.root(), "m-test", true)
+                contextunity_acdd::engine::milestones::show(root.root(), "m-test", true)
                     .unwrap_err()
                     .to_string()
                     .contains("TASK_CHECKPOINT_PENDING")
@@ -177,7 +174,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
                     "token" => value["intent"] = json!("invalid-token"),
                     _ => unreachable!(),
                 }
-                let corrupt_tip = contextunity_forge_mcp::core::git::git_checkpoint(
+                let corrupt_tip = contextunity_acdd::core::git::git_checkpoint(
                     root.root(),
                     &checkpoint_ref,
                     &serde_json::to_vec(&value).unwrap(),
@@ -202,7 +199,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
             }
             let peer_ref = format!("{}/second", checkpoint_ref.rsplit_once('/').unwrap().0);
             let peer_keeper = TaskHarness::revision_text(root.root(), &peer_ref).unwrap();
-            let peer = contextunity_forge_mcp::db::tasks_store::recovery::read_checkpoint(
+            let peer = contextunity_acdd::db::tasks_store::recovery::read_checkpoint(
                 root.root(),
                 &peer_ref,
             )
@@ -216,7 +213,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
                 )
                 .status
                 .success());
-                let first_tip = contextunity_forge_mcp::core::git::git_checkpoint(
+                let first_tip = contextunity_acdd::core::git::git_checkpoint(
                     root.root(),
                     &checkpoint_ref,
                     &serde_json::to_vec(&genuine).unwrap(),
@@ -231,7 +228,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
                 } else {
                     value["cohort_id"] = json!("foreign-cohort");
                 }
-                let peer_tip = contextunity_forge_mcp::core::git::git_checkpoint(
+                let peer_tip = contextunity_acdd::core::git::git_checkpoint(
                     root.root(),
                     &peer_ref,
                     &serde_json::to_vec(&value).unwrap(),
@@ -266,7 +263,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
             )
             .status
             .success());
-            mutation = contextunity_forge_mcp::core::git::git_checkpoint(
+            mutation = contextunity_acdd::core::git::git_checkpoint(
                 root.root(),
                 &checkpoint_ref,
                 &serde_json::to_vec(&state).unwrap(),
@@ -274,7 +271,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
             )
             .unwrap();
         }
-        let database = root.root().join(".forge/tasks.sqlite");
+        let database = root.root().join(".acdd/tasks.sqlite");
         let paths = [
             database.clone(),
             std::path::PathBuf::from(format!("{}-wal", database.display())),
@@ -342,7 +339,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
         obsolete[field] = json!([]);
     }
     obsolete["cohort_id"] = json!("");
-    contextunity_forge_mcp::core::git::git_checkpoint(
+    contextunity_acdd::core::git::git_checkpoint(
         root.root(),
         &obsolete_ref,
         &serde_json::to_vec(&obsolete).unwrap(),
@@ -350,7 +347,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
     )
     .unwrap();
     obsolete["intent"] = json!("2-2");
-    let ignored_tip = contextunity_forge_mcp::core::git::git_checkpoint(
+    let ignored_tip = contextunity_acdd::core::git::git_checkpoint(
         root.root(),
         &obsolete_ref,
         &serde_json::to_vec(&obsolete).unwrap(),
@@ -363,7 +360,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
         ignored_tip,
         "obsolete intent must not be rewound"
     );
-    let ignored_tip = contextunity_forge_mcp::core::git::git_checkpoint(
+    let ignored_tip = contextunity_acdd::core::git::git_checkpoint(
         root.root(),
         &obsolete_ref,
         b"unsupported obsolete keeper bytes",
@@ -386,7 +383,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
         .is_ok(),
         "obsolete keeper must not fence managed reads"
     );
-    let database = root.root().join(".forge/tasks.sqlite");
+    let database = root.root().join(".acdd/tasks.sqlite");
     std::fs::remove_file(&database).unwrap();
     let result = recover().unwrap();
     assert_eq!(result["status"], "recovered");
@@ -616,7 +613,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
         let members = [task_id.as_str(), task_id_2.as_str(), third.as_str()];
         let before = members.map(|id| store.inspect_details(id).unwrap());
         drop(store);
-        std::fs::remove_file(root.root().join(".forge/tasks.sqlite")).unwrap();
+        std::fs::remove_file(root.root().join(".acdd/tasks.sqlite")).unwrap();
         recover().unwrap();
         let mut store = tasks::store(root.root()).unwrap();
         for (id, expected) in members.into_iter().zip(before) {

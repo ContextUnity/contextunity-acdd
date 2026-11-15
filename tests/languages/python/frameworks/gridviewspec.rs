@@ -2,7 +2,7 @@ use super::*;
 #[cfg(all(feature = "lang-typescript", feature = "lang-html"))]
 #[test]
 fn gridviewspec_pack_bindings_follow_unique_targets() {
-    use contextunity_forge_mcp::core::commitments;
+    use contextunity_acdd::core::commitments;
 
     let workspace = fixture_workspace(&[]);
     let families = [
@@ -228,7 +228,7 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
 
     // A workspace extension adds a project API without replacing the verified catalogue.
     let bundled: toml::Value = toml::from_str(include_str!(
-        "../../../../crates/forge-index/src/languages/manifests/gridviewspec.toml"
+        "../../../../crates/acdd-index/src/languages/manifests/gridviewspec.toml"
     ))
     .unwrap();
     assert_eq!(
@@ -247,15 +247,15 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
         persisted_coverage(&workspace.open(), "extension.py", 3, "self.expose").0,
         "unresolved"
     );
-    workspace.write(".forge/frameworks/gridviewspec.toml", "[[class_hierarchy_receivers]]\nbases=['fixture_grid.Widget']\nprovider='fixture_grid.Widget'\nmembers=['expose']\n");
-    workspace.delta(&[".forge/frameworks/gridviewspec.toml"]);
+    workspace.write(".acdd/frameworks/gridviewspec.toml", "[[class_hierarchy_receivers]]\nbases=['fixture_grid.Widget']\nprovider='fixture_grid.Widget'\nmembers=['expose']\n");
+    workspace.delta(&[".acdd/frameworks/gridviewspec.toml"]);
     assert_eq!(
         persisted_coverage(&workspace.open(), "extension.py", 3, "self.expose").0,
         "external"
     );
     observe(true, "resolved", true);
-    remove_fixture(&workspace, ".forge/frameworks/gridviewspec.toml");
-    workspace.delta(&[".forge/frameworks/gridviewspec.toml"]);
+    remove_fixture(&workspace, ".acdd/frameworks/gridviewspec.toml");
+    workspace.delta(&[".acdd/frameworks/gridviewspec.toml"]);
     assert_eq!(
         persisted_coverage(&workspace.open(), "extension.py", 3, "self.expose").0,
         "unresolved"
@@ -287,9 +287,9 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
     workspace.delta(&["provider.js"]);
     observe(true, "resolved", true);
 
-    let manifest = ".forge/frameworks/gridviewspec.toml";
+    let manifest = ".acdd/frameworks/gridviewspec.toml";
     let mut pack: toml::Value = toml::from_str(include_str!(
-        "../../../../crates/forge-index/src/languages/manifests/gridviewspec.toml"
+        "../../../../crates/acdd-index/src/languages/manifests/gridviewspec.toml"
     ))
     .unwrap();
     pack.as_table_mut()
@@ -415,12 +415,12 @@ fn gridviewspec_runtime_provider_scopes_renamed() {
 
 #[cfg(all(feature = "lang-typescript", feature = "lang-html"))]
 fn assert_gridviewspec_runtime_provider_scopes(renamed: bool) {
-    use contextunity_forge_mcp::core::commitments;
+    use contextunity_acdd::core::commitments;
 
     // Observed built-in runtime registrations live in a separately indexed
     // frontend project. Their installation-specific workspace identity is local data.
     let bundled: toml::Value = toml::from_str(include_str!(
-        "../../../../crates/forge-index/src/languages/manifests/gridviewspec.toml"
+        "../../../../crates/acdd-index/src/languages/manifests/gridviewspec.toml"
     ))
     .unwrap();
     let mut runtime_policy = bundled;
@@ -452,7 +452,7 @@ fn assert_gridviewspec_runtime_provider_scopes(renamed: bool) {
         }
     };
     scoped.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [.]\nlinked_workspaces:\n  - name: runtime\n    path: '{}'\n    roots: [.]\n",
             runtime.root().display()
@@ -475,7 +475,7 @@ fn assert_gridviewspec_runtime_provider_scopes(renamed: bool) {
     scoped.write("consumer.py", &consumer);
     runtime.write("src/consumer.py", &consumer);
     let policy = rewrite(&runtime_policy);
-    let local_manifest = ".forge/frameworks/gridviewspec.toml";
+    let local_manifest = ".acdd/frameworks/gridviewspec.toml";
     scoped.write(local_manifest, &policy);
     runtime.write(local_manifest, &policy);
     scoped.build();

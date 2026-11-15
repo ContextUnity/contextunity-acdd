@@ -2,19 +2,19 @@ use super::*;
 
 #[test]
 fn inherited_default_task_claims_validate_proofs_across_lifecycle() {
-    use contextunity_forge_mcp::db::tasks_store::GateTransition;
+    use contextunity_acdd::db::tasks_store::GateTransition;
 
     for seam in [false, true] {
         let workspace = TaskHarness::runner_workspace(DEFAULT_SEAM, "");
         let commands = FIXTURE_COMMANDS.split("gates:").next().unwrap();
         let profile = format!("inherit: default\n{commands}\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          command: test\n        - id: build\n          command: rust-check-and-test\n        - id: seam\n          gates:\n            - id: integrate\n              command: rust-check-and-test\n");
-        workspace.write(".forge/acdd/profile.yaml", &profile);
+        workspace.write(".acdd/profile.yaml", &profile);
         workspace.write("src/lib.rs", "pub fn work() {}\n");
         workspace.write(
-            "forge-mcp.yaml",
-            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+            "acdd.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
         );
-        workspace.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
+        workspace.write(".gitignore", CANONICAL_ACDD_GITIGNORE);
         let mut builder = MilestoneFixtureBuilder::new("m-default-parity")
             .status("active")
             .task("case", &["src/lib.rs"]);
@@ -28,9 +28,9 @@ fn inherited_default_task_claims_validate_proofs_across_lifecycle() {
             &workspace,
             &[
                 "src/lib.rs",
-                "forge-mcp.yaml",
+                "acdd.yaml",
                 ".gitignore",
-                ".forge/acdd/profile.yaml",
+                ".acdd/profile.yaml",
                 path,
             ],
         );
@@ -74,7 +74,7 @@ fn inherited_default_task_claims_validate_proofs_across_lifecycle() {
             let profile = h.store.profile_for_task(&task).unwrap();
             let gate = profile.by_stage(&task.stage).unwrap();
             let expected =
-                contextunity_forge_mcp::core::tasks::gates::proof_template(gate, &profile).unwrap();
+                contextunity_acdd::core::tasks::gates::proof_template(gate, &profile).unwrap();
             assert_eq!(
                 claim["workflow_guidance"]["expected_evidence_template"]["proof"], expected,
                 "{stage}: claim proof template must match the resolved gate projection"
@@ -137,7 +137,7 @@ fn inherited_default_task_claims_validate_proofs_across_lifecycle() {
             h.submit_evidence(&evidence)
                 .unwrap_or_else(|error| panic!("{stage}: {error:#}"));
             if *stage == "contract" {
-                workspace.write(".forge/runner_fixture_green", "");
+                workspace.write(".acdd/runner_fixture_green", "");
             }
         }
     }
@@ -193,18 +193,12 @@ gates:
     let workspace = TaskHarness::workspace();
     workspace.write("src/lib.rs", "pub fn schema_gate() {}\n");
     workspace.write(
-        "forge-mcp.yaml",
-        "tasks_db: .forge/tasks.sqlite\nacdd_profile: custom/profile.yaml\n",
+        "acdd.yaml",
+        "tasks_db: .acdd/tasks.sqlite\nacdd_profile: custom/profile.yaml\n",
     );
-    workspace.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
-    workspace.write(
-        "AGENTS.md",
-        "# Task instructions\nLoad the contextunity-forge skill.\n",
-    );
-    workspace.write(
-        ".agents/skills/contextunity-forge/SKILL.md",
-        "# ContextUnity Forge\n",
-    );
+    workspace.write(".gitignore", CANONICAL_ACDD_GITIGNORE);
+    workspace.write("AGENTS.md", "# Task instructions\nLoad the acdd skill.\n");
+    workspace.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
     workspace.write("custom/profile.yaml", PROFILE);
     let manifest = MilestoneFixtureBuilder::new("m-scheme")
         .status("active")
@@ -379,10 +373,10 @@ gates:
     let workspace = TaskHarness::workspace();
     workspace.write("src/lib.rs", "pub fn named_schema_gate() {}\n");
     workspace.write(
-        "forge-mcp.yaml",
-        "tasks_db: .forge/tasks.sqlite\nacdd_profile: custom/profile.yaml\n",
+        "acdd.yaml",
+        "tasks_db: .acdd/tasks.sqlite\nacdd_profile: custom/profile.yaml\n",
     );
-    workspace.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
+    workspace.write(".gitignore", CANONICAL_ACDD_GITIGNORE);
     workspace.write("custom/profile.yaml", PROFILE);
     let manifest = MilestoneFixtureBuilder::new("m-named-schema")
         .status("active")
@@ -448,7 +442,7 @@ gates:
     proof: design
 "#,
     );
-    contextunity_forge_mcp::forge_tasks::engine::orchestrator::workflow::run_standalone_workflow(
+    contextunity_acdd::acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow(
         workspace.root(),
         std::path::Path::new("docs/workflows/named.yaml"),
         None,
@@ -499,11 +493,11 @@ fn claim_and_root_role_agree_for_configured_proof_shapes() {
     ];
     let workspace = TaskHarness::workspace();
     workspace.write("src/lib.rs", "pub fn work() {}\n");
-    workspace.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
+    workspace.write(".gitignore", CANONICAL_ACDD_GITIGNORE);
     for (name, proof_definition, catalog, expected) in cases {
         workspace.write(
-            "forge-mcp.yaml",
-            &format!("tasks_db: .forge/tasks-{name}.sqlite\nacdd_profile: custom/profile.yaml\n"),
+            "acdd.yaml",
+            &format!("tasks_db: .acdd/tasks-{name}.sqlite\nacdd_profile: custom/profile.yaml\n"),
         );
         let fixture = match name {
             "contract" => json!({
@@ -590,9 +584,12 @@ print(json.dumps({'gate': context['gate'], 'session_id': context['session_id'], 
             format!("version: 2\ninherit: none\nsave: none\n{common}gates:\n  - id: contract\n    role: builder\n{proof_definition}")
         };
         workspace.write("docs/workflows/parity.yaml", &workflow);
-        contextunity_forge_mcp::forge_tasks::engine::orchestrator::workflow::run_standalone_workflow(
-            workspace.root(), std::path::Path::new("docs/workflows/parity.yaml"), None,
-        ).unwrap_or_else(|error| panic!("{name}: {error:#}"));
+        contextunity_acdd::acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow(
+            workspace.root(),
+            std::path::Path::new("docs/workflows/parity.yaml"),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{name}: {error:#}"));
         let role_proof: Value = serde_json::from_str(
             &std::fs::read_to_string(workspace.root().join("role-proof.json")).unwrap(),
         )
@@ -605,8 +602,8 @@ print(json.dumps({'gate': context['gate'], 'session_id': context['session_id'], 
 fn inline_role_mode_adapts_guidance_text() {
     let root = acdd_workspace(DEFAULT_SEAM, "");
     root.write(
-        "forge-mcp.yaml",
-        "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/AGENTS.md\nacdd_profile: custom_profile.yaml\n",
+        "acdd.yaml",
+        "tasks_db: .acdd/tasks.sqlite\nagents_guidance: docs/AGENTS.md\nacdd_profile: custom_profile.yaml\n",
     );
     root.write(
         "docs/AGENTS.md",
@@ -661,7 +658,7 @@ scope:
 "#;
     root.write("docs/milestones/010-inline.md", milestone_content);
 
-    let sync_res = contextunity_forge_mcp::engine::tasks::manage(
+    let sync_res = contextunity_acdd::engine::tasks::manage(
         root.root(),
         serde_json::from_value(json!({
             "action": "sync",
@@ -672,7 +669,7 @@ scope:
     .unwrap();
     let task_id = sync_res["tasks"][0]["task_id"].as_str().unwrap();
 
-    let inspected = contextunity_forge_mcp::engine::tasks::manage(
+    let inspected = contextunity_acdd::engine::tasks::manage(
         root.root(),
         serde_json::from_value(json!({
             "action": "inspect",

@@ -24,7 +24,7 @@ All benchmark runs are driven by declarative JSON profiles located in `benchmark
 
 ## Path & Workspace Resolution
 
-- Profiles configure `workspace_root` as a path relative to the Forge repository root (e.g. `"../../worktrees/commerce-release-update"`).
+- Profiles configure `workspace_root` as a path relative to the ContextUnity ACDD repository root (e.g. `"../../worktrees/commerce-release-update"`).
 - Profile loader (`benchmarks/benchmark_profile.py`) automatically resolves relative workspace paths against the repository root.
 - Never hardcode user-specific absolute filesystem paths in profiles or scripts.
 
@@ -34,8 +34,8 @@ All benchmark runs are driven by declarative JSON profiles located in `benchmark
 - `benchmarks/benchmark_profile.py`: Profile loader and workspace snapshot isolation logic.
 - `benchmarks/mcp_tool_comparison_benchmark.py`: Measures tool latency, RSS/HWM memory, and CPU utilization across MCP servers.
 - `benchmarks/mcp_tool_quality_benchmark.py`: Evaluates tool answer completeness and schema compliance.
-- `benchmarks/mcp_adapter_single_load.py`: Linux inotify probe verifying that adapter configurations (`forge-mcp.yaml`) are not redundantly re-read on every request.
-- `benchmarks/cold_test_coverage_benchmark.py`: Sequentially compares cold builds and graph coverage from fresh temporary databases while honoring the selected workspace's `forge-mcp.yaml` and linked workspaces.
+- `benchmarks/mcp_adapter_single_load.py`: Linux inotify probe verifying that adapter configurations (`acdd.yaml`) are not redundantly re-read on every request.
+- `benchmarks/cold_test_coverage_benchmark.py`: Sequentially compares cold builds and graph coverage from fresh temporary databases while honoring the selected workspace's `acdd.yaml` and linked workspaces.
 
 ## Host Performance Profile Precondition
 

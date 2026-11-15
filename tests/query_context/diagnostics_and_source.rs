@@ -343,14 +343,14 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     let mut client = in_process::McpTestHarness::new(&workspace).expect("MCP initialize");
     let mcp_first = client
         .payload(
-            "forge_read",
+            "acdd_read",
             serde_json::json!({"selector":"selected","max_body_lines":35,"format":"json"}),
         )
         .expect("MCP tool should succeed");
     assert_eq!(mcp_first["source_preview"]["next_source_offset"], 35);
     let (_, inferred_response) = client
         .call(
-            "forge_read",
+            "acdd_read",
             serde_json::json!({
                 "selector":"selected",
                 "max_body_lines":35,
@@ -365,7 +365,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     );
     let resumed = client
         .payload(
-            "forge_read",
+            "acdd_read",
             serde_json::json!({
                 "selector":"selected",
                 "max_body_lines":35,
@@ -378,7 +378,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     let mut failures = Vec::new();
     let bounded_workspace = Workspace::new();
     bounded_workspace.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "roots: [.]\nresponse:\n  max_output_bytes: 4096\n  source_context:\n    max_body_lines: 16\n",
     );
     let bounded_body = (0..700)
@@ -404,7 +404,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
             arguments["format"] = serde_json::json!(format);
         }
         let (first_bytes, first_response) = bounded_client
-            .call("forge_read", arguments.clone())
+            .call("acdd_read", arguments.clone())
             .expect("MCP transport");
         if first_response["result"]["isError"] == true {
             failures.push(format!(
@@ -456,7 +456,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         let mut continuation = arguments;
         continuation["source_offset"] = serde_json::json!(cursor);
         let (_, missing_generation) = bounded_client
-            .call("forge_read", continuation.clone())
+            .call("acdd_read", continuation.clone())
             .expect("MCP transport");
         assert_eq!(missing_generation["result"]["isError"], true);
         let generation = if format.is_some() {
@@ -476,7 +476,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         };
         continuation["generation"] = generation;
         let (_, next_response) = bounded_client
-            .call("forge_read", continuation)
+            .call("acdd_read", continuation)
             .expect("MCP transport");
         if next_response["result"]["isError"] == true {
             failures.push(format!(
@@ -508,7 +508,7 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
 
     let line_workspace = Workspace::new();
     line_workspace.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "roots: [.]\nresponse:\n  max_output_bytes: 4096\n",
     );
     line_workspace.write(
@@ -518,14 +518,14 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     let mut line_client = in_process::McpTestHarness::new(&line_workspace).expect("MCP initialize");
     let first_line = line_client
         .payload(
-            "forge_read",
+            "acdd_read",
             serde_json::json!({"selector":"budget_line","leading_lines":0,"max_body_lines":1}),
         )
         .expect("MCP tool should succeed");
     for format in ["json", "markdown"] {
         let (bytes, response) = line_client
             .call(
-                "forge_read",
+                "acdd_read",
                 serde_json::json!({
                     "selector":"budget_line","leading_lines":0,"max_body_lines":1,
                     "source_offset":1,"generation":first_line["generation"],"format":format,
@@ -888,7 +888,7 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
         assert!(!next["languages"]["has_more"].as_bool().unwrap());
     }
 
-    use contextunity_forge_mcp::core::format::{self, OutputFormat};
+    use contextunity_acdd::core::format::{self, OutputFormat};
     let mut missing = Vec::new();
     // These are recorded resolver outcomes, not inferred labels or visible-page totals.
     for (unknown, external, health) in [(0, 0, "80.0%"), (0, 12, "80.0%"), (1, 12, "79.2%")] {
@@ -897,7 +897,7 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
         fixture.write("scope.py", &"# recorded reference\n".repeat(120));
         linked.write("linked_scope.py", "def linked_target(): pass\n");
         fixture.write(
-            "forge-mcp.yaml",
+            "acdd.yaml",
             &format!(
                 "roots: [.]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [.]\n",
                 linked.root().display()

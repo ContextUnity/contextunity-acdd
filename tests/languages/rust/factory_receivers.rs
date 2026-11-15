@@ -213,14 +213,14 @@ fn batch_seven<'a>(facts: &BatchFacts<'a>, collision: &Collision, name: &str, ta
         let facts = sources
             .iter()
             .map(|(path, source)| {
-                let parsed = contextunity_forge_mcp::engine::ast::extract(path, "rust", source)
+                let parsed = contextunity_acdd::engine::ast::extract(path, "rust", source)
                     .unwrap_or_else(|error| panic!("{path} (rust): {error}"));
                 ((*path).to_owned(), parsed)
             })
             .collect::<std::collections::BTreeMap<_, _>>();
         let registry_root = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
-        let registry = contextunity_forge_mcp::engine::languages::dependency_registry::DependencyRegistry::collect(registry_root);
-        let graph = contextunity_forge_mcp::engine::linker::link_with_registry(&facts, None, None, &registry);
+        let registry = contextunity_acdd::engine::languages::dependency_registry::DependencyRegistry::collect(registry_root);
+        let graph = contextunity_acdd::engine::linker::link_with_registry(&facts, None, None, &registry);
         LinkedCatalog { facts, graph }
     })
 }

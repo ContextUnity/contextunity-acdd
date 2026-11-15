@@ -262,7 +262,7 @@ pub(super) fn for_fixture_variant(
     if kind == OperationKind::NamedBinding {
         for pack in ["alpinejs", "gridviewspec"] {
             workspace.write(
-                format!(".forge/frameworks/{pack}.toml"),
+                format!(".acdd/frameworks/{pack}.toml"),
                 "enabled = false\nsyntax_rules = []\nsemantic_rules = []\n",
             );
         }
@@ -351,7 +351,7 @@ pub(super) fn for_fixture_variant(
         cold_references: ColdFilesystemReferenceCache::default(),
         case,
         rewrite,
-        manifest: ".forge/frameworks/finite.toml",
+        manifest: ".acdd/frameworks/finite.toml",
         label: format!("{name} renamed={renamed}"),
     };
     scenario(fixture);
@@ -381,7 +381,7 @@ pub(super) fn manifest_lifecycle(
         verify(phase, active, None);
     }
 
-    fixture.remove_input(".forge/frameworks/finite.toml");
+    fixture.remove_input(".acdd/frameworks/finite.toml");
     verify("manifest removed", false, None);
     fixture.apply_manifest(&fixture.case.pack);
     verify("manifest restored", true, None);
@@ -407,11 +407,11 @@ pub(super) fn rejected(
     for invalid in [unknown, boundary].into_iter().chain(additional_invalids) {
         fixture.install_manifest(&invalid);
         assert!(
-            contextunity_forge_mcp::engine::pipeline::build_with_cache_dir(
+            contextunity_acdd::engine::pipeline::build_with_cache_dir(
                 fixture.workspace.root(),
                 &fixture.workspace.db(),
                 None,
-                &fixture.workspace.path(".forge/extraction-cache"),
+                &fixture.workspace.path(".acdd/extraction-cache"),
             )
             .is_err(),
             "{phase}: unknown field or invalid boundary must fail closed"

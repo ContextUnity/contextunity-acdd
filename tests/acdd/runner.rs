@@ -4,21 +4,19 @@ pub(super) use super::command_gate_harness::output_spec;
 use super::command_gate_harness::{CommandGateHarness, S0_RUNNER, S0_RUNNER_COUNTS_ONLY};
 use super::support::fixture;
 use super::{mcp, support};
-use contextunity_forge_mcp::core::tasks::profile::{
+use acdd_tasks::tasks::profile::parse_profile;
+use contextunity_acdd::core::tasks::profile::{
     self, CommandDef, ExpectedFailure, PatternCommands, RejectRouting,
 };
-use contextunity_forge_mcp::db::tasks_store::{
-    ClaimBoundExecutionRun, GateExecutionTrace, TasksStore,
-};
-use contextunity_forge_mcp::engine::milestones::execute_command_gate;
-use contextunity_forge_mcp::engine::tasks::compile_evidence_envelope;
-use contextunity_forge_mcp::engine::tasks::evaluate_reject_routing;
-use contextunity_forge_mcp::engine::tasks::rebase_speculative_dependency;
-use contextunity_forge_mcp::engine::tasks::submit_zero_arg;
-use contextunity_forge_mcp::engine::tasks::telemetry_passport_note;
-use contextunity_forge_mcp::engine::tasks::verify_red_to_green;
-use contextunity_forge_mcp::engine::tasks::Action;
-use forge_tasks::tasks::profile::parse_profile;
+use contextunity_acdd::db::tasks_store::{ClaimBoundExecutionRun, GateExecutionTrace, TasksStore};
+use contextunity_acdd::engine::milestones::execute_command_gate;
+use contextunity_acdd::engine::tasks::compile_evidence_envelope;
+use contextunity_acdd::engine::tasks::evaluate_reject_routing;
+use contextunity_acdd::engine::tasks::rebase_speculative_dependency;
+use contextunity_acdd::engine::tasks::submit_zero_arg;
+use contextunity_acdd::engine::tasks::telemetry_passport_note;
+use contextunity_acdd::engine::tasks::verify_red_to_green;
+use contextunity_acdd::engine::tasks::Action;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -58,7 +56,7 @@ fn unobserved_task_evidence(
     store: &TasksStore,
     task_id: &str,
 ) -> (
-    contextunity_forge_mcp::db::tasks_store::Task,
+    contextunity_acdd::db::tasks_store::Task,
     super::support::Evidence,
 ) {
     let task = store.inspect(task_id).unwrap();
@@ -67,7 +65,7 @@ fn unobserved_task_evidence(
 }
 fn write_cargo_seam_project(root: &crate::common::Workspace) {
     root.write("Cargo.toml", "[package]\nname = \"seam-proof-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[[test]]\nname = \"observed\"\npath = \"tests/runner_fixture.rs\"\n");
-    root.write(".gitignore", ".forge/\ntarget/\nCargo.lock\n");
+    root.write(".gitignore", ".acdd/\ntarget/\nCargo.lock\n");
 }
 
 fn write_member_seam_project(root: &crate::common::Workspace) {
@@ -80,7 +78,7 @@ fn write_member_seam_project(root: &crate::common::Workspace) {
         "member/tests/runner_fixture.rs",
         "#[test] fn seam_test() {}\n",
     );
-    root.write(".gitignore", ".forge/\ntarget/\nCargo.lock\n");
+    root.write(".gitignore", ".acdd/\ntarget/\nCargo.lock\n");
 }
 fn latest_run(
     store: &TasksStore,

@@ -1,4 +1,4 @@
-#[path = "crates/forge-index/build_manifests.rs"]
+#[path = "crates/acdd-index/build_manifests.rs"]
 mod build_manifests;
 
 fn main() {
@@ -20,7 +20,7 @@ fn main() {
 
 fn generate_profiles() {
     use sha2::Digest;
-    let directory = std::path::Path::new("crates/forge-index/src/languages");
+    let directory = std::path::Path::new("crates/acdd-index/src/languages");
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo manifest");
     println!("cargo:rerun-if-changed={}", directory.display());
     let mut profiles = Vec::new();
@@ -138,7 +138,7 @@ fn generate_profiles() {
         digest.update(contents);
     }
     println!(
-        "cargo:rustc-env=FORGE_LANGUAGE_PROFILE_DIGEST={:x}",
+        "cargo:rustc-env=ACDD_LANGUAGE_PROFILE_DIGEST={:x}",
         digest.finalize()
     );
     let mut source = String::new();
@@ -171,7 +171,7 @@ fn generate_profiles() {
 }
 
 fn generate_framework_manifests() -> Vec<std::path::PathBuf> {
-    build_manifests::generate_framework_manifests("crates/forge-index/src/languages/manifests")
+    build_manifests::generate_framework_manifests("crates/acdd-index/src/languages/manifests")
 }
 
 fn manifest_declares_feature(manifest: &str, feature: &str) -> bool {

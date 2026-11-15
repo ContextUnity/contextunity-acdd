@@ -1,7 +1,7 @@
 #![cfg(feature = "lang-yaml")]
 
 use crate::common::Workspace;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     db::{reader, writer},
     engine::scanner,
     mcp::server::Server,
@@ -13,8 +13,8 @@ use std::{fs, path::PathBuf};
 fn response_only_default_config_is_outside_source_inventory() {
     let workspace = Workspace::new();
     workspace.write("settings.yaml", "service: enabled\n");
-    workspace.write("nested/forge-mcp.yaml", "service: nested\n");
-    let database = workspace.path(".forge/index.sqlite");
+    workspace.write("nested/acdd.yaml", "service: nested\n");
+    let database = workspace.path(".acdd/index.sqlite");
     let server = Server::new(workspace.root().to_path_buf(), database.clone());
     let read = || {
         server.read(|conn| Ok(json!({"files": reader::rows(conn, "SELECT path FROM files ORDER BY path", &[], 20)?}))).unwrap()
@@ -23,9 +23,9 @@ fn response_only_default_config_is_outside_source_inventory() {
     let before_bytes = fs::read(&database).unwrap();
     for content in [Some("response: {page_size: 1}\n"), Some("{}\n"), None] {
         if let Some(content) = content {
-            workspace.write("forge-mcp.yaml", content);
+            workspace.write("acdd.yaml", content);
         } else {
-            fs::remove_file(workspace.path("forge-mcp.yaml")).unwrap();
+            fs::remove_file(workspace.path("acdd.yaml")).unwrap();
         }
         let current = read();
         assert_eq!(current["files"], before["files"]);
@@ -38,15 +38,33 @@ fn response_only_default_config_is_outside_source_inventory() {
     }
     assert_eq!(
         before["files"],
-        json!([{"path":"nested/forge-mcp.yaml"},{"path":"settings.yaml"}])
+        json!([{"path":"nested/acdd.yaml"},{"path":"settings.yaml"}])
     );
+}
+
+#[test]
+fn only_acdd_yaml_is_auto_discovered_as_adapter() {
+    let workspace = Workspace::new();
+    workspace.write("manuals/guide.md", "guide\n");
+    let default = scanner::load_adapter(workspace.root(), None).unwrap();
+    let config = "roots: [.]\ndocs: [manuals]\nignore: [custom-excluded]\n";
+    workspace.write("forge-mcp.yaml", config);
+    let legacy = scanner::load_adapter(workspace.root(), None).unwrap();
+    assert_eq!(legacy.roots, default.roots);
+    assert_eq!(legacy.ignored_names, default.ignored_names);
+    assert_eq!(legacy.digest, default.digest);
+    workspace.write("acdd.yaml", config);
+    let current = scanner::load_adapter(workspace.root(), None).unwrap();
+    assert!(current.roots.contains(&workspace.path("manuals")));
+    assert!(current.ignored_names.contains("custom-excluded"));
+    assert_ne!(current.digest, default.digest);
 }
 
 #[test]
 fn custom_adapter_exclusion_survives_delta_and_linked_configs_remain_sources() {
     let workspace = Workspace::new();
     let linked = Workspace::new();
-    linked.write("forge-mcp.yaml", "library: indexed\n");
+    linked.write("acdd.yaml", "library: indexed\n");
     workspace.write("outside.yaml", "outside: excluded\n");
     workspace.write("src/settings.yaml", "service: before\n");
     let config = workspace.path("src/custom.yaml");
@@ -54,7 +72,7 @@ fn custom_adapter_exclusion_survives_delta_and_linked_configs_remain_sources() {
         format!("roots: [src]\nresponse: {{page_size: {size}}}\nlinked_workspaces:\n  - name: library\n    path: {}\n", linked.root().display())
     };
     workspace.write("src/custom.yaml", &configuration(1));
-    let database = workspace.path(".forge/index.sqlite");
+    let database = workspace.path(".acdd/index.sqlite");
     writer::build(workspace.root(), &database, Some(&config)).unwrap();
     workspace.write("src/custom.yaml", &configuration(2));
     workspace.write("src/settings.yaml", "service: after\n");
@@ -65,7 +83,7 @@ fn custom_adapter_exclusion_survives_delta_and_linked_configs_remain_sources() {
     )
     .unwrap();
     assert_eq!(delta["changed_files"], 1, "{delta}");
-    let cold_path = workspace.path(".forge/cold.sqlite");
+    let cold_path = workspace.path(".acdd/cold.sqlite");
     writer::build(workspace.root(), &cold_path, Some(&config)).unwrap();
     let incremental = reader::open(&database, workspace.root()).unwrap();
     let cold = reader::open(&cold_path, workspace.root()).unwrap();
@@ -89,7 +107,7 @@ fn custom_adapter_exclusion_survives_delta_and_linked_configs_remain_sources() {
     .unwrap();
     assert_eq!(
         json!(paths),
-        json!([{"path":"[library]/forge-mcp.yaml"},{"path":"src/settings.yaml"}])
+        json!([{"path":"[library]/acdd.yaml"},{"path":"src/settings.yaml"}])
     );
     let adapter = scanner::load_adapter(workspace.root(), Some(&config)).unwrap();
     assert_eq!(adapter.adapter_path, Some(config.canonicalize().unwrap()));
@@ -99,9 +117,9 @@ fn custom_adapter_exclusion_survives_delta_and_linked_configs_remain_sources() {
 #[test]
 fn delta_framework_manifest_parse_error_fails_closed_before_publication() {
     let workspace = Workspace::new();
-    workspace.write("forge-mcp.yaml", "roots: [src]\n");
+    workspace.write("acdd.yaml", "roots: [src]\n");
     workspace.write("src/main.rs", "pub fn previous() -> u32 { 1 }\n");
-    let database = workspace.path(".forge/index.sqlite");
+    let database = workspace.path(".acdd/index.sqlite");
     writer::build(workspace.root(), &database, None).unwrap();
 
     let indexed_source_state = |conn: &rusqlite::Connection| {
@@ -148,7 +166,7 @@ fn delta_framework_manifest_parse_error_fails_closed_before_publication() {
         assert!(source_state.3.iter().any(|name| name == "previous"));
         assert_eq!(
             conn.query_row(
-                "SELECT count(*) FROM files WHERE path='.forge/frameworks/acme.toml'",
+                "SELECT count(*) FROM files WHERE path='.acdd/frameworks/acme.toml'",
                 [],
                 |row| row.get::<_, i64>(0),
             )
@@ -160,18 +178,18 @@ fn delta_framework_manifest_parse_error_fails_closed_before_publication() {
     };
     let before_bytes = fs::read(&database).unwrap();
 
-    workspace.write(".forge/frameworks/acme.toml", "receivers = [\n");
+    workspace.write(".acdd/frameworks/acme.toml", "receivers = [\n");
     workspace.write_bytes("src/main.rs", b"\xff");
     let result = writer::delta(workspace.root(), &database, &[PathBuf::from("src/main.rs")]);
     let error = match result {
         Err(error) => error,
         Ok(summary) => panic!(
-            "delta published a changed source despite malformed .forge/frameworks/acme.toml: {summary}"
+            "delta published a changed source despite malformed .acdd/frameworks/acme.toml: {summary}"
         ),
     };
     let error_text = format!("{error:#}");
     assert!(
-        error_text.contains(".forge/frameworks/acme.toml"),
+        error_text.contains(".acdd/frameworks/acme.toml"),
         "the error must identify the malformed framework manifest: {error_text}"
     );
 

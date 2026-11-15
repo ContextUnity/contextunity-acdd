@@ -461,7 +461,7 @@ fn two_phase_semantic_facts_reach_persisted_consumers_and_follow_provider_deltas
             )],
             "persisted file edge at app/pages.py"
         );
-        const REPLACE: &str = ".forge/frameworks/django.toml";
+        const REPLACE: &str = ".acdd/frameworks/django.toml";
         workspace.write(REPLACE, "replace=true\n");
         workspace.delta(&[REPLACE]);
         assert_complete_cold(&workspace);

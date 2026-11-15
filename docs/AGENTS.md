@@ -16,7 +16,7 @@ Preserve explicit validation boundaries and security checks.
 
 ## Canonical ownership
 
-Follow the documentation layers in the shared `contextunity-forge` skill.
+Follow the documentation layers in the shared `acdd` skill.
 Keep each contract on one page and link its consumers. Record accepted decisions in `adr/` under owner
 approval; delivery agents escalate decision changes to that process.
 
@@ -29,9 +29,9 @@ Keep connection steps in [MCP setup](reference/mcp-setup.md). Keep tool behavior
 
 When editing server instructions, tool descriptions, or input-schema text in `src/mcp/tools.rs`, assign each fact to one layer and match it to the handler before writing it. Update [MCP tools](reference/mcp-tools.md) in the same change when the contract changes.
 
-## Forge MCP indexing rules
+## ACDD MCP indexing rules
 
-Forge MCP parses documentation into searchable sections and links them directly
+ACDD MCP parses documentation into searchable sections and links them directly
 to code symbols in the SQLite code map. Follow these structural standards:
 
 1. **YAML frontmatter**:
@@ -42,10 +42,10 @@ to code symbols in the SQLite code map. Follow these structural standards:
    doc_type: architecture
    ---
    ```
-   Forge uses `doc_type` for filtered documentation search (`search_docs`).
+   ACDD uses `doc_type` for filtered documentation search (`search_docs`).
 
 2. **Heading chunking**:
-   Use clear second-level (`##`) and third-level (`###`) headings. Forge splits
+   Use clear second-level (`##`) and third-level (`###`) headings. ACDD splits
    documents at headings into indexed sections (`DocSection`). Each section forms
    an independent BM25 full-text search unit.
 
@@ -55,11 +55,11 @@ to code symbols in the SQLite code map. Follow these structural standards:
    declaration. Do not invent a qualified name or present an approximate symbol
    as a verified code claim. For example, this claim names a real declaration
    and explicitly selects its source file:
-   [`extract_with_details`](../crates/forge-index/src/docs.rs).
+   [`extract_with_details`](../crates/acdd-index/src/docs.rs).
    Ordinary inline code remains useful for commands, configuration keys, and
    other technical text; a code span alone does not certify that its contents
    match an indexed declaration.
-   - Forge resolves each code claim against eligible declarations. An explicit
+   - ACDD resolves each code claim against eligible declarations. An explicit
      normalized file target confines eligibility to that file; an unscoped claim
      is limited to the source document's workspace. Document, invariant, and
      component nodes do not verify code claims.
@@ -82,14 +82,14 @@ to code symbols in the SQLite code map. Follow these structural standards:
    > Invariant: Every reader holds the shared database snapshot lock while reading and rejects a result if the snapshot identity changes.
    ```
    Supported alert tags: `[!IMPORTANT]`, `[!WARNING]`, `[!NOTE]`.
-   Forge marks such a section with `is_invariant: true`; this section flag alone
+   ACDD marks such a section with `is_invariant: true`; this section flag alone
    does not create an invariant node or a `governs` edge. To declare a linked
    invariant, put its `INV-*` identifier and an exact code claim within the
    invariant node's line span. Use a source link to confine resolution when needed.
-   The declaration must resolve uniquely for Forge to
+   The declaration must resolve uniquely for ACDD to
    create a verified governance edge. This guide declares the resolver's actual
    priority rule:
-   - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [`document_symbol_candidates`](../crates/forge-index/src/linker/resolution/mod.rs).
+   - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [`document_symbol_candidates`](../crates/acdd-index/src/linker/resolution/mod.rs).
    The identifier remains documentation authority; the code link identifies
    the governed declaration. See [documentation queries](reference/mcp-tools.md#documentation-queries)
    for the distinction between invariant discovery and verified governance.
@@ -129,7 +129,7 @@ branch merges. Obtain explicit approval for publication.
 ## Shared skill and example maintenance
 
 When modifying architecture, workflows, declarative profiles, schemas, CLI commands, or standing Git permissions:
-- Update the repository skill [`skills/contextunity-forge/SKILL.md`](../skills/contextunity-forge/SKILL.md) and reference examples under [`skills/contextunity-forge/references/`](../skills/contextunity-forge/references/) (`acdd_profile.yaml.example`, `agents.md.example`, `forge-mcp.yaml.example`, `gitignore.example`) to match active system behavior and schemas.
+- Update the repository skill [`skills/acdd/SKILL.md`](../skills/acdd/SKILL.md) and reference examples under [`skills/acdd/references/`](../skills/acdd/references/) (`acdd_profile.yaml.example`, `agents.md.example`, `acdd.yaml.example`, `gitignore.example`) to match active system behavior and schemas.
 - Ensure all example configurations parse cleanly and adhere to strict validation invariants (e.g. `deny_unknown_fields`, valid `guidance` keys, and accurate model specs).
 - Do not write to external agent directories (`~/.agents/`) directly during task execution; external installation and distribution is handled via installer workflows and dedicated distribution commands.
 

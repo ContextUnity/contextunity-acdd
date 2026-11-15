@@ -1,4 +1,4 @@
-use contextunity_forge_mcp::db::writer;
+use contextunity_acdd::db::writer;
 use serde_json::Value;
 use std::{
     fs,
@@ -80,9 +80,9 @@ impl BenchmarkWorkspace {
         fs::write(target, content).expect("could not write benchmark fixture");
     }
 
-    /// Returns the default Forge database path.
+    /// Returns the default ACDD database path.
     pub fn db(&self) -> PathBuf {
-        self.root.join(".forge/code-map.sqlite")
+        self.root.join(".acdd/code-map.sqlite")
     }
 
     /// Runs a cold build through the production writer.

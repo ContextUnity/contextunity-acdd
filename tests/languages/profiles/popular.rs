@@ -1,5 +1,5 @@
 use super::*;
-use contextunity_forge_mcp::db::reader;
+use contextunity_acdd::db::reader;
 
 const FIXTURES: &[(&str, &str, &str, i64)] = &[
     #[cfg(feature = "lang-java")]
@@ -235,11 +235,11 @@ fn popular_languages_preserve_calls_coverage_deltas_and_diagnostics() {
         w.build();
         let conn = w.open();
         assert_eq!(count(&conn, "SELECT count(*) FROM errors"), 0, "{language}");
-        let page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
-            &contextunity_forge_mcp::core::response::ResponsePolicy::default(),
+        let page = contextunity_acdd::core::response::QueryOptions::resolve(
+            &contextunity_acdd::core::response::ResponsePolicy::default(),
             Some(100),
             0,
-            Some(contextunity_forge_mcp::core::response::Detail::Full),
+            Some(contextunity_acdd::core::response::Detail::Full),
             None,
         )
         .unwrap();

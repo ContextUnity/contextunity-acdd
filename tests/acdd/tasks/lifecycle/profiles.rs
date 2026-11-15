@@ -117,7 +117,7 @@ fn profile_session_and_independence_paths_share_a_harness() {
     {
         assert_eq!(
             h.profile().unwrap().gates[0].proof.kind(),
-            Some(contextunity_forge_mcp::core::tasks::profile::ProofKind::None)
+            Some(contextunity_acdd::core::tasks::profile::ProofKind::None)
         );
         let gates = h.executable_gates().unwrap();
         assert_eq!(
@@ -233,7 +233,7 @@ fn profile_session_and_independence_paths_share_a_harness() {
     let mut h = in_memory_profile_harness();
     assert_eq!(
         h.profile().unwrap().gates[0].proof.kind(),
-        Some(contextunity_forge_mcp::core::tasks::profile::ProofKind::None)
+        Some(contextunity_acdd::core::tasks::profile::ProofKind::None)
     );
     {
         let builder_session = TaskHarness::session_for("builder");
@@ -322,7 +322,7 @@ fn profile_gates_fail_closed_and_resolve_qualified_stages() {
     }
 }
 
-fn conditional_first_profile() -> contextunity_forge_mcp::core::tasks::profile::GateProfile {
+fn conditional_first_profile() -> contextunity_acdd::core::tasks::profile::GateProfile {
     let mut profile = fixture_profile();
     profile.gates = serde_yaml::from_str(
         "- id: code_gate\n  role: builder\n  when: code\n  proof: none\n- id: docs_gate\n  role: builder\n  proof: none\n- id: finish\n  role: builder\n  proof: delivery\n  auto_commit: false\n",
@@ -533,14 +533,14 @@ fn single_direct_task_manifest(id: &str, task_ref: &str) -> String {
         .build()
 }
 
-fn profile_with_gates(gates: &str) -> contextunity_forge_mcp::core::tasks::profile::GateProfile {
+fn profile_with_gates(gates: &str) -> contextunity_acdd::core::tasks::profile::GateProfile {
     let mut profile = fixture_profile();
     profile.gates = serde_yaml::from_str(gates).unwrap();
     profile.validate().unwrap();
     profile
 }
 
-fn nested_independent_profile() -> contextunity_forge_mcp::core::tasks::profile::GateProfile {
+fn nested_independent_profile() -> contextunity_acdd::core::tasks::profile::GateProfile {
     let mut profile = fixture_profile();
     profile.gates = serde_yaml::from_str(
         "- id: a\n  gates:\n    - id: work\n      role: architect\n      proof: none\n- id: b\n  gates:\n    - id: work\n      role: builder\n      proof: none\n    - id: audit\n      role: builder\n      proof: review\n      independent_from: work\n      reject_to: work\n      contours: guidance.contours\n",
@@ -551,7 +551,7 @@ fn nested_independent_profile() -> contextunity_forge_mcp::core::tasks::profile:
 }
 
 fn in_memory_profile_harness() -> TaskHarness {
-    use contextunity_forge_mcp::core::tasks::profile::ProofKind;
+    use contextunity_acdd::core::tasks::profile::ProofKind;
 
     let manifest = MilestoneFixtureBuilder::new("m-memory-profile")
         .task("universal-task", &["src/"])

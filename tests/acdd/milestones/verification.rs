@@ -2,7 +2,7 @@ use super::super::snapshot;
 use super::*;
 
 fn check_integration_evidence_cases(scenarios: &[&str]) {
-    let scope = &["src/", "docs/guide.md", "scripts/tool.sh", "forge-mcp.yaml"];
+    let scope = &["src/", "docs/guide.md", "scripts/tool.sh", "acdd.yaml"];
     let source = MilestoneFixtureBuilder::new("m-final")
         .title("Final integration evidence")
         .task("first", scope)
@@ -14,15 +14,15 @@ fn check_integration_evidence_cases(scenarios: &[&str]) {
         milestone_id: "m-final",
         active_path: "docs/milestones/010-final.md",
         source: &source,
-        config: "roots: [src]\ntasks_db: .forge/tasks.sqlite\n",
+        config: "roots: [src]\ntasks_db: .acdd/tasks.sqlite\n",
         files: vec![
-            (".gitignore", ".forge/\n".into()),
+            (".gitignore", ".acdd/\n".into()),
             ("src/lib.rs", "pub fn work() -> u8 { 0 }\n".into()),
             ("src/obsolete.rs", "pub fn retained() {}\n".into()),
             ("docs/guide.md", "# Runtime guide\n".into()),
             ("scripts/tool.sh", "#!/bin/sh\nexit 0\n".into()),
         ],
-        seed_paths: &[".gitignore", "forge-mcp.yaml", "src", "docs", "scripts"],
+        seed_paths: &[".gitignore", "acdd.yaml", "src", "docs", "scripts"],
         commit_message: "admit final-evidence fixture",
         disable_git_maintenance: false,
         tasks: vec![
@@ -152,8 +152,8 @@ fn check_integration_evidence_cases(scenarios: &[&str]) {
                 .root
                 .write("docs/guide.md", "# Changed runtime contract\n"),
             "configuration" => fixture.root.write(
-                "forge-mcp.yaml",
-                "roots: [src, docs]\ntasks_db: .forge/tasks.sqlite\n",
+                "acdd.yaml",
+                "roots: [src, docs]\ntasks_db: .acdd/tasks.sqlite\n",
             ),
             "authority" => {
                 let doc = fixture.root.document(active);
@@ -225,22 +225,22 @@ fn check_integration_evidence_cases(scenarios: &[&str]) {
         ) {
             fixture
                 .root
-                .stage_paths(&["src", "docs", "scripts", "forge-mcp.yaml"]);
+                .stage_paths(&["src", "docs", "scripts", "acdd.yaml"]);
             fixture.root.commit_staged("post-review change");
         }
-        let file = fixture.root.path(".forge/integration-evidence.json");
+        let file = fixture.root.path(".acdd/integration-evidence.json");
         if scenario == "malformed-record" {
             fixture
                 .root
-                .write(".forge/integration-evidence.json", "{\"binding\":false}");
+                .write(".acdd/integration-evidence.json", "{\"binding\":false}");
         }
         let before = fixture
             .root
             .operation_state(&store, &state_files, state_tasks);
         let result = if matches!(scenario, "missing-record" | "malformed-record") {
-            contextunity_forge_mcp::cli::milestone::run(
+            contextunity_acdd::cli::milestone::run(
                 fixture.root.root(),
-                contextunity_forge_mcp::cli::milestone::MilestoneCommand::Handoff {
+                contextunity_acdd::cli::milestone::MilestoneCommand::Handoff {
                     id: "m-final".into(),
                     commit: None,
                     evidence_file: file,
@@ -346,7 +346,7 @@ fn milestone_verification_reports_registered_gate_outcomes_without_root_checkpoi
         )
         .task_target("Deliver a verified source change")
         .build();
-    root.write(".gitignore", ".forge/\n");
+    root.write(".gitignore", ".acdd/\n");
     root.write("docs/milestones/010-verification.md", &manifest);
     root.write("src/lib.rs", "pub fn value() -> u8 { 0 }\n");
     root.write(
@@ -363,7 +363,7 @@ fn milestone_verification_reports_registered_gate_outcomes_without_root_checkpoi
     );
     root.make_executable("skills/lean-ctx/scripts/install.sh");
     root.write(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         include_str!("../fixtures/milestones/verification_profile.yaml"),
     );
     let (milestone, store) = root.sync_document("docs/milestones/010-verification.md", &manifest);
@@ -371,7 +371,7 @@ fn milestone_verification_reports_registered_gate_outcomes_without_root_checkpoi
         &root,
         &[
             ".gitignore",
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "docs/milestones/010-verification.md",
             "src/lib.rs",
             "docs/reference/verification.md",
@@ -392,7 +392,7 @@ fn milestone_verification_reports_registered_gate_outcomes_without_root_checkpoi
     {
         if fail_check {
             snapshot.restore(&root);
-            root.write(".forge/fail-check", "fail\n");
+            root.write(".acdd/fail-check", "fail\n");
         }
         let store = root.store();
         let result = root
@@ -416,10 +416,7 @@ fn milestone_verification_reports_registered_gate_outcomes_without_root_checkpoi
 fn milestone_handoff_accepts_integration_evidence_for_cancelled_tasks_and_prunes_sqlite() {
     snapshot::assert_safe_git_environment();
     let root = MilestoneHarness::workspace(DEFAULT_SEAM, "");
-    root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\nmilestones: [docs/milestones]\n",
-    );
+    root.write("acdd.yaml", "roots: [src]\nmilestones: [docs/milestones]\n");
     root.write("src/lib.rs", "pub fn value() {}\n");
     let manifest = "docs/milestones/010-cancelled.md";
     let text = MilestoneFixtureBuilder::new("m-cancelled-root")
@@ -431,7 +428,7 @@ fn milestone_handoff_accepts_integration_evidence_for_cancelled_tasks_and_prunes
         .build();
     root.write(manifest, &text);
     root.write(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         include_str!("../fixtures/milestones/verification_profile.yaml"),
     );
     MilestoneHarness::git_at(root.root(), &["add", "-A"]).unwrap();

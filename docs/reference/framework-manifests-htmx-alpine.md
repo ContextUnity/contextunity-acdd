@@ -45,12 +45,12 @@ The pack's finite implicit-receiver table also classifies configured Alpine magi
 members such as `$root.querySelector` and `$el.addEventListener` as external
 runtime behavior when eligible. This classification supplies no local callback
 target. Ordinary local bindings and unsupported magic members retain their normal
-resolution guards. The [HTMX example](../../skills/contextunity-forge/references/frameworks/htmx.toml.example)
+resolution guards. The [HTMX example](../../skills/acdd/references/frameworks/htmx.toml.example)
 shows the complete request operation without duplicating the Alpine rules.
 
 ## Overrides and incremental indexing
 
-Use `.forge/frameworks/htmx.toml` or `.forge/frameworks/alpinejs.toml` for a
+Use `.acdd/frameworks/htmx.toml` or `.acdd/frameworks/alpinejs.toml` for a
 workspace-local override. The filename stem identifies the pack. Follow the
 [manifest merge and validation rules](framework-manifests.md) when extending or
 replacing rules. Removing an effective rule removes its semantic relations;

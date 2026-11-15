@@ -1,4 +1,4 @@
-//! ContextUnity Forge MCP code graph, persistence, language analysis, and tool APIs.
+//! ContextUnity ACDD code graph, persistence, language analysis, and tool APIs.
 #![warn(missing_docs)]
 
 /// Implements cli support.
@@ -12,9 +12,9 @@ pub mod engine;
 /// Implements mcp support.
 pub mod mcp;
 
-/// Re-exported forge-core crate.
-pub use forge_core;
-/// Re-exported forge-index crate.
-pub use forge_index;
-/// Re-exported forge-tasks crate.
-pub use forge_tasks;
+/// Re-exported acdd-core crate.
+pub use acdd_core;
+/// Re-exported acdd-index crate.
+pub use acdd_index;
+/// Re-exported acdd-tasks crate.
+pub use acdd_tasks;

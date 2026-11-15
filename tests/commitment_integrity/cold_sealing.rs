@@ -1,6 +1,6 @@
 use super::harness::*;
 use crate::common::Workspace;
-use contextunity_forge_mcp::engine::pipeline;
+use contextunity_acdd::engine::pipeline;
 use rusqlite::{ffi, Connection};
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -183,7 +183,7 @@ fn cold_disk_build_sealing_matches_serial_and_preserves_previous_generation() {
         .unwrap()
     };
 
-    let extraction_cache = workspace.path(".forge/extraction-cache-cold");
+    let extraction_cache = workspace.path(".acdd/extraction-cache-cold");
     let mut expected_disk_root = None;
     let mut expected_domains = None;
     let mut control_domain_workers = BTreeMap::new();

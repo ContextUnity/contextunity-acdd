@@ -1,7 +1,7 @@
 #![cfg(feature = "lang-python")]
 
 use crate::common::Workspace;
-use contextunity_forge_mcp::core::commitments;
+use contextunity_acdd::core::commitments;
 use rusqlite::Connection;
 fn rows(conn: &Connection, sql: &str) -> Vec<String> {
     conn.prepare(sql)

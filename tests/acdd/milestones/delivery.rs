@@ -1,5 +1,5 @@
 use super::*;
-use contextunity_forge_mcp::core::tasks::profile::ProofKind;
+use contextunity_acdd::core::tasks::profile::ProofKind;
 
 #[test]
 fn milestone_handoff_prunes_only_its_gate_telemetry_identity() {
@@ -97,8 +97,8 @@ fn manual_delivery_handoff_rewrites_markdown_receipt_to_landed_commit() {
     let root = MilestoneHarness::workspace(DEFAULT_SEAM, "");
     root.write("src/lib.rs", "pub fn manual_delivery() {}\n");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nacdd_profile: custom/manual.yaml\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nacdd_profile: custom/manual.yaml\n",
     );
     let mut profile = fixture_profile();
     profile.find_gate_mut("deliver").unwrap().auto_commit = false;
@@ -113,7 +113,7 @@ fn manual_delivery_handoff_rewrites_markdown_receipt_to_landed_commit() {
         .build();
     root.write("docs/milestones/010-manual.md", &source);
     root.commit_fixture_inputs(&[
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "custom/manual.yaml",
         "docs/milestones/010-manual.md",
     ]);
@@ -186,8 +186,8 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     let root = MilestoneHarness::workspace(DEFAULT_SEAM, "");
     root.write("src/lib.rs", "pub fn example() {}\n");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     let source = SPEC
         .replace(
@@ -307,7 +307,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
         json!(["decisions: Keep durable task outcomes in the milestone receipt."])
     );
     assert_eq!(receipt["rollup"]["review_summary"]["decision"], "pass");
-    for contour in contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS {
+    for contour in contextunity_acdd::core::tasks::gates::REVIEW_CONTOURS {
         assert_eq!(
             receipt["rollup"]["review_summary"]["contours"][contour],
             "accepted"
@@ -392,7 +392,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
                     architectural_notes: vec!["decisions: Retain retry notes.".into()],
                     review_summary: ReviewSummary {
                         decision: "pass".into(),
-                        contours: contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS
+                        contours: contextunity_acdd::core::tasks::gates::REVIEW_CONTOURS
                             .into_iter()
                             .map(|name| (name.into(), "accepted".into()))
                             .collect(),
@@ -499,7 +499,7 @@ fn terminal_delivery_checks_custom_review_rollup_and_stale_candidates() {
     }
     let candidate = final_candidate.unwrap();
     let custom_store =
-        contextunity_forge_mcp::engine::tasks::store_for_task(custom.root(), custom_id).unwrap();
+        contextunity_acdd::engine::tasks::store_for_task(custom.root(), custom_id).unwrap();
     let delivered = custom_store.inspect(custom_id).unwrap();
     let receipt = serde_json::to_value(delivered.receipt.unwrap()).unwrap();
     assert_eq!(

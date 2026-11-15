@@ -1,0 +1,90 @@
+# =============================================================================
+# ACDD PROFILE EXAMPLE: Plan Profile (Only Tasks Container, No Root Gates)
+#
+# ADR 0021 Work Model 2: Plan executes in-place steps without pre-task synthesis
+# (blueprint_synthesis) or post-task closure (verify/polish/milestone_review/handoff).
+# The plan document (docs/plans/*.md) is already the architectural decision.
+# It consists strictly of the `tasks:` container.
+# =============================================================================
+
+version: 2
+inherit: none
+
+# Plans execute in-place and use `save: snapshot` (snapshots + logs, strictly no auto-commits):
+save: snapshot
+
+roles:
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+scope_args_by_pattern:
+  "src/**/*.rs": "--lib"
+  "crates/acdd-core/**/*.rs": "--package acdd-core --lib"
+  "crates/acdd-index/**/*.rs": "--package acdd-index --lib"
+  "crates/acdd-tasks/**/*.rs": "--package acdd-tasks --lib"
+  "tests/acdd/**/*.rs": "--test acdd"
+
+commands:
+  rust-check-and-test:
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: true
+      noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
+      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+      tests:
+        target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
+        passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
+        failed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b'
+        ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
+    timeout_seconds: 300
+
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+    audit_extended_scope: true
+
+# Plan workflow: Strictly the `tasks:` container, zero root milestone gates!
+gates:
+  - tasks:
+      gates:
+        - id: build
+          role: builder
+          command: rust-check-and-test
+          proof: command
+          save:
+            pre: snapshot
+            post: snapshot
+
+        - id: review
+          role: independent_reviewer
+          policy: default_review
+          independent_from: build
+          fail: build
+          loop:
+            scope: build
+          save:
+            immutable: true
+
+        - id: deliver
+          role: independent_reviewer
+          receipt: true
+          need:
+            - review
+          independent_from: build
+          fail: build
+          save:
+            immutable: true
+            post: snapshot

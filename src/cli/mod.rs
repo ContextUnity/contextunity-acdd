@@ -220,7 +220,7 @@ pub(crate) mod discovery {
             .and_then(Value::as_str)
             .map(Path::new)
             .unwrap_or(root);
-        let settings = forge_tasks::tasks::configuration::current(root);
+        let settings = acdd_tasks::tasks::configuration::current(root);
         let config = settings
             .as_ref()
             .and_then(|settings| settings.config.as_deref());
@@ -594,22 +594,22 @@ use std::io;
 use std::path::{Path, PathBuf};
 #[derive(Parser, Debug)]
 #[command(
-    name = "contextunity-forge-mcp",
+    name = "acdd",
     version,
     about = "Native code graph, documentation engine, MCP server and CLI"
 )]
 /// Represents cli data.
 pub struct Cli {
-    #[arg(long, global = true, env = "FORGE_WORKSPACE_ROOT")]
+    #[arg(long, global = true, env = "ACDD_WORKSPACE_ROOT")]
     /// Optional root value.
     pub root: Option<PathBuf>,
-    #[arg(long, global = true, env = "FORGE_DB")]
+    #[arg(long, global = true, env = "ACDD_DB")]
     /// Optional db value.
     pub db: Option<PathBuf>,
-    #[arg(long, global = true, env = "FORGE_CONFIG")]
-    /// Explicit root-confined Forge configuration file.
+    #[arg(long, global = true, env = "ACDD_CONFIG")]
+    /// Explicit root-confined ACDD configuration file.
     pub config: Option<PathBuf>,
-    #[arg(long, global = true, env = "FORGE_PROFILE")]
+    #[arg(long, global = true, env = "ACDD_PROFILE")]
     /// Explicit root-confined gate profile file.
     pub profile: Option<PathBuf>,
     #[arg(long, global = true, value_enum, default_value = "markdown")]
@@ -654,7 +654,7 @@ pub enum ClearCommand {
         #[arg(long)]
         archive: bool,
     },
-    /// Clear standalone workflow execution run logs in .forge/runs/ and traces.
+    /// Clear standalone workflow execution run logs in .acdd/runs/ and traces.
     Workflow {
         /// Workflow name or discovered root-relative path.
         selector: String,
@@ -1019,12 +1019,12 @@ pub enum AstCommand {
 }
 /// Performs default db.
 pub fn default_db(root: &std::path::Path) -> PathBuf {
-    root.join(".forge/code-map.sqlite")
+    root.join(".acdd/code-map.sqlite")
 }
 
 fn command_presentation(command: &Command) -> (OperationKind, &'static str, Option<bool>) {
     match command {
-        Command::Read { .. } => (OperationKind::Navigation, "forge_read", None),
+        Command::Read { .. } => (OperationKind::Navigation, "acdd_read", None),
         Command::Task { command } => {
             let title = match command {
                 task::TaskCommand::Run { .. } => "task_manage",
@@ -1180,7 +1180,7 @@ fn open_or_rebuild(
     root: &Path,
     cache_dir: Option<&Path>,
 ) -> Result<crate::db::reader::LockedConnection> {
-    let selected = forge_tasks::tasks::configuration::current(root);
+    let selected = acdd_tasks::tasks::configuration::current(root);
     let adapter = selected
         .as_ref()
         .and_then(|settings| settings.config.as_deref());
@@ -1213,7 +1213,7 @@ fn open_or_rebuild(
                 .is_some();
             if requires_rebuild || !db.exists() {
                 eprintln!(
-                    "Forge index incompatible or missing ({msg}); auto-rebuilding for {}...",
+                    "ACDD index incompatible or missing ({msg}); auto-rebuilding for {}...",
                     root.display()
                 );
                 match cache_dir {
@@ -1315,7 +1315,7 @@ impl Cli {
                 root.join(path)
             }
         });
-        let selection = forge_tasks::tasks::configuration::InvocationSettings::new(
+        let selection = acdd_tasks::tasks::configuration::InvocationSettings::new(
             root.clone(),
             settings.config.clone(),
             settings.profile.clone(),
@@ -1371,7 +1371,7 @@ impl Cli {
             } => {
                 let adapter =
                     crate::engine::scanner::load_adapter(&root, settings.config.as_deref())?;
-                let mode = serde_json::from_value::<forge_core::model::ReadMode>(json!(mode))?;
+                let mode = serde_json::from_value::<acdd_core::model::ReadMode>(json!(mode))?;
                 let request = crate::engine::reader::ReadRequest {
                     path: Some(path),
                     paths: None,
@@ -1400,7 +1400,7 @@ impl Cli {
                 let structural = request.requires_index(&adapter)?;
                 if structural {
                     let conn = open_or_rebuild(&db, &root, cache_dir)?;
-                    crate::engine::reader::forge_read_tool(
+                    crate::engine::reader::acdd_read_tool(
                         &root,
                         &adapter,
                         &request,
@@ -1413,7 +1413,7 @@ impl Cli {
                 {
                     reader::open_locked(&db, &root)
                         .and_then(|conn| {
-                            crate::engine::reader::forge_read_tool(
+                            crate::engine::reader::acdd_read_tool(
                                 &root,
                                 &adapter,
                                 &request,
@@ -1423,12 +1423,12 @@ impl Cli {
                             )
                         })
                         .or_else(|_| {
-                            crate::engine::reader::forge_read_tool(
+                            crate::engine::reader::acdd_read_tool(
                                 &root, &adapter, &request, &page, &source, None,
                             )
                         })?
                 } else {
-                    crate::engine::reader::forge_read_tool(
+                    crate::engine::reader::acdd_read_tool(
                         &root, &adapter, &request, &page, &source, None,
                     )?
                 }
@@ -1456,7 +1456,7 @@ impl Cli {
             },
             Command::Serve => {
                 writer::validate_code_map_target(&root, &db)?;
-                let invocation = forge_tasks::tasks::configuration::current(&root)
+                let invocation = acdd_tasks::tasks::configuration::current(&root)
                     .map(|settings| (*settings).clone());
                 crate::mcp::server::serve_with_settings(
                     root,
@@ -1885,7 +1885,7 @@ impl Cli {
         format::compact(&mut result, operation, explain);
         let formatted = match checkpoint_action.as_deref() {
             Some(action) => format::render_checkpoint(&result, output_format, title, action),
-            None if matches!(title, "task_list" | "forge_read") => {
+            None if matches!(title, "task_list" | "acdd_read") => {
                 let policy =
                     crate::engine::scanner::load_adapter(&root, settings.config.as_deref())
                         .map(|adapter| adapter.response)

@@ -22,9 +22,9 @@ const NESTED: &str = r#"
 "#;
 
 fn observation<'a>(
-    graph: &'a contextunity_forge_mcp::core::models::Graph,
+    graph: &'a contextunity_acdd::core::models::Graph,
     expression: &str,
-) -> &'a contextunity_forge_mcp::core::models::Coverage {
+) -> &'a contextunity_acdd::core::models::Coverage {
     graph
         .coverage
         .iter()
@@ -189,6 +189,6 @@ fn nested_member_status_and_evidence_survive_persistence() {
         let row = persisted_coverage(&conn, "nested.ts", None, expression);
         assert_eq!(row.0, "unresolved", "persisted {expression}: {row:?}");
     }
-    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    contextunity_acdd::core::commitments::verify(&conn).unwrap();
     drop(conn);
 }

@@ -4,8 +4,8 @@ use super::*;
 fn handoff_retains_opt_out_history_and_records_polish_verification() {
     let root = MilestoneHarness::workspace(DEFAULT_SEAM, "");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nhandoff_pruning: false\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nhandoff_pruning: false\n",
     );
     root.write("src/lib.rs", "pub fn fallback() {}\n");
     let source = MilestoneFixtureBuilder::new("m-fallback")
@@ -16,7 +16,7 @@ fn handoff_retains_opt_out_history_and_records_polish_verification() {
         .build();
     let active = "docs/milestones/020-fallback.md";
     root.write(active, &source);
-    root.commit_fixture_inputs(&["forge-mcp.yaml", active]);
+    root.commit_fixture_inputs(&["acdd.yaml", active]);
     let (milestone, store) = root.sync_document(active, &source);
     let task_id = milestone.task_id(&milestone.tasks[0]);
     root.complete_task(CompletionMode::Store {
@@ -31,7 +31,7 @@ fn handoff_retains_opt_out_history_and_records_polish_verification() {
     drop(store);
 
     let mut profile = fixture_profile();
-    let check: contextunity_forge_mcp::core::tasks::profile::CommandDef =
+    let check: contextunity_acdd::core::tasks::profile::CommandDef =
         serde_yaml::from_str("command: 'test -s src/lib.rs'\noutput: {require_counts: false}\n")
             .unwrap();
     profile
@@ -40,18 +40,18 @@ fn handoff_retains_opt_out_history_and_records_polish_verification() {
     profile.commands.insert("project-check".into(), check);
     profile.commands.insert(
         "project-lint".into(),
-        contextunity_forge_mcp::core::tasks::profile::CommandDef::Script(
+        contextunity_acdd::core::tasks::profile::CommandDef::Script(
             "! grep -q BAD_LINT src/lib.rs".into(),
         ),
     );
     profile.commands.insert(
         "failing-lint".into(),
-        contextunity_forge_mcp::core::tasks::profile::CommandDef::Script(
+        contextunity_acdd::core::tasks::profile::CommandDef::Script(
             "grep -q BAD_LINT src/lib.rs".into(),
         ),
     );
     root.write(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         &crate::acdd::support::standalone_profile_yaml(&profile),
     );
     let before_polish = root.head();
@@ -110,17 +110,17 @@ fn handoff_retains_opt_out_history_and_records_polish_verification() {
     root.add_detached_worktree(&stale, &polish_commit).unwrap();
     let orphan = "refs/forge/state/forge-mcp/forge-mcp/m-fallback/orphan";
     root.set_ref(orphan, &polish_commit);
-    root.remove_file(".forge/tasks.sqlite");
+    root.remove_file(".acdd/tasks.sqlite");
     root.db_recover().unwrap();
     let recovered_store = root.store();
     assert!(recovered_store.list(None, "all", None).unwrap().is_empty());
     assert!(recovered_store.milestone_tombstoned("m-fallback").unwrap());
     assert!(!root.has_ref(orphan));
     drop(recovered_store);
-    let stale_sync = contextunity_forge_mcp::engine::tasks::manage(
+    let stale_sync = contextunity_acdd::engine::tasks::manage(
         &stale,
-        contextunity_forge_mcp::engine::tasks::Manage {
-            action: contextunity_forge_mcp::engine::tasks::ManageAction::Sync,
+        contextunity_acdd::engine::tasks::Manage {
+            action: contextunity_acdd::engine::tasks::ManageAction::Sync,
             milestone_ref: Some("docs/milestones/020-fallback.md".into()),
             ..Default::default()
         },

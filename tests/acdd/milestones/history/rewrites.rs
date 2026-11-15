@@ -35,10 +35,10 @@ fn history_baseline(config: &str) -> DeliveredBaseline {
         source: &source,
         config,
         files: vec![
-            (".gitignore", ".forge/\n".into()),
+            (".gitignore", ".acdd/\n".into()),
             ("src/shared.rs", initial),
         ],
-        seed_paths: &[".gitignore", "forge-mcp.yaml", "docs", "src"],
+        seed_paths: &[".gitignore", "acdd.yaml", "docs", "src"],
         commit_message: "admit history fixture",
         disable_git_maintenance: true,
         tasks,
@@ -51,7 +51,7 @@ fn history_baseline(config: &str) -> DeliveredBaseline {
 }
 
 fn rewrite_baseline() -> DeliveredBaseline {
-    history_baseline("roots: [src]\ntasks_db: .forge/tasks.sqlite\n")
+    history_baseline("roots: [src]\ntasks_db: .acdd/tasks.sqlite\n")
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn check_history_rewrites(baseline: DeliveredBaseline, rewrites: &[&str]) {
         let store = root.open_task_store().unwrap();
         assert!(store.list(None, "all", None).unwrap().is_empty());
         for (index, spec) in archived_milestone.tasks.iter().enumerate() {
-            let accepted: contextunity_forge_mcp::core::tasks::Receipt =
+            let accepted: contextunity_acdd::core::tasks::Receipt =
                 serde_json::from_value(before[index]["receipt"].clone()).unwrap();
             assert!(accepted.matches_proofs(spec.receipt.as_ref().unwrap()));
         }
@@ -259,7 +259,7 @@ fn handoff_preserves_proofs_across_commit_tracking_policies() {
         evidence,
         snapshot,
         ..
-    } = history_baseline("roots: [src]\ntasks_db: .forge/tasks.sqlite\n");
+    } = history_baseline("roots: [src]\ntasks_db: .acdd/tasks.sqlite\n");
 
     assert_eq!(
         evidence.binding.builders,
@@ -271,10 +271,10 @@ fn handoff_preserves_proofs_across_commit_tracking_policies() {
         }
         root.reset_history_to(&base);
         root.write(
-            "forge-mcp.yaml",
-            &format!("roots: [src]\ntasks_db: .forge/tasks.sqlite\n{setting}"),
+            "acdd.yaml",
+            &format!("roots: [src]\ntasks_db: .acdd/tasks.sqlite\n{setting}"),
         );
-        root.stage_paths(&["forge-mcp.yaml"]);
+        root.stage_paths(&["acdd.yaml"]);
         root.commit_staged("select handoff recording policy");
         let policy_base = root.head();
         root.cherry_pick_commit(&deliveries[0]);
@@ -300,7 +300,7 @@ fn handoff_preserves_proofs_across_commit_tracking_policies() {
         let store = root.open_task_store().unwrap();
         assert!(store.list(None, "all", None).unwrap().is_empty());
         for (index, spec) in archived_milestone.tasks.iter().enumerate() {
-            let accepted: contextunity_forge_mcp::core::tasks::Receipt =
+            let accepted: contextunity_acdd::core::tasks::Receipt =
                 serde_json::from_value(before[index]["receipt"].clone()).unwrap();
             assert!(accepted.matches_proofs(spec.receipt.as_ref().unwrap()));
             assert!(spec.receipt.as_ref().unwrap().commit.is_none());

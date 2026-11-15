@@ -4,7 +4,7 @@ fn linked_provider_workspace() -> (PersistedWorkspaceHarness, PersistedWorkspace
     let owner = crate::languages::PersistedWorkspaceHarness::new();
     let linked = crate::languages::PersistedWorkspaceHarness::new();
     owner.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [.]\nlinked_workspaces:\n  - name: provider\n    path: '{}'\n    roots: [.]\n",
             linked.root().display()
@@ -71,7 +71,7 @@ fn import_owner_family_relative_and_ambiguous_provider_matrix() {
     let owner = crate::languages::PersistedWorkspaceHarness::new();
     let a = crate::languages::PersistedWorkspaceHarness::new();
     let b = crate::languages::PersistedWorkspaceHarness::new();
-    owner.write("forge-mcp.yaml", &format!("roots: [.]\nlinked_workspaces:\n  - name: a\n    path: '{}'\n    roots: [.]\n  - name: b\n    path: '{}'\n    roots: [.]\n",a.root().display(),b.root().display()));
+    owner.write("acdd.yaml", &format!("roots: [.]\nlinked_workspaces:\n  - name: a\n    path: '{}'\n    roots: [.]\n  - name: b\n    path: '{}'\n    roots: [.]\n",a.root().display(),b.root().display()));
     owner.write("settings.py", "def value(): pass\n");
     owner.write("shared/service.py", "def local(): pass\n");
     owner.write("foreign/only.ts", "export function target() {}\n");

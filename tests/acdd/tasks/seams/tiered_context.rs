@@ -97,15 +97,15 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
         root.write("tests/external.rs", "use tiered_fixture::routing::test_only_route;\n#[test]\nfn external_test_only_caller() { let actual = test_only_route(); assert_eq!(actual, 3); }\n");
         root.write(
             "AGENTS.md",
-            "# Instructions\nLoad the contextunity-forge skill.\n",
+            "# Instructions\nLoad the acdd skill.\n",
         );
         root.write(
-            ".agents/skills/contextunity-forge/SKILL.md",
+            ".agents/skills/acdd/SKILL.md",
             "# ContextUnity Forge\n",
         );
         root.write(
-            "forge-mcp.yaml",
-            "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+            "acdd.yaml",
+            "roots: [src, tests]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
         );
         root.write("docs/adr/001-routing.md", "---\ntitle: Routing invariants\ndoc_type: adr\nstatus: accepted\n---\n# Routing invariants\n- INV-ROUTING: [`src.routing.route_task`](../../src/routing.rs#L1) remains observable through the public seam.\n- Decision: Admit every caller before changing the public signature.\n");
         let caller_scope = if admit_caller {
@@ -116,8 +116,8 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
         let specification = format!("---\nid: m-tiered\ntitle: Tiered boundary gates\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: routing\ntarget: Preserve the routing boundary\nproof_policy: seam-test-first\nscope: [src/routing.rs, tests/connected.rs, tests/acdd/tasks.rs{caller_scope}]\nscope_roots: [src/, tests/]\n```\n");
         root.write("docs/milestones/010-tiered.md", &specification);
         commit_fixture_baseline(&root);
-        root.build_to(root.path(".forge/code-map.sqlite"));
-        let connection = rusqlite::Connection::open(root.path(".forge/code-map.sqlite")).unwrap();
+        root.build_to(root.path(".acdd/code-map.sqlite"));
+        let connection = rusqlite::Connection::open(root.path(".acdd/code-map.sqlite")).unwrap();
         connection
             .execute(
                 "INSERT OR IGNORE INTO coverage_evidence(evidence) VALUES('acdd boundary fixture')",
@@ -167,12 +167,11 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
         let root = &fixture.0;
         let task_id = "forge-mcp/m-tiered:routing";
         let profile =
-            contextunity_forge_mcp::core::tasks::profile::load_for_workspace(root.root()).unwrap();
-        let repo_profile = contextunity_forge_mcp::core::tasks::profile::load_for_workspace(
-            std::path::Path::new("."),
-        )
-        .unwrap();
-        let defaults = contextunity_forge_mcp::core::tasks::profile::compiled();
+            contextunity_acdd::core::tasks::profile::load_for_workspace(root.root()).unwrap();
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let repo_profile =
+            contextunity_acdd::core::tasks::profile::load_for_workspace(repo_root).unwrap();
+        let defaults = contextunity_acdd::core::tasks::profile::compiled();
         if !defaults.commands.is_empty() {
             failures.push(format!("{stage}/{seam}: default embedded profile must remain strictly language-agnostic with no hardcoded commands"));
         }
@@ -226,7 +225,7 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
                 name == role
                     && definition.effective_reuse_on_reject()
                     && definition.effective_mode()
-                        == contextunity_forge_mcp::core::tasks::profile::RoleExecutionMode::Subagent
+                        == contextunity_acdd::core::tasks::profile::RoleExecutionMode::Subagent
                     && definition
                         .models
                         .iter()

@@ -2,7 +2,7 @@ use crate::cli::run_cli;
 use crate::common::{assertions, mcp_client::invalidate_mcp_connection_cache, Workspace};
 use crate::harness::McpTestHarness;
 use crate::sqlite_fixture::TaskClaimsFixture;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::{
         format::OutputFormat,
         response::{ResponsePolicy, MAX_OUTPUT_BYTES},

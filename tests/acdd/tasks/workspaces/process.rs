@@ -1,5 +1,5 @@
 use crate::acdd::tasks::harness::TaskHarness;
-use contextunity_forge_mcp::core::tasks::gates::Evidence;
+use contextunity_acdd::core::tasks::gates::Evidence;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -94,7 +94,7 @@ impl TaskHarness {
         use std::os::unix::fs::PermissionsExt;
         workspace.write(
             ".git/info/exclude",
-            ".forge/\nfixture-gc-window.json\nfixture-gc-construction.json\n",
+            ".acdd/\nfixture-gc-window.json\nfixture-gc-construction.json\n",
         );
         let shim = workspace.root().join("fixture-bin/git");
         if pending {
@@ -166,7 +166,7 @@ impl GcPublicationFixture {
     }
 
     pub fn submit_build(&self, id: &str, evidence: &Evidence) -> anyhow::Result<Output> {
-        Ok(Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        Ok(Command::new(env!("CARGO_BIN_EXE_acdd"))
             .args([
                 "--root",
                 self.root.to_str().unwrap(),
@@ -183,7 +183,7 @@ impl GcPublicationFixture {
                 &serde_json::to_string(evidence)?,
             ])
             .env(
-                "FORGE_AGENT_SESSION_ID",
+                "ACDD_AGENT_SESSION_ID",
                 TaskHarness::session_for(&evidence.worker_id),
             )
             .env(
@@ -221,12 +221,12 @@ impl TaskHarness {
     pub fn gc_workspace() -> crate::common::Workspace {
         let isolated = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
         isolated.write(
-            "forge-mcp.yaml",
-            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+            "acdd.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
         );
         isolated.write("src/lib.rs", "pub fn before() {}\n");
         isolated.write("docs/milestones/010-gc.md", "---\nid: m-gc\nstatus: active\n---\n```yaml\ntask_ref: candidate\ntarget: Preserve provisional candidate\nproof_policy: direct-proof\nscope: [src/]\n```\n");
-        contextunity_forge_mcp::engine::tasks::manage(
+        contextunity_acdd::engine::tasks::manage(
             isolated.root(),
             serde_json::from_value(
                 serde_json::json!({"action":"sync","milestone_ref":"docs/milestones/010-gc.md"}),

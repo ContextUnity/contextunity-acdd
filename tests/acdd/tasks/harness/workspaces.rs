@@ -4,11 +4,11 @@ impl TaskHarness {
     pub fn linked_selectors(include_primary_slug_collision: bool) -> (Self, Workspace) {
         let primary = Workspace::new();
         let linked = Workspace::new();
-        primary.write("forge-mcp.yaml", &format!(
+        primary.write("acdd.yaml", &format!(
             "task_repository: primary\ntask_project: primary\nroots: []\nlinked_workspaces:\n  - name: linked\n    path: {}\n    tasks: {{enabled: true}}\n", linked.root().display()
         ));
         linked.write(
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "task_repository: linked\ntask_project: linked\nroots: []\n",
         );
         for (root, path, id, second) in [
@@ -85,7 +85,7 @@ impl TaskHarness {
     pub fn selectors() -> Self {
         let workspace = Workspace::new();
         workspace.write("AGENTS.md", "# Rules\n");
-        workspace.write("forge-mcp.yaml", "task_repository: test\ntask_project: test\nroots: []\nmilestones: [docs/milestones, contracts]\n");
+        workspace.write("acdd.yaml", "task_repository: test\ntask_project: test\nroots: []\nmilestones: [docs/milestones, contracts]\n");
         for (path, milestone, task, status) in [
             (
                 "docs/milestones/030-tool-performance-and-storage-compaction.md",
@@ -222,23 +222,18 @@ impl TaskHarness {
         let workspace = acdd_workspace(DEFAULT_SEAM, "");
         workspace.write("src/lib.rs", "pub fn example() {}\n");
         workspace.write(
-            "forge-mcp.yaml",
-            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+            "acdd.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
         );
         workspace.write(path, source);
         let profile_yaml = format!(
             "inherit: none\n{}",
             serde_yaml::to_string(&profile).unwrap()
         );
-        workspace.write(".forge/acdd/profile.yaml", &profile_yaml);
+        workspace.write(".acdd/profile.yaml", &profile_yaml);
         Self::commit_handoff_fixture_inputs(
             &workspace,
-            &[
-                "src/lib.rs",
-                "forge-mcp.yaml",
-                path,
-                ".forge/acdd/profile.yaml",
-            ],
+            &["src/lib.rs", "acdd.yaml", path, ".acdd/profile.yaml"],
         );
 
         let milestone = Milestone::parse(source, "forge-mcp").unwrap();

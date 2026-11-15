@@ -26,9 +26,9 @@ Before `milestone handoff`, run each command from the repository root:
 1. `cargo test --test commitment_integrity`
 2. `cargo clippy --all-targets --all-features -- -D warnings`
 3. `cargo test --all-targets`
-4. `cargo test -p forge-tasks --lib`
+4. `cargo test -p acdd-tasks --lib`
 
-The root package's `--all-targets` run does not include the `forge-tasks`
+The root package's `--all-targets` run does not include the `acdd-tasks`
 member's library unit tests. Record the separate member-library result alongside
 the root suite result.
 
@@ -45,7 +45,7 @@ separately if the profile changes. Obtain fresh independent review.
 
 For initial handoff, copy the successful observation's `command`, `exit_code`,
 `tests_passed`, and `tests_failed` into the corresponding `verification` fields
-of `IntegrationEvidence`. Forge matches the command and applicable counts to
+of `IntegrationEvidence`. ACDD matches the command and applicable counts to
 its latest trace; do not replace its observed count with a deduplicated count.
 Separately report the unique passed-test count from `cargo test --all-targets`,
 counting the standalone commitment run only once and excluding Clippy, and report
@@ -68,7 +68,7 @@ step.
 To prevent test-suite bloat, redundant execution storms, and synthetic masking, all test suites MUST adhere to these architectural invariants:
 
 1. **Anti-Fake-Gating & Shared Snapshot Setup**:
-   - `#[ignore]` gating (`FORGE_TESTS_GIT=1`) is strictly forbidden as a substitute for optimizing redundant test setups.
+   - `#[ignore]` gating (`ACDD_TESTS_GIT=1`) is strictly forbidden as a substitute for optimizing redundant test setups.
    - Matrix tests verifying rejections, invalid receipts, or failure modes MUST NOT re-run multi-gate task/milestone lifecycles from scratch for each scenario row.
    - Establish the base state ONCE (e.g. delivered milestone state) and use lightweight branching (`git switch -c`), worktree branching, or in-memory SQLite snapshots to mutate only the single condition under test per scenario. All rejection scenarios must execute in seconds, not minutes.
    - Do NOT use `.filter(|scenario| git_matrix != ...)` to sweep unoptimized multi-minute loops into the ignored lane while leaving the underlying test unoptimized.
@@ -97,7 +97,7 @@ To prevent test-suite bloat, redundant execution storms, and synthetic masking, 
 
 7. **Zero-Disk In-Memory Syntax & AST Invariant**:
    - Unit tests for AST extraction, syntax parsing, language semantics, and framework manifest resolution MUST execute purely in-memory (`ExtractorHarness::for_lang(Rust).extract(code)` or in-memory SQLite connections).
-   - They MUST NOT allocate physical filesystem tempdirs (`Workspace::new()`), initialize Git repositories, or write physical files to `/tmp` or `.forge/` unless physical filesystem boundary behavior (such as file locking or symlinks) is the explicit subject of the test.
+   - They MUST NOT allocate physical filesystem tempdirs (`Workspace::new()`), initialize Git repositories, or write physical files to `/tmp` or `.acdd/` unless physical filesystem boundary behavior (such as file locking or symlinks) is the explicit subject of the test.
 
 8. **In-Process MCP Routing Over Subprocess Transports**:
    - Protocol and tool tests in `tests/mcp/` and `tests/acdd/mcp.rs` MUST dispatch JSON-RPC requests directly through the in-process server handler (`server.handle_request(&req)`).
@@ -211,14 +211,14 @@ When a new subsystem emerges (e.g. a consumer of `PlanHarness` or `TasksStore`):
 
 Run the default repository suite with `cargo test --all-targets`. All current
 registered scenarios, including Git/history and scale cases, stay in this lane.
-The current Rust tree has no `#[ignore]` tests or `FORGE_TESTS_GIT` /
-`FORGE_EXTENDED_TESTS` test switches, so there is no separate ignored or
+The current Rust tree has no `#[ignore]` tests or `ACDD_TESTS_GIT` /
+`ACDD_EXTENDED_TESTS` test switches, so there is no separate ignored or
 environment-gated lane. Record passed, failed, and ignored counts; the default
 run currently reports zero ignored tests.
 
-Run the `forge-tasks` member-library suite separately with
-`cargo test -p forge-tasks --lib`; use
-`cargo test -p forge-tasks --lib handoff_accepts_completed_reviewed_shared_scope`
+Run the `acdd-tasks` member-library suite separately with
+`cargo test -p acdd-tasks --lib`; use
+`cargo test -p acdd-tasks --lib handoff_accepts_completed_reviewed_shared_scope`
 for focused development on its native handoff seam.
 
 The milestone tests live in `tests/acdd/milestones/`. Run their default cases
@@ -278,7 +278,7 @@ before pushing changes that touch platform-gated code.
        *) args+=("$arg") ;;
      esac
    done
-   exec zig cc -target "$FORGE_ZIG_TARGET" "${args[@]}"
+   exec zig cc -target "$ACDD_ZIG_TARGET" "${args[@]}"
    ```
 
    Use `x86_64-macos` or `aarch64-macos` without a single-component version suffix (such as
@@ -290,9 +290,9 @@ before pushing changes that touch platform-gated code.
 
    ```bash
    chmod +x /tmp/zig-macos-cc.sh
-   FORGE_ZIG_TARGET=x86_64-macos CC=/tmp/zig-macos-cc.sh CXX=/tmp/zig-macos-cc.sh \
+   ACDD_ZIG_TARGET=x86_64-macos CC=/tmp/zig-macos-cc.sh CXX=/tmp/zig-macos-cc.sh \
      cargo clippy --target x86_64-apple-darwin --tests --all-features -- -D warnings
-   FORGE_ZIG_TARGET=aarch64-macos CC=/tmp/zig-macos-cc.sh CXX=/tmp/zig-macos-cc.sh \
+   ACDD_ZIG_TARGET=aarch64-macos CC=/tmp/zig-macos-cc.sh CXX=/tmp/zig-macos-cc.sh \
      cargo clippy --target aarch64-apple-darwin --tests --all-features -- -D warnings
    ```
 

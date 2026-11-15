@@ -1,5 +1,5 @@
-use contextunity_forge_mcp::core::models::{Coverage, Facts, Graph, Node};
-use contextunity_forge_mcp::engine::{ast, linker};
+use contextunity_acdd::core::models::{Coverage, Facts, Graph, Node};
+use contextunity_acdd::engine::{ast, linker};
 use rusqlite::{backup::Backup, Connection};
 use std::collections::BTreeMap;
 use std::ops::Deref;
@@ -48,9 +48,8 @@ impl PersistedWorkspaceHarness {
     }
 
     pub(super) fn open_at(&self, database: impl AsRef<std::path::Path>) -> Connection {
-        let conn =
-            contextunity_forge_mcp::db::reader::open(database.as_ref(), self.workspace.root())
-                .unwrap_or_else(|error| panic!("could not open test workspace index: {error:#}"));
+        let conn = contextunity_acdd::db::reader::open(database.as_ref(), self.workspace.root())
+            .unwrap_or_else(|error| panic!("could not open test workspace index: {error:#}"));
         let _ = conn.execute_batch("COMMIT");
         conn
     }

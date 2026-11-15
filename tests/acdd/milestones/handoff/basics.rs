@@ -78,9 +78,9 @@ fn archived_proof_list_validation_covers_valid_and_invalid_values() {
         );
         let output = fixture.db_recover();
         assert_eq!(output.is_ok(), valid, "proof_shas {proof}: {output:#?}");
-        assert_eq!(fixture.root().join(".forge/tasks.sqlite").exists(), valid);
+        assert_eq!(fixture.root().join(".acdd/tasks.sqlite").exists(), valid);
         for name in ["tasks.sqlite", "tasks.sqlite-wal", "tasks.sqlite-shm"] {
-            let path = fixture.path(format!(".forge/{name}"));
+            let path = fixture.path(format!(".acdd/{name}"));
             if path.exists() {
                 std::fs::remove_file(path).unwrap();
             }

@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 
-use contextunity_forge_mcp::core::tasks::SubtaskSpec;
+use contextunity_acdd::core::tasks::SubtaskSpec;
 
 use crate::acdd::support::MilestoneFixtureBuilder;
 use crate::acdd::tasks::harness::TaskHarness;
@@ -427,7 +427,7 @@ fn task_list_status_and_subtask_detail_matrix() {
     assert_eq!(cli_shorthand_all, expected_all);
 
     use clap::Parser;
-    let cli_help = contextunity_forge_mcp::cli::Cli::try_parse_from([
+    let cli_help = contextunity_acdd::cli::Cli::try_parse_from([
         "contextunity-forge-mcp",
         "task",
         "list",

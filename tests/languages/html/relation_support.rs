@@ -42,7 +42,7 @@ pub(super) struct HtmlWorkspaceObservations {
     edges: OnceLock<Vec<HtmlEdgeObservation>>,
     nodes: OnceLock<Vec<HtmlNodeObservation>>,
     coverage: OnceLock<Vec<HtmlCoverageObservation>>,
-    persisted_facts: OnceLock<Vec<contextunity_forge_mcp::core::models::Facts>>,
+    persisted_facts: OnceLock<Vec<contextunity_acdd::core::models::Facts>>,
 }
 
 impl HtmlWorkspaceObservations {
@@ -66,7 +66,7 @@ impl HtmlWorkspaceObservations {
             .get_or_init(|| html_coverage_observations(&self.connection))
     }
 
-    pub(super) fn persisted_facts(&self) -> &[contextunity_forge_mcp::core::models::Facts] {
+    pub(super) fn persisted_facts(&self) -> &[contextunity_acdd::core::models::Facts] {
         self.persisted_facts
             .get_or_init(|| persisted_facts(&self.connection))
     }
@@ -335,9 +335,7 @@ pub(super) fn edge_occurrence_rows(
         .unwrap()
 }
 
-pub(super) fn persisted_facts(
-    conn: &Connection,
-) -> Vec<contextunity_forge_mcp::core::models::Facts> {
+pub(super) fn persisted_facts(conn: &Connection) -> Vec<contextunity_acdd::core::models::Facts> {
     let blobs: Vec<Vec<u8>> = conn
         .prepare("SELECT facts_blob FROM local_facts ORDER BY path")
         .unwrap()
@@ -347,7 +345,7 @@ pub(super) fn persisted_facts(
         .unwrap();
     blobs
         .iter()
-        .map(|blob| contextunity_forge_mcp::db::reader::decode_local_facts(blob).unwrap())
+        .map(|blob| contextunity_acdd::db::reader::decode_local_facts(blob).unwrap())
         .collect()
 }
 

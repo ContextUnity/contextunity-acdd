@@ -1,7 +1,7 @@
 # Tests — Invariants and Test Creation Boundaries
 
 Rules for placing, creating, refactoring, and maintaining tests in
-`contextunity-forge-mcp`.
+`acdd`.
 
 ## 1. Positive contract specifications
 
@@ -10,7 +10,7 @@ Rules for placing, creating, refactoring, and maintaining tests in
   permanent specifications, not transient incidents.
 - Prove admitted milestone requirements. Do not invent uncontracted requirements
   to justify a new subsystem.
-<!-- acdd-forge:test-invariants:start -->
+<!-- acdd:test-invariants:start -->
 - **Table-driven contract matrices**: Consolidate homogeneous variations of the
   same capability, boundary rule, error diagnostic, alias/spelling case, or hook
   mode into one table-driven `#[test]` (`for case in cases`). Ban cloning
@@ -45,7 +45,7 @@ Rules for placing, creating, refactoring, and maintaining tests in
   structs. See [test harness architecture](../docs/architecture/test-harness.md).
 - **Bounded loop & cache discipline**: Do not run full-DB dumps (`persisted_state`)
   or $O(N^2)$ cold index rebuilds inside per-row loops when lightweight checks or
-  batched deltas prove the same invariant. Clean up temporary `.forge/cold-*` files
+  batched deltas prove the same invariant. Clean up temporary `.acdd/cold-*` files
   and avoid 0%-hit `Weak<Workspace>` or per-iteration directory-walk caches.
 - **Seam-preserving decomposition**: Do not replace production seams with
   mockist unit doubles, and do not author multi-hundred-line meta-test suites for
@@ -56,7 +56,7 @@ Rules for placing, creating, refactoring, and maintaining tests in
   in-memory (no tempdir Git/SQLite) unless the claim requires disk.
 - **Plan/workflow fixtures**: Keep Markdown/profile extract fixtures thin until
   AC-003 admits execution. Do not grow execution harnesses ahead of the engine.
-<!-- acdd-forge:test-invariants:end -->
+<!-- acdd:test-invariants:end -->
 - For semantic receiver evidence, cover exact resolution separately from
   possible targets through the linker and persisted query seam.
 

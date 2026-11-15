@@ -1,19 +1,19 @@
-use forge_core::commitments::DOMAINS;
-use forge_core::config::ScannerLimits;
-use forge_core::format::stable_hash64;
-use forge_core::interner::{PathId, SymbolId};
-use forge_core::models::Node;
-use forge_index::ast::AstToken;
-use forge_index::languages::LanguageRegistry;
-use forge_index::linker::RouteIndex;
-use forge_tasks::blackboard::BlackboardScope;
-use forge_tasks::lifecycle::{TaskStage, TaskStatus};
-use forge_tasks::verification::ProofPolicy;
+use acdd_core::commitments::DOMAINS;
+use acdd_core::config::ScannerLimits;
+use acdd_core::format::stable_hash64;
+use acdd_core::interner::{PathId, SymbolId};
+use acdd_core::models::Node;
+use acdd_index::ast::AstToken;
+use acdd_index::languages::LanguageRegistry;
+use acdd_index::linker::RouteIndex;
+use acdd_tasks::blackboard::BlackboardScope;
+use acdd_tasks::lifecycle::{TaskStage, TaskStatus};
+use acdd_tasks::verification::ProofPolicy;
 
 #[test]
 fn workspace_file_uris_encode_canonical_relative_coordinates() {
     use crate::common::workspace::canonical_file_uri;
-    use contextunity_forge_mcp::core::format::file_uri_for_path;
+    use contextunity_acdd::core::format::file_uri_for_path;
 
     let workspace = crate::common::Workspace::new();
     let relative = "space quote\" plus+ percent% hash# café.rs";
@@ -63,24 +63,24 @@ fn workspace_database_open_confines_aliases_and_symlinks() {
     workspace.build();
     let root = workspace.root().to_path_buf();
     let outside_root = outside.root().to_path_buf();
-    let reader = forge_index::db::reader::open(&workspace.db(), workspace.root()).unwrap();
+    let reader = acdd_index::db::reader::open(&workspace.db(), workspace.root()).unwrap();
     drop(reader);
     assert_eq!(
-        forge_core::fs::confined_database_open_path(&workspace.db()).unwrap(),
-        workspace.canonical_root().join(".forge/code-map.sqlite")
+        acdd_core::fs::confined_database_open_path(&workspace.db()).unwrap(),
+        workspace.canonical_root().join(".acdd/code-map.sqlite")
     );
 
     outside.write_bytes("foreign.sqlite", b"foreign");
     let ancestor = workspace.path("escape");
-    let leaf = workspace.path(".forge/escape.sqlite");
+    let leaf = workspace.path(".acdd/escape.sqlite");
     symlink(outside.root(), &ancestor).unwrap();
     symlink(outside.path("foreign.sqlite"), &leaf).unwrap();
-    assert!(forge_core::fs::confined_database_open_path(&ancestor.join("foreign.sqlite")).is_err());
-    assert!(forge_core::fs::confined_database_open_path(&leaf).is_err());
+    assert!(acdd_core::fs::confined_database_open_path(&ancestor.join("foreign.sqlite")).is_err());
+    assert!(acdd_core::fs::confined_database_open_path(&leaf).is_err());
     assert!(
-        forge_index::db::reader::open(&ancestor.join("foreign.sqlite"), workspace.root()).is_err()
+        acdd_index::db::reader::open(&ancestor.join("foreign.sqlite"), workspace.root()).is_err()
     );
-    assert!(forge_index::db::reader::open(&leaf, workspace.root()).is_err());
+    assert!(acdd_index::db::reader::open(&leaf, workspace.root()).is_err());
     std::fs::remove_file(&ancestor).unwrap();
     std::fs::remove_file(&leaf).unwrap();
     assert!(!ancestor.exists() && !leaf.exists());
@@ -100,16 +100,16 @@ fn workspace_build_cache_is_isolated_and_removed_with_its_workspace() {
         workspace.write("src/lib.rs", "pub fn same_source() {}\n");
     }
     let first_cold = first.build();
-    let first_warm = first.build_to(first.path(".forge/warm.sqlite"));
+    let first_warm = first.build_to(first.path(".acdd/warm.sqlite"));
     let second_cold = second.build();
     assert_eq!(first_cold["pipeline"]["extraction_cache_hits"], 0);
     assert_eq!(first_warm["pipeline"]["extraction_cache_hits"], 1);
     assert_eq!(second_cold["pipeline"]["extraction_cache_hits"], 0);
-    let cache = first.path(".forge/extraction-cache");
+    let cache = first.path(".acdd/extraction-cache");
     assert!(cache.is_dir());
     drop(first);
     assert!(!cache.exists());
-    assert!(second.path(".forge/extraction-cache").is_dir());
+    assert!(second.path(".acdd/extraction-cache").is_dir());
 }
 
 #[test]
@@ -152,9 +152,9 @@ fn workspace_builds_and_applies_delta_in_its_owned_temp_directory() {
 
 #[test]
 fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
-    // Verify forge-core crate public API & real Merkle root computation
+    // Verify acdd-core crate public API & real Merkle root computation
     assert_eq!(stable_hash64("workspace_boundary"), 7897085170651836845);
-    assert_eq!(forge_core::version(), "0.5.2");
+    assert_eq!(acdd_core::version(), "0.5.2");
     let path_id = PathId(42);
     let sym_id = SymbolId(101);
     assert_eq!(u32::from(path_id), 42);
@@ -164,11 +164,11 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     assert!(DOMAINS.contains(&"nodes"));
     let mut leaves = std::collections::BTreeMap::new();
     leaves.insert("src/lib.rs".to_string(), "a1b2c3d4".to_string());
-    let agg = forge_core::commitments::aggregate_domain_digest("nodes", &leaves);
+    let agg = acdd_core::commitments::aggregate_domain_digest("nodes", &leaves);
     assert!(!agg.is_empty());
     let domains = vec![("nodes".to_string(), agg)];
     let metadata = vec![("schema_version".to_string(), "15".to_string())];
-    let merkle_root = forge_core::commitments::compute_merkle_root(&domains, &metadata);
+    let merkle_root = acdd_core::commitments::compute_merkle_root(&domains, &metadata);
     assert_eq!(merkle_root.len(), 64);
 
     let route_node = Node {
@@ -189,8 +189,8 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
         native_semantic: None,
     };
 
-    // Verify forge-index crate public API & real route matching and schema initialization
-    assert_eq!(forge_index::version(), "0.5.2");
+    // Verify acdd-index crate public API & real route matching and schema initialization
+    assert_eq!(acdd_index::version(), "0.5.2");
     let mut reg = LanguageRegistry::new();
     assert!(reg.is_empty());
     reg.enable("rust");
@@ -215,7 +215,7 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     assert_eq!(token.text, "my_var");
 
     let mem_conn = rusqlite::Connection::open_in_memory().unwrap();
-    forge_index::db::initialize_code_map_schema(&mem_conn).unwrap();
+    acdd_index::db::initialize_code_map_schema(&mem_conn).unwrap();
     let table_count: i64 = mem_conn
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('nodes', 'edges', 'metadata', 'resolution_coverage')",
@@ -225,8 +225,8 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
         .unwrap();
     assert_eq!(table_count, 4);
 
-    // Verify forge-tasks crate public API & real lifecycle, blackboard, and store operations
-    assert_eq!(forge_tasks::version(), "0.5.2");
+    // Verify acdd-tasks crate public API & real lifecycle, blackboard, and store operations
+    assert_eq!(acdd_tasks::version(), "0.5.2");
     assert_eq!(TaskStage::Build, TaskStage::Build);
     assert_eq!(TaskStatus::InProgress, TaskStatus::InProgress);
     assert_eq!(ProofPolicy::DirectProof, ProofPolicy::DirectProof);
@@ -235,8 +235,8 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     let temp_path =
         std::env::temp_dir().join(format!("test-tasks-store-{}.sqlite", std::process::id()));
     let store =
-        forge_tasks::store::TasksStore::open_project(&temp_path, "test-repo", "test-proj").unwrap();
-    assert!(forge_tasks::store::now() > 0);
+        acdd_tasks::store::TasksStore::open_project(&temp_path, "test-repo", "test-proj").unwrap();
+    assert!(acdd_tasks::store::now() > 0);
     drop(store);
     let _ = std::fs::remove_file(&temp_path);
 
@@ -246,7 +246,7 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     let doc: toml::Value = content.parse().expect("root Cargo.toml must be valid toml");
 
     // 1. Cargo workspace root in Cargo.toml declares members:
-    //    ["crates/forge-core", "crates/forge-index", "crates/forge-tasks", "."]
+    //    ["crates/acdd-core", "crates/acdd-index", "crates/acdd-tasks", "."]
     let workspace = doc
         .get("workspace")
         .expect("Cargo.toml must declare [workspace]");
@@ -256,9 +256,9 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
         .expect("[workspace] must have members array");
     let member_strings: Vec<&str> = members.iter().filter_map(|m| m.as_str()).collect();
     for required in [
-        "crates/forge-core",
-        "crates/forge-index",
-        "crates/forge-tasks",
+        "crates/acdd-core",
+        "crates/acdd-index",
+        "crates/acdd-tasks",
         ".",
     ] {
         assert!(
@@ -267,89 +267,89 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
         );
     }
 
-    // 2. forge-core crate exists and has no parser or database dependencies
-    let core_cargo_path = manifest_dir.join("crates/forge-core/Cargo.toml");
+    // 2. acdd-core crate exists and has no parser or database dependencies
+    let core_cargo_path = manifest_dir.join("crates/acdd-core/Cargo.toml");
     assert!(
         core_cargo_path.exists(),
-        "crates/forge-core/Cargo.toml must exist"
+        "crates/acdd-core/Cargo.toml must exist"
     );
     let core_content =
-        std::fs::read_to_string(&core_cargo_path).expect("read forge-core Cargo.toml");
-    let core_doc: toml::Value = core_content.parse().expect("parse forge-core Cargo.toml");
-    assert_eq!(core_doc["package"]["name"].as_str(), Some("forge-core"));
+        std::fs::read_to_string(&core_cargo_path).expect("read acdd-core Cargo.toml");
+    let core_doc: toml::Value = core_content.parse().expect("parse acdd-core Cargo.toml");
+    assert_eq!(core_doc["package"]["name"].as_str(), Some("acdd-core"));
     let core_deps = core_doc
         .get("dependencies")
         .cloned()
         .unwrap_or(toml::Value::Table(Default::default()));
     assert!(
         core_deps.get("rusqlite").is_none(),
-        "forge-core must have zero rusqlite dependency"
+        "acdd-core must have zero rusqlite dependency"
     );
     assert!(
         core_deps.get("tree-sitter").is_none(),
-        "forge-core must have zero tree-sitter dependency"
+        "acdd-core must have zero tree-sitter dependency"
     );
     assert!(
-        core_deps.get("forge-index").is_none(),
-        "forge-core must have zero forge-index dependency"
+        core_deps.get("acdd-index").is_none(),
+        "acdd-core must have zero acdd-index dependency"
     );
     assert!(
-        core_deps.get("forge-tasks").is_none(),
-        "forge-core must have zero forge-tasks dependency"
+        core_deps.get("acdd-tasks").is_none(),
+        "acdd-core must have zero acdd-tasks dependency"
     );
 
-    // 3. forge-index crate exists, depends on forge-core, and has no dependency on forge-tasks
-    let index_cargo_path = manifest_dir.join("crates/forge-index/Cargo.toml");
+    // 3. acdd-index crate exists, depends on acdd-core, and has no dependency on acdd-tasks
+    let index_cargo_path = manifest_dir.join("crates/acdd-index/Cargo.toml");
     assert!(
         index_cargo_path.exists(),
-        "crates/forge-index/Cargo.toml must exist"
+        "crates/acdd-index/Cargo.toml must exist"
     );
     let index_content =
-        std::fs::read_to_string(&index_cargo_path).expect("read forge-index Cargo.toml");
-    let index_doc: toml::Value = index_content.parse().expect("parse forge-index Cargo.toml");
-    assert_eq!(index_doc["package"]["name"].as_str(), Some("forge-index"));
+        std::fs::read_to_string(&index_cargo_path).expect("read acdd-index Cargo.toml");
+    let index_doc: toml::Value = index_content.parse().expect("parse acdd-index Cargo.toml");
+    assert_eq!(index_doc["package"]["name"].as_str(), Some("acdd-index"));
     let index_deps = index_doc
         .get("dependencies")
         .cloned()
         .unwrap_or(toml::Value::Table(Default::default()));
     assert!(
-        index_deps.get("forge-core").is_some(),
-        "forge-index must depend on forge-core"
+        index_deps.get("acdd-core").is_some(),
+        "acdd-index must depend on acdd-core"
     );
     assert!(
-        index_deps.get("forge-tasks").is_none(),
-        "forge-index must have zero forge-tasks dependency"
+        index_deps.get("acdd-tasks").is_none(),
+        "acdd-index must have zero acdd-tasks dependency"
     );
 
-    // 4. forge-tasks crate exists, depends on forge-core, and has no dependency on forge-index
-    let tasks_cargo_path = manifest_dir.join("crates/forge-tasks/Cargo.toml");
+    // 4. acdd-tasks crate exists, depends on acdd-core, and has no dependency on acdd-index
+    let tasks_cargo_path = manifest_dir.join("crates/acdd-tasks/Cargo.toml");
     assert!(
         tasks_cargo_path.exists(),
-        "crates/forge-tasks/Cargo.toml must exist"
+        "crates/acdd-tasks/Cargo.toml must exist"
     );
     let tasks_content =
-        std::fs::read_to_string(&tasks_cargo_path).expect("read forge-tasks Cargo.toml");
-    let tasks_doc: toml::Value = tasks_content.parse().expect("parse forge-tasks Cargo.toml");
-    assert_eq!(tasks_doc["package"]["name"].as_str(), Some("forge-tasks"));
+        std::fs::read_to_string(&tasks_cargo_path).expect("read acdd-tasks Cargo.toml");
+    let tasks_doc: toml::Value = tasks_content.parse().expect("parse acdd-tasks Cargo.toml");
+    assert_eq!(tasks_doc["package"]["name"].as_str(), Some("acdd-tasks"));
     let tasks_deps = tasks_doc
         .get("dependencies")
         .cloned()
         .unwrap_or(toml::Value::Table(Default::default()));
     assert!(
-        tasks_deps.get("forge-core").is_some(),
-        "forge-tasks must depend on forge-core"
+        tasks_deps.get("acdd-core").is_some(),
+        "acdd-tasks must depend on acdd-core"
     );
     assert!(
-        tasks_deps.get("forge-index").is_none(),
-        "forge-tasks must have zero forge-index dependency"
+        tasks_deps.get("acdd-index").is_none(),
+        "acdd-tasks must have zero acdd-index dependency"
     );
 }
 
 #[test]
 fn direct_library_task_entrypoint_initializes_extractors_without_caller_bootstrap() {
     // Calling direct root library task API automatically composes extractors
-    contextunity_forge_mcp::engine::tasks::ensure_extractors();
-    let facts = contextunity_forge_mcp::engine::ast::extract_typed(
+    contextunity_acdd::engine::tasks::ensure_extractors();
+    let facts = contextunity_acdd::engine::ast::extract_typed(
         "tests/seam.rs",
         "rust",
         "#[test] fn sample_seam() { assert!(true); }",

@@ -124,8 +124,8 @@ fn milestone_context_and_blackboard_preserve_milestone_notes_until_handoff() {
 fn milestone_inherited_descriptors_and_gate_snapshots_preserve_task_state() {
     let root = MilestoneHarness::context_retention();
     let task_id = root.task_id("implement");
-    let inherited_descriptor = contextunity_forge_mcp::db::tasks_store::recovery::lock_database(
-        &root.path(".forge/tasks.sqlite"),
+    let inherited_descriptor = contextunity_acdd::db::tasks_store::recovery::lock_database(
+        &root.path(".acdd/tasks.sqlite"),
     )
     .unwrap()
     .try_clone()
@@ -164,7 +164,7 @@ fn milestone_inherited_descriptors_and_gate_snapshots_preserve_task_state() {
         let stored = root.store().inspect(&task_id).unwrap();
         let mut previous_proof = evidence(&stored);
         previous_proof.stage = "handoff/v1".into();
-        let rejected = contextunity_forge_mcp::engine::tasks::submit(
+        let rejected = contextunity_acdd::engine::tasks::submit(
             root.root(),
             TaskHarness::pass_request(&task_id, "handoff/v1", &previous_proof),
         )

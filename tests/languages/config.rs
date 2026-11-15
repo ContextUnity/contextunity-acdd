@@ -1,5 +1,5 @@
 use crate::languages::PersistedWorkspaceHarness;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::response::{QueryOptions, ResponsePolicy, SourceOptions},
     db::{reader, symbols},
     engine::{ast, scanner},

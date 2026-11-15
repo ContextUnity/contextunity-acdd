@@ -1,20 +1,20 @@
-//! ACDD task engine re-exported from forge-tasks with automatic extractor registration.
+//! ACDD task engine re-exported from acdd-tasks with automatic extractor registration.
 
 use std::sync::Once;
 
 static INIT_EXTRACTOR: Once = Once::new();
 
-/// Ensures that the production AST extractor and symbol facts extractor are registered into forge_tasks.
+/// Ensures that the production AST extractor and symbol facts extractor are registered into acdd_tasks.
 pub fn ensure_extractors() {
     INIT_EXTRACTOR.call_once(|| {
-        forge_tasks::set_ast_extractor(|path, source| {
+        acdd_tasks::set_ast_extractor(|path, source| {
             let Some(language) = crate::engine::languages::for_path(std::path::Path::new(path))
             else {
                 return Ok(None);
             };
             crate::engine::ast::extract_typed(path, language.id(), source).map(Some)
         });
-        forge_tasks::milestones::set_symbol_facts_extractor(|path, source| {
+        acdd_tasks::milestones::set_symbol_facts_extractor(|path, source| {
             let Some(language) = crate::engine::languages::for_path(std::path::Path::new(path))
             else {
                 return Ok(Vec::new());
@@ -25,18 +25,18 @@ pub fn ensure_extractors() {
     });
 }
 
-pub use forge_tasks::engine::*;
+pub use acdd_tasks::engine::*;
 
 /// Claims a task gate after ensuring production extractors are wired.
 pub fn claim(root: &std::path::Path, p: Claim) -> anyhow::Result<serde_json::Value> {
     ensure_extractors();
-    forge_tasks::engine::claim(root, p)
+    acdd_tasks::engine::claim(root, p)
 }
 
 /// Submits a task gate after ensuring production extractors are wired.
 pub fn submit(root: &std::path::Path, p: Submit) -> anyhow::Result<serde_json::Value> {
     ensure_extractors();
-    forge_tasks::engine::submit(root, p)
+    acdd_tasks::engine::submit(root, p)
 }
 
 /// Submits an automated task gate without caller proof fields after ensuring production extractors are wired.
@@ -49,14 +49,7 @@ pub fn submit_zero_arg(
     session_fingerprint: Option<&str>,
 ) -> anyhow::Result<serde_json::Value> {
     ensure_extractors();
-    forge_tasks::engine::submit_zero_arg(
-        root,
-        task_id,
-        stage,
-        action,
-        findings,
-        session_fingerprint,
-    )
+    acdd_tasks::engine::submit_zero_arg(root, task_id, stage, action, findings, session_fingerprint)
 }
 
 /// Verifies a claimed gate without advancing its lifecycle after wiring extractors.
@@ -66,7 +59,7 @@ pub fn verify_task(
     timeout_seconds: Option<u64>,
 ) -> anyhow::Result<serde_json::Value> {
     ensure_extractors();
-    forge_tasks::engine::verify_task(root, task_id, timeout_seconds)
+    acdd_tasks::engine::verify_task(root, task_id, timeout_seconds)
 }
 
 /// Verifies a claimed gate with an explicit test and optional seam reference after wiring extractors.
@@ -78,7 +71,7 @@ pub fn verify_task_with_options(
     timeout_seconds: Option<u64>,
 ) -> anyhow::Result<serde_json::Value> {
     ensure_extractors();
-    forge_tasks::engine::verify_task_with_options(root, task_id, test, seam, timeout_seconds)
+    acdd_tasks::engine::verify_task_with_options(root, task_id, test, seam, timeout_seconds)
 }
 
 /// Submits an automated gate with a bounded runtime timeout override.
@@ -92,7 +85,7 @@ pub fn submit_zero_arg_with_timeout(
     session_fingerprint: Option<&str>,
 ) -> anyhow::Result<serde_json::Value> {
     ensure_extractors();
-    forge_tasks::engine::submit_zero_arg_with_timeout(
+    acdd_tasks::engine::submit_zero_arg_with_timeout(
         root,
         task_id,
         stage,
@@ -106,28 +99,28 @@ pub fn submit_zero_arg_with_timeout(
 /// Manages a task lifecycle after ensuring production extractors are wired.
 pub fn manage(root: &std::path::Path, p: Manage) -> anyhow::Result<serde_json::Value> {
     ensure_extractors();
-    forge_tasks::engine::manage(root, p)
+    acdd_tasks::engine::manage(root, p)
 }
 
 /// Lists tasks after ensuring production extractors are wired.
 pub fn list(root: &std::path::Path, p: List) -> anyhow::Result<serde_json::Value> {
     ensure_extractors();
-    forge_tasks::engine::list(root, p)
+    acdd_tasks::engine::list(root, p)
 }
 
 /// Reopens a task after ensuring production extractors are wired.
-pub fn reopen(root: &std::path::Path, task_id: &str) -> anyhow::Result<forge_tasks::store::Task> {
+pub fn reopen(root: &std::path::Path, task_id: &str) -> anyhow::Result<acdd_tasks::store::Task> {
     ensure_extractors();
-    forge_tasks::engine::reopen(root, task_id)
+    acdd_tasks::engine::reopen(root, task_id)
 }
 
 /// Resets a task after ensuring production extractors are wired.
-pub fn reset(root: &std::path::Path, task_id: &str) -> anyhow::Result<forge_tasks::store::Task> {
+pub fn reset(root: &std::path::Path, task_id: &str) -> anyhow::Result<acdd_tasks::store::Task> {
     ensure_extractors();
-    forge_tasks::engine::reset(root, task_id)
+    acdd_tasks::engine::reset(root, task_id)
 }
 
-pub use forge_tasks::milestones;
+pub use acdd_tasks::milestones;
 
 /// Task engine compatibility alias.
 #[allow(clippy::module_inception)]

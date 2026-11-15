@@ -4,18 +4,18 @@ use super::*;
 fn delivery_requires_terminal_subtasks_with_verification_evidence() {
     let root = acdd_workspace(DEFAULT_SEAM, "");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
-    root.write(".gitignore", super::super::CANONICAL_FORGE_GITIGNORE);
-    TaskHarness::commit_handoff_fixture_inputs(&root, &[".forge/acdd/profile.yaml"]);
+    root.write(".gitignore", super::super::CANONICAL_ACDD_GITIGNORE);
+    TaskHarness::commit_handoff_fixture_inputs(&root, &[".acdd/profile.yaml"]);
     root.write("src/lib.rs", "pub fn delivered() -> bool { true }\n");
     let manifest = MilestoneFixtureBuilder::new("m-delivery-subtasks")
         .title("Delivery subtask guard")
         .task("deliver", &["src/lib.rs"])
         .task_target("Require completed subtask proof at delivery")
         .task_proof_policy("seam-test-first")
-        .task_subtasks(&[contextunity_forge_mcp::core::tasks::SubtaskSpec {
+        .task_subtasks(&[contextunity_acdd::core::tasks::SubtaskSpec {
             subtask_ref: "verify".into(),
             title: "Verify the delivered behavior".into(),
             status: "completed".into(),
@@ -26,7 +26,7 @@ fn delivery_requires_terminal_subtasks_with_verification_evidence() {
     root.write(milestone_ref, &manifest);
     let milestone = Milestone::parse(&manifest, "forge-mcp").unwrap();
     let task_id = milestone.task_id(&milestone.tasks[0]);
-    let mut store = TasksStore::open(&root.root().join(".forge/tasks.sqlite")).unwrap();
+    let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     store.sync(&milestone, milestone_ref, root.root()).unwrap();
     drop(store);
 
@@ -83,7 +83,7 @@ fn check_blocked_sync_or_create(mode: &str) -> anyhow::Result<(String, bool)> {
 
     let (root, _, milestone) = fixture(DEFAULT_SEAM);
     let task_id = milestone.task_id(&milestone.tasks[0]);
-    let database = root.path(".forge/tasks.sqlite");
+    let database = root.path(".acdd/tasks.sqlite");
     let mut harness = TaskHarness::attach(&root, &task_id);
     let tx = harness.begin_competing_handoff_tombstone(&format!(
         "{}/{}/{}",
@@ -145,7 +145,7 @@ fn sync_race_and_initialized_reader_use_disk_wal() {
             milestone.repository, milestone.project, milestone.id
         ))
         .unwrap();
-    let reader = TasksStore::open(&root.root().join(".forge/tasks.sqlite"))
+    let reader = TasksStore::open(&root.root().join(".acdd/tasks.sqlite"))
         .expect("initialized readers must open while another connection holds the writer lock");
     assert_eq!(reader.inspect(task_id).unwrap().task_id, task_id);
     tx.rollback().unwrap();
@@ -202,7 +202,7 @@ fn task_mutation_payloads_are_bounded_without_skipping_effects() {
 }
 
 fn assert_task_mutation_payloads_for_actions(actions: &[&str]) {
-    use contextunity_forge_mcp::{core::response::ResponsePolicy, mcp::response};
+    use contextunity_acdd::{core::response::ResponsePolicy, mcp::response};
 
     let (root, mut store, _) = fixture(DEFAULT_SEAM);
     let large = "\\\"λ\n".repeat(12_000);
@@ -253,7 +253,7 @@ fn assert_task_mutation_payloads_for_actions(actions: &[&str]) {
                     None,
                     Some("docs/010-test.md"),
                     true,
-                    contextunity_forge_mcp::db::tasks_store::now(),
+                    contextunity_acdd::db::tasks_store::now(),
                 )
                 .unwrap();
             root.write(
@@ -310,11 +310,11 @@ fn assert_task_mutation_payloads_for_actions(actions: &[&str]) {
             "{action}: mutation must return usable success: {wire:?}"
         );
         assert!(
-            response::serialized_bytes(&wire) < forge_core::response::MAX_OUTPUT_BYTES,
+            response::serialized_bytes(&wire) < acdd_core::response::MAX_OUTPUT_BYTES,
             "{action}"
         );
         assert!(
-            value.to_string().len() <= (forge_core::response::MAX_OUTPUT_BYTES * 5) / 8,
+            value.to_string().len() <= (acdd_core::response::MAX_OUTPUT_BYTES * 5) / 8,
             "{action}"
         );
         if action == "sync_many" {
@@ -395,8 +395,7 @@ gates:
           auto_commit: false
 "#;
     let profile =
-        contextunity_forge_mcp::core::tasks::profile::validate_profile_document(profile_yaml)
-            .unwrap();
+        contextunity_acdd::core::tasks::profile::validate_profile_document(profile_yaml).unwrap();
     let manifest = MilestoneFixtureBuilder::new("m-nested-seam-delivery")
         .title("Nested seam delivery")
         .task("first", &["src/lib.rs"])
@@ -418,7 +417,7 @@ gates:
 
 #[test]
 fn response_limit_from_config_bounds_context_while_preserving_inherited_proofs() {
-    use contextunity_forge_mcp::{core::response::ResponsePolicy, mcp::response};
+    use contextunity_acdd::{core::response::ResponsePolicy, mcp::response};
 
     let profile_yaml = r#"inherit: none
 version: 2
@@ -452,13 +451,13 @@ gates:
           auto_commit: false
 "#;
     let root = acdd_workspace(DEFAULT_SEAM, "");
-    root.write(".forge/acdd/profile.yaml", profile_yaml);
+    root.write(".acdd/profile.yaml", profile_yaml);
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nresponse:\n  max_output_bytes: 8192\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nresponse:\n  max_output_bytes: 8192\n",
     );
-    root.write(".gitignore", super::super::CANONICAL_FORGE_GITIGNORE);
-    TaskHarness::commit_handoff_fixture_inputs(&root, &[".forge/acdd/profile.yaml"]);
+    root.write(".gitignore", super::super::CANONICAL_ACDD_GITIGNORE);
+    TaskHarness::commit_handoff_fixture_inputs(&root, &[".acdd/profile.yaml"]);
     root.write("src/lib.rs", "pub fn delivered() -> bool { true }\n");
 
     let manifest = MilestoneFixtureBuilder::new("m-bounded-proofs")
@@ -473,8 +472,7 @@ gates:
     let milestone = Milestone::parse(&manifest, &repo).unwrap();
     let task_id = milestone.task_id(&milestone.tasks[0]);
     let mut store =
-        TasksStore::open_project(&root.root().join(".forge/tasks.sqlite"), &repo, &project)
-            .unwrap();
+        TasksStore::open_project(&root.root().join(".acdd/tasks.sqlite"), &repo, &project).unwrap();
     store.sync(&milestone, milestone_ref, root.root()).unwrap();
 
     let milestone_identity = format!("{repo}/{project}/{}", milestone.id);
@@ -520,7 +518,7 @@ gates:
     .unwrap();
     let transitions_before_context: i64 = {
         let store =
-            TasksStore::open_project(&root.root().join(".forge/tasks.sqlite"), &repo, &project)
+            TasksStore::open_project(&root.root().join(".acdd/tasks.sqlite"), &repo, &project)
                 .unwrap();
         store
             .connection
@@ -540,7 +538,7 @@ gates:
     .unwrap();
     let transitions_after_context: i64 = {
         let store =
-            TasksStore::open_project(&root.root().join(".forge/tasks.sqlite"), &repo, &project)
+            TasksStore::open_project(&root.root().join(".acdd/tasks.sqlite"), &repo, &project)
                 .unwrap();
         store
             .connection
@@ -557,21 +555,18 @@ gates:
     let custom_config_path = root.root().join("configs/override.yaml");
     root.write(
         "configs/override.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nresponse:\n  max_output_bytes: 16384\nlimits:\n  max_metadata_bytes: 512\n",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nresponse:\n  max_output_bytes: 16384\nlimits:\n  max_metadata_bytes: 512\n",
     );
-    let selected_settings =
-        contextunity_forge_mcp::core::tasks::configuration::InvocationSettings::new(
-            root.root().canonicalize().unwrap(),
-            Some(custom_config_path),
-            std::sync::Arc::new(
-                contextunity_forge_mcp::core::tasks::profile::validate_profile_document(
-                    profile_yaml,
-                )
+    let selected_settings = contextunity_acdd::core::tasks::configuration::InvocationSettings::new(
+        root.root().canonicalize().unwrap(),
+        Some(custom_config_path),
+        std::sync::Arc::new(
+            contextunity_acdd::core::tasks::profile::validate_profile_document(profile_yaml)
                 .unwrap(),
-            ),
-            None,
-            root.root().join(".forge/code.sqlite"),
-        );
+        ),
+        None,
+        root.root().join(".acdd/code.sqlite"),
+    );
     let selected_context = selected_settings
         .run(|| {
             tasks::manage(
@@ -610,17 +605,17 @@ gates:
 
 #[test]
 fn metadata_limit_from_config_validates_bounds_and_regulates_profile() {
-    use contextunity_forge_mcp::core::config::{load_adapter, MAX_METADATA_BYTES};
-    use contextunity_forge_mcp::core::tasks::{
+    use contextunity_acdd::acdd_tasks::config::load_workspace_adapter;
+    use contextunity_acdd::core::config::{load_adapter, MAX_METADATA_BYTES};
+    use contextunity_acdd::core::tasks::{
         configuration::InvocationSettings, profile::load_for_workspace,
     };
-    use contextunity_forge_mcp::forge_tasks::config::load_workspace_adapter;
 
     let root = acdd_workspace(DEFAULT_SEAM, "");
 
     for invalid in ["0", &format!("{}", MAX_METADATA_BYTES + 1), "-1", "\"abc\""] {
         root.write(
-            "forge-mcp.yaml",
+            "acdd.yaml",
             &format!("roots: [src]\ndocs: [docs]\nlimits:\n  max_metadata_bytes: {invalid}\n"),
         );
         assert!(load_adapter(root.root(), None).is_err(), "{invalid}");
@@ -633,7 +628,7 @@ fn metadata_limit_from_config_validates_bounds_and_regulates_profile() {
     }
 
     root.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "roots: [src]\ndocs: [docs]\nlimits:\n  max_metadata_bytes: 256\n",
     );
     let adapter = load_adapter(root.root(), None).unwrap();
@@ -658,7 +653,7 @@ fn metadata_limit_from_config_validates_bounds_and_regulates_profile() {
         Some(alt_config),
         profile,
         None,
-        root.root().join(".forge/code.sqlite"),
+        root.root().join(".acdd/code.sqlite"),
     );
     selected.run(|| {
         assert_eq!(
@@ -714,8 +709,7 @@ gates:
           auto_commit: false
 "#;
     let profile =
-        contextunity_forge_mcp::core::tasks::profile::validate_profile_document(profile_yaml)
-            .unwrap();
+        contextunity_acdd::core::tasks::profile::validate_profile_document(profile_yaml).unwrap();
     let manifest = r#"---
 id: m-renamed-seam
 title: Renamed seam_test gate context
@@ -741,12 +735,12 @@ concurrency:
 "#;
     let root = acdd_workspace(DEFAULT_SEAM, "");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
-    root.write(".gitignore", super::super::CANONICAL_FORGE_GITIGNORE);
+    root.write(".gitignore", super::super::CANONICAL_ACDD_GITIGNORE);
     root.write(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         &format!(
             "inherit: none\n{}",
             serde_yaml::to_string(&profile).unwrap()
@@ -760,8 +754,8 @@ concurrency:
         &root,
         &[
             ".gitignore",
-            "forge-mcp.yaml",
-            ".forge/acdd/profile.yaml",
+            "acdd.yaml",
+            ".acdd/profile.yaml",
             "src/provider.rs",
             "src/consumer.rs",
             milestone_ref,

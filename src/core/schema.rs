@@ -1,1 +1,1 @@
-pub use forge_index::db::SCHEMA_DDL;
+pub use acdd_index::db::SCHEMA_DDL;

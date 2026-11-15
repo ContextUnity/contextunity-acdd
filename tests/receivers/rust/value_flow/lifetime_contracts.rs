@@ -72,7 +72,7 @@ fn rust_lifetime_only_nominals_preserve_imported_receiver_contracts() {
 #[test]
 fn rust_lifetime_nominal_factory_contracts_survive_cache_and_delta() {
     use crate::common::Workspace;
-    use contextunity_forge_mcp::{core::commitments, db::reader};
+    use contextunity_acdd::{core::commitments, db::reader};
 
     let workspace = Workspace::new();
     workspace.write(
@@ -110,7 +110,7 @@ fn rust_lifetime_nominal_factory_contracts_survive_cache_and_delta() {
     let delta = workspace.open();
     commitments::verify(&delta).unwrap();
     assert_eq!(coverage(&delta), expected);
-    let cold_db = workspace.path(".forge/cold.sqlite");
+    let cold_db = workspace.path(".acdd/cold.sqlite");
     workspace.build_to(&cold_db);
     let cold = reader::open(&cold_db, workspace.root()).unwrap();
     commitments::verify(&cold).unwrap();

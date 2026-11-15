@@ -1052,7 +1052,7 @@ fn assign_components(facts: &mut BTreeMap<String, TypedFacts>, owners: &BTreeMap
 /// # Errors
 /// Returns an error if:
 /// - The target filename matches known task database names (e.g. `tasks.sqlite`, `tasks.db`).
-/// - The target matches the configured `tasks_db` path in `forge-mcp.yaml`.
+/// - The target matches the configured `tasks_db` path in `acdd.yaml`.
 /// - The target file exists and contains task tracking tables (e.g. `tasks`, `task_gates`, etc.).
 pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
     // Resolve output path to absolute matching atomic_build (cwd-based for relative paths)
@@ -1079,7 +1079,7 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
         || file_name_lower == "tasks.sqlite3"
     {
         bail!(
-            "TASK_DATABASE_COLLISION: Refusing to use task database path '{}' as code map output. The code map database must be separate (default: '.forge/code-map.sqlite').",
+            "TASK_DATABASE_COLLISION: Refusing to use task database path '{}' as code map output. The code map database must be separate (default: '.acdd/code-map.sqlite').",
             output.display()
         );
     }
@@ -1089,8 +1089,8 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
     let base =
         crate::engine::tasks::primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
     if let Err(error) = &settings {
-        if root.join("forge-mcp.yaml").try_exists().unwrap_or(true)
-            || base.join("forge-mcp.yaml").try_exists().unwrap_or(true)
+        if root.join("acdd.yaml").try_exists().unwrap_or(true)
+            || base.join("acdd.yaml").try_exists().unwrap_or(true)
         {
             bail!(
                 "TASK_DATABASE_COLLISION: Cannot validate the reserved tasks database because task configuration is invalid ({error:#}). Refusing code map output '{}'.",
@@ -1107,13 +1107,13 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
         let same_path = crate::core::fs::same_filesystem_path(&output_abs, &task_db_path);
         if same_path {
             bail!(
-                "TASK_DATABASE_COLLISION: Refusing to use configured tasks database '{}' as code map output. The code map database must be separate (default: '.forge/code-map.sqlite').",
+                "TASK_DATABASE_COLLISION: Refusing to use configured tasks database '{}' as code map output. The code map database must be separate (default: '.acdd/code-map.sqlite').",
                 output.display()
             );
         }
         if let Err(err) = settings.path(root) {
-            let default_db_path = root.join(".forge/code-map.sqlite");
-            let default_base_db_path = base.join(".forge/code-map.sqlite");
+            let default_db_path = root.join(".acdd/code-map.sqlite");
+            let default_base_db_path = base.join(".acdd/code-map.sqlite");
             if crate::core::fs::same_filesystem_path(&output_abs, &default_db_path)
                 || crate::core::fs::same_filesystem_path(&output_abs, &default_base_db_path)
             {
@@ -1177,7 +1177,7 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
                         match is_task_db {
                             Ok(true) => {
                                 bail!(
-                                    "TASK_DATABASE_COLLISION: Refusing to overwrite task database at '{}' with code map index. The target database contains active task tracking tables. The code map database must be separate (default: '.forge/code-map.sqlite').",
+                                    "TASK_DATABASE_COLLISION: Refusing to overwrite task database at '{}' with code map index. The target database contains active task tracking tables. The code map database must be separate (default: '.acdd/code-map.sqlite').",
                                     output.display()
                                 );
                             }
@@ -1264,7 +1264,7 @@ fn atomic_build(
         bail!("output must not be a symlink");
     }
     let stage = parent.join(format!(
-        ".forge-stage-{}-{}",
+        ".acdd-stage-{}-{}",
         std::process::id(),
         NONCE.fetch_add(1, Ordering::Relaxed)
     ));
@@ -1514,7 +1514,10 @@ fn build_inner(
         root,
         output,
         adapter_path,
-        Arc::new(ExtractionCache::new(cache::default_cache_root())),
+        Arc::new(ExtractionCache::new(
+            cache::default_cache_root()
+                .map(|path| acdd_core::fs::resolve_workspace_path(root, &path)),
+        )),
         test_hooks,
     )
 }
@@ -3452,7 +3455,7 @@ mod tests {
         ] {
             fs::write(root.0.join("src").join(path), source).unwrap();
         }
-        let db = root.0.join(".forge/code-map.sqlite");
+        let db = root.0.join(".acdd/code-map.sqlite");
         let candidates = |path: &Path| {
             let conn = crate::db::reader::open(path, &root.0).unwrap();
             let mut statement = conn.prepare("SELECT d.id FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='caller' AND e.kind='possible_calls' ORDER BY d.id").unwrap();
@@ -3469,7 +3472,7 @@ mod tests {
             1,
             "cold build links caller to existing Alpha::run candidate"
         );
-        let cold = root.0.join(".forge/cold.sqlite");
+        let cold = root.0.join(".acdd/cold.sqlite");
         fs::write(
             root.0.join("src/beta.rs"),
             "use crate::defs::Work; pub struct Beta; impl Work for Beta { fn run(&self) {} }\n",

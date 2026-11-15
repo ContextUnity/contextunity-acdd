@@ -1,7 +1,7 @@
-# Contract planning — ContextUnity Forge MCP add-on
+# Contract planning — ContextUnity ACDD add-on
 
 This add-on supplies repository-specific planning authority, invariants, and inspection
-tools for ContextUnity Forge MCP.
+tools for ContextUnity ACDD.
 
 ---
 
@@ -23,7 +23,7 @@ Before authoring, auditing, or amending any milestone contract or task in this r
 Every contract must be evaluated against these repository invariants:
 
 1. **`INV-CORE-LEAF` (Subsystem Purity):**
-   - `crates/forge-core` is a leaf crate. It must never depend on `crates/forge-index`, `crates/forge-tasks`, CLI, or engine subsystems.
+   - `crates/acdd-core` is a leaf crate. It must never depend on `crates/acdd-index`, `crates/acdd-tasks`, CLI, or engine subsystems.
    - Core path helpers must remain fast, standalone primitives without circular dependencies.
 2. **`INV-MINIMAL-INTERVENTION` (Binary Leanliness):**
    - Keep the compiled Rust binary focused on indexing, AST search, code maps, and task orchestration.
@@ -31,18 +31,18 @@ Every contract must be evaluated against these repository invariants:
 3. **`INV-ZERO-PERFORMANCE-REGRESSION` (I/O Efficiency):**
    - Path resolution (`checked_child`, `canonical_root`) must remain single-pass checks. Never perform multi-entry directory scans (`read_dir` loops) on path components.
 4. **`INV-SCOPE-INTEGRITY` (Protected Infrastructure):**
-   - Core configuration files (`Cargo.toml`, root `build.rs`, `.forge/acdd/profile.yaml`) are protected infrastructure. Contracts must not modify them without explicit milestone-level authorization.
+   - Core configuration files (`Cargo.toml`, root `build.rs`, `.acdd/profile.yaml`) are protected infrastructure. Contracts must not modify them without explicit milestone-level authorization.
 
 ---
 
 ## 3. Code Discovery and Inspection Seams
 
-Use Forge MCP tools rather than unstructured grep/find during contract planning:
+Use ACDD MCP tools rather than unstructured grep/find during contract planning:
 
 - **Symbol Inspection:** `code_map_inspect(selector: "...")` for full caller/callee trees and covering tests.
 - **Impact Analysis:** `code_map_impact(selector: "...", depth: 1)` to trace consumer boundaries before assigning task write scopes.
 - **Structural Syntax Search:** `ast_grep_search(pattern: "...", language: "...")` for pattern matching.
-- **Targeted Source Reading:** `forge_read(path: "...", selector: "...")` for digest-verified source context.
+- **Targeted Source Reading:** `acdd_read(path: "...", selector: "...")` for digest-verified source context.
 
 ---
 

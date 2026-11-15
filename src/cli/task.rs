@@ -1,10 +1,10 @@
-use anyhow::Result;
-use clap::Subcommand;
-use forge_tasks::engine as tasks;
-use forge_tasks::{
+use acdd_tasks::engine as tasks;
+use acdd_tasks::{
     Action, BlackboardAction, BlackboardRequest, BlackboardScope, Claim, List, Manage,
     ManageAction, MilestoneStatusFilter, Status, Submit, TaskListDetail,
 };
+use anyhow::Result;
+use clap::Subcommand;
 use serde_json::Value;
 use std::path::Path;
 
@@ -362,7 +362,7 @@ pub(super) fn preflight_error(command: &TaskCommand, error: anyhow::Error) -> an
         TaskCommand::Next { .. } | TaskCommand::List { .. } | TaskCommand::Cleanup => None,
     }
     .unwrap_or("unselected");
-    anyhow::anyhow!(forge_tasks::tasks::task_lifecycle_diagnostic(
+    anyhow::anyhow!(acdd_tasks::tasks::task_lifecycle_diagnostic(
         subject,
         &error.to_string()
     ))
@@ -377,7 +377,7 @@ pub fn run(root: &Path, command: TaskCommand) -> Result<Value> {
             task_id,
             in_place: _,
         } => {
-            let session = forge_tasks::store::host_session_fingerprint().ok_or_else(|| {
+            let session = acdd_tasks::store::host_session_fingerprint().ok_or_else(|| {
                 anyhow::anyhow!(
                     "TASK_RUN_SESSION_REQUIRED: supply the genuine host session identity"
                 )

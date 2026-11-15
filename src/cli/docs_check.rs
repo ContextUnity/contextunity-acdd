@@ -509,7 +509,7 @@ fn check_links(root: &Path) -> Result<usize> {
     }) {
         let entry = entry?;
         if entry.file_type().is_file()
-            && forge_core::fs::is_doc_path(&entry.path().to_string_lossy())
+            && acdd_core::fs::is_doc_path(&entry.path().to_string_lossy())
         {
             files.push(entry.into_path());
         }
@@ -591,7 +591,7 @@ fn check_links(root: &Path) -> Result<usize> {
                     }
                     continue;
                 }
-                if !forge_core::fs::is_doc_path(&target.to_string_lossy()) {
+                if !acdd_core::fs::is_doc_path(&target.to_string_lossy()) {
                     continue;
                 }
                 if !documents.contains_key(&target) {

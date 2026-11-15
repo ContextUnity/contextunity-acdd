@@ -120,12 +120,12 @@ jobs:
           set -euo pipefail
           staging=$(mktemp -d)
           trap 'rm -rf "$staging"' EXIT
-          cp "target/$TARGET/release/contextunity-forge-mcp" "$staging/"
+          cp "target/$TARGET/release/acdd" "$staging/"
           cp -R skills "$staging/skills"
           test -f "$staging/skills/install.sh"
           mkdir -p dist
-          archive="contextunity-forge-mcp-$TARGET.tar.gz"
-          tar -czf "dist/$archive" -C "$staging" contextunity-forge-mcp skills
+          archive="contextunity-acdd-$TARGET.tar.gz"
+          tar -czf "dist/$archive" -C "$staging" acdd skills
           cd dist
           if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "$archive" > SHA256SUMS

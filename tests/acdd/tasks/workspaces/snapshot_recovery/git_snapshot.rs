@@ -141,7 +141,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         )
         .unwrap_err();
     assert!(
-        contextunity_forge_mcp::db::tasks_store::recovery::is_pending(&error),
+        contextunity_acdd::db::tasks_store::recovery::is_pending(&error),
         "{error:#}"
     );
     assert!(pending_store
@@ -295,8 +295,8 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         sync::mpsc,
         time::Duration,
     };
-    let ready = root.root().join(".forge/crash-ready");
-    let resume = root.root().join(".forge/crash-resume");
+    let ready = root.root().join(".acdd/crash-ready");
+    let resume = root.root().join(".acdd/crash-resume");
     let fifo_status = Command::new("mkfifo")
         .args([&ready, &resume])
         .status()
@@ -309,10 +309,10 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .clone();
     std::fs::write(
         &hook,
-        "#!/bin/sh\nprintf ready > \"$FORGE_CRASH_READY\"\nread answer < \"$FORGE_CRASH_RESUME\"\n",
+        "#!/bin/sh\nprintf ready > \"$ACDD_CRASH_READY\"\nread answer < \"$ACDD_CRASH_RESUME\"\n",
     )
     .unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_acdd"))
         .args([
             "--root",
             root.root().to_str().unwrap(),
@@ -326,10 +326,10 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
             "--evidence",
             &serde_json::to_string(&ev).unwrap(),
         ])
-        .env("FORGE_CRASH_READY", &ready)
-        .env("FORGE_CRASH_RESUME", &resume)
+        .env("ACDD_CRASH_READY", &ready)
+        .env("ACDD_CRASH_RESUME", &resume)
         .env(
-            "FORGE_AGENT_SESSION_ID",
+            "ACDD_AGENT_SESSION_ID",
             TaskHarness::session_for(&ev.worker_id),
         )
         .stdout(Stdio::piped())
@@ -374,7 +374,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         "in_progress"
     );
     assert!(
-        contextunity_forge_mcp::engine::milestones::show(root.root(), "m-test", true)
+        contextunity_acdd::engine::milestones::show(root.root(), "m-test", true)
             .unwrap_err()
             .to_string()
             .contains("TASK_CHECKPOINT_PENDING")

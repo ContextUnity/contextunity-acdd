@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repeatable stdio-MCP comparison runner for Forge and Codebase Memory."""
+"""Repeatable stdio-MCP comparison runner for ACDD and Codebase Memory."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from typing import Any
 from benchmark_profile import BenchmarkProfile, copy_workspace_snapshot, load_profile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-FORGE_BIN = shutil.which("contextunity-forge-mcp") or "contextunity-forge-mcp"
+ACDD_BIN = shutil.which("acdd") or "acdd"
 CODEBASE_BIN = shutil.which("codebase-memory-mcp") or "codebase-memory-mcp"
 PROTOCOL_VERSION = "2025-03-26"
 
@@ -130,8 +130,8 @@ class McpClient:
         binary_path: str | None = None,
     ):
         startup_started = time.perf_counter_ns()
-        if backend == "forge":
-            command = [binary_path or FORGE_BIN, "--root", workspace_root or str(ROOT)]
+        if backend == "acdd":
+            command = [binary_path or ACDD_BIN, "--root", workspace_root or str(ROOT)]
             if db_path:
                 command += ["--db", db_path]
             command += ["serve"]
@@ -159,7 +159,7 @@ class McpClient:
             {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "forge-codebase-benchmark", "version": "1"},
+                "clientInfo": {"name": "acdd-codebase-benchmark", "version": "1"},
             },
         )
         self.notify("notifications/initialized")
@@ -264,7 +264,7 @@ class McpClient:
 
 
 def discover() -> None:
-    for backend in ("forge", "codebase"):
+    for backend in ("acdd", "codebase"):
         with McpClient(backend) as client:
             tools = client.list_tools().get("result", {}).get("tools", [])
             compact = [
@@ -332,7 +332,7 @@ def prepare_indexes(
     temp_root: pathlib.Path,
     profile: BenchmarkProfile,
 ) -> tuple[pathlib.Path, pathlib.Path, dict[str, str], pathlib.Path, dict[str, Any]]:
-    forge_db = temp_root / "forge-code-map.sqlite"
+    acdd_db = temp_root / "acdd-code-map.sqlite"
     codebase_cache = temp_root / "codebase-cache"
     codebase_source = temp_root / "codebase-source"
     copy_workspace_snapshot(
@@ -365,12 +365,12 @@ def prepare_indexes(
         if configured.returncode:
             raise RuntimeError(f"failed setting isolated Codebase {key}: {configured.stderr}")
 
-    forge_build = measure_process(
-        [profile.forge_binary, "--root", str(codebase_source), "--db", str(forge_db), "build"], os.environ.copy()
+    acdd_build = measure_process(
+        [profile.acdd_binary, "--root", str(codebase_source), "--db", str(acdd_db), "build"], os.environ.copy()
     )
-    if forge_build["exit_code"]:
-        raise RuntimeError(f"Forge index build failed: {forge_build['stderr_tail']}")
-    forge_build["db_bytes"] = forge_db.stat().st_size
+    if acdd_build["exit_code"]:
+        raise RuntimeError(f"ACDD index build failed: {acdd_build['stderr_tail']}")
+    acdd_build["db_bytes"] = acdd_db.stat().st_size
 
     with McpClient("codebase", env_overrides=cbm_env, binary_path=profile.codebase_binary) as client:
         codebase_index = client.call(
@@ -391,8 +391,8 @@ def prepare_indexes(
             "response": codebase_index.response,
         }
     codebase_build["cache_bytes"] = directory_bytes(codebase_cache)
-    return forge_db, codebase_cache, cbm_env, codebase_source, {
-        "forge": forge_build,
+    return acdd_db, codebase_cache, cbm_env, codebase_source, {
+        "acdd": acdd_build,
         "codebase": codebase_build,
         "codebase_source_copy": {
             "root": str(codebase_source),
@@ -430,9 +430,9 @@ def benchmark(
 ) -> None:
     rows: list[dict[str, Any]] = []
     examples: dict[str, Any] = {}
-    temp_root = pathlib.Path(tempfile.mkdtemp(prefix="forge-codebase-mcp-bench-"))
+    temp_root = pathlib.Path(tempfile.mkdtemp(prefix="acdd-codebase-mcp-bench-"))
     try:
-        forge_db, codebase_cache, codebase_env, codebase_source, index_builds = prepare_indexes(temp_root, profile)
+        acdd_db, codebase_cache, codebase_env, codebase_source, index_builds = prepare_indexes(temp_root, profile)
     except Exception:
         import shutil
 
@@ -443,7 +443,7 @@ def benchmark(
         for scenario in profile.scenarios:
             if scenario_id and scenario["id"] != scenario_id:
                 continue
-            for backend, call_spec in (("forge", scenario["forge"]), ("codebase", scenario["codebase"])):
+            for backend, call_spec in (("acdd", scenario["acdd"]), ("codebase", scenario["codebase"])):
                 if call_spec is None:
                     continue
                 tool_name, arguments = call_spec
@@ -455,10 +455,10 @@ def benchmark(
                 for _ in range(repeats):
                     with McpClient(
                         backend,
-                        db_path=str(forge_db) if backend == "forge" else None,
+                        db_path=str(acdd_db) if backend == "acdd" else None,
                         env_overrides=codebase_env if backend == "codebase" else None,
-                        workspace_root=str(codebase_source) if backend == "forge" else None,
-                        binary_path=profile.forge_binary if backend == "forge" else profile.codebase_binary,
+                        workspace_root=str(codebase_source) if backend == "acdd" else None,
+                        binary_path=profile.acdd_binary if backend == "acdd" else profile.codebase_binary,
                     ) as client:
                         startup_times["cold_process"].append(client.startup_ms)
                         sample = client.call(tool_name, arguments)
@@ -470,10 +470,10 @@ def benchmark(
 
                 with McpClient(
                     backend,
-                    db_path=str(forge_db) if backend == "forge" else None,
+                    db_path=str(acdd_db) if backend == "acdd" else None,
                     env_overrides=codebase_env if backend == "codebase" else None,
-                    workspace_root=str(codebase_source) if backend == "forge" else None,
-                    binary_path=profile.forge_binary if backend == "forge" else profile.codebase_binary,
+                    workspace_root=str(codebase_source) if backend == "acdd" else None,
+                    binary_path=profile.acdd_binary if backend == "acdd" else profile.codebase_binary,
                 ) as client:
                     startup_times["warm_process"].append(client.startup_ms)
                     warmup = client.call(tool_name, arguments)
@@ -533,7 +533,7 @@ def benchmark(
             "workspace_root": str(profile.workspace_root),
             "profile": str(profile.path),
             "profile_name": profile.name,
-            "source_snapshot": "both backends use a temporary workspace copy; Forge may additionally follow enabled linked_workspaces from its adapter policy",
+            "source_snapshot": "both backends use a temporary workspace copy; ACDD may additionally follow enabled linked_workspaces from its adapter policy",
             "scope_note": profile.scope_note,
             "codebase_project": profile.project,
             "platform": platform.platform(),
@@ -541,13 +541,13 @@ def benchmark(
             "cpu_count": os.cpu_count(),
             "cpu_measurement": "sum of Linux /proc/<pid>/task/<tid>/schedstat runtime nanoseconds across each tracked process tree",
             "repeats_per_state": repeats,
-            "cold_definition": "first request in a fresh Forge server/SQLite connection; Codebase daemon and graph connection are restarted before each cold repetition; both use freshly built isolated index files; Linux page cache is not flushed; startup time is reported separately",
+            "cold_definition": "first request in a fresh ACDD server/SQLite connection; Codebase daemon and graph connection are restarted before each cold repetition; both use freshly built isolated index files; Linux page cache is not flushed; startup time is reported separately",
             "warm_definition": "same MCP process and SQLite connection after one discarded warm-up call",
             "rss_definition": "summed process-tree VmRSS sampled every 5ms during the request; VmHWM is summed process-lifetime high water",
             "cpu_definition": "summed process-tree scheduled runtime delta from /proc/<pid>/schedstat",
-            "index_mutations": "only disposable Forge DB and CBM_CACHE_DIR under disposable temp root were built; existing .forge and Codebase indexes/config were not modified",
+            "index_mutations": "only disposable ACDD DB and CBM_CACHE_DIR under disposable temp root were built; existing .acdd and Codebase indexes/config were not modified",
             "index_builds": index_builds,
-            "forge_index_bytes": forge_db.stat().st_size,
+            "acdd_index_bytes": acdd_db.stat().st_size,
             "codebase_index_cache_bytes": directory_bytes(codebase_cache),
             "codebase_cache_dir_isolated": True,
             "scenario_match": {
@@ -578,7 +578,7 @@ def redact_sensitive_results(path: pathlib.Path) -> None:
     metadata = result.setdefault("metadata", {})
     metadata["corpus_parity_caveat"] = (
         "Both tools read one immutable temporary source copy and the benchmark targets the same relative symbols, "
-        "but Forge follows forge-mcp.yaml roots while Codebase mode=full indexes all included root files. "
+        "but ACDD follows acdd.yaml roots while Codebase mode=full indexes all included root files. "
         "Node/edge counts, overview, and disk/cache sizes are therefore not normalized to identical indexed files."
     )
     metadata["source_snapshot"] = (
@@ -587,11 +587,11 @@ def redact_sensitive_results(path: pathlib.Path) -> None:
     )
     metadata["warm_definition"] = (
         "One discarded same-tool warm-up followed by five requests in the same MCP stdio client. "
-        "Forge reuses its server/SQLite connection; Codebase reuses its separate isolated daemon/graph connection behind the stdio client."
+        "ACDD reuses its server/SQLite connection; Codebase reuses its separate isolated daemon/graph connection behind the stdio client."
     )
     metadata["latency_boundary_caveat"] = (
         "wall_ms measures tools/call only, after initialize; fresh-server startup_ms is separate. "
-        "Cold means a fresh Forge server/SQLite connection or restarted isolated Codebase daemon/graph connection, "
+        "Cold means a fresh ACDD server/SQLite connection or restarted isolated Codebase daemon/graph connection, "
         "not an OS page-cache flush."
     )
     metadata["resource_caveat"] = (
@@ -601,7 +601,7 @@ def redact_sensitive_results(path: pathlib.Path) -> None:
         "during sampling and its overhead is included in wall_ms."
     )
     metadata["build_metric_caveat"] = (
-        "Forge build wall_ms covers its build process; Codebase index_repository wall_ms starts after daemon initialization, "
+        "ACDD build wall_ms covers its build process; Codebase index_repository wall_ms starts after daemon initialization, "
         "which is recorded separately. The isolated config setup phase is not included."
     )
     metadata["response_size_caveat"] = (
@@ -618,7 +618,7 @@ def redact_sensitive_results(path: pathlib.Path) -> None:
         "not an automated LLM judge or formal correctness proof."
     )
     metadata["session_checkpoint_scope"] = (
-        "Read-only list was remeasured five times against the isolated snapshot, which has no .forge/checkpoints.json; examples are omitted and no checkpoint state was written."
+        "Read-only list was remeasured five times against the isolated snapshot, which has no .acdd/checkpoints.json; examples are omitted and no checkpoint state was written."
     )
     metadata["redactions"] = [
         "session_checkpoint response examples omitted; byte counts and hashes remain"

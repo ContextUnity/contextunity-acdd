@@ -1,5 +1,5 @@
 pub(crate) use crate::common::Workspace;
-pub(crate) use contextunity_forge_mcp::{
+pub(crate) use contextunity_acdd::{
     core::tasks::{gates::Evidence, Milestone, Receipt, ReceiptRollup, ReviewSummary},
     db::tasks_store::{TasksStore, RETENTION_SECONDS},
     engine::tasks,

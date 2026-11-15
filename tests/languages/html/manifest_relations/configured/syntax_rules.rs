@@ -24,7 +24,7 @@ fn configured_syntax_rules_follow_effective_rules_and_delta() {
             {"id":"client","language":"typescript","operation":{"kind":"http_client_call","callee":"ask","receivers":[],"methods":{},"default_method":"GET","url_key":"destination","method_key":"verb","relative_prefixes":["/"]}}
         ]
     });
-    let manifest = ".forge/frameworks/atelier.toml";
+    let manifest = ".acdd/frameworks/atelier.toml";
     let write =
         |value: &serde_json::Value| workspace.write(manifest, &toml::to_string(value).unwrap());
     write(&pack);
@@ -122,7 +122,7 @@ fn configured_syntax_rules_follow_effective_rules_and_delta() {
                 "durable configured origin: {rule}"
             );
         }
-        let clients=cached.iter().flat_map(|facts| &facts.references).filter(|reference| reference.kind=="calls_endpoint").filter(|reference| matches!(&reference.receiver_hint,Some(contextunity_forge_mcp::core::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack=="atelier" && origin.rule=="client")).count();
+        let clients=cached.iter().flat_map(|facts| &facts.references).filter(|reference| reference.kind=="calls_endpoint").filter(|reference| matches!(&reference.receiver_hint,Some(contextunity_acdd::core::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack=="atelier" && origin.rule=="client")).count();
         assert_eq!(
             clients,
             usize::from(active),
@@ -197,11 +197,11 @@ fn configured_syntax_rules_follow_effective_rules_and_delta() {
         pack["syntax_rules"][0]["operation"] = invalid;
         write(&pack);
         assert!(
-            contextunity_forge_mcp::engine::pipeline::build_with_cache_dir(
+            contextunity_acdd::engine::pipeline::build_with_cache_dir(
                 workspace.root(),
                 &workspace.db(),
                 None,
-                &workspace.path(".forge/extraction-cache"),
+                &workspace.path(".acdd/extraction-cache"),
             )
             .is_err(),
             "unknown operation/field must fail closed"

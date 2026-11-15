@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 
-use contextunity_forge_mcp::core::format::{self, OutputFormat};
-use contextunity_forge_mcp::core::tasks::profile::ProofKind;
+use contextunity_acdd::core::format::{self, OutputFormat};
+use contextunity_acdd::core::tasks::profile::ProofKind;
 
 use crate::acdd::support::{restart_mcp_session, review_proof, MilestoneFixtureBuilder};
 use crate::acdd::tasks::harness::TaskHarness;
@@ -47,12 +47,12 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         "docs/milestones/010-linked.md",
         &manifest.replace('\n', "\r\n"),
     );
-    main.write("forge-mcp.yaml", &format!("roots: []\ndocs: []\nlinked_workspaces:\n  - name: traverse\n    path: {}\n    tasks: {{enabled: true}}\n", linked.root().display()));
+    main.write("acdd.yaml", &format!("roots: []\ndocs: []\nlinked_workspaces:\n  - name: traverse\n    path: {}\n    tasks: {{enabled: true}}\n", linked.root().display()));
     linked.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: []\ndocs: []\ntask_repository: traverse\ntask_project: traverse\ntasks_db: {}\n",
-            main.root().join(".forge/tasks.sqlite").display()
+            main.root().join(".acdd/tasks.sqlite").display()
         ),
     );
     let mut client = McpTestHarness::new(&main).expect("MCP new should succeed");
@@ -630,7 +630,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
             }
             for length in [7, 12, 39, 40] {
                 assert_eq!(
-                    contextunity_forge_mcp::core::tasks::canonical_commit_from_prefix(
+                    contextunity_acdd::core::tasks::canonical_commit_from_prefix(
                         &candidate[..length],
                         &candidate
                     )
@@ -762,7 +762,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         } else {
             assert_eq!(
                 result["snapshot"]["inspect_cmd"],
-                contextunity_forge_mcp::core::tasks::snapshot_inspect_cmd(snapshot)
+                contextunity_acdd::core::tasks::snapshot_inspect_cmd(snapshot)
             );
         }
         assert_eq!(
@@ -788,7 +788,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
     assert_eq!(restored["latest_snapshot"]["commit"], candidate_commit);
     assert_eq!(
         restored["latest_snapshot"]["inspect_cmd"],
-        contextunity_forge_mcp::core::tasks::snapshot_inspect_cmd(&candidate_commit)
+        contextunity_acdd::core::tasks::snapshot_inspect_cmd(&candidate_commit)
     );
     for gate in restored["gates"].as_array().unwrap() {
         let gate_commit = gate["commit"].as_str().unwrap();
@@ -812,7 +812,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         json!([])
     );
     main.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: []\ndocs: []\nresponse:\n  max_output_bytes: 4096\nlinked_workspaces:\n  - name: traverse\n    path: {}\n    tasks: {{enabled: true}}\n",
             linked.root().display()
@@ -867,14 +867,14 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
     workspace.write("docs/milestones/010-snap.md", &manifest);
     reviewer.write("docs/milestones/010-snap.md", &manifest);
     workspace.write(
-        "forge-mcp.yaml",
-        "roots: []\ndocs: []\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: []\ndocs: []\ntasks_db: .acdd/tasks.sqlite\n",
     );
     reviewer.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: []\ndocs: []\ntasks_db: {}\n",
-            workspace.root().join(".forge/tasks.sqlite").display()
+            workspace.root().join(".acdd/tasks.sqlite").display()
         ),
     );
 

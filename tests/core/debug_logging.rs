@@ -1,5 +1,5 @@
 use crate::common::Workspace;
-use contextunity_forge_mcp::{core::debug_log, engine::scanner};
+use contextunity_acdd::{core::debug_log, engine::scanner};
 use std::fs;
 use std::process::Command;
 
@@ -18,7 +18,7 @@ fn debug_flag_parsing_and_digest_determinism() {
 
     // 1. Adapter without DEBUG
     ws.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         r#"
 version: 1
 roots:
@@ -30,7 +30,7 @@ roots:
 
     // 2. Adapter with DEBUG: true
     ws.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         r#"
 version: 1
 DEBUG: true
@@ -43,7 +43,7 @@ roots:
 
     // 3. Adapter with debug: true
     ws.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         r#"
 version: 1
 debug: true
@@ -71,7 +71,7 @@ fn debug_logger_writes_to_forge_directory() {
     let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
     let expected_jsonl_file = ws
         .root()
-        .join(".forge")
+        .join(".acdd")
         .join(format!("command-log-debug--{date_str}.jsonl"));
 
     assert!(!expected_jsonl_file.exists());
@@ -132,15 +132,12 @@ fn debug_log_obstructions_report_errors_without_breaking_requests() {
                     continue;
                 }
                 let ws = Workspace::new();
-                ws.write(
-                    "forge-mcp.yaml",
-                    "version: 1\ndebug: true\nroots:\n  - '.'\n",
-                );
+                ws.write("acdd.yaml", "version: 1\ndebug: true\nroots:\n  - '.'\n");
                 ws.write(
                     "secret-request-content",
                     "version: 1\ndebug: true\nroots:\n  - '.'\n",
                 );
-                let directory = ws.path(".forge");
+                let directory = ws.path(".acdd");
                 let destination = if obstruction == "directory" {
                     fs::write(&directory, "obstruction").unwrap();
                     directory.clone()
@@ -167,7 +164,7 @@ fn debug_log_obstructions_report_errors_without_breaking_requests() {
                             .to_string(),
                     )
                 };
-                let mut command = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+                let mut command = Command::new(env!("CARGO_BIN_EXE_acdd"));
                 command
                     .arg("--root")
                     .arg(ws.root())
@@ -175,7 +172,7 @@ fn debug_log_obstructions_report_errors_without_breaking_requests() {
                     .arg(ws.path("index.sqlite"))
                     .arg("--format")
                     .arg("json")
-                    .env("FORGE_EXTRACTION_CACHE_DIR", ws.path("cache"))
+                    .env("ACDD_EXTRACTION_CACHE_DIR", ws.path("cache"))
                     .stdout(Stdio::piped());
                 if source == "cli" {
                     command

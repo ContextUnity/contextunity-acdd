@@ -3,7 +3,7 @@ use crate::{
     harness::McpTestHarness,
 };
 use clap::Parser;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     cli::{guide, Cli},
     core::response::MAX_OUTPUT_BYTES,
 };
@@ -44,7 +44,7 @@ fn guide_unknown_topic_preserves_diagnostics_across_surfaces() {
 fn guide_init_preserves_force_and_bypasses_invalid_adapter() {
     let (workspace, harness) = McpTestHarness::indexed_workspace(&[]);
     let mut harness = harness.unwrap();
-    workspace.write("forge-mcp.yaml", "roots: [\n");
+    workspace.write("acdd.yaml", "roots: [\n");
     assert!(guide::run(workspace.root(), "init", false).is_err());
     assert_eq!(
         harness
@@ -57,7 +57,7 @@ fn guide_init_preserves_force_and_bypasses_invalid_adapter() {
         .status
         .success());
     assert_eq!(
-        std::fs::read_to_string(workspace.path("forge-mcp.yaml")).unwrap(),
+        std::fs::read_to_string(workspace.path("acdd.yaml")).unwrap(),
         "roots: [\n"
     );
     let response = harness
@@ -66,10 +66,10 @@ fn guide_init_preserves_force_and_bypasses_invalid_adapter() {
         .1;
     assert_ne!(response["result"]["isError"], true, "{response}");
     assert_eq!(
-        std::fs::read_to_string(workspace.path("forge-mcp.yaml")).unwrap(),
+        std::fs::read_to_string(workspace.path("acdd.yaml")).unwrap(),
         guide::TEMPLATE
     );
-    workspace.write("forge-mcp.yaml", "roots: [\n");
+    workspace.write("acdd.yaml", "roots: [\n");
     let cli = run_cli_json(&workspace, &["guide", "init", "--force"]);
     assert!(
         cli.status.success(),
@@ -77,7 +77,7 @@ fn guide_init_preserves_force_and_bypasses_invalid_adapter() {
         String::from_utf8_lossy(&cli.stderr)
     );
     assert_eq!(
-        std::fs::read_to_string(workspace.path("forge-mcp.yaml")).unwrap(),
+        std::fs::read_to_string(workspace.path("acdd.yaml")).unwrap(),
         guide::TEMPLATE
     );
     harness.finish().unwrap();
@@ -168,7 +168,7 @@ fn lifecycle_guide_preserves_live_claim_and_proof_authority() {
     }
     let runners = mcp["runners"].to_string().to_lowercase();
     assert!(runners.contains("independent gate checks compare worker_id"));
-    assert!(runners.contains("forge_agent_session_id"));
+    assert!(runners.contains("acdd_agent_session_id"));
     assert!(runners.contains("recovery metadata and runner isolation controls"));
     for rule in [
         "runner",
@@ -368,7 +368,7 @@ fn navigation_guides_retain_keys_and_execute_supported_examples() {
                 "code_map_overview",
                 "code_map_search",
                 "code_map_inspect",
-                "forge_read",
+                "acdd_read",
                 "code_map_explain",
                 "code_map_impact",
                 "code_map_tests",
@@ -383,7 +383,7 @@ fn navigation_guides_retain_keys_and_execute_supported_examples() {
             &[
                 "search_docs",
                 "get_doc",
-                "forge_read",
+                "acdd_read",
                 "docs search",
                 "docs get",
             ][..],
@@ -406,7 +406,7 @@ fn navigation_guides_retain_keys_and_execute_supported_examples() {
         assert!(
             matches!(
                 name,
-                "code_map_overview" | "code_map_search" | "search_docs" | "get_doc" | "forge_read"
+                "code_map_overview" | "code_map_search" | "search_docs" | "get_doc" | "acdd_read"
             ),
             "navigation example must use a read operation"
         );
@@ -421,7 +421,7 @@ fn navigation_guides_retain_keys_and_execute_supported_examples() {
             .expect("CLI example")
             .split_whitespace()
             .collect::<Vec<_>>();
-        assert_eq!(words.first().copied(), Some("contextunity-forge-mcp"));
+        assert_eq!(words.first().copied(), Some("acdd"));
         let output = run_cli_json(&workspace, &words[1..]);
         assert!(
             output.status.success(),
@@ -495,7 +495,7 @@ fn guide_topic_index_and_capabilities_match_both_surfaces() {
         let docs = bits & 2 != 0;
         let acdd = bits & 4 != 0;
         let blackboard = bits & 8 != 0;
-        workspace.write("forge-mcp.yaml", &format!("roots: [src/]\nmodules:\n  codemap: {codemap}\n  docs: {docs}\n  acdd: {acdd}\n  blackboard: {blackboard}\n"));
+        workspace.write("acdd.yaml", &format!("roots: [src/]\nmodules:\n  codemap: {codemap}\n  docs: {docs}\n  acdd: {acdd}\n  blackboard: {blackboard}\n"));
         let mut harness = McpTestHarness::new(&workspace).expect("module configuration");
         let query = harness
             .payload("forge_guide", json!({}))
@@ -647,7 +647,7 @@ fn guide_discovery_and_examples_match_real_tools_and_commands() {
             "observed-command",
         ],
     ] {
-        assert!(Cli::try_parse_from(std::iter::once("contextunity-forge-mcp").chain(args)).is_ok());
+        assert!(Cli::try_parse_from(std::iter::once("acdd").chain(args)).is_ok());
     }
     harness.finish().expect("guide cleanup");
 }

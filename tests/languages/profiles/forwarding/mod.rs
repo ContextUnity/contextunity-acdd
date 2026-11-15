@@ -1,5 +1,5 @@
 use super::*;
-use contextunity_forge_mcp::core::commitments;
+use contextunity_acdd::core::commitments;
 use rusqlite::{params, Connection};
 
 mod deltas;
@@ -130,7 +130,7 @@ pub(super) fn snapshot(conn: &Connection) -> Vec<Vec<String>> {
 pub(super) fn fresh_cold(w: &PersistedWorkspaceHarness) -> Connection {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = w.path(format!(".forge/rust-cold-{id}.sqlite"));
+    let path = w.path(format!(".acdd/rust-cold-{id}.sqlite"));
     w.build_to(&path);
     w.open_at(&path)
 }

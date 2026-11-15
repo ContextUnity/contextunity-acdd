@@ -5,7 +5,7 @@ fn milestone_resolution_prefers_active_path_components_and_propagates_list_error
     let root = MilestoneHarness::workspace(DEFAULT_SEAM, "");
     root.write("AGENTS.md", "# Rules\n");
     root.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "task_repository: test\ntask_project: test\nroots: []\n",
     );
     for (id, title, status, task, target, path) in [

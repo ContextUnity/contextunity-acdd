@@ -31,7 +31,7 @@ fn default_claim_bundle_carries_task_milestone_and_cross_gate_messages() {
         .unwrap();
     store
         .blackboard_post_scoped_with_recipient(
-            contextunity_forge_mcp::db::tasks_store::BlackboardPostInput {
+            contextunity_acdd::db::tasks_store::BlackboardPostInput {
                 milestone_ref: &milestone_ref,
                 task_id: Some(task_2_id),
                 subtask_ref: None,
@@ -45,7 +45,7 @@ fn default_claim_bundle_carries_task_milestone_and_cross_gate_messages() {
         .unwrap();
     store
         .blackboard_post_scoped_with_recipient(
-            contextunity_forge_mcp::db::tasks_store::BlackboardPostInput {
+            contextunity_acdd::db::tasks_store::BlackboardPostInput {
                 milestone_ref: &milestone_ref,
                 task_id: Some(task_2_id),
                 subtask_ref: None,

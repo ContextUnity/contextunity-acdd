@@ -1,4 +1,4 @@
-//! Commitments implementation re-exported from forge-core and forge-index.
+//! Commitments implementation re-exported from acdd-core and acdd-index.
 
-pub use forge_core::commitments::*;
-pub use forge_index::db::commitments::*;
+pub use acdd_core::commitments::*;
+pub use acdd_index::db::commitments::*;

@@ -1,6 +1,6 @@
 #![cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-vue"))]
 
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::commitments,
     db::{reader, writer::delta},
 };
@@ -23,7 +23,7 @@ fn cold_comparison(
     let incremental_verified = commitments::verify(&incremental).is_ok();
     let dangling: i64 = incremental.query_row("SELECT count(*) FROM edges e LEFT JOIN nodes s ON s.node_hash=e.src_hash LEFT JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.id IS NULL OR d.id IS NULL", [], |r| r.get(0)).unwrap();
 
-    let cold_path = workspace.path(".forge/cold.sqlite");
+    let cold_path = workspace.path(".acdd/cold.sqlite");
     workspace.build_to(&cold_path);
     let cold = reader::open(&cold_path, workspace.root()).unwrap();
     let cold_verified = commitments::verify(&cold).is_ok();
@@ -116,12 +116,12 @@ fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
     linked.write("Parent/Foo.rs", "pub fn parent() {}\n");
     linked.write("Foo.rs", "pub fn leaf() {}\n");
     linked_alias_root.write("Foo.rs", "pub fn linked() {}\n");
-    fs::create_dir_all(w.path(".forge")).unwrap();
+    fs::create_dir_all(w.path(".acdd")).unwrap();
     #[cfg(unix)]
     let (root_alias, linked_alias) = {
         use std::os::unix::fs::symlink;
-        let root_alias = w.path(".forge/root-alias");
-        let linked_alias = w.path(".forge/linked-alias");
+        let root_alias = w.path(".acdd/root-alias");
+        let linked_alias = w.path(".acdd/linked-alias");
         symlink(w.root(), &root_alias).unwrap();
         symlink(linked_alias_root.root(), &linked_alias).unwrap();
         (root_alias, linked_alias)
@@ -129,7 +129,7 @@ fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
     #[cfg(not(unix))]
     let linked_alias = linked_alias_root.root().to_path_buf();
     w.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
         "linked_workspaces:\n  - name: library\n    path: {}\n  - name: aliased\n    path: {}\n",
         linked.root().display(), linked_alias.display()
@@ -272,7 +272,7 @@ fn distinct_filesystem_spellings_coexist_through_delta() {
     w.write("Foo.rs", "pub fn upper() {}\n");
     w.write("caf\u{e9}.rs", "pub fn nfc() {}\n");
     w.build();
-    if contextunity_forge_mcp::core::fs::is_case_insensitive_volume(w.root()) {
+    if contextunity_acdd::core::fs::is_case_insensitive_volume(w.root()) {
         eprintln!("case coexistence unavailable on case-insensitive volume");
     } else {
         w.write("foo.rs", "pub fn lower() {}\n");
@@ -641,7 +641,7 @@ fn linked_component_transfer_preserves_unmodified_containment_edges() {
     w.write("local/a.py", "def local(): pass\n");
     linked.write("src/b.py", "def bravo(): pass\n");
     linked.write("src/c.py", "def charlie(): pass\n");
-    w.write("forge-mcp.yaml", &format!("roots: [local]\nlinked_workspaces:\n  - name: linked\n    path: {}\n    roots: [src]\n", linked.root().display()));
+    w.write("acdd.yaml", &format!("roots: [local]\nlinked_workspaces:\n  - name: linked\n    path: {}\n    roots: [src]\n", linked.root().display()));
     w.build();
     let untouched_sql = "SELECT id||'|'||node_id FROM nodes WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path='local/a.py') ORDER BY id";
     let before = strings(&w.open(), untouched_sql);
@@ -887,7 +887,7 @@ fn dyn_trait_dispatch_add_change_and_remove_impls_match_cold_builds() {
             None => w.remove("src/beta.rs"),
         }
         let report = delta(w.root(), &w.db(), &["src/beta.rs".into()]).unwrap();
-        let cold_path = w.path(".forge/cold-dispatch.sqlite");
+        let cold_path = w.path(".acdd/cold-dispatch.sqlite");
         w.build_to(&cold_path);
         let cold = reader::open(&cold_path, w.root()).unwrap();
         let expected_candidates = strings(&cold, candidates);

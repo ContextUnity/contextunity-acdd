@@ -16,10 +16,7 @@ fn subtask_mcp_and_cli_operations() {
     let manifest = "---\nid: m-mcp-subtasks\ntitle: MCP Subtasks\ndoc_type: contract\ninvariants: [local-rules]\n---\n```yaml\ntask_ref: sub-demo\ntarget: Subtask demonstration\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     workspace.write("docs/milestones/010-subtasks.md", manifest);
     workspace.write("AGENTS.md", "# Agent Rules\n");
-    workspace.write(
-        "forge-mcp.yaml",
-        "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
-    );
+    workspace.write("acdd.yaml", "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n");
     let mut client = McpTestHarness::new(&workspace).expect("MCP new should succeed");
     client
         .payload(

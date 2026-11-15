@@ -1,4 +1,4 @@
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::models::{Edge, Facts},
     engine::linker,
 };

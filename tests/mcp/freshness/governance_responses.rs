@@ -5,7 +5,7 @@ fn mcp_document_governance_inspection_and_reference_identity() {
     let (ws, harness) = McpTestHarness::with_files(DOCUMENT_FILES);
     drop(harness.expect("MCP initialize"));
     ws.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "roots: [src]\ndocs: [docs/allowed, docs/reference]\n",
     );
     ws.write(

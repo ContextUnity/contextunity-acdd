@@ -31,22 +31,16 @@ pub(crate) fn prepare_indexed_boundary_workspace(
     if let Some(test_helper_source) = test_helper_source {
         root.write("src/test_helpers.rs", test_helper_source);
     }
+    root.write("AGENTS.md", "# Instructions\nLoad the acdd skill.\n");
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
     root.write(
-        "AGENTS.md",
-        "# Instructions\nLoad the contextunity-forge skill.\n",
-    );
-    root.write(
-        ".agents/skills/contextunity-forge/SKILL.md",
-        "# ContextUnity Forge\n",
-    );
-    root.write(
-        "forge-mcp.yaml",
-        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src, tests]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     root.write("docs/milestones/010-boundary.md", "---\nid: m-current-boundary\ntitle: Current boundary evidence\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: routing\ntarget: Preserve current seam and public signature boundaries\nproof_policy: seam-test-first\nscope: [src/api.rs, src/seam.rs]\nscope_roots: [src/, tests/]\n```\n");
     commit_fixture_baseline(&root);
     root.build();
-    let connection = rusqlite::Connection::open(root.path(".forge/code-map.sqlite")).unwrap();
+    let connection = rusqlite::Connection::open(root.path(".acdd/code-map.sqlite")).unwrap();
     let has_expected_witness = if let Some(intermediate) = expected_intermediate {
         let exact_witness: i64 = connection
             .query_row(
@@ -135,7 +129,7 @@ pub(crate) fn boundary_caller_edge_count(
     caller_paths: &[&str],
     caller_name: Option<&str>,
 ) -> i64 {
-    let connection = rusqlite::Connection::open(root.path(".forge/code-map.sqlite")).unwrap();
+    let connection = rusqlite::Connection::open(root.path(".acdd/code-map.sqlite")).unwrap();
     let caller_path_placeholders = (5..5 + caller_paths.len())
         .map(|index| format!("?{index}"))
         .collect::<Vec<_>>()

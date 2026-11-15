@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Forge/Codebase resource benchmarks and answer-quality capture."""
+"""Run ACDD/Codebase resource benchmarks and answer-quality capture."""
 
 from __future__ import annotations
 

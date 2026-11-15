@@ -1,5 +1,5 @@
 use crate::common::Workspace;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::{commitments, models::DocSection},
     db::{reader, writer},
     engine::{pipeline, scanner},
@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 #[test]
 fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() -> anyhow::Result<()>
 {
-    use contextunity_forge_mcp::core::models::stable_hash64;
+    use contextunity_acdd::core::models::stable_hash64;
 
     let item_count = 251;
     let workspace = Workspace::new();
@@ -42,13 +42,13 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() ->
             .collect::<anyhow::Result<Vec<_>>>()
     })?;
 
-    let db_path = workspace.root().join(".forge/storage.sqlite");
+    let db_path = workspace.root().join(".acdd/storage.sqlite");
     extraction_pool.install(|| {
         pipeline::build_with_cache_dir(
             workspace.root(),
             &db_path,
             None,
-            &workspace.path(".forge/extraction-cache"),
+            &workspace.path(".acdd/extraction-cache"),
         )
     })?;
     let conn = Connection::open(&db_path)?;
@@ -165,8 +165,8 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() ->
         .map(|node| (node.id.clone(), node))
         .collect();
     let live_versus_durable_nodes: Vec<(
-        contextunity_forge_mcp::core::models::Node,
-        Option<contextunity_forge_mcp::core::models::Node>,
+        contextunity_acdd::core::models::Node,
+        Option<contextunity_acdd::core::models::Node>,
     )> = extracted_facts
         .iter()
         .flat_map(|facts| facts.nodes.iter().cloned())
@@ -209,7 +209,7 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() ->
         assert_eq!(stored.2, source.language);
         assert_eq!(
             stored.3,
-            contextunity_forge_mcp::core::models::is_test(&source.path)
+            contextunity_acdd::core::models::is_test(&source.path)
         );
         assert!(!stored.4);
         assert_eq!(stored.6, "blob");
@@ -308,10 +308,7 @@ fn cli_memory_budget_precedence_fallback_and_rejection_are_observable() -> anyho
         let limits = memory_budget_mb.map_or_else(String::new, |value| {
             format!("limits:\n  memory_budget_mb: {value}\n")
         });
-        workspace.write(
-            "forge-mcp.yaml",
-            &format!("roots: [src]\ndocs: []\n{limits}"),
-        );
+        workspace.write("acdd.yaml", &format!("roots: [src]\ndocs: []\n{limits}"));
     };
     let read_persisted_commitments =
         |database: &std::path::Path| -> anyhow::Result<Vec<(String, i64, String)>> {
@@ -329,9 +326,9 @@ fn cli_memory_budget_precedence_fallback_and_rejection_are_observable() -> anyho
 
             let database = workspace
                 .root()
-                .join(".forge")
+                .join(".acdd")
                 .join(format!("{label}.sqlite"));
-            let mut command = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+            let mut command = Command::new(env!("CARGO_BIN_EXE_acdd"));
             command
                 .arg("--format")
                 .arg("json")
@@ -340,12 +337,12 @@ fn cli_memory_budget_precedence_fallback_and_rejection_are_observable() -> anyho
                 .arg("--output")
                 .arg(&database)
                 .env(
-                    "FORGE_EXTRACTION_CACHE_DIR",
-                    workspace.path(".forge/extraction-cache"),
+                    "ACDD_EXTRACTION_CACHE_DIR",
+                    workspace.path(".acdd/extraction-cache"),
                 )
-                .env_remove("FORGE_MEMORY_BUDGET_MB");
+                .env_remove("ACDD_MEMORY_BUDGET_MB");
             if let Some(value) = env_budget_mb {
-                command.env("FORGE_MEMORY_BUDGET_MB", value);
+                command.env("ACDD_MEMORY_BUDGET_MB", value);
             }
             let output = command.output()?;
             Ok((label.to_owned(), output, database))

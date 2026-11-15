@@ -9,12 +9,12 @@ Git milestone frontmatter and fenced YAML task blocks own specifications.
 `src/engine/tasks/mod.rs` serves CLI and MCP through the independent SQLite store
 in `src/db/tasks_store/mod.rs`. Code-index rebuilds preserve operational task state.
 For standalone authoring of milestones, implementation plans, and workflows before execution, dedicated standalone workflows (`docs/workflows/author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, `author-workflow.workflow.yaml`) provide pre-execution synthesis, review, and structural validation.
-For the lifecycle, load the `contextunity-forge` skill; for worktree and Git rules,
+For the lifecycle, load the `acdd` skill; for worktree and Git rules,
 follow root [AGENTS.md](../../AGENTS.md#worktrees-and-git-permissions).
 
 ## Configuration and identity
 
-`tasks_db` defaults to `.forge/tasks.sqlite` when omitted from `forge-mcp.yaml`.
+`tasks_db` defaults to `.acdd/tasks.sqlite` when omitted from `acdd.yaml`.
 When running within a git worktree, relative paths (including the default) resolve
 against the primary worktree root discovered via `git rev-parse --git-common-dir`,
 ensuring all linked worktrees share the same central tasks database without requiring
@@ -47,7 +47,7 @@ for mappings and examples.
 Milestone frontmatter `status: in_progress` is read as `active`.
 
 ```yaml
-tasks_db: .forge/tasks.sqlite
+tasks_db: .acdd/tasks.sqlite
 task_repository: forge-mcp
 task_project: forge-mcp
 agents_guidance: AGENTS.md
@@ -83,7 +83,7 @@ Unavailable linked roots are skipped. Duplicate names, roots, or task namespaces
 are rejected before mutation.
 
 The linked configuration's `name` selects its workspace. Its repository identity
-defaults to that name, while its own `forge-mcp.yaml` can override `task_repository`
+defaults to that name, while its own `acdd.yaml` can override `task_repository`
 and `task_project`. All operations through the primary server use the primary
 `tasks_db`; a linked repository's independent store is not used by this server.
 Synchronize linked specifications explicitly before querying their queue.
@@ -123,7 +123,7 @@ runs verification again unless it has valid evidence for that claim and candidat
 Compiled command evidence must satisfy the gate's passing-proof rules, including
 required test counts. A contract run must satisfy its expected outcome for every
 command trace before any of its observations can be reused as passing evidence.
-If the instruction file is missing, does not name the `contextunity-forge` skill, that skill is not installed globally or in the repository, or `.gitignore` lacks the canonical protective rules, the response includes `TASK_GUIDANCE_MISSING` and inline steps.
+If the instruction file is missing, does not name the `acdd` skill, that skill is not installed globally or in the repository, or `.gitignore` lacks the canonical protective rules, the response includes `TASK_GUIDANCE_MISSING` and inline steps.
 
 Scope paths are checked in both their owner's root and the task's claimed isolated
 worktree. Traversal and symlinks into another repository are rejected. Nested
@@ -134,12 +134,12 @@ perimeter cannot claim a foreign task.
 
 ### Scope Management and Co-Evolution Planning
 
-Every task contract declares an explicit file perimeter (`scope`) bounding allowable writes. Forge guards these write boundaries in SQLite (`task_scope_paths` table):
+Every task contract declares an explicit file perimeter (`scope`) bounding allowable writes. ACDD guards these write boundaries in SQLite (`task_scope_paths` table):
 
 - **Exclusive Scope Locks and Sibling Conflicts**: Declared scope paths are registered with `frozen = 1`. During sync, overlapping task scopes create predecessor-to-successor dependencies in task declaration order. These SQLite edges preserve `TaskSpec.depends_on` and authority digests. `wave_index` is zero without dependencies, otherwise one plus the greatest predecessor wave. An active sibling with exact, ancestor, or descendant overlap blocks a claim with `TASK_SCOPE_CONFLICT`.
-- **Dynamic Extension (`extend_scope`)**: A claimed task extends its perimeter within admitted base roots via `task extend-scope <task_id> <path>...` or MCP `task_manage(action: "extend_scope", ...)`. One SQLite transaction updates the task descriptor and stores a manifest replacement intent in the existing `task_store_metadata` pending-publication record. After commit, Forge atomically publishes the owning milestone block: `scope` remains the effective path set, while `extended_scope` records additions for review. Publication replaces the manifest only when its bytes match the recorded preimage, and replay succeeds when the target bytes are already present. If publication is interrupted or conflicts with an unexpected manifest edit, Forge retains the pending record and blocks task observation until `reconcile_checkpoints` completes or reports the conflict. Failures before SQLite commit leave both task state and manifest unchanged. A later `task sync` is idempotent for the extension. If an active sibling holds the requested scope, one transaction admits the paths, adds holder dependencies, publishes a `blockers` note, ends the claim, and returns `status: "parked"` with `blocked_by`. The descriptor retains `parked_worker_id` and `parked_worktree`; the same worker resumes in that worktree after the holders complete. Conflicts with other nonterminal owners remain fail-closed.
+- **Dynamic Extension (`extend_scope`)**: A claimed task extends its perimeter within admitted base roots via `task extend-scope <task_id> <path>...` or MCP `task_manage(action: "extend_scope", ...)`. One SQLite transaction updates the task descriptor and stores a manifest replacement intent in the existing `task_store_metadata` pending-publication record. After commit, ACDD atomically publishes the owning milestone block: `scope` remains the effective path set, while `extended_scope` records additions for review. Publication replaces the manifest only when its bytes match the recorded preimage, and replay succeeds when the target bytes are already present. If publication is interrupted or conflicts with an unexpected manifest edit, ACDD retains the pending record and blocks task observation until `reconcile_checkpoints` completes or reports the conflict. Failures before SQLite commit leave both task state and manifest unchanged. A later `task sync` is idempotent for the extension. If an active sibling holds the requested scope, one transaction admits the paths, adds holder dependencies, publishes a `blockers` note, ends the claim, and returns `status: "parked"` with `blocked_by`. The descriptor retains `parked_worker_id` and `parked_worktree`; the same worker resumes in that worktree after the holders complete. Conflicts with other nonterminal owners remain fail-closed.
 - **Terminal Task Scope Release**: Completed and cancelled tasks retain their scope history without holding active scope locks. Cancellation leaves dependencies unsatisfied; a dependent task still requires a completed predecessor.
-- **Protected System Scopes and Dirty File Prohibition**: System configuration and workflow profile files (`.forge/acdd/**` and profile definitions) are protected system paths (`TASK_SCOPE_PROTECTED`). Regular tasks cannot claim or extend into these paths via `extend_scope`. Furthermore, during `task_claim`, gate execution, and `task_submit`, the compiled binary inspects the worktree git status: if any file under `.forge/acdd/**` is dirty (modified, unstaged, staged, or untracked) and is not explicitly admitted in `task.spec.scope`, Forge fails closed with `TASK_SCOPE_VIOLATION`. This guarantees that agents cannot mutate workflow profiles, weaken review contours, or bypass test gates on the fly. Legitimate profile updates are performed either directly outside task cycles or within dedicated configuration tasks whose explicit scope admits `.forge/acdd/profile.yaml`.
+- **Protected System Scopes and Dirty File Prohibition**: System configuration and workflow profile files (`.acdd/**` and profile definitions) are protected system paths (`TASK_SCOPE_PROTECTED`). Regular tasks cannot claim or extend into these paths via `extend_scope`. Furthermore, during `task_claim`, gate execution, and `task_submit`, the compiled binary inspects the worktree git status: if any file under `.acdd/**` is dirty (modified, unstaged, staged, or untracked) and is not explicitly admitted in `task.spec.scope`, ACDD fails closed with `TASK_SCOPE_VIOLATION`. This guarantees that agents cannot mutate workflow profiles, weaken review contours, or bypass test gates on the fly. Legitimate profile updates are performed either directly outside task cycles or within dedicated configuration tasks whose explicit scope admits `.acdd/profile.yaml`.
 - **Documentation Co-Evolution Planning**: Shared documentation (such as `docs/reference/tasks.md`, `README.md`, or architecture documents) frequently evolves across multiple milestone tasks. When multiple tasks in a milestone must update the same documentation or common shared modules, dependencies must be sequenced via `depends_on`. Once the predecessor task completes, the successor task gains lawful access to extend into and evolve the shared documentation. Alternatively, documentation changes can be planned alongside code changes within the owning task's build gate, ensuring documentation and implementation remain synchronized without scope friction.
 - **Task Dependencies and Cross-Milestone Sequencing (`depends_on`)**: Task contracts declare local dependencies (`task_ref`), cross-milestone task dependencies (`milestone_id:task_ref`), or external project dependencies (`project/milestone_id:task_ref`). Dependent tasks remain in `blocked` status until all predecessor tasks are completed, preventing premature claims (`TASK_NOT_READY`).
 
@@ -191,7 +191,7 @@ and the two detail flags are mutually exclusive within one invocation. See the
 | `task_blackboard` | `action` is `post`, `read`, or `inspect`. Optional `scope` selects `milestone`, `task`, or `subtask`; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain that context. Post requires canonical `topic` and `payload`, accepts `author` and optional active-profile `gate`, and returns an ID. Read accepts `topic`, optional active-profile `gate`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first summaries and pagination metadata without payload. Inspect with `message_id` returns that message including payload and gate, ignoring optional `scope`, `task_id`, and `milestone_ref`; without `message_id`, inspect returns the scoped read page. |
 
 CLI `task submit` without `--evidence` and MCP `task_submit` without `evidence`
-compile claim-bound evidence for Contract, Command, and SeamTest proof gates. Forge reuses
+compile claim-bound evidence for Contract, Command, and SeamTest proof gates. ACDD reuses
 a fresh completed execution trace matching the current candidate fingerprint;
 otherwise it runs the gate's registered command in the claimed worktree. It then
 uses the regular submit validation path. Delivery proof is compiled from the
@@ -318,12 +318,12 @@ agents should deepen the active task using **subtasks**.
   `status` (`ready`, `in_progress`, `completed`, `cancelled`, or `blocked`), and optional `evidence` (verification command or test notes). Omitted status defaults to `ready`; legacy `pending` is accepted in manifests, stored descriptors, SQLite rows, CLI and MCP inputs, and returned as `ready`.
 - **Canonical State**: During active execution, SQLite (`task_subtasks` table
   and `Task.spec.subtasks` descriptor) is the canonical operational state. Upon task completion at the profile's terminal delivery gate,
-  Forge serializes all subtasks directly into the milestone Markdown fenced YAML block alongside the delivery receipt.
+  ACDD serializes all subtasks directly into the milestone Markdown fenced YAML block alongside the delivery receipt.
   The milestone document is the durable canonical record that survives SQLite clearing, rebuilds, and milestone handoff.
 - **Post-Delivery Immutability**: Subtasks are strictly operational execution artifacts. Once a task passes its terminal delivery gate
   (`status: completed`), its subtasks and receipt are frozen. Calling `subtask_add` or `subtask_update` on a completed or cancelled task
   fails closed with `TASK_TERMINAL`.
-- **Delivery Subtask Completion Guard**: During the terminal `deliver` gate, Forge mechanically enforces that all declared subtasks are either `completed` or `cancelled`. If any subtask remains in an unfinished status (`ready`, `in_progress`, `blocked`, `pending`), submission fails closed with `TASK_SUBTASKS_INCOMPLETE`. If any `completed` subtask lacks non-empty verification evidence, submission fails closed with `TASK_SUBTASK_EVIDENCE_MISSING`.
+- **Delivery Subtask Completion Guard**: During the terminal `deliver` gate, ACDD mechanically enforces that all declared subtasks are either `completed` or `cancelled`. If any subtask remains in an unfinished status (`ready`, `in_progress`, `blocked`, `pending`), submission fails closed with `TASK_SUBTASKS_INCOMPLETE`. If any `completed` subtask lacks non-empty verification evidence, submission fails closed with `TASK_SUBTASK_EVIDENCE_MISSING`.
 - **Digest Independence**: Contract digests exclude `spec.subtasks`. Adding, updating, or completing subtasks
   never triggers `AUTHORITY_GAP` or forces contract re-admission.
 - **Sync behavior**: When the task contract digest is unchanged, `task sync` updates subtask titles from Markdown
@@ -332,7 +332,7 @@ agents should deepen the active task using **subtasks**.
 
 ### Subtask guidance field
 
-`context_bundle.guidance.subtask_dod` returns the advisory criteria when `bundle` is true, the default. `bundle: false` omits `context_bundle`. `subtask_update` records the caller-provided status and evidence and does not score the criteria. The `contextunity-forge` skill lists the criteria.
+`context_bundle.guidance.subtask_dod` returns the advisory criteria when `bundle` is true, the default. `bundle: false` omits `context_bundle`. `subtask_update` records the caller-provided status and evidence and does not score the criteria. The `acdd` skill lists the criteria.
 
 ```yaml
 task_ref: language-profile
@@ -362,8 +362,8 @@ session metadata does not bypass or veto the worker check. Existing claim revisi
 worker, worktree, candidate and observed-proof bindings still apply.
 
 Optional session metadata comes from an explicit in-process argument first, then
-nonblank `FORGE_AGENT_SESSION_ID`; absent or blank transport leaves no metadata.
-Forge does not infer it from legacy agent host variables. The MCP server captures
+nonblank `ACDD_AGENT_SESSION_ID`; absent or blank transport leaves no metadata.
+ACDD does not infer it from legacy agent host variables. The MCP server captures
 the explicit transport at startup, supports trusted in-process metadata, and does
 not accept session identity from tool JSON. Configured role runners still generate
 and transport real distinct session identities/fingerprints for process isolation
@@ -395,11 +395,11 @@ active task, stage, claim and contract revisions, worker, and worktree.
 
 ### Context bundle matrix by proof taxonomy
 
-When `proof:` is omitted on a gate in the profile, [`infer_gate_proof`](../../crates/forge-tasks/src/tasks/profile/normalize.rs) automatically infers the internal verification mode (`ProofKind`) from the gate's structural attributes (`receipt: true` $\implies$ `delivery`, `expected_failure` $\implies$ `contract`, `command` $\implies$ `command`, `policy` or `contours` $\implies$ `review`, otherwise `none`). Explicit `proof:` declarations are used for `seam_test`, `contract` (without inline `expected_failure`), reusable schemas from the top-level `proofs:` catalog (`proof: <catalog_name>`, e.g. `proof: blueprint`), or inline recursive schemas (`proof: { scheme: { ... } }`).
+When `proof:` is omitted on a gate in the profile, [`infer_gate_proof`](../../crates/acdd-tasks/src/tasks/profile/normalize.rs) automatically infers the internal verification mode (`ProofKind`) from the gate's structural attributes (`receipt: true` $\implies$ `delivery`, `expected_failure` $\implies$ `contract`, `command` $\implies$ `command`, `policy` or `contours` $\implies$ `review`, otherwise `none`). Explicit `proof:` declarations are used for `seam_test`, `contract` (without inline `expected_failure`), reusable schemas from the top-level `proofs:` catalog (`proof: <catalog_name>`, e.g. `proof: blueprint`), or inline recursive schemas (`proof: { scheme: { ... } }`).
 
-Before any milestone task inside `- tasks:` can be claimed, all reachable applicable (`when`) pre-task root gates on the accepted route (`cursor.root_index < task_position`, such as `blueprint_synthesis`: `synthesize` $\to$ `review`) must have an accepted pass transition in `gate_transitions` (`subject = "milestone"`), or `task_claim` fails closed with `MILESTONE_PRE_TASK_GATE_PENDING`. When a pre-task root gate passes and its validated `scheme_proof` contains a per-task dictionary `tasks: { "<task_ref>": { ... } }`, Forge automatically records a `gate_transitions` row per task with `subject = <full_task_id>` (`<milestone_ref>:<task_ref>`) containing strictly that task's proof slice, and injects that task-scoped slice into `context_bundle` upon `task_claim` and `task_manage(action="context")`. Replay of persisted transitions preserves the accepted route: gates bypassed by routing do not block claims, while a missing reachable pass does.
+Before any milestone task inside `- tasks:` can be claimed, all reachable applicable (`when`) pre-task root gates on the accepted route (`cursor.root_index < task_position`, such as `blueprint_synthesis`: `synthesize` $\to$ `review`) must have an accepted pass transition in `gate_transitions` (`subject = "milestone"`), or `task_claim` fails closed with `MILESTONE_PRE_TASK_GATE_PENDING`. When a pre-task root gate passes and its validated `scheme_proof` contains a per-task dictionary `tasks: { "<task_ref>": { ... } }`, ACDD automatically records a `gate_transitions` row per task with `subject = <full_task_id>` (`<milestone_ref>:<task_ref>`) containing strictly that task's proof slice, and injects that task-scoped slice into `context_bundle` upon `task_claim` and `task_manage(action="context")`. Replay of persisted transitions preserves the accepted route: gates bypassed by routing do not block claims, while a missing reachable pass does.
 
-When claiming a gate with `task_claim`, Forge returns tailored context bundles based on the gate's proof behavior:
+When claiming a gate with `task_claim`, ACDD returns tailored context bundles based on the gate's proof behavior:
 
 | Proof Kind | Claim Context Bundle Content | Primary Role Guidance |
 |---|---|---|
@@ -425,7 +425,7 @@ references, and review evidence. Review contours are keyed objects containing
 proof is `{"none_proof":{}}` and seam test guidance includes exit code,
 references, and passed and failed counts.
 
-`evidence` is a direct JSON object bound to the active claim. The `commit` field can be omitted; Forge automatically captures the scoped candidate snapshot SHA on predecessor gates with snapshot persistence (`save: snapshot` / `save.post: snapshot`, e.g. `contract` and `build`), and inherits it on downstream gates (`review` and `deliver`). For example, a passing build submission contains:
+`evidence` is a direct JSON object bound to the active claim. The `commit` field can be omitted; ACDD automatically captures the scoped candidate snapshot SHA on predecessor gates with snapshot persistence (`save: snapshot` / `save.post: snapshot`, e.g. `contract` and `build`), and inherits it on downstream gates (`review` and `deliver`). For example, a passing build submission contains:
 
 ```json
 {
@@ -477,14 +477,14 @@ limited to 64 KiB. Review proof is wrapped in `review_proof` and requires a
 boolean `applicable` and nonempty `evidence`, including a rationale when
 inapplicable. Other gates carry non-null proof. Identical accepted retries return
 the stored result; changed or revoked evidence fails closed. The validated JSON
-is retained in `task_gates.evidence` without reading an evidence file. Supplied SHA values may be 7-to-40-character hexadecimal prefixes of the expected commit; Forge resolves them to the full canonical SHA before comparison and persistence. Task API responses retain full SHAs in receipt and snapshot fields, while `inspect_cmd` may use a short display form.
+is retained in `task_gates.evidence` without reading an evidence file. Supplied SHA values may be 7-to-40-character hexadecimal prefixes of the expected commit; ACDD resolves them to the full canonical SHA before comparison and persistence. Task API responses retain full SHAs in receipt and snapshot fields, while `inspect_cmd` may use a short display form.
 
 When a code map is available, passing contract and build submissions also
 enforce indexed task boundaries. Contract proof returns
 `TASK_SEAM_DISCONNECTED` unless its exact indexed test symbol has a current
 one- or two-hop path to a non-test production symbol inside admitted scope.
 Supported witness edges are `calls`, `imports`, `possible_calls`, `implements`,
-and `overrides`. Forge checks each hop's source and target identities, current
+and `overrides`. ACDD checks each hop's source and target identities, current
 typed outgoing references, and applicable import bindings against source parsed
 from the claimed worktree. It uses that worktree's code map when present;
 otherwise it uses the workspace's read-only code map. Missing or stale indexed
@@ -493,7 +493,7 @@ changing a test, helper, import, or binding used by the witness.
 
 Rust integration tests can import the root library through its Cargo crate name,
 including the underscore form of a hyphenated package name. An explicit
-`[lib].name` supplies the library name instead. Forge normalizes these imports
+`[lib].name` supplies the library name instead. ACDD normalizes these imports
 against the indexed root `src/lib.rs`, using the admitted Cargo manifest snapshot
 for the owning workspace. Ordinary imports, aliases, module-qualified calls and
 glob imports provide the same seam evidence as internal `crate::` imports.
@@ -514,10 +514,10 @@ signature. Rust trait methods are implicitly callable at the visibility of
 their containing visible trait, including methods with default bodies and
 declarations without bodies.
 
-At passing task delivery (`deliver`), Forge validates the current task
+At passing task delivery (`deliver`), ACDD validates the current task
 specification and accepted build and review proof, then writes
 `status: completed` and a receipt into the
-milestone task block. When `auto_commit: true` (default in profile), Forge automatically
+milestone task block. When `auto_commit: true` (default in profile), ACDD automatically
 creates an atomic Git commit directly from the candidate snapshot tree of the nearest predecessor gate with snapshot persistence (`save: snapshot` / `save.post: snapshot`, which is `build` in the default profile, whose candidate tree SHA is verified across all `need` review gates)
 plus the milestone receipt file, with parent `HEAD` (verifying `git rev-parse HEAD` matches `candidate_baseline_head`, the exact commit SHA of HEAD captured when the candidate snapshot was created).
 Standard commit message is derived from task target and completed subtasks, and hooks are enforced.
@@ -534,16 +534,16 @@ are stored as topic-labelled strings in the existing `architectural_notes` vecto
 the original message payload.
 The task becomes completed in SQLite and its blackboard messages are cleared.
 The milestone document is the durable context after task delivery. When `auto_commit` is active,
-Forge has already committed the deliverable; when `auto_commit: false`, commit the task's scoped source,
+ACDD has already committed the deliverable; when `auto_commit: false`, commit the task's scoped source,
 tests, and generated receipt in its claimed task worktree under standing permissions.
 Merge the delivered task branch into the milestone branch and delete the
 temporary task branch. Final handoff validates immutable task proofs and the
 [integration evidence](#milestone-cli-lifecycle), refreshes optional navigation
 pointers, and archives the document. Commit the archive afterward. Completed tasks
-can be reopened for actual task repairs with `contextunity-forge-mcp task reopen
+can be reopened for actual task repairs with `acdd task reopen
 <task-id>`; branch history rewrites alone do not require reopening them.
 
-Zero runtime backward compatibility applies strictly to SQLite runtime storage and active milestone manifests. Historical receipts archived in `docs/milestones/archive/` are read as-is and exempt from active profile receipt schema validation. Filtering by `--stage <id>` matches directly against the persistent `task.stage` string ID in SQLite; CLI argument validation checks that the stage ID is defined in the active profile of the workspace or open tasks. If a task references a stage missing from the active profile's `gates`, Forge fails closed with `TASK_STAGE_UNKNOWN`, naming mismatched gates and suggesting either migrating task records or pinning the intended profile via `acdd_profile: <path>:<sha256_prefix>`.
+Zero runtime backward compatibility applies strictly to SQLite runtime storage and active milestone manifests. Historical receipts archived in `docs/milestones/archive/` are read as-is and exempt from active profile receipt schema validation. Filtering by `--stage <id>` matches directly against the persistent `task.stage` string ID in SQLite; CLI argument validation checks that the stage ID is defined in the active profile of the workspace or open tasks. If a task references a stage missing from the active profile's `gates`, ACDD fails closed with `TASK_STAGE_UNKNOWN`, naming mismatched gates and suggesting either migrating task records or pinning the intended profile via `acdd_profile: <path>:<sha256_prefix>`.
 
 ## Task lifecycle diagnostics and error ergonomics
 
@@ -566,8 +566,8 @@ are appended when the placeholder is absent; equivalent expanded commands run
 once. Changes to the configured argument plan invalidate cached proof.
 
 Command processes (verification commands and handoff checks) execute in an
-isolated environment where internal Forge orchestration variables (`FORGE_CONFIG`,
-`FORGE_PROFILE`, `FORGE_DB`, `FORGE_WORKSPACE_ROOT`, `FORGE_AGENT_SESSION_ID`) are
+isolated environment where internal ACDD orchestration variables (`ACDD_CONFIG`,
+`ACDD_PROFILE`, `ACDD_DB`, `ACDD_WORKSPACE_ROOT`, `ACDD_AGENT_SESSION_ID`) are
 explicitly removed. This process isolation ensures that external build, test, and
 linter tools run against a clean project environment without inheriting parent
 workspace configuration or leaking paths into test fixtures.
@@ -584,7 +584,7 @@ return compact summaries without log files. An unexpected contract exit 0 retain
 its actual diagnostics, like a wrong exit code or missing failure signature.
 Failures fitting `limits.diagnostic_inline_bytes` (default 4096) return inline
 diagnostics. Larger failures retain a bounded excerpt and a `file:///` link to
-the full log under `<claimed-worktree>/.forge/task-traces/`. Durable proof does
+the full log under `<claimed-worktree>/.acdd/task-traces/`. Durable proof does
 not depend on optional log files. Modified or untracked paths outside the
 admitted or extended scope before or after execution prepend
 `SCOPE_VIOLATION_WARNING`; this warning does not fail the command.
@@ -600,7 +600,7 @@ Contract digests bind `repository`, `project`, `id`, `invariants`, `owners`, `de
 - **Field Attribution**: Digest differences are decomposed into qualified field names: milestone frontmatter (`milestone.invariants`, `milestone.owners`, `milestone.depends_on`, `milestone.acdd_profile`, `milestone.id`) versus task YAML (`task.target`, `task.proof_policy`, `task.scope`, `task.scope_roots`, `task.invariants`, `task.depends_on`, etc.).
 - **Revision Comparisons**: Errors state whether `file revision <= stored` or `file revision > stored (unsynced)` and output the exact command to resolve divergence:
   - If frontmatter diverged: revert the mutated milestone frontmatter fields (or declare task-level invariants inside `task.invariants`).
-  - If task YAML diverged: increment `contract_revision` in the task specification and run `contextunity-forge-mcp task sync`.
+  - If task YAML diverged: increment `contract_revision` in the task specification and run `acdd task sync`.
 - **Milestone ID Protection**: Pre-detects if `milestone.id` changed relative to stored tasks before syncing or claiming:
   `AUTHORITY_GAP: milestone '{milestone_ref}'. milestone id changed from '{stored_id}' to '{file_id}'. Do: revert milestone id in {milestone_ref}. Task ids are {project}/{id}:{task_ref}; task cannot be resolved.`
 - **`TASK_AUTHORITY_MISSING`**: Emits distinct actionable errors when the entire milestone file is missing versus when a specific task block is absent from the file.
@@ -618,12 +618,12 @@ Contract digests bind `repository`, `project`, `id`, `invariants`, `owners`, `de
 - `TASK_NOT_FOUND`: The requested task ID is not found in SQLite.
 - `TASK_SCOPE_INVALID`: Specified path falls outside admitted base roots (or traversal detected).
 - `TASK_SCOPE_CONFLICT`: Specified path belongs to an active, uncompleted sibling task in the milestone.
-- `TASK_SCOPE_PROTECTED`: Configuration paths under `.forge/acdd/**` require explicit admission in initial task scope.
+- `TASK_SCOPE_PROTECTED`: Configuration paths under `.acdd/**` require explicit admission in initial task scope.
 - `TASK_SCOPE_VIOLATION`: Dirty configuration or profile files detected in git status during claim or submission.
 
 ### In-Context Guidance Guardrails
 
-Upon every `task_claim`, Forge injects standard operational rules directly into `workflow_guidance.rules` so agents receive runtime guardrails without relying on external documents:
+Upon every `task_claim`, ACDD injects standard operational rules directly into `workflow_guidance.rules` so agents receive runtime guardrails without relying on external documents:
 1. `PROTECTED`: Milestone `id`, `invariants`, `owners`, `depends_on`, and `acdd_profile` are immutable while tasks are active.
 2. `ISOLATION`: Develop exclusively inside the assigned dedicated worktree.
 3. `IMMUTABILITY`: Keep admitted scope unchanged after review pass and during deliver.
@@ -674,7 +674,7 @@ subtask scopes use `milestone_ref` only as a direct milestone filter and do not
 reinterpret task selectors.
 Use `scope: "task"` or `scope: "subtask"` to select those levels. Omitted task
 and subtask keys resolve only through unique in-progress contexts; missing or
-ambiguous contexts fail closed. When scope and keys are all omitted, Forge uses
+ambiguous contexts fail closed. When scope and keys are all omitted, ACDD uses
 the unique in-progress task, fails if several are in progress, and falls back to
 the unique active milestone only when no task is in progress.
 
@@ -711,12 +711,12 @@ Use the CLI milestone commands to create, inspect, and close repository
 contracts:
 
 ```sh
-contextunity-forge-mcp milestone init --plan docs/plans/proposal.md [--dir docs/milestones] [--num 011] [--slug short-name] [--title "Title"] [--active]
-contextunity-forge-mcp milestone list [--archive] [--status planned|active|completed|cancelled|all]
-contextunity-forge-mcp milestone show <id-or-number> [--full]
-contextunity-forge-mcp milestone handoff-context <id-or-number> --target-base <git-selector>
-contextunity-forge-mcp milestone verify <id-or-number> --target-base <git-selector>
-contextunity-forge-mcp milestone handoff <id-or-number> [--commit <git-selector>] --evidence-file <external-review.json>
+acdd milestone init --plan docs/plans/proposal.md [--dir docs/milestones] [--num 011] [--slug short-name] [--title "Title"] [--active]
+acdd milestone list [--archive] [--status planned|active|completed|cancelled|all]
+acdd milestone show <id-or-number> [--full]
+acdd milestone handoff-context <id-or-number> --target-base <git-selector>
+acdd milestone verify <id-or-number> --target-base <git-selector>
+acdd milestone handoff <id-or-number> [--commit <git-selector>] --evidence-file <external-review.json>
 ```
 
 `milestone init` chooses the highest current or archived milestone number in its
@@ -772,15 +772,15 @@ Supply a JSON `IntegrationEvidence` record through `--evidence-file`:
 | `review.scope_findings`, `review.contract_findings` | Empty arrays after resolving unadmitted changes and contract/invariant findings. |
 | `verification.command`, `verification.exit_code` | Exact observed command returned by `milestone verify` and `0`. |
 | `verification.tests_passed`, `verification.tests_failed` | Counts returned by the successful observation and `0` failures; applicable counts must match the recorded proof. |
-| `verification.lint_command` | Optional registered command ID explicitly selected as the project linter. Forge verifies or reuses the recorded observation, preserving its exact command, exit code, output digests and content provenance. A missing selection is `unobserved`, never `clean`; a selected failing linter rejects handoff. |
-| `verification.project_command` | Registered verification command ID required when the integration commit contains source polish prepared by handoff context. Forge verifies or reuses the recorded observation against the reviewed content. |
+| `verification.lint_command` | Optional registered command ID explicitly selected as the project linter. ACDD verifies or reuses the recorded observation, preserving its exact command, exit code, output digests and content provenance. A missing selection is `unobserved`, never `clean`; a selected failing linter rejects handoff. |
+| `verification.project_command` | Registered verification command ID required when the integration commit contains source polish prepared by handoff context. ACDD verifies or reuses the recorded observation against the reviewed content. |
 
 Keep the evidence file outside tracked implementation content, for example under
 `/tmp/`. The coordinator supplies independent review and repository verification.
 `handoff-context` absorbs admitted working-tree polish into an integration commit
 before producing its binding. Obtain fresh review for that binding; changed content
 never inherits an earlier review. Source polish additionally requires the selected
-registered project verification command at handoff. Forge launches no agents.
+registered project verification command at handoff. ACDD launches no agents.
 
 > [!IMPORTANT]
 > Invariant: Final evidence binds current task contracts and accepted gate proofs,
@@ -833,7 +833,7 @@ location and complete task state, satisfies existing incoming dependencies on
 completed tasks and the terminal milestone, and records a tombstone with completed
 task IDs. The archive preserves task receipts and terminal subtask evidence;
 cancelled tasks receive no completion receipt. Set the project-wide
-`handoff_pruning: false` in `forge-mcp.yaml` to retain task history with references
+`handoff_pruning: false` in `acdd.yaml` to retain task history with references
 relocated to `archive/`, without creating a pruning tombstone. See
 [configuration](configuration.md#declarative-acdd-profile-and-role-configuration).
 Duration starts at `started_at` or the earliest
@@ -842,7 +842,7 @@ working manifest's removal; this later commit SHA is not part of its own receipt
 Historical archived receipts remain readable without rewriting them.
 
 Handoff stages the rendered archive, expected terminal tasks and landed receipts in
-a private, atomically written `.forge/handoff-<owner-digest>.json` journal. The owner
+a private, atomically written `.acdd/handoff-<owner-digest>.json` journal. The owner
 digest includes repository, project and milestone identity. It then atomically
 replaces the archive, removes the active document, prunes or relocates SQLite tasks,
 cleans owned refs and removes the journal. A failed transition retains the journal
@@ -954,7 +954,7 @@ ordinary receipt/HEAD rollback, reset and handoff. Release the underlying Git
 publication fault and run:
 
 ```sh
-contextunity-forge-mcp milestone db-recover [<id-or-number-or-path>]
+acdd milestone db-recover [<id-or-number-or-path>]
 ```
 
 `db-recover` restores active milestone tasks from durable per-task checkpoints (`refs/forge/state/`).
@@ -1012,24 +1012,24 @@ Fields:
 ## CLI and administration
 
 ```sh
-contextunity-forge-mcp task list [--repository NAME|all] [--milestone REF] [--status STATUS] [--stage STAGE] [--milestone-status active|planned|completed|all] [--planned|--completed|--all] [--full]
-contextunity-forge-mcp task create MILESTONE_REF TASK_REF [--workspace NAME]
-contextunity-forge-mcp task sync [MILESTONE_REF] [--workspace NAME]
-contextunity-forge-mcp task inspect TASK_ID
-contextunity-forge-mcp task claim TASK_ID --stage STAGE --worker WORKER --worktree PATH
-contextunity-forge-mcp task submit TASK_ID --stage STAGE --action pass|reject --evidence '<JSON_OBJECT>' [--findings JSON]
-contextunity-forge-mcp task blackboard post [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] [--gate GATE] --topic TOPIC --payload TEXT [--author WORKER]
-contextunity-forge-mcp task blackboard read [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] [--gate GATE] [--topic TOPIC] [--limit N] [--offset N]
-contextunity-forge-mcp task blackboard inspect MESSAGE_ID
-contextunity-forge-mcp task extend-scope TASK_ID PATH...
-contextunity-forge-mcp task delete TASK_ID [--force]
-contextunity-forge-mcp task delete --milestone REF [--workspace NAME] [--force]
-contextunity-forge-mcp task reset TASK_ID
-contextunity-forge-mcp task reopen TASK_ID
-contextunity-forge-mcp task cleanup
-contextunity-forge-mcp migrate preview [MILESTONE_REF]
-contextunity-forge-mcp migrate apply [MILESTONE_REF]
-contextunity-forge-mcp migrate verify [MILESTONE_REF]
+acdd task list [--repository NAME|all] [--milestone REF] [--status STATUS] [--stage STAGE] [--milestone-status active|planned|completed|all] [--planned|--completed|--all] [--full]
+acdd task create MILESTONE_REF TASK_REF [--workspace NAME]
+acdd task sync [MILESTONE_REF] [--workspace NAME]
+acdd task inspect TASK_ID
+acdd task claim TASK_ID --stage STAGE --worker WORKER --worktree PATH
+acdd task submit TASK_ID --stage STAGE --action pass|reject --evidence '<JSON_OBJECT>' [--findings JSON]
+acdd task blackboard post [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] [--gate GATE] --topic TOPIC --payload TEXT [--author WORKER]
+acdd task blackboard read [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] [--gate GATE] [--topic TOPIC] [--limit N] [--offset N]
+acdd task blackboard inspect MESSAGE_ID
+acdd task extend-scope TASK_ID PATH...
+acdd task delete TASK_ID [--force]
+acdd task delete --milestone REF [--workspace NAME] [--force]
+acdd task reset TASK_ID
+acdd task reopen TASK_ID
+acdd task cleanup
+acdd migrate preview [MILESTONE_REF]
+acdd migrate apply [MILESTONE_REF]
+acdd migrate verify [MILESTONE_REF]
 ```
 
 Task list defaults to active milestones and compact subtask references/statuses.
@@ -1071,7 +1071,7 @@ Without a reference, migration selects numbered Markdown milestones under
 
 ## Unified Task Context Bundle
 
-To achieve zero-shot agent orientation and eliminate exploratory tool-call loops, Forge aggregates task context by default upon MCP `task_claim` and CLI `task claim`, as well as through `task_manage(action: "context")` and CLI `task context <task-id>`. The MCP `task_claim` argument `bundle: false` returns minimal details; CLI `task claim` always returns the context bundle. The shared lifecycle formatter preserves all fields each mode supplies; see the [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
+To achieve zero-shot agent orientation and eliminate exploratory tool-call loops, ACDD aggregates task context by default upon MCP `task_claim` and CLI `task claim`, as well as through `task_manage(action: "context")` and CLI `task context <task-id>`. The MCP `task_claim` argument `bundle: false` returns minimal details; CLI `task claim` always returns the context bundle. The shared lifecycle formatter preserves all fields each mode supplies; see the [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
 
 ### Proof-Taxonomy Bundle Generation
 

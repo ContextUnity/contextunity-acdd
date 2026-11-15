@@ -73,7 +73,7 @@ fn discovery_package_fixture() -> anyhow::Result<(Workspace, Workspace, McpTestH
         (".gitignore", "gitignored/\n"),
     ]);
     packages.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "milestones: [docs/milestones]\nignore: [configured-ignored]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [.]\n",
             linked_packages.root().display()
@@ -87,7 +87,7 @@ fn discovery_package_fixture() -> anyhow::Result<(Workspace, Workspace, McpTestH
 #[test]
 fn same_server_refreshes_non_source_manifests_outside_source_roots() {
     let ws = Workspace::with_files(&[
-        ("forge-mcp.yaml", "roots: [src]\n"),
+        ("acdd.yaml", "roots: [src]\n"),
         (
             "src/consumer.py",
             "import novel_library\ndef run(): return novel_library.fetch()\n",
@@ -260,7 +260,7 @@ fn same_server_refreshes_non_source_manifests_outside_source_roots() {
     assert_ne!(next_components["items"][0], components["items"][0]);
 
     let (_bounded, bounded_client) = McpTestHarness::with_files(&[
-        ("forge-mcp.yaml", "roots: [src]\nlimits:\n  max_files: 1\n"),
+        ("acdd.yaml", "roots: [src]\nlimits:\n  max_files: 1\n"),
         ("src/app.py", "def app(): pass\n"),
         ("src/a/package.json", "{\"name\":\"bounded-a\"}"),
         ("src/b/package.json", "{\"name\":\"bounded-b\"}"),
@@ -291,13 +291,13 @@ fn same_server_refreshes_non_source_manifests_outside_source_roots() {
 #[test]
 fn manifest_changes_trigger_deterministic_rebuild_in_both_admit_and_delta() {
     let ws = Workspace::with_files(&[
-        ("forge-mcp.yaml", "roots: [src]\n"),
+        ("acdd.yaml", "roots: [src]\n"),
         ("requirements.txt", "requests>=2.0\n"),
         ("unindexed/requirements.txt", "unindexed_library>=1\n"),
         ("src/app.py", "import requests\n"),
     ]);
 
-    let db = ws.path(".forge/index.sqlite");
+    let db = ws.path(".acdd/index.sqlite");
     ws.build_to(&db);
     let initial_digest = crate::sqlite_fixture::manifest_digest_at(&db).unwrap();
 
@@ -324,11 +324,11 @@ fn manifest_changes_trigger_deterministic_rebuild_in_both_admit_and_delta() {
 
     // 2. Change manifest on disk and verify delta performs rebuild
     ws.write("requirements.txt", "requests>=2.2\n");
-    let delta_res = contextunity_forge_mcp::engine::pipeline::delta_with_cache_dir(
+    let delta_res = contextunity_acdd::engine::pipeline::delta_with_cache_dir(
         ws.root(),
         &db,
         &[PathBuf::from("src/app.py")],
-        &ws.path(".forge/extraction-cache"),
+        &ws.path(".acdd/extraction-cache"),
     )
     .unwrap();
     assert!(delta_res.is_object());

@@ -1,4 +1,4 @@
-use contextunity_forge_mcp::db::reader;
+use contextunity_acdd::db::reader;
 use rusqlite::{limits::Limit, Connection};
 
 #[test]

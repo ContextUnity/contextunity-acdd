@@ -25,7 +25,7 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
     if topic.trim() == "init" {
         return initialize(&root, force);
     }
-    let settings = forge_tasks::tasks::configuration::current(&root);
+    let settings = acdd_tasks::tasks::configuration::current(&root);
     let adapter =
         scanner::load_adapter(&root, settings.as_ref().and_then(|s| s.config.as_deref()))?;
     run_with_adapter(&root, topic, force, &adapter)
@@ -98,9 +98,9 @@ pub fn run_with_adapter(
 }
 
 fn initialize(root: &Path, force: bool) -> Result<Value> {
-    let path = root.join("forge-mcp.yaml");
+    let path = root.join("acdd.yaml");
     if path.exists() && !force {
-        bail!("forge-mcp.yaml already exists; pass force to replace");
+        bail!("acdd.yaml already exists; pass force to replace");
     }
     crate::core::fs::atomic_write(&path, TEMPLATE.as_bytes(), false)?;
     Ok(json!({"path":path,"created":true}))
@@ -115,9 +115,9 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "Use task_list to discover ready work, then task_claim with task_id, worker_id, stage and worktree to obtain the current claim and complete context.",
                 "Implement inside admitted scope. Call task_manage(action=verify, task_id=TASK_ID, test=tests/seam.rs::case) to observe proof, then task_submit for the claimed gate. Submission consumes accepted proof and follows profile transitions.",
                 "Inspect structured rejection findings and the configured upstream target; resume the retained builder rather than starting an unrelated replacement.",
-                "For configured headless runners use contextunity-forge-mcp task run TASK_ID --in-place or milestone run MILESTONE --in-place --target-base main. Complete required subtasks before delivery; use the existing immutable-candidate and receipt pipeline."
+                "For configured headless runners use acdd task run TASK_ID --in-place or milestone run MILESTONE --in-place --target-base main. Complete required subtasks before delivery; use the existing immutable-candidate and receipt pipeline."
             ],
-            "runners":"Configured role runner processes receive actual separate session identities and fingerprints through explicit FORGE_AGENT_SESSION_ID transport, plus the gate prompt/context. Independent gate checks compare worker_id against the accepted prior worker; runner session fingerprints remain recovery metadata and runner isolation controls. Rejections resume the target builder session with structured findings when reuse is configured. Only an accepted structured submission passes a task gate; process exit zero alone is insufficient.",
+            "runners":"Configured role runner processes receive actual separate session identities and fingerprints through explicit ACDD_AGENT_SESSION_ID transport, plus the gate prompt/context. Independent gate checks compare worker_id against the accepted prior worker; runner session fingerprints remain recovery metadata and runner isolation controls. Rejections resume the target builder session with structured findings when reuse is configured. Only an accepted structured submission passes a task gate; process exit zero alone is insufficient.",
             "blackboard":"Use task_blackboard for decisions, findings and blockers; inspect full payloads and follow the current claim's gate targeting.",
             "recovery":{
                 "TASK_ALREADY_CLAIMED":"Inspect the active owner and worktree. Resume the owning worker or coordinate release/recovery before claiming; preserve its work and proofs.",
@@ -127,7 +127,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "TASK_GIT_WORKTREE_MISSING":"Worktree directory was removed from disk. Run task cleanup to prune orphaned state checkpoints and metadata, or recreate the worktree.",
                 "TASK_RECOVERY_CHECKPOINT_INVALID":"Checkpoint references a missing or desynchronized worktree. Run task cleanup or milestone db-recover to auto-heal orphaned state refs."
             },
-            "example":{"mcp":{"name":"task_list","arguments":{"status":"ready"}},"cli":"contextunity-forge-mcp task list --status ready"},
+            "example":{"mcp":{"name":"task_list","arguments":{"status":"ready"}},"cli":"acdd task list --status ready"},
             "references":["AGENTS.md","docs/reference/tasks.md","docs/reference/cli.md"]
         })),
         "gates" => Ok(json!({
@@ -143,7 +143,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             "transitions":"The profile's pass target selects the next successful gate (default: next applicable gate); fail routes and max_attempts control retries/exhaustion. Classified findings select configured loop/reject_routing targets such as scope or symbols. Gate names and routes are profile data, not a fixed sequence.",
             "persistence":"save.pre and save.post apply configured persistence around execution. Parentless Git snapshot commits retain content without advancing branch history. Branch commits and automatic receipt commits occur only when configured. immutable: true fences the accepted candidate; drift fails TASK_CANDIDATE_MISMATCH and requires the configured rejection/repair path.",
             "verification":"task verify / task_manage(action=verify) observes without advancing; task submit consumes fresh claim-bound proof. gate_execution_traces persist actual command execution; commands.output.tests declares parsing of individual test outcomes and seam_test_refs records individually observed seams. Caller-supplied JSON is not an execution observation and cannot replace registered command proof or immutable candidate bindings.",
-            "example":{"mcp":{"name":"task_manage","arguments":{"action":"verify","task_id":"TASK_ID","test":"tests/seam.rs::case"}},"cli":"contextunity-forge-mcp task verify TASK_ID --test tests/seam.rs::case"},
+            "example":{"mcp":{"name":"task_manage","arguments":{"action":"verify","task_id":"TASK_ID","test":"tests/seam.rs::case"}},"cli":"acdd task verify TASK_ID --test tests/seam.rs::case"},
             "references":["docs/reference/tasks.md","docs/reference/acdd.md","docs/reference/cli.md"]
         })),
         "subtasks" => Ok(json!({
@@ -155,23 +155,23 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "missing_evidence":"A completed subtask with missing, empty or whitespace-only evidence fails TASK_SUBTASK_EVIDENCE_MISSING.",
                 "evidence_boundary":"subtask_update stores an evidence string; it does not independently execute or verify that command. Gate proof still requires observed verification."
             },
-            "example":{"mcp":{"name":"task_manage","arguments":{"action":"subtask_list","task_id":"TASK_ID"}},"cli":"contextunity-forge-mcp task subtask list TASK_ID"},
+            "example":{"mcp":{"name":"task_manage","arguments":{"action":"subtask_list","task_id":"TASK_ID"}},"cli":"acdd task subtask list TASK_ID"},
             "references":["docs/reference/tasks.md","docs/reference/cli.md"]
         })),
         "code" => {
             let query = topic_value(root, "query", adapter)?;
             let mut steps = ["start", "symbols", "snippets", "queries", "tests", "recovery"].into_iter().map(|key| query[key].clone()).collect::<Vec<_>>();
             steps.push(json!("Use ast_grep_search for structural patterns; guide ast describes profile capabilities. Treat candidate relationships and lexical test suggestions as navigation, not verified calls or coverage."));
-            Ok(json!({"purpose":"Navigate indexed code through the existing query guidance and verified relationships.","steps":steps,"example":{"mcp":{"name":"code_map_overview","arguments":{}},"cli":"contextunity-forge-mcp query overview"},"references":["docs/reference/mcp-tools.md","docs/reference/cli.md"]}))
+            Ok(json!({"purpose":"Navigate indexed code through the existing query guidance and verified relationships.","steps":steps,"example":{"mcp":{"name":"code_map_overview","arguments":{}},"cli":"acdd query overview"},"references":["docs/reference/mcp-tools.md","docs/reference/cli.md"]}))
         }
         "adapter" => Ok(
-            json!({"filename":"forge-mcp.yaml","template":TEMPLATE,"keys":["roots","eligible_roots","docs","milestones","plans","ignore","excluded_directory_names","excluded_file_names","linked_workspaces","workspaces"],"roots":"relative plain paths or .; symlinks and parent traversal rejected","ignore":"exact file or directory basenames","linked_workspaces":"array of {name, path, enabled?, roots, docs, ignore}; indexes external/sibling worktrees into unified graph; enabled (default true) allows toggling workspaces; skips unavailable worktrees and auto-rebuilds","default":"workspace root; gitignore and common build directories excluded"}),
+            json!({"filename":"acdd.yaml","template":TEMPLATE,"keys":["roots","eligible_roots","docs","milestones","plans","ignore","excluded_directory_names","excluded_file_names","linked_workspaces","workspaces"],"roots":"relative plain paths or .; symlinks and parent traversal rejected","ignore":"exact file or directory basenames","linked_workspaces":"array of {name, path, enabled?, roots, docs, ignore}; indexes external/sibling worktrees into unified graph; enabled (default true) allows toggling workspaces; skips unavailable worktrees and auto-rebuilds","default":"workspace root; gitignore and common build directories excluded"}),
         ),
         "docs" => Ok(
             json!({"frontmatter":"---\ndoc_type: architecture\ntitle: Module contract\n---","invariant":"> [!IMPORTANT] INV-MODULE-RULE: Document the rule and reference [`symbol.name`](../src/module.rs).","types":["architecture","adr","guide","api","plan"],
                 "purpose":"Find and read documentation, then author valid metadata, links and invariants.",
-                "steps":["Use search_docs(query, include_excerpt=true) to find relevant sections; CLI: contextunity-forge-mcp docs search TERM.","Use get_doc(path_or_id, detail=compact) for an outline, then section for the exact content; CLI: contextunity-forge-mcp docs get docs/guide.md.","Use forge_read(path, mode=lines) for source text; preserve frontmatter, relative links and uniquely linked symbol/invariant claims."],
-                "example":{"mcp":{"name":"search_docs","arguments":{"query":"guide"}},"cli":"contextunity-forge-mcp docs search guide"},"references":["docs/AGENTS.md","docs/reference/mcp-tools.md","docs/reference/cli.md"]}),
+                "steps":["Use search_docs(query, include_excerpt=true) to find relevant sections; CLI: acdd docs search TERM.","Use get_doc(path_or_id, detail=compact) for an outline, then section for the exact content; CLI: acdd docs get docs/guide.md.","Use acdd_read(path, mode=lines) for source text; preserve frontmatter, relative links and uniquely linked symbol/invariant claims."],
+                "example":{"mcp":{"name":"search_docs","arguments":{"query":"guide"}},"cli":"acdd docs search guide"},"references":["docs/AGENTS.md","docs/reference/mcp-tools.md","docs/reference/cli.md"]}),
         ),
         "acdd" => Ok(json!({
             "purpose":"Choose Workflow, Plan or Milestone execution under the canonical profile and proof authorities.",
@@ -181,7 +181,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "plan":"Source-owned plan steps execute in the active working tree with snapshots and no automatic branch commit. Use plan list, plan show SELECTOR and plan run SELECTOR --in-place. Explicit execution profiles must be task-only and snapshot-only.",
                 "milestone":"An admitted milestone follows synthesis, topological task waves, root verification, independent integration review and content-bound handoff. Use milestone run ID --in-place --target-base main, or owned isolated task worktrees. Existing task lifecycle, receipt, recovery and handoff owners remain authoritative."
             },
-            "example":{"mcp":{"name":"task_list","arguments":{}},"cli":"contextunity-forge-mcp task list"},
+            "example":{"mcp":{"name":"task_list","arguments":{}},"cli":"acdd task list"},
             "references":["docs/adr/0021-workflow-plan-and-milestone-lifecycle-hierarchy.md","docs/reference/cli.md","docs/reference/tasks.md"],
             "gates": ["blueprint_synthesis", "contract", "build", "review", "deliver", "verify", "polish", "milestone_review", "handoff"],
             "proof_policies": {
@@ -202,13 +202,13 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             "review_contours": ["paths", "claims", "concurrency", "project_isolation", "administration"],
             "subtask_rules": "Subtask must name concrete target, expected status, and verification command. Not completed with partial implementation. Use subtask_add to deepen tasks, not root task proliferation.",
             "commit_authority": "Follow current user authorization and repository AGENTS.md for task commits, integration and cleanup. Guidance alone grants no delivery or history-editing permission. Remote publication requires explicit approval.",
-            "reference": "Load the contextunity-forge skill for the procedure, AGENTS.md for worktrees and permissions, docs/reference/tasks.md for API and evidence schemas."
+            "reference": "Load the acdd skill for the procedure, AGENTS.md for worktrees and permissions, docs/reference/tasks.md for API and evidence schemas."
         })),
         "query" => Ok(json!({
             "start": "Call code_map_overview to identify indexed paths and coverage.",
             "sql_schema": "nodes(node_id, id, kind, name, qualname, path_id, line, end_line, is_test, language, generated, details, node_hash, owner_path_id); path_dictionary(path_id, path); edges(src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count); files(path, status, digest, size, language, is_test, generated, path_hash); doc_sections(doc_id, path, section_title, doc_type, content, invariants, referenced_symbols, is_invariant). Paths: FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id. Edge endpoints: FROM edges e JOIN nodes src ON e.src_hash=src.node_hash JOIN nodes dst ON e.dst_hash=dst.node_hash. nodes and edges have no path text column; edges have no src/dst text columns or compatibility views.",
             "symbols": "Use code_map_search with FTS terms or prefix* pattern. Hits include their indexed signature and inspect_selector arguments for code_map_inspect with show_source=true. Previews appear automatically for at most three total hits; set include_preview=true to include up to three previews on larger result sets. Selectors accept an exact ID, path:name, path:known_kind:name, path:line, or path#Lline. Bare names never get hijacked into modules. Compact inspect and explain include signature, docstring, receiver-aware container, inbound/outbound call counts, and up to five direct callers/callees; set include_coverage=true when resolution evidence is needed.",
-            "snippets": "Use forge_read(selector=...) for digest-verified symbol bodies, or forge_read(path=..., mode=lines|raw|search|delta|outline) for layered file reads. CLI: contextunity-forge-mcp read <path> --mode <mode>. Core reads work in minimal workspaces; conditional Hints reflect enabled graph and task signals.",
+            "snippets": "Use acdd_read(selector=...) for digest-verified symbol bodies, or acdd_read(path=..., mode=lines|raw|search|delta|outline) for layered file reads. CLI: acdd read <path> --mode <mode>. Core reads work in minimal workspaces; conditional Hints reflect enabled graph and task signals.",
             "tests": "Call code_map_tests on a narrow symbol or module; broad scopes are rejected before unbounded traversal.",
             "queries": "Use code_map_inspect and code_map_explain for symbols, code_map_analyze for diagnostics, and code_map_impact for traversal. Use code_map_query for sql (pass sql='SELECT ...' directly), untested, implementations, slice, unwired, and duplicates; pages use limit, offset, and generation.",
             "diagnostics": "Call code_map_analyze with target='' for workspace totals; use an indexed path for a smaller scope or an exact file for paged rows. Cycles require include_cycles=true.",

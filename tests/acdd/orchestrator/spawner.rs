@@ -1,7 +1,7 @@
 #![cfg(target_os = "linux")]
 
 use crate::common::Workspace;
-use forge_tasks::{
+use acdd_tasks::{
     engine::orchestrator::{
         spawner::{
             monitor_runner_process, render_role_prompt, spawn_role_runner, RunnerError,
@@ -282,7 +282,7 @@ fn runner_tokenizes_original_quotes_escapes_and_empty_arguments() {
 fn runner_rejects_blank_resume_session() {
     let root = Workspace::new();
     let mut context = invocation(root.root(), "data");
-    for session in ["", " \t\n", forge_tasks::store::UNKNOWN_SESSION_FINGERPRINT] {
+    for session in ["", " \t\n", acdd_tasks::store::UNKNOWN_SESSION_FINGERPRINT] {
         context.session_id = session.into();
         let result = spawn_role_runner(
             &runner_config("inspect"),
@@ -329,7 +329,7 @@ fn unsupported_provider_resume_is_rejected_at_profile_and_spawn_boundaries() {
         };
         let error = spawn_role_runner(&config, &context, RunnerSessionPolicy::Resume).unwrap_err();
         assert!(
-            error.to_string().contains("FORGE_AGENT_SESSION_ID"),
+            error.to_string().contains("ACDD_AGENT_SESSION_ID"),
             "{runner}: {error}"
         );
     }
@@ -530,7 +530,7 @@ fn dropping_runner_reaps_its_child() {
 fn runner_resumes_builder_identity_and_isolates_fresh_sessions() {
     let root = Workspace::new();
     let context = invocation(root.root(), "data");
-    let parent_identity = std::env::var_os("FORGE_AGENT_SESSION_ID");
+    let parent_identity = std::env::var_os("ACDD_AGENT_SESSION_ID");
     let mut observed_sessions = Vec::new();
     for policy in [
         RunnerSessionPolicy::Resume,
@@ -555,7 +555,7 @@ fn runner_resumes_builder_identity_and_isolates_fresh_sessions() {
             assert!(!observed_sessions.contains(&outcome.session_fingerprint));
         }
         observed_sessions.push(outcome.session_fingerprint);
-        assert_eq!(std::env::var_os("FORGE_AGENT_SESSION_ID"), parent_identity);
+        assert_eq!(std::env::var_os("ACDD_AGENT_SESSION_ID"), parent_identity);
     }
 }
 

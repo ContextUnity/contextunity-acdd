@@ -34,7 +34,7 @@ impl MilestoneHarness {
         action: &str,
         milestone_ref: Option<&str>,
     ) -> anyhow::Result<Value> {
-        use contextunity_forge_mcp::cli::migrate::MigrateCommand;
+        use contextunity_acdd::cli::migrate::MigrateCommand;
 
         let milestone_ref = milestone_ref.map(str::to_owned);
         let command = match action {
@@ -43,14 +43,14 @@ impl MilestoneHarness {
             "verify" => MigrateCommand::Verify { milestone_ref },
             _ => anyhow::bail!("unknown migration action: {action}"),
         };
-        contextunity_forge_mcp::cli::migrate::run(self.root(), command)
+        contextunity_acdd::cli::migrate::run(self.root(), command)
     }
 
     pub(crate) fn manage(
         &self,
-        request: contextunity_forge_mcp::engine::tasks::Manage,
+        request: contextunity_acdd::engine::tasks::Manage,
     ) -> anyhow::Result<Value> {
-        contextunity_forge_mcp::engine::tasks::manage(self.root(), request)
+        contextunity_acdd::engine::tasks::manage(self.root(), request)
     }
 
     pub(crate) fn claim_task(
@@ -64,9 +64,9 @@ impl MilestoneHarness {
 
     pub(crate) fn submit_request(
         &self,
-        request: contextunity_forge_mcp::engine::tasks::Submit,
+        request: contextunity_acdd::engine::tasks::Submit,
     ) -> anyhow::Result<Value> {
-        contextunity_forge_mcp::engine::tasks::submit(self.root(), request)
+        contextunity_acdd::engine::tasks::submit(self.root(), request)
     }
 
     pub(crate) fn execute_verification(
@@ -78,6 +78,6 @@ impl MilestoneHarness {
     }
 
     pub(crate) fn workspace_names(&self) -> anyhow::Result<Vec<String>> {
-        contextunity_forge_mcp::engine::tasks::list_workspaces(self.root())
+        contextunity_acdd::engine::tasks::list_workspaces(self.root())
     }
 }

@@ -1,5 +1,5 @@
 use crate::common::Workspace;
-use contextunity_forge_mcp::{db::reader, engine::pipeline};
+use contextunity_acdd::{db::reader, engine::pipeline};
 use rusqlite::Connection;
 use serde_json::Value;
 
@@ -34,7 +34,7 @@ impl RoutingFixture {
             workspace.root(),
             &workspace.db(),
             None,
-            &workspace.path(".forge/extraction-cache"),
+            &workspace.path(".acdd/extraction-cache"),
         )?;
         Ok(Self { workspace, imports })
     }
@@ -46,23 +46,23 @@ impl RoutingFixture {
             self.workspace.root(),
             &self.workspace.db(),
             &["urls.py".into()],
-            &self.workspace.path(".forge/extraction-cache"),
+            &self.workspace.path(".acdd/extraction-cache"),
         )
     }
 
     pub fn build_cold(&self) -> anyhow::Result<Value> {
         pipeline::build_with_cache_dir(
             self.workspace.root(),
-            &self.workspace.path(".forge/cold.sqlite"),
+            &self.workspace.path(".acdd/cold.sqlite"),
             None,
-            &self.workspace.path(".forge/extraction-cache"),
+            &self.workspace.path(".acdd/extraction-cache"),
         )
     }
 
     pub fn snapshot(&self) -> anyhow::Result<RouteSnapshot> {
         Ok(RouteSnapshot {
             incremental: reader::open(&self.workspace.db(), self.workspace.root())?,
-            cold: Connection::open(self.workspace.path(".forge/cold.sqlite"))?,
+            cold: Connection::open(self.workspace.path(".acdd/cold.sqlite"))?,
         })
     }
 }

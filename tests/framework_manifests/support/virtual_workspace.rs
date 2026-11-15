@@ -33,14 +33,14 @@ impl VirtualWorkspace {
             .files
             .iter()
             .filter(|(path, _)| {
-                path.starts_with(".forge/frameworks/")
+                path.starts_with(".acdd/frameworks/")
                     || languages::dependency_registry::is_dependency_manifest_filename(
                         path.rsplit('/').next().unwrap(),
                     )
             })
             .map(|(path, source)| (path.as_str(), source.as_str()))
             .collect();
-        manifests.sort_by_key(|(path, _)| path.starts_with(".forge/frameworks/"));
+        manifests.sort_by_key(|(path, _)| path.starts_with(".acdd/frameworks/"));
         let harness = FrameworkHarness::from_manifests(&manifests)?;
         let conn = self.index_with_registry(&harness.registry)?;
         Ok(FrameworkIndex {
@@ -53,11 +53,11 @@ impl VirtualWorkspace {
         &self,
         registry: &DependencyRegistry,
     ) -> anyhow::Result<Connection> {
-        use contextunity_forge_mcp::forge_core::{config::Adapter, models::FileEntry};
+        use contextunity_acdd::acdd_core::{config::Adapter, models::FileEntry};
         let mut entries = Vec::new();
         let mut facts = BTreeMap::new();
         for (path, source) in &self.files {
-            if path.starts_with(".forge/") {
+            if path.starts_with(".acdd/") {
                 continue;
             }
             let Some(profile) = languages::for_path(std::path::Path::new(path)) else {
@@ -78,7 +78,7 @@ impl VirtualWorkspace {
             );
         }
         ast::route_includes::compose_route_includes(&mut facts);
-        contextunity_forge_mcp::engine::pipeline::components(&mut facts);
+        contextunity_acdd::engine::pipeline::components(&mut facts);
         let graph = linker::link_compact_with_typed_registry(&facts, None, None, registry);
         let mut conn = Connection::open_in_memory()?;
         let root = std::path::Path::new("/__forge_virtual_workspace__");

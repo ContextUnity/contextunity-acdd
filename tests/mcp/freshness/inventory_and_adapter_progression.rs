@@ -2,7 +2,7 @@ use super::*;
 
 fn large_inventory_workspace() -> Workspace {
     let ws = Workspace::with_files(&[
-        ("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n"),
+        ("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n"),
         ("main.rs", "pub fn current() {}\n"),
         ("docs/intro.md", "# Intro\n\nCurrent documentation.\n"),
     ]);
@@ -24,7 +24,7 @@ fn large_inventory_workspace() -> Workspace {
             [format!("{inventory}{}", " ".repeat(8 * 1024 * 1024))],
         )
         .unwrap();
-        contextunity_forge_mcp::core::commitments::seal(&conn).unwrap();
+        contextunity_acdd::core::commitments::seal(&conn).unwrap();
     }
 
     ws
@@ -41,7 +41,7 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
         ),
         ("code_map_inspect", json!({"selector":"main.rs:current"})),
         (
-            "forge_read",
+            "acdd_read",
             json!({"selector":"main.rs:current","format":"json"}),
         ),
         (
@@ -71,7 +71,7 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
     ];
     for (name, arguments) in calls {
         let text = response_text(&mut client, name, arguments);
-        if name == "forge_read" {
+        if name == "acdd_read" {
             let snippet: Value = serde_json::from_str(&text).unwrap();
             assert!(snippet.get("source").is_some(), "{snippet}");
             assert!(snippet.get("coverage").is_none(), "{snippet}");
@@ -101,7 +101,7 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
     client.finish().expect("server must finish successfully");
 
     let server = Server::new(ws.root().to_path_buf(), ws.db())
-        .with_cache_dir(ws.path(".forge/extraction-cache"));
+        .with_cache_dir(ws.path(".acdd/extraction-cache"));
     server
         .read(|conn| {
             assert_eq!(
@@ -169,9 +169,9 @@ fn adapter_changes_preserve_or_rebuild_facts_in_one_workspace() {
         (None, default_limit),
     ] {
         if let Some(configuration) = configuration {
-            fixture.workspace.write("forge-mcp.yaml", configuration);
+            fixture.workspace.write("acdd.yaml", configuration);
         } else {
-            fs::remove_file(fixture.workspace.path("forge-mcp.yaml")).unwrap();
+            fs::remove_file(fixture.workspace.path("acdd.yaml")).unwrap();
         }
         let current = fixture
             .client
@@ -216,7 +216,7 @@ fn adapter_changes_preserve_or_rebuild_facts_in_one_workspace() {
         "response: [\n",
         "response: {page_size: 2}\nroots: ['..']\n",
     ] {
-        fixture.workspace.write("forge-mcp.yaml", invalid);
+        fixture.workspace.write("acdd.yaml", invalid);
         let error = fixture
             .client
             .request_value(
@@ -233,7 +233,7 @@ fn adapter_changes_preserve_or_rebuild_facts_in_one_workspace() {
     }
     fixture
         .workspace
-        .write("forge-mcp.yaml", "response: {page_size: 1}\n");
+        .write("acdd.yaml", "response: {page_size: 1}\n");
     let recovered = fixture
         .client
         .document("src/README.md", json!({"offset":1,"generation":generation}))
@@ -252,7 +252,7 @@ fn adapter_changes_preserve_or_rebuild_facts_in_one_workspace() {
         ("roots: [src]\nignore: [helper.md]\nadapter_version: 2\n", 1),
     ] {
         fixture.workspace.write(
-            "forge-mcp.yaml",
+            "acdd.yaml",
             &format!("{settings}response: {{page_size: 1}}\n"),
         );
         let changed = fixture

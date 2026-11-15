@@ -184,7 +184,7 @@ package_family = "python"
 activation = [{kind="package",name="jinja2"}]
 operation = {kind="named_binding",domain="local_filters",binding={kind="template_reference",symbol_kind="filter"}}
 "#;
-        registry.write(".forge/frameworks/local-filters.toml", manifest);
+        registry.write(".acdd/frameworks/local-filters.toml", manifest);
         registry.write(
             "app/pyproject.toml",
             "[project]\nname='app'\ndependencies=['jinja2']\n",
@@ -355,10 +355,10 @@ operation = {kind="named_binding",domain="local_filters",binding={kind="template
         registry.delta(&["app/site/jinja_env.py"]);
         readback(&registry.open(), true);
         registry.write(
-            ".forge/frameworks/local-filters.toml",
+            ".acdd/frameworks/local-filters.toml",
             "enabled=true\nreplace=true\n",
         );
-        registry.delta(&[".forge/frameworks/local-filters.toml"]);
+        registry.delta(&[".acdd/frameworks/local-filters.toml"]);
         readback(&registry.open(), false);
         assert_cold_observations(crate::languages::harness::cold_relations(&registry));
     }

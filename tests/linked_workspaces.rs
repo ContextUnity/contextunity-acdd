@@ -1,8 +1,8 @@
 #![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 
-use contextunity_forge_mcp::engine::scanner;
-use contextunity_forge_mcp::mcp::server::Server;
-use contextunity_forge_mcp::{
+use contextunity_acdd::engine::scanner;
+use contextunity_acdd::mcp::server::Server;
+use contextunity_acdd::{
     core::response::{QueryOptions, ResponsePolicy},
     db::reader,
 };
@@ -61,7 +61,7 @@ fn test_multi_workspace_indexing_and_resilience() {
     )
     .unwrap();
 
-    // 4. Configure forge-mcp.yaml in traverse linking commerce and gridviewspec
+    // 4. Configure acdd.yaml in traverse linking commerce and gridviewspec
     let adapter_content = format!(
         r#"format: forge-code-map-policy/v1
 adapter_version: 1
@@ -84,9 +84,9 @@ linked_workspaces:
         ws_commerce.display(),
         ws_grid.display()
     );
-    fs::write(ws_traverse.join("forge-mcp.yaml"), &adapter_content).unwrap();
+    fs::write(ws_traverse.join("acdd.yaml"), &adapter_content).unwrap();
 
-    let db_path = ws_traverse.join(".forge/code-map.sqlite");
+    let db_path = ws_traverse.join(".acdd/code-map.sqlite");
     let server = Server::new(ws_traverse.clone(), db_path.clone());
 
     // 5. Initial read: should index traverse + commerce + gridviewspec
@@ -264,7 +264,7 @@ linked_workspaces:
 "#,
         ws_sibling.display()
     );
-    fs::write(ws_main.join("forge-mcp.yaml"), &adapter_disabled).unwrap();
+    fs::write(ws_main.join("acdd.yaml"), &adapter_disabled).unwrap();
     let adapter = scanner::load_adapter(&ws_main, None).unwrap();
     assert!(
         adapter.linked_workspaces.is_empty(),
@@ -282,7 +282,7 @@ linked_workspaces:
 "#,
         ws_sibling.display()
     );
-    fs::write(ws_main.join("forge-mcp.yaml"), &adapter_enabled).unwrap();
+    fs::write(ws_main.join("acdd.yaml"), &adapter_enabled).unwrap();
     let adapter = scanner::load_adapter(&ws_main, None).unwrap();
     assert_eq!(adapter.linked_workspaces.len(), 1);
     assert_eq!(adapter.linked_workspaces[0].name, "sibling");
@@ -297,7 +297,7 @@ linked_workspaces:
 "#,
         ws_sibling.display()
     );
-    fs::write(ws_main.join("forge-mcp.yaml"), &adapter_default).unwrap();
+    fs::write(ws_main.join("acdd.yaml"), &adapter_default).unwrap();
     let adapter = scanner::load_adapter(&ws_main, None).unwrap();
     assert_eq!(adapter.linked_workspaces.len(), 1);
     assert_eq!(adapter.linked_workspaces[0].name, "sibling");
@@ -344,9 +344,9 @@ linked_workspaces:
 "#,
         ws_linked.display()
     );
-    fs::write(ws_main.join("forge-mcp.yaml"), &adapter_content).unwrap();
+    fs::write(ws_main.join("acdd.yaml"), &adapter_content).unwrap();
 
-    let db_path = ws_main.join(".forge/code-map.sqlite");
+    let db_path = ws_main.join(".acdd/code-map.sqlite");
     let server = Server::new(ws_main.clone(), db_path);
 
     // Initial read must succeed without looping or erroring on admission

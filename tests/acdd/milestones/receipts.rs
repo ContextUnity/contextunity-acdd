@@ -13,7 +13,7 @@ fn repacked_task_commits_sync_and_handoff_cleanly() {
         &milestone_content,
         "",
     );
-    let original_profile = root.document(".forge/acdd/profile.yaml");
+    let original_profile = root.document(".acdd/profile.yaml");
     let _initial_commit = root.head();
 
     // 1. Sync milestone
@@ -64,8 +64,8 @@ fn repacked_task_commits_sync_and_handoff_cleanly() {
     root.commit_staged("Foreign commit outside scope");
     let foreign_sha = root.head();
     // 5d. Commit modifying protected profile without scope: sync must reject
-    root.write(".forge/acdd/profile.yaml", "gates: []\n");
-    root.stage_forced_paths(&[".forge/acdd/profile.yaml"]);
+    root.write(".acdd/profile.yaml", "gates: []\n");
+    root.stage_forced_paths(&[".acdd/profile.yaml"]);
     root.commit_staged("Modify protected profile without scope");
     let protected_sha = root.head();
     // 5f. Divergent commit from the same baseline with different content in scope: sync must reject
@@ -90,7 +90,7 @@ fn repacked_task_commits_sync_and_handoff_cleanly() {
     };
     // Every receipt permutation reaches validation with the genuine valid
     // runner profile. A malformed active profile must not mask receipt errors.
-    root.write(".forge/acdd/profile.yaml", &original_profile);
+    root.write(".acdd/profile.yaml", &original_profile);
     for (scenario, commit, rejection) in [
         (
             "decision",
@@ -179,9 +179,9 @@ fn repacked_task_commits_sync_and_handoff_cleanly() {
             .contains("TASK_GATE_EVIDENCE_CORRUPTED"),
         "expected TASK_GATE_EVIDENCE_CORRUPTED error"
     );
-    let corrupt_verify = contextunity_forge_mcp::cli::migrate::run(
+    let corrupt_verify = contextunity_acdd::cli::migrate::run(
         root.root(),
-        contextunity_forge_mcp::cli::migrate::MigrateCommand::Verify {
+        contextunity_acdd::cli::migrate::MigrateCommand::Verify {
             milestone_ref: Some("docs/milestones/010-repack.md".into()),
         },
     );
@@ -269,12 +269,12 @@ fn repacked_task_commits_sync_and_handoff_cleanly() {
     );
 
     // Remove the deliberately foreign migration fixtures from the final integration.
-    for path in ["tests/unrelated.rs", ".forge/acdd/profile.yaml"] {
+    for path in ["tests/unrelated.rs", ".acdd/profile.yaml"] {
         root.remove_file(path);
     }
-    root.commit_fixture_inputs(&["tests/unrelated.rs", ".forge/acdd/profile.yaml"]);
+    root.commit_fixture_inputs(&["tests/unrelated.rs", ".acdd/profile.yaml"]);
     root.write(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         &crate::acdd::support::standalone_profile_yaml(&fixture_profile()),
     );
     let handoff_commit = root.head();
@@ -436,9 +436,9 @@ fn record_task_commits_false_archives_commitless_markdown_receipt_and_syncs_clea
     drop(store3);
 
     // 8. Verify migrate verify succeeds with 0 conflicts on the commitless archive
-    let migrate_res = contextunity_forge_mcp::cli::migrate::run(
+    let migrate_res = contextunity_acdd::cli::migrate::run(
         root.root(),
-        contextunity_forge_mcp::cli::migrate::MigrateCommand::Verify {
+        contextunity_acdd::cli::migrate::MigrateCommand::Verify {
             milestone_ref: Some("docs/milestones/archive/010-commitless.md".into()),
         },
     )

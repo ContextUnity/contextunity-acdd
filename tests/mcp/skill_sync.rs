@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use contextunity_forge_mcp::engine::docs;
+use contextunity_acdd::engine::docs;
 use pulldown_cmark::{Event, Parser, Tag};
 
 fn read_skill_files(root: &Path) -> io::Result<BTreeMap<PathBuf, Vec<u8>>> {
@@ -65,7 +65,7 @@ fn collect_skill_files(
 
 #[test]
 fn test_skill_markdown_links_resolve_from_supported_install_layouts() {
-    let repo_skill = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/contextunity-forge");
+    let repo_skill = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/acdd");
     let skill_files = read_skill_files(&repo_skill).unwrap_or_else(|error| {
         panic!(
             "Cannot read repository skill tree at {}: {error}",
@@ -77,15 +77,11 @@ fn test_skill_markdown_links_resolve_from_supported_install_layouts() {
     let layouts = [
         (
             "user-level",
-            temp_root
-                .path
-                .join("home/.agents/skills/contextunity-forge"),
+            temp_root.path.join("home/.agents/skills/acdd"),
         ),
         (
             "repository-local",
-            temp_root
-                .path
-                .join("repository/.agents/skills/contextunity-forge"),
+            temp_root.path.join("repository/.agents/skills/acdd"),
         ),
     ];
 
@@ -112,7 +108,7 @@ fn test_skill_markdown_links_resolve_from_supported_install_layouts() {
 
 #[test]
 fn onboarding_reference_is_reachable_with_canonical_configuration_assets() {
-    let skill_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/contextunity-forge");
+    let skill_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/acdd");
     let files = read_skill_files(&skill_root).expect("read companion skill assets");
     let entrypoint = std::str::from_utf8(&files[Path::new("SKILL.md")]).unwrap();
     let entry_sections = docs::extract_with_details("SKILL.md", entrypoint, 0.0).unwrap();
@@ -143,7 +139,7 @@ fn onboarding_reference_is_reachable_with_canonical_configuration_assets() {
         .collect::<BTreeSet<_>>();
     for resource in [
         "adapters.md",
-        "forge-mcp.yaml.example",
+        "acdd.yaml.example",
         "acdd_profile.yaml.example",
         "agents.md.example",
     ] {
@@ -268,7 +264,7 @@ impl TemporaryDirectory {
             .map_err(|error| io::Error::other(error.to_string()))?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "contextunity-forge-skill-links-{}-{timestamp}",
+            "acdd-skill-links-{}-{timestamp}",
             std::process::id()
         ));
         fs::create_dir(&path)?;

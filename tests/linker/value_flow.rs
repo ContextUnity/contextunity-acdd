@@ -1,4 +1,4 @@
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::{
         models::{Facts, Node},
         semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
@@ -307,7 +307,7 @@ fn inferred_factory_returns_relink_bindings_and_leave_cycles_unknown() {
     let position = |line| SourcePosition { line, column: 0 };
     #[allow(clippy::field_reassign_with_default)]
     let returning = |name: &str, line| {
-        let mut framework = contextunity_forge_mcp::core::semantic::FrameworkScopeFacts::default();
+        let mut framework = contextunity_acdd::core::semantic::FrameworkScopeFacts::default();
         framework.return_value = Some(ValueExpr::Call {
             callee: name.into(),
             site: None,

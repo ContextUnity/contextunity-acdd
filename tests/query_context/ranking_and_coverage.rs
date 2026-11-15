@@ -717,12 +717,12 @@ function shadowed(test: Function) {
                         }
                     }
                     if case == "test_long" {
-                        let markdown = contextunity_forge_mcp::core::format::render_for_operation(
+                        let markdown = contextunity_acdd::core::format::render_for_operation(
                             &found,
-                            contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+                            contextunity_acdd::core::format::OutputFormat::Markdown,
                             "code_map_tests",
                             None,
-                            contextunity_forge_mcp::core::format::OperationKind::Navigation,
+                            contextunity_acdd::core::format::OperationKind::Navigation,
                         );
                         let breadcrumb = markdown
                             .split("Verified call path:")
@@ -750,12 +750,12 @@ function shadowed(test: Function) {
                         assert!(breadcrumb.contains("test_helper"), "{breadcrumb}");
                         assert!(breadcrumb.contains("(target)"), "{breadcrumb}");
 
-                        let json = contextunity_forge_mcp::core::format::render_for_operation(
+                        let json = contextunity_acdd::core::format::render_for_operation(
                             &found,
-                            contextunity_forge_mcp::core::format::OutputFormat::Json,
+                            contextunity_acdd::core::format::OutputFormat::Json,
                             "code_map_tests",
                             None,
-                            contextunity_forge_mcp::core::format::OperationKind::Navigation,
+                            contextunity_acdd::core::format::OperationKind::Navigation,
                         );
                         assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), found);
                     }
@@ -1032,12 +1032,12 @@ fn test_mapping_uses_lexical_fallback_when_no_test_edges_exist() {
     assert!(lexical["connection"]
         .get("verified_call_path_nodes")
         .is_none());
-    let markdown = contextunity_forge_mcp::core::format::render_for_operation(
+    let markdown = contextunity_acdd::core::format::render_for_operation(
         &inbound,
-        contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+        contextunity_acdd::core::format::OutputFormat::Markdown,
         "code_map_tests",
         None,
-        contextunity_forge_mcp::core::format::OperationKind::Navigation,
+        contextunity_acdd::core::format::OperationKind::Navigation,
     );
     assert!(
         markdown.contains("Lexical fallback is unverified")
@@ -1454,7 +1454,7 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
 #[test]
 fn search_docs_prioritizes_all_term_matches_above_single_term_title_hits() {
     let workspace = Workspace::new();
-    workspace.write("forge-mcp.yaml", "roots: [.]\ndocs: [docs]\n");
+    workspace.write("acdd.yaml", "roots: [.]\ndocs: [docs]\n");
     workspace.write("docs/alpha.md", "# Alpha\n\nUnrelated text.\n");
     workspace.write(
         "docs/overview.md",
@@ -1505,7 +1505,7 @@ fn search_docs_prioritizes_all_term_matches_above_single_term_title_hits() {
 fn search_docs_resolves_component_via_adapter_aliases_and_owners() {
     let workspace = Workspace::new();
     workspace.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         r#"roots: [.]
 eligible_roots: [extensions, packages]
 docs: [extensions, packages]

@@ -127,7 +127,7 @@ fn linked_projects_preserve_framework_lineage_and_protocol_identity_isolation() 
     let second = second_workspace();
     let linked = fixture_workspace(&[]);
     linked.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [.]\nlinked_workspaces:\n  - name: first\n    path: '{}'\n    roots: [.]\n  - name: second\n    path: '{}'\n    roots: [.]\n",
             first.root().display(),

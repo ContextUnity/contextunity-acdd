@@ -1,5 +1,5 @@
 use super::*;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::response::{CoverageOptions, QueryOptions, ResponsePolicy},
     db::{reader, traversal},
 };

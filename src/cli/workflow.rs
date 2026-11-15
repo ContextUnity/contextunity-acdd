@@ -1,5 +1,5 @@
 use super::paths::verify_no_symlink_traversal;
-use crate::forge_tasks::engine::orchestrator::workflow;
+use crate::acdd_tasks::engine::orchestrator::workflow;
 use anyhow::Result;
 use clap::Subcommand;
 use serde_json::{json, Value};
@@ -23,7 +23,7 @@ pub enum WorkflowCommand {
         #[arg(long)]
         goal: Option<String>,
     },
-    /// Clear standalone workflow execution run logs in .forge/runs/ and traces.
+    /// Clear standalone workflow execution run logs in .acdd/runs/ and traces.
     Clear {
         /// Workflow name or discovered root-relative path.
         selector: String,
@@ -100,7 +100,7 @@ pub fn run(root: &Path, command: WorkflowCommand) -> Result<Value> {
 
             let runs_dir = verify_no_symlink_traversal(
                 root,
-                Path::new(".forge/runs"),
+                Path::new(".acdd/runs"),
                 "WORKFLOW_PATH_INVALID",
             )?;
             let mut to_delete = Vec::new();
@@ -154,7 +154,7 @@ pub fn run(root: &Path, command: WorkflowCommand) -> Result<Value> {
             }
 
             let mut traces_deleted = 0;
-            let db_path = forge_tasks::database_path(root)?;
+            let db_path = acdd_tasks::database_path(root)?;
             if db_path.exists() {
                 let conn = rusqlite::Connection::open(&db_path)?;
                 let prefix = format!("{slug}#");

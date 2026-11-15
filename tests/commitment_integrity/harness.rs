@@ -1,5 +1,5 @@
-pub(super) use contextunity_forge_mcp::core::commitments;
-use contextunity_forge_mcp::core::schema::SCHEMA_DDL;
+pub(super) use contextunity_acdd::core::commitments;
+use contextunity_acdd::core::schema::SCHEMA_DDL;
 use rusqlite::params;
 use rusqlite::Connection;
 

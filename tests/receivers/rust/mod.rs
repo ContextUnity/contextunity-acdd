@@ -1,6 +1,6 @@
 #![cfg(feature = "lang-rust")]
 
-use contextunity_forge_mcp::engine::{ast, linker};
+use contextunity_acdd::engine::{ast, linker};
 use std::collections::BTreeMap;
 
 mod builtin_receivers;

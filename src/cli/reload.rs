@@ -20,7 +20,7 @@ pub fn run() -> Result<Value> {
         }
     }
     if signaled.is_empty() {
-        bail!("no running contextunity-forge-mcp MCP server found for this executable and user");
+        bail!("no running acdd MCP server found for this executable and user");
     }
     Ok(serde_json::json!({"signaled_pids": signaled}))
 }
@@ -351,18 +351,15 @@ mod tests {
     #[test]
     fn canonical_cli_grammar_selects_only_server_invocations() {
         for (args, expected) in [
-            (vec!["forge"], true),
-            (vec!["forge", "serve"], true),
-            (vec!["forge", "--root", "serve"], true),
-            (
-                vec!["forge", "--root", "project with spaces", "serve"],
-                true,
-            ),
-            (vec!["forge", "read", "serve"], false),
-            (vec!["forge", "--help"], false),
-            (vec!["forge", "--version"], false),
-            (vec!["forge", "--root"], false),
-            (vec!["forge", "unknown-command"], false),
+            (vec!["acdd"], true),
+            (vec!["acdd", "serve"], true),
+            (vec!["acdd", "--root", "serve"], true),
+            (vec!["acdd", "--root", "project with spaces", "serve"], true),
+            (vec!["acdd", "read", "serve"], false),
+            (vec!["acdd", "--help"], false),
+            (vec!["acdd", "--version"], false),
+            (vec!["acdd", "--root"], false),
+            (vec!["acdd", "unknown-command"], false),
             (vec![], false),
         ] {
             assert_eq!(
@@ -376,14 +373,14 @@ mod tests {
     #[test]
     fn darwin_argument_boundary_respects_argc_padding_and_empty_values() {
         let mut bytes = 4i32.to_ne_bytes().to_vec();
-        bytes.extend_from_slice(b"/installed/forge\0\0\0forge\0read\0\0serve\0FORGE_FAKE=serve\0");
+        bytes.extend_from_slice(b"/installed/acdd\0\0\0acdd\0read\0\0serve\0ACDD_FAKE=serve\0");
         let (exec_path, args) = darwin_proc_args(&bytes).unwrap();
-        assert_eq!(exec_path, std::path::Path::new("/installed/forge"));
-        assert_eq!(args, ["forge", "read", "", "serve"]);
+        assert_eq!(exec_path, std::path::Path::new("/installed/acdd"));
+        assert_eq!(args, ["acdd", "read", "", "serve"]);
         assert!(!server_invocation(args));
 
         let mut default = 1i32.to_ne_bytes().to_vec();
-        default.extend_from_slice(b"/installed/forge\0\0forge\0ignored-environment\0");
+        default.extend_from_slice(b"/installed/acdd\0\0acdd\0ignored-environment\0");
         assert!(server_invocation(darwin_argv(&default).unwrap()));
 
         for corrupt in [
@@ -392,28 +389,28 @@ mod tests {
             (-1i32).to_ne_bytes().to_vec(),
             {
                 let mut b = 1i32.to_ne_bytes().to_vec();
-                b.extend_from_slice(b"\0\0forge\0");
+                b.extend_from_slice(b"\0\0acdd\0");
                 b
             },
             {
                 let mut b = 2i32.to_ne_bytes().to_vec();
-                b.extend_from_slice(b"/forge\0\0forge\0");
+                b.extend_from_slice(b"/acdd\0\0acdd\0");
                 b
             },
             {
                 let mut b = 1i32.to_ne_bytes().to_vec();
-                b.extend_from_slice(b"/forge\0\0unterminated");
+                b.extend_from_slice(b"/acdd\0\0unterminated");
                 b
             },
             1i32.to_ne_bytes()[..2].to_vec(),
             {
                 let mut b = 1i32.to_ne_bytes().to_vec();
-                b.extend_from_slice(b"/forge");
+                b.extend_from_slice(b"/acdd");
                 b
             },
             {
                 let mut b = 1i32.to_ne_bytes().to_vec();
-                b.extend_from_slice(b"/forge\0\0\0");
+                b.extend_from_slice(b"/acdd\0\0\0");
                 b
             },
         ] {
@@ -424,9 +421,9 @@ mod tests {
     #[test]
     fn darwin_argv_excludes_environment_from_cli_grammar() {
         let mut bytes = 2i32.to_ne_bytes().to_vec();
-        bytes.extend_from_slice(b"/forge\0\0forge\0read\0serve\0");
+        bytes.extend_from_slice(b"/acdd\0\0acdd\0read\0serve\0");
         let argv = darwin_argv(&bytes).unwrap();
-        assert_eq!(argv, ["forge", "read"]);
+        assert_eq!(argv, ["acdd", "read"]);
         assert!(!server_invocation(argv));
         bytes.truncate(bytes.len() - b"serve\0".len() - 1);
         assert!(darwin_argv(&bytes).is_none());
@@ -441,27 +438,27 @@ mod tests {
         let base = std::env::temp_dir()
             .canonicalize()
             .unwrap()
-            .join(format!("forge_reload_exe_{}", std::process::id()));
+            .join(format!("acdd_reload_exe_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let real_dir = base.join("private_var/bin");
         let alias_dir = base.join("var_bin");
         std::fs::create_dir_all(&real_dir).unwrap();
-        let real_bin = real_dir.join("forge");
+        let real_bin = real_dir.join("acdd");
         std::fs::write(&real_bin, b"").unwrap();
         symlink(&real_dir, &alias_dir).unwrap();
 
-        let alias_bin = alias_dir.join("forge");
+        let alias_bin = alias_dir.join("acdd");
         let canonical = crate::core::fs::resolve_path_with_existing_prefix(&alias_bin);
         assert!(executable_matches(&real_bin, &alias_bin, &canonical));
         assert!(!executable_matches(
-            &base.join("other/forge"),
+            &base.join("other/acdd"),
             &alias_bin,
             &canonical
         ));
 
         let retained_link = base.join("retained-installed-image");
         std::fs::hard_link(&real_bin, &retained_link).unwrap();
-        let foreign_bin = real_dir.join("forge (deleted)");
+        let foreign_bin = real_dir.join("acdd (deleted)");
         std::fs::write(&foreign_bin, b"").unwrap();
         let device = {
             use std::os::unix::fs::MetadataExt;
@@ -475,11 +472,7 @@ mod tests {
             device
         ));
         assert!(super::darwin_executable_matches(
-            None,
-            &alias_bin,
-            &alias_bin,
-            &canonical,
-            device
+            None, &alias_bin, &alias_bin, &canonical, device
         ));
         assert!(!super::darwin_executable_matches(
             None,

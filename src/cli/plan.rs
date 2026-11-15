@@ -1,7 +1,7 @@
 use super::paths::{confined_file, verify_no_symlink_traversal, ResolvedPaths};
+use acdd_tasks::engine::orchestrator::plan::{run_plan_workflow, PlanDocument};
 use anyhow::{bail, ensure, Context, Result};
 use clap::Subcommand;
-use forge_tasks::engine::orchestrator::plan::{run_plan_workflow, PlanDocument};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -65,7 +65,7 @@ fn prune_plan_snapshots(root: &Path, path: &Path, _slug: &str) -> Result<usize> 
     let plan_prefix = format!("refs/forge/snapshots/{namespace}/plan-{tag_prefix}-");
     let gate_prefix = format!("refs/forge/snapshots/{namespace}/plan-gate-{tag_prefix}-");
 
-    let output = forge_core::git::git_command(
+    let output = acdd_core::git::git_command(
         root,
         &[
             "for-each-ref",
@@ -97,13 +97,13 @@ fn prune_plan_snapshots(root: &Path, path: &Path, _slug: &str) -> Result<usize> 
         for ref_name in &refs_to_delete {
             stdin_data.push_str(&format!("delete {ref_name}\n"));
         }
-        forge_tasks::git::git_input(root, &["update-ref", "--stdin"], stdin_data.as_bytes())?;
+        acdd_tasks::git::git_input(root, &["update-ref", "--stdin"], stdin_data.as_bytes())?;
     }
     Ok(refs_to_delete.len())
 }
 
 fn prune_plan_traces(root: &Path, path: &Path, slug: &str) -> Result<usize> {
-    let db_path = forge_tasks::database_path(root)?;
+    let db_path = acdd_tasks::database_path(root)?;
     if !db_path.exists() {
         return Ok(0);
     }
@@ -121,7 +121,7 @@ fn prune_plan_traces(root: &Path, path: &Path, slug: &str) -> Result<usize> {
 fn discover(root: &Path, settings: &ResolvedPaths) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for directory in &settings.plans {
-        let directory = forge_tasks::tasks::confined_path(root, directory)?;
+        let directory = acdd_tasks::tasks::confined_path(root, directory)?;
         if !directory.exists() {
             continue;
         }

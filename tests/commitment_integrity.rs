@@ -13,7 +13,7 @@ mod harness;
 #[path = "commitment_integrity/parallel_sealing.rs"]
 mod parallel_sealing;
 
-use contextunity_forge_mcp::core::models::stable_hash64;
+use contextunity_acdd::core::models::stable_hash64;
 use harness::*;
 use rusqlite::{config::DbConfig, params};
 

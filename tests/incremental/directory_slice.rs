@@ -1,6 +1,6 @@
 #![cfg(feature = "lang-python")]
 
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy},
     db::{reader, traversal},
 };
@@ -469,21 +469,21 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
     let consumer = "extensions/commerce/src/contextunity/commerce/consumer.py";
     ws.write(consumer, "from contextunity.commerce.ingestion.worker import publish\ndef consume():\n    publish()\n    return publish()\n");
     let delta = ws.delta(&[consumer]);
-    let cold = ws.build_to(ws.path(".forge/cold-after-edit.sqlite"));
+    let cold = ws.build_to(ws.path(".acdd/cold-after-edit.sqlite"));
     assert_eq!(delta["output_root"], cold["output_root"]);
-    contextunity_forge_mcp::core::commitments::verify(&ws.open()).unwrap();
+    contextunity_acdd::core::commitments::verify(&ws.open()).unwrap();
     let moved = "extensions/commerce/src/contextunity/commerce/ingestion/renamed.py";
     std::fs::rename(ws.path(file), ws.path(moved)).unwrap();
     let delta = ws.delta(&[file, moved]);
-    let cold = ws.build_to(ws.path(".forge/cold-after-move.sqlite"));
+    let cold = ws.build_to(ws.path(".acdd/cold-after-move.sqlite"));
     assert_eq!(delta["output_root"], cold["output_root"]);
-    contextunity_forge_mcp::core::commitments::verify(&ws.open()).unwrap();
+    contextunity_acdd::core::commitments::verify(&ws.open()).unwrap();
     let prior_root = delta["output_root"].clone();
     let injected = rusqlite::Connection::open(ws.db()).unwrap();
     injected.execute_batch("CREATE TRIGGER reject_edge_insert BEFORE INSERT ON edges BEGIN SELECT RAISE(ABORT,'injected edge failure'); END;").unwrap();
     drop(injected);
     ws.write(consumer, "from contextunity.commerce.ingestion.renamed import publish\ndef consume(): return publish()\n");
-    let failure = contextunity_forge_mcp::db::writer::delta(
+    let failure = contextunity_acdd::db::writer::delta(
         ws.root(),
         &ws.db(),
         &[std::path::PathBuf::from(consumer)],
@@ -500,7 +500,7 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         )
         .unwrap();
     assert_eq!(prior_root, root);
-    contextunity_forge_mcp::core::commitments::verify(&after).unwrap();
+    contextunity_acdd::core::commitments::verify(&after).unwrap();
     drop(after);
 
     // Make JSON string ordering differ from raw endpoint ordering, after the
@@ -536,7 +536,7 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
           JOIN path_dictionary sp ON sp.path_id=s.path_id JOIN path_dictionary dp ON dp.path_id=d.path_id
           WHERE sp.path LIKE '%/commerce/ingestion/%' AND dp.path LIKE '%/commerce/ingestion/%'
           ORDER BY s.id,d.id,e.kind LIMIT 1);").unwrap();
-    contextunity_forge_mcp::core::commitments::seal(&writer).unwrap();
+    contextunity_acdd::core::commitments::seal(&writer).unwrap();
     drop(writer);
     let conn = ws.open();
     for detail in [Detail::Compact, Detail::Full] {

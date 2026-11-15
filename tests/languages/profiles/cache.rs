@@ -1,5 +1,5 @@
-use contextunity_forge_mcp::core::models::Facts;
-use contextunity_forge_mcp::engine::languages::{self, LanguageProfile, SyntaxGrammarSpec};
+use contextunity_acdd::core::models::Facts;
+use contextunity_acdd::engine::languages::{self, LanguageProfile, SyntaxGrammarSpec};
 
 static FUNCTION_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declarations: &[("function_definition", "function")],

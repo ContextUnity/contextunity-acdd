@@ -11,11 +11,11 @@ If you are connecting a client, start with [MCP setup](reference/mcp-setup.md): 
 
 If you are planning work, read [ACDD](reference/acdd.md) for the loop, [task operations](reference/tasks.md) for claims, evidence, and receipts, and [ACDD profiles](reference/profiles.md) for gates, roles, and pins on a milestone or a task. Admitted work lives in [milestones](milestones/README.md). Proposals that are not yet admitted live in [plans](plans/README.md). [Roadmap](roadmap.md) is the short strategic note above both.
 
-If you are writing pages Forge should retrieve, follow [documentation instructions](AGENTS.md). Headings become searchable sections. A backticked code claim is a candidate for linking; only a unique eligible declaration in the first non-empty match tier becomes a verified edge. Use an exact declaration name and, when needed, a source-file link to confine resolution. Forge keeps ambiguous candidates for navigation without treating them as verified coverage. See the [documentation query contract](reference/mcp-tools.md#documentation-queries).
+If you are writing pages ACDD should retrieve, follow [documentation instructions](AGENTS.md). Headings become searchable sections. A backticked code claim is a candidate for linking; only a unique eligible declaration in the first non-empty match tier becomes a verified edge. Use an exact declaration name and, when needed, a source-file link to confine resolution. ACDD keeps ambiguous candidates for navigation without treating them as verified coverage. See the [documentation query contract](reference/mcp-tools.md#documentation-queries).
 
 If you are reading or extending the graph, the [MCP tools](reference/mcp-tools.md) reference and the [CLI](reference/cli.md) reference name every call. [Languages](reference/languages.md) lists compiled profiles and the static limits of each one. [Framework manifests](reference/framework-manifests.md) explains project rule files and what it takes to add a language. [Indexing](architecture/indexing.md) and [engine modularity](architecture/modularity.md) describe how extraction, linking, and storage fit together.
 
-If you are installing skills, the [skills index](../skills/README.md) lists `contextunity-forge` and the companion skills, and what to put in `AGENTS.md`.
+If you are installing skills, the [skills index](../skills/README.md) lists `acdd` and the companion skills, and what to put in `AGENTS.md`.
 
 Operational ceilings, freshness, and what a failed query looks like are in [limits and freshness](runbooks/limits-and-freshness.md). Verification commands are in [TESTS.md](../TESTS.md) and [tests/AGENTS.md](../tests/AGENTS.md).
 

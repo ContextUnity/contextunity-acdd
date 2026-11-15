@@ -1,10 +1,10 @@
-# Manual Forge benchmarks
+# Manual ACDD benchmarks
 
 These runners preserve paired baseline/candidate profiling outside Cargo's test inventory.
 Run them from the repository root with the release profile for meaningful timings.
 
 Use `cold_test_coverage_benchmark.py` to compare fresh database builds on a configured
-workspace. It reads that workspace's `forge-mcp.yaml` directly, so its enabled
+workspace. It reads that workspace's `acdd.yaml` directly, so its enabled
 `linked_workspaces` are indexed using their configured paths. Every run gets a new
 database under the system temporary directory, and the script removes it after
 collecting graph counts, resolution coverage, elapsed time, CPU, peak RSS, and database
@@ -13,8 +13,8 @@ size. Builds run one at a time and alternate baseline/candidate order.
 ```sh
 python3 benchmarks/cold_test_coverage_benchmark.py \
   --repo /path/to/workspace \
-  --baseline-binary /path/to/older/contextunity-forge-mcp \
-  --candidate-binary /path/to/newer/contextunity-forge-mcp \
+  --baseline-binary /path/to/older/acdd \
+  --candidate-binary /path/to/newer/acdd \
   --repeats 5
 ```
 
@@ -44,25 +44,25 @@ retained in the report, including a failed performance comparison.
 python3 benchmarks/cold_memory_budget_benchmark.py \
   --profile benchmarks/profiles/commerce-release-update.json \
   --workspace /path/to/isolated/workspace \
-  --baseline-binary /path/to/older/contextunity-forge-mcp \
-  --candidate-binary /path/to/newer/contextunity-forge-mcp \
+  --baseline-binary /path/to/older/acdd \
+  --candidate-binary /path/to/newer/acdd \
   --repeats 5 --matrix-repeats 3 --budgets-mb 50 200 500 1000 \
   --output /tmp/cold-memory-budget.json
 ```
 
 ```sh
-FORGE_BENCH_ROOT=/path/to/workspace \
-FORGE_BENCH_BASELINE=/path/to/baseline/contextunity-forge-mcp \
+ACDD_BENCH_ROOT=/path/to/workspace \
+ACDD_BENCH_BASELINE=/path/to/baseline/acdd \
 cargo run --release --manifest-path benchmarks/Cargo.toml --bin frozen_workspace_profile
 
-FORGE_BASELINE_BIN=/path/to/baseline/contextunity-forge-mcp \
+ACDD_BASELINE_BIN=/path/to/baseline/acdd \
 cargo run --release --manifest-path benchmarks/Cargo.toml --bin document_suffix_delta_profile
 ```
 
 `frozen_workspace_profile` copies scanner-selected source files into a temporary workspace
 and reports cold builds, single and bulk deltas, and candidate MCP admission. Optional inputs
-are `FORGE_BENCH_REVERSE` to reverse execution order, `FORGE_BENCH_INPUT_LOG` to reuse a
-previous `PROFILE_INPUT` bulk-path selection, and `FORGE_BENCH_DELTA_PATH` to select the
+are `ACDD_BENCH_REVERSE` to reverse execution order, `ACDD_BENCH_INPUT_LOG` to reuse a
+previous `PROFILE_INPUT` bulk-path selection, and `ACDD_BENCH_DELTA_PATH` to select the
 single-file delta path. The source workspace remains unchanged.
 
 `document_suffix_delta_profile` compares a baseline CLI build/delta with the current

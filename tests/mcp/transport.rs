@@ -49,7 +49,7 @@ fn stdio_client_reaps_after_timeout_and_early_exit() {
     use crate::common::mcp_client::TransportEnd;
 
     let workspace = Workspace::new();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_acdd"));
     command.arg("--root").arg(workspace.root()).arg("serve");
     let client = StdioClient::with_command(&mut command).unwrap();
     let pid = client.child().id() as i32;
@@ -102,14 +102,14 @@ fn stdio_transport_smoke() {
     };
 
     let isolated_server_binary = |workspace: &crate::common::Workspace| -> io::Result<PathBuf> {
-        let binary = workspace.path(".forge/server");
+        let binary = workspace.path(".acdd/server");
         fs::create_dir_all(binary.parent().unwrap())?;
-        let shipped = env!("CARGO_BIN_EXE_contextunity-forge-mcp");
+        let shipped = env!("CARGO_BIN_EXE_acdd");
         fs::hard_link(shipped, &binary).or_else(|_| fs::copy(shipped, &binary).map(|_| ()))?;
         Ok(binary)
     };
     let replace_binary = |workspace: &crate::common::Workspace, binary: &Path| -> io::Result<()> {
-        let replacement = workspace.path(".forge/server-next");
+        let replacement = workspace.path(".acdd/server-next");
         fs::copy(binary, &replacement)?;
         fs::rename(replacement, binary)
     };
@@ -238,7 +238,7 @@ fn stdio_transport_smoke() {
         let binary = if reload {
             isolated_server_binary(&workspace).expect("copy isolated server image")
         } else {
-            PathBuf::from(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+            PathBuf::from(env!("CARGO_BIN_EXE_acdd"))
         };
         let pid_file = workspace.path("server.pid");
         let mut command = Command::new("sh");
@@ -252,7 +252,7 @@ fn stdio_transport_smoke() {
             .arg(workspace.root())
             .arg(&pid_file);
         if inactivity {
-            command.env("CONTEXTUNITY_FORGE_MCP_IDLE_TIMEOUT", "1s");
+            command.env("ACDD_MCP_IDLE_TIMEOUT", "1s");
         }
         let mut client = if initialized {
             StdioClient::with_command(&mut command).expect("initialized parent session")

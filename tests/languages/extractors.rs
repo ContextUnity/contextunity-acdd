@@ -142,7 +142,7 @@ class ServiceClient:
         "[project]\nname = 'scope-probe'\nversion = '0.1.0'\n",
     );
     let dependencies =
-        contextunity_forge_mcp::engine::languages::dependency_registry::DependencyRegistry::collect(
+        contextunity_acdd::engine::languages::dependency_registry::DependencyRegistry::collect(
             Some(workspace.root()),
         );
     let pool = rayon::ThreadPoolBuilder::new()
@@ -176,14 +176,14 @@ class ServiceClient:
             .clone();
         let all = std::collections::BTreeMap::from([(path, facts)]);
         let (graph, copies) = pool.install(|| {
-            let _ = contextunity_forge_mcp::engine::linker::link_with_registry(
+            let _ = contextunity_acdd::engine::linker::link_with_registry(
                 &all,
                 None,
                 Some(workspace.root()),
                 &dependencies,
             );
             scope_allocations::measure(scope.len(), || {
-                contextunity_forge_mcp::engine::linker::link_with_registry(
+                contextunity_acdd::engine::linker::link_with_registry(
                     &all,
                     None,
                     Some(workspace.root()),

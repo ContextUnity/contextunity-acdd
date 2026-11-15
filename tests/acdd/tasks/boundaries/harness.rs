@@ -40,7 +40,7 @@ impl TaskHarness {
 
 impl CommitHistory {
     pub(super) fn validate(&self, commit: &str, scope: &[String]) -> anyhow::Result<()> {
-        contextunity_forge_mcp::core::tasks::validate_commit_for_task(
+        contextunity_acdd::core::tasks::validate_commit_for_task(
             self.root.root(),
             commit,
             scope,

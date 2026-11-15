@@ -55,7 +55,7 @@ fn provisional_snapshot_survives_gc_and_pending_publication() {
             "keeper durability releases only this task's temporary pack protection"
         );
         let candidate = gc.candidate.as_str();
-        assert!(contextunity_forge_mcp::core::git::git_ancestor(
+        assert!(contextunity_acdd::core::git::git_ancestor(
             task.root(),
             candidate,
             "refs/forge/state/forge-mcp/forge-mcp/m-gc/candidate"
@@ -77,11 +77,11 @@ fn scoped_snapshot_delivery_and_handoff_controls() {
     let root = acdd_workspace(DEFAULT_SEAM, "");
     root.write("src/lib.rs", "pub fn baseline() {}\n");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     root.write("docs/milestones/010-control.md", "---\nid: m-control\ntitle: Control\ndoc_type: contract\nstatus: active\n---\n# Tasks\n```yaml\ntask_ref: first\ntarget: Deliver first\nproof_policy: seam-test-first\nscope: [src/]\n```\n");
-    let added = TaskHarness::stage_changes(root.root(), &["src", "docs", "forge-mcp.yaml"]);
+    let added = TaskHarness::stage_changes(root.root(), &["src", "docs", "acdd.yaml"]);
     assert!(added.status.success(), "{added:?}");
     let committed = TaskHarness::commit_fixture(root.root(), "control baseline");
     assert!(committed.status.success(), "{committed:?}");
@@ -94,7 +94,7 @@ fn scoped_snapshot_delivery_and_handoff_controls() {
     )
     .unwrap();
     let task_id = "forge-mcp/m-control:first";
-    let premature = contextunity_forge_mcp::engine::milestones::handoff(
+    let premature = contextunity_acdd::engine::milestones::handoff(
         root.root(),
         "m-control",
         None,
@@ -194,8 +194,8 @@ fn scoped_snapshot_omits_deleted_exact_path_during_contract_submit() {
     root.write("src/kept.rs", "pub fn kept() -> i32 { 1 }\n");
     root.write("src/unscoped.rs", "pub fn sibling() -> i32 { 2 }\n");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     let spec = "---\nid: m-snapshot\ntitle: Snapshot Tasks\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\ninvariants: [isolated]\n---\n# Snapshot Tasks\n```yaml\ntask_ref: exact-path\ntarget: Capture a scoped candidate with a deleted exact path\nproof_policy: seam-test-first\nscope: [src/deleted.rs, src/kept.rs]\n```\n";
     root.write("docs/milestones/010-snapshot.md", spec);
@@ -262,7 +262,7 @@ fn scoped_snapshot_omits_deleted_exact_path_during_contract_submit() {
 
 #[test]
 fn scoped_commit_commits_staged_deletion_and_preserves_unrelated_staged_work() {
-    use contextunity_forge_mcp::core::git::git_scoped_commit;
+    use contextunity_acdd::core::git::git_scoped_commit;
 
     let root = TaskHarness::exact_tree_fixture(&[
         ("src/a.rs", "pub fn a() -> u32 { 1 }\n"),

@@ -17,7 +17,7 @@ if mode == "inspect":
         "cwd": os.getcwd(),
         "pid": os.getpid(),
         "pgid": os.getpgrp(),
-        "forge_session": os.environ.get("FORGE_AGENT_SESSION_ID"),
+        "forge_session": os.environ.get("ACDD_AGENT_SESSION_ID"),
     }), flush=True)
 elif mode == "streams":
     acknowledgment = Path(arguments[0])

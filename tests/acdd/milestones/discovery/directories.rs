@@ -7,10 +7,10 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
     ));
     std::fs::write(
         root.root().join(".git/info/exclude"),
-        ".forge/\ncode_map.sqlite*\n",
+        ".acdd/\ncode_map.sqlite*\n",
     )
     .unwrap();
-    let paths = contextunity_forge_mcp::engine::scanner::scan(root.root(), None)
+    let paths = contextunity_acdd::engine::scanner::scan(root.root(), None)
         .unwrap()
         .entries
         .into_iter()
@@ -40,9 +40,9 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
 
     let index_path = root.path("code_map.sqlite");
     root.build_to(&index_path);
-    let conn = contextunity_forge_mcp::db::reader::open(&index_path, root.root()).unwrap();
-    let page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
-        &contextunity_forge_mcp::core::response::ResponsePolicy::default(),
+    let conn = contextunity_acdd::db::reader::open(&index_path, root.root()).unwrap();
+    let page = contextunity_acdd::core::response::QueryOptions::resolve(
+        &contextunity_acdd::core::response::ResponsePolicy::default(),
         Some(10),
         0,
         None,
@@ -50,10 +50,10 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
     )
     .unwrap();
     for (query, path, visible) in CONFIGURED_NAVIGATION {
-        let paths = contextunity_forge_mcp::db::reader::search_docs_with_options(
+        let paths = contextunity_acdd::db::reader::search_docs_with_options(
             &conn,
             query,
-            &contextunity_forge_mcp::db::reader::DocSearchOptions {
+            &contextunity_acdd::db::reader::DocSearchOptions {
                 doc_type: None,
                 component: None,
                 include_excerpt: false,
@@ -97,7 +97,7 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
     let init_v2_content = root.document("extensions/commerce/docs/milestones/020-commerce-v2.md");
     assert!(init_v2_content.contains("project: extensions.commerce"));
 
-    root.commit_fixture_inputs(&["forge-mcp.yaml", "src", "docs", "extensions"]);
+    root.commit_fixture_inputs(&["acdd.yaml", "src", "docs", "extensions"]);
     let synced = root
         .sync("extensions/commerce/docs/milestones/010-commerce.md")
         .unwrap();

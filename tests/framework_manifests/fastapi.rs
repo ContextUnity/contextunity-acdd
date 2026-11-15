@@ -3,7 +3,7 @@ use super::*;
 #[cfg(feature = "lang-python")]
 #[test]
 fn framework_manifest_symbol_relation_links_exact_dependency_injection_target() {
-    use contextunity_forge_mcp::engine::languages::manifests::FrameworkManifest;
+    use contextunity_acdd::engine::languages::manifests::FrameworkManifest;
 
     let manifest = serde_json::json!({
         "di_calls": [{"callee": "Depends", "argument": 0}],
@@ -48,7 +48,7 @@ fn framework_manifest_symbol_relation_links_exact_dependency_injection_target() 
             "app/rebound_parameter.py",
             "from fastapi import Depends\nfrom app.providers import get_db\n\ndef endpoint(Depends):\n    return Depends(get_db)\n",
         ),
-        (".forge/frameworks/dependencies.toml", &source),
+        (".acdd/frameworks/dependencies.toml", &source),
         (
             "unactivated/pyproject.toml",
             "[project]\nname='without-fastapi'\ndependencies=[]\n",

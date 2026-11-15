@@ -14,7 +14,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     let full_source = format!("def full_symbol():\r\n{full_body}    return escaped_0000\r\n");
     let (workspace, harness) = McpTestHarness::with_files(&[
         (
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "roots: [.]\nresponse:\n  max_output_bytes: 65536\n  source_context:\n    max_body_lines: 24\n",
         ),
         ("service.py", source.as_str()),
@@ -68,7 +68,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
             arguments["max_body_lines"] = json!(lines);
         }
         let (full_bytes, full_response) =
-            client.call("forge_read", arguments).expect("MCP transport");
+            client.call("acdd_read", arguments).expect("MCP transport");
         assert_ne!(
             full_response["result"]["isError"], true,
             "{label}: {full_response}"
@@ -119,7 +119,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     assert_eq!(first["source_preview"]["body_lines"], 35);
     let (_, wrong_cursor) = client
         .call(
-            "forge_read",
+            "acdd_read",
             json!({
                 "selector":"selected","max_body_lines":35,"source_offset":36,"format":"json"
             }),
@@ -138,7 +138,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     assert_eq!(third["source_preview"]["body_offset"], 70);
     let (_, markdown_first) = client
         .call(
-            "forge_read",
+            "acdd_read",
             json!({
                 "selector":"selected","max_body_lines":5,"leading_lines":0
             }),
@@ -148,7 +148,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         markdown_first["result"]["isError"], true,
         "{markdown_first}"
     );
-    let (_, markdown_next) = client.call("forge_read", json!({
+    let (_, markdown_next) = client.call("acdd_read", json!({
         "selector":"selected","max_body_lines":5,"leading_lines":0,"source_offset":5,"generation":first["generation"]
     })).expect("MCP transport");
     assert_ne!(
@@ -194,7 +194,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     let mut restarted = McpTestHarness::new(&workspace).expect("MCP initialize");
     let (_, restarted_response) = restarted
         .call(
-            "forge_read",
+            "acdd_read",
             json!({
                 "selector":"selected","max_body_lines":35,"source_offset":35,"format":"json"
             }),
@@ -207,7 +207,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         .contains("previous page's generation"));
     let (_, foreign_symbol) = client
         .call(
-            "forge_read",
+            "acdd_read",
             json!({
                 "selector":"selected_116","max_body_lines":35,"source_offset":35,"format":"json"
             }),
@@ -215,7 +215,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         .expect("MCP transport");
     assert_eq!(foreign_symbol["result"]["isError"], true);
     let (_, unrelated_page) = client.call(
-        "forge_read",
+        "acdd_read",
         json!({
             "selector":"selected","max_body_lines":35,"offset":1,"source_offset":35,"format":"json"
         }),
@@ -249,7 +249,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     assert_ne!(second_generation["generation"], first["generation"]);
     let (_, ambiguous) = client
         .call(
-            "forge_read",
+            "acdd_read",
             json!({
                 "selector":"selected","max_body_lines":35,"source_offset":35,"format":"json"
             }),
@@ -260,7 +260,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         .as_str()
         .unwrap()
         .contains("generation"));
-    let (_, stale_explicit) = client.call("forge_read", json!({
+    let (_, stale_explicit) = client.call("acdd_read", json!({
         "selector":"selected","max_body_lines":35,"source_offset":35,"generation":first_generation,"format":"json"
     })).expect("MCP transport");
     assert_eq!(
@@ -275,7 +275,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     let max_body_lines = full_source.lines().count();
     let (_, complete_page) = client
         .call(
-            "forge_read",
+            "acdd_read",
             json!({
                 "selector":selector,"max_body_lines":max_body_lines,"format":"json"
             }),
@@ -283,7 +283,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         .expect("MCP transport");
     assert_ne!(complete_page["result"]["isError"], true, "{complete_page}");
     let (_, missing_token) = client.call(
-        "forge_read",
+        "acdd_read",
         json!({
             "selector":selector,"max_body_lines":max_body_lines,"source_offset":1,"format":"json"
         }),
@@ -295,7 +295,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     );
     invalidate_mcp_connection_cache(&workspace.db()).unwrap();
     let (_, enormous) = client
-        .call("forge_read", json!({"selector":"enormous"}))
+        .call("acdd_read", json!({"selector":"enormous"}))
         .expect("MCP transport");
     assert_eq!(enormous["result"]["isError"], true);
     assert!(enormous["result"]["content"][0]["text"]
@@ -304,7 +304,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
         .contains("huge.py"));
     let (_, enormous_missing_token) = client
         .call(
-            "forge_read",
+            "acdd_read",
             json!({
                 "selector":"enormous","source_offset":1,"format":"json"
             }),
@@ -316,7 +316,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     restarted.finish().expect("server must finish successfully");
 
     workspace.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "roots: [.]\nresponse:\n  max_output_bytes: 4096\n  source_context:\n    max_body_lines: 16\n",
     );
     let bounded_body = (0..700)
@@ -342,7 +342,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
             arguments["generation"] = generation.clone();
         }
         let (frame_bytes, response) = bounded_client
-            .call("forge_read", arguments)
+            .call("acdd_read", arguments)
             .expect("MCP transport");
         assert!(
             frame_bytes <= 4096,
@@ -371,7 +371,7 @@ fn mcp_source_previews_respect_boundaries_and_continue_crlf_utf8() {
     assert_eq!(reconstructed, bounded_source);
     let (markdown_bytes, markdown_response) = bounded_client
         .call(
-            "forge_read",
+            "acdd_read",
             json!({
                 "selector":"bounded.py:bounded",
                 "leading_lines":0,
@@ -436,7 +436,7 @@ fn repair_ast_byte_pruning_keeps_earlier_horizon_continuation_usable() {
         .map(|i| format!("print({i})\n"))
         .collect::<String>();
     let (_workspace, harness) = McpTestHarness::with_files(&[
-        ("forge-mcp.yaml", "response:\n  max_output_bytes: 4096\n"),
+        ("acdd.yaml", "response:\n  max_output_bytes: 4096\n"),
         ("service.py", source.as_str()),
     ]);
     let mut client = harness.expect("MCP initialize");
@@ -506,14 +506,9 @@ fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
                 json!({"pattern":pattern,"language":"python","limit":100}),
             )
             .expect("MCP tool should succeed");
-        let legacy = contextunity_forge_mcp::engine::ast::search(
-            source,
-            "service.py",
-            "python",
-            pattern,
-            100,
-        )
-        .unwrap();
+        let legacy =
+            contextunity_acdd::engine::ast::search(source, "service.py", "python", pattern, 100)
+                .unwrap();
         assert!(!legacy.is_empty());
         assert_eq!(ordinary["matches"]["items"], json!(legacy));
         assert_eq!(ordinary["matches"]["computation_truncated"], false);
@@ -521,7 +516,7 @@ fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
     let late_source = (0..25_001)
         .map(|i| format!("print({i})\n"))
         .collect::<String>();
-    let legacy = contextunity_forge_mcp::engine::ast::search(
+    let legacy = contextunity_acdd::engine::ast::search(
         &late_source,
         "late.py",
         "python",

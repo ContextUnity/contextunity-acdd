@@ -1,2 +1,2 @@
-//! Git operations re-exported from forge-tasks.
-pub use forge_tasks::git::*;
+//! Git operations re-exported from acdd-tasks.
+pub use acdd_tasks::git::*;

@@ -14,7 +14,7 @@ def set_field(payload, key, value):
 
 context = json.loads(sys.argv[1].split("\n\nGate context:\n", 1)[1])
 gate = context["gate"]
-session = os.environ["FORGE_AGENT_SESSION_ID"]
+session = os.environ["ACDD_AGENT_SESSION_ID"]
 proof = context["expected_response"]["proof"]
 payload, = proof.values()
 set_field(payload, "decision", "pass")

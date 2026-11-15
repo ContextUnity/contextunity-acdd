@@ -37,7 +37,7 @@ fn callable_imports_preserve_exact_targets_across_provider_deltas() {
                     }
                 })
             };
-            let manifest = ".forge/frameworks/callables.toml";
+            let manifest = ".acdd/frameworks/callables.toml";
             let configuration = "app.config.ts";
             let provider = "providers/parcel.ts";
             let provider_source = "export function readParcel() { return 1; }\n";
@@ -265,7 +265,7 @@ fn callable_imports_preserve_exact_targets_across_provider_deltas() {
                             "filesystem cold",
                         ),
                         ExpectedCold::SourceInventory(registry) => {
-                            let adapter = contextunity_forge_mcp::engine::scanner::load_adapter(
+                            let adapter = contextunity_acdd::engine::scanner::load_adapter(
                                 workspace.root(),
                                 None,
                             )
@@ -274,12 +274,11 @@ fn callable_imports_preserve_exact_targets_across_provider_deltas() {
                                 adapter.linked_workspaces.is_empty(),
                                 "RAM fixture inventory requires a single workspace"
                             );
-                            let report =
-                                contextunity_forge_mcp::engine::scanner::scan_with_adapter(
-                                    workspace.root(),
-                                    &adapter,
-                                )
-                                .unwrap();
+                            let report = contextunity_acdd::engine::scanner::scan_with_adapter(
+                                workspace.root(),
+                                &adapter,
+                            )
+                            .unwrap();
                             let mut sources = VirtualWorkspace::default();
                             for file in report.entries {
                                 let source =
@@ -560,11 +559,11 @@ fn callable_imports_preserve_exact_targets_across_provider_deltas() {
                     .extend(invalid.as_object().unwrap().clone());
                 workspace.write(manifest, &rewrite(&toml::to_string(&rejected).unwrap()));
                 assert!(
-                    contextunity_forge_mcp::engine::pipeline::build_with_cache_dir(
+                    contextunity_acdd::engine::pipeline::build_with_cache_dir(
                         workspace.root(),
                         &workspace.db(),
                         None,
-                        &workspace.path(".forge/extraction-cache"),
+                        &workspace.path(".acdd/extraction-cache"),
                     )
                     .is_err(),
                     "renamed={renamed}: strict descriptor boundary"

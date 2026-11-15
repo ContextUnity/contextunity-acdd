@@ -6,7 +6,7 @@ fn python_linked(path: &str, source: &str) -> crate::languages::harness::LinkedF
         .linked(source)
 }
 
-fn python_extracted(path: &str, source: &str) -> contextunity_forge_mcp::core::models::Facts {
+fn python_extracted(path: &str, source: &str) -> contextunity_acdd::core::models::Facts {
     ExtractorHarness::for_lang("python")
         .at_path(path)
         .extract(source)
@@ -46,7 +46,7 @@ fn class_assignments_are_bindings_without_leaking_nested_callable_assignments() 
 
 #[test]
 fn computed_receiver_hints_are_structural_and_preserve_original_expression() {
-    use contextunity_forge_mcp::core::semantic::{SourcePosition, ValueExpr};
+    use contextunity_acdd::core::semantic::{SourcePosition, ValueExpr};
     let source = "def run():\n    'value'.upper()\n    r'value'.strip()\n    b'value'.upper()\n    f'{value}'.upper()\n    Widget().execute()\n    package.Widget().execute()\n    super().execute()\n    super(Widget, self).execute()\n    response.request().consume()\n    factory().request().consume()\n";
     let facts = python_extracted("computed.py", source);
     assert!(facts.errors.is_empty(), "{:?}", facts.errors);

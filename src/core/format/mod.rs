@@ -310,7 +310,7 @@ fn render_milestone_list(value: &Value) -> String {
         value["archive_displayed"].as_u64().unwrap_or(0),
         value["archive_total"].as_u64().unwrap_or(0)
     ));
-    output.push_str("## Next Steps\n\n- Inspect a milestone: `contextunity-forge-mcp milestone show <ID> --full`.\n- View active tasks: `contextunity-forge-mcp task list --milestone <ID> --status all`.\n- Query archive history: `contextunity-forge-mcp milestone list --archive --limit 10`.\n- Filter milestones: `contextunity-forge-mcp milestone list --status active` (also `planned`, `completed`, `cancelled`, or `all`).\n");
+    output.push_str("## Next Steps\n\n- Inspect a milestone: `acdd milestone show <ID> --full`.\n- View active tasks: `acdd task list --milestone <ID> --status all`.\n- Query archive history: `acdd milestone list --archive --limit 10`.\n- Filter milestones: `acdd milestone list --status active` (also `planned`, `completed`, `cancelled`, or `all`).\n");
     output
 }
 

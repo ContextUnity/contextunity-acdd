@@ -4,11 +4,11 @@ use super::*;
 fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() {
     let primary = Workspace::with_files(&[
         (
-            "forge-mcp.yaml",
-            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+            "acdd.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
         ),
         (
-            ".forge/acdd/profile.yaml",
+            ".acdd/profile.yaml",
             "version: 2\ninherit: none\nroles:\n  worker: {mode: subagent}\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          role: worker\n          proof: contract\n        - id: build\n          role: worker\n          proof: none\n        - id: review\n          role: worker\n          proof: none\n          independent_from: build\n        - id: deliver\n          role: worker\n          receipt: true\n          need: []\n          save: snapshot\n",
         ),
         ("src/lib.rs", "pub fn primary_only() {}\n"),
@@ -55,10 +55,10 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
     .unwrap();
     let claims = TaskClaimsFixture::worktrees_only(
         &primary,
-        ".forge/tasks.sqlite",
+        ".acdd/tasks.sqlite",
         &[&linked, &sibling, &mirror],
     );
-    let custom_db = linked.join(".forge/custom.sqlite");
+    let custom_db = linked.join(".acdd/custom.sqlite");
     let mut client =
         McpTestHarness::with_root_and_db(&linked, &custom_db, "linked-routing-session")
             .expect("MCP initialize");
@@ -86,12 +86,8 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
         );
     }
     drop(claims);
-    primary.remove(".forge/tasks.sqlite");
-    fs::write(
-        sibling.join("AGENTS.md"),
-        "Load the contextunity-forge skill.\n",
-    )
-    .unwrap();
+    primary.remove(".acdd/tasks.sqlite");
+    fs::write(sibling.join("AGENTS.md"), "Load the acdd skill.\n").unwrap();
     let sync = client
         .payload(
             "task_manage",
@@ -192,7 +188,7 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
     }
 
     assert!(custom_db.is_file());
-    assert!(!linked.join(".forge/code-map.sqlite").exists());
+    assert!(!linked.join(".acdd/code-map.sqlite").exists());
     let sibling_result = client
         .search(
             "sibling_only",
@@ -209,7 +205,7 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
         .expect("MCP tool should succeed");
     assert_eq!(linked_page["source_preview"]["next_source_offset"], 1);
     let (_, mirror_continuation) = client.call(
-        "forge_read",
+        "acdd_read",
         json!({"selector":"shared_source","max_body_lines":1,"leading_lines":0,"source_offset":1,"worktree":"mirror","format":"json"}),
     ).expect("MCP transport");
     assert_eq!(mirror_continuation["result"]["isError"], true);
@@ -218,7 +214,7 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
         .unwrap()
         .contains("generation"));
     let (_, sibling_continuation) = client.call(
-        "forge_read",
+        "acdd_read",
         json!({"selector":"shared_source","max_body_lines":1,"leading_lines":0,"source_offset":1,"worktree":"external","format":"json"}),
     ).expect("MCP transport");
     assert_eq!(sibling_continuation["result"]["isError"], true);

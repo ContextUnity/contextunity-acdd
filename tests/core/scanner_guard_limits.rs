@@ -1,6 +1,6 @@
 use crate::common::Workspace;
-use contextunity_forge_mcp::db::writer;
-use contextunity_forge_mcp::engine::scanner;
+use contextunity_acdd::db::writer;
+use contextunity_acdd::engine::scanner;
 use rusqlite::Connection;
 use std::{
     fs, io,
@@ -39,8 +39,8 @@ fn test_root_scope_guard_multi_repo_container() {
     // Allowed if allow_broad is true
     assert!(scanner::check_root_scope(workspace.root(), true).is_ok());
 
-    // Allowed if root has forge-mcp.yaml manifest
-    workspace.write("forge-mcp.yaml", "limits:\n  allow_broad_root: true\n");
+    // Allowed if root has acdd.yaml manifest
+    workspace.write("acdd.yaml", "limits:\n  allow_broad_root: true\n");
     assert!(scanner::check_root_scope(workspace.root(), false).is_ok());
 }
 
@@ -48,7 +48,7 @@ fn test_root_scope_guard_multi_repo_container() {
 fn test_scanner_limits_adapter_config() {
     let workspace = Workspace::new();
     workspace.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         r#"
 limits:
   max_files: 50
@@ -70,7 +70,7 @@ fn test_scanner_limits_file_byte_limit_enforced() {
     let workspace = Workspace::new();
     workspace.write(".git/config", ""); // mark as valid repo
     workspace.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         r#"
 limits:
   max_file_bytes: 100
@@ -129,7 +129,7 @@ fn scanner_enforces_configured_file_count_and_byte_limits() {
     for (name, config, files, expected) in cases {
         let _ = std::fs::remove_dir_all(workspace.path("src"));
         let _ = std::fs::remove_file(workspace.path("notes.txt"));
-        workspace.write("forge-mcp.yaml", config);
+        workspace.write("acdd.yaml", config);
         for &(file_path, content) in files {
             workspace.write(file_path, content);
         }
@@ -160,7 +160,7 @@ fn scanner_accepts_the_default_file_boundary_and_rejects_one_byte_over() {
     let workspace = Workspace::new();
     workspace.write(".git/config", "");
     workspace.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "limits:\n  max_file_bytes: 5242880\n  max_total_bytes: 6000000\n  allow_broad_root: true\n",
     );
     workspace.write_bytes(
@@ -234,14 +234,14 @@ fn scanner_memory_budget_has_a_defensive_floor_and_cap() {
 
 #[test]
 fn scanner_memory_helpers_reexport_the_core_system_contract() {
-    let core_available: fn() -> u64 = contextunity_forge_mcp::core::sys::available_memory_bytes;
+    let core_available: fn() -> u64 = contextunity_acdd::core::sys::available_memory_bytes;
     let scanner_available: fn() -> u64 = scanner::available_memory_bytes;
     assert!(
         std::ptr::fn_addr_eq(scanner_available, core_available),
         "scanner must re-export the canonical core memory helper"
     );
 
-    let core_budget: fn() -> u64 = contextunity_forge_mcp::core::sys::memory_budget_bytes;
+    let core_budget: fn() -> u64 = contextunity_acdd::core::sys::memory_budget_bytes;
     let scanner_budget: fn() -> u64 = scanner::memory_budget_bytes;
     assert!(
         std::ptr::fn_addr_eq(scanner_budget, core_budget),
@@ -266,7 +266,7 @@ fn delta_preserves_the_configured_file_size_limit() {
         "roots: [src]\nlimits:\n  max_files: 10\n  max_file_bytes: 3\n  max_total_bytes: 100000\n",
     );
     workspace.write("src/a.py", "x");
-    let database = workspace.root().join(".forge/code-map.sqlite");
+    let database = workspace.root().join(".acdd/code-map.sqlite");
     let adapter = workspace.root().join("adapter.yaml");
     writer::build(workspace.root(), &database, Some(&adapter)).unwrap();
 
@@ -290,7 +290,7 @@ fn delta_accepts_a_root_allowed_by_the_current_adapter() {
         "adapter.yaml",
         "roots: [repo-a/src, repo-b/src]\nlimits:\n  allow_broad_root: true\n",
     );
-    let database = workspace.root().join(".forge/code-map.sqlite");
+    let database = workspace.root().join(".acdd/code-map.sqlite");
     let adapter = workspace.root().join("adapter.yaml");
     writer::build(workspace.root(), &database, Some(&adapter)).unwrap();
 
@@ -314,7 +314,7 @@ fn delta_rebuilds_stale_policy_with_its_explicit_adapter() {
         "adapter.yaml",
         "roots: [repo-a/src, repo-b/src]\nlimits:\n  allow_broad_root: true\n",
     );
-    let database = workspace.root().join(".forge/code-map.sqlite");
+    let database = workspace.root().join(".acdd/code-map.sqlite");
     let adapter = workspace.root().join("adapter.yaml");
     writer::build(workspace.root(), &database, Some(&adapter)).unwrap();
 
@@ -391,8 +391,8 @@ fn default_scope_excludes_common_generated_directories() {
     workspace.write("src/build_helpers.py", "def source(): pass\n");
     for directory in [
         ".git",
-        ".forge",
-        ".forge-mcp",
+        ".acdd",
+        ".acdd",
         ".venv",
         "vendor",
         "target",

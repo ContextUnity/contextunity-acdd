@@ -36,7 +36,7 @@ impl ForwardingColdCache {
         } else {
             static NEXT: AtomicU64 = AtomicU64::new(0);
             let id = NEXT.fetch_add(1, Ordering::Relaxed);
-            let path = w.path(format!(".forge/forwarding-cold-{id}.sqlite"));
+            let path = w.path(format!(".acdd/forwarding-cold-{id}.sqlite"));
             w.build_to(&path);
             commitments::verify(&w.open_at(&path)).unwrap();
             self.references.borrow_mut().push((inputs, path.clone()));

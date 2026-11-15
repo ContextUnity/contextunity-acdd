@@ -73,7 +73,7 @@ fn test_prefilter_empty_candidate_fallback() {
         "def compute():\n    local_value = 1 + 2\n    return local_value\n",
     )
     .unwrap();
-    let database = root.join(".forge/code-map.sqlite");
+    let database = root.join(".acdd/code-map.sqlite");
     crate::db::writer::build(&root, &database, None).unwrap();
     let conn = crate::db::reader::open(&database, &root).unwrap();
     let pattern = "local_value = $EXPR";
@@ -122,7 +122,7 @@ pub fn search_paged(
         "AST continuation requires generation"
     );
     let root = scanner::canonical_root(root)?;
-    let settings = forge_tasks::tasks::configuration::current(&root);
+    let settings = acdd_tasks::tasks::configuration::current(&root);
     let adapter = scanner::load_adapter(
         &root,
         settings

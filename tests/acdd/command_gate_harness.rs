@@ -1,20 +1,20 @@
 //! Thin command-gate harness: one S0 runner, in-process engine, CLI/MCP smokes.
 //!
-//! `precompile_runner` writes `.forge/runner_fixture` once. Gate execution uses
-//! that binary. Red/green stay `FORGE_FIXTURE_RED` / `runner_fixture_green`.
+//! `precompile_runner` writes `.acdd/runner_fixture` once. Gate execution uses
+//! that binary. Red/green stay `ACDD_FIXTURE_RED` / `runner_fixture_green`.
 //! `#[test]` owns mutations and assertions.
 
 use super::support::fixture;
-use contextunity_forge_mcp::core::tasks::profile::{self, CommandDef, ExpectedFailure};
-use contextunity_forge_mcp::db::tasks_store::TasksStore;
-use contextunity_forge_mcp::engine::milestones::execute_command_gate;
+use contextunity_acdd::core::tasks::profile::{self, CommandDef, ExpectedFailure};
+use contextunity_acdd::db::tasks_store::TasksStore;
+use contextunity_acdd::engine::milestones::execute_command_gate;
 
-/// Execute the process-wide precompiled S0 runner (green: no `FORGE_FIXTURE_RED`).
-pub(super) const S0_RUNNER: &str = "test -x .forge/runner_fixture && .forge/runner_fixture";
+/// Execute the process-wide precompiled S0 runner (green: no `ACDD_FIXTURE_RED`).
+pub(super) const S0_RUNNER: &str = "test -x .acdd/runner_fixture && .acdd/runner_fixture";
 
 /// S0 binary is present but not executed; only unstructured counts are printed.
 pub(super) const S0_RUNNER_COUNTS_ONLY: &str =
-    "test -x .forge/runner_fixture && printf 'test result: ok. 1 passed; 0 failed\\n'";
+    "test -x .acdd/runner_fixture && printf 'test result: ok. 1 passed; 0 failed\\n'";
 
 pub(super) struct CommandGateHarness {
     pub root: crate::common::Workspace,
@@ -38,7 +38,7 @@ impl CommandGateHarness {
         proof: profile::ProofKind,
     ) -> Self {
         let (root, mut store, milestone) = fixture(super::support::DEFAULT_SEAM);
-        root.write(".gitignore", ".forge/\n");
+        root.write(".gitignore", ".acdd/\n");
         let id = milestone.task_id(&milestone.tasks[0]);
         let mut configured = (*profile::compiled()).clone();
         let output = output.or_else(|| {
@@ -62,7 +62,7 @@ impl CommandGateHarness {
         gate.proof = profile::ProofDef::Kind(proof);
         gate.expected_failure = None;
         root.write(
-            ".forge/acdd/profile.yaml",
+            ".acdd/profile.yaml",
             &serde_yaml::to_string(&configured).unwrap(),
         );
         store
@@ -88,7 +88,7 @@ impl CommandGateHarness {
     pub fn seam_s0() -> Self {
         let harness = Self::with_proof(S0_RUNNER, None, profile::ProofKind::SeamTest);
         debug_assert!(
-            harness.root.root().join(".forge/runner_fixture").is_file(),
+            harness.root.root().join(".acdd/runner_fixture").is_file(),
             "S0 runner must already be precompiled"
         );
         harness
@@ -146,7 +146,7 @@ impl CommandGateHarness {
         gate.proof = profile::ProofDef::Kind(proof);
         gate.expected_failure = None;
         self.root.write(
-            ".forge/acdd/profile.yaml",
+            ".acdd/profile.yaml",
             &serde_yaml::to_string(&configured).unwrap(),
         );
     }
@@ -158,18 +158,18 @@ impl CommandGateHarness {
             .unwrap()
             .expected_failure = Some(expected_failure);
         self.root.write(
-            ".forge/acdd/profile.yaml",
+            ".acdd/profile.yaml",
             &serde_yaml::to_string(&configured).unwrap(),
         );
     }
 
     pub fn store(&self) -> TasksStore {
-        forge_tasks::engine::store_for_task(self.root.root(), &self.id).unwrap()
+        acdd_tasks::engine::store_for_task(self.root.root(), &self.id).unwrap()
     }
 
     pub fn execute_check(
         &self,
-    ) -> anyhow::Result<Vec<contextunity_forge_mcp::db::tasks_store::GateExecutionTrace>> {
+    ) -> anyhow::Result<Vec<contextunity_acdd::db::tasks_store::GateExecutionTrace>> {
         let store = self.store();
         let task = store.inspect(&self.id)?;
         let configured = store.profile_for_task(&task)?;
@@ -189,7 +189,7 @@ impl CommandGateHarness {
     }
 
     pub fn verify(&self) -> anyhow::Result<serde_json::Value> {
-        forge_tasks::engine::verify_task(self.root.root(), &self.id, None)
+        acdd_tasks::engine::verify_task(self.root.root(), &self.id, None)
     }
 }
 

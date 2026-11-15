@@ -7,7 +7,7 @@ mod languages;
 
 #[test]
 fn helper_modules_are_not_advertised_as_language_profiles() {
-    use contextunity_forge_mcp::engine::languages;
+    use contextunity_acdd::engine::languages;
 
     for (id, feature) in [
         ("support", "lang-support"),

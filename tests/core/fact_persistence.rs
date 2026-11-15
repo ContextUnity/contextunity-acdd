@@ -1,5 +1,5 @@
 use crate::common::Workspace;
-use contextunity_forge_mcp::db::{reader, writer};
+use contextunity_acdd::db::{reader, writer};
 use rusqlite::Connection;
 use std::path::PathBuf;
 
@@ -9,7 +9,7 @@ fn navigation_storage_preserves_compressed_analysis_and_delta_calls() {
     let ws = Workspace::new();
     ws.write("service.py", "class Service:\n    def execute(self):\n        \"\"\"Execute the request.\"\"\"\n        return 42\n");
     ws.write("caller.py", "from service import Service\n\ndef run():\n    service = Service()\n    return service.execute()\n");
-    let db_path = ws.root().join(".forge/code-map.sqlite");
+    let db_path = ws.root().join(".acdd/code-map.sqlite");
     writer::build(ws.root(), &db_path, None).unwrap();
     let conn = reader::open(&db_path, ws.root()).unwrap();
     let blob: Vec<u8> = conn
@@ -55,7 +55,7 @@ fn navigation_storage_preserves_compressed_analysis_and_delta_calls() {
         calls, 1,
         "cached complete local analysis supports receiver resolution during delta"
     );
-    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    contextunity_acdd::core::commitments::verify(&conn).unwrap();
     let root: String = conn
         .query_row(
             "SELECT value FROM metadata WHERE key='output_root'",

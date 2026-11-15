@@ -155,7 +155,7 @@ pub(in super::super) fn django_include_sources() -> VirtualWorkspace {
         "[project]\nname = 'django-sample'\ndependencies = ['django']\n",
     );
     put!(
-        ".forge/frameworks/django.toml",
+        ".acdd/frameworks/django.toml",
         r#"
 [[route_decorators]]
 callee = "portal.expose"
@@ -208,7 +208,7 @@ pub(in super::super) fn cross_pack_sources() -> VirtualWorkspace {
     );
     put!("package.json", r#"{"dependencies":{"@nestjs/common":"*"}}"#);
     put!(
-        ".forge/frameworks/django.toml",
+        ".acdd/frameworks/django.toml",
         r#"
 [[class_hierarchy_receivers]]
 bases = ["django.custom.Base"]

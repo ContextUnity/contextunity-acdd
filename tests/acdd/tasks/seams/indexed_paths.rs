@@ -9,14 +9,14 @@ fn contract_seam_accepts_root_cargo_package_imports_from_integration_tests() {
 None,
 None,
 "tests/connected.rs");
-    let profile_path = root.root().join(".forge/acdd/profile.yaml");
+    let profile_path = root.root().join(".acdd/profile.yaml");
     let profile_before = std::fs::read(&profile_path).unwrap();
     root.write(
         "tests/connected.rs",
         "use boundary_fixture::api::route;\n#[test]\nfn integration_connected() { let actual = route(); assert_eq!(actual, 1); }\n",
     );
     commit_fixture_baseline(&root);
-    root.build_to(root.path(".forge/code-map.sqlite"));
+    root.build_to(root.path(".acdd/code-map.sqlite"));
     TaskHarness::claim_at(
         root.root(),
         "forge-mcp/m-current-boundary:routing",
@@ -193,7 +193,7 @@ fn contract_seam_requires_current_indexed_paths_at_every_hop() {
             _ => {}
         }
         if refresh {
-            root.build_to(root.path(".forge/code-map.sqlite"));
+            root.build_to(root.path(".acdd/code-map.sqlite"));
         }
         let result = submit_indexed_boundary(root, "contract", seam);
         match (reject, result) {
@@ -219,7 +219,7 @@ fn contract_seam_requires_current_indexed_paths_at_every_hop() {
                         ));
                     }
                 }
-                if expected == "TASK_SEAM_STALE" && !error.contains("contextunity-forge-mcp scan") {
+                if expected == "TASK_SEAM_STALE" && !error.contains("acdd scan") {
                     failures.push(format!(
                         "{case}: stale diagnostic omits refresh action: {error}"
                     ));
@@ -269,7 +269,7 @@ fn contract_seam_accepts_test_path_helpers_and_rejects_stale_hops() {
     assert!(baseline_task.worker_id.is_none());
     let baseline_head = git_head(root.root());
     let snapshot = FixtureSnapshot::capture(&root);
-    let baseline_database = std::fs::read(root.path(".forge/tasks.sqlite")).unwrap();
+    let baseline_database = std::fs::read(root.path(".acdd/tasks.sqlite")).unwrap();
     TaskHarness::claim_at(root.root(), task_id, "contract", "contract-author").unwrap();
     match submit_indexed_boundary(&root, "contract", "src/seam.rs::test_connected") {
         Ok(_) => {}
@@ -279,7 +279,7 @@ fn contract_seam_accepts_test_path_helpers_and_rejects_stale_hops() {
     snapshot.restore(&root);
     assert_eq!(git_head(root.root()), baseline_head, "fixture HEAD ref");
     assert_eq!(
-        std::fs::read(root.path(".forge/tasks.sqlite")).unwrap(),
+        std::fs::read(root.path(".acdd/tasks.sqlite")).unwrap(),
         baseline_database,
         "task database should return to the shared seed"
     );
@@ -302,7 +302,7 @@ fn contract_seam_accepts_test_path_helpers_and_rejects_stale_hops() {
     match submit_indexed_boundary(&root, "contract", "src/seam.rs::test_connected") {
         Err(error) if error.to_string().contains("TASK_SEAM_STALE") => {
             let error = error.to_string();
-            assert!(error.contains("contextunity-forge-mcp scan"), "{error}");
+            assert!(error.contains("acdd scan"), "{error}");
             assert!(error.contains("Reached targets:"), "{error}");
         }
         Err(error) => failures.push(format!(
@@ -374,11 +374,11 @@ fn contract_seam_validates_claimed_worktree_against_shared_primary_index() {
             )
             .unwrap();
         }
-        contextunity_forge_mcp::engine::pipeline::build_with_cache_dir(
+        contextunity_acdd::engine::pipeline::build_with_cache_dir(
             &worktree,
-            &worktree.join(".forge/code-map.sqlite"),
+            &worktree.join(".acdd/code-map.sqlite"),
             None,
-            &worktree.join(".forge/extraction-cache"),
+            &worktree.join(".acdd/extraction-cache"),
         )
         .unwrap();
         match submit_indexed_boundary(&root, "contract", "src/seam.rs::test_connected") {

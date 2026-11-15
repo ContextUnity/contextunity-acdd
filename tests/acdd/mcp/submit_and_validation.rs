@@ -10,7 +10,7 @@ use super::cli_payload;
 #[test]
 fn command_submit_validates_evidence_and_uses_cli_mcp_cache() {
     let (root, store, id) = runner::command_fixture(
-        "printf run >> .forge/counter; printf checked",
+        "printf run >> .acdd/counter; printf checked",
         Some(runner::output_spec(false)),
     );
     let mut client = McpTestHarness::new(&root).expect("MCP new should succeed");
@@ -50,7 +50,7 @@ fn command_submit_validates_evidence_and_uses_cli_mcp_cache() {
             "expected diagnostic '{expected_diagnostic}' in error response: {error_text}"
         );
     }
-    assert!(!root.root().join(".forge/task-traces").exists());
+    assert!(!root.root().join(".acdd/task-traces").exists());
     let verified = cli_payload(&root, &["task", "verify", &id, "--timeout", "5"]).unwrap();
     assert_eq!(verified["verification"]["exit_code"], 0, "{verified}");
     let checked = client
@@ -89,7 +89,7 @@ fn command_submit_validates_evidence_and_uses_cli_mcp_cache() {
         .expect("MCP payload should succeed");
     assert_eq!(submitted["stage"], "build", "{submitted}");
     assert_eq!(
-        fs::read_to_string(root.root().join(".forge/counter")).unwrap(),
+        fs::read_to_string(root.root().join(".acdd/counter")).unwrap(),
         "run"
     );
     client.finish().expect("MCP server should finish");

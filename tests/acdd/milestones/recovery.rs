@@ -13,14 +13,14 @@ fn milestone_handoff_recovers_crash_at_each_journal_phase() {
         let milestone = std::env::var(HANDOFF_CRASH_MILESTONE).unwrap();
         let commit = std::env::var(HANDOFF_CRASH_COMMIT).ok();
         let evidence = read_fixture_evidence(&std::env::var(HANDOFF_CRASH_EVIDENCE).unwrap());
-        contextunity_forge_mcp::mcp::tasks::ensure_extractors();
+        contextunity_acdd::mcp::tasks::ensure_extractors();
         let result = milestone_engine::handoff(&root, &milestone, commit.as_deref(), &evidence)
             .unwrap_or_else(|error| panic!("crash worker failed before SIGKILL: {error:#}"));
         panic!("crash worker completed before SIGKILL: {result:?}");
     }
     let root =
         MilestoneHarness::from_catalog(include_str!("../fixtures/milestones/crash_recovery.json"));
-    commit_handoff_fixture_inputs(&root, &["forge-mcp.yaml", "src", "docs"]);
+    commit_handoff_fixture_inputs(&root, &["acdd.yaml", "src", "docs"]);
     for path in [
         "docs/milestones/010-close.md",
         "docs/milestones/011-wait.md",

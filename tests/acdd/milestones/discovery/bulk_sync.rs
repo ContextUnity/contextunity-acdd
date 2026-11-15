@@ -14,7 +14,7 @@ fn bulk_sync_rejects_invalid_numbered_manifests_in_custom_directories() {
     const ARCHIVE_PATH: &str = "contracts/archive/003-fixture.md";
     let root = MilestoneHarness::workspace(DEFAULT_SEAM, "");
     root.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "roots: [src]\nmilestones: [contracts]\ntask_repository: fixture\ntask_project: fixture\n",
     );
     root.write("src/lib.rs", "pub fn fixture() {}\n");

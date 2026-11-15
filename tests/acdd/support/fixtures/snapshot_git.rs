@@ -40,19 +40,19 @@ impl NamedSnapshotHarness {
     pub(crate) fn new() -> Self {
         let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
         root.write(
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "roots: [src]\ndocs: [docs]\nmilestones: [docs/milestones]\ntasks_db: runtime/tasks.sqlite\n",
         );
         root.write("src/lib.rs", "snapshot baseline\n");
-        root.write(".forge/managed-state", "preserve Forge state\n");
-        root.write(".git/info/exclude", "\n.forge/\n");
-        git_checked(root.root(), &["add", "forge-mcp.yaml", "src/lib.rs"]);
+        root.write(".acdd/managed-state", "preserve Forge state\n");
+        root.write(".git/info/exclude", "\n.acdd/\n");
+        git_checked(root.root(), &["add", "acdd.yaml", "src/lib.rs"]);
         git_checked(root.root(), &["commit", "-m", "snapshot fixture baseline"]);
         Self { root }
     }
 
     pub(crate) fn manage(&self, action: &str, name: &str) -> anyhow::Result<serde_json::Value> {
-        contextunity_forge_mcp::engine::tasks::manage(
+        contextunity_acdd::engine::tasks::manage(
             self.root.root(),
             serde_json::from_value(serde_json::json!({ "action": action, "name": name }))?,
         )

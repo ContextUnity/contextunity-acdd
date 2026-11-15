@@ -23,7 +23,7 @@ fn policy_workspace(manifest: Option<&str>) -> (PersistedWorkspaceHarness, Vec<S
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write("Cargo.toml", "[package]\nname='batch11-probe'\nversion='0.1.0'\n[dependencies]\nserde_json='1'\nserde_yaml='0.9'\nserde={version='1',features=['derive']}\n");
     if let Some(manifest) = manifest {
-        workspace.write(".forge/frameworks/rust-cargo.toml", manifest);
+        workspace.write(".acdd/frameworks/rust-cargo.toml", manifest);
     }
     let mut source = String::from("#[derive(serde::Deserialize)] struct LeafBatch11 {} impl LeafBatch11 { fn finish(&self) {} }\n");
     let mut functions = Vec::new();

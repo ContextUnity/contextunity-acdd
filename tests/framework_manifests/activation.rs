@@ -275,7 +275,7 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
         .unwrap()
         .registry;
     let inventory_directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("crates/forge-index/src/languages/manifests");
+        .join("crates/acdd-index/src/languages/manifests");
     let inventory = std::fs::read_dir(inventory_directory)
         .unwrap()
         .map(Result::unwrap)
@@ -362,7 +362,7 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
                 false,
                 "false survives serialization"
             );
-            let manifest = ".forge/frameworks/django.toml";
+            let manifest = ".acdd/frameworks/django.toml";
             let disabled_index = sources_for(
                 case,
                 Some(case.declaration),
@@ -426,7 +426,7 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
                 serde_yaml::to_string(value).unwrap()
             }
         };
-        let manifest = format!(".forge/frameworks/starlette.{extension}");
+        let manifest = format!(".acdd/frameworks/starlette.{extension}");
         let index_with = |local_manifest: Option<&str>| {
             let mut sources = VirtualWorkspace::from_files(STARLETTE_OVERLAY_FILES);
             if let Some(source) = local_manifest {
@@ -518,7 +518,7 @@ fn bundled_framework_packs_activate_only_in_their_workspace() {
         );
         assert_eq!(route_names(&restored_defaults.conn), ["ANY /records/"]);
 
-        let atelier_manifest = format!(".forge/frameworks/atelier.{extension}");
+        let atelier_manifest = format!(".acdd/frameworks/atelier.{extension}");
         let mut atelier_sources = VirtualWorkspace::from_files(STARLETTE_OVERLAY_FILES);
         atelier_sources.write(&atelier_manifest, &reenabled_source);
         let atelier = atelier_sources.index().unwrap();

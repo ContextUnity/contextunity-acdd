@@ -6,14 +6,14 @@ fn handoff_validates_retained_cancelled_task_history() {
     let active = "docs/milestones/030-terminal.md";
     let archive = "docs/milestones/archive/030-terminal.md";
     let root = MilestoneHarness::workspace(DEFAULT_SEAM, "");
-    root.write(".gitignore", ".forge/\n");
+    root.write(".gitignore", ".acdd/\n");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     root.write("src/lib.rs", "pub fn finish() -> u8 { 0 }\n");
     root.write("deferred/work.rs", "pub fn transferred() -> u8 { 0 }\n");
-    let retained_subtask = contextunity_forge_mcp::core::tasks::SubtaskSpec {
+    let retained_subtask = contextunity_acdd::core::tasks::SubtaskSpec {
         subtask_ref: "retained-case".into(),
         title: "Retain cancellation history".into(),
         status: "ready".into(),
@@ -30,7 +30,7 @@ fn handoff_validates_retained_cancelled_task_history() {
         .task_subtasks(&[retained_subtask])
         .build();
     root.write(active, &source);
-    root.commit_fixture_inputs(&[".gitignore", "forge-mcp.yaml", "src", "deferred", "docs"]);
+    root.commit_fixture_inputs(&[".gitignore", "acdd.yaml", "src", "deferred", "docs"]);
     let (milestone, store) = root.sync_document(active, &source);
     let finish_id = milestone.task_id(&milestone.tasks[0]);
     let transferred_id = milestone.task_id(&milestone.tasks[1]);

@@ -9,7 +9,7 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
         "from cycle import a\ndef test_a(): a()\n",
     );
 
-    w.write(".gitignore", ".forge/\n");
+    w.write(".gitignore", ".acdd/\n");
     w.write("other.py", "def idle(): return 0\n");
     let odd_path = "paths/space α\tline\nname.py";
     w.write(odd_path, "def odd(): return 0\n");
@@ -475,10 +475,8 @@ fn mcp_graph_depth_cycles_and_direction_boundaries() {
         ));
     }
 
-    let control_w = Workspace::with_files(&[
-        (".gitignore", ".forge/\n"),
-        ("graph.py", &graph_source(630)),
-    ]);
+    let control_w =
+        Workspace::with_files(&[(".gitignore", ".acdd/\n"), ("graph.py", &graph_source(630))]);
     control_w.seed_git().expect("seed control Git fixture");
     let control = graph_source(630).replace("def seed(): return 1", "def seed(): return 2");
     control_w.write("graph.py", &control);

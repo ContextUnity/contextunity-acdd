@@ -46,9 +46,9 @@ impl McpTestHarness {
 pub fn session_workspace() -> anyhow::Result<Workspace> {
     let workspace = Workspace::with_files(&[
         ("AGENTS.md", "# Rules\n"),
-        (".gitignore", ".forge/\n"),
+        (".gitignore", ".acdd/\n"),
         (
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "task_repository: test\ntask_project: test\nroots: [src/]\nmilestones: [docs/milestones]\n",
         ),
         ("src/lib.rs", "pub fn entry() {}\n"),
@@ -57,7 +57,7 @@ pub fn session_workspace() -> anyhow::Result<Workspace> {
             "---\nid: m-session\ntitle: Sessions\nstatus: active\n---\n```yaml\ntask_ref: first\ntarget: Session independence\nproof_policy: direct-proof\nscope: [src/]\n```\n",
         ),
         (
-            ".forge/acdd/profile.yaml",
+            ".acdd/profile.yaml",
             "version: 2\ninherit: none\nroles:\n  worker: {mode: subagent}\ncommands:\n  check: \"printf 'test result: ok. 1 passed; 0 failed;\\\\n'\"\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: worker\n          proof: none\n        - id: review\n          role: worker\n          proof: command\n          command: check\n          independent_from: build\n        - id: deliver\n          role: worker\n          receipt: true\n          need: []\n          save: snapshot\n",
         ),
     ]);

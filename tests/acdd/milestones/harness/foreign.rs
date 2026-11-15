@@ -55,7 +55,7 @@ impl ForeignHandoffFixture {
         )
         .unwrap();
         foreign_parent.write(
-            "linked/.forge/acdd/profile.yaml",
+            "linked/.acdd/profile.yaml",
             &crate::acdd::support::standalone_profile_yaml(&fixture_profile()),
         );
         let selected_target = MilestoneHarness::git_text_at(&foreign, &["rev-parse", "HEAD"]);

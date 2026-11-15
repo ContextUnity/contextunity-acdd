@@ -1,3 +1,3 @@
-//! Typed facts extracted from source declarations, re-exported from forge-core.
+//! Typed facts extracted from source declarations, re-exported from acdd-core.
 
-pub use forge_core::typed_facts::*;
+pub use acdd_core::typed_facts::*;

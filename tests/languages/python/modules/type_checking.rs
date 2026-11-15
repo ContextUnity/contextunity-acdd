@@ -1,7 +1,7 @@
 use super::*;
 #[test]
 fn oversized_python_flow_keeps_type_only_imports_fail_closed_after_persistence() {
-    use forge_core::typed_facts::{NodeView, TypedFacts};
+    use acdd_core::typed_facts::{NodeView, TypedFacts};
 
     let model = "class Client:\n    pass\n";
     let mut small = String::from(
@@ -24,7 +24,7 @@ fn oversized_python_flow_keeps_type_only_imports_fail_closed_after_persistence()
             [],
         );
         let facts = TypedFacts::from_public(
-            contextunity_forge_mcp::db::reader::decode_local_facts(&blob).unwrap(),
+            contextunity_acdd::db::reader::decode_local_facts(&blob).unwrap(),
         );
         let module = facts
             .nodes
@@ -65,12 +65,12 @@ fn oversized_python_flow_keeps_type_only_imports_fail_closed_after_persistence()
     let facts = sources
         .iter()
         .map(|(path, source)| {
-            let parsed = contextunity_forge_mcp::engine::ast::extract(path, "python", source)
+            let parsed = contextunity_acdd::engine::ast::extract(path, "python", source)
                 .unwrap_or_else(|error| panic!("{path} (python): {error}"));
             ((*path).to_owned(), parsed)
         })
         .collect::<std::collections::BTreeMap<_, _>>();
-    let graph = contextunity_forge_mcp::engine::linker::link(&facts);
+    let graph = contextunity_acdd::engine::linker::link(&facts);
     let catalog = crate::languages::harness::LinkedCatalog { facts, graph };
     let facts = TypedFacts::from_public(catalog.facts["src/consumer.py"].clone());
     let module = facts

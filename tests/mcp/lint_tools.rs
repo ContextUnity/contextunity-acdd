@@ -1,7 +1,7 @@
 use crate::cli::{run_cli, run_cli_json};
 use crate::common::Workspace;
 use crate::harness::McpTestHarness;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::response::{QueryOptions, ResponsePolicy},
     db::lint,
     engine::languages,

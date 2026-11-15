@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
-    use contextunity_forge_mcp::core::tasks::profile::{
+    use contextunity_acdd::core::tasks::profile::{
         compiled, load_for_workspace, parse_profile, validate_profile_document, RoleDef,
         RoleExecutionMode,
     };
@@ -70,7 +70,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
 
     // 3. Repository override replaces mode, rejection policy, and ordered models.
     let ws = TaskHarness::workspace_with_file(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         "roles:\n  independent_reviewer:\n    mode: inline\n    reuse_on_reject: false\n    models:\n      - model: sol-6.1\n        reasoning: high\n      - model: sol-6.0\n        reasoning: medium\n",
     );
 
@@ -124,7 +124,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
         "custom/team_profile.yaml",
         "roles:\n  independent_reviewer:\n    models:\n      - model: custom-model\n        reasoning: medium\n",
     );
-    ws.write("forge-mcp.yaml", "acdd_profile: custom/team_profile.yaml\n");
+    ws.write("acdd.yaml", "acdd_profile: custom/team_profile.yaml\n");
     let loaded_custom = load_for_workspace(ws.root()).unwrap();
     let custom_reviewer = loaded_custom.roles.get("independent_reviewer").unwrap();
     let custom_reviewer_value = serde_json::to_value(custom_reviewer).unwrap();
@@ -204,14 +204,14 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
 
     // The documented reference profile example loads and validates cleanly
     let example_profile_text =
-        std::fs::read_to_string("skills/contextunity-forge/references/acdd_profile.yaml.example")
+        std::fs::read_to_string("skills/acdd/references/acdd_profile.yaml.example")
             .expect("example profile file must exist");
     let parsed_example = parse_profile(&example_profile_text)
         .expect("example profile must parse and validate without error");
     assert!(!parsed_example.roles.is_empty());
     // exactly one terminal delivery gate instead of accepting an incomplete workflow.
     let profile_workspace = TaskHarness::workspace_with_file(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         "gates:\n  - id: inspect\n    role: builder\n    proof: none\n",
     );
     let invalid_profile = load_for_workspace(profile_workspace.root());
@@ -239,7 +239,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
 "#;
     let later_gate = "  - id: later\n    role: builder\n    proof: none\n";
     let assert_profile_error = |case: &str, yaml: &str, expected: &str| {
-        profile_workspace.write(".forge/acdd/profile.yaml", yaml);
+        profile_workspace.write(".acdd/profile.yaml", yaml);
         let error = match load_for_workspace(profile_workspace.root()) {
             Ok(_) => panic!("{case} should fail merged profile compilation"),
             Err(error) => error,
@@ -359,7 +359,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
         ),
     ];
     for (case, yaml) in cases {
-        profile_workspace.write(".forge/acdd/profile.yaml", &yaml);
+        profile_workspace.write(".acdd/profile.yaml", &yaml);
         let error = match load_for_workspace(profile_workspace.root()) {
             Ok(_) => panic!("{case} should fail merged profile compilation"),
             Err(error) => error,
@@ -416,7 +416,7 @@ gates:
     review_sources: [review]
     reject_to: build
 "#;
-    profile_workspace.write(".forge/acdd/profile.yaml", clean_room_yaml);
+    profile_workspace.write(".acdd/profile.yaml", clean_room_yaml);
 
     let clean_room = load_for_workspace(profile_workspace.root());
     assert!(
@@ -447,14 +447,12 @@ gates:
 
 #[test]
 fn inherit_default_deep_merges_gate_overrides_and_loads_repository_overlay() {
-    use contextunity_forge_mcp::core::tasks::profile::{
-        load_for_workspace, validate_profile_document,
-    };
+    use contextunity_acdd::core::tasks::profile::{load_for_workspace, validate_profile_document};
     use std::path::Path;
 
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo_profile = load_for_workspace(repo_root)
-        .expect(".forge/acdd/profile.yaml repository overlay should load cleanly");
+        .expect(".acdd/profile.yaml repository overlay should load cleanly");
 
     // 1. Inherited default gates exist with overlay commands bound by ID
     let contract = repo_profile

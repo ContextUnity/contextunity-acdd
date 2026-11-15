@@ -3,7 +3,7 @@ fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     let linked = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [src, nuxt.config.ts, nested/src, nested/nuxt.config.ts]\ndocs: []\nignore: [package.json]\nlinked_workspaces:\n  - name: shared\n    path: '{}'\n    roots: [src, nuxt.config.ts]\n    ignore: [package.json]\n",
             linked.root().display()
@@ -70,7 +70,7 @@ fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
             "ignored root, ancestor, and linked package manifests must not activate Nuxt: {path} {expression} -> {rows:?}"
         );
     }
-    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    contextunity_acdd::core::commitments::verify(&conn).unwrap();
     drop(conn);
 
     // Unimported names cannot acquire authority from directory or spelling conventions,
@@ -92,7 +92,7 @@ fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
     let consumer = workspace.read("src/unconfigured.ts");
     let assert_unconfigured = || {
         let conn = workspace.open();
-        contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+        contextunity_acdd::core::commitments::verify(&conn).unwrap();
         for expression in ["useForeign", "useNeighbor", "usePlain", "remoteStore"] {
             let states: Vec<String> = conn.prepare("SELECT c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path='src/unconfigured.ts' AND x.expression=?1 ORDER BY c.line").unwrap().query_map([expression], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
             assert_eq!(
@@ -121,14 +121,14 @@ fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
     };
     // A real, nonempty disabled override exercises effective rules rather than an empty pack.
     for disabled in [false, true, false] {
-        let manifest = ".forge/frameworks/nuxt.toml";
+        let manifest = ".acdd/frameworks/nuxt.toml";
         if disabled {
             workspace.write(
                 manifest,
                 &format!(
                     "enabled = false\n{}",
                     include_str!(
-                        "../../../../../crates/forge-index/src/languages/manifests/nuxt.toml"
+                        "../../../../../crates/acdd-index/src/languages/manifests/nuxt.toml"
                     )
                 ),
             );
@@ -226,6 +226,6 @@ fn nuxt_components_import_links_tsx_to_vue_only_for_declared_nuxt() {
             && plain_statuses == ["unresolved"],
         "#components must resolve through the declared Nuxt linker while a plain Vue tag stays unresolved; nuxt statuses={nuxt_statuses:?}, import targets={nuxt_import_targets:?}, plain statuses={plain_statuses:?}"
     );
-    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    contextunity_acdd::core::commitments::verify(&conn).unwrap();
     drop(conn);
 }

@@ -112,8 +112,8 @@ fn release_fixture() -> &'static ReleaseFixture {
     static RELEASE: OnceLock<ReleaseFixture> = OnceLock::new();
     RELEASE.get_or_init(|| {
         let workspace = Workspace::new();
-        let binary = workspace.path("contextunity-forge-mcp");
-        fs::copy(env!("CARGO_BIN_EXE_contextunity-forge-mcp"), &binary).unwrap();
+        let binary = workspace.path("acdd");
+        fs::copy(env!("CARGO_BIN_EXE_acdd"), &binary).unwrap();
         // Release assets are stripped too; avoid archiving debug information.
         setup_output(Command::new("strip").arg(&binary));
         let archive = workspace.path("release.tar.gz");
@@ -123,7 +123,7 @@ fn release_fixture() -> &'static ReleaseFixture {
                 .arg(&archive)
                 .arg("-C")
                 .arg(workspace.root())
-                .arg("contextunity-forge-mcp")
+                .arg("acdd")
                 .arg("-C")
                 .arg(env!("CARGO_MANIFEST_DIR"))
                 .arg("skills"),
@@ -237,7 +237,7 @@ impl InstallerHarness {
             let path = tools.join(tool);
             fs::write(
                 &path,
-                "#!/bin/sh\nprintf '%s\\n' \"$0\" >> \"$FORGE_FORBIDDEN_LOG\"\nexit 97\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$0\" >> \"$ACDD_FORBIDDEN_LOG\"\nexit 97\n",
             )
             .unwrap();
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -327,15 +327,15 @@ impl InstallerHarness {
                     TARGETS
                         .iter()
                         .map(|(_, _, target)| {
-                            format!("{checksum}  contextunity-forge-mcp-{target}.tar.gz\n")
+                            format!("{checksum}  contextunity-acdd-{target}.tar.gz\n")
                         })
                         .collect::<String>()
                 };
                 observed.lock().unwrap().push(path.to_owned());
                 let name = path.rsplit('/').next().unwrap_or_default();
-                let asset = TARGETS.iter().any(|(_, _, target)| {
-                    name == format!("contextunity-forge-mcp-{target}.tar.gz")
-                });
+                let asset = TARGETS
+                    .iter()
+                    .any(|(_, _, target)| name == format!("contextunity-acdd-{target}.tar.gz"));
                 let body: &[u8] = if name == "SHA256SUMS" {
                     checksums.as_bytes()
                 } else if asset {
@@ -427,8 +427,8 @@ impl InstallerHarness {
             .env("HOME", &self.home)
             .env("PATH", &self.tools)
             .env("TMPDIR", self.workspace.path("tmp"))
-            .env("FORGE_RELEASE_BASE_URL", &self.origin)
-            .env("FORGE_FORBIDDEN_LOG", self.workspace.path("forbidden.log"))
+            .env("ACDD_RELEASE_BASE_URL", &self.origin)
+            .env("ACDD_FORBIDDEN_LOG", self.workspace.path("forbidden.log"))
             .env("LC_ALL", "C")
             .process_group(0)
             .stdin(Stdio::null())
@@ -501,7 +501,7 @@ impl InstallerHarness {
     }
 
     fn installed_binary(&self) -> PathBuf {
-        self.home.join(".local/bin/contextunity-forge-mcp")
+        self.home.join(".local/bin/acdd")
     }
 
     fn config(&self) -> Value {
@@ -550,7 +550,7 @@ fn request_archive(installer: &InstallerHarness) -> TcpStream {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
-    write!(stream, "GET /contextunity-forge-mcp-x86_64-unknown-linux-gnu.tar.gz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+    write!(stream, "GET /contextunity-acdd-x86_64-unknown-linux-gnu.tar.gz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
     stream.flush().unwrap();
     stream
 }
@@ -638,7 +638,7 @@ fn http_harness_preserves_bytes_and_reports_disconnect() {
         .expect_err("200 transfer disconnect must fail server teardown");
     assert!(
         failure.contains("200 OK")
-            && failure.contains("/contextunity-forge-mcp-")
+            && failure.contains("/contextunity-acdd-")
             && failure.contains("declared=")
             && failure.contains("attempted="),
         "missing transfer context: {failure}"
@@ -758,7 +758,7 @@ fn installer_deadline_kills_descendants_holding_output() {
     fs::remove_file(&curl).unwrap();
     fs::write(
         &curl,
-        "#!/bin/sh\n(/bin/sleep 1; printf 'survived\\n' >> \"$FORGE_FORBIDDEN_LOG\") &\nprintf '%s\\n' \"$!\" > \"$FORGE_FORBIDDEN_LOG\"\nwait\n",
+        "#!/bin/sh\n(/bin/sleep 1; printf 'survived\\n' >> \"$ACDD_FORBIDDEN_LOG\") &\nprintf '%s\\n' \"$!\" > \"$ACDD_FORBIDDEN_LOG\"\nwait\n",
     )
     .unwrap();
     fs::set_permissions(curl, fs::Permissions::from_mode(0o755)).unwrap();
@@ -798,9 +798,7 @@ fn installer_deadline_kills_descendants_holding_output() {
 fn termination_during_download_cleans_up_and_preserves_installation() {
     let mut installer = InstallerHarness::new(ReleaseIntegrity::Stall);
     installer.seed_binary(b"existing binary");
-    let skill = installer
-        .home
-        .join(".agents/skills/contextunity-forge/SKILL.md");
+    let skill = installer.home.join(".agents/skills/acdd/SKILL.md");
     fs::create_dir_all(skill.parent().unwrap()).unwrap();
     fs::write(&skill, b"existing skill").unwrap();
     let config = installer.project.join(".mcp.json");
@@ -899,15 +897,14 @@ fn verified_release_installs_real_binary_and_companion_skills_without_runtimes()
     assert!(version.status.success());
     assert_eq!(
         version.stdout,
-        Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        Command::new(env!("CARGO_BIN_EXE_acdd"))
             .arg("--version")
             .output()
             .unwrap()
             .stdout
     );
     let expected =
-        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/contextunity-forge/SKILL.md"))
-            .unwrap();
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/acdd/SKILL.md")).unwrap();
     for directory in [
         ".agents/skills",
         ".claude/skills",
@@ -916,13 +913,7 @@ fn verified_release_installs_real_binary_and_companion_skills_without_runtimes()
         ".cursor/skills",
     ] {
         assert_eq!(
-            fs::read(
-                installer
-                    .home
-                    .join(directory)
-                    .join("contextunity-forge/SKILL.md")
-            )
-            .unwrap(),
+            fs::read(installer.home.join(directory).join("acdd/SKILL.md")).unwrap(),
             expected,
             "real companion sync to {directory}"
         );
@@ -931,12 +922,9 @@ fn verified_release_installs_real_binary_and_companion_skills_without_runtimes()
         !installer.workspace.path("forbidden.log").exists(),
         "installer invoked a forbidden runtime/compiler"
     );
+    assert_eq!(installer.config()["mcpServers"]["acdd"]["type"], "stdio");
     assert_eq!(
-        installer.config()["mcpServers"]["contextunity-forge"]["type"],
-        "stdio"
-    );
-    assert_eq!(
-        installer.config()["mcpServers"]["contextunity-forge"]["command"],
+        installer.config()["mcpServers"]["acdd"]["command"],
         binary.to_str().unwrap()
     );
     let messages = format!(
@@ -959,7 +947,7 @@ fn platform_detection_selects_each_agreed_release_asset() {
             output.status.success(),
             "{os}/{arch} installation: {output:?}"
         );
-        let expected = format!("/contextunity-forge-mcp-{target}.tar.gz");
+        let expected = format!("/contextunity-acdd-{target}.tar.gz");
         assert!(
             installer
                 .requests
@@ -1004,9 +992,7 @@ fn unsupported_platform_is_rejected_before_download_or_installation() {
 fn incomplete_and_failed_http_downloads_preserve_installation_and_cleanup() {
     let mut installer = InstallerHarness::new(ReleaseIntegrity::Mismatch);
     installer.seed_binary(b"existing binary");
-    let skill = installer
-        .home
-        .join(".agents/skills/contextunity-forge/SKILL.md");
+    let skill = installer.home.join(".agents/skills/acdd/SKILL.md");
     fs::create_dir_all(skill.parent().unwrap()).unwrap();
     fs::write(&skill, b"existing skill").unwrap();
     let custom = installer.home.join(".agents/skills/custom/SKILL.md");
@@ -1143,9 +1129,7 @@ fn nonfile_binary_destinations_preserve_configuration_and_skills() {
             binary.clone()
         };
         fs::write(target.join("keep"), b"destination data").unwrap();
-        let skill = installer
-            .home
-            .join(".agents/skills/contextunity-forge/SKILL.md");
+        let skill = installer.home.join(".agents/skills/acdd/SKILL.md");
         fs::create_dir_all(skill.parent().unwrap()).unwrap();
         fs::write(&skill, b"old skill").unwrap();
         let config = installer.project.join(".mcp.json");
@@ -1202,12 +1186,11 @@ fn aliased_agent_skill_root_preserves_the_canonical_hub_without_rsync() {
         b"user skill"
     );
     assert_eq!(
-        fs::read(hub.join("contextunity-forge/SKILL.md")).unwrap(),
-        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/contextunity-forge/SKILL.md"))
-            .unwrap()
+        fs::read(hub.join("acdd/SKILL.md")).unwrap(),
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/acdd/SKILL.md")).unwrap()
     );
     assert!(installer.home.join(".codex/skills").is_symlink());
-    assert!(!hub.join("contextunity-forge/contextunity-forge").exists());
+    assert!(!hub.join("acdd/acdd").exists());
 }
 
 #[test]
@@ -1216,7 +1199,7 @@ fn client_setup_preserves_nested_existing_json_and_user_fields() {
         json!({"inputs":[{"id":"token", "default":"braces { } and \\\"quoted\\\" values"}], "mcpSe\rvers":"unrelated user field", "unicode":"Привіт 🦀"}).to_string(),
         json!({"inputs":{"mcpServers":{"nested":"keep"}}, "mcpServers":{
             "other":{"command":"user-server", "env":{"TOKEN":"a}b\\c\"d"}, "args":["{x}",null,42,true]},
-            "contextunity-forge":{"command":"/obsolete/forge", "type":"stdio", "cwd":"/user/project", "env":{"FORGE_CUSTOM":"keep"}, "args":["--root","/user/project"]}
+            "acdd":{"command":"/obsolete/forge", "type":"stdio", "cwd":"/user/project", "env":{"ACDD_CUSTOM":"keep"}, "args":["--root","/user/project"]}
         }}).to_string(),
         r#"{"mcp\u0053ervers":{"oth\u0065r":{"command":"keep","env":{"GREETING":"\u041f\u0440\u0438\u0432\u0456\u0442"}}}}"#.to_owned(),
     ] {
@@ -1230,19 +1213,19 @@ fn client_setup_preserves_nested_existing_json_and_user_fields() {
         let output = installer.run(None);
         assert!(output.status.success(), "client setup: {output:?}");
         let mut actual = installer.config();
-        let forge = &mut actual["mcpServers"]["contextunity-forge"];
+        let forge = &mut actual["mcpServers"]["acdd"];
         assert_eq!(
             forge["command"],
             installer.installed_binary().to_str().unwrap()
         );
         assert_eq!(forge["type"], "stdio");
-        if let Some(prior) = existing["mcpServers"].get("contextunity-forge") {
+        if let Some(prior) = existing["mcpServers"].get("acdd") {
             forge["command"] = prior["command"].clone();
         } else {
             actual["mcpServers"]
                 .as_object_mut()
                 .unwrap()
-                .remove("contextunity-forge");
+                .remove("acdd");
             if existing.get("mcpServers").is_none() {
                 actual.as_object_mut().unwrap().remove("mcpServers");
             }
@@ -1299,9 +1282,7 @@ fn invalid_client_utf8_preserves_all_installation_state() {
     ] {
         let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
         installer.seed_binary(b"existing binary");
-        let skill = installer
-            .home
-            .join(".agents/skills/contextunity-forge/SKILL.md");
+        let skill = installer.home.join(".agents/skills/acdd/SKILL.md");
         fs::create_dir_all(skill.parent().unwrap()).unwrap();
         fs::write(&skill, b"old skill").unwrap();
         let mut malformed = b"{\"user\":\"".to_vec();
@@ -1331,7 +1312,7 @@ fn update_reexecutes_the_installed_server_and_preserves_project_configuration() 
     use std::{os::unix::fs::MetadataExt, time::Instant};
     let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
     installer.seed_binary(&release_fixture().binary);
-    for skill in ["contextunity-forge", "user-skill"] {
+    for skill in ["acdd", "user-skill"] {
         fs::create_dir_all(installer.home.join(".agents/skills").join(skill)).unwrap();
         fs::write(
             installer
@@ -1346,11 +1327,11 @@ fn update_reexecutes_the_installed_server_and_preserves_project_configuration() 
     let binary = installer.installed_binary();
     fs::create_dir(installer.project.join("src")).unwrap();
     fs::write(
-        installer.project.join("forge-mcp.yaml"),
+        installer.project.join("acdd.yaml"),
         "roots: [src]\nignore: [.forge]\nresponse:\n  page_size: 7\n",
     )
     .unwrap();
-    let config_before = fs::read(installer.project.join("forge-mcp.yaml")).unwrap();
+    let config_before = fs::read(installer.project.join("acdd.yaml")).unwrap();
     let mut command = Command::new(&binary);
     command
         .arg("--root")
@@ -1386,18 +1367,12 @@ fn update_reexecutes_the_installed_server_and_preserves_project_configuration() 
         "MCP session did not survive update: {after}"
     );
     assert_eq!(
-        fs::read(installer.project.join("forge-mcp.yaml")).unwrap(),
+        fs::read(installer.project.join("acdd.yaml")).unwrap(),
         config_before
     );
     assert_eq!(
-        fs::read(
-            installer
-                .home
-                .join(".agents/skills/contextunity-forge/SKILL.md")
-        )
-        .unwrap(),
-        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/contextunity-forge/SKILL.md"))
-            .unwrap()
+        fs::read(installer.home.join(".agents/skills/acdd/SKILL.md")).unwrap(),
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/acdd/SKILL.md")).unwrap()
     );
     assert_eq!(
         fs::read_to_string(installer.home.join(".agents/skills/user-skill/SKILL.md")).unwrap(),
@@ -1435,7 +1410,7 @@ fn update_reexecutes_default_configured_server_without_signaling_other_commands(
         "initial installation: {installed:?}"
     );
     let config = installer.config();
-    let entry = &config["mcpServers"]["contextunity-forge"];
+    let entry = &config["mcpServers"]["acdd"];
     let args: Vec<&str> = entry
         .get("args")
         .map(|args| {
@@ -1622,7 +1597,7 @@ fn update_reexecutes_installed_image_retained_by_hardlink() {
             "initial installation: {initial:?}"
         );
         let config = installer.config();
-        let entry = &config["mcpServers"]["contextunity-forge"];
+        let entry = &config["mcpServers"]["acdd"];
         let binary = PathBuf::from(entry["command"].as_str().unwrap());
         let args = entry
             .get("args")
@@ -1656,7 +1631,7 @@ fn update_reexecutes_installed_image_retained_by_hardlink() {
 
         // Both processes will have the same /proc exe text after replacement,
         // but the literal filename identifies only the foreign image's inode.
-        let literal = binary.with_file_name("contextunity-forge-mcp (deleted)");
+        let literal = binary.with_file_name("acdd (deleted)");
         let mut foreign = {
             fs::copy(&binary, &literal).unwrap();
             assert_ne!(fs::metadata(&literal).unwrap().ino(), original_inode);
@@ -1754,7 +1729,7 @@ fn reload_excludes_foreign_executable_with_literal_deleted_suffix() {
         let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
         installer.seed_binary(&release_fixture().binary);
         let binary = installer.installed_binary();
-        let foreign = binary.with_file_name("contextunity-forge-mcp (deleted)");
+        let foreign = binary.with_file_name("acdd (deleted)");
         fs::copy(&binary, &foreign).unwrap();
         let mut command = Command::new(&foreign);
         command
@@ -1781,7 +1756,7 @@ fn reload_excludes_foreign_executable_with_literal_deleted_suffix() {
         };
         assert_eq!(fs::metadata(&executable).unwrap().nlink(), links);
         let expected_path = if matches!(topology, Topology::Unlinked) {
-            binary.with_file_name("contextunity-forge-mcp (deleted) (deleted)")
+            binary.with_file_name("acdd (deleted) (deleted)")
         } else {
             foreign.clone()
         };
@@ -1868,7 +1843,7 @@ fn macos_update_executes_default_and_explicit_servers_with_confined_discovery() 
         "initial installation: {initial:?}"
     );
     let config = installer.config();
-    let entry = &config["mcpServers"]["contextunity-forge"];
+    let entry = &config["mcpServers"]["acdd"];
     let binary = PathBuf::from(entry["command"].as_str().unwrap());
     let retained = installer.workspace.path("retained-installed-image");
     let args = entry
@@ -1901,7 +1876,7 @@ fn macos_update_executes_default_and_explicit_servers_with_confined_discovery() 
         .env_clear()
         .env("HOME", &installer.home);
     let mut explicit_server = StdioClient::with_command(&mut explicit_command).unwrap();
-    let foreign_binary = binary.with_file_name("contextunity-forge-mcp (deleted)");
+    let foreign_binary = binary.with_file_name("acdd (deleted)");
     fs::copy(&binary, &foreign_binary).unwrap();
     let mut foreign_command = Command::new(&foreign_binary);
     foreign_command
@@ -2115,7 +2090,7 @@ fn installer_flags_support_nightly_latest_and_help_options() {
         .env("HOME", &installer.home)
         .env("TMPDIR", installer.workspace.path("tmp"))
         .env("PATH", &installer.tools)
-        .env("FORGE_RELEASE_BASE_URL", &installer.origin)
+        .env("ACDD_RELEASE_BASE_URL", &installer.origin)
         .output()
         .unwrap();
     assert!(

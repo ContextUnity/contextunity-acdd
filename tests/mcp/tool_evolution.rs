@@ -4,7 +4,7 @@ use crate::cli::run_cli;
 pub(super) use crate::common::Workspace;
 #[allow(unused_imports)]
 pub(super) use crate::harness::McpTestHarness;
-use contextunity_forge_mcp::db::reader;
+use contextunity_acdd::db::reader;
 use serde_json::Value;
 use std::fs;
 

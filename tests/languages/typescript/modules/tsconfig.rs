@@ -70,7 +70,7 @@ fn tsconfig_extends_inherits_alias_origin_and_rebuilds_on_base_change() {
     );
     assert_eq!(targets("apps/two/src/main.ts"), ["apps/two/src/helper.ts"]);
     let conn = workspace.open();
-    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    contextunity_acdd::core::commitments::verify(&conn).unwrap();
     drop(conn);
 }
 
@@ -98,7 +98,7 @@ fn tsconfig_paths_choose_first_indexed_alternative_and_relink_on_new_file() {
     workspace.delta(&["apps/one/missing/thing.ts"]);
     assert_eq!(targets(), ["apps/one/missing/thing.ts"]);
     let conn = workspace.open();
-    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    contextunity_acdd::core::commitments::verify(&conn).unwrap();
     drop(conn);
 }
 
@@ -136,7 +136,7 @@ fn type_only_imports_resolve_indexed_local_interface_provider() {
         [],
     );
     assert_eq!(invalid_call, "unresolved");
-    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    contextunity_acdd::core::commitments::verify(&conn).unwrap();
     drop(conn);
 }
 
@@ -279,7 +279,7 @@ fn exported_enum_members_require_exact_indexed_provider() {
         [],
     );
     assert_eq!(callable_edges, 0);
-    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    contextunity_acdd::core::commitments::verify(&conn).unwrap();
     drop(stmt);
     drop(callable_stmt);
     drop(conn);

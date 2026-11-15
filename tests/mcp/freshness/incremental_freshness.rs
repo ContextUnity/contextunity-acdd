@@ -36,20 +36,20 @@ fn same_server_refreshes_exact_spelling_and_alias_renames() {
         ("case/Foo.rs", "pub fn renamed() {}\n"),
         ("unicode/caf\u{e9}.rs", "pub fn unicode() {}\n"),
     ]);
-    fs::create_dir_all(ws.path(".forge")).unwrap();
-    let primary_alias = ws.path(".forge/primary-alias");
-    let linked_alias = ws.path(".forge/linked-alias");
+    fs::create_dir_all(ws.path(".acdd")).unwrap();
+    let primary_alias = ws.path(".acdd/primary-alias");
+    let linked_alias = ws.path(".acdd/linked-alias");
     symlink(ws.root(), &primary_alias).unwrap();
     symlink(linked.root(), &linked_alias).unwrap();
     ws.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "linked_workspaces:\n  - name: library\n    path: {}\n",
             linked_alias.display()
         ),
     );
-    let server = Server::new(primary_alias.clone(), ws.path(".forge/index.sqlite"))
-        .with_cache_dir(ws.path(".forge/extraction-cache"));
+    let server = Server::new(primary_alias.clone(), ws.path(".acdd/index.sqlite"))
+        .with_cache_dir(ws.path(".acdd/extraction-cache"));
     snapshot(&server).unwrap();
 
     for (old, new) in [
@@ -116,9 +116,9 @@ fn same_server_refreshes_exact_spelling_and_alias_renames() {
         .iter()
         .any(|node| node["path"] == "[library]/parent/Foo.rs"));
     assert_eq!(after["freshness"]["refresh"], "delta");
-    let cold = ws.path(".forge/cold-linked.sqlite");
+    let cold = ws.path(".acdd/cold-linked.sqlite");
     ws.build_to(&cold);
-    let conn = contextunity_forge_mcp::db::reader::open(&cold, ws.root()).unwrap();
+    let conn = contextunity_acdd::db::reader::open(&cold, ws.root()).unwrap();
     let count: i64 = conn
         .query_row(
             "SELECT count(*) FROM files WHERE path='[library]/parent/Foo.rs'",
@@ -135,7 +135,7 @@ fn same_server_refreshes_exact_spelling_and_alias_renames() {
         )
         .unwrap();
     assert_eq!(after["output_root"], cold_root);
-    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    contextunity_acdd::core::commitments::verify(&conn).unwrap();
     drop(conn);
     fs::remove_file(cold).unwrap();
     drop(server);
@@ -177,9 +177,9 @@ impl RollbackFixture<'_> {
 
 fn rollback_fixture(base: &(Workspace, PathBuf, String)) -> (RollbackFixture<'_>, PathBuf, String) {
     let ws = Workspace::new();
-    fs::create_dir_all(ws.path(".forge")).unwrap();
+    fs::create_dir_all(ws.path(".acdd")).unwrap();
     fs::copy(base.0.path("main.rs"), ws.path("main.rs")).unwrap();
-    let database = ws.path(".forge/index.sqlite");
+    let database = ws.path(".acdd/index.sqlite");
     fs::copy(&base.1, &database).unwrap();
     fs::copy(
         format!("{}.verified.json", base.1.display()),
@@ -225,7 +225,7 @@ fn delta_rollback_receipt_verification_matrix() {
     for case in cases {
         match case {
             0 => {
-                use contextunity_forge_mcp::engine::pipeline::{
+                use contextunity_acdd::engine::pipeline::{
                     delta_with_test_hooks, PipelineTestHooks,
                 };
                 for case in [
@@ -278,7 +278,7 @@ fn delta_rollback_receipt_verification_matrix() {
                         ws.root(),
                         &database,
                         &[PathBuf::from("main.rs")],
-                        &ws.path(".forge/extraction-cache"),
+                        &ws.path(".acdd/extraction-cache"),
                         &hooks,
                     )
                     .unwrap_err();
@@ -311,7 +311,7 @@ fn delta_rollback_receipt_verification_matrix() {
                 }
             }
             1 => {
-                use contextunity_forge_mcp::engine::pipeline::{
+                use contextunity_acdd::engine::pipeline::{
                     delta_with_test_hooks, PipelineTestHooks,
                 };
                 let (ws, database, root) = rollback_fixture(&base);
@@ -326,7 +326,7 @@ fn delta_rollback_receipt_verification_matrix() {
                     ws.root(),
                     &database,
                     &[PathBuf::from("main.rs")],
-                    &ws.path(".forge/extraction-cache"),
+                    &ws.path(".acdd/extraction-cache"),
                     &hooks,
                 )
                 .unwrap_err();
@@ -350,7 +350,7 @@ fn delta_rollback_receipt_verification_matrix() {
                 }
             }
             2 => {
-                use contextunity_forge_mcp::engine::pipeline::{
+                use contextunity_acdd::engine::pipeline::{
                     delta_with_test_hooks, PipelineTestHooks,
                 };
                 let (ws, database, root) = rollback_fixture(&base);
@@ -373,7 +373,7 @@ fn delta_rollback_receipt_verification_matrix() {
                     ws.root(),
                     &database,
                     &[PathBuf::from("main.rs")],
-                    &ws.path(".forge/extraction-cache"),
+                    &ws.path(".acdd/extraction-cache"),
                     &hooks,
                 )
                 .unwrap_err();
@@ -401,7 +401,7 @@ fn delta_rollback_receipt_verification_matrix() {
                 }
             }
             3 => {
-                use contextunity_forge_mcp::engine::pipeline::{
+                use contextunity_acdd::engine::pipeline::{
                     delta_with_test_hooks, PipelineTestHooks,
                 };
                 let (ws, database, root) = rollback_fixture(&base);
@@ -427,7 +427,7 @@ fn delta_rollback_receipt_verification_matrix() {
                     ws.root(),
                     &database,
                     &[PathBuf::from("main.rs")],
-                    &ws.path(".forge/extraction-cache"),
+                    &ws.path(".acdd/extraction-cache"),
                     &hooks,
                 )
                 .unwrap_err();
@@ -456,7 +456,7 @@ fn delta_rollback_receipt_verification_matrix() {
                 }
             }
             4 => {
-                use contextunity_forge_mcp::engine::pipeline::{
+                use contextunity_acdd::engine::pipeline::{
                     delta_with_test_hooks, PipelineTestHooks,
                 };
                 let (ws, database, root) = rollback_fixture(&base);
@@ -480,7 +480,7 @@ fn delta_rollback_receipt_verification_matrix() {
                     ws.root(),
                     &database,
                     &[PathBuf::from("main.rs")],
-                    &ws.path(".forge/extraction-cache"),
+                    &ws.path(".acdd/extraction-cache"),
                     &hooks,
                 )
                 .unwrap_err();
@@ -506,7 +506,7 @@ fn delta_rollback_receipt_verification_matrix() {
                 }
             }
             5 => {
-                use contextunity_forge_mcp::engine::pipeline::{
+                use contextunity_acdd::engine::pipeline::{
                     delta_with_test_hooks, PipelineTestHooks,
                 };
                 let (ws, database, root) = rollback_fixture(&base);
@@ -537,7 +537,7 @@ fn delta_rollback_receipt_verification_matrix() {
                     ws.root(),
                     &database,
                     &[PathBuf::from("main.rs")],
-                    &ws.path(".forge/extraction-cache"),
+                    &ws.path(".acdd/extraction-cache"),
                     &hooks,
                 )
                 .unwrap_err();
@@ -557,7 +557,7 @@ fn delta_rollback_receipt_verification_matrix() {
                 }
             }
             6 => {
-                use contextunity_forge_mcp::engine::pipeline::{
+                use contextunity_acdd::engine::pipeline::{
                     delta_with_test_hooks, PipelineTestHooks,
                 };
                 let (ws, database, root) = rollback_fixture(&base);
@@ -588,7 +588,7 @@ fn delta_rollback_receipt_verification_matrix() {
                     ws.root(),
                     &database,
                     &[PathBuf::from("main.rs")],
-                    &ws.path(".forge/extraction-cache"),
+                    &ws.path(".acdd/extraction-cache"),
                     &hooks,
                 )
                 .unwrap_err();
@@ -662,11 +662,11 @@ fn verified_receipt_survives_rollback_and_delta_retry() {
     let receipt = PathBuf::from(format!("{}.verified.json", database.display()));
 
     ws.write("main.rs", "pub fn after_() {}\n");
-    let error = contextunity_forge_mcp::engine::pipeline::delta_with_cache_dir(
+    let error = contextunity_acdd::engine::pipeline::delta_with_cache_dir(
         ws.root(),
         &database,
         &[PathBuf::from("main.rs")],
-        &ws.path(".forge/extraction-cache"),
+        &ws.path(".acdd/extraction-cache"),
     )
     .unwrap_err();
     assert!(
@@ -704,11 +704,11 @@ fn verified_receipt_survives_rollback_and_delta_retry() {
     conn.execute_batch("DROP TRIGGER reject_file_delete")
         .unwrap();
     drop(conn);
-    let retried = contextunity_forge_mcp::engine::pipeline::delta_with_cache_dir(
+    let retried = contextunity_acdd::engine::pipeline::delta_with_cache_dir(
         ws.root(),
         &database,
         &[PathBuf::from("main.rs")],
-        &ws.path(".forge/extraction-cache"),
+        &ws.path(".acdd/extraction-cache"),
     )
     .unwrap();
     assert_ne!(retried["output_root"].as_str().unwrap(), root);
@@ -738,8 +738,7 @@ fn same_server_coexisting_spellings_match_cold_build() {
         ("Foo.rs", "foo.rs", true),
         ("caf\u{e9}.rs", "cafe\u{301}.rs", false),
     ] {
-        if case_sensitive && contextunity_forge_mcp::core::fs::is_case_insensitive_volume(ws.root())
-        {
+        if case_sensitive && contextunity_acdd::core::fs::is_case_insensitive_volume(ws.root()) {
             eprintln!("case coexistence unavailable on case-insensitive volume");
             continue;
         }
@@ -779,9 +778,9 @@ fn same_server_coexisting_spellings_match_cold_build() {
         .iter()
         .map(|node| node["path"].as_str().unwrap())
         .collect();
-    let cold = ws.path(".forge/cold-spellings.sqlite");
+    let cold = ws.path(".acdd/cold-spellings.sqlite");
     ws.build_to(&cold);
-    let conn = contextunity_forge_mcp::db::reader::open(&cold, ws.root()).unwrap();
+    let conn = contextunity_acdd::db::reader::open(&cold, ws.root()).unwrap();
     let mut statement = conn
         .prepare("SELECT path FROM files ORDER BY path")
         .unwrap();
@@ -802,7 +801,7 @@ fn same_server_coexisting_spellings_match_cold_build() {
         )
         .unwrap();
     assert_eq!(after["output_root"], cold_root);
-    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    contextunity_acdd::core::commitments::verify(&conn).unwrap();
     drop(conn);
     fs::remove_file(cold).unwrap();
 }
@@ -873,7 +872,7 @@ fn same_server_refreshes_add_edit_rename_and_delete() {
 fn linked_source_edits_and_renames_refresh_in_same_server() {
     let linked = Workspace::with_files(&[("lib.rs", "pub fn before() {}\n")]);
     let ws = Workspace::with_files(&[(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "linked_workspaces:\n  - name: library\n    path: {}\n",
             linked.root().display()
@@ -905,11 +904,11 @@ fn external_delta_invalidates_cached_connection_without_another_write() {
     let server = in_process_server(&ws);
     snapshot(&server).unwrap();
     ws.write("main.rs", "pub fn after() {}\n");
-    let delta = contextunity_forge_mcp::engine::pipeline::delta_with_cache_dir(
+    let delta = contextunity_acdd::engine::pipeline::delta_with_cache_dir(
         ws.root(),
         &server.db,
         &[PathBuf::from("main.rs")],
-        &ws.path(".forge/extraction-cache"),
+        &ws.path(".acdd/extraction-cache"),
     )
     .unwrap();
     let identity = db::cache::identity(&server.db).unwrap();
@@ -977,7 +976,7 @@ fn cold_rebuild_waits_for_active_mcp_reader_before_rename() {
     let (boundary_tx, boundary_rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
     let builder = std::thread::spawn(move || {
-        use contextunity_forge_mcp::engine::pipeline::{build_with_test_hooks, PipelineTestHooks};
+        use contextunity_acdd::engine::pipeline::{build_with_test_hooks, PipelineTestHooks};
         let hooks = PipelineTestHooks::before_generation_lock(move |_| {
             let _ = boundary_tx.send(());
         });

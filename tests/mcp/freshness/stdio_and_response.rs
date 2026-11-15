@@ -33,7 +33,7 @@ static REFERENCE_WORKSPACE: std::sync::OnceLock<Workspace> = std::sync::OnceLock
 fn reference_workspace() -> &'static Workspace {
     REFERENCE_WORKSPACE.get_or_init(|| {
         let workspace = Workspace::with_files(&[
-            ("forge-mcp.yaml", "roots: [src]\ndocs: [docs/reference]\n"),
+            ("acdd.yaml", "roots: [src]\ndocs: [docs/reference]\n"),
             ("src/overview.py", "def code_map_overview(): pass\n"),
             (
                 "src/candidates.py",

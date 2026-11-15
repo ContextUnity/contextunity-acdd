@@ -1,6 +1,6 @@
 use crate::acdd::support::{acdd_workspace, Workspace, DEFAULT_SEAM};
 use crate::acdd::tasks::harness::TaskHarness;
-use contextunity_forge_mcp::engine::tasks;
+use contextunity_acdd::engine::tasks;
 use serde_json::{json, Value};
 
 pub(crate) struct RecoveryContractFixture {
@@ -14,8 +14,8 @@ impl TaskHarness {
         let root = acdd_workspace(DEFAULT_SEAM, "");
         root.write("src/lib.rs", "pub fn example() {}\n");
         root.write(
-            "forge-mcp.yaml",
-            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+            "acdd.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
         );
         root.write("docs/milestones/010-test.md", "---\nid: m-test\ntitle: Tasks\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: first\ntarget: Deliver first\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Deliver second\nproof_policy: seam-test-first\nscope: [src/]\ndepends_on: [first]\n```\n");
         tasks::manage(
@@ -25,7 +25,7 @@ impl TaskHarness {
             )?,
         )?;
         for output in [
-            Self::stage_changes(root.root(), &["src", "docs", "forge-mcp.yaml"]),
+            Self::stage_changes(root.root(), &["src", "docs", "acdd.yaml"]),
             Self::commit_fixture(root.root(), "initial"),
         ] {
             anyhow::ensure!(
@@ -92,7 +92,7 @@ impl TaskHarness {
 impl RecoveryContractFixture {
     pub fn contract_evidence(
         &self,
-    ) -> anyhow::Result<contextunity_forge_mcp::core::tasks::gates::Evidence> {
+    ) -> anyhow::Result<contextunity_acdd::core::tasks::gates::Evidence> {
         let task = tasks::store(self.root.root())?.inspect(&self.id)?;
         let mut proof = TaskHarness::default_evidence(&task);
         proof.commit = None;
@@ -101,7 +101,7 @@ impl RecoveryContractFixture {
 
     pub fn submit_contract(
         &self,
-        proof: &contextunity_forge_mcp::core::tasks::gates::Evidence,
+        proof: &contextunity_acdd::core::tasks::gates::Evidence,
     ) -> anyhow::Result<(Value, String)> {
         let receipt = tasks::submit(
             self.root.root(),

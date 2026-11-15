@@ -1,11 +1,11 @@
 ---
-title: "Forge MCP strategic direction"
+title: "ACDD MCP strategic direction"
 doc_type: guide
 ---
 
 # Strategic direction
 
-Forge MCP focuses on precise, evidence-backed code navigation across supported
+ACDD MCP focuses on precise, evidence-backed code navigation across supported
 languages and large workspaces. Development improves extraction and resolution
 quality, predictable query latency, compact storage, and reproducible cold and
 incremental builds through measured production seams.

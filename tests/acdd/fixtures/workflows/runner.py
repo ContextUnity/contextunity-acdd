@@ -5,9 +5,9 @@ import sys
 
 context = json.loads(sys.argv[1].split("\n\nGate context:\n", 1)[1])
 gate = context["gate"]
-session = os.environ["FORGE_AGENT_SESSION_ID"]
+session = os.environ["ACDD_AGENT_SESSION_ID"]
 with Path("workflow-role-sessions.jsonl").open("a") as output:
-    output.write(json.dumps({"gate": gate, "goal": context["goal"], "session": session, "findings": context["findings"], "config": os.environ.get("FORGE_CONFIG"), "profile": os.environ.get("FORGE_PROFILE"), "db": os.environ.get("FORGE_DB")}) + "\n")
+    output.write(json.dumps({"gate": gate, "goal": context["goal"], "session": session, "findings": context["findings"], "config": os.environ.get("ACDD_CONFIG"), "profile": os.environ.get("ACDD_PROFILE"), "db": os.environ.get("ACDD_DB")}) + "\n")
 if Path("missing-decision").exists():
     sys.exit(0)
 decision = "pass"

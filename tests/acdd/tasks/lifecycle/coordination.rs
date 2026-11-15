@@ -18,9 +18,9 @@ fn task_specification_and_store_survive_code_index_rebuild() {
             Some(&TaskHarness::session_for("builder")),
         )
         .unwrap();
-    root.build_to(root.path(".forge/code-map.sqlite"));
+    root.build_to(root.path(".acdd/code-map.sqlite"));
     drop(store);
-    let store = TasksStore::open(&root.root().join(".forge/tasks.sqlite")).unwrap();
+    let store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     assert_eq!(
         store.inspect(&id).unwrap().claim_revision,
         claim.claim_revision
@@ -68,7 +68,7 @@ fn tasks_coordinate_claims_dependencies_reset_scope_and_claim_diagnostic() {
         let listed = h.list(tasks::List::default()).unwrap();
         assert_eq!(listed["tasks"].as_array().unwrap().len(), 1);
         assert_eq!(listed["tasks"][0]["task_id"], h.id);
-        let path = h.root().join(".forge/tasks.sqlite");
+        let path = h.root().join(".acdd/tasks.sqlite");
         let worktree = h.root().to_string_lossy().into_owned();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let handles: Vec<_> = (0..2)
@@ -185,7 +185,7 @@ fn gates_write_receipts_and_preserve_retention_outcomes() {
             .unwrap();
         let mut evidence = harness.evidence_for_gate(&task).unwrap();
         if definition.proof.kind()
-            == Some(contextunity_forge_mcp::core::tasks::profile::ProofKind::Delivery)
+            == Some(contextunity_acdd::core::tasks::profile::ProofKind::Delivery)
         {
             evidence.proof = json!({"stage":stage});
             assert!(harness
@@ -202,7 +202,7 @@ fn gates_write_receipts_and_preserve_retention_outcomes() {
         assert_eq!(
             result.status,
             if definition.proof.kind()
-                == Some(contextunity_forge_mcp::core::tasks::profile::ProofKind::Delivery)
+                == Some(contextunity_acdd::core::tasks::profile::ProofKind::Delivery)
             {
                 "completed"
             } else {

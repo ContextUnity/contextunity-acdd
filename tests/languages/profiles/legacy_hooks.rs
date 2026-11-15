@@ -1,5 +1,5 @@
 use crate::languages::harness::ExtractorHarness;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::{
         models::Facts,
         semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},

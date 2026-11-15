@@ -6,7 +6,7 @@ fn target_context_resolves_only_routes_in_declared_workspace_scope() {
     // ambiguous until explicit owner policy asserts the intended application.
     let scoped = FrameworkHarness::persisted(&[]);
     scoped.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [.]\nexcluded_directory_names: [service]\nlinked_workspaces:\n  - name: service\n    path: '{}'\n    roots: [.]\n",
             scoped.path("service").display()
@@ -63,7 +63,7 @@ fn target_context_resolves_only_routes_in_declared_workspace_scope() {
     };
     check_scope("ambiguous", None);
     let web: Value = toml::from_str::<toml::Value>(include_str!(
-        "../../../crates/forge-index/src/languages/manifests/web.toml"
+        "../../../crates/acdd-index/src/languages/manifests/web.toml"
     ))
     .unwrap()
     .try_into()
@@ -78,7 +78,7 @@ fn target_context_resolves_only_routes_in_declared_workspace_scope() {
         }
         toml::to_string(&web).unwrap()
     };
-    let manifest = ".forge/frameworks/web.toml";
+    let manifest = ".acdd/frameworks/web.toml";
     for (owners, status, target) in [
         (vec!["app.py"], "resolved", Some("app.py")),
         (

@@ -127,7 +127,7 @@ fn plan_clear_and_archive_commands() {
 #[test]
 fn workflow_clear_command() {
     let harness = MilestoneHarness::configured_workspace();
-    let runs_dir = harness.root().join(".forge/runs");
+    let runs_dir = harness.root().join(".acdd/runs");
     std::fs::create_dir_all(&runs_dir).unwrap();
     let log_file = runs_dir.join("sample-workflow-2026-11-10.log");
     std::fs::write(&log_file, "workflow run log output").unwrap();
@@ -175,7 +175,7 @@ fn milestone_clear_preserves_neighbors_foreign_tasks_and_wildcards() {
         .unwrap();
 
     // Seed execution provenance and foreign tasks into SQLite
-    let db_path = root.join(".forge/tasks.sqlite");
+    let db_path = root.join(".acdd/tasks.sqlite");
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         // Foreign task sharing milestone_ref
@@ -270,7 +270,7 @@ fn milestone_clear_preserves_neighbors_foreign_tasks_and_wildcards() {
 #[test]
 fn milestone_clear_rejects_pending_publication_fence() {
     let harness = MilestoneHarness::linear("m-close");
-    let db_path = harness.root().join(".forge/tasks.sqlite");
+    let db_path = harness.root().join(".acdd/tasks.sqlite");
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.execute(
@@ -335,8 +335,8 @@ fn plan_archive_rejects_overwrite_and_symlinks() {
         let symlink_harness = MilestoneHarness::configured_workspace();
         let sl_root = symlink_harness.root();
         symlink_harness.write(
-            "forge-mcp.yaml",
-            "roots: [src]\ndocs: [docs]\nplans: [plans]\ntasks_db: .forge/tasks.sqlite\n",
+            "acdd.yaml",
+            "roots: [src]\ndocs: [docs]\nplans: [plans]\ntasks_db: .acdd/tasks.sqlite\n",
         );
         symlink_harness.write(
             "plans/symlink-plan.md",
@@ -351,8 +351,8 @@ fn plan_archive_rejects_overwrite_and_symlinks() {
 
         let wf_harness = MilestoneHarness::configured_workspace();
         let wf_root = wf_harness.root();
-        std::fs::create_dir_all(wf_root.join(".forge")).unwrap();
-        symlink(&outside_dir, wf_root.join(".forge/runs")).unwrap();
+        std::fs::create_dir_all(wf_root.join(".acdd")).unwrap();
+        symlink(&outside_dir, wf_root.join(".acdd/runs")).unwrap();
         let res_wf = wf_harness.run_cli(&["workflow", "clear", "check"]);
         assert!(res_wf.is_err());
         assert!(res_wf
@@ -365,7 +365,7 @@ fn plan_archive_rejects_overwrite_and_symlinks() {
 #[test]
 fn workflow_clear_preserves_neighbor_logs() {
     let harness = MilestoneHarness::configured_workspace();
-    let runs_dir = harness.root().join(".forge/runs");
+    let runs_dir = harness.root().join(".acdd/runs");
     std::fs::create_dir_all(&runs_dir).unwrap();
     let neighbor_log = runs_dir.join("check-other.log");
     std::fs::write(&neighbor_log, "neighbor log").unwrap();
@@ -390,7 +390,7 @@ fn workflow_ambiguity_fails_closed() {
         "docs/workflows/check.yml",
         "version: 2\ninherit: none\ngates: []\n",
     );
-    let runs_dir = harness.root().join(".forge/runs");
+    let runs_dir = harness.root().join(".acdd/runs");
     std::fs::create_dir_all(&runs_dir).unwrap();
     let log_path = runs_dir.join("check-2026-11-10.log");
     std::fs::write(&log_path, "target log\n").unwrap();
@@ -413,7 +413,7 @@ fn workflow_clear_qualified_selector_shared_stem_fails_closed() {
         "docs/workflows/check.yml",
         "version: 2\ninherit: none\ngates: []\n",
     );
-    let runs_dir = harness.root().join(".forge/runs");
+    let runs_dir = harness.root().join(".acdd/runs");
     std::fs::create_dir_all(&runs_dir).unwrap();
     let log_exact = runs_dir.join("check.log");
     let log_ts = runs_dir.join("check-2026-11-10.log");
@@ -463,7 +463,7 @@ fn workflow_clear_qualified_selector_shared_stem_fails_closed() {
 
 #[test]
 fn workflow_clear_shared_stem_trace_only_and_topologies_fails_closed() {
-    // 1. Trace-only with NO .forge/runs directory
+    // 1. Trace-only with NO .acdd/runs directory
     let harness1 = MilestoneHarness::configured_workspace();
     let root1 = harness1.root();
     harness1.write(
@@ -474,7 +474,7 @@ fn workflow_clear_shared_stem_trace_only_and_topologies_fails_closed() {
         "docs/workflows/check.yml",
         "version: 2\ninherit: none\ngates: []\n",
     );
-    let db_path1 = root1.join(".forge/tasks.sqlite");
+    let db_path1 = root1.join(".acdd/tasks.sqlite");
     std::fs::create_dir_all(db_path1.parent().unwrap()).unwrap();
     let conn1 = rusqlite::Connection::open(&db_path1).unwrap();
     conn1
@@ -494,7 +494,7 @@ fn workflow_clear_shared_stem_trace_only_and_topologies_fails_closed() {
         "INSERT INTO gate_execution_traces(milestone_id,subject,gate_path,command_id,command_str,status,duration_ms) VALUES(?,?,?,?,?,?,?)",
         rusqlite::params!["workflow/check", "check#gate", "gate", "own", "echo check", "passed", 1],
     ).unwrap();
-    assert!(!root1.join(".forge/runs").exists());
+    assert!(!root1.join(".acdd/runs").exists());
 
     let res1 = harness1.run_cli(&["workflow", "clear", "docs/workflows/check.yaml"]);
     assert!(res1.is_err());
@@ -528,7 +528,7 @@ fn workflow_clear_shared_stem_trace_only_and_topologies_fails_closed() {
     assert_eq!(count1_uni, 1, "trace must be preserved on universal clear");
 
     // 3. Empty runs directory
-    let runs_dir1 = root1.join(".forge/runs");
+    let runs_dir1 = root1.join(".acdd/runs");
     std::fs::create_dir_all(&runs_dir1).unwrap();
     let res1_empty = harness1.run_cli(&["workflow", "clear", "docs/workflows/check.yaml"]);
     assert!(res1_empty.is_err());
@@ -579,7 +579,7 @@ fn workflow_clear_shared_stem_trace_only_and_topologies_fails_closed() {
         "docs/workflows/check.yaml",
         "version: 2\ninherit: none\ngates: []\n",
     );
-    let db_path2 = root2.join(".forge/tasks.sqlite");
+    let db_path2 = root2.join(".acdd/tasks.sqlite");
     std::fs::create_dir_all(db_path2.parent().unwrap()).unwrap();
     let conn2 = rusqlite::Connection::open(&db_path2).unwrap();
     conn2
@@ -720,7 +720,7 @@ fn milestone_enumeration_failure_fails_closed() {
 fn workflow_and_plan_trace_ownership_preserves_milestone_verification_traces() {
     let harness = MilestoneHarness::configured_workspace();
     let root = harness.root();
-    let db_path = root.join(".forge/tasks.sqlite");
+    let db_path = root.join(".acdd/tasks.sqlite");
     std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     conn.execute_batch(
@@ -778,7 +778,7 @@ fn numeric_workflow_neighbor_is_preserved() {
             "version: 2\ninherit: none\ngates: []\n",
         );
     }
-    let runs_dir = root.join(".forge/runs");
+    let runs_dir = root.join(".acdd/runs");
     std::fs::create_dir_all(&runs_dir).unwrap();
     let check_log = runs_dir.join("check-2026-11-12.log");
     let check_exact_neighbor_log = runs_dir.join("check-2026-11-10.log");
@@ -811,8 +811,8 @@ fn dangling_workflow_runs_fails_closed() {
     use std::os::unix::fs::symlink;
     let harness = MilestoneHarness::configured_workspace();
     let root = harness.root();
-    std::fs::create_dir_all(root.join(".forge")).unwrap();
-    symlink(root.join("missing-runs"), root.join(".forge/runs")).unwrap();
+    std::fs::create_dir_all(root.join(".acdd")).unwrap();
+    symlink(root.join("missing-runs"), root.join(".acdd/runs")).unwrap();
     let res = harness.run_cli(&["workflow", "clear", "check"]);
     assert!(res.is_err());
     let err = res.unwrap_err().to_string();
@@ -823,7 +823,7 @@ fn dangling_workflow_runs_fails_closed() {
 fn invalid_task_identity_configuration_fails_closed() {
     let harness = MilestoneHarness::configured_workspace();
     harness.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "roots: [src]\ndocs: [docs]\ntasks_db: ../external-tasks.sqlite\n",
     );
     let res_wf = harness.run_cli(&["workflow", "clear", "check"]);
@@ -850,7 +850,7 @@ fn db_confinement_fails_closed() {
     // Absolute symlink parent
     let abs_symlink_db = root.join("link/tasks.sqlite");
     harness.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [src]\ndocs: [docs]\ntasks_db: {}\n",
             abs_symlink_db.display()
@@ -863,7 +863,7 @@ fn db_confinement_fails_closed() {
     // Absolute traversal with '..'
     let abs_dotdot_db = root.join("../external-test-db/tasks.sqlite");
     harness.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [src]\ndocs: [docs]\ntasks_db: {}\n",
             abs_dotdot_db.display()
@@ -888,10 +888,10 @@ fn named_task_snapshot_ownership_is_preserved() {
     );
 
     // Create real named snapshot using actual engine
-    forge_tasks::manage(
+    acdd_tasks::manage(
         root,
-        forge_tasks::Manage {
-            action: forge_tasks::ManageAction::Snapshot,
+        acdd_tasks::Manage {
+            action: acdd_tasks::ManageAction::Snapshot,
             name: Some("shared".to_string()),
             ..Default::default()
         },

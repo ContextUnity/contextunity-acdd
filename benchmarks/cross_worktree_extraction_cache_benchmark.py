@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure Forge extraction-cache reuse between equivalent workspace copies."""
+"""Measure ACDD extraction-cache reuse between equivalent workspace copies."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def run_build(
         workspace,
         database,
         directory,
-        extra_env={"FORGE_EXTRACTION_CACHE_DIR": str(cache_directory)},
+        extra_env={"ACDD_EXTRACTION_CACHE_DIR": str(cache_directory)},
     )
     build = json.loads((directory / "build.stdout").read_text())
     pipeline = build.get("pipeline", {})
@@ -72,7 +72,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace-a", type=Path, required=True, help="cache-seeding workspace copy")
     parser.add_argument("--workspace-b", type=Path, required=True, help="independent cache-consumer copy")
-    parser.add_argument("--candidate-binary", required=True, help="Forge executable under measurement")
+    parser.add_argument("--candidate-binary", required=True, help="ACDD executable under measurement")
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -82,10 +82,10 @@ def main() -> int:
     if workspace_a == workspace_b:
         parser.error("workspace copies must have different roots")
     for workspace in (workspace_a, workspace_b):
-        if not workspace.is_dir() or not (workspace / "forge-mcp.yaml").is_file():
-            parser.error(f"workspace must be a directory containing forge-mcp.yaml: {workspace}")
-    if file_sha256(workspace_a / "forge-mcp.yaml") != file_sha256(workspace_b / "forge-mcp.yaml"):
-        parser.error("workspace copies must use byte-identical forge-mcp.yaml configurations")
+        if not workspace.is_dir() or not (workspace / "acdd.yaml").is_file():
+            parser.error(f"workspace must be a directory containing acdd.yaml: {workspace}")
+    if file_sha256(workspace_a / "acdd.yaml") != file_sha256(workspace_b / "acdd.yaml"):
+        parser.error("workspace copies must use byte-identical acdd.yaml configurations")
     if args.repeats < 1:
         parser.error("--repeats must be at least 1")
 
@@ -97,7 +97,7 @@ def main() -> int:
         report: dict[str, Any] = {
             "workspace_a": str(workspace_a),
             "workspace_b": str(workspace_b),
-            "config_sha256": file_sha256(workspace_a / "forge-mcp.yaml"),
+            "config_sha256": file_sha256(workspace_a / "acdd.yaml"),
             "candidate_binary": str(binary),
             "candidate_binary_sha256": file_sha256(binary),
             "runner_sha256": file_sha256(Path(__file__).resolve()),
@@ -107,13 +107,13 @@ def main() -> int:
                 "rayon_num_threads": os.environ.get("RAYON_NUM_THREADS"),
             },
             "policy": (
-                "Forge-only sequential builds with a fresh database for every run; "
+                "ACDD-only sequential builds with a fresh database for every run; "
                 "each repetition uses a new cache seeded in workspace A and consumed in workspace B"
             ),
         }
 
         for repetition in range(1, args.repeats + 1):
-            with tempfile.TemporaryDirectory(prefix="forge-cross-worktree-cache-") as temporary:
+            with tempfile.TemporaryDirectory(prefix="acdd-cross-worktree-cache-") as temporary:
                 root = Path(temporary)
                 shared_cache = root / "shared-cache"
                 cold_cache = root / "cold-cache"
@@ -124,7 +124,7 @@ def main() -> int:
                 def measure_seed_and_warm() -> tuple[dict[str, Any], dict[str, Any]]:
                     seeded = run_build(binary, workspace_a, root / "seed-work", shared_cache)
                     if not has_cache_entries(shared_cache):
-                        raise RuntimeError("Forge did not publish extraction-cache entries during the seed build")
+                        raise RuntimeError("ACDD did not publish extraction-cache entries during the seed build")
                     warmed = run_build(binary, workspace_b, root / "warm-work", shared_cache)
                     return seeded, warmed
 
@@ -141,11 +141,11 @@ def main() -> int:
                         f"workspace B reused no extraction facts from workspace A in repetition {repetition}"
                     )
                 if coverage_signature(cold_run["graph"]) != coverage_signature(warm_run["graph"]):
-                    raise RuntimeError("cold and cross-worktree cached Forge builds have different coverage")
+                    raise RuntimeError("cold and cross-worktree cached ACDD builds have different coverage")
                 if cold_run["output_root"] != warm_run["output_root"]:
-                    raise RuntimeError(f"cold and cross-worktree cached Forge builds have different output roots: cold={cold_run['output_root']} vs warm={warm_run['output_root']}")
+                    raise RuntimeError(f"cold and cross-worktree cached ACDD builds have different output roots: cold={cold_run['output_root']} vs warm={warm_run['output_root']}")
                 if coverage_signature(seed_run["graph"]) != coverage_signature(warm_run["graph"]):
-                    raise RuntimeError("cache-seeding and cache-consuming Forge builds have different coverage")
+                    raise RuntimeError("cache-seeding and cache-consuming ACDD builds have different coverage")
 
                 for run, destination in (
                     (cold_run, cold_runs),

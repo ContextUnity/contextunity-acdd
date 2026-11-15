@@ -39,7 +39,7 @@ fn allowed_fields_for_tool(tool_name: &str) -> &'static [&'static str] {
             "generation",
             "worktree",
         ],
-        "forge_read" => &[
+        "acdd_read" => &[
             "mode",
             "start_line",
             "end_line",
@@ -607,18 +607,18 @@ impl Server {
     #[tool(
         description = "Read workspace text by path: lines, raw, search (pattern, optional regex/context), or Git delta (optional baseline). To read a complete indexed function, struct, or class, pass symbol: \"SymbolName\" (or selector: \"SymbolName\"); optional path restricts lookup to a file. Auto selects snippet for symbol or selector, search for pattern, otherwise lines. Core reads work without an index. Outline uses docs for Markdown and codemap AST declarations for code; snippet requires codemap and preserves digest-verified complete-symbol paging with source_offset/generation. Optional output_file exports returned content to a confined path. Sensitive patterns, symlinks, traversal and NUL binary input are rejected. Enabled graph/task signals add scope badges and copy-ready Hints."
     )]
-    fn forge_read(&self, Parameters(mut p): Parameters<Snippet>) -> CallToolResult {
+    fn acdd_read(&self, Parameters(mut p): Parameters<Snippet>) -> CallToolResult {
         let format = p.page.output_format();
         self.responding_with_presentation(
             format,
             OperationKind::Navigation,
-            "forge_read",
+            "acdd_read",
             |adapter, policy| {
                 p.normalize(&self.root)?;
                 let page = p.page.resolve(policy)?;
                 let source = p.source(policy)?;
                 let read = |conn: Option<&rusqlite::Connection>| {
-                    crate::engine::reader::forge_read_tool(
+                    crate::engine::reader::acdd_read_tool(
                         &self.root, adapter, &p.read, &page, &source, conn,
                     )
                 };
@@ -1154,7 +1154,7 @@ fn looks_like_sql(value: &str) -> bool {
 }
 
 #[tool_handler(
-    name = "contextunity-forge-mcp",
+    name = "contextunity-acdd",
     version = "0.3.0",
     instructions = "Workspace code graph and task coordination, 20 tools. Responses have a 96 KiB maximum; lower configured byte limits remain authoritative. SQLite budget is 2 seconds. Start with code_map_overview and check coverage before an absence claim. Continue a page with offset and generation. Prefer detail=compact. Selector rules and gate proofs: forge_guide topic=query or acdd."
 )]
@@ -1294,7 +1294,7 @@ impl ServerHandler for Server {
             Ok(result) => Ok(result),
             Err(error) => {
                 let err_msg = error.to_string();
-                let enhanced = if tool_name == "forge_read" {
+                let enhanced = if tool_name == "acdd_read" {
                     let allowed = allowed_fields_for_tool(&tool_name);
                     format!(
                         "{err_msg}\nValid supported parameters for '{tool_name}': {}",

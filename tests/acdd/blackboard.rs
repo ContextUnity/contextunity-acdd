@@ -5,7 +5,7 @@ fn blackboard_persists_task_scoped_messages_in_chronological_order() {
     let milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
     let mut store = TasksStore::open_in_memory("forge-mcp", "forge-mcp").unwrap();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/acdd");
-    assert!(!root.join("forge-mcp.yaml").exists());
+    assert!(!root.join("acdd.yaml").exists());
     store.sync(&milestone, "docs/010-test.md", &root).unwrap();
     let first = milestone.task_id(&milestone.tasks[0]);
     let second = milestone.task_id(&milestone.tasks[1]);
@@ -54,11 +54,11 @@ fn blackboard_persists_task_scoped_messages_in_chronological_order() {
 }
 #[test]
 fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
-    use contextunity_forge_mcp::engine::tasks as engine_tasks;
+    use contextunity_acdd::engine::tasks as engine_tasks;
 
     let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
     let manifest = "---\nid: m-blackboard\ntitle: Blackboard\ndoc_type: contract\nstatus: active\n---\n# Blackboard\n```yaml\ntask_ref: first\ntarget: Coordinate task agents\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Coordinate another task\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
-    root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
+    root.write("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n");
     let manifest = manifest.replace(
         "task_ref: second\ntarget: Coordinate another task\nproof_policy: seam-test-first\nscope: [src/]",
         "task_ref: second\ntarget: Coordinate another task\nproof_policy: seam-test-first\nscope: [docs/]",
@@ -253,25 +253,25 @@ fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering()
     root.write("linked/src/lib.rs", "pub fn linked() {}\n");
     root.write(
         "linked/AGENTS.md",
-        "# Linked instructions\nLoad the contextunity-forge skill.\n",
+        "# Linked instructions\nLoad the acdd skill.\n",
     );
     root.write(
-        "linked/.agents/skills/contextunity-forge/SKILL.md",
+        "linked/.agents/skills/acdd/SKILL.md",
         "# ContextUnity Forge\n",
     );
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nlinked_workspaces:\n  - name: linked\n    path: linked\n    tasks:\n      enabled: true\n      milestones_dir: contracts\n      agents_guidance: AGENTS.md\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nlinked_workspaces:\n  - name: linked\n    path: linked\n    tasks:\n      enabled: true\n      milestones_dir: contracts\n      agents_guidance: AGENTS.md\n",
     );
     root.write(
-        "linked/forge-mcp.yaml",
+        "linked/acdd.yaml",
         "task_repository: linked-repository\ntask_project: linked-project\n",
     );
 
     let with_first_gate = |gate_id: &str| {
         format!(
             "inherit: none\n{}",
-            include_str!("../../crates/forge-tasks/src/tasks/acdd.default.yaml")
+            include_str!("../../crates/acdd-tasks/src/tasks/acdd.profile.yaml")
                 .replace("- id: contract", &format!("- id: \"{gate_id}\""))
                 .replace("symbols: contract", &format!("symbols: \"{gate_id}\""))
                 .replace("id: \"contract\"", &format!("id: \"{gate_id}\""))
@@ -426,7 +426,7 @@ fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering()
 #[test]
 fn blackboard_automatic_scope_fails_closed_without_one_active_context() {
     let root = crate::common::Workspace::new();
-    root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
+    root.write("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n");
     for (manifests, expected) in [
         (
             vec![("010-first.md", "planned")],
@@ -454,7 +454,7 @@ fn blackboard_automatic_scope_fails_closed_without_one_active_context() {
 fn blackboard_concurrent_connections_persist_and_cascade() {
     let (root, store, milestone) = file_backed_blackboard_fixture();
     let task_id = milestone.task_id(&milestone.tasks[0]);
-    let database = root.path(".forge/tasks.sqlite");
+    let database = root.path(".acdd/tasks.sqlite");
     let workers: Vec<_> = (0..2)
         .map(|worker| {
             let database = database.clone();
@@ -519,7 +519,7 @@ fn blackboard_post_fails_closed_when_task_completes_during_write() {
     let milestone_ref = store.milestone_scope_ref(&task.milestone_ref).unwrap();
     drop(store);
 
-    let database = root.path(".forge/tasks.sqlite");
+    let database = root.path(".acdd/tasks.sqlite");
     let mut completion = TasksStore::open(&database).unwrap();
     let poster = TasksStore::open(&database).unwrap();
     let (busy_tx, busy_rx) = std::sync::mpsc::channel();
@@ -561,13 +561,13 @@ fn blackboard_post_fails_closed_when_task_completes_during_write() {
 
 #[test]
 fn blackboard_accepts_nested_task_gates_read_aliases_and_unique_in_progress_task() {
-    use contextunity_forge_mcp::engine::tasks as engine_tasks;
+    use contextunity_acdd::engine::tasks as engine_tasks;
 
     let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
-    root.write(".gitignore", ".forge/\n");
-    root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
+    root.write(".gitignore", ".acdd/\n");
+    root.write("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n");
     root.write(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         r#"inherit: none
 roles:
   architect: {mode: subagent}

@@ -54,7 +54,7 @@ fn javascript_local_imports_require_indexed_project_targets() {
         }
     }
     owner.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [.]\nlinked_workspaces:\n  - name: first\n    path: '{}'\n    roots: [.]\n  - name: second\n    path: '{}'\n    roots: [.]\n",
             first.root().display(),
@@ -501,7 +501,7 @@ fn conflicting_exports_cycles_private_and_type_exports_fail_closed() {
 
 #[test]
 fn changing_a_transitive_barrel_matches_cold_resolution() {
-    use contextunity_forge_mcp::core::commitments;
+    use contextunity_acdd::core::commitments;
     let root = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in [
         ("first.ts", "export function work() {}"),
@@ -524,7 +524,7 @@ fn changing_a_transitive_barrel_matches_cold_resolution() {
         connection.prepare("SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edges e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE src.path_id=(SELECT path_id FROM path_dictionary WHERE path='consumer.ts') AND e.kind='calls' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)").unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()
     };
     assert_eq!(targets(&delta), ["second.ts"]);
-    let cold = root.root().join(".forge/cold.sqlite");
+    let cold = root.root().join(".acdd/cold.sqlite");
     root.build_to(&cold);
     let cold = root.open_at(&cold);
     commitments::verify(&cold).unwrap();
@@ -589,7 +589,7 @@ fn commonjs_capture_keeps_linked_projects_isolated() {
         );
     }
     linked.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [.]\nlinked_workspaces:\n  - name: first\n    path: '{}'\n    roots: [.]\n  - name: second\n    path: '{}'\n    roots: [.]\n",
             first.root().display(),

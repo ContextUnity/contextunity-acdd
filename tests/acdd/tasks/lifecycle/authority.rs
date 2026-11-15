@@ -45,7 +45,7 @@ fn task_authority_diagnostics_share_the_synced_manifest_fixture() {
                     )
                     .replace("target: Deliver first", "target: Deliver amended first"),
                     format!(
-                        "AUTHORITY_GAP: {id}. task '{id}'. file revision 1 <= stored 1; frontmatter fields [milestone.owners], task fields [task.target]. Do: revert [milestone.owners] in docs/010-test.md, set contract_revision above 1, and run contextunity-forge-mcp task sync."
+                        "AUTHORITY_GAP: {id}. task '{id}'. file revision 1 <= stored 1; frontmatter fields [milestone.owners], task fields [task.target]. Do: revert [milestone.owners] in docs/010-test.md, set contract_revision above 1, and run acdd task sync."
                     ),
                 ),
                 (
@@ -85,7 +85,7 @@ fn task_authority_diagnostics_share_the_synced_manifest_fixture() {
         assert_eq!(
                 error,
                 format!(
-                    "AUTHORITY_GAP: task '{id}'. file revision 1 <= stored 1; digest fields [task.target]. Do: set contract_revision above 1 and run contextunity-forge-mcp task sync."
+                    "AUTHORITY_GAP: task '{id}'. file revision 1 <= stored 1; digest fields [task.target]. Do: set contract_revision above 1 and run acdd task sync."
                 )
             );
     }
@@ -171,7 +171,7 @@ fn task_authority_diagnostics_share_the_synced_manifest_fixture() {
         assert_eq!(
                 error,
                 format!(
-                    "AUTHORITY_GAP: {id}. task '{id}'. file revision 2 > stored 1 (unsynced); digest fields [milestone.owners]. Do: revert [milestone.owners] in docs/010-test.md and run contextunity-forge-mcp task sync."
+                    "AUTHORITY_GAP: {id}. task '{id}'. file revision 2 > stored 1 (unsynced); digest fields [milestone.owners]. Do: revert [milestone.owners] in docs/010-test.md and run acdd task sync."
                 )
             );
         assert!(!error.contains("task.contract_revision"));
@@ -182,7 +182,7 @@ fn task_authority_diagnostics_share_the_synced_manifest_fixture() {
 fn milestone_id_guard_ignores_foreign_project_at_the_same_manifest_path() {
     let root = acdd_workspace(DEFAULT_SEAM, "");
     let foreign_root = acdd_workspace(DEFAULT_SEAM, "");
-    let database = root.root().join(".forge/tasks.sqlite");
+    let database = root.root().join(".acdd/tasks.sqlite");
     let mut foreign_store = TasksStore::open_project(&database, "forge-mcp", "aaa").unwrap();
     let mut current_store = TasksStore::open_project(&database, "forge-mcp", "zzz").unwrap();
     let specification = |project: &str, id: &str| {
@@ -248,7 +248,7 @@ fn milestone_id_guard_ignores_foreign_project_at_the_same_manifest_path() {
                 "docs/milestones/010-shared.md",
                 &specification("zzz", "m-test"),
             );
-            root.write("forge-mcp.yaml", "roots: [src]\ndocs: [docs]\ntask_repository: forge-mcp\ntask_project: zzz\ntasks_db: .forge/tasks.sqlite\n");
+            root.write("acdd.yaml", "roots: [src]\ndocs: [docs]\ntask_repository: forge-mcp\ntask_project: zzz\ntasks_db: .acdd/tasks.sqlite\n");
             store
                 .connection
                 .execute_batch(

@@ -6,18 +6,18 @@ fn concurrent_subtask_add_preserves_all_subtasks_in_sqlite_and_descriptor() {
     let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
     root.write("src/lib.rs", "pub fn work() {}\n");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     root.write("docs/010-concurrent.md", spec);
     let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
-    let mut store = TasksStore::open(&root.root().join(".forge/tasks.sqlite")).unwrap();
+    let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     store
         .sync(&milestone, "docs/010-concurrent.md", root.root())
         .unwrap();
     let task_id = "forge-mcp/m-concurrent:worker";
 
-    let db_path = root.root().join(".forge/tasks.sqlite");
+    let db_path = root.root().join(".acdd/tasks.sqlite");
     let t1 = {
         let db_path = db_path.clone();
         let task_id = task_id.to_string();

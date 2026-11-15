@@ -40,9 +40,9 @@ fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
     let listed = root.list(false, None, 10);
     let rows = listed["milestones"].as_array().unwrap();
     assert_eq!(rows.len(), 2);
-    let markdown = contextunity_forge_mcp::core::format::render(
+    let markdown = contextunity_acdd::core::format::render(
         &listed,
-        contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+        contextunity_acdd::core::format::OutputFormat::Markdown,
         "milestone_list",
     );
     for text in [
@@ -250,7 +250,7 @@ fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
 #[test]
 fn archived_milestone_metrics_and_limits_survive_unreadable_sqlite() {
     let history = MilestoneHarness::configured_workspace();
-    history.write(".forge/tasks.sqlite", "unreadable SQLite sentinel");
+    history.write(".acdd/tasks.sqlite", "unreadable SQLite sentinel");
     for index in 0..102 {
         let source = include_str!("../../fixtures/milestones/archive_metrics.md")
             .replace("INDEX", &format!("{index:03}"))
@@ -283,13 +283,13 @@ fn archived_milestone_metrics_and_limits_survive_unreadable_sqlite() {
         assert_eq!(value["milestones"][0]["tasks"][1]["status"], "cancelled");
     }
     assert_eq!(
-        history.file_bytes(".forge/tasks.sqlite"),
+        history.file_bytes(".acdd/tasks.sqlite"),
         b"unreadable SQLite sentinel"
     );
     let value = history.list(true, None, 1);
-    let markdown = contextunity_forge_mcp::core::format::render(
+    let markdown = contextunity_acdd::core::format::render(
         &value,
-        contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+        contextunity_acdd::core::format::OutputFormat::Markdown,
         "milestone_list",
     );
     assert!(markdown.contains("Archive: 1 of 102 documents displayed."));
@@ -313,9 +313,9 @@ fn milestone_list_renders_untrusted_manifest_text_literally() {
         .build();
     hostile.write(filename, &hostile_manifest);
     let literal_json = hostile.list(false, None, 10);
-    let markdown = contextunity_forge_mcp::core::format::render(
+    let markdown = contextunity_acdd::core::format::render(
         &literal_json,
-        contextunity_forge_mcp::core::format::OutputFormat::Markdown,
+        contextunity_acdd::core::format::OutputFormat::Markdown,
         "milestone_list",
     );
     assert!(

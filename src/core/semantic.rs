@@ -1,3 +1,3 @@
-//! Semantic models and flow analysis, re-exported from forge-core.
+//! Semantic models and flow analysis, re-exported from acdd-core.
 
-pub use forge_core::semantic::*;
+pub use acdd_core::semantic::*;

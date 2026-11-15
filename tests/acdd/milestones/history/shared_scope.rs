@@ -33,13 +33,13 @@ fn shared_scope_baseline() -> DeliveredBaseline {
         active_path: "docs/milestones/010-shared-landings.md",
         source: &source,
         config:
-            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nrecord_task_commits: true\n",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nrecord_task_commits: true\n",
         files: vec![
             ("src/shared.rs", "pub fn shared() -> u8 { 0 }\n".into()),
             ("src/first.rs", "pub fn first() -> u8 { 0 }\n".into()),
             ("src/second.rs", "pub fn second() -> u8 { 0 }\n".into()),
         ],
-        seed_paths: &["forge-mcp.yaml", "docs", "src"],
+        seed_paths: &["acdd.yaml", "docs", "src"],
         commit_message: "admit shared milestone",
         disable_git_maintenance: true,
         tasks: vec![
@@ -121,10 +121,10 @@ fn check_shared_scope_scenarios(scenarios: &[SharedScenario], record_commits: bo
     if !record_commits {
         landings.root.reset_history_to(&delivered_baseline);
         landings.root.write(
-            "forge-mcp.yaml",
-            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nrecord_task_commits: false\n",
+            "acdd.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nrecord_task_commits: false\n",
         );
-        landings.root.stage_paths(&["forge-mcp.yaml"]);
+        landings.root.stage_paths(&["acdd.yaml"]);
         landings
             .root
             .commit_staged("select handoff recording policy");
@@ -164,9 +164,9 @@ fn check_shared_scope_scenarios(scenarios: &[SharedScenario], record_commits: bo
         let (mut first_landed, mut second_landed, mut integration, baseline) = {
             if index > 0 {
                 if sql_only && previous_sql_only {
-                    let db = landings.root.path(".forge/tasks.sqlite");
+                    let db = landings.root.path(".acdd/tasks.sqlite");
                     for suffix in ["-wal", "-shm", "-journal"] {
-                        let auxiliary = landings.root.path(format!(".forge/tasks.sqlite{suffix}"));
+                        let auxiliary = landings.root.path(format!(".acdd/tasks.sqlite{suffix}"));
                         if auxiliary.exists() {
                             std::fs::remove_file(auxiliary).unwrap();
                         }

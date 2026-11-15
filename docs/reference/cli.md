@@ -5,33 +5,33 @@ title: CLI reference
 
 # CLI reference
 
-`contextunity-forge-mcp` provides a command-line interface and a stdio MCP server. Run `contextunity-forge-mcp --help` or append `--help` to any command for accepted arguments. Commands other than `serve` print readable Markdown by default. Pass global `--format json` to retain machine-readable JSON output.
+`acdd` provides a command-line interface and a stdio MCP server. Run `acdd --help` or append `--help` to any command for accepted arguments. Commands other than `serve` print readable Markdown by default. Pass global `--format json` to retain machine-readable JSON output.
 
 ## Global options
 
 | Option | Behavior |
 | --- | --- |
-| `--root <PATH>` | Workspace for all commands. Defaults to the current directory; `FORGE_WORKSPACE_ROOT` can set it. |
-| `--db <PATH>` | Code-index path, relative to the selected root. Defaults to `<root>/.forge/code-map.sqlite`; `FORGE_DB` can set it. Does not select the task store. |
-| `--config <PATH>` | Root-confined Forge YAML configuration; `FORGE_CONFIG` can set it. Explicit missing files fail. Defaults to `<root>/forge-mcp.yaml` when present. |
-| `--profile <PATH>` | Root-confined gate profile, overriding the selected config's `acdd_profile`; `FORGE_PROFILE` can set it. Explicit missing files fail. |
+| `--root <PATH>` | Workspace for all commands. Defaults to the current directory; `ACDD_WORKSPACE_ROOT` can set it. |
+| `--db <PATH>` | Code-index path, relative to the selected root. Defaults to `<root>/.acdd/code-map.sqlite`; `ACDD_DB` can set it. Does not select the task store. |
+| `--config <PATH>` | Root-confined ACDD YAML configuration; `ACDD_CONFIG` can set it. Explicit missing files fail. Defaults to `<root>/acdd.yaml` when present. |
+| `--profile <PATH>` | Root-confined gate profile, overriding the selected config's `acdd_profile`; `ACDD_PROFILE` can set it. Explicit missing files fail. |
 | `--format markdown|json` | Output format for command results. Defaults to `markdown`; invalid values fail before a command runs. |
 
 `build`, `scan`, and `delta` also accept a positional workspace path. Either form selects the workspace; when both are supplied, they must resolve to the same directory.
 
 Selections resolve once per invocation. Flags override their environment variables.
 Profile selection is explicit profile, selected configuration's `acdd_profile`,
-repository `.forge/acdd/profile.yaml`, then the embedded profile. Canonical
+repository `.acdd/profile.yaml`, then the embedded profile. Canonical
 profile references retain pin validation; task and milestone pins still apply.
 Configuration and profile paths resolve under the chosen root; absolute paths
 must remain confined there. A selected config without `acdd_profile` falls back
 to the repository/embedded profile, not another configuration file.
 Task-store resolution continues to use `tasks_db` and the primary Git worktree.
 Owned runner children (agent sessions claiming gates) receive selected paths and
-session identity (`FORGE_CONFIG`, `FORGE_PROFILE`, `FORGE_DB`, `FORGE_AGENT_SESSION_ID`)
+session identity (`ACDD_CONFIG`, `ACDD_PROFILE`, `ACDD_DB`, `ACDD_AGENT_SESSION_ID`)
 without mutating the parent environment. Command processes (project build, lint,
 and test commands executed by command gates and handoff verification) execute in
-a sanitized environment where internal Forge orchestration variables are scrubbed,
+a sanitized environment where internal ACDD orchestration variables are scrubbed,
 preventing cross-workspace configuration pollution. Concurrent in-process invocations
 retain separate selections.
 
@@ -45,10 +45,10 @@ explicit selections fail before index publication.
 ## Inventory and indexing
 
 ```sh
-contextunity-forge-mcp scan .
-contextunity-forge-mcp build .
-contextunity-forge-mcp build /path/to/repository --output /path/to/index.sqlite
-contextunity-forge-mcp delta . src/module.py src/other.py
+acdd scan .
+acdd build .
+acdd build /path/to/repository --output /path/to/index.sqlite
+acdd delta . src/module.py src/other.py
 ```
 
 `scan` reports admitted files without writing an index. `build` creates a full index. `delta` updates the listed changed or deleted paths in an existing index. `build` and `scan` accept `--adapter <PATH>` for a configuration file inside the workspace; reads use the selected configuration. Conflicting `--adapter` and `--config` paths fail.
@@ -58,16 +58,16 @@ contextunity-forge-mcp delta . src/module.py src/other.py
 ## File and symbol reads
 
 ```sh
-contextunity-forge-mcp read notes.txt --start-line 20 --line-count 40
-contextunity-forge-mcp read notes.txt --mode search --pattern 'timeout' --context 2
-contextunity-forge-mcp read notes.txt --mode search --pattern 'error|warning' --regex
-contextunity-forge-mcp read docs/reference/tasks.md --mode outline
-contextunity-forge-mcp read src/engine/reader.rs --selector forge_read_tool
-contextunity-forge-mcp read notes.txt --mode delta --baseline HEAD
-contextunity-forge-mcp read notes.txt --mode raw --output-file exports/read.txt
+acdd read notes.txt --start-line 20 --line-count 40
+acdd read notes.txt --mode search --pattern 'timeout' --context 2
+acdd read notes.txt --mode search --pattern 'error|warning' --regex
+acdd read docs/reference/tasks.md --mode outline
+acdd read src/engine/reader.rs --selector acdd_read_tool
+acdd read notes.txt --mode delta --baseline HEAD
+acdd read notes.txt --mode raw --output-file exports/read.txt
 ```
 
-`read` uses the same layered reader as MCP `forge_read`. The positional path is
+`read` uses the same layered reader as MCP `acdd_read`. The positional path is
 required; `--selector` selects a symbol within that file. Alternatively, pass a
 symbol selector as the positional value with `--mode snippet`. Auto mode selects
 snippet for `--selector`, search for `--pattern`, and lines otherwise.
@@ -80,27 +80,27 @@ text bounds, exports, sensitive paths, task badges, and conditional hints.
 ## Queries
 
 ```sh
-contextunity-forge-mcp query overview
-contextunity-forge-mcp query overview --aspects entrypoints
-contextunity-forge-mcp query overview --aspects entrypoints_with_tests
-contextunity-forge-mcp query overview --aspects topology
-contextunity-forge-mcp query search 'parse*' --kind function --limit 30
-contextunity-forge-mcp query search 'takes:GateProfile'
-contextunity-forge-mcp query search 'returns:Result'
-contextunity-forge-mcp query inspect 'src/module.py:parse' --show-source
-contextunity-forge-mcp query explain 'src/module.py:parse'
-contextunity-forge-mcp query impact 'src/module.py:parse' --depth 1
-contextunity-forge-mcp query impact --changes staged --depth 1
-contextunity-forge-mcp query tests 'src/module.py:parse' --direction inbound
-contextunity-forge-mcp query remove 'src/module.py:parse'
-contextunity-forge-mcp query analyze 'SELECT name FROM nodes ORDER BY name'
-contextunity-forge-mcp query run slice 'src/module.py:parse' --depth 1 --limit 30
-contextunity-forge-mcp query run slice src/db --limit 30
-contextunity-forge-mcp query run untested src/core --limit 30
-contextunity-forge-mcp query run implementations LanguageLinker --limit 30
-contextunity-forge-mcp query run duplicates --level symbol --min-lines 10 --limit 30
-contextunity-forge-mcp query run duplicates src --level file --limit 30
-contextunity-forge-mcp --format json query overview
+acdd query overview
+acdd query overview --aspects entrypoints
+acdd query overview --aspects entrypoints_with_tests
+acdd query overview --aspects topology
+acdd query search 'parse*' --kind function --limit 30
+acdd query search 'takes:GateProfile'
+acdd query search 'returns:Result'
+acdd query inspect 'src/module.py:parse' --show-source
+acdd query explain 'src/module.py:parse'
+acdd query impact 'src/module.py:parse' --depth 1
+acdd query impact --changes staged --depth 1
+acdd query tests 'src/module.py:parse' --direction inbound
+acdd query remove 'src/module.py:parse'
+acdd query analyze 'SELECT name FROM nodes ORDER BY name'
+acdd query run slice 'src/module.py:parse' --depth 1 --limit 30
+acdd query run slice src/db --limit 30
+acdd query run untested src/core --limit 30
+acdd query run implementations LanguageLinker --limit 30
+acdd query run duplicates --level symbol --min-lines 10 --limit 30
+acdd query run duplicates src --level file --limit 30
+acdd --format json query overview
 ```
 
 `query overview --aspects` accepts comma-separated aspect names. `entrypoints` excludes tests; `entrypoints_with_tests` includes them in the same `entrypoints` result. Repeat the chosen aspect and use `--limit`, `--offset`, and the previous page's `--generation` to continue a bounded aspect page.
@@ -127,9 +127,9 @@ returned semantic value for clients that parse stdout.
 ## Documentation and syntax search
 
 ```sh
-contextunity-forge-mcp docs search 'dependency' --doc-type architecture
-contextunity-forge-mcp docs get 'docs/architecture/indexing.md' --section 'Ownership and data flow'
-contextunity-forge-mcp ast grep 'print($VALUE)' --lang python --path src
+acdd docs search 'dependency' --doc-type architecture
+acdd docs get 'docs/architecture/indexing.md' --section 'Ownership and data flow'
+acdd ast grep 'print($VALUE)' --lang python --path src
 ```
 
 `docs` reads indexed documents. `ast grep` reads admitted file paths from the index, narrows them with FTS terms, and parses matching source after checking its indexed digest. Both can trigger the missing or incompatible-index rebuild described above; `ast grep` also requires a compiled language profile. `docs search` accepts `--component` and `--limit`; `ast grep` accepts `--limit`.
@@ -145,16 +145,16 @@ shared page parity.
 Use [repository tasks](tasks.md) for `task list`, `create`, `sync`, `inspect`,
 `claim`, `run`, `verify`, `submit`, `blackboard`, `extend-scope`, `delete`, `reset`, `cleanup`, and the
 `migrate preview/apply/verify` administration commands. These operations use
-`tasks_db` from `forge-mcp.yaml`; global `--db` selects only the code index.
+`tasks_db` from `acdd.yaml`; global `--db` selects only the code index.
 `task submit --evidence` accepts a JSON object with claim-bound identity and
-typed proof. The `contextunity-forge` skill completes a task with:
+typed proof. The `acdd` skill completes a task with:
 
 CLI task `--worktree` inputs are existing directory paths; the MCP
 human-friendly exact-name, numeric-prefix, suffix, and substring selectors do
 not apply to CLI commands. CLI query commands choose a workspace with `--root`.
 
 ```sh
-contextunity-forge-mcp task list [--repository NAME|all] [--milestone REF] [--status STATUS] [--stage STAGE] [--milestone-status active|planned|completed|all] [--planned|--completed|--all] [--detail compact|full] [--limit 1..100] [--offset N --generation TOKEN]
+acdd task list [--repository NAME|all] [--milestone REF] [--status STATUS] [--stage STAGE] [--milestone-status active|planned|completed|all] [--planned|--completed|--all] [--detail compact|full] [--limit 1..100] [--offset N --generation TOKEN]
 ```
 
 Task list defaults to ready tasks from the unique active milestone in the selected
@@ -175,16 +175,16 @@ Task `--status` accepts `ready` (default), `in_progress`, `blocked`, `parked`,
 and worktree while waiting for a scope owner; `--status all` includes them.
 
 ```sh
-contextunity-forge-mcp task claim TASK_ID --stage deliver --worker REVIEWER --worktree PATH [--bundle]
-contextunity-forge-mcp task submit TASK_ID --stage deliver --action pass --evidence '<JSON_OBJECT>'
-contextunity-forge-mcp task context TASK_ID
+acdd task claim TASK_ID --stage deliver --worker REVIEWER --worktree PATH [--bundle]
+acdd task submit TASK_ID --stage deliver --action pass --evidence '<JSON_OBJECT>'
+acdd task context TASK_ID
 ```
 
 Verify a claimed command gate iteratively, then submit its cached proof:
 
 ```sh
-contextunity-forge-mcp task verify TASK_ID [--test <file.rs::test_fn>] [--seam <target>] [--timeout SECONDS]
-contextunity-forge-mcp task submit TASK_ID --stage build --action pass [--timeout SECONDS]
+acdd task verify TASK_ID [--test <file.rs::test_fn>] [--seam <target>] [--timeout SECONDS]
+acdd task submit TASK_ID --stage build --action pass [--timeout SECONDS]
 ```
 
 `verify` executes the registered command in the claimed worktree and preserves
@@ -207,15 +207,15 @@ for timeout, scope-warning, and diagnostic behavior.
 form per invocation:
 
 ```sh
-contextunity-forge-mcp task show --task TASK_ID
-contextunity-forge-mcp task submit --task TASK_ID --stage build --action pass --evidence '<JSON_OBJECT>'
-contextunity-forge-mcp task sync --file docs/milestones/010-example.md
+acdd task show --task TASK_ID
+acdd task submit --task TASK_ID --stage build --action pass --evidence '<JSON_OBJECT>'
+acdd task sync --file docs/milestones/010-example.md
 ```
 
 Dispatch the highest-priority eligible gate atomically:
 
 ```sh
-contextunity-forge-mcp task next --worker WORKER --worktree PATH [--workspace WS]
+acdd task next --worker WORKER --worktree PATH [--workspace WS]
 ```
 
 The command returns the claim and context bundle, or `status: "idle"` when no
@@ -232,7 +232,7 @@ include the receipt. See
 ### Headless task execution
 
 ```sh
-contextunity-forge-mcp --root PATH task run TASK_ID --in-place
+acdd --root PATH task run TASK_ID --in-place
 ```
 
 `task run` executes the task's pinned profile in the selected root. `--in-place`
@@ -241,7 +241,7 @@ It resumes the persisted applicable gate, follows profile transitions and
 conditions, and returns the completed task with its durable receipt. Repeating
 the command for a completed task returns that receipt without rerunning gates.
 
-Supply the coordinator's genuine session through `FORGE_AGENT_SESSION_ID`.
+Supply the coordinator's genuine session through `ACDD_AGENT_SESSION_ID`.
 Each configured role runner receives a
 separate session selected before its gate claim; that same identity is passed
 in its arguments and child environment for submission. The runner receives the
@@ -280,9 +280,9 @@ These commands deliver one task. `milestone handoff` below closes the whole
 milestone. Exchange temporary task context with:
 
 ```sh
-contextunity-forge-mcp task blackboard post [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--recipient-task-id TASK_ID] [--subtask-ref REF] --topic TOPIC --payload TEXT [--author WORKER]
-contextunity-forge-mcp task blackboard read [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] [--topic TOPIC] [--limit N] [--offset N]
-contextunity-forge-mcp task blackboard inspect MESSAGE_ID
+acdd task blackboard post [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--recipient-task-id TASK_ID] [--subtask-ref REF] --topic TOPIC --payload TEXT [--author WORKER]
+acdd task blackboard read [TASK_ID] [--scope milestone|task|subtask] [--milestone-ref REF] [--subtask-ref REF] [--topic TOPIC] [--limit N] [--offset N]
+acdd task blackboard inspect MESSAGE_ID
 ```
 
 Post accepts a task ID as a positional source scope or resolves context from
@@ -308,15 +308,15 @@ ambiguous. Explicit milestone scope includes only milestone-level messages.
 Manage iterative subtasks within an admitted task:
 
 ```sh
-contextunity-forge-mcp task subtask add TASK_ID SUBTASK_REF "Description of subtask" [--workspace WS]
-contextunity-forge-mcp task subtask update TASK_ID SUBTASK_REF --status ready|in_progress|completed|cancelled|blocked [--evidence "Test notes"] [--workspace WS]
-contextunity-forge-mcp task subtask list TASK_ID [--workspace WS]
-contextunity-forge-mcp task reset TASK_ID
-contextunity-forge-mcp task reopen TASK_ID
-contextunity-forge-mcp task context TASK_ID
-contextunity-forge-mcp task extend-scope TASK_ID PATH1 [PATH2...]
-contextunity-forge-mcp task delete TASK_ID [--force]
-contextunity-forge-mcp task cleanup
+acdd task subtask add TASK_ID SUBTASK_REF "Description of subtask" [--workspace WS]
+acdd task subtask update TASK_ID SUBTASK_REF --status ready|in_progress|completed|cancelled|blocked [--evidence "Test notes"] [--workspace WS]
+acdd task subtask list TASK_ID [--workspace WS]
+acdd task reset TASK_ID
+acdd task reopen TASK_ID
+acdd task context TASK_ID
+acdd task extend-scope TASK_ID PATH1 [PATH2...]
+acdd task delete TASK_ID [--force]
+acdd task cleanup
 ```
 
 Subtasks default to `ready`; legacy `pending` aliases `ready` and responses use
@@ -336,12 +336,12 @@ SQLite and milestone Markdown, resets the task to the first gate in its active p
 ## Structured plans
 
 ```sh
-contextunity-forge-mcp --root PATH plan list
-contextunity-forge-mcp --root PATH plan show NAME
-contextunity-forge-mcp --root PATH --format json plan run NAME --in-place
-contextunity-forge-mcp --root PATH --config config/custom.yaml --profile profiles/plan.yaml plan run NAME
-contextunity-forge-mcp --root PATH plan clear NAME
-contextunity-forge-mcp --root PATH plan archive NAME
+acdd --root PATH plan list
+acdd --root PATH plan show NAME
+acdd --root PATH --format json plan run NAME --in-place
+acdd --root PATH --config config/custom.yaml --profile profiles/plan.yaml plan run NAME
+acdd --root PATH plan clear NAME
+acdd --root PATH plan archive NAME
 ```
 
 Plans are Markdown documents with `doc_type: plan`, discovered recursively in
@@ -383,10 +383,10 @@ results include the path, steps and snapshots. A failure retains work for repair
 ## Standalone workflows
 
 ```sh
-contextunity-forge-mcp --root PATH workflow list
-contextunity-forge-mcp --root PATH workflow show NAME
-contextunity-forge-mcp --root PATH --format json workflow run NAME [--goal TEXT]
-contextunity-forge-mcp --root PATH workflow clear NAME
+acdd --root PATH workflow list
+acdd --root PATH workflow show NAME
+acdd --root PATH --format json workflow run NAME [--goal TEXT]
+acdd --root PATH workflow clear NAME
 ```
 
 Workflows are validated profile documents in `docs/workflows/*.yaml` or `*.yml`.
@@ -394,7 +394,7 @@ Select a workflow by its unique filename stem or discovered root-relative path.
 Discovery is read-only and accepts a repository root reached through a symlink.
 Missing, ambiguous, escaping, or cyclic workflow paths fail.
 
-`workflow clear <selector>` resolves the workflow name or path (failing closed with `WORKFLOW_AMBIGUOUS` on multiple candidates), verifies that `.forge/runs` and its contents contain no symlinks (ADR 0005), deletes run logs matching `{slug}.log` or timestamp-delimited `{slug}-<timestamp>.log` / `{slug}_<timestamp>.log` while strictly preserving neighbor logs, and purges SQLite execution traces matching `{slug}#`.
+`workflow clear <selector>` resolves the workflow name or path (failing closed with `WORKFLOW_AMBIGUOUS` on multiple candidates), verifies that `.acdd/runs` and its contents contain no symlinks (ADR 0005), deletes run logs matching `{slug}.log` or timestamp-delimited `{slug}-<timestamp>.log` / `{slug}_<timestamp>.log` while strictly preserving neighbor logs, and purges SQLite execution traces matching `{slug}#`.
 
 `workflow run` executes command-owned and agent-owned root gates in-place with `save: none`.
 It follows the profile's pass, failure, condition, and retry edges, drains both
@@ -415,7 +415,7 @@ progress to stderr and exactly one JSON decision to stdout: `gate`, `session_id`
 rejection. Exit zero without a decision cannot pass. Declared independence is
 checked against observed predecessor sessions; configured reuse resumes the
 rejected target's session with findings. Typed command proof must agree with
-commands Forge actually observes. The workflow document supplies its own graph
+commands ACDD actually observes. The workflow document supplies its own graph
 and roles.
 
 Task containers, task receipts and persistence other than `none` are refused.
@@ -429,15 +429,15 @@ retain their own effects.
 provides task operations and has no milestone lifecycle tools.
 
 ```sh
-contextunity-forge-mcp milestone list [--archive] [--limit N] [--status planned|active|completed|cancelled|all]
-contextunity-forge-mcp milestone show <id-or-number> [--full]
-contextunity-forge-mcp milestone init <manifest.md> [--in-place]
-contextunity-forge-mcp milestone run <id-or-number> --target-base <git-selector> [--in-place]
-contextunity-forge-mcp milestone draft [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--dir docs/milestones] [--desc "Purpose"] [--depends-on m-prior] [--active]
-contextunity-forge-mcp milestone handoff-context <id-or-number> --target-base <git-selector>
-contextunity-forge-mcp milestone handoff <id-or-number> [--commit <git-selector>] --evidence-file <external-review.json>
-contextunity-forge-mcp milestone clear <id-or-number>
-contextunity-forge-mcp milestone db-recover [<id-or-number-or-path>]
+acdd milestone list [--archive] [--limit N] [--status planned|active|completed|cancelled|all]
+acdd milestone show <id-or-number> [--full]
+acdd milestone init <manifest.md> [--in-place]
+acdd milestone run <id-or-number> --target-base <git-selector> [--in-place]
+acdd milestone draft [--num 011] [--slug short-name] [--title "Title"] [--plan docs/plans/proposal.md] [--dir docs/milestones] [--desc "Purpose"] [--depends-on m-prior] [--active]
+acdd milestone handoff-context <id-or-number> --target-base <git-selector>
+acdd milestone handoff <id-or-number> [--commit <git-selector>] --evidence-file <external-review.json>
+acdd milestone clear <id-or-number>
+acdd milestone db-recover [<id-or-number-or-path>]
 ```
 
 `milestone list` renders Markdown sections for active and planned milestones,
@@ -497,7 +497,7 @@ while retaining completed task receipts and avoiding new claims for those tasks.
 Root role runners return typed
 proof and actual session identity. An independent integration reviewer also
 returns `integration_review` and the exact supplied `binding`, with its actual
-session as `worker_id`. Forge verifies session separation from accepted builders.
+session as `worker_id`. ACDD verifies session separation from accepted builders.
 
 The runner calls `handoff-context`, validates observed verification counts and
 current-content independent review, then invokes the normal handoff pipeline.
@@ -559,9 +559,9 @@ The SQLite task store represents current active state only:
 ## Universal clear dispatch
 
 ```sh
-contextunity-forge-mcp --root PATH clear milestone <id-or-number>
-contextunity-forge-mcp --root PATH clear plan <selector> [--archive]
-contextunity-forge-mcp --root PATH clear workflow <selector>
+acdd --root PATH clear milestone <id-or-number>
+acdd --root PATH clear plan <selector> [--archive]
+acdd --root PATH clear workflow <selector>
 ```
 
 `clear` routes lifecycle cleanup across milestones, plans, and workflows under a unified top-level command.
@@ -572,24 +572,24 @@ contextunity-forge-mcp --root PATH clear workflow <selector>
 ## Server, guide, and checkpoints
 
 ```sh
-contextunity-forge-mcp --root /path/to/repository serve
-contextunity-forge-mcp reload
-contextunity-forge-mcp guide init
-contextunity-forge-mcp guide query
-contextunity-forge-mcp guide lifecycle --format json
-contextunity-forge-mcp guide gates
-contextunity-forge-mcp guide subtasks
-contextunity-forge-mcp guide code
-contextunity-forge-mcp guide docs
-contextunity-forge-mcp checkpoint save --name repository/project/milestone/tasks/task/build --content '{"status":"in-progress"}'
-contextunity-forge-mcp checkpoint get --name repository/project/milestone/tasks/task/build
-contextunity-forge-mcp checkpoint list
-contextunity-forge-mcp checkpoint delete --name repository/project/milestone/tasks/task/build
+acdd --root /path/to/repository serve
+acdd reload
+acdd guide init
+acdd guide query
+acdd guide lifecycle --format json
+acdd guide gates
+acdd guide subtasks
+acdd guide code
+acdd guide docs
+acdd checkpoint save --name repository/project/milestone/tasks/task/build --content '{"status":"in-progress"}'
+acdd checkpoint get --name repository/project/milestone/tasks/task/build
+acdd checkpoint list
+acdd checkpoint delete --name repository/project/milestone/tasks/task/build
 ```
 
 Markdown checkpoint lists show returned names and serialized byte sizes. Save
 and delete show the actual action and name; get preserves the saved JSON value,
-including user fields that resemble Forge metadata.
+including user fields that resemble ACDD metadata.
 
 `serve` uses stdin and stdout for MCP messages; the [MCP setup guide](mcp-setup.md) covers client configuration and automatic indexing. On Unix, `SIGHUP` replaces the server process with the executable currently installed at its path while preserving its PID and standard streams. On Linux and macOS, `reload` signals matching MCP servers owned by the current user and launched from the same executable path, including both the default invocation and explicit `serve`. It reports the signaled PIDs or fails when none are found. Start the server with this version once before using `reload`, then run `reload` after installing subsequent replacement binaries. An in-flight MCP request can be interrupted during replacement. The replacement restores that process's negotiated client handshake, so the client retries the interrupted request on the same connection.
 
@@ -602,7 +602,7 @@ Omitted format returns Markdown; `--format json` returns structured guidance.
 See the [topic and capability reference](mcp-tools.md#built-in-guide).
 
 `guide ast` prints profile capabilities and wildcard conventions. `guide init`
-creates `forge-mcp.yaml`, requires `--force` to replace it, and can bootstrap a
+creates `acdd.yaml`, requires `--force` to replace it, and can bootstrap a
 workspace with an invalid existing adapter. `guide validate` scans using the
 selected adapter. Checkpoints accept valid JSON state addressed by the full gate
 breadcrumb and persist in the selected task-store project's SQLite database.
@@ -610,13 +610,13 @@ breadcrumb and persist in the selected task-store project's SQLite database.
 ## Validation and migration
 
 ```sh
-contextunity-forge-mcp validate [PATH]
-contextunity-forge-mcp migrate preview [MILESTONE_REF]
-contextunity-forge-mcp migrate apply [MILESTONE_REF]
-contextunity-forge-mcp migrate verify [MILESTONE_REF]
+acdd validate [PATH]
+acdd migrate preview [MILESTONE_REF]
+acdd migrate apply [MILESTONE_REF]
+acdd migrate verify [MILESTONE_REF]
 ```
 
-- `validate [PATH]`: Validates an explicit ACDD profile or milestone manifest document against schema and topological constraints. When `PATH` is omitted, scans and validates the active profile (`.forge/acdd/profile.yaml`) and all open milestone manifests across configured milestone directories.
+- `validate [PATH]`: Validates an explicit ACDD profile or milestone manifest document against schema and topological constraints. When `PATH` is omitted, scans and validates the active profile (`.acdd/profile.yaml`) and all open milestone manifests across configured milestone directories.
 - `migrate preview [MILESTONE_REF]`: Inspects milestone contract structure and reports required schema migrations without mutating files. When `MILESTONE_REF` is omitted, previews all discovered milestones.
 - `migrate apply [MILESTONE_REF]`: Reconciles and upgrades milestone Markdown manifests to the current contract schema.
 - `migrate verify [MILESTONE_REF]`: Verifies that milestone manifests conform strictly to current ACDD contract requirements.

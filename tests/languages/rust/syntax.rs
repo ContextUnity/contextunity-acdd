@@ -1,24 +1,24 @@
 use super::*;
-use contextunity_forge_mcp::core::{
+use acdd_index::languages::manifests::{ClassHierarchyReceiverRule, ReturnPolicy};
+use acdd_index::linker::value_flow::{
+    ConfiguredReceiverAuthority, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
+};
+use contextunity_acdd::core::{
     models::{Facts, Node},
     semantic::{SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
-};
-use forge_index::languages::manifests::{ClassHierarchyReceiverRule, ReturnPolicy};
-use forge_index::linker::value_flow::{
-    ConfiguredReceiverAuthority, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
 };
 
 struct SeamValueFlowResolver;
 
-impl<'a> forge_index::linker::value_flow::SemanticResolver<'a> for SeamValueFlowResolver {
+impl<'a> acdd_index::linker::value_flow::SemanticResolver<'a> for SeamValueFlowResolver {
     fn resolve_symbol(
         &self,
-        _scope: &'a contextunity_forge_mcp::core::models::Node,
+        _scope: &'a contextunity_acdd::core::models::Node,
         _name: &str,
-        _at: contextunity_forge_mcp::core::semantic::SourcePosition,
-        _role: forge_index::linker::value_flow::SymbolRole,
-    ) -> forge_index::linker::value_flow::Symbol<'a> {
-        forge_index::linker::value_flow::Symbol::Unknown
+        _at: contextunity_acdd::core::semantic::SourcePosition,
+        _role: acdd_index::linker::value_flow::SymbolRole,
+    ) -> acdd_index::linker::value_flow::Symbol<'a> {
+        acdd_index::linker::value_flow::Symbol::Unknown
     }
 }
 
@@ -317,9 +317,9 @@ fn supplied_return_authority_controls_nested_wrapper_projections() {
                 assert_eq!(
                     wrapper,
                     if depth == 1 {
-                        forge_index::linker::value_flow::RustWrapperKind::Option
+                        acdd_index::linker::value_flow::RustWrapperKind::Option
                     } else {
-                        forge_index::linker::value_flow::RustWrapperKind::Result
+                        acdd_index::linker::value_flow::RustWrapperKind::Result
                     }
                 );
                 result = *ok;
@@ -373,8 +373,8 @@ fn declarations_and_static_constructor_metadata_are_preserved() {
     assert!(constructor.details.get("is_method").is_none());
     assert_eq!(constructor.details["is_static"], true);
     assert_eq!(
-        forge_index::languages::rust::kind("function_item"),
+        acdd_index::languages::rust::kind("function_item"),
         Some("function")
     );
-    let _ = contextunity_forge_mcp::engine::languages::rust::language();
+    let _ = contextunity_acdd::engine::languages::rust::language();
 }

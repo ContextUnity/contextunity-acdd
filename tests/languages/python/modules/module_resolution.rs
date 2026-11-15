@@ -314,7 +314,7 @@ fn src_layout_linked_reexports_preserve_owner_workspace_priority() {
         ("src/catalogue/models.py", "class Config: pass\n"),
     ]);
     w.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [src]\nlinked_workspaces:\n  - name: catalogue\n    path: '{}'\n    roots: [src]\n",
             linked.root().display()

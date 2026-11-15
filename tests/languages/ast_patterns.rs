@@ -1,5 +1,5 @@
-use contextunity_forge_mcp::engine::{ast, languages};
-use contextunity_forge_mcp::{
+use contextunity_acdd::engine::{ast, languages};
+use contextunity_acdd::{
     cli,
     core::response::{Detail, QueryOptions, ResponsePolicy},
 };
@@ -431,7 +431,7 @@ fn public_ast_search_reports_structured_tree_sitter_pattern_diagnostics() {
     let pattern = "let = ;";
     let result =
         cli::ast::search_paged(&conn, workspace.root(), pattern, "rust", None, &options).unwrap();
-    let mut parser = contextunity_forge_mcp::engine::ast::parser("rust", "src/lib.rs").unwrap();
+    let mut parser = contextunity_acdd::engine::ast::parser("rust", "src/lib.rs").unwrap();
     let tree = parser.parse(pattern, None).unwrap();
     let expected = smallest_error(tree.root_node()).expect("pattern has a nonempty ERROR node");
     let diagnostic = &result["diagnostic"];

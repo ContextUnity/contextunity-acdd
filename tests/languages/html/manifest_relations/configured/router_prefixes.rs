@@ -14,7 +14,7 @@ fn configured_router_prefixes_are_static_unique_and_recursive() {
             "kind":"http_client_call","callee":"ask","receivers":[],"methods":{},
             "default_method":"GET","url_key":"destination","method_key":"verb","relative_prefixes":["/"]}}]
     });
-    let manifest = ".forge/frameworks/prefix-proof.toml";
+    let manifest = ".acdd/frameworks/prefix-proof.toml";
     workspace.write(manifest, &toml::to_string(&pack).unwrap());
     let valid = "root = Mount(base_path='/outer')\nmiddle = Mount(base_path='/middle')\nleaf = Mount(base_path='/leaf')\nroot.attach(middle, under='/v1')\nmiddle.attach(leaf, under='/v2')\n@leaf.expose('/item')\ndef endpoint(): return 1\ndef consumer(): return ask('/outer/v1/middle/v2/leaf/item')\ndef helper(): return 1\ndef ordinary(): return helper()\n";
     workspace.write("app.py", valid);

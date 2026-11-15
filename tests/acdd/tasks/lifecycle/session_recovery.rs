@@ -4,8 +4,8 @@ use super::*;
 fn review_rejection_retains_findings_and_requires_a_new_build() {
     let (root, store, milestone) = fixture(DEFAULT_SEAM);
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\nmilestones: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\nmilestones: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     let id = milestone.task_id(&milestone.tasks[0]);
     drop(store);
@@ -64,12 +64,10 @@ fn review_rejection_retains_findings_and_requires_a_new_build() {
         .unwrap();
     drop(harness);
     let keeper_ref = format!("refs/forge/state/forge-mcp/{}", id.replace(':', "/"));
-    let checkpoint = contextunity_forge_mcp::db::tasks_store::recovery::read_checkpoint(
-        root.root(),
-        &keeper_ref,
-    )
-    .unwrap();
-    let keeper = contextunity_forge_mcp::core::git::git_stdout(
+    let checkpoint =
+        contextunity_acdd::db::tasks_store::recovery::read_checkpoint(root.root(), &keeper_ref)
+            .unwrap();
+    let keeper = contextunity_acdd::core::git::git_stdout(
         root.root(),
         &["rev-parse", &keeper_ref],
         "FIXTURE_KEEPER",
@@ -149,14 +147,14 @@ fn review_rejection_retains_findings_and_requires_a_new_build() {
                 .clone();
             state["claims"].as_array_mut().unwrap().push(duplicate);
         }
-        contextunity_forge_mcp::core::git::git_checkpoint(
+        contextunity_acdd::core::git::git_checkpoint(
             root.root(),
             &keeper_ref,
             &serde_json::to_vec(&state).unwrap(),
             std::slice::from_ref(&keeper),
         )
         .unwrap();
-        let database = root.root().join(".forge/tasks.sqlite");
+        let database = root.root().join(".acdd/tasks.sqlite");
         let files = [
             database.clone(),
             database.with_file_name("tasks.sqlite-wal"),
@@ -189,7 +187,7 @@ fn review_rejection_retains_findings_and_requires_a_new_build() {
                 .success()
         );
     }
-    std::fs::remove_file(root.root().join(".forge/tasks.sqlite")).unwrap();
+    std::fs::remove_file(root.root().join(".acdd/tasks.sqlite")).unwrap();
     let recovery = TaskHarness::run_cli_for_root(
         root.root(),
         &["--format", "json", "milestone", "db-recover"],

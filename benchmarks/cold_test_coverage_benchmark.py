@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare cold Forge builds and graph coverage on one configured workspace."""
+"""Compare cold ACDD builds and graph coverage on one configured workspace."""
 
 from __future__ import annotations
 
@@ -47,8 +47,8 @@ def run_build(
     environment = os.environ.copy()
     if extra_env:
         environment.update(extra_env)
-    if "FORGE_EXTRACTION_CACHE_DIR" not in environment:
-        environment["FORGE_EXTRACTION_CACHE_DIR"] = str(work / "extraction-cache")
+    if "ACDD_EXTRACTION_CACHE_DIR" not in environment:
+        environment["ACDD_EXTRACTION_CACHE_DIR"] = str(work / "extraction-cache")
     host_load_before = list(os.getloadavg()) if hasattr(os, "getloadavg") else None
     start = time.perf_counter()
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
@@ -243,9 +243,9 @@ def compare(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, An
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", type=pathlib.Path, required=True, help="workspace containing forge-mcp.yaml")
-    parser.add_argument("--baseline-binary", required=True, help="older Forge executable or PATH command")
-    parser.add_argument("--candidate-binary", required=True, help="newer Forge executable or PATH command")
+    parser.add_argument("--repo", type=pathlib.Path, required=True, help="workspace containing acdd.yaml")
+    parser.add_argument("--baseline-binary", required=True, help="older ACDD executable or PATH command")
+    parser.add_argument("--candidate-binary", required=True, help="newer ACDD executable or PATH command")
     parser.add_argument("--repeats", type=int, default=5, help="fresh-database builds per binary (default: 5)")
     parser.add_argument("--max-peak-rss-mb", type=float, help="require every candidate run to stay below this RSS limit in decimal MB")
     parser.add_argument("--output", type=pathlib.Path, help="write the JSON report to this file")
@@ -257,8 +257,8 @@ def main() -> int:
     repo = args.repo.expanduser().resolve()
     if not repo.is_dir():
         parser.error(f"workspace is not a directory: {repo}")
-    if not (repo / "forge-mcp.yaml").is_file():
-        parser.error(f"workspace must contain forge-mcp.yaml: {repo}")
+    if not (repo / "acdd.yaml").is_file():
+        parser.error(f"workspace must contain acdd.yaml: {repo}")
     if args.repeats < 1:
         parser.error("--repeats must be at least 1")
     if args.max_peak_rss_mb is not None and args.max_peak_rss_mb <= 0:
@@ -278,7 +278,7 @@ def main() -> int:
         for repetition in range(args.repeats):
             order = ("baseline", "candidate") if repetition % 2 == 0 else ("candidate", "baseline")
             for label in order:
-                with tempfile.TemporaryDirectory(prefix="forge-cold-coverage-") as directory:
+                with tempfile.TemporaryDirectory(prefix="acdd-cold-coverage-") as directory:
                     work = pathlib.Path(directory)
                     db = work / "index.sqlite"
                     timing = run_build(
@@ -286,7 +286,7 @@ def main() -> int:
                         repo,
                         db,
                         work,
-                        extra_env={"FORGE_EXTRACTION_CACHE_DIR": str(work / "extraction-cache")},
+                        extra_env={"ACDD_EXTRACTION_CACHE_DIR": str(work / "extraction-cache")},
                     )
                     build = json.loads((work / "build.stdout").read_text())
                     graph = query_overview(binaries[label], repo, db)
@@ -325,10 +325,10 @@ def main() -> int:
 
         report = {
             "workspace": str(repo),
-            "config": str(repo / "forge-mcp.yaml"),
+            "config": str(repo / "acdd.yaml"),
             "database_policy": "fresh temporary database per run; removed on completion",
             "extraction_cache_policy": "fresh temporary extraction cache per run; removed on completion",
-            "build_policy": "sequential cold builds; forge-mcp.yaml and enabled linked_workspaces are read from the supplied workspace",
+            "build_policy": "sequential cold builds; acdd.yaml and enabled linked_workspaces are read from the supplied workspace",
             "baseline_binary": str(baseline_binary),
             "candidate_binary": str(candidate_binary),
             "binary_sha256": binary_hashes,
@@ -336,7 +336,7 @@ def main() -> int:
             "os_page_cache_policy": "not flushed; only index and extraction caches are cold",
             "environment": {
                 key: os.environ[key]
-                for key in ("RAYON_NUM_THREADS", "MALLOC_ARENA_MAX", "FORGE_MEMORY_BUDGET_MB")
+                for key in ("RAYON_NUM_THREADS", "MALLOC_ARENA_MAX", "ACDD_MEMORY_BUDGET_MB")
                 if key in os.environ
             },
             "baseline": summarize_runs(results["baseline"]),

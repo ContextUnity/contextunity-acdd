@@ -153,7 +153,7 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
     let milestone_ref = "forge-mcp/forge-mcp/docs/010-test.md";
     let message_id = store
         .blackboard_post_scoped_with_recipient(
-            contextunity_forge_mcp::db::tasks_store::BlackboardPostInput {
+            contextunity_acdd::db::tasks_store::BlackboardPostInput {
                 milestone_ref,
                 task_id: Some(&sender_id),
                 subtask_ref: None,
@@ -206,7 +206,7 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
         .expect("a message already read should not be acknowledged twice"));
     assert!(store
         .blackboard_post_scoped_with_recipient(
-            contextunity_forge_mcp::db::tasks_store::BlackboardPostInput {
+            contextunity_acdd::db::tasks_store::BlackboardPostInput {
                 milestone_ref,
                 task_id: None,
                 subtask_ref: None,
@@ -219,7 +219,7 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
         )
         .is_err());
 
-    let transition = contextunity_forge_mcp::db::tasks_store::GateTransition {
+    let transition = contextunity_acdd::db::tasks_store::GateTransition {
         milestone_id: "m-test".into(),
         subject: "task:first".into(),
         gate_path: "tasks.build".into(),
@@ -246,8 +246,8 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
         transition.proof_payload
     );
 
-    let max_snippet_bytes = contextunity_forge_mcp::db::tasks_store::MAX_OUTPUT_SNIPPET_BYTES;
-    let trace = contextunity_forge_mcp::db::tasks_store::GateExecutionTrace {
+    let max_snippet_bytes = contextunity_acdd::db::tasks_store::MAX_OUTPUT_SNIPPET_BYTES;
+    let trace = contextunity_acdd::db::tasks_store::GateExecutionTrace {
         milestone_id: "m-test".into(),
         subject: "task:first".into(),
         gate_path: "tasks.build".into(),
@@ -280,7 +280,7 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
         "the attempt and command uniqueness key should reject duplicate traces"
     );
 
-    let checkpoint = contextunity_forge_mcp::db::tasks_store::GateCheckpoint {
+    let checkpoint = contextunity_acdd::db::tasks_store::GateCheckpoint {
         breadcrumb: "forge-mcp/forge-mcp/m-test/tasks.build/first/build".into(),
         milestone_id: "forge-mcp/forge-mcp/m-test".into(),
         subject: "first".into(),
@@ -324,19 +324,17 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
         refreshed_checkpoint.state_payload
     );
 
-    let matrix = contextunity_forge_mcp::core::tasks::MilestoneContractMatrix {
+    let matrix = contextunity_acdd::core::tasks::MilestoneContractMatrix {
         milestone_id: "m-test".into(),
-        entries: vec![
-            contextunity_forge_mcp::core::tasks::MilestoneContractEntry {
-                milestone_id: "m-test".into(),
-                source_task: "provider".into(),
-                target_task: "consumer".into(),
-                contract_type: contextunity_forge_mcp::core::tasks::ContractType::SeamDependency,
-                contract_ref: "GateExecutionTrace".into(),
-                revision: 1,
-                status: contextunity_forge_mcp::core::tasks::ContractStatus::Synthesized,
-            },
-        ],
+        entries: vec![contextunity_acdd::core::tasks::MilestoneContractEntry {
+            milestone_id: "m-test".into(),
+            source_task: "provider".into(),
+            target_task: "consumer".into(),
+            contract_type: contextunity_acdd::core::tasks::ContractType::SeamDependency,
+            contract_ref: "GateExecutionTrace".into(),
+            revision: 1,
+            status: contextunity_acdd::core::tasks::ContractStatus::Synthesized,
+        }],
     };
     store
         .replace_contract_matrix(&matrix)

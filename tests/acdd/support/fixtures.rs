@@ -22,7 +22,7 @@ pub(crate) fn restart_mcp_session(
 
 pub(crate) fn unconfigured_test_root() -> std::path::PathBuf {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/acdd/fixtures/empty-root");
-    for name in ["forge-mcp.yaml", ".git", "src", "tests"] {
+    for name in ["acdd.yaml", ".git", "src", "tests"] {
         assert!(matches!(
             std::fs::symlink_metadata(root.join(name)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound
@@ -35,23 +35,23 @@ pub(crate) const DEFAULT_SEAM: &str = "tests/acdd/tasks.rs";
 
 pub(crate) const TASK_SEAM_FIXTURE: &str = "#[test]\nfn task_submit_accepts_inline_json_evidence_and_persists_it_in_sqlite() {}\n#[test]\nfn seam_test() {}\n";
 pub(crate) const RUNNER_FIXTURE: &str =
-    "#[test]\nfn seam_test() { assert!(std::env::var_os(\"FORGE_FIXTURE_RED\").is_none()); }\n";
+    "#[test]\nfn seam_test() { assert!(std::env::var_os(\"ACDD_FIXTURE_RED\").is_none()); }\n";
 pub(crate) const FIXTURE_EXCLUDE: &str =
-    ".forge/\n.forge/runner_fixture*\n/tasks.sqlite*\n/target/\n/Cargo.lock\n";
+    ".acdd/\n.acdd/runner_fixture*\n/tasks.sqlite*\n/target/\n/Cargo.lock\n";
 
 pub(crate) const FIXTURE_COMMANDS: &str = r#"commands:
   test:
-    command: ": --seam-ref tests/acdd/tasks.rs {scope_target} && test -x .forge/runner_fixture && if test -f .forge/runner_fixture_green; then .forge/runner_fixture; else FORGE_FIXTURE_RED=1 .forge/runner_fixture --nocapture; fi"
+    command: ": --seam-ref tests/acdd/tasks.rs {scope_target} && test -x .acdd/runner_fixture && if test -f .acdd/runner_fixture_green; then .acdd/runner_fixture; else ACDD_FIXTURE_RED=1 .acdd/runner_fixture --nocapture; fi"
     output:
       require_counts: false
       seam_ref_pattern: '--seam-ref (\S+)'
   rust-check-and-test:
-    command: ": {scope_target} && test -x .forge/runner_fixture && .forge/runner_fixture"
+    command: ": {scope_target} && test -x .acdd/runner_fixture && .acdd/runner_fixture"
     output:
       require_counts: true
       counts: {passed: '(\d+) passed', failed: '(\d+) failed'}
   check_full_repo:
-    command: ": {scope_target} && test -x .forge/runner_fixture && .forge/runner_fixture"
+    command: ": {scope_target} && test -x .acdd/runner_fixture && .acdd/runner_fixture"
     output:
       require_counts: true
       counts: {passed: '(\d+) passed', failed: '(\d+) failed'}
@@ -110,24 +110,24 @@ gates:
     save: commit
 "#;
 
-pub(crate) fn fixture_profile() -> contextunity_forge_mcp::core::tasks::profile::GateProfile {
+pub(crate) fn fixture_profile() -> contextunity_acdd::core::tasks::profile::GateProfile {
     runner_profile(DEFAULT_SEAM, "")
 }
 
 pub(crate) fn runner_profile(
     seam: &str,
     extra_profile: &str,
-) -> contextunity_forge_mcp::core::tasks::profile::GateProfile {
+) -> contextunity_acdd::core::tasks::profile::GateProfile {
     let source = format!(
         "{}\n{extra_profile}",
         FIXTURE_COMMANDS.replace(DEFAULT_SEAM, seam)
     );
     let mut profile =
-        contextunity_forge_mcp::core::tasks::profile::validate_profile_document(&source).unwrap();
+        contextunity_acdd::core::tasks::profile::validate_profile_document(&source).unwrap();
     let handoff = profile.find_gate_mut("handoff").unwrap();
     handoff.auto_commit = false;
     handoff.persistence.post =
-        Some(contextunity_forge_mcp::core::tasks::profile::PersistenceAction::Snapshot);
+        Some(contextunity_acdd::core::tasks::profile::PersistenceAction::Snapshot);
     // Task lifecycle fixtures omit the pre-task synthesis barrier, but retain
     // the registered post-task verification command used by handoff fixtures.
     profile
@@ -160,10 +160,10 @@ pub(crate) fn fixture_integration_evidence(
     command: &str,
     passed: u64,
     failed: u64,
-) -> contextunity_forge_mcp::engine::milestones::IntegrationEvidence {
-    use contextunity_forge_mcp::engine::{milestones, tasks::TaskSettings};
+) -> contextunity_acdd::engine::milestones::IntegrationEvidence {
+    use contextunity_acdd::engine::{milestones, tasks::TaskSettings};
     let exclude = root.join(
-        contextunity_forge_mcp::core::git::git_stdout(
+        contextunity_acdd::core::git::git_stdout(
             root,
             &["rev-parse", "--git-path", "info/exclude"],
             "fixture Git directory",
@@ -171,14 +171,13 @@ pub(crate) fn fixture_integration_evidence(
         .unwrap(),
     );
     let mut ignored = std::fs::read_to_string(&exclude).unwrap_or_default();
-    if !ignored.lines().any(|line| line == ".forge/") {
-        ignored.push_str("\n.forge/\n");
+    if !ignored.lines().any(|line| line == ".acdd/") {
+        ignored.push_str("\n.acdd/\n");
     }
     std::fs::write(exclude, ignored).unwrap();
-    let settings: TaskSettings = serde_yaml::from_str(
-        &std::fs::read_to_string(root.join("forge-mcp.yaml")).unwrap_or_default(),
-    )
-    .unwrap();
+    let settings: TaskSettings =
+        serde_yaml::from_str(&std::fs::read_to_string(root.join("acdd.yaml")).unwrap_or_default())
+            .unwrap();
     let view = milestones::show(root, selector, false).unwrap();
     let repository = view["frontmatter"]["repository"]
         .as_str()
@@ -274,12 +273,11 @@ pub(crate) fn unready_fixture_integration_evidence(
     root: &Path,
     selector: &str,
     review_worker: &str,
-) -> contextunity_forge_mcp::engine::milestones::IntegrationEvidence {
-    use contextunity_forge_mcp::engine::{milestones, tasks::TaskSettings};
-    let settings: TaskSettings = serde_yaml::from_str(
-        &std::fs::read_to_string(root.join("forge-mcp.yaml")).unwrap_or_default(),
-    )
-    .unwrap();
+) -> contextunity_acdd::engine::milestones::IntegrationEvidence {
+    use contextunity_acdd::engine::{milestones, tasks::TaskSettings};
+    let settings: TaskSettings =
+        serde_yaml::from_str(&std::fs::read_to_string(root.join("acdd.yaml")).unwrap_or_default())
+            .unwrap();
     let view = milestones::show(root, selector, false).ok();
     let repository = view
         .as_ref()
@@ -332,7 +330,7 @@ pub(crate) fn handoff_with_fixture_evidence(
     passed: u64,
     failed: u64,
 ) -> anyhow::Result<Value> {
-    contextunity_forge_mcp::engine::milestones::handoff(
+    contextunity_acdd::engine::milestones::handoff(
         root,
         selector,
         commit,
@@ -347,7 +345,7 @@ pub(crate) fn fixture_evidence_file(
     passed: u64,
     failed: u64,
 ) -> String {
-    let path = root.join(".forge/integration-evidence.json");
+    let path = root.join(".acdd/integration-evidence.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
         &path,
@@ -370,14 +368,14 @@ pub(crate) fn acdd_workspace(seam: &str, extra_profile: &str) -> Workspace {
 
 pub(crate) fn initialize_runner_fixture_with_profile(
     workspace: &Workspace,
-    profile: &contextunity_forge_mcp::core::tasks::profile::GateProfile,
+    profile: &contextunity_acdd::core::tasks::profile::GateProfile,
 ) {
     workspace.write("tests/runner_fixture.rs", RUNNER_FIXTURE);
     init_git(workspace.root());
     let profile_yaml = standalone_profile_yaml(profile);
-    contextunity_forge_mcp::core::tasks::profile::validate_profile_document(&profile_yaml)
+    contextunity_acdd::core::tasks::profile::validate_profile_document(&profile_yaml)
         .unwrap_or_else(|error| panic!("serialized task fixture profile is invalid: {error:#}"));
-    workspace.write(".forge/acdd/profile.yaml", &profile_yaml);
+    workspace.write(".acdd/profile.yaml", &profile_yaml);
     crate::acdd::snapshot::precompile_runner(workspace);
 }
 
@@ -387,7 +385,7 @@ pub(crate) fn initialize_runner_fixture(root: &Workspace) {
 
 pub(crate) fn review_proof(decision: &str) -> serde_json::Value {
     let contours: serde_json::Map<String, serde_json::Value> =
-        contextunity_forge_mcp::core::tasks::gates::REVIEW_CONTOURS
+        contextunity_acdd::core::tasks::gates::REVIEW_CONTOURS
             .iter()
             .map(|name| {
                 (
@@ -403,7 +401,7 @@ pub(crate) fn passing_review_proof() -> serde_json::Value {
     review_proof("pass")
 }
 
-pub(crate) fn evidence(task: &contextunity_forge_mcp::db::tasks_store::Task) -> Evidence {
+pub(crate) fn evidence(task: &contextunity_acdd::db::tasks_store::Task) -> Evidence {
     observe_fixture_evidence(task);
     if let Some(root) = task.worktree.as_deref() {
         if let Ok(observed) =
@@ -422,7 +420,7 @@ pub(crate) fn evidence(task: &contextunity_forge_mcp::db::tasks_store::Task) -> 
     unobserved_evidence(task)
 }
 
-pub(crate) fn observe_fixture_evidence(task: &contextunity_forge_mcp::db::tasks_store::Task) {
+pub(crate) fn observe_fixture_evidence(task: &contextunity_acdd::db::tasks_store::Task) {
     if task.status != "in_progress" {
         return;
     }
@@ -440,8 +438,8 @@ pub(crate) fn observe_fixture_evidence(task: &contextunity_forge_mcp::db::tasks_
         if matches!(
             gate.proof.kind(),
             Some(
-                contextunity_forge_mcp::core::tasks::profile::ProofKind::Contract
-                    | contextunity_forge_mcp::core::tasks::profile::ProofKind::Command
+                contextunity_acdd::core::tasks::profile::ProofKind::Contract
+                    | contextunity_acdd::core::tasks::profile::ProofKind::Command
             )
         ) {
             if let Some(command) = gate
@@ -449,15 +447,15 @@ pub(crate) fn observe_fixture_evidence(task: &contextunity_forge_mcp::db::tasks_
                 .as_deref()
                 .and_then(|name| profile.commands.get(name))
             {
-                std::fs::create_dir_all(root.join(".forge")).unwrap();
-                let runner = root.join(".forge/runner_fixture");
+                std::fs::create_dir_all(root.join(".acdd")).unwrap();
+                let runner = root.join(".acdd/runner_fixture");
                 if !runner.is_file() {
                     if let Ok(git_ref) = std::fs::read_to_string(root.join(".git")) {
                         if let Some(git_dir) = git_ref.strip_prefix("gitdir: ") {
                             let git_path = Path::new(git_dir.trim());
                             if let Some(main_git) = git_path.parent().and_then(Path::parent) {
                                 if let Some(main_root) = main_git.parent() {
-                                    let main_runner = main_root.join(".forge/runner_fixture");
+                                    let main_runner = main_root.join(".acdd/runner_fixture");
                                     if main_runner.is_file() {
                                         let _ = std::fs::copy(&main_runner, &runner);
                                         if let Ok(meta) = std::fs::metadata(&main_runner) {
@@ -485,7 +483,7 @@ pub(crate) fn observe_fixture_evidence(task: &contextunity_forge_mcp::db::tasks_
                     .iter()
                     .any(|policy| policy == &task.spec.proof_policy);
                 let is_contract = gate.proof.kind()
-                    == Some(contextunity_forge_mcp::core::tasks::profile::ProofKind::Contract);
+                    == Some(contextunity_acdd::core::tasks::profile::ProofKind::Contract);
                 let query_latest_exit_code = || -> Option<i32> {
                     let store = tasks::store_for_task(root, &task.task_id).ok()?;
                     store
@@ -499,7 +497,7 @@ pub(crate) fn observe_fixture_evidence(task: &contextunity_forge_mcp::db::tasks_
                         .flatten()
                 };
 
-                match contextunity_forge_mcp::engine::milestones::execute_command_gate(
+                match contextunity_acdd::engine::milestones::execute_command_gate(
                     root,
                     &task.task_id,
                     &gate_path,
@@ -571,10 +569,8 @@ pub(crate) fn observe_fixture_evidence(task: &contextunity_forge_mcp::db::tasks_
     }
 }
 
-pub(crate) fn unobserved_evidence(
-    task: &contextunity_forge_mcp::db::tasks_store::Task,
-) -> Evidence {
-    use contextunity_forge_mcp::core::tasks::profile;
+pub(crate) fn unobserved_evidence(task: &contextunity_acdd::db::tasks_store::Task) -> Evidence {
+    use contextunity_acdd::core::tasks::profile;
 
     let root = Path::new(
         task.worktree
@@ -599,11 +595,11 @@ pub(crate) fn unobserved_evidence(
 }
 
 pub(crate) fn projected_evidence(
-    task: &contextunity_forge_mcp::db::tasks_store::Task,
-    gate: &contextunity_forge_mcp::core::tasks::profile::GateDef,
-    profile: &contextunity_forge_mcp::core::tasks::profile::GateProfile,
+    task: &contextunity_acdd::db::tasks_store::Task,
+    gate: &contextunity_acdd::core::tasks::profile::GateDef,
+    profile: &contextunity_acdd::core::tasks::profile::GateProfile,
 ) -> Evidence {
-    let mut proof = contextunity_forge_mcp::core::tasks::gates::proof_template(gate, profile)
+    let mut proof = contextunity_acdd::core::tasks::gates::proof_template(gate, profile)
         .expect("fixture gate proof template must project");
     fn materialize(value: &mut Value, command: Option<&str>) {
         match value {
@@ -648,13 +644,13 @@ pub(crate) fn fixture(seam: &str) -> (Workspace, TasksStore, Milestone) {
     root.write("tests/acdd/tasks.rs", TASK_SEAM_FIXTURE);
     root.write("src/lib.rs", "pub fn example() {}\n");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     root.write("docs/010-test.md", SPEC);
     initialize_runner_fixture_with_profile(&root, &runner_profile(seam, ""));
     let milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
-    let mut store = TasksStore::open(&root.path(".forge/tasks.sqlite")).unwrap();
+    let mut store = TasksStore::open(&root.path(".acdd/tasks.sqlite")).unwrap();
     store
         .sync(&milestone, "docs/010-test.md", root.root())
         .unwrap();

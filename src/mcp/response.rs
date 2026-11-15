@@ -16,7 +16,7 @@ fn render_for_operation(
     discovery: Option<DiscoveryKind>,
     operation: OperationKind,
 ) -> String {
-    if title == "forge_read" && output_format == OutputFormat::Markdown {
+    if title == "acdd_read" && output_format == OutputFormat::Markdown {
         let mut body = value.clone();
         let hints = body
             .as_object_mut()
@@ -128,7 +128,7 @@ pub(crate) fn result_for_presented(
                     budget,
                 )
             };
-            let mut trimmed = if title == "forge_read" {
+            let mut trimmed = if title == "acdd_read" {
                 trim_snippet_source_to_budget(
                     &mut trimmed_value,
                     output_format,
@@ -141,7 +141,7 @@ pub(crate) fn result_for_presented(
             } else {
                 false
             };
-            if title != "forge_read" {
+            if title != "acdd_read" {
                 loop {
                     let mut compact_candidate = trimmed_value.clone();
                     format::compact(&mut compact_candidate, operation, explain);
@@ -168,7 +168,7 @@ pub(crate) fn result_for_presented(
                 }
             }
             if !trimmed {
-                if title == "forge_read" && trimmed_value.get("source_preview").is_some() {
+                if title == "acdd_read" && trimmed_value.get("source_preview").is_some() {
                     return bounded_error(
                         "Snippet line exceeds the serialized response byte budget; use a larger response budget or read the local source file. No partial line was returned.",
                         budget,
@@ -559,7 +559,7 @@ pub(crate) fn checkpoint_result_for(
                 CallToolResult::success(vec![ContentBlock::text(rendered)])
             } else {
                 bounded_error(
-                    "Checkpoint output exceeds the response byte limit. Read the complete saved content from the local .forge/checkpoints.json file; checkpoint contents are unchanged and are not paginated.",
+                    "Checkpoint output exceeds the response byte limit. Read the complete saved content from the local .acdd/checkpoints.json file; checkpoint contents are unchanged and are not paginated.",
                     budget,
                 )
             }

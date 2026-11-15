@@ -1,5 +1,5 @@
 use crate::common::Workspace;
-use contextunity_forge_mcp::mcp::server::Server;
+use contextunity_acdd::mcp::server::Server;
 use serde_json::{json, Value};
 use std::{
     ffi::OsStr,
@@ -31,23 +31,23 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 pub fn in_process_server(workspace: &Workspace) -> Server {
     Server::new(
         workspace.root().to_path_buf(),
-        workspace.root().join(".forge/index.sqlite"),
+        workspace.root().join(".acdd/index.sqlite"),
     )
-    .with_cache_dir(workspace.path(".forge/extraction-cache"))
+    .with_cache_dir(workspace.path(".acdd/extraction-cache"))
 }
 
 /// Runs the shipped CLI against the same isolated workspace used by test clients.
 pub fn run_cli(workspace: &Workspace, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    Command::new(env!("CARGO_BIN_EXE_acdd"))
         .arg("--root")
         .arg(workspace.root())
         .env(
-            "FORGE_EXTRACTION_CACHE_DIR",
-            workspace.path(".forge/extraction-cache"),
+            "ACDD_EXTRACTION_CACHE_DIR",
+            workspace.path(".acdd/extraction-cache"),
         )
         .args(args)
         .output()
-        .expect("could not run contextunity-forge-mcp")
+        .expect("could not run acdd")
 }
 
 #[derive(Debug)]
@@ -127,8 +127,8 @@ impl StdioClient {
             .arg(workspace.root())
             .arg("serve")
             .env(
-                "FORGE_EXTRACTION_CACHE_DIR",
-                workspace.path(".forge/extraction-cache"),
+                "ACDD_EXTRACTION_CACHE_DIR",
+                workspace.path(".acdd/extraction-cache"),
             );
         Self::with_command(&mut command)
     }
@@ -198,7 +198,7 @@ impl StdioClient {
                 };
                 for &byte in &chunk[..count] {
                     pending.push(byte);
-                    if pending.len() > contextunity_forge_mcp::core::response::MAX_OUTPUT_BYTES {
+                    if pending.len() > contextunity_acdd::core::response::MAX_OUTPUT_BYTES {
                         let _ = sender.send(ReadEvent::Oversized(pending.len()));
                         return;
                     }
@@ -306,7 +306,7 @@ impl StdioClient {
                 Ok(ReadEvent::Oversized(actual)) => {
                     return Err(StdioError::OversizedFrame {
                         actual,
-                        limit: contextunity_forge_mcp::core::response::MAX_OUTPUT_BYTES,
+                        limit: contextunity_acdd::core::response::MAX_OUTPUT_BYTES,
                     })
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => return Err(StdioError::Timeout),
@@ -314,7 +314,7 @@ impl StdioClient {
                     return Err(StdioError::ReaderDisconnected);
                 }
             };
-            let limit = contextunity_forge_mcp::core::response::MAX_OUTPUT_BYTES;
+            let limit = contextunity_acdd::core::response::MAX_OUTPUT_BYTES;
             if line.len() > limit {
                 return Err(StdioError::OversizedFrame {
                     actual: line.len(),
@@ -353,7 +353,7 @@ impl StdioClient {
                 Ok(ReadEvent::Oversized(actual)) => {
                     return Err(StdioError::OversizedFrame {
                         actual,
-                        limit: contextunity_forge_mcp::core::response::MAX_OUTPUT_BYTES,
+                        limit: contextunity_acdd::core::response::MAX_OUTPUT_BYTES,
                     })
                 }
                 Ok(ReadEvent::Frame(_)) => {}

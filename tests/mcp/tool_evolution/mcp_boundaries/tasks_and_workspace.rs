@@ -4,7 +4,7 @@ use super::*;
 fn ergonomic_task_aliases_reach_existing_operations() {
     let w = Workspace::with_files(&[
         (
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "roots: [.]\ndocs: [docs]\nmilestones: [docs/milestones]\n",
         ),
         ("app.py", "def first(): pass\n"),
@@ -170,7 +170,7 @@ fn guide_topics_preserve_query_and_acdd_shapes_and_reject_unknown_topics() {
 fn granular_diagnostics_preserve_resolution_evidence_and_crlf_utf8_source() {
     let diagnostics = DIAGNOSTICS_SOURCE;
     let fixture = AnalysisFixture::from_workspace(Workspace::with_files(&[
-        ("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n"),
+        ("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n"),
         ("cycle.py", "def a(): b()\ndef b(): a()\n"),
         ("other.py", "def idle(): pass\n"),
         ("requirements.txt", "pydantic\nrequests\n"),
@@ -312,7 +312,7 @@ fn granular_diagnostics_preserve_resolution_evidence_and_crlf_utf8_source() {
 #[test]
 fn workspace_coverage_keeps_published_scope_identity_across_restart_and_rebuild() {
     let workspace = Workspace::with_files(&[
-        ("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n"),
+        ("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n"),
         ("cycle.py", "def a(): b()\ndef b(): a()\n"),
         ("other.py", "def idle(): pass\n"),
         ("requirements.txt", "pydantic\nrequests\n"),
@@ -327,7 +327,7 @@ fn workspace_coverage_keeps_published_scope_identity_across_restart_and_rebuild(
         "def linked_entry(value): value.missing()\n",
     );
     w.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: [.]\nlinked_workspaces:\n  - name: linked\n    path: '{}'\n    roots: [src]\n",
             linked.root().display()
@@ -402,10 +402,10 @@ fn workspace_coverage_keeps_published_scope_identity_across_restart_and_rebuild(
     restarted
         .finish()
         .expect("server must finish before restart");
-    w.write("forge-mcp.yaml", "roots: [.]\n");
+    w.write("acdd.yaml", "roots: [.]\n");
     let connection = w.open();
-    let page = contextunity_forge_mcp::core::response::QueryOptions::resolve(
-        &contextunity_forge_mcp::core::response::ResponsePolicy::default(),
+    let page = contextunity_acdd::core::response::QueryOptions::resolve(
+        &contextunity_acdd::core::response::ResponsePolicy::default(),
         Some(100),
         0,
         None,

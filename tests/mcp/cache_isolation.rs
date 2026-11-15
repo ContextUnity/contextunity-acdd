@@ -1,17 +1,17 @@
 use crate::cache_fixture::{entries, global_copies, CacheFixture, RebuildCause};
 use crate::{cli, harness::McpTestHarness};
-use contextunity_forge_mcp::engine::pipeline;
+use contextunity_acdd::engine::pipeline;
 use serde_json::json;
 
 #[test]
 fn mcp_cold_and_adapter_rebuilds_keep_extractions_in_the_session_cache() {
     let workspace = CacheFixture::new();
-    let directory = workspace.path(".forge/extraction-cache");
+    let directory = workspace.path(".acdd/extraction-cache");
     let mut client = McpTestHarness::new(&workspace).expect("MCP initialize");
     for changed in [false, true] {
         if changed {
             workspace.clear_cache();
-            workspace.write("forge-mcp.yaml", "roots: [src]\nadapter_version: changed\n");
+            workspace.write("acdd.yaml", "roots: [src]\nadapter_version: changed\n");
         }
         let result = client
             .payload("code_map_overview", json!({}))
@@ -47,8 +47,8 @@ fn shared_server_constructor_keeps_cold_admission_in_the_workspace_cache() {
         })
         .expect("admit real shared server");
     assert_eq!(symbols["symbols"], 1);
-    assert!(workspace.path(".forge/index.sqlite").is_file());
-    let cached = entries(&workspace.path(".forge/extraction-cache"));
+    assert!(workspace.path(".acdd/index.sqlite").is_file());
+    let cached = entries(&workspace.path(".acdd/extraction-cache"));
     assert!(!cached.is_empty());
     assert!(global_copies(&cached).is_empty(), "{cached:?}");
 }
@@ -89,7 +89,7 @@ fn concurrent_workspace_delta_fallbacks_use_distinct_local_caches() {
         let handles = [&first, &second].map(|workspace| {
             scope.spawn(move || {
                 workspace.delta(&["src/main.rs"]);
-                entries(&workspace.path(".forge/extraction-cache"))
+                entries(&workspace.path(".acdd/extraction-cache"))
             })
         });
         handles.map(|handle| handle.join().unwrap())
@@ -98,8 +98,8 @@ fn concurrent_workspace_delta_fallbacks_use_distinct_local_caches() {
     assert_eq!(cached[0], cached[1]);
     assert!(global_copies(&cached[0]).is_empty());
     assert_ne!(
-        first.path(".forge/extraction-cache"),
-        second.path(".forge/extraction-cache")
+        first.path(".acdd/extraction-cache"),
+        second.path(".acdd/extraction-cache")
     );
 }
 
@@ -112,7 +112,7 @@ fn cli_build_and_query_auto_build_capture_output_with_local_extraction_caches() 
         assert!(serde_json::from_slice::<serde_json::Value>(&output.stdout)
             .unwrap()
             .is_object());
-        let cached = entries(&workspace.path(".forge/extraction-cache"));
+        let cached = entries(&workspace.path(".acdd/extraction-cache"));
         assert!(!cached.is_empty(), "{args:?}");
         assert!(global_copies(&cached).is_empty(), "{args:?}: {cached:?}");
         assert_eq!(workspace.isolated_symbol_count().unwrap(), 1);
@@ -149,7 +149,7 @@ fn mcp_manifest_and_source_inventory_rebuilds_keep_the_session_cache() {
         client
             .payload("code_map_overview", json!({}))
             .expect("MCP tool should succeed");
-        let directory = workspace.path(".forge/extraction-cache");
+        let directory = workspace.path(".acdd/extraction-cache");
         workspace.clear_cache();
         if case == "manifest" {
             workspace.write("requirements.txt", "requests>=2.1\n");
@@ -211,11 +211,11 @@ fn an_unwritable_explicit_cache_remains_best_effort_without_global_fallback() {
     client
         .payload("code_map_overview", json!({}))
         .expect("MCP tool should succeed");
-    let expected_entries = entries(&first.path(".forge/extraction-cache"));
+    let expected_entries = entries(&first.path(".acdd/extraction-cache"));
     assert!(!expected_entries.is_empty());
     let blocked = CacheFixture::new();
     blocked.copy_source_from(&first);
-    blocked.write(".forge/extraction-cache", "blocked cache\n");
+    blocked.write(".acdd/extraction-cache", "blocked cache\n");
     client.finish().expect("server must finish successfully");
     let mut client = McpTestHarness::new(&blocked).expect("MCP initialize");
     assert_eq!(
@@ -228,7 +228,7 @@ fn an_unwritable_explicit_cache_remains_best_effort_without_global_fallback() {
         1
     );
     assert_eq!(
-        std::fs::read(blocked.path(".forge/extraction-cache")).unwrap(),
+        std::fs::read(blocked.path(".acdd/extraction-cache")).unwrap(),
         b"blocked cache\n"
     );
     assert!(global_copies(&expected_entries).is_empty());
@@ -262,9 +262,9 @@ fn selected_git_worktrees_keep_the_explicit_session_cache() {
         )
         .expect("MCP tool should succeed");
     assert_eq!(result["nodes"]["total"], 1, "{result}");
-    let cached = entries(&workspace.path(".forge/extraction-cache"));
+    let cached = entries(&workspace.path(".acdd/extraction-cache"));
     assert!(!cached.is_empty());
     assert!(global_copies(&cached).is_empty());
-    assert!(!linked.join(".forge/extraction-cache").exists());
+    assert!(!linked.join(".acdd/extraction-cache").exists());
     client.finish().expect("server must finish successfully");
 }

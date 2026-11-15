@@ -3,7 +3,7 @@ use crate::acdd::tasks::harness::TaskHarness;
 
 #[test]
 fn infer_project_from_path_supports_arbitrary_monorepo_structures_universally() {
-    use contextunity_forge_mcp::core::tasks::infer_project_from_path;
+    use contextunity_acdd::core::tasks::infer_project_from_path;
     use std::path::Path;
 
     let path_cases = [
@@ -68,7 +68,7 @@ fn infer_project_from_path_supports_arbitrary_monorepo_structures_universally() 
     }
 
     let root = acdd_workspace(DEFAULT_SEAM, "");
-    root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\nmilestones:\n  - docs/milestones\n  - packages/api/docs/milestones\n  - services/api/docs/milestones\n  - plugins/api/docs/milestones\n");
+    root.write("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\nmilestones:\n  - docs/milestones\n  - packages/api/docs/milestones\n  - services/api/docs/milestones\n  - plugins/api/docs/milestones\n");
     let task_block = "# Tasks\n```yaml\ntask_ref: shared\ntarget: Resolve one project\nproof_policy: direct-proof\nscope: [src/]\n```\n";
     for (dir, project) in [
         ("packages/api", ""),
@@ -131,7 +131,7 @@ fn linked_task_workspaces_share_storage_and_confine_local_scope() {
     linked.write("src/lib.rs", "pub fn linked() {}\n");
     linked.write("docs/AGENTS.md", "# Linked repository rules\n");
     linked.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "task_repository: traverse-library\ntask_project: tooling\n",
     );
     linked.write(
@@ -140,7 +140,7 @@ fn linked_task_workspaces_share_storage_and_confine_local_scope() {
             .replace("id: m-test", "id: m-linked")
             .replace("isolated", "linked-rules"),
     );
-    root.write("forge-mcp.yaml", &format!("roots: [src]\nlinked_workspaces:\n  - name: traverse\n    path: {}\n    tasks:\n      enabled: true\n      milestones_dir: contracts\n      agents_guidance: docs/AGENTS.md\n  - name: missing\n    path: {}\n    tasks: {{enabled: true}}\n  - name: empty\n    path: {}\n    tasks: {{enabled: true}}\n  - name: disabled\n    path: {}\n    tasks: {{enabled: false}}\n  - name: index-only\n    path: {}\n",linked.root().display(),missing.root().display(),empty.root().display(),linked.root().display(),linked.root().display()));
+    root.write("acdd.yaml", &format!("roots: [src]\nlinked_workspaces:\n  - name: traverse\n    path: {}\n    tasks:\n      enabled: true\n      milestones_dir: contracts\n      agents_guidance: docs/AGENTS.md\n  - name: missing\n    path: {}\n    tasks: {{enabled: true}}\n  - name: empty\n    path: {}\n    tasks: {{enabled: true}}\n  - name: disabled\n    path: {}\n    tasks: {{enabled: false}}\n  - name: index-only\n    path: {}\n",linked.root().display(),missing.root().display(),empty.root().display(),linked.root().display(),linked.root().display()));
     let sync = |workspace: &str| {
         tasks::manage(
             root.root(),
@@ -265,7 +265,7 @@ fn linked_scope_extension_validates_owner_and_claimed_worktree() {
         workspace.write("docs/010-test.md", SPEC);
     }
     root.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "linked_workspaces:\n  - name: traverse\n    path: {}\n    tasks: {{enabled: true}}\n",
             owner.root().display()
@@ -318,7 +318,7 @@ fn nested_repository_tasks_preserve_distinct_write_perimeters() {
     );
     main.write("src/library/src/lib.rs", "pub fn library_owner() {}\n");
     main.write("src/library/docs/milestones/010-lib.md", SPEC);
-    main.write("forge-mcp.yaml", "linked_workspaces:\n  - name: library\n    path: src/library\n    tasks: {enabled: true}\n");
+    main.write("acdd.yaml", "linked_workspaces:\n  - name: library\n    path: src/library\n    tasks: {enabled: true}\n");
     let imported = tasks::manage(
         main.root(),
         serde_json::from_value(json!({"action":"sync","milestone_ref":"docs/010-main.md"}))
@@ -379,13 +379,13 @@ fn nested_repository_tasks_preserve_distinct_write_perimeters() {
 #[test]
 fn task_configuration_defaults_and_crlf_preserve_operational_identity() {
     let (root, _, milestone) = fixture(DEFAULT_SEAM);
-    root.write("forge-mcp.yaml", "roots: [src]\n");
+    root.write("acdd.yaml", "roots: [src]\n");
     assert_eq!(
         tasks::database_path(root.root()).unwrap(),
         root.root()
             .canonicalize()
             .unwrap()
-            .join(".forge/tasks.sqlite")
+            .join(".acdd/tasks.sqlite")
     );
     let crlf = Milestone::parse(&SPEC.replace('\n', "\r\n"), "forge-mcp").unwrap();
     assert_eq!(
@@ -421,7 +421,7 @@ fn linked_worktree_resolves_tasks_db_to_primary_worktree_root() {
     let primary = TaskHarness::runner_workspace(DEFAULT_SEAM, "");
     let wt = TaskHarness::workspace();
     primary.write("README.md", "# test\n");
-    primary.write("forge-mcp.yaml", "roots: [src]\n");
+    primary.write("acdd.yaml", "roots: [src]\n");
     TaskHarness::stage_changes(primary.root(), &["."]);
     TaskHarness::commit_fixture(primary.root(), "initial");
     let wt_out = TaskHarness::create_worktree(primary.root(), wt.root(), "test-wt");
@@ -434,11 +434,11 @@ fn linked_worktree_resolves_tasks_db_to_primary_worktree_root() {
         .root()
         .canonicalize()
         .unwrap()
-        .join(".forge/tasks.sqlite");
+        .join(".acdd/tasks.sqlite");
     let resolved = tasks::database_path(wt.root()).unwrap();
     assert_eq!(resolved, expected);
-    // Fallback when forge-mcp.yaml is absent in worktree:
-    let _ = std::fs::remove_file(wt.root().join("forge-mcp.yaml"));
+    // Fallback when acdd.yaml is absent in worktree:
+    let _ = std::fs::remove_file(wt.root().join("acdd.yaml"));
     let resolved_fallback = tasks::database_path(wt.root()).unwrap();
     assert_eq!(resolved_fallback, expected);
     let _ = TaskHarness::remove_worktree(primary.root(), wt.root());
@@ -451,8 +451,8 @@ fn linked_pinned_tasks_ignore_linked_workspace_profile_overrides() {
     let invalid_linked_base = "gates:\n  - id: linked_only\n    role: builder\n    proof: none\n";
 
     for (case, linked_base_path) in [
-        ("forge_config", "forge-mcp.yaml"),
-        ("repository_profile", ".forge/acdd/profile.yaml"),
+        ("forge_config", "acdd.yaml"),
+        ("repository_profile", ".acdd/profile.yaml"),
     ] {
         let root = acdd_workspace(DEFAULT_SEAM, "");
         root.write("src/lib.rs", "pub fn primary() {}\n");
@@ -465,22 +465,22 @@ fn linked_pinned_tasks_ignore_linked_workspace_profile_overrides() {
                 std::fs::read(root.root().join("linked/profiles/task.yaml")).unwrap()
             )
         );
-        if linked_base_path == "forge-mcp.yaml" {
+        if linked_base_path == "acdd.yaml" {
             root.write("linked/invalid-base.yaml", invalid_linked_base);
             root.write(
-                "linked/forge-mcp.yaml",
+                "linked/acdd.yaml",
                 "task_repository: linked-repository\ntask_project: linked-project\nacdd_profile: invalid-base.yaml\n",
             );
         } else {
             root.write(
-                "linked/forge-mcp.yaml",
+                "linked/acdd.yaml",
                 "task_repository: linked-repository\ntask_project: linked-project\n",
             );
             root.write(format!("linked/{linked_base_path}"), invalid_linked_base);
         }
         root.write(
-            "forge-mcp.yaml",
-            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nlinked_workspaces:\n  - name: linked\n    path: linked\n    tasks:\n      enabled: true\n      milestones_dir: contracts\n      agents_guidance: AGENTS.md\n",
+            "acdd.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nlinked_workspaces:\n  - name: linked\n    path: linked\n    tasks:\n      enabled: true\n      milestones_dir: contracts\n      agents_guidance: AGENTS.md\n",
         );
         let manifest = format!(
             "---\nid: m-linked-{case}\ntitle: Linked profile\ndoc_type: contract\nstatus: active\n---\n# Linked profile\n```yaml\ntask_ref: pinned\ntarget: Ignore linked base profile\nacdd_profile: profiles/task.yaml:{}\nproof_policy: seam-test-first\nscope: [src/]\n```\n",

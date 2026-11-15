@@ -15,8 +15,8 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
     workspace.write("app.py", &source("Wire"));
     let mut pack = serde_json::json!({"di_calls":[{"callee":"Wire","argument":0}],"semantic_rules":[{"id":"inject","namespace":"atelier","scope":"project","activation":[{"kind":"package","name":"atelier"}],"operation":{"kind":"call_to_file","language":"python","callee":{"kind":"imported","module":"atelier","export":"Wire"},"argument":0,"target":{"kind":"imported_symbol","language":"python"},"relation":"injects_dependency"}}]});
     pack["semantic_rules"][0]["operation"]["kind"] = "call_to_symbol".into();
-    let first = ".forge/frameworks/di-alpha.toml";
-    let second = ".forge/frameworks/di-beta.toml";
+    let first = ".acdd/frameworks/di-alpha.toml";
+    let second = ".acdd/frameworks/di-beta.toml";
     let write = |path: &str, value: &serde_json::Value| {
         workspace.write(path, &toml::to_string(value).unwrap())
     };
@@ -41,7 +41,7 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
             .flat_map(|facts| &facts.references)
             .filter(|reference| reference.kind == "injects" && reference.source == endpoint)
             .map(|reference| match &reference.receiver_hint {
-                Some(contextunity_forge_mcp::core::models::ReceiverHint::ConfiguredReference {
+                Some(contextunity_acdd::core::models::ReceiverHint::ConfiguredReference {
                     origin,
                 }) => {
                     assert!(!origin.rule.is_empty());
@@ -90,8 +90,8 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
     };
     assert_state(&["di-alpha", "di-beta"], true);
     workspace.assert_cold_parity();
-    let renamed = ".forge/frameworks/di-renamed.toml";
-    let renamed_second = ".forge/frameworks/di-beta-current.toml";
+    let renamed = ".acdd/frameworks/di-renamed.toml";
+    let renamed_second = ".acdd/frameworks/di-beta-current.toml";
     let observations = workspace.observe();
     let stale: std::collections::BTreeMap<_, _> = observations
         .persisted_facts()
@@ -112,10 +112,10 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
     workspace.rename_file(first, renamed).unwrap();
     workspace.rename_file(second, renamed_second).unwrap();
     let registry =
-        contextunity_forge_mcp::engine::languages::dependency_registry::DependencyRegistry::collect(
+        contextunity_acdd::engine::languages::dependency_registry::DependencyRegistry::collect(
             Some(workspace.root()),
         );
-    let replay = contextunity_forge_mcp::engine::linker::link_with_registry(
+    let replay = contextunity_acdd::engine::linker::link_with_registry(
         &stale,
         None,
         Some(workspace.root()),

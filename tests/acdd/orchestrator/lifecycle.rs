@@ -1,7 +1,7 @@
 #![cfg(target_os = "linux")]
 
 use crate::acdd::{support::*, tasks::harness::TaskHarness};
-use forge_tasks::{
+use acdd_tasks::{
     engine::orchestrator::{
         spawner::{
             monitor_runner_process, render_role_prompt, spawn_role_runner, RunnerSessionPolicy,
@@ -19,26 +19,40 @@ use harness::{LifecycleHarness, MANIFEST};
 #[test]
 fn taskless_rejection_reuses_only_accepted_role_sessions() {
     use crate::acdd::harness::workflows::WorkflowHarness;
-    use forge_tasks::engine::orchestrator::workflow::run_standalone_workflow;
+    use acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
 
     let root = WorkflowHarness::agents().materialize();
-    let mut profile: Value = serde_yaml::from_str(include_str!("../fixtures/workflows/agents.yaml")).unwrap();
+    let mut profile: Value =
+        serde_yaml::from_str(include_str!("../fixtures/workflows/agents.yaml")).unwrap();
     profile["gates"][0]["proof"] = profile["gates"][1]["proof"].clone();
     profile["gates"][0]["fail"] = json!("build");
     profile["gates"][0]["max_attempts"] = json!(4);
     profile["roles"]["builder"]["reuse_on_reject"] = json!(true);
-    root.write("docs/workflows/agents.yaml", &serde_yaml::to_string(&profile).unwrap());
+    root.write(
+        "docs/workflows/agents.yaml",
+        &serde_yaml::to_string(&profile).unwrap(),
+    );
     let runner = include_str!("../fixtures/workflows/runner.py")
         .replace("Path(\"review-rejected\")", "Path(gate + \"-rejected\")");
     root.write("workflow-runner.py", &runner);
 
-    let result = run_standalone_workflow(root.root(), Path::new("docs/workflows/agents.yaml"), None);
+    let result =
+        run_standalone_workflow(root.root(), Path::new("docs/workflows/agents.yaml"), None);
     assert!(result.is_ok(), "{result:#?}");
     let records: Vec<Value> = fs::read_to_string(root.path("workflow-role-sessions.jsonl"))
-        .unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-    let builders: Vec<_> = records.iter().filter(|record| record["gate"] == "build").collect();
-    let reviewers: Vec<_> = records.iter().filter(|record| record["gate"] == "review").collect();
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let builders: Vec<_> = records
+        .iter()
+        .filter(|record| record["gate"] == "build")
+        .collect();
+    let reviewers: Vec<_> = records
+        .iter()
+        .filter(|record| record["gate"] == "review")
+        .collect();
     assert_eq!(builders.len(), 3, "{records:?}");
     assert_eq!(reviewers.len(), 2, "{records:?}");
     assert_ne!(builders[0]["session"], builders[1]["session"]);
@@ -51,29 +65,46 @@ fn taskless_rejection_reuses_only_accepted_role_sessions() {
 #[test]
 fn workflow_reexecuted_rejected_producer_cannot_use_its_old_command_artifact() {
     use crate::acdd::harness::workflows::WorkflowHarness;
-    use forge_tasks::engine::orchestrator::workflow::run_standalone_workflow;
+    use acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
 
     let root = WorkflowHarness::artifact_refresh().materialize();
     let source = include_str!("../fixtures/workflows/artifact-refresh.yaml")
-        .replace("{plan_name} {plan_slug} {artifact_path} {prerequisite}", "{artifact_path}")
-        .replace("    proof: *artifact_proof\n", "    proof: *artifact_proof\n    command: check\n")
+        .replace(
+            "{plan_name} {plan_slug} {artifact_path} {prerequisite}",
+            "{artifact_path}",
+        )
+        .replace(
+            "    proof: *artifact_proof\n",
+            "    proof: *artifact_proof\n    command: check\n",
+        )
         .replace("    fail: synthesize", "    fail: prerequisite");
     root.write("docs/workflows/artifact-refresh.yaml", &source);
     let runner = include_str!("../fixtures/workflows/artifact-runner.py")
         .replace("payload.update(prerequisite=\"prerequisite\")", "payload.update(prerequisite=\"prerequisite\")\n    if not Path(\"synthesized\").exists():\n        payload.update(artifact_path=\"bootstrap\")")
         .replace("payload.update(plan_slug=\"new-plan\", artifact_path=\"new/path\")", "payload.update(plan_slug=\"new-plan\")\n        decision = \"reject\"\n        Path(\"synth-rejected\").touch()");
     root.write("artifact-runner.py", &runner);
-    let error = run_standalone_workflow(root.root(), Path::new("docs/workflows/artifact-refresh.yaml"), None).unwrap_err();
+    let error = run_standalone_workflow(
+        root.root(),
+        Path::new("docs/workflows/artifact-refresh.yaml"),
+        None,
+    )
+    .unwrap_err();
     assert!(root.path("synth-rejected").exists());
-    assert!(format!("{error:#}").contains("WORKFLOW_COMMAND_UNRESOLVED"), "{error:#}");
-    assert_eq!(fs::read_to_string(root.path("validated-arguments")).unwrap(), "bootstrap");
+    assert!(
+        format!("{error:#}").contains("WORKFLOW_COMMAND_UNRESOLVED"),
+        "{error:#}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.path("validated-arguments")).unwrap(),
+        "bootstrap"
+    );
 }
 
 #[test]
 fn workflow_recently_accepted_producer_wins_collisions_in_execution_order() {
     use crate::acdd::harness::workflows::WorkflowHarness;
-    use forge_tasks::engine::orchestrator::workflow::run_standalone_workflow;
+    use acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
 
     let root = WorkflowHarness::artifact_refresh().materialize();
@@ -85,82 +116,158 @@ fn workflow_recently_accepted_producer_wins_collisions_in_execution_order() {
     let runner = include_str!("../fixtures/workflows/artifact-runner.py")
         .replace("gate == \"prerequisite\"", "gate == \"z_prerequisite\"")
         .replace("gate == \"synthesize\"", "gate == \"a_synthesize\"")
-        .replace("prerequisite=\"prerequisite\"", "prerequisite=\"prerequisite\", artifact_path=\"earlier/path\"");
+        .replace(
+            "prerequisite=\"prerequisite\"",
+            "prerequisite=\"prerequisite\", artifact_path=\"earlier/path\"",
+        );
     root.write("artifact-runner.py", &runner);
-    let result = run_standalone_workflow(root.root(), Path::new("docs/workflows/artifact-refresh.yaml"), None).unwrap();
+    let result = run_standalone_workflow(
+        root.root(),
+        Path::new("docs/workflows/artifact-refresh.yaml"),
+        None,
+    )
+    .unwrap();
     assert_eq!(result["status"], "completed");
-    assert_eq!(fs::read_to_string(root.path("validated-arguments")).unwrap(), "new-plan new-plan new/path prerequisite");
+    assert_eq!(
+        fs::read_to_string(root.path("validated-arguments")).unwrap(),
+        "new-plan new-plan new/path prerequisite"
+    );
 }
 
 #[test]
 fn workflow_repass_refreshes_artifacts_for_role_command() {
     use crate::acdd::harness::workflows::WorkflowHarness;
-    use forge_tasks::engine::orchestrator::workflow::run_standalone_workflow;
+    use acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
     let root = WorkflowHarness::artifact_refresh().materialize();
-    let result = run_standalone_workflow(root.root(), Path::new("docs/workflows/artifact-refresh.yaml"), None).unwrap();
-    let gates: Vec<_> = result["outcomes"].as_array().unwrap().iter().map(|v| v["gate"].as_str().unwrap()).collect();
-    assert_eq!(gates, ["prerequisite", "synthesize", "review", "synthesize", "review", "preflight"]);
-    assert_eq!(fs::read_to_string(root.path("validated-arguments")).unwrap(), "new-plan new-plan new/path prerequisite");
+    let result = run_standalone_workflow(
+        root.root(),
+        Path::new("docs/workflows/artifact-refresh.yaml"),
+        None,
+    )
+    .unwrap();
+    let gates: Vec<_> = result["outcomes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["gate"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        gates,
+        [
+            "prerequisite",
+            "synthesize",
+            "review",
+            "synthesize",
+            "review",
+            "preflight"
+        ]
+    );
+    assert_eq!(
+        fs::read_to_string(root.path("validated-arguments")).unwrap(),
+        "new-plan new-plan new/path prerequisite"
+    );
 }
 
 #[test]
 fn workflow_repass_removes_old_producer_fields() {
     use crate::acdd::harness::workflows::WorkflowHarness;
-    use forge_tasks::engine::orchestrator::workflow::run_standalone_workflow;
+    use acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
     let root = WorkflowHarness::artifact_refresh().materialize();
-    let source = include_str!("../fixtures/workflows/artifact-refresh.yaml").replace("{artifact_path}", "{removed}");
+    let source = include_str!("../fixtures/workflows/artifact-refresh.yaml")
+        .replace("{artifact_path}", "{removed}");
     root.write("docs/workflows/artifact-refresh.yaml", &source);
-    let error = run_standalone_workflow(root.root(), Path::new("docs/workflows/artifact-refresh.yaml"), None).unwrap_err();
-    assert!(format!("{error:#}").contains("WORKFLOW_COMMAND_UNRESOLVED"), "{error:#}");
+    let error = run_standalone_workflow(
+        root.root(),
+        Path::new("docs/workflows/artifact-refresh.yaml"),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("WORKFLOW_COMMAND_UNRESOLVED"),
+        "{error:#}"
+    );
     assert!(!root.path("validated-arguments").exists());
 }
 
 #[test]
 fn workflow_role_command_rejects_unsafe_artifact_values() {
     use crate::acdd::harness::workflows::WorkflowHarness;
-    use forge_tasks::engine::orchestrator::workflow::run_standalone_workflow;
+    use acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
     let root = WorkflowHarness::artifact_refresh().materialize();
-    let runner = include_str!("../fixtures/workflows/artifact-runner.py").replace("new/path", "../unsafe");
+    let runner =
+        include_str!("../fixtures/workflows/artifact-runner.py").replace("new/path", "../unsafe");
     root.write("artifact-runner.py", &runner);
-    let error = run_standalone_workflow(root.root(), Path::new("docs/workflows/artifact-refresh.yaml"), None).unwrap_err();
-    assert!(format!("{error:#}").contains("WORKFLOW_COMMAND_INVALID"), "{error:#}");
+    let error = run_standalone_workflow(
+        root.root(),
+        Path::new("docs/workflows/artifact-refresh.yaml"),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("WORKFLOW_COMMAND_INVALID"),
+        "{error:#}"
+    );
     assert!(!root.path("validated-arguments").exists());
 }
 
 #[test]
 fn workflow_rejected_producer_fields_are_unavailable() {
     use crate::acdd::harness::workflows::WorkflowHarness;
-    use forge_tasks::engine::orchestrator::workflow::run_standalone_workflow;
+    use acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
     let root = WorkflowHarness::artifact_refresh().materialize();
-    let source = include_str!("../fixtures/workflows/artifact-refresh.yaml").replace("    proof: *artifact_proof\n", "    proof: *artifact_proof\n    fail: preflight\n    max_attempts: 2\n");
+    let source = include_str!("../fixtures/workflows/artifact-refresh.yaml").replace(
+        "    proof: *artifact_proof\n",
+        "    proof: *artifact_proof\n    fail: preflight\n    max_attempts: 2\n",
+    );
     root.write("docs/workflows/artifact-refresh.yaml", &source);
-    let runner = include_str!("../fixtures/workflows/artifact-runner.py").replace("elif gate == \"review\":", "    decision = \"reject\"\nelif gate == \"review\":");
+    let runner = include_str!("../fixtures/workflows/artifact-runner.py").replace(
+        "elif gate == \"review\":",
+        "    decision = \"reject\"\nelif gate == \"review\":",
+    );
     root.write("artifact-runner.py", &runner);
-    let error = run_standalone_workflow(root.root(), Path::new("docs/workflows/artifact-refresh.yaml"), None).unwrap_err();
-    assert!(format!("{error:#}").contains("WORKFLOW_COMMAND_UNRESOLVED"), "{error:#}");
+    let error = run_standalone_workflow(
+        root.root(),
+        Path::new("docs/workflows/artifact-refresh.yaml"),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("WORKFLOW_COMMAND_UNRESOLVED"),
+        "{error:#}"
+    );
     assert!(!root.path("validated-arguments").exists());
 }
 
 #[test]
 fn workflow_role_rejects_counts_not_observed_by_count_free_command() {
     use crate::acdd::harness::workflows::WorkflowHarness;
-    use forge_tasks::engine::orchestrator::workflow::run_standalone_workflow;
+    use acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
     let root = WorkflowHarness::agents().materialize();
-    root.write("docs/workflows/agents.yaml", include_str!("../fixtures/workflows/count-free-role.yaml"));
-    root.write("root-proof.json", &json!({"command":"check","exit_code":0,"tests_passed":99,"tests_failed":0}).to_string());
-    let error = run_standalone_workflow(root.root(), Path::new("docs/workflows/agents.yaml"), None).unwrap_err();
-    assert!(format!("{error:#}").contains("WORKFLOW_PROOF_UNOBSERVED"), "{error:#}");
+    root.write(
+        "docs/workflows/agents.yaml",
+        include_str!("../fixtures/workflows/count-free-role.yaml"),
+    );
+    root.write(
+        "root-proof.json",
+        &json!({"command":"check","exit_code":0,"tests_passed":99,"tests_failed":0}).to_string(),
+    );
+    let error = run_standalone_workflow(root.root(), Path::new("docs/workflows/agents.yaml"), None)
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("WORKFLOW_PROOF_UNOBSERVED"),
+        "{error:#}"
+    );
 }
 
 #[test]
 fn workflow_role_seam_checks_observed_references_and_counts() {
     use crate::acdd::harness::workflows::WorkflowHarness;
-    use forge_tasks::engine::orchestrator::workflow::run_standalone_workflow;
+    use acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
     let root = WorkflowHarness::agents().materialize();
     let command = "printf 'test suite::passes ... ok\\n1 passed; 0 failed\\n'";
@@ -168,11 +275,23 @@ fn workflow_role_seam_checks_observed_references_and_counts() {
         "version: 2\ninherit: none\nsave: none\nroles:\n  builder: {{ runner: \"python3 workflow-runner.py '{{prompt}}'\" }}\ncommands:\n  check:\n    command: {}\n    output:\n      counts: {{ passed: '(\\d+) passed', failed: '(\\d+) failed' }}\n      tests: {{ passed: 'test (\\S+) \\.\\.\\. ok' }}\ngates:\n  - id: build\n    role: builder\n    command: check\n    proof: seam_test\n    max_attempts: 1\n",
         serde_json::to_string(command).unwrap()
     ));
-    for (reference, count, accepted) in [("suite::passes", 1, true), ("suite::other", 1, false), ("suite::passes", 2, false)] {
+    for (reference, count, accepted) in [
+        ("suite::passes", 1, true),
+        ("suite::other", 1, false),
+        ("suite::passes", 2, false),
+    ] {
         root.write("root-proof.json", &json!({"exit_code":0,"seam_test_refs":[reference],"tests_passed":count,"tests_failed":0}).to_string());
-        let result = run_standalone_workflow(root.root(), Path::new("docs/workflows/agents.yaml"), None);
-        if accepted { assert!(result.is_ok(), "{result:#?}"); }
-        else { let error = result.unwrap_err(); assert!(format!("{error:#}").contains("WORKFLOW_PROOF_UNOBSERVED"), "{error:#}"); }
+        let result =
+            run_standalone_workflow(root.root(), Path::new("docs/workflows/agents.yaml"), None);
+        if accepted {
+            assert!(result.is_ok(), "{result:#?}");
+        } else {
+            let error = result.unwrap_err();
+            assert!(
+                format!("{error:#}").contains("WORKFLOW_PROOF_UNOBSERVED"),
+                "{error:#}"
+            );
+        }
         assert!(root.path("workflow-role-sessions.jsonl").exists());
         fs::remove_file(root.path("workflow-role-sessions.jsonl")).unwrap();
     }
@@ -181,22 +300,39 @@ fn workflow_role_seam_checks_observed_references_and_counts() {
 #[test]
 fn workflow_role_contract_requires_observed_runtime_red() {
     use crate::acdd::harness::workflows::WorkflowHarness;
-    use forge_tasks::engine::orchestrator::workflow::run_standalone_workflow;
+    use acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
     let root = WorkflowHarness::agents().materialize();
     for (command, accepted) in [
-        ("printf 'assertion failed' >&2; exit 101 # seam:tests/acdd.rs::red", true),
+        (
+            "printf 'assertion failed' >&2; exit 101 # seam:tests/acdd.rs::red",
+            true,
+        ),
         ("exit 0 # seam:tests/acdd.rs::red", false),
-        ("printf 'error[E1234]: assertion failed' >&2; exit 101 # seam:tests/acdd.rs::red", false),
+        (
+            "printf 'error[E1234]: assertion failed' >&2; exit 101 # seam:tests/acdd.rs::red",
+            false,
+        ),
     ] {
         root.write("docs/workflows/agents.yaml", &format!(
             "version: 2\ninherit: none\nsave: none\nroles:\n  builder: {{ runner: \"python3 workflow-runner.py '{{prompt}}'\" }}\ncommands:\n  check:\n    command: {}\n    output: {{ require_counts: false, seam_ref_pattern: 'seam:(\\S+)' }}\ngates:\n  - id: build\n    role: builder\n    command: check\n    proof: contract\n    expected_failure: {{ exit_codes: [101], stderr_contains: 'assertion failed' }}\n    max_attempts: 1\n",
             serde_json::to_string(command).unwrap()
         ));
-        root.write("root-proof.json", &json!({"seam_test_ref":"tests/acdd.rs::red","red_exit_code":101}).to_string());
-        let result = run_standalone_workflow(root.root(), Path::new("docs/workflows/agents.yaml"), None);
-        if accepted { assert!(result.is_ok(), "{result:#?}"); }
-        else { let error = result.unwrap_err(); assert!(format!("{error:#}").contains("WORKFLOW_PROOF_UNOBSERVED"), "{error:#}"); }
+        root.write(
+            "root-proof.json",
+            &json!({"seam_test_ref":"tests/acdd.rs::red","red_exit_code":101}).to_string(),
+        );
+        let result =
+            run_standalone_workflow(root.root(), Path::new("docs/workflows/agents.yaml"), None);
+        if accepted {
+            assert!(result.is_ok(), "{result:#?}");
+        } else {
+            let error = result.unwrap_err();
+            assert!(
+                format!("{error:#}").contains("WORKFLOW_PROOF_UNOBSERVED"),
+                "{error:#}"
+            );
+        }
         assert!(root.path("workflow-role-sessions.jsonl").exists());
         fs::remove_file(root.path("workflow-role-sessions.jsonl")).unwrap();
     }
@@ -413,19 +549,19 @@ fn task_run_routes_structured_rejection_to_retained_stage_session() {
 fn zero_test_command_observation_routes_to_repair_then_passes() {
     let h = LifecycleHarness::with_profile(|profile| {
         profile.commands.insert("zero-check".into(), serde_json::from_value(json!({
-            "command": "if test -e .forge/lifecycle/fail-check; then echo 'test result: ok. 0 passed; 0 failed'; else .forge/runner_fixture; fi",
+            "command": "if test -e .acdd/lifecycle/fail-check; then echo 'test result: ok. 0 passed; 0 failed'; else .acdd/runner_fixture; fi",
             "output": {"require_counts": true, "counts": {"passed": "(\\d+) passed", "failed": "(\\d+) failed"}}
         })).unwrap());
         let gate = profile.find_gate_mut("runtime-check").unwrap();
         gate.command = Some("zero-check".into());
         gate.on_fail = Some("build".into());
     });
-    fs::write(h.root().join(".forge/lifecycle/fail-check"), "").unwrap();
+    fs::write(h.root().join(".acdd/lifecycle/fail-check"), "").unwrap();
     let mut rejected = false;
     let result = run_task_lifecycle(h.root(), &h.task.id, &h.options, &mut |event| {
         if matches!(event, OrchestratorEvent::GateRejected { .. }) {
             rejected = true;
-            fs::remove_file(h.root().join(".forge/lifecycle/fail-check")).unwrap();
+            fs::remove_file(h.root().join(".acdd/lifecycle/fail-check")).unwrap();
         }
     });
     assert!(result.is_ok(), "zero-test repair must complete: {result:?}");
@@ -438,8 +574,8 @@ fn multi_command_contract_rejects_later_green_then_repairs() {
     let h = LifecycleHarness::with_profile_and_scope(&["src/lib.rs", "src/other.md"], |profile| {
         profile.commands.insert("multi-contract".into(), serde_json::from_value(json!({
             "by_pattern": {
-                "src/*.rs": ": --seam-ref tests/acdd/tasks.rs && FORGE_FIXTURE_RED=1 .forge/runner_fixture --nocapture",
-                "src/*.md": ": --seam-ref tests/acdd/tasks.rs && if test -e .forge/lifecycle/fail-check; then .forge/runner_fixture; else FORGE_FIXTURE_RED=1 .forge/runner_fixture --nocapture; fi"
+                "src/*.rs": ": --seam-ref tests/acdd/tasks.rs && ACDD_FIXTURE_RED=1 .acdd/runner_fixture --nocapture",
+                "src/*.md": ": --seam-ref tests/acdd/tasks.rs && if test -e .acdd/lifecycle/fail-check; then .acdd/runner_fixture; else ACDD_FIXTURE_RED=1 .acdd/runner_fixture --nocapture; fi"
             },
             "output": {"require_counts": false, "seam_ref_pattern": "--seam-ref (\\S+)"}
         })).unwrap());
@@ -450,12 +586,12 @@ fn multi_command_contract_rejects_later_green_then_repairs() {
         gate.on_fail = Some("build".into());
     });
     fs::write(h.root().join("src/other.md"), "fixture\n").unwrap();
-    fs::write(h.root().join(".forge/lifecycle/fail-check"), "").unwrap();
+    fs::write(h.root().join(".acdd/lifecycle/fail-check"), "").unwrap();
     let mut rejected = false;
     let result = run_task_lifecycle(h.root(), &h.task.id, &h.options, &mut |event| {
         if matches!(event, OrchestratorEvent::GateRejected { .. }) {
             rejected = true;
-            fs::remove_file(h.root().join(".forge/lifecycle/fail-check")).unwrap();
+            fs::remove_file(h.root().join(".acdd/lifecycle/fail-check")).unwrap();
         }
     });
     assert!(
@@ -473,7 +609,7 @@ fn multi_command_contract_rejects_later_green_then_repairs() {
 fn aggregate_only_seam_observation_routes_to_repair_and_new_pass() {
     let h = LifecycleHarness::with_profile(|profile| {
         profile.commands.insert("seam-repair".into(), serde_json::from_value(json!({
-            "command": ": target=tests/runner_fixture.rs && if test -e .forge/lifecycle/fail-check; then echo 'test result: ok. 1 passed; 0 failed'; else .forge/runner_fixture; fi",
+            "command": ": target=tests/runner_fixture.rs && if test -e .acdd/lifecycle/fail-check; then echo 'test result: ok. 1 passed; 0 failed'; else .acdd/runner_fixture; fi",
             "output": {
                 "require_counts": true,
                 "counts": {"passed": "(\\d+) passed", "failed": "(\\d+) failed"},
@@ -485,12 +621,12 @@ fn aggregate_only_seam_observation_routes_to_repair_and_new_pass() {
         gate.proof = serde_json::from_value(json!("seam_test")).unwrap();
         gate.on_fail = Some("build".into());
     });
-    fs::write(h.root().join(".forge/lifecycle/fail-check"), "").unwrap();
+    fs::write(h.root().join(".acdd/lifecycle/fail-check"), "").unwrap();
     let mut rejected = false;
     let result = run_task_lifecycle(h.root(), &h.task.id, &h.options, &mut |event| {
         if matches!(event, OrchestratorEvent::GateRejected { .. }) {
             rejected = true;
-            fs::remove_file(h.root().join(".forge/lifecycle/fail-check")).unwrap();
+            fs::remove_file(h.root().join(".acdd/lifecycle/fail-check")).unwrap();
         }
     });
     assert!(result.is_ok(), "seam repair must complete: {result:?}");
@@ -506,7 +642,7 @@ fn failed_observation_is_not_reused_for_same_claim_after_repair() {
     let failed = tasks::verify_task(h.root(), &h.task.id, None).unwrap();
     assert!(failed["evidence"].is_null());
     assert_eq!(h.check_exits(), vec![Some(1)]);
-    fs::remove_file(h.root().join(".forge/lifecycle/fail-check")).unwrap();
+    fs::remove_file(h.root().join(".acdd/lifecycle/fail-check")).unwrap();
     let passed = tasks::verify_task(h.root(), &h.task.id, None).unwrap();
     assert!(!passed["evidence"].is_null(), "{passed}");
     assert_eq!(h.check_exits(), vec![Some(1), Some(0)]);
@@ -520,37 +656,59 @@ fn command_and_contract_failures_route_to_repair_and_observe_new_passes() {
     let mut h = LifecycleHarness::with_repairable_check();
     let first = h.task.id.clone();
     let second = h.add_second_case();
-    let cases = [(first, false, vec![Some(1), Some(0)]), (second, true, vec![Some(0), Some(101)])];
+    let cases = [
+        (first, false, vec![Some(1), Some(0)]),
+        (second, true, vec![Some(0), Some(101)]),
+    ];
     for (task_id, contract, expected_exits) in cases {
         h.task.id = task_id;
         if contract {
-            let path = h.root().join(".forge/acdd/profile.yaml");
+            let path = h.root().join(".acdd/profile.yaml");
             let source = fs::read_to_string(&path).unwrap();
-            let mut profile = forge_tasks::tasks::profile::validate_profile_document(&source).unwrap();
+            let mut profile =
+                acdd_tasks::tasks::profile::validate_profile_document(&source).unwrap();
             profile.commands.insert("repairable-check".into(), serde_json::from_value(json!({
-                "command": ": --seam-ref tests/acdd/tasks.rs && if test -e .forge/lifecycle/fail-check; then .forge/runner_fixture; else FORGE_FIXTURE_RED=1 .forge/runner_fixture --nocapture; fi",
+                "command": ": --seam-ref tests/acdd/tasks.rs && if test -e .acdd/lifecycle/fail-check; then .acdd/runner_fixture; else ACDD_FIXTURE_RED=1 .acdd/runner_fixture --nocapture; fi",
                 "output": {"require_counts": false, "seam_ref_pattern": "--seam-ref (\\S+)", "counts": {"passed": "(\\d+) passed", "failed": "(\\d+) failed"}}
             })).unwrap());
             let gate = profile.find_gate_mut("runtime-check").unwrap();
             gate.proof = serde_json::from_value(json!("contract")).unwrap();
-            gate.expected_failure = Some(serde_json::from_value(json!({"exit_codes": [101]})).unwrap());
-            fs::write(path, format!("inherit: none\n{}", serde_yaml::to_string(&profile).unwrap())).unwrap();
-            for args in [&["add", "-f", ".forge/acdd/profile.yaml"][..], &["commit", "-m", "contract fixture profile"][..]] {
+            gate.expected_failure =
+                Some(serde_json::from_value(json!({"exit_codes": [101]})).unwrap());
+            fs::write(
+                path,
+                format!(
+                    "inherit: none\n{}",
+                    serde_yaml::to_string(&profile).unwrap()
+                ),
+            )
+            .unwrap();
+            for args in [
+                &["add", "-f", ".acdd/profile.yaml"][..],
+                &["commit", "-m", "contract fixture profile"][..],
+            ] {
                 assert!(git_command(h.root(), args).status().unwrap().success());
             }
-            fs::write(h.root().join(".forge/lifecycle/fail-check"), "").unwrap();
+            fs::write(h.root().join(".acdd/lifecycle/fail-check"), "").unwrap();
         }
         let previous = h.check_exits().len();
         let mut rejected = false;
         let result = run_task_lifecycle(h.root(), &h.task.id, &h.options, &mut |event| {
             if matches!(event, OrchestratorEvent::GateRejected { .. }) {
                 rejected = true;
-                fs::remove_file(h.root().join(".forge/lifecycle/fail-check")).unwrap();
+                fs::remove_file(h.root().join(".acdd/lifecycle/fail-check")).unwrap();
             }
         });
-        assert!(result.is_ok(), "contract={contract}: repair must complete: {result:?}");
+        assert!(
+            result.is_ok(),
+            "contract={contract}: repair must complete: {result:?}"
+        );
         assert!(rejected, "contract={contract}");
-        assert_eq!(&h.check_exits()[previous..], expected_exits, "contract={contract}");
+        assert_eq!(
+            &h.check_exits()[previous..],
+            expected_exits,
+            "contract={contract}"
+        );
     }
 }
 
@@ -569,7 +727,7 @@ fn command_rejection_survives_store_reopen_before_repair() {
     assert_eq!(reopened.inspect(&h.task.id).unwrap().status, "ready");
     assert_eq!(h.check_exits(), vec![Some(1)]);
     drop(reopened);
-    fs::remove_file(h.root().join(".forge/lifecycle/fail-check")).unwrap();
+    fs::remove_file(h.root().join(".acdd/lifecycle/fail-check")).unwrap();
     let result = run_task_lifecycle(h.root(), &h.task.id, &h.options, &mut |_| {});
     assert!(
         result.is_ok(),
@@ -581,20 +739,29 @@ fn command_rejection_survives_store_reopen_before_repair() {
 #[test]
 fn task_run_recovers_first_self_rejection_for_polish_and_seam() {
     let mut h = LifecycleHarness::with_profile(|profile| {
-        let executable = env!("CARGO_BIN_EXE_contextunity-forge-mcp").replace('\'', "'\\''");
+        let executable = env!("CARGO_BIN_EXE_acdd").replace('\'', "'\\''");
         profile.roles.get_mut("builder").unwrap().runner = Some(format!(
-            "python3 {{worktree}}/.forge/lifecycle/seam_fixture.py '{executable}' {{session_id}} '{{prompt}}'"
+            "python3 {{worktree}}/.acdd/lifecycle/seam_fixture.py '{executable}' {{session_id}} '{{prompt}}'"
         ));
         profile.commands.insert("seam-fixture".into(), serde_json::from_value(json!({
-            "command": ": target=tests/runner_fixture.rs && .forge/runner_fixture",
+            "command": ": target=tests/runner_fixture.rs && .acdd/runner_fixture",
             "output": {
                 "require_counts": true,
                 "counts": {"passed": "(\\d+) passed", "failed": "(\\d+) failed"},
                 "tests": {"target": "target=(tests/runner_fixture\\.rs)", "passed": "test\\s+([A-Za-z0-9_:]+)\\s+\\.\\.\\.\\s+ok"}
             }
         })).unwrap());
-        let gates = &mut profile.gates.iter_mut().find_map(|gate| gate.tasks.as_mut()).unwrap().gates;
-        let mut polish = gates.iter().find(|gate| gate.id == "build").unwrap().clone();
+        let gates = &mut profile
+            .gates
+            .iter_mut()
+            .find_map(|gate| gate.tasks.as_mut())
+            .unwrap()
+            .gates;
+        let mut polish = gates
+            .iter()
+            .find(|gate| gate.id == "build")
+            .unwrap()
+            .clone();
         polish.id = "polish".into();
         polish.on_fail = Some("polish".into());
         let mut integrate = polish.clone();
@@ -605,34 +772,61 @@ fn task_run_recovers_first_self_rejection_for_polish_and_seam() {
         gates.retain(|gate| gate.id != "seam");
         let review = gates.iter().position(|gate| gate.id == "review").unwrap();
         gates.insert(review, polish);
-        gates.insert(review + 1, forge_tasks::tasks::profile::GateDef { id: "seam".into(), gates: vec![integrate], ..Default::default() });
+        gates.insert(
+            review + 1,
+            acdd_tasks::tasks::profile::GateDef {
+                id: "seam".into(),
+                gates: vec![integrate],
+                ..Default::default()
+            },
+        );
     });
-    let fixture = include_str!("lifecycle/role_fixture.py").replace("\"seamtest\"", "\"seam_test\"");
-    fs::write(h.root().join(".forge/lifecycle/seam_fixture.py"), fixture).unwrap();
+    let fixture =
+        include_str!("lifecycle/role_fixture.py").replace("\"seamtest\"", "\"seam_test\"");
+    fs::write(h.root().join(".acdd/lifecycle/seam_fixture.py"), fixture).unwrap();
     let first = h.task.id.clone();
     let second = h.add_second_case();
     let cases = [(first, "polish"), (second, "seam.integrate")];
     for (task_id, stage) in cases {
         h.task.id = task_id;
-        let log = h.root().join(".forge/lifecycle/roles.jsonl");
-        if log.exists() { fs::remove_file(log).unwrap(); }
+        let log = h.root().join(".acdd/lifecycle/roles.jsonl");
+        if log.exists() {
+            fs::remove_file(log).unwrap();
+        }
         h.task.advance_to(stage).unwrap();
         let claim = h.task.claim_next().unwrap();
         let details = h.task.store.inspect_details(&h.task.id).unwrap();
-        assert!(details["gates"].as_array().unwrap().iter().all(|gate| gate["stage"] != stage || gate["state"] != "passed"), "{stage}: no prior pass is allowed");
+        assert!(
+            details["gates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|gate| gate["stage"] != stage || gate["state"] != "passed"),
+            "{stage}: no prior pass is allowed"
+        );
         let evidence = if stage == "seam.integrate" {
-            let context = TaskHarness::manage_task(h.root(), &h.task.id, tasks::ManageAction::Context).unwrap();
-            serde_json::from_value(context["workflow_guidance"]["expected_evidence_template"].clone()).unwrap()
+            let context =
+                TaskHarness::manage_task(h.root(), &h.task.id, tasks::ManageAction::Context)
+                    .unwrap();
+            serde_json::from_value(
+                context["workflow_guidance"]["expected_evidence_template"].clone(),
+            )
+            .unwrap()
         } else {
             h.task.evidence_for_gate(&claim).unwrap()
         };
         let session = TaskHarness::session_for(&evidence.worker_id);
         let findings = json!({"kind": "repair", "message": "first attempt"});
-        h.task.submit_rejection_in_session(&evidence, Some(&session), Some(&findings)).unwrap();
+        h.task
+            .submit_rejection_in_session(&evidence, Some(&session), Some(&findings))
+            .unwrap();
         let result = run_task_lifecycle(h.root(), &h.task.id, &h.options, &mut |_| {});
         assert!(result.is_ok(), "{stage} must recover: {result:?}");
         let records = h.records();
-        let run = records.iter().find(|record| record["stage"] == stage).unwrap();
+        let run = records
+            .iter()
+            .find(|record| record["stage"] == stage)
+            .unwrap();
         assert_ne!(run["session"], session, "{stage}");
         assert_eq!(run["rejection"]["findings"], findings, "{stage}");
     }
@@ -655,19 +849,28 @@ fn task_run_recovers_first_self_rejections_with_fresh_sessions() {
     let options = h.options.clone();
     let mut build_session = None;
     let result = run_task_lifecycle(&root, &task_id, &options, &mut |event| {
-        if matches!(event, OrchestratorEvent::RunnerExited { ref stage, .. } if stage == "contract") {
+        if matches!(event, OrchestratorEvent::RunnerExited { ref stage, .. } if stage == "contract")
+        {
             let claim = h.task.claim_next().unwrap();
             let evidence = h.task.evidence_for_gate(&claim).unwrap();
             let session = TaskHarness::session_for(&evidence.worker_id);
-            h.task.submit_rejection_in_session(&evidence, Some(&session), Some(&findings)).unwrap();
+            h.task
+                .submit_rejection_in_session(&evidence, Some(&session), Some(&findings))
+                .unwrap();
             build_session = Some(session);
         }
     });
     assert!(result.is_ok(), "self rejections must recover: {result:?}");
     let records = h.records();
-    let cases = [("contract", contract_session), ("build", build_session.unwrap())];
+    let cases = [
+        ("contract", contract_session),
+        ("build", build_session.unwrap()),
+    ];
     for (stage, prior_session) in cases {
-        let run = records.iter().find(|record| record["stage"] == stage).unwrap();
+        let run = records
+            .iter()
+            .find(|record| record["stage"] == stage)
+            .unwrap();
         assert_ne!(run["session"], prior_session, "{stage}");
         assert_eq!(run["rejection"]["findings"], findings, "{stage}");
     }
@@ -682,12 +885,16 @@ fn rejected_predecessor_with_invalid_identity_fails_closed() {
     let mut evidence = h.task.evidence_for_gate(&claim).unwrap();
     evidence.proof = review_proof("reject");
     let reviewer_session = TaskHarness::session_for(&evidence.worker_id);
-    h.task.submit_rejection_in_session(
-        &evidence,
-        Some(&reviewer_session),
-        Some(&json!({"kind":"scope","message":"repair"})),
-    ).unwrap();
-    let revision = h.task.persisted_gate_evidence("build")["claim_revision"].as_u64().unwrap();
+    h.task
+        .submit_rejection_in_session(
+            &evidence,
+            Some(&reviewer_session),
+            Some(&json!({"kind":"scope","message":"repair"})),
+        )
+        .unwrap();
+    let revision = h.task.persisted_gate_evidence("build")["claim_revision"]
+        .as_u64()
+        .unwrap();
     let (worker, session): (String, Option<String>) = h.task.store.connection.query_row(
         "SELECT worker_id, session_fingerprint FROM task_claims WHERE task_id=?1 AND revision=?2",
         rusqlite::params![h.task.id, revision], |row| Ok((row.get(0)?, row.get(1)?)),
@@ -706,7 +913,10 @@ fn rejected_predecessor_with_invalid_identity_fails_closed() {
             ).unwrap();
         }
         let error = run_task_lifecycle(h.root(), &h.task.id, &h.options, &mut |_| {}).unwrap_err();
-        assert!(error.to_string().contains("TASK_RESUME_IDENTITY_MISSING"), "{error:#}");
+        assert!(
+            error.to_string().contains("TASK_RESUME_IDENTITY_MISSING"),
+            "{error:#}"
+        );
         h.task.store.connection.execute(
             "UPDATE task_claims SET worker_id=?1, session_fingerprint=?2 WHERE task_id=?3 AND revision=?4",
             rusqlite::params![worker, session, h.task.id, revision],
@@ -882,7 +1092,7 @@ fn task_run_delivery_rejects_candidate_drift() {
 #[test]
 fn task_run_cli_accepts_in_place_and_uses_lifecycle() {
     let h = LifecycleHarness::new();
-    let output = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+    let output = Command::new(env!("CARGO_BIN_EXE_acdd"))
         .args([
             "--root",
             h.root().to_str().unwrap(),
@@ -893,7 +1103,7 @@ fn task_run_cli_accepts_in_place_and_uses_lifecycle() {
             &h.task.id,
             "--in-place",
         ])
-        .env("FORGE_AGENT_SESSION_ID", "fixture-cli-coordinator")
+        .env("ACDD_AGENT_SESSION_ID", "fixture-cli-coordinator")
         .current_dir(h.root())
         .output()
         .unwrap();
@@ -915,20 +1125,28 @@ fn task_run_cli_accepts_in_place_and_uses_lifecycle() {
 fn malformed_emitted_review_templates_are_rejected_by_task_submission() {
     let mut h = LifecycleHarness::new();
     let cases = [
-        ("corrupt-template", "missing review decision must be rejected"),
+        (
+            "corrupt-template",
+            "missing review decision must be rejected",
+        ),
         ("wrong-wrapper", "wrong proof wrapper must be rejected"),
     ];
     for (marker, reason) in cases {
-        let path = h.root().join(".forge/lifecycle").join(marker);
-        let log = h.root().join(".forge/lifecycle/roles.jsonl");
-        if log.exists() { fs::remove_file(log).unwrap(); }
+        let path = h.root().join(".acdd/lifecycle").join(marker);
+        let log = h.root().join(".acdd/lifecycle/roles.jsonl");
+        if log.exists() {
+            fs::remove_file(log).unwrap();
+        }
         fs::write(&path, "").unwrap();
         let result = run_task_lifecycle(h.root(), &h.task.id, &h.options, &mut |_| {});
         assert!(result.is_err(), "{reason}: {result:?}");
         let task = h.task.store.inspect(&h.task.id).unwrap();
         assert_ne!(task.status, "completed", "{marker}");
         assert_eq!(task.stage, "review", "{marker}");
-        assert!(h.records().iter().any(|record| record["stage"] == "review"), "{marker}: review runner must execute");
+        assert!(
+            h.records().iter().any(|record| record["stage"] == "review"),
+            "{marker}: review runner must execute"
+        );
         fs::remove_file(path).unwrap();
         h.task.store.reset(&h.task.id).unwrap();
     }
@@ -962,7 +1180,7 @@ fn renamed_workflow_gate_preserves_role_proof_contract() {
 #[test]
 fn workflow_role_decision_framing_and_consistency() {
     use crate::acdd::harness::workflows::WorkflowHarness;
-    use contextunity_forge_mcp::forge_tasks::engine::orchestrator::workflow::run_standalone_workflow;
+    use contextunity_acdd::acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
     let root = WorkflowHarness::agents().materialize();
     for (mode, prepass, succeeds) in [
@@ -988,7 +1206,9 @@ fn workflow_role_decision_framing_and_consistency() {
         ("multiple", true, false),
     ] {
         for path in ["review-rejected", "workflow-role-sessions.jsonl"] {
-            if root.path(path).exists() { fs::remove_file(root.path(path)).unwrap(); }
+            if root.path(path).exists() {
+                fs::remove_file(root.path(path)).unwrap();
+            }
         }
         fs::write(root.path("role-mode"), mode).unwrap();
         if prepass {
@@ -1014,7 +1234,7 @@ fn workflow_role_decision_framing_and_consistency() {
 #[test]
 fn workflow_role_and_command_both_execute() {
     use crate::acdd::harness::workflows::WorkflowHarness;
-    use contextunity_forge_mcp::forge_tasks::engine::orchestrator::workflow::run_standalone_workflow;
+    use contextunity_acdd::acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
     let root = WorkflowHarness::agents().materialize();
     let path = root.path("docs/workflows/agents.yaml");
@@ -1044,7 +1264,7 @@ fn workflow_role_and_command_both_execute() {
 #[test]
 fn workflow_role_pass_is_blocked_by_failed_registered_command() {
     use crate::acdd::harness::workflows::WorkflowHarness;
-    use contextunity_forge_mcp::forge_tasks::engine::orchestrator::workflow::run_standalone_workflow;
+    use contextunity_acdd::acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
     let root = WorkflowHarness::agents().materialize();
     let path = root.path("docs/workflows/agents.yaml");

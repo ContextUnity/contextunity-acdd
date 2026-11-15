@@ -5,14 +5,14 @@ title: MCP setup
 
 # MCP setup
 
-Forge runs as a local stdio MCP server. The executable also provides CLI commands. With no subcommand, `contextunity-forge-mcp` starts the MCP server; `serve` names that mode explicitly. The server uses its process working directory as the workspace unless `--root` or `FORGE_WORKSPACE_ROOT` selects another root.
+ContextUnity ACDD runs as a local stdio MCP server. The executable also provides CLI commands. With no subcommand, `acdd` starts the MCP server; `serve` names that mode explicitly. The server uses its process working directory as the workspace unless `--root` or `ACDD_WORKSPACE_ROOT` selects another root.
 
 ## Install the binary
 
 Run the installer from the project directory whose `.mcp.json` should be configured:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main/install.sh | sh
 ```
 
 The installer uses POSIX `sh`, ordinary shell utilities, `tar` with gzip support,
@@ -27,26 +27,26 @@ Select release channel via flags, interactive prompt, or custom asset directory:
 
 ```sh
 # Stable release (default)
-curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main/install.sh | sh
 
 # Nightly pre-release
-curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh | sh -s -- --nightly
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main/install.sh | sh -s -- --nightly
 
 # When run directly in an interactive terminal, install.sh prompts to choose between latest and nightly:
 sh install.sh
 
-# Or select a custom tagged release via FORGE_RELEASE_BASE_URL:
-curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-forge-mcp/main/install.sh -o /tmp/forge-install.sh
-FORGE_RELEASE_BASE_URL="https://github.com/ContextUnity/contextunity-forge-mcp/releases/download/<tag>" sh /tmp/forge-install.sh
+# Or select a custom tagged release via ACDD_RELEASE_BASE_URL:
+curl -fsSL https://raw.githubusercontent.com/ContextUnity/contextunity-acdd/main/install.sh -o /tmp/acdd-install.sh
+ACDD_RELEASE_BASE_URL="https://github.com/ContextUnity/contextunity-acdd/releases/download/<tag>" sh /tmp/acdd-install.sh
 ```
 
-`FORGE_RELEASE_BASE_URL` is an absolute release asset directory, containing
-`SHA256SUMS` and `contextunity-forge-mcp-<rust-target>.tar.gz`. The archive has
+`ACDD_RELEASE_BASE_URL` is an absolute release asset directory, containing
+`SHA256SUMS` and `contextunity-acdd-<rust-target>.tar.gz`. The archive has
 the executable and companion `skills/` directory at its root. Verification
 checks download integrity against that release manifest.
 
 The binary is staged beside its destination and atomically renamed into
-`~/.local/bin/contextunity-forge-mcp`. Add `~/.local/bin` to your shell `PATH`
+`~/.local/bin/acdd`. Add `~/.local/bin` to your shell `PATH`
 when the installer prints the PATH notice. Client configuration uses the
 absolute executable path. The bundled `skills/install.sh` refreshes
 `~/.agents/skills` and links skills into detected Claude, Codex, Gemini and
@@ -55,9 +55,9 @@ skills remain present. The companion script also supports `--copy`,
 `--dry-run`, selected skill names, and an `AGENTS_SKILLS_DIR` hub override.
 
 The installer creates or updates the current project `.mcp.json`, setting only
-the Forge server `command` and `type` fields. Other servers, root fields and
-tailored Forge `args`, `env`, and `cwd` values survive. Formatting may change.
-Malformed JSON, a nonobject root, nonobject `mcpServers` or Forge entry, and
+the ACDD server `command` and `type` fields. Other servers, root fields and
+tailored ACDD `args`, `env`, and `cwd` values survive. Formatting may change.
+Malformed JSON, a nonobject root, nonobject `mcpServers` or ACDD entry, and
 symlink configuration files are rejected without overwriting configuration.
 
 Run the same installer to update binary and companion skills. For an existing
@@ -70,11 +70,11 @@ pipes. A notice reports when no matching server is running. The
 installer preserves project adapters and does not promise a transaction across
 binary, skills, and configuration changes.
 
-To build from a Forge checkout instead:
+To build from a ACDD checkout instead:
 
 ```sh
 cargo install --path . --locked
-command -v contextunity-forge-mcp
+command -v acdd
 ```
 
 A Rust toolchain and C compiler are required to build the bundled SQLite and language grammars. Use `--features all-languages` during installation for optional language profiles. The binary must be on the MCP client's `PATH` or named by its absolute path in the client configuration.
@@ -86,9 +86,9 @@ For VS Code or GitHub Copilot's portable format, put `.mcp.json` at the root of 
 ```json
 {
   "mcpServers": {
-    "contextunity-forge": {
+    "acdd": {
       "type": "stdio",
-      "command": "contextunity-forge-mcp"
+      "command": "acdd"
     }
   }
 }
@@ -99,23 +99,23 @@ This form uses the client's workspace directory. If the client launches servers 
 ```json
 {
   "mcpServers": {
-    "contextunity-forge": {
+    "acdd": {
       "type": "stdio",
-      "command": "/absolute/path/to/contextunity-forge-mcp",
+      "command": "/absolute/path/to/acdd",
       "cwd": "/absolute/path/to/repository"
     }
   }
 }
 ```
 
-For clients without a `cwd` setting, pass the repository root to Forge:
+For clients without a `cwd` setting, pass the repository root to ACDD:
 
 ```json
 {
   "mcpServers": {
-    "contextunity-forge": {
+    "acdd": {
       "type": "stdio",
-      "command": "/absolute/path/to/contextunity-forge-mcp",
+      "command": "/absolute/path/to/acdd",
       "args": ["--root", "/absolute/path/to/repository"]
     }
   }
@@ -140,17 +140,17 @@ exits when its launching parent disappears, including while awaiting MCP
 initialization. SIGHUP reload preserves the established session and stdio pipes.
 There is no inactivity shutdown setting.
 
-Reconnect the client and call `code_map_overview`. The first database-backed call creates `<root>/.forge/code-map.sqlite` automatically. The result reports the indexed workspace, generation, counts, and coverage. No `guide init` or manual `build` is required for MCP use.
+Reconnect the client and call `code_map_overview`. The first database-backed call creates `<root>/.acdd/code-map.sqlite` automatically. The result reports the indexed workspace, generation, counts, and coverage. No `guide init` or manual `build` is required for MCP use.
 
-Before later database reads, Forge checks the adapter and admitted source inventory. Changed files trigger an incremental update or full rebuild as needed. A changed response policy affects output without reindexing. `ast_grep_search` scans admitted source directly, so use `code_map_overview` when you want to initialize or verify the SQLite index.
+Before later database reads, ACDD checks the adapter and admitted source inventory. Changed files trigger an incremental update or full rebuild as needed. A changed response policy affects output without reindexing. `ast_grep_search` scans admitted source directly, so use `code_map_overview` when you want to initialize or verify the SQLite index.
 
 For a first exploration, use `code_map_search` with `{"pattern":"parse*"}`, inspect an ID returned by search, then ask `code_map_impact` with `depth=1`. The [tool reference](mcp-tools.md) lists all 20 tools and their fields.
 
 ## If the server does not appear
 
-- **Executable not found:** run `command -v contextunity-forge-mcp` in a terminal and put that absolute path in `command`.
+- **Executable not found:** run `command -v acdd` in a terminal and put that absolute path in `command`.
 - **Wrong repository:** compare `code_map_overview`'s workspace with the intended root. Set `cwd` or `--root` explicitly.
-- **Indexing error:** inspect the MCP client's server log and validate `forge-mcp.yaml` with `contextunity-forge-mcp guide validate` from the repository.
-- **CLI results are stale:** CLI readers use the index on disk. Run `contextunity-forge-mcp build .` or `delta` after source changes; MCP reads refresh automatically.
+- **Indexing error:** inspect the MCP client's server log and validate `acdd.yaml` with `acdd guide validate` from the repository.
+- **CLI results are stale:** CLI readers use the index on disk. Run `acdd build .` or `delta` after source changes; MCP reads refresh automatically.
 
 The [adapter reference](configuration.md) covers admission rules and linked workspaces; [limits and freshness](../runbooks/limits-and-freshness.md) covers scan and response budgets.

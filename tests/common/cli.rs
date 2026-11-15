@@ -1,6 +1,6 @@
 use super::Workspace;
 use clap::Parser;
-use contextunity_forge_mcp::cli::Cli;
+use contextunity_acdd::cli::Cli;
 use std::{ffi::OsString, process::Output};
 
 /// Executes the real Clap parser, CLI dispatcher, and formatter in process.
@@ -17,8 +17,7 @@ pub fn run_cli_json(workspace: &Workspace, args: &[&str]) -> Output {
 }
 
 pub fn run_cli_args(args: &[OsString]) -> Output {
-    let argv =
-        std::iter::once(OsString::from("contextunity-forge-mcp")).chain(args.iter().cloned());
+    let argv = std::iter::once(OsString::from("acdd")).chain(args.iter().cloned());
     let cli = match Cli::try_parse_from(argv) {
         Ok(cli) => cli,
         Err(error) => {
@@ -43,9 +42,9 @@ pub fn run_cli_args(args: &[OsString]) -> Output {
     let mut stdout = Vec::new();
     let positional_root = match &cli.command {
         Some(
-            contextunity_forge_mcp::cli::Command::Build { workspace_root, .. }
-            | contextunity_forge_mcp::cli::Command::Scan { workspace_root, .. }
-            | contextunity_forge_mcp::cli::Command::Delta { workspace_root, .. },
+            contextunity_acdd::cli::Command::Build { workspace_root, .. }
+            | contextunity_acdd::cli::Command::Scan { workspace_root, .. }
+            | contextunity_acdd::cli::Command::Delta { workspace_root, .. },
         ) => workspace_root.clone(),
         _ => None,
     };
@@ -55,7 +54,7 @@ pub fn run_cli_args(args: &[OsString]) -> Output {
         .or(positional_root)
         .unwrap_or_else(|| std::env::current_dir().unwrap());
     let result = runtime.block_on(
-        cli.run_with_writer_and_cache_dir(&mut stdout, &cache_root.join(".forge/extraction-cache")),
+        cli.run_with_writer_and_cache_dir(&mut stdout, &cache_root.join(".acdd/extraction-cache")),
     );
     Output {
         status: exit_status(i32::from(result.is_err())),

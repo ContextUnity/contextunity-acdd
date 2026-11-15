@@ -13,7 +13,7 @@ cargo build --release --locked --features all-languages
 cargo build --release --locked --no-default-features --features lang-rust
 ```
 
-Use `contextunity-forge-mcp --help` to inspect the installed binary. Enabling a profile changes which files the scanner admits and which parser and linker rules are available. Rebuild the index after changing the binary's feature set.
+Use `acdd --help` to inspect the installed binary. Enabling a profile changes which files the scanner admits and which parser and linker rules are available. Rebuild the index after changing the binary's feature set.
 
 ## File profiles
 
@@ -67,7 +67,7 @@ Python indexes module-level PEP 695 aliases, `TypeAlias` and `TypeAliasType` ann
 
 ## Dependencies and typed receivers
 
-Forge collects declared dependencies from workspace manifests before linking: Python `pyproject.toml`, `requirements*.txt`, `setup.cfg`, and `Pipfile`; JavaScript/TypeScript `package.json`; Rust `Cargo.toml`; Go `go.mod`; and Java/Kotlin `pom.xml`, `build.gradle`, and `build.gradle.kts`. Linked workspaces use the admitted adapter configuration. Standard-library imports and declared dependencies have distinct evidence. An absolute import with no indexed provider is classified as external even when no manifest declares it; relative imports and missing symbols in indexed modules retain their local resolution evidence.
+ACDD collects declared dependencies from workspace manifests before linking: Python `pyproject.toml`, `requirements*.txt`, `setup.cfg`, and `Pipfile`; JavaScript/TypeScript `package.json`; Rust `Cargo.toml`; Go `go.mod`; and Java/Kotlin `pom.xml`, `build.gradle`, and `build.gradle.kts`. Linked workspaces use the admitted adapter configuration. Standard-library imports and declared dependencies have distinct evidence. An absolute import with no indexed provider is classified as external even when no manifest declares it; relative imports and missing symbols in indexed modules retain their local resolution evidence.
 
 The committed manifest digest covers scanner-admitted manifests and supported
 files directly in primary and linked workspace roots, including those root files
@@ -103,7 +103,7 @@ Vue templates use HTML element boundaries and JavaScript expression parsing. Com
 
 ## Python registrations
 
-For an indexed module that imports `FastMCP` from `fastmcp` or `mcp.server.fastmcp`, Forge records `@server.tool` and `@server.tool(...)` on module-level functions when `server` is assigned a `FastMCP(...)` instance. Each confirmed tool has a `tool_registration` node, a `contains` edge from its module, and a `handles` edge to its function. A literal `name=` sets the advertised name; a dynamic name is marked unknown. Import aliases and module-qualified constructors are supported. Reassignment of the constructor before instance creation, or the server before registration, prevents a confirmed link.
+For an indexed module that imports `FastMCP` from `fastmcp` or `mcp.server.fastmcp`, ACDD records `@server.tool` and `@server.tool(...)` on module-level functions when `server` is assigned a `FastMCP(...)` instance. Each confirmed tool has a `tool_registration` node, a `contains` edge from its module, and a `handles` edge to its function. A literal `name=` sets the advertised name; a dynamic name is marked unknown. Import aliases and module-qualified constructors are supported. Reassignment of the constructor before instance creation, or the server before registration, prevents a confirmed link.
 
 The graph records registrations evident in source. Runtime-created tools, factory-returned servers, and imported server instances require runtime confirmation. Other decorator-based frameworks use their own registration rules; a method named `tool` alone does not identify FastMCP.
 

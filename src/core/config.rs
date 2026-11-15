@@ -1,7 +1,7 @@
-//! Workspace adapter configuration, scanner limits, and path resolution re-exported from forge-core.
+//! Workspace adapter configuration, scanner limits, and path resolution re-exported from acdd-core.
 
+pub use acdd_core::config::*;
 use anyhow::Result;
-pub use forge_core::config::*;
 use std::path::Path;
 
 /// Reads adapter policy from index SQLite metadata table.
@@ -11,5 +11,5 @@ pub fn read_policy(root: &Path, conn: &rusqlite::Connection) -> Result<Adapter> 
             r.get(0)
         })?;
     let value: serde_json::Value = serde_json::from_str(&raw)?;
-    forge_core::config::read_policy_from_value(root, &value)
+    acdd_core::config::read_policy_from_value(root, &value)
 }

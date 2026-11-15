@@ -5,11 +5,11 @@ fn delivery_rejects_commit_that_differs_from_candidate_when_auto_commit_is_disab
     let root = acdd_workspace(DEFAULT_SEAM, "");
     root.write("src/lib.rs", "pub fn candidate() -> bool { true }\n");
     root.write(
-        "forge-mcp.yaml",
-        "tasks_db: .forge/tasks.sqlite\nacdd_profile: custom_profile.yaml\n",
+        "acdd.yaml",
+        "tasks_db: .acdd/tasks.sqlite\nacdd_profile: custom_profile.yaml\n",
     );
-    root.write(".gitignore", super::super::CANONICAL_FORGE_GITIGNORE);
-    TaskHarness::commit_handoff_fixture_inputs(&root, &[".forge/acdd/profile.yaml"]);
+    root.write(".gitignore", super::super::CANONICAL_ACDD_GITIGNORE);
+    TaskHarness::commit_handoff_fixture_inputs(&root, &[".acdd/profile.yaml"]);
     root.write(
         "custom_profile.yaml",
         r#"inherit: none
@@ -28,12 +28,12 @@ guidance:
   contour.administration: "Verify governance."
 commands:
   test:
-    command: ": --seam-ref tests/acdd/tasks.rs {scope_target} && test -x .forge/runner_fixture && if test -f .forge/runner_fixture_green; then .forge/runner_fixture; else FORGE_FIXTURE_RED=1 .forge/runner_fixture --nocapture; fi"
+    command: ": --seam-ref tests/acdd/tasks.rs {scope_target} && test -x .acdd/runner_fixture && if test -f .acdd/runner_fixture_green; then .acdd/runner_fixture; else ACDD_FIXTURE_RED=1 .acdd/runner_fixture --nocapture; fi"
     output:
       require_counts: false
       seam_ref_pattern: '--seam-ref (\S+)'
   rust-check-and-test:
-    command: ": {scope_target} && test -x .forge/runner_fixture && .forge/runner_fixture"
+    command: ": {scope_target} && test -x .acdd/runner_fixture && .acdd/runner_fixture"
     output:
       require_counts: true
       counts: {passed: '(\d+) passed', failed: '(\d+) failed'}
@@ -156,11 +156,11 @@ fn on_demand_checkpoint_cannot_override_immutable_candidate_or_claim_checkpoint(
 fn concurrent_pre_snapshot_immutable_gate_rejects_on_demand_checkpoint_races() {
     let root = acdd_workspace(DEFAULT_SEAM, "");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     root.write(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         r#"inherit: none
 version: 2
 roles:
@@ -194,7 +194,7 @@ gates:
     .unwrap();
 
     let task_id = "forge-mcp/m-atomic:guarded";
-    let db_path = root.root().join(".forge/tasks.sqlite");
+    let db_path = root.root().join(".acdd/tasks.sqlite");
     let breadcrumb = "forge-mcp/forge-mcp/m-atomic/tasks/guarded/sample".to_owned();
 
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -260,7 +260,7 @@ gates:
 
     root.write("src/lib.rs", "pub fn tampered() {}\n");
 
-    let evidence = contextunity_forge_mcp::core::tasks::gates::Evidence {
+    let evidence = contextunity_acdd::core::tasks::gates::Evidence {
         task_id: task_id.into(),
         stage: "sample".into(),
         claim_revision: claim_res["claim_revision"].as_u64().unwrap(),

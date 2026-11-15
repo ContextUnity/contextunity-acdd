@@ -1,16 +1,90 @@
 use super::*;
 
 #[test]
+fn configured_cache_generation_does_not_block_task_claim() {
+    let (root, store, milestone) = fixture(DEFAULT_SEAM);
+    drop(store);
+    root.write(".git/info/exclude", "");
+    root.write(
+        ".gitignore",
+        &format!("{CANONICAL_ACDD_GITIGNORE}/.acdd/runner_fixture\n"),
+    );
+    TaskHarness::commit_handoff_fixture_inputs(&root, &[".acdd/profile.yaml"]);
+    let binary = env!("CARGO_BIN_EXE_acdd");
+    let build = std::process::Command::new(binary)
+        .current_dir(root.root())
+        .env("ACDD_EXTRACTION_CACHE_DIR", "./.acdd/custom-cache")
+        .args(["--root", root.root().to_str().unwrap(), "build"])
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "{}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let cache = root.path(".acdd/custom-cache");
+    assert!(std::fs::read_dir(&cache)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter_map(|entry| std::fs::read_dir(entry.path()).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .any(|entry| entry.path().extension().is_some_and(|ext| ext == "facts")));
+    let task = milestone.task_id(&milestone.tasks[0]);
+    let claim = |cache_dir: &std::ffi::OsStr| {
+        std::process::Command::new(binary)
+            .current_dir(root.root())
+            .env("ACDD_EXTRACTION_CACHE_DIR", cache_dir)
+            .args([
+                "--root",
+                root.root().to_str().unwrap(),
+                "task",
+                "claim",
+                &task,
+                "--stage",
+                "contract",
+                "--worker",
+                "cache-claim",
+                "--worktree",
+                root.root().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+    };
+    root.write(".acdd/custom-cache/policy.json", "inherit: none\n");
+    for cache_dir in [
+        std::ffi::OsStr::new("./.acdd/custom-cache"),
+        cache.as_os_str(),
+    ] {
+        let output = claim(cache_dir);
+        let diagnostic = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !output.status.success() && diagnostic.contains(".acdd/custom-cache/policy.json"),
+            "{diagnostic}"
+        );
+    }
+    std::fs::remove_file(cache.join("policy.json")).unwrap();
+    let output = claim(std::ffi::OsStr::new("./.acdd/custom-cache"));
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn claim_context_intersects_documentation_across_repository_paths() {
     let (root, store, milestone) = fixture(DEFAULT_SEAM);
     drop(store);
-    root.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
-    TaskHarness::commit_handoff_fixture_inputs(&root, &[".forge/acdd/profile.yaml"]);
-    root.write(
-        ".agents/skills/contextunity-forge/SKILL.md",
-        "# ContextUnity Forge\n",
-    );
-    root.write("forge-mcp.yaml", "roots: [src]\ndocs: [docs, README.md, AGENTS.md, TESTS.md, nested/docs]\ntasks_db: .forge/tasks.sqlite\n");
+    root.write(".gitignore", CANONICAL_ACDD_GITIGNORE);
+    TaskHarness::commit_handoff_fixture_inputs(&root, &[".acdd/profile.yaml"]);
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
+    root.write("acdd.yaml", "roots: [src]\ndocs: [docs, README.md, AGENTS.md, TESTS.md, nested/docs]\ntasks_db: .acdd/tasks.sqlite\n");
     let paths = [
         "README.md",
         "AGENTS.md",
@@ -30,9 +104,9 @@ fn claim_context_intersects_documentation_across_repository_paths() {
             .unwrap()
             .components()
             .count();
-        root.write(path, &format!("# Task guidance\nLoad the contextunity-forge skill.\nInvariant: [`example`]({}src/lib.rs) stays callable.\n", "../".repeat(depth)));
+        root.write(path, &format!("# Task guidance\nLoad the acdd skill.\nInvariant: [`example`]({}src/lib.rs) stays callable.\n", "../".repeat(depth)));
     }
-    root.build_to(root.path(".forge/code-map.sqlite"));
+    root.build_to(root.path(".acdd/code-map.sqlite"));
     let id = milestone.task_id(&milestone.tasks[0]);
     let claim =
         TaskHarness::claim_at(root.root(), &id, "contract", "documentation-author").unwrap();
@@ -66,17 +140,11 @@ fn claim_context_intersects_documentation_across_repository_paths() {
 fn role_runner_templates_render_active_claim_context() {
     let (root, store, milestone) = fixture(DEFAULT_SEAM);
     drop(store);
-    root.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
-    TaskHarness::commit_handoff_fixture_inputs(&root, &[".forge/acdd/profile.yaml"]);
-    root.write(
-        "AGENTS.md",
-        "# Guidance\nLoad the contextunity-forge skill.\n",
-    );
-    root.write(
-        ".agents/skills/contextunity-forge/SKILL.md",
-        "# ContextUnity Forge\n",
-    );
-    root.write("forge-mcp.yaml", "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nacdd_profile: custom_profile.yaml\n");
+    root.write(".gitignore", CANONICAL_ACDD_GITIGNORE);
+    TaskHarness::commit_handoff_fixture_inputs(&root, &[".acdd/profile.yaml"]);
+    root.write("AGENTS.md", "# Guidance\nLoad the acdd skill.\n");
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
+    root.write("acdd.yaml", "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nacdd_profile: custom_profile.yaml\n");
     let id = milestone.task_id(&milestone.tasks[0]);
     for (mode, runner, prompt) in [
         (
@@ -103,7 +171,7 @@ fn role_runner_templates_render_active_claim_context() {
             &crate::acdd::support::standalone_profile_yaml(&profile),
         );
         let profile =
-            contextunity_forge_mcp::core::tasks::profile::load_for_workspace(root.root()).unwrap();
+            contextunity_acdd::core::tasks::profile::load_for_workspace(root.root()).unwrap();
         let role = &profile.roles["contract_author"];
         assert_eq!(role.runner.as_deref(), runner);
         assert_eq!(role.prompt_template.as_deref(), prompt);
@@ -160,36 +228,30 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
     }
     root.write(
         "docs/team-guidance.md",
-        "# Root task guidance\nLoad the contextunity-forge skill.\n",
+        "# Root task guidance\nLoad the acdd skill.\n",
     );
     linked.write(
         "docs/linked-guidance.md",
-        "# Linked task guidance\nLoad the contextunity-forge skill.\n",
+        "# Linked task guidance\nLoad the acdd skill.\n",
     );
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
+    linked.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
     root.write(
-        ".agents/skills/contextunity-forge/SKILL.md",
-        "# ContextUnity Forge\n",
-    );
-    linked.write(
-        ".agents/skills/contextunity-forge/SKILL.md",
-        "# ContextUnity Forge\n",
-    );
-    root.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
-            "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/team-guidance.md\nlinked_workspaces:\n  - name: linked\n    path: {}\n    tasks:\n      enabled: true\n      agents_guidance: docs/linked-guidance.md\n",
+            "tasks_db: .acdd/tasks.sqlite\nagents_guidance: docs/team-guidance.md\nlinked_workspaces:\n  - name: linked\n    path: {}\n    tasks:\n      enabled: true\n      agents_guidance: docs/linked-guidance.md\n",
             linked.root().display()
         ),
     );
-    root.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
-    linked.write(".gitignore", CANONICAL_FORGE_GITIGNORE);
-    TaskHarness::commit_handoff_fixture_inputs(&root, &[".forge/acdd/profile.yaml"]);
-    TaskHarness::commit_handoff_fixture_inputs(&linked, &[".forge/acdd/profile.yaml"]);
+    root.write(".gitignore", CANONICAL_ACDD_GITIGNORE);
+    linked.write(".gitignore", CANONICAL_ACDD_GITIGNORE);
+    TaskHarness::commit_handoff_fixture_inputs(&root, &[".acdd/profile.yaml"]);
+    TaskHarness::commit_handoff_fixture_inputs(&linked, &[".acdd/profile.yaml"]);
     linked.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "task_repository: linked\ntask_project: linked\n",
     );
-    missing.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
+    missing.write("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n");
 
     for (server, workspace, selector, repository, agent_type, expected_path, absent) in [
         (
@@ -391,8 +453,8 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
 
     let missing_id = "forge-mcp/m-guided:guided";
     missing.write(
-        "forge-mcp.yaml",
-        "tasks_db: .forge/tasks.sqlite\nagents_guidance: docs/unavailable.md\n",
+        "acdd.yaml",
+        "tasks_db: .acdd/tasks.sqlite\nagents_guidance: docs/unavailable.md\n",
     );
     let configured_missing = tasks::manage(
         missing.root(),
@@ -420,47 +482,40 @@ fn task_guidance_requires_named_and_installed_forge_skill() {
     let root = acdd_workspace(DEFAULT_SEAM, "");
     root.write("src/lib.rs", "pub fn skill() {}\n");
     root.write("docs/010-skill.md", specification);
-    root.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
-    let skill_path = root
-        .root()
-        .join(".agents/skills/contextunity-forge/SKILL.md");
+    root.write("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n");
+    let skill_path = root.root().join(".agents/skills/acdd/SKILL.md");
     let gitignore_path = root.root().join(".gitignore");
     let global_installed = std::env::var_os("HOME").is_some_and(|home| {
         std::path::Path::new(&home)
-            .join(".agents/skills/contextunity-forge/SKILL.md")
+            .join(".agents/skills/acdd/SKILL.md")
             .is_file()
     });
-    let canonical = CANONICAL_FORGE_GITIGNORE;
-    let load = "# Rules\nLoad the contextunity-forge skill.\n";
+    let canonical = CANONICAL_ACDD_GITIGNORE;
+    let load = "# Rules\nLoad the acdd skill.\n";
     let git_protection =
-        format!(".*\n*.json\n.forge/frameworks/nested/\n!.forge/scan.sqlite\n{canonical}");
+        format!(".*\n*.json\n.acdd/frameworks/nested/\n!.acdd/scan.sqlite\n{canonical}");
     let git_unmatched = format!("{canonical}*.md\n");
     let git_yaml = format!("{canonical}*.yaml\n");
     let git_dot = format!("{canonical}.*\n");
-    let git_tasks = format!("{canonical}!.forge/tasks.sqlite\n");
-    let git_nested = format!("{canonical}.forge/frameworks/nested/\n");
+    let git_tasks = format!("{canonical}!.acdd/tasks.sqlite\n");
+    let git_nested = format!("{canonical}.acdd/frameworks/nested/\n");
     let git_json = format!("{canonical}*.json\n");
-    let git_scan = format!("{canonical}!.forge/scan.sqlite\n");
+    let git_scan = format!("{canonical}!.acdd/scan.sqlite\n");
     for (agents, gitignore, install_skill, warning_fragment) in [
         (load, Some(canonical), true, None),
         (
-            "# Rules\nLoad contextunity-forge-mcp skill for ACDD.\n",
+            "# Rules\nLoad acdd skill for ACDD.\n",
             Some(canonical),
             true,
             None,
         ),
         (
-            "# Rules\nLoad [contextunity-forge-mcp](https://example.com/SKILL.md) skill for ACDD.\n",
+            "# Rules\nLoad [acdd](https://example.com/SKILL.md) skill for ACDD.\n",
             Some(canonical),
             true,
             None,
         ),
-        (
-            "# Intro\n\ncontextunity-forge skill.\n",
-            Some(canonical),
-            true,
-            None,
-        ),
+        ("# Intro\n\nacdd skill.\n", Some(canonical), true, None),
         (load, Some(git_protection.as_str()), true, None),
         (
             load,
@@ -469,28 +524,64 @@ fn task_guidance_requires_named_and_installed_forge_skill() {
             Some("Edit `.gitignore`"),
         ),
         (
-            "# Rules\nUse contextunity-forge-mcp for queries.\n",
+            "# Rules\nUse acdd for queries.\n",
             Some(canonical),
             true,
-            Some("do not name the contextunity-forge skill"),
+            Some("do not name the acdd skill"),
         ),
         (
-            "# Rules\nLoad xcontextunity-forge skill.\n",
+            "# Rules\nLoad xacdd skill.\n",
             Some(canonical),
             true,
-            Some("do not name the contextunity-forge skill"),
+            Some("do not name the acdd skill"),
         ),
         (
-            "# Rules\nLoad contextunity-forge-mcp-tools skill for ACDD.\n",
+            "# Rules\nLoad acdd-tools skill for task tracking.\n",
             Some(canonical),
             true,
-            Some("do not name the contextunity-forge skill"),
+            Some("do not name the acdd skill"),
         ),
         (
-            "# Rules\nUse contextunity-forge-mcp for queries.\nThe worker skill is installed.\n",
+            "# Rules\nLoad .agents/skills/acdd-tools/SKILL.md.\n",
             Some(canonical),
             true,
-            Some("do not name the contextunity-forge skill"),
+            Some("do not name the acdd skill"),
+        ),
+        (
+            "# Rules\nLoad .agents/skills/acdd.tools/SKILL.md.\n",
+            Some(canonical),
+            true,
+            Some("do not name the acdd skill"),
+        ),
+        (
+            "# Rules\nLoad .agents/skills/acdd_tools/SKILL.md.\n",
+            Some(canonical),
+            true,
+            Some("do not name the acdd skill"),
+        ),
+        (
+            "# Rules\nLoad skills/acdd.v2/SKILL.md.\n",
+            Some(canonical),
+            true,
+            Some("do not name the acdd skill"),
+        ),
+        (
+            "# Rules\nLoad .agents/skills/acdd.\n",
+            Some(canonical),
+            true,
+            None,
+        ),
+        (
+            "# Rules\nLoad .agents/skills/acdd/SKILL.md.\n",
+            Some(canonical),
+            true,
+            None,
+        ),
+        (
+            "# Rules\nUse acdd for queries.\nThe worker skill is installed.\n",
+            Some(canonical),
+            true,
+            Some("do not name the acdd skill"),
         ),
         (
             load,
@@ -498,10 +589,15 @@ fn task_guidance_requires_named_and_installed_forge_skill() {
             false,
             (!global_installed).then_some("not installed"),
         ),
-        (load, Some("target/\n.forge/\n"), true, Some("Edit `.gitignore`")),
         (
             load,
-            Some("target/\n.forge/\n!.forge/*.yaml\n"),
+            Some("target/\n.acdd/\n"),
+            true,
+            Some("Edit `.gitignore`"),
+        ),
+        (
+            load,
+            Some("target/\n.acdd/\n!.acdd/*.yaml\n"),
             true,
             Some("Edit `.gitignore`"),
         ),
@@ -551,10 +647,7 @@ fn task_guidance_requires_named_and_installed_forge_skill() {
             std::fs::remove_file(&gitignore_path).unwrap();
         }
         if install_skill {
-            root.write(
-                ".agents/skills/contextunity-forge/SKILL.md",
-                "# ContextUnity Forge\n",
-            );
+            root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
         } else if skill_path.exists() {
             std::fs::remove_file(&skill_path).unwrap();
         }
@@ -580,7 +673,11 @@ fn task_guidance_requires_named_and_installed_forge_skill() {
         match warning_fragment {
             None => assert!(warning.is_null()),
             Some(fragment) => {
-                assert_eq!(warning["code"], "TASK_GUIDANCE_MISSING");
+                assert_eq!(
+                    warning["code"],
+                    "TASK_GUIDANCE_MISSING",
+                    "expected warning for fragment={fragment:?}, agents={agents:?}, gitignore={gitignore:?}, install_skill={install_skill}"
+                );
                 let message = warning["message"].as_str().unwrap();
                 assert!(message.contains(fragment), "{message}");
                 if fragment == "Edit `.gitignore`" {
@@ -588,17 +685,16 @@ fn task_guidance_requires_named_and_installed_forge_skill() {
                         .as_str()
                         .is_some_and(|path| path.ends_with(".gitignore")));
                     for rule in [
-                        "!/.forge/",
-                        "!/.forge/acdd/",
-                        "!/.forge/acdd/**",
-                        "!/.forge/frameworks/",
-                        "!/.forge/frameworks/**",
-                        ".forge/*.sqlite*",
-                        ".forge/*.lock",
-                        ".forge/*.log",
-                        ".forge/*.jsonl",
-                        ".forge/tasks/",
-                        ".forge/checkpoints.json",
+                        "!/.acdd/",
+                        "!/.acdd/profile.yaml",
+                        "!/.acdd/frameworks/",
+                        "!/.acdd/frameworks/**",
+                        ".acdd/*.sqlite*",
+                        ".acdd/*.lock",
+                        ".acdd/*.log",
+                        ".acdd/*.jsonl",
+                        ".acdd/tasks/",
+                        ".acdd/checkpoints.json",
                     ] {
                         assert!(message.contains(rule), "missing `{rule}` in: {message}");
                     }

@@ -1,6 +1,6 @@
-use contextunity_forge_mcp::core::format::file_uri_for_path;
-use contextunity_forge_mcp::db::reader;
-use contextunity_forge_mcp::engine::pipeline;
+use contextunity_acdd::core::format::file_uri_for_path;
+use contextunity_acdd::db::reader;
+use contextunity_acdd::engine::pipeline;
 use rusqlite::Connection;
 use serde_json::Value;
 use std::{
@@ -28,7 +28,7 @@ enum WorkspaceInput {
     Other,
 }
 
-/// Owns one isolated source workspace and its default Forge index.
+/// Owns one isolated source workspace and its default ACDD index.
 pub struct Workspace {
     root: PathBuf,
 }
@@ -69,7 +69,7 @@ impl Workspace {
     pub fn new() -> Self {
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(|| {
-            contextunity_forge_mcp::mcp::tasks::ensure_extractors();
+            contextunity_acdd::mcp::tasks::ensure_extractors();
         });
         static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
         let timestamp = SystemTime::now()
@@ -161,7 +161,7 @@ impl Workspace {
 
     /// Returns the default code map database path.
     pub fn db(&self) -> PathBuf {
-        self.root.join(".forge/code-map.sqlite")
+        self.root.join(".acdd/code-map.sqlite")
     }
 
     /// Returns the default code map database path.
@@ -185,7 +185,7 @@ impl Workspace {
             self.root(),
             database.as_ref(),
             adapter,
-            &self.path(".forge/extraction-cache"),
+            &self.path(".acdd/extraction-cache"),
         )
         .unwrap_or_else(|error| panic!("could not build test workspace index: {error:#}"))
     }
@@ -200,7 +200,7 @@ impl Workspace {
             self.root(),
             &self.db(),
             &modified,
-            &self.path(".forge/extraction-cache"),
+            &self.path(".acdd/extraction-cache"),
         )
         .unwrap_or_else(|error| panic!("could not update test workspace index: {error:#}"))
     }
@@ -243,7 +243,7 @@ impl Workspace {
                 "baseline",
             ],
         ] {
-            let output = contextunity_forge_mcp::core::git::git_command(self.root(), &args)?;
+            let output = contextunity_acdd::core::git::git_command(self.root(), &args)?;
             anyhow::ensure!(
                 output.status.success(),
                 "Git fixture command {args:?} failed: {}",
@@ -256,8 +256,7 @@ impl Workspace {
     /// Creates Git tags in the workspace.
     pub fn create_git_tags(&self, tags: &[&str]) -> anyhow::Result<()> {
         for tag in tags {
-            let output =
-                contextunity_forge_mcp::core::git::git_command(self.root(), &["tag", tag])?;
+            let output = contextunity_acdd::core::git::git_command(self.root(), &["tag", tag])?;
             anyhow::ensure!(
                 output.status.success(),
                 "Git tag {tag} failed: {}",
@@ -297,7 +296,7 @@ impl Workspace {
 
     /// Runs a Git command inside the workspace root.
     pub fn run_git(&self, args: &[&str]) -> anyhow::Result<()> {
-        let output = contextunity_forge_mcp::core::git::git_command(self.root(), args)?;
+        let output = contextunity_acdd::core::git::git_command(self.root(), args)?;
         anyhow::ensure!(
             output.status.success(),
             "Git fixture command {args:?} failed: {}",
@@ -347,7 +346,7 @@ impl Workspace {
                     || relative == Path::new(".git/info/exclude");
                 return !(scanner_git_input && (file_type.is_file() || file_type.is_symlink()));
             }
-            if first != ".forge" {
+            if first != ".acdd" {
                 return false;
             }
             let Some(Component::Normal(second)) = components.next() else {
@@ -435,7 +434,7 @@ impl Workspace {
 
         let mut entries = Vec::new();
         visit(self.root(), self.root(), &mut entries);
-        if let Ok(manifest) = fs::read_to_string(self.path("forge-mcp.yaml")) {
+        if let Ok(manifest) = fs::read_to_string(self.path("acdd.yaml")) {
             if let Ok(config) = serde_yaml::from_str::<serde_yaml::Value>(&manifest) {
                 if let Some(linked_workspaces) = config
                     .get("linked_workspaces")

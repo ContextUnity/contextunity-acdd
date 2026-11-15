@@ -35,8 +35,8 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
     let root = TaskHarness::recovery_workspace();
     root.write("src/lib.rs", "pub fn sample() {}\n");
     root.write(
-        "forge-mcp.yaml",
-        "roots: [src]\ndocs: []\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "roots: [src]\ndocs: []\ntasks_db: .acdd/tasks.sqlite\n",
     );
     let index = root.root().join("index.sqlite");
     root.build_to(&index);
@@ -98,10 +98,7 @@ fn dedicated_store_rejects_index_and_unknown_schema_without_ddl() {
         assert_eq!(sentinel, "preserve me");
         assert_eq!(tables, ["sentinel", "task_store_metadata"]);
 
-        root.write(
-            "forge-mcp.yaml",
-            &format!("tasks_db: schema-{version}.sqlite\n"),
-        );
+        root.write("acdd.yaml", &format!("tasks_db: schema-{version}.sqlite\n"));
         let wal = std::path::PathBuf::from(format!("{}-wal", old.display()));
         let shm = std::path::PathBuf::from(format!("{}-shm", old.display()));
         std::fs::write(&wal, b"preserve refused WAL bytes").unwrap();

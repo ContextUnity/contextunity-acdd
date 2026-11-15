@@ -1,6 +1,6 @@
 use super::harness::*;
 use crate::common::Workspace;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::schema::SCHEMA_DDL,
     db::{reader, writer},
 };
@@ -194,7 +194,7 @@ fn built_nodes_keep_owner_paths_and_repeatable_merkle_leaves() {
             .unwrap();
         assert_eq!(
             schema_after_rebuild,
-            contextunity_forge_mcp::core::config::ENGINE_SCHEMA_VERSION,
+            contextunity_acdd::core::config::ENGINE_SCHEMA_VERSION,
             "{}",
             schema_label(mutation)
         );

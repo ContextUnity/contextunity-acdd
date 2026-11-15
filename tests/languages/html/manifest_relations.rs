@@ -23,7 +23,7 @@ fn framework_manifest_class_attributes_follow_effective_rules_and_delta() {
         ),
     ] {
         let workspace = crate::languages::PersistedWorkspaceHarness::new();
-        let manifest_path = format!(".forge/frameworks/{pack_name}.toml");
+        let manifest_path = format!(".acdd/frameworks/{pack_name}.toml");
         let project = "[project]\nname='attribute-rules'\n";
         workspace.write("pyproject.toml", project);
         workspace.write(

@@ -2,7 +2,7 @@ use super::*;
 use crate::languages::harness::PersistedSnapshot;
 use crate::languages::PersistedWorkspaceHarness;
 
-const MANIFEST: &str = ".forge/frameworks/property-proof.toml";
+const MANIFEST: &str = ".acdd/frameworks/property-proof.toml";
 
 struct FactoryWorkspace {
     workspace: PersistedWorkspaceHarness,

@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use crate::acdd::support::{evidence, restart_mcp_session, review_proof, TasksStore};
 use crate::acdd::tasks::harness::TaskHarness;
 use crate::common::mcp_harness::McpTestHarness;
-use contextunity_forge_mcp::core::tasks::profile::ProofKind;
+use contextunity_acdd::core::tasks::profile::ProofKind;
 
 use super::in_process_cli;
 
@@ -40,7 +40,7 @@ fn parity_fixture(
     let result = TaskHarness::create_worktree(&root, &sibling, &format!("{name}-sibling"));
     let standalone = root.join(".worktrees/parity-standalone");
     for target in [&sibling, &standalone] {
-        for dir in ["src", "docs/milestones", ".forge/acdd"] {
+        for dir in ["src", "docs/milestones", ".acdd"] {
             fs::create_dir_all(target.join(dir)).unwrap();
         }
         fs::copy(
@@ -48,9 +48,9 @@ fn parity_fixture(
             target.join("docs/milestones/010-dispatch.md"),
         )
         .unwrap();
-        let profile = fs::read_to_string(root.join(".forge/acdd/profile.yaml")).unwrap();
+        let profile = fs::read_to_string(root.join(".acdd/profile.yaml")).unwrap();
         fs::write(
-            target.join(".forge/acdd/profile.yaml"),
+            target.join(".acdd/profile.yaml"),
             profile.replace("--seam-ref", "--selected-profile --seam-ref"),
         )
         .unwrap();
@@ -58,7 +58,7 @@ fn parity_fixture(
             fs::copy(root.join(path), target.join(path)).unwrap();
         }
         fs::write(
-            target.join("forge-mcp.yaml"),
+            target.join("acdd.yaml"),
             format!(
                 "roots: []\ndocs: []\nmodules:\n  blackboard: false\ntasks_db: {}\n",
                 root.join("tasks.sqlite").display()
@@ -106,7 +106,7 @@ fn claim_worktree_identity_matches_cli_and_mcp() {
             path.to_str().unwrap()
         };
         if index >= 2 {
-            let config_path = path.join("forge-mcp.yaml");
+            let config_path = path.join("acdd.yaml");
             let config = fs::read_to_string(&config_path).unwrap();
             fs::write(
                 &config_path,
@@ -190,7 +190,7 @@ fn claim_worktree_identity_matches_cli_and_mcp() {
             } else {
                 assert_eq!(
                     session,
-                    contextunity_forge_mcp::db::tasks_store::host_session_fingerprint()
+                    contextunity_acdd::db::tasks_store::host_session_fingerprint()
                 );
             }
         }
@@ -216,7 +216,7 @@ fn next_worktree_identity_matches_cli_and_mcp() {
             path.to_str().unwrap()
         };
         if index >= 2 {
-            let config_path = path.join("forge-mcp.yaml");
+            let config_path = path.join("acdd.yaml");
             let config = fs::read_to_string(&config_path).unwrap();
             fs::write(
                 &config_path,
@@ -296,7 +296,7 @@ fn next_worktree_identity_matches_cli_and_mcp() {
             } else {
                 assert_eq!(
                     session,
-                    contextunity_forge_mcp::db::tasks_store::host_session_fingerprint()
+                    contextunity_acdd::db::tasks_store::host_session_fingerprint()
                 );
             }
         }
@@ -488,18 +488,18 @@ fn mcp_delivery_preserves_deferred_defects_across_shared_worktrees() {
         workspace.write("docs/milestones/010-defects.md", source);
     }
     builder.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "roots: []\ndocs: []\ntask_repository: contextunity\ntask_project: tooling\n",
     );
     reviewer.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         &format!(
             "roots: []\ndocs: []\ntask_repository: contextunity\ntask_project: tooling\ntasks_db: {}\n",
-            builder.root().join(".forge/tasks.sqlite").display()
+            builder.root().join(".acdd/tasks.sqlite").display()
         ),
     );
-    let profile_path = builder.root().join(".forge/acdd/profile.yaml");
-    let mut profile = contextunity_forge_mcp::core::tasks::profile::parse_profile(
+    let profile_path = builder.root().join(".acdd/profile.yaml");
+    let mut profile = contextunity_acdd::core::tasks::profile::parse_profile(
         &fs::read_to_string(&profile_path).unwrap(),
     )
     .unwrap();
@@ -603,7 +603,7 @@ fn mcp_delivery_preserves_deferred_defects_across_shared_worktrees() {
     let written =
         fs::read_to_string(builder.root().join("docs/milestones/010-defects.md")).unwrap();
     let milestone =
-        contextunity_forge_mcp::core::tasks::Milestone::parse(&written, "contextunity").unwrap();
+        contextunity_acdd::core::tasks::Milestone::parse(&written, "contextunity").unwrap();
     assert_eq!(milestone.tasks[0].status.as_deref(), Some("completed"));
     assert_eq!(
         milestone.tasks[0]
@@ -779,7 +779,7 @@ fn parking_preserves_and_resumes_the_original_worktree() {
             client.payload("task_submit", json!({"task_id":ids[2],"stage":"contract","action":"pass","evidence":evidence(&ordinary)})).expect("MCP payload should succeed");
             let another_worktree = TaskHarness::mcp_workspace();
             another_worktree.write(
-                "forge-mcp.yaml",
+                "acdd.yaml",
                 &format!(
                     "roots: []\ndocs: []\ntasks_db: {}\n",
                     parking.root().join("tasks.sqlite").display()

@@ -10,7 +10,7 @@ fn worktree_churn_keeps_one_registration_for_the_shared_slot() {
         let workspace = Workspace::with_files(&[("main.rs", "pub fn other() {}\n")]);
         let mut rebound = server.clone();
         rebound.root = workspace.root().to_path_buf();
-        rebound.db = workspace.root().join(".forge/index.sqlite");
+        rebound.db = workspace.root().join(".acdd/index.sqlite");
         snapshot(&rebound).unwrap();
         assert_eq!(server.reader_registration_count().unwrap(), 1);
         workspaces.push(workspace);
@@ -117,7 +117,7 @@ fn foreign_and_corrupt_indexes_remain_rejected_without_replacement() {
     snapshot(&server).unwrap();
     let identity = db::cache::identity(&server.db).unwrap();
     let foreign = Server::new(other.root().to_path_buf(), server.db.clone())
-        .with_cache_dir(other.path(".forge/extraction-cache"));
+        .with_cache_dir(other.path(".acdd/extraction-cache"));
     assert!(snapshot(&foreign)
         .unwrap_err()
         .to_string()
@@ -142,10 +142,10 @@ fn foreign_and_corrupt_indexes_remain_rejected_without_replacement() {
     drop(foreign);
     drop(cached_foreign);
     drop(server);
-    fs::write(ws.path(".forge/index.sqlite"), b"corrupt database").unwrap();
+    fs::write(ws.path(".acdd/index.sqlite"), b"corrupt database").unwrap();
     assert!(snapshot(&in_process_server(&ws)).is_err());
     assert_eq!(
-        fs::read(ws.path(".forge/index.sqlite")).unwrap(),
+        fs::read(ws.path(".acdd/index.sqlite")).unwrap(),
         b"corrupt database"
     );
 
@@ -158,7 +158,7 @@ fn foreign_and_corrupt_indexes_remain_rejected_without_replacement() {
     index.checkpoint();
     drop(index);
     let identity = db::cache::identity(&db_path).unwrap();
-    other.write("forge-mcp.yaml", "roots:\n  - src\n");
+    other.write("acdd.yaml", "roots:\n  - src\n");
     assert!(snapshot(&in_process_server(&other)).is_err());
     assert_eq!(identity, db::cache::identity(&db_path).unwrap());
 }
@@ -179,7 +179,7 @@ fn mcp_rebuild_admission_preserves_corruption_and_rebuilds_valid_legacy_index() 
         ws.build_to(&database);
 
         if mismatch == "adapter" {
-            ws.write("forge-mcp.yaml", "adapter_version: 2\n");
+            ws.write("acdd.yaml", "adapter_version: 2\n");
         } else {
             let version = match mismatch {
                 "schema" => MetadataVersion::Schema,
@@ -258,14 +258,14 @@ fn symlink_database_is_rejected_without_touching_target() {
     std::os::unix::fs::symlink(&original, &alias).unwrap();
     let identity = db::cache::identity(&original).unwrap();
     let aliased = Server::new(ws.root().to_path_buf(), alias)
-        .with_cache_dir(ws.path(".forge/extraction-cache"));
+        .with_cache_dir(ws.path(".acdd/extraction-cache"));
     assert!(snapshot(&aliased).is_err());
     assert_eq!(identity, db::cache::identity(&original).unwrap());
 }
 
 #[test]
 fn newly_created_configured_root_is_admitted() {
-    let ws = Workspace::with_files(&[("forge-mcp.yaml", "roots:\n  - src\n")]);
+    let ws = Workspace::with_files(&[("acdd.yaml", "roots:\n  - src\n")]);
     let server = in_process_server(&ws);
     assert!(snapshot(&server).unwrap()["nodes"]
         .as_array()

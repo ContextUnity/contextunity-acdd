@@ -1,6 +1,6 @@
 use crate::common::Workspace;
 use anyhow::Result;
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::{commitments, models::stable_hash64, schema::SCHEMA_DDL},
     db::{reader, writer},
 };

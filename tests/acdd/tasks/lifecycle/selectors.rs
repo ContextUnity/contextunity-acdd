@@ -157,7 +157,7 @@ fn task_selectors_resolve_and_reject_references_with_one_fixture() {
 fn task_list_alias_collisions_report_both_configured_candidates() {
     let workspace = TaskHarness::workspace();
     workspace.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "roots: []\nmilestones: [contracts, proposals]\n",
     );
     for (path, id) in [
@@ -254,7 +254,7 @@ fn task_lists_share_filters_pagination_and_selection_fixture() {
     {
         assert!(h.store.inspect(&h.id).is_ok());
         let other =
-            TasksStore::open_project(&h.root().join(".forge/tasks.sqlite"), "other", "project")
+            TasksStore::open_project(&h.root().join(".acdd/tasks.sqlite"), "other", "project")
                 .unwrap();
         assert!(other.list(None, "all", None).unwrap().is_empty());
         assert!(other.inspect(&h.id).is_err());

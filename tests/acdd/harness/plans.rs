@@ -1,6 +1,6 @@
 use crate::acdd::support::{git_command, git_head, init_git, Workspace};
 use clap::Parser;
-use contextunity_forge_mcp::{core::models::DocSection, engine::docs};
+use contextunity_acdd::{core::models::DocSection, engine::docs};
 
 /// Canonical plan documents extracted through the production Markdown indexer.
 /// Extraction stays in memory; execution fixtures explicitly materialize Git state.
@@ -23,7 +23,7 @@ pub(crate) enum PlanFixture {
 
 impl PlanHarness {
     fn run(&self, root: &Workspace) -> anyhow::Result<serde_json::Value> {
-        let cli = contextunity_forge_mcp::cli::Cli::try_parse_from([
+        let cli = contextunity_acdd::cli::Cli::try_parse_from([
             "forge",
             "--root",
             root.root().to_str().unwrap(),
@@ -77,10 +77,7 @@ impl PlanHarness {
     pub fn materialize(&self, path: &str) -> Workspace {
         let root = Workspace::new();
         root.write(path, self.source);
-        root.write(
-            "forge-mcp.yaml",
-            include_str!("../fixtures/plans/forge-mcp.yaml"),
-        );
+        root.write("acdd.yaml", include_str!("../fixtures/plans/acdd.yaml"));
         root.write(
             "configs/custom.yaml",
             include_str!("../fixtures/plans/custom-config.yaml"),
@@ -149,7 +146,7 @@ fn plans_exclude_configured_database_from_each_snapshot() {
     let harness = PlanHarness::linear();
     let root = harness.materialize(harness.path);
     root.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "acdd_profile: profiles/plan.yaml\ntasks_db: runtime/tasks.sqlite\nplans: [docs/plans]\n",
     );
     root.write(
@@ -244,7 +241,7 @@ fn plans_reject_source_drift_and_external_database_configuration() {
     );
     assert_eq!(git_head(root.root()), head);
     root.write(harness.path, harness.source);
-    root.write("forge-mcp.yaml", "acdd_profile: profiles/plan.yaml\ntasks_db: ../external-tasks.sqlite\nplans: [docs/plans]\n");
+    root.write("acdd.yaml", "acdd_profile: profiles/plan.yaml\ntasks_db: ../external-tasks.sqlite\nplans: [docs/plans]\n");
     let error = harness.run(&root).unwrap_err();
     assert!(
         format!("{error:#}").contains("TASK_SCOPE_INVALID"),

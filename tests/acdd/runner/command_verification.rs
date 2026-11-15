@@ -90,7 +90,7 @@ fn seam_observations_are_bound_to_claim_candidate_and_command_plan() {
                 };
                 command.push_str(" && true");
                 harness.root.write(
-                    ".forge/acdd/profile.yaml",
+                    ".acdd/profile.yaml",
                     &serde_yaml::to_string(&configured).unwrap(),
                 );
             }
@@ -143,13 +143,13 @@ fn typed_contract_submission_requires_claim_bound_observation() {
         "{error:#}"
     );
     assert_eq!(store.inspect(&id).unwrap().stage, task.stage);
-    assert!(!root.root().join(".forge/tasks.sqlite").exists());
+    assert!(!root.root().join(".acdd/tasks.sqlite").exists());
 }
 
 #[test]
 fn command_verification_reuses_durable_facts_and_invalidates_changed_candidates() {
     let harness = CommandGateHarness::with_command(
-        "printf run >> .forge/counter; printf 'PASS=3 FAIL=0\\nPASS=4 FAIL=0\\n'",
+        "printf run >> .acdd/counter; printf 'PASS=3 FAIL=0\\nPASS=4 FAIL=0\\n'",
         Some(output_spec(true)),
     );
     let store = harness.store();
@@ -164,7 +164,7 @@ fn command_verification_reuses_durable_facts_and_invalidates_changed_candidates(
     let cached = harness.verify().unwrap();
     assert_eq!(cached["evidence"], first["evidence"]);
     assert_eq!(
-        fs::read_to_string(harness.root.root().join(".forge/counter")).unwrap(),
+        fs::read_to_string(harness.root.root().join(".acdd/counter")).unwrap(),
         "run"
     );
     harness
@@ -172,10 +172,10 @@ fn command_verification_reuses_durable_facts_and_invalidates_changed_candidates(
         .write("src/lib.rs", "pub fn changed_candidate() {}\n");
     harness.verify().unwrap();
     assert_eq!(
-        fs::read_to_string(harness.root.root().join(".forge/counter")).unwrap(),
+        fs::read_to_string(harness.root.root().join(".acdd/counter")).unwrap(),
         "runrun"
     );
-    assert!(!harness.root.root().join(".forge/task-traces").exists());
+    assert!(!harness.root.root().join(".acdd/task-traces").exists());
 
     for mutation in ["add", "remove", "change"] {
         harness.restore();
@@ -189,7 +189,7 @@ fn command_verification_reuses_durable_facts_and_invalidates_changed_candidates(
         root.write("src/readme.md", "scoped documentation\\n");
         let mut configured = (*profile::load_for_workspace(root.root()).unwrap()).clone();
         let mut patterns = PatternCommands {
-            by_pattern: BTreeMap::from([("src/*.rs".into(), "printf rust >> .forge/runs".into())]),
+            by_pattern: BTreeMap::from([("src/*.rs".into(), "printf rust >> .acdd/runs".into())]),
             description: None,
             timeout_seconds: Some(5),
             output: Some(output_spec(false)),
@@ -197,24 +197,24 @@ fn command_verification_reuses_durable_facts_and_invalidates_changed_candidates(
         if mutation == "remove" {
             patterns
                 .by_pattern
-                .insert("src/*.md".into(), "printf docs >> .forge/runs".into());
+                .insert("src/*.md".into(), "printf docs >> .acdd/runs".into());
         }
         configured
             .commands
             .insert("check".into(), CommandDef::Pattern(patterns.clone()));
         root.write(
-            ".forge/acdd/profile.yaml",
+            ".acdd/profile.yaml",
             &serde_yaml::to_string(&configured).unwrap(),
         );
         assert!(
-            forge_tasks::engine::verify_task(root.root(), &id, None).unwrap()["evidence"]
+            acdd_tasks::engine::verify_task(root.root(), &id, None).unwrap()["evidence"]
                 .is_object()
         );
         match mutation {
             "add" => {
                 patterns.by_pattern.insert(
                     "src/*.md".into(),
-                    "printf docs > .forge/docs-ran; exit 2".into(),
+                    "printf docs > .acdd/docs-ran; exit 2".into(),
                 );
             }
             "remove" => {
@@ -223,7 +223,7 @@ fn command_verification_reuses_durable_facts_and_invalidates_changed_candidates(
             "change" => {
                 patterns.by_pattern.insert(
                     "src/*.rs".into(),
-                    "printf changed > .forge/changed-ran; exit 2".into(),
+                    "printf changed > .acdd/changed-ran; exit 2".into(),
                 );
             }
             _ => unreachable!(),
@@ -232,18 +232,18 @@ fn command_verification_reuses_durable_facts_and_invalidates_changed_candidates(
             .commands
             .insert("check".into(), CommandDef::Pattern(patterns));
         root.write(
-            ".forge/acdd/profile.yaml",
+            ".acdd/profile.yaml",
             &serde_yaml::to_string(&configured).unwrap(),
         );
         assert!(
             compile_evidence_envelope(root.root(), &id, "contract").is_err(),
             "{mutation} must invalidate cached plan"
         );
-        let result = forge_tasks::engine::verify_task(root.root(), &id, None).unwrap();
+        let result = acdd_tasks::engine::verify_task(root.root(), &id, None).unwrap();
         if mutation == "remove" {
             assert!(result["evidence"].is_object(), "{result}");
             assert_eq!(
-                fs::read_to_string(root.root().join(".forge/runs")).unwrap(),
+                fs::read_to_string(root.root().join(".acdd/runs")).unwrap(),
                 "rustdocsrust"
             );
         } else {
@@ -251,9 +251,9 @@ fn command_verification_reuses_durable_facts_and_invalidates_changed_candidates(
             assert!(root
                 .root()
                 .join(if mutation == "add" {
-                    ".forge/docs-ran"
+                    ".acdd/docs-ran"
                 } else {
-                    ".forge/changed-ran"
+                    ".acdd/changed-ran"
                 })
                 .exists());
         }
@@ -278,7 +278,7 @@ fn command_diagnostics_filter_noise_and_confine_large_failures() {
     assert!(output.contains("ERROR useful failure"));
     assert!(!output.contains("progress compiling"));
     assert!(result["verification"]["log_path"].is_null());
-    assert!(!harness.root.root().join(".forge/task-traces").exists());
+    assert!(!harness.root.root().join(".acdd/task-traces").exists());
 
     harness.restore();
     harness.configure_check(
@@ -294,7 +294,7 @@ fn command_diagnostics_filter_noise_and_confine_large_failures() {
     let output = result["verification"]["output"].as_str().unwrap();
     assert!(output.contains("HEAD") && output.contains("TAIL") && output.contains("file:///"));
     let log = result["verification"]["log_path"].as_str().unwrap();
-    assert!(log.starts_with(".forge/task-traces/"));
+    assert!(log.starts_with(".acdd/task-traces/"));
     assert!(fs::read(harness.root.root().join(log)).unwrap().len() > 10000);
 }
 
@@ -352,11 +352,11 @@ fn command_scope_guard_observes_paths_before_and_after_execution() {
                         .insert("src/*.rs".into(), args.into());
                 }
                 harness.root.write(
-                    ".forge/acdd/profile.yaml",
+                    ".acdd/profile.yaml",
                     &serde_yaml::to_string(&configured).unwrap(),
                 );
                 let result =
-                    forge_tasks::engine::verify_task(harness.root.root(), &id, None).unwrap();
+                    acdd_tasks::engine::verify_task(harness.root.root(), &id, None).unwrap();
                 let context = format!("{kind} placeholder={placeholder} args={args:?}: {result}");
                 assert_eq!(
                     result["verification"]["diagnostic_mode"], "pass",
@@ -368,11 +368,11 @@ fn command_scope_guard_observes_paths_before_and_after_execution() {
                 let expected = match args {
                     Some(args) if placeholder => command.replace("{scope_target}", args),
                     Some(args) => format!("{command} {args}"),
-                    None => forge_tasks::milestones::expand_command_args(&command, None),
+                    None => acdd_tasks::milestones::expand_command_args(&command, None),
                 };
                 assert_eq!(traces.last().unwrap().command_str, expected, "{context}");
                 let cached =
-                    forge_tasks::engine::verify_task(harness.root.root(), &id, None).unwrap();
+                    acdd_tasks::engine::verify_task(harness.root.root(), &id, None).unwrap();
                 assert_eq!(cached["evidence"], result["evidence"], "{context}");
                 assert_eq!(
                     store
@@ -392,13 +392,13 @@ fn command_timeout_overrides_are_bounded_and_profile_changes_invalidate_proofs()
     let harness = CommandGateHarness::with_command("sleep 30", Some(output_spec(false)));
     for timeout in [0, 1801] {
         assert!(
-            forge_tasks::engine::verify_task(harness.root.root(), &harness.id, Some(timeout))
+            acdd_tasks::engine::verify_task(harness.root.root(), &harness.id, Some(timeout))
                 .is_err()
         );
     }
     let started = Instant::now();
     let result =
-        forge_tasks::engine::verify_task(harness.root.root(), &harness.id, Some(1)).unwrap();
+        acdd_tasks::engine::verify_task(harness.root.root(), &harness.id, Some(1)).unwrap();
     assert!(started.elapsed() < Duration::from_secs(5));
     assert_eq!(
         result["verification"]["diagnostic_mode"], "timeout",
@@ -411,7 +411,7 @@ fn command_timeout_overrides_are_bounded_and_profile_changes_invalidate_proofs()
 
     harness.restore();
     harness.configure_check(
-        "printf run >> .forge/counter; printf checked",
+        "printf run >> .acdd/counter; printf checked",
         Some(output_spec(false)),
         profile::ProofKind::Command,
     );
@@ -422,13 +422,13 @@ fn command_timeout_overrides_are_bounded_and_profile_changes_invalidate_proofs()
         output.as_mut().unwrap().noise.push("^new-noise".into());
     }
     harness.root.write(
-        ".forge/acdd/profile.yaml",
+        ".acdd/profile.yaml",
         &serde_yaml::to_string(&configured).unwrap(),
     );
-    assert!(forge_tasks::engine::verify_task(harness.root.root(), &harness.id, Some(3)).is_err());
-    forge_tasks::engine::verify_task(harness.root.root(), &harness.id, Some(2)).unwrap();
+    assert!(acdd_tasks::engine::verify_task(harness.root.root(), &harness.id, Some(3)).is_err());
+    acdd_tasks::engine::verify_task(harness.root.root(), &harness.id, Some(2)).unwrap();
     assert_eq!(
-        fs::read_to_string(harness.root.root().join(".forge/counter")).unwrap(),
+        fs::read_to_string(harness.root.root().join(".acdd/counter")).unwrap(),
         "runrun"
     );
 }

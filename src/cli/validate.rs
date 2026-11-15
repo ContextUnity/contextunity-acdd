@@ -84,7 +84,7 @@ pub fn run(root: &Path, relative: Option<&Path>) -> Result<Value> {
                 let settings = match TaskSettings::load(root) {
                     Ok(settings) => settings,
                     Err(error) => {
-                        diagnostics.push(fail_from_error("forge-mcp.yaml", &error, 1, 1));
+                        diagnostics.push(fail_from_error("acdd.yaml", &error, 1, 1));
                         return Ok(report("document", diagnostics, warnings, 1));
                     }
                 };
@@ -135,7 +135,7 @@ pub fn run(root: &Path, relative: Option<&Path>) -> Result<Value> {
     let settings = match TaskSettings::load(root) {
         Ok(settings) => settings,
         Err(error) => {
-            diagnostics.push(fail_from_error("forge-mcp.yaml", &error, 1, 1));
+            diagnostics.push(fail_from_error("acdd.yaml", &error, 1, 1));
             return Ok(report("workspace", diagnostics, warnings, 0));
         }
     };
@@ -606,7 +606,7 @@ fn first_task_line(content: &str) -> usize {
 }
 
 fn active_profile_path(root: &Path) -> String {
-    let settings = forge_tasks::tasks::configuration::current(root);
+    let settings = acdd_tasks::tasks::configuration::current(root);
     if let Some(path) = settings
         .as_ref()
         .and_then(|settings| settings.profile_argument.as_ref())
@@ -617,7 +617,7 @@ fn active_profile_path(root: &Path) -> String {
             .to_string_lossy()
             .into_owned();
     }
-    let config = forge_tasks::tasks::configuration::config_path(root);
+    let config = acdd_tasks::tasks::configuration::config_path(root);
     if let Ok(content) = fs::read_to_string(&config) {
         if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
             if let Some(path) = value
@@ -628,15 +628,15 @@ fn active_profile_path(root: &Path) -> String {
             }
         }
     }
-    if root.join(".forge/acdd/profile.yaml").is_file() {
-        ".forge/acdd/profile.yaml".to_owned()
+    if root.join(".acdd/profile.yaml").is_file() {
+        ".acdd/profile.yaml".to_owned()
     } else if root
-        .join("crates/forge-tasks/src/tasks/acdd.default.yaml")
+        .join("crates/acdd-tasks/src/tasks/acdd.profile.yaml")
         .is_file()
     {
-        "crates/forge-tasks/src/tasks/acdd.default.yaml".to_owned()
+        "crates/acdd-tasks/src/tasks/acdd.profile.yaml".to_owned()
     } else {
-        "<embedded:acdd.default.yaml>".to_owned()
+        "<embedded:acdd.profile.yaml>".to_owned()
     }
 }
 

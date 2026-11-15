@@ -1,7 +1,7 @@
 use crate::cli;
 use crate::common::Workspace;
 use clap::Parser;
-use contextunity_forge_mcp::cli::Cli;
+use contextunity_acdd::cli::Cli;
 use std::io::{self, Write};
 
 struct FailingWriter(io::ErrorKind);
@@ -26,7 +26,7 @@ fn runtime() -> tokio::runtime::Runtime {
 #[test]
 fn cli_writer_preserves_broken_pipe_success_and_other_write_failures() {
     let workspace = Workspace::with_files(&[
-        ("forge-mcp.yaml", "profile: minimal\n"),
+        ("acdd.yaml", "profile: minimal\n"),
         ("notes.txt", "hello\n"),
     ]);
     for kind in [io::ErrorKind::BrokenPipe, io::ErrorKind::Other] {
@@ -99,7 +99,7 @@ fn docs_check_preserves_output_write_panics_for_success_and_error_reports() {
 #[test]
 fn real_cli_preserves_captured_output_parser_errors_and_process_exit_status() {
     let workspace = Workspace::with_files(&[
-        ("forge-mcp.yaml", "profile: minimal\n"),
+        ("acdd.yaml", "profile: minimal\n"),
         ("notes.txt", "hello\n"),
     ]);
     for args in [

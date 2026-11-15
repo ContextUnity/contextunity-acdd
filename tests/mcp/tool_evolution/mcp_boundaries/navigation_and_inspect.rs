@@ -147,7 +147,7 @@ fn ergonomic_source_budgets_preserve_defaults_and_explicit_limits_at_mcp_boundar
 
 #[test]
 fn symbol_boundaries_preserve_source_across_direct_and_mcp_callers() {
-    use contextunity_forge_mcp::core::response::{QueryOptions, ResponsePolicy, SourceOptions};
+    use contextunity_acdd::core::response::{QueryOptions, ResponsePolicy, SourceOptions};
     let cases = [
         (
             "alias.py",
@@ -208,11 +208,11 @@ fn symbol_boundaries_preserve_source_across_direct_and_mcp_callers() {
             offset: 0,
         };
         let snippet =
-            contextunity_forge_mcp::db::symbols::snippet_paged(&conn, w.root(), id, &source, &page)
+            contextunity_acdd::db::symbols::snippet_paged(&conn, w.root(), id, &source, &page)
                 .unwrap();
         assert_eq!(snippet["source"], expected, "{path}: {snippet}");
         let mut m = harness.expect("MCP initialize");
-        for tool in ["code_map_inspect", "code_map_explain", "forge_read"] {
+        for tool in ["code_map_inspect", "code_map_explain", "acdd_read"] {
             let result = m
                 .payload(
                     tool,
@@ -253,7 +253,7 @@ fn mcp_selector_and_source_boundaries() {
         "code_map_impact",
         "code_map_tests",
         "code_map_prove_removal",
-        "forge_read",
+        "acdd_read",
     ] {
         let rejection = m
             .text(tool, json!({"selector":"scanner"}))
@@ -340,7 +340,7 @@ fn mcp_selector_and_source_boundaries() {
         let mut arguments = json!({"selector":"src/app.py:first"});
         arguments[field] = json!(-1);
         let rejection = m
-            .text("forge_read", arguments)
+            .text("acdd_read", arguments)
             .expect_err("tool should reject input");
         assert!(
             rejection
@@ -358,7 +358,7 @@ fn mcp_selector_and_source_boundaries() {
 
     let (_, traversal) = m
         .call(
-            "forge_read",
+            "acdd_read",
             json!({"selector":"scanner.py:scanner","path":"../outside.py","format":"json"}),
         )
         .expect("MCP transport");
@@ -371,7 +371,7 @@ fn mcp_selector_and_source_boundaries() {
         std::os::unix::fs::symlink(outside.path("outside.py"), w.path("guarded.py")).unwrap();
         let (_, response) = m
             .call(
-                "forge_read",
+                "acdd_read",
                 json!({"selector":"guarded.py:guarded","leading_lines":0,"format":"json"}),
             )
             .expect("MCP transport");

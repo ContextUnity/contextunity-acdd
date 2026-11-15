@@ -1,19 +1,18 @@
 use super::support::*;
-use contextunity_forge_mcp::engine::milestones::recovery::db_recover;
+use contextunity_acdd::engine::milestones::recovery::db_recover;
 
-const CANONICAL_FORGE_GITIGNORE: &str = concat!(
+const CANONICAL_ACDD_GITIGNORE: &str = concat!(
     "target/\n",
-    "!/.forge/\n",
-    "!/.forge/acdd/\n",
-    "!/.forge/acdd/**\n",
-    "!/.forge/frameworks/\n",
-    "!/.forge/frameworks/**\n",
-    ".forge/*.sqlite*\n",
-    ".forge/*.lock\n",
-    ".forge/*.log\n",
-    ".forge/*.jsonl\n",
-    ".forge/tasks/\n",
-    ".forge/checkpoints.json\n",
+    "!/.acdd/\n",
+    "!/.acdd/profile.yaml\n",
+    "!/.acdd/frameworks/\n",
+    "!/.acdd/frameworks/**\n",
+    ".acdd/*.sqlite*\n",
+    ".acdd/*.lock\n",
+    ".acdd/*.log\n",
+    ".acdd/*.jsonl\n",
+    ".acdd/tasks/\n",
+    ".acdd/checkpoints.json\n",
 );
 
 mod boundaries;

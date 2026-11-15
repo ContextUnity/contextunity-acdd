@@ -22,7 +22,7 @@ def main() -> None:
         name: max(deps.glob(f"lib{name}-*.rlib"), key=lambda path: path.stat().st_mtime)
         for name in ("tree_sitter", "tree_sitter_python")
     }
-    with tempfile.TemporaryDirectory(prefix="forge-tree-query-probe-") as directory:
+    with tempfile.TemporaryDirectory(prefix="acdd-tree-query-probe-") as directory:
         work = pathlib.Path(directory)
         binary = work / "probe"
         command = ["rustc", "--edition=2021", "-O", "-C", "lto=thin", "-C", "panic=abort",

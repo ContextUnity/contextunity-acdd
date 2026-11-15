@@ -4,7 +4,7 @@
     feature = "lang-typescript"
 ))]
 
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::models::{Facts, Graph},
     engine::{ast, linker},
 };
@@ -28,10 +28,7 @@ fn linked(files: &[(&str, &str, &str)]) -> (BTreeMap<String, Facts>, Graph) {
     (facts, graph)
 }
 
-fn call<'a>(
-    graph: &'a Graph,
-    expression: &str,
-) -> &'a contextunity_forge_mcp::core::models::Coverage {
+fn call<'a>(graph: &'a Graph, expression: &str) -> &'a contextunity_acdd::core::models::Coverage {
     graph
         .coverage
         .iter()

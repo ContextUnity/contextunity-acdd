@@ -13,7 +13,7 @@ Milestone commitment files in this directory (`0XX-*.md`, `TAG-NNN-*.md`) define
 - **Queue Order:** Numeric filename prefixes (`010-*.md`, `020-*.md`, ...) supply the queue execution order. Supported milestone filenames also admit tagged prefixes such as `P-001-*.md` or `EC-001-*.md`.
 - **Archive:** Completed and cancelled milestones are retained in [archive/](archive/README.md) with their durable receipts and rationale. Sync prunes operational task state for cancelled milestones.
 
-Use `contextunity-forge-mcp milestone list` to inspect queue order and dependencies.
+Use `acdd milestone list` to inspect queue order and dependencies.
 Continue an active commitment; admit the next planned commitment when its
 dependencies are satisfied. Its first accepted task claim activates it.
 
@@ -61,7 +61,7 @@ owners:
 invariants:
   - 'INV-...: Explicit invariant statements'
 required_skills:
-  - contextunity-forge
+  - acdd
 ---
 ```
 

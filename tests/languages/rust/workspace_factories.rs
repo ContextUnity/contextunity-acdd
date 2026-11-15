@@ -76,18 +76,18 @@ const OWNER_PATH_CASES: &[(&str, &str, &str)] = &[
     ),
     ("examples/probe.rs", "examples/core.rs", "crate::core::work"),
     (
-        "crates/forge-index/src/probe.rs",
-        "crates/forge-core/src/models.rs",
-        "forge_core::models::work",
+        "crates/acdd-index/src/probe.rs",
+        "crates/acdd-core/src/models.rs",
+        "acdd_core::models::work",
     ),
     (
-        "crates/forge-index/src/probe.rs",
-        "crates/forge-index/src/ast.rs",
+        "crates/acdd-index/src/probe.rs",
+        "crates/acdd-index/src/ast.rs",
         "crate::ast::work",
     ),
     (
-        "crates/forge-tasks/src/probe.rs",
-        "crates/forge-tasks/src/store.rs",
+        "crates/acdd-tasks/src/probe.rs",
+        "crates/acdd-tasks/src/store.rs",
         "crate::store::work",
     ),
     (
@@ -140,7 +140,7 @@ fn cargo_policy_controls_statement_return_authority() {
         ),
     ] {
         let workspace = crate::languages::PersistedWorkspaceHarness::new();
-        workspace.write(".forge/frameworks/rust-cargo.toml", manifest);
+        workspace.write(".acdd/frameworks/rust-cargo.toml", manifest);
         let catalog = ExtractorHarness::linked_with_root("rust", &[("src/lib.rs", source)], Some(workspace.root()));
         let graph = &catalog.graph;
         let row = graph
@@ -171,7 +171,7 @@ bases = ['rusqlite::Row', 'Row']
 provider = 'rusqlite'
 members = ['get']
 "#;
-    workspace.write(".forge/frameworks/rust-cargo.toml", manifest);
+    workspace.write(".acdd/frameworks/rust-cargo.toml", manifest);
     let source = "use rusqlite::Connection;\nfn f(conn: Connection) { let value = conn.prepare_cached(\"SELECT 1\").unwrap(); value.get(0); }";
     let catalog = ExtractorHarness::linked_with_root(
         "rust",
@@ -268,7 +268,7 @@ fn rows_next_obeys_effective_return_policy_after_persistence() {
         ] {
             let workspace = crate::languages::PersistedWorkspaceHarness::new();
             workspace.write("Cargo.toml", "[package]\nname='row-policy'\nversion='0.1.0'\n[dependencies]\nrusqlite='0.31'\ntree-sitter='0.22'\n");
-            if let Some(manifest) = manifest { workspace.write(".forge/frameworks/rust-cargo.toml", &manifest); }
+            if let Some(manifest) = manifest { workspace.write(".acdd/frameworks/rust-cargo.toml", &manifest); }
             workspace.write("src/lib.rs", "use rusqlite::{Rows, Row};\nfn assigned(rows: &mut Rows<'_>) { let row = rows.next().unwrap().unwrap(); row.get(0); row.kind(); }\nfn computed(rows: &mut Rows<'_>) { rows.next().unwrap().unwrap().get(0); rows.next().unwrap().unwrap().kind(); }\nfn generic(row: &Row) { let value = row.get(0).unwrap(); value.kind(); }\n");
             workspace.build();
             let db = workspace.open();
@@ -397,8 +397,8 @@ fn explicit_root_is_independent_of_process_cwd() {
                 "use left::*;\nfn probe(){ work(); let node = Node::new(); node.finish(); }\nfn borrowed(node: &Node) { node.finish(); let _ = &node.visible; let _ = &node.internal; let _ = &node.private; }\n",
             );
     for (index, cwd) in [workspace.root(), unrelated.root()].into_iter().enumerate() {
-        let db_path = workspace.path(format!(".forge/cwd-{index}.sqlite"));
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"))
+        let db_path = workspace.path(format!(".acdd/cwd-{index}.sqlite"));
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_acdd"))
             .arg("--root")
             .arg(workspace.root())
             .arg("--db")

@@ -1,6 +1,6 @@
 use anyhow::Result;
-use contextunity_forge_benchmarks::BenchmarkWorkspace;
-use contextunity_forge_mcp::{engine::scanner, mcp::server::Server};
+use contextunity_acdd::{engine::scanner, mcp::server::Server};
+use contextunity_acdd_benchmarks::BenchmarkWorkspace;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::{
@@ -28,9 +28,9 @@ fn run(binary: Option<&Path>, root: &Path, db: &Path, modified: &[String]) -> Re
         );
         Ok(serde_json::from_slice(&output.stdout)?)
     } else if modified.is_empty() {
-        Ok(contextunity_forge_mcp::db::writer::build(root, db, None)?)
+        Ok(contextunity_acdd::db::writer::build(root, db, None)?)
     } else {
-        Ok(contextunity_forge_mcp::db::writer::delta(
+        Ok(contextunity_acdd::db::writer::delta(
             root,
             db,
             &modified.iter().map(PathBuf::from).collect::<Vec<_>>(),
@@ -40,7 +40,7 @@ fn run(binary: Option<&Path>, root: &Path, db: &Path, modified: &[String]) -> Re
 
 fn profile() -> Result<()> {
     let source_root =
-        PathBuf::from(std::env::var("FORGE_BENCH_ROOT").expect("FORGE_BENCH_ROOT required"));
+        PathBuf::from(std::env::var("ACDD_BENCH_ROOT").expect("ACDD_BENCH_ROOT required"));
     let adapter = scanner::load_adapter(&source_root, None)?;
     let scan = scanner::scan_with_adapter(&source_root, &adapter)?;
     let workspace = BenchmarkWorkspace::new();
@@ -75,7 +75,7 @@ fn profile() -> Result<()> {
     }
 
     let mut bulk = Vec::new();
-    let live_db = source_root.join(".forge/code-map.sqlite");
+    let live_db = source_root.join(".acdd/code-map.sqlite");
     if live_db.exists() {
         let conn =
             Connection::open_with_flags(live_db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -112,7 +112,7 @@ fn profile() -> Result<()> {
             .map(str::to_owned)
             .collect();
     }
-    if let Ok(input_log) = std::env::var("FORGE_BENCH_INPUT_LOG") {
+    if let Ok(input_log) = std::env::var("ACDD_BENCH_INPUT_LOG") {
         let input = fs::read_to_string(input_log)?;
         let row = input
             .lines()
@@ -124,28 +124,28 @@ fn profile() -> Result<()> {
     }
     println!("PROFILE_INPUT {}", json!({"bulk_paths":bulk}));
 
-    let single = std::env::var("FORGE_BENCH_DELTA_PATH")
+    let single = std::env::var("ACDD_BENCH_DELTA_PATH")
         .unwrap_or_else(|_| "services/shield/src/contextunity/shield/audit.py".into());
     anyhow::ensure!(
         originals.contains_key(&single),
         "single delta fixture path missing"
     );
-    let baseline = std::env::var_os("FORGE_BENCH_BASELINE").map(PathBuf::from);
+    let baseline = std::env::var_os("ACDD_BENCH_BASELINE").map(PathBuf::from);
     let mut versions = Vec::new();
     if let Some(path) = baseline.as_deref() {
         versions.push(("baseline", Some(path)));
     }
     versions.push(("candidate", None));
-    if std::env::var_os("FORGE_BENCH_REVERSE").is_some() {
+    if std::env::var_os("ACDD_BENCH_REVERSE").is_some() {
         versions.reverse();
     }
 
     for (label, binary) in versions {
         for (scope, settings) in [("main", &main_config), ("linked", &linked_config)] {
-            fs::write(workspace.root().join("forge-mcp.yaml"), settings)?;
+            fs::write(workspace.root().join("acdd.yaml"), settings)?;
             let db = workspace
                 .root()
-                .join(format!(".forge/{label}-{scope}.sqlite"));
+                .join(format!(".acdd/{label}-{scope}.sqlite"));
             let started = Instant::now();
             let report = run(binary, workspace.root(), &db, &[])?;
             let conn =

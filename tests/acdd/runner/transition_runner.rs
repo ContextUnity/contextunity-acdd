@@ -7,20 +7,20 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     let outside_trace_root = root.root().with_extension("task3-outside-traces");
     let shell_quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
     let outside_trace_root_arg = shell_quote(&outside_trace_root.to_string_lossy());
-    root.write(".gitignore", ".forge/\n");
+    root.write(".gitignore", ".acdd/\n");
     root.write(
         "tests/acdd/runner.rs",
         "#[test]\nfn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() { assert!(false); }\n",
     );
     root.write("src/readme.md", "Scoped documentation command input.\n");
-    fs::create_dir_all(root.root().join(".forge/task3-bin")).unwrap();
+    fs::create_dir_all(root.root().join(".acdd/task3-bin")).unwrap();
     let compiled = std::process::Command::new("rustc")
         .current_dir(root.root())
         .args([
             "--test",
             "tests/acdd/runner.rs",
             "-o",
-            ".forge/task3-bin/contract-red",
+            ".acdd/task3-bin/contract-red",
         ])
         .output()
         .unwrap();
@@ -29,10 +29,10 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         "{}",
         String::from_utf8_lossy(&compiled.stderr)
     );
-    let fake_cargo = root.root().join(".forge/task3-bin/cargo");
+    let fake_cargo = root.root().join(".acdd/task3-bin/cargo");
     fs::write(
         &fake_cargo,
-        "#!/bin/sh\ncase \"$TASK3_MODE\" in\n  contract-red) exec .forge/task3-bin/contract-red ;;\n  large-fail) head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  build-fail) printf 'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\\n'; exit 1 ;;\n  forge-symlink) mv .forge .forge-preserved && ln -s \"$TASK3_OUTSIDE\" .forge && head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  *) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'; printf 'label=%s\\n' \"$TASK3_LABEL\" ;;\nesac\n",
+        "#!/bin/sh\ncase \"$TASK3_MODE\" in\n  contract-red) exec .acdd/task3-bin/contract-red ;;\n  large-fail) head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  build-fail) printf 'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\\n'; exit 1 ;;\n  forge-symlink) mv .acdd .acdd-preserved && ln -s \"$TASK3_OUTSIDE\" .acdd && head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  *) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'; printf 'label=%s\\n' \"$TASK3_LABEL\" ;;\nesac\n",
     )
     .unwrap();
     #[cfg(unix)]
@@ -43,7 +43,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         fs::set_permissions(&fake_cargo, permissions).unwrap();
     }
 
-    let fake_path = shell_quote(&root.root().join(".forge/task3-bin").to_string_lossy());
+    let fake_path = shell_quote(&root.root().join(".acdd/task3-bin").to_string_lossy());
     let seam_filter =
         "acdd::runner::transition_runner_compiles_proofs_and_covers_all_task3_subtasks";
     let cargo_seam = format!(
@@ -52,10 +52,10 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     let contract_command =
         format!("PATH={fake_path}:$PATH TASK3_MODE=contract-red TASK3_LABEL=contract {cargo_seam}");
     let rust_command = format!(
-        "printf 'rust\\n' >> .forge/runner-order.log && TASK3_OUTSIDE={outside_trace_root_arg} PATH={fake_path}:$PATH TASK3_MODE=$(cat .forge/runner-mode) TASK3_LABEL=rust {cargo_seam} && printf 'pid=%s\\n' \"$$\""
+        "printf 'rust\\n' >> .acdd/runner-order.log && TASK3_OUTSIDE={outside_trace_root_arg} PATH={fake_path}:$PATH TASK3_MODE=$(cat .acdd/runner-mode) TASK3_LABEL=rust {cargo_seam} && printf 'pid=%s\\n' \"$$\""
     );
     let docs_command = format!(
-        "printf 'docs\\n' >> .forge/runner-order.log && PATH={fake_path}:$PATH TASK3_MODE=$(cat .forge/runner-mode) TASK3_LABEL=docs {cargo_seam} && printf '%s' '{}' && printf 'pid=%s\\n' \"$$\"",
+        "printf 'docs\\n' >> .acdd/runner-order.log && PATH={fake_path}:$PATH TASK3_MODE=$(cat .acdd/runner-mode) TASK3_LABEL=docs {cargo_seam} && printf '%s' '{}' && printf 'pid=%s\\n' \"$$\"",
         "x".repeat(4096)
     );
     let mut profile_override = super::support::runner_profile(super::support::DEFAULT_SEAM, "");
@@ -95,10 +95,10 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         stderr_contains: Some("assertion failed".into()),
     });
     profile_override.find_gate_mut("build").unwrap().command = Some("task3-check".into());
-    fs::create_dir_all(root.root().join(".forge/acdd")).unwrap();
+    fs::create_dir_all(root.root().join(".acdd")).unwrap();
     let profile_yaml = crate::acdd::support::standalone_profile_yaml(&profile_override);
-    fs::write(root.root().join(".forge/acdd/profile.yaml"), &profile_yaml).unwrap();
-    fs::write(root.root().join(".forge/runner-mode"), "green\n").unwrap();
+    fs::write(root.root().join(".acdd/profile.yaml"), &profile_yaml).unwrap();
+    fs::write(root.root().join(".acdd/runner-mode"), "green\n").unwrap();
     let profile = profile::load_for_workspace(root.root()).unwrap();
     let contract_commands = profile.commands["task3-contract"].clone();
     let build_commands = profile.commands["task3-check"].clone();
@@ -115,11 +115,11 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
             Some("test-session-contract-author"),
         )
         .unwrap();
-    let ownership_db = root.root().join(".forge/tasks.sqlite");
+    let ownership_db = root.root().join(".acdd/tasks.sqlite");
     let mut foreign_store =
         TasksStore::open_project(&ownership_db, "forge-mcp", "another-project").unwrap();
     let contract_execution =
-        contextunity_forge_mcp::engine::tasks::milestones::execute_command_gate_with_options(
+        contextunity_acdd::engine::tasks::milestones::execute_command_gate_with_options(
             root.root(),
             task_id,
             "tasks.contract",
@@ -175,7 +175,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     let source_paths = vec!["src/lib.rs".to_owned(), "src/readme.md".to_owned()];
     let execution = execute_build(&source_paths);
     let command_order =
-        fs::read_to_string(root.root().join(".forge/runner-order.log")).unwrap_or_default();
+        fs::read_to_string(root.root().join(".acdd/runner-order.log")).unwrap_or_default();
     let command_execution_ok = execution.as_ref().is_ok_and(|traces| {
         traces.len() == 2
             && traces
@@ -249,13 +249,13 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
             .insert("src/*.rs".into(), "printf 'unregistered command\\n'".into());
     }
     fs::write(
-        root.root().join(".forge/acdd/profile.yaml"),
+        root.root().join(".acdd/profile.yaml"),
         crate::acdd::support::standalone_profile_yaml(&altered_profile),
     )
     .unwrap();
     let command_identity_rejected =
         compile_evidence_envelope(root.root(), task_id, "build").is_err();
-    fs::write(root.root().join(".forge/acdd/profile.yaml"), &profile_yaml).unwrap();
+    fs::write(root.root().join(".acdd/profile.yaml"), &profile_yaml).unwrap();
     fs::write(
         root.root().join("src/lib.rs"),
         "pub fn candidate() { /* drift */ }\n",
@@ -265,11 +265,11 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         compile_evidence_envelope(root.root(), task_id, "build").is_err();
     fs::write(root.root().join("src/lib.rs"), "pub fn example() {}\n").unwrap();
 
-    fs::write(root.root().join(".forge/runner-mode"), "build-fail\n").unwrap();
+    fs::write(root.root().join(".acdd/runner-mode"), "build-fail\n").unwrap();
     let newer_failure = execute_build(&["src/lib.rs".to_owned()]);
     let stale_success_rejected =
         newer_failure.is_err() && compile_evidence_envelope(root.root(), task_id, "build").is_err();
-    fs::write(root.root().join(".forge/runner-mode"), "green\n").unwrap();
+    fs::write(root.root().join(".acdd/runner-mode"), "green\n").unwrap();
     let recovery_run = execute_build(&source_paths);
     let recovery_proof_ok =
         recovery_run.is_ok() && compile_evidence_envelope(root.root(), task_id, "build").is_ok();
@@ -323,7 +323,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     #[cfg(unix)]
     let (final_symlink_rejected, parent_symlink_rejected, forged_parent_symlink_rejected) = {
         use std::os::unix::fs::symlink;
-        fs::write(root.root().join(".forge/runner-mode"), "large-fail\n").unwrap();
+        fs::write(root.root().join(".acdd/runner-mode"), "large-fail\n").unwrap();
 
         let path_command_id = "task3-check::src/lib.rs";
         let previous = store
@@ -338,7 +338,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
             + 1;
         let final_log = root
             .root()
-            .join(".forge/task-traces")
+            .join(".acdd/task-traces")
             .join(format!("{:x}", Sha256::digest(task_id.as_bytes())))
             .join(format!("{:x}", Sha256::digest("tasks.build".as_bytes())))
             .join(format!(
@@ -346,7 +346,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
                 Sha256::digest(path_command_id.as_bytes())
             ));
         fs::create_dir_all(final_log.parent().unwrap()).unwrap();
-        let protected_target = root.root().join(".forge/symlink-target.txt");
+        let protected_target = root.root().join(".acdd/symlink-target.txt");
         fs::write(&protected_target, "keep this target\n").unwrap();
         symlink(&protected_target, &final_log).unwrap();
         let final_result = execute_build(&["src/lib.rs".to_owned()]);
@@ -354,9 +354,9 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
             && fs::read_to_string(&protected_target).unwrap() == "keep this target\n";
         fs::remove_file(&final_log).unwrap();
 
-        let trace_root = root.root().join(".forge/task-traces");
+        let trace_root = root.root().join(".acdd/task-traces");
         fs::remove_dir_all(&trace_root).unwrap();
-        let parent_target = root.root().join(".forge/parent-target");
+        let parent_target = root.root().join(".acdd/parent-target");
         fs::create_dir_all(&parent_target).unwrap();
         fs::write(parent_target.join("sentinel.txt"), "untouched\n").unwrap();
         symlink(&parent_target, &trace_root).unwrap();
@@ -369,9 +369,9 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         fs::create_dir_all(&outside_trace_root).unwrap();
         let outside_task_traces = outside_trace_root.join("task-traces");
         assert!(!outside_task_traces.exists());
-        let forge_path = root.root().join(".forge");
-        let forge_backup = root.root().join(".forge-preserved");
-        fs::write(root.root().join(".forge/runner-mode"), "forge-symlink\n").unwrap();
+        let forge_path = root.root().join(".acdd");
+        let forge_backup = root.root().join(".acdd-preserved");
+        fs::write(root.root().join(".acdd/runner-mode"), "forge-symlink\n").unwrap();
         let forge_result = execute_build(&["src/lib.rs".to_owned()]);
         let forged_parent = fs::symlink_metadata(&forge_path)
             .is_ok_and(|metadata| metadata.file_type().is_symlink());
@@ -531,7 +531,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
 
     drop(store);
     let git = |args: &[&str]| super::support::git(root.root(), args);
-    let artifacts = root.root().join(".forge");
+    let artifacts = root.root().join(".acdd");
     if artifacts.exists() {
         fs::remove_dir_all(artifacts).unwrap();
     }
@@ -549,7 +549,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     git(&["switch", "upstream-snapshot"]);
     let rebased =
         rebase_speculative_dependency(root.root(), "speculative-task", "upstream-snapshot");
-    let upstream_is_ancestor = contextunity_forge_mcp::core::git::git_command(
+    let upstream_is_ancestor = contextunity_acdd::core::git::git_command(
         root.root(),
         &[
             "merge-base",

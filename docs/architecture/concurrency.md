@@ -7,7 +7,7 @@ doc_type: architecture
 
 ## Concurrency model
 
-Forge MCP accepts concurrent MCP JSON-RPC requests while background cold builds and incremental delta indexing may run in other processes.
+ACDD MCP accepts concurrent MCP JSON-RPC requests while background cold builds and incremental delta indexing may run in other processes.
 
 ### SQLite Pragmas & WAL Mode
 
@@ -19,7 +19,7 @@ PRAGMA mmap_size = 268435456;
 PRAGMA busy_timeout = 5000;
 ```
 
-Graph write transactions (`BEGIN IMMEDIATE`) are owned by `crates/forge-index/src/db/writer.rs` and `crates/forge-index/src/db/delta.rs`; task-state writes use the separate `crates/forge-tasks` storage boundary. Task orchestration lives in `crates/forge-tasks/src/engine/`. The MCP surface registers 20 tools. A mutex guards the reader slot through each query transaction, serializing reads within one server instance. The current-thread Tokio runtime also runs synchronous tool handlers serially. A reader pool alone would not make public MCP requests execute concurrently.
+Graph write transactions (`BEGIN IMMEDIATE`) are owned by `crates/acdd-index/src/db/writer.rs` and `crates/acdd-index/src/db/delta.rs`; task-state writes use the separate `crates/acdd-tasks` storage boundary. Task orchestration lives in `crates/acdd-tasks/src/engine/`. The MCP surface registers 20 tools. A mutex guards the reader slot through each query transaction, serializing reads within one server instance. The current-thread Tokio runtime also runs synchronous tool handlers serially. A reader pool alone would not make public MCP requests execute concurrently.
 
 ## Snapshot admission and reader fencing
 

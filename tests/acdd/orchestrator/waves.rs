@@ -3,7 +3,7 @@ use crate::acdd::{
     support::{git_command, git_head},
 };
 use clap::Parser;
-use contextunity_forge_mcp::{cli::Cli, forge_tasks::tasks::profile};
+use contextunity_acdd::{acdd_tasks::tasks::profile, cli::Cli};
 use serde_json::Value;
 use std::fs;
 
@@ -11,42 +11,65 @@ mod harness;
 
 #[test]
 fn native_absorbed_polish_passes_immutable_review_and_handoff() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
-    use forge_tasks::tasks::profile::PersistenceAction;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::tasks::profile::PersistenceAction;
     let mut h = harness::WaveHarness::with_single_task(true);
     let mut profile = h.read_profile();
     let mut role = profile.roles["wave_role"].clone();
     role.runner = Some(format!("python3 -c 'import runpy;open(\"docs/polish-note.md\",\"w\").write(\"polished\\n\");runpy.run_path(\"{}\")' '{{prompt}}'", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/acdd/fixtures/workflows/wave-role.py")));
     profile.roles.insert("polishing_role".into(), role);
-    let polish = profile.gates.iter_mut().find(|gate| gate.id == "polish").unwrap();
+    let polish = profile
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == "polish")
+        .unwrap();
     polish.role = Some("polishing_role".into());
     polish.persistence.post = Some(PersistenceAction::Snapshot);
-    profile.gates.iter_mut().find(|gate| gate.id == "milestone_review").unwrap().persistence.immutable = true;
-    let handoff = profile.gates.iter_mut().find(|gate| gate.id == "handoff").unwrap();
+    profile
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == "milestone_review")
+        .unwrap()
+        .persistence
+        .immutable = true;
+    let handoff = profile
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == "handoff")
+        .unwrap();
     handoff.persistence.immutable = true;
     handoff.absorb_working_tree = true;
     profile.polish_scope.push("docs/polish-note.md".into());
     h.commit_profile(&profile, "immutable handoff fixture");
     let result = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {});
     assert!(result.is_ok(), "{result:#?}");
-    let output = git_command(h.root(), &["show", "HEAD:docs/polish-note.md"]).output().unwrap();
+    let output = git_command(h.root(), &["show", "HEAD:docs/polish-note.md"])
+        .output()
+        .unwrap();
     assert!(output.status.success());
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "polished\n");
-    assert!(h.root().join("docs/milestones/archive/011-wave.md").exists());
+    assert!(h
+        .root()
+        .join("docs/milestones/archive/011-wave.md")
+        .exists());
     assert!(!h.root().join("docs/milestones/011-wave.md").exists());
 }
 
 #[test]
 fn native_root_snapshots_capture_pre_and_post_without_moving_head() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
-    use forge_tasks::tasks::profile::PersistenceAction;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::tasks::profile::PersistenceAction;
     let mut h = harness::WaveHarness::with_single_task(true);
     let mut profile = h.read_profile();
-    let polish = profile.gates.iter_mut().find(|gate| gate.id == "polish").unwrap();
+    let polish = profile
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == "polish")
+        .unwrap();
     polish.persistence.pre = Some(PersistenceAction::Snapshot);
     polish.persistence.post = Some(PersistenceAction::Snapshot);
     h.commit_profile(&profile, "root snapshots");
-    fs::write(h.root().join(".forge/stop-wave-review"), "").unwrap();
+    fs::write(h.root().join(".acdd/stop-wave-review"), "").unwrap();
     assert!(run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).is_err());
     let raw: String = h.task.store.connection.query_row(
         "SELECT proof_payload FROM gate_transitions WHERE subject='milestone' AND gate_path='polish' AND action='pass' ORDER BY id DESC LIMIT 1", [], |row| row.get(0)
@@ -55,100 +78,187 @@ fn native_root_snapshots_capture_pre_and_post_without_moving_head() {
     for phase in ["pre_snapshot", "post_snapshot"] {
         let snapshot = &payload[phase];
         assert_eq!(snapshot["head"], git_head(h.root()));
-        assert_eq!(snapshot["candidate_fingerprint"], payload[if phase == "pre_snapshot" { "candidate_before" } else { "candidate_after" }]);
-        let output = git_command(h.root(), &["rev-parse", "--verify", snapshot["snapshot_ref"].as_str().unwrap()]).output().unwrap();
+        assert_eq!(
+            snapshot["candidate_fingerprint"],
+            payload[if phase == "pre_snapshot" {
+                "candidate_before"
+            } else {
+                "candidate_after"
+            }]
+        );
+        let output = git_command(
+            h.root(),
+            &[
+                "rev-parse",
+                "--verify",
+                snapshot["snapshot_ref"].as_str().unwrap(),
+            ],
+        )
+        .output()
+        .unwrap();
         assert!(output.status.success());
-        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), snapshot["snapshot_commit"].as_str().unwrap());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            snapshot["snapshot_commit"].as_str().unwrap()
+        );
     }
 }
 
 #[test]
 fn native_immutable_review_rejects_candidate_mutation() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
-    use forge_tasks::tasks::profile::PersistenceAction;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::tasks::profile::PersistenceAction;
     let mut h = harness::WaveHarness::with_single_task(true);
     let mut profile = h.read_profile();
-    profile.gates.iter_mut().find(|gate| gate.id == "polish").unwrap().persistence.post = Some(PersistenceAction::Snapshot);
+    profile
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == "polish")
+        .unwrap()
+        .persistence
+        .post = Some(PersistenceAction::Snapshot);
     let mut role = profile.roles["wave_role"].clone();
     role.runner = Some(format!("python3 -c 'import runpy;open(\"src/lib.rs\",\"a\").write(\"// mutation\\n\");runpy.run_path(\"{}\")' '{{prompt}}'", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/acdd/fixtures/workflows/wave-role.py")));
     profile.roles.insert("mutating_review".into(), role);
-    let review = profile.gates.iter_mut().find(|gate| gate.id == "milestone_review").unwrap();
+    let review = profile
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == "milestone_review")
+        .unwrap();
     review.role = Some("mutating_review".into());
     review.persistence.immutable = true;
     h.commit_profile(&profile, "immutable review");
     let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
-    assert!(format!("{error:#}").contains("TASK_CANDIDATE_MISMATCH"), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("TASK_CANDIDATE_MISMATCH"),
+        "{error:#}"
+    );
     let count: i64 = h.task.store.connection.query_row("SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND gate_path='milestone_review' AND action='pass'", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 0);
 }
 
 #[test]
 fn native_root_replay_after_reopen_invalidates_changed_candidate_and_preserves_receipt() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
-    use forge_tasks::tasks::profile::PersistenceAction;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::tasks::profile::PersistenceAction;
     let mut h = harness::WaveHarness::with_single_task(true);
     let mut profile = h.read_profile();
-    profile.gates.iter_mut().find(|gate| gate.id == "polish").unwrap().persistence.post = Some(PersistenceAction::Snapshot);
+    profile
+        .gates
+        .iter_mut()
+        .find(|gate| gate.id == "polish")
+        .unwrap()
+        .persistence
+        .post = Some(PersistenceAction::Snapshot);
     h.commit_profile(&profile, "replay snapshots");
-    fs::write(h.root().join(".forge/stop-wave-review"), "").unwrap();
+    fs::write(h.root().join(".acdd/stop-wave-review"), "").unwrap();
     assert!(run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).is_err());
     let receipt = h.task.store.inspect(&h.task.id).unwrap();
     assert_eq!(receipt.status, "completed");
     let receipt = serde_json::to_value(receipt.receipt).unwrap();
     assert!(!receipt.is_null());
-    let claims: i64 = h.task.store.connection.query_row("SELECT count(*) FROM task_claims", [], |row| row.get(0)).unwrap();
-    let temporary = forge_tasks::store::TasksStore::open_in_memory("fixture", "fixture").unwrap();
+    let claims: i64 = h
+        .task
+        .store
+        .connection
+        .query_row("SELECT count(*) FROM task_claims", [], |row| row.get(0))
+        .unwrap();
+    let temporary = acdd_tasks::store::TasksStore::open_in_memory("fixture", "fixture").unwrap();
     drop(std::mem::replace(&mut h.task.store, temporary));
-    h.task.store = contextunity_forge_mcp::engine::tasks::store_for_task(h.root(), &h.task.id).unwrap();
-    fs::write(h.root().join("src/lib.rs"), "pub fn changed_after_review() {}\n").unwrap();
-    for args in [vec!["add", "src/lib.rs"], vec!["commit", "-m", "changed candidate"]] {
+    h.task.store = contextunity_acdd::engine::tasks::store_for_task(h.root(), &h.task.id).unwrap();
+    fs::write(
+        h.root().join("src/lib.rs"),
+        "pub fn changed_after_review() {}\n",
+    )
+    .unwrap();
+    for args in [
+        vec!["add", "src/lib.rs"],
+        vec!["commit", "-m", "changed candidate"],
+    ] {
         assert!(git_command(h.root(), &args).status().unwrap().success());
     }
     let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
-    assert!(format!("{error:#}").contains("WORKFLOW_RUNNER_FAILED"), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("WORKFLOW_RUNNER_FAILED"),
+        "{error:#}"
+    );
     let count: i64 = h.task.store.connection.query_row("SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND gate_path='polish' AND action='pass'", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 2);
-    assert_eq!(h.task.store.inspect(&h.task.id).unwrap().status, "completed");
-    assert_eq!(serde_json::to_value(h.task.store.inspect(&h.task.id).unwrap().receipt).unwrap(), receipt);
-    let after: i64 = h.task.store.connection.query_row("SELECT count(*) FROM task_claims", [], |row| row.get(0)).unwrap();
+    assert_eq!(
+        h.task.store.inspect(&h.task.id).unwrap().status,
+        "completed"
+    );
+    assert_eq!(
+        serde_json::to_value(h.task.store.inspect(&h.task.id).unwrap().receipt).unwrap(),
+        receipt
+    );
+    let after: i64 = h
+        .task
+        .store
+        .connection
+        .query_row("SELECT count(*) FROM task_claims", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(claims, after);
 }
 
 #[test]
 fn workflow_rejects_executed_command_that_violates_proof_catalog() {
     let root = WorkflowHarness::ordered().materialize();
-    root.write("docs/workflows/ordered.yaml", include_str!("../fixtures/workflows/catalog-invalid.yaml"));
+    root.write(
+        "docs/workflows/ordered.yaml",
+        include_str!("../fixtures/workflows/catalog-invalid.yaml"),
+    );
     let error = run_cli(root.root(), &["workflow", "run", "ordered"]).unwrap_err();
-    assert!(format!("{error:#}").contains("TASK_EVIDENCE_INVALID"), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("TASK_EVIDENCE_INVALID"),
+        "{error:#}"
+    );
 }
 
 #[test]
 fn plan_rejects_executed_command_that_violates_proof_catalog() {
     let harness = PlanHarness::linear();
     let root = harness.materialize(harness.path);
-    root.write("profiles/plan.yaml", include_str!("../fixtures/plans/catalog-invalid.yaml"));
+    root.write(
+        "profiles/plan.yaml",
+        include_str!("../fixtures/plans/catalog-invalid.yaml"),
+    );
     let error = run_cli(root.root(), &["plan", "run", "linear", "--in-place"]).unwrap_err();
-    assert!(format!("{error:#}").contains("TASK_EVIDENCE_INVALID"), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("TASK_EVIDENCE_INVALID"),
+        "{error:#}"
+    );
 }
 
 #[test]
 fn milestone_rejects_executed_command_that_violates_proof_catalog() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let mut h = harness::WaveHarness::new(true);
     let mut profile = h.read_profile();
     profile.proofs.insert("command".into(), serde_json::from_value(serde_json::json!({
         "schema": {"type": "object", "properties": {"tests_passed": {"type": "integer", "const": 2}}}
     })).unwrap());
-    profile.commands.insert("catalog-check".into(), serde_json::from_value(serde_json::json!({
-        "command": "echo '1 passed; 0 failed'",
-        "output": {"counts": {"passed": "(\\d+) passed", "failed": "(\\d+) failed"}}
-    })).unwrap());
-    profile.gates.insert(0, serde_json::from_value(serde_json::json!({
-        "id": "catalog_check", "command": "catalog-check", "proof": "command"
-    })).unwrap());
+    profile.commands.insert(
+        "catalog-check".into(),
+        serde_json::from_value(serde_json::json!({
+            "command": "echo '1 passed; 0 failed'",
+            "output": {"counts": {"passed": "(\\d+) passed", "failed": "(\\d+) failed"}}
+        }))
+        .unwrap(),
+    );
+    profile.gates.insert(
+        0,
+        serde_json::from_value(serde_json::json!({
+            "id": "catalog_check", "command": "catalog-check", "proof": "command"
+        }))
+        .unwrap(),
+    );
     h.commit_profile(&profile, "catalog proof fixture");
     let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
-    assert!(format!("{error:#}").contains("TASK_EVIDENCE_INVALID"), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("TASK_EVIDENCE_INVALID"),
+        "{error:#}"
+    );
     let passes: i64 = h.task.store.connection.query_row(
         "SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND gate_path='catalog_check' AND action='pass'", [], |row| row.get(0)
     ).unwrap();
@@ -157,12 +267,16 @@ fn milestone_rejects_executed_command_that_violates_proof_catalog() {
 
 #[test]
 fn post_task_milestone_verification_accepts_absent_counts_when_optional() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let mut h = harness::WaveHarness::with_single_task(true);
     let mut profile = h.read_profile();
-    profile.commands.insert("count-free".into(), serde_json::from_value(serde_json::json!({
-        "command": "true", "output": {"require_counts": false}
-    })).unwrap());
+    profile.commands.insert(
+        "count-free".into(),
+        serde_json::from_value(serde_json::json!({
+            "command": "true", "output": {"require_counts": false}
+        }))
+        .unwrap(),
+    );
     profile.find_gate_mut("verify").unwrap().command = Some("count-free".into());
     h.commit_profile(&profile, "count-free verification fixture");
     let result = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {});
@@ -171,20 +285,27 @@ fn post_task_milestone_verification_accepts_absent_counts_when_optional() {
 
 #[test]
 fn post_task_milestone_catalog_rejection_does_not_persist_pass() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let mut h = harness::WaveHarness::with_single_task(true);
     let mut profile = h.read_profile();
     profile.proofs.insert("command".into(), serde_json::from_value(serde_json::json!({
         "schema": {"type": "object", "properties": {"command": {"type": "string", "const": "rust-check-and-test"}}}
     })).unwrap());
-    profile.commands.insert("catalog-check".into(), serde_json::from_value(serde_json::json!({
-        "command": "echo '1 passed; 0 failed'",
-        "output": {"counts": {"passed": "(\\d+) passed", "failed": "(\\d+) failed"}}
-    })).unwrap());
+    profile.commands.insert(
+        "catalog-check".into(),
+        serde_json::from_value(serde_json::json!({
+            "command": "echo '1 passed; 0 failed'",
+            "output": {"counts": {"passed": "(\\d+) passed", "failed": "(\\d+) failed"}}
+        }))
+        .unwrap(),
+    );
     profile.find_gate_mut("verify").unwrap().command = Some("catalog-check".into());
     h.commit_profile(&profile, "post-task catalog fixture");
     let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
-    assert!(format!("{error:#}").contains("TASK_EVIDENCE_INVALID"), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("TASK_EVIDENCE_INVALID"),
+        "{error:#}"
+    );
     let traces: i64 = h.task.store.connection.query_row(
         "SELECT count(*) FROM gate_execution_traces WHERE subject='milestone' AND gate_path='verify' AND command_id='catalog-check' AND status='completed'", [], |row| row.get(0)
     ).unwrap();
@@ -197,7 +318,7 @@ fn post_task_milestone_catalog_rejection_does_not_persist_pass() {
 
 #[test]
 fn milestone_command_catalog_checks_aggregate_counts() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let mut h = harness::WaveHarness::new(true);
     let mut profile = h.read_profile();
     profile.proofs.insert("command".into(), serde_json::from_value(serde_json::json!({
@@ -207,7 +328,10 @@ fn milestone_command_catalog_checks_aggregate_counts() {
         "by_pattern": {"src/lib.rs": "echo '1 passed; 0 failed' # first", "src/second.rs": "echo '1 passed; 0 failed' # second"},
         "output": {"counts": {"passed": "(\\d+) passed", "failed": "(\\d+) failed"}}
     })).unwrap());
-    profile.commands.insert("stop-root".into(), profile::CommandDef::Script("exit 1".into()));
+    profile.commands.insert(
+        "stop-root".into(),
+        profile::CommandDef::Script("exit 1".into()),
+    );
     profile.gates.insert(0, serde_json::from_value(serde_json::json!({"id": "aggregate", "command": "aggregate", "proof": "command", "max_attempts": 1})).unwrap());
     profile.gates.insert(1, serde_json::from_value(serde_json::json!({"id": "stop_root", "command": "stop-root", "proof": "none", "max_attempts": 1})).unwrap());
     h.commit_profile(&profile, "aggregate proof fixture");
@@ -220,32 +344,56 @@ fn milestone_command_catalog_checks_aggregate_counts() {
 
 #[test]
 fn milestone_role_contract_observes_runtime_red_and_rejects_invalid_results() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let mut h = harness::WaveHarness::new(true);
     let mut profile = h.read_profile();
-    profile.commands.insert("stop-root".into(), profile::CommandDef::Script("exit 1".into()));
+    profile.commands.insert(
+        "stop-root".into(),
+        profile::CommandDef::Script("exit 1".into()),
+    );
     profile.gates.insert(0, serde_json::from_value(serde_json::json!({
         "id": "root_contract", "role": "wave_role", "command": "root-contract",
         "proof": "contract", "expected_failure": {"exit_codes": [101], "stderr_contains": "assertion failed"}, "max_attempts": 1
     })).unwrap());
-    profile.gates.insert(1, serde_json::from_value(serde_json::json!({
-        "id": "stop_root", "command": "stop-root", "proof": "none", "max_attempts": 1
-    })).unwrap());
-    fs::write(h.root().join("root-proof.json"), serde_json::json!({"seam_test_ref":"tests/acdd.rs::red","red_exit_code":101}).to_string()).unwrap();
+    profile.gates.insert(
+        1,
+        serde_json::from_value(serde_json::json!({
+            "id": "stop_root", "command": "stop-root", "proof": "none", "max_attempts": 1
+        }))
+        .unwrap(),
+    );
+    fs::write(
+        h.root().join("root-proof.json"),
+        serde_json::json!({"seam_test_ref":"tests/acdd.rs::red","red_exit_code":101}).to_string(),
+    )
+    .unwrap();
     for (command, accepted) in [
         ("exit 0 # seam:tests/acdd.rs::red", false),
-        ("printf 'could not compile: assertion failed' >&2; exit 101 # seam:tests/acdd.rs::red", false),
-        ("printf 'assertion failed' >&2; exit 101 # seam:tests/acdd.rs::red", true),
+        (
+            "printf 'could not compile: assertion failed' >&2; exit 101 # seam:tests/acdd.rs::red",
+            false,
+        ),
+        (
+            "printf 'assertion failed' >&2; exit 101 # seam:tests/acdd.rs::red",
+            true,
+        ),
     ] {
-        profile.commands.insert("root-contract".into(), serde_json::from_value(serde_json::json!({
-            "command": command,
-            "output": {"require_counts": false, "seam_ref_pattern": "seam:(\\S+)"}
-        })).unwrap());
+        profile.commands.insert(
+            "root-contract".into(),
+            serde_json::from_value(serde_json::json!({
+                "command": command,
+                "output": {"require_counts": false, "seam_ref_pattern": "seam:(\\S+)"}
+            }))
+            .unwrap(),
+        );
         h.commit_profile(&profile, "root contract fixture");
         let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
         if !accepted {
-            assert!(format!("{error:#}").contains("WORKFLOW_PROOF_UNOBSERVED"), "{error:#}");
-            assert!(h.root().join(".forge/wave-roles.jsonl").exists());
+            assert!(
+                format!("{error:#}").contains("WORKFLOW_PROOF_UNOBSERVED"),
+                "{error:#}"
+            );
+            assert!(h.root().join(".acdd/wave-roles.jsonl").exists());
         }
         let passes: i64 = h.task.store.connection.query_row(
             "SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND gate_path='root_contract' AND action='pass'", [], |row| row.get(0)
@@ -256,61 +404,115 @@ fn milestone_role_contract_observes_runtime_red_and_rejects_invalid_results() {
 
 #[test]
 fn command_catalog_validation_rejects_invalid_inputs_across_orchestrators() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let workflow = WorkflowHarness::ordered().materialize();
     let plan_harness = PlanHarness::linear();
     let plan = plan_harness.materialize(plan_harness.path);
     let milestone = harness::WaveHarness::new(true);
     let base_profile = milestone.read_profile();
     let cases = [
-        ("{ command: '' }", serde_json::json!({"command": ""}), false, "commands registry names and commands must be non-empty"),
-        ("{ command: 'touch forbidden-command', output: { seam_ref_pattern: '[' } }", serde_json::json!({"command": "touch forbidden-command", "output": {"seam_ref_pattern": "["}}), false, "invalid output.seam_ref_pattern regex"),
-        ("'touch forbidden-command'", serde_json::json!("touch forbidden-command"), true, "expected_failure.exit_codes must contain non-zero values"),
+        (
+            "{ command: '' }",
+            serde_json::json!({"command": ""}),
+            false,
+            "commands registry names and commands must be non-empty",
+        ),
+        (
+            "{ command: 'touch forbidden-command', output: { seam_ref_pattern: '[' } }",
+            serde_json::json!({"command": "touch forbidden-command", "output": {"seam_ref_pattern": "["}}),
+            false,
+            "invalid output.seam_ref_pattern regex",
+        ),
+        (
+            "'touch forbidden-command'",
+            serde_json::json!("touch forbidden-command"),
+            true,
+            "expected_failure.exit_codes must contain non-zero values",
+        ),
     ];
     for (command, json_command, invalid_exit, expected_error) in cases {
         for domain in ["workflow", "plan", "milestone"] {
             let error = match domain {
                 "workflow" => {
-                    let expected = if invalid_exit { "    expected_failure: { exit_codes: [0] }\n" } else { "" };
+                    let expected = if invalid_exit {
+                        "    expected_failure: { exit_codes: [0] }\n"
+                    } else {
+                        ""
+                    };
                     workflow.write("docs/workflows/ordered.yaml", &format!("version: 2\ninherit: none\nsave: none\ncommands:\n  check: {command}\ngates:\n  - id: check\n    command: check\n    proof: contract\n{expected}"));
-                    let error = run_cli(workflow.root(), &["workflow", "run", "ordered"]).unwrap_err();
+                    let error =
+                        run_cli(workflow.root(), &["workflow", "run", "ordered"]).unwrap_err();
                     assert!(!workflow.path("forbidden-command").exists());
                     error
                 }
                 "plan" => {
-                    let expected = if invalid_exit { "          expected_failure: { exit_codes: [0] }\n" } else { "" };
+                    let expected = if invalid_exit {
+                        "          expected_failure: { exit_codes: [0] }\n"
+                    } else {
+                        ""
+                    };
                     plan.write("profiles/plan.yaml", &format!("version: 2\ninherit: none\nsave: snapshot\ncommands:\n  check: {command}\ngates:\n  - tasks:\n      gates:\n        - id: check\n          command: check\n          proof: contract\n{expected}        - id: finish\n          receipt: true\n          save: snapshot\n"));
-                    let error = run_cli(plan.root(), &["plan", "run", "linear", "--in-place"]).unwrap_err();
+                    let error =
+                        run_cli(plan.root(), &["plan", "run", "linear", "--in-place"]).unwrap_err();
                     assert!(!plan.path("forbidden-command").exists());
                     error
                 }
                 "milestone" => {
                     let mut profile = base_profile.clone();
-                    profile.commands.insert("check-invalid".into(), serde_json::from_value(json_command.clone()).unwrap());
+                    profile.commands.insert(
+                        "check-invalid".into(),
+                        serde_json::from_value(json_command.clone()).unwrap(),
+                    );
                     let mut gate = serde_json::json!({"id": "check_invalid", "command": "check-invalid", "proof": "contract"});
-                    if invalid_exit { gate["expected_failure"] = serde_json::json!({"exit_codes": [0]}); }
-                    profile.gates.insert(0, serde_json::from_value(gate).unwrap());
-                    fs::write(milestone.root().join(".forge/acdd/profile.yaml"), format!("inherit: none\n{}", serde_yaml::to_string(&profile).unwrap())).unwrap();
-                    let error = run_milestone_waves(milestone.root(), "m-wave", &milestone.options, &mut |_| {}).unwrap_err();
+                    if invalid_exit {
+                        gate["expected_failure"] = serde_json::json!({"exit_codes": [0]});
+                    }
+                    profile
+                        .gates
+                        .insert(0, serde_json::from_value(gate).unwrap());
+                    fs::write(
+                        milestone.root().join(".acdd/profile.yaml"),
+                        format!(
+                            "inherit: none\n{}",
+                            serde_yaml::to_string(&profile).unwrap()
+                        ),
+                    )
+                    .unwrap();
+                    let error = run_milestone_waves(
+                        milestone.root(),
+                        "m-wave",
+                        &milestone.options,
+                        &mut |_| {},
+                    )
+                    .unwrap_err();
                     assert!(!milestone.root().join("forbidden-command").exists());
                     error
                 }
                 _ => unreachable!(),
             };
-            assert!(format!("{error:#}").contains(expected_error), "{domain}: {error:#}");
+            assert!(
+                format!("{error:#}").contains(expected_error),
+                "{domain}: {error:#}"
+            );
         }
     }
 }
 
 #[test]
 fn command_drivers_reject_unsupported_proofs_across_orchestrators() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let workflow = WorkflowHarness::ordered().materialize();
     let plan_harness = PlanHarness::linear();
     let plan = plan_harness.materialize(plan_harness.path);
     let milestone = harness::WaveHarness::new(true);
     let base_profile = milestone.read_profile();
-    let cases = [("review", serde_json::json!("review")), ("{ scheme: { type: object } }", serde_json::json!({"scheme": {"type": "object"}}))];
+    let cases = [
+        ("review", serde_json::json!("review")),
+        (
+            "{ scheme: { type: object } }",
+            serde_json::json!({"scheme": {"type": "object"}}),
+        ),
+    ];
     for (proof, json_proof) in cases {
         for domain in ["workflow", "plan", "milestone"] {
             match domain {
@@ -328,12 +530,36 @@ fn command_drivers_reject_unsupported_proofs_across_orchestrators() {
                 }
                 "milestone" => {
                     let mut profile = base_profile.clone();
-                    profile.commands.insert("unsupported".into(), profile::CommandDef::Script("touch forbidden-command".into()));
+                    profile.commands.insert(
+                        "unsupported".into(),
+                        profile::CommandDef::Script("touch forbidden-command".into()),
+                    );
                     profile.gates.insert(0, serde_json::from_value(serde_json::json!({"id": "unsupported", "command": "unsupported", "proof": json_proof})).unwrap());
-                    fs::write(milestone.root().join(".forge/acdd/profile.yaml"), format!("inherit: none\n{}", serde_yaml::to_string(&profile).unwrap())).unwrap();
-                    let error = run_milestone_waves(milestone.root(), "m-wave", &milestone.options, &mut |_| {}).unwrap_err();
-                    assert!(format!("{error:#}").contains("MILESTONE_PROOF_REQUIRED: command execution cannot supply this proof"), "{proof}: {error:#}");
-                    assert!(!milestone.root().join("forbidden-command").exists(), "{proof}");
+                    fs::write(
+                        milestone.root().join(".acdd/profile.yaml"),
+                        format!(
+                            "inherit: none\n{}",
+                            serde_yaml::to_string(&profile).unwrap()
+                        ),
+                    )
+                    .unwrap();
+                    let error = run_milestone_waves(
+                        milestone.root(),
+                        "m-wave",
+                        &milestone.options,
+                        &mut |_| {},
+                    )
+                    .unwrap_err();
+                    assert!(
+                        format!("{error:#}").contains(
+                            "MILESTONE_PROOF_REQUIRED: command execution cannot supply this proof"
+                        ),
+                        "{proof}: {error:#}"
+                    );
+                    assert!(
+                        !milestone.root().join("forbidden-command").exists(),
+                        "{proof}"
+                    );
                 }
                 _ => unreachable!(),
             }
@@ -343,13 +569,13 @@ fn command_drivers_reject_unsupported_proofs_across_orchestrators() {
 
 #[test]
 fn milestone_root_command_without_required_counts_fails_without_retrying_forever() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
 
     let mut h = harness::WaveHarness::new(true);
     let mut profile = h.read_profile();
     profile.commands.insert(
         "countless".into(),
-        profile::CommandDef::Script("echo visited >> .forge/countless-visits".into()),
+        profile::CommandDef::Script("echo visited >> .acdd/countless-visits".into()),
     );
     profile.gates.insert(
         0,
@@ -361,7 +587,7 @@ fn milestone_root_command_without_required_counts_fails_without_retrying_forever
     h.commit_profile(&profile, "require root command counts");
     assert!(run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).is_err());
     assert_eq!(
-        fs::read_to_string(h.root().join(".forge/countless-visits")).unwrap(),
+        fs::read_to_string(h.root().join(".acdd/countless-visits")).unwrap(),
         "visited\n"
     );
 }
@@ -384,7 +610,10 @@ gates:
 "#,
     );
     assert!(run_cli(root.root(), &["workflow", "run", "ordered"]).is_err());
-    assert_eq!(fs::read_to_string(root.path("visits")).unwrap(), "visited\n");
+    assert_eq!(
+        fs::read_to_string(root.path("visits")).unwrap(),
+        "visited\n"
+    );
 }
 
 #[test]
@@ -407,7 +636,10 @@ gates:
 "#,
     );
     run_cli(root.root(), &["workflow", "run", "ordered"]).unwrap();
-    assert_eq!(fs::read_to_string(root.path("visits")).unwrap(), "visited\n");
+    assert_eq!(
+        fs::read_to_string(root.path("visits")).unwrap(),
+        "visited\n"
+    );
 }
 
 #[test]
@@ -434,28 +666,35 @@ gates:
 "#,
     );
     assert!(run_cli(root.root(), &["plan", "run", "linear", "--in-place"]).is_err());
-    assert_eq!(fs::read_to_string(root.path("visits")).unwrap(), "visited\n");
+    assert_eq!(
+        fs::read_to_string(root.path("visits")).unwrap(),
+        "visited\n"
+    );
 }
 
 #[test]
 fn milestone_replay_reconstructs_visits_and_failure_budget() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let mut h = harness::WaveHarness::new(true);
     let mut profile = h.read_profile();
     for (name, command) in [
         (
             "check",
-            "echo check >> .forge/replay-visits; if test -f .forge/reviewed; then exit 1; fi",
+            "echo check >> .acdd/replay-visits; if test -f .acdd/reviewed; then exit 1; fi",
         ),
         (
             "review",
-            "echo review >> .forge/replay-visits; touch .forge/reviewed; exit 1",
+            "echo review >> .acdd/replay-visits; touch .acdd/reviewed; exit 1",
         ),
-        ("repair", "echo repair >> .forge/replay-visits"),
+        ("repair", "echo repair >> .acdd/replay-visits"),
     ] {
-        profile
-            .commands
-            .insert(name.into(), serde_json::from_value(serde_json::json!({"command": command, "output": {"require_counts": false}})).unwrap());
+        profile.commands.insert(
+            name.into(),
+            serde_json::from_value(
+                serde_json::json!({"command": command, "output": {"require_counts": false}}),
+            )
+            .unwrap(),
+        );
     }
     for (index, gate) in [
         serde_json::json!({"id":"check","command":"check","proof":"none","max_attempts":2,"pass":"root_retry_review","fail":"repair"}),
@@ -474,7 +713,7 @@ fn milestone_replay_reconstructs_visits_and_failure_budget() {
             "{error:#}"
         );
         assert_eq!(
-            fs::read_to_string(h.root().join(".forge/replay-visits")).unwrap(),
+            fs::read_to_string(h.root().join(".acdd/replay-visits")).unwrap(),
             "check\nreview\ncheck\nrepair\ncheck\n"
         );
     }
@@ -504,7 +743,7 @@ fn milestone_replay_reconstructs_visits_and_failure_budget() {
 
 #[test]
 fn milestone_corrupt_root_route_fails_closed_without_reexecuting_observations() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let mut h = harness::WaveHarness::new(true);
     h.pre_task_checks(true);
     assert!(run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).is_err());
@@ -515,14 +754,14 @@ fn milestone_corrupt_root_route_fails_closed_without_reexecuting_observations() 
         "{error:#}"
     );
     assert_eq!(
-        fs::read_to_string(h.root().join(".forge/preflight.log")).unwrap(),
+        fs::read_to_string(h.root().join(".acdd/preflight.log")).unwrap(),
         "seen"
     );
 }
 
 #[test]
 fn milestone_partial_root_prefix_reuses_refreshed_suffix_on_unchanged_restart() {
-    use forge_tasks::engine::{candidate_fingerprint, orchestrator::waves::run_milestone_waves};
+    use acdd_tasks::engine::{candidate_fingerprint, orchestrator::waves::run_milestone_waves};
     let mut h = harness::WaveHarness::new(true);
     h.partial_pre_task_checks(false);
     let original = fs::read(h.root().join("src/lib.rs")).unwrap();
@@ -547,11 +786,11 @@ fn milestone_partial_root_prefix_reuses_refreshed_suffix_on_unchanged_restart() 
         );
         assert_eq!(candidate_fingerprint(h.root()).unwrap(), initial);
         assert_eq!(
-            fs::read_to_string(h.root().join(".forge/preflight.log")).unwrap(),
+            fs::read_to_string(h.root().join(".acdd/preflight.log")).unwrap(),
             "seen"
         );
         assert_eq!(
-            fs::read_to_string(h.root().join(".forge/second-preflight.log")).unwrap(),
+            fs::read_to_string(h.root().join(".acdd/second-preflight.log")).unwrap(),
             "seenseen"
         );
     }
@@ -559,7 +798,7 @@ fn milestone_partial_root_prefix_reuses_refreshed_suffix_on_unchanged_restart() 
 
 #[test]
 fn milestone_partial_root_prefix_preserves_failed_retry_route_on_restart() {
-    use forge_tasks::engine::{candidate_fingerprint, orchestrator::waves::run_milestone_waves};
+    use acdd_tasks::engine::{candidate_fingerprint, orchestrator::waves::run_milestone_waves};
     let mut h = harness::WaveHarness::new(true);
     h.partial_pre_task_checks(true);
     let original = fs::read(h.root().join("src/lib.rs")).unwrap();
@@ -572,11 +811,11 @@ fn milestone_partial_root_prefix_preserves_failed_retry_route_on_restart() {
         "{first:#}"
     );
     assert_eq!(
-        fs::read_to_string(h.root().join(".forge/second-preflight.log")).unwrap(),
+        fs::read_to_string(h.root().join(".acdd/second-preflight.log")).unwrap(),
         "seenseenseen"
     );
     fs::write(h.root().join("src/lib.rs"), &original).unwrap();
-    fs::remove_file(h.root().join(".forge/preflight-retry-done")).unwrap();
+    fs::remove_file(h.root().join(".acdd/preflight-retry-done")).unwrap();
     for _ in 0..2 {
         let resumed = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
         assert!(
@@ -587,11 +826,11 @@ fn milestone_partial_root_prefix_preserves_failed_retry_route_on_restart() {
         );
         assert_eq!(candidate_fingerprint(h.root()).unwrap(), initial);
         assert_eq!(
-            fs::read_to_string(h.root().join(".forge/preflight.log")).unwrap(),
+            fs::read_to_string(h.root().join(".acdd/preflight.log")).unwrap(),
             "seen"
         );
         assert_eq!(
-            fs::read_to_string(h.root().join(".forge/second-preflight.log")).unwrap(),
+            fs::read_to_string(h.root().join(".acdd/second-preflight.log")).unwrap(),
             "seenseenseenseenseenseen"
         );
     }
@@ -599,7 +838,7 @@ fn milestone_partial_root_prefix_preserves_failed_retry_route_on_restart() {
 
 #[test]
 fn milestone_restart_fences_delivered_but_unintegrated_isolated_predecessor() {
-    use forge_tasks::engine::orchestrator::{types::OrchestratorEvent, waves::run_milestone_waves};
+    use acdd_tasks::engine::orchestrator::{types::OrchestratorEvent, waves::run_milestone_waves};
     let mut h = harness::WaveHarness::new(false);
     let mut delivered = None;
     let first = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |event| {
@@ -676,7 +915,7 @@ fn milestone_restart_fences_delivered_but_unintegrated_isolated_predecessor() {
 
 #[test]
 fn milestone_pre_task_observations_resume_unchanged_content() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let mut h = harness::WaveHarness::new(true);
     h.pre_task_checks(true);
     for _ in 0..2 {
@@ -689,7 +928,7 @@ fn milestone_pre_task_observations_resume_unchanged_content() {
         );
     }
     assert_eq!(
-        fs::read_to_string(h.root().join(".forge/preflight.log")).unwrap(),
+        fs::read_to_string(h.root().join(".acdd/preflight.log")).unwrap(),
         "seen"
     );
 }
@@ -712,7 +951,7 @@ fn task_claim_fails_closed_until_pre_task_root_gates_pass() {
 
 #[test]
 fn task_next_surfaces_pre_task_root_gates_before_wave_tasks() {
-    use forge_tasks::engine::{manage, Manage, ManageAction};
+    use acdd_tasks::engine::{manage, Manage, ManageAction};
 
     let mut h = harness::WaveHarness::new(true);
     h.pre_task_checks(false);
@@ -751,8 +990,8 @@ fn task_next_surfaces_pre_task_root_gates_before_wave_tasks() {
 
 #[test]
 fn task_next_keeps_the_barrier_closed_after_a_pre_task_gate_exhausts() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
-    use forge_tasks::engine::{manage, Manage, ManageAction};
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::{manage, Manage, ManageAction};
 
     let mut h = harness::WaveHarness::new(true);
     h.pre_task_checks(true);
@@ -800,7 +1039,7 @@ fn task_next_keeps_the_barrier_closed_after_a_pre_task_gate_exhausts() {
 
 #[test]
 fn pre_task_root_transitions_are_persisted_for_the_milestone_subject() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
 
     let mut h = harness::WaveHarness::new(true);
     h.pre_task_checks(true);
@@ -846,7 +1085,7 @@ fn pre_task_root_transitions_are_persisted_for_the_milestone_subject() {
 
 #[test]
 fn task_next_surfaces_post_task_root_gates_after_all_tasks_complete() {
-    use forge_tasks::engine::{manage, Manage, ManageAction};
+    use acdd_tasks::engine::{manage, Manage, ManageAction};
 
     let mut h = harness::WaveHarness::with_single_task(true);
     h.task.advance_to_completion().unwrap();
@@ -878,7 +1117,7 @@ fn task_next_surfaces_post_task_root_gates_after_all_tasks_complete() {
 }
 
 fn install_post_task_route_profile(h: &harness::WaveHarness) {
-    let path = h.root().join(".forge/acdd/profile.yaml");
+    let path = h.root().join(".acdd/profile.yaml");
     let mut profile =
         profile::validate_profile_document(&fs::read_to_string(&path).unwrap()).unwrap();
     let task_container = profile
@@ -950,8 +1189,7 @@ fn record_milestone_root_transition(
 ) {
     let manifest = fs::read_to_string(h.root().join(harness::MANIFEST)).unwrap();
     let milestone =
-        contextunity_forge_mcp::forge_tasks::tasks::Milestone::parse(&manifest, "forge-mcp")
-            .unwrap();
+        contextunity_acdd::acdd_tasks::tasks::Milestone::parse(&manifest, "forge-mcp").unwrap();
     let milestone_identity = format!(
         "{}/{}/{}",
         milestone.repository, milestone.project, milestone.id
@@ -978,7 +1216,7 @@ fn record_milestone_root_transition(
 
 #[test]
 fn task_next_follows_verify_pass_edge_to_documentation() {
-    use forge_tasks::engine::{manage, Manage, ManageAction};
+    use acdd_tasks::engine::{manage, Manage, ManageAction};
 
     let mut h = harness::WaveHarness::with_single_task(true);
     h.task.advance_to_completion().unwrap();
@@ -1003,7 +1241,7 @@ fn task_next_follows_verify_pass_edge_to_documentation() {
 
 #[test]
 fn task_next_follows_polish_pass_edge_after_failed_verification() {
-    use forge_tasks::engine::{manage, Manage, ManageAction};
+    use acdd_tasks::engine::{manage, Manage, ManageAction};
 
     let mut h = harness::WaveHarness::with_single_task(true);
     h.task.advance_to_completion().unwrap();
@@ -1029,7 +1267,7 @@ fn task_next_follows_polish_pass_edge_after_failed_verification() {
 
 #[test]
 fn task_next_follows_the_latest_transition_after_a_repeated_polish_cycle() {
-    use forge_tasks::engine::{manage, Manage, ManageAction};
+    use acdd_tasks::engine::{manage, Manage, ManageAction};
 
     let mut h = harness::WaveHarness::with_single_task(true);
     h.task.advance_to_completion().unwrap();
@@ -1057,7 +1295,7 @@ fn task_next_follows_the_latest_transition_after_a_repeated_polish_cycle() {
 
 #[test]
 fn milestone_waves_select_the_applicable_conditional_task_container() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
 
     let mut h = harness::WaveHarness::new(true);
     let mut profile = h.read_profile();
@@ -1089,10 +1327,10 @@ fn milestone_waves_select_the_applicable_conditional_task_container() {
 
 #[test]
 fn invalid_pre_task_task_map_is_rejected_before_root_pass_is_recorded() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
 
     let h = harness::WaveHarness::with_blueprint_gate(true);
-    fs::write(h.root().join(".forge/invalid-task-proof-map"), "invalid").unwrap();
+    fs::write(h.root().join(".acdd/invalid-task-proof-map"), "invalid").unwrap();
     let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
     assert!(
         format!("{error:#}").contains("WORKFLOW_ATTEMPTS_EXHAUSTED"),
@@ -1137,76 +1375,113 @@ fn invalid_pre_task_task_map_is_rejected_before_root_pass_is_recorded() {
 
 #[test]
 fn pre_task_resynthesis_requires_a_fresh_review() {
-    use forge_tasks::store::GateTransition;
+    use acdd_tasks::store::GateTransition;
 
     let mut h = harness::WaveHarness::with_nested_blueprint(true);
     let milestone = h.task.id.split_once(':').unwrap().0.to_owned();
     let record = |gate: &str, action: &str| {
-        h.task.store.record_gate_transition(&GateTransition {
-            milestone_id: milestone.clone(),
-            subject: "milestone".into(),
-            gate_path: format!("blueprint_synthesis.{gate}"),
-            action: action.into(),
-            proof_kind: "orchestrator".into(),
-            proof_payload: serde_json::json!({"findings": {"scope_findings": ["revise"]}}),
-            git_tree_sha: h.options.target_base.clone(),
-            worker_id: gate.into(),
-        }).unwrap();
+        h.task
+            .store
+            .record_gate_transition(&GateTransition {
+                milestone_id: milestone.clone(),
+                subject: "milestone".into(),
+                gate_path: format!("blueprint_synthesis.{gate}"),
+                action: action.into(),
+                proof_kind: "orchestrator".into(),
+                proof_payload: serde_json::json!({"findings": {"scope_findings": ["revise"]}}),
+                git_tree_sha: h.options.target_base.clone(),
+                worker_id: gate.into(),
+            })
+            .unwrap();
     };
     record("synthesize", "pass");
     record("review", "pass");
     record("review", "fail");
     record("synthesize", "pass");
     let error = h.task.claim_next().unwrap_err();
-    assert!(format!("{error:#}").contains("MILESTONE_PRE_TASK_GATE_PENDING"), "{error:#}");
-    let advances: i64 = h.task.store.connection.query_row(
-        "SELECT count(*) FROM gate_transitions WHERE subject=?1 AND action='advance'",
-        [&h.task.id], |row| row.get(0),
-    ).unwrap();
+    assert!(
+        format!("{error:#}").contains("MILESTONE_PRE_TASK_GATE_PENDING"),
+        "{error:#}"
+    );
+    let advances: i64 = h
+        .task
+        .store
+        .connection
+        .query_row(
+            "SELECT count(*) FROM gate_transitions WHERE subject=?1 AND action='advance'",
+            [&h.task.id],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(advances, 0);
 }
 
 #[test]
 fn pre_task_missing_reachable_gate_keeps_claim_blocked() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
 
     let mut h = harness::WaveHarness::with_single_task(true);
     h.pre_task_checks(true);
     let outcome = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {});
     assert!(outcome.is_err());
     let error = h.task.claim_next().unwrap_err();
-    assert!(format!("{error:#}").contains("MILESTONE_PRE_TASK_GATE_PENDING"), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("MILESTONE_PRE_TASK_GATE_PENDING"),
+        "{error:#}"
+    );
 }
 
 #[test]
 fn pre_task_bypass_route_survives_store_reopen_and_wave_replay() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
 
     let mut h = harness::WaveHarness::with_single_task(true);
     h.pre_task_checks(false);
     let mut profile = h.read_profile();
     profile.gates[0].on_success = Some("conditional".into());
-    profile.gates.insert(1, serde_json::from_value(serde_json::json!({
-        "id": "bypassed", "command": "preflight", "proof": "none"
-    })).unwrap());
-    profile.gates.insert(2, serde_json::from_value(serde_json::json!({
-        "id": "conditional", "when": "doc", "command": "preflight", "proof": "none"
-    })).unwrap());
-    profile.gates.insert(3, serde_json::from_value(serde_json::json!({
-        "id": "required", "command": "preflight", "proof": "none"
-    })).unwrap());
+    profile.gates.insert(
+        1,
+        serde_json::from_value(serde_json::json!({
+            "id": "bypassed", "command": "preflight", "proof": "none"
+        }))
+        .unwrap(),
+    );
+    profile.gates.insert(
+        2,
+        serde_json::from_value(serde_json::json!({
+            "id": "conditional", "when": "doc", "command": "preflight", "proof": "none"
+        }))
+        .unwrap(),
+    );
+    profile.gates.insert(
+        3,
+        serde_json::from_value(serde_json::json!({
+            "id": "required", "command": "preflight", "proof": "none"
+        }))
+        .unwrap(),
+    );
     h.commit_profile(&profile, "persisted bypass route");
-    assert!(format!("{:#}", h.task.claim_next().unwrap_err()).contains("MILESTONE_PRE_TASK_GATE_PENDING"));
-    fs::write(h.root().join(".forge/stop-wave-review"), "").unwrap();
+    assert!(format!("{:#}", h.task.claim_next().unwrap_err())
+        .contains("MILESTONE_PRE_TASK_GATE_PENDING"));
+    fs::write(h.root().join(".acdd/stop-wave-review"), "").unwrap();
     assert!(run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).is_err());
-    let temporary = forge_tasks::store::TasksStore::open_in_memory("fixture", "fixture").unwrap();
+    let temporary = acdd_tasks::store::TasksStore::open_in_memory("fixture", "fixture").unwrap();
     drop(std::mem::replace(&mut h.task.store, temporary));
-    h.task.store = contextunity_forge_mcp::engine::tasks::store_for_task(h.root(), &h.task.id).unwrap();
+    h.task.store = contextunity_acdd::engine::tasks::store_for_task(h.root(), &h.task.id).unwrap();
     let before: Vec<(String, String)> = h.task.store.connection.prepare(
         "SELECT gate_path, action FROM gate_transitions WHERE subject='milestone' AND gate_path IN ('preflight','bypassed','conditional','required') ORDER BY id"
     ).unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect();
-    assert_eq!(before, vec![("preflight".into(), "pass".into()), ("required".into(), "pass".into())]);
-    assert_eq!(h.task.store.inspect(&h.task.id).unwrap().status, "completed");
+    assert_eq!(
+        before,
+        vec![
+            ("preflight".into(), "pass".into()),
+            ("required".into(), "pass".into())
+        ]
+    );
+    assert_eq!(
+        h.task.store.inspect(&h.task.id).unwrap().status,
+        "completed"
+    );
     assert!(run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).is_err());
     let count: i64 = h.task.store.connection.query_row(
         "SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND gate_path IN ('bypassed','conditional')", [], |row| row.get(0)
@@ -1216,7 +1491,7 @@ fn pre_task_bypass_route_survives_store_reopen_and_wave_replay() {
 
 #[test]
 fn pre_task_bypass_reopens_before_fresh_task_claim() {
-    use forge_tasks::engine::{claim, submit, Action, Claim, Submit};
+    use acdd_tasks::engine::{claim, submit, Action, Claim, Submit};
 
     let mut h = harness::WaveHarness::with_single_task(true);
     let mut profile = h.read_profile();
@@ -1231,17 +1506,26 @@ fn pre_task_bypass_reopens_before_fresh_task_claim() {
     h.commit_profile(&profile, "fresh claim bypass fixture");
     let worktree = h.root().to_string_lossy().into_owned();
     for stage in ["start", "required"] {
-        claim(h.root(), Claim { task_id: "m-wave".into(), stage: stage.into(),
-            worker_id: "architect".into(), worktree: worktree.clone(), bundle: None,
-            session_fingerprint: None }).unwrap();
+        claim(
+            h.root(),
+            Claim {
+                task_id: "m-wave".into(),
+                stage: stage.into(),
+                worker_id: "architect".into(),
+                worktree: worktree.clone(),
+                bundle: None,
+                session_fingerprint: None,
+            },
+        )
+        .unwrap();
         submit(h.root(), Submit { task_id: "m-wave".into(), stage: stage.into(),
             evidence: serde_json::json!({"worker_id":"architect","worktree":worktree,"proof":{"none_proof":{}}}),
             action: Action::Pass, findings: None, session_fingerprint: None }).unwrap();
     }
     assert_eq!(h.task.store.inspect(&h.task.id).unwrap().status, "ready");
-    let temporary = forge_tasks::store::TasksStore::open_in_memory("fixture", "fixture").unwrap();
+    let temporary = acdd_tasks::store::TasksStore::open_in_memory("fixture", "fixture").unwrap();
     drop(std::mem::replace(&mut h.task.store, temporary));
-    h.task.store = contextunity_forge_mcp::engine::tasks::store_for_task(h.root(), &h.task.id).unwrap();
+    h.task.store = contextunity_acdd::engine::tasks::store_for_task(h.root(), &h.task.id).unwrap();
     let skipped: i64 = h.task.store.connection.query_row(
         "SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND gate_path IN ('bypassed','conditional')",
         [], |row| row.get(0)).unwrap();
@@ -1264,30 +1548,68 @@ fn pre_task_multi_blueprint_fixture() -> harness::WaveHarness {
 }
 
 fn pre_task_submit_blueprint(h: &harness::WaveHarness, tasks: Value) -> anyhow::Result<Value> {
-    use forge_tasks::engine::{claim, submit, Action, Claim, Submit};
+    use acdd_tasks::engine::{claim, submit, Action, Claim, Submit};
     let worktree = h.root().to_string_lossy().into_owned();
-    claim(h.root(), Claim { task_id: "m-wave".into(), stage: "blueprint_synthesis.synthesize".into(),
-        worker_id: "architect".into(), worktree: worktree.clone(), bundle: None, session_fingerprint: None })?;
-    submit(h.root(), Submit { task_id: "m-wave".into(), stage: "blueprint_synthesis.synthesize".into(),
-        evidence: serde_json::json!({"worker_id":"architect","worktree":worktree,"proof":{"scheme_proof":{"tasks":tasks}}}),
-        action: Action::Pass, findings: None, session_fingerprint: None })
+    claim(
+        h.root(),
+        Claim {
+            task_id: "m-wave".into(),
+            stage: "blueprint_synthesis.synthesize".into(),
+            worker_id: "architect".into(),
+            worktree: worktree.clone(),
+            bundle: None,
+            session_fingerprint: None,
+        },
+    )?;
+    submit(
+        h.root(),
+        Submit {
+            task_id: "m-wave".into(),
+            stage: "blueprint_synthesis.synthesize".into(),
+            evidence: serde_json::json!({"worker_id":"architect","worktree":worktree,"proof":{"scheme_proof":{"tasks":tasks}}}),
+            action: Action::Pass,
+            findings: None,
+            session_fingerprint: None,
+        },
+    )
 }
 
 #[test]
 fn pre_task_nested_blueprint_failed_synthesis_blocks_all_task_proofs() {
-    use forge_tasks::engine::{claim, submit, Action, Claim, Submit};
+    use acdd_tasks::engine::{claim, submit, Action, Claim, Submit};
     let mut h = pre_task_multi_blueprint_fixture();
     let worktree = h.root().to_string_lossy().into_owned();
-    claim(h.root(), Claim { task_id:"m-wave".into(), stage:"blueprint_synthesis.synthesize".into(),
-        worker_id:"architect".into(), worktree:worktree.clone(), bundle:None, session_fingerprint:None }).unwrap();
+    claim(
+        h.root(),
+        Claim {
+            task_id: "m-wave".into(),
+            stage: "blueprint_synthesis.synthesize".into(),
+            worker_id: "architect".into(),
+            worktree: worktree.clone(),
+            bundle: None,
+            session_fingerprint: None,
+        },
+    )
+    .unwrap();
     submit(h.root(), Submit { task_id:"m-wave".into(), stage:"blueprint_synthesis.synthesize".into(),
         evidence:serde_json::json!({"worker_id":"architect","worktree":worktree,"proof":{"scheme_proof":{"tasks":{"task_a":{"goal":"a"},"task_b":{"goal":"b"}}}}}),
         action:Action::Reject, findings:Some(serde_json::json!({"scope_findings":["revise"]})), session_fingerprint:None }).unwrap();
-    assert!(format!("{:#}", h.task.claim_next().unwrap_err()).contains("MILESTONE_PRE_TASK_GATE_PENDING"));
+    assert!(format!("{:#}", h.task.claim_next().unwrap_err())
+        .contains("MILESTONE_PRE_TASK_GATE_PENDING"));
     let second = format!("{}:task_b", h.task.id.split_once(':').unwrap().0);
     let stage = h.task.store.inspect(&second).unwrap().stage;
-    let error = claim(h.root(), Claim { task_id:second, stage, worker_id:"other".into(),
-        worktree:worktree.clone(), bundle:None, session_fingerprint:None }).unwrap_err();
+    let error = claim(
+        h.root(),
+        Claim {
+            task_id: second,
+            stage,
+            worker_id: "other".into(),
+            worktree: worktree.clone(),
+            bundle: None,
+            session_fingerprint: None,
+        },
+    )
+    .unwrap_err();
     assert!(format!("{error:#}").contains("MILESTONE_PRE_TASK_GATE_PENDING"));
     let failures: i64 = h.task.store.connection.query_row(
         "SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND gate_path='blueprint_synthesis.synthesize' AND action='fail'",
@@ -1303,20 +1625,37 @@ fn pre_task_nested_blueprint_failed_synthesis_blocks_all_task_proofs() {
 fn pre_task_nested_blueprint_invalid_task_maps_fail_before_fanout() {
     let mut h = pre_task_multi_blueprint_fixture();
     for (tasks, detail) in [
-        (serde_json::json!({"task_a":{"goal":"a"}}), "missing non-cancelled task_ref 'task_b'"),
-        (serde_json::json!({"task_a":{"goal":"a"},"task_b":{"goal":"b"},"foreign":{"goal":"x"}}), "unknown task_ref 'foreign'"),
+        (
+            serde_json::json!({"task_a":{"goal":"a"}}),
+            "missing non-cancelled task_ref 'task_b'",
+        ),
+        (
+            serde_json::json!({"task_a":{"goal":"a"},"task_b":{"goal":"b"},"foreign":{"goal":"x"}}),
+            "unknown task_ref 'foreign'",
+        ),
     ] {
         let error = pre_task_submit_blueprint(&h, tasks).unwrap_err();
         let message = format!("{error:#}");
-        assert!(message.contains("MILESTONE_TASK_PROOF_INVALID") && message.contains(detail), "{message}");
-        assert!(format!("{:#}", h.task.claim_next().unwrap_err()).contains("MILESTONE_PRE_TASK_GATE_PENDING"));
+        assert!(
+            message.contains("MILESTONE_TASK_PROOF_INVALID") && message.contains(detail),
+            "{message}"
+        );
+        assert!(format!("{:#}", h.task.claim_next().unwrap_err())
+            .contains("MILESTONE_PRE_TASK_GATE_PENDING"));
         let count: i64 = h.task.store.connection.query_row(
             "SELECT count(*) FROM gate_transitions WHERE subject != 'milestone' AND action='advance'",
             [], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
-        let root_passes: i64 = h.task.store.connection.query_row(
-            "SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND action='pass'",
-            [], |row| row.get(0)).unwrap();
+        let root_passes: i64 = h
+            .task
+            .store
+            .connection
+            .query_row(
+                "SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND action='pass'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(root_passes, 0);
         assert_eq!(h.task.store.inspect(&h.task.id).unwrap().status, "ready");
     }
@@ -1324,24 +1663,53 @@ fn pre_task_nested_blueprint_invalid_task_maps_fail_before_fanout() {
 
 #[test]
 fn pre_task_nested_blueprint_independent_review_injects_only_each_task_slice() {
-    use forge_tasks::engine::{claim, submit, Action, Claim, Submit};
+    use acdd_tasks::engine::{claim, submit, Action, Claim, Submit};
     let h = pre_task_multi_blueprint_fixture();
-    pre_task_submit_blueprint(&h, serde_json::json!({"task_a":{"goal":"slice-a"},"task_b":{"goal":"slice-b"}})).unwrap();
+    pre_task_submit_blueprint(
+        &h,
+        serde_json::json!({"task_a":{"goal":"slice-a"},"task_b":{"goal":"slice-b"}}),
+    )
+    .unwrap();
     let worktree = h.root().to_string_lossy().into_owned();
-    let review = |worker: &str| claim(h.root(), Claim { task_id:"m-wave".into(),
-        stage:"blueprint_synthesis.review".into(), worker_id:worker.into(), worktree:worktree.clone(),
-        bundle:None, session_fingerprint:None });
-    assert!(format!("{:#}", review("architect").unwrap_err()).contains("TASK_REVIEW_NOT_INDEPENDENT"));
+    let review = |worker: &str| {
+        claim(
+            h.root(),
+            Claim {
+                task_id: "m-wave".into(),
+                stage: "blueprint_synthesis.review".into(),
+                worker_id: worker.into(),
+                worktree: worktree.clone(),
+                bundle: None,
+                session_fingerprint: None,
+            },
+        )
+    };
+    assert!(
+        format!("{:#}", review("architect").unwrap_err()).contains("TASK_REVIEW_NOT_INDEPENDENT")
+    );
     review("reviewer").unwrap();
     submit(h.root(), Submit { task_id:"m-wave".into(), stage:"blueprint_synthesis.review".into(),
         evidence:serde_json::json!({"worker_id":"reviewer","worktree":worktree,"proof":{"none_proof":{}}}),
         action:Action::Pass, findings:None, session_fingerprint:None }).unwrap();
     let milestone = h.task.id.split_once(':').unwrap().0;
-    for (task_ref, expected, other) in [("task_a","slice-a","slice-b"), ("task_b","slice-b","slice-a")] {
+    for (task_ref, expected, other) in [
+        ("task_a", "slice-a", "slice-b"),
+        ("task_b", "slice-b", "slice-a"),
+    ] {
         let id = format!("{milestone}:{task_ref}");
         let stage = h.task.store.inspect(&id).unwrap().stage;
-        let result = claim(h.root(), Claim { task_id:id, stage, worker_id:format!("worker-{task_ref}"),
-            worktree:worktree.clone(), bundle:Some(true), session_fingerprint:None }).unwrap();
+        let result = claim(
+            h.root(),
+            Claim {
+                task_id: id,
+                stage,
+                worker_id: format!("worker-{task_ref}"),
+                worktree: worktree.clone(),
+                bundle: Some(true),
+                session_fingerprint: None,
+            },
+        )
+        .unwrap();
         let inherited = &result["context_bundle"]["inherited_proofs"];
         assert_eq!(inherited[0]["proof"]["goal"], expected, "{result}");
         assert!(!inherited.to_string().contains(other), "{result}");
@@ -1350,45 +1718,72 @@ fn pre_task_nested_blueprint_independent_review_injects_only_each_task_slice() {
 
 #[test]
 fn pre_task_exhausted_native_run_is_replaced_by_current_observations() {
-    use forge_tasks::engine::{claim, manage, orchestrator::waves::run_milestone_waves, Claim, Manage, ManageAction};
+    use acdd_tasks::engine::{
+        claim, manage, orchestrator::waves::run_milestone_waves, Claim, Manage, ManageAction,
+    };
 
     let mut h = harness::WaveHarness::with_nested_blueprint(true);
     let mut profile = h.read_profile();
     profile.gates[0].gates[1].max_attempts = Some(1);
     profile.gates[0].gates[0].proof = serde_json::from_value(serde_json::json!({
         "scheme": {"type": "object", "properties": {"tasks": {"type": "object"}}}
-    })).unwrap();
+    }))
+    .unwrap();
     h.commit_profile(&profile, "exhausted blueprint fixture");
     fs::write(h.root().join("root-proof.json"), r#"{"tasks":{"first":{"layer":"obsolete","summary":"old","blackboard_decision_id":"old"}}}"#).unwrap();
     let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
-    assert!(format!("{error:#}").contains("WORKFLOW_ATTEMPTS_EXHAUSTED"), "{error:#}");
-    assert!(format!("{:#}", h.task.claim_next().unwrap_err()).contains("MILESTONE_PRE_TASK_GATE_PENDING"));
+    assert!(
+        format!("{error:#}").contains("WORKFLOW_ATTEMPTS_EXHAUSTED"),
+        "{error:#}"
+    );
+    assert!(format!("{:#}", h.task.claim_next().unwrap_err())
+        .contains("MILESTONE_PRE_TASK_GATE_PENDING"));
 
-    fs::write(h.root().join("root-proof.json"), r#"{"tasks":{"first":{"layer":"current","summary":"new","blackboard_decision_id":"new"}}}"#).unwrap();
+    fs::write(
+        h.root().join("root-proof.json"),
+        r#"{"tasks":{"first":{"layer":"current","summary":"new","blackboard_decision_id":"new"}}}"#,
+    )
+    .unwrap();
     fs::write(h.root().join("src/lib.rs"), "// changed candidate\n").unwrap();
-    let stop_review = h.root().join(".forge/stop-blueprint-review");
+    let stop_review = h.root().join(".acdd/stop-blueprint-review");
     fs::write(&stop_review, "").unwrap();
     assert!(run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).is_err());
-    let action = manage(h.root(), Manage { action: ManageAction::Next,
-        worker_id: Some("next-worker".into()), worktree: Some(h.root().to_string_lossy().into_owned()),
-        ..Default::default() }).unwrap();
+    let action = manage(
+        h.root(),
+        Manage {
+            action: ManageAction::Next,
+            worker_id: Some("next-worker".into()),
+            worktree: Some(h.root().to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert_eq!(action["subject"], "milestone");
     assert_eq!(action["stage"], "blueprint_synthesis.review");
     fs::remove_file(stop_review).unwrap();
     // Stop before dispatch so the subsequent claim exercises a fresh store.
     h.options.task.runner_timeout = std::time::Duration::ZERO;
     assert!(run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).is_err());
-    let temporary = forge_tasks::store::TasksStore::open_in_memory("fixture", "fixture").unwrap();
+    let temporary = acdd_tasks::store::TasksStore::open_in_memory("fixture", "fixture").unwrap();
     drop(std::mem::replace(&mut h.task.store, temporary));
-    h.task.store = contextunity_forge_mcp::engine::tasks::store_for_task(h.root(), &h.task.id).unwrap();
+    h.task.store = contextunity_acdd::engine::tasks::store_for_task(h.root(), &h.task.id).unwrap();
     let reviews: Vec<String> = h.task.store.connection.prepare(
         "SELECT action FROM gate_transitions WHERE subject='milestone' AND gate_path='blueprint_synthesis.review' ORDER BY id"
     ).unwrap().query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect();
     assert_eq!(reviews, ["fail", "pass"]);
     let task = h.task.store.inspect(&h.task.id).unwrap();
-    let result = claim(h.root(), Claim { task_id: h.task.id.clone(), stage: task.stage,
-        worker_id: "fresh-worker".into(), worktree: h.root().to_string_lossy().into_owned(),
-        bundle: Some(true), session_fingerprint: None }).unwrap();
+    let result = claim(
+        h.root(),
+        Claim {
+            task_id: h.task.id.clone(),
+            stage: task.stage,
+            worker_id: "fresh-worker".into(),
+            worktree: h.root().to_string_lossy().into_owned(),
+            bundle: Some(true),
+            session_fingerprint: None,
+        },
+    )
+    .unwrap();
     let inherited = &result["context_bundle"]["inherited_proofs"];
     assert!(inherited.to_string().contains("current"), "{result}");
     assert!(!inherited.to_string().contains("obsolete"), "{result}");
@@ -1396,14 +1791,15 @@ fn pre_task_exhausted_native_run_is_replaced_by_current_observations() {
 
 #[test]
 fn pre_task_nested_blueprint_rejected_review_does_not_fan_out() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
 
     let mut h = harness::WaveHarness::with_nested_blueprint(true);
     let mut profile = h.read_profile();
     profile.gates[0].gates[1].max_attempts = Some(1);
     h.commit_profile(&profile, "rejected nested blueprint fixture");
     assert!(run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).is_err());
-    assert!(format!("{:#}", h.task.claim_next().unwrap_err()).contains("MILESTONE_PRE_TASK_GATE_PENDING"));
+    assert!(format!("{:#}", h.task.claim_next().unwrap_err())
+        .contains("MILESTONE_PRE_TASK_GATE_PENDING"));
     let count: i64 = h.task.store.connection.query_row(
         "SELECT count(*) FROM gate_transitions WHERE subject != 'milestone' AND gate_path='blueprint_synthesis.synthesize' AND action='advance'", [], |row| row.get(0)
     ).unwrap();
@@ -1416,7 +1812,7 @@ fn pre_task_nested_blueprint_rejected_review_does_not_fan_out() {
 
 #[test]
 fn pre_task_blueprint_synthesis_container_barrier_and_per_task_proof_injection() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
 
     let mut h = harness::WaveHarness::with_nested_blueprint(true);
 
@@ -1428,7 +1824,7 @@ fn pre_task_blueprint_synthesis_container_barrier_and_per_task_proof_injection()
     );
 
     // 2. Stop at milestone_review before handoff so state is not pruned
-    let stop = h.root().join(".forge/stop-wave-review");
+    let stop = h.root().join(".acdd/stop-wave-review");
     fs::write(&stop, "").unwrap();
     let outcome = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {});
     assert!(outcome.is_err(), "{outcome:#?}");
@@ -1454,12 +1850,15 @@ fn pre_task_blueprint_synthesis_container_barrier_and_per_task_proof_injection()
     let transitions: Vec<(String, String)> = h.task.store.connection.prepare(
         "SELECT gate_path, action FROM gate_transitions WHERE subject='milestone' AND gate_path LIKE 'blueprint_synthesis.%' ORDER BY id"
     ).unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect();
-    assert_eq!(transitions, vec![
-        ("blueprint_synthesis.synthesize".into(), "pass".into()),
-        ("blueprint_synthesis.review".into(), "fail".into()),
-        ("blueprint_synthesis.synthesize".into(), "pass".into()),
-        ("blueprint_synthesis.review".into(), "pass".into()),
-    ]);
+    assert_eq!(
+        transitions,
+        vec![
+            ("blueprint_synthesis.synthesize".into(), "pass".into()),
+            ("blueprint_synthesis.review".into(), "fail".into()),
+            ("blueprint_synthesis.synthesize".into(), "pass".into()),
+            ("blueprint_synthesis.review".into(), "pass".into()),
+        ]
+    );
 
     // 4. Verify that task completed successfully with proof receipt
     let inspected = h.task.store.inspect(&h.task.id).unwrap();
@@ -1469,7 +1868,7 @@ fn pre_task_blueprint_synthesis_container_barrier_and_per_task_proof_injection()
 
 #[test]
 fn milestone_pre_task_observations_invalidate_changed_implementation() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     for committed in [false, true] {
         let mut h = harness::WaveHarness::new(true);
         h.pre_task_checks(true);
@@ -1497,7 +1896,7 @@ fn milestone_pre_task_observations_invalidate_changed_implementation() {
                 "{error:#}"
             );
             assert_eq!(
-                fs::read_to_string(h.root().join(".forge/preflight.log")).unwrap(),
+                fs::read_to_string(h.root().join(".acdd/preflight.log")).unwrap(),
                 "seenseen",
                 "committed={committed}"
             );
@@ -1507,10 +1906,10 @@ fn milestone_pre_task_observations_invalidate_changed_implementation() {
 
 #[test]
 fn milestone_pre_task_refresh_after_delivery_resumes_without_new_task_claims() {
-    use forge_tasks::engine::orchestrator::{types::OrchestratorEvent, waves::run_milestone_waves};
+    use acdd_tasks::engine::orchestrator::{types::OrchestratorEvent, waves::run_milestone_waves};
     let mut h = harness::WaveHarness::new(true);
     h.pre_task_checks(false);
-    let stop = h.root().join(".forge/stop-wave-review");
+    let stop = h.root().join(".acdd/stop-wave-review");
     fs::write(&stop, "").unwrap();
     assert!(run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).is_err());
     assert_eq!(
@@ -1527,7 +1926,7 @@ fn milestone_pre_task_refresh_after_delivery_resumes_without_new_task_claims() {
     assert!(resumed.is_ok(), "{resumed:#?}");
     assert!(claims.is_empty(), "{claims:?}");
     assert_eq!(
-        fs::read_to_string(h.root().join(".forge/preflight.log")).unwrap(),
+        fs::read_to_string(h.root().join(".acdd/preflight.log")).unwrap(),
         "seenseen"
     );
 }
@@ -1543,7 +1942,7 @@ fn selected_server_worktree_rebases_config_profile_and_index_without_leaking_roo
         primary.root(),
         "configs/custom.yaml",
         "profiles/plan.yaml",
-        ".forge/selected-index.sqlite",
+        ".acdd/selected-index.sqlite",
     );
     let mut client = settings.run(|| {
         McpTestHarness::with_root_and_db(primary.root(), &settings.code_db, "worktree-server")
@@ -1551,13 +1950,13 @@ fn selected_server_worktree_rebases_config_profile_and_index_without_leaking_roo
     });
     let found = client.payload("code_map_search", serde_json::json!({"pattern":"worktree_selected","exact":true,"worktree":selected.root()})).unwrap();
     assert_eq!(found["nodes"]["total"], 1);
-    assert!(selected.path(".forge/selected-index.sqlite").exists());
+    assert!(selected.path(".acdd/selected-index.sqlite").exists());
     assert!(!settings.code_db.exists());
     client
         .payload("task_list", serde_json::json!({"worktree":selected.root()}))
         .unwrap();
-    assert!(selected.path(".forge/custom-tasks.sqlite").exists());
-    assert!(!primary.path(".forge/custom-tasks.sqlite").exists());
+    assert!(selected.path(".acdd/custom-tasks.sqlite").exists());
+    assert!(!primary.path(".acdd/custom-tasks.sqlite").exists());
     let primary_result = client
         .payload(
             "code_map_search",
@@ -1596,7 +1995,7 @@ fn milestone_preflight_enforces_selected_module_policy() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("FEATURE_DISABLED"), "{error:#}");
-    assert!(!root.path(".forge/tasks.sqlite").exists());
+    assert!(!root.path(".acdd/tasks.sqlite").exists());
     let result = run_cli(
         root.root(),
         &[
@@ -1612,7 +2011,7 @@ fn milestone_preflight_enforces_selected_module_policy() {
     )
     .unwrap();
     assert_eq!(result["milestone_id"], "m-selected");
-    assert!(root.path(".forge/custom-tasks.sqlite").exists());
+    assert!(root.path(".acdd/custom-tasks.sqlite").exists());
     assert!(!root.path(".worktrees").exists());
 }
 
@@ -1636,7 +2035,7 @@ fn selected_config_reaches_cli_and_mcp_guide_validation() {
         root.root(),
         "configs/index.yaml",
         "profiles/plan.yaml",
-        ".forge/server-index.sqlite",
+        ".acdd/server-index.sqlite",
     );
     let mut client = selection.run(|| {
         McpTestHarness::with_root_and_db(root.root(), &selection.code_db, "guide-server").unwrap()
@@ -1687,7 +2086,7 @@ fn selected_adapter_resolves_linked_sources_in_cli_and_mcp_ast_queries() {
         root.root(),
         &[
             "--db",
-            ".forge/linked-index.sqlite",
+            ".acdd/linked-index.sqlite",
             "--config",
             "configs/linked.yaml",
             "ast",
@@ -1708,7 +2107,7 @@ fn selected_adapter_resolves_linked_sources_in_cli_and_mcp_ast_queries() {
         root.root(),
         "configs/linked.yaml",
         "profiles/plan.yaml",
-        ".forge/linked-index.sqlite",
+        ".acdd/linked-index.sqlite",
     );
     let mut client = selection.run(|| {
         McpTestHarness::with_root_and_db(root.root(), &selection.code_db, "linked-server").unwrap()
@@ -1734,7 +2133,7 @@ fn server_claim_uses_retained_explicit_profile_over_configured_profile() {
         root.root(),
         "configs/custom.yaml",
         "profiles/plan.yaml",
-        ".forge/server-index.sqlite",
+        ".acdd/server-index.sqlite",
     );
     let mut client = selection.run(|| {
         McpTestHarness::with_root_and_db(root.root(), &selection.code_db, "profile-server").unwrap()
@@ -1753,8 +2152,8 @@ fn server_claim_uses_retained_explicit_profile_over_configured_profile() {
         .unwrap();
     let result = client.payload("task_claim", serde_json::json!({"task_id":"forge-mcp/m-selected:one","stage":"record","worker_id":"selected-profile-worker","worktree":root.root()})).unwrap();
     assert_eq!(result["stage"], "record");
-    assert!(root.path(".forge/custom-tasks.sqlite").is_file());
-    assert!(!root.path(".forge/tasks.sqlite").exists());
+    assert!(root.path(".acdd/custom-tasks.sqlite").is_file());
+    assert!(!root.path(".acdd/tasks.sqlite").exists());
     assert!(!selection.code_db.exists());
     client.finish().unwrap();
 }
@@ -1762,21 +2161,21 @@ fn server_claim_uses_retained_explicit_profile_over_configured_profile() {
 #[test]
 fn server_selection_survives_transport_lifetime_and_refreshes() {
     use crate::common::{mcp_client::invalidate_mcp_connection_cache, mcp_harness::McpTestHarness};
-    use forge_tasks::tasks::configuration::current;
+    use acdd_tasks::tasks::configuration::current;
     let plan = PlanHarness::linear();
     let root = plan.materialize(plan.path);
     root.write(
         "configs/index.yaml",
-        "roots: [selected]\ntasks_db: .forge/server-tasks.sqlite\n",
+        "roots: [selected]\ntasks_db: .acdd/server-tasks.sqlite\n",
     );
     root.write("selected/lib.rs", "pub fn before_refresh() {}\n");
     let selection = harness::selected_settings(
         root.root(),
         "configs/index.yaml",
         "profiles/plan.yaml",
-        ".forge/server-index.sqlite",
+        ".acdd/server-index.sqlite",
     );
-    let db = root.path(".forge/server-index.sqlite");
+    let db = root.path(".acdd/server-index.sqlite");
     let mut client =
         selection.run(|| McpTestHarness::spawn(root.root(), &db, "selected-server").unwrap());
     assert!(current(root.root()).is_none());
@@ -1802,13 +2201,13 @@ fn server_selection_survives_transport_lifetime_and_refreshes() {
         .unwrap();
     assert_eq!(after["nodes"]["total"], 1);
     client.payload("task_list", serde_json::json!({})).unwrap();
-    assert!(root.path(".forge/server-tasks.sqlite").is_file());
-    assert!(!root.path(".forge/tasks.sqlite").exists());
+    assert!(root.path(".acdd/server-tasks.sqlite").is_file());
+    assert!(!root.path(".acdd/tasks.sqlite").exists());
     assert!(current(root.root()).is_none());
     client.finish().unwrap();
-    let conn = contextunity_forge_mcp::db::reader::open(&db, root.root()).unwrap();
+    let conn = contextunity_acdd::db::reader::open(&db, root.root()).unwrap();
     assert_eq!(
-        contextunity_forge_mcp::core::config::read_policy(root.root(), &conn)
+        contextunity_acdd::core::config::read_policy(root.root(), &conn)
             .unwrap()
             .adapter_path,
         Some(root.path("configs/index.yaml").canonicalize().unwrap())
@@ -1825,17 +2224,17 @@ fn simultaneous_servers_keep_selected_module_and_task_policies_independent() {
         root.root(),
         "configs/minimal.yaml",
         "profiles/plan.yaml",
-        ".forge/minimal-index.sqlite",
+        ".acdd/minimal-index.sqlite",
     );
     let full = harness::selected_settings(
         root.root(),
         "configs/custom.yaml",
         "profiles/plan.yaml",
-        ".forge/full-index.sqlite",
+        ".acdd/full-index.sqlite",
     );
     let parent = (
-        std::env::var_os("FORGE_CONFIG"),
-        std::env::var_os("FORGE_PROFILE"),
+        std::env::var_os("ACDD_CONFIG"),
+        std::env::var_os("ACDD_PROFILE"),
     );
     std::thread::scope(|threads| {
         let first = threads.spawn(|| {
@@ -1875,12 +2274,12 @@ fn simultaneous_servers_keep_selected_module_and_task_policies_independent() {
         first.join().unwrap();
         second.join().unwrap();
     });
-    assert!(root.path(".forge/custom-tasks.sqlite").exists());
-    assert!(!root.path(".forge/tasks.sqlite").exists());
+    assert!(root.path(".acdd/custom-tasks.sqlite").exists());
+    assert!(!root.path(".acdd/tasks.sqlite").exists());
     assert_eq!(
         (
-            std::env::var_os("FORGE_CONFIG"),
-            std::env::var_os("FORGE_PROFILE")
+            std::env::var_os("ACDD_CONFIG"),
+            std::env::var_os("ACDD_PROFILE")
         ),
         parent
     );
@@ -1892,12 +2291,12 @@ fn cli_query_rebuilds_existing_index_with_the_selected_policy() {
     let root = plan.materialize(plan.path);
     root.write("configs/index.yaml", "roots: [selected]\n");
     root.write("selected/lib.rs", "pub fn selected_query() {}\n");
-    run_cli(root.root(), &["--db", ".forge/query-index.sqlite", "build"]).unwrap();
+    run_cli(root.root(), &["--db", ".acdd/query-index.sqlite", "build"]).unwrap();
     run_cli(
         root.root(),
         &[
             "--db",
-            ".forge/query-index.sqlite",
+            ".acdd/query-index.sqlite",
             "--config",
             "configs/index.yaml",
             "query",
@@ -1905,18 +2304,16 @@ fn cli_query_rebuilds_existing_index_with_the_selected_policy() {
         ],
     )
     .unwrap();
-    let conn = contextunity_forge_mcp::db::reader::open(
-        &root.path(".forge/query-index.sqlite"),
-        root.root(),
-    )
-    .unwrap();
-    let inventory = contextunity_forge_mcp::db::reader::inventory_snapshot(&conn).unwrap();
+    let conn =
+        contextunity_acdd::db::reader::open(&root.path(".acdd/query-index.sqlite"), root.root())
+            .unwrap();
+    let inventory = contextunity_acdd::db::reader::inventory_snapshot(&conn).unwrap();
     assert!(inventory
         .iter()
         .any(|entry| entry.path == "selected/lib.rs"));
     assert!(!inventory.iter().any(|entry| entry.path == "src/first.rs"));
     assert_eq!(
-        contextunity_forge_mcp::core::config::read_policy(root.root(), &conn)
+        contextunity_acdd::core::config::read_policy(root.root(), &conn)
             .unwrap()
             .adapter_path,
         Some(root.path("configs/index.yaml").canonicalize().unwrap())
@@ -1929,7 +2326,7 @@ fn cli_delta_selects_policy_and_preserves_legacy_persisted_selection() {
     let root = harness.materialize(harness.path);
     root.write("configs/index.yaml", "roots: [selected]\n");
     root.write("selected/lib.rs", "pub fn selected() {}\n");
-    let db = root.path(".forge/selected-index.sqlite");
+    let db = root.path(".acdd/selected-index.sqlite");
     run_cli(root.root(), &["--db", db.to_str().unwrap(), "build"]).unwrap();
     run_cli(
         root.root(),
@@ -1944,8 +2341,8 @@ fn cli_delta_selects_policy_and_preserves_legacy_persisted_selection() {
         ],
     )
     .unwrap();
-    let conn = contextunity_forge_mcp::db::reader::open(&db, root.root()).unwrap();
-    let selected = contextunity_forge_mcp::core::config::read_policy(root.root(), &conn).unwrap();
+    let conn = contextunity_acdd::db::reader::open(&db, root.root()).unwrap();
+    let selected = contextunity_acdd::core::config::read_policy(root.root(), &conn).unwrap();
     assert_eq!(
         selected.adapter_path.as_deref(),
         Some(
@@ -1956,7 +2353,7 @@ fn cli_delta_selects_policy_and_preserves_legacy_persisted_selection() {
         )
     );
     assert_eq!(
-        contextunity_forge_mcp::db::reader::inventory_snapshot(&conn)
+        contextunity_acdd::db::reader::inventory_snapshot(&conn)
             .unwrap()
             .iter()
             .filter(|entry| !entry.is_doc)
@@ -1977,21 +2374,21 @@ fn cli_delta_selects_policy_and_preserves_legacy_persisted_selection() {
         ],
     )
     .unwrap();
-    let conn = contextunity_forge_mcp::db::reader::open(&db, root.root()).unwrap();
+    let conn = contextunity_acdd::db::reader::open(&db, root.root()).unwrap();
     assert_eq!(
-        contextunity_forge_mcp::core::config::read_policy(root.root(), &conn)
+        contextunity_acdd::core::config::read_policy(root.root(), &conn)
             .unwrap()
             .adapter_path,
         selected.adapter_path
     );
-    assert!(!root.path(".forge/code-map.sqlite").exists());
+    assert!(!root.path(".acdd/code-map.sqlite").exists());
 }
 
 #[test]
 fn cli_missing_or_malformed_policy_never_changes_delta_generation() {
     let harness = PlanHarness::linear();
     let root = harness.materialize(harness.path);
-    let db = root.path(".forge/selected-index.sqlite");
+    let db = root.path(".acdd/selected-index.sqlite");
     run_cli(root.root(), &["--db", db.to_str().unwrap(), "build"]).unwrap();
     root.write("configs/broken.yaml", "roots: [\n");
     let before = fs::read(&db).unwrap();
@@ -2010,7 +2407,7 @@ fn cli_missing_or_malformed_policy_never_changes_delta_generation() {
 #[test]
 fn milestone_cancelled_dependency_blocks_dispatch_without_completion_credit() {
     use crate::acdd::support::MilestoneFixtureBuilder;
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let h = harness::WaveHarness::new(true);
     let source = MilestoneFixtureBuilder::new("m-wave")
         .task("first", &["src/lib.rs"])
@@ -2026,7 +2423,7 @@ fn milestone_cancelled_dependency_blocks_dispatch_without_completion_credit() {
     let cancelled = h.task.store.inspect(&h.task.id).unwrap();
     assert_eq!(cancelled.status, "cancelled");
     assert!(cancelled.receipt.is_none());
-    assert!(!h.root().join(".forge/lifecycle/roles.jsonl").exists());
+    assert!(!h.root().join(".acdd/lifecycle/roles.jsonl").exists());
     assert!(h.root().join(harness::MANIFEST).exists());
 }
 
@@ -2090,9 +2487,9 @@ fn explicit_missing_configuration_or_profile_fails_before_plan_execution() {
 
 #[test]
 fn milestone_changed_content_invalidates_root_observation_reuse() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let h = harness::WaveHarness::new(true);
-    let stop = h.root().join(".forge/stop-wave-review");
+    let stop = h.root().join(".acdd/stop-wave-review");
     fs::write(&stop, "").unwrap();
     assert!(run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).is_err());
     fs::write(
@@ -2111,7 +2508,7 @@ fn milestone_changed_content_invalidates_root_observation_reuse() {
     fs::remove_file(stop).unwrap();
     let result = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {});
     assert!(result.is_ok(), "{result:#?}");
-    let contexts = fs::read_to_string(h.root().join(".forge/wave-roles.jsonl")).unwrap();
+    let contexts = fs::read_to_string(h.root().join(".acdd/wave-roles.jsonl")).unwrap();
     let polish = contexts
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -2126,9 +2523,9 @@ fn milestone_changed_content_invalidates_root_observation_reuse() {
 
 #[test]
 fn milestone_handoff_refuses_a_profile_route_without_independent_review() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let mut h = harness::WaveHarness::new(true);
-    let profile_path = h.root().join(".forge/acdd/profile.yaml");
+    let profile_path = h.root().join(".acdd/profile.yaml");
     let mut profile =
         profile::validate_profile_document(&fs::read_to_string(&profile_path).unwrap()).unwrap();
     profile.gates.retain(|gate| gate.id != "milestone_review");
@@ -2137,12 +2534,10 @@ fn milestone_handoff_refuses_a_profile_route_without_independent_review() {
         serde_yaml::to_string(&profile).unwrap()
     );
     fs::write(&profile_path, profile_yaml).unwrap();
-    assert!(
-        git_command(h.root(), &["add", "-f", ".forge/acdd/profile.yaml"])
-            .status()
-            .unwrap()
-            .success()
-    );
+    assert!(git_command(h.root(), &["add", "-f", ".acdd/profile.yaml"])
+        .status()
+        .unwrap()
+        .success());
     assert!(
         git_command(h.root(), &["commit", "-m", "fixture gate profile"])
             .status()
@@ -2154,16 +2549,16 @@ fn milestone_handoff_refuses_a_profile_route_without_independent_review() {
     assert!(
         error.to_string().contains("HANDOFF_REVIEW_REQUIRED"),
         "{error:#}; task role records: {}",
-        fs::read_to_string(h.root().join(".forge/lifecycle/roles.jsonl")).unwrap_or_default()
+        fs::read_to_string(h.root().join(".acdd/lifecycle/roles.jsonl")).unwrap_or_default()
     );
     assert!(h.root().join(harness::MANIFEST).exists());
 }
 
 #[test]
 fn milestone_failed_verification_cannot_archive_passing_tasks() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let mut h = harness::WaveHarness::new(true);
-    let profile_path = h.root().join(".forge/acdd/profile.yaml");
+    let profile_path = h.root().join(".acdd/profile.yaml");
     let mut profile =
         profile::validate_profile_document(&fs::read_to_string(&profile_path).unwrap()).unwrap();
     profile.commands.insert(
@@ -2175,12 +2570,10 @@ fn milestone_failed_verification_cannot_archive_passing_tasks() {
         serde_yaml::to_string(&profile).unwrap()
     );
     fs::write(&profile_path, profile_yaml).unwrap();
-    assert!(
-        git_command(h.root(), &["add", "-f", ".forge/acdd/profile.yaml"])
-            .status()
-            .unwrap()
-            .success()
-    );
+    assert!(git_command(h.root(), &["add", "-f", ".acdd/profile.yaml"])
+        .status()
+        .unwrap()
+        .success());
     assert!(
         git_command(h.root(), &["commit", "-m", "fixture gate profile"])
             .status()
@@ -2223,9 +2616,9 @@ fn configure_post_task_retry(h: &mut harness::WaveHarness, command: &str, limit:
 #[cfg(unix)]
 #[test]
 fn milestone_post_task_signal_preserves_missing_exit_and_stops_retry() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let mut h = harness::WaveHarness::with_single_task(true);
-    configure_post_task_retry(&mut h, "if test -f .forge/post-task-signal; then printf 'test result: ok. 1 passed; 0 failed\\n'; exit 0; fi; touch .forge/post-task-signal; kill -TERM $$", None);
+    configure_post_task_retry(&mut h, "if test -f .acdd/post-task-signal; then printf 'test result: ok. 1 passed; 0 failed\\n'; exit 0; fi; touch .acdd/post-task-signal; kill -TERM $$", None);
     let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
     assert!(
         error
@@ -2239,7 +2632,7 @@ fn milestone_post_task_signal_preserves_missing_exit_and_stops_retry() {
 
 #[test]
 fn milestone_post_task_nonzero_exit_consumes_failure_budget() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let mut h = harness::WaveHarness::with_single_task(true);
     configure_post_task_retry(&mut h, "exit 19", Some(2));
     let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
@@ -2261,9 +2654,9 @@ fn milestone_post_task_nonzero_exit_consumes_failure_budget() {
 
 #[test]
 fn milestone_restart_reuses_bound_root_observations_and_delivered_tasks() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let h = harness::WaveHarness::new(true);
-    let stop = h.root().join(".forge/stop-wave-review");
+    let stop = h.root().join(".acdd/stop-wave-review");
     fs::write(&stop, "").unwrap();
     let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
     assert!(
@@ -2279,7 +2672,7 @@ fn milestone_restart_reuses_bound_root_observations_and_delivered_tasks() {
     fs::remove_file(stop).unwrap();
     let result = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {});
     assert!(result.is_ok(), "{result:#?}");
-    let contexts = fs::read_to_string(h.root().join(".forge/wave-roles.jsonl")).unwrap();
+    let contexts = fs::read_to_string(h.root().join(".acdd/wave-roles.jsonl")).unwrap();
     let gates = contexts
         .lines()
         .map(|line| {
@@ -2300,7 +2693,7 @@ fn milestone_restart_reuses_bound_root_observations_and_delivered_tasks() {
 
 #[test]
 fn milestone_waves_integrate_owned_isolated_worktrees_before_handoff() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let h = harness::WaveHarness::new(false);
     let result = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {});
     assert!(result.is_ok(), "{result:#?}");
@@ -2316,11 +2709,11 @@ fn milestone_waves_integrate_owned_isolated_worktrees_before_handoff() {
 
 #[test]
 fn milestone_isolation_failure_preserves_owned_worktree_and_foreign_paths() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     let h = harness::WaveHarness::new(false);
     fs::create_dir_all(h.root().join(".worktrees/foreign")).unwrap();
     fs::write(h.root().join(".worktrees/foreign/keep"), "user data").unwrap();
-    fs::write(h.root().join(".forge/fail-isolated-role"), "").unwrap();
+    fs::write(h.root().join(".acdd/fail-isolated-role"), "").unwrap();
     let head = git_head(h.root());
     let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
     assert!(
@@ -2342,7 +2735,7 @@ fn milestone_isolation_failure_preserves_owned_worktree_and_foreign_paths() {
 
 #[test]
 fn milestone_waves_execute_dependencies_and_content_bound_handoff_in_place() {
-    use forge_tasks::engine::orchestrator::{types::OrchestratorEvent, waves::run_milestone_waves};
+    use acdd_tasks::engine::orchestrator::{types::OrchestratorEvent, waves::run_milestone_waves};
     let h = harness::WaveHarness::new(true);
     let mut events = Vec::new();
     let result = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |event| {
@@ -2370,13 +2763,13 @@ fn milestone_waves_execute_dependencies_and_content_bound_handoff_in_place() {
 
 #[test]
 fn milestone_waves_reject_unobserved_or_stale_role_decisions() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     for (control, expected) in [
         ("no-wave-decision", "WORKFLOW_DECISION_REQUIRED"),
         ("stale-wave-review", "HANDOFF_EVIDENCE_STALE"),
     ] {
         let h = harness::WaveHarness::new(true);
-        fs::write(h.root().join(".forge").join(control), "").unwrap();
+        fs::write(h.root().join(".acdd").join(control), "").unwrap();
         let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
         assert!(format!("{error:#}").contains(expected), "{error:#}");
         assert!(h.root().join(harness::MANIFEST).exists());
@@ -2425,20 +2818,20 @@ fn global_config_selects_existing_task_store_without_using_index_db() {
             "--config",
             "configs/custom.yaml",
             "--db",
-            ".forge/selected-index.sqlite",
+            ".acdd/selected-index.sqlite",
             "task",
             "list",
         ],
     )
     .unwrap();
-    assert!(root.path(".forge/custom-tasks.sqlite").exists());
-    assert!(!root.path(".forge/tasks.sqlite").exists());
-    assert!(!root.path(".forge/selected-index.sqlite").exists());
+    assert!(root.path(".acdd/custom-tasks.sqlite").exists());
+    assert!(!root.path(".acdd/tasks.sqlite").exists());
+    assert!(!root.path(".acdd/selected-index.sqlite").exists());
 }
 
 #[test]
 fn global_settings_survive_interleaved_future_polls_without_leaking() {
-    use contextunity_forge_mcp::forge_tasks::{
+    use contextunity_acdd::acdd_tasks::{
         tasks::configuration::{current, InvocationSettings},
         TaskSettings,
     };
@@ -2450,17 +2843,17 @@ fn global_settings_survive_interleaved_future_polls_without_leaking() {
     );
     let default = InvocationSettings::new(
         root.root().to_owned(),
-        Some(root.path("forge-mcp.yaml")),
+        Some(root.path("acdd.yaml")),
         profile.clone(),
         None,
-        root.path(".forge/first-index.sqlite"),
+        root.path(".acdd/first-index.sqlite"),
     );
     let custom = InvocationSettings::new(
         root.root().to_owned(),
         Some(root.path("configs/custom.yaml")),
         profile,
         None,
-        root.path(".forge/second-index.sqlite"),
+        root.path(".acdd/second-index.sqlite"),
     );
     let workspace_root = root.root();
     let check = |expected: &'static str| async move {
@@ -2481,8 +2874,8 @@ fn global_settings_survive_interleaved_future_polls_without_leaking() {
         .unwrap()
         .block_on(async {
             tokio::join!(
-                default.clone().scope(check(".forge/tasks.sqlite")),
-                custom.scope(check(".forge/custom-tasks.sqlite"))
+                default.clone().scope(check(".acdd/tasks.sqlite")),
+                custom.scope(check(".acdd/custom-tasks.sqlite"))
             );
         });
     assert!(current(root.root()).is_none());
@@ -2492,7 +2885,7 @@ fn global_settings_survive_interleaved_future_polls_without_leaking() {
     assert!(current(root.root()).is_none());
     assert_eq!(
         TaskSettings::load(root.root()).unwrap().tasks_db.to_str(),
-        Some(".forge/tasks.sqlite")
+        Some(".acdd/tasks.sqlite")
     );
 }
 
@@ -2502,9 +2895,9 @@ fn global_selections_reach_role_children_without_parent_environment_mutation() {
     let root = harness.materialize(harness.path);
     WorkflowHarness::agents().write_to(&root);
     let original = (
-        std::env::var_os("FORGE_CONFIG"),
-        std::env::var_os("FORGE_PROFILE"),
-        std::env::var_os("FORGE_DB"),
+        std::env::var_os("ACDD_CONFIG"),
+        std::env::var_os("ACDD_PROFILE"),
+        std::env::var_os("ACDD_DB"),
     );
     run_cli(
         root.root(),
@@ -2514,7 +2907,7 @@ fn global_selections_reach_role_children_without_parent_environment_mutation() {
             "--profile",
             "profiles/plan.yaml",
             "--db",
-            ".forge/selected-index.sqlite",
+            ".acdd/selected-index.sqlite",
             "workflow",
             "run",
             "agents",
@@ -2538,16 +2931,16 @@ fn global_selections_reach_role_children_without_parent_environment_mutation() {
         assert_eq!(
             record["db"],
             canonical_root
-                .join(".forge/selected-index.sqlite")
+                .join(".acdd/selected-index.sqlite")
                 .to_str()
                 .unwrap()
         );
     }
     assert_eq!(
         (
-            std::env::var_os("FORGE_CONFIG"),
-            std::env::var_os("FORGE_PROFILE"),
-            std::env::var_os("FORGE_DB")
+            std::env::var_os("ACDD_CONFIG"),
+            std::env::var_os("ACDD_PROFILE"),
+            std::env::var_os("ACDD_DB")
         ),
         original
     );
@@ -2572,7 +2965,7 @@ fn workflow_role_rejection_resumes_builder_and_preserves_independence() {
         records[2]["findings"]["scope_findings"][0],
         "Apply the required correction"
     );
-    assert!(!root.path(".forge").exists());
+    assert!(!root.path(".acdd").exists());
     assert!(!root.path(".git").exists());
 }
 
@@ -2585,7 +2978,7 @@ fn workflow_role_exit_success_without_decision_cannot_pass() {
         error.to_string().contains("WORKFLOW_DECISION_REQUIRED"),
         "{error:#}"
     );
-    assert!(!root.path(".forge").exists());
+    assert!(!root.path(".acdd").exists());
 }
 
 #[test]
@@ -2693,7 +3086,7 @@ fn workflow_failure_routes_retry_without_creating_task_state() {
         fs::read_to_string(root.path("retry-result")).unwrap(),
         "retried\n"
     );
-    assert!(!root.path(".forge").exists());
+    assert!(!root.path(".acdd").exists());
 }
 
 #[test]
@@ -2847,7 +3240,7 @@ fn workflow_failure_exhaustion_prevents_successor_execution() {
         "{error:#}"
     );
     assert!(!root.path("must-not-run").exists());
-    assert!(!root.path(".forge").exists());
+    assert!(!root.path(".acdd").exists());
 }
 
 #[cfg(unix)]
@@ -2861,20 +3254,39 @@ fn workflow_timeouts_reap_the_owned_process_group() {
     let source = fs::read_to_string(root.path("docs/workflows/timeout.yaml")).unwrap();
     let cases = [
         ("timeout", source.clone()),
-        ("unbounded-timeout", source.replace("    max_attempts: 1\n", "")),
+        (
+            "unbounded-timeout",
+            source.replace("    max_attempts: 1\n", ""),
+        ),
     ];
     for (name, profile) in cases {
         root.write(format!("docs/workflows/{name}.yaml"), &profile);
         let started = std::time::Instant::now();
         let error = run_cli(root.root(), &["workflow", "run", name]).unwrap_err();
-        assert!(error.to_string().contains("WORKFLOW_COMMAND_TIMEOUT: timeout"), "{name}: {error:#}");
-        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{name}");
+        assert!(
+            error
+                .to_string()
+                .contains("WORKFLOW_COMMAND_TIMEOUT: timeout"),
+            "{name}: {error:#}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{name}"
+        );
         let pid = fs::read_to_string(root.path("timeout.pid")).unwrap();
         let pid: libc::pid_t = pid.trim().parse().unwrap();
         assert!(pid > 0, "{name}");
-        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "{name}: process {pid} is still alive");
-        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH), "{name}");
-        assert!(!root.path(".forge").exists());
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "{name}: process {pid} is still alive"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH),
+            "{name}"
+        );
+        assert!(!root.path(".acdd").exists());
         fs::remove_file(root.path("timeout.pid")).unwrap();
     }
 }
@@ -2909,11 +3321,11 @@ gates:
 #[cfg(unix)]
 #[test]
 fn milestone_signal_interruption_stops_unbounded_root_route() {
-    use forge_tasks::engine::orchestrator::waves::run_milestone_waves;
-    use forge_tasks::tasks::profile::CommandDef;
+    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
+    use acdd_tasks::tasks::profile::CommandDef;
     let mut h = harness::WaveHarness::new(true);
     let mut profile = h.read_profile();
-    profile.commands.insert("signal_root".into(), CommandDef::Script("if test -f .forge/signal-visited; then exit 0; fi; touch .forge/signal-visited; kill -TERM $$".into()));
+    profile.commands.insert("signal_root".into(), CommandDef::Script("if test -f .acdd/signal-visited; then exit 0; fi; touch .acdd/signal-visited; kill -TERM $$".into()));
     profile.gates.insert(0, serde_json::from_value(serde_json::json!({"id":"signal_root","command":"signal_root","proof":"none","fail":"signal_root"})).unwrap());
     h.commit_profile(&profile, "signal root fixture");
     let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
@@ -2923,7 +3335,7 @@ fn milestone_signal_interruption_stops_unbounded_root_route() {
             .contains("WORKFLOW_COMMAND_INTERRUPTED: signal_root"),
         "{error:#}"
     );
-    assert!(h.root().join(".forge/signal-visited").exists());
+    assert!(h.root().join(".acdd/signal-visited").exists());
 }
 
 #[test]
@@ -2968,7 +3380,7 @@ fn workflow_agent_gate_requires_a_structured_decision_runner() {
         error.to_string().contains("WORKFLOW_RUNNER_REQUIRED"),
         "{error:#}"
     );
-    assert!(!root.path(".forge").exists());
+    assert!(!root.path(".acdd").exists());
 }
 
 #[cfg(unix)]
@@ -3024,7 +3436,7 @@ fn workflow_run_executes_root_gates_without_task_state() {
     );
     assert!(!root.path(".git").exists());
     assert!(
-        !root.path(".forge").exists(),
+        !root.path(".acdd").exists(),
         "save:none must remain ephemeral"
     );
     assert_eq!(
@@ -3097,7 +3509,7 @@ fn workflow_discovery_does_not_execute_gates() {
         let value: Value = serde_json::from_slice(&output).unwrap();
         assert!(value.to_string().contains("ordered"));
         assert!(!root.path("workflow-order.log").exists());
-        assert!(!root.path(".forge").exists());
+        assert!(!root.path(".acdd").exists());
         assert!(!root.path(".git").exists());
     }
 }
@@ -3234,7 +3646,7 @@ fn plan_run_honors_explicit_config_and_profile_paths() {
         "--root",
         root.root().to_str().unwrap(),
         "--db",
-        ".forge/selected-index.sqlite",
+        ".acdd/selected-index.sqlite",
         "--config",
         "configs/custom.yaml",
         "--profile",
@@ -3272,8 +3684,8 @@ fn plan_run_honors_explicit_config_and_profile_paths() {
         !root.path("rejected-profile.log").exists(),
         "explicit profile must override selected config"
     );
-    assert!(!root.path(".forge/tasks.sqlite").exists());
-    assert!(!root.path(".forge/custom-tasks.sqlite").exists());
+    assert!(!root.path(".acdd/tasks.sqlite").exists());
+    assert!(!root.path(".acdd/custom-tasks.sqlite").exists());
     assert_eq!(git_head(root.root()), head);
     assert!(harness
         .snapshots(&root)
@@ -3283,7 +3695,7 @@ fn plan_run_honors_explicit_config_and_profile_paths() {
 
 #[test]
 fn milestone_root_gate_claim_and_submit_enforce_barriers_independence_and_fanout() {
-    use contextunity_forge_mcp::forge_tasks::engine::{
+    use contextunity_acdd::acdd_tasks::engine::{
         claim, manage, submit, Action, Claim, Manage, ManageAction, Submit,
     };
 
@@ -3559,7 +3971,7 @@ fn milestone_root_gate_claim_and_submit_enforce_barriers_independence_and_fanout
 fn root_command_verify_blocks_unobserved_pass_and_bypassed_polish_allows_independent_milestone_review(
 ) {
     use crate::acdd::support::passing_review_proof;
-    use contextunity_forge_mcp::forge_tasks::engine::{
+    use contextunity_acdd::acdd_tasks::engine::{
         claim, manage, submit, Action, Claim, Manage, ManageAction, Submit,
     };
 
@@ -3722,7 +4134,7 @@ fn root_command_verify_blocks_unobserved_pass_and_bypassed_polish_allows_indepen
 
 #[test]
 fn root_immutable_gate_rejects_modified_candidate_after_claim() {
-    use contextunity_forge_mcp::forge_tasks::engine::{claim, submit, Action, Claim, Submit};
+    use contextunity_acdd::acdd_tasks::engine::{claim, submit, Action, Claim, Submit};
 
     let mut h = harness::WaveHarness::with_single_task(true);
     let mut profile = h.read_profile();
@@ -3828,7 +4240,7 @@ fn root_immutable_gate_rejects_modified_candidate_after_claim() {
 
 #[test]
 fn claim_response_overflow_releases_claim_and_keeps_task_ready() {
-    use contextunity_forge_mcp::forge_tasks::engine::{claim, submit, Action, Claim, Submit};
+    use contextunity_acdd::acdd_tasks::engine::{claim, submit, Action, Claim, Submit};
 
     let mut h = harness::WaveHarness::with_single_task(true);
     h.with_blueprint_synthesis_root_gates();
@@ -3899,7 +4311,7 @@ fn claim_response_overflow_releases_claim_and_keeps_task_ready() {
     .unwrap();
 
     // Lower configured response budget below the inherited proof size to force TASK_RESPONSE_OVERFLOW.
-    let cfg_path = h.root().join("forge-mcp.yaml");
+    let cfg_path = h.root().join("acdd.yaml");
     let mut cfg = fs::read_to_string(&cfg_path).unwrap();
     cfg.push_str("\nresponse:\n  max_output_bytes: 1024\n");
     fs::write(&cfg_path, cfg).unwrap();
@@ -3944,7 +4356,7 @@ fn claim_response_overflow_releases_claim_and_keeps_task_ready() {
 
 #[test]
 fn root_immutable_gate_enforces_prior_snapshot_across_intervening_ordinary_pass() {
-    use contextunity_forge_mcp::forge_tasks::engine::{claim, submit, Action, Claim, Submit};
+    use contextunity_acdd::acdd_tasks::engine::{claim, submit, Action, Claim, Submit};
 
     let mut h = harness::WaveHarness::with_single_task(true);
     let mut profile = h.read_profile();
@@ -4047,7 +4459,7 @@ fn root_immutable_gate_enforces_prior_snapshot_across_intervening_ordinary_pass(
 
 #[test]
 fn task_pinned_inherit_none_profile_cannot_bypass_milestone_root_barriers() {
-    use contextunity_forge_mcp::forge_tasks::engine::{
+    use contextunity_acdd::acdd_tasks::engine::{
         claim, manage, submit, Action, Claim, Manage, ManageAction, Submit,
     };
     use sha2::Digest;
@@ -4115,17 +4527,17 @@ gates:
     );
     fs::write(h.root().join(manifest_rel), spec).unwrap();
     fs::remove_file(h.root().join(harness::MANIFEST)).unwrap();
-    fs::remove_file(h.root().join(".forge/tasks.sqlite")).unwrap();
-    let cfg = fs::read_to_string(h.root().join("forge-mcp.yaml")).unwrap();
+    fs::remove_file(h.root().join(".acdd/tasks.sqlite")).unwrap();
+    let cfg = fs::read_to_string(h.root().join("acdd.yaml")).unwrap();
     let cleaned_cfg = cfg
         .lines()
         .filter(|line| !line.starts_with("acdd_profile:"))
         .collect::<Vec<_>>()
         .join("\n");
-    fs::write(h.root().join("forge-mcp.yaml"), format!("{cleaned_cfg}\n")).unwrap();
+    fs::write(h.root().join("acdd.yaml"), format!("{cleaned_cfg}\n")).unwrap();
     for args in [
         vec!["rm", harness::MANIFEST],
-        vec!["add", "forge-mcp.yaml", "profiles", manifest_rel],
+        vec!["add", "acdd.yaml", "profiles", manifest_rel],
         vec!["commit", "-m", "pinned milestone and task profiles"],
     ] {
         assert!(git_command(h.root(), &args).status().unwrap().success());
@@ -4232,7 +4644,7 @@ gates:
 
 #[test]
 fn post_task_immutable_review_ignores_pre_task_snapshot_and_cli_verifies_root_gate() {
-    use contextunity_forge_mcp::forge_tasks::engine::{claim, submit, Action, Claim, Submit};
+    use contextunity_acdd::acdd_tasks::engine::{claim, submit, Action, Claim, Submit};
 
     let mut h = harness::WaveHarness::with_single_task(true);
     let mut profile = h.read_profile();

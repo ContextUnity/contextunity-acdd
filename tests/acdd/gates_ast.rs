@@ -1,7 +1,7 @@
 //! Test module reserved for the AC-001 gate AST contract.
 
 use super::{snapshot::FixtureSnapshot, support, tasks::harness::TaskHarness};
-use contextunity_forge_mcp::core::tasks::{
+use contextunity_acdd::core::tasks::{
     catalog::{filter_subsystem_tools, SubsystemPreset, SubsystemRegistry},
     profile::{parse_profile, validate_profile_document, GateDriver},
     Milestone,

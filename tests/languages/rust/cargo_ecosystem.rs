@@ -322,9 +322,9 @@ fn rayon_authority_follows_dependency_prelude_and_module_scope() {
             },
         );
         if let Some(manifest) = manifest {
-            workspace.write(".forge/frameworks/rust-cargo.toml", manifest);
+            workspace.write(".acdd/frameworks/rust-cargo.toml", manifest);
         } else {
-            let _ = std::fs::remove_file(workspace.path(".forge/frameworks/rust-cargo.toml"));
+            let _ = std::fs::remove_file(workspace.path(".acdd/frameworks/rust-cargo.toml"));
         }
         let import = if prelude {
             "use rayon::prelude::*;"

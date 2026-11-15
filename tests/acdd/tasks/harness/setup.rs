@@ -28,10 +28,10 @@ impl TaskHarness {
         let workspace = Workspace::new();
         workspace.write("src/lib.rs", "pub fn example() {}\n");
         workspace.write(
-            "forge-mcp.yaml",
-            "roots: [src]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\n",
+            "acdd.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
         );
-        let mut store = TasksStore::open(&workspace.path(".forge/tasks.sqlite")).unwrap();
+        let mut store = TasksStore::open(&workspace.path(".acdd/tasks.sqlite")).unwrap();
         for (path, id, task, status) in [
             (
                 "docs/milestones/010-active.md",

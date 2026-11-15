@@ -1,6 +1,6 @@
 use crate::common::Workspace;
 use crate::harness::{HarnessResult, McpTestHarness};
-use contextunity_forge_mcp::db::reader;
+use contextunity_acdd::db::reader;
 use serde_json::Value;
 use std::sync::OnceLock;
 
@@ -145,7 +145,7 @@ pub fn persisted_state(workspace: &Workspace) -> anyhow::Result<Value> {
 
 fn analysis_workspace() -> Workspace {
     let workspace = Workspace::new();
-    workspace.write("forge-mcp.yaml", "tasks_db: .forge/tasks.sqlite\n");
+    workspace.write("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n");
     workspace.write("cycle.py", "def a(): b()\ndef b(): a()\n");
     workspace.write("other.py", "def idle(): pass\n");
     workspace

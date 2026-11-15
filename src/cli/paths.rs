@@ -1,5 +1,5 @@
+use acdd_tasks::tasks::profile::{self, GateProfile};
 use anyhow::{bail, ensure, Context, Result};
-use forge_tasks::tasks::profile::{self, GateProfile};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -20,9 +20,9 @@ impl ResolvedPaths {
         let config = match config {
             Some(path) => Some(confined_file(root, path)?),
             None => root
-                .join("forge-mcp.yaml")
+                .join("acdd.yaml")
                 .is_file()
-                .then(|| root.join("forge-mcp.yaml")),
+                .then(|| root.join("acdd.yaml")),
         };
         let value = config
             .as_ref()
@@ -80,7 +80,7 @@ impl ResolvedPaths {
                 profile::apply_config_metadata_limit(config.as_deref(), (*profile).clone())?
             }
             None if explicit_config => {
-                let repository = root.join(".forge/acdd/profile.yaml");
+                let repository = root.join(".acdd/profile.yaml");
                 let profile = if repository.exists() {
                     Arc::new(profile::validate_profile_document(&fs::read_to_string(
                         confined_file(root, &repository)?,
@@ -192,15 +192,15 @@ mod tests {
             .join(format!("forge_cli_paths_{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let real_repo = base.join("private_var/repo");
-        fs::create_dir_all(real_repo.join(".forge/acdd")).unwrap();
-        let profile_file = real_repo.join(".forge/acdd/profile.yaml");
+        fs::create_dir_all(real_repo.join(".acdd")).unwrap();
+        let profile_file = real_repo.join(".acdd/profile.yaml");
         fs::write(&profile_file, "version: 2\n").unwrap();
 
         let alias_repo = base.join("var_repo");
         symlink(&real_repo, &alias_repo).unwrap();
 
         let canonical_root = real_repo.canonicalize().unwrap();
-        let alias_profile = alias_repo.join(".forge/acdd/profile.yaml");
+        let alias_profile = alias_repo.join(".acdd/profile.yaml");
         let resolved = ResolvedPaths::resolve(&canonical_root, None, Some(&alias_profile)).unwrap();
         assert!(resolved.explicit_profile);
 

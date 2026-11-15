@@ -12,10 +12,10 @@ const MANIFESTS: &[(&str, &str)] = &[
         "{\"lockfileVersion\":3,\"packages\":{\"node_modules/vue\":{\"version\":\"3\"}}}",
     ),
     (
-        ".forge/frameworks/django.toml",
+        ".acdd/frameworks/django.toml",
         "[[route_calls]]\ncallee='LocalRoute'\nmethod='GET'\npath_argument=0\nhandler_argument=1\n",
     ),
-    (".forge/frameworks/fastapi.yaml", "enabled: true\n"),
+    (".acdd/frameworks/fastapi.yaml", "enabled: true\n"),
 ];
 const SOURCES: &[(&str, &str, &str)] = &[
     ("app.py", "python", "from fastapi import FastAPI\nclass Record: pass\napp=FastAPI()\n@app.get('/records/', response_model=Record)\ndef records(): return []\nLocalRoute('/local/', records)\n"),
@@ -56,9 +56,9 @@ fn source_registry_matches_disk_scopes_facts_and_linked_graph() {
                 serde_json::to_value(disk_facts[path].clone().into_public()).unwrap()
             );
         }
-        let actual: contextunity_forge_mcp::core::models::Graph =
+        let actual: contextunity_acdd::core::models::Graph =
             linker::link_compact_with_typed_registry(&source_facts, None, None, &source).into();
-        let expected: contextunity_forge_mcp::core::models::Graph =
+        let expected: contextunity_acdd::core::models::Graph =
             linker::link_compact_with_typed_registry(&disk_facts, None, None, &disk).into();
         assert_eq!(
             serde_json::to_value(&actual.edges).unwrap(),
@@ -104,8 +104,8 @@ fn source_registry_matches_disk_linked_scope_canonical_targets() {
         let expected_facts = FrameworkHarness::extract_with_registry(&disk, &files).unwrap();
         let actual = linker::link_compact_with_typed_registry(&actual_facts, None, None, &source);
         let expected = linker::link_compact_with_typed_registry(&expected_facts, None, None, &disk);
-        let actual: contextunity_forge_mcp::core::models::Graph = actual.into();
-        let expected: contextunity_forge_mcp::core::models::Graph = expected.into();
+        let actual: contextunity_acdd::core::models::Graph = actual.into();
+        let expected: contextunity_acdd::core::models::Graph = expected.into();
         assert_eq!(
             serde_json::to_value(&actual.edges).unwrap(),
             serde_json::to_value(&expected.edges).unwrap(),

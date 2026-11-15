@@ -148,7 +148,7 @@ patch that leaves a second error boundary unset is `incomplete-remediation`.
 4. Run the validated predicates across production and tests.
 5. Classify every match as owner, caller, adapter, composition root, test seam,
    or forbidden residual; inspect every production match.
-6. Use the owning repository's declared impact mapper. Load `contextunity-forge`
+6. Use the owning repository's declared impact mapper. Load `acdd`
    for its discovery workflow and follow the active tool schemas. Otherwise use the
    repository's supported structural analysis plus live call-site inspection.
 7. Treat stale, missing, zero-node, or untracked required architecture-map

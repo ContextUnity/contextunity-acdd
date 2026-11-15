@@ -35,7 +35,7 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
             {"id":"dialect","language":"html","operation":{"kind":"template_dialect","dialect":{"directory":"screens","assignment":"assign","function":"function","import":"fetch","from":"using","alias":"called","load":"use","include":"pull","extends":"inherit","scope_open":["when"],"scope_close":["endwhen"]}}}
         ]
     });
-    let manifest = ".forge/frameworks/atelier-templates.toml";
+    let manifest = ".acdd/frameworks/atelier-templates.toml";
     let write =
         |value: &serde_json::Value| workspace.write(manifest, &toml::to_string(value).unwrap());
     write(&pack);
@@ -149,7 +149,7 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
     };
     assert_active(true);
     workspace.assert_cold_parity();
-    let late_manifest = ".forge/frameworks/zcustom.toml";
+    let late_manifest = ".acdd/frameworks/zcustom.toml";
     workspace.rename_file(manifest, late_manifest).unwrap();
     workspace.delta(&[manifest, late_manifest]);
     assert_active(true);
@@ -158,7 +158,7 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
     assert!(
         cached.iter().flat_map(|facts| &facts.references).any(|reference| reference.kind == "includes"
             && reference.expression == "part.html"
-            && matches!(&reference.receiver_hint, Some(contextunity_forge_mcp::core::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack == "zcustom" && origin.rule == "dialect")),
+            && matches!(&reference.receiver_hint, Some(contextunity_acdd::core::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack == "zcustom" && origin.rule == "dialect")),
         "late pack retains actual typed include origin"
     );
     drop(observations);
@@ -170,7 +170,7 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
     conflicting["route_calls"] = serde_json::json!([]);
     conflicting["syntax_rules"][0]["id"] = "conflict".into();
     conflicting["syntax_rules"][0]["operation"]["dialect"]["include"] = "different".into();
-    let conflict_path = ".forge/frameworks/ambiguous-dialect.toml";
+    let conflict_path = ".acdd/frameworks/ambiguous-dialect.toml";
     workspace.write(conflict_path, &toml::to_string(&conflicting).unwrap());
     workspace.delta(&[conflict_path]);
     let observations = workspace.observe();

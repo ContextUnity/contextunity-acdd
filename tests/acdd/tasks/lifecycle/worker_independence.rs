@@ -1,7 +1,7 @@
 use super::*;
 use crate::common::mcp_harness::McpTestHarness;
-use contextunity_forge_mcp::db::tasks_store::UNKNOWN_SESSION_FINGERPRINT;
-use forge_tasks::engine as lifecycle_engine;
+use acdd_tasks::engine as lifecycle_engine;
+use contextunity_acdd::db::tasks_store::UNKNOWN_SESSION_FINGERPRINT;
 use serde_json::{json, Value};
 use std::process::Command;
 
@@ -14,7 +14,7 @@ fn independent_fixture() -> TaskHarness {
 }
 
 fn independent_profile_fixture(
-    profile: contextunity_forge_mcp::core::tasks::profile::GateProfile,
+    profile: contextunity_acdd::core::tasks::profile::GateProfile,
 ) -> TaskHarness {
     let manifest = MilestoneFixtureBuilder::new("m-worker-independence")
         .task("independent", &["src/"])
@@ -25,13 +25,13 @@ fn independent_profile_fixture(
 }
 
 fn cli_command(harness: &TaskHarness, session: Option<&str>, legacy_hosts: bool) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_acdd"));
     command
         .arg("--root")
         .arg(harness.root())
         .args(["--format", "json", "task"]);
     for key in [
-        "FORGE_AGENT_SESSION_ID",
+        "ACDD_AGENT_SESSION_ID",
         "CODEX_THREAD_ID",
         "AGY_CONVERSATION_ID",
         "CLAUDE_SESSION_ID",
@@ -40,7 +40,7 @@ fn cli_command(harness: &TaskHarness, session: Option<&str>, legacy_hosts: bool)
         command.env_remove(key);
     }
     if let Some(session) = session {
-        command.env("FORGE_AGENT_SESSION_ID", session);
+        command.env("ACDD_AGENT_SESSION_ID", session);
     }
     if legacy_hosts {
         for key in [
@@ -73,7 +73,7 @@ fn mcp_independent_gates_use_worker_identity_without_session_proof() {
             .unwrap();
         let mut client = McpTestHarness::with_root_and_db(
             harness.root(),
-            &harness.root().join(".forge/code-map.sqlite"),
+            &harness.root().join(".acdd/code-map.sqlite"),
             session,
         )
         .unwrap();
@@ -135,7 +135,7 @@ fn mcp_independent_submission_ignores_transport_fingerprint_changes() {
         let evidence = harness.evidence_for_gate(&audit).unwrap();
         let mut client = McpTestHarness::with_root_and_db(
             harness.root(),
-            &harness.root().join(".forge/code-map.sqlite"),
+            &harness.root().join(".acdd/code-map.sqlite"),
             submitting_session,
         )
         .unwrap();
@@ -258,7 +258,7 @@ fn independent_gate_rejects_reused_worker_despite_distinct_session() {
     let before = serde_json::to_value(harness.store.inspect(&harness.id).unwrap()).unwrap();
     let mut client = McpTestHarness::with_root_and_db(
         harness.root(),
-        &harness.root().join(".forge/code-map.sqlite"),
+        &harness.root().join(".acdd/code-map.sqlite"),
         "fresh-session",
     )
     .unwrap();
@@ -296,7 +296,7 @@ fn independent_submission_keeps_active_worker_binding() {
     let before = serde_json::to_value(&audit).unwrap();
     let mut client = McpTestHarness::with_root_and_db(
         harness.root(),
-        &harness.root().join(".forge/code-map.sqlite"),
+        &harness.root().join(".acdd/code-map.sqlite"),
         "audit-session",
     )
     .unwrap();
@@ -320,7 +320,7 @@ fn independent_gate_dispatch_is_shared_by_submit_and_guidance() {
     let mut harness = independent_fixture();
     let mut client = McpTestHarness::with_root_and_db(
         harness.root(),
-        &harness.root().join(".forge/code-map.sqlite"),
+        &harness.root().join(".acdd/code-map.sqlite"),
         "observer-session",
     )
     .unwrap();
@@ -423,7 +423,7 @@ fn dispatch_follows_profile_routes_and_conditions_with_configured_roles() {
         let before = harness.store.inspect_details(&harness.id).unwrap();
         let mut client = McpTestHarness::with_root_and_db(
             harness.root(),
-            &harness.root().join(".forge/code-map.sqlite"),
+            &harness.root().join(".acdd/code-map.sqlite"),
             "observer",
         )
         .unwrap();
@@ -478,7 +478,7 @@ fn independent_dispatch_is_absent_for_a_non_independent_next_gate() {
     assert!(submitted.get("dispatch").is_none());
     let mut client = McpTestHarness::with_root_and_db(
         harness.root(),
-        &harness.root().join(".forge/code-map.sqlite"),
+        &harness.root().join(".acdd/code-map.sqlite"),
         "observer-session",
     )
     .unwrap();

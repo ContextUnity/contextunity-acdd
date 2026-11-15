@@ -14,23 +14,17 @@ fn boundary_guards_follow_configured_proof_kinds_and_non_cargo_commands_keep_pat
         "use crate::routing::route_task;\npub fn invoke_route() -> usize { route_task() }\n",
     );
     root.write("tests/connected.rs", "use tiered_alias_fixture::routing::route_task;\n#[test]\nfn test_connected() { let actual = route_task(); assert_eq!(actual, 1); }\n");
-    root.write(
-        "AGENTS.md",
-        "# Instructions\nLoad the contextunity-forge skill.\n",
-    );
-    root.write(
-        ".agents/skills/contextunity-forge/SKILL.md",
-        "# ContextUnity Forge\n",
-    );
-    root.write("forge-mcp.yaml", "roots: [src, tests]\ndocs: [docs]\ntasks_db: .forge/tasks.sqlite\nacdd_profile: custom_profile.yaml\n");
+    root.write("AGENTS.md", "# Instructions\nLoad the acdd skill.\n");
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
+    root.write("acdd.yaml", "roots: [src, tests]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nacdd_profile: custom_profile.yaml\n");
     root.write(
         "custom_profile.yaml",
-        "inherit: none\nroles:\n  contract_author:\n    mode: inline\n  builder:\n    mode: inline\n  independent_reviewer:\n    mode: inline\nguidance:\n  contour.paths: \"Verify path boundaries.\"\n  contour.claims: \"Verify contract claims.\"\n  contour.concurrency: \"Verify concurrency invariants.\"\n  contour.project_isolation: \"Verify project isolation.\"\n  contour.administration: \"Verify governance.\"\ngates:\n  - id: spec\n    role: contract_author\n    proof: contract\n    command: test\n    sha_snapshot: true\n  - id: implement\n    role: builder\n    proof: command\n    command: rust-check-and-test\n    sha_snapshot: true\n    expected_failure:\n      exit_codes: [1, 127]\n  - id: inspect\n    role: independent_reviewer\n    proof: review\n    reject_to: implement\n    independent_from: implement\n    contours: guidance.contours\n  - id: archive\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [inspect]\n    reject_to: implement\ncommands:\n  test:\n    command: \": --seam-ref src/routing.rs::test_connected && test -x .forge/runner_fixture && FORGE_FIXTURE_RED=1 .forge/runner_fixture\"\n  rust-check-and-test:\n    command: pytest\n    description: Preserve ordinary scoped paths for non-Cargo profiles.\n  python-quality: ruff\n",
+        "inherit: none\nroles:\n  contract_author:\n    mode: inline\n  builder:\n    mode: inline\n  independent_reviewer:\n    mode: inline\nguidance:\n  contour.paths: \"Verify path boundaries.\"\n  contour.claims: \"Verify contract claims.\"\n  contour.concurrency: \"Verify concurrency invariants.\"\n  contour.project_isolation: \"Verify project isolation.\"\n  contour.administration: \"Verify governance.\"\ngates:\n  - id: spec\n    role: contract_author\n    proof: contract\n    command: test\n    sha_snapshot: true\n  - id: implement\n    role: builder\n    proof: command\n    command: rust-check-and-test\n    sha_snapshot: true\n    expected_failure:\n      exit_codes: [1, 127]\n  - id: inspect\n    role: independent_reviewer\n    proof: review\n    reject_to: implement\n    independent_from: implement\n    contours: guidance.contours\n  - id: archive\n    role: independent_reviewer\n    proof: delivery\n    review_sources: [inspect]\n    reject_to: implement\ncommands:\n  test:\n    command: \": --seam-ref src/routing.rs::test_connected && test -x .acdd/runner_fixture && ACDD_FIXTURE_RED=1 .acdd/runner_fixture\"\n  rust-check-and-test:\n    command: pytest\n    description: Preserve ordinary scoped paths for non-Cargo profiles.\n  python-quality: ruff\n",
     );
     let milestone = "---\nid: m-tiered-alias\ntitle: Proof-kind aliases\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: routing\ntarget: Preserve routing API boundaries\nproof_policy: seam-test-first\nscope: [src/routing.rs, tests/connected.rs]\nscope_roots: [src/, tests/]\n```\n";
     root.write("docs/milestones/010-tiered-alias.md", milestone);
     commit_fixture_baseline(&root);
-    root.build_to(root.path(".forge/code-map.sqlite"));
+    root.build_to(root.path(".acdd/code-map.sqlite"));
     tasks::manage(
         root.root(),
         serde_json::from_value(
@@ -90,7 +84,7 @@ fn boundary_guards_follow_configured_proof_kinds_and_non_cargo_commands_keep_pat
 }
 #[test]
 fn commit_scope_validation_checks_exact_milestone_and_non_empty_scope() {
-    use contextunity_forge_mcp::core::tasks::commit_files_within_scope;
+    use contextunity_acdd::core::tasks::commit_files_within_scope;
 
     let milestone_ref = "docs/milestones/010-repack.md";
     let task_scope = ["src/lib.rs"];
@@ -129,43 +123,43 @@ fn commit_scope_validation_checks_exact_milestone_and_non_empty_scope() {
         ),
         (
             "ACDD config requires explicit scope",
-            &[".forge/acdd/profile.yaml"],
+            &[".acdd/profile.yaml"],
             None,
             false,
         ),
         (
             "framework config requires explicit scope",
-            &[".forge/frameworks/rules.yaml"],
+            &[".acdd/frameworks/rules.yaml"],
             None,
             false,
         ),
         (
             "explicit protected config scope",
-            &[".forge/acdd/profile.yaml"],
-            Some(&[".forge/acdd/profile.yaml"]),
+            &[".acdd/profile.yaml"],
+            Some(&[".acdd/profile.yaml"]),
             true,
         ),
         (
             "SQLite runtime artifact",
-            &[".forge/tasks.sqlite"],
+            &[".acdd/tasks.sqlite"],
             Some(&[]),
             true,
         ),
         (
             "lock runtime artifact",
-            &[".forge/tasks.lock"],
+            &[".acdd/tasks.lock"],
             Some(&[]),
             true,
         ),
         (
             "checkpoint runtime artifact",
-            &[".forge/checkpoints.json"],
+            &[".acdd/checkpoints.json"],
             Some(&[]),
             true,
         ),
         (
             "nested task SQLite runtime artifact",
-            &[".forge/tasks/state.sqlite"],
+            &[".acdd/tasks/state.sqlite"],
             Some(&[]),
             true,
         ),
@@ -190,7 +184,7 @@ fn commit_scope_validation_checks_exact_milestone_and_non_empty_scope() {
 }
 #[test]
 fn validate_commit_for_task_enforces_scope_and_ancestry_invariants() {
-    use contextunity_forge_mcp::core::git::git_scoped_tree_changed;
+    use contextunity_acdd::core::git::git_scoped_tree_changed;
     let h = TaskHarness::commit_history_fixture().unwrap();
     let scope = ["src/lib.rs".into()];
     assert!(h.validate(&h.delivery, &scope).is_ok());
@@ -237,5 +231,30 @@ fn validate_commit_for_task_enforces_scope_and_ancestry_invariants() {
     assert!(
         !git_scoped_tree_changed(h.root.root(), &h.delivery, &h.delivery, &[]).unwrap(),
         "empty scope must return false for identical commits"
+    );
+    h.root.write(".git/info/exclude", "");
+    let profile_commit = TaskHarness::commit_source(
+        &h.root,
+        ".acdd/handoff-policy.json",
+        "inherit: none\n",
+        "Out of scope profile",
+    )
+    .unwrap();
+    let error = contextunity_acdd::core::tasks::validate_commit_for_task(
+        h.root.root(),
+        &profile_commit,
+        &scope,
+        None,
+        None,
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("TASK_COMMIT_OUTSIDE_SCOPE"),
+        "{error:#}"
+    );
+    assert!(
+        error.to_string().contains(".acdd/handoff-policy.json"),
+        "{error:#}"
     );
 }

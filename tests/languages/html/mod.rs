@@ -1,6 +1,6 @@
 #![cfg(feature = "lang-html")]
 
-use contextunity_forge_mcp::{
+use contextunity_acdd::{
     core::{
         commitments,
         response::{Detail, QueryOptions, ResponsePolicy, SourceOptions},

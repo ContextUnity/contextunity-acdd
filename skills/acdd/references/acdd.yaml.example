@@ -1,0 +1,48 @@
+# Example acdd.yaml adapter
+# Points to repository resources, guidance, and optional ACDD profile file.
+
+roots:
+  - src
+  - crates # Include crates for multi-crate workspaces.
+docs:
+  - README.md
+  - docs
+milestones:
+  - docs/milestones
+plans:
+  - docs/plans
+ignore:
+  - target
+  - node_modules
+  - .venv
+  - .git
+
+# Reader paths blocked before reads and exports (gitignore-style patterns).
+sensitive: ['.env*', 'secrets/**']
+
+# Task configuration
+task_repository: "forge-mcp"
+task_project: "forge-mcp"
+tasks_db: ".acdd/tasks.sqlite"
+agents_guidance: "AGENTS.md"
+
+# Linked workspaces (optional)
+# linked_workspaces:
+#   - name: shared-core
+#     path: ../shared-core
+#     enabled: true
+#     roots:
+#       - src
+#     tasks:
+#       enabled: true
+#       milestones_dir: docs/milestones
+#       agents_guidance: AGENTS.md
+
+# Optional path link to repository ACDD profile (defaults to .acdd/profile.yaml if omitted):
+acdd_profile: ".acdd/profile.yaml"
+
+# MCP response policy
+response:
+  detail: compact
+  page_size: 30
+  max_output_bytes: 65536

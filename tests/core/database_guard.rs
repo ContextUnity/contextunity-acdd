@@ -1,10 +1,10 @@
 use crate::common::Workspace;
-use contextunity_forge_mcp::db::tasks_store::TasksStore;
-use contextunity_forge_mcp::db::writer::{build, validate_code_map_target};
+use contextunity_acdd::db::tasks_store::TasksStore;
+use contextunity_acdd::db::writer::{build, validate_code_map_target};
 
 #[test]
 fn stage_cleanup_and_failure_recovery() {
-    use contextunity_forge_mcp::{
+    use contextunity_acdd::{
         db::cache,
         engine::pipeline::{build_with_test_hooks, PipelineTestHooks},
     };
@@ -21,8 +21,8 @@ fn stage_cleanup_and_failure_recovery() {
     std::fs::write(&unrelated, b"preserve").unwrap();
     for case in ["publication", "consumer", "obstructed"] {
         std::fs::write(&db, &before).unwrap();
-        let conn = contextunity_forge_mcp::db::reader::open(&db, ws.root()).unwrap();
-        contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+        let conn = contextunity_acdd::db::reader::open(&db, ws.root()).unwrap();
+        contextunity_acdd::core::commitments::verify(&conn).unwrap();
         drop(conn);
         let seal = old["output_root"].as_str().unwrap();
         assert!(cache::publish_verified(&db, ws.root(), seal).unwrap());
@@ -104,8 +104,8 @@ fn stage_cleanup_and_failure_recovery() {
             std::fs::remove_dir_all(&stage).unwrap();
         }
         let recovered = build(ws.root(), &db, None).unwrap();
-        let conn = contextunity_forge_mcp::db::reader::open(&db, ws.root()).unwrap();
-        contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+        let conn = contextunity_acdd::db::reader::open(&db, ws.root()).unwrap();
+        contextunity_acdd::core::commitments::verify(&conn).unwrap();
         drop(conn);
         assert!(cache::matches(
             &db,
@@ -118,7 +118,7 @@ fn stage_cleanup_and_failure_recovery() {
             .unwrap()
             .file_name()
             .to_string_lossy()
-            .starts_with(".forge-stage-")));
+            .starts_with(".acdd-stage-")));
     }
 }
 
@@ -164,13 +164,13 @@ fn output_sidecar_hazards_preserve_generation() {
         .unwrap()
         .file_name()
         .to_string_lossy()
-        .starts_with(".forge-stage-")));
+        .starts_with(".acdd-stage-")));
 }
 
 #[cfg(unix)]
 #[test]
 fn staged_sidecar_cleanup_reports_all_errors_and_removes_dangling_symlink() {
-    use contextunity_forge_mcp::engine::pipeline::{build_with_test_hooks, PipelineTestHooks};
+    use contextunity_acdd::engine::pipeline::{build_with_test_hooks, PipelineTestHooks};
     use std::os::unix::fs::symlink;
     use std::sync::{Arc, Mutex};
     let ws = Workspace::new();
@@ -220,12 +220,12 @@ fn checkpoint_rejects_active_reader_and_succeeds_after_release() {
     reader.execute_batch("BEGIN; SELECT * FROM t;").unwrap();
     writer.execute_batch("INSERT INTO t VALUES (2);").unwrap();
     for truncate in [false, true] {
-        let error = contextunity_forge_mcp::db::cache::checkpoint(&writer, truncate).unwrap_err();
+        let error = contextunity_acdd::db::cache::checkpoint(&writer, truncate).unwrap_err();
         assert!(error.to_string().contains("incomplete"), "{error:#}");
     }
     reader.execute_batch("ROLLBACK").unwrap();
     drop(reader);
-    contextunity_forge_mcp::db::cache::checkpoint(&writer, true).unwrap();
+    contextunity_acdd::db::cache::checkpoint(&writer, true).unwrap();
 }
 
 #[cfg(unix)]
@@ -233,8 +233,8 @@ fn checkpoint_rejects_active_reader_and_succeeds_after_release() {
 fn task_store_initialization_serializes_with_index_publication() {
     // A separate process exercises the same public opener while publication
     // holds the generation lock. Its environment is local to that child.
-    if let Some(path) = std::env::var_os("FORGE_TEST_TASK_INITIALIZER") {
-        std::fs::write(std::env::var_os("FORGE_TEST_TASK_READY").unwrap(), "ready").unwrap();
+    if let Some(path) = std::env::var_os("ACDD_TEST_TASK_INITIALIZER") {
+        std::fs::write(std::env::var_os("ACDD_TEST_TASK_READY").unwrap(), "ready").unwrap();
         let error = TasksStore::open(std::path::Path::new(&path))
             .err()
             .expect("published code index must not become a task store");
@@ -277,8 +277,8 @@ fn task_store_initialization_serializes_with_index_publication() {
                 "database_guard::task_store_initialization_serializes_with_index_publication",
                 "--nocapture",
             ])
-            .env("FORGE_TEST_TASK_INITIALIZER", &input)
-            .env("FORGE_TEST_TASK_READY", &ready)
+            .env("ACDD_TEST_TASK_INITIALIZER", &input)
+            .env("ACDD_TEST_TASK_READY", &ready)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -317,7 +317,7 @@ fn unreadable_task_database_is_preserved() {
             return;
         }
         let (rejected, diagnostic) = if command == "delta" {
-            let result = contextunity_forge_mcp::db::writer::delta(
+            let result = contextunity_acdd::db::writer::delta(
                 ws.root(),
                 &target,
                 &[ws.root().join("app.py")],
@@ -365,7 +365,7 @@ fn code_map_rebuild_recovers_readable_non_sqlite_cache() {
 #[test]
 fn code_map_target_rejects_tasks_database_by_name_and_schema() {
     let ws = Workspace::new();
-    let tasks_sqlite = ws.root().join(".forge/tasks.sqlite");
+    let tasks_sqlite = ws.root().join(".acdd/tasks.sqlite");
 
     // 1. Rejects by filename pattern even if file doesn't exist yet
     let err = validate_code_map_target(ws.root(), &tasks_sqlite).unwrap_err();
@@ -409,7 +409,7 @@ fn code_map_target_rejects_tasks_database_by_name_and_schema() {
 #[test]
 fn tasks_store_rejects_code_map_database_by_name_and_schema() {
     let ws = Workspace::new();
-    let code_map = ws.root().join(".forge/code-map.sqlite");
+    let code_map = ws.root().join(".acdd/code-map.sqlite");
 
     // 1. Rejects by filename pattern
     let err = match TasksStore::open(&code_map) {
@@ -482,23 +482,23 @@ fn code_map_target_rejects_fifo_without_blocking() {
 #[test]
 fn code_map_target_rejects_non_canonical_and_configured_tasks_db() {
     let ws = Workspace::new();
-    // 1. Configure tasks_db as .forge/state.sqlite
-    let config = "task_repository: repo\ntasks_db: .forge/state.sqlite\n";
-    std::fs::write(ws.root().join("forge-mcp.yaml"), config).unwrap();
+    // 1. Configure tasks_db as .acdd/state.sqlite
+    let config = "task_repository: repo\ntasks_db: .acdd/state.sqlite\n";
+    std::fs::write(ws.root().join("acdd.yaml"), config).unwrap();
 
     // Non-canonical path referencing configured tasks_db before it exists
-    let non_canonical = ws.root().join(".forge/sub/../state.sqlite");
+    let non_canonical = ws.root().join(".acdd/sub/../state.sqlite");
     let err = validate_code_map_target(ws.root(), &non_canonical).unwrap_err();
     assert!(
         err.to_string().contains("TASK_DATABASE_COLLISION"),
         "expected TASK_DATABASE_COLLISION on non-canonical tasks_db path, got: {err}"
     );
 
-    // 2. Configure tasks_db as .forge/code-map.sqlite (invalid collision with default code map)
-    let bad_config = "task_repository: repo\ntasks_db: .forge/code-map.sqlite\n";
-    std::fs::write(ws.root().join("forge-mcp.yaml"), bad_config).unwrap();
+    // 2. Configure tasks_db as .acdd/code-map.sqlite (invalid collision with default code map)
+    let bad_config = "task_repository: repo\ntasks_db: .acdd/code-map.sqlite\n";
+    std::fs::write(ws.root().join("acdd.yaml"), bad_config).unwrap();
 
-    let code_map = ws.root().join(".forge/code-map.sqlite");
+    let code_map = ws.root().join(".acdd/code-map.sqlite");
     let err = validate_code_map_target(ws.root(), &code_map).unwrap_err();
     assert!(
         err.to_string().contains("TASK_DATABASE_COLLISION"),
@@ -507,11 +507,11 @@ fn code_map_target_rejects_non_canonical_and_configured_tasks_db() {
 
     // Invalid task identity must not disable protection of a custom tasks_db.
     std::fs::write(
-        ws.root().join("forge-mcp.yaml"),
-        "task_repository: repo\ntask_project: invalid/name\ntasks_db: .forge/state.sqlite\n",
+        ws.root().join("acdd.yaml"),
+        "task_repository: repo\ntask_project: invalid/name\ntasks_db: .acdd/state.sqlite\n",
     )
     .unwrap();
-    let custom = ws.root().join(".forge/state.sqlite");
+    let custom = ws.root().join(".acdd/state.sqlite");
     let err = build(ws.root(), &custom, None).unwrap_err();
     assert!(
         err.to_string().contains("TASK_DATABASE_COLLISION"),
@@ -524,20 +524,20 @@ fn code_map_target_rejects_non_canonical_and_configured_tasks_db() {
         let real_repo = ws.path("private_var/repo");
         std::fs::create_dir_all(&real_repo).unwrap();
         std::fs::write(
-            real_repo.join("forge-mcp.yaml"),
-            "task_repository: repo\ntasks_db: .forge/state.sqlite\n",
+            real_repo.join("acdd.yaml"),
+            "task_repository: repo\ntasks_db: .acdd/state.sqlite\n",
         )
         .unwrap();
         let alias_repo = ws.path("var_repo");
         symlink(&real_repo, &alias_repo).unwrap();
 
         let canonical_root = real_repo.canonicalize().unwrap();
-        let alias_target = alias_repo.join(".forge/state.sqlite");
+        let alias_target = alias_repo.join(".acdd/state.sqlite");
         let err = validate_code_map_target(&canonical_root, &alias_target).unwrap_err();
         assert!(
             err.to_string().contains("TASK_DATABASE_COLLISION"),
             "expected TASK_DATABASE_COLLISION across canonical/alias roots, got: {err:#}"
         );
-        assert!(!real_repo.join(".forge/state.sqlite").exists());
+        assert!(!real_repo.join(".acdd/state.sqlite").exists());
     }
 }

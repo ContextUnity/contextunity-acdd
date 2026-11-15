@@ -16,15 +16,15 @@ fn stdio_server_persists_the_environment_session_on_claim() {
     let gate = harness.executable_gates().unwrap().remove(0);
     let worker = harness.worker_for_gate(&gate);
     let session = "stdio-session-alpha";
-    let mut command = Command::new(env!("CARGO_BIN_EXE_contextunity-forge-mcp"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_acdd"));
     command
         .arg("--root")
         .arg(harness.root())
         .arg("serve")
-        .env("FORGE_AGENT_SESSION_ID", session)
+        .env("ACDD_AGENT_SESSION_ID", session)
         .env(
-            "FORGE_EXTRACTION_CACHE_DIR",
-            harness.root().join(".forge/extraction-cache"),
+            "ACDD_EXTRACTION_CACHE_DIR",
+            harness.root().join(".acdd/extraction-cache"),
         );
     let mut client =
         StdioClient::with_command(&mut command).expect("stdio MCP client should start");
@@ -61,10 +61,7 @@ fn stdio_server_persists_the_environment_session_on_claim() {
 #[test]
 fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
     let workspace = TaskHarness::mcp_workspace();
-    workspace.write(
-        "forge-mcp.yaml",
-        "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
-    );
+    workspace.write("acdd.yaml", "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n");
     workspace.write(
         "docs/milestones/010-guidance.md",
         &MilestoneFixtureBuilder::new("m-guidance")
@@ -135,7 +132,7 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
     let catalog_text = serde_json::to_string(&catalog).unwrap();
     assert!(
         serde_json::to_vec(&catalog).unwrap().len()
-            <= contextunity_forge_mcp::core::response::MAX_OUTPUT_BYTES,
+            <= contextunity_acdd::core::response::MAX_OUTPUT_BYTES,
         "MCP tool catalog exceeded the maximum response budget"
     );
     assert!(!catalog_text.contains(PROTECTED_RULE));
@@ -146,7 +143,7 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
         );
     }
 
-    workspace.write("forge-mcp.yaml", "profile: minimal\n");
+    workspace.write("acdd.yaml", "profile: minimal\n");
     let (_, minimal_catalog) = client
         .request("tools/list", json!({}))
         .expect("MCP request should succeed");
@@ -154,7 +151,14 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
         .as_array()
         .expect("minimal profile should return its active tool catalog");
     assert_eq!(minimal_tools.len(), 2);
-    assert_eq!(minimal_tools[0]["name"], "forge_guide");
+    let minimal_names: Vec<_> = minimal_tools
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert!(
+        minimal_names.contains(&"acdd_read") && minimal_names.contains(&"forge_guide"),
+        "expected minimal tools [acdd_read, forge_guide], got {minimal_names:?}"
+    );
     let minimal_guide = client
         .payload("forge_guide", json!({"topic":"query"}))
         .expect("MCP payload should succeed");
@@ -174,10 +178,7 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
         }
     }
 
-    workspace.write(
-        "forge-mcp.yaml",
-        "profile: minimal\nmodules:\n  acdd: true\n",
-    );
+    workspace.write("acdd.yaml", "profile: minimal\nmodules:\n  acdd: true\n");
     let acdd_without_blackboard = client
         .payload("forge_guide", json!({"topic":"acdd"}))
         .expect("MCP payload should succeed");
@@ -198,10 +199,7 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
         }
     }
 
-    workspace.write(
-        "forge-mcp.yaml",
-        "profile: minimal\nmodules:\n  docs: true\n",
-    );
+    workspace.write("acdd.yaml", "profile: minimal\nmodules:\n  docs: true\n");
     let docs_only_query = client
         .payload("forge_guide", json!({"topic":"query"}))
         .expect("MCP payload should succeed");
@@ -218,8 +216,8 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
 
     let preflight = TaskHarness::mcp_workspace();
     preflight.write(
-        "forge-mcp.yaml",
-        "profile: minimal\nmodules:\n  acdd: true\nroots: []\ndocs: []\nmilestones: [docs/milestones]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "profile: minimal\nmodules:\n  acdd: true\nroots: []\ndocs: []\nmilestones: [docs/milestones]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     let tool_profile = r#"inherit: none
 version: 2
@@ -255,7 +253,7 @@ gates:
           proof: delivery
           review_sources: [review]
 "#;
-    preflight.write(".forge/acdd/profile.yaml", tool_profile);
+    preflight.write(".acdd/profile.yaml", tool_profile);
     let mut preflight_client = McpTestHarness::new(&preflight).expect("MCP new should succeed");
     let planned_tasks = [
         (
@@ -364,8 +362,8 @@ gates:
 
     let no_blackboard = TaskHarness::mcp_workspace();
     no_blackboard.write(
-        "forge-mcp.yaml",
-        "profile: minimal\nmodules:\n  acdd: true\n  codemap: true\n  docs: true\nroots: []\ndocs: []\nmilestones: [docs/milestones]\ntasks_db: .forge/tasks.sqlite\n",
+        "acdd.yaml",
+        "profile: minimal\nmodules:\n  acdd: true\n  codemap: true\n  docs: true\nroots: []\ndocs: []\nmilestones: [docs/milestones]\ntasks_db: .acdd/tasks.sqlite\n",
     );
     no_blackboard.write(
         "docs/milestones/010-guidance.md",
@@ -412,13 +410,13 @@ gates:
     }
 
     let full_primary = TaskHarness::mcp_workspace();
-    full_primary.write("forge-mcp.yaml", "profile: full\nroots: []\ndocs: []\n");
+    full_primary.write("acdd.yaml", "profile: full\nroots: []\ndocs: []\n");
     let minimal_target = full_primary.root().join(".worktrees/selected-minimal");
     let full_target = full_primary.root().join(".worktrees/selected-full");
     fs::create_dir_all(&minimal_target).unwrap();
     fs::create_dir_all(&full_target).unwrap();
-    fs::write(minimal_target.join("forge-mcp.yaml"), "profile: minimal\n").unwrap();
-    fs::write(full_target.join("forge-mcp.yaml"), "profile: full\n").unwrap();
+    fs::write(minimal_target.join("acdd.yaml"), "profile: minimal\n").unwrap();
+    fs::write(full_target.join("acdd.yaml"), "profile: full\n").unwrap();
     let mut full_primary_client =
         McpTestHarness::new(&full_primary).expect("MCP new should succeed");
     let (_, selected_minimal) = full_primary_client
@@ -436,7 +434,7 @@ gates:
         ));
     }
 
-    full_primary.write("forge-mcp.yaml", "profile: minimal\n");
+    full_primary.write("acdd.yaml", "profile: minimal\n");
     let (_, selected_full) = full_primary_client
         .call(
             "task_list",
@@ -467,10 +465,7 @@ gates:
 #[test]
 fn task_mcp_preserves_ready_claim_reset_selectors_and_diagnostic() {
     let workspace = TaskHarness::mcp_workspace();
-    workspace.write(
-        "forge-mcp.yaml",
-        "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n",
-    );
+    workspace.write("acdd.yaml", "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n");
     fs::create_dir_all(workspace.root().join("docs/milestones")).unwrap();
     workspace.write("docs/milestones/010-tasks.md","---\nid: m-pilot\ntitle: Pilot\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: first\ntarget: Deliver\nproof_policy: seam-test-first\nscope: [src/]\n```\n");
     let mut client = McpTestHarness::new(&workspace).expect("MCP new should succeed");
@@ -500,7 +495,7 @@ fn task_mcp_preserves_ready_claim_reset_selectors_and_diagnostic() {
     assert_eq!(error["error"]["code"], "TASK_ALREADY_CLAIMED");
     let collision_args =
         json!({"task_id":id,"stage":"contract","worker_id":"other","worktree":workspace.root()});
-    let engine_error = contextunity_forge_mcp::engine::tasks::claim(
+    let engine_error = contextunity_acdd::engine::tasks::claim(
         workspace.root(),
         serde_json::from_value(collision_args.clone()).unwrap(),
     )

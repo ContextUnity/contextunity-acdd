@@ -1,11 +1,11 @@
 #[test]
 fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
-    use contextunity_forge_mcp::db::reader;
+    use contextunity_acdd::db::reader;
 
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in [
         (
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "roots: [src, composables, nuxt/src, nuxt/composables, plain/src, nuxt.config.ts, nuxt/nuxt.config.ts]\ndocs: []\n",
         ),
         (
@@ -336,7 +336,7 @@ fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
         [0, "type Mixed = [typeof ".len() as u64],
         "ordinary type reference keeps legacy coordinates; only typeof is exact"
     );
-    let legacy: contextunity_forge_mcp::core::semantic::AnnotationReferenceFact =
+    let legacy: contextunity_acdd::core::semantic::AnnotationReferenceFact =
         serde_json::from_value(
             serde_json::json!({"expression":"selected","position":{"line":2,"column":21}}),
         )
@@ -352,8 +352,8 @@ fn nuxt_autoimports_require_declared_project_and_preserve_local_shadow() {
             .is_none(),
         "false marker keeps legacy wire omission"
     );
-    assert!(serde_json::from_value::<contextunity_forge_mcp::core::semantic::AnnotationReferenceFact>(serde_json::json!({"expression":"selected","position":{"line":2,"column":21},"value_query":"true"})).is_err(),"malformed marker cannot supply authority");
-    contextunity_forge_mcp::core::commitments::verify(&conn).unwrap();
+    assert!(serde_json::from_value::<contextunity_acdd::core::semantic::AnnotationReferenceFact>(serde_json::json!({"expression":"selected","position":{"line":2,"column":21},"value_query":"true"})).is_err(),"malformed marker cannot supply authority");
+    contextunity_acdd::core::commitments::verify(&conn).unwrap();
     assert!(
         callable_failures.is_empty(),
         "scoped exported-callable/root-alias/typeof target losses: {callable_failures:#?}"

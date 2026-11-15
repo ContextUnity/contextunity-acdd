@@ -212,8 +212,8 @@ fn mcp_caps_documents_scalars_checkpoints_and_tool_errors() {
     let readme = format!("# Huge document\n{}", "\"\\Привіт\t".repeat(30_000));
     let (_workspace, harness) = McpTestHarness::with_files(&[
         (
-            "forge-mcp.yaml",
-            "roots: [.]\ntasks_db: .forge/tasks.sqlite\nresponse:\n  max_output_bytes: 1024\n",
+            "acdd.yaml",
+            "roots: [.]\ntasks_db: .acdd/tasks.sqlite\nresponse:\n  max_output_bytes: 1024\n",
         ),
         ("README.md", readme.as_str()),
     ]);
@@ -379,7 +379,7 @@ fn mcp_byte_pruning_continues_after_exactly_the_emitted_rows() {
 fn adapter_response_policy_reloads_without_reindexing_and_rejects_invalid_settings() {
     let (workspace, harness) = McpTestHarness::with_files(&[
         (
-            "forge-mcp.yaml",
+            "acdd.yaml",
             "roots: [.]\nresponse:\n  page_size: 2\n  max_output_bytes: 4096\n",
         ),
         ("README.md", "# A\none\n# B\ntwo\n# C\nthree\n# D\nfour\n"),
@@ -393,7 +393,7 @@ fn adapter_response_policy_reloads_without_reindexing_and_rejects_invalid_settin
     assert_eq!(crate::json_array(&payload["sections"]["items"]).len(), 2);
     let database = workspace.db();
     let before = fs::metadata(&database).unwrap().modified().unwrap();
-    workspace.write("forge-mcp.yaml", "roots: [.]\nresponse:\n  detail: full\n  page_size: 3\n  max_output_bytes: 2048\n  source_context:\n    max_body_lines: 10\n");
+    workspace.write("acdd.yaml", "roots: [.]\nresponse:\n  detail: full\n  page_size: 3\n  max_output_bytes: 2048\n  source_context:\n    max_body_lines: 10\n");
     let second = scanner::load_adapter(workspace.root(), None).unwrap();
     assert_eq!(first.digest, second.digest);
     let (bytes, response) = client
@@ -403,7 +403,7 @@ fn adapter_response_policy_reloads_without_reindexing_and_rejects_invalid_settin
     assert_ne!(response["result"]["isError"], true, "{response}");
     assert_eq!(fs::metadata(database).unwrap().modified().unwrap(), before);
     workspace.write(
-        "forge-mcp.yaml",
+        "acdd.yaml",
         "roots: [.]\nresponse:\n  max_output_bytes: 1024\n",
     );
     let (bytes, response) = client
@@ -415,7 +415,7 @@ fn adapter_response_policy_reloads_without_reindexing_and_rejects_invalid_settin
     assert!(bytes <= 1024, "parameter error frame was {bytes} bytes");
     assert_eq!(response["result"]["isError"], true);
     client.finish().expect("server must finish successfully");
-    workspace.write("forge-mcp.yaml", "response:\n  max_output_bytes: 98304\n");
+    workspace.write("acdd.yaml", "response:\n  max_output_bytes: 98304\n");
     assert!(scanner::load_adapter(workspace.root(), None).is_ok());
     for settings in [
         "page_size: 0",
@@ -427,7 +427,7 @@ fn adapter_response_policy_reloads_without_reindexing_and_rejects_invalid_settin
         "source_context: {max_body_lines: 0}",
         "detail: enormous",
     ] {
-        workspace.write("forge-mcp.yaml", &format!("response:\n  {settings}\n"));
+        workspace.write("acdd.yaml", &format!("response:\n  {settings}\n"));
         assert!(
             scanner::load_adapter(workspace.root(), None).is_err(),
             "{settings}"
@@ -514,7 +514,7 @@ fn mcp_tool_catalog_allows_optional_json_and_markdown_formats() {
 
 #[test]
 fn task_submit_format_preserves_optional_input_and_evidence_semantics() {
-    use contextunity_forge_mcp::mcp::tools::TaskSubmitInput;
+    use contextunity_acdd::mcp::tools::TaskSubmitInput;
 
     for (format, expected) in [
         (None, None),

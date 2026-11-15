@@ -14,7 +14,7 @@ def set_field(payload, key, value):
 
 context = json.loads(sys.argv[1].split("\n\nGate context:\n", 1)[1])
 gate = context["gate"]
-session = os.environ["FORGE_AGENT_SESSION_ID"]
+session = os.environ["ACDD_AGENT_SESSION_ID"]
 subject = context["subject"]
 kind = next(name for name in ("milestone", "plan", "workflow") if "author-" + name in subject)
 paths = {

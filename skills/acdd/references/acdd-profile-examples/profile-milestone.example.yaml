@@ -1,0 +1,244 @@
+# =============================================================================
+# ACDD PROFILE EXAMPLE: Full Milestone Profile (Root Gates + Tasks Container)
+#
+# ADR 0021 Work Model 3: Milestone contains upfront blueprint_synthesis
+# (`synthesize` -> `review`), the per-task execution container (`tasks:` executed
+# via DAG waves), and post-task closure (`verify`, `polish`, `milestone_review`,
+# `handoff`).
+# =============================================================================
+
+version: 2
+inherit: none
+
+# Milestones execute in isolated worktrees and use `save: commit` (commits + receipts + snapshots + logs):
+save: commit
+
+roles:
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+  contract_author:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+scope_args_by_pattern:
+  "src/main.rs": "--bin acdd"
+  "src/**/*.rs": "--lib"
+  "crates/acdd-core/**/*.rs": "--package acdd-core --lib"
+  "crates/acdd-index/**/*.rs": "--package acdd-index --lib"
+  "crates/acdd-tasks/**/*.rs": "--package acdd-tasks --lib"
+  "tests/*.rs": "--test {file_stem}"
+  "tests/acdd/**/*.rs": "--test acdd"
+
+commands:
+  rust-check-and-test:
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: true
+      noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
+      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+      tests:
+        target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
+        passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
+        failed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b'
+        ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
+    timeout_seconds: 300
+
+  check_full_repo:
+    command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    timeout_seconds: 1800
+
+  test:
+    command: "cargo test"
+    description: "Compatibility command for task contract and seam testing."
+
+proofs:
+  blueprint:
+    description: "Architectural blueprint with grounded citations and per-task slices"
+    schema:
+      type: object
+      required:
+        - cited_invariants
+        - cited_symbols
+        - global_negative_boundaries
+        - blackboard_decision_id
+        - tasks
+      properties:
+        cited_invariants:
+          type: array
+          items: { type: string }
+        cited_symbols:
+          type: array
+          items: { type: string }
+        global_negative_boundaries:
+          type: array
+          items: { type: string }
+        blackboard_decision_id: { type: string }
+        tasks:
+          type: object
+          additionalProperties:
+            type: object
+            required:
+              - layer
+              - summary
+              - exported_interfaces
+              - negative_boundaries
+              - incoming_seams
+              - outgoing_seams
+            properties:
+              layer: { type: string }
+              summary: { type: string }
+              exported_interfaces:
+                type: array
+                items: { type: string }
+              negative_boundaries:
+                type: array
+                items: { type: string }
+              verification_seam: { type: string }
+              incoming_seams:
+                type: array
+                items: { type: object }
+              outgoing_seams:
+                type: array
+                items: { type: object }
+
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+    audit_extended_scope: true
+
+gates:
+  # ---------------------------------------------------------------------------
+  # Upfront Blueprint Synthesis Container (Executed ONCE before task claims)
+  # ---------------------------------------------------------------------------
+  - id: blueprint_synthesis
+    gates:
+      - id: synthesize
+        role: architect
+        proof: blueprint
+        save:
+          pre: snapshot
+          post: snapshot
+      - id: review
+        role: independent_reviewer
+        policy: default_review
+        independent_from: synthesize
+        fail: synthesize
+        save:
+          immutable: true
+
+  # ---------------------------------------------------------------------------
+  # Per-Task Execution Container (Executed per Task in DAG Wave Order)
+  # ---------------------------------------------------------------------------
+  - tasks:
+      gates:
+        - id: contract
+          role: contract_author
+          proof: contract
+          command: test
+          save:
+            post: snapshot
+
+        - id: build
+          role: builder
+          command: rust-check-and-test
+          proof: command
+          save:
+            pre: snapshot
+            post: snapshot
+
+        - id: review
+          role: independent_reviewer
+          policy: default_review
+          independent_from: build
+          fail: build
+          loop:
+            scope: build
+            symbols: contract
+          save:
+            immutable: true
+
+        - id: seam
+          when: seam
+          gates:
+            - id: integrate
+              role: builder
+              command: rust-check-and-test
+              save:
+                pre: snapshot
+                post: snapshot
+            - id: review
+              role: independent_reviewer
+              policy: default_review
+              independent_from: integrate
+              fail: integrate
+              loop:
+                scope: integrate
+                symbols: contract
+              save:
+                immutable: true
+
+        - id: deliver
+          role: independent_reviewer
+          receipt: true
+          need:
+            - review
+          independent_from: build
+          fail: build
+          save:
+            immutable: true
+            post: commit
+            git_commit_note: telemetry
+
+  # ---------------------------------------------------------------------------
+  # Milestone Verification & Closure Pipeline (Option 1B cycle)
+  # ---------------------------------------------------------------------------
+  - id: verify
+    command: check_full_repo
+    max_attempts: 2
+    pass: milestone_review
+    fail: polish
+
+  - id: polish
+    role: architect
+    pass: verify
+    save:
+      pre: snapshot
+      post: snapshot
+
+  - id: milestone_review
+    role: independent_reviewer
+    policy: default_review
+    independent_from: polish
+    pass: handoff
+    fail: polish
+    save:
+      immutable: true
+
+  - id: handoff
+    receipt: true
+    absorb: true
+    save:
+      post: commit
+      git_commit_note: telemetry
