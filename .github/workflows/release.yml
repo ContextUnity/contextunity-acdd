@@ -211,10 +211,16 @@ jobs:
             if ! gh release view nightly >/dev/null 2>&1; then
               gh release create nightly --target "$GITHUB_SHA" --title Nightly \
                 --notes "Rolling build from main at $GITHUB_SHA" --prerelease --latest=false
+            else
+              if gh api "repos/$GH_REPO/git/ref/tags/nightly" >/dev/null 2>&1; then
+                gh api --method PATCH "repos/$GH_REPO/git/refs/tags/nightly" \
+                  -f sha="$GITHUB_SHA" -F force=true
+              else
+                gh api --method POST "repos/$GH_REPO/git/refs" \
+                  -f ref="refs/tags/nightly" -f sha="$GITHUB_SHA"
+              fi
+              gh release edit nightly --target "$GITHUB_SHA" --title Nightly \
+                --notes "Rolling build from main at $GITHUB_SHA" --prerelease --latest=false
             fi
-            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/nightly" \
-              -f sha="$GITHUB_SHA" -F force=true
-            gh release edit nightly --target "$GITHUB_SHA" --title Nightly \
-              --notes "Rolling build from main at $GITHUB_SHA" --prerelease --latest=false
           fi
           gh release upload "$tag" dist/*.tar.gz dist/SHA256SUMS --clobber

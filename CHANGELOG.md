@@ -6,9 +6,41 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-15
+
+This release completes the unified `contextunity-acdd` ecosystem transition (Milestone IN-002), brings extensive cross-platform macOS/Linux hardening (Milestone AR-001), strengthens orchestrator and multi-agent wave lifecycles, and resolves release publishing and test maintenance bottlenecks.
+
 ### Breaking changes
 
-- Renamed the distribution to `contextunity-acdd`, the executable and skill to `acdd`, and the MCP reader to `acdd_read`. Configuration and state use `acdd.yaml` and `.acdd/`; environment variables use the `ACDD_` prefix. Release archives use `contextunity-acdd-<target>.tar.gz`. Update integrations and move existing state as described in the cutover runbook; no legacy aliases are provided.
+- **One-Pass Ecosystem Rename (`contextunity-acdd`)**:
+  - Renamed the distribution to `contextunity-acdd`, the primary executable and companion skill to `acdd`, and the MCP single-shot reader to `acdd_read`.
+  - Renamed workspace crates to `acdd-core`, `acdd-index`, and `acdd-tasks`.
+  - Configuration and runtime stores now use `acdd.yaml` and `.acdd/` (with `.acdd/code-map.sqlite` and `.acdd/tasks.sqlite`).
+  - Environment variables now use the `ACDD_` prefix (`ACDD_WORKSPACE_ROOT`, `ACDD_RELEASE_CHANNEL`, etc.).
+  - Release archives are now published as `contextunity-acdd-<target>.tar.gz`.
+  - Standardized managed marker comments across documentation and agent instructions to `<!-- acdd:<name>:start -->` / `<!-- acdd:<name>:end -->`.
+  - All legacy aliases, shims, and fallback flags have been retired per `INV-ONE-PASS-IDENTITY`.
+
+### Fixed
+
+- **CI Rolling Nightly Publish**: Resolved HTTP 422 `Reference does not exist` during the `publish` stage in `.github/workflows/release.yml` by checking ref existence via GitHub API, using `POST` for missing refs and `PATCH` for existing ones, and decoupling initial release creation from rolling tag updates.
+- **macOS & Cross-Platform Boundaries**:
+  - Fixed path canonicalization, `/private/var/folders` symlink resolution, and case-insensitive filesystem boundaries on macOS (`crates/acdd-core/src/fs.rs`).
+  - Confined SQLite database opening (`confined_database_open_path`) to prevent alias and symlink traversal escapes outside the workspace root.
+  - Fixed process signaling and discovery (`SIGUSR1` / `SIGTERM`) in `acdd reload` across Darwin and Linux.
+  - Hardened scanner limits and symlink cycle detection during deep directory traversal.
+- **Orchestrator, Wave Concurrency & Workflow Parity**:
+  - Fixed parallel execution races, role runner environment propagation, and dependency resolution in multi-agent wave dispatchers (`engine/orchestrator/waves.rs`, `spawner.rs`).
+  - Hardened candidate snapshot verification and evidence compilation to prevent drift and enforce strict gate transition contracts.
+  - Fixed worktree isolation tracking and candidate snapshot recovery in concurrent task workflows.
+- **Test Invariant Hardening & Performance**:
+  - Resolved SQLite WAL/SHM sidecar publication hazard in `src/engine/pipeline.rs::atomic_build` by checkpointing WAL (`TRUNCATE`), switching to `PRAGMA journal_mode=DELETE;`, and cleaning regular-file `-wal`/`-shm`/`-journal` sidecars under `exclusive_lock` before final publication (verified via `tests/core/database_guard.rs::output_sidecar_hazards_preserve_generation`).
+  - Strengthened repository test-suite authoring invariants (shared read-only indexed fixtures, in-memory `TasksStore` vs `WaveHarness` subprocess separation, integration binary budget, and zero tautological/meta-test bloat) across `AGENTS.md`, `TESTS.md`, `tests/AGENTS.md`, `tests/acdd/AGENTS.md`, and `docs/architecture/test-harness.md`, while keeping shared skills (`skills/test-suite-refactor/SKILL.md`, `skills/test-contract-seam/SKILL.md`) repository-agnostic.
+  - Expanded Milestone `AR-001` (`AR-001-borrowed-data-and-composable-execution.md`), authored Milestone `PF-002` (`PF-002-indexing-delta-and-query-acceleration.md`), and created `docs/plans/test-suite-decomposition-and-shared-fixtures.md`.
+  - Cleaned up redundant and fragile test theater: eliminated tautological enum self-comparisons, struct setter echoes, test-harness meta-tests, repetitive Cargo.toml string assertions, and brittle CI YAML inspection tests.
+  - Replaced cloned heavy test harnesses with table-driven test matrices across `incremental`, `mcp/freshness`, and `installer` test suites, drastically reducing test runtime and unnecessary subprocess spawns.
+  - Hardened SQLite VM budget test (`compact_summary_call_counts_obey_vm_budget_and_reset_connection`) by expanding recursive fanout bounds from 10M to 50M rows, ensuring deterministic `QueryBudget` interrupt across ultra-fast Apple Silicon CPUs.
+- **Documentation Clarification**: Cleaned up duplicated ACDD acronym definitions in `README.md` and `INSTALL.md` to reference the ACDD lifecycle cleanly.
 
 ## [0.5.2] - 2026-11-13
 
@@ -127,7 +159,8 @@ Initial public release of the pure-Rust `contextunity-forge-mcp` MCP server and 
 
 - **Initial Native Rust Forge Engine**: Released the standalone `contextunity-forge-mcp` MCP server and CLI featuring Tree-sitter AST indexing (`.forge/code-map.sqlite`), single-shot digest-verified symbol reads (`forge_read`), `ast_grep_search`, living documentation indexing, deterministic Merkle commitments, and SQLite task/milestone lifecycle management.
 
-[Unreleased]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/ContextUnity/contextunity-forge-mcp/compare/v0.5.1-alpha.2...v0.5.2
 [0.5.1-alpha.2]: https://github.com/ContextUnity/contextunity-forge-mcp/compare/v0.5.1-alpha.1...v0.5.1-alpha.2
 [0.5.1-alpha.1]: https://github.com/ContextUnity/contextunity-forge-mcp/compare/v0.5.0-alpha.1...v0.5.1-alpha.1

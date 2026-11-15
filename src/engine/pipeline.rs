@@ -1410,13 +1410,37 @@ fn atomic_build(
         let _idle_readers_guard = crate::db::cache::release_idle_readers(&output)?;
         validate_code_map_target(root, &output)?;
         if ensure_no_publication_sidecars(&output, false).is_err() {
-            let open_path = crate::core::fs::confined_database_open_path(&output)?;
-            let connection = Connection::open_with_flags(
-                open_path,
-                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-            )?;
-            crate::db::cache::checkpoint(&connection, true)?;
-            connection.close().map_err(|(_, err)| err)?;
+            ensure_no_publication_sidecars(&output, true)?;
+            if output.exists() {
+                let open_path = crate::core::fs::confined_database_open_path(&output)?;
+                let connection = Connection::open_with_flags(
+                    open_path,
+                    OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+                )?;
+                crate::db::cache::checkpoint(&connection, true)?;
+                let _ = connection.query_row("PRAGMA journal_mode=DELETE;", [], |_| Ok(()));
+                connection.close().map_err(|(_, err)| err)?;
+            }
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let mut name = output.as_os_str().to_owned();
+                name.push(suffix);
+                let sidecar = PathBuf::from(name);
+                match fs::symlink_metadata(&sidecar) {
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => {
+                        return Err(err)
+                            .with_context(|| format!("inspect sidecar {}", sidecar.display()));
+                    }
+                    Ok(metadata) if metadata.is_file() => {
+                        fs::remove_file(&sidecar)
+                            .with_context(|| format!("remove sidecar {}", sidecar.display()))?;
+                    }
+                    Ok(_) => bail!(
+                        "cannot replace database with existing sidecar {}",
+                        sidecar.display()
+                    ),
+                }
+            }
         }
         ensure_no_publication_sidecars(&output, false)?;
         fs::rename(&temporary, &output)?;

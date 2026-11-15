@@ -99,25 +99,21 @@ Count callers after the move. A helper with one caller is scenario code: return
 its unique mutation to the test and keep the shared prefix in the canonical
 helper.
 
-When returning a single-caller helper to its test or designing `<Domain>Harness`:
+When returning a single-caller helper to its test or designing a domain harness:
 
-- **No IIFE / Observation-shell dumping**: Do not paste a 100-line helper body into
-  the test wrapped in `(|| -> Result<_> { ... Ok(SomeObservation { ... }) })()` or
-  `{ ... SomeObservation { ... } }` while leaving zero-method `*Observation` structs
-  stranded in `harness.rs` or empty submodules. Compose multi-caller primitives
-  (`Workspace`, `sqlite::query_rows`, harness verbs) directly and delete the
-  one-off struct shell.
-- **No static namespace dumping**: Every method on `<Domain>Harness` must construct
-  or operate on that harness's domain state (`&self` / `&mut self`). Never attach
-  unrelated static Git, SQL, or file functions onto a harness type merely to satisfy
-  "use the harness" checks; place workspace/Git utilities on `Workspace` and shared
-  SQL queries in `tests/common/sqlite.rs`.
-- **No harness type aliasing**: Never alias harness types (`use McpTestHarness as Client`,
-  `type Mcp = McpTestHarness`). Type aliases break static call-graph indexing and
-  obscure harness boundaries.
+- **No IIFE / one-off observation-struct dumping**: Do not inline a large
+  single-caller helper body as an IIFE or block returning a zero-method
+  observation struct stranded in a support module. Compose shared multi-caller
+  primitives directly in the test and delete the one-off wrapper type.
+- **No static utility dumping on stateful harnesses**: Every method on a domain
+  harness must construct or operate on that harness's own state. Keep general
+  workspace, VCS, database, or file utilities in their owning shared support
+  modules rather than attaching unrelated static functions to a domain harness.
+- **No harness type aliasing**: Do not alias canonical harness or fixture types,
+  which obscures ownership and breaks static symbol navigation.
 - **No silent fixture fallbacks**: Happy-path fixture builders must fail loudly on
-  unexpected setup errors instead of fabricating `"unavailable"` digests or swallowing
-  command failures. Provide separate explicit helpers for malformed-input tests.
+  unexpected setup errors instead of fabricating placeholder values or swallowing
+  command failures; use separate explicit helpers for malformed-input scenarios.
 
 ## 3b. Duplicates, Noise, And Junk
 
@@ -139,11 +135,13 @@ or fixture rather than preserving its history.
 | `test_*_exports_*`, `has_no_dead_*`, hasattr inventories per method | One architecture-guard module; do not keep per-wrapper copies. Keep a single public-API freeze test for removed kwargs |
 | Two parametrize tables encoding the same mapping (profile list + access matrix + known-names) | One table, one test |
 | N identical nested fakes/stubs in one file | One helper or one table-driven test; harness `REWRITE` |
-| Harness function with one caller that rebuilds workspace, SQL, session, or evidence for that test | Return the mutation to the test via composable multi-caller primitives; delete one-off `*Observation` struct shells |
-| Static non-domain function dumped onto `<Domain>Harness` (`McpTestHarness::seed_git`, `McpTestHarness::edge_rows`) | Move to the owning primitive (`Workspace`, `tests/common/sqlite.rs`) or inline if single-caller |
-| `Weak<Workspace>` cache dropped at test exit, or directory-walk cache inside a mutating loop with 0% hits | Use a real shared fixture lifetime when ≥2 tests share the exact input, or construct a local `Workspace` |
-| Full-DB table dump (`persisted_state`) or full cold index rebuild inside an N-iteration rejection/delta loop | Assert lightweight per-iteration invariants (`PRAGMA data_version` + `output_root`) bracketed by before/after full checks; batch independent file additions |
-| Multi-hundred-line meta-test suite testing test-only helpers (`SeedGitTemplate`, `FixtureSnapshot`, `McpTestHarness`) | Collapse to 1–2 smoke assertions or delete; keep test budgets on production seams |
+| Single-caller harness helper that builds scenario-specific state | Return the mutation to the test using shared primitives; delete one-off observation wrapper types |
+| Unrelated static utility functions attached to a stateful domain harness | Move to the owning shared support module or inline if single-caller |
+| Ephemeral cache dropped at test exit or inside a mutating loop with 0% hit rate | Use a module- or suite-scoped shared read-only fixture when >=2 tests share identical immutable inputs, or construct local state directly |
+| Repeated expensive full-corpus builds or full-store dumps per test/iteration when inputs are immutable or a lightweight invariant suffices | Share one read-only snapshot across read-only tests, and assert lightweight per-iteration invariants bracketed by full before/after checks |
+| Heavy subprocess or isolated-worktree harness used to test pure in-memory state machine, scheduling, or validation rules | `REWRITE` against in-process or in-memory stores; keep subprocess harnesses strictly for process, signal, or filesystem boundaries |
+| Proliferating tiny standalone test-runner targets or binaries | Consolidate into the owning domain suite per repository instructions |
+| Tautological self-equality/setter echo assertions, brittle build-manifest or CI config substring checks, or large meta-test suites testing test-only helpers | `REMOVE` or collapse to 1–2 smoke checks; keep test budgets on production seams |
 | `__repr__` / wording / "human readable" unless redaction or client-safety is the contract | `REMOVE` |
 | Inner `_Stub` class per SDK/RPC test | Table of RPC → request/response fields through the real client |
 | `type: ignore`, `cast`, method-assign, `object.__new__` | `REWRITE` construction; do not leave the suppression |
@@ -169,13 +167,9 @@ cohesion; decompose monolithic test files along natural architectural and contra
 boundaries rather than applying an arbitrary mechanical line-count cap.
  
 1. Split by behavioral, subsystem, or contract seam, never mechanically. Decompose
-   multi-subsystem monoliths (>1,500–2,000 lines mixing unrelated contracts such as
-   `tests/acdd/mcp.rs`, `tests/mcp/context.rs`, `tests/mcp/tool_evolution/mcp_boundaries.rs`)
-   into focused domain submodules. Do NOT mechanically chop a cohesive single-domain
-   test file (e.g., 800–1,600 lines testing one tool or language surface) or hide test
-   assertions in harness helpers just to hit an arbitrary 500/800-line cap. Keep
-   `tests/commitment_integrity/*` under `< 500` lines since its submodules are already
-   organized by domain.
+   multi-subsystem monoliths that mix unrelated contracts into focused domain
+   modules. Do NOT mechanically chop a cohesive single-domain test file or hide
+   test assertions in harness helpers just to hit an arbitrary line-count cap.
 2. Carry forward only `KEEP` and unfinished `REWRITE` tests. Do not copy
    `REMOVE` tests into the new modules.
 3. Preserve markers, fixture scope, and ordering assumptions for retained tests.

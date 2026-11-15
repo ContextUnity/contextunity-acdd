@@ -511,7 +511,7 @@ fn compact_summary_call_counts_obey_vm_budget_and_reset_connection() {
     // A bounded virtual fan-out forces the normal inspect path through its SQLite VM budget.
     conn.execute_batch(&format!(
         "CREATE TEMP VIEW edges AS
-         WITH RECURSIVE fanout(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM fanout WHERE n<10000000)
+         WITH RECURSIVE fanout(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM fanout WHERE n<50000000)
          SELECT * FROM main.edges WHERE kind<>'calls'
          UNION ALL
          SELECT {target_hash},'calls',{target_hash},{path_id},1,1,1,1 FROM fanout;

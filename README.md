@@ -4,7 +4,7 @@
 [![MCP Protocol](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-green.svg)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 
-ACDD stands for Augmented Context-Driven Development. ContextUnity ACDD is a local-first, zero-daemon Rust engine for AI coding agents that brings together deep code graph navigation, living documentation indexing, and an Augmented Context-Driven Development (ACDD) lifecycle state machine into a single high-performance binary.
+ACDD stands for Augmented Context-Driven Development. ContextUnity ACDD is a local-first, zero-daemon Rust engine for AI coding agents that brings together deep code graph navigation, living documentation indexing, and an ACDD lifecycle state machine into a single high-performance binary.
 
 The same binary acts as both a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (20 tools) for coding assistants and an autonomous command-line interface (CLI) for headless workflows.
 

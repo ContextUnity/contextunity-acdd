@@ -8,9 +8,11 @@ doc_type: architecture
 Integration and contract tests drive real production seams. Shared setup lives in
 helpers; the `#[test]` owns the scenario mutation and every assertion.
 
-Active hardening order and branch reality live in
-`docs/plans/archive/test-suite-diet-and-fixture-hardening.md`. Placement rules live in
-`tests/AGENTS.md`. This page states only durable boundaries.
+Active hardening sequencing lives in
+[test-suite-decomposition-and-shared-fixtures.md](../plans/test-suite-decomposition-and-shared-fixtures.md)
+(superseding
+[test-suite-diet-and-fixture-hardening.md](../plans/archive/test-suite-diet-and-fixture-hardening.md)).
+Placement rules live in `tests/AGENTS.md`. This page states only durable boundaries.
 
 ## Mental model
 
@@ -71,26 +73,32 @@ Active hardening order and branch reality live in
      checks instead of triggering $O(N^2)$ sequential cold rebuilds.
    - Clean up temporary `.acdd/cold-*` databases and reuse extraction caches when
      testing linker/database parity rather than parser cold-cache misses.
-8. **Real lifetime caching only.** Do not cache `Weak<Workspace>` when the caller
-   drops the only `Arc<Workspace>` at the end of the test. Share read-only fixtures
-   only when ≥2 tests in the binary reuse the exact same file set; otherwise build
-   a local `Workspace` directly.
+8. **Real lifetime caching and shared `OnceLock` fixtures.** Do not cache `Weak<Workspace>`
+   when the caller drops the only `Arc<Workspace>` at the end of the test. Share
+   immutable read-only indexed corpora via module-scoped `std::sync::OnceLock`
+   whenever `>= 2` query, search, or linker tests inspect the exact same file set
+   without mutating disk or SQLite state; otherwise build a local `Workspace` directly.
 9. **Fail-loud fixture builders.** Happy-path fixture builders (`fixture_integration_evidence`,
    `observe_fixture_evidence`) must fail immediately on unexpected setup errors.
    Never silently fall back to `"unavailable"` digests or swallow non-contract command
    failures; provide separate explicit constructors for malformed-input tests.
 10. **In-process default & in-memory when sufficient.** Call engine/task/MCP/CLI APIs
-    in-process and use in-memory SQLite/AST fixtures unless filesystem or subprocess
-    behavior is the explicit contract under test.
-11. **No meta-test bloat.** Do not build multi-hundred-line test suites that only test
-    test-only helpers (`SeedGitTemplate`, `FixtureSnapshot`, `McpTestHarness`). Keep
-    production test budgets focused on production seams.
+    in-process and use in-memory SQLite (`TasksStore::open_in_memory`) or AST
+    fixtures for DAG ordering, blocking, gate transitions, and blackboard rules.
+    Reserve full Git/Python `WaveHarness` subprocess runs strictly for process,
+    signal, recovery, or concurrent worktree isolation behavior.
+11. **Zero new root binaries & no meta-test bloat.** Register new suites in
+    canonical domain binaries instead of adding top-level `tests/<name>.rs` binaries;
+    never author multi-hundred-line meta-test suites for test-only helpers
+    (`SeedGitTemplate`, `FixtureSnapshot`, `McpTestHarness`), tautological
+    struct/enum echoes, or brittle `Cargo.toml`/CI YAML substring assertions.
 12. **Split by domain cohesion, not arbitrary line counts.** Decompose multi-subsystem
     monoliths (>1,500–2,000 lines mixing unrelated contracts such as `tests/acdd/mcp.rs`,
-    `tests/mcp/context.rs`, `tests/mcp/tool_evolution/mcp_boundaries.rs`) into focused
-    domain submodules. Never mechanically split a single cohesive domain file (e.g.,
-    800–1,600 lines testing one tool or language surface) or hide test assertions in
-    harness helpers just to hit an arbitrary 500/800-line ceiling.
+    `tests/mcp/context.rs`, `tests/mcp/tool_evolution/mcp_boundaries.rs`, or
+    `tests/acdd/orchestrator/waves.rs`) into focused domain submodules. Never
+    mechanically split a single cohesive domain file (e.g., 800–1,600 lines testing
+    one tool or language surface) or hide test assertions in harness helpers just to
+    hit an arbitrary 500/800-line ceiling.
 
 ## External role processes
 

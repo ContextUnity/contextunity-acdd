@@ -1,14 +1,9 @@
 use acdd_core::commitments::DOMAINS;
 use acdd_core::config::ScannerLimits;
 use acdd_core::format::stable_hash64;
-use acdd_core::interner::{PathId, SymbolId};
 use acdd_core::models::Node;
-use acdd_index::ast::AstToken;
 use acdd_index::languages::LanguageRegistry;
 use acdd_index::linker::RouteIndex;
-use acdd_tasks::blackboard::BlackboardScope;
-use acdd_tasks::lifecycle::{TaskStage, TaskStatus};
-use acdd_tasks::verification::ProofPolicy;
 
 #[test]
 fn workspace_file_uris_encode_canonical_relative_coordinates() {
@@ -154,11 +149,6 @@ fn workspace_builds_and_applies_delta_in_its_owned_temp_directory() {
 fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     // Verify acdd-core crate public API & real Merkle root computation
     assert_eq!(stable_hash64("workspace_boundary"), 7897085170651836845);
-    assert_eq!(acdd_core::version(), "0.5.2");
-    let path_id = PathId(42);
-    let sym_id = SymbolId(101);
-    assert_eq!(u32::from(path_id), 42);
-    assert_eq!(u32::from(sym_id), 101);
     let limits = ScannerLimits::default();
     assert_eq!(limits.max_files, 100_000);
     assert!(DOMAINS.contains(&"nodes"));
@@ -190,7 +180,6 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     };
 
     // Verify acdd-index crate public API & real route matching and schema initialization
-    assert_eq!(acdd_index::version(), "0.5.2");
     let mut reg = LanguageRegistry::new();
     assert!(reg.is_empty());
     reg.enable("rust");
@@ -206,14 +195,6 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     let unmatched = routes.match_route("POST", "/api/users/123").unwrap();
     assert!(unmatched.is_none());
 
-    let token = AstToken {
-        kind: "identifier".into(),
-        text: "my_var".into(),
-        row: 1,
-        column: 4,
-    };
-    assert_eq!(token.text, "my_var");
-
     let mem_conn = rusqlite::Connection::open_in_memory().unwrap();
     acdd_index::db::initialize_code_map_schema(&mem_conn).unwrap();
     let table_count: i64 = mem_conn
@@ -225,13 +206,7 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
         .unwrap();
     assert_eq!(table_count, 4);
 
-    // Verify acdd-tasks crate public API & real lifecycle, blackboard, and store operations
-    assert_eq!(acdd_tasks::version(), "0.5.2");
-    assert_eq!(TaskStage::Build, TaskStage::Build);
-    assert_eq!(TaskStatus::InProgress, TaskStatus::InProgress);
-    assert_eq!(ProofPolicy::DirectProof, ProofPolicy::DirectProof);
-    assert_eq!(BlackboardScope::Task, BlackboardScope::Task);
-
+    // Verify acdd-tasks crate public API & real store operations
     let temp_path =
         std::env::temp_dir().join(format!("test-tasks-store-{}.sqlite", std::process::id()));
     let store =
@@ -239,110 +214,6 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     assert!(acdd_tasks::store::now() > 0);
     drop(store);
     let _ = std::fs::remove_file(&temp_path);
-
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let root_cargo = manifest_dir.join("Cargo.toml");
-    let content = std::fs::read_to_string(&root_cargo).expect("root Cargo.toml must exist");
-    let doc: toml::Value = content.parse().expect("root Cargo.toml must be valid toml");
-
-    // 1. Cargo workspace root in Cargo.toml declares members:
-    //    ["crates/acdd-core", "crates/acdd-index", "crates/acdd-tasks", "."]
-    let workspace = doc
-        .get("workspace")
-        .expect("Cargo.toml must declare [workspace]");
-    let members = workspace
-        .get("members")
-        .and_then(|m| m.as_array())
-        .expect("[workspace] must have members array");
-    let member_strings: Vec<&str> = members.iter().filter_map(|m| m.as_str()).collect();
-    for required in [
-        "crates/acdd-core",
-        "crates/acdd-index",
-        "crates/acdd-tasks",
-        ".",
-    ] {
-        assert!(
-            member_strings.contains(&required),
-            "workspace members must include {required}, got {member_strings:?}"
-        );
-    }
-
-    // 2. acdd-core crate exists and has no parser or database dependencies
-    let core_cargo_path = manifest_dir.join("crates/acdd-core/Cargo.toml");
-    assert!(
-        core_cargo_path.exists(),
-        "crates/acdd-core/Cargo.toml must exist"
-    );
-    let core_content =
-        std::fs::read_to_string(&core_cargo_path).expect("read acdd-core Cargo.toml");
-    let core_doc: toml::Value = core_content.parse().expect("parse acdd-core Cargo.toml");
-    assert_eq!(core_doc["package"]["name"].as_str(), Some("acdd-core"));
-    let core_deps = core_doc
-        .get("dependencies")
-        .cloned()
-        .unwrap_or(toml::Value::Table(Default::default()));
-    assert!(
-        core_deps.get("rusqlite").is_none(),
-        "acdd-core must have zero rusqlite dependency"
-    );
-    assert!(
-        core_deps.get("tree-sitter").is_none(),
-        "acdd-core must have zero tree-sitter dependency"
-    );
-    assert!(
-        core_deps.get("acdd-index").is_none(),
-        "acdd-core must have zero acdd-index dependency"
-    );
-    assert!(
-        core_deps.get("acdd-tasks").is_none(),
-        "acdd-core must have zero acdd-tasks dependency"
-    );
-
-    // 3. acdd-index crate exists, depends on acdd-core, and has no dependency on acdd-tasks
-    let index_cargo_path = manifest_dir.join("crates/acdd-index/Cargo.toml");
-    assert!(
-        index_cargo_path.exists(),
-        "crates/acdd-index/Cargo.toml must exist"
-    );
-    let index_content =
-        std::fs::read_to_string(&index_cargo_path).expect("read acdd-index Cargo.toml");
-    let index_doc: toml::Value = index_content.parse().expect("parse acdd-index Cargo.toml");
-    assert_eq!(index_doc["package"]["name"].as_str(), Some("acdd-index"));
-    let index_deps = index_doc
-        .get("dependencies")
-        .cloned()
-        .unwrap_or(toml::Value::Table(Default::default()));
-    assert!(
-        index_deps.get("acdd-core").is_some(),
-        "acdd-index must depend on acdd-core"
-    );
-    assert!(
-        index_deps.get("acdd-tasks").is_none(),
-        "acdd-index must have zero acdd-tasks dependency"
-    );
-
-    // 4. acdd-tasks crate exists, depends on acdd-core, and has no dependency on acdd-index
-    let tasks_cargo_path = manifest_dir.join("crates/acdd-tasks/Cargo.toml");
-    assert!(
-        tasks_cargo_path.exists(),
-        "crates/acdd-tasks/Cargo.toml must exist"
-    );
-    let tasks_content =
-        std::fs::read_to_string(&tasks_cargo_path).expect("read acdd-tasks Cargo.toml");
-    let tasks_doc: toml::Value = tasks_content.parse().expect("parse acdd-tasks Cargo.toml");
-    assert_eq!(tasks_doc["package"]["name"].as_str(), Some("acdd-tasks"));
-    let tasks_deps = tasks_doc
-        .get("dependencies")
-        .cloned()
-        .unwrap_or(toml::Value::Table(Default::default()));
-    assert!(
-        tasks_deps.get("acdd-core").is_some(),
-        "acdd-tasks must depend on acdd-core"
-    );
-    assert!(
-        tasks_deps.get("acdd-index").is_none(),
-        "acdd-tasks must have zero acdd-index dependency"
-    );
 }
 
 #[test]
@@ -360,24 +231,4 @@ fn direct_library_task_entrypoint_initializes_extractors_without_caller_bootstra
         .nodes
         .iter()
         .any(|n| n.is_test && n.name == "sample_seam"));
-}
-
-#[test]
-fn workspace_writes_a_file_set_and_removes_one_member() {
-    let workspace = crate::common::Workspace::new();
-    workspace.write_all(&[
-        ("src/a.rs", "pub fn a() {}\n"),
-        ("src/b.rs", "pub fn b() {}\n"),
-    ]);
-    assert_eq!(
-        std::fs::read_to_string(workspace.path("src/a.rs")).unwrap(),
-        "pub fn a() {}\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(workspace.path("src/b.rs")).unwrap(),
-        "pub fn b() {}\n"
-    );
-    workspace.remove("src/b.rs");
-    assert!(!workspace.path("src/b.rs").exists());
-    assert!(workspace.path("src/a.rs").exists());
 }

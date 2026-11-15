@@ -160,6 +160,30 @@ fn output_sidecar_hazards_preserve_generation() {
         }
     }
     build(ws.root(), &db, None).unwrap();
+    // Stale regular-file WAL/SHM sidecars left when a read-only handle outlives
+    // the writer must checkpoint and clean up cleanly during publication.
+    {
+        let rw = rusqlite::Connection::open(&db).unwrap();
+        let mode: String = rw
+            .query_row("PRAGMA journal_mode=WAL;", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode.to_ascii_lowercase(), "wal");
+        let ro = rusqlite::Connection::open_with_flags(
+            &db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap();
+        let _: i64 = ro
+            .query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))
+            .unwrap();
+        drop(rw);
+        drop(ro);
+        assert!(ws.path("index.sqlite-wal").exists() || ws.path("index.sqlite-shm").exists());
+    }
+    build(ws.root(), &db, None).unwrap();
+    assert!(!ws.path("index.sqlite-wal").exists());
+    assert!(!ws.path("index.sqlite-shm").exists());
+    assert!(!ws.path("index.sqlite-journal").exists());
     assert!(!std::fs::read_dir(ws.root()).unwrap().any(|entry| entry
         .unwrap()
         .file_name()

@@ -48,8 +48,20 @@ Rules for placing, creating, refactoring, and maintaining tests in
   batched deltas prove the same invariant. Clean up temporary `.acdd/cold-*` files
   and avoid 0%-hit `Weak<Workspace>` or per-iteration directory-walk caches.
 - **Seam-preserving decomposition**: Do not replace production seams with
-  mockist unit doubles, and do not author multi-hundred-line meta-test suites for
-  test-only helpers.
+  mockist unit doubles. Ban tautological enum/struct self-equality echoes,
+  brittle `Cargo.toml`/CI YAML substring assertions, and multi-hundred-line
+  meta-test suites for `tests/common` helpers.
+- **Shared read-only indexed fixtures (`OnceLock`)**: When two or more read-only
+  tests in a query, linker, or AST suite inspect the same immutable corpus
+  without mutating files or database state, initialize one `Workspace` and cold
+  index per binary via `std::sync::OnceLock` and open per-test read-only
+  connections instead of calling `.build()` per `#[test]`.
+- **Orchestrator & `WaveHarness` boundary**: Reserve Git worktree and Python
+  subprocess harnesses (`WaveHarness`, `LifecycleHarness`) strictly for tests
+  proving subprocess execution, signal/timeout recovery, or physical worktree
+  isolation. Drive pure DAG scheduling, dependency readiness, gate transitions,
+  and blackboard routing in-process against lightweight in-memory `TasksStore` /
+  `TaskHarness` fixtures.
 - **In-process MCP**: Prefer in-process handlers / `McpTestHarness`. Reserve
   `StdioClient` / `mkfifo` for dedicated transport smoke tests.
 - **Zero-disk AST**: Language extraction and framework-manifest unit tests stay
@@ -63,6 +75,14 @@ Rules for placing, creating, refactoring, and maintaining tests in
 ## 2. Domain modules and binary budget
 
 Every `.rs` file directly under `tests/` is a separate Cargo test binary.
+Do NOT create new top-level `tests/<name>.rs` binaries; register new test modules
+under the owning canonical domain binary (`acdd.rs`, `core.rs`, `incremental.rs`,
+`languages.rs`, `framework_manifests.rs`, `linker.rs`, `mcp.rs`,
+`query_context.rs`, `commitment_integrity.rs`). Small standalone binaries
+(`cli_roots.rs`, `impact_context.rs`, `linked_workspaces.rs`, `docs_check.rs`,
+`release_packaging.rs`) are scheduled for consolidation into those canonical
+domain binaries under
+[test-suite-decomposition-and-shared-fixtures.md](../docs/plans/test-suite-decomposition-and-shared-fixtures.md).
 Prefer coherent domain modules:
 
 - `tests/acdd.rs` (`tests/acdd/`): tasks, milestones, blackboard, runners
@@ -114,7 +134,10 @@ When moving, renaming, splitting, or removing a suite file, update this file and
 ## 4. Authoring patterns
 
 Read [test harness architecture](../docs/architecture/test-harness.md). Active
-refactor sequencing: [reality-reset plan](../docs/plans/archive/test-suite-diet-and-fixture-hardening.md).
+refactor sequencing:
+[test-suite-decomposition-and-shared-fixtures.md](../docs/plans/test-suite-decomposition-and-shared-fixtures.md)
+(building on the archived
+[reality-reset plan](../docs/plans/archive/test-suite-diet-and-fixture-hardening.md)).
 
 1. **Extend a capability** — add a table row or a single harness mutation; do not
    copy a 100-line test to flip one field.
@@ -122,7 +145,8 @@ refactor sequencing: [reality-reset plan](../docs/plans/archive/test-suite-diet-
    drive the real seam through the existing harness.
 3. **Split by domain cohesion, not arbitrary line counts**: Decompose multi-subsystem
    monoliths (>1,500–2,000 lines mixing unrelated contracts such as `tests/acdd/mcp.rs`,
-   `tests/mcp/context.rs`, `tests/mcp/tool_evolution/mcp_boundaries.rs`) or shared
+   `tests/mcp/context.rs`, `tests/mcp/tool_evolution/mcp_boundaries.rs`, or
+   `tests/acdd/orchestrator/waves.rs`) or shared
    infrastructure (`tests/acdd/support/*`) into focused domain submodules. Do NOT
    mechanically chop a cohesive single-domain test file (e.g., 800–1,600 lines testing
    one tool or language surface) or hide test assertions in harness helpers just to

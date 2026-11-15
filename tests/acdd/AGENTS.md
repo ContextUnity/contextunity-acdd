@@ -7,6 +7,7 @@ This document defines the architectural boundaries and test authoring invariants
 - **Blackboard Coordination**: [blackboard.rs](blackboard.rs) — Targeted routing, topics, RFC message delivery, and payload size bounds (`INV-PAYLOAD-OVERFLOW-GUARD`).
 - **MCP Tool Contracts**: [mcp.rs](mcp.rs) — JSON-RPC tool contracts (`task_claim`, `task_submit`, `task_manage`, `task_blackboard`, `task_list`).
 - **Milestone Lifecycles**: [milestones/AGENTS.md](milestones/AGENTS.md) — Milestone initialization, synthesis, DAG verification, handoff, and recovery.
+- **Orchestrator & Wave Execution**: [orchestrator/mod.rs](orchestrator/mod.rs) — Role spawner, task lifecycle runner, and wave DAG dispatch.
 - **Subtask Lifecycle**: [subtasks.rs](subtasks.rs) — Subtask state transitions, evidence validation, and dependency ordering.
 - **Task Engine & Lifecycles**: [tasks/AGENTS.md](tasks/AGENTS.md) — Task state machine, seam reachability, signature boundaries, workspaces, and retirement.
 - **Shared Test Harnesses**: [support.rs](support.rs) and [tests/common/](../common/) — Reusable workspace builders, temp stores, and fixture factories.
@@ -33,3 +34,7 @@ This document defines the architectural boundaries and test authoring invariants
 ### 4. Positive Seams and Runtime-Red Contracts
 - Extended capabilities must strengthen existing domain seams additively.
 - Contract gate tests must compile cleanly and produce runtime assertion failures (exit code 101). Never introduce compilation errors.
+
+### 5. Orchestrator Subprocess vs In-Memory DAG Boundary
+- Keep pure DAG scheduling, dependency blocking, gate transitions, and blackboard routing tests in-process against in-memory `TasksStore` fixtures. Reserve Git worktree + Python subprocess `WaveHarness` runs strictly for subprocess spawning, signal/timeout recovery, or worktree isolation tests.
+- Partition `orchestrator/waves.rs` into domain submodules by behavioral concern (scheduling, recovery, escalation, cancellation) rather than accumulating unrelated orchestration contracts in one file.

@@ -81,8 +81,9 @@ To prevent test-suite bloat, redundant execution storms, and synthetic masking, 
    - Integration tests proving milestone and task lifecycle logic must invoke the in-process Rust API directly (`milestone_engine::handoff`, `tasks::manage`, `TasksStore`).
    - OS-level binary execution (`std::process::Command::new(env!("CARGO_BIN_EXE_..."))`) is restricted exclusively to dedicated CLI smoke tests (1–2 per subcommand) to verify CLI argument parsing and exit codes. Never drive domain matrix permutations through subprocess spawning.
 
-4. **In-Memory Store First**:
-   - Pure state-machine logic, gate transitions, DAG status queries, and invariant checks must run against in-memory SQLite stores (`TasksStore::open_in_memory(":memory:?cache=shared")`) in < 5ms without disk files or external Git processes.
+4. **In-Memory Store First & Orchestrator Subprocess Boundary**:
+   - Pure state-machine logic, gate transitions, DAG wave ordering, dependency blocking, and blackboard routing must run against in-memory SQLite stores (`TasksStore::open_in_memory(":memory:?cache=shared")`) in < 5ms without disk files, Git worktrees, or external Python/shell subprocesses.
+   - Reserve `WaveHarness` Git worktrees and Python runner subprocesses strictly for tests asserting subprocess lifecycle, signal/timeout cancellation, process recovery, or concurrent worktree filesystem isolation.
 
 5. **Universal Declarative Test Harnesses (`<Domain>Harness`)**:
    - Integration tests must express domain intent, not procedural plumbing.
@@ -113,6 +114,12 @@ To prevent test-suite bloat, redundant execution storms, and synthetic masking, 
     - The test harness automatically derives isolated synthetic sessions per simulated worker (`test-session-{worker}`) to make in-process tests immune to ambient host environment variables.
     - Dedicated integration tests must verify that an independent gate rejects the accepted predecessor's `worker_id` with `TASK_REVIEW_NOT_INDEPENDENT`, regardless of session metadata, while a distinct worker is not vetoed by missing or equal session metadata.
     - Runner tests must separately verify distinct session identities and fingerprints, process isolation, and retained session reuse on rejection.
+
+11. **Shared Read-Only Indexed Corpus (`INV-TEST-SHARED-READONLY-INDEX`)**:
+    - When two or more read-only query, search, or linker tests inspect the same immutable file corpus, initialize one `Workspace` and cold index per test binary via `std::sync::OnceLock` and open per-test read-only connections rather than rebuilding the index per `#[test]`.
+
+12. **Integration Binary Consolidation Budget (`INV-TEST-BINARY-BUDGET`)**:
+    - Every `.rs` file directly under `tests/` compiles and links a separate integration binary. Register new test modules inside the owning canonical domain binary (`tests/core.rs`, `tests/mcp.rs`, `tests/query_context.rs`, `tests/linker.rs`, `tests/incremental.rs`, `tests/languages.rs`, `tests/framework_manifests.rs`, `tests/acdd.rs`, `tests/commitment_integrity.rs`) rather than creating new standalone `tests/<name>.rs` files.
 
 ## Declarative Seam Testing via `<Domain>Harness`: Agent Authoring Guide
 
@@ -204,8 +211,11 @@ When a new subsystem emerges (e.g. a consumer of `PlanHarness` or `TasksStore`):
 - ❌ **NEVER** inline a single-caller helper as a 100-line `(|| -> Result<_> { ... })()` IIFE block returning a one-off `*Observation` struct, or leave zero-method `*Observation` struct shells in `harness.rs`.
 - ❌ **NEVER** run full-DB dumps (`persisted_state`) or $O(N^2)$ sequential cold index rebuilds inside per-row rejection/delta loops when lightweight checks or batched file updates prove the same contract.
 - ❌ **NEVER** synthesize 40–80 lines of raw JSON evidence manually (use `h.default_evidence()` and declarative mutators), or hide setup bugs behind silent `"unavailable"` digest fallbacks in happy-path fixture helpers.
-- ❌ **NEVER** combine unrelated workflows into 300-line mega-tests, or author multi-hundred-line meta-test suites for test-only helpers.
-- ❌ **NEVER** mechanically chop a cohesive single-domain test file (e.g. 800–1,600 lines testing one tool or language surface) or hide test assertions in `*Harness` helpers to chase an arbitrary line count. Decompose multi-subsystem monoliths (>1,500–2,000 lines mixing unrelated contracts such as `tests/acdd/mcp.rs`, `tests/mcp/context.rs`, `tests/mcp/tool_evolution/mcp_boundaries.rs`) by domain cohesion, keeping `tests/commitment_integrity/*` under `< 500` lines since its submodules are already partitioned by domain.
+- ❌ **NEVER** combine unrelated workflows into 300-line mega-tests, author multi-hundred-line meta-test suites for test-only helpers, or write tautological enum/struct echo checks and brittle `Cargo.toml`/CI YAML substring assertions.
+- ❌ **NEVER** call `Workspace::build()` repeatedly per test when `>= 2` read-only query, search, or linker tests inspect the same immutable fixture corpus (share one read-only index via `OnceLock`).
+- ❌ **NEVER** spawn `WaveHarness` Git worktrees and Python runner subprocesses for pure in-memory DAG scheduling, dependency blocking, or SQLite state-transition assertions.
+- ❌ **NEVER** add new top-level `tests/<name>.rs` Cargo test binaries; register new modules inside the owning canonical domain binary.
+- ❌ **NEVER** mechanically chop a cohesive single-domain test file (e.g. 800–1,600 lines testing one tool or language surface) or hide test assertions in `*Harness` helpers to chase an arbitrary line count. Decompose multi-subsystem monoliths (>1,500–2,000 lines mixing unrelated contracts such as `tests/acdd/mcp.rs`, `tests/mcp/context.rs`, `tests/mcp/tool_evolution/mcp_boundaries.rs`, or `tests/acdd/orchestrator/waves.rs`) by domain cohesion, keeping `tests/commitment_integrity/*` under `< 500` lines since its submodules are already partitioned by domain.
 
 ## Test lanes
 
