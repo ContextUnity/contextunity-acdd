@@ -1,0 +1,101 @@
+# =============================================================================
+# ACDD SCENARIO EXAMPLE: Documentation & Skill Refactor/Sync Workflow
+# File pattern: {scenario}.workflow.yaml (ADR 0021 — Stateless Workflow Engine)
+#
+# Refactors and reconciles docs, ADRs, AGENTS.md, skills, and profile examples
+# against live source and schemas (`save: log`, zero tasks, zero code edits).
+# Structural template: with `inherit: none`, bind `runner:` per role before
+# running `acdd workflow run`; AC-004 target switches `inherit: none` to
+# `inherit: workspace` to reuse workspace `roles:`, `runner:`, and `models:`.
+# =============================================================================
+
+version: 2
+inherit: none
+save: log
+
+roles:
+  docs_architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:high'
+    guidance: "Load `agent-instructions`. Audit target docs, ADRs, AGENTS.md, skills, and examples against live code, CLI flags, and schemas. Keep skills language- and repo-agnostic; route source code bugs to code owners without authorizing source edits."
+
+  docs_builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+    guidance: "Load `agent-instructions`, `docs/AGENTS.md`, and `skills/AGENTS.md`. Rewrite docs in present tense, remove historical migration cruft, keep links relative and valid, keep skill links self-contained inside their skill directory, and update docs/skills/examples synchronously."
+
+  docs_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+    guidance: "Verify symbol parity against live code, strict YAML schema validation, domain-agnostic skills, self-contained installed skill links, zero production source edits, and concise affirmative phrasing."
+
+commands:
+  guard_and_validate_docs:
+    command: "(! git status --porcelain | grep -qE '^.. (src|app|lib|crates|packages|tests)/') && acdd docs check && for f in docs/workflows/*.workflow.yaml skills/acdd/references/acdd-profile-examples/*.*.yaml; do [ -e \"$f\" ] && acdd validate \"$f\" >/dev/null || exit 1; done"
+    output:
+      require_counts: false
+    timeout_seconds: 180
+
+policies:
+  docs_review_policy:
+    independent_worker: true
+    require_all_contours: true
+
+guidance:
+  contour.link_integrity: "Verify all Markdown relative links, section anchors, and clickable references resolve; installed skill trees stay self-contained inside their skill root."
+  contour.symbol_parity: "Verify documented CLI commands, MCP tools, config keys, and symbol citations match live source code and schemas."
+  contour.agnostic_skills: "Verify bundled skills and scenario examples contain zero product-specific jargon, dead history, or hardcoded repository paths."
+  contour.no_code_tampering: "Verify zero edits to source code or test suites; escalate code defects to owning tasks."
+
+gates:
+  - id: audit_drift
+    role: docs_architect
+    max_attempts: 2
+    proof: &audit_proof
+      scheme:
+        type: object
+        required: [decision, summary, target_files, drift_findings, code_bugs_escalated]
+        properties:
+          decision: { type: string, enum: [pass, reject] }
+          summary: { type: string }
+          target_files:
+            type: array
+            items: { type: string }
+          drift_findings:
+            type: array
+            items: { type: string }
+          code_bugs_escalated:
+            type: array
+            items: { type: string }
+    pass: reconcile_docs
+
+  - id: reconcile_docs
+    role: docs_builder
+    command: guard_and_validate_docs
+    max_attempts: 3
+    proof: &docs_decision
+      scheme:
+        type: object
+        required: [decision, summary, updated_files]
+        properties:
+          decision: { type: string, enum: [pass, reject] }
+          summary: { type: string }
+          updated_files:
+            type: array
+            items: { type: string }
+    pass: review_docs
+
+  - id: review_docs
+    role: docs_reviewer
+    policy: docs_review_policy
+    contours: guidance.contours
+    independent_from: reconcile_docs
+    max_attempts: 3
+    proof: *docs_decision
+    fail: reconcile_docs

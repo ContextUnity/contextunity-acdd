@@ -1,0 +1,84 @@
+# =============================================================================
+# ACDD SCENARIO EXAMPLE: Standalone Clean-Room CI Verification Gate
+# File pattern: {scenario}.workflow.yaml (ADR 0021 — Stateless Workflow Engine)
+#
+# Self-contained CI verification pipeline (`inherit: none`, `save: log`) suitable
+# for headless CI environments and pre-release checks without tasks or worktrees.
+# Structural template: configure `runner:` per role (or switch to `inherit:
+# workspace` under AC-004) before launching `acdd workflow run`.
+# =============================================================================
+
+version: 2
+inherit: none
+save: log
+
+roles:
+  ci_fixer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  release_auditor:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+commands:
+  lint_and_fmt:
+    command: "cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings"
+    output:
+      require_counts: false
+    timeout_seconds: 600
+
+  workspace_tests:
+    command: "cargo test --workspace"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: true
+    timeout_seconds: 1200
+
+policies:
+  ci_signoff:
+    independent_worker: true
+    require_all_contours: true
+
+guidance:
+  contour.reproducibility: "Verify deterministic builds and clean git status after checks."
+  contour.regressions: "Verify zero skipped or weakened assertions across test suites."
+
+gates:
+  - id: verify_lint
+    command: lint_and_fmt
+    pass: verify_tests
+    fail: repair
+
+  - id: verify_tests
+    command: workspace_tests
+    pass: release_audit
+    fail: repair
+
+  - id: repair
+    role: ci_fixer
+    command: workspace_tests
+    max_attempts: 3
+    proof: &gate_decision
+      scheme:
+        type: object
+        required: [decision, summary]
+        properties:
+          decision: { type: string, enum: [pass, reject] }
+          summary: { type: string }
+    pass: verify_lint
+
+  - id: release_audit
+    role: release_auditor
+    policy: ci_signoff
+    contours: guidance.contours
+    independent_from: repair
+    max_attempts: 2
+    proof: *gate_decision
+    fail: repair

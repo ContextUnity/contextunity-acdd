@@ -8,6 +8,9 @@ ACDD stands for Augmented Context-Driven Development. ContextUnity ACDD is a loc
 
 The same binary acts as both a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (20 tools) for coding assistants and an autonomous command-line interface (CLI) for headless workflows.
 
+> [!NOTE]
+> **Architecture & Lifecycle Methodology**: See [Specification, Design, and Verification Lifecycle](docs/architecture/specification-and-design-lifecycle.md) ([Architecture index](docs/architecture/README.md)) and [ADR 0021](docs/adr/0021-workflow-plan-and-milestone-lifecycle-hierarchy.md) for how `Specify/AC-*`, manual C1–C2 design (`SAD`/`ADR`), live indexed C3–C4 graphs, and S/M/L execution (`Workflow` / `Plan` / `Milestone`) fit together.
+
 ---
 
 ## The Three Core Pillars

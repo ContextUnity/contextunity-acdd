@@ -319,7 +319,7 @@ policies:
     enforce_baseline_parity: true     # Verifies test count does not drop without observable justification
 ```
 - **Review Policy Invariants**: Enforces cognitive independence between workers, mandates full contour evaluation, and prevents unreviewed scope creep.
-- **Delivery Policy Invariants**: Enforces snapshot immutability, clean git state, and automated zero-token commit generation.
+- **Delivery Policy Invariants**: Enforces candidate acceptance under the Option 1 protocol below, clean git state, and automated zero-token commit generation.
 
 ---
 
@@ -392,6 +392,31 @@ where:
 Command and contract proofs must consume engine-observed execution bound to the claim, candidate, command plan, and output policy. A runtime-red contract must prove the declared seam and failure signature; a successful build must verify the candidate. Reviewers submit typed `decision` (`pass` or `reject`) and a `contours` object mapping each configured contour to `applicable` and nonblank `evidence`, with `extended_scope_review` when needed; see the [typed proof reference](../reference/tasks.md#gates-and-evidence). `task submit` can compile evidence from traces, but Round 4 found that typed submissions can bypass observation (R4-01 and R4-02). The common acceptance path must enforce the same proof binding for all submission surfaces.
 
 Task execution can use a selected working tree. Native plan execution, role dispatch, and headless runners are implemented. Dedicated taskless workflow run logs are not implemented.
+
+#### Option 1: Immutable candidate warning and mandatory rebinding
+
+`candidate_fingerprint` and Git snapshots use the same `.acdd/` runtime-path
+exclusions. Runtime churn never triggers drift; profile, framework, source,
+test, and other authority files remain part of candidate comparison. The
+snapshot and keeper guarantees belong to [ADR 0015](0015-acdd-lifecycle-snapshots-and-proactive-defect-resolution.md).
+
+Non-runtime worktree drift during review or `save: { immutable: true }` emits
+structured `candidate_drift_warning` with prior/current bindings and changed
+paths. It records a mandatory pending rebind obligation through existing
+lifecycle transitions and checkpoints, including resume/recovery. The engine
+supersedes active candidate acceptance without altering historical proofs.
+Rebind to current content, re-verify using fresh observed verification when
+source/test paths drifted (and whenever existing binding rules require it), and
+re-review with an independent reviewer before any terminal deliver, handoff, or
+Plan snapshot-completion receipt. Repeated drift restarts these obligations.
+Terminal checks compare current content again and withhold receipts until the
+new binding has all required verification and independent review.
+
+Warnings never count as passing proofs. Gate routing remains generic and
+profile-driven; typed observed proof and reviewer independence remain mandatory.
+Hard `TASK_CANDIDATE_MISMATCH` is reserved strictly for corrupted/mismatched
+explicit commit receipts or unrecoverable HEAD divergence. Invalid or missing
+authority continues to fail closed under its existing validation rules.
 
 ---
 
@@ -509,7 +534,7 @@ To avoid circular dependencies, type drift between parallel builder sessions, an
    | GATE_INVALID_CONFIGURATION | A gate has missing, conflicting, or invalid driver fields. |
    | MILESTONE_DAG_CYCLE | The task dependency graph contains a cycle. |
    | MILESTONE_PREFLIGHT_FAILED | Manifest, skill, repository, or worktree preflight failed. |
-   | TASK_CANDIDATE_MISMATCH | The delivery tree differs from the reviewed immutable candidate. |
+   | TASK_CANDIDATE_MISMATCH | Corrupted/mismatched explicit commit receipt or unrecoverable HEAD divergence. |
    | TASK_CANDIDATE_OUT_OF_SCOPE | The task candidate changes a path outside admitted scope. |
    | TASK_SCOPE_INVALID | A scope path is malformed or outside declared roots. |
    | TASK_SCOPE_PROTECTED | A protected path cannot be added to task scope. |
@@ -647,7 +672,7 @@ git_commit_note:
 save:
   pre: snapshot              # snapshot | commit (omitted = None). Captured on claim/entry.
   post: commit               # snapshot | commit (omitted = None). Captured/landed on pass/exit.
-  immutable: true            # bool (default false). Enforces zero working tree deviation from snapshot.
+  immutable: true            # bool (default false). Enforces the Option 1 candidate drift protocol.
   git_commit_note: command.benchmark # Shorthand: attaches structured output of configured command to refs/notes/forge
 ```
 
@@ -672,7 +697,8 @@ save:
    - `pre`: Runs before agent begins editing (on `task claim`). Essential for the Architect or major refactoring tasks to preserve a pristine baseline before rewriting documents.
    - `post`: Runs when the stage passes (`task submit --action pass`), locking in verified changes.
 4. **`immutable: true`**:
-   - Replaces ad-hoc candidate baseline checks. When set (e.g. during `review` or `deliver`), Forge verifies that working tree files match the active candidate snapshot. Any modification fails closed with `TASK_CANDIDATE_MISMATCH`.
+   - Compares the worktree with the active candidate under the [Option 1 protocol](#option-1-immutable-candidate-warning-and-mandatory-rebinding), using the same `.acdd/` runtime-path exclusions for fingerprints and snapshots. Non-runtime drift emits `candidate_drift_warning` with changed paths and requires candidate rebinding, renewed verification when source/test paths drift or binding rules require it, and renewed independent review. Terminal deliver and handoff receipts are withheld until those obligations are satisfied and current content is rechecked.
+   - Hard `TASK_CANDIDATE_MISMATCH` is reserved strictly for corrupted/mismatched explicit commit receipts or unrecoverable HEAD divergence. Invalid or missing authority still fails closed under its existing rules.
 5. **`git_commit_note`: Full Automated Telemetry Passport (Markdown-First)**:
    - Git commit notes serve as an **automated engineering passport** for every delivered task, computed in milliseconds by Forge directly from Git diffs, AST parsing, and SQLite timestamps without requiring any manual flags or agent inputs:
      ```markdown

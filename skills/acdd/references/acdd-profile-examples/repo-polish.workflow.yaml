@@ -1,0 +1,69 @@
+# =============================================================================
+# ACDD SCENARIO EXAMPLE: Resource-Inheriting Repository Polish Workflow
+# File pattern: {scenario}.workflow.yaml (ADR 0021 — Stateless Workflow Engine)
+#
+# Demonstrates a stateless polish workflow (`verify_repo` -> `polish` ->
+# `review_polish`) reusing repository role/command conventions with `save: log`.
+# Structural template: with `inherit: none`, bind `runner:` per role before
+# running `acdd workflow run`; AC-004 target switches to `inherit: workspace`
+# and omits duplicate `roles:`, `policies:`, and `commands:` blocks.
+# =============================================================================
+
+version: 2
+inherit: none
+save: log
+
+roles:
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+commands:
+  check_full_repo:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test --workspace"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: true
+    timeout_seconds: 1200
+
+policies:
+  polish_review:
+    independent_worker: true
+    require_all_contours: true
+
+gates:
+  - id: verify_repo
+    command: check_full_repo
+    pass: review_polish
+    fail: polish
+
+  - id: polish
+    role: builder
+    command: check_full_repo
+    max_attempts: 3
+    proof: &polish_decision
+      scheme:
+        type: object
+        required: [decision, summary]
+        properties:
+          decision: { type: string, enum: [pass, reject] }
+          summary: { type: string }
+    pass: verify_repo
+
+  - id: review_polish
+    role: independent_reviewer
+    policy: polish_review
+    independent_from: polish
+    max_attempts: 2
+    proof: *polish_decision
+    fail: polish

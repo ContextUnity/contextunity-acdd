@@ -2,7 +2,7 @@
 title: "ADR 0021: Workflow, Plan, and Milestone Lifecycle Hierarchy"
 doc_type: adr
 status: accepted
-date: 2026-11-03
+date: 2026-11-15
 decision_makers:
   - Oleksii (Architecture Owner)
   - Antigravity (ACDD Coordinator)
@@ -14,24 +14,46 @@ informed:
 
 # ADR 0021: Workflow, Plan, and Milestone Lifecycle Hierarchy
 
-> [!IMPORTANT]
-> This hierarchy includes the core task DAG and receipts, milestone verification, and the headless runtime with native `workflow run` and `plan run` commands. See the [ACDD execution reference](../reference/acdd.md#headless-task-milestone-plan-and-workflow-execution) for the implemented boundaries. Schema validation alone does not prove end-to-end execution.
+> [!NOTE]
+> Alignment of legacy `plan.rs` in-place orchestration onto SQLite `TasksStore`, explicit `inherit: workspace` resource resolution, and append-only `save: log` workflow traces is tracked in [`AC-004-unified-execution-and-spec-pipeline`](../milestones/AC-004-unified-execution-and-spec-pipeline.md). See the [ACDD execution reference](../reference/acdd.md#headless-task-milestone-plan-and-workflow-execution) for current runtime boundaries.
 
-## Context and decision
+## Context and decision: Variant A
 
-[ADR 0020](0020-hierarchical-acdd-gates-and-milestone-orchestration.md) defines the shared gate model. A workflow, plan, and milestone have distinct execution subjects and persistence needs. Their graphs must not introduce synthetic task identities or mix root milestone gates into task execution.
+[ADR 0020](0020-hierarchical-acdd-gates-and-milestone-orchestration.md) establishes the hierarchical gate grammar. Standalone procedures (`Workflow`), in-place multi-step execution (`Plan`), and contract-governed feature delivery (`Milestone`) share reusable agent and command configuration while differing fundamentally in state persistence and architectural ceremony.
+
+ACDD separates two orthogonal axes:
+
+1. **Two execution engines** across three authoring artifacts:
+   - **Stateless Taskless Engine (`Workflow`)**: Executes a pure root `gates:` graph with no `tasks:` container, no SQLite task or subtask rows, and no Git worktree management.
+   - **Unified Stateful Task Engine (`TasksStore` + `task_runner`)**: Executes multi-step task/subtask DAGs in SQLite with wave scheduling, claim scoping, blackboard coordination, findings propagation, and crash/resume recovery in one of two lifecycle modes: **Plan** or **Milestone**.
+2. **Shared resources vs. pipeline topology (`inherit`)**: Profiles separate shared execution resources (`roles`, `commands`, `policies`, `limits`, `guidance`, `scope_args_by_pattern`, `proofs`) from the lifecycle topology (`gates:` and `save:`).
 
 ### Workflow
 
-A Workflow is a pure root `gates:` graph (`inherit: none`, `save: none`) with no `tasks:` container, task IDs, task rows, or task claims. The native runner executes it in memory with `save: none`, including configured role runners. Standalone workflows also govern artifact authoring and structural validation (`author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, `author-workflow.workflow.yaml`) through a three-gate cycle (`synthesize` (`role: architect`, referencing a `proofs:` schema or inline `proof: { scheme: ... }`) $\to$ `review` (`role: independent_reviewer`, `independent_from: synthesize`, `fail: synthesize`) $\to$ `preflight` (registered validation command)). Autonomous run logs are not implemented; a valid profile is not evidence that it has run.
+A Workflow is a pure root `gates:` graph (`tasks:` absent) for repeatable standalone operations: security audits and penetration checks, CI quality verification, repository polish, document authoring (`author-spec`, `author-plan`, `author-milestone`, `author-workflow`), and isolated test harnesses. Workflows execute in memory (`save: none`) or append structured gate progression and command observation records to an append-only run log (`save: log`) without mutating `.acdd/tasks.sqlite` or spawning worktrees.
 
-### Plan
+### Unified Task Engine: Plan Mode vs. Milestone Mode
 
-A Plan uses only a `tasks:` container and executes its steps in the active working tree. It uses snapshots and does not automatically commit. It has no milestone synthesis or handoff gates. Native `plan run` executes in place; completed plans may be archived separately.
+Plan and Milestone both run on the same SQLite `TasksStore` and `task_runner` engine rather than duplicating step loops, subtask state machines, or repair routing:
 
-### Milestone
+`ExecutionSubjectKind` distinguishes Plan from Milestone in the canonical store;
+legacy rows default to Milestone. Plan identity is stable within the repository
+namespace and normalized confined document path. Plan steps and their subtasks
+use the shared claims, transitions, findings, blackboard, and resume state.
+Subject dispatch selects authority parsing, context/profile resolution, and
+Markdown receipt projection in the existing owners. It introduces no parallel
+registry, scheduler, proof store, or persistence table.
 
-A Milestone combines a pre-task root blueprint synthesis container (`blueprint_synthesis`: `synthesize` $\to$ `review`), a per-task DAG container (`- tasks:` including conditional `- id: seam` for parallel/speculative seam reconciliation), engine verification, independent integration review, a delivery commit, and handoff context binding and archival. Pre-task root gates (`cursor.root_index < task_position`) execute with `subject = "milestone"` before any task can be claimed (`MILESTONE_PRE_TASK_GATE_PENDING`), and fan out per-task proof entries (`proof.tasks["<task_ref>"]`) into `gate_transitions` (`subject = <full_task_id>`) so each task automatically receives only its own architectural blueprint slice in `context_bundle` upon `task claim`. Post-task root gates (`cursor.root_index > task_position`) unlock after all non-cancelled tasks complete.
+| Dimension | Plan Mode (`docs/plans/*.md`) | Milestone Mode (`docs/milestones/*.md`) |
+| :--- | :--- | :--- |
+| **Workspace isolation** | Active working tree (`--in-place`) | Isolated task and milestone Git worktrees |
+| **Persistence (`save`)** | `snapshot` (SQLite state + tree snapshots, zero auto-commits) | `commit` (delivery commits, bound receipts, archival) |
+| **Task & subtask engine** | Full SQLite tasks, subtasks, `resume`, `blackboard`, bidirectional Markdown sync | Full SQLite tasks, subtasks, `resume`, `blackboard`, manifest sync |
+| **Pre-task design gate** | None (plan manifest is already tactical) | Mandatory `blueprint_synthesis` (`synthesize` $\to$ `review`) with per-task slice fan-out |
+| **Seam & contract gates** | Optional ordinary gates; no mandatory red contract or integration seam | Red `contract` proof (`expected_failure`), conditional `seam` integration |
+| **Closure** | Terminal step delivery (`deliver` / snapshot) | `verify` $\to$ `polish` $\to$ `milestone_review` $\to$ `handoff` |
+
+A canonical Milestone profile composes all three phases while keeping task execution strictly inside the `- tasks:` container:
 
 ```yaml
 gates:
@@ -51,7 +73,7 @@ gates:
           proof: contract
         - id: build
           role: builder
-          command: check_task
+          command: rust-check-and-test
         - id: review
           role: independent_reviewer
           independent_from: build
@@ -62,7 +84,7 @@ gates:
             - id: integrate
               role: builder
               proof: seam_test
-              command: check_task
+              command: rust-check-and-test
             - id: review
               role: independent_reviewer
               independent_from: integrate
@@ -94,10 +116,42 @@ gates:
     save: commit
 ```
 
+### Resource vs. gate inheritance (`inherit`)
+
+The `inherit` field selects an explicit base target so standalone procedures can stay isolated or reuse workspace configuration cleanly without leaking task pipelines:
+
+- `inherit: none`: Compiles a completely self-contained profile with zero external configuration lookup. Suitable for isolated pentests, clean-room CI gates, security sandboxes, and self-contained verification profiles.
+- `inherit: default`: Overlays the embedded `acdd.profile.yaml` defaults (the default when `inherit` is omitted).
+- `inherit: workspace`: Imports shared execution resources (`roles`, `commands`, `policies`, `limits`, `guidance`, `scope_args_by_pattern`, `proofs`) from the active workspace profile (`.acdd/profile.yaml` or `--profile` override) while ignoring the workspace profile's `gates:` and root `save:`. Builtin and local authoring workflows inherit the host repository's configured agent runners and models without inheriting Milestone `blueprint_synthesis` or `tasks:`. Self-referential `inherit: workspace` on the root workspace profile fails closed during validation.
+- `inherit: <path>`: Inherits explicitly from a confined workspace-relative profile file, following the same resource merge rules and retaining local Workflow/Plan topology and save settings. Reject escaping paths, inheritance cycles, and root self-inheritance.
+
+Merge selected base resources by key, applying local definitions after inherited
+definitions: roles (including runner, models, and prompt_template), commands,
+policies, limits, guidance, scope_args_by_pattern, and proofs. Resolve the active
+workspace profile through its explicit `--profile` override when supplied.
+Workflow and Plan overlays retain their own `gates:` and `save:`; resource
+inheritance never imports a Milestone task pipeline into a Workflow.
+
+Local overrides in `docs/workflows/` resolve ahead of builtin embedded workflows of the same name.
+
 ## Persistence and audit log
 
-The architectural persistence levels are `none`, `log`, `snapshot`, and `commit`. `none` keeps execution in memory. `log` records gate progression, timestamps, commands, results, output digests, durations, review decisions, and terminal status in an audit log. `snapshot` adds working-tree snapshots; `commit` adds delivery commits and bound receipts. Workflow defaults to `none`, Plan to `snapshot`, and Milestone delivery to `commit`. Autonomous Workflow run logs, including `.forge/runs/` and associated trace records, are not implemented. Existing task and milestone records retain their own evidence and lifecycle rules.
+The four architectural persistence levels are `none`, `log`, `snapshot`, and `commit`:
 
-## Consequences and verification
+- `none`: Ephemeral in-memory execution.
+- `log`: Append-only execution trace recording gate progression, timestamps, observed commands, exit codes, output digests, durations, review decisions, and terminal status without creating task rows in `.acdd/tasks.sqlite`.
+- `snapshot`: Working-tree snapshots paired with SQLite state (`Plan` default).
+- `commit`: Isolated Git commits, bound verification receipts, and milestone handoff archival (`Milestone` default).
 
-Profiles distinguish the models by graph shape. Root milestone gates execute once at the milestone boundary; task gates execute for each admitted task. Verification must consume observed, content-bound engine evidence and independent review before handoff. Round 4 findings R4-01–R4-09, R4-15, R4-19, and R4-20 identify historical incomplete enforcement. End-to-end tests after AC-003 must exercise each model, persistence choice, failure route, recovery, and Git effects.
+Sequential `save: log` Workflow runs append observations without overwriting
+earlier runs or creating task/subtask rows. Plan `clear|archive` prunes exactly
+the selected Plan's SQLite rows and dependent traces, checkpoints, and snapshot
+state while preserving foreign subjects. Partial cleanup failures are reported
+and remain safe to retry. Plan snapshot completion follows the mandatory drift
+rebind protocol in [ADR 0015](0015-acdd-lifecycle-snapshots-and-proactive-defect-resolution.md).
+
+## Non-goals and consequences
+
+- **No synthetic tasks in workflows**: Stateless workflows never fabricate `tasks` rows or require `milestone init`.
+- **Single stateful engine for plans and milestones**: Plan execution shares SQLite DAG waves, subtask transitions, findings propagation, and `resume` guarantees with Milestones instead of maintaining divergent markdown-only runners.
+- **Explicit resource/topology boundary**: `inherit: workspace` eliminates boilerplate runner and command duplication across workflows and plans while preserving isolated `inherit: none` sandboxes for security, CI, and clean-room verification.

@@ -7,6 +7,7 @@ doc_type: architecture
 
 The architecture documentation describes verified system structure, contracts, and recommended performance values:
 
+- [Specification, design, and verification lifecycle](specification-and-design-lifecycle.md): Specify/Clarify (`AC-*`), SAD/ADR + C1–C2 boundaries vs. live indexed C3–C4 graph, and S/M/L cadence across `Workflow`, `Plan`, and `Milestone`.
 - [Indexing and resolution](indexing.md): Scanner, AST fact extraction, symbol linking, and storage boundaries.
 - [SQLite concurrency and isolation](concurrency.md): Reader isolation, generation locking, RAII guards, and WAL mode pragmas.
 - [Cross-platform and macOS boundaries](cross-platform.md): Canonical root and URI boundaries, volume-dependent case and Unicode spelling, SQLite WAL/`Identity` lifecycle, BSD socket portability, and fail-loud diagnostics.

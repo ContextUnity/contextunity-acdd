@@ -1,0 +1,123 @@
+# =============================================================================
+# ACDD SCENARIO EXAMPLE: Full Subsystem Milestone Profile
+# File pattern: {scenario}.milestone.yaml (ADR 0021 — Unified Task Engine: Milestone Mode)
+#
+# Full worktree-isolated milestone overlay (`inherit: default`, `save: commit`):
+# blueprint_synthesis -> task DAG (contract, build, review, seam, deliver) ->
+# post-task closure (verify, polish, milestone_review, handoff).
+# =============================================================================
+
+version: 2
+inherit: default
+save: commit
+
+commands:
+  rust-check-and-test:
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: true
+    timeout_seconds: 300
+
+  check_full_repo:
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test --workspace"
+    timeout_seconds: 1200
+
+gates:
+  - id: blueprint_synthesis
+    gates:
+      - id: synthesize
+        role: architect
+        proof: blueprint
+      - id: review
+        role: independent_reviewer
+        policy: default_review
+        contours: guidance.contours
+        independent_from: synthesize
+        fail: synthesize
+        save:
+          immutable: true
+
+  - tasks:
+      gates:
+        - id: contract
+          role: contract_author
+          command: rust-check-and-test
+          expected_failure:
+            exit_codes: [1, 101]
+          save:
+            pre: snapshot
+            post: snapshot
+
+        - id: build
+          role: builder
+          command: rust-check-and-test
+          proof: command
+          save:
+            pre: snapshot
+            post: snapshot
+
+        - id: review
+          role: independent_reviewer
+          policy: default_review
+          contours: guidance.contours
+          independent_from: build
+          fail: build
+          loop:
+            scope: build
+          save:
+            immutable: true
+
+        - id: seam
+          when: seam
+          gates:
+            - id: integrate
+              role: builder
+              command: rust-check-and-test
+              proof: seam_test
+            - id: review
+              role: independent_reviewer
+              policy: default_review
+              contours: guidance.contours
+              independent_from: integrate
+              fail: integrate
+
+        - id: deliver
+          role: independent_reviewer
+          receipt: true
+          need: [review]
+          independent_from: build
+          fail: build
+          save:
+            immutable: true
+            post: commit
+
+  - id: verify
+    command: check_full_repo
+    pass: milestone_review
+    fail: polish
+
+  - id: polish
+    role: architect
+    command: check_full_repo
+    pass: verify
+    save:
+      pre: snapshot
+      post: snapshot
+
+  - id: milestone_review
+    role: independent_reviewer
+    policy: default_review
+    contours: guidance.contours
+    independent_from: polish
+    pass: handoff
+    fail: polish
+    save:
+      immutable: true
+
+  - id: handoff
+    receipt: true
+    absorb: true
+    save: commit

@@ -207,10 +207,9 @@ schemas are declared in the reusable top-level `proofs:` catalog (`proof: <name>
 `proof: blueprint`) or inline on the gate via `proof: { scheme: { ... } }`. When
 a pre-task root gate passes with `proof.tasks[<task_ref>]`, the engine records each
 task's slice in `gate_transitions` (`subject = <full_task_id>`) and injects only that
-task's slice into `context_bundle` upon `task_claim`. Command gates and reusable templates
-supply verification and retry contours. Use the
+task's slice into `context_bundle` upon `task_claim`. Command gates and reusable templates supply verification and retry contours. Use the
 [ACDD domain profile examples catalog](references/acdd-profile-examples/README.md)
-for domain-specific starting points; verify examples against the live schema.
+(including `{scenario}.{workflow|plan|milestone}.yaml` scenarios such as [`pentest-security-audit.workflow.yaml`](references/acdd-profile-examples/pentest-security-audit.workflow.yaml), [`ci-verification-gate.workflow.yaml`](references/acdd-profile-examples/ci-verification-gate.workflow.yaml), [`repo-polish.workflow.yaml`](references/acdd-profile-examples/repo-polish.workflow.yaml), [`docs-refactor-and-reconcile.workflow.yaml`](references/acdd-profile-examples/docs-refactor-and-reconcile.workflow.yaml), [`in-place-refactor.plan.yaml`](references/acdd-profile-examples/in-place-refactor.plan.yaml), and [`subsystem-feature.milestone.yaml`](references/acdd-profile-examples/subsystem-feature.milestone.yaml)) for domain-specific starting points; verify examples against the live schema.
 Dedicated standalone authoring workflows (`author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, `author-workflow.workflow.yaml`) under `docs/workflows/` (and mirrored in `references/acdd-profile-examples/`) execute as taskless root-gate workflows (`inherit: none`, `save: none`) to synthesize, review, and preflight manifests, plans, and workflows before execution.
 The milestone preflight runs `milestone init --in-place`, which initializes the
 authored manifest's tasks; the workflow gates do not create tasks or claims.

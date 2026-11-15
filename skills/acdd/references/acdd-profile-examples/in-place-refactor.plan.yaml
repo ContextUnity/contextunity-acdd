@@ -1,0 +1,79 @@
+# =============================================================================
+# ACDD SCENARIO EXAMPLE: In-Place Feature / Refactor Plan Profile
+# File pattern: {scenario}.plan.yaml (ADR 0021 — Unified Task Engine: Plan Mode)
+#
+# Executes plan steps and subtasks in the active working tree (`save: snapshot`,
+# zero automatic commits), omitting milestone blueprint/contract/handoff gates.
+# AC-004 target: switch `inherit: none` to `inherit: workspace` to inherit
+# repository `roles`, `runner`, `commands`, and `scope_args_by_pattern`.
+# =============================================================================
+
+version: 2
+inherit: none
+save: snapshot
+
+roles:
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:medium'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:xhigh'
+
+scope_args_by_pattern:
+  "src/**/*.rs": "--lib"
+  "crates/acdd-tasks/**/*.rs": "--package acdd-tasks --lib"
+  "tests/acdd/**/*.rs": "--test acdd"
+
+commands:
+  rust-check-and-test:
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: true
+    timeout_seconds: 300
+
+policies:
+  default_review:
+    independent_worker: true
+    require_all_contours: true
+    audit_extended_scope: true
+
+gates:
+  - tasks:
+      gates:
+        - id: build
+          role: builder
+          command: rust-check-and-test
+          proof: command
+          save:
+            pre: snapshot
+            post: snapshot
+
+        - id: review
+          role: independent_reviewer
+          policy: default_review
+          independent_from: build
+          fail: build
+          loop:
+            scope: build
+          save:
+            immutable: true
+
+        - id: deliver
+          role: independent_reviewer
+          receipt: true
+          need:
+            - review
+          independent_from: build
+          fail: build
+          save:
+            immutable: true
+            post: snapshot
