@@ -139,17 +139,22 @@ fn on_demand_checkpoint_cannot_override_immutable_candidate_or_claim_checkpoint(
     // Now tamper with the scoped file during the immutable review gate
     root.write("src/lib.rs", "pub fn tampered() {}\n");
 
-    // Submitting review must detect divergence and reject with TASK_CANDIDATE_MISMATCH
+    // Submitting review records drift and rewinds without accepting the stale review.
     let task = store.inspect(task_id).unwrap();
-    let submit_err = tasks::submit(
+    let response = tasks::submit(
         root.root(),
         TaskHarness::pass_request(task_id, "review", &TaskHarness::default_evidence(&task)),
     )
-    .unwrap_err();
+    .unwrap();
     assert!(
-        submit_err.to_string().contains("TASK_CANDIDATE_MISMATCH"),
-        "tampering with file during immutable gate must fail with TASK_CANDIDATE_MISMATCH: {submit_err}"
+        response["candidate_drift_warning"]["changed_paths"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("src/lib.rs")),
+        "{response}"
     );
+    assert_ne!(response["stage"], "deliver");
+    assert!(response["receipt"].is_null());
 }
 
 #[test]
@@ -272,22 +277,32 @@ gates:
         proof: json!({"none_proof": {}}),
     };
 
-    let submit_err = tasks::submit(
+    let response = tasks::submit(
         root.root(),
         TaskHarness::pass_request(task_id, "sample", &evidence),
     )
-    .unwrap_err();
+    .unwrap();
     assert!(
-        submit_err.to_string().contains("TASK_CANDIDATE_MISMATCH"),
-        "tampering with file during immutable gate must fail closed: {submit_err}"
+        response["candidate_drift_warning"]["changed_paths"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("src/lib.rs")),
+        "{response}"
     );
 
     root.write("src/lib.rs", "pub fn original() {}\n");
-    let submit_ok = tasks::submit(
+    let stale = tasks::submit(
         root.root(),
         TaskHarness::pass_request(task_id, "sample", &evidence),
-    )
-    .expect("restoring scoped content to pre-snapshot baseline allows submission");
-    assert_eq!(submit_ok["status"], "ready");
-    assert_eq!(submit_ok["stage"], "deliver");
+    );
+    assert!(
+        stale.is_err(),
+        "restoring content must not revive the old claim"
+    );
+    assert!(tasks::store_for_task(root.root(), task_id)
+        .unwrap()
+        .inspect(task_id)
+        .unwrap()
+        .receipt
+        .is_none());
 }

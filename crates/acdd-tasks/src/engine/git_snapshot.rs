@@ -711,38 +711,7 @@ fn capture_scoped_snapshot_excluding(
         );
     }
 
-    let mut valid_paths = Vec::with_capacity(scope.len());
-    for path in scope {
-        match std::fs::symlink_metadata(worktree.join(path)) {
-            Ok(_) => valid_paths.push(path.as_str()),
-            // The temporary index is empty, so a deleted scoped path is
-            // already absent from the candidate tree and must not be passed
-            // to `git add` as a pathspec.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!("TASK_SNAPSHOT_FAILED: could not inspect scoped path {path}")
-                });
-            }
-        }
-    }
-
-    if !valid_paths.is_empty() {
-        let mut cmd = std::process::Command::new("git");
-        cmd.args(["add", "-A", "--"]);
-        cmd.args(&valid_paths);
-        cmd.env("GIT_INDEX_FILE", &temp_index_str);
-        cmd.current_dir(worktree);
-        let out = cmd.output()?;
-        if !out.status.success() {
-            bail!(
-                "TASK_SNAPSHOT_FAILED: git add failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
-    } else if scope.is_empty() {
-        add_unscoped_snapshot_entries(worktree, temp_index.path(), excluded_paths)?;
-    }
+    add_snapshot_entries(worktree, temp_index.path(), excluded_paths, scope)?;
 
     let write_tree_out = std::process::Command::new("git")
         .args(["write-tree"])
@@ -805,48 +774,58 @@ fn capture_scoped_snapshot_excluding(
     Ok(Some((commit_sha, head, objects)))
 }
 
-fn is_acdd_runtime_path(path: &[u8]) -> bool {
-    let Ok(text) = std::str::from_utf8(path) else {
-        return path.starts_with(b".acdd/");
-    };
-    let Some(rel) = text.strip_prefix(".acdd/") else {
+pub(super) fn is_acdd_runtime_path(path: &[u8]) -> bool {
+    let Some(rel) = path.strip_prefix(b".acdd/") else {
         return false;
     };
-    rel == "tasks"
-        || rel.starts_with("tasks/")
-        || rel == "checkpoints.json"
-        || rel == "checkpoints.json.lock"
-        || rel.ends_with(".sqlite")
-        || rel.ends_with(".sqlite-wal")
-        || rel.ends_with(".sqlite-shm")
-        || rel.ends_with(".sqlite-journal")
-        || rel.ends_with(".sqlite.lock")
-        || rel.ends_with(".sqlite.verified.json")
-        || rel.ends_with(".lock")
-        || rel.ends_with(".log")
-        || rel.ends_with(".jsonl")
+    if rel == b"profile.yaml" || rel.starts_with(b"frameworks/") {
+        return false;
+    }
+    rel == b"tasks"
+        || rel.starts_with(b"tasks/")
+        || rel == b"checkpoints.json"
+        || rel == b"checkpoints.json.lock"
+        || rel.ends_with(b".sqlite")
+        || rel.ends_with(b".sqlite-wal")
+        || rel.ends_with(b".sqlite-shm")
+        || rel.ends_with(b".sqlite-journal")
+        || rel.ends_with(b".sqlite.lock")
+        || rel.ends_with(b".sqlite.verified.json")
+        || rel.ends_with(b".lock")
+        || rel.ends_with(b".log")
+        || rel.ends_with(b".jsonl")
 }
 
-fn is_excluded_snapshot_entry(path: &[u8], excluded_paths: &[String], untracked: bool) -> bool {
-    excluded_paths.iter().any(|excluded| {
-        path == excluded.as_bytes()
-            || (excluded == ".acdd"
-                && path.starts_with(b".acdd/")
-                && (untracked || is_acdd_runtime_path(path)))
-    })
+fn is_excluded_snapshot_entry(path: &[u8], excluded_paths: &[String], _untracked: bool) -> bool {
+    is_acdd_runtime_path(path)
+        || excluded_paths.iter().any(|excluded| {
+            path == excluded.as_bytes()
+                || (excluded == ".acdd"
+                    && path.starts_with(b".acdd/")
+                    && is_acdd_runtime_path(path))
+        })
 }
 
-fn add_unscoped_snapshot_entries(
+fn add_snapshot_entries(
     worktree: &Path,
     index: &Path,
     excluded_paths: &[String],
+    scope: &[String],
 ) -> Result<()> {
     let mut paths = Vec::new();
     for (args, untracked) in [
         (&["ls-files", "--cached", "-z"][..], false),
-        (&["ls-files", "--others", "--exclude-standard", "-z"][..], true),
+        (
+            &["ls-files", "--others", "--exclude-standard", "-z"][..],
+            true,
+        ),
     ] {
-        let listed = crate::git::git_command(worktree, args)?;
+        let mut args = args.to_vec();
+        if !scope.is_empty() {
+            args.push("--");
+            args.extend(scope.iter().map(String::as_str));
+        }
+        let listed = crate::git::git_command(worktree, &args)?;
         if !listed.status.success() {
             bail!(
                 "TASK_SNAPSHOT_FAILED: could not enumerate worktree paths: {}",
@@ -867,8 +846,9 @@ fn add_unscoped_snapshot_entries(
                 std::fs::symlink_metadata(worktree.join(std::ffi::OsStr::from_bytes(path)))
             };
             #[cfg(not(unix))]
-            let exists =
-                { std::fs::symlink_metadata(worktree.join(String::from_utf8_lossy(path).as_ref())) };
+            let exists = {
+                std::fs::symlink_metadata(worktree.join(String::from_utf8_lossy(path).as_ref()))
+            };
             match exists {
                 Ok(_) => paths.push(path.to_vec()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

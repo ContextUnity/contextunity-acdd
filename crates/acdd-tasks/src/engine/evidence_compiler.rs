@@ -166,6 +166,17 @@ pub(crate) fn evaluate_root_command_gate(
     proof_policy: &str,
     supplied: Option<&Value>,
 ) -> Result<bool> {
+    evaluate_root_command_gate_decision(gate, profile, observations, proof_policy, supplied, true)
+}
+
+pub(crate) fn evaluate_root_command_gate_decision(
+    gate: &crate::tasks::profile::GateDef,
+    profile: &crate::tasks::profile::GateProfile,
+    observations: &[(String, Value)],
+    proof_policy: &str,
+    supplied: Option<&Value>,
+    passed: bool,
+) -> Result<bool> {
     let name = gate
         .command
         .as_deref()
@@ -226,7 +237,18 @@ pub(crate) fn evaluate_root_command_gate(
                 Err(error) if error.to_string().contains("count overflowed") => {
                     bail!("WORKFLOW_GATE_OUTPUT_INVALID: count overflow")
                 }
-                Err(_) => return Ok(false),
+                Err(_) => {
+                    if let Some(proof) = supplied {
+                        crate::tasks::gates::validate_gate_proof(
+                            proof,
+                            gate,
+                            profile,
+                            passed,
+                            proof_policy,
+                        )?;
+                    }
+                    return Ok(false);
+                }
             }
         }
         other => {
@@ -238,6 +260,15 @@ pub(crate) fn evaluate_root_command_gate(
                         && (fact.passed.is_some() || fact.failed.is_some())
                         && !(fact.passed.is_some() && fact.failed == Some(0)))
             }) {
+                if let Some(proof) = supplied {
+                    crate::tasks::gates::validate_gate_proof(
+                        proof,
+                        gate,
+                        profile,
+                        passed,
+                        proof_policy,
+                    )?;
+                }
                 return Ok(false);
             }
             if other == Some(ProofKind::None) {
@@ -264,7 +295,7 @@ pub(crate) fn evaluate_root_command_gate(
                 }
             }
         }
-        crate::tasks::gates::validate_gate_proof(supplied, gate, profile, true, proof_policy)?;
+        crate::tasks::gates::validate_gate_proof(supplied, gate, profile, passed, proof_policy)?;
     } else {
         crate::tasks::gates::validate_gate_proof(&compiled, gate, profile, true, proof_policy)?;
     }
@@ -1330,14 +1361,50 @@ pub(super) fn candidate_fingerprint(root: &Path) -> Result<String> {
         &["rev-parse", "--verify", "HEAD"],
         "TASK_CANDIDATE_BASELINE_INVALID",
     )?;
-    let diff = git_command(root, &["diff", "--binary", "HEAD", "--"])?;
+    let mut runtime_paths = std::collections::BTreeSet::new();
+    for args in [
+        &[
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ][..],
+        &["ls-tree", "-r", "--name-only", "-z", "HEAD"][..],
+    ] {
+        let output = git_command(root, args)?;
+        if !output.status.success() {
+            bail!("TASK_CANDIDATE_BASELINE_INVALID: could not enumerate candidate paths");
+        }
+        runtime_paths.extend(
+            output
+                .stdout
+                .split(|byte| *byte == 0)
+                .filter(|path| super::git_snapshot::is_acdd_runtime_path(path))
+                .map(<[u8]>::to_vec),
+        );
+    }
+    let filtered_git = |args: &[&str]| -> Result<std::process::Output> {
+        let mut command = std::process::Command::new("git");
+        command.current_dir(root).args(args).arg("--").arg(".");
+        for path in &runtime_paths {
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStringExt;
+                let mut spec = b":(exclude,literal)".to_vec();
+                spec.extend_from_slice(path);
+                command.arg(std::ffi::OsString::from_vec(spec));
+            }
+            #[cfg(not(unix))]
+            command.arg(format!(":(exclude,literal){}", std::str::from_utf8(path)?));
+        }
+        Ok(command.output()?)
+    };
+    let diff = filtered_git(&["diff", "--binary", "HEAD"])?;
     if !diff.status.success() {
         bail!("TASK_CANDIDATE_BASELINE_INVALID: could not read the candidate diff");
     }
-    let status = git_command(
-        root,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-    )?;
+    let status = filtered_git(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
     if !status.status.success() {
         bail!("TASK_CANDIDATE_BASELINE_INVALID: could not read candidate status");
     }
@@ -1354,7 +1421,7 @@ pub(super) fn candidate_fingerprint(root: &Path) -> Result<String> {
     for path_bytes in untracked
         .stdout
         .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
+        .filter(|path| !path.is_empty() && !super::git_snapshot::is_acdd_runtime_path(path))
     {
         digest.update(path_bytes);
         digest.update([0]);

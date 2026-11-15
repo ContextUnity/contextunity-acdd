@@ -45,6 +45,19 @@ pub(super) struct RoleObservations {
     decisions: Vec<(String, GateDecision)>,
 }
 
+pub(super) fn sync_command_findings(
+    stage: &str,
+    decision: &mut GateDecision,
+    observations: &mut RoleObservations,
+) {
+    decision.findings = if decision.passed {
+        None
+    } else {
+        Some(json!({"code": "COMMAND_FAILED", "gate": stage, "diagnostics": decision.evidence}))
+    };
+    observations.restore(stage, decision);
+}
+
 impl RoleObservations {
     pub(super) fn note_executed(&mut self, stage: &str) {
         self.executed_gates.insert(stage.to_owned());
@@ -52,7 +65,7 @@ impl RoleObservations {
 
     pub(super) fn restore(&mut self, stage: &str, decision: &GateDecision) {
         self.note_executed(stage);
-        if decision.passed {
+        if decision.passed || decision.evidence["reuse_on_reject"] == true {
             if let Some(session) = decision.evidence["session_id"].as_str() {
                 self.sessions.insert(stage.to_owned(), session.to_owned());
             }
@@ -267,15 +280,17 @@ impl RoleObservations {
                 )?;
                 observations.push((id, observation));
             }
-            let observed_pass = crate::engine::evidence_compiler::evaluate_root_command_gate(
-                &cursor.gate,
-                profile,
-                &observations,
-                cursor.gate.policy.as_deref().unwrap_or("seam-test-first"),
-                if passed { Some(&decision.proof) } else { None },
-            )?;
+            let observed_pass =
+                crate::engine::evidence_compiler::evaluate_root_command_gate_decision(
+                    &cursor.gate,
+                    profile,
+                    &observations,
+                    cursor.gate.policy.as_deref().unwrap_or("seam-test-first"),
+                    Some(&decision.proof),
+                    passed,
+                )?;
             ensure!(
-                passed == observed_pass,
+                !passed || observed_pass,
                 "WORKFLOW_PROOF_UNOBSERVED: decision disagrees with executed commands"
             );
         } else {
@@ -288,14 +303,14 @@ impl RoleObservations {
             passed,
             cursor.gate.policy.as_deref().unwrap_or("seam-test-first"),
         )?;
-        if passed {
+        if passed || role.effective_reuse_on_reject() {
             self.sessions
                 .insert(cursor.canonical_stage_id.clone(), session.clone());
         }
         self.findings = if passed { None } else { findings.clone() };
         let result = GateDecision {
             passed,
-            evidence: json!({"session_id":session,"proof":decision.proof,"integration_review":decision.integration_review,"binding":decision.binding}),
+            evidence: json!({"session_id":session,"reuse_on_reject":role.effective_reuse_on_reject(),"proof":decision.proof,"integration_review":decision.integration_review,"binding":decision.binding}),
             findings,
         };
         self.decisions

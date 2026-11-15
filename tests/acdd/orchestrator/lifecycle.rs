@@ -17,7 +17,7 @@ mod harness;
 use harness::{LifecycleHarness, MANIFEST};
 
 #[test]
-fn taskless_rejection_reuses_only_accepted_role_sessions() {
+fn taskless_rejection_reuses_configured_role_sessions() {
     use crate::acdd::harness::workflows::WorkflowHarness;
     use acdd_tasks::engine::orchestrator::workflow::run_standalone_workflow;
     use std::path::Path;
@@ -55,7 +55,7 @@ fn taskless_rejection_reuses_only_accepted_role_sessions() {
         .collect();
     assert_eq!(builders.len(), 3, "{records:?}");
     assert_eq!(reviewers.len(), 2, "{records:?}");
-    assert_ne!(builders[0]["session"], builders[1]["session"]);
+    assert_eq!(builders[0]["session"], builders[1]["session"]);
     assert_eq!(builders[1]["session"], builders[2]["session"]);
     for reviewer in reviewers {
         assert_ne!(reviewer["session"], builders[1]["session"]);
@@ -1065,7 +1065,7 @@ fn task_run_delivery_preserves_subtask_guard() {
 }
 
 #[test]
-fn task_run_delivery_rejects_candidate_drift() {
+fn task_run_delivery_withholds_receipt_on_candidate_drift() {
     let mut h = LifecycleHarness::new();
     h.task.advance_to("deliver").unwrap();
     let head = git_head(h.root());
@@ -1075,12 +1075,14 @@ fn task_run_delivery_rejects_candidate_drift() {
     fs::write(h.root().join("src/lib.rs"), changed).unwrap();
     let result = run_task_lifecycle(h.root(), &h.task.id, &h.options, &mut |_| {});
     let error = result.unwrap_err().to_string();
-    assert!(error.contains("TASK_CANDIDATE_MISMATCH"), "{error}");
-    assert!(h.task.store.inspect(&h.task.id).unwrap().receipt.is_none());
+    assert!(error.contains("TASK_RECEIPT_MISSING"), "{error}");
+    let pending = h.task.store.inspect(&h.task.id).unwrap();
+    assert_eq!(pending.stage, "build");
+    assert!(pending.receipt.is_none());
     assert_eq!(git_head(h.root()), head);
     assert_eq!(
-        h.task.store.build_snapshot_candidate(&h.task.id).unwrap(),
-        candidate
+        h.task.persisted_gate_evidence("build")["commit"],
+        candidate.unwrap().0
     );
     assert_eq!(fs::read(h.root().join(MANIFEST)).unwrap(), manifest);
     assert_eq!(

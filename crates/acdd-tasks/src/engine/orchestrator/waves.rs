@@ -1,5 +1,5 @@
 use super::{
-    role::RoleObservations,
+    role::{sync_command_findings, RoleObservations},
     task_runner::{run_task_lifecycle, TaskRunOptions},
     types::OrchestratorEvent,
     workflow::{ensure_command_completed, run_gate_graph, GateDecision},
@@ -115,14 +115,21 @@ pub fn run_milestone_waves(
     // candidate invalidates the remaining prefix and requires fresh observations.
     let mut history = {
         let store = registry.open(workspace)?;
-        gate_graph::active_milestone_history(&store.connection, &identity)?
-            .into_iter()
+        let rows = gate_graph::active_milestone_history(&store.connection, &identity)?;
+        let epoch = rows
+            .iter()
+            .filter(|row| row.3 == "candidate_drift")
+            .map(|row| row.0)
+            .max()
+            .unwrap_or(0);
+        rows.into_iter()
+            .filter(|row| row.0 > epoch)
             .filter(|row| row.3 == "orchestrator")
             .map(|(id, gate, _, _, payload)| (id, gate, payload))
             .collect::<std::collections::VecDeque<_>>()
     };
     let mut previous_observation = None;
-    let mut accepted_snapshot: Option<String> = None;
+    let mut accepted_snapshot: Option<Value> = None;
     let outcomes = run_gate_graph(&root, &scope, &active_tasks, &cursors, |cursor, attempt| {
         roles.note_executed(&cursor.canonical_stage_id);
         if !tasks_done && cursor.root_index > task_position {
@@ -185,7 +192,65 @@ pub fn run_milestone_waves(
         }
         if cursor.gate.persistence.immutable {
             if let Some(prior) = &accepted_snapshot {
-                git_snapshot::ensure_root_candidate(prior, &before)?;
+                if prior["candidate_fingerprint"] != before {
+                    let prior_commit = prior["snapshot_commit"]
+                        .as_str()
+                        .context("TASK_CANDIDATE_MISMATCH: prior root snapshot missing")?;
+                    let prior_head = prior["head"]
+                        .as_str()
+                        .context("TASK_CANDIDATE_MISMATCH: prior root baseline missing")?;
+                    let (current, head, _objects) = git_snapshot::capture_scoped_snapshot(
+                        &root,
+                        &format!("{identity}:drift-before"),
+                        &[],
+                    )?
+                    .context("TASK_SNAPSHOT_FAILED")?;
+                    ensure!(
+                        head == prior_head,
+                        "TASK_CANDIDATE_MISMATCH: root HEAD diverged from candidate baseline"
+                    );
+                    let diff = crate::git::git_command(
+                        &root,
+                        &[
+                            "diff-tree",
+                            "--no-commit-id",
+                            "--name-only",
+                            "--no-renames",
+                            "-r",
+                            "-z",
+                            prior_commit,
+                            &current,
+                        ],
+                    )?;
+                    ensure!(
+                        diff.status.success(),
+                        "TASK_CANDIDATE_MISMATCH: cannot compare root snapshots"
+                    );
+                    let paths = diff
+                        .stdout
+                        .split(|byte| *byte == 0)
+                        .filter(|path| {
+                            !path.is_empty() && !git_snapshot::is_acdd_runtime_path(path)
+                        })
+                        .map(|path| String::from_utf8_lossy(path).into_owned())
+                        .collect::<Vec<_>>();
+                    let warning = json!({"prior_binding":prior["candidate_fingerprint"],"current_binding":before,"changed_paths":paths,"needs_verification":true,"needs_independent_review":true});
+                    let store = registry.open(workspace)?;
+                    engine::record_root_transition_with_watermark(
+                        &store,
+                        crate::store::GateTransition {
+                            milestone_id: identity.clone(),
+                            subject: "milestone".into(),
+                            gate_path: cursor.canonical_stage_id.clone(),
+                            action: "fail".into(),
+                            proof_kind: "candidate_drift".into(),
+                            proof_payload: json!({"previous_observation":previous_observation,"passed":false,"candidate_drift_warning":warning,"findings":{"code":"CANDIDATE_DRIFT"}}),
+                            git_tree_sha: head,
+                            worker_id: options.task.worker_id.clone(),
+                        },
+                    )?;
+                    anyhow::bail!("CANDIDATE_DRIFT_REBIND_REQUIRED: root snapshot changed; verification and independent review must be renewed");
+                }
             }
         }
         let snapshot_identity = format!(
@@ -270,6 +335,18 @@ pub fn run_milestone_waves(
                 findings: None,
             });
         }
+        let immutable_snapshot = if cursor.gate.persistence.immutable && cached.is_none() {
+            Some(
+                git_snapshot::capture_scoped_snapshot(
+                    &root,
+                    &format!("{snapshot_identity}:drift-check"),
+                    &[],
+                )?
+                .context("TASK_SNAPSHOT_FAILED: immutable root gate requires a snapshot")?,
+            )
+        } else {
+            None
+        };
         let mut replayed = cached.is_some();
         let mut decision = if let Some((id, _, saved)) = cached.clone() {
             previous_observation = Some(id);
@@ -296,12 +373,23 @@ pub fn run_milestone_waves(
                 ),
                 "MILESTONE_PROOF_REQUIRED: post-task verification cannot supply this proof"
             );
-            let result = milestones::execute_wave_verification(
+            let mut result = milestones::execute_wave_verification(
                 &root,
                 selector,
                 &options.target_base,
                 &cursor.canonical_stage_id,
             )?;
+            let command_id = cursor
+                .gate
+                .command
+                .as_deref()
+                .context("MILESTONE_COMMAND_MISSING")?;
+            let trace = registry.open(workspace)?.connection.query_row(
+                "SELECT command_id, command_str, status, exit_code, output_snippet, log_path, attempt_id FROM gate_execution_traces WHERE milestone_id=?1 AND subject='milestone' AND gate_path=?2 AND command_id=?3 ORDER BY attempt_id DESC, id DESC LIMIT 1",
+                rusqlite::params![identity, cursor.canonical_stage_id, command_id],
+                |row| Ok(json!({"command_id": row.get::<_, String>(0)?, "command": row.get::<_, String>(1)?, "status": row.get::<_, String>(2)?, "exit_code": row.get::<_, Option<i64>>(3)?, "output": row.get::<_, Option<String>>(4)?, "log_path": row.get::<_, Option<String>>(5)?, "attempt_id": row.get::<_, i64>(6)?})),
+            )?;
+            result["trace"] = trace;
             ensure_command_completed(&result["verification"], &cursor.canonical_stage_id)?;
             let passed = result["status"] == "passed";
             if passed {
@@ -402,14 +490,67 @@ pub fn run_milestone_waves(
             )?
         };
         let after_execution = engine::candidate_fingerprint(&root)?;
-        if cursor.gate.persistence.immutable {
-            git_snapshot::ensure_root_candidate(&before, &after_execution)?;
+        if cursor.gate.persistence.immutable && before != after_execution {
+            let (prior, head, _objects) =
+                immutable_snapshot.context("TASK_SNAPSHOT_FAILED: immutable snapshot missing")?;
+            let (current, current_head, _current_objects) = git_snapshot::capture_scoped_snapshot(
+                &root,
+                &format!("{snapshot_identity}:drift-current"),
+                &[],
+            )?
+            .context("TASK_SNAPSHOT_FAILED: immutable current snapshot missing")?;
+            ensure!(
+                head == current_head,
+                "TASK_CANDIDATE_MISMATCH: immutable gate changed HEAD"
+            );
+            let diff = crate::git::git_command(
+                &root,
+                &[
+                    "diff-tree",
+                    "--no-commit-id",
+                    "--name-only",
+                    "--no-renames",
+                    "-r",
+                    "-z",
+                    &prior,
+                    &current,
+                ],
+            )?;
+            ensure!(
+                diff.status.success(),
+                "TASK_CANDIDATE_MISMATCH: cannot compare immutable snapshots"
+            );
+            let paths = diff
+                .stdout
+                .split(|byte| *byte == 0)
+                .filter(|path| !path.is_empty() && !git_snapshot::is_acdd_runtime_path(path))
+                .map(|path| String::from_utf8_lossy(path).into_owned())
+                .collect::<Vec<_>>();
+            let warning = json!({"prior_binding":before,"current_binding":after_execution,"changed_paths":paths,"needs_verification":true,"needs_independent_review":true});
+            let store = registry.open(workspace)?;
+            engine::record_root_transition_with_watermark(
+                &store,
+                crate::store::GateTransition {
+                    milestone_id: identity.clone(),
+                    subject: "milestone".into(),
+                    gate_path: cursor.canonical_stage_id.clone(),
+                    action: "fail".into(),
+                    proof_kind: "candidate_drift".into(),
+                    proof_payload: json!({"previous_observation":previous_observation,"passed":false,"candidate_drift_warning":warning,"findings":{"code":"CANDIDATE_DRIFT"}}),
+                    git_tree_sha: current_head,
+                    worker_id: options.task.worker_id.clone(),
+                },
+            )?;
+            anyhow::bail!("CANDIDATE_DRIFT_REBIND_REQUIRED: immutable gate changed candidate; verification and independent review must be renewed");
         }
         let output_binding = if tasks_done {
             milestones::handoff_context(&root, selector, &options.target_base)?["binding"].clone()
         } else {
             json!({"candidate_fingerprint":after_execution})
         };
+        if cursor.gate.driver() == Some(GateDriver::Command) {
+            sync_command_findings(&cursor.canonical_stage_id, &mut decision, &mut roles);
+        }
         let after = engine::candidate_fingerprint(&root)?;
         if decision.passed && !tasks_done && cursor.root_index < task_position {
             let proof_validation = registry.open(workspace).and_then(|store| {
@@ -460,7 +601,7 @@ pub fn run_milestone_waves(
                     &after,
                 )?
             };
-            accepted_snapshot = Some(after.clone());
+            accepted_snapshot = Some(snapshot.clone());
             Some(snapshot)
         } else {
             None
@@ -469,13 +610,28 @@ pub fn run_milestone_waves(
             return Ok(decision);
         }
         let store = registry.open(workspace)?;
-        let id = store.record_gate_transition(&crate::store::GateTransition {
-            milestone_id:identity.clone(), subject:"milestone".into(), gate_path:cursor.canonical_stage_id.clone(),
-            action:if decision.passed { "pass" } else { "fail" }.into(), proof_kind:"orchestrator".into(),
-            proof_payload:json!({"previous_observation":previous_observation,"profile_digest":profile_digest,"authority_digest":authority_digest,"input_binding":binding,"binding":output_binding,"candidate_before":before,"candidate_after":after,"pre_snapshot":pre_snapshot,"post_snapshot":post_snapshot,"root_snapshot_fingerprint":if post_snapshot.is_some() { Some(after) } else { None },"passed":decision.passed,"attempt":attempt,"evidence":decision.evidence,"findings":decision.findings}),
-            git_tree_sha:crate::git::git_stdout(&root, &["rev-parse", "HEAD"], "MILESTONE_HEAD_REQUIRED")?,
-            worker_id:decision.evidence["session_id"].as_str().unwrap_or(&options.task.worker_id).to_owned(),
-        })?;
+        let transition = crate::store::GateTransition {
+            milestone_id: identity.clone(),
+            subject: "milestone".into(),
+            gate_path: cursor.canonical_stage_id.clone(),
+            action: if decision.passed { "pass" } else { "fail" }.into(),
+            proof_kind: "orchestrator".into(),
+            proof_payload: json!({"previous_observation":previous_observation,"profile_digest":profile_digest,"authority_digest":authority_digest,"input_binding":binding,"binding":output_binding,"candidate_before":before,"candidate_after":after,"pre_snapshot":pre_snapshot,"post_snapshot":post_snapshot,"root_snapshot_fingerprint":if post_snapshot.is_some() { Some(after) } else { None },"passed":decision.passed,"attempt":attempt,"evidence":decision.evidence,"findings":decision.findings}),
+            git_tree_sha: crate::git::git_stdout(
+                &root,
+                &["rev-parse", "HEAD"],
+                "MILESTONE_HEAD_REQUIRED",
+            )?,
+            worker_id: decision.evidence["session_id"]
+                .as_str()
+                .unwrap_or(&options.task.worker_id)
+                .to_owned(),
+        };
+        let id = if post_snapshot.is_some() {
+            engine::record_root_transition_with_watermark(&store, transition)?
+        } else {
+            store.record_gate_transition(&transition)?
+        };
         if decision.passed && !tasks_done && cursor.root_index < task_position {
             super::super::lifecycle::fan_out_pre_task_proofs_if_ready(
                 &store, workspace, task, &profile, &root,

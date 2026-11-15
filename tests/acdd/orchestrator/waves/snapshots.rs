@@ -128,7 +128,7 @@ fn native_immutable_review_rejects_candidate_mutation() {
     h.commit_profile(&profile, "immutable review");
     let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();
     assert!(
-        format!("{error:#}").contains("TASK_CANDIDATE_MISMATCH"),
+        format!("{error:#}").contains("CANDIDATE_DRIFT_REBIND_REQUIRED"),
         "{error:#}"
     );
     let count: i64 = h.task.store.connection.query_row("SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND gate_path='milestone_review' AND action='pass'", [], |row| row.get(0)).unwrap();
@@ -285,7 +285,7 @@ fn root_immutable_gate_rejects_modified_candidate_after_claim() {
     )
     .unwrap();
 
-    let err = submit(
+    let response = submit(
         h.root(),
         Submit {
             task_id: milestone_id,
@@ -300,9 +300,14 @@ fn root_immutable_gate_rejects_modified_candidate_after_claim() {
             session_fingerprint: None,
         },
     )
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("TASK_CANDIDATE_MISMATCH"), "{err}");
+    .unwrap();
+    assert!(
+        response["candidate_drift_warning"]["changed_paths"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("src/lib.rs")),
+        "{response}"
+    );
 }
 
 #[test]
@@ -392,7 +397,7 @@ fn root_immutable_gate_enforces_prior_snapshot_across_intervening_ordinary_pass(
     )
     .unwrap();
 
-    let err = claim(
+    let response = claim(
         h.root(),
         Claim {
             task_id: milestone_id,
@@ -403,9 +408,14 @@ fn root_immutable_gate_enforces_prior_snapshot_across_intervening_ordinary_pass(
             session_fingerprint: None,
         },
     )
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("TASK_CANDIDATE_MISMATCH"), "{err}");
+    .unwrap();
+    assert!(
+        response["candidate_drift_warning"]["changed_paths"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("src/lib.rs")),
+        "{response}"
+    );
 }
 
 #[test]

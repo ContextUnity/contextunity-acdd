@@ -26,6 +26,84 @@ fn same_worktree(active: &str, submitted: &str) -> bool {
 }
 
 impl TasksStore {
+    pub(crate) fn rewind_candidate_drift(
+        &mut self,
+        id: &str,
+        evidence: &Evidence,
+        warning: &serde_json::Value,
+    ) -> Result<Task> {
+        let observed = self.inspect(id)?;
+        let profile = self.profile_for_task(&observed)?;
+        let cursor = super::super::claim::cursor_for_stage(&profile, &observed.stage)?;
+        let cursors = super::super::claim::collect_cursors_for_task(&profile, Some(&observed))?;
+        let position = cursors
+            .iter()
+            .position(|item| item.canonical_stage_id == cursor.canonical_stage_id)
+            .context("TASK_STAGE_UNKNOWN: active drift gate is absent")?;
+        let target = cursors
+            .iter()
+            .take(position)
+            .find(|candidate| {
+                candidate.gate.sha_snapshot
+                    && matches!(
+                        candidate.gate.proof.kind(),
+                        Some(ProofKind::Command | ProofKind::SeamTest)
+                    )
+            })
+            .or_else(|| {
+                cursors
+                    .iter()
+                    .take(position)
+                    .find(|candidate| candidate.gate.sha_snapshot)
+            })
+            .or_else(|| {
+                (cursor.gate.persistence.pre
+                    == Some(crate::tasks::profile::PersistenceAction::Snapshot))
+                .then_some(&cursor)
+            })
+            .context("TASK_SNAPSHOT_NOT_FOUND: drift recovery requires a candidate producer")?;
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = crate::store::recovery::transaction(&mut self.connection, checkpoint)?;
+        tx.enroll(&[id.to_owned()], false)?;
+        let mut task = load(&tx, id)?.context(crate::store::task_not_found_message(id))?;
+        if task.status != "in_progress"
+            || task.stage != evidence.stage
+            || task.claim_revision != evidence.claim_revision
+            || task.contract_revision != evidence.contract_revision
+            || task.worker_id.as_deref() != Some(&evidence.worker_id)
+            || !task
+                .worktree
+                .as_deref()
+                .is_some_and(|active| same_worktree(active, &evidence.worktree))
+            || task.task_id != evidence.task_id
+            || task.profile_pin != observed.profile_pin
+        {
+            bail!("TASK_STALE_SUBMISSION: candidate drift claim is no longer active");
+        }
+        validate_gate_proof(
+            &evidence.proof,
+            &cursor.gate,
+            &profile,
+            true,
+            &task.spec.proof_policy,
+        )?;
+        let (milestone, _) = super::super::claim::breadcrumb(id, &cursor)?;
+        let milestone_id = format!("{}/{}/{}", self.repository, self.project, milestone);
+        tx.execute(
+            "INSERT INTO gate_transitions (milestone_id,subject,gate_path,action,proof_kind,proof_payload,git_tree_sha,worker_id) VALUES (?1,?2,?3,'drift','candidate_drift',?4,?5,?6)",
+            params![milestone_id, id, cursor.gate_path, serde_json::to_string(warning)?, warning["current_binding"].as_str().unwrap_or_default(), evidence.worker_id],
+        )?;
+        end_claim(&tx, id)?;
+        task.gate = target.flat_index;
+        task.stage = target.canonical_stage_id.clone();
+        task.status = "ready".into();
+        task.worker_id = None;
+        task.worktree = None;
+        save(&tx, &task)?;
+        tx.commit()?;
+        Ok(task)
+    }
+
     /// Performs submit.
     pub fn submit(
         &mut self,
@@ -418,6 +496,42 @@ impl TasksStore {
                     validate_extended_scope_review(&review.proof, &task.spec.extended_scope)?;
                 }
                 review_proofs.push((configured_source, review.proof.clone()));
+            }
+            let drift_epoch: Option<i64> = tx.query_row(
+                "SELECT MAX(id) FROM gate_transitions WHERE subject=?1 AND proof_kind='candidate_drift'",
+                [id], |row| row.get(0),
+            )?;
+            if let Some(epoch) = drift_epoch {
+                let mut statement = tx.prepare("SELECT proof_kind,proof_payload FROM gate_transitions WHERE subject=?1 AND id>?2 AND action='advance' ORDER BY id")?;
+                let rows = statement
+                    .query_map(params![id, epoch], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let mut verified_by: Option<String> = None;
+                let mut independently_reviewed = false;
+                for (kind, raw) in rows {
+                    if !matches!(kind.as_str(), "command" | "seam_test" | "review") {
+                        continue;
+                    }
+                    let accepted: Evidence = serde_json::from_str(&raw)?;
+                    if accepted.commit.as_deref() != Some(candidate_snapshot) {
+                        continue;
+                    }
+                    if matches!(kind.as_str(), "command" | "seam_test") {
+                        verified_by = Some(accepted.worker_id);
+                        independently_reviewed = false;
+                    } else if kind == "review"
+                        && verified_by
+                            .as_deref()
+                            .is_some_and(|worker| worker != accepted.worker_id)
+                    {
+                        independently_reviewed = true;
+                    }
+                }
+                if !independently_reviewed {
+                    bail!("CANDIDATE_DRIFT_REBIND_REQUIRED: current candidate needs renewed observed verification and independent review");
+                }
             }
             let claim_worktree: String = tx.query_row(
                 "SELECT worktree FROM task_claims WHERE task_id=?1 AND revision=?2 AND ended=0",

@@ -23,10 +23,26 @@ fn pending_root_gate_from_transitions(
     store: &TasksStore,
     milestone_identity: &str,
     cursors: &[gate_graph::GateCursor],
-    applicable: impl FnMut(&gate_graph::GateCursor) -> bool,
+    mut applicable: impl FnMut(&gate_graph::GateCursor) -> bool,
 ) -> Result<Option<gate_graph::GateCursor>> {
-    let history = gate_graph::active_milestone_history(&store.connection, milestone_identity)?;
-    let pending = gate_graph::accepted_root_route_from_history(&history, cursors, applicable)?.1;
+    let paths = cursors
+        .iter()
+        .filter(|cursor| applicable(cursor))
+        .map(|cursor| cursor.canonical_stage_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut history = gate_graph::active_milestone_history(&store.connection, milestone_identity)?;
+    let drift_epoch = history
+        .iter()
+        .filter(|(_, path, _, kind, _)| kind == "candidate_drift" && paths.contains(path))
+        .map(|(id, _, _, _, _)| *id)
+        .max();
+    if let Some(epoch) = drift_epoch {
+        history.retain(|(id, _, _, _, _)| *id > epoch);
+    }
+    let pending = gate_graph::accepted_root_route_from_history(&history, cursors, |cursor| {
+        paths.contains(&cursor.canonical_stage_id)
+    })?
+    .1;
     if let Some(cursor) = &pending {
         if let Some(limit) = cursor.gate.max_attempts {
             let failures = history
@@ -741,11 +757,105 @@ pub(super) fn claim_root_gate(root: &Path, p: Claim) -> Result<Value> {
             if let Some(prior_snapshot) =
                 latest_accepted_root_snapshot(&ctx.store, &ctx.milestone_identity, &phase_paths)?
             {
-                super::super::git_snapshot::ensure_root_candidate(&prior_snapshot, &fingerprint)?;
+                if prior_snapshot != fingerprint {
+                    let mut stmt = ctx.store.connection.prepare("SELECT gate_path,proof_payload FROM gate_transitions WHERE milestone_id=?1 AND subject='milestone' AND action='pass' ORDER BY id DESC")?;
+                    let entries = stmt
+                        .query_map([&ctx.milestone_identity], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    let snapshot = entries
+                        .into_iter()
+                        .filter(|(path, _)| phase_paths.contains(&path.as_str()))
+                        .filter_map(|(_, raw)| serde_json::from_str::<Value>(&raw).ok())
+                        .find(|value| value["root_snapshot_fingerprint"] == prior_snapshot)
+                        .context("TASK_CANDIDATE_MISMATCH: prior root snapshot missing")?;
+                    let snapshot = snapshot
+                        .get("root_snapshot")
+                        .filter(|value| value.is_object())
+                        .or_else(|| {
+                            snapshot
+                                .get("post_snapshot")
+                                .filter(|value| value.is_object())
+                        })
+                        .context("TASK_CANDIDATE_MISMATCH: prior snapshot payload missing")?;
+                    let prior = snapshot["snapshot_commit"]
+                        .as_str()
+                        .context("TASK_CANDIDATE_MISMATCH: prior snapshot commit missing")?;
+                    let reference = snapshot["snapshot_ref"]
+                        .as_str()
+                        .context("TASK_CANDIDATE_MISMATCH: prior snapshot ref missing")?;
+                    let resolved = crate::git::git_stdout(
+                        &canonical_worktree,
+                        &["rev-parse", "--verify", reference],
+                        "TASK_CANDIDATE_MISMATCH",
+                    )?;
+                    if resolved != prior {
+                        bail!(
+                            "TASK_CANDIDATE_MISMATCH: prior snapshot ref differs from bound commit"
+                        );
+                    }
+                    let old_head = snapshot["head"]
+                        .as_str()
+                        .context("TASK_CANDIDATE_MISMATCH: prior snapshot baseline missing")?;
+                    let (current, head, _objects) =
+                        super::super::git_snapshot::capture_scoped_snapshot(
+                            &canonical_worktree,
+                            &format!("{}:claim-drift", ctx.milestone_identity),
+                            &[],
+                        )?
+                        .context("TASK_SNAPSHOT_FAILED")?;
+                    if head != old_head {
+                        bail!("TASK_CANDIDATE_MISMATCH: root HEAD diverged from snapshot baseline");
+                    }
+                    let diff = crate::git::git_command(
+                        &canonical_worktree,
+                        &[
+                            "diff-tree",
+                            "--no-commit-id",
+                            "--name-only",
+                            "--no-renames",
+                            "-r",
+                            "-z",
+                            prior,
+                            &current,
+                        ],
+                    )?;
+                    if !diff.status.success() {
+                        bail!("TASK_CANDIDATE_MISMATCH: cannot compare root snapshots");
+                    }
+                    let paths = diff
+                        .stdout
+                        .split(|byte| *byte == 0)
+                        .filter(|path| {
+                            !path.is_empty()
+                                && !super::super::git_snapshot::is_acdd_runtime_path(path)
+                        })
+                        .map(|path| String::from_utf8_lossy(path).into_owned())
+                        .collect::<Vec<_>>();
+                    let warning = json!({"prior_binding":prior_snapshot,"current_binding":fingerprint,"changed_paths":paths,"needs_verification":true,"needs_independent_review":true});
+                    super::super::record_root_transition_with_watermark(
+                        &ctx.store,
+                        crate::store::GateTransition {
+                            milestone_id: ctx.milestone_identity.clone(),
+                            subject: "milestone".into(),
+                            gate_path: cursor.canonical_stage_id.clone(),
+                            action: "fail".into(),
+                            proof_kind: "candidate_drift".into(),
+                            proof_payload: json!({"candidate_drift_warning":warning,"findings":{"code":"CANDIDATE_DRIFT"}}),
+                            git_tree_sha: head,
+                            worker_id: p.worker_id.clone(),
+                        },
+                    )?;
+                    return ctx.workspace.envelope(
+                        json!({"status":"rebind_required","candidate_drift_warning":warning}),
+                    );
+                }
             }
         }
-        let pre_snapshot = if cursor.gate.persistence.pre
-            == Some(crate::tasks::profile::PersistenceAction::Snapshot)
+        let pre_snapshot = if cursor.gate.persistence.immutable
+            || cursor.gate.persistence.pre
+                == Some(crate::tasks::profile::PersistenceAction::Snapshot)
         {
             Some(super::super::git_snapshot::capture_root_snapshot(
                 &canonical_worktree,
@@ -927,7 +1037,7 @@ pub(super) fn verify_root_gate_with_options(
         )?
         .context("TASK_AUTO_PROOF_UNAVAILABLE: completed root execution run missing")?;
     let traces = ctx.store.claim_bound_execution_traces(run.run_id)?;
-    let proof = if cursor.gate.proof.kind() == Some(ProofKind::Command) {
+    let proof = if overall_passed && cursor.gate.proof.kind() == Some(ProofKind::Command) {
         Some(super::evidence_compiler::command_proof(
             &run,
             &traces,
@@ -1001,6 +1111,15 @@ pub(in crate::engine) fn submit_root_gate(root: &Path, p: Submit) -> Result<Valu
     }
     let cursor = eligible_root_cursor(&ctx, &worktree, &p.stage)?;
     ensure_root_gate_independent(&ctx, &cursor, &worker_id)?;
+    let pending_drift: bool = ctx.store.connection.query_row(
+        "SELECT COALESCE(MAX(CASE WHEN proof_kind='candidate_drift' THEN id END),0) > COALESCE(MAX(CASE WHEN action='pass' AND json_extract(proof_payload,'$.root_snapshot_fingerprint') IS NOT NULL THEN id END),0) FROM gate_transitions WHERE milestone_id=?1 AND subject='milestone'",
+        [&ctx.milestone_identity], |row| row.get(0),
+    )?;
+    if pending_drift
+        && cursor.gate.persistence.post != Some(crate::tasks::profile::PersistenceAction::Snapshot)
+    {
+        bail!("CANDIDATE_DRIFT_REBIND_REQUIRED: renew the candidate snapshot before accepting this gate");
+    }
 
     let passed = p.action.name() == "pass";
     let proof_policy = ctx
@@ -1049,6 +1168,29 @@ pub(in crate::engine) fn submit_root_gate(root: &Path, p: Submit) -> Result<Valu
                         "TASK_PROOF_UNOBSERVED: root command gate '{}' verification is incomplete or stale for current tree",
                         cursor.canonical_stage_id
                     );
+                }
+                let drift: Option<(i64, String)> = ctx.store.connection.query_row(
+                    "SELECT id,proof_payload FROM gate_transitions WHERE milestone_id=?1 AND subject='milestone' AND proof_kind='candidate_drift' ORDER BY id DESC LIMIT 1",
+                    [&ctx.milestone_identity], |row| Ok((row.get(0)?,row.get(1)?)),
+                ).optional()?;
+                if let Some((epoch, raw)) = drift {
+                    let payload: Value = serde_json::from_str(&raw)?;
+                    let mut cutoff = payload["root_run_cutoff"]
+                        .as_i64()
+                        .context("TASK_PROOF_UNOBSERVED: drift execution watermark missing")?;
+                    let rebound: Option<String> = ctx.store.connection.query_row(
+                        "SELECT proof_payload FROM gate_transitions WHERE milestone_id=?1 AND subject='milestone' AND id>?2 AND action='pass' AND json_extract(proof_payload,'$.root_snapshot_fingerprint') IS NOT NULL ORDER BY id DESC LIMIT 1",
+                        rusqlite::params![ctx.milestone_identity,epoch], |row| row.get(0),
+                    ).optional()?;
+                    if let Some(raw) = rebound {
+                        let binding: Value = serde_json::from_str(&raw)?;
+                        cutoff = cutoff.max(binding["root_run_cutoff"].as_i64().context(
+                            "TASK_PROOF_UNOBSERVED: rebind execution watermark missing",
+                        )?);
+                    }
+                    if run.run_id <= cutoff {
+                        bail!("TASK_PROOF_UNOBSERVED: root command execution predates candidate drift");
+                    }
                 }
                 let traces = ctx.store.claim_bound_execution_traces(run.run_id)?;
                 let observed_envelope = super::evidence_compiler::command_proof(
@@ -1117,7 +1259,65 @@ pub(in crate::engine) fn submit_root_gate(root: &Path, p: Submit) -> Result<Valu
                     cursor.canonical_stage_id
                 )
             })?;
-        super::super::git_snapshot::ensure_root_candidate(claimed_fp, current_fp)?;
+        if claimed_fp != current_fp {
+            let prior = &checkpoint.state_payload["pre_snapshot"];
+            let prior_commit = prior["snapshot_commit"]
+                .as_str()
+                .context("TASK_CANDIDATE_MISMATCH: immutable claim snapshot is missing")?;
+            let prior_head = prior["head"]
+                .as_str()
+                .context("TASK_CANDIDATE_MISMATCH: immutable claim baseline is missing")?;
+            let (current, head, _objects) = super::super::git_snapshot::capture_scoped_snapshot(
+                &canonical_worktree,
+                &format!("{}:drift", ctx.milestone_identity),
+                &[],
+            )?
+            .context("TASK_SNAPSHOT_FAILED: cannot inspect root candidate")?;
+            if head != prior_head {
+                bail!("TASK_CANDIDATE_MISMATCH: root HEAD diverged from claim baseline");
+            }
+            let diff = crate::git::git_command(
+                &canonical_worktree,
+                &[
+                    "diff-tree",
+                    "--no-commit-id",
+                    "--name-only",
+                    "--no-renames",
+                    "-r",
+                    "-z",
+                    prior_commit,
+                    &current,
+                ],
+            )?;
+            if !diff.status.success() {
+                bail!("TASK_CANDIDATE_MISMATCH: cannot compare root candidate snapshots");
+            }
+            let paths = diff
+                .stdout
+                .split(|byte| *byte == 0)
+                .filter(|path| {
+                    !path.is_empty() && !super::super::git_snapshot::is_acdd_runtime_path(path)
+                })
+                .map(|path| String::from_utf8_lossy(path).into_owned())
+                .collect::<Vec<_>>();
+            let warning = json!({"prior_binding":claimed_fp,"current_binding":current_fp,"changed_paths":paths,"needs_verification":true,"needs_independent_review":true});
+            super::super::record_root_transition_with_watermark(
+                &ctx.store,
+                crate::store::GateTransition {
+                    milestone_id: ctx.milestone_identity.clone(),
+                    subject: "milestone".into(),
+                    gate_path: cursor.canonical_stage_id.clone(),
+                    action: "fail".into(),
+                    proof_kind: "candidate_drift".into(),
+                    proof_payload: json!({"candidate_drift_warning":warning,"findings":{"code":"CANDIDATE_DRIFT"}}),
+                    git_tree_sha: current,
+                    worker_id: worker_id.clone(),
+                },
+            )?;
+            return ctx
+                .workspace
+                .envelope(json!({"status":"rebind_required", "candidate_drift_warning":warning}));
+        }
         let phase_paths = phase_root_gate_paths(&ctx, &cursor);
         if let Some(prior_snapshot) =
             latest_accepted_root_snapshot(&ctx.store, &ctx.milestone_identity, &phase_paths)?
@@ -1171,18 +1371,23 @@ pub(in crate::engine) fn submit_root_gate(root: &Path, p: Submit) -> Result<Valu
                 "non-git".to_owned()
             }
         });
-    let transition_id = ctx
-        .store
-        .record_gate_transition(&crate::store::GateTransition {
-            milestone_id: ctx.milestone_identity.clone(),
-            subject: "milestone".to_owned(),
-            gate_path: cursor.canonical_stage_id.clone(),
-            action: if passed { "pass" } else { "fail" }.to_owned(),
-            proof_kind: gate_proof_kind(&cursor.gate),
-            proof_payload,
-            git_tree_sha: git_tree_sha.clone(),
-            worker_id: worker_id.clone(),
-        })?;
+    let transition = crate::store::GateTransition {
+        milestone_id: ctx.milestone_identity.clone(),
+        subject: "milestone".to_owned(),
+        gate_path: cursor.canonical_stage_id.clone(),
+        action: if passed { "pass" } else { "fail" }.to_owned(),
+        proof_kind: gate_proof_kind(&cursor.gate),
+        proof_payload,
+        git_tree_sha: git_tree_sha.clone(),
+        worker_id: worker_id.clone(),
+    };
+    let transition_id = if passed
+        && cursor.gate.persistence.post == Some(crate::tasks::profile::PersistenceAction::Snapshot)
+    {
+        super::super::record_root_transition_with_watermark(&ctx.store, transition)?
+    } else {
+        ctx.store.record_gate_transition(&transition)?
+    };
     if let Some((_, fingerprint)) = current_snapshot {
         ctx.store
             .save_engine_checkpoint(&crate::store::GateCheckpoint {
@@ -1246,16 +1451,15 @@ pub(super) fn ensure_pre_task_root_gates_passed(
         applicable_pre_task_root_cursors(profile, task, &milestone_tasks, &scope, worktree)?;
     let milestone_identity = milestone_identity_for_task(workspace, task)?;
     let all_cursors = gate_graph::collect_root_cursors(profile)?;
-    gate_graph::ensure_root_gate_transitions_passed_where(
-        &store.connection,
-        &milestone_identity,
-        &all_cursors,
-        |candidate| {
-            cursors
-                .iter()
-                .any(|cursor| cursor.canonical_stage_id == candidate.canonical_stage_id)
-        },
-    )?;
+    if pending_root_gate_from_transitions(store, &milestone_identity, &all_cursors, |candidate| {
+        cursors
+            .iter()
+            .any(|cursor| cursor.canonical_stage_id == candidate.canonical_stage_id)
+    })?
+    .is_some()
+    {
+        bail!("MILESTONE_ROOT_GATE_REQUIRED: root gate recovery or verification remains pending");
+    }
     fan_out_pre_task_proofs_if_ready(store, workspace, task, profile, worktree)?;
     Ok(())
 }

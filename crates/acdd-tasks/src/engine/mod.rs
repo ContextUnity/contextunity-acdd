@@ -1074,6 +1074,28 @@ fn validate_authority(
     Ok(())
 }
 
+fn root_run_watermark(store: &TasksStore, identity: &str) -> Result<i64> {
+    Ok(store.connection.query_row(
+        "SELECT COALESCE(MAX(id),0) FROM gate_execution_runs WHERE milestone_id=?1 AND subject='milestone'",
+        [identity], |row| row.get(0),
+    )?)
+}
+
+fn record_root_transition_with_watermark(
+    store: &TasksStore,
+    mut transition: crate::store::GateTransition,
+) -> Result<i64> {
+    let tx = rusqlite::Transaction::new_unchecked(
+        &store.connection,
+        rusqlite::TransactionBehavior::Immediate,
+    )?;
+    transition.proof_payload["root_run_cutoff"] =
+        serde_json::json!(root_run_watermark(store, &transition.milestone_id)?);
+    let id = store.record_gate_transition(&transition)?;
+    tx.commit()?;
+    Ok(id)
+}
+
 fn candidate_divergence_diagnostic(
     worktree: &Path,
     task_id: &str,
@@ -1227,6 +1249,63 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
         )?;
         candidate_commit = Some(candidate.clone());
         evidence.candidate_baseline_head = Some(candidate_baseline.clone());
+        if p.action.name() == "pass"
+            && task.status != "completed"
+            && (gate.persistence.immutable
+                || matches!(
+                    gate.proof.kind(),
+                    Some(
+                        crate::tasks::profile::ProofKind::Review
+                            | crate::tasks::profile::ProofKind::Delivery
+                    )
+                ))
+        {
+            if let Some(supplied) = explicit_commit.as_deref() {
+                if canonical_commit_from_prefix(supplied, &candidate).is_none() {
+                    bail!("TASK_CANDIDATE_MISMATCH: supplied commit {supplied} != candidate snapshot {candidate}");
+                }
+            }
+            let head = crate::git::git_stdout(
+                worktree,
+                &["rev-parse", "--verify", "HEAD"],
+                "TASK_CANDIDATE_MISMATCH",
+            )?;
+            if head != candidate_baseline {
+                bail!("TASK_CANDIDATE_MISMATCH: HEAD diverged from candidate baseline");
+            }
+            let (current, _, _objects) =
+                git_snapshot::capture_scoped_snapshot(worktree, &p.task_id, &task.spec.scope)?
+                    .context("TASK_SNAPSHOT_FAILED: snapshot capture requires a Git worktree")?;
+            if current != candidate {
+                let output = crate::git::git_command(
+                    worktree,
+                    &[
+                        "diff-tree",
+                        "--no-commit-id",
+                        "--name-only",
+                        "--no-renames",
+                        "-r",
+                        "-z",
+                        &candidate,
+                        &current,
+                    ],
+                )?;
+                if !output.status.success() {
+                    bail!("TASK_CANDIDATE_MISMATCH: cannot compare candidate snapshots");
+                }
+                let changed_paths = output
+                    .stdout
+                    .split(|byte| *byte == 0)
+                    .filter(|path| !path.is_empty() && !git_snapshot::is_acdd_runtime_path(path))
+                    .map(|path| String::from_utf8_lossy(path).into_owned())
+                    .collect::<Vec<_>>();
+                let warning = serde_json::json!({"prior_binding":candidate,"current_binding":current,"changed_paths":changed_paths,"needs_verification":true,"needs_independent_review":true});
+                let pending = store.rewind_candidate_drift(&p.task_id, &evidence, &warning)?;
+                let mut response = serde_json::to_value(pending)?;
+                response["candidate_drift_warning"] = warning;
+                return Ok(response);
+            }
+        }
         if is_delivery && gate.auto_commit && p.action.name() == "pass" {
             if task.status == "completed" {
                 let delivered = task
@@ -1244,32 +1323,6 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
                 }
                 evidence.commit = Some(delivered.to_owned());
             } else {
-                let head = crate::git::git_stdout(
-                    worktree,
-                    &["rev-parse", "--verify", "HEAD"],
-                    "TASK_CANDIDATE_BASELINE_MISMATCH",
-                )?;
-                if head != candidate_baseline {
-                    bail!(
-                        "TASK_CANDIDATE_BASELINE_MISMATCH: HEAD '{head}' does not match candidate baseline '{candidate_baseline}'"
-                    );
-                }
-                let (current, _, _objects) =
-                    git_snapshot::capture_scoped_snapshot(worktree, &p.task_id, &task.spec.scope)?
-                        .context(
-                            "TASK_SNAPSHOT_FAILED: snapshot capture requires a Git worktree",
-                        )?;
-                if current != candidate {
-                    bail!(
-                        "{}",
-                        candidate_divergence_diagnostic(
-                            worktree,
-                            &p.task_id,
-                            &task.spec.scope,
-                            &candidate
-                        )?
-                    );
-                }
                 evidence.commit = Some(candidate.clone());
             }
         } else {
@@ -1282,14 +1335,15 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
                 }
             }
             evidence.commit = Some(candidate.clone());
-            if gate.persistence.immutable
-                || matches!(
-                    gate.proof.kind(),
-                    Some(
-                        crate::tasks::profile::ProofKind::Review
-                            | crate::tasks::profile::ProofKind::Delivery
-                    )
-                )
+            if p.action.name() != "pass"
+                && (gate.persistence.immutable
+                    || matches!(
+                        gate.proof.kind(),
+                        Some(
+                            crate::tasks::profile::ProofKind::Review
+                                | crate::tasks::profile::ProofKind::Delivery
+                        )
+                    ))
             {
                 let (current, _, _objects) =
                     git_snapshot::capture_scoped_snapshot(worktree, &p.task_id, &task.spec.scope)?

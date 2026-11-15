@@ -165,33 +165,91 @@ receipt:
 
 ```yaml
 task_ref: fix-role-command-rejection-and-findings
-target: "Fix role + command + scheme/review rejection handling in role.rs and evidence_compiler.rs (including reuse_on_reject session retention), emit structured failure findings from waves.rs command/verification gates and sync RoleObservations.findings, return structured passed=false payloads from verify_root_gate_with_options, unify .acdd/ runtime exclusions between candidate_fingerprint and git_snapshot.rs while turning non-runtime review/immutable drift into structured candidate_drift_warning + mandatory candidate rebinding/re-verify/re-review prior to deliver receipt (preserving fail-closed only on corrupted/mismatched explicit commits), migrate existing wave/lifecycle/snapshot drift expectations, and prove all contracts in cycle_contracts.rs."
+target: Fix role + command + scheme/review rejection handling in role.rs and evidence_compiler.rs (including reuse_on_reject session retention), emit structured failure findings from waves.rs command/verification gates and sync RoleObservations.findings, return structured passed=false payloads from verify_root_gate_with_options, unify .acdd/ runtime exclusions between candidate_fingerprint and git_snapshot.rs while turning non-runtime review/immutable drift into structured candidate_drift_warning + mandatory candidate rebinding/re-verify/re-review prior to deliver receipt (preserving fail-closed only on corrupted/mismatched explicit commits), migrate existing wave/lifecycle/snapshot drift expectations, and prove all contracts in cycle_contracts.rs.
 proof_policy: seam-test-first
 contract_revision: 1
 depends_on:
-  - upfront-contract-synthesis-and-dag-prioritization
+- upfront-contract-synthesis-and-dag-prioritization
 scope:
-  - crates/acdd-tasks/src/engine/mod.rs
-  - crates/acdd-tasks/src/engine/git_snapshot.rs
-  - crates/acdd-tasks/src/engine/gates/submit.rs
-  - crates/acdd-tasks/src/engine/orchestrator/role.rs
-  - crates/acdd-tasks/src/engine/evidence_compiler.rs
-  - crates/acdd-tasks/src/engine/orchestrator/waves.rs
-  - crates/acdd-tasks/src/engine/lifecycle/root_gates.rs
-  - tests/acdd/orchestrator/cycle_contracts.rs
-  - tests/acdd/orchestrator/waves/snapshots.rs
-  - tests/acdd/orchestrator/lifecycle.rs
-  - tests/acdd/tasks/lifecycle/snapshots.rs
+- crates/acdd-tasks/src/engine/mod.rs
+- crates/acdd-tasks/src/engine/git_snapshot.rs
+- crates/acdd-tasks/src/engine/gates/submit.rs
+- crates/acdd-tasks/src/engine/orchestrator/role.rs
+- crates/acdd-tasks/src/engine/evidence_compiler.rs
+- crates/acdd-tasks/src/engine/orchestrator/waves.rs
+- crates/acdd-tasks/src/engine/lifecycle/root_gates.rs
+- tests/acdd/orchestrator/cycle_contracts.rs
+- tests/acdd/orchestrator/waves/snapshots.rs
+- tests/acdd/orchestrator/lifecycle.rs
+- tests/acdd/tasks/lifecycle/snapshots.rs
 symbols:
-  - fn:sync_command_findings
-status: ready
+- fn:sync_command_findings
+status: completed
 subtasks:
-  - subtask_ref: role-command-rejection-and-session-retention
-    title: "Pass rejection proof and passed flag into evaluate_root_command_gate, forbid only false-positive passes when observed_pass is false, and keep reuse_on_reject sessions on failure"
-  - subtask_ref: sync-findings-and-root-verify-failure
-    title: "Populate structured failure findings in waves.rs, sync RoleObservations.findings across command gates, and return structured passed=false JSON in verify_root_gate_with_options"
-  - subtask_ref: relax-candidate-drift-and-unify-runtime-filter
-    title: "Share .acdd/ runtime exclusions between git_snapshot.rs and candidate_fingerprint, convert non-runtime review/immutable drift into candidate_drift_warning + mandatory rebind/re-verify/re-review before deliver receipt across waves/root_gates/submit, and migrate existing drift assertions in waves/snapshots.rs, lifecycle.rs, and tasks/lifecycle/snapshots.rs"
+- subtask_ref: role-command-rejection-and-session-retention
+  title: Pass rejection proof and passed flag into evaluate_root_command_gate, forbid only false-positive passes when observed_pass is false, and keep reuse_on_reject sessions on failure
+  status: completed
+  evidence: Added decision-aware evaluate_root_command_gate_decision, RoleObservations reuse_on_reject retention, and false-positive pass rejection; verified in orchestrator::cycle_contracts (11 passed)
+- subtask_ref: sync-findings-and-root-verify-failure
+  title: Populate structured failure findings in waves.rs, sync RoleObservations.findings across command gates, and return structured passed=false JSON in verify_root_gate_with_options
+  status: completed
+  evidence: Added pub(crate) fn sync_command_findings with trace diagnostics in waves.rs and failed observation return in verify_root_gate_with_options; verified in orchestrator::cycle_contracts
+- subtask_ref: relax-candidate-drift-and-unify-runtime-filter
+  title: Share .acdd/ runtime exclusions between git_snapshot.rs and candidate_fingerprint, convert non-runtime review/immutable drift into candidate_drift_warning + mandatory rebind/re-verify/re-review before deliver receipt across waves/root_gates/submit, and migrate existing drift assertions in waves/snapshots.rs, lifecycle.rs, and tasks/lifecycle/snapshots.rs
+  status: completed
+  evidence: Unified .acdd runtime exclusions between git_snapshot.rs and candidate_fingerprint, implemented Option 1 candidate_drift_warning + durable rebind/re-verify/re-review across submit/root_gates/waves, and migrated waves/snapshots (7), lifecycle (35), tasks/lifecycle/snapshots (3)
+receipt:
+  delivery_gate: deliver
+  candidate_gate: build
+  contract_revision: 1
+  passed_at: 2026-11-15T23:29:50.103470750+00:00
+  evidence:
+    command_proof:
+      command: rust-check-and-test
+      exit_code: 0
+      tests_passed: 1
+      tests_failed: 0
+      log: |
+        [rust-check-and-test::tests/acdd/orchestrator/cycle_contracts.rs]
+        PASS rust-check-and-test::tests/acdd/orchestrator/cycle_contracts.rs: exit=0 passed=1 failed=0 (7342 ms)
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: Diff against c941ae072 contains exactly the 11 admitted files. Cargo.toml, build.rs, .acdd/profile.yaml, workflow.rs and all other files are untouched.
+        claims:
+          applicable: true
+          evidence: 'All five findings from #221 are resolved: execution watermarks, commandless recovery, native snapshot compatibility, scoped runtime exclusions and duplicate capture removal. No blocking regressions or weakened test invariants found.'
+        concurrency:
+          applicable: true
+          evidence: Drift/rebind watermarks and transitions commit atomically under SQLite IMMEDIATE transactions. Root verification rejects executions at or below the applicable cutoff.
+        project_isolation:
+          applicable: true
+          evidence: 'Scoped and unscoped snapshots share runtime filtering while retaining authority files. Temporary-directory sets remained identical: 5177 before and after, zero new leaks.'
+        administration:
+          applicable: true
+          evidence: Reviewed claim revision 19; content matches candidate a99c29aa080b7aedc573d8c88e42f6ad006fdc6b. No files edited or task_submit executed. Diff hash and Git status remained unchanged; whitespace check passed.
+      notes: 'All seven requested checks passed serially: both strict Clippy commands and test counts 91, 14, 7, 35 and 3. Total: 150 passed, zero failures, zero warnings.'
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ROLE-COMMAND-REJECTION-PARITY: An agent role paired with command pre-validation can return a valid structured rejection proof even when the observed command exited zero, failing closed only on false-positive pass when observed_pass is false, and preserving reuse_on_reject sessions across failed role retries.'
+    - 'INV-CANDIDATE-DRIFT-WARNING: candidate_fingerprint and git snapshots share the same .acdd/ runtime-path exclusions so runtime churn never triggers drift; non-runtime worktree drift during review/immutable gates emits a structured candidate_drift_warning with changed paths for LLM/reviewer inspection and enforces mandatory candidate rebinding, renewed verification when source/test paths drifted, and renewed independent_reviewer sign-off before issuing any terminal deliver/handoff receipt (reserving hard TASK_CANDIDATE_MISMATCH fail-closed strictly for corrupted/mismatched explicit commit receipts or unrecoverable HEAD divergence).'
+    - 'INV-COMMAND-FAILURE-FINDINGS-PROPAGATION: Failing autonomous command gates across waves, workflows, and plans emit structured failure diagnostics into findings and keep RoleObservations.findings synchronized so on_fail repair roles and reject_routing never receive null or stale diagnostics.'
+    - 'INV-ADR021-UNIFIED-TASK-MODEL: Under amended ADR 0021 (Variant A), Plan and Milestone share the single SQLite TasksStore and task_runner execution contour (with plan steps executing in-place via snapshots, full subtask lifecycle, blackboard, and resume, while Milestone adds worktree isolation, blueprint synthesis, red contract tests, and handoff commits); Workflow stays strictly stateless with respect to tasks and subtasks.'
+    - 'INV-WORKFLOW-PROFILE-INHERITANCE: Standalone and builtin workflows inherit roles (runner, models, prompt_template), commands, policies, and limits from the active repository profile without importing a tasks container, support append-only save: log audit trails without task rows, and keep local docs/workflows overrides higher priority.'
+    - 'INV-SPECIFY-DESIGN-TRACEABILITY: Builtin author-spec and amended blueprint schemas capture Goal, Non-goals, ambiguities, numbered AC-* criteria, C1/C2 boundary impact, ADR requirements, and SAD updates prior to code delivery without weakening core gate proofs.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: builtin-profile-presets-and-workflow-inheritance
