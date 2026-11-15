@@ -2,9 +2,6 @@ use crate::common::Workspace;
 use crate::harness::{HarnessResult, McpTestHarness};
 use contextunity_acdd::db::reader;
 use serde_json::Value;
-use std::sync::OnceLock;
-
-static INDEXED_ANALYSIS_FIXTURE: OnceLock<AnalysisFixture> = OnceLock::new();
 
 /// Owns the real workspace used by MCP analysis contract tests.
 pub struct AnalysisFixture {
@@ -23,12 +20,10 @@ impl AnalysisFixture {
         Self { workspace }
     }
 
-    pub fn indexed() -> &'static Self {
-        INDEXED_ANALYSIS_FIXTURE.get_or_init(|| {
-            let workspace = analysis_workspace();
-            workspace.build();
-            Self { workspace }
-        })
+    pub fn indexed() -> Self {
+        let workspace = analysis_workspace();
+        workspace.build();
+        Self { workspace }
     }
 
     pub fn workspace(&self) -> &Workspace {

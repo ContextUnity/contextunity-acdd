@@ -21,6 +21,11 @@ mod edge_aggregation;
 mod fact_persistence;
 #[path = "core/reader_row_limits.rs"]
 mod reader_row_limits;
+#[path = "core/docs_check.rs"]
+mod docs_check;
+#[cfg(unix)]
+#[path = "core/release_packaging.rs"]
+mod release_packaging;
 #[path = "core/scanner_guard_limits.rs"]
 mod scanner_guard_limits;
 #[path = "core/storage_batches.rs"]

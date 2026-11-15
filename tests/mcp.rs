@@ -12,6 +12,8 @@ mod cache_isolation;
 pub use common::cli;
 #[path = "mcp/cli_contract.rs"]
 mod cli_contract;
+#[path = "mcp/cli_roots.rs"]
+mod cli_roots;
 
 #[path = "mcp/harness/analysis.rs"]
 mod analysis_fixture;

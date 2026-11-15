@@ -1,26 +1,31 @@
-#![cfg(feature = "lang-python")]
-
 #[path = "common/mod.rs"]
 #[allow(dead_code)]
 mod common;
 
+#[cfg(feature = "lang-python")]
 use contextunity_acdd::{
     core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions},
     db::{reader, symbols, traversal, writer},
 };
+#[cfg(feature = "lang-python")]
 use rusqlite::{
     hooks::{AuthAction, AuthContext, Authorization},
     Connection,
 };
+#[cfg(feature = "lang-python")]
 use serde_json::Value;
+#[cfg(feature = "lang-python")]
 use std::{collections::BTreeSet, path::PathBuf};
 
+#[cfg(feature = "lang-python")]
 use common::Workspace;
 
+#[cfg(feature = "lang-python")]
 fn options(limit: usize) -> QueryOptions {
     QueryOptions::resolve(&ResponsePolicy::default(), Some(limit), 0, None, None).unwrap()
 }
 
+#[cfg(feature = "lang-python")]
 fn continue_page(options: &mut QueryOptions, page: &Value) -> bool {
     assert_eq!(page["limit"], options.limit);
     assert_eq!(page["offset"], options.offset);
@@ -36,6 +41,7 @@ fn continue_page(options: &mut QueryOptions, page: &Value) -> bool {
     true
 }
 
+#[cfg(feature = "lang-python")]
 fn persisted_state(conn: &Connection) -> Value {
     let schema = reader::rows(
         conn,
@@ -85,11 +91,20 @@ fn persisted_state(conn: &Connection) -> Value {
     })
 }
 
+#[cfg(feature = "lang-python")]
 #[path = "query_context/diagnostics_and_source.rs"]
 mod diagnostics_and_source;
+#[path = "query_context/impact_context.rs"]
+mod impact_context;
+#[cfg(all(feature = "lang-python", feature = "lang-typescript"))]
+#[path = "query_context/linked_workspaces.rs"]
+mod linked_workspaces;
+#[cfg(feature = "lang-python")]
 #[path = "query_context/ranking_and_coverage.rs"]
 mod ranking_and_coverage;
+#[cfg(feature = "lang-python")]
 #[path = "query_context/search_and_paging.rs"]
 mod search_and_paging;
+#[cfg(feature = "lang-python")]
 #[path = "query_context/symbol_context.rs"]
 mod symbol_context;

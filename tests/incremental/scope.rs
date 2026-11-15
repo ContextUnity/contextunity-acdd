@@ -893,20 +893,26 @@ fn dyn_trait_dispatch_add_change_and_remove_impls_match_cold_builds() {
         let expected_candidates = strings(&cold, candidates);
         assert_eq!(expected_candidates.len(), expected, "{operation}: cold build fixture must retain bounded dispatch");
         assert_eq!(strings(&w.open(), candidates), expected_candidates, "{operation}: unchanged caller must match cold-build candidate edges; delta={report}");
-        {
-        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
-        assert!(incremental_verified);
-        assert!(cold_verified);
-        assert_eq!(dangling, 0);
-        for (path, facts_blob) in facts {
-            assert!(facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"), "{path}: newly written local facts use the typed binary format");
-            reader::decode_local_facts(&facts_blob).unwrap();
-            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
-        }
-        for (sql, incremental, cold) in parity {
-            assert_eq!(incremental, cold, "{sql}");
-        }
+        assert_cold_parity_and_local_facts(&w);
     }
+}
+
+#[cfg(feature = "lang-rust")]
+fn assert_cold_parity_and_local_facts(w: &Workspace) {
+    let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(w);
+    assert!(incremental_verified);
+    assert!(cold_verified);
+    assert_eq!(dangling, 0);
+    for (path, facts_blob) in facts {
+        assert!(
+            facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+            "{path}: newly written local facts use the typed binary format"
+        );
+        reader::decode_local_facts(&facts_blob).unwrap();
+        assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+    }
+    for (sql, incremental, cold) in parity {
+        assert_eq!(incremental, cold, "{sql}");
     }
 }
 
@@ -939,45 +945,11 @@ fn shared_aggregate_deletion_reseals_transferred_and_unchanged_owners() {
         assert_eq!(report["loaded_fact_files"], 0, "{report}");
         assert_eq!(report["rewritten_files"], 0, "{report}");
         assert_aggregate(&w, surviving, 1);
-        {
-            let (incremental_verified, cold_verified, dangling, facts, parity) =
-                cold_comparison(&w);
-            assert!(incremental_verified);
-            assert!(cold_verified);
-            assert_eq!(dangling, 0);
-            for (path, facts_blob) in facts {
-                assert!(
-                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
-                    "{path}: newly written local facts use the typed binary format"
-                );
-                reader::decode_local_facts(&facts_blob).unwrap();
-                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
-            }
-            for (sql, incremental, cold) in parity {
-                assert_eq!(incremental, cold, "{sql}");
-            }
-        }
+        assert_cold_parity_and_local_facts(&w);
         w.remove(surviving);
         w.delta(&[surviving]);
         assert_aggregate(&w, "", 0);
-        {
-            let (incremental_verified, cold_verified, dangling, facts, parity) =
-                cold_comparison(&w);
-            assert!(incremental_verified);
-            assert!(cold_verified);
-            assert_eq!(dangling, 0);
-            for (path, facts_blob) in facts {
-                assert!(
-                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
-                    "{path}: newly written local facts use the typed binary format"
-                );
-                reader::decode_local_facts(&facts_blob).unwrap();
-                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
-            }
-            for (sql, incremental, cold) in parity {
-                assert_eq!(incremental, cold, "{sql}");
-            }
-        }
+        assert_cold_parity_and_local_facts(&w);
     }
 }
 
@@ -999,24 +971,7 @@ fn shared_aggregate_addition_reseals_prior_and_resulting_owners() {
         assert_eq!(report["loaded_fact_files"], 0, "{report}");
         assert_eq!(report["rewritten_files"], 1, "{report}");
         assert_aggregate(&w, owner, 3);
-        {
-            let (incremental_verified, cold_verified, dangling, facts, parity) =
-                cold_comparison(&w);
-            assert!(incremental_verified);
-            assert!(cold_verified);
-            assert_eq!(dangling, 0);
-            for (path, facts_blob) in facts {
-                assert!(
-                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
-                    "{path}: newly written local facts use the typed binary format"
-                );
-                reader::decode_local_facts(&facts_blob).unwrap();
-                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
-            }
-            for (sql, incremental, cold) in parity {
-                assert_eq!(incremental, cold, "{sql}");
-            }
-        }
+        assert_cold_parity_and_local_facts(&w);
     }
 }
 
@@ -1034,24 +989,7 @@ fn shared_aggregate_edit_reseals_transferred_and_unchanged_owners() {
         assert_eq!(report["loaded_fact_files"], 0, "{report}");
         assert_eq!(report["rewritten_files"], 1, "{report}");
         assert_aggregate(&w, surviving, 1);
-        {
-            let (incremental_verified, cold_verified, dangling, facts, parity) =
-                cold_comparison(&w);
-            assert!(incremental_verified);
-            assert!(cold_verified);
-            assert_eq!(dangling, 0);
-            for (path, facts_blob) in facts {
-                assert!(
-                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
-                    "{path}: newly written local facts use the typed binary format"
-                );
-                reader::decode_local_facts(&facts_blob).unwrap();
-                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
-            }
-            for (sql, incremental, cold) in parity {
-                assert_eq!(incremental, cold, "{sql}");
-            }
-        }
+        assert_cold_parity_and_local_facts(&w);
     }
 }
 
@@ -1070,24 +1008,7 @@ fn shared_aggregate_rename_reseals_prior_and_resulting_owners() {
         assert_eq!(report["loaded_fact_files"], 0, "{report}");
         assert_eq!(report["rewritten_files"], 1, "{report}");
         assert_aggregate(&w, owner, 2);
-        {
-            let (incremental_verified, cold_verified, dangling, facts, parity) =
-                cold_comparison(&w);
-            assert!(incremental_verified);
-            assert!(cold_verified);
-            assert_eq!(dangling, 0);
-            for (path, facts_blob) in facts {
-                assert!(
-                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
-                    "{path}: newly written local facts use the typed binary format"
-                );
-                reader::decode_local_facts(&facts_blob).unwrap();
-                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
-            }
-            for (sql, incremental, cold) in parity {
-                assert_eq!(incremental, cold, "{sql}");
-            }
-        }
+        assert_cold_parity_and_local_facts(&w);
     }
 }
 

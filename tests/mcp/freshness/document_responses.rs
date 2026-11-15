@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn cli_and_mcp_test_mapping_preserve_verified_call_paths() {
-    let ws = document_workspace();
+    let ws = &document_workspace();
     let mut client = McpTestHarness::new(ws).expect("MCP initialize");
     let mcp_text = response_text(
         &mut client,
@@ -49,7 +49,7 @@ fn cli_and_mcp_test_mapping_preserve_verified_call_paths() {
 
 #[test]
 fn document_detail_preserves_full_content_and_compact_outline_across_formats() {
-    let ws = document_workspace();
+    let ws = &document_workspace();
     let mut client = McpTestHarness::new(ws).expect("MCP initialize");
     let document = client
         .document("README.md", json!({}))
@@ -98,7 +98,7 @@ fn document_detail_preserves_full_content_and_compact_outline_across_formats() {
 
 #[test]
 fn document_search_markdown_preserves_page_metadata_excerpts_and_section_identity() {
-    let ws = document_workspace();
+    let ws = &document_workspace();
     let mut client = McpTestHarness::new(ws).expect("MCP initialize");
     let markdown = response_text(
         &mut client,
@@ -193,7 +193,7 @@ fn document_markdown_admits_edited_sources_and_keeps_freshness_evidence() {
 
 #[test]
 fn explain_document_controls_and_direction_aliases_preserve_the_graph() {
-    let ws = document_workspace();
+    let ws = &document_workspace();
     let mut client = McpTestHarness::new(ws).expect("MCP initialize");
     let mut explain = |arguments: Value| {
         client

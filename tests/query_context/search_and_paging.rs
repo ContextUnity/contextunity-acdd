@@ -1,11 +1,39 @@
 use super::*;
 
+pub(super) fn search_workspace() -> &'static crate::common::sqlite::PersistedSnapshot {
+    static SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
+        std::sync::OnceLock::new();
+    SNAPSHOT.get_or_init(|| {
+        let workspace = Workspace::new();
+        workspace.write("pkg/service.py", "class Server:\n    def admit(self): pass\n\ndef admission():\n    \"\"\"admit clients\"\"\"\n    pass\n");
+        workspace.write("other/service.py", "def admit(): pass\n");
+        workspace.write(
+            "a.py",
+            "def unrelated():\n    \"\"\"resolve_conflict helper\"\"\"\n    pass\n",
+        );
+        workspace.write("b.py", "def _resolve_conflict(): pass\n");
+        workspace.write("z.py", "def resolve_conflict(): pass\n");
+        workspace.write("build.py", "def unrelated(): pass\n");
+        workspace.write("zz.py", "def build_target(): pass\n");
+        workspace.write(
+            "docs/guide.md",
+            &format!(
+                "# Guide\n\n{} needle {}\n",
+                "before ".repeat(80),
+                "after ".repeat(80)
+            ),
+        );
+        workspace.write("pkg/a.py", "def lookup(): pass\n");
+        workspace.write("pkg/sub/b.py", "def lookup(): pass\n");
+        workspace.write("other.py", "def lookup(): pass\n");
+        workspace.build();
+        crate::common::sqlite::PersistedSnapshot::from_connection(&workspace.open())
+    })
+}
+
 #[test]
 fn exact_symbol_search_uses_fts_candidates_and_keeps_scope_and_kind_filters() {
-    let workspace = Workspace::new();
-    workspace.write("pkg/service.py", "class Server:\n    def admit(self): pass\n\ndef admission():\n    \"\"\"admit clients\"\"\"\n    pass\n");
-    workspace.write("other/service.py", "def admit(): pass\n");
-    workspace.build();
+    let workspace = search_workspace();
     let conn = workspace.open();
     conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
@@ -81,11 +109,7 @@ fn exact_symbol_search_uses_fts_candidates_and_keeps_scope_and_kind_filters() {
 
 #[test]
 fn exact_symbol_search_handles_underscore_only_identifiers() {
-    let workspace = Workspace::new();
-    workspace.write("symbols.py", "def _(): pass\ndef __(): pass\n");
-    workspace.write("two.py", "def _(): pass\n");
-    workspace.write("README.md", "# _\n\nDocumentation section.\n");
-    workspace.build();
+    let workspace = super::ranking_and_coverage::navigation_workspace();
     let conn = workspace.open();
 
     for name in ["_", "__"] {

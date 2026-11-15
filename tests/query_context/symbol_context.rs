@@ -434,12 +434,7 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
 
 #[test]
 fn compact_summary_preserves_the_exact_nested_python_container() {
-    let workspace = Workspace::new();
-    workspace.write(
-        "nested.py",
-        "class A:\n    class Item:\n        def handle(self): return 1\n\nclass B:\n    class Item:\n        def handle(self): return 2\n",
-    );
-    workspace.build();
+    let workspace = super::ranking_and_coverage::navigation_workspace();
     let conn = workspace.open();
     let (method_id, receiver_type): (String, String) = conn
         .query_row(
@@ -461,7 +456,7 @@ fn compact_summary_preserves_the_exact_nested_python_container() {
     let source = SourceOptions::resolve(&ResponsePolicy::default(), None, None, None, 0).unwrap();
     let inspected = symbols::inspect_with_options(
         &conn,
-        workspace.root(),
+        std::path::Path::new("."),
         &method_id,
         &symbols::InspectOptions {
             show_doc: false,
@@ -675,16 +670,7 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
 
 #[test]
 fn document_excerpt_is_opt_in_and_bounded_around_match() {
-    let workspace = Workspace::new();
-    workspace.write(
-        "docs/guide.md",
-        &format!(
-            "# Guide\n\n{} needle {}\n",
-            "before ".repeat(80),
-            "after ".repeat(80)
-        ),
-    );
-    workspace.build();
+    let workspace = super::search_and_paging::search_workspace();
     let conn = workspace.open();
     let basic = reader::search_docs_with_options(
         &conn,
@@ -758,11 +744,7 @@ fn document_excerpt_uses_the_matching_fts_column() {
 
 #[test]
 fn search_path_scopes_file_and_descendants_without_changing_page_contract() {
-    let workspace = Workspace::new();
-    workspace.write("pkg/a.py", "def lookup(): pass\n");
-    workspace.write("pkg/sub/b.py", "def lookup(): pass\n");
-    workspace.write("other.py", "def lookup(): pass\n");
-    workspace.build();
+    let workspace = super::search_and_paging::search_workspace();
     let conn = workspace.open();
     let all = symbols::search_with_options(
         &conn,

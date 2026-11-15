@@ -49,17 +49,32 @@ scope_args_by_pattern:
   "tests/query_context/**/*.rs": "--test query_context"
   "tests/receivers/**/*.rs": "--test linker"
 
+guidance:
+  task.repo_testing:
+    description: "Repository test placement, fixture reuse, and verification reminders (TESTS.md / tests/AGENTS.md)"
+    criteria:
+      - "ZERO NEW ROOT BINARIES: Place new integration test modules inside tests/core.rs, tests/mcp.rs, tests/query_context.rs, tests/linker.rs, tests/incremental.rs, or tests/acdd.rs; never add standalone tests/*.rs binaries or tautological meta-tests."
+      - "FIXTURE & MATRIX HYGIENE: NEVER store Workspace or TempDir inside static OnceLock/LazyLock (statics skip Drop and leak /tmp/contextunity-test-*); share immutable SQLite corpora via OnceLock<PersistedSnapshot> (tests/common/sqlite.rs) so seed Workspaces drop in get_or_init, or use local Workspaces for disk/MCP suites. Prove pure DAG/gate/blackboard rules in-process via TasksStore/TaskHarness, collapse variants into table-driven loops with Workspace::new()/.build() outside the loop (unless cold layout differs), and keep leaked temp dirs at zero."
+      - "VERIFICATION BOUNDARY: Keep contract tests runtime-red (exit 101) without weakens/skips, and run strict Clippy (`cargo clippy ... -- -D warnings`) plus scoped `cargo test --test <target>` before passing build/review."
+
 gates:
   - tasks:
       gates:
         - id: contract
           command: test
+          guidance: [task.contract, task.repo_testing, hitl.pro]
         - id: build
           command: rust-check-and-test
+          guidance: [task.code, task.repo_testing, hitl.pro]
+        - id: review
+          guidance: [task.review, task.repo_testing, hitl.pro]
         - id: seam
           gates:
             - id: integrate
               command: rust-check-and-test
+              guidance: [task.deferred_final_test, task.repo_testing, hitl.pro]
+            - id: review
+              guidance: [task.seam_review, task.repo_testing, hitl.pro]
 
   - id: verify
     command: check_full_repo

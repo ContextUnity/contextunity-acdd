@@ -1,5 +1,36 @@
 use super::*;
 
+pub(super) fn navigation_workspace() -> &'static crate::common::sqlite::PersistedSnapshot {
+    static SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
+        std::sync::OnceLock::new();
+    SNAPSHOT.get_or_init(|| {
+        let workspace = Workspace::new();
+        workspace.write("pkg/a.py", "def a(): from pkg.b import b; b()\n");
+        workspace.write("pkg/b.py", "def b(): from pkg.a import a; a()\n");
+        workspace.write(
+            "test_foo.py",
+            "def test_one():\n    unresolved_call_target()\n",
+        );
+        workspace.write(
+            "target.py",
+            "def target_func():\n    return unresolved_dependency()\n",
+        );
+        workspace.write(
+            "a.py",
+            "class First:\n    def shared(self): pass\nclass Second:\n    def shared(self): pass\n",
+        );
+        workspace.write(
+            "nested.py",
+            "class A:\n    class Item:\n        def handle(self): return 1\n\nclass B:\n    class Item:\n        def handle(self): return 2\n",
+        );
+        workspace.write("symbols.py", "def _(): pass\ndef __(): pass\n");
+        workspace.write("two.py", "def _(): pass\n");
+        workspace.write("README.md", "# _\n\nDocumentation section.\n");
+        workspace.build();
+        crate::common::sqlite::PersistedSnapshot::from_connection(&workspace.open())
+    })
+}
+
 #[test]
 fn exact_symbol_match_filters_text_only_candidates_by_default() {
     let mut failures = Vec::new();
@@ -367,16 +398,7 @@ fn natural_document_search_ignores_stop_words_and_boosts_section_titles() {
 
 #[test]
 fn search_ranking_applies_to_other_names_and_wildcard_pages() {
-    let workspace = Workspace::new();
-    workspace.write(
-        "a.py",
-        "def unrelated():\n    \"\"\"resolve_conflict helper\"\"\"\n    pass\n",
-    );
-    workspace.write("b.py", "def _resolve_conflict(): pass\n");
-    workspace.write("z.py", "def resolve_conflict(): pass\n");
-    workspace.write("build.py", "def unrelated(): pass\n");
-    workspace.write("zz.py", "def build_target(): pass\n");
-    workspace.build();
+    let workspace = super::search_and_paging::search_workspace();
     let conn = workspace.open();
 
     let ranked = symbols::search_with_options(
@@ -1116,10 +1138,7 @@ fn test_mapping_places_direct_evidence_before_earlier_transitive_tests() {
 
 #[test]
 fn analyze_cycles_option_and_explain_direction_filtering() {
-    let workspace = Workspace::new();
-    workspace.write("pkg/a.py", "def a(): from pkg.b import b; b()\n");
-    workspace.write("pkg/b.py", "def b(): from pkg.a import a; a()\n");
-    workspace.build();
+    let workspace = navigation_workspace();
     let conn = workspace.open();
 
     let summary_no_cycles = reader::analyze_paged(&conn, "pkg", None, &options(10)).unwrap();
@@ -1134,9 +1153,10 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
     // explain direction filtering
     let source =
         SourceOptions::resolve(&ResponsePolicy::default(), Some(false), None, None, 0).unwrap();
+    let empty_root = std::path::Path::new(".");
     let both = symbols::explain_with_options(
         &conn,
-        workspace.root(),
+        empty_root,
         "a",
         &symbols::ExplainOptions {
             direction: Some("both"),
@@ -1154,7 +1174,7 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
 
     let incoming_only = symbols::explain_with_options(
         &conn,
-        workspace.root(),
+        empty_root,
         "a",
         &symbols::ExplainOptions {
             direction: Some("incoming"),
@@ -1171,7 +1191,7 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
 
     let outgoing_only = symbols::explain_with_options(
         &conn,
-        workspace.root(),
+        empty_root,
         "a",
         &symbols::ExplainOptions {
             direction: Some("outgoing"),
@@ -1189,12 +1209,7 @@ fn analyze_cycles_option_and_explain_direction_filtering() {
 
 #[test]
 fn tests_reports_unresolved_references_in_symbol_scope() {
-    let workspace = Workspace::new();
-    workspace.write(
-        "test_foo.py",
-        "def test_one():\n    unresolved_call_target()\n",
-    );
-    workspace.build();
+    let workspace = navigation_workspace();
     let conn = workspace.open();
     let res = symbols::tests_paged(&conn, "test_one", "inbound", &options(10)).unwrap();
     assert!(res["unresolved_references"].as_u64().unwrap() >= 1);
@@ -1206,12 +1221,7 @@ fn tests_reports_unresolved_references_in_symbol_scope() {
 
 #[test]
 fn compact_coverage_keeps_scope_counts_and_full_detail_keeps_evidence() {
-    let workspace = Workspace::new();
-    workspace.write(
-        "target.py",
-        "def target_func():\n    return unresolved_dependency()\n",
-    );
-    workspace.build();
+    let workspace = navigation_workspace();
     let conn = workspace.open();
     let inspected = reader::inspect_paged(&conn, "target_func", false, &options(10)).unwrap();
     let coverage = &inspected["coverage"];
@@ -1236,12 +1246,7 @@ fn compact_coverage_keeps_scope_counts_and_full_detail_keeps_evidence() {
 
 #[test]
 fn compact_search_preserves_distinct_selectors_and_locations() {
-    let workspace = Workspace::new();
-    workspace.write(
-        "a.py",
-        "class First:\n    def shared(self): pass\nclass Second:\n    def shared(self): pass\n",
-    );
-    workspace.build();
+    let workspace = navigation_workspace();
     let conn = workspace.open();
     let compact = symbols::search_with_options(
         &conn,

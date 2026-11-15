@@ -1,8 +1,4 @@
-#[path = "common/mod.rs"]
-#[allow(dead_code)]
-mod common;
-
-use common::Workspace;
+use crate::common::Workspace;
 use std::process::{Command, Output};
 
 fn check(workspace: &Workspace) -> Output {

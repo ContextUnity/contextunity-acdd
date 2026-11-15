@@ -1,4 +1,4 @@
-use crate::acdd::{support::*, tasks::harness::TaskHarness};
+use crate::acdd::{snapshot::FixtureSnapshot, support::*, tasks::harness::TaskHarness};
 use acdd_tasks::{
     engine::orchestrator::{task_runner::TaskRunOptions, waves::MilestoneRunOptions},
     tasks::profile::GateDef,
@@ -31,10 +31,108 @@ pub(super) fn selected_settings(
     )
 }
 
+pub(super) fn milestone_profile(blueprint_gate: bool) -> acdd_tasks::tasks::profile::GateProfile {
+    let mut profile = runner_profile(DEFAULT_SEAM, "");
+    profile.roles.insert(
+        "wave_role".into(),
+        serde_json::from_value(json!({"guidance":"Exercise the real task gate protocol."}))
+            .unwrap(),
+    );
+    let mut tasks = profile
+        .gates
+        .iter()
+        .find(|g| g.tasks.is_some())
+        .unwrap()
+        .clone();
+    for gate in &mut tasks.tasks.as_mut().unwrap().gates {
+        gate.guidance.clear();
+    }
+    let task_containers = vec![tasks];
+    let polish: GateDef = serde_json::from_value(
+        json!({"id":"polish","proof":"none","role":"wave_role","max_attempts":2}),
+    )
+    .unwrap();
+    let review: GateDef = serde_json::from_value(json!({"id":"milestone_review","role":"wave_role","independent_from":"polish","proof":{"scheme":{"type":"object","required":["decision","summary"],"properties":{"decision":{"type":"string"},"summary":{"type":"string"}}}},"fail":"polish","max_attempts":2})).unwrap();
+    let mut verify = profile.find_gate("verify").unwrap().clone();
+    verify.role = None;
+    verify.command = Some("check_full_repo".into());
+    verify.proof =
+        acdd_tasks::tasks::profile::ProofDef::Kind(acdd_tasks::tasks::profile::ProofKind::Command);
+    let verify_again: GateDef = serde_json::from_value(
+        json!({"id":"verify_again","command":"rust-check-and-test","proof":"command"}),
+    )
+    .unwrap();
+    let handoff: GateDef = serde_json::from_value(
+        json!({"id":"handoff","proof":"delivery","receipt":true,"save":"snapshot","auto_commit":false}),
+    )
+    .unwrap();
+    profile.gates = if blueprint_gate {
+        vec![serde_json::from_value(json!({
+            "id": "preflight",
+            "role": "wave_role",
+            "proof": "blueprint",
+            "max_attempts": 1
+        }))
+        .unwrap()]
+    } else {
+        Vec::new()
+    };
+    profile.gates.extend(task_containers);
+    profile
+        .gates
+        .extend([polish, review, verify, verify_again, handoff]);
+    profile.validate().unwrap();
+    profile
+}
+
+pub(super) fn pre_task_profile(
+    mut profile: acdd_tasks::tasks::profile::GateProfile,
+    stop: bool,
+) -> acdd_tasks::tasks::profile::GateProfile {
+    profile.commands.insert(
+        "preflight".into(),
+        serde_json::from_value(json!({"command": "printf seen >> .acdd/preflight.log", "output": {"require_counts": false}})).unwrap(),
+    );
+    profile.gates.insert(
+        0,
+        serde_json::from_value(json!({"id":"preflight","command":"preflight","proof":"none"}))
+            .unwrap(),
+    );
+    if stop {
+        profile.commands.insert(
+            "stop-before-tasks".into(),
+            acdd_tasks::tasks::profile::CommandDef::Script("exit 31".into()),
+        );
+        profile.gates.insert(
+            1,
+            serde_json::from_value(
+                json!({"id":"stop_before_tasks","command":"stop-before-tasks","proof":"none","max_attempts":1}),
+            )
+            .unwrap(),
+        );
+    }
+    profile
+}
+
+pub(super) fn blueprint_synthesis_gate() -> GateDef {
+    serde_json::from_value(json!({
+        "id": "blueprint_synthesis",
+        "gates": [
+            {"id": "synthesize", "role": "wave_role", "proof": "blueprint", "max_attempts": 3},
+            {"id": "review", "role": "wave_role", "independent_from": "synthesize",
+             "proof": {"scheme": {"type": "object", "required": ["decision", "summary"],
+                 "properties": {"decision": {"type": "string"}, "summary": {"type": "string"}}}},
+             "fail": "synthesize", "max_attempts": 3}
+        ]
+    }))
+    .unwrap()
+}
+
 pub(super) struct WaveHarness {
     pub task: TaskHarness,
     pub options: MilestoneRunOptions,
     pub verification_marker: PathBuf,
+    workspace: Workspace,
 }
 
 impl WaveHarness {
@@ -53,22 +151,13 @@ impl WaveHarness {
     pub fn with_nested_blueprint(in_place: bool) -> Self {
         let mut harness = Self::with_blueprint_gate(in_place);
         let mut profile = harness.read_profile();
-        profile.gates[0] = serde_json::from_value(json!({
-            "id": "blueprint_synthesis",
-            "gates": [
-                {"id": "synthesize", "role": "wave_role", "proof": "blueprint", "max_attempts": 3},
-                {"id": "review", "role": "wave_role", "independent_from": "synthesize",
-                 "proof": {"scheme": {"type": "object", "required": ["decision", "summary"],
-                     "properties": {"decision": {"type": "string"}, "summary": {"type": "string"}}}},
-                 "fail": "synthesize", "max_attempts": 3}
-            ]
-        })).unwrap();
+        profile.gates[0] = blueprint_synthesis_gate();
         harness.commit_profile(&profile, "nested blueprint fixture");
         harness
     }
 
     fn build(in_place: bool, single_task: bool, blueprint_gate: bool) -> Self {
-        let mut profile = runner_profile(DEFAULT_SEAM, "");
+        let mut profile = milestone_profile(blueprint_gate);
         let verification_marker = std::env::temp_dir().join(format!(
             "forge-wave-verification-{}-{}.marker",
             std::process::id(),
@@ -103,51 +192,6 @@ impl WaveHarness {
             ));
         }
         profile.roles.insert("wave_role".into(), serde_json::from_value(json!({"runner":format!("python3 {} '{{prompt}}'", quote(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/acdd/fixtures/workflows/wave-role.py"))),"guidance":"Exercise the real task gate protocol."})).unwrap());
-        let mut tasks = profile
-            .gates
-            .iter()
-            .find(|g| g.tasks.is_some())
-            .unwrap()
-            .clone();
-        for gate in &mut tasks.tasks.as_mut().unwrap().gates {
-            gate.guidance.clear();
-        }
-        let task_containers = vec![tasks];
-        let polish: GateDef = serde_json::from_value(
-            json!({"id":"polish","proof":"none","role":"wave_role","max_attempts":2}),
-        )
-        .unwrap();
-        let review: GateDef = serde_json::from_value(json!({"id":"milestone_review","role":"wave_role","independent_from":"polish","proof":{"scheme":{"type":"object","required":["decision","summary"],"properties":{"decision":{"type":"string"},"summary":{"type":"string"}}}},"fail":"polish","max_attempts":2})).unwrap();
-        let mut verify = profile.find_gate("verify").unwrap().clone();
-        verify.role = None;
-        verify.command = Some("check_full_repo".into());
-        verify.proof = acdd_tasks::tasks::profile::ProofDef::Kind(
-            acdd_tasks::tasks::profile::ProofKind::Command,
-        );
-        let verify_again: GateDef = serde_json::from_value(
-            json!({"id":"verify_again","command":"rust-check-and-test","proof":"command"}),
-        )
-        .unwrap();
-        let handoff: GateDef = serde_json::from_value(
-            json!({"id":"handoff","proof":"delivery","receipt":true,"save":"snapshot","auto_commit":false}),
-        )
-        .unwrap();
-        profile.gates = if blueprint_gate {
-            vec![serde_json::from_value(json!({
-                "id": "preflight",
-                "role": "wave_role",
-                "proof": "blueprint",
-                "max_attempts": 1
-            }))
-            .unwrap()]
-        } else {
-            Vec::new()
-        };
-        profile.gates.extend(task_containers);
-        profile
-            .gates
-            .extend([polish, review, verify, verify_again, handoff]);
-        profile.validate().unwrap();
         let builder = MilestoneFixtureBuilder::new("m-wave").task("first", &["src/lib.rs"]);
         let source = if single_task {
             builder.build()
@@ -156,7 +200,23 @@ impl WaveHarness {
                 .task_with_deps("second", &["src/second.rs"], &["first"])
                 .build()
         };
-        let task = TaskHarness::disk_with_profile(&source, MANIFEST, profile);
+        let workspace = acdd_workspace(DEFAULT_SEAM, "");
+        workspace.write("src/lib.rs", "pub fn example() {}\n");
+        workspace.write(
+            "acdd.yaml",
+            "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
+        );
+        workspace.write(MANIFEST, &source);
+        workspace.write(".acdd/profile.yaml", &standalone_profile_yaml(&profile));
+        commit_handoff_fixture_inputs(
+            &workspace,
+            &["src/lib.rs", "acdd.yaml", MANIFEST, ".acdd/profile.yaml"],
+        );
+        let milestone = Milestone::parse(&source, "forge-mcp").unwrap();
+        let mut task = TaskHarness::attach(&workspace, &milestone.task_id(&milestone.tasks[0]));
+        task.store
+            .sync(&milestone, MANIFEST, workspace.root())
+            .unwrap();
         assert_eq!(
             task.profile()
                 .unwrap()
@@ -192,11 +252,27 @@ impl WaveHarness {
             task,
             options,
             verification_marker,
+            workspace,
         }
     }
 
     pub fn root(&self) -> &Path {
         self.task.root()
+    }
+
+    pub fn checkpoint(&mut self) -> FixtureSnapshot {
+        let temporary = TasksStore::open_in_memory("fixture", "fixture").unwrap();
+        drop(std::mem::replace(&mut self.task.store, temporary));
+        let snapshot = FixtureSnapshot::capture(&self.workspace);
+        self.task.store = tasks::store_for_task(self.root(), &self.task.id).unwrap();
+        snapshot
+    }
+
+    pub fn restore(&mut self, snapshot: &FixtureSnapshot) {
+        let temporary = TasksStore::open_in_memory("fixture", "fixture").unwrap();
+        drop(std::mem::replace(&mut self.task.store, temporary));
+        snapshot.restore(&self.workspace);
+        self.task.store = tasks::store_for_task(self.root(), &self.task.id).unwrap();
     }
 
     pub(super) fn read_profile(&self) -> acdd_tasks::tasks::profile::GateProfile {
@@ -225,87 +301,8 @@ impl WaveHarness {
         }
         self.options.target_base = git_head(self.root());
     }
-
-    pub fn with_blueprint_synthesis_root_gates(&mut self) {
-        let path = self.root().join(".acdd/profile.yaml");
-        let mut profile = acdd_tasks::tasks::profile::validate_profile_document(
-            &fs::read_to_string(&path).unwrap(),
-        )
-        .unwrap();
-        let task_container = profile
-            .gates
-            .iter()
-            .find(|gate| gate.tasks.is_some())
-            .unwrap()
-            .clone();
-        let synthesize: GateDef = serde_json::from_value(json!({
-            "id": "synthesize",
-            "role": "wave_role",
-            "proof": {
-                "scheme": {
-                    "type": "object",
-                    "required": ["tasks"],
-                    "properties": {
-                        "tasks": {"type": "object"}
-                    }
-                }
-            }
-        }))
-        .unwrap();
-        let review: GateDef = serde_json::from_value(json!({
-            "id": "blueprint_review",
-            "role": "wave_role",
-            "proof": "none",
-            "independent_from": "synthesize",
-            "fail": "synthesize"
-        }))
-        .unwrap();
-        let blueprint_synthesis: GateDef = serde_json::from_value(json!({
-            "id": "blueprint_synthesis",
-            "gates": [synthesize, review]
-        }))
-        .unwrap();
-        let polish: GateDef =
-            serde_json::from_value(json!({"id": "polish", "role": "wave_role", "proof": "none"}))
-                .unwrap();
-        let handoff = profile
-            .gates
-            .iter()
-            .find(|gate| gate.id == "handoff")
-            .unwrap()
-            .clone();
-        profile.gates = vec![blueprint_synthesis, task_container, polish, handoff];
-        self.commit_profile(&profile, "fixture gate profile");
-    }
-
     pub fn pre_task_checks(&mut self, stop: bool) {
-        let path = self.root().join(".acdd/profile.yaml");
-        let mut profile = acdd_tasks::tasks::profile::validate_profile_document(
-            &fs::read_to_string(&path).unwrap(),
-        )
-        .unwrap();
-        profile.commands.insert(
-            "preflight".into(),
-            serde_json::from_value(json!({"command": "printf seen >> .acdd/preflight.log", "output": {"require_counts": false}})).unwrap(),
-        );
-        profile.gates.insert(
-            0,
-            serde_json::from_value(json!({"id":"preflight","command":"preflight","proof":"none"}))
-                .unwrap(),
-        );
-        if stop {
-            profile.commands.insert(
-                "stop-before-tasks".into(),
-                acdd_tasks::tasks::profile::CommandDef::Script("exit 31".into()),
-            );
-            profile.gates.insert(
-                1,
-                serde_json::from_value(
-                    json!({"id":"stop_before_tasks","command":"stop-before-tasks","proof":"none","max_attempts":1}),
-                )
-                .unwrap(),
-            );
-        }
+        let profile = pre_task_profile(self.read_profile(), stop);
         self.commit_profile(&profile, "pre-task observation fixture");
     }
 
@@ -342,26 +339,5 @@ impl WaveHarness {
 impl Drop for WaveHarness {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.verification_marker);
-    }
-}
-
-#[test]
-fn malformed_blueprint_guidance_cannot_be_repaired_by_role_fixture() {
-    use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
-    let h = WaveHarness::with_blueprint_gate(true);
-    for marker in [
-        "corrupt-blueprint-missing",
-        "corrupt-blueprint-tasks",
-        "corrupt-blueprint-nested",
-    ] {
-        fs::write(h.root().join(".acdd").join(marker), "").unwrap();
-        let result = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {});
-        assert!(result.is_err(), "{marker}: malformed guidance must fail");
-        let passes: i64 = h.task.store.connection.query_row(
-            "SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND gate_path='preflight' AND action='pass'",
-            [], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(passes, 0, "{marker}: no malformed blueprint may pass");
-        fs::remove_file(h.root().join(".acdd").join(marker)).unwrap();
     }
 }

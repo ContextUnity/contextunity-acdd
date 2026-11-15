@@ -1,9 +1,10 @@
 use contextunity_acdd::core::models::{Coverage, Facts, Graph, Node};
 use contextunity_acdd::engine::{ast, linker};
-use rusqlite::{backup::Backup, Connection};
+use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::ops::Deref;
-use std::sync::Mutex;
+
+pub(super) use crate::common::sqlite::PersistedSnapshot;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct CallObservation {
@@ -178,7 +179,8 @@ pub(super) struct ExtractorHarness<'a> {
 }
 
 /// Copies a real persisted baseline into independent query connections.
-pub(super) struct PersistedSnapshot(Mutex<Connection>);
+#[allow(dead_code)]
+fn _persisted_snapshot_imported() {}
 
 #[derive(Debug)]
 pub(super) struct LinkedFacts {
@@ -275,25 +277,6 @@ impl LinkedFacts {
             .filter(|edge| edge.kind == "calls" && edge.evidence == expression)
             .filter_map(|edge| self.facts.nodes.iter().find(|node| node.id == edge.dst))
             .collect()
-    }
-}
-
-impl PersistedSnapshot {
-    pub(super) fn from_connection(source: &Connection) -> Self {
-        Self(Mutex::new(Self::copy(source)))
-    }
-
-    pub(super) fn open(&self) -> Connection {
-        Self::copy(&self.0.lock().unwrap())
-    }
-
-    fn copy(source: &Connection) -> Connection {
-        let mut connection = Connection::open_in_memory().unwrap();
-        Backup::new(source, &mut connection)
-            .unwrap()
-            .run_to_completion(256, std::time::Duration::ZERO, None)
-            .unwrap();
-        connection
     }
 }
 

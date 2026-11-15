@@ -1,5 +1,3 @@
-#![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
-
 use contextunity_acdd::engine::scanner;
 use contextunity_acdd::mcp::server::Server;
 use contextunity_acdd::{

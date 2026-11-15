@@ -1,9 +1,5 @@
-#[path = "common/mod.rs"]
-#[allow(dead_code)]
-mod common;
-
 use anyhow::Result;
-use common::Workspace;
+use crate::common::Workspace;
 use contextunity_acdd::{
     core::{
         models::stable_hash64,
@@ -326,6 +322,7 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
     Ok(())
 }
 
+#[cfg(feature = "lang-python")]
 #[test]
 fn candidate_only_callers_appear_in_impact_and_block_removal() -> Result<()> {
     let workspace = Workspace::new();

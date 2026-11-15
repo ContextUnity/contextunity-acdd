@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn document_references_keep_distinct_sections_and_ambiguous_candidate_sources() {
-    let ws = reference_workspace();
+    let ws = &reference_workspace();
     let mut client = McpTestHarness::new(ws).expect("MCP initialize");
     let overview = client
         .document("docs/reference/mcp-tools.md", json!({"limit":100}))
@@ -100,7 +100,7 @@ fn document_references_keep_distinct_sections_and_ambiguous_candidate_sources() 
 
 #[test]
 fn document_reference_pages_preserve_every_section_in_full_and_compact_detail() {
-    let ws = reference_workspace();
+    let ws = &reference_workspace();
     let mut client = McpTestHarness::new(ws).expect("MCP initialize");
     let target_declaration_uri = format!("{})", ws.file_uri("src/overview.py", Some(1)));
     for detail in ["full", "compact"] {

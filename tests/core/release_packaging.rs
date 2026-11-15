@@ -1,10 +1,5 @@
-#![cfg(unix)]
-
-#[allow(dead_code)]
-mod common;
-
 use anyhow::Context;
-use common::Workspace;
+use crate::common::Workspace;
 use serde_yaml::Value;
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path, process::Command};

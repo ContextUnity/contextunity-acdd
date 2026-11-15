@@ -28,6 +28,8 @@ Before `milestone handoff`, run each command from the repository root:
 3. `cargo test --all-targets`
 4. `cargo test -p acdd-tasks --lib`
 
+Also verify temporary directory cleanup across test runs: compare `/tmp/contextunity-test-*` counts immediately before and after executing tests so shared fixtures (`PersistedSnapshot`, local `Workspace` drops, child processes) leave zero leaked directories (`BEFORE == AFTER`).
+
 The root package's `--all-targets` run does not include the `acdd-tasks`
 member's library unit tests. Record the separate member-library result alongside
 the root suite result.
@@ -116,7 +118,7 @@ To prevent test-suite bloat, redundant execution storms, and synthetic masking, 
     - Runner tests must separately verify distinct session identities and fingerprints, process isolation, and retained session reuse on rejection.
 
 11. **Shared Read-Only Indexed Corpus (`INV-TEST-SHARED-READONLY-INDEX`)**:
-    - When two or more read-only query, search, or linker tests inspect the same immutable file corpus, initialize one `Workspace` and cold index per test binary via `std::sync::OnceLock` and open per-test read-only connections rather than rebuilding the index per `#[test]`.
+    - When two or more read-only query, search, or linker tests inspect the same immutable file corpus, share a `std::sync::OnceLock<PersistedSnapshot>` from `tests/common/sqlite.rs`, dropping the builder `Workspace` inside `get_or_init`, and open per-test read-only connections. Use local `Workspace` instances when disk source files are required; never store a `Workspace` in a static.
 
 12. **Integration Binary Consolidation Budget (`INV-TEST-BINARY-BUDGET`)**:
     - Every `.rs` file directly under `tests/` compiles and links a separate integration binary. Register new test modules inside the owning canonical domain binary (`tests/core.rs`, `tests/mcp.rs`, `tests/query_context.rs`, `tests/linker.rs`, `tests/incremental.rs`, `tests/languages.rs`, `tests/framework_manifests.rs`, `tests/acdd.rs`, `tests/commitment_integrity.rs`) rather than creating new standalone `tests/<name>.rs` files.

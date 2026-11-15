@@ -14,10 +14,11 @@ Rules for placing, creating, refactoring, and maintaining tests in
 - **Table-driven contract matrices**: Consolidate homogeneous variations of the
   same capability, boundary rule, error diagnostic, alias/spelling case, or hook
   mode into one table-driven `#[test]` (`for case in cases`). Ban cloning
-  heavy `#[test]` functions (`Workspace::new`, cold builds,
-  `InstallerHarness::new`, `McpTestHarness::new`, subprocess spawns) per row;
-  build shared immutable base state once outside the loop and copy/mutate only
-  the case-specific delta.
+  heavy `#[test]` functions or calling `Workspace::new()`, `.build()`,
+  `InstallerHarness::new`, `McpTestHarness::new`, or subprocess spawns inside
+  per-row loop bodies unless each case genuinely tests a distinct cold-build
+  initial directory layout; build shared immutable base state once outside the
+  loop and copy/mutate only the case-specific delta.
 - **Domain decomposition**: Author a separate `#[test]` in the owning domain
   module only for genuinely distinct domain contracts or orthogonal multi-step
   workflows — never by appending unrelated scenarios into an existing workflow
@@ -51,11 +52,17 @@ Rules for placing, creating, refactoring, and maintaining tests in
   mockist unit doubles. Ban tautological enum/struct self-equality echoes,
   brittle `Cargo.toml`/CI YAML substring assertions, and multi-hundred-line
   meta-test suites for `tests/common` helpers.
-- **Shared read-only indexed fixtures (`OnceLock`)**: When two or more read-only
-  tests in a query, linker, or AST suite inspect the same immutable corpus
-  without mutating files or database state, initialize one `Workspace` and cold
-  index per binary via `std::sync::OnceLock` and open per-test read-only
-  connections instead of calling `.build()` per `#[test]`.
+- **Shared read-only indexed fixtures (`PersistedSnapshot`) & zero leaks**:
+  NEVER store `Workspace` or `TempDir` inside a `static OnceLock` / `LazyLock`
+  (statics never run `Drop` at process exit and leak `/tmp/contextunity-test-*`).
+  When two or more read-only tests in a query, linker, or AST suite inspect
+  the same immutable SQLite corpus without mutating files, initialize one
+  `OnceLock<PersistedSnapshot>` (`tests/common/sqlite.rs`), creating and
+  dropping the seed `Workspace` inside `get_or_init`, and open per-test
+  in-memory/snapshot connections. When tests require live disk files (e.g.
+  `McpTestHarness` or CLI commands), create local `Workspace` values so `Drop`
+  runs at test exit, and verify zero leaked `/tmp/contextunity-test-*`
+  directories (`BEFORE == AFTER`).
 - **Orchestrator & `WaveHarness` boundary**: Reserve Git worktree and Python
   subprocess harnesses (`WaveHarness`, `LifecycleHarness`) strictly for tests
   proving subprocess execution, signal/timeout recovery, or physical worktree
@@ -78,24 +85,16 @@ Every `.rs` file directly under `tests/` is a separate Cargo test binary.
 Do NOT create new top-level `tests/<name>.rs` binaries; register new test modules
 under the owning canonical domain binary (`acdd.rs`, `core.rs`, `incremental.rs`,
 `languages.rs`, `framework_manifests.rs`, `linker.rs`, `mcp.rs`,
-`query_context.rs`, `commitment_integrity.rs`). Small standalone binaries
-(`cli_roots.rs`, `impact_context.rs`, `linked_workspaces.rs`, `docs_check.rs`,
-`release_packaging.rs`) are scheduled for consolidation into those canonical
-domain binaries under
-[test-suite-decomposition-and-shared-fixtures.md](../docs/plans/test-suite-decomposition-and-shared-fixtures.md).
-Prefer coherent domain modules:
+`query_context.rs`, `commitment_integrity.rs`). Prefer coherent domain modules:
 
 - `tests/acdd.rs` (`tests/acdd/`): tasks, milestones, blackboard, runners
-- `tests/cli_roots.rs`: CLI roots and path normalization
-- `tests/core.rs` (`tests/core/`): storage, adapters, scanner limits
-- `tests/impact_context.rs`: impact / blast-radius context
+- `tests/core.rs` (`tests/core/`): storage, adapters, scanner limits, docs checks, release packaging
 - `tests/incremental.rs` (`tests/incremental/`): delta indexing and scopes
 - `tests/languages.rs` (`tests/languages/`): extraction and language semantics
 - `tests/framework_manifests.rs` (`tests/framework_manifests/`): packs and manifests
-- `tests/linked_workspaces.rs`: multi-root links
 - `tests/linker.rs` (`tests/linker/`, `tests/receivers/`): linking and receivers
-- `tests/mcp.rs` (`tests/mcp/`, `tests/mcp_context/`): MCP protocol and tools
-- `tests/query_context.rs` (`tests/query_context/`): query options and search
+- `tests/mcp.rs` (`tests/mcp/`, `tests/mcp_context/`): MCP protocol, CLI roots, and tools
+- `tests/query_context.rs` (`tests/query_context/`): query options, impact context, linked workspaces, and search
 - `tests/commitment_integrity.rs`: Merkle / commitment integrity
 - `tests/common/`: shared workspace, SQLite, MCP harness substrate
 

@@ -137,8 +137,8 @@ or fixture rather than preserving its history.
 | N identical nested fakes/stubs in one file | One helper or one table-driven test; harness `REWRITE` |
 | Single-caller harness helper that builds scenario-specific state | Return the mutation to the test using shared primitives; delete one-off observation wrapper types |
 | Unrelated static utility functions attached to a stateful domain harness | Move to the owning shared support module or inline if single-caller |
-| Ephemeral cache dropped at test exit or inside a mutating loop with 0% hit rate | Use a module- or suite-scoped shared read-only fixture when >=2 tests share identical immutable inputs, or construct local state directly |
-| Repeated expensive full-corpus builds or full-store dumps per test/iteration when inputs are immutable or a lightweight invariant suffices | Share one read-only snapshot across read-only tests, and assert lightweight per-iteration invariants bracketed by full before/after checks |
+| Ephemeral cache dropped at test exit or inside a mutating loop with 0% hit rate; or RAII temp-dir/workspace handles stored in process-wide `OnceLock`/`LazyLock` statics (skipping `Drop` cleanup) | Use a serializable/in-memory read-only snapshot whose builder temp dir drops during initialization, or construct local scoped fixtures for disk-bound tests; keep zero leaked temp dirs |
+| Repeated expensive full-corpus builds, harness constructors, or full-store dumps inside loop bodies when inputs are immutable or a lightweight invariant suffices | Build shared base state once outside the loop (unless each row varies initial disk layout); assert lightweight per-iteration invariants bracketed by full before/after checks |
 | Heavy subprocess or isolated-worktree harness used to test pure in-memory state machine, scheduling, or validation rules | `REWRITE` against in-process or in-memory stores; keep subprocess harnesses strictly for process, signal, or filesystem boundaries |
 | Proliferating tiny standalone test-runner targets or binaries | Consolidate into the owning domain suite per repository instructions |
 | Tautological self-equality/setter echo assertions, brittle build-manifest or CI config substring checks, or large meta-test suites testing test-only helpers | `REMOVE` or collapse to 1–2 smoke checks; keep test budgets on production seams |
@@ -194,13 +194,10 @@ boundaries rather than applying an arbitrary mechanical line-count cap.
    asserted seam.
 4. Do not introduce `Any`, `cast`, `type: ignore`, `pyright: ignore`, or rule
    suppressions to make a test type-check.
-5. BasedPyright 0/0 is not a pass if the test still reaches production
-   privates by relocating the same write/call. Forbidden pyright workarounds:
-   subclass/`__init__` whose only job is `self._foo = …`; `exec`/`eval` of
-   `_Name` calls; `getattr`/`setattr`/`importlib` of `_` symbols to dodge
-   `reportPrivateUsage`. REWRITE through the public constructor, parser, or
-   RPC. Direct private access stays only as `KEEP defensive` with a named
-   threat the public seam cannot see.
+5. Passing static checks does not justify relocating access to production
+   internals or bypassing the checks. Rewrite through a public constructor,
+   parser, or interface. Direct private access stays only as `KEEP defensive`
+   with a named threat the public seam cannot see.
 6. Restore the required static baseline for every file newly touched by the
    refactor. Pre-existing diagnostics are not permission to add a file to a
    changed set without remediating its applicable errors.
@@ -271,8 +268,9 @@ Run the narrowest focused test command after each bounded cluster, then:
 6. every required integration level, with skipped required evidence failing the
    cluster;
 7. after the final test/support edit, run the repository's designated full
-   completion gate on the settled diff; focused, owner, integration, lint, and
-   typing receipts do not substitute for it;
+   completion gate on the settled diff and verify temp-directory/resource
+   hygiene (temp dir count before vs after unchanged); focused, owner,
+   integration, lint, and typing receipts do not substitute for it;
 8. independent review for lost coverage, import collisions, state leakage,
    fixture scope drift, bypassed seams, insufficient integration, weakened
    fail-closed assertions, leftover duplicates, and unauthorized production

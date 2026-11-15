@@ -12,14 +12,10 @@ const DOCUMENT_FILES: &[(&str, &str)] = &[
     ),
 ];
 
-static DOCUMENT_WORKSPACE: std::sync::OnceLock<Workspace> = std::sync::OnceLock::new();
-
-fn document_workspace() -> &'static Workspace {
-    DOCUMENT_WORKSPACE.get_or_init(|| {
-        let workspace = Workspace::with_files(DOCUMENT_FILES);
-        workspace.build();
-        workspace
-    })
+fn document_workspace() -> Workspace {
+    let workspace = Workspace::with_files(DOCUMENT_FILES);
+    workspace.build();
+    workspace
 }
 
 fn response_text(client: &mut McpTestHarness, tool: &str, arguments: Value) -> String {
@@ -28,25 +24,21 @@ fn response_text(client: &mut McpTestHarness, tool: &str, arguments: Value) -> S
         .expect("MCP tool should succeed")
 }
 
-static REFERENCE_WORKSPACE: std::sync::OnceLock<Workspace> = std::sync::OnceLock::new();
-
-fn reference_workspace() -> &'static Workspace {
-    REFERENCE_WORKSPACE.get_or_init(|| {
-        let workspace = Workspace::with_files(&[
-            ("acdd.yaml", "roots: [src]\ndocs: [docs/reference]\n"),
-            ("src/overview.py", "def code_map_overview(): pass\n"),
-            (
-                "src/candidates.py",
-                "def shared(): return 'first'\ndef shared(): return 'second'\n",
-            ),
-            (
-                "docs/reference/mcp-tools.md",
-                "---\ntitle: MCP tools\ndoc_type: reference\n---\n# MCP tools\n## Overview one\n[`code_map_overview`](../../src/overview.py#L1)\n\n## Overview two\n[`code_map_overview`](../../src/overview.py#L1)\n\n## Overview three\n[`code_map_overview`](../../src/overview.py#L1)\n\n## Overview four\n[`code_map_overview`](../../src/overview.py#L1)\n\n## Ambiguous candidates\n[`shared`](../../src/candidates.py#L1)\n",
-            ),
-        ]);
-        workspace.build();
-        workspace
-    })
+fn reference_workspace() -> Workspace {
+    let workspace = Workspace::with_files(&[
+        ("acdd.yaml", "roots: [src]\ndocs: [docs/reference]\n"),
+        ("src/overview.py", "def code_map_overview(): pass\n"),
+        (
+            "src/candidates.py",
+            "def shared(): return 'first'\ndef shared(): return 'second'\n",
+        ),
+        (
+            "docs/reference/mcp-tools.md",
+            "---\ntitle: MCP tools\ndoc_type: reference\n---\n# MCP tools\n## Overview one\n[`code_map_overview`](../../src/overview.py#L1)\n\n## Overview two\n[`code_map_overview`](../../src/overview.py#L1)\n\n## Overview three\n[`code_map_overview`](../../src/overview.py#L1)\n\n## Overview four\n[`code_map_overview`](../../src/overview.py#L1)\n\n## Ambiguous candidates\n[`shared`](../../src/candidates.py#L1)\n",
+        ),
+    ]);
+    workspace.build();
+    workspace
 }
 
 #[path = "document_responses.rs"]

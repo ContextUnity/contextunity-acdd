@@ -1,8 +1,4 @@
-#[path = "common/mod.rs"]
-#[allow(dead_code)]
-mod common;
-
-use common::{mcp_client::run_cli, Workspace};
+use crate::common::{mcp_client::run_cli, Workspace};
 use contextunity_acdd::db::reader;
 use std::{
     fs,

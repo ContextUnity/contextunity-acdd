@@ -891,21 +891,28 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
     use contextunity_acdd::core::format::{self, OutputFormat};
     let mut missing = Vec::new();
     // These are recorded resolver outcomes, not inferred labels or visible-page totals.
+    let fixture = Workspace::new();
+    let linked = Workspace::new();
+    fixture.write("scope.py", &"# recorded reference\n".repeat(120));
+    linked.write("linked_scope.py", "def linked_target(): pass\n");
+    fixture.write(
+        "acdd.yaml",
+        &format!(
+            "roots: [.]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [.]\n",
+            linked.root().display()
+        ),
+    );
+    fixture.build();
+    drop(fixture.open());
+    let recorded = Connection::open(fixture.db()).unwrap();
     for (unknown, external, health) in [(0, 0, "80.0%"), (0, 12, "80.0%"), (1, 12, "79.2%")] {
-        let fixture = Workspace::new();
-        let linked = Workspace::new();
-        fixture.write("scope.py", &"# recorded reference\n".repeat(120));
-        linked.write("linked_scope.py", "def linked_target(): pass\n");
-        fixture.write(
-            "acdd.yaml",
-            &format!(
-                "roots: [.]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [.]\n",
-                linked.root().display()
-            ),
-        );
-        fixture.build();
-        drop(fixture.open());
-        let recorded = Connection::open(fixture.db()).unwrap();
+        recorded
+            .execute_batch(
+                "DELETE FROM coverage_language_counts;
+                 DELETE FROM coverage_owner_language;
+                 DELETE FROM resolution_coverage;",
+            )
+            .unwrap();
         let populations = [
             (80, "resolved", "target", "exact indexed target"),
             (
