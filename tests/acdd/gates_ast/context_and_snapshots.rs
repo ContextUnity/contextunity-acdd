@@ -197,6 +197,9 @@ task_depends_on: [m-upstream:producer]
 #[test]
 fn task_manage_named_snapshot_restores_worktree_and_guards_head_changes() {
     let snapshot = crate::acdd::snapshot::NamedSnapshotHarness::new();
+    snapshot.write(".git/info/exclude", "\n.acdd/*\n!.acdd/profile.yaml\n");
+    snapshot.write(".acdd/profile.yaml", "version: 2\n");
+    snapshot.commit_file(".acdd/profile.yaml", "track versioned profile");
     let head = snapshot.head();
     let created = snapshot
         .manage("snapshot", "before-change")
@@ -216,6 +219,7 @@ fn task_manage_named_snapshot_restores_worktree_and_guards_head_changes() {
         .contains("TASK_SELECTOR_INVALID"));
 
     snapshot.write("src/lib.rs", "experiment changes\n");
+    snapshot.write(".acdd/profile.yaml", "version: 2\n# mutated\n");
     snapshot.write("after-snapshot.txt", "remove on rollback\n");
     #[cfg(unix)]
     {
@@ -237,6 +241,7 @@ fn task_manage_named_snapshot_restores_worktree_and_guards_head_changes() {
     assert_eq!(rollback["action"], "rollback");
     assert_eq!(rollback["restored"], true);
     assert_eq!(snapshot.read("src/lib.rs"), "snapshot baseline\n");
+    assert_eq!(snapshot.read(".acdd/profile.yaml"), "version: 2\n");
     assert!(!snapshot.exists("after-snapshot.txt"));
     assert_eq!(snapshot.head(), head);
     assert_eq!(
@@ -269,6 +274,20 @@ fn task_manage_named_snapshot_restores_worktree_and_guards_head_changes() {
     );
     #[cfg(target_os = "linux")]
     case_named_snapshot_releases_its_lock_with_an_inherited_descriptor_open(&snapshot);
+    snapshot.write(
+        ".git/info/exclude",
+        "\n.acdd/*\n!.acdd/profile.yaml\n!.acdd/code-map.sqlite\n",
+    );
+    snapshot.write(".acdd/code-map.sqlite", "runtime db\n");
+    snapshot.commit_file(".acdd/code-map.sqlite", "accidentally track runtime db");
+    let tracked_runtime = snapshot
+        .manage("snapshot", "blocked-by-tracked-runtime")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        tracked_runtime.contains("TASK_SNAPSHOT_RUNTIME_PATH_TRACKED"),
+        "tracked runtime DB must still fail closed: {tracked_runtime}"
+    );
 }
 
 #[cfg(target_os = "linux")]

@@ -805,51 +805,77 @@ fn capture_scoped_snapshot_excluding(
     Ok(Some((commit_sha, head, objects)))
 }
 
+fn is_acdd_runtime_path(path: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(path) else {
+        return path.starts_with(b".acdd/");
+    };
+    let Some(rel) = text.strip_prefix(".acdd/") else {
+        return false;
+    };
+    rel == "tasks"
+        || rel.starts_with("tasks/")
+        || rel == "checkpoints.json"
+        || rel == "checkpoints.json.lock"
+        || rel.ends_with(".sqlite")
+        || rel.ends_with(".sqlite-wal")
+        || rel.ends_with(".sqlite-shm")
+        || rel.ends_with(".sqlite-journal")
+        || rel.ends_with(".sqlite.lock")
+        || rel.ends_with(".sqlite.verified.json")
+        || rel.ends_with(".lock")
+        || rel.ends_with(".log")
+        || rel.ends_with(".jsonl")
+}
+
+fn is_excluded_snapshot_entry(path: &[u8], excluded_paths: &[String], untracked: bool) -> bool {
+    excluded_paths.iter().any(|excluded| {
+        path == excluded.as_bytes()
+            || (excluded == ".acdd"
+                && path.starts_with(b".acdd/")
+                && (untracked || is_acdd_runtime_path(path)))
+    })
+}
+
 fn add_unscoped_snapshot_entries(
     worktree: &Path,
     index: &Path,
     excluded_paths: &[String],
 ) -> Result<()> {
-    let listed = crate::git::git_command(
-        worktree,
-        &[
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ],
-    )?;
-    if !listed.status.success() {
-        bail!(
-            "TASK_SNAPSHOT_FAILED: could not enumerate worktree paths: {}",
-            String::from_utf8_lossy(&listed.stderr)
-        );
-    }
     let mut paths = Vec::new();
-    for path in listed
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-    {
-        if excluded_paths.iter().any(|excluded| {
-            path == excluded.as_bytes() || (excluded == ".acdd" && path.starts_with(b".acdd/"))
-        }) {
-            continue;
+    for (args, untracked) in [
+        (&["ls-files", "--cached", "-z"][..], false),
+        (&["ls-files", "--others", "--exclude-standard", "-z"][..], true),
+    ] {
+        let listed = crate::git::git_command(worktree, args)?;
+        if !listed.status.success() {
+            bail!(
+                "TASK_SNAPSHOT_FAILED: could not enumerate worktree paths: {}",
+                String::from_utf8_lossy(&listed.stderr)
+            );
         }
-        #[cfg(unix)]
-        let exists = {
-            use std::os::unix::ffi::OsStrExt;
-            std::fs::symlink_metadata(worktree.join(std::ffi::OsStr::from_bytes(path)))
-        };
-        #[cfg(not(unix))]
-        let exists =
-            { std::fs::symlink_metadata(worktree.join(String::from_utf8_lossy(path).as_ref())) };
-        match exists {
-            Ok(_) => paths.push(path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).context("TASK_SNAPSHOT_FAILED: could not inspect worktree path")
+        for path in listed
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+        {
+            if is_excluded_snapshot_entry(path, excluded_paths, untracked) {
+                continue;
+            }
+            #[cfg(unix)]
+            let exists = {
+                use std::os::unix::ffi::OsStrExt;
+                std::fs::symlink_metadata(worktree.join(std::ffi::OsStr::from_bytes(path)))
+            };
+            #[cfg(not(unix))]
+            let exists =
+                { std::fs::symlink_metadata(worktree.join(String::from_utf8_lossy(path).as_ref())) };
+            match exists {
+                Ok(_) => paths.push(path.to_vec()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .context("TASK_SNAPSHOT_FAILED: could not inspect worktree path")
+                }
             }
         }
     }
@@ -1089,12 +1115,11 @@ fn ensure_snapshot_exclusions_untracked(worktree: &Path, excluded_paths: &[Strin
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let tracked_runtime_path = output.stdout.split(|byte| *byte == 0).find(|tracked| {
-        excluded_paths.iter().any(|excluded| {
-            *tracked == excluded.as_bytes()
-                || (excluded == ".acdd" && (*tracked).starts_with(b".acdd/"))
-        })
-    });
+    let tracked_runtime_path = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|tracked| !tracked.is_empty())
+        .find(|tracked| is_excluded_snapshot_entry(tracked, excluded_paths, false));
     if let Some(path) = tracked_runtime_path {
         bail!(
             "TASK_SNAPSHOT_RUNTIME_PATH_TRACKED: refusing to snapshot or rollback while runtime path '{}' is tracked",
