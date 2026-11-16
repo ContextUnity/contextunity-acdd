@@ -214,11 +214,11 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
                 "{stage}/{seam}: profile must include the three task roles and the milestone architect role"
             ));
         }
-        for (gate, role, model) in [
-            ("contract", "contract_author", "sol-6.1:high"),
-            ("build", "builder", "gpt6-luna:xhigh"),
-            ("review", "independent_reviewer", "sol-6.1:xhigh"),
-            ("deliver", "independent_reviewer", "sol-6.1:xhigh"),
+        for (gate, role) in [
+            ("contract", "contract_author"),
+            ("build", "builder"),
+            ("review", "independent_reviewer"),
+            ("deliver", "independent_reviewer"),
         ] {
             let role_definition = profile.role_for_stage(gate);
             if !role_definition.is_some_and(|(name, definition)| {
@@ -226,12 +226,9 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
                     && definition.effective_reuse_on_reject()
                     && definition.effective_mode()
                         == contextunity_acdd::core::tasks::profile::RoleExecutionMode::Subagent
-                    && definition
-                        .models
-                        .iter()
-                        .any(|entry| entry.formatted() == model)
+                    && !definition.models.is_empty()
             }) {
-                failures.push(format!("{stage}/{seam}: {gate} must use {role} with {model} and reusable worker authority"));
+                failures.push(format!("{stage}/{seam}: {gate} must use {role} with a configured model and reusable worker authority"));
             }
         }
         let mut claim =

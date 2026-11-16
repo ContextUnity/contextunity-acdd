@@ -171,6 +171,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
     let mut release_milestone = Milestone::parse(release_spec, "forge-mcp").unwrap();
     release_milestone.tasks[0].status = Some("completed".into());
     release_milestone.tasks[0].receipt = Some(Receipt {
+        gates: None,
         delivery_gate: None,
         candidate_gate: None,
         commit: None,

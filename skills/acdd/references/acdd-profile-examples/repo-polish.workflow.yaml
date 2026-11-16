@@ -5,8 +5,8 @@
 # Demonstrates a stateless polish workflow (`verify_repo` -> `polish` ->
 # `review_polish`) reusing repository role/command conventions with `save: log`.
 # Structural template: with `inherit: none`, bind `runner:` per role before
-# running `acdd workflow run`; AC-004 target switches to `inherit: workspace`
-# and omits duplicate `roles:`, `policies:`, and `commands:` blocks.
+# running `acdd workflow run`; `inherit: workspace` can reuse compatible
+# roles, policies, and commands from the workspace.
 # =============================================================================
 
 version: 2

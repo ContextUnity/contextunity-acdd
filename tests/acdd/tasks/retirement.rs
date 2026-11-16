@@ -146,7 +146,7 @@ fn contract_rejects_retirement_without_baseline_caller_evidence() {
                 TaskHarness::claim_at(root.root(), RETIREMENT_TASK, "contract", "contract-author")
                     .unwrap();
                 let result = submit_indexed_boundary(&root, "contract", RETIREMENT_SEAM);
-                if !refresh && !external_caller {
+                if !external_caller {
                     assert!(
                         result.is_ok(),
                         "{staged}/{refresh}/{external_caller}: {result:?}"
@@ -154,7 +154,9 @@ fn contract_rejects_retirement_without_baseline_caller_evidence() {
                 } else {
                     let error = result.unwrap_err().to_string();
                     assert!(
-                        error.contains("TASK_SCOPE_INCOMPLETE") && error.contains("route"),
+                        error.contains("TASK_SCOPE_INCOMPLETE")
+                            && error.contains("src/caller.rs")
+                            && error.contains("route"),
                         "{staged}/{refresh}/{external_caller}: {error}"
                     );
                 }
@@ -195,14 +197,12 @@ fn build_revalidates_legacy_empty_baseline_caller_evidence() {
                 root.build_to(root.path(".acdd/code-map.sqlite"));
             }
             let result = submit_indexed_boundary(&root, "build", RETIREMENT_SEAM);
-            if indexed_target && !external_caller {
-                assert!(result.is_ok(), "{result:?}");
+            if !external_caller {
+                assert!(result.is_ok(), "{indexed_target}/{external_caller}: {result:?}");
             } else {
                 let error = result.unwrap_err().to_string();
                 assert!(error.contains("TASK_SCOPE_INCOMPLETE"), "{error}");
-                if external_caller {
-                    assert!(error.contains("src/caller.rs"), "{error}");
-                }
+                assert!(error.contains("src/caller.rs"), "{error}");
             }
         }
     }

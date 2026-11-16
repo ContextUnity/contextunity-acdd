@@ -189,7 +189,7 @@ roles:
     mode: subagent
     reuse_on_reject: true
     models:
-      - 'gpt6-luna:xhigh'
+      - 'gpt-6.1-terra:medium'
     guidance: "Implement the approved contract inside the declared allowed_write_scope and verify tests."
   independent_reviewer:
     mode: subagent

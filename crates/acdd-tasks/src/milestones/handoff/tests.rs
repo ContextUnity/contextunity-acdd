@@ -3,6 +3,146 @@ mod harness;
 use harness::{NativeHandoffHarness, ACTIVE, ARCHIVE};
 
 #[test]
+fn receipt_gate_history_survives_profile_evolution_and_requires_anchors() {
+    let fixture = NativeHandoffHarness::new().unwrap();
+    let id = fixture.milestone.task_id(&fixture.milestone.tasks[0]);
+    fixture.write_shared_value(1).unwrap();
+    fixture.complete_task(&id).unwrap();
+    let store = fixture.store().unwrap();
+    let task = store.inspect(&id).unwrap();
+    let profile = crate::tasks::profile::load_for_workspace(fixture.root()).unwrap();
+    let mut profile =
+        crate::engine::tasks::claim::flattened_profile(&profile, Some(&task)).unwrap();
+    profile.gates.retain(|gate| gate.id != "contract_review");
+    let review = profile
+        .gates
+        .iter()
+        .find(|gate| gate.id == "review")
+        .unwrap()
+        .clone();
+    let build = profile
+        .gates
+        .iter()
+        .position(|gate| gate.id == "build")
+        .unwrap();
+    let mut added = review;
+    added.id = "contract_review".into();
+    profile.gates.insert(build, added);
+    let cases = [
+        (
+            Some(vec!["contract", "build", "review", "deliver"]),
+            None,
+            None,
+            true,
+        ),
+        (
+            Some(vec![
+                "contract",
+                "contract_review",
+                "build",
+                "review",
+                "deliver",
+            ]),
+            None,
+            None,
+            false,
+        ),
+        (Some(vec!["build", "review", "deliver"]), None, None, false),
+        (
+            Some(vec!["contract", "review", "deliver"]),
+            None,
+            None,
+            false,
+        ),
+        (
+            Some(vec!["contract", "build", "deliver"]),
+            None,
+            None,
+            false,
+        ),
+        (None, None, None, true),
+        (None, Some("contract"), None, false),
+        (None, Some("build"), None, false),
+        (None, Some("review"), None, false),
+        (None, Some("deliver"), None, false),
+        (None, None, Some(("review", 0)), true),
+        (
+            Some(vec!["contract", "build", "review", "deliver"]),
+            None,
+            Some(("review", 0)),
+            true,
+        ),
+        (
+            Some(vec!["contract", "build", "review", "deliver"]),
+            None,
+            Some(("contract_review", task.claim_revision + 1)),
+            false,
+        ),
+        (
+            None,
+            None,
+            Some(("contract_review", task.claim_revision + 1)),
+            false,
+        ),
+    ];
+    assert!(task
+        .receipt
+        .as_ref()
+        .unwrap()
+        .gates
+        .as_ref()
+        .unwrap()
+        .contains(&"contract_review".to_owned()));
+    store
+        .connection
+        .execute(
+            "DELETE FROM task_gates WHERE task_id=?1 AND gate='contract_review'",
+            [&id],
+        )
+        .unwrap();
+    for (recorded, missing, rejected, succeeds) in cases {
+        store
+            .connection
+            .execute_batch("SAVEPOINT receipt_case")
+            .unwrap();
+        if let Some(gate) = missing {
+            store
+                .connection
+                .execute(
+                    "DELETE FROM task_gates WHERE task_id=?1 AND gate=?2",
+                    rusqlite::params![id, gate],
+                )
+                .unwrap();
+        }
+        if let Some((gate, revision)) = rejected {
+            store.connection.execute(
+                "INSERT INTO task_gates (task_id, gate, revision, state, evidence) VALUES (?1, ?2, ?3, 'rejected', NULL)",
+                rusqlite::params![id, gate, revision],
+            ).unwrap();
+        }
+        let recorded = recorded.map(|ids| ids.into_iter().map(str::to_owned).collect::<Vec<_>>());
+        let result = accepted_gate_evidence(
+            fixture.root(),
+            &store,
+            &id,
+            task.contract_revision,
+            &task.spec.proof_policy,
+            &profile,
+            recorded.as_deref(),
+        );
+        if succeeds {
+            result.unwrap();
+        } else {
+            assert!(format!("{:#}", result.unwrap_err()).contains("TASK_RECEIPT_INVALID"));
+        }
+        store
+            .connection
+            .execute_batch("ROLLBACK TO receipt_case; RELEASE receipt_case")
+            .unwrap();
+    }
+}
+
+#[test]
 fn handoff_and_retry_ignore_foreign_profile_stage() {
     let mut fixture = NativeHandoffHarness::new().unwrap();
     let config = fixture.root().join("acdd.yaml");

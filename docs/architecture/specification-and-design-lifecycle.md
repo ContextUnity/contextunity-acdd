@@ -8,7 +8,7 @@ doc_type: architecture
 ContextUnity ACDD separates problem definition (**Specify / Clarify**), architectural framing (**Design**), and automated proof (**Execution & Verification**), sizing ceremony to the scope of change (**S / M / L**) while keeping low-level component and code diagrams grounded in the live indexed AST graph.
 
 > [!NOTE]
-> Live runtime boundaries are documented in [Architecture index](README.md) and [ACDD execution reference](../reference/acdd.md). Extensions for the builtin `author-spec` workflow, `ac_mapping` and `c2_boundary_impact` blueprint properties, optional `spec:`/`acceptance_criteria:` bundle projection, unified SQLite `Plan` execution, and `inherit: workspace` resource sharing are tracked in [`AC-004-unified-execution-and-spec-pipeline`](../milestones/AC-004-unified-execution-and-spec-pipeline.md).
+> Runtime boundaries are documented in the [architecture index](README.md) and [ACDD execution reference](../reference/acdd.md). The builtin `author-spec` workflow, blueprint properties `ac_mapping` and `c2_boundary_impact`, optional `spec` and `acceptance_criteria` projection, SQLite-backed Plan execution, and `inherit: workspace` resource sharing support this lifecycle.
 
 ## Specify / Clarify before implementation
 
@@ -29,7 +29,7 @@ ACDD treats architectural documentation as a multi-resolution hierarchy where hu
 | **PRD / Spec (`AC-*`)** | Product / Architect | Defines `Goal`, `Non-goals`, edge cases, and testable acceptance criteria. |
 | **C4 Level 1 & 2 + SAD** | Architect (`docs/architecture/`) | Captures external actors, system context (`C1`), container/crate boundaries (`C2`), data flows, and `INV-*` invariants. |
 | **ADRs** | Architecture Owner (`docs/adr/`) | Records durable present-tense architectural trade-offs and superseded boundaries ([ADR index](../adr/README.md)). |
-| **C4 Level 3 & 4** | Live Index (`acdd-index`) | Derived automatically from AST parsing and symbol linking (`code_map_overview`, `code_map_inspect`, `code_map_impact`, `code_map_query`) so component and symbol maps never drift from source. |
+| **C4 Level 3 & 4** | Source index (`acdd-index`) | Derived from AST parsing and symbol linking (`code_map_overview`, `code_map_inspect`, `code_map_impact`, `code_map_query`); refresh the index after source changes. |
 
 Static Markdown documentation stops at **C4 Level 1–2** and invariant definitions (`INV-*`). Detailed call graphs, dependency edges, and symbol signatures come directly from the SQLite code map (`governs` and `cites_doc` edges linking documentation claims to uniquely resolved declarations).
 

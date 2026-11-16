@@ -220,6 +220,8 @@ impl PlanDocument {
             ),
             repository: repository.into(),
             project: project.into(),
+            spec: None,
+            acceptance_criteria: vec![],
             acdd_profile: None,
             invariants: vec![],
             owners: vec![],
@@ -237,6 +239,8 @@ impl PlanDocument {
                 .map(|step| crate::tasks::TaskSpec {
                     task_ref: reference(&step.title),
                     target: step.target.clone(),
+                    spec: None,
+                    acceptance_criteria: vec![],
                     agent_type: None,
                     acdd_profile: None,
                     proof_policy: "seam-test-first".into(),
@@ -588,6 +592,7 @@ pub fn run_plan_workflow(
         runner_timeout: std::time::Duration::from_secs(3600),
     };
     let mut snapshots = Vec::new();
+    let mut expected_source = plan.source.clone();
     for index in order {
         if plan.steps[index].status == "cancelled" {
             continue;
@@ -599,6 +604,32 @@ pub fn run_plan_workflow(
             .context("PLAN_TASK_MISSING")?;
         super::task_runner::run_task_lifecycle(root, &id, &options, &mut |_| {})?;
         if task.status != "completed" {
+            let stored = crate::engine::store(root)?.inspect(&id)?;
+            let expected = PlanDocument::from_source(&plan.path, expected_source)?;
+            let expected_step = expected
+                .steps
+                .iter()
+                .find(|step| step.title == plan.steps[index].title)
+                .context("PLAN_SOURCE_DRIFT: step missing")?;
+            expected_source = if serde_json::to_value(&expected_step.subtasks)?
+                != serde_json::to_value(&stored.spec.subtasks)?
+            {
+                expected.project_subtasks(&stored.spec.task_ref, &stored.spec.subtasks)?
+            } else {
+                expected.source.clone()
+            };
+            let expected = PlanDocument::from_source(&plan.path, expected_source)?;
+            let receipt = stored
+                .receipt
+                .as_ref()
+                .context("PLAN_SOURCE_DRIFT: completed step missing receipt")?;
+            expected_source = expected
+                .project_completion(&stored.spec.task_ref, &serde_json::to_value(receipt)?)?;
+            let actual = std::fs::read_to_string(crate::tasks::confined_path(root, &reference)?)?;
+            ensure!(
+                actual == expected_source,
+                "PLAN_SOURCE_DRIFT: plan source changed outside task projection"
+            );
             let name = format!(
                 "plan-{}-{:x}",
                 &format!("{:x}", Sha256::digest(reference.as_bytes()))[..16],

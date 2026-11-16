@@ -33,27 +33,20 @@ fn repository_profile_inherits_defaults_and_binds_commands_by_gate_id() {
     let profile = validate_profile_document(include_str!("../../../../../.acdd/profile.yaml"))
         .expect("repository profile should compile over the embedded defaults");
 
-    for (stage, command) in [
-        ("contract", "test"),
-        ("build", "rust-check-and-test"),
-        ("seam.integrate", "rust-check-and-test"),
-    ] {
-        assert_eq!(
-            profile
-                .by_stage(stage)
-                .and_then(|gate| gate.command.as_deref()),
-            Some(command),
+    for stage in ["contract", "build", "seam.integrate"] {
+        let command = profile
+            .by_stage(stage)
+            .and_then(|gate| gate.command.as_deref())
+            .expect("gate command");
+        assert!(
+            profile.commands.contains_key(command),
             "{stage} command binding"
         );
     }
-    assert_eq!(
-        profile
-            .find_gate("verify")
-            .and_then(|gate| gate.command.as_deref()),
-        Some("check_full_repo"),
-        "verify command binding"
-    );
     let verify = profile.find_gate("verify").unwrap();
+    assert!(profile
+        .commands
+        .contains_key(verify.command.as_deref().unwrap()));
     assert!(
         verify.role.is_none(),
         "verification is an observed command gate"

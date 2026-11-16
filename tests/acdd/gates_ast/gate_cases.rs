@@ -393,6 +393,22 @@ fn case_specialized_rejection_routes_recover_within_track() {
             .claim_gate_in_session("code.review", worker, Some(&session))
             .unwrap();
         let evidence = harness.task().evidence_for_gate(&claim).unwrap();
+        for findings in [
+            serde_json::json!({"kind":"scope", "category":"symbols"}),
+            serde_json::json!({"kind":"build", "category":"scope", "scope_findings":[]}),
+            serde_json::json!({"kind":"scope", "contract_findings":["conflict"]}),
+            serde_json::json!({"category":"symbols", "scope_findings":["conflict"]}),
+            serde_json::json!({"kind":"repair", "symbol_findings":["conflict"]}),
+        ] {
+            let error = harness
+                .task_mut()
+                .submit_rejection_in_session(&evidence, Some(&session), Some(&findings))
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("TASK_FINDINGS_INVALID"),
+                "{error:#}"
+            );
+        }
         let findings = serde_json::json!({"kind":kind});
         let result = harness
             .task_mut()

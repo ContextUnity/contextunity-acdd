@@ -638,7 +638,9 @@ pub(super) fn capture_scoped_snapshot(
     task_id: &str,
     scope: &[String],
 ) -> Result<Option<(String, String, crate::git::KeptObjects)>> {
-    capture_scoped_snapshot_excluding(worktree, task_id, scope, &[])
+    let database = super::database_path(worktree)?;
+    let excluded = named_snapshot_exclusions(worktree, &database);
+    capture_scoped_snapshot_excluding(worktree, task_id, scope, &excluded)
 }
 
 /// Persist a root candidate without moving HEAD or changing the caller's index.
@@ -796,7 +798,11 @@ pub(super) fn is_acdd_runtime_path(path: &[u8]) -> bool {
         || rel.ends_with(b".jsonl")
 }
 
-fn is_excluded_snapshot_entry(path: &[u8], excluded_paths: &[String], _untracked: bool) -> bool {
+pub(super) fn is_excluded_snapshot_entry(
+    path: &[u8],
+    excluded_paths: &[String],
+    _untracked: bool,
+) -> bool {
     is_acdd_runtime_path(path)
         || excluded_paths.iter().any(|excluded| {
             path == excluded.as_bytes()
@@ -1070,7 +1076,7 @@ fn named_snapshot_context(worktree: &Path, name: &str) -> Result<NamedSnapshotCo
     })
 }
 
-fn named_snapshot_exclusions(worktree: &Path, database: &Path) -> Vec<String> {
+pub(super) fn named_snapshot_exclusions(worktree: &Path, database: &Path) -> Vec<String> {
     let mut paths = vec![".acdd".to_owned()];
     if let Ok(relative) = database.strip_prefix(worktree) {
         let database = relative.to_string_lossy().replace('\\', "/");

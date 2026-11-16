@@ -30,6 +30,19 @@ required_skills:
 - acdd
 - agent-instructions
 related_plans: []
+polish_scope:
+- crates/acdd-tasks/src/milestones/handoff/mod.rs
+- crates/acdd-tasks/src/milestones/handoff/provenance.rs
+- crates/acdd-tasks/src/milestones/handoff/tests.rs
+- tests/acdd/milestones/delivery.rs
+- tests/acdd/tasks/lifecycle/authority.rs
+- tests/acdd/tasks/workspaces/confinement.rs
+- docs/architecture/test-harness.md
+- docs/adr/0020-hierarchical-acdd-gates-and-milestone-orchestration.md
+- docs/reference/cli.md
+- skills/acdd/references/acdd-profile-examples/ci-verification-gate.workflow.yaml
+- skills/acdd/references/acdd-profile-examples/pentest-security-audit.workflow.yaml
+- skills/acdd/references/acdd-profile-examples/subsystem-feature.milestone.yaml
 started_at: 2026-11-15T21:33:56+00:00
 ---
 
@@ -509,50 +522,138 @@ receipt:
 
 ```yaml
 task_ref: spec-traceability-docs-and-skills-reconciliation
-target: "Add optional spec and acceptance_criteria manifest/task fields with scoped AC-* projection into context_bundle, set the embedded default builder model to 'gpt-6.1-terra:medium' in acdd.profile.yaml, replace hardcoded default/repo profile model, gate-count, cursor-count, and command-name assertions across unit and integration tests with dynamic profile projection checks, reconcile CLI guide (src/cli/guide.rs) and docs (AGENTS.md, tests/AGENTS.md, architecture, milestones, reference/acdd.md, reference/profiles.md, reference/cli.md — removing hardcoded versioned builder/reviewer model names where role contracts suffice) and skills (acdd, contract-planning) with C1/C2 + live C3/C4 graph, Option 1 immutable-rebind semantics, and S/M/L Specify-Design cadence, and verify all repository test gates."
+target: Add optional spec and acceptance_criteria manifest/task fields with scoped AC-* projection into context_bundle, set the embedded default builder model to 'gpt-6.1-terra:medium' in acdd.profile.yaml, resolve WORKFLOW_FINDINGS_CONFLICT in gates.rs schema_placeholder and harden reject findings routing/validation, fix claim preflight order and plan source-drift preservation along with harness/plans and milestones/clear parity, replace hardcoded default/repo profile model, gate-count, cursor-count, and command-name assertions across unit and integration tests with dynamic profile projection checks, reconcile CLI guide (src/cli/guide.rs) and docs (AGENTS.md, tests/AGENTS.md, architecture, milestones, reference/acdd.md, reference/profiles.md, reference/cli.md — removing hardcoded versioned builder/reviewer model names where role contracts suffice) and skills (acdd, contract-planning) with C1/C2 + live C3/C4 graph, Option 1 immutable-rebind semantics, and S/M/L Specify-Design cadence, and verify all repository test gates.
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 3
 depends_on:
-  - unify-plan-execution-on-task-store
+- unify-plan-execution-on-task-store
 scope:
-  - crates/acdd-tasks/src/tasks/mod.rs
-  - crates/acdd-tasks/src/tasks/acdd.profile.yaml
-  - crates/acdd-tasks/src/tasks/profile/tests.rs
-  - crates/acdd-tasks/src/engine/context.rs
-  - crates/acdd-tasks/src/engine/orchestrator/role.rs
-  - src/cli/guide.rs
-  - AGENTS.md
-  - README.md
-  - docs/AGENTS.md
-  - tests/AGENTS.md
-  - docs/architecture/README.md
-  - docs/architecture/specification-and-design-lifecycle.md
-  - docs/milestones/AGENTS.md
-  - docs/reference/acdd.md
-  - docs/reference/profiles.md
-  - docs/reference/cli.md
-  - docs/reference/tasks.md
-  - skills/AGENTS.md
-  - skills/acdd/SKILL.md
-  - skills/acdd/references/acdd-profile-examples/README.md
-  - skills/acdd/references/acdd-profile-examples/docs-refactor-and-reconcile.workflow.yaml
-  - skills/acdd/references/acdd-profile-examples/repo-polish.workflow.yaml
-  - skills/acdd/references/acdd-profile-examples/in-place-refactor.plan.yaml
-  - skills/contract-planning/SKILL.md
-  - tests/acdd/orchestrator/spec_traceability.rs
-  - tests/acdd/tasks/seams/tiered_context.rs
-  - tests/acdd/tasks/guidance/profile_defaults.rs
-  - tests/acdd/tasks/guidance/custom_profiles.rs
-  - tests/acdd/mcp/profiles_and_gates.rs
-  - tests/acdd/gates_ast/profile_parser.rs
-  - tests/acdd/command_gate_harness.rs
+- crates/acdd-tasks/src/tasks/mod.rs
+- crates/acdd-tasks/src/tasks/acdd.profile.yaml
+- crates/acdd-tasks/src/tasks/gates.rs
+- crates/acdd-tasks/src/tasks/profile/tests.rs
+- crates/acdd-tasks/src/engine/context.rs
+- crates/acdd-tasks/src/engine/lifecycle/mod.rs
+- crates/acdd-tasks/src/engine/gate_graph.rs
+- crates/acdd-tasks/src/engine/gates/submit.rs
+- crates/acdd-tasks/src/engine/orchestrator/plan.rs
+- crates/acdd-tasks/src/engine/orchestrator/role.rs
+- src/cli/guide.rs
+- AGENTS.md
+- README.md
+- docs/AGENTS.md
+- tests/AGENTS.md
+- docs/architecture/README.md
+- docs/architecture/specification-and-design-lifecycle.md
+- docs/milestones/AGENTS.md
+- docs/reference/acdd.md
+- docs/reference/profiles.md
+- docs/reference/cli.md
+- docs/reference/tasks.md
+- skills/AGENTS.md
+- skills/acdd/SKILL.md
+- skills/acdd/references/acdd-profile-examples/README.md
+- skills/acdd/references/acdd-profile-examples/docs-refactor-and-reconcile.workflow.yaml
+- skills/acdd/references/acdd-profile-examples/repo-polish.workflow.yaml
+- skills/acdd/references/acdd-profile-examples/in-place-refactor.plan.yaml
+- skills/contract-planning/SKILL.md
+- tests/acdd/orchestrator/spec_traceability.rs
+- tests/acdd/tasks/seams/tiered_context.rs
+- tests/acdd/tasks/guidance/profile_defaults.rs
+- tests/acdd/tasks/guidance/custom_profiles.rs
+- tests/acdd/mcp/profiles_and_gates.rs
+- tests/acdd/gates_ast/profile_parser.rs
+- tests/acdd/command_gate_harness.rs
+- tests/acdd/harness/plans.rs
+- tests/acdd/milestones/clear.rs
+- crates/acdd-tasks/src/engine/lifecycle/tests.rs
+- crates/acdd-tasks/src/engine/evidence_compiler.rs
+- crates/acdd-tasks/src/engine/git_snapshot.rs
+- tests/acdd/gates_ast/gate_cases.rs
+- tests/acdd/orchestrator/workflow_inheritance.rs
+- tests/acdd/tasks/retirement.rs
 symbols: []
-status: ready
+status: completed
 subtasks:
-  - subtask_ref: optional-spec-ac-context-projection
-    title: "Support optional spec and acceptance_criteria fields in Milestone/TaskSpec with scoped AC-* injection into context_bundle"
-  - subtask_ref: profile-defaults-and-dynamic-test-assertions
-    title: "Fix embedded builder model ('gpt-6.1-terra:medium') in acdd.profile.yaml and refactor hardcoded profile/model/cursor/command test assertions to read dynamically from resolved profiles"
-  - subtask_ref: docs-skills-and-suite-verification
-    title: "Reconcile documentation (dropping hardcoded model versions in reference docs) and skills with ADR 0021 Variant A and Specify/Design paradigms and pass all TESTS.md checks"
+- subtask_ref: optional-spec-ac-context-projection
+  title: Support optional spec and acceptance_criteria fields in Milestone/TaskSpec with scoped AC-* injection into context_bundle
+  status: completed
+  evidence: cargo test --test acdd spec_traceability passed (2/2); context_bundle projects applicable spec/acceptance_criteria.
+- subtask_ref: docs-skills-and-suite-verification
+  title: Reconcile documentation (dropping hardcoded model versions in reference docs) and skills with ADR 0021 Variant A and Specify/Design paradigms and pass all TESTS.md checks
+  status: completed
+  evidence: Reconciled README.md, AGENTS.md, src/cli/guide.rs, docs/reference/*.md, skills/acdd/**, skills/contract-planning/SKILL.md; clippy clean, commitment_integrity 14/14, docs check 0 errors in edited files.
+- subtask_ref: profile-defaults-and-dynamic-test-assertions
+  title: Fix embedded builder model ('gpt-6.1-terra:medium') in acdd.profile.yaml, resolve WORKFLOW_FINDINGS_CONFLICT/findings routing + claim preflight/plan source-drift parity, and refactor hardcoded profile/model/cursor/command test assertions to read dynamically from resolved profiles
+  status: completed
+  evidence: Embedded builder default set to gpt-6.1-terra:medium; gate_graph classifier validation + lifecycle preflight + evidence_compiler + plan drift fixed; 474/474 tests/acdd and 92/92 acdd-tasks --lib passed.
+extended_scope:
+- crates/acdd-tasks/src/engine/lifecycle/tests.rs
+- crates/acdd-tasks/src/engine/evidence_compiler.rs
+- crates/acdd-tasks/src/engine/git_snapshot.rs
+- tests/acdd/gates_ast/gate_cases.rs
+- tests/acdd/orchestrator/workflow_inheritance.rs
+- tests/acdd/tasks/retirement.rs
+receipt:
+  delivery_gate: deliver
+  candidate_gate: build
+  contract_revision: 3
+  passed_at: 2026-11-16T08:44:51.518967475+00:00
+  evidence:
+    command_proof:
+      command: rust-check-and-test
+      exit_code: 0
+      tests_passed: 1
+      tests_failed: 0
+      log: |
+        [rust-check-and-test::tests/acdd/orchestrator/spec_traceability.rs]
+        SCOPE_VIOLATION_WARNING: docs/milestones/AC-004-unified-execution-and-spec-pipeline.md
+        PASS rust-check-and-test::tests/acdd/orchestrator/spec_traceability.rs: exit=0 passed=1 failed=0 (916 ms)
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: All modified files stay within Task 5 initial_scope and 6 approved extended_scope paths; protected files untouched.
+        claims:
+          applicable: true
+          evidence: Confirmed both P2 fixes (gate_graph classifier conflict validation + gate_cases matrix, AGENTS.md candidate rebind alignment), spec/AC projection, preflight registry.open, proof-catalog exit, retirement git-baseline alignment, and doc/skill reconciliation.
+        concurrency:
+          applicable: true
+          evidence: Claim preflight rejects before milestone activation; nested_and_conditional_gate_cases passed 1/1.
+        project_isolation:
+          applicable: true
+          evidence: Project-confined scopes, registry.open workspace profile, and zero new leaked tmp dirs verified.
+        administration:
+          applicable: true
+          evidence: Strict Clippy exited 0; all 3 modified YAML examples validated; zero standalone test bloat.
+      notes: Independent gpt-6.1-sol:high round-2 review passed with 0 findings.
+      extended_scope_review:
+        approved_paths:
+        - crates/acdd-tasks/src/engine/lifecycle/tests.rs
+        - crates/acdd-tasks/src/engine/evidence_compiler.rs
+        - crates/acdd-tasks/src/engine/git_snapshot.rs
+        - tests/acdd/gates_ast/gate_cases.rs
+        - tests/acdd/orchestrator/workflow_inheritance.rs
+        - tests/acdd/tasks/retirement.rs
+        reason_verified: true
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ROLE-COMMAND-REJECTION-PARITY: An agent role paired with command pre-validation can return a valid structured rejection proof even when the observed command exited zero, failing closed only on false-positive pass when observed_pass is false, and preserving reuse_on_reject sessions across failed role retries.'
+    - 'INV-CANDIDATE-DRIFT-WARNING: candidate_fingerprint and git snapshots share the same .acdd/ runtime-path exclusions so runtime churn never triggers drift; non-runtime worktree drift during review/immutable gates emits a structured candidate_drift_warning with changed paths for LLM/reviewer inspection and enforces mandatory candidate rebinding, renewed verification when source/test paths drifted, and renewed independent_reviewer sign-off before issuing any terminal deliver/handoff receipt (reserving hard TASK_CANDIDATE_MISMATCH fail-closed strictly for corrupted/mismatched explicit commit receipts or unrecoverable HEAD divergence).'
+    - 'INV-COMMAND-FAILURE-FINDINGS-PROPAGATION: Failing autonomous command gates across waves, workflows, and plans emit structured failure diagnostics into findings and keep RoleObservations.findings synchronized so on_fail repair roles and reject_routing never receive null or stale diagnostics.'
+    - 'INV-ADR021-UNIFIED-TASK-MODEL: Under amended ADR 0021 (Variant A), Plan and Milestone share the single SQLite TasksStore and task_runner execution contour (with plan steps executing in-place via snapshots, full subtask lifecycle, blackboard, and resume, while Milestone adds worktree isolation, blueprint synthesis, red contract tests, and handoff commits); Workflow stays strictly stateless with respect to tasks and subtasks.'
+    - 'INV-WORKFLOW-PROFILE-INHERITANCE: Standalone and builtin workflows inherit roles (runner, models, prompt_template), commands, policies, and limits from the active repository profile without importing a tasks container, support append-only save: log audit trails without task rows, and keep local docs/workflows overrides higher priority.'
+    - 'INV-SPECIFY-DESIGN-TRACEABILITY: Builtin author-spec and amended blueprint schemas capture Goal, Non-goals, ambiguities, numbered AC-* criteria, C1/C2 boundary impact, ADR requirements, and SAD updates prior to code delivery without weakening core gate proofs.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```

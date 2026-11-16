@@ -423,10 +423,13 @@ pub(super) fn compile_evidence_for_task(
             bail!("TASK_TYPED_EVIDENCE_REQUIRED: schema-defined proof gates require their declared typed payload")
         }
     };
-    crate::tasks::gates::validate_gate_proof(&proof, gate, &profile, true, &task.spec.proof_policy)
-        .map_err(|error| {
-            anyhow::anyhow!("TASK_AUTO_PROOF_INVALID: compiled proof failed validation: {error:#}")
-        })?;
+    crate::tasks::gates::validate_gate_proof(
+        &proof,
+        gate,
+        &profile,
+        true,
+        &task.spec.proof_policy,
+    )?;
     let evidence = Evidence {
         task_id: task_id.to_owned(),
         stage: stage.to_owned(),
@@ -737,6 +740,27 @@ fn ensure_command_evidence_with_options(
     if let Err(error) = execution {
         if !error.to_string().starts_with("TASK_COMMAND_FAILED:") {
             return Err(error);
+        }
+        let path = Path::new(worktree).canonicalize()?;
+        let worker = task
+            .worker_id
+            .as_deref()
+            .context("TASK_STALE_CLAIM: claimed worker missing")?;
+        if let Some(run) = store.latest_claim_bound_execution_run(
+            task_id,
+            &format!("tasks.{}", cursor.canonical_stage_id),
+            task.claim_revision,
+            task.contract_revision,
+            worker,
+            &path.to_string_lossy(),
+        )? {
+            if store
+                .claim_bound_execution_traces(run.run_id)?
+                .last()
+                .is_some_and(|trace| trace.trace.status == "timeout")
+            {
+                bail!("WORKFLOW_COMMAND_TIMEOUT: {}", cursor.canonical_stage_id);
+            }
         }
         compile_rejection_evidence(root, &task)?;
         return Err(ObservedMechanicalFailure(error.to_string()).into());
@@ -1422,6 +1446,8 @@ fn read_trace_log(worktree: &Path, trace: &GateExecutionTrace) -> Result<String>
 
 /// Hash the committed tree and all non-ignored Git-visible worktree changes.
 pub(super) fn candidate_fingerprint(root: &Path) -> Result<String> {
+    let database = super::database_path(root)?;
+    let exclusions = super::git_snapshot::named_snapshot_exclusions(root, &database);
     let head = git_stdout(
         root,
         &["rev-parse", "--verify", "HEAD"],
@@ -1446,7 +1472,9 @@ pub(super) fn candidate_fingerprint(root: &Path) -> Result<String> {
             output
                 .stdout
                 .split(|byte| *byte == 0)
-                .filter(|path| super::git_snapshot::is_acdd_runtime_path(path))
+                .filter(|path| {
+                    super::git_snapshot::is_excluded_snapshot_entry(path, &exclusions, false)
+                })
                 .map(<[u8]>::to_vec),
         );
     }
@@ -1484,11 +1512,10 @@ pub(super) fn candidate_fingerprint(root: &Path) -> Result<String> {
     digest.update(&status.stdout);
     digest.update([0]);
     digest.update(&diff.stdout);
-    for path_bytes in untracked
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty() && !super::git_snapshot::is_acdd_runtime_path(path))
-    {
+    for path_bytes in untracked.stdout.split(|byte| *byte == 0).filter(|path| {
+        !path.is_empty()
+            && !super::git_snapshot::is_excluded_snapshot_entry(path, &exclusions, true)
+    }) {
         digest.update(path_bytes);
         digest.update([0]);
         let path = git_relative_path(path_bytes)?;

@@ -89,7 +89,7 @@ Worktrees live at `.worktrees/<milestone-prefix>-<slug>` for milestones and `.wo
 - Task commits:
   - With `auto_commit: true`, ACDD automatically creates the delivery commit and records the receipt in SQLite; do not create duplicate commits.
   - With `auto_commit: false`, create exactly one scoped task commit containing task changes and the generated receipt after delivery.
-  - Snapshot immutability: Never modify files during `deliver` stage or after `review`. Any edit triggers `TASK_CANDIDATE_MISMATCH`. If delivery fails, restore the worktree to the candidate snapshot before submitting rejection (`task submit --stage deliver --action reject`).
+  - Snapshot immutability: Keep accepted snapshots immutable. Rebind candidate drift, renew required verification, and obtain independent review of the rebound content before a terminal receipt. Deliver cannot accept un-rebound candidate drift; follow the [task reference](docs/reference/tasks.md) for recovery.
 - History integration: Preserve accepted task proofs while integrating branches. Rebase, cherry-pick, merge, amend, and squash may change navigation SHAs without reopening completed tasks. Before handoff, obtain independent integration review and repository verification bound to the final content and explicit target base; follow the task and CLI references for the evidence file.
 - Branch integration: Merge each delivered task branch into the milestone branch, delete the temporary task branch, and remove its worktree (`git worktree remove .worktrees/<milestone-prefix>-<task-slug>`).
 

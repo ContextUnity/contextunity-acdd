@@ -607,7 +607,7 @@ Contract digests bind `repository`, `project`, `id`, `invariants`, `owners`, `de
 
 ### Lifecycle Error Codes
 
-- `TASK_CANDIDATE_MISMATCH`: The candidate snapshot from the build gate does not match current worktree state. Restore the worktree to the candidate snapshot before retrying delivery or submitting rejection.
+- `TASK_CANDIDATE_MISMATCH`: An explicit candidate receipt is corrupt or HEAD divergence cannot be recovered. Ordinary candidate drift requires rebinding and renewed verification and independent review before delivery.
 - `TASK_NOT_READY`: The task is blocked by unsatisfied dependencies or parent milestone state.
 - `TASK_ALREADY_CLAIMED`: The task gate is currently held under an active claim revision by another worker.
 - `TASK_STALE_SUBMISSION`: Submission evidence does not match the active gate, claim revision, or candidate snapshot baseline.

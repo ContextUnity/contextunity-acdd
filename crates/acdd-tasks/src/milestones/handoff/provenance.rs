@@ -7,6 +7,7 @@ pub(super) fn accepted_gate_evidence(
     contract_revision: u64,
     proof_policy: &str,
     profile: &crate::core::tasks::profile::GateProfile,
+    receipt_gates: Option<&[String]>,
 ) -> Result<BTreeMap<String, crate::core::tasks::gates::Evidence>> {
     let details = store.inspect_details(task_id)?;
     let attempts = details["attempts"]
@@ -16,6 +17,30 @@ pub(super) fn accepted_gate_evidence(
         .as_array()
         .context("TASK_RECEIPT_INVALID: task gate history is malformed")?;
     let task = store.inspect(task_id)?;
+    use crate::core::tasks::profile::ProofKind;
+    let deliveries: Vec<_> = profile
+        .gates
+        .iter()
+        .filter(|gate| gate.proof.kind() == Some(ProofKind::Delivery))
+        .collect();
+    if let Some(recorded) = receipt_gates {
+        if recorded.is_empty()
+            || recorded
+                .iter()
+                .any(|id| !profile.gates.iter().any(|gate| &gate.id == id))
+        {
+            bail!("TASK_RECEIPT_INVALID: recorded gates are empty or unknown");
+        }
+    }
+    let mut stages = BTreeSet::new();
+    for row in rows.iter().rev() {
+        let stage = row["stage"]
+            .as_str()
+            .context("TASK_RECEIPT_INVALID: gate stage is malformed")?;
+        if stages.insert(stage) && row["state"] != "passed" {
+            bail!("TASK_RECEIPT_INVALID: task has unpassed gate history");
+        }
+    }
     let mut accepted = BTreeMap::new();
     for (gate_pos, gate) in profile.gates.iter().enumerate() {
         if !crate::engine::tasks::claim::task_matches_gate_condition(gate.when.as_deref(), &task) {
@@ -32,6 +57,32 @@ pub(super) fn accepted_gate_evidence(
             false
         });
         if bypassed_by_jump {
+            continue;
+        }
+        let mandatory = gate.sha_snapshot
+            || matches!(
+                gate.proof.kind(),
+                Some(
+                    ProofKind::Contract
+                        | ProofKind::Command
+                        | ProofKind::SeamTest
+                        | ProofKind::Delivery
+                )
+            )
+            || deliveries.iter().any(|delivery| {
+                delivery.review_sources.contains(&gate.id)
+                    || (delivery.review_sources.is_empty()
+                        && gate.proof.kind() == Some(ProofKind::Review))
+            });
+        let recorded = receipt_gates.is_some_and(|gates| gates.contains(&gate.id));
+        if mandatory && receipt_gates.is_some() && !recorded {
+            bail!(
+                "TASK_RECEIPT_INVALID: mandatory gate '{}' is absent from receipt",
+                gate.id
+            );
+        }
+        let persisted = rows.iter().any(|row| row["stage"] == gate.id);
+        if !mandatory && !recorded && (receipt_gates.is_some() || !persisted) {
             continue;
         }
         let row = rows
@@ -165,6 +216,7 @@ pub(super) fn validate_task_provenance(
         task.contract_revision,
         task.proof_policy,
         task.profile,
+        task.receipt.gates.as_deref(),
     )?;
     let delivery_index = task
         .profile

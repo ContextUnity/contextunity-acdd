@@ -10,13 +10,13 @@ This catalog provides domain-tailored ACDD profiles, lifecycle presets, and scen
 | :--- | :--- | :--- |
 | **[`pentest-security-audit.workflow.yaml`](pentest-security-audit.workflow.yaml)** | `Workflow` · `inherit: none` · `save: log` | Self-contained penetration & security audit pipeline (recon, exploit probe, remediation, independent signoff) with zero `.acdd/profile.yaml` dependency. |
 | **[`ci-verification-gate.workflow.yaml`](ci-verification-gate.workflow.yaml)** | `Workflow` · `inherit: none` · `save: log` | Clean-room standalone CI verification & autonomous repair loop for release/PR gates. |
-| **[`repo-polish.workflow.yaml`](repo-polish.workflow.yaml)** | `Workflow` · resource overlay (`AC-004`: `inherit: workspace`) · `save: log` | Shared-resource workflow reusing workspace roles, models, and commands while declaring its own stateless `gates:` graph. |
+| **[`repo-polish.workflow.yaml`](repo-polish.workflow.yaml)** | `Workflow` · `inherit: none` · `save: log` | Portable stateless polish workflow with explicit roles and commands. |
 | **[`docs-refactor-and-reconcile.workflow.yaml`](docs-refactor-and-reconcile.workflow.yaml)** | `Workflow` · `inherit: none` · `save: log` | Refactors and synchronizes docs, `AGENTS.md`, skills, and examples (`audit_drift` $\to$ `reconcile_docs` $\to$ `review_docs`) with link/schema guards and zero code edits. |
 | **[`in-place-refactor.plan.yaml`](in-place-refactor.plan.yaml)** | `Plan` · `save: snapshot` | Unified `TasksStore` in-place plan execution (`build` $\to$ `review` $\to$ `deliver`) without `blueprint_synthesis`, red `contract`, or `handoff`. |
 | **[`subsystem-feature.milestone.yaml`](subsystem-feature.milestone.yaml)** | `Milestone` · `inherit: default` · `save: commit` | Full subsystem delivery (`blueprint_synthesis` $\to$ `tasks:` with `contract`/`seam` $\to$ `verify`/`polish`/`milestone_review`/`handoff`). |
 
 > [!NOTE]
-> The four standalone `*.workflow.yaml` scenario examples above use `inherit: none` and omit local CLI `runner:` shell strings so they validate cleanly as portable templates. Configure `roles.<name>.runner` (or switch to `inherit: workspace` under `AC-004`) before executing them with `acdd workflow run`.
+> The four standalone `*.workflow.yaml` scenario examples above use `inherit: none` and omit local CLI `runner:` shell strings so they validate cleanly as portable templates. Configure `roles.<name>.runner` or use `inherit: workspace` with compatible workspace resources before execution.
 
 Canonical baseline structural examples ([`profile-workflow.example.yaml`](profile-workflow.example.yaml), [`profile-plan.example.yaml`](profile-plan.example.yaml), [`profile-milestone.example.yaml`](profile-milestone.example.yaml)) and authoring workflows ([`author-milestone.workflow.yaml`](author-milestone.workflow.yaml), [`author-plan.workflow.yaml`](author-plan.workflow.yaml), [`author-workflow.workflow.yaml`](author-workflow.workflow.yaml)) remain alongside the domain catalog below.
 

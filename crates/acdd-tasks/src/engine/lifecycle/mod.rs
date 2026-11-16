@@ -199,12 +199,12 @@ fn claim_inner(root: &Path, p: Claim) -> Result<Value> {
     let mut store = workspace.open(&registry.database)?;
     store.lock_checkpoint()?;
     let mut task = store.inspect(&p.task_id)?;
+    task.worktree = Some(worktree.to_string_lossy().into_owned());
     validate_authority(&task, &worktree, workspace, &registry)?;
     registry.check_scope(workspace, &task.spec.scope, Some(&worktree))?;
     context::validate_claim_gate_requirements(workspace, &store, &task)?;
     let profile = store.profile_for_task(&task)?;
     let root_profile = root_gates::resolve_milestone_profile_for_task(&store, workspace, &task)?;
-    task.worktree = Some(worktree.to_string_lossy().into_owned());
     ensure_pre_task_root_gates_passed(&store, workspace, &task, &root_profile)?;
     let cursor = super::claim::claim_nested_gate_for_task(&profile, &task.stage, &p.stage, &task)?;
     let claimed = store.claim(
@@ -843,7 +843,7 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                 &all_tasks,
                 &selected_worktree,
             )?;
-            let profile_store = super::store(root)?;
+            let profile_store = registry.open(workspace)?;
             let next = store.next(
                 worker,
                 worktree,

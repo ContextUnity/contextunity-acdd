@@ -5,6 +5,11 @@ description: Build, audit, or amend implementation contracts, tasks, and milesto
 
 # Contract planning and architectural audit
 
+Specify the goal, non-goals, ambiguities, and numbered `AC-*` criteria before
+design. Map criteria to task slices and proof seams. Record C1/C2 boundaries and
+ADRs where needed; inspect C3/C4 structure in the live code map. Choose a
+Workflow, Plan, or Milestone to match the scope and persistence required.
+
 Use before creating, reopening, materially amending, or admitting an
 implementation task or milestone plan. Use it again when review or repair shows
 that the current contract omitted an owner, consumer, failure mode, or proof

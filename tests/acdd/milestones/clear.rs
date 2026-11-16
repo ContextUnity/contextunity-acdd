@@ -722,6 +722,7 @@ fn workflow_and_plan_trace_ownership_preserves_milestone_verification_traces() {
     let root = harness.root();
     let db_path = root.join(".acdd/tasks.sqlite");
     std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    drop(acdd_tasks::store::TasksStore::open(&db_path).unwrap());
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS gate_execution_traces (
@@ -927,7 +928,7 @@ fn named_task_snapshot_ownership_is_preserved() {
 
     let cleared = harness.run_cli(&["plan", "clear", "shared"]).unwrap();
     assert_eq!(cleared["cleared"], true);
-    assert_eq!(cleared["refs_pruned"], 1);
+    assert_eq!(cleared["refs_pruned"], 2);
 
     // Task snapshot is strictly preserved!
     assert!(crate::acdd::support::git_command(

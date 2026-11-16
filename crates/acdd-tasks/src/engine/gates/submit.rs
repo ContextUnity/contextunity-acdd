@@ -12,6 +12,43 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use std::path::Path;
 
+fn delivery_gate_ids(
+    conn: &rusqlite::Connection,
+    id: &str,
+    profile: &crate::tasks::profile::GateProfile,
+    task: &Task,
+    delivery: &str,
+) -> Result<Vec<String>> {
+    let profile = super::super::claim::flattened_profile(profile, Some(task))?;
+    let mut gates = Vec::new();
+    let mut skip_until = 0;
+    for (index, gate) in profile.gates.iter().enumerate() {
+        if index < skip_until
+            || !super::super::claim::task_matches_gate_condition(gate.when.as_deref(), task)
+        {
+            continue;
+        }
+        gates.push(gate.id.clone());
+        if gate.id == delivery {
+            break;
+        }
+        if let Some(target) = gate
+            .on_success
+            .as_deref()
+            .and_then(|target| profile.index_of(target))
+        {
+            let passed = conn.query_row(
+                "SELECT state FROM task_gates WHERE task_id=?1 AND gate=?2 ORDER BY revision DESC LIMIT 1",
+                params![id, gate.id], |row| row.get::<_, String>(0),
+            ).optional()?.as_deref() == Some("passed");
+            if passed && target > index {
+                skip_until = target;
+            }
+        }
+    }
+    Ok(gates)
+}
+
 fn same_worktree(active: &str, submitted: &str) -> bool {
     if active == submitted {
         return true;
@@ -495,6 +532,13 @@ impl TasksStore {
                 text.clone(),
             )?;
             let receipt = Receipt {
+                gates: Some(delivery_gate_ids(
+                    &tx,
+                    id,
+                    &profile,
+                    &task,
+                    &cursor.canonical_stage_id,
+                )?),
                 delivery_gate: Some(cursor.canonical_stage_id.clone()),
                 candidate_gate: None,
                 commit: evidence.commit.clone(),
@@ -703,6 +747,13 @@ impl TasksStore {
                 Some(receipt_commit.to_owned())
             };
             let generated = Receipt {
+                gates: Some(delivery_gate_ids(
+                    &tx,
+                    id,
+                    &profile,
+                    &task,
+                    &cursor.canonical_stage_id,
+                )?),
                 delivery_gate: Some(cursor.canonical_stage_id.clone()),
                 candidate_gate: Some(_snapshot_gate.canonical_stage_id.clone()),
                 commit: document_commit.clone(),
@@ -725,6 +776,13 @@ impl TasksStore {
                         document_commit.as_deref(),
                         &profile,
                     )?;
+                    if existing
+                        .gates
+                        .as_ref()
+                        .is_some_and(|gates| Some(gates) != generated.gates.as_ref())
+                    {
+                        bail!("TASK_RECEIPT_INVALID: recorded gates differ from the applicable delivery gates");
+                    }
                     if existing.rollup != generated.rollup {
                         bail!("TASK_RECEIPT_INVALID: rollup differs from accepted task context");
                     }
@@ -785,6 +843,7 @@ impl TasksStore {
             task.status = "ready".into();
         } else {
             let findings = findings.context("reject requires findings")?;
+            super::super::gate_graph::validate_rejection_findings(&gate_def, findings)?;
             let reject_count: i64 = tx.query_row(
                 "SELECT count(*) FROM task_gates WHERE task_id=?1 AND gate=?2 AND state='rejected'",
                 params![id, evidence.stage],

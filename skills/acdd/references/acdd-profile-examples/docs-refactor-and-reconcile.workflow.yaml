@@ -5,8 +5,8 @@
 # Refactors and reconciles docs, ADRs, AGENTS.md, skills, and profile examples
 # against live source and schemas (`save: log`, zero tasks, zero code edits).
 # Structural template: with `inherit: none`, bind `runner:` per role before
-# running `acdd workflow run`; AC-004 target switches `inherit: none` to
-# `inherit: workspace` to reuse workspace `roles:`, `runner:`, and `models:`.
+# running `acdd workflow run`; `inherit: workspace` can reuse compatible
+# workspace roles, runners, and models.
 # =============================================================================
 
 version: 2

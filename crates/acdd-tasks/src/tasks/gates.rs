@@ -145,12 +145,6 @@ fn schema_placeholder(schema: &crate::tasks::profile::SchemaDef) -> serde_json::
             }
             let mut value = json!({});
             merge_schema(&mut value, schema);
-            let object = value.as_object_mut().expect("object placeholder");
-            for (name, child) in &schema.properties {
-                object
-                    .entry(name.clone())
-                    .or_insert_with(|| schema_placeholder(child));
-            }
             value
         }
         "array" => json!(schema

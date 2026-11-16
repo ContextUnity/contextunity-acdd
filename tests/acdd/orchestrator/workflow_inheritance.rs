@@ -361,13 +361,9 @@ fn custom_catalog_proof_projects_optional_properties_without_requiring_them_at_r
     );
     let template = &projected["scheme_proof"];
     assert!(template["summary"].is_string());
-    assert!(
-        template["boundary_notes"].is_array()
-            && template["requires_adr"].is_boolean()
-            && template["design"]["goal"].is_string()
-            && template["design"]["sad_updates"].is_array(),
-        "generic catalog templates must project optional properties recursively: {projected}"
-    );
+    for field in ["boundary_notes", "requires_adr", "design"] {
+        assert!(template.get(field).is_none(), "optional {field}: {projected}");
+    }
     assert!(!root.path(".acdd/tasks.sqlite").exists());
     assert!(!root.path(".worktrees").exists());
 }
@@ -925,11 +921,15 @@ fn blueprint_schema_validates_additive_design_fields_without_weakening_core_proo
         if !schema.properties.contains_key(field) {
             failures.push(format!("missing typed Specify/Design field {field}"));
         }
-        if let Some(value) = projected["scheme_proof"].get(field) {
-            expanded[field] = value.clone();
-        } else {
-            failures.push(format!("role proof template omits {field}"));
+        if projected["scheme_proof"].get(field).is_some() {
+            failures.push(format!("role proof template populated optional {field}"));
         }
+        expanded[field] = match field {
+            "ac_mapping" | "sad_updates" => json!(["example"]),
+            "c2_boundary_impact" => json!("boundary"),
+            "adr_required" => json!(false),
+            _ => unreachable!(),
+        };
         let mut malformed = legacy.clone();
         malformed[field] = Value::Null;
         if schema.validate_value(&malformed, "$.scheme_proof").is_ok() {

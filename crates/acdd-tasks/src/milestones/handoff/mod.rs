@@ -735,6 +735,9 @@ pub fn handoff(
             task.contract_revision,
             &task.spec.proof_policy,
             &flattened_profile,
+            task.receipt
+                .as_ref()
+                .and_then(|receipt| receipt.gates.as_deref()),
         )?;
         let delivery = flattened_profile
             .gates

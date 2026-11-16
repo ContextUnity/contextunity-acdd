@@ -377,6 +377,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
             let current = root.document(milestone_ref);
             let parsed = Milestone::parse(&current, "forge-mcp").unwrap();
             let mut recovered = Receipt {
+                gates: None,
                 delivery_gate: None,
                 candidate_gate: None,
                 commit: None,
@@ -414,6 +415,22 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
             assert_eq!(store.blackboard_read(&second, None, None).unwrap().len(), 2);
             recovered.rollup.as_mut().unwrap().architectural_notes[0] =
                 "decisions: Retain retry notes.".into();
+            let mut forged = receipt["gates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|gate| gate.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            assert!(forged.iter().any(|gate| gate == "contract_review"));
+            forged.retain(|gate| gate != "contract_review");
+            recovered.gates = Some(forged);
+            root.write(milestone_ref, &recovery_text(&recovered));
+            let rejected = TaskHarness::pass_request(&second, stage, &proof);
+            let error = root.submit_request(rejected).unwrap_err();
+            assert!(format!("{error:#}").contains("TASK_RECEIPT_INVALID"));
+            assert!(format!("{error:#}").contains("recorded gates differ"));
+            assert_eq!(store.inspect(&second).unwrap().status, "in_progress");
+            recovered.gates = None;
             root.write(milestone_ref, &recovery_text(&recovered));
         }
         let request: tasks::Submit = TaskHarness::pass_request(&second, stage, &proof);

@@ -1311,6 +1311,8 @@ pub(super) fn context_bundle(
         json!({
             "task_id": task_id,
             "target": details["goal"],
+            "spec": task.spec.spec,
+            "acceptance_criteria": task.spec.acceptance_criteria,
             "stage": stage,
             "status": details["status"],
             "proof_policy": details["proof_policy"],

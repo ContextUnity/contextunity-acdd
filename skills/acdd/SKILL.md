@@ -187,6 +187,15 @@ persistence belong to the active embedded/repository profile. Read
 `workflow_guidance` returned by `task_claim` and submit its claim-bound
 `expected_evidence_template`; do not infer a fixed sequence from this skill.
 Repository `AGENTS.md` owns verification commands and Git permissions.
+Keep temporary task artifacts under `.acdd/tmp/` and outside source authority.
+
+Use a stateless Workflow for repeatable procedures, an in-place Plan for
+multi-step task execution, and a Milestone for isolated delivery with blueprint
+and handoff gates. Plans and Milestones share `TasksStore`; Workflows create no
+task rows. Specify numbered `AC-*` criteria before design and map each task to
+its applicable criteria. Keep C1/C2 boundaries in architecture documentation
+and inspect live C3/C4 relationships in the code map. Rebind candidate drift and
+renew required verification and independent review before a terminal receipt.
 
 To customize a repository or task workflow, copy the
 [canonical ACDD profile example](references/acdd_profile.yaml.example), select it
@@ -210,7 +219,7 @@ task's slice in `gate_transitions` (`subject = <full_task_id>`) and injects only
 task's slice into `context_bundle` upon `task_claim`. Command gates and reusable templates supply verification and retry contours. Use the
 [ACDD domain profile examples catalog](references/acdd-profile-examples/README.md)
 (including `{scenario}.{workflow|plan|milestone}.yaml` scenarios such as [`pentest-security-audit.workflow.yaml`](references/acdd-profile-examples/pentest-security-audit.workflow.yaml), [`ci-verification-gate.workflow.yaml`](references/acdd-profile-examples/ci-verification-gate.workflow.yaml), [`repo-polish.workflow.yaml`](references/acdd-profile-examples/repo-polish.workflow.yaml), [`docs-refactor-and-reconcile.workflow.yaml`](references/acdd-profile-examples/docs-refactor-and-reconcile.workflow.yaml), [`in-place-refactor.plan.yaml`](references/acdd-profile-examples/in-place-refactor.plan.yaml), and [`subsystem-feature.milestone.yaml`](references/acdd-profile-examples/subsystem-feature.milestone.yaml)) for domain-specific starting points; verify examples against the live schema.
-Dedicated standalone authoring workflows (`author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, `author-workflow.workflow.yaml`) under `docs/workflows/` (and mirrored in `references/acdd-profile-examples/`) execute as taskless root-gate workflows (`inherit: none`, `save: none`) to synthesize, review, and preflight manifests, plans, and workflows before execution.
+Dedicated standalone authoring workflows execute taskless root gates to synthesize, review, and preflight specifications, manifests, plans, and workflows before execution. Resolve their inheritance and persistence from the active workflow profile.
 The milestone preflight runs `milestone init --in-place`, which initializes the
 authored manifest's tasks; the workflow gates do not create tasks or claims.
 Standalone role runners return a structured decision and matching proof; a role's

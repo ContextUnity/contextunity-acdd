@@ -14,6 +14,12 @@ doc_type: guide
 ACDD separates *what* must be built from *how* work is governed and verified:
 
 1. **Git-Tracked Authority (`docs/milestones/*.md`, `docs/plans/*.md`)**: Humans and architects keep contracts, task write perimeters (`scope`), dependency edges (`depends_on`), and proof policies in Markdown under Git.
+
+Milestone and task `spec` references and `acceptance_criteria` identify the
+applicable specification and `AC-*` criteria. A claim projects its own task's
+criteria into `context_bundle.contract`; sibling task criteria remain outside
+that projection. Blueprint proof maps acceptance criteria to design and task
+slices without replacing the gate's typed proof.
 2. **Persistent Queue and Proof Store (`.acdd/tasks.sqlite`)**: ACDD synchronizes contracts into SQLite (`tasks`, `gate_transitions`, `task_claims`, `task_blackboard`). Rebuilding `.acdd/code-map.sqlite` never resets active task state or receipts.
 3. **Declarative Governance Profile (`profile.yaml`)**: Defines the ordered gate graph, required proof schemas, role assignments, command catalogs, HITL escalation rules, and review contours.
 
@@ -70,7 +76,7 @@ Each reachable applicable (`when`) root gate on the accepted route before `- tas
 - **Dispatch Directives**: Submission to an independent next gate returns a structured `dispatch` object derived from the active role and prior worker, along with the `[INDEPENDENT GATE DISPATCH REQUIRED]` directive and suggested worker `{task_slug}-{gate}`. The coordinator performs that dispatch; reading guidance launches no process. See [gate dispatch and evidence](tasks.md#gates-and-evidence).
 - **Failure & Loop Routing (`pass`, `fail`, `loop`)**: Passing advances sequentially or to the named `pass:` target; rejecting or failing routes to `fail:`. Declaring `loop: { scope: <gate>, symbols: <gate> }` on a review gate routes back to the builder with structured reviewer findings (`task_findings`). With `reuse_on_reject: true`, ACDD supplies the accepted builder identity through `{session_id}` and `ACDD_AGENT_SESSION_ID`; this does not preserve provider conversation history or widen admitted scope or symbols.
 - **Conditional Gates (`when`) & Multi-Attempt Limits (`max_attempts`)**: Gates with `when: seam` run only when the task participates in cross-task seam dependencies. An explicit `max_attempts` limits failures at that gate; successful visits do not consume the budget. Omitting it leaves failure routing unbounded. Root milestone replay reconstructs the budget from the replayed observations. A timed-out or signal-interrupted root command stops execution with an error instead of following a failure route.
-- **Save & Immutability (`save`)**: Controls snapshot and commit semantics around a gate (`pre: snapshot`, `post: snapshot | commit`, `immutable: true` to reject working-tree tampering via `TASK_CANDIDATE_MISMATCH`, `git_commit_note: telemetry`, `receipt: true`, and `absorb: true` on terminal milestone handoff).
+- **Save & Immutability (`save`)**: Controls snapshots and commits around a gate. Candidate drift requires rebinding and renewed verification and independent review before a terminal receipt; corrupted explicit receipts or unrecoverable HEAD divergence fail closed.
 
 Native milestone root gates capture declared snapshots before execution and after
 an accepted decision without moving `HEAD`. Immutable gates compare their input
@@ -182,10 +188,10 @@ Phase 3: Post-Task Milestone Closure
   - `seam_test`: Requires `seam_test_proof` (`exit_code: 0`, `seam_test_refs`, optional test counts).
   - `delivery`: Requires `delivery_proof` (`delivered`, `commit_sha`, `receipt_id`).
 - **Roles (`roles`)**: All four roles use `mode: subagent` and `reuse_on_reject: true`. Headless runners receive a retained ACDD identity on rejection; that identity alone does not resume provider conversation state. Runner templates requesting unsupported provider conversation resumption are rejected during profile validation and before spawning:
-  - `architect` (`sol-6.1:high`): Synthesizes the milestone blueprint, grounds decisions on `task_blackboard`, and performs milestone integration polish.
-  - `contract_author` (`sol-6.1:high`): Designs each task's data flow, invariants, negative boundaries, and compiling runtime-red seam test, and posts a `build`-targeted `draft` to `task_blackboard`.
-  - `builder` (`gpt6-luna:xhigh`): Implements approved contracts and joint seam integrations strictly inside admitted scope.
-  - `independent_reviewer` (`sol-6.1:xhigh`): Audits blueprint synthesis, individual tasks (and claims/submits `deliver` in the same session), seam integration, and final milestone cohesion while staying strictly independent (`worker_id`) from the author/builder being reviewed.
+  - `architect`: Synthesizes the milestone blueprint, grounds decisions on `task_blackboard`, and performs milestone integration polish.
+  - `contract_author`: Designs each task's data flow, invariants, negative boundaries, and compiling runtime-red seam test, and posts a `build`-targeted `draft` to `task_blackboard`.
+  - `builder`: Implements approved contracts and joint seam integrations inside admitted scope.
+  - `independent_reviewer`: Audits blueprint synthesis, tasks, seam integration, and final milestone cohesion while remaining independent (`worker_id`) from the author or builder.
 - **Policies (`policies`)**: Enforces `require_zero_exit: true` (`max_log_bytes: 98304`) for commands, `atomic_receipt: true` for delivery, and `default_review` (`independent_worker: true`, `require_all_contours: true`, `audit_extended_scope: true`).
 - **Review Contours (`contour.*`)**: Every review gate receives five analytical focus lenses (`guidance.contours`):
   1. `contour.paths`: Changed/staged/untracked/generated files remain inside initial scope and admitted extensions; protected paths untouched.

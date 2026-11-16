@@ -85,7 +85,7 @@ Documentation in ContextUnity ACDD is not an afterthought stored in disconnected
 - **Session-Preserving Repair Loops & Dynamic Context**: Every gate claim delivers tailored `workflow_guidance`, an isolated `context_bundle`, and persistent `task_blackboard` notes; reviewer rejections resume the builder session with full context intact.
 - **Three Execution Tiers**:
   1. **Milestones (`docs/milestones/*.md`)**: Reviewed team delivery contracts with upfront blueprint synthesis, isolated task DAG waves, independent integration review, and cryptographic handoff receipts.
-  2. **Documentation Plans (`docs/plans/*.md`)**: Structured documentation-driven step execution in-place with snapshot persistence (*under active alpha testing*).
+  2. **Documentation Plans (`docs/plans/*.md`)**: Structured in-place steps use the shared SQLite task lifecycle and snapshot persistence.
   3. **Standalone Workflows (`docs/workflows/*.yaml`)**: Lightweight taskless root-gate pipelines with ephemeral observations for sweeps, linting, authoring, and checks (*under active alpha testing*).
 
 > [!TIP] Complete ACDD, Profile & Tool References

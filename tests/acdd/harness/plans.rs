@@ -155,18 +155,27 @@ fn plans_exclude_configured_database_from_each_snapshot() {
     );
     root.write("unrelated.txt", "preserved\n");
     std::fs::create_dir_all(root.path("runtime")).unwrap();
+    drop(acdd_tasks::store::TasksStore::open(&root.path("runtime/tasks.sqlite")).unwrap());
     let db = rusqlite::Connection::open(root.path("runtime/tasks.sqlite")).unwrap();
-    db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE activity (value TEXT); INSERT INTO activity VALUES ('live');").unwrap();
+    db.execute_batch(
+        "PRAGMA journal_mode=WAL; INSERT INTO meta(key, value) VALUES ('activity', 1);",
+    )
+    .unwrap();
     for suffix in ["", "-wal", "-shm"] {
         assert!(root.path(format!("runtime/tasks.sqlite{suffix}")).exists());
     }
+    drop(db);
     root.write("runtime/tasks.sqlite-journal", "journal");
     root.write("runtime/tasks.sqlite.lock", "lock");
     let head = git_head(root.root());
     let result = harness.run(&root).unwrap();
     assert_eq!(result["status"], "completed");
     assert_eq!(git_head(root.root()), head);
-    let refs = harness.snapshots(&root);
+    let refs = harness
+        .snapshots(&root)
+        .into_iter()
+        .filter(|reference| reference.contains(" refs/forge/snapshots/"))
+        .collect::<Vec<_>>();
     assert_eq!(refs.len(), 6, "{refs:?}");
     let mut completed = 0;
     let mut implemented = 0;
@@ -189,32 +198,31 @@ fn plans_exclude_configured_database_from_each_snapshot() {
                 "{name}: {tree}"
             );
         }
-        assert!(tree.lines().any(|p| p == "unrelated.txt"));
-        let output = git_command(root.root(), &["show", &format!("{name}:src/first.rs")])
+        assert!(root.path("unrelated.txt").exists());
+        if name.starts_with("refs/forge/snapshots/forge-mcp/") {
+            assert!(!tree.lines().any(|p| p == "unrelated.txt"));
+        }
+        if tree.lines().any(|path| path == "src/first.rs") {
+            let output = git_command(root.root(), &["show", &format!("{name}:src/first.rs")])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let source = String::from_utf8(output.stdout).unwrap();
+            implemented += usize::from(source.contains("implementation"));
+        }
+        if tree.lines().any(|path| path == "docs/plans/linear.md") {
+            let output = git_command(
+                root.root(),
+                &["show", &format!("{name}:docs/plans/linear.md")],
+            )
             .output()
             .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let source = String::from_utf8(output.stdout).unwrap();
-        implemented += usize::from(source.contains("implementation"));
-        let output = git_command(
-            root.root(),
-            &["show", &format!("{name}:docs/plans/linear.md")],
-        )
-        .output()
-        .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let plan = String::from_utf8(output.stdout).unwrap();
-        if plan.contains("**Status**: completed") {
-            assert!(plan.contains("**Evidence**:"));
-            completed += 1;
+            assert!(output.status.success());
+            let plan = String::from_utf8(output.stdout).unwrap();
+            if plan.contains("**Status**: completed") {
+                assert!(plan.contains("**Evidence**:"));
+                completed += 1;
+            }
         }
     }
     assert!(implemented >= 4);

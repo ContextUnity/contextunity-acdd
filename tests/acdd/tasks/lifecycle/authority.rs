@@ -8,6 +8,7 @@ fn specifications_validate_unique_identities_and_governing_digests() {
     let mut completed = first.clone();
     completed.status = Some("completed".into());
     completed.receipt = Some(Receipt {
+        gates: None,
         delivery_gate: None,
         candidate_gate: None,
         commit: Some("candidate".into()),

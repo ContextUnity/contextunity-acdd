@@ -350,9 +350,9 @@ Select a unique filename stem or discovered root-relative path. `list` and
 `show` perform no gate execution. Discovery rejects symlinks and escaping paths.
 `show` exposes validated steps, scopes, statuses and dependency edges.
 
-`plan clear <selector>` purges Git working snapshot references (`refs/forge/snapshots/{namespace}/plan-*`) and deletes SQLite execution traces matching literal `path#` and `slug#`, leaving the plan Markdown manifest untouched.
+`plan clear <selector>` purges the plan's Git snapshot references, SQLite plan task and subtask rows, and execution traces matching literal `path#` and `slug#`, leaving the plan Markdown manifest untouched.
 
-`plan archive <selector>` enforces ADR 0005 symlink confinement on destination ancestor directories (`docs/plans/archive`), fails closed if the destination archive file already exists (`PLAN_ARCHIVE_EXISTS`), prunes snapshot references and traces, and renames the plan manifest into `docs/plans/archive/`.
+`plan archive <selector>` enforces ADR 0005 symlink confinement on destination ancestor directories (`docs/plans/archive`), fails closed if the destination archive file already exists (`PLAN_ARCHIVE_EXISTS`), prunes the same snapshot, task, subtask, and trace state, and renames the plan manifest into `docs/plans/archive/`.
 
 Use numbered step headings (`## 1. Step name`) and explicit bullet fields:
 `- **Target**: goal`, `- **Scope**: ["src/module.rs"]`,
@@ -368,15 +368,19 @@ mode. The default projects the selected profile's task gates to `save: snapshot`
 An explicit profile must already contain only task gates and use snapshot
 persistence; root gates and commits are refused. Steps follow the canonical
 pass/fail graph, conditions and retry limits. Agent roles return typed decisions;
-command gates collect actual process observations. Immutable gates reject
-candidate drift. Delivery reuses the task subtask guard: unfinished subtasks fail
+command gates collect actual process observations. Non-runtime candidate drift
+at an immutable gate emits `candidate_drift_warning` and requires candidate
+rebinding, renewed verification when required, and independent review of the
+rebound candidate before delivery. Delivery is withheld until those obligations
+are satisfied. Delivery reuses the task subtask guard: unfinished subtasks fail
 with `TASK_SUBTASKS_INCOMPLETE`, and completed subtasks with blank evidence fail
 with `TASK_SUBTASK_EVIDENCE_MISSING`; cancelled subtasks are permitted.
 
 Successful steps update source `Status` and `Evidence` and retain named Git
-snapshots, including configured pre/post gate snapshots. Execution preserves
-HEAD and staged content, creates no worktree or task registry, and refuses
-concurrent plan-source changes. A failed snapshot rolls back only this runner's
+snapshots, including configured pre/post gate snapshots. Plan steps and subtasks
+persist in the shared SQLite `TasksStore` via `TasksStore::sync_plan`. Execution
+preserves HEAD and staged content, creates no worktree, and refuses concurrent
+plan-source changes. A failed snapshot rolls back only this runner's
 unchanged source update. Completed steps with evidence are not replayed. JSON
 results include the path, steps and snapshots. A failure retains work for repair.
 

@@ -930,17 +930,65 @@ fn has_findings(value: &serde_json::Value, key: &str) -> bool {
     }
 }
 
+/// Reject ambiguous routing signals before a rejection is persisted.
+pub(crate) fn validate_rejection_findings(
+    gate: &GateDef,
+    findings: &serde_json::Value,
+) -> Result<()> {
+    let scope = has_findings(findings, "scope_findings");
+    let symbols =
+        has_findings(findings, "contract_findings") || has_findings(findings, "symbol_findings");
+    let mut classifier = None;
+    for field in ["kind", "category"] {
+        if let Some(kind) = findings.get(field) {
+            let kind = kind
+                .as_str()
+                .context("TASK_FINDINGS_INVALID: kind and category must be strings")?;
+            let class = routing_class(kind);
+            if classifier.is_some_and(|previous| previous != class) {
+                bail!("TASK_FINDINGS_INVALID: conflicting rejection routing signals");
+            }
+            classifier = Some(class);
+            let conflict = match class {
+                Some("scope") => symbols,
+                Some("symbols") => scope,
+                _ => scope || symbols,
+            };
+            if conflict {
+                bail!("TASK_FINDINGS_INVALID: conflicting rejection routing signals");
+            }
+        }
+    }
+    if scope
+        && symbols
+        && gate.reject_routing.as_ref().is_some_and(|route| {
+            route.scope.is_some() && route.symbols.is_some() && route.scope != route.symbols
+        })
+    {
+        bail!("TASK_FINDINGS_INVALID: conflicting rejection routing signals");
+    }
+    Ok(())
+}
+
+fn routing_class(kind: &str) -> Option<&'static str> {
+    match kind {
+        "scope" => Some("scope"),
+        "symbols" | "contract" => Some("symbols"),
+        _ => None,
+    }
+}
+
 fn failure_class(findings: Option<&serde_json::Value>) -> Option<&'static str> {
     let findings = findings?;
     let kind = findings
         .get("kind")
         .or_else(|| findings.get("category"))
         .and_then(serde_json::Value::as_str);
-    if has_findings(findings, "scope_findings") || kind == Some("scope") {
+    if has_findings(findings, "scope_findings") || kind.and_then(routing_class) == Some("scope") {
         Some("scope")
     } else if has_findings(findings, "contract_findings")
         || has_findings(findings, "symbol_findings")
-        || matches!(kind, Some("symbols" | "contract"))
+        || kind.and_then(routing_class) == Some("symbols")
     {
         Some("symbols")
     } else {

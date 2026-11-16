@@ -51,6 +51,8 @@ mod task_proof_fanout_validation_tests {
             spec: TaskSpec {
                 task_ref: task_ref.into(),
                 target: format!("implement {task_ref}"),
+                spec: None,
+                acceptance_criteria: Vec::new(),
                 agent_type: None,
                 acdd_profile: None,
                 proof_policy: "strict".into(),

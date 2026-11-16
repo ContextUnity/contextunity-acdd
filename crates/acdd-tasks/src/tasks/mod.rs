@@ -192,6 +192,9 @@ pub fn shorten_task_response_commits(_value: &mut serde_json::Value) {}
 #[serde(deny_unknown_fields)]
 /// Represents receipt data.
 pub struct Receipt {
+    /// Ordered list of applicable profile gate IDs enforced when this task delivered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gates: Option<Vec<String>>,
     /// Qualified delivery gate that accepted this receipt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_gate: Option<String>,
@@ -221,6 +224,7 @@ impl Receipt {
     /// decision, contract revision, timestamp, and rollup, ignoring the Git commit pointer.
     pub fn matches_proofs(&self, other: &Self) -> bool {
         self.contract_revision == other.contract_revision
+            && self.gates == other.gates
             && self.delivery_gate == other.delivery_gate
             && self.candidate_gate == other.candidate_gate
             && self.passed_at == other.passed_at
@@ -702,6 +706,12 @@ pub struct TaskSpec {
     pub task_ref: String,
     /// The target value.
     pub target: String,
+    /// Specification reference for this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
+    /// Acceptance criteria applicable to this task.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acceptance_criteria: Vec<String>,
     /// Optional agent specialization requested by the task contract.
     #[serde(default)]
     pub agent_type: Option<String>,
@@ -760,6 +770,12 @@ pub struct Milestone {
     pub repository: String,
     /// The project value.
     pub project: String,
+    /// Specification reference for this milestone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
+    /// Milestone-level acceptance criteria.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acceptance_criteria: Vec<String>,
     /// Optional pinned ACDD profile override for every task in the milestone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acdd_profile: Option<String>,
@@ -1377,6 +1393,12 @@ impl Milestone {
             status,
             repository,
             project,
+            spec: field("spec"),
+            acceptance_criteria: meta
+                .get("acceptance_criteria")
+                .map(|v| serde_yaml::from_value(v.clone()))
+                .transpose()?
+                .unwrap_or_default(),
             acdd_profile,
             invariants,
             owners,
