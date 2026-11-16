@@ -45,6 +45,9 @@ pub struct ReadRequest {
     pub baseline: Option<String>,
     /// Export the returned content to a confined workspace-relative file.
     pub output_file: Option<String>,
+    /// Include Hints footer with follow-up MCP suggestions (default false).
+    #[serde(default)]
+    pub include_hints: bool,
 }
 
 /// Strips workspace root prefix from absolute paths, resolving to workspace-relative path.
@@ -253,6 +256,13 @@ pub fn acdd_read_tool(
                             "output_file must differ from any input file in paths"
                         );
                     }
+                    if request.resolved_mode() == ReadMode::Search
+                        && is_directory_or_glob_search(root, adapter, p)?
+                    {
+                        if let Some(scope) = resolve_search_scope(root, adapter, p)? {
+                            ensure_export_not_in_search_scope(&scope, Some(&destination))?;
+                        }
+                    }
                 }
             }
             let mut results = Vec::new();
@@ -453,57 +463,90 @@ fn acdd_read_single(
         let path = request
             .path
             .as_deref()
+            .or((mode == ReadMode::Search).then_some("."))
             .context("reader mode requires path")?;
-        let file = admitted_file(root, adapter, path)?;
         let bounds = ReadBounds {
             start_line: request.start_line,
             line_count: request.line_count,
         };
-        let (content, truncated) = match mode {
-            ReadMode::Delta => (
-                compute_file_delta(root, &file, request.baseline.as_deref(), task.as_ref())?,
-                false,
-            ),
-            ReadMode::Outline => {
-                ensure!(
-                    file.metadata()?.len() <= adapter.limits.max_file_bytes,
-                    "outline file exceeds max_file_bytes"
-                );
-                let text = std::fs::read_to_string(&file)?;
-                if markdown {
-                    (crate::engine::docs::render_outline(path, &text)?, false)
-                } else {
-                    let profile = crate::engine::languages::for_path(&file)
-                        .context("no compiled language profile for outline")?;
-                    let facts = crate::engine::ast::extract(path, profile.id(), &text)?;
-                    (
-                        facts
-                            .nodes
-                            .iter()
-                            .filter(|n| n.kind != "module")
-                            .map(|n| {
-                                format!(
-                                    "{}:{} {} {}",
-                                    n.line,
-                                    n.end_line,
-                                    n.kind,
-                                    n.details["signature"].as_str().unwrap_or(&n.qualname)
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                        false,
-                    )
+        let export_dest = request
+            .output_file
+            .as_deref()
+            .map(|output| -> Result<std::path::PathBuf> {
+                sensitive(adapter, root, output)?;
+                Ok(acdd_core::fs::checked_child(root, Path::new(output))?)
+            })
+            .transpose()?;
+        let (content, truncated, single_file) = if mode == ReadMode::Search
+            && is_directory_or_glob_search(root, adapter, path)?
+        {
+            let (content, truncated) = search_directory_or_glob(
+                root,
+                adapter,
+                path,
+                &bounds,
+                request,
+                export_dest.as_deref(),
+            )?;
+            (content, truncated, false)
+        } else {
+            let file = admitted_file(root, adapter, path)?;
+            let (content, truncated) = match mode {
+                ReadMode::Delta => (
+                    compute_file_delta(root, &file, request.baseline.as_deref(), task.as_ref())?,
+                    false,
+                ),
+                ReadMode::Outline => {
+                    ensure!(
+                        file.metadata()?.len() <= adapter.limits.max_file_bytes,
+                        "outline file exceeds max_file_bytes"
+                    );
+                    let text = std::fs::read_to_string(&file)?;
+                    if markdown {
+                        (crate::engine::docs::render_outline(path, &text)?, false)
+                    } else {
+                        let profile = crate::engine::languages::for_path(&file)
+                            .context("no compiled language profile for outline")?;
+                        let facts = crate::engine::ast::extract(path, profile.id(), &text)?;
+                        (
+                            facts
+                                .nodes
+                                .iter()
+                                .filter(|n| n.kind != "module")
+                                .map(|n| {
+                                    format!(
+                                        "{}:{} {} {}",
+                                        n.line,
+                                        n.end_line,
+                                        n.kind,
+                                        n.details["signature"].as_str().unwrap_or(&n.qualname)
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            false,
+                        )
+                    }
                 }
-            }
-            _ => extract_file_slice(&file, mode, &bounds, request)?,
+                _ => extract_file_slice(&file, mode, &bounds, request)?,
+            };
+            (content, truncated, true)
         };
-        serde_json::to_value(ReadResult {
+        let mut val = serde_json::to_value(ReadResult {
             path: path.into(),
             mode,
             content,
             truncated,
-        })?
+        })?;
+        if !single_file {
+            if let (Some(output), Some(destination)) = (&request.output_file, export_dest) {
+                let content = exportable_content(&val).context("read has no exportable content")?;
+                acdd_core::fs::atomic_write(&destination, content.as_bytes(), false)?;
+                val["output_file"] = json!(output);
+            }
+            return Ok(val);
+        }
+        val
     };
     let path = value["node"]["path"]
         .as_str()
@@ -512,7 +555,10 @@ fn acdd_read_single(
         .to_owned();
     if adapter.modules.is_enabled("codemap") {
         if let Some(conn) = conn {
-            value["graph_pulse"] = graph_signals(conn, &path, value.get("node"), adapter)?;
+            let pulse = graph_signals(conn, &path, value.get("node"), adapter)?;
+            if pulse.as_object().is_some_and(|map| !map.is_empty()) {
+                value["graph_pulse"] = pulse;
+            }
         }
     }
     if let Some(task) = &task {
@@ -551,25 +597,29 @@ fn acdd_read_single(
     } else {
         None
     };
-    let mut hints = render_read_hints(
-        root,
-        conn,
-        adapter,
-        &path,
-        &value,
-        task.as_ref(),
-        value["write_scope"] == "OUT_OF_SCOPE",
-    )?;
     if let Some(ref footer) = footer_hint {
         value["footer"] = json!(footer);
-        if hints.is_empty() {
-            hints = footer.clone();
-        } else {
-            hints = format!("{footer}\n{hints}");
-        }
     }
-    if !hints.is_empty() {
-        value["Hints"] = json!(hints);
+    if request.include_hints {
+        let mut hints = render_read_hints(
+            root,
+            conn,
+            adapter,
+            &path,
+            &value,
+            task.as_ref(),
+            value["write_scope"] == "OUT_OF_SCOPE",
+        )?;
+        if let Some(ref footer) = footer_hint {
+            if hints.is_empty() {
+                hints = footer.clone();
+            } else {
+                hints = format!("{footer}\n{hints}");
+            }
+        }
+        if !hints.is_empty() {
+            value["Hints"] = json!(hints);
+        }
     }
     if let Some(output) = &request.output_file {
         sensitive(adapter, root, output)?;
@@ -586,6 +636,390 @@ fn acdd_read_single(
     Ok(value)
 }
 
+struct SearchMatcher<'a> {
+    pattern: &'a str,
+    regex: Option<acdd_tasks::regex::Regex>,
+}
+
+impl<'a> SearchMatcher<'a> {
+    fn new(request: &'a ReadRequest) -> Result<Self> {
+        let pattern = request.pattern.as_deref().context("search requires pattern")?;
+        ensure!(!pattern.is_empty(), "search pattern must not be empty");
+        let regex = request
+            .regex
+            .then(|| acdd_tasks::regex::Regex::new(pattern))
+            .transpose()?;
+        Ok(Self { pattern, regex })
+    }
+
+    fn is_match(&self, line: &str) -> bool {
+        self.regex
+            .as_ref()
+            .map_or_else(|| line.contains(self.pattern), |r| r.is_match(line))
+    }
+}
+
+fn split_linked_workspace<'a>(
+    root: &'a Path,
+    adapter: &'a Adapter,
+    raw_path: &'a str,
+) -> Result<(&'a Path, &'a str, Option<String>)> {
+    if raw_path.starts_with('[') {
+        if let Some((prefix, rest)) = raw_path.split_once("]/") {
+            let ws_name = prefix.trim_start_matches('[');
+            if let Some(lw) = adapter
+                .linked_workspaces
+                .iter()
+                .find(|w| w.name == ws_name)
+            {
+                return Ok((
+                    lw.path.as_path(),
+                    rest.strip_prefix("./").unwrap_or(rest),
+                    Some(format!("[{ws_name}]/")),
+                ));
+            }
+        }
+    }
+    Ok((root, raw_path.strip_prefix("./").unwrap_or(raw_path), None))
+}
+
+fn has_glob_meta(path: &str) -> bool {
+    path.contains(['*', '?', '[', ']'])
+}
+
+fn is_directory_or_glob_search(root: &Path, adapter: &Adapter, path: &str) -> Result<bool> {
+    let (_, rel_spec, linked) = split_linked_workspace(root, adapter, path)?;
+    if linked.is_none() && path.starts_with('[') && path.contains("]/") {
+        return Ok(false);
+    }
+    if rel_spec.is_empty() || rel_spec == "." || has_glob_meta(rel_spec) {
+        return Ok(true);
+    }
+    Ok(resolve_file_path(root, adapter, path)
+        .map(|resolved| resolved.is_dir())
+        .unwrap_or(false))
+}
+
+fn is_binary_prefix(file: &Path) -> Result<bool> {
+    let mut prefix = [0; 8192];
+    let count = File::open(file)?.read(&mut prefix)?;
+    Ok(prefix[..count].contains(&0))
+}
+
+fn normalize_rel_display(path: &Path) -> String {
+    path.components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+struct SearchScope<'a> {
+    base_root: &'a Path,
+    walk_dir: std::path::PathBuf,
+    glob_matcher: Option<ignore::overrides::Override>,
+    linked_prefix: Option<String>,
+}
+
+fn resolve_search_scope<'a>(
+    root: &'a Path,
+    adapter: &'a Adapter,
+    raw_path: &'a str,
+) -> Result<Option<SearchScope<'a>>> {
+    let (base_root, rel_spec, linked_prefix) = split_linked_workspace(root, adapter, raw_path)?;
+    ensure!(
+        !rel_spec.starts_with('/')
+            && !rel_spec.contains('\\')
+            && !rel_spec.contains('\0')
+            && !Path::new(rel_spec)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir)),
+        "path must be a relative plain path without parent traversal"
+    );
+    let is_glob = has_glob_meta(rel_spec);
+    let (walk_dir, glob_matcher) = if is_glob {
+        let mut prefix_parts = Vec::new();
+        for segment in rel_spec.split('/').filter(|s| !s.is_empty() && *s != ".") {
+            if has_glob_meta(segment) {
+                break;
+            }
+            prefix_parts.push(segment);
+        }
+        let walk_dir = if prefix_parts.is_empty() {
+            base_root.to_path_buf()
+        } else {
+            let prefix_rel = prefix_parts.join("/");
+            sensitive(adapter, root, &prefix_rel)?;
+            let dir = acdd_core::fs::checked_child(base_root, Path::new(&prefix_rel))?;
+            if !dir.is_dir() {
+                return Ok(None);
+            }
+            dir
+        };
+        let mut ov = ignore::overrides::OverrideBuilder::new(base_root);
+        ov.add(rel_spec.trim_start_matches("./"))
+            .with_context(|| format!("invalid search glob pattern '{raw_path}'"))?;
+        (walk_dir, Some(ov.build()?))
+    } else {
+        if rel_spec != "." && !rel_spec.is_empty() {
+            sensitive(adapter, root, raw_path)?;
+        }
+        let walk_dir = if rel_spec.is_empty() || rel_spec == "." {
+            base_root.to_path_buf()
+        } else {
+            acdd_core::fs::checked_child(base_root, Path::new(rel_spec))?
+        };
+        ensure!(
+            walk_dir.exists(),
+            "FILE_NOT_FOUND: file '{raw_path}' does not exist"
+        );
+        (walk_dir, None)
+    };
+    Ok(Some(SearchScope {
+        base_root,
+        walk_dir,
+        glob_matcher,
+        linked_prefix,
+    }))
+}
+
+fn ensure_export_not_in_search_scope(
+    scope: &SearchScope<'_>,
+    export_dest: Option<&Path>,
+) -> Result<()> {
+    let Some(dest) = export_dest else {
+        return Ok(());
+    };
+    if let (Some(dest_name), Ok(can_parent), Ok(can_walk), Ok(can_base)) = (
+        dest.file_name(),
+        dest.parent().context("export destination has no parent").and_then(|p| Ok(p.canonicalize()?)),
+        scope.walk_dir.canonicalize(),
+        scope.base_root.canonicalize(),
+    ) {
+        let can_dest = can_parent.join(dest_name);
+        if can_dest.starts_with(&can_walk) {
+            let rel_match = can_dest.strip_prefix(&can_base).ok().map(normalize_rel_display);
+            let in_scope = match (&scope.glob_matcher, rel_match) {
+                (Some(ov), Some(rel)) => ov.matched(Path::new(&rel), false).is_whitelist(),
+                (None, _) => true,
+                _ => false,
+            };
+            ensure!(!in_scope, "output_file must differ from input");
+        }
+    }
+    Ok(())
+}
+
+fn search_directory_or_glob(
+    root: &Path,
+    adapter: &Adapter,
+    raw_path: &str,
+    bounds: &ReadBounds,
+    request: &ReadRequest,
+    export_dest: Option<&Path>,
+) -> Result<(String, bool)> {
+    const MAX_SEARCH_BYTES: usize = 48 * 1024;
+    let start = bounds.start_line.unwrap_or(1);
+    let count = bounds.line_count.unwrap_or(200);
+    ensure!(
+        start > 0 && count > 0 && count <= 10000,
+        "line bounds require start_line >= 1 and line_count 1..=10000"
+    );
+    let matcher = SearchMatcher::new(request)?;
+    let context = request.context.unwrap_or(2).min(100);
+    let Some(scope) = resolve_search_scope(root, adapter, raw_path)? else {
+        return Ok((String::new(), false));
+    };
+    ensure_export_not_in_search_scope(&scope, export_dest)?;
+
+    let SearchScope {
+        base_root,
+        walk_dir,
+        glob_matcher,
+        linked_prefix,
+    } = scope;
+
+    let base_ci = acdd_core::fs::is_case_insensitive_volume(base_root);
+    let mut output = String::new();
+    let mut kept = 0;
+    let mut truncated = false;
+
+    let walker = ignore::WalkBuilder::new(&walk_dir)
+        .follow_links(false)
+        .standard_filters(true)
+        .filter_entry(|entry| {
+            let name = entry.file_name();
+            name != ".git" && name != ".acdd"
+        })
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .build();
+
+    for entry in walker {
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(base_root) else {
+            continue;
+        };
+        let rel_str = normalize_rel_display(rel);
+        if let Some(ref ov) = glob_matcher {
+            if !ov.matched(Path::new(&rel_str), false).is_whitelist() {
+                continue;
+            }
+        }
+        if let Some(dest) = export_dest {
+            ensure!(
+                !acdd_core::fs::same_filesystem_path(dest, path),
+                "output_file must differ from input"
+            );
+        }
+        let display_path = match &linked_prefix {
+            Some(prefix) => format!("{prefix}{rel_str}"),
+            None => rel_str.clone(),
+        };
+        if sensitive(adapter, root, &display_path).is_err()
+            || (linked_prefix.is_some()
+                && sensitive_with_case(adapter, &rel_str, base_ci).is_err())
+        {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.len() > adapter.limits.max_file_bytes {
+            continue;
+        }
+        if is_binary_prefix(path).unwrap_or(true) {
+            continue;
+        }
+
+        let file_truncated = scan_matching_lines(
+            path,
+            start,
+            count,
+            context,
+            MAX_SEARCH_BYTES,
+            Some(&display_path),
+            &matcher,
+            &mut output,
+            &mut kept,
+        )?;
+        if file_truncated {
+            truncated = true;
+            break;
+        }
+    }
+    Ok((output, truncated))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_matching_lines(
+    file: &Path,
+    start: usize,
+    count: usize,
+    context: usize,
+    max_bytes: usize,
+    path_prefix: Option<&str>,
+    matcher: &SearchMatcher<'_>,
+    output: &mut String,
+    kept: &mut usize,
+) -> Result<bool> {
+    let mut prior: std::collections::VecDeque<(usize, String)> = std::collections::VecDeque::new();
+    let mut after = 0;
+    let mut last = 0;
+    let mut reader = BufReader::new(File::open(file)?);
+    let mut raw_line = Vec::new();
+    let mut number = 0;
+    let prefix_len = path_prefix.map_or(0, |p| p.len() + 1);
+    let saved_len = output.len();
+    let saved_kept = *kept;
+    loop {
+        raw_line.clear();
+        let bytes = reader
+            .by_ref()
+            .take(1024 * 1024 + 1)
+            .read_until(b'\n', &mut raw_line)?;
+        if bytes == 0 {
+            return Ok(false);
+        }
+        if path_prefix.is_some() {
+            if bytes > 1024 * 1024 {
+                output.truncate(saved_len);
+                *kept = saved_kept;
+                return Ok(false);
+            }
+        } else {
+            ensure!(bytes <= 1024 * 1024, "line exceeds reader byte limit");
+        }
+        let line = match std::str::from_utf8(&raw_line) {
+            Ok(s) => s.to_owned(),
+            Err(err) => {
+                if path_prefix.is_some() {
+                    output.truncate(saved_len);
+                    *kept = saved_kept;
+                    return Ok(false);
+                }
+                return Err(err.into());
+            }
+        };
+        number += 1;
+        if number < start {
+            continue;
+        }
+        let matched = matcher.is_match(&line);
+        if matched {
+            after = context + 1;
+        }
+        let include = after > 0;
+        if include {
+            if matched {
+                for (n, text) in &prior {
+                    if *n > last
+                        && *kept < count
+                        && output.len() + prefix_len + text.len() + 32 <= max_bytes
+                    {
+                        if let Some(p) = path_prefix {
+                            output.push_str(&format!("{p}:{n}: {text}"));
+                        } else {
+                            output.push_str(&format!("{n}: {text}"));
+                        }
+                        if !output.ends_with('\n') {
+                            output.push('\n');
+                        }
+                        *kept += 1;
+                        last = *n;
+                    }
+                }
+            }
+            if *kept >= count || output.len() + prefix_len + line.len() + 32 > max_bytes {
+                return Ok(true);
+            }
+            if let Some(p) = path_prefix {
+                output.push_str(&format!("{p}:{number}: {line}"));
+            } else {
+                output.push_str(&format!("{number}: {line}"));
+            }
+            if !output.ends_with('\n') {
+                output.push('\n');
+            }
+            *kept += 1;
+            last = number;
+        }
+        after = after.saturating_sub(1);
+        prior.push_back((number, line.clone()));
+        while prior.len() > context {
+            prior.pop_front();
+        }
+    }
+}
+
 /// Read bounded text windows or matching lines without loading the complete file.
 pub fn extract_file_slice(
     file: &Path,
@@ -593,32 +1027,33 @@ pub fn extract_file_slice(
     bounds: &ReadBounds,
     request: &ReadRequest,
 ) -> Result<(String, bool)> {
+    const MAX_SLICE_BYTES: usize = 48 * 1024;
     let start = bounds.start_line.unwrap_or(1);
     let count = bounds.line_count.unwrap_or(200);
     ensure!(
         start > 0 && count > 0 && count <= 10000,
         "line bounds require start_line >= 1 and line_count 1..=10000"
     );
-    let pattern = if mode == ReadMode::Search {
-        Some(
-            request
-                .pattern
-                .as_deref()
-                .context("search requires pattern")?,
-        )
-    } else {
-        None
-    };
-    let matcher = pattern
-        .filter(|_| request.regex)
-        .map(acdd_tasks::regex::Regex::new)
+    let matcher = (mode == ReadMode::Search)
+        .then(|| SearchMatcher::new(request))
         .transpose()?;
     let context = request.context.unwrap_or(2).min(100);
-    let mut prior: std::collections::VecDeque<(usize, String)> = std::collections::VecDeque::new();
-    let mut after = 0;
-    let mut last = 0;
     let mut output = String::new();
     let mut kept = 0;
+    if let Some(ref matcher) = matcher {
+        let truncated = scan_matching_lines(
+            file,
+            start,
+            count,
+            context,
+            MAX_SLICE_BYTES,
+            None,
+            matcher,
+            &mut output,
+            &mut kept,
+        )?;
+        return Ok((output, truncated));
+    }
     let mut truncated = false;
     let mut reader = BufReader::new(File::open(file)?);
     let mut line = String::new();
@@ -635,44 +1070,16 @@ pub fn extract_file_slice(
         if number < start {
             continue;
         }
-        let matched = pattern.is_some_and(|p| {
-            matcher
-                .as_ref()
-                .map_or_else(|| line.contains(p), |r| r.is_match(&line))
-        });
-        if matched {
-            after = context + 1;
+        if kept >= count || output.len() + line.len() + 32 > MAX_SLICE_BYTES {
+            truncated = true;
+            break;
         }
-        let include = pattern.is_none() || after > 0;
-        if include {
-            if matched {
-                for (n, text) in &prior {
-                    if *n > last && kept < count && output.len() + text.len() + 32 <= 48 * 1024 {
-                        output.push_str(&format!("{n}: {text}"));
-                        kept += 1;
-                        last = *n;
-                    }
-                }
-            }
-            if kept >= count || output.len() + line.len() + 32 > 48 * 1024 {
-                truncated = true;
-                break;
-            }
-            if mode == ReadMode::Raw {
-                output.push_str(&line);
-            } else {
-                output.push_str(&format!("{number}: {line}"));
-            }
-            kept += 1;
-            last = number;
+        if mode == ReadMode::Raw {
+            output.push_str(&line);
+        } else {
+            output.push_str(&format!("{number}: {line}"));
         }
-        after = after.saturating_sub(1);
-        if pattern.is_some() {
-            prior.push_back((number, line.clone()));
-            while prior.len() > context {
-                prior.pop_front();
-            }
-        }
+        kept += 1;
     }
     Ok((output, truncated))
 }
@@ -757,9 +1164,23 @@ fn graph_signals(
     .filter(|v| v["discovery_method"] == "graph")
     .and_then(|v| v["nodes"]["total"].as_u64())
     .unwrap_or(0);
-    Ok(
-        json!({"edges":edges,"callers":callers,"covering_tests":tests,"implementations":implementations,"invariants":invariants}),
-    )
+    let mut pulse = serde_json::Map::new();
+    if edges > 0 {
+        pulse.insert("edges".into(), json!(edges));
+    }
+    if callers > 0 {
+        pulse.insert("callers".into(), json!(callers));
+    }
+    if tests > 0 {
+        pulse.insert("covering_tests".into(), json!(tests));
+    }
+    if implementations > 0 {
+        pulse.insert("implementations".into(), json!(implementations));
+    }
+    if invariants > 0 {
+        pulse.insert("invariants".into(), json!(invariants));
+    }
+    Ok(Value::Object(pulse))
 }
 
 /// Produce at most three lines of copy-ready calls, only for confirmed signals.

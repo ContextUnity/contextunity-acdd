@@ -64,6 +64,7 @@ pub fn render(value: &Value, format: OutputFormat, title: &str) -> String {
                 "milestone_list" => render_milestone_list(value),
                 "task_blackboard" => coordination::render_blackboard(value, title),
                 "search_docs" | "get_doc" => coordination::render_docs(value, title),
+                "acdd_read" => render_acdd_read(value),
                 _ => render_markdown(value, title),
             },
         },
@@ -312,6 +313,130 @@ fn render_milestone_list(value: &Value) -> String {
     ));
     output.push_str("## Next Steps\n\n- Inspect a milestone: `acdd milestone show <ID> --full`.\n- View active tasks: `acdd task list --milestone <ID> --status all`.\n- Query archive history: `acdd milestone list --archive --limit 10`.\n- Filter milestones: `acdd milestone list --status active` (also `planned`, `completed`, `cancelled`, or `all`).\n");
     output
+}
+
+fn render_acdd_read(value: &Value) -> String {
+    let mut output = String::from("# acdd_read\n");
+    match value {
+        Value::Object(object) if !object.is_empty() => {
+            render_read_object(&mut output, object, 0);
+        }
+        other => render_value(&mut output, other, 0),
+    }
+    output
+}
+
+fn render_read_object(output: &mut String, object: &Map<String, Value>, depth: usize) {
+    let lang = infer_read_language(object);
+    let mut deferred_code: Vec<(&str, &str)> = Vec::new();
+    for (key, child) in ordered_fields(object) {
+        if matches!(key, "content" | "source") {
+            if let Some(code) = child.as_str() {
+                deferred_code.push((key, code));
+                continue;
+            }
+        }
+        render_read_field(output, key, child, depth);
+    }
+    for (key, code) in deferred_code {
+        render_fenced_code_field(output, key, code, depth, lang);
+    }
+}
+
+fn render_read_field(output: &mut String, key: &str, value: &Value, depth: usize) {
+    match value {
+        Value::Object(object) if !object.is_empty() => {
+            indent(output, depth);
+            output.push_str("- **");
+            output.push_str(&escape_label(key));
+            output.push_str("**\n");
+            render_read_object(output, object, depth + 1);
+        }
+        Value::Array(items) if !items.is_empty() => {
+            indent(output, depth);
+            output.push_str("- **");
+            output.push_str(&escape_label(key));
+            output.push_str("**\n");
+            for (index, item) in items.iter().enumerate() {
+                render_read_field(output, &format!("[{index}]"), item, depth + 1);
+            }
+        }
+        _ => render_field(output, key, value, depth),
+    }
+}
+
+fn render_fenced_code_field(
+    output: &mut String,
+    key: &str,
+    code: &str,
+    depth: usize,
+    lang: &str,
+) {
+    let mut max_ticks = 0usize;
+    let mut run = 0usize;
+    for ch in code.chars() {
+        if ch == '`' {
+            run += 1;
+            max_ticks = max_ticks.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    let fence = "`".repeat(max_ticks.max(2) + 1);
+    indent(output, depth);
+    output.push_str("- **");
+    output.push_str(&escape_label(key));
+    output.push_str("**:\n");
+    output.push_str(&fence);
+    if !lang.is_empty() {
+        output.push_str(lang);
+    }
+    output.push('\n');
+    output.push_str(code);
+    if !code.ends_with('\n') {
+        output.push('\n');
+    }
+    output.push_str(&fence);
+    output.push('\n');
+}
+
+fn infer_read_language(object: &Map<String, Value>) -> &str {
+    if object.get("mode").and_then(Value::as_str) == Some("delta") {
+        return "diff";
+    }
+    if let Some(lang) = object
+        .get("node")
+        .and_then(|node| node.get("language"))
+        .and_then(Value::as_str)
+    {
+        return lang;
+    }
+    let path = object
+        .get("path")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            object
+                .get("node")
+                .and_then(|node| node.get("path"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("");
+    if object.get("mode").and_then(Value::as_str) == Some("search") && path.contains(['*', '?', '[']) {
+        return "text";
+    }
+    match path.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()).as_deref() {
+        Some("rs") => "rust",
+        Some("py") => "python",
+        Some("ts" | "tsx") => "typescript",
+        Some("js" | "jsx" | "mjs" | "cjs") => "javascript",
+        Some("md" | "markdown") => "markdown",
+        Some("yaml" | "yml") => "yaml",
+        Some("json") => "json",
+        Some("toml") => "toml",
+        Some("sh" | "bash") => "bash",
+        Some("sql") => "sql",
+        _ => "text",
+    }
 }
 
 fn render_markdown(value: &Value, title: &str) -> String {

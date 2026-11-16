@@ -76,6 +76,7 @@ pub fn search_results_with_navigation(
     const PREVIEW_HIT_LIMIT: usize = 3;
     const PREVIEW_BYTES_PER_HIT: usize = 4096;
 
+    let pattern = result["pattern"].as_str().unwrap_or("").to_owned();
     let has_small_total = result["nodes"]["total"]
         .as_u64()
         .is_some_and(|total| total <= PREVIEW_HIT_LIMIT as u64);
@@ -85,6 +86,8 @@ pub fn search_results_with_navigation(
     if items.is_empty() {
         return Ok(result);
     }
+
+    let mut source_cache: HashMap<String, Option<String>> = HashMap::new();
 
     let ids = items
         .iter()
@@ -156,23 +159,75 @@ pub fn search_results_with_navigation(
             object.insert("docstring_first_sentence".into(), json!(docstring));
         }
 
-        if index < PREVIEW_HIT_LIMIT
-            && object.get("language").and_then(Value::as_str) != Some("markdown")
-        {
+        let is_indexed_text =
+            object.get("match_reason").and_then(Value::as_str) == Some("indexed_text");
+        let is_markdown = object.get("language").and_then(Value::as_str) == Some("markdown");
+        let mut matched_window: Option<(String, Value)> = None;
+        if is_indexed_text && !is_markdown && !pattern.trim().is_empty() {
+            if let (Some(path), Some(start), Some(end)) = (
+                object.get("path").and_then(Value::as_str).map(str::to_owned),
+                object
+                    .get("line")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| usize::try_from(v).ok()),
+                object
+                    .get("end_line")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| usize::try_from(v).ok()),
+            ) {
+                let cached = source_cache
+                    .entry(path.clone())
+                    .or_insert_with(|| verified_source(conn, root, &path).ok());
+                if let Some(text) = cached.as_deref() {
+                    if let Some(matched) =
+                        resolve_indexed_text_match(text, start, end, &pattern, PREVIEW_BYTES_PER_HIT)
+                    {
+                        object.insert("line".into(), json!(matched.line));
+                        object.insert("match_snippet".into(), json!(matched.snippet));
+                        if previews_enabled && index < PREVIEW_HIT_LIMIT {
+                            if let Some((preview_src, win_start, win_end)) = matched.preview {
+                                matched_window = Some((
+                                    preview_src,
+                                    json!({
+                                        "start_line": win_start,
+                                        "end_line": win_end,
+                                        "body_lines": win_end.saturating_sub(win_start) + 1,
+                                        "has_more": false,
+                                    }),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if index < PREVIEW_HIT_LIMIT && !is_markdown {
             object.insert("graph_pulse".into(), search_graph_pulse(conn, &id));
         }
 
-        if !previews_enabled
-            || index >= PREVIEW_HIT_LIMIT
-            || object.get("language").and_then(Value::as_str) == Some("markdown")
-        {
+        if !previews_enabled || index >= PREVIEW_HIT_LIMIT || is_markdown {
+            continue;
+        }
+        if let Some((source, preview)) = matched_window {
+            object.insert("source".into(), json!(source));
+            object.insert("source_preview".into(), preview);
+            continue;
+        }
+        if is_indexed_text {
+            // An indexed_text hit without a verified bounded window keeps match_snippet (if any)
+            // instead of falling back to line 1 of an enclosing module container.
             continue;
         }
         let path = object
             .get("path")
             .and_then(Value::as_str)
             .context("search result has no path")?;
-        let Ok(text) = verified_source(conn, root, path) else {
+        let Some(text) = source_cache
+            .entry(path.to_owned())
+            .or_insert_with(|| verified_source(conn, root, path).ok())
+            .clone()
+        else {
             continue;
         };
         let node = json!({
@@ -199,6 +254,136 @@ pub fn search_results_with_navigation(
         }
     }
     Ok(result)
+}
+
+struct IndexedTextMatch {
+    line: usize,
+    snippet: String,
+    preview: Option<(String, usize, usize)>,
+}
+
+fn resolve_indexed_text_match(
+    text: &str,
+    start_line: usize,
+    end_line: usize,
+    pattern: &str,
+    max_bytes: usize,
+) -> Option<IndexedTextMatch> {
+    const SNIPPET_CHAR_LIMIT: usize = 180;
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let lo = start_line.max(1).min(lines.len());
+    let hi = end_line.max(lo).min(lines.len());
+    let trimmed_pattern = pattern.trim();
+    let is_natural_query =
+        !trimmed_pattern.starts_with('@') && trimmed_pattern.chars().any(char::is_whitespace);
+    let tokens: Vec<String> = trimmed_pattern
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    if tokens.is_empty() {
+        return None;
+    }
+
+    // Delegate line matching to SQLite's FTS5 `unicode61 separators '._-/'` engine so diacritics,
+    // Unicode case folding, and separator boundaries match `node_search` identically.
+    let fts_matched = |query: &str| -> Option<usize> {
+        let fts = Connection::open_in_memory().ok()?;
+        fts.execute_batch("CREATE VIRTUAL TABLE _line USING fts5(body, tokenize='unicode61 separators ''._-/''');")
+            .ok()?;
+        let mut insert = fts
+            .prepare("INSERT INTO _line(rowid, body) VALUES (?1, ?2)")
+            .ok()?;
+        for ln in lo..=hi {
+            let _ = insert.execute(rusqlite::params![ln as i64, lines[ln - 1]]);
+        }
+        drop(insert);
+        fts.query_row(
+            "SELECT rowid FROM _line WHERE _line MATCH ?1 ORDER BY rowid LIMIT 1",
+            [query],
+            |row| row.get::<_, usize>(0),
+        )
+        .ok()
+    };
+
+    let quoted: Vec<String> = tokens
+        .iter()
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect();
+    let and_query = quoted.join(" AND ");
+    let or_query = quoted.join(" OR ");
+    let matched_line = fts_matched(&and_query)
+        .or_else(|| (is_natural_query && tokens.len() > 1).then(|| fts_matched(&or_query)).flatten())?;
+
+    let raw_line = lines[matched_line - 1].trim();
+    let mut snippet: String = raw_line.chars().take(SNIPPET_CHAR_LIMIT).collect();
+    if raw_line.chars().count() > SNIPPET_CHAR_LIMIT {
+        snippet.push('…');
+    }
+
+    let preview = build_centered_preview(&lines, matched_line, max_bytes);
+    Some(IndexedTextMatch {
+        line: matched_line,
+        snippet,
+        preview,
+    })
+}
+
+fn build_centered_preview(
+    lines: &[&str],
+    matched_line: usize,
+    max_bytes: usize,
+) -> Option<(String, usize, usize)> {
+    let center = format!("{matched_line}: {}", lines[matched_line - 1]);
+    let center_bytes = center.len() + usize::from(!center.ends_with('\n'));
+    if center_bytes > max_bytes {
+        return None;
+    }
+
+    let mut total_bytes = center_bytes;
+    let mut win_start = matched_line;
+    let mut win_end = matched_line;
+    let min_start = matched_line.saturating_sub(2).max(1);
+    let max_end = (matched_line + 4).min(lines.len());
+
+    loop {
+        let mut expanded = false;
+        if win_start > min_start {
+            let candidate_ln = win_start - 1;
+            let entry = format!("{candidate_ln}: {}", lines[candidate_ln - 1]);
+            let extra = entry.len() + usize::from(!entry.ends_with('\n'));
+            if total_bytes + extra <= max_bytes {
+                win_start = candidate_ln;
+                total_bytes += extra;
+                expanded = true;
+            }
+        }
+        if win_end < max_end {
+            let candidate_ln = win_end + 1;
+            let entry = format!("{candidate_ln}: {}", lines[candidate_ln - 1]);
+            let extra = entry.len() + usize::from(!entry.ends_with('\n'));
+            if total_bytes + extra <= max_bytes {
+                win_end = candidate_ln;
+                total_bytes += extra;
+                expanded = true;
+            }
+        }
+        if !expanded {
+            break;
+        }
+    }
+
+    let mut preview = String::with_capacity(total_bytes);
+    for ln in win_start..=win_end {
+        preview.push_str(&format!("{ln}: {}", lines[ln - 1]));
+        if !preview.ends_with('\n') {
+            preview.push('\n');
+        }
+    }
+    Some((preview, win_start, win_end))
 }
 
 fn search_graph_pulse(conn: &Connection, id: &str) -> Value {
@@ -1270,5 +1455,32 @@ mod tests {
         assert_eq!(hit["line"], 1);
         assert_eq!(hit["inspect_selector"]["selector"], hit["id"]);
         assert!(hit.get("source_preview").is_none());
+    }
+
+    #[test]
+    fn indexed_text_resolution_uses_whole_tokens_and_respects_preview_byte_cap() {
+        let source = "fn prepared() {}\n// red line\n// red and blue\n";
+        let resolved = resolve_indexed_text_match(source, 1, 3, "red blue", 4096)
+            .expect("all-token line should match");
+        assert_eq!(resolved.line, 3);
+        assert_eq!(resolved.snippet, "// red and blue");
+        assert!(resolved.preview.is_some());
+
+        let split = "fn prepared() {}\nfn blue_later() {}\n";
+        assert!(
+            resolve_indexed_text_match(split, 1, 2, "red", 4096).is_none(),
+            "whole-token match must not hit substring 'red' in 'prepared'"
+        );
+
+        let accented = "fn cafeorder() {}\n// Caf\u{00e9}\n";
+        let unicode_hit = resolve_indexed_text_match(accented, 1, 2, "cafe", 4096)
+            .expect("unicode61 diacritic/case folding should match line 2");
+        assert_eq!(unicode_hit.line, 2);
+
+        let oversized = format!("// needle {}\n", "a".repeat(200));
+        let capped = resolve_indexed_text_match(&oversized, 1, 1, "needle", 64).unwrap();
+        assert_eq!(capped.line, 1);
+        assert!(capped.snippet.contains("needle"));
+        assert!(capped.preview.is_none(), "oversized line must drop preview rather than exceed budget");
     }
 }

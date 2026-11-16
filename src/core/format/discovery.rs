@@ -939,7 +939,7 @@ fn render_search_item(output: &mut String, item: &Value, path: &str, index: usiz
     };
     if let Some(uri) = text(item, "uri") {
         output.push_str(&format!(
-            "### {index}. [{}]({uri})\n\n- Source: [{}]({uri})\n",
+            "### {index}. {}\n\n- Source: [{}]({uri})\n",
             escape_text(name),
             escape_text(&coordinate)
         ));
@@ -978,43 +978,65 @@ fn render_search_item(output: &mut String, item: &Value, path: &str, index: usiz
     if let Some(docstring) = text(item, "docstring_first_sentence") {
         output.push_str(&format!("- Documentation: {}\n", escape_text(docstring)));
     }
+    if let Some(snippet) = text(item, "match_snippet") {
+        if text(item, "source").is_none() {
+            output.push_str(&format!("- Match: `{}`\n", code_span(snippet)));
+        }
+    }
     let pulse = &item["graph_pulse"];
     if !pulse.is_null() {
-        output.push_str("- Graph pulse:\n");
+        let mut pulse_block = String::new();
         if let Some(callers) = pulse.get("callers") {
-            output.push_str(&format!(
-                "  - callers: {}\n",
-                callers
-                    .get("count")
-                    .map(scalar)
-                    .unwrap_or_else(|| "unavailable".into())
-            ));
-            render_graph_items(output, callers.get("preview"), "caller");
+            let count = callers.get("count").and_then(Value::as_u64);
+            let unavailable = callers.get("availability").and_then(Value::as_str) == Some("unavailable");
+            if count.is_some_and(|c| c > 0) || unavailable {
+                pulse_block.push_str(&format!(
+                    "  - callers: {}\n",
+                    callers
+                        .get("count")
+                        .map(scalar)
+                        .unwrap_or_else(|| "unavailable".into())
+                ));
+                render_graph_items(&mut pulse_block, callers.get("preview"), "caller");
+            }
         }
         if let Some(implementations) = pulse.get("implementations") {
-            output.push_str(&format!(
-                "  - implementation relations: {}\n",
-                implementations
-                    .get("count")
-                    .map(scalar)
-                    .unwrap_or_else(|| "unavailable".into())
-            ));
+            let count = implementations.get("count").and_then(Value::as_u64);
+            let unavailable =
+                implementations.get("availability").and_then(Value::as_str) == Some("unavailable");
+            if count.is_some_and(|c| c > 0) || unavailable {
+                pulse_block.push_str(&format!(
+                    "  - implementation relations: {}\n",
+                    implementations
+                        .get("count")
+                        .map(scalar)
+                        .unwrap_or_else(|| "unavailable".into())
+                ));
+            }
         }
         if let Some(tests) = pulse.get("covering_tests") {
+            let total = tests.get("total").and_then(Value::as_u64).unwrap_or(0);
             match text(tests, "discovery_method") {
-                Some("graph") => {
-                    output.push_str(&format!(
+                Some("graph") if total > 0 => {
+                    pulse_block.push_str(&format!(
                         "  - verified covering tests: {}\n",
                         tests.get("total").map(scalar).unwrap_or_else(|| "0".into())
                     ));
-                    render_graph_items(output, tests.get("items"), "test");
+                    render_graph_items(&mut pulse_block, tests.get("items"), "test");
                 }
-                Some(method) => output.push_str(&format!(
+                Some(method) if total > 0 => pulse_block.push_str(&format!(
                     "  - test discovery: {} (not a verified call path)\n",
                     escape_text(method)
                 )),
-                None => output.push_str("  - verified covering tests: unavailable\n"),
+                None if tests.get("availability").and_then(Value::as_str) == Some("unavailable") => {
+                    pulse_block.push_str("  - verified covering tests: unavailable\n");
+                }
+                _ => {}
             }
+        }
+        if !pulse_block.is_empty() {
+            output.push_str("- Graph pulse:\n");
+            output.push_str(&pulse_block);
         }
     }
     if let Some(source) = text(item, "source") {

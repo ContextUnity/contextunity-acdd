@@ -835,17 +835,17 @@ fn acdd_read_codemap_hints_and_outline_use_verified_graph_signals() {
     ]);
     let mut client = harness.expect("MCP initialize");
     for (arguments, expected) in [
-        (json!({"path":"model.py","mode":"outline"}), false),
-        (json!({"path":"model.py","mode":"lines"}), false),
-        (json!({"path":"model.py","mode":"raw"}), false),
+        (json!({"path":"model.py","mode":"outline","include_hints":true}), false),
+        (json!({"path":"model.py","mode":"lines","include_hints":true}), false),
+        (json!({"path":"model.py","mode":"raw","include_hints":true}), false),
         (
-            json!({"path":"model.py","mode":"search","pattern":"class"}),
+            json!({"path":"model.py","mode":"search","pattern":"class","include_hints":true}),
             false,
         ),
-        (json!({"selector":"model.py"}), false),
-        (json!({"selector":"Base"}), true),
-        (json!({"selector":"Child"}), false),
-        (json!({"selector":"standalone"}), false),
+        (json!({"selector":"model.py","include_hints":true}), false),
+        (json!({"selector":"Base","include_hints":true}), true),
+        (json!({"selector":"Child","include_hints":true}), false),
+        (json!({"selector":"standalone","include_hints":true}), false),
     ] {
         let read = read_tool(&mut client, arguments);
         let hints = read["Hints"].as_str().unwrap_or("");
@@ -872,8 +872,8 @@ fn acdd_read_codemap_hints_and_outline_use_verified_graph_signals() {
         }
     }
     for args in [
-        vec!["read", "model.py", "--mode", "outline"],
-        vec!["read", "model.py", "--selector", "Base"],
+        vec!["read", "model.py", "--mode", "outline", "--include-hints"],
+        vec!["read", "model.py", "--selector", "Base", "--include-hints"],
     ] {
         let output = run_cli_json(&w, &args);
         assert!(
@@ -901,7 +901,10 @@ fn acdd_read_codemap_hints_and_outline_use_verified_graph_signals() {
         !outline["content"].as_str().unwrap().contains("return 42"),
         "{outline}"
     );
-    let snippet = read_tool(&mut client, json!({"selector":"compute"}));
+    // Default acdd_read suppresses Hints; include_hints=true opts in.
+    let no_hints = read_tool(&mut client, json!({"selector":"compute"}));
+    assert!(no_hints.get("Hints").is_none(), "{no_hints}");
+    let snippet = read_tool(&mut client, json!({"selector":"compute","include_hints":true}));
     assert_eq!(snippet["source"], "def compute():\n    return 42\n");
     let hints = snippet["Hints"].as_str().unwrap();
     assert!(
@@ -934,7 +937,7 @@ fn acdd_read_docs_outline_keeps_hierarchy_and_filters_disabled_navigation() {
     .expect("MCP initialize");
     let result = read_tool(
         &mut client,
-        json!({"path":"docs/guide.md","mode":"outline"}),
+        json!({"path":"docs/guide.md","mode":"outline","include_hints":true}),
     );
     let outline = result["content"].as_str().unwrap();
     assert!(
@@ -1036,7 +1039,9 @@ fn acdd_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
         let mut client = McpTestHarness::new(&w).expect("MCP initialize");
         let allowed = read_tool(&mut client, json!({"path":"allowed.txt"}));
         assert_eq!(allowed["write_scope"], "ALLOWED", "{allowed}");
-        let outside = read_tool(&mut client, json!({"path":"other.txt"}));
+        let outside_default = read_tool(&mut client, json!({"path":"other.txt"}));
+        assert!(outside_default.get("Hints").is_none(), "{outside_default}");
+        let outside = read_tool(&mut client, json!({"path":"other.txt","include_hints":true}));
         assert_eq!(outside["write_scope"], "OUT_OF_SCOPE", "{outside}");
         let hints = outside["Hints"].as_str().unwrap();
         assert!(
@@ -1105,4 +1110,54 @@ fn minimal_subsystems_filter_tools_and_check_batch_outline_admission() {
         ..Default::default()
     };
     assert!(req_mixed.requires_index(&adapter_both).is_ok());
+}
+
+#[test]
+fn acdd_read_directory_glob_search_and_markdown_fenced_blocks_preserve_raw_code() {
+    let linked = Workspace::with_files(&[("lib.rs", "pub fn linked() { /* needle */ }\n")]);
+    let ws = Workspace::with_files(&[
+        (
+            "acdd.yaml",
+            &format!(
+                "profile: minimal\nroots: [src]\nlinked_workspaces:\n  - name: extra\n    path: {}\n",
+                linked.root().display()
+            ),
+        ),
+        ("src/alpha.rs", "pub fn alpha() -> &'static str {\n    \"needle \\\"quoted\\\"\"\n}\n"),
+        ("src/nested/beta.rs", "pub fn beta() {\n    // needle in nested file\n}\n"),
+        ("src/notes.txt", "needle in non-rust file\n"),
+        (".env", "SECRET=needle\n"),
+    ]);
+    std::fs::write(ws.path("src/m_bad_utf8.bin"), [0xff_u8, 0xfe, b'n', b'e', b'e', b'd']).unwrap();
+    let mut client = McpTestHarness::new(&ws).expect("MCP initialize");
+
+    let (_, md_resp) = client
+        .call("acdd_read", json!({"path": "src/alpha.rs", "mode": "lines"}))
+        .expect("MCP transport");
+    let md_text = md_resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(md_text.contains("```rust\n1: pub fn alpha()"), "{md_text}");
+    assert!(!md_text.contains("\\n") && !md_text.contains("Hints:"), "{md_text}");
+
+    for (args, expected, forbidden) in [
+        (json!({"path": "src", "mode": "search", "pattern": "needle", "context": 0}), "src/nested/beta.rs:2:", ".env"),
+        (json!({"path": "src/**/*.rs", "mode": "search", "pattern": "needle", "context": 0}), "src/alpha.rs:2:", "src/notes.txt"),
+        (json!({"mode": "search", "pattern": "needle", "context": 0}), "src/alpha.rs:2:", "SECRET=needle"),
+    ] {
+        let res = read_tool(&mut client, args);
+        let content = res["content"].as_str().unwrap();
+        assert!(content.contains(expected) && !content.contains(forbidden), "{content}");
+    }
+
+    for export_args in [
+        json!({"path": "src", "mode": "search", "pattern": "needle", "line_count": 1, "output_file": "src/notes.txt"}),
+        json!({"paths": ["src/**/*.rs"], "mode": "search", "pattern": "needle", "output_file": "src/alpha.rs"}),
+    ] {
+        let (_, err) = client.call("acdd_read", export_args).expect("MCP transport");
+        assert_eq!(err["result"]["isError"], true, "{err}");
+    }
+    assert_eq!(std::fs::read_to_string(ws.path("src/notes.txt")).unwrap(), "needle in non-rust file\n");
+
+    let linked_res = read_tool(&mut client, json!({"path": "[extra]/lib.rs", "mode": "search", "pattern": "needle", "context": 0}));
+    assert!(linked_res["content"].as_str().unwrap().starts_with("1: "), "{linked_res}");
+    client.finish().expect("server must finish successfully");
 }

@@ -78,11 +78,19 @@ impl PageInput {
     }
 
     pub(super) fn resolve(&self, policy: &ResponsePolicy) -> anyhow::Result<QueryOptions> {
+        self.resolve_with_default_detail(policy, None)
+    }
+
+    pub(super) fn resolve_with_default_detail(
+        &self,
+        policy: &ResponsePolicy,
+        default_detail: Option<Detail>,
+    ) -> anyhow::Result<QueryOptions> {
         QueryOptions::resolve(
             policy,
             self.limit,
             self.offset,
-            self.detail,
+            self.detail.or(default_detail),
             self.generation.clone(),
         )
     }

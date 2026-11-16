@@ -713,6 +713,9 @@ pub enum Command {
         /// Workspace-relative export destination.
         #[arg(long)]
         output_file: Option<String>,
+        /// Include Hints footer with follow-up suggestions.
+        #[arg(long)]
+        include_hints: bool,
         /// Symbol source page offset.
         #[arg(long, default_value_t = 0)]
         source_offset: usize,
@@ -1364,6 +1367,7 @@ impl Cli {
                 context,
                 baseline,
                 output_file,
+                include_hints,
                 source_offset,
                 generation,
                 max_body_lines,
@@ -1384,6 +1388,7 @@ impl Cli {
                     context,
                     baseline,
                     output_file,
+                    include_hints,
                 };
                 anyhow::ensure!(
                     source_offset == 0 || generation.is_some(),

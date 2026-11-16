@@ -53,6 +53,7 @@ fn allowed_fields_for_tool(tool_name: &str) -> &'static [&'static str] {
             "context",
             "baseline",
             "output_file",
+            "include_hints",
             "selector",
             "symbol",
             "path",
@@ -649,7 +650,9 @@ impl Server {
             "code_map_search",
             |adapter, policy| {
                 self.read_with_adapter(adapter, |c| {
-                    let page = p.page.resolve(policy)?;
+                    let default_detail = (p.page.limit.unwrap_or(policy.page_size) > 10)
+                        .then_some(Detail::Compact);
+                    let page = p.page.resolve_with_default_detail(policy, default_detail)?;
                     let res = symbols::search_with_options(
                         c,
                         p.pattern()?,

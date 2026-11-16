@@ -390,3 +390,89 @@ fn mcp_symbol_search_matches_methods_and_functions_interchangeably() {
     assert_eq!(result_fn["nodes"]["items"][0]["name"], "admit");
     client.finish().expect("server must finish successfully");
 }
+
+#[test]
+fn code_map_search_compact_default_single_uri_omits_zero_pulse_and_resolves_indexed_text_line() {
+    let ws = Workspace::with_files(&[
+        (
+            "acdd.yaml",
+            "profile: minimal\nmodules: {codemap: true}\nroots: [src]\nresponse:\n  detail: full\n",
+        ),
+        (
+            "src/lib.rs",
+            "use std::fmt;\n\npub fn helper() {\n    let tag = \"needle_ref_token\";\n    let _ = tag;\n}\n\npub fn needle_ref_token() {}\n",
+        ),
+        (
+            "src/caller.rs",
+            &format!(
+                "use super::*;\n\npub fn first() {{}}\npub fn invoke_target() {{\n    // {}\n    needle_ref_token();\n}}\n",
+                "x".repeat(4500)
+            ),
+        ),
+    ]);
+    let mut client = McpTestHarness::new(&ws).expect("MCP initialize");
+
+    // Even when workspace response.detail is `full`, code_map_search defaults to `compact` for limit > 10.
+    let compact_default = client
+        .payload("code_map_search", json!({"pattern":"*","path":"src"}))
+        .expect("MCP tool should succeed");
+    let first_item = &compact_default["nodes"]["items"][0];
+    assert!(first_item.get("details").is_none(), "{compact_default}");
+
+    // code_map_search with explicit limit <= 10 or detail=full preserves full details,
+    // and unrelated code_map_query retains configured response.detail=full when limit > 10.
+    let small_full = client
+        .payload("code_map_search", json!({"pattern":"*","path":"src","limit":5}))
+        .expect("MCP tool should succeed");
+    assert!(small_full["nodes"]["items"][0].get("details").is_some(), "{small_full}");
+    let query_full = client
+        .payload(
+            "code_map_query",
+            json!({"operation":"untested","target":"src","limit":20}),
+        )
+        .expect("MCP tool should succeed");
+    assert!(
+        query_full["nodes"]["items"][0].get("details").is_some(),
+        "code_map_query must preserve policy detail=full: {query_full}"
+    );
+
+    // Whole-token matching must not match `"red"` inside `"prepared"`, and oversized line 3 context
+    // must not exhaust PREVIEW_BYTES_PER_HIT before reaching the matched line #L6.
+    let mod_hit = client
+        .payload(
+            "code_map_search",
+            json!({"pattern":"needle_ref_token","path":"src/caller.rs"}),
+        )
+        .expect("MCP tool should succeed");
+    let items = mod_hit["nodes"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{mod_hit}");
+    assert_eq!(items[0]["match_reason"], "indexed_text", "{mod_hit}");
+    assert_eq!(items[0]["line"], 6, "{mod_hit}");
+    assert_eq!(items[0]["match_snippet"], "needle_ref_token();", "{mod_hit}");
+    let preview_source = items[0]["source"].as_str().unwrap();
+    assert!(preview_source.len() <= 4096, "preview exceeded cap: {}", preview_source.len());
+    assert!(preview_source.contains("6:     needle_ref_token();"), "{preview_source}");
+
+    let (_, md_resp) = client
+        .call(
+            "code_map_search",
+            json!({"pattern":"needle_ref_token","path":"src/caller.rs","format":"markdown"}),
+        )
+        .expect("MCP transport");
+    let markdown = md_resp["result"]["content"][0]["text"].as_str().unwrap();
+    let expected_uri = ws.file_uri("src/caller.rs", Some(6));
+    assert_eq!(
+        markdown.matches(&expected_uri).count(),
+        1,
+        "URI should appear once, not duplicated: {markdown}"
+    );
+    assert!(
+        !markdown.contains("- Graph pulse:"),
+        "all-zero graph_pulse should be omitted: {markdown}"
+    );
+    assert!(
+        markdown.contains("6:     needle_ref_token();"),
+        "preview should center around matched line #L6, not line 1: {markdown}"
+    );
+    client.finish().expect("server must finish successfully");
+}
