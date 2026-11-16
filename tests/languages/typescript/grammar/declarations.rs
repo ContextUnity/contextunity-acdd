@@ -1,22 +1,15 @@
 use super::*;
 #[test]
-fn local_constructors_and_aliases_resolve_real_methods() {
-    assert!(resolves(
-        "class Worker { work() {} } function run() { const client = new Worker(); client.work(); }",
-        "client.work",
-    ));
-    assert!(resolves(
-        "class Worker { work() {} } function run() { const client: Worker = new Worker(); const alias = client; alias.work(); }",
-        "alias.work",
-    ));
-}
-
-#[test]
-fn object_methods_require_actual_declarations_and_stable_bindings() {
-    assert!(resolves(
-        "function run() { const client = {work() {}}; client.work(); }",
-        "client.work"
-    ));
+fn receiver_binding_contract_matrix() {
+    for (source, expression, expected) in [
+("class Worker { work() {} } function run() { const client = new Worker(); client.work(); }", "client.work", true),
+("class Worker { work() {} } function run() { const client: Worker = new Worker(); const alias = client; alias.work(); }", "alias.work", true),
+("function run() { const client = {work() {}}; client.work(); }", "client.work", true),
+("class Worker { work() {} } function run() { const client = new Worker(); client.work(); }", "client.work", true),
+("class Worker { work() {} } function run() { let client: Worker; client.work(); }", "client.work", false),
+("class Worker { work() {} } function run() { const client: Worker = client.work(); }", "client.work", false)] {
+        assert_eq!(resolves(source, expression), expected, "{source}: {expression}");
+    }
 }
 
 #[test]
@@ -49,21 +42,8 @@ fn inherited_methods_select_actual_overrides_and_reject_parent_cycles() {
 }
 
 #[test]
-fn value_flow_admits_initializers_only_after_complete_declarations() {
-    for source in [
-        "class Worker { work() {} } function run() { let client: Worker; client.work(); }",
-        "class Worker { work() {} } function run() { const client: Worker = client.work(); }",
-    ] {
-        assert!(!resolves(source, "client.work"), "{source}");
-    }
-    assert!(resolves(
-        "class Worker { work() {} } function run() { const client = new Worker(); client.work(); }",
-        "client.work"
-    ));
-}
-
-#[test]
-fn javascript_doc_types_supply_explicit_parameter_and_return_contracts() {
+fn declaration_type_contract_matrix() {
+    let mut cases = Vec::new();
     for (source, expression) in [
         (
             "class Worker { work() {} }\n/** @param {Worker} client */\nfunction run(client) { client.work(); }",
@@ -74,35 +54,8 @@ fn javascript_doc_types_supply_explicit_parameter_and_return_contracts() {
             "client.work",
         ),
     ] {
-        let graph = linked("service.js", "javascript", source);
-        assert!(
-            graph
-                .edges
-                .iter()
-                .any(|edge| edge.kind == "calls" && edge.evidence == expression),
-            "{source}"
-        );
+        cases.push(("service.js", "javascript", source.to_owned(), vec![expression], Vec::new()));
     }
-}
-
-#[test]
-fn computed_receivers_use_constructors_and_explicit_factory_returns() {
-    assert!(resolves(
-        "class Worker { work() {} } function run() { (new Worker()).work(); }",
-        "(new Worker()).work"
-    ));
-    assert!(resolves(
-        "class Worker { work() {} } function make(): Worker { return new Worker(); } function run() { make().work(); }",
-        "make().work"
-    ));
-    assert!(!resolves(
-        "class Worker { work() {} } function run() { Worker().work(); }",
-        "Worker().work"
-    ));
-}
-
-#[test]
-fn declaration_docs_preserve_annotation_precedence_and_unknown_returns() {
     for (path, language, declaration, expected) in [
         (
             "service.js",
@@ -129,38 +82,59 @@ fn declaration_docs_preserve_annotation_precedence_and_unknown_returns() {
             "unresolved",
         ),
     ] {
-        let source = format!(
-            "class Worker {{ work() {{}} }} class Other {{}}\n{declaration}\nconst output = make(new Worker()); output.work();"
-        );
+        cases.push((path, language, format!("class Worker {{ work() {{}} }} class Other {{}}\n{declaration}\nconst output = make(new Worker()); output.work();"), Vec::new(), vec![("client.work", "resolved"), ("output.work", expected)]));
+    }
+    for (path, language, source, calls, coverage) in cases {
         let graph = linked(path, language, &source);
-        for (expression, status) in [("client.work", "resolved"), ("output.work", expected)] {
+        for expression in calls {
+            assert!(
+                graph
+                    .edges
+                    .iter()
+                    .any(|edge| edge.kind == "calls" && edge.evidence == expression),
+                "{source}: {expression}"
+            );
+        }
+        for (expression, status) in coverage {
             let rows: Vec<_> = graph
                 .coverage
                 .iter()
                 .filter(|row| row.expression == expression)
                 .collect();
             assert!(!rows.is_empty(), "{source}: {expression}");
-            assert!(rows.iter().all(|row| row.status == status), "{source}: {rows:#?}");
+            assert!(
+                rows.iter().all(|row| row.status == status),
+                "{source}: {rows:#?}"
+            );
         }
     }
 }
 
 #[test]
-fn straight_line_factory_returns_prove_chains_and_reject_cycles_or_branches() {
-    assert!(resolves(
-        "class Worker { work() {} } function make() { return new Worker(); } function wrap() { const result = make(); return result; } function run() { const client = wrap(); client.work(); }",
-        "client.work"
-    ));
-    assert!(resolves(
-        "class Worker { work() {} } const make = () => new Worker(); function run() { const client = make(); client.work(); }",
-        "client.work"
-    ));
-    for source in [
-        "class Worker { work() {} } function make() { return wrap(); } function wrap() { return make(); } function run() { const client = make(); client.work(); }",
-        "class Worker { work() {} } function make(flag) { if (flag) return new Worker(); return unknown(); } function run() { const client = make(true); client.work(); }",
-        "class Worker { work() {} } function make(flag) { if (flag) return new Worker(); } function run() { const client = make(true); client.work(); }",
-    ] {
-        assert!(!resolves(source, "client.work"), "{source}");
+fn factory_return_contract_matrix() {
+    let mut cases: Vec<(String, &str, bool)> = [
+("class Worker { work() {} } function run() { (new Worker()).work(); }", "(new Worker()).work", true),
+("class Worker { work() {} } function make(): Worker { return new Worker(); } function run() { make().work(); }", "make().work", true),
+("class Worker { work() {} } function run() { Worker().work(); }", "Worker().work", false),
+("class Worker { work() {} } function make() { return new Worker(); } function wrap() { const result = make(); return result; } function run() { const client = wrap(); client.work(); }", "client.work", true),
+("class Worker { work() {} } const make = () => new Worker(); function run() { const client = make(); client.work(); }", "client.work", true),
+("class Worker { work() {} } function make() { return wrap(); } function wrap() { return make(); } function run() { const client = make(); client.work(); }", "client.work", false),
+("class Worker { work() {} } function make(flag) { if (flag) return new Worker(); return unknown(); } function run() { const client = make(true); client.work(); }", "client.work", false),
+("class Worker { work() {} } function make(flag) { if (flag) return new Worker(); } function run() { const client = make(true); client.work(); }", "client.work", false),
+("class Worker { work() {} } function make() { return new Worker(); } function run() { const client = make(); client.work(); }", "client.work", true)].into_iter().map(|(source, expression, expected)| (source.to_owned(), expression, expected)).collect();
+    cases.extend([
+        "async function make() { return new Worker(); }",
+        "async function make(): Worker { return new Worker(); }",
+        "const make = async () => new Worker();",
+        "function* make(): Worker { return new Worker(); }",
+        "class Factory { static async make(): Worker { return new Worker(); } } const make = Factory.make;",
+    ].into_iter().map(|factory| (format!("class Worker {{ work() {{}} }} {factory} function run() {{ const client = make(); client.work(); }}"), "client.work", false)));
+    for (source, expression, expected) in cases {
+        assert_eq!(
+            resolves(&source, expression),
+            expected,
+            "{source}: {expression}"
+        );
     }
 }
 
@@ -197,27 +171,7 @@ fn generic_containers_prove_only_documented_container_members() {
 }
 
 #[test]
-fn async_and_generator_factories_do_not_expose_wrapped_return_members() {
-    assert!(resolves(
-        "class Worker { work() {} } function make() { return new Worker(); } function run() { const client = make(); client.work(); }",
-        "client.work"
-    ));
-    for factory in [
-        "async function make() { return new Worker(); }",
-        "async function make(): Worker { return new Worker(); }",
-        "const make = async () => new Worker();",
-        "function* make(): Worker { return new Worker(); }",
-        "class Factory { static async make(): Worker { return new Worker(); } } const make = Factory.make;",
-    ] {
-        let source = format!(
-            "class Worker {{ work() {{}} }} {factory} function run() {{ const client = make(); client.work(); }}"
-        );
-        assert!(!resolves(&source, "client.work"), "{factory}");
-    }
-}
-
-#[test]
-fn static_this_and_nominal_calls_preserve_static_instance_boundaries() {
+fn static_dispatch_contract_matrix() {
     let source = "class Worker { instance() {} static associated() {} static runStatic() { this.instance(); this.associated(); } runInstance() { this.instance(); this.associated(); } }";
     let graph = linked("static.ts", "typescript", source);
     let facts = &graph.facts;
@@ -238,14 +192,44 @@ fn static_this_and_nominal_calls_preserve_static_instance_boundaries() {
             .count(),
         2
     );
-    assert!(!resolves(
-        "class Worker { work() {} make(): Worker { return new Worker(); } } function run() { const client = Worker.make(); client.work(); }",
-        "client.work"
-    ));
-    assert!(resolves(
-        "class Worker { work() {} static make(): Worker { return new Worker(); } } function run() { const client = Worker.make(); client.work(); }",
-        "client.work"
-    ));
+    for (source, expression, expected) in [
+("class Worker { work() {} make(): Worker { return new Worker(); } } function run() { const client = Worker.make(); client.work(); }", "client.work", false),
+("class Worker { work() {} static make(): Worker { return new Worker(); } } function run() { const client = Worker.make(); client.work(); }", "client.work", true)] {
+        assert_eq!(resolves(source, expression), expected, "{source}");
+    }
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
+    workspace.write(
+        "view.ts",
+        r#"
+class View {
+  instanceMethod(): HTMLElement {
+    return document.createElement("div");
+  }
+  static make(): HTMLElement {
+    return document.createElement("div");
+  }
+  static run() {
+    const leaked = this.instanceMethod();
+    leaked.appendChild(document.createElement("span"));
+    const built = this.make();
+    built.appendChild(document.createElement("span"));
+  }
+}
+"#,
+    );
+    workspace.build();
+    let conn = workspace.open();
+    for (expression, expected, origin) in [
+        ("leaked.appendChild", "unresolved", None),
+        ("built.appendChild", "external", Some("builtin:web_api")),
+    ] {
+        let (status, evidence) = persisted_coverage(&conn, "view.ts", None, expression);
+        assert_eq!(status, expected, "{expression}: {evidence}");
+        if let Some(origin) = origin {
+            assert!(evidence.contains(origin), "{expression}: {evidence}");
+        }
+    }
+    drop(conn);
 }
 
 #[test]
@@ -333,7 +317,7 @@ fn finite_standard_static_members_require_unshadowed_globals() {
 }
 
 #[test]
-fn typescript_constructor_field_assignments_resolve_proven_member_calls() {
+fn persisted_constructor_field_matrix() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
         "table.ts",
@@ -350,9 +334,27 @@ class TableView {
 }
 "#,
     );
+    workspace.write(
+        "later.ts",
+        r#"
+class LaterTableView {
+  constructor(element: HTMLElement) {
+    this.tbody = element;
+  }
+  reset(element: HTMLElement) {
+    this.tbody = element;
+  }
+  touch() {
+    this.tbody += 1;
+  }
+  render() {
+    this.tbody.appendChild(document.createElement("tr"));
+  }
+}
+"#,
+    );
     workspace.build();
     let conn = workspace.open();
-
     // Verify tbody and activeRow are indexed as fields under TableView
     let mut stmt = conn.prepare("SELECT name, kind, qualname FROM nodes WHERE path_id=(SELECT path_id FROM path_dictionary WHERE path='table.ts') AND kind='field' ORDER BY name").unwrap();
     let fields: Vec<(String, String, String)> = stmt
@@ -378,82 +380,27 @@ class TableView {
         "fields in nodes table: {fields:?}"
     );
 
-    let (tbody_status, tbody_evidence) =
-        persisted_coverage(&conn, "table.ts", None, "this.tbody.appendChild");
-    assert_eq!(tbody_status, "external", "{tbody_evidence}");
-    assert!(
-        tbody_evidence.contains("builtin:web_api"),
-        "{tbody_evidence}"
-    );
-
-    let (active_status, active_evidence) =
-        persisted_coverage(&conn, "table.ts", None, "this.activeRow.select");
-    assert_eq!(active_status, "unresolved", "{active_evidence}");
-
+    for (path, expression, expected, origin) in [
+        (
+            "table.ts",
+            "this.tbody.appendChild",
+            "external",
+            Some("builtin:web_api"),
+        ),
+        ("table.ts", "this.activeRow.select", "unresolved", None),
+        (
+            "later.ts",
+            "this.tbody.appendChild",
+            "external",
+            Some("builtin:web_api"),
+        ),
+    ] {
+        let (status, evidence) = persisted_coverage(&conn, path, None, expression);
+        assert_eq!(status, expected, "{path}: {expression}: {evidence}");
+        if let Some(origin) = origin {
+            assert!(evidence.contains(origin), "{path}: {evidence}");
+        }
+    }
     drop(stmt);
-    drop(conn);
-}
-
-#[test]
-fn constructor_field_type_survives_later_assignment() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write(
-        "table.ts",
-        r#"
-class TableView {
-  constructor(element: HTMLElement) {
-    this.tbody = element;
-  }
-  reset(element: HTMLElement) {
-    this.tbody = element;
-  }
-  touch() {
-    this.tbody += 1;
-  }
-  render() {
-    this.tbody.appendChild(document.createElement("tr"));
-  }
-}
-"#,
-    );
-    workspace.build();
-    let conn = workspace.open();
-    let (status, evidence) = persisted_coverage(&conn, "table.ts", None, "this.tbody.appendChild");
-    assert_eq!(status, "external", "{evidence}");
-    assert!(evidence.contains("builtin:web_api"), "{evidence}");
-    drop(conn);
-}
-
-#[test]
-fn static_this_does_not_call_instance_methods() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write(
-        "view.ts",
-        r#"
-class View {
-  instanceMethod(): HTMLElement {
-    return document.createElement("div");
-  }
-  static make(): HTMLElement {
-    return document.createElement("div");
-  }
-  static run() {
-    const leaked = this.instanceMethod();
-    leaked.appendChild(document.createElement("span"));
-    const built = this.make();
-    built.appendChild(document.createElement("span"));
-  }
-}
-"#,
-    );
-    workspace.build();
-    let conn = workspace.open();
-    assert_eq!(
-        persisted_coverage(&conn, "view.ts", None, "leaked.appendChild").0,
-        "unresolved"
-    );
-    let built = persisted_coverage(&conn, "view.ts", None, "built.appendChild");
-    assert_eq!(built.0, "external", "{}", built.1);
-    assert!(built.1.contains("builtin:web_api"), "{}", built.1);
     drop(conn);
 }

@@ -1494,25 +1494,53 @@ pub(super) fn candidate_fingerprint(root: &Path) -> Result<String> {
         }
         Ok(command.output()?)
     };
-    let diff = filtered_git(&["diff", "--binary", "HEAD"])?;
-    if !diff.status.success() {
-        bail!("TASK_CANDIDATE_BASELINE_INVALID: could not read the candidate diff");
-    }
     let status = filtered_git(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
     if !status.status.success() {
         bail!("TASK_CANDIDATE_BASELINE_INVALID: could not read candidate status");
     }
-    let untracked = git_command(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
-    if !untracked.status.success() {
-        bail!("TASK_CANDIDATE_BASELINE_INVALID: could not enumerate candidate untracked files");
+    let mut has_tracked_changes = false;
+    let mut has_untracked = false;
+    {
+        let mut iter = status.stdout.split(|byte| *byte == 0);
+        while let Some(record) = iter.next() {
+            if record.is_empty() {
+                continue;
+            }
+            if record.starts_with(b"?? ") {
+                has_untracked = true;
+            } else {
+                has_tracked_changes = true;
+                if matches!(record.first(), Some(b'R' | b'C')) {
+                    let _ = iter.next();
+                }
+            }
+        }
     }
+    let diff_stdout = if has_tracked_changes {
+        let diff = filtered_git(&["diff", "--binary", "HEAD"])?;
+        if !diff.status.success() {
+            bail!("TASK_CANDIDATE_BASELINE_INVALID: could not read the candidate diff");
+        }
+        diff.stdout
+    } else {
+        Vec::new()
+    };
+    let untracked_stdout = if has_untracked {
+        let untracked = git_command(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+        if !untracked.status.success() {
+            bail!("TASK_CANDIDATE_BASELINE_INVALID: could not enumerate candidate untracked files");
+        }
+        untracked.stdout
+    } else {
+        Vec::new()
+    };
     let mut digest = Sha256::new();
     digest.update(head.as_bytes());
     digest.update([0]);
     digest.update(&status.stdout);
     digest.update([0]);
-    digest.update(&diff.stdout);
-    for path_bytes in untracked.stdout.split(|byte| *byte == 0).filter(|path| {
+    digest.update(&diff_stdout);
+    for path_bytes in untracked_stdout.split(|byte| *byte == 0).filter(|path| {
         !path.is_empty()
             && !super::git_snapshot::is_excluded_snapshot_entry(path, &exclusions, true)
     }) {

@@ -669,51 +669,11 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
 }
 
 #[test]
-fn document_excerpt_is_opt_in_and_bounded_around_match() {
+fn document_excerpt_contract_matrix() {
     let workspace = super::search_and_paging::search_workspace();
-    let conn = workspace.open();
-    let basic = reader::search_docs_with_options(
-        &conn,
-        "needle",
-        &reader::DocSearchOptions {
-            doc_type: None,
-            component: None,
-            include_excerpt: false,
-            page: &options(10),
-        },
-    )
-    .unwrap();
-    assert!(basic["sections"]["items"][0].get("excerpt").is_none());
-    let with_excerpt = reader::search_docs_with_options(
-        &conn,
-        "needle",
-        &reader::DocSearchOptions {
-            doc_type: None,
-            component: None,
-            include_excerpt: true,
-            page: &options(10),
-        },
-    )
-    .unwrap();
-    let excerpt = with_excerpt["sections"]["items"][0]["excerpt"]
-        .as_str()
-        .unwrap();
-    assert!(excerpt.contains("[needle]"), "{excerpt}");
-    assert!(excerpt.chars().count() <= 240);
-    assert_eq!(
-        basic["sections"]["total"],
-        with_excerpt["sections"]["total"]
-    );
-    assert_eq!(
-        basic["sections"]["generation"],
-        with_excerpt["sections"]["generation"]
-    );
-}
-
-#[test]
-fn document_excerpt_uses_the_matching_fts_column() {
-    let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(
+    let indexed_conn = workspace.open();
+    let fts_conn = Connection::open_in_memory().unwrap();
+    fts_conn.execute_batch(
         "CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);\
          INSERT INTO metadata VALUES('output_root','test-generation');\
          CREATE TABLE doc_sections(doc_id TEXT PRIMARY KEY,path TEXT,section_title TEXT,doc_type TEXT,content TEXT,invariants TEXT,size INTEGER,is_invariant INTEGER);\
@@ -721,24 +681,71 @@ fn document_excerpt_uses_the_matching_fts_column() {
          INSERT INTO doc_sections VALUES('doc:1','docs/one.md','titlematch','guide','ordinary body','rulematch',13,1);\
          INSERT INTO doc_search(rowid,section_title,content,invariants) SELECT rowid,section_title,content,invariants FROM doc_sections;",
     ).unwrap();
-    for query in ["titlematch", "rulematch"] {
-        let result = reader::search_docs_with_options(
-            &conn,
-            query,
-            &reader::DocSearchOptions {
-                doc_type: None,
-                component: None,
-                include_excerpt: true,
-                page: &options(10),
-            },
-        )
-        .unwrap();
-        assert_eq!(result["sections"]["total"], 1);
-        let excerpt = result["sections"]["items"][0]["excerpt"].as_str().unwrap();
-        assert!(
-            excerpt.contains(&format!("[{query}]")),
-            "{query}: {excerpt}"
-        );
+    for case in ["indexed_body", "title_and_invariants"] {
+        match case {
+            "indexed_body" => {
+                let conn = &indexed_conn;
+                let basic = reader::search_docs_with_options(
+                    conn,
+                    "needle",
+                    &reader::DocSearchOptions {
+                        doc_type: None,
+                        component: None,
+                        include_excerpt: false,
+                        page: &options(10),
+                    },
+                )
+                .unwrap();
+                assert!(basic["sections"]["items"][0].get("excerpt").is_none());
+                let with_excerpt = reader::search_docs_with_options(
+                    conn,
+                    "needle",
+                    &reader::DocSearchOptions {
+                        doc_type: None,
+                        component: None,
+                        include_excerpt: true,
+                        page: &options(10),
+                    },
+                )
+                .unwrap();
+                let excerpt = with_excerpt["sections"]["items"][0]["excerpt"]
+                    .as_str()
+                    .unwrap();
+                assert!(excerpt.contains("[needle]"), "{excerpt}");
+                assert!(excerpt.chars().count() <= 240);
+                assert_eq!(
+                    basic["sections"]["total"],
+                    with_excerpt["sections"]["total"]
+                );
+                assert_eq!(
+                    basic["sections"]["generation"],
+                    with_excerpt["sections"]["generation"]
+                );
+            }
+            "title_and_invariants" => {
+                let conn = &fts_conn;
+                for query in ["titlematch", "rulematch"] {
+                    let result = reader::search_docs_with_options(
+                        conn,
+                        query,
+                        &reader::DocSearchOptions {
+                            doc_type: None,
+                            component: None,
+                            include_excerpt: true,
+                            page: &options(10),
+                        },
+                    )
+                    .unwrap();
+                    assert_eq!(result["sections"]["total"], 1);
+                    let excerpt = result["sections"]["items"][0]["excerpt"].as_str().unwrap();
+                    assert!(
+                        excerpt.contains(&format!("[{query}]")),
+                        "{query}: {excerpt}"
+                    );
+                }
+            }
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -808,63 +815,69 @@ fn search_path_scopes_file_and_descendants_without_changing_page_contract() {
 }
 
 #[test]
-fn line_anchor_prefers_exact_path_and_fails_closed_for_ambiguous_suffixes() {
+fn line_anchor_contract_matrix() {
     let workspace = Workspace::new();
     workspace.write("alpha/shared.py", "def target(): return 'alpha'\n");
     workspace.write("beta/shared.py", "def target(): return 'beta'\n");
-    workspace.write("nested/alpha/shared.py", "def target(): return 'nested'\n");
-    workspace.build();
-    let conn = workspace.open();
-
-    let exact = reader::select(&conn, "alpha/shared.py#L1").unwrap();
-    assert_eq!(exact["path"], "alpha/shared.py");
-
-    let error = reader::select(&conn, "shared.py#L1").unwrap_err();
-    assert!(
-        matches!(
-            error.downcast_ref::<reader::SelectorError>(),
-            Some(reader::SelectorError::Ambiguous { .. })
-        ),
-        "expected typed ambiguity for multiple whole-path suffix matches, got: {error}"
-    );
-}
-
-#[test]
-fn line_anchor_does_not_match_a_partial_filename_component() {
-    let workspace = Workspace::new();
-    workspace.write("notshared.py", "def target(): return 'wrong file'\n");
-    workspace.build();
-    let conn = workspace.open();
-
-    let error = reader::select(&conn, "shared.py#L1").unwrap_err();
-    assert!(
-        matches!(
-            error.downcast_ref::<reader::SelectorError>(),
-            Some(reader::SelectorError::NotFound { .. })
-        ),
-        "expected line anchor to reject a partial filename suffix, got: {error}"
-    );
-}
-
-#[test]
-fn line_anchor_does_not_fall_back_when_exact_file_has_no_node_on_the_line() {
-    let workspace = Workspace::new();
-    workspace.write("alpha/shared.py", "def target(): return 'exact'\n");
     workspace.write(
         "nested/alpha/shared.py",
         "def target():\n    return 'nested'\n",
     );
+    workspace.write("notshared.py", "def target(): return 'wrong file'\n");
     workspace.build();
-    let conn = workspace.open();
+    let snapshot = crate::common::sqlite::PersistedSnapshot::from_connection(&workspace.open());
+    let conn = snapshot.open();
+    for case in [
+        "exact_and_ambiguous",
+        "partial_filename",
+        "missing_exact_line",
+    ] {
+        match case {
+            "exact_and_ambiguous" => {
+                let exact = reader::select(&conn, "alpha/shared.py#L1").unwrap();
+                assert_eq!(exact["path"], "alpha/shared.py");
 
-    let error = reader::select(&conn, "alpha/shared.py#L2").unwrap_err();
-    assert!(
-        matches!(
-            error.downcast_ref::<reader::SelectorError>(),
-            Some(reader::SelectorError::NotFound { .. })
-        ),
-        "expected the exact file's missing line to remain not found, got: {error}"
-    );
+                let error = reader::select(&conn, "shared.py#L1").unwrap_err();
+                assert!(
+                    matches!(
+                        error.downcast_ref::<reader::SelectorError>(),
+                        Some(reader::SelectorError::Ambiguous { .. })
+                    ),
+                    "expected typed ambiguity for multiple whole-path suffix matches, got: {error}"
+                );
+            }
+            "partial_filename" => {
+                conn.execute_batch(
+                    "SAVEPOINT partial_filename;
+                    DELETE FROM nodes WHERE path_id IN (
+                        SELECT path_id FROM path_dictionary WHERE path <> 'notshared.py'
+                    );",
+                )
+                .unwrap();
+                let error = reader::select(&conn, "shared.py#L1").unwrap_err();
+                assert!(
+                    matches!(
+                        error.downcast_ref::<reader::SelectorError>(),
+                        Some(reader::SelectorError::NotFound { .. })
+                    ),
+                    "expected line anchor to reject a partial filename suffix, got: {error}"
+                );
+                conn.execute_batch("ROLLBACK TO partial_filename; RELEASE partial_filename;")
+                    .unwrap();
+            }
+            "missing_exact_line" => {
+                let error = reader::select(&conn, "alpha/shared.py#L2").unwrap_err();
+                assert!(
+                    matches!(
+                        error.downcast_ref::<reader::SelectorError>(),
+                        Some(reader::SelectorError::NotFound { .. })
+                    ),
+                    "expected the exact file's missing line to remain not found, got: {error}"
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[test]

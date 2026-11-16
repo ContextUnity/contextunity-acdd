@@ -74,7 +74,7 @@ impl TaskHarness {
             workspace.write(path, &source);
             store
                 .sync(
-                    &Milestone::parse(&source, "forge-mcp").unwrap(),
+                    &Milestone::parse(&source, "acdd").unwrap(),
                     path,
                     workspace.root(),
                 )
@@ -90,7 +90,7 @@ impl TaskHarness {
                 .build(),
         );
         Self {
-            id: "forge-mcp/m-active:active-task".into(),
+            id: "acdd/m-active:active-task".into(),
             store,
             root: workspace.root().to_owned(),
             _workspace: Some(workspace),

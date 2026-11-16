@@ -112,7 +112,7 @@ fn classic_require_rebindings_do_not_change_independent_module_imports() {
 
 #[cfg(feature = "lang-typescript")]
 #[test]
-fn overview_attributes_disjoint_script_islands_without_claiming_template_lines() {
+fn coverage_owner_attribution() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write("templates/page.html", "<script>\nunknownFirst();\n</script>\n<div>{{ missingTemplate }}</div>\n<script>\nunknownSecond();\n</script>\n");
     workspace.write(
@@ -122,6 +122,10 @@ fn overview_attributes_disjoint_script_islands_without_claiming_template_lines()
     workspace.write(
         "templates/mixed.html",
         "<div>{{ mixedTemplate }}</div><script>unknownMixed();</script>\n",
+    );
+    workspace.write(
+        "templates/ambiguous.html",
+        "{% include 'same' %}<script>same();</script>\n",
     );
     workspace.build();
     let conn = workspace.open();
@@ -141,33 +145,57 @@ fn overview_attributes_disjoint_script_islands_without_claiming_template_lines()
             .find(|entry| entry["language"] == language)
             .unwrap()
     };
-    assert_eq!(by_language("html")["unresolved"], 2, "{overview}");
+    assert_eq!(by_language("html")["unresolved"], 4, "{overview}");
     assert_eq!(by_language("javascript")["unresolved"], 4, "{overview}");
     assert_eq!(by_language("javascript")["files"], 0, "{overview}");
 
-    let analysis = reader::analyze_paged(&conn, "templates/page.html", None, &options).unwrap();
-    assert_eq!(
-        analysis["resolution_languages"]["html"]["unresolved"], 1,
-        "{analysis}"
-    );
-    assert_eq!(
-        analysis["resolution_languages"]["javascript"]["unresolved"], 2,
-        "{analysis}"
-    );
-    let inline = reader::analyze_paged(&conn, "templates/inline.html", None, &options).unwrap();
-    assert_eq!(
-        inline["resolution_languages"]["javascript"]["unresolved"], 1,
-        "{inline}"
-    );
-    let mixed = reader::analyze_paged(&conn, "templates/mixed.html", None, &options).unwrap();
-    assert_eq!(
-        mixed["resolution_languages"]["html"]["unresolved"], 1,
-        "{mixed}"
-    );
-    assert_eq!(
-        mixed["resolution_languages"]["javascript"]["unresolved"], 1,
-        "{mixed}"
-    );
+    for (case_id, path, html, javascript, overrides) in [
+        (
+            "overview_attributes_disjoint_script_islands_without_claiming_template_lines",
+            "templates/page.html",
+            Some(1),
+            Some(2),
+            0,
+        ),
+        (
+            "overview_attributes_disjoint_script_islands_without_claiming_template_lines",
+            "templates/inline.html",
+            None,
+            Some(1),
+            0,
+        ),
+        (
+            "overview_attributes_disjoint_script_islands_without_claiming_template_lines",
+            "templates/mixed.html",
+            Some(1),
+            Some(1),
+            1,
+        ),
+        (
+            "same_line_coverage_with_distinct_ast_owners_fails_closed",
+            "templates/ambiguous.html",
+            Some(2),
+            None,
+            0,
+        ),
+    ] {
+        let analysis = reader::analyze_paged(&conn, path, None, &options).unwrap();
+        for (language, expected) in [("html", html), ("javascript", javascript)] {
+            if let Some(expected) = expected {
+                assert_eq!(
+                    analysis["resolution_languages"][language]["unresolved"], expected,
+                    "{case_id}: {analysis}"
+                );
+            } else if language == "javascript" {
+                assert!(
+                    analysis["resolution_languages"].get(language).is_none(),
+                    "{case_id}: {analysis}"
+                );
+            }
+        }
+        let actual: i64 = query_scalar(&conn, "SELECT count(*) FROM coverage_owner_language ol JOIN path_dictionary pd ON pd.path_id=ol.path_id WHERE pd.path=?1", [path]);
+        assert_eq!(actual, overrides, "{case_id}: {path}");
+    }
     let raw_count: i64 = query_scalar(&conn, "SELECT count(*) FROM resolution_coverage", []);
     let sidecar_count: i64 =
         query_scalar(&conn, "SELECT count(*) FROM coverage_owner_language", []);
@@ -278,30 +306,6 @@ fn overview_attributes_disjoint_script_islands_without_claiming_template_lines()
     assert_eq!(report(&rebuilt)["javascript"]["unresolved"], 1);
 }
 
-#[cfg(feature = "lang-typescript")]
-#[test]
-fn same_line_coverage_with_distinct_ast_owners_fails_closed() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write(
-        "templates/ambiguous.html",
-        "{% include 'same' %}<script>same();</script>\n",
-    );
-    let conn = workspace.build_and_open();
-    let options = full_query_options();
-    let analysis =
-        reader::analyze_paged(&conn, "templates/ambiguous.html", None, &options).unwrap();
-    assert_eq!(
-        analysis["resolution_languages"]["html"]["unresolved"], 2,
-        "{analysis}"
-    );
-    assert!(
-        analysis["resolution_languages"].get("javascript").is_none(),
-        "{analysis}"
-    );
-    let overrides: i64 = query_scalar(&conn, "SELECT count(*) FROM coverage_owner_language", []);
-    assert_eq!(overrides, 0);
-}
-
 #[test]
 fn html_files_are_indexed_and_snippets_preserve_markup_after_delta() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
@@ -358,145 +362,176 @@ fn html_files_are_indexed_and_snippets_preserve_markup_after_delta() {
 
 #[cfg(feature = "lang-typescript")]
 #[test]
-fn inline_javascript_imports_resolve_without_html_namespace_collision() {
+fn browser_asset_resolution() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    let source = "<html>\n<script type=\"module\">\nimport { answer } from './app.js';\n</script>\n<script type=\"application/ld+json\">{\"invalidJS\": true}</script>\n<script src=\"other.js\">import ignored from 'ignored';</script>\n</html>\n";
-    workspace.write("app.html", source);
+    let cases = [
+        ("inline_javascript_imports_resolve_without_html_namespace_collision", "inline.html", "<html>\n<script type=\"module\">\nimport { answer } from './app.js';\n</script>\n<script type=\"application/ld+json\">{\"invalidJS\": true}</script>\n<script src=\"other.js\">import ignored from 'ignored';</script>\n</html>\n", &["./app.js", "./other.js"][..], Some(3), None),
+        ("html_local_script_and_link_assets_resolve_and_remote_assets_stay_out", "app.html", "<script src='app.js?v=1'></script>\n<link rel='modulepreload' href='/app.js#module'>\n<script src='https://cdn.invalid/remote.js'></script>\n<link rel='stylesheet' href='app.css'>\n", &["./app.js", "/app.js"][..], None, Some(2)),
+    ];
     workspace.write("app.js", "export function answer() { return 42; }\n");
-    let facts = ExtractorHarness::for_lang("html")
-        .at_path("app.html")
-        .extract(source);
-    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    assert_eq!(facts.references.len(), 2);
-    let inline = facts
-        .references
-        .iter()
-        .find(|reference| reference.module.as_deref() == Some("./app.js"))
-        .unwrap();
-    assert_eq!(inline.line, 3);
-    assert!(!facts
-        .references
-        .iter()
-        .any(|reference| reference.module.as_deref() == Some("ignored")));
+    for (_, path, source, ..) in cases {
+        workspace.write(path, source);
+    }
     workspace.build();
     let conn = workspace.open();
-    let resolved: i64 = query_scalar(
-        &conn,
-        "SELECT count(*) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=n.path_id WHERE e.src_hash=(SELECT node_hash FROM nodes WHERE id='module:app.html') AND e.kind='imports' AND p.path='app.js'",
-        [],
-    );
-    assert!(resolved > 0);
-    let self_imports: i64 = query_scalar(
-        &conn,
-        "SELECT count(*) FROM edges WHERE (SELECT id FROM nodes WHERE node_hash=src_hash)='module:app.html' AND (SELECT id FROM nodes WHERE node_hash=dst_hash)='module:app.html' AND kind='imports'",
-        [],
-    );
-    assert_eq!(self_imports, 0);
-}
-
-#[cfg(feature = "lang-typescript")]
-#[test]
-fn html_local_script_and_link_assets_resolve_and_remote_assets_stay_out() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    let source = "<script src='app.js?v=1'></script>\n<link rel='modulepreload' href='/app.js#module'>\n<script src='https://cdn.invalid/remote.js'></script>\n<link rel='stylesheet' href='app.css'>\n";
-    workspace.write("app.html", source);
-    workspace.write("app.js", "export const answer = 42;\n");
-    let facts = ExtractorHarness::for_lang("html")
-        .at_path("app.html")
-        .extract(source);
-    assert_eq!(facts.references.len(), 2);
-    assert!(facts
-        .references
-        .iter()
-        .any(|reference| reference.module.as_deref() == Some("./app.js")));
-    assert!(facts
-        .references
-        .iter()
-        .any(|reference| reference.module.as_deref() == Some("/app.js")));
-    workspace.build();
-    let conn = workspace.open();
-    let occurrences: i64 = query_scalar(
-        &conn,
-        "SELECT occurrence_count FROM edges WHERE (SELECT id FROM nodes WHERE node_hash=src_hash)='module:app.html' AND (SELECT id FROM nodes WHERE node_hash=dst_hash)='module:app.js' AND kind='imports'",
-        [],
-    );
-    assert_eq!(occurrences, 2);
-}
-
-#[cfg(feature = "lang-typescript")]
-#[test]
-fn embedded_javascript_scopes_preserve_symbols_positions_and_receiver_edges() {
-    let source = "<script type='module'>class Client { work() {} }\nconst client = new Client(); client.work();\n</script>\n<script type='module'>client.work();</script>\n<button onclick=\"function launch() {} launch();\">Run</button>";
-    let graph = ExtractorHarness::for_lang("html")
-        .at_path("islands.html")
-        .linked(source);
-    let facts = &graph.facts;
-    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    let class = facts
-        .nodes
-        .iter()
-        .find(|node| node.name == "Client" && node.kind == "class")
-        .unwrap();
-    assert_eq!(class.line, 1);
-    assert_eq!(
-        class.details["column"],
-        source.find("class Client").unwrap()
-    );
-    let work = facts
-        .nodes
-        .iter()
-        .find(|node| node.name == "work" && node.kind == "method")
-        .unwrap();
-    let launch = facts
-        .nodes
-        .iter()
-        .find(|node| node.name == "launch")
-        .unwrap();
-    assert_eq!(launch.line, 5);
-    assert_eq!(
-        launch.details["column"],
-        source
-            .lines()
-            .nth(4)
-            .unwrap()
-            .find("function launch")
-            .unwrap()
-    );
-    assert!(
-        graph.edges.iter().any(|edge| edge.kind == "calls"
-            && edge.evidence == "client.work"
-            && edge.dst == work.id),
-        "{graph:#?}"
-    );
-    assert!(
-        graph
-            .edges
+    for (case_id, path, source, modules, inline_line, occurrences) in cases {
+        let facts = ExtractorHarness::for_lang("html")
+            .at_path(path)
+            .extract(source);
+        assert!(facts.errors.is_empty(), "{case_id}: {:?}", facts.errors);
+        assert_eq!(facts.references.len(), 2, "{case_id}");
+        for module in modules {
+            assert!(
+                facts
+                    .references
+                    .iter()
+                    .any(|r| r.module.as_deref() == Some(module)),
+                "{case_id}: {module}"
+            );
+        }
+        assert!(!facts
+            .references
             .iter()
-            .any(|edge| edge.kind == "calls" && edge.evidence == "launch" && edge.dst == launch.id),
-        "{graph:#?}"
-    );
-    assert!(
-        graph.coverage.iter().any(|coverage| coverage.line == 4
-            && coverage.expression == "client.work"
-            && coverage.status == "unresolved"),
-        "{graph:#?}"
-    );
-    assert_eq!(
-        facts
-            .nodes
-            .iter()
-            .filter(|node| node.kind == "template_scope")
-            .count(),
-        4
-    );
+            .any(|r| r.module.as_deref() == Some("ignored")));
+        if let Some(line) = inline_line {
+            let inline = facts
+                .references
+                .iter()
+                .find(|r| r.module.as_deref() == Some("./app.js"))
+                .unwrap();
+            assert_eq!(inline.line, line);
+        }
+        let module = format!("module:{path}");
+        let resolved: i64 = query_scalar(&conn, "SELECT count(*) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=n.path_id WHERE e.src_hash=(SELECT node_hash FROM nodes WHERE id=?1) AND e.kind='imports' AND p.path='app.js'", [&module]);
+        assert!(resolved > 0, "{case_id}");
+        let self_imports: i64 = query_scalar(&conn, "SELECT count(*) FROM edges WHERE src_hash=(SELECT node_hash FROM nodes WHERE id=?1) AND dst_hash=src_hash AND kind='imports'", [&module]);
+        assert_eq!(self_imports, 0, "{case_id}");
+        if let Some(expected) = occurrences {
+            let count: i64 = query_scalar(&conn, "SELECT occurrence_count FROM edges WHERE src_hash=(SELECT node_hash FROM nodes WHERE id=?1) AND dst_hash=(SELECT node_hash FROM nodes WHERE id='module:app.js') AND kind='imports'", [&module]);
+            assert_eq!(count, expected, "{case_id}");
+        }
+    }
 }
 
 #[cfg(feature = "lang-typescript")]
 #[test]
-fn html_javascript_import_scope_and_boolean_handlers_survive_delta() {
+fn embedded_script_identity_and_delta() {
+    struct Case {
+        case_id: &'static str,
+        path: &'static str,
+        source: &'static str,
+        symbols: &'static [(&'static str, &'static str, usize, &'static str)],
+        calls: &'static [(&'static str, &'static str, &'static str)],
+        unresolved: &'static [(usize, &'static str)],
+        scopes: Option<usize>,
+        distinct_functions: Option<(&'static str, usize)>,
+    }
+    let cases = [
+        Case {
+            case_id: "embedded_javascript_scopes_preserve_symbols_positions_and_receiver_edges",
+            path: "islands.html", source: "<script type='module'>class Client { work() {} }\nconst client = new Client(); client.work();\n</script>\n<script type='module'>client.work();</script>\n<button onclick=\"function launch() {} launch();\">Run</button>",
+            symbols: &[("Client", "class", 1, "class Client"), ("launch", "function", 5, "function launch")],
+            calls: &[("client.work", "work", "method"), ("launch", "launch", "function")],
+            unresolved: &[(4, "client.work")], scopes: Some(4), distinct_functions: None,
+        },
+        Case {
+            case_id: "html_javascript_import_scope_and_boolean_handlers_survive_delta",
+            path: "page.html", source: "<script type='module'>import { answer } from './provider.js'; answer();</script>\n<script type='module'>answer();</script>\n<button onclick=\"function check() {} if (true && true) check();\">Run</button>",
+            symbols: &[], calls: &[], unresolved: &[(2, "answer")], scopes: None, distinct_functions: None,
+        },
+        Case {
+            case_id: "same_line_javascript_islands_have_distinct_linked_symbol_identities",
+            path: "same-line.html", source: "<script type='module'>function same() {} same();</script><script type='module'>function same() {} same();</script><button onclick='function same() {} same();'>Run</button>",
+            symbols: &[], calls: &[], unresolved: &[], scopes: None, distinct_functions: Some(("same", 3)),
+        },
+    ];
+    for case in &cases {
+        let graph = ExtractorHarness::for_lang("html")
+            .at_path(case.path)
+            .linked(case.source);
+        let facts = &graph.facts;
+        assert!(
+            facts.errors.is_empty(),
+            "{}: {:?}",
+            case.case_id,
+            facts.errors
+        );
+        for (name, kind, line, marker) in case.symbols {
+            let node = facts
+                .nodes
+                .iter()
+                .find(|node| node.name == *name && node.kind == *kind)
+                .unwrap();
+            assert_eq!(node.line, *line, "{}", case.case_id);
+            assert_eq!(
+                node.details["column"],
+                case.source
+                    .lines()
+                    .nth(line - 1)
+                    .unwrap()
+                    .find(marker)
+                    .unwrap(),
+                "{}",
+                case.case_id
+            );
+        }
+        for (expression, target, kind) in case.calls {
+            let node = facts
+                .nodes
+                .iter()
+                .find(|node| node.name == *target && node.kind == *kind)
+                .unwrap();
+            assert!(
+                graph.edges.iter().any(|edge| edge.kind == "calls"
+                    && edge.evidence == *expression
+                    && edge.dst == node.id),
+                "{}: {graph:#?}",
+                case.case_id
+            );
+        }
+        for (line, expression) in case.unresolved {
+            assert!(
+                graph.coverage.iter().any(|row| row.line == *line
+                    && row.expression == *expression
+                    && row.status == "unresolved"),
+                "{}: {graph:#?}",
+                case.case_id
+            );
+        }
+        if let Some(count) = case.scopes {
+            assert_eq!(
+                facts
+                    .nodes
+                    .iter()
+                    .filter(|node| node.kind == "template_scope")
+                    .count(),
+                count,
+                "{}",
+                case.case_id
+            );
+        }
+        if let Some((name, count)) = case.distinct_functions {
+            let functions: std::collections::BTreeSet<_> = facts
+                .nodes
+                .iter()
+                .filter(|node| node.kind == "function" && node.name == name)
+                .map(|node| node.id.clone())
+                .collect();
+            assert_eq!(functions.len(), count, "{}", case.case_id);
+            let targets: std::collections::BTreeSet<_> = graph
+                .edges
+                .iter()
+                .filter(|edge| edge.kind == "calls" && edge.evidence == name)
+                .map(|edge| edge.dst.clone())
+                .collect();
+            assert_eq!(targets, functions, "{}: {graph:#?}", case.case_id);
+        }
+    }
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write("provider.js", "export function answer() { return 42; }");
-    workspace.write("page.html", "<script type='module'>import { answer } from './provider.js'; answer();</script>\n<script type='module'>answer();</script>\n<button onclick=\"function check() {} if (true && true) check();\">Run</button>");
+    for case in &cases {
+        workspace.write(case.path, case.source);
+    }
     workspace.build();
     let conn = workspace.open();
     let imports: i64 = query_scalar(
@@ -537,30 +572,6 @@ fn html_javascript_import_scope_and_boolean_handlers_survive_delta() {
             .unwrap()
     };
     assert_eq!(rows(&workspace.open()), rows(&cold));
-}
-
-#[cfg(feature = "lang-typescript")]
-#[test]
-fn same_line_javascript_islands_have_distinct_linked_symbol_identities() {
-    let source = "<script type='module'>function same() {} same();</script><script type='module'>function same() {} same();</script><button onclick='function same() {} same();'>Run</button>";
-    let graph = ExtractorHarness::for_lang("html")
-        .at_path("same-line.html")
-        .linked(source);
-    let facts = &graph.facts;
-    let functions: std::collections::BTreeSet<_> = facts
-        .nodes
-        .iter()
-        .filter(|node| node.kind == "function" && node.name == "same")
-        .map(|node| node.id.clone())
-        .collect();
-    assert_eq!(functions.len(), 3);
-    let targets: std::collections::BTreeSet<_> = graph
-        .edges
-        .iter()
-        .filter(|edge| edge.kind == "calls" && edge.evidence == "same")
-        .map(|edge| edge.dst.clone())
-        .collect();
-    assert_eq!(targets, functions, "{graph:#?}");
 }
 
 #[cfg(feature = "lang-typescript")]

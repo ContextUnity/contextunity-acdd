@@ -14,7 +14,7 @@ use binary::{BinaryDecode, BinaryEncode};
 use rayon::prelude::*;
 use serde_json::Value;
 
-const LOCAL_FACTS_BINARY_MAGIC: &[u8] = b"FORGE-LOCAL-FACTS\0\x03";
+const LOCAL_FACTS_BINARY_MAGIC: &[u8] = b"ACDD-LOCAL-FACTS\0\x03";
 
 thread_local! {
     static LOCAL_FACTS_BUFFER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };

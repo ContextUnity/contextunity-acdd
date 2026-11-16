@@ -115,7 +115,7 @@ fn milestone_and_plan_directories_configured_and_excluded_from_scanner() {
         .unwrap();
     assert_eq!(commerce_m["tasks"][0]["status"], "ready");
 
-    let store = root.store_in("forge-mcp", "extensions.commerce");
+    let store = root.store_in("acdd", "extensions.commerce");
     let task = store.list(None, "all", None).unwrap().pop().unwrap();
     root.complete_task(CompletionMode::Store {
         store: &store,

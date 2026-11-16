@@ -128,7 +128,7 @@ pub(super) fn add_task_status_fixture(
         .sync_reference(Some(status_path), None)
         .unwrap();
     for (task_ref, status) in task_statuses {
-        let task_id = format!("forge-mcp/m-task-statuses:status-{task_ref}");
+        let task_id = format!("acdd/m-task-statuses:status-{task_ref}");
         task_harness.set_persisted_task_status(&task_id, status);
     }
     task_statuses
@@ -267,7 +267,7 @@ fn stdio_tool_catalog_uses_object_schemas_for_every_property() {
         .as_str()
         .unwrap()
         .contains("full breadcrumb"));
-    let breadcrumb = "forge-mcp/forge-mcp/m-test/tasks.build/checkpoint-sample/build";
+    let breadcrumb = "acdd/acdd/m-test/tasks.build/checkpoint-sample/build";
     for value in [
         json!(true),
         json!(42),
@@ -428,7 +428,7 @@ fn task_list_status_and_subtask_detail_matrix() {
 
     use clap::Parser;
     let cli_help = contextunity_acdd::cli::Cli::try_parse_from([
-        "contextunity-forge-mcp",
+        "contextunity-acdd",
         "task",
         "list",
         "--help",
@@ -520,7 +520,7 @@ fn task_list_status_and_subtask_detail_matrix() {
     assert_eq!(task_status_markdown.matches("- [x]").count(), 1);
     assert_eq!(task_status_markdown.matches("- [ ]").count(), 5);
     for (task_ref, status) in task_statuses {
-        let task_id = format!("forge-mcp/m-task-statuses:status-{task_ref}");
+        let task_id = format!("acdd/m-task-statuses:status-{task_ref}");
         let heading = format!("### `{task_id}`");
         let section = task_status_markdown
             .split_once(&heading)

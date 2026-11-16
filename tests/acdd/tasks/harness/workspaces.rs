@@ -188,9 +188,9 @@ impl TaskHarness {
 
     pub fn memory_with_manifest(source: &str, path: &str) -> Self {
         let root = unconfigured_test_root();
-        let milestone = Milestone::parse(source, "forge-mcp").unwrap();
+        let milestone = Milestone::parse(source, "acdd").unwrap();
         let id = milestone.task_id(&milestone.tasks[0]);
-        let mut store = TasksStore::open_in_memory("forge-mcp", "forge-mcp").unwrap();
+        let mut store = TasksStore::open_in_memory("acdd", "acdd").unwrap();
         store.sync(&milestone, path, &root).unwrap();
         Self {
             store,
@@ -203,10 +203,10 @@ impl TaskHarness {
 
     pub fn memory_with_profile(source: &str, path: &str, profile: GateProfile) -> Self {
         let root = unconfigured_test_root();
-        let milestone = Milestone::parse(source, "forge-mcp").unwrap();
+        let milestone = Milestone::parse(source, "acdd").unwrap();
         let id = milestone.task_id(&milestone.tasks[0]);
         let mut store =
-            TasksStore::open_in_memory_with_profile("forge-mcp", "forge-mcp", Arc::new(profile))
+            TasksStore::open_in_memory_with_profile("acdd", "acdd", Arc::new(profile))
                 .unwrap();
         store.sync(&milestone, path, &root).unwrap();
         Self {
@@ -236,7 +236,7 @@ impl TaskHarness {
             &["src/lib.rs", "acdd.yaml", path, ".acdd/profile.yaml"],
         );
 
-        let milestone = Milestone::parse(source, "forge-mcp").unwrap();
+        let milestone = Milestone::parse(source, "acdd").unwrap();
         let id = milestone.task_id(&milestone.tasks[0]);
         let mut store = tasks::store_for_task(workspace.root(), &id).unwrap();
         store.sync(&milestone, path, workspace.root()).unwrap();

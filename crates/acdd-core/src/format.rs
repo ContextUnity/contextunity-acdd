@@ -16,9 +16,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stable_hash64_uses_fnv1a_vectors() {
-        assert_eq!(stable_hash64("") as u64, 0xcbf29ce484222325);
-        assert_eq!(stable_hash64("a") as u64, 0xaf63dc4c8601ec8c);
-        assert_eq!(stable_hash64("hello") as u64, 0xa430d84680aabd0b);
+    fn stable_hash64_contract_matrix() {
+        for (input, expected) in [
+            ("", 0xcbf29ce484222325_u64),
+            ("a", 0xaf63dc4c8601ec8c),
+            ("hello", 0xa430d84680aabd0b),
+        ] {
+            for hash in [stable_hash64, crate::models::stable_hash64] {
+                assert_eq!(hash(input) as u64, expected, "{input:?}");
+            }
+        }
     }
 }

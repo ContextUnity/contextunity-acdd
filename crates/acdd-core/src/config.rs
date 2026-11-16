@@ -855,7 +855,7 @@ mod tests {
 
     #[test]
     fn resolve_file_path_handles_dot_slash_and_absolute_paths() {
-        let temp_dir = std::env::temp_dir().join(format!("forge_test_{}", std::process::id()));
+        let temp_dir = std::env::temp_dir().join(format!("acdd_test_{}", std::process::id()));
         let _cleanup = TempDirDrop(temp_dir.clone());
         std::fs::create_dir_all(&temp_dir).unwrap();
         let file_path = temp_dir.join("test.rs");
@@ -935,7 +935,7 @@ mod tests {
         let temp_project = std::env::temp_dir()
             .canonicalize()
             .unwrap()
-            .join(format!("forge_scope_ok_{}", std::process::id()));
+            .join(format!("acdd_scope_ok_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_project);
         let _cleanup = TempDirDrop(temp_project.clone());
         std::fs::create_dir_all(&temp_project).unwrap();

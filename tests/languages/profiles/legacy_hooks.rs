@@ -261,30 +261,83 @@ fn extract((combined, flow_return, prepared): Case) -> (Facts, Vec<&'static str>
 }
 
 #[test]
-fn legacy_and_combined_declaration_hooks_preserve_public_metadata() {
+fn declaration_hook_modes() {
     for case in cases() {
-        let (facts, _) = extract(case);
-        assert!(facts.errors.is_empty(), "{case:?}: {:?}", facts.errors);
-        let symbol = facts.nodes.iter().find(|n| n.name == "sample").unwrap();
-        assert_eq!(symbol.qualname, "legacy.ReceiverType.sample", "{case:?}");
-        let details = crate::common::assertions::projected_node_details(&facts, symbol);
-        for (key, expected) in [
-            ("receiver_name", json!("receiver_name")),
-            ("receiver_type", json!("ReceiverType")),
-            ("receiver", json!("receiver")),
-            ("decorators", json!(["decorate"])),
-            ("bases", json!("Base")),
-            ("param_types", json!({"input":"InputType"})),
-            ("default_export", json!(true)),
-            ("async", json!(true)),
-            ("prototype", json!(true)),
-            ("is_method", json!(true)),
-            ("is_static", json!(true)),
-            ("is_overload", json!(true)),
-            ("is_stub", json!(true)),
-            ("is_conditional", json!(true)),
-        ] {
-            assert_eq!(details[key], expected, "{case:?}: {key}");
+        let (facts, calls) = extract(case);
+        {
+            // legacy_and_combined_declaration_hooks_preserve_public_metadata
+
+            assert!(facts.errors.is_empty(), "{case:?}: {:?}", facts.errors);
+            let symbol = facts.nodes.iter().find(|n| n.name == "sample").unwrap();
+            assert_eq!(symbol.qualname, "legacy.ReceiverType.sample", "{case:?}");
+            let details = crate::common::assertions::projected_node_details(&facts, symbol);
+            for (key, expected) in [
+                ("receiver_name", json!("receiver_name")),
+                ("receiver_type", json!("ReceiverType")),
+                ("receiver", json!("receiver")),
+                ("decorators", json!(["decorate"])),
+                ("bases", json!("Base")),
+                ("param_types", json!({"input":"InputType"})),
+                ("default_export", json!(true)),
+                ("async", json!(true)),
+                ("prototype", json!(true)),
+                ("is_method", json!(true)),
+                ("is_static", json!(true)),
+                ("is_overload", json!(true)),
+                ("is_stub", json!(true)),
+                ("is_conditional", json!(true)),
+            ] {
+                assert_eq!(details[key], expected, "{case:?}: {key}");
+            }
+        }
+        {
+            // exact_prepared_root_bindings_merge_with_existing_public_bindings
+
+            let module = facts.nodes.iter().find(|n| n.kind == "module").unwrap();
+            let details = crate::common::assertions::projected_node_details(&facts, module);
+            let matching = matches!(case.2, Prepared::Matching);
+            assert_eq!(
+                details["bindings"],
+                if matching {
+                    json!(["existing_binding", "prepared_only"])
+                } else {
+                    json!(["existing_binding", "fallback"])
+                },
+                "{case:?}"
+            );
+            assert_eq!(
+                details["rebindings"],
+                if matching {
+                    json!(["existing_rebound", "prepared_rebound"])
+                } else {
+                    json!(["existing_rebound", "fallback"])
+                },
+                "{case:?}"
+            );
+        }
+        {
+            // declaration_hooks_and_root_fallback_execute_exactly_once
+
+            let matching = matches!(case.2, Prepared::Matching);
+            assert_eq!(
+                calls.iter().filter(|c| **c == "root_fallback").count(),
+                usize::from(!matching),
+                "{case:?}"
+            );
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|c| **c == "combined_declaration")
+                    .count(),
+                usize::from(case.0),
+                "{case:?}"
+            );
+            assert!(!calls.contains(&"separate_metadata"), "{case:?}");
+            assert_eq!(
+                calls.iter().filter(|c| **c == "metadata").count(),
+                usize::from(!case.0),
+                "{case:?}"
+            );
         }
     }
 }
@@ -312,61 +365,6 @@ fn contextual_flow_keeps_precedence_bindings_and_source_positions() {
         assert_eq!(
             flow.return_position,
             Some(SourcePosition { line: 5, column: 2 }),
-            "{case:?}"
-        );
-    }
-}
-
-#[test]
-fn exact_prepared_root_bindings_merge_with_existing_public_bindings() {
-    for case in cases() {
-        let (facts, _) = extract(case);
-        let module = facts.nodes.iter().find(|n| n.kind == "module").unwrap();
-        let details = crate::common::assertions::projected_node_details(&facts, module);
-        let matching = matches!(case.2, Prepared::Matching);
-        assert_eq!(
-            details["bindings"],
-            if matching {
-                json!(["existing_binding", "prepared_only"])
-            } else {
-                json!(["existing_binding", "fallback"])
-            },
-            "{case:?}"
-        );
-        assert_eq!(
-            details["rebindings"],
-            if matching {
-                json!(["existing_rebound", "prepared_rebound"])
-            } else {
-                json!(["existing_rebound", "fallback"])
-            },
-            "{case:?}"
-        );
-    }
-}
-
-#[test]
-fn declaration_hooks_and_root_fallback_execute_exactly_once() {
-    for case in cases() {
-        let (_, calls) = extract(case);
-        let matching = matches!(case.2, Prepared::Matching);
-        assert_eq!(
-            calls.iter().filter(|c| **c == "root_fallback").count(),
-            usize::from(!matching),
-            "{case:?}"
-        );
-        assert_eq!(
-            calls
-                .iter()
-                .filter(|c| **c == "combined_declaration")
-                .count(),
-            usize::from(case.0),
-            "{case:?}"
-        );
-        assert!(!calls.contains(&"separate_metadata"), "{case:?}");
-        assert_eq!(
-            calls.iter().filter(|c| **c == "metadata").count(),
-            usize::from(!case.0),
             "{case:?}"
         );
     }

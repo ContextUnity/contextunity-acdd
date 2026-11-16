@@ -71,48 +71,7 @@ fn python_standard_functions_types_and_exceptions_resolve() {
 
 #[cfg(feature = "lang-rust")]
 #[test]
-fn rust_prelude_variants_and_macros_have_stdlib_provenance() {
-    let names = [
-        "Some", "Ok", "Err", "vec", "format", "println", "eprintln", "panic",
-    ];
-    let source = r#"fn run() {
-    let _some = Some(1);
-    let _ok: Result<i32, ()> = Ok(1);
-    let _err: Result<(), i32> = Err(1);
-    let _items = vec![1];
-    let _text = format!("{}", 1);
-    println!("{}", 1);
-    eprintln!("{}", 1);
-    if false { panic!(); }
-}
-"#;
-    let profile = languages::require("rust").unwrap();
-    assert!(profile.builtin("None"));
-    let graph = ExtractorHarness::for_lang("rust")
-        .at_path("builtins.rs")
-        .linked(source);
-    let facts = &graph.facts;
-    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    for name in ["Some", "Ok", "Err"] {
-        assert!(profile.builtin(name), "missing Rust builtin {name}");
-    }
-    for name in names {
-        let coverage = graph
-            .coverage
-            .iter()
-            .find(|row| row.expression == name)
-            .unwrap_or_else(|| panic!("missing {name}: {graph:#?}"));
-        assert_eq!(coverage.status, "external", "{name}: {coverage:#?}");
-        assert!(
-            coverage.evidence.contains("Rust standard library"),
-            "{name}: {coverage:#?}"
-        );
-    }
-}
-
-#[cfg(feature = "lang-rust")]
-#[test]
-fn rust_stdlib_calls_are_external_and_local_shadow_is_resolved() {
+fn rust_stdlib_provenance_and_shadowing() {
     let profile = languages::require("rust").unwrap();
     for (receiver, member, expected) in [
         ("String", "clone", true),
@@ -147,6 +106,10 @@ fn rust_stdlib_calls_are_external_and_local_shadow_is_resolved() {
             expected,
             "{receiver}::{member}"
         );
+    }
+    assert!(profile.builtin("None"));
+    for name in ["Some", "Ok", "Err"] {
+        assert!(profile.builtin(name), "missing Rust builtin {name}");
     }
     let cases = [
         (
@@ -278,32 +241,44 @@ fn rust_stdlib_calls_are_external_and_local_shadow_is_resolved() {
             true,
         ),
     ];
-    for (path, source, expression, status, origin, local_target) in cases {
-        let graph = ExtractorHarness::for_lang("rust")
-            .at_path(path)
-            .linked(source);
-        let facts = &graph.facts;
-        assert!(facts.errors.is_empty(), "{path}: {facts:#?}");
-        let coverage = graph
-            .coverage
-            .iter()
-            .find(|row| row.expression == expression)
-            .unwrap_or_else(|| panic!("{path}: missing {expression}: {graph:#?}"));
-        assert_eq!(coverage.status, status, "{path}: {coverage:#?}");
-        if let Some(origin) = origin {
-            assert!(coverage.evidence.contains(origin), "{path}: {coverage:#?}");
-        }
-        if local_target {
-            let target = facts.nodes.iter().find(|node| node.name == "from").unwrap();
-            assert!(
-                graph.edges.iter().any(|edge| edge.kind == "calls"
-                    && edge.evidence == expression
-                    && edge.dst == target.id),
-                "{path}: {graph:#?}"
-            );
-        }
-    }
-    let prelude_source = r#"
+
+    let mut cases: Vec<_> = cases
+        .into_iter()
+        .map(|(path, source, expression, status, origin, local_target)| {
+            (
+                "rust_stdlib_calls_are_external_and_local_shadow_is_resolved",
+                path,
+                source,
+                vec![(expression, status, origin, local_target)],
+            )
+        })
+        .collect();
+    let prelude_source = r#"fn run() {
+    let _some = Some(1);
+    let _ok: Result<i32, ()> = Ok(1);
+    let _err: Result<(), i32> = Err(1);
+    let _items = vec![1];
+    let _text = format!("{}", 1);
+    println!("{}", 1);
+    eprintln!("{}", 1);
+    if false { panic!(); }
+}
+"#;
+    cases.push((
+        "rust_prelude_variants_and_macros_have_stdlib_provenance",
+        "builtins.rs",
+        prelude_source,
+        [
+            "Some", "Ok", "Err", "vec", "format", "println", "eprintln", "panic",
+        ]
+        .into_iter()
+        .map(|name| (name, "external", Some("Rust standard library"), false))
+        .collect(),
+    ));
+    cases.push((
+        "rust_stdlib_calls_are_external_and_local_shadow_is_resolved",
+        "prelude_traits.rs",
+        r#"
 fn run() {
     let text = String::from("hello");
     text.clone();
@@ -311,21 +286,37 @@ fn run() {
     let numbers = Vec::new();
     numbers.iter();
 }
-"#;
-    let prelude_graph = ExtractorHarness::for_lang("rust")
-        .at_path("prelude_traits.rs")
-        .linked(prelude_source);
-    assert!(
-        prelude_graph.facts.errors.is_empty(),
-        "{:#?}",
-        prelude_graph.facts.errors
-    );
-    for expression in ["text.clone", "Default::default", "numbers.iter"] {
-        let coverage = prelude_graph
-            .coverage
-            .iter()
-            .find(|row| row.expression == expression)
-            .unwrap_or_else(|| panic!("missing {expression}: {prelude_graph:#?}"));
-        assert_eq!(coverage.status, "external", "{expression}: {coverage:#?}");
+"#,
+        ["text.clone", "Default::default", "numbers.iter"]
+            .into_iter()
+            .map(|name| (name, "external", None, false))
+            .collect(),
+    ));
+    for (case_id, path, source, expectations) in cases {
+        let graph = ExtractorHarness::for_lang("rust")
+            .at_path(path)
+            .linked(source);
+        let facts = &graph.facts;
+        assert!(facts.errors.is_empty(), "{case_id}: {path}: {facts:#?}");
+        for (expression, status, origin, local_target) in expectations {
+            let coverage = graph
+                .coverage
+                .iter()
+                .find(|row| row.expression == expression)
+                .unwrap_or_else(|| panic!("{path}: missing {expression}: {graph:#?}"));
+            assert_eq!(coverage.status, status, "{path}: {coverage:#?}");
+            if let Some(origin) = origin {
+                assert!(coverage.evidence.contains(origin), "{path}: {coverage:#?}");
+            }
+            if local_target {
+                let target = facts.nodes.iter().find(|node| node.name == "from").unwrap();
+                assert!(
+                    graph.edges.iter().any(|edge| edge.kind == "calls"
+                        && edge.evidence == expression
+                        && edge.dst == target.id),
+                    "{path}: {graph:#?}"
+                );
+            }
+        }
     }
 }

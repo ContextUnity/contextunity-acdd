@@ -381,11 +381,8 @@ mod tests {
 
     #[test]
     fn verification_requires_matching_command_profile_and_trace() {
-        let path = std::env::temp_dir().join(format!(
-            "forge-verification-{}-{}.sqlite",
-            std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap()
-        ));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("verification.sqlite");
         let mut store = TasksStore::open(&path).unwrap();
         let command = crate::tasks::profile::CommandDef::Script("true".into());
         std::sync::Arc::make_mut(&mut store.profile)
@@ -446,6 +443,6 @@ mod tests {
         )
         .is_err());
         drop(store);
-        let _ = fs::remove_file(path);
+        drop(dir);
     }
 }

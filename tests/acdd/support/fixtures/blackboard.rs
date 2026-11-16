@@ -3,7 +3,7 @@ use super::*;
 pub(crate) fn file_backed_blackboard_fixture() -> (crate::common::Workspace, TasksStore, Milestone)
 {
     let root = crate::common::Workspace::new();
-    let milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(SPEC, "acdd").unwrap();
     let mut store = TasksStore::open(&root.path(".acdd/tasks.sqlite")).unwrap();
     store
         .sync(&milestone, "docs/010-test.md", root.root())

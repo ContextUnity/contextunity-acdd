@@ -365,13 +365,7 @@ fn render_read_field(output: &mut String, key: &str, value: &Value, depth: usize
     }
 }
 
-fn render_fenced_code_field(
-    output: &mut String,
-    key: &str,
-    code: &str,
-    depth: usize,
-    lang: &str,
-) {
+fn render_fenced_code_field(output: &mut String, key: &str, code: &str, depth: usize, lang: &str) {
     let mut max_ticks = 0usize;
     let mut run = 0usize;
     for ch in code.chars() {
@@ -421,10 +415,16 @@ fn infer_read_language(object: &Map<String, Value>) -> &str {
                 .and_then(Value::as_str)
         })
         .unwrap_or("");
-    if object.get("mode").and_then(Value::as_str) == Some("search") && path.contains(['*', '?', '[']) {
+    if object.get("mode").and_then(Value::as_str) == Some("search")
+        && path.contains(['*', '?', '['])
+    {
         return "text";
     }
-    match path.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()).as_deref() {
+    match path
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .as_deref()
+    {
         Some("rs") => "rust",
         Some("py") => "python",
         Some("ts" | "tsx") => "typescript",

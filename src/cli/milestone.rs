@@ -138,6 +138,19 @@ impl DraftArgs {
 
 /// Runs the selected milestone command within the repository root.
 pub fn run(root: &Path, command: MilestoneCommand) -> Result<Value> {
+    run_with_optional_stdin(root, command, None)
+}
+
+/// Runs a milestone command with explicit draft input, without reading process stdin.
+pub fn run_with_stdin(root: &Path, command: MilestoneCommand, stdin: &str) -> Result<Value> {
+    run_with_optional_stdin(root, command, Some(stdin))
+}
+
+fn run_with_optional_stdin(
+    root: &Path,
+    command: MilestoneCommand,
+    stdin: Option<&str>,
+) -> Result<Value> {
     crate::mcp::tasks::ensure_extractors();
     match command {
         MilestoneCommand::Run {
@@ -208,16 +221,21 @@ pub fn run(root: &Path, command: MilestoneCommand) -> Result<Value> {
             if in_place {
                 anyhow::bail!("--in-place requires a milestone manifest path");
             }
-            run_draft(root, draft, false)
+            run_draft(root, draft, false, stdin)
         }
-        MilestoneCommand::Draft(draft) => run_draft(root, draft, true),
+        MilestoneCommand::Draft(draft) => run_draft(root, draft, true, stdin),
         MilestoneCommand::Clear { id } => milestones::clear_milestone(root, &id),
     }
 }
 
-fn run_draft(root: &Path, draft: DraftArgs, canonical_draft: bool) -> Result<Value> {
-    let mut stdin = String::new();
-    if !io::stdin().is_terminal() {
+fn run_draft(
+    root: &Path,
+    draft: DraftArgs,
+    canonical_draft: bool,
+    input: Option<&str>,
+) -> Result<Value> {
+    let mut stdin = input.unwrap_or_default().to_owned();
+    if input.is_none() && !io::stdin().is_terminal() {
         io::stdin().read_to_string(&mut stdin)?;
     }
     let options = Init {

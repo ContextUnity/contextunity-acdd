@@ -6,7 +6,7 @@ use acdd_tasks::{
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 pub(super) const MANIFEST: &str = "docs/milestones/011-wave.md";
@@ -132,20 +132,25 @@ pub(super) struct WaveHarness {
     pub task: TaskHarness,
     pub options: MilestoneRunOptions,
     pub verification_marker: PathBuf,
+    _marker_workspace: Workspace,
     workspace: Workspace,
 }
 
 impl WaveHarness {
     pub fn new(in_place: bool) -> Self {
-        Self::build(in_place, false, false)
+        Self::build(in_place, false, false, false)
     }
 
     pub fn with_single_task(in_place: bool) -> Self {
-        Self::build(in_place, true, false)
+        Self::build(in_place, true, false, false)
+    }
+
+    pub fn with_minimal_task_gates(in_place: bool, single_task: bool) -> Self {
+        Self::build(in_place, single_task, false, true)
     }
 
     pub fn with_blueprint_gate(in_place: bool) -> Self {
-        Self::build(in_place, true, true)
+        Self::build(in_place, true, true, false)
     }
 
     pub fn with_nested_blueprint(in_place: bool) -> Self {
@@ -156,16 +161,26 @@ impl WaveHarness {
         harness
     }
 
-    fn build(in_place: bool, single_task: bool, blueprint_gate: bool) -> Self {
+    fn build(in_place: bool, single_task: bool, blueprint_gate: bool, minimal: bool) -> Self {
+        let workspace = acdd_workspace(DEFAULT_SEAM, "");
+        let role_helper = crate::acdd::snapshot::role_helper_path();
         let mut profile = milestone_profile(blueprint_gate);
-        let verification_marker = std::env::temp_dir().join(format!(
-            "forge-wave-verification-{}-{}.marker",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
+        if minimal {
+            let gates = &mut profile
+                .gates
+                .iter_mut()
+                .find_map(|gate| gate.tasks.as_mut())
                 .unwrap()
-                .as_nanos()
-        ));
+                .gates;
+            gates.retain(|gate| matches!(gate.id.as_str(), "build" | "review" | "deliver"));
+            gates
+                .iter_mut()
+                .find(|gate| gate.id == "review")
+                .unwrap()
+                .reject_routing = None;
+        }
+        let marker_workspace = Workspace::new();
+        let verification_marker = marker_workspace.path("verification.marker");
         match profile.commands.get_mut("check_full_repo") {
             Some(acdd_tasks::tasks::profile::CommandDef::Detailed { command, .. }) => {
                 command.push_str(&format!(
@@ -176,22 +191,23 @@ impl WaveHarness {
             _ => panic!("wave fixture must register a detailed verification command"),
         }
         let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+        let role_helper_quoted = quote(&role_helper.to_string_lossy());
         for role in profile.roles.values_mut() {
             role.guidance = Some("Exercise the real task gate protocol.".into());
             role.runner = Some(format!(
-                "python3 {} {} {} {{session_id}} '{{prompt}}'",
-                quote(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/tests/acdd/fixtures/workflows/wave-task-role.py"
-                )),
-                quote(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/tests/acdd/orchestrator/lifecycle/role_fixture.py"
-                )),
+                "{role_helper_quoted} wave-task-role {} {} {{session_id}} '{{prompt}}'",
+                quote(&workspace.root().to_string_lossy()),
                 quote(env!("CARGO_BIN_EXE_acdd"))
             ));
         }
-        profile.roles.insert("wave_role".into(), serde_json::from_value(json!({"runner":format!("python3 {} '{{prompt}}'", quote(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/acdd/fixtures/workflows/wave-role.py"))),"guidance":"Exercise the real task gate protocol."})).unwrap());
+        let wave_runner = format!("{role_helper_quoted} wave-role '{{prompt}}'");
+        profile.roles.insert(
+            "wave_role".into(),
+            serde_json::from_value(
+                json!({"runner":wave_runner,"guidance":"Exercise the real task gate protocol."}),
+            )
+            .unwrap(),
+        );
         let builder = MilestoneFixtureBuilder::new("m-wave").task("first", &["src/lib.rs"]);
         let source = if single_task {
             builder.build()
@@ -200,7 +216,6 @@ impl WaveHarness {
                 .task_with_deps("second", &["src/second.rs"], &["first"])
                 .build()
         };
-        let workspace = acdd_workspace(DEFAULT_SEAM, "");
         workspace.write("src/lib.rs", "pub fn example() {}\n");
         workspace.write(
             "acdd.yaml",
@@ -212,7 +227,7 @@ impl WaveHarness {
             &workspace,
             &["src/lib.rs", "acdd.yaml", MANIFEST, ".acdd/profile.yaml"],
         );
-        let milestone = Milestone::parse(&source, "forge-mcp").unwrap();
+        let milestone = Milestone::parse(&source, "acdd").unwrap();
         let mut task = TaskHarness::attach(&workspace, &milestone.task_id(&milestone.tasks[0]));
         task.store
             .sync(&milestone, MANIFEST, workspace.root())
@@ -252,6 +267,7 @@ impl WaveHarness {
             task,
             options,
             verification_marker,
+            _marker_workspace: marker_workspace,
             workspace,
         }
     }

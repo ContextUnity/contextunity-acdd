@@ -434,7 +434,7 @@ fn task_list_generation_and_continuation_matrix() {
         .to_owned();
     task_harness
         .store
-        .subtask_update("forge-mcp/m-large:large-0", "ready-case", "blocked", None)
+        .subtask_update("acdd/m-large:large-0", "ready-case", "blocked", None)
         .unwrap();
     let stale_subtask_token = client
         .call(
@@ -466,7 +466,7 @@ fn task_list_generation_and_continuation_matrix() {
         )
         .expect("MCP payload should succeed");
     let first_task = &consistent_view["tasks"][0];
-    assert_eq!(first_task["task_id"], "forge-mcp/m-large:large-0");
+    assert_eq!(first_task["task_id"], "acdd/m-large:large-0");
     assert_eq!(first_task["status"], "ready");
     assert_eq!(
         first_task["subtasks"]

@@ -3,10 +3,10 @@ inherit: none
 save: none
 roles:
   builder:
-    runner: "python3 workflow-runner.py '{prompt}'"
+    runner: "./workflow-role-fixture workflow-runner '{prompt}'"
     prompt_template: "Implement {goal} as {role} at {stage}."
   reviewer:
-    runner: "python3 workflow-runner.py '{prompt}'"
+    runner: "./workflow-role-fixture workflow-runner '{prompt}'"
 gates:
   - id: build
     role: builder

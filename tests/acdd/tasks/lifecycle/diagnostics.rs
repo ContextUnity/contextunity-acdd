@@ -15,7 +15,7 @@ fn task_manage_selector_diagnostics_report_fields_before_resolution() {
         (
             tasks::Manage {
                 action: tasks::ManageAction::Inspect,
-                task_id: Some("forge-mcp/m-missing:task".into()),
+                task_id: Some("acdd/m-missing:task".into()),
                 milestone_ref: Some("docs/010-test.md".into()),
                 ..Default::default()
             },
@@ -33,7 +33,7 @@ fn task_manage_selector_diagnostics_report_fields_before_resolution() {
         (
             tasks::Manage {
                 action: tasks::ManageAction::ExtendScope,
-                task_id: Some("forge-mcp/m-test:first".into()),
+                task_id: Some("acdd/m-test:first".into()),
                 paths: Some(Vec::new()),
                 ..Default::default()
             },
@@ -65,7 +65,7 @@ fn task_store_diagnostics_cover_missing_stale_and_submission_precedence() {
     let mut h = TaskHarness::memory();
     {
         let mut proof = unobserved_evidence(&h.claim("contract"));
-        let id = "forge-mcp/m-test:missing";
+        let id = "acdd/m-test:missing";
         proof.task_id = id.into();
         let root = h.root().to_owned();
         let errors = [
@@ -170,7 +170,7 @@ fn task_store_diagnostics_cover_missing_stale_and_submission_precedence() {
                     )
                 }
                 "task_id" => {
-                    proof.task_id = "forge-mcp/m-other:task".into();
+                    proof.task_id = "acdd/m-other:task".into();
                     (proof.task_id.clone(), original.task_id.clone())
                 }
                 "worker_id" => {
@@ -276,7 +276,7 @@ fn task_store_diagnostics_cover_missing_stale_and_submission_precedence() {
 
     let mut h = TaskHarness::disk();
     {
-        let id = "forge-mcp/m-test:missing";
+        let id = "acdd/m-test:missing";
         let diagnostic = format!(
             "task '{id}' not found in tasks database. Do: verify task id and sync milestone."
         );

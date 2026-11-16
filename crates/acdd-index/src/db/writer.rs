@@ -794,3 +794,13 @@ fn cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> rusqli
 #[cfg(test)]
 #[path = "writer/multi_value_batch_tests.rs"]
 mod multi_value_batch_tests;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn sqlite_cache_size_is_clamped_in_kibibytes() {
+        for (budget, expected) in [(0, 4_096), (64 * 1024 * 1024, 8_192), (u64::MAX, 32_768)] {
+            assert_eq!(super::sqlite_cache_size_kib(budget), expected);
+        }
+    }
+}

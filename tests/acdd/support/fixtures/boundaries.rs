@@ -32,7 +32,7 @@ pub(crate) fn prepare_indexed_boundary_workspace(
         root.write("src/test_helpers.rs", test_helper_source);
     }
     root.write("AGENTS.md", "# Instructions\nLoad the acdd skill.\n");
-    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity ACDD\n");
     root.write(
         "acdd.yaml",
         "roots: [src, tests]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
@@ -94,7 +94,7 @@ pub(crate) fn indexed_boundary_workspace(
     );
     crate::acdd::tasks::harness::TaskHarness::claim_at(
         root.root(),
-        "forge-mcp/m-current-boundary:routing",
+        "acdd/m-current-boundary:routing",
         "contract",
         "contract-author",
     )
@@ -107,7 +107,7 @@ pub(crate) fn submit_indexed_boundary(
     stage: &str,
     seam: &str,
 ) -> anyhow::Result<Value> {
-    let task_id = "forge-mcp/m-current-boundary:routing";
+    let task_id = "acdd/m-current-boundary:routing";
     let task = tasks::store_for_task(root.root(), task_id)?.inspect(task_id)?;
     let mut proof = evidence(&task);
     proof.proof = if stage == "contract" {

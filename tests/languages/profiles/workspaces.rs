@@ -94,33 +94,8 @@ func Main() int {
 
 #[cfg(feature = "lang-rust")]
 #[test]
-fn root_cargo_crate_imports_link_integration_tests_and_preserve_delta_parity() {
-    check_root_cargo_crate_import_cases(&ROOT_IMPORT_CASES[..4]);
-}
-
-#[cfg(feature = "lang-rust")]
-#[test]
-fn root_cargo_crate_imports_reject_mismatched_crate_names_and_preserve_delta_parity() {
-    check_root_cargo_crate_import_cases(&ROOT_IMPORT_CASES[4..8]);
-}
-
-#[cfg(feature = "lang-rust")]
-#[test]
-fn root_cargo_crate_imports_reject_invalid_manifests_and_binary_only_roots_and_preserve_delta_parity(
-) {
-    check_root_cargo_crate_import_cases(&ROOT_IMPORT_CASES[8..12]);
-}
-
-#[cfg(feature = "lang-rust")]
-#[test]
-fn root_cargo_crate_imports_respect_custom_lib_path_and_autolib_settings_and_preserve_delta_parity()
-{
-    check_root_cargo_crate_import_cases(&ROOT_IMPORT_CASES[12..]);
-}
-
-#[cfg(feature = "lang-rust")]
-fn check_root_cargo_crate_import_cases(cases: &[(&str, &str, bool, i64)]) {
-    for &(manifest, crate_name, library, expected) in cases {
+fn root_cargo_import_contract() {
+    for &(manifest, crate_name, library, expected) in ROOT_IMPORT_CASES {
         let w = PersistedWorkspaceHarness::new();
         if !manifest.is_empty() {
             w.write("Cargo.toml", manifest);

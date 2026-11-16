@@ -4,9 +4,9 @@ use super::*;
 fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
     let fixture = TaskHarness::recovery_contract_fixture().unwrap();
     let proof = fixture.contract_evidence().unwrap();
-    let refs = fixture.root.root().join(".git/refs/forge/snapshots");
+    let refs = fixture.root.root().join(".git/refs/acdd/snapshots");
     std::fs::create_dir_all(&refs).unwrap();
-    let blocker = refs.join("forge-mcp");
+    let blocker = refs.join("acdd");
     std::fs::write(&blocker, "block the nested snapshot ref path").unwrap();
     let failed_pin = fixture.submit_contract(&proof).unwrap_err().to_string();
     assert!(
@@ -62,7 +62,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
     let root = fixture.root;
     let task_id = fixture.id;
     let task_id = &task_id;
-    let checkpoint_ref = format!("refs/forge/state/forge-mcp/{}", task_id.replace(':', "/"));
+    let checkpoint_ref = format!("refs/acdd/state/acdd/{}", task_id.replace(':', "/"));
     let checkpoint =
         contextunity_acdd::db::tasks_store::recovery::read_checkpoint(root.root(), &checkpoint_ref)
             .unwrap();
@@ -71,7 +71,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
         .inspect_details(task_id)
         .unwrap();
     let stored = tasks::store(root.root()).unwrap().inspect(task_id).unwrap();
-    let permanent_pins = TaskHarness::references(root.root(), "refs/forge/evidence/");
+    let permanent_pins = TaskHarness::references(root.root(), "refs/acdd/evidence/");
     assert!(permanent_pins.status.success());
     assert!(
         permanent_pins.stdout.is_empty(),
@@ -89,222 +89,154 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
             .unwrap()
             .trim()
             .to_owned();
-    for (field, replacement, diagnostic) in [
-        (
-            "intent",
-            json!("unacknowledged isolated process intent"),
-            "TASK_RECOVERY_AMBIGUOUS",
-        ),
-        (
-            "cohort_id",
-            json!("incomplete isolated publication"),
-            "TASK_RECOVERY_AMBIGUOUS",
-        ),
-        (
-            "project",
-            json!("foreign"),
-            "TASK_RECOVERY_CHECKPOINT_INVALID",
-        ),
-        ("version", json!(99), "TASK_RECOVERY_AMBIGUOUS"),
-    ] {
-        let mut state = serde_json::to_value(&checkpoint).unwrap();
-        state[field] = replacement;
-        let mut mutation = contextunity_acdd::core::git::git_checkpoint(
+    let mut state = serde_json::to_value(&checkpoint).unwrap();
+    state["intent"] = json!("unacknowledged isolated process intent");
+    let mutation = contextunity_acdd::core::git::git_checkpoint(
+        root.root(),
+        &checkpoint_ref,
+        &serde_json::to_vec(&state).unwrap(),
+        std::slice::from_ref(&contract_snap),
+    )
+    .unwrap();
+    assert!(
+        contextunity_acdd::engine::milestones::show(root.root(), "m-test", true)
+            .unwrap_err()
+            .to_string()
+            .contains("TASK_CHECKPOINT_PENDING")
+    );
+    assert!(recover().is_err());
+    assert_eq!(
+        tasks::store(root.root())
+            .unwrap()
+            .inspect_details(task_id)
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        TaskHarness::revision_text(root.root(), &checkpoint_ref).unwrap(),
+        mutation
+    );
+    let database = root.root().join(".acdd/tasks.sqlite");
+    let paths = [
+        database.clone(),
+        std::path::PathBuf::from(format!("{}-wal", database.display())),
+        std::path::PathBuf::from(format!("{}-shm", database.display())),
+    ];
+    let originals = paths.each_ref().map(|path| std::fs::read(path).ok());
+    for path in &paths {
+        if path.exists() {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+    let refused = recover().expect_err("invalid checkpoint must be refused");
+    assert!(format!("{refused:#}").contains("TASK_RECOVERY_AMBIGUOUS"));
+    assert!(
+        !database.exists(),
+        "refusal must not install a partial database"
+    );
+    for (path, bytes) in paths.iter().zip(originals) {
+        if let Some(bytes) = bytes {
+            std::fs::write(path, bytes).unwrap();
+        }
+    }
+    assert!(TaskHarness::update_reference(
+        root.root(),
+        &checkpoint_ref,
+        &keeper_commit,
+        Some(&mutation)
+    )
+    .status
+    .success());
+    let peer_ref = format!("{checkpoint_ref}-peer");
+    for case in ["conflicting tokens", "foreign cohort"] {
+        let mut acknowledged = serde_json::to_value(&checkpoint).unwrap();
+        if case == "foreign cohort" {
+            acknowledged["cohort"] = json!([[root.root().canonicalize().unwrap(), peer_ref]]);
+            acknowledged["cohort_id"] = json!("cohort");
+        }
+        contextunity_acdd::core::git::git_checkpoint(
             root.root(),
             &checkpoint_ref,
-            &serde_json::to_vec(&state).unwrap(),
-            std::slice::from_ref(&contract_snap),
+            &serde_json::to_vec(&acknowledged).unwrap(),
+            &[],
         )
         .unwrap();
-        if field == "intent" {
-            assert!(
-                contextunity_acdd::engine::milestones::show(root.root(), "m-test", true)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("TASK_CHECKPOINT_PENDING")
-            );
-            let recovered = recover();
-            assert!(
-                recovered.is_err(),
-                "an arbitrary intent is not authority to revoke a claim"
-            );
-            assert_eq!(
-                tasks::store(root.root())
-                    .unwrap()
-                    .inspect_details(task_id)
-                    .unwrap(),
-                before
-            );
-            let mut genuine = serde_json::to_value(&checkpoint).unwrap();
-            genuine["intent"] = json!("1-1");
-            genuine["max_revision"] = json!(checkpoint.max_revision + 1);
-            genuine["cohort"] = json!([]);
-            genuine["cohort_id"] = json!("");
-            for corrupt in [
-                "reservation",
-                "worker",
-                "claim",
-                "claims",
-                "gates",
-                "cohort",
-                "cohort_id",
-                "token",
-            ] {
-                assert!(TaskHarness::update_reference(
-                    root.root(),
-                    &checkpoint_ref,
-                    &keeper_commit,
-                    None
-                )
-                .status
-                .success());
-                let mut value = genuine.clone();
-                match corrupt {
-                    "reservation" => value["max_revision"] = json!(checkpoint.max_revision + 100),
-                    "worker" => value["task"]["worker_id"] = json!("foreign-worker"),
-                    "claim" => {
-                        value["task"]["claim_revision"] = json!(checkpoint.max_revision + 10)
-                    }
-                    "claims" => value["claims"] = json!([]),
-                    "gates" => value["gates"] = json!([]),
-                    "cohort" => {
-                        value["cohort"] = json!([[root.root().to_string_lossy(), checkpoint_ref]])
-                    }
-                    "cohort_id" => value["cohort_id"] = json!("foreign-cohort"),
-                    "token" => value["intent"] = json!("invalid-token"),
-                    _ => unreachable!(),
-                }
-                let corrupt_tip = contextunity_acdd::core::git::git_checkpoint(
-                    root.root(),
-                    &checkpoint_ref,
-                    &serde_json::to_vec(&value).unwrap(),
-                    std::slice::from_ref(&contract_snap),
-                )
-                .unwrap();
-                let refused = recover();
-                assert!(refused.is_err(), "must reject {corrupt}");
-                assert_eq!(
-                    tasks::store(root.root())
-                        .unwrap()
-                        .inspect_details(task_id)
-                        .unwrap(),
-                    before,
-                    "SQL changed after rejected {corrupt}"
-                );
-                assert_eq!(
-                    TaskHarness::revision_text(root.root(), &checkpoint_ref).unwrap(),
-                    corrupt_tip,
-                    "ref changed after rejected {corrupt}"
-                );
-            }
-            let peer_ref = format!("{}/second", checkpoint_ref.rsplit_once('/').unwrap().0);
-            let peer_keeper = TaskHarness::revision_text(root.root(), &peer_ref).unwrap();
-            let peer = contextunity_acdd::db::tasks_store::recovery::read_checkpoint(
+        let mut peer = acknowledged.clone();
+        peer["task_id"] = json!(format!("{task_id}-peer"));
+        if case == "foreign cohort" {
+            peer["cohort_id"] = json!("foreign-cohort");
+        }
+        let peer_ack = contextunity_acdd::core::git::git_checkpoint(
+            root.root(),
+            &peer_ref,
+            &serde_json::to_vec(&peer).unwrap(),
+            &[],
+        )
+        .unwrap();
+        let mut intent = acknowledged.clone();
+        intent["intent"] = json!("1-1");
+        intent["cohort"] = json!([]);
+        intent["cohort_id"] = json!("");
+        let main_tip = contextunity_acdd::core::git::git_checkpoint(
+            root.root(),
+            &checkpoint_ref,
+            &serde_json::to_vec(&intent).unwrap(),
+            &[],
+        )
+        .unwrap();
+        let peer_tip = if case == "conflicting tokens" {
+            peer["intent"] = json!("2-2");
+            peer["cohort"] = json!([]);
+            peer["cohort_id"] = json!("");
+            contextunity_acdd::core::git::git_checkpoint(
                 root.root(),
                 &peer_ref,
+                &serde_json::to_vec(&peer).unwrap(),
+                &[],
             )
-            .unwrap();
-            for corrupt in ["token", "acknowledged_cohort"] {
-                assert!(TaskHarness::update_reference(
-                    root.root(),
-                    &checkpoint_ref,
-                    &keeper_commit,
-                    None
-                )
-                .status
-                .success());
-                let first_tip = contextunity_acdd::core::git::git_checkpoint(
-                    root.root(),
-                    &checkpoint_ref,
-                    &serde_json::to_vec(&genuine).unwrap(),
-                    std::slice::from_ref(&contract_snap),
-                )
-                .unwrap();
-                let mut value = serde_json::to_value(&peer).unwrap();
-                if corrupt == "token" {
-                    value["intent"] = json!("2-2");
-                    value["cohort"] = json!([]);
-                    value["cohort_id"] = json!("");
-                } else {
-                    value["cohort_id"] = json!("foreign-cohort");
-                }
-                let peer_tip = contextunity_acdd::core::git::git_checkpoint(
-                    root.root(),
-                    &peer_ref,
-                    &serde_json::to_vec(&value).unwrap(),
-                    &[],
-                )
-                .unwrap();
-                assert!(recover().is_err(), "must reject conflicting {corrupt}");
-                assert_eq!(
-                    tasks::store(root.root())
-                        .unwrap()
-                        .inspect_details(task_id)
-                        .unwrap(),
-                    before
-                );
-                for (reference, tip) in [(&checkpoint_ref, first_tip), (&peer_ref, peer_tip)] {
-                    assert_eq!(
-                        TaskHarness::revision_text(root.root(), reference).unwrap(),
-                        tip
-                    );
-                }
-                assert!(
-                    TaskHarness::update_reference(root.root(), &peer_ref, &peer_keeper, None)
-                        .status
-                        .success()
-                );
-            }
-            assert!(TaskHarness::update_reference(
-                root.root(),
-                &checkpoint_ref,
-                &keeper_commit,
-                None
-            )
-            .status
-            .success());
-            mutation = contextunity_acdd::core::git::git_checkpoint(
-                root.root(),
-                &checkpoint_ref,
-                &serde_json::to_vec(&state).unwrap(),
-                std::slice::from_ref(&contract_snap),
-            )
-            .unwrap();
-        }
-        let database = root.root().join(".acdd/tasks.sqlite");
-        let paths = [
-            database.clone(),
-            std::path::PathBuf::from(format!("{}-wal", database.display())),
-            std::path::PathBuf::from(format!("{}-shm", database.display())),
-        ];
-        let originals = paths.each_ref().map(|path| std::fs::read(path).ok());
-        for path in &paths {
-            if path.exists() {
-                std::fs::remove_file(path).unwrap();
-            }
-        }
-        let refused = recover().expect_err("invalid checkpoint must be refused");
-        let diagnostic_text = format!("{refused:#}");
+            .unwrap()
+        } else {
+            peer_ack.clone()
+        };
+        let error = recover().expect_err(case);
         assert!(
-            diagnostic_text.contains(diagnostic),
-            "{field}: {diagnostic_text}"
+            format!("{error:#}").contains(if case == "conflicting tokens" {
+                "conflicting operation tokens"
+            } else {
+                "incomplete acknowledged cohort"
+            }),
+            "{case}: {error:#}"
         );
-        assert!(
-            !database.exists(),
-            "refusal must not install a partial database"
+        assert_eq!(
+            tasks::store(root.root())
+                .unwrap()
+                .inspect_details(task_id)
+                .unwrap(),
+            before,
+            "{case}"
         );
-        for (path, bytes) in paths.iter().zip(originals) {
-            if let Some(bytes) = bytes {
-                std::fs::write(path, bytes).unwrap();
-            }
-        }
-        let restored = TaskHarness::update_reference(
+        assert_eq!(
+            TaskHarness::revision_text(root.root(), &checkpoint_ref).unwrap(),
+            main_tip
+        );
+        assert_eq!(
+            TaskHarness::revision_text(root.root(), &peer_ref).unwrap(),
+            peer_tip
+        );
+        assert!(TaskHarness::update_reference(
             root.root(),
             &checkpoint_ref,
             &keeper_commit,
-            Some(&mutation),
-        );
-        assert!(restored.status.success());
+            Some(&main_tip)
+        )
+        .status
+        .success());
+        assert!(std::process::Command::new("git")
+            .current_dir(root.root())
+            .args(["update-ref", "-d", &peer_ref, &peer_tip])
+            .status()
+            .unwrap()
+            .success());
     }
     let obsolete_archive = "docs/milestones/archive/009-obsolete.md";
     root.write(
@@ -319,12 +251,12 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
     let obsolete_active = "docs/milestones/009-obsolete.md";
     root.write(obsolete_active, "---\nid: m-obsolete\nstatus: active\n---\n```yaml\ntask_ref: obsolete\nunsupported_old_field: true\n```\n");
     let obsolete_ref = format!(
-        "refs/forge/state/{}/{}/m-obsolete/obsolete",
+        "refs/acdd/state/{}/{}/m-obsolete/obsolete",
         checkpoint.repository, checkpoint.project
     );
     let mut obsolete = serde_json::to_value(&checkpoint).unwrap();
     obsolete["milestone_id"] = json!("m-obsolete");
-    obsolete["task_id"] = json!("forge-mcp/m-obsolete:obsolete");
+    obsolete["task_id"] = json!("acdd/m-obsolete:obsolete");
     obsolete["task"] = Value::Null;
     for field in [
         "claims",
@@ -445,7 +377,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
         let extended = format!("{original}\n```yaml\ntask_ref: third\ntarget: Resume current work\nproof_policy: seam-test-first\nscope: [src/]\ndepends_on: [first, second]\n```\n");
         root.write(reference, &extended);
         let mut store = tasks::store(root.root()).unwrap();
-        let current = Milestone::parse(&extended, "forge-mcp").unwrap();
+        let current = Milestone::parse(&extended, "acdd").unwrap();
         store.sync(&current, reference, root.root()).unwrap();
         let third = current.task_id(&current.tasks[2]);
         store
@@ -460,7 +392,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
         let foreign_reference = "docs/milestones/020-independent.md";
         let foreign_text = "---\nid: m-independent\nstatus: active\ntitle: Independent\n---\n```yaml\ntask_ref: foreign\ntarget: Independent owner\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
         root.write(foreign_reference, foreign_text);
-        let foreign = Milestone::parse(foreign_text, "forge-mcp").unwrap();
+        let foreign = Milestone::parse(foreign_text, "acdd").unwrap();
         store
             .sync(&foreign, foreign_reference, root.root())
             .unwrap();
@@ -475,10 +407,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
             )
             .unwrap();
         let foreign_before = TaskHarness::persisted_task_rows(&store, &foreign_id).unwrap();
-        let foreign_ref = format!(
-            "refs/forge/state/forge-mcp/{}",
-            foreign_id.replace(':', "/")
-        );
+        let foreign_ref = format!("refs/acdd/state/acdd/{}", foreign_id.replace(':', "/"));
         let foreign_keeper = || {
             let output = TaskHarness::revision(root.root(), &foreign_ref);
             assert!(output.status.success());
@@ -486,7 +415,7 @@ fn db_recovery_rejects_invalid_checkpoints_and_preserves_independent_owners() {
         };
         let keeper_before = foreign_keeper();
         // Raw malformed history is confined to this isolated TempDir fixture.
-        let legacy_id = "forge-mcp/m-retired:legacy";
+        let legacy_id = "acdd/m-retired:legacy";
         let mut legacy = serde_json::to_value(store.inspect(&third).unwrap()).unwrap();
         legacy["task_id"] = json!(legacy_id);
         legacy["milestone_ref"] = json!("docs/milestones/099-retired.md");

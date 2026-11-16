@@ -79,27 +79,59 @@ export const processUser = (u: User) => {
 
 #[cfg(feature = "lang-typescript")]
 #[test]
-fn typescript_tsx_parser_slot_reuses_cleanly_across_files() {
-    for (path, source, expected_name) in [
+fn parser_slot_grammar_reuse() {
+    for (profile_id, path, source, expected_name) in [
         (
+            "typescript",
             "First.tsx",
             "export const First = () => <main><span /></main>;",
             "First",
         ),
         (
+            "typescript",
             "Second.tsx",
             "export function Second() { return <button />; }",
             "Second",
         ),
+        #[cfg(feature = "lang-vue")]
+        (
+            "vue",
+            "First.vue",
+            "export function First() { return 1; }",
+            "First",
+        ),
+        #[cfg(feature = "lang-vue")]
+        (
+            "vue",
+            "Second.tsx",
+            "export function Second() { return <button />; }",
+            "Second",
+        ),
+        #[cfg(feature = "lang-vue")]
+        (
+            "vue",
+            "Third.js",
+            "export function Third() { return 1; }",
+            "Third",
+        ),
     ] {
-        let facts = ExtractorHarness::for_lang("typescript")
-            .at_path(path)
-            .extract(source);
-        assert!(facts.errors.is_empty(), "{path}: {:?}", facts.errors);
-        assert!(facts
-            .nodes
-            .iter()
-            .any(|node| node.name == expected_name && node.kind == "function"));
+        let profile =
+            contextunity_acdd::engine::languages::by_id(profile_id).expect("compiled profile");
+        let mut facts = contextunity_acdd::core::models::Facts::default();
+        contextunity_acdd::engine::languages::parse_file(profile, path, source, path, &mut facts)
+            .expect("parse failed");
+        assert!(
+            facts.errors.is_empty(),
+            "{profile_id}:{path}: {:?}",
+            facts.errors
+        );
+        assert!(
+            facts
+                .nodes
+                .iter()
+                .any(|node| node.name == expected_name && node.kind == "function"),
+            "{profile_id}:{path}: {facts:#?}"
+        );
     }
 }
 
@@ -218,33 +250,4 @@ function outside() { const arrow = () => this.mark(); arrow(); }"#,
         sibling_edges, 0,
         "same-name Counter in sibling file cannot provide this members"
     );
-}
-
-#[cfg(feature = "lang-vue")]
-#[test]
-fn vue_profile_parser_reuse_tracks_the_selected_grammar() {
-    let profile =
-        contextunity_acdd::engine::languages::by_id("vue").expect("Vue profile is compiled");
-    for (path, source, expected_name) in [
-        (
-            "First.vue",
-            "export function First() { return 1; }",
-            "First",
-        ),
-        (
-            "Second.tsx",
-            "export function Second() { return <button />; }",
-            "Second",
-        ),
-        ("Third.js", "export function Third() { return 1; }", "Third"),
-    ] {
-        let mut facts = contextunity_acdd::core::models::Facts::default();
-        contextunity_acdd::engine::languages::parse_file(profile, path, source, path, &mut facts)
-            .expect("Vue profile parse failed");
-        assert!(facts.errors.is_empty(), "{path}: {:?}", facts.errors);
-        assert!(facts
-            .nodes
-            .iter()
-            .any(|node| node.name == expected_name && node.kind == "function"));
-    }
 }

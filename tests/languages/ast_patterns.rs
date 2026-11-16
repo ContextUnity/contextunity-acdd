@@ -6,60 +6,163 @@ use contextunity_acdd::{
 
 #[cfg(feature = "lang-rust")]
 #[test]
-fn bare_rust_headers_match_signatures_without_weakening_explicit_parameters() {
+fn public_rust_candidate_selection() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
+    workspace.write("src/lib.rs", "fn target() {}\nfn target(value: i32) {}\nfn target() -> i32 { 1 }\nfn target<T>(value: T) -> T { value }\nfn other() {}\n");
+    workspace.write("src/a_candidate.rs", "fn coverage_owner_language() {}\n");
     workspace.write(
-        "src/lib.rs",
-        "fn target() {}\nfn target(value: i32) {}\nfn target() -> i32 { 1 }\nfn target<T>(value: T) -> T { value }\nfn other() {}\n",
+        "src/z_body.rs",
+        "fn other() { let value = \"coverage_owner_language\"; }\n",
     );
     workspace.build();
     let conn = workspace.open();
-    let options =
-        QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
-    for (pattern, expected) in [
-        ("fn target", 4),
-        ("fn target()", 1),
-        ("fn target(value: i32)", 1),
-        ("fn target<T>", 1),
+    let options = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(10),
+        0,
+        Some(Detail::Compact),
+        None,
+    )
+    .unwrap();
+    for (case_id, pattern, expected, item) in [
+        (
+            "bare_rust_headers_match_signatures_without_weakening_explicit_parameters",
+            "fn target",
+            4,
+            None,
+        ),
+        (
+            "bare_rust_headers_match_signatures_without_weakening_explicit_parameters",
+            "fn target()",
+            1,
+            None,
+        ),
+        (
+            "bare_rust_headers_match_signatures_without_weakening_explicit_parameters",
+            "fn target(value: i32)",
+            1,
+            None,
+        ),
+        (
+            "bare_rust_headers_match_signatures_without_weakening_explicit_parameters",
+            "fn target<T>",
+            1,
+            None,
+        ),
+        (
+            "public_ast_search_keeps_rust_body_only_literal_candidates",
+            "\"coverage_owner_language\"",
+            1,
+            Some(("src/z_body.rs", "\"coverage_owner_language\"")),
+        ),
     ] {
         let result =
             cli::ast::search_paged(&conn, workspace.root(), pattern, "rust", None, &options)
                 .unwrap();
-        assert_eq!(result["matches"]["total"], expected, "{pattern}: {result}");
+        assert_eq!(
+            result["matches"]["total"], expected,
+            "{case_id}: {pattern}: {result}"
+        );
+        if let Some((path, text)) = item {
+            let items = result["matches"]["items"].as_array().unwrap();
+            assert_eq!(items.len(), 1, "{result}");
+            assert_eq!(items[0]["path"], path);
+            assert_eq!(items[0]["text"], text);
+        }
     }
 }
 
-#[cfg(all(feature = "lang-python", feature = "lang-rust"))]
+#[cfg(feature = "lang-rust")]
 #[test]
-fn invalid_ast_patterns_report_diagnostics_without_candidate_files() {
+fn public_pattern_diagnostics() {
+    fn smallest_error(root: tree_sitter::Node<'_>) -> Option<std::ops::Range<usize>> {
+        let mut stack = vec![root];
+        let mut smallest = None;
+        while let Some(node) = stack.pop() {
+            if node.is_error() && node.start_byte() < node.end_byte() {
+                let range = node.start_byte()..node.end_byte();
+                if smallest
+                    .as_ref()
+                    .is_none_or(|current: &std::ops::Range<usize>| range.len() < current.len())
+                {
+                    smallest = Some(range);
+                }
+            }
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+        }
+        smallest
+    }
+
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
+    workspace.build();
+    let options = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(10),
+        0,
+        Some(Detail::Compact),
+        None,
+    )
+    .unwrap();
+    // Both corpus states must validate patterns before candidate selection.
     for rust_only in [false, true] {
-        let workspace = crate::languages::PersistedWorkspaceHarness::new();
         if rust_only {
             workspace.write("src/lib.rs", "fn valid() {}\n");
+            workspace.delta(&["src/lib.rs"]);
         }
-        workspace.build();
         let conn = workspace.open();
-        let options =
-            QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
-        let result =
-            cli::ast::search_paged(&conn, workspace.root(), "def (", "python", None, &options)
-                .unwrap();
-        let diagnostic = &result["diagnostic"];
-        assert_eq!(diagnostic["code"], "unsupported_ast_pattern", "{result}");
-        assert_eq!(diagnostic["language"], "python");
-        assert!(diagnostic["span"].is_object());
-        assert!(!diagnostic["hint"].as_str().unwrap().is_empty());
-        assert!(!diagnostic["examples"].as_array().unwrap().is_empty());
-        let valid = cli::ast::search_paged(
-            &conn,
-            workspace.root(),
-            "def target()",
+        let mut cases = vec![(
+            "public_ast_search_reports_structured_tree_sitter_pattern_diagnostics",
+            "rust",
+            "src/lib.rs",
+            "let = ;",
+            Some("fn target()"),
+        )];
+        #[cfg(feature = "lang-python")]
+        cases.push((
+            "invalid_ast_patterns_report_diagnostics_without_candidate_files",
             "python",
-            None,
-            &options,
-        )
-        .unwrap();
-        assert_eq!(valid["matches"]["total"], 0, "{valid}");
+            "service.py",
+            "def (",
+            Some("def target()"),
+        ));
+        for (case_id, language, path, pattern, valid) in cases {
+            let result =
+                cli::ast::search_paged(&conn, workspace.root(), pattern, language, None, &options)
+                    .unwrap();
+            let diagnostic = &result["diagnostic"];
+            assert_eq!(
+                diagnostic["code"], "unsupported_ast_pattern",
+                "{case_id}: {result}"
+            );
+            assert_eq!(diagnostic["language"], language);
+            assert!(diagnostic["span"].is_object());
+            if language == "rust" {
+                let mut parser = ast::parser(language, path).unwrap();
+                let tree = parser.parse(pattern, None).unwrap();
+                let expected = smallest_error(tree.root_node()).expect("nonempty ERROR node");
+                assert_eq!(diagnostic["span"]["start_byte"], expected.start);
+                assert_eq!(diagnostic["span"]["end_byte"], expected.end);
+                assert!(
+                    diagnostic["span"]["end_byte"].as_u64().unwrap()
+                        > diagnostic["span"]["start_byte"].as_u64().unwrap()
+                );
+            }
+            assert!(!diagnostic["hint"].as_str().unwrap().is_empty());
+            assert!(!diagnostic["examples"].as_array().unwrap().is_empty());
+            if let Some(valid) = valid {
+                let result = cli::ast::search_paged(
+                    &conn,
+                    workspace.root(),
+                    valid,
+                    language,
+                    None,
+                    &options,
+                )
+                .unwrap();
+                assert_eq!(result["matches"]["total"], 0, "{case_id}: {result}");
+            }
+        }
     }
 }
 
@@ -97,48 +200,16 @@ fn upfront_ast_validation_accepts_tsx_grammar_patterns() {
     assert_eq!(invalid["diagnostic"]["code"], "unsupported_ast_pattern");
 }
 
-#[cfg(feature = "lang-rust")]
-#[test]
-fn ast_search_matches_root_rejected_rust_method_call_fragment() {
-    let matches = ast::search(
-        "fn invoke() { client.fetch(value); }",
-        "src/lib.rs",
-        "rust",
-        "client.fetch($ARG)",
-        10,
-    )
-    .expect("Rust method-call fragment should be searchable");
-
-    assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0]["text"], "client.fetch(value)");
-    assert_eq!(matches[0]["captures"]["ARG"], "value");
-}
-
-#[cfg(feature = "lang-rust")]
-#[test]
-fn ast_search_matches_root_rejected_rust_macro_statement_fragment() {
-    let matches = ast::search(
-        "fn run() { let value = print!(\"ready\"); }",
-        "src/lib.rs",
-        "rust",
-        "let value = print!(\"ready\");",
-        10,
-    )
-    .expect("Rust macro statement fragment should be searchable");
-
-    assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0]["text"], "let value = print!(\"ready\");");
-}
-
 #[cfg(any(
     feature = "lang-rust",
     feature = "lang-python",
     feature = "lang-typescript",
     feature = "lang-html",
-    feature = "lang-vue"
+    feature = "lang-vue",
+    feature = "lang-toml"
 ))]
 #[test]
-fn ast_search_profile_capabilities_cover_complete_declaration_and_attribute_patterns() {
+fn ast_pattern_capabilities() {
     let mut cases: Vec<(&str, &str, &str, &str)> = Vec::new();
 
     #[cfg(feature = "lang-rust")]
@@ -330,151 +401,123 @@ fn ast_search_profile_capabilities_cover_complete_declaration_and_attribute_patt
         assert!(capabilities.attribute_kinds.contains(&"decorator"));
     }
 
-    for (language, path, source, pattern) in cases {
-        let matches = ast::search(source, path, language, pattern, 10)
-            .unwrap_or_else(|error| panic!("{language} pattern {pattern:?}: {error}"));
-        assert!(
-            !matches.is_empty(),
-            "{language} pattern {pattern:?} did not match"
-        );
+    struct Case<'a> {
+        case_id: &'a str,
+        language: &'a str,
+        path: &'a str,
+        source: &'a str,
+        pattern: &'a str,
+        count: Option<usize>,
+        text: Option<&'a str>,
+        prefix: Option<&'a str>,
+        capture: Option<(&'a str, &'a str)>,
     }
-}
-
-#[cfg(feature = "lang-toml")]
-#[test]
-fn ast_search_profiles_with_only_complete_syntax_use_the_shared_default() {
-    let capabilities = languages::require("toml")
-        .unwrap()
-        .ast_search_capabilities();
-    assert!(capabilities.declaration_kinds.is_empty());
-    assert!(capabilities.fragment_probe.is_none());
-    let matches = ast::search(
-        "edition = \"2021\"",
-        "Cargo.toml",
-        "toml",
-        "edition = \"2021\"",
-        10,
-    )
-    .unwrap();
-    assert_eq!(matches.len(), 1);
-}
-
-#[cfg(feature = "lang-rust")]
-#[test]
-fn public_ast_search_keeps_rust_body_only_literal_candidates() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write("src/a_candidate.rs", "fn coverage_owner_language() {}\n");
-    workspace.write(
-        "src/z_body.rs",
-        "fn other() { let value = \"coverage_owner_language\"; }\n",
-    );
-    workspace.build();
-    let conn = workspace.open();
-    let options = QueryOptions::resolve(
-        &ResponsePolicy::default(),
-        Some(10),
-        0,
-        Some(Detail::Compact),
-        None,
-    )
-    .unwrap();
-
-    let result = cli::ast::search_paged(
-        &conn,
-        workspace.root(),
-        "\"coverage_owner_language\"",
-        "rust",
-        None,
-        &options,
-    )
-    .unwrap();
-    let items = result["matches"]["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1, "{result}");
-    assert_eq!(items[0]["path"], "src/z_body.rs");
-    assert_eq!(items[0]["text"], "\"coverage_owner_language\"");
-}
-
-#[cfg(feature = "lang-rust")]
-#[test]
-fn public_ast_search_reports_structured_tree_sitter_pattern_diagnostics() {
-    fn smallest_error(root: tree_sitter::Node<'_>) -> Option<std::ops::Range<usize>> {
-        let mut stack = vec![root];
-        let mut smallest = None;
-        while let Some(node) = stack.pop() {
-            if node.is_error() && node.start_byte() < node.end_byte() {
-                let range = node.start_byte()..node.end_byte();
-                if smallest
-                    .as_ref()
-                    .is_none_or(|current: &std::ops::Range<usize>| range.len() < current.len())
-                {
-                    smallest = Some(range);
-                }
-            }
-            let mut cursor = node.walk();
-            stack.extend(node.children(&mut cursor));
+    let mut cases: Vec<_> = cases
+        .into_iter()
+        .map(|(language, path, source, pattern)| Case {
+            case_id:
+                "ast_search_profile_capabilities_cover_complete_declaration_and_attribute_patterns",
+            language,
+            path,
+            source,
+            pattern,
+            count: None,
+            text: None,
+            prefix: None,
+            capture: None,
+        })
+        .collect();
+    #[cfg(feature = "lang-rust")]
+    {
+        cases.push(Case {
+            case_id: "ast_search_matches_root_rejected_rust_method_call_fragment",
+            language: "rust",
+            path: "src/lib.rs",
+            source: "fn invoke() { client.fetch(value); }",
+            pattern: "client.fetch($ARG)",
+            count: Some(1),
+            text: Some("client.fetch(value)"),
+            prefix: None,
+            capture: Some(("ARG", "value")),
+        });
+        cases.push(Case {
+            case_id: "ast_search_matches_root_rejected_rust_macro_statement_fragment",
+            language: "rust",
+            path: "src/lib.rs",
+            source: "fn run() { let value = print!(\"ready\"); }",
+            pattern: "let value = print!(\"ready\");",
+            count: Some(1),
+            text: Some("let value = print!(\"ready\");"),
+            prefix: None,
+            capture: None,
+        });
+        let source = concat!(
+            "mod rust;\n",
+            "pub struct Foo { pub field: usize }\n",
+            "pub trait Bar { fn run(&self); }\n",
+            "impl Foo { pub fn new() -> Self { Self { field: 1 } } }\n",
+            "fn local() { let value = 42; }\n"
+        );
+        for (pattern, prefix) in [
+            ("pub struct Foo { $$$ }", "pub struct Foo"),
+            ("pub trait Bar { $$$ }", "pub trait Bar"),
+            ("impl Foo { $$$ }", "impl Foo"),
+            ("mod rust", "mod rust;"),
+            ("let value = $EXPR", "let value = 42;"),
+        ] {
+            cases.push(Case {
+                case_id:
+                    "ast_search_matches_rust_wildcard_declaration_bodies_and_semicolonless_items",
+                language: "rust",
+                path: "src/lib.rs",
+                source,
+                pattern,
+                count: Some(1),
+                text: None,
+                prefix: Some(prefix),
+                capture: None,
+            });
         }
-        smallest
     }
-
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write("src/lib.rs", "fn valid() {}\n");
-    workspace.build();
-    let conn = workspace.open();
-    let options = QueryOptions::resolve(
-        &ResponsePolicy::default(),
-        Some(10),
-        0,
-        Some(Detail::Compact),
-        None,
-    )
-    .unwrap();
-    let pattern = "let = ;";
-    let result =
-        cli::ast::search_paged(&conn, workspace.root(), pattern, "rust", None, &options).unwrap();
-    let mut parser = contextunity_acdd::engine::ast::parser("rust", "src/lib.rs").unwrap();
-    let tree = parser.parse(pattern, None).unwrap();
-    let expected = smallest_error(tree.root_node()).expect("pattern has a nonempty ERROR node");
-    let diagnostic = &result["diagnostic"];
-
-    assert_eq!(diagnostic["code"], "unsupported_ast_pattern");
-    assert_eq!(diagnostic["language"], "rust");
-    assert_eq!(diagnostic["span"]["start_byte"], expected.start);
-    assert_eq!(diagnostic["span"]["end_byte"], expected.end);
-    assert!(
-        diagnostic["span"]["end_byte"].as_u64().unwrap()
-            > diagnostic["span"]["start_byte"].as_u64().unwrap()
-    );
-    assert!(!diagnostic["hint"].as_str().unwrap().is_empty());
-    assert!(!diagnostic["examples"].as_array().unwrap().is_empty());
-}
-
-#[cfg(feature = "lang-rust")]
-#[test]
-fn ast_search_matches_rust_wildcard_declaration_bodies_and_semicolonless_items() {
-    let source = concat!(
-        "mod rust;\n",
-        "pub struct Foo { pub field: usize }\n",
-        "pub trait Bar { fn run(&self); }\n",
-        "impl Foo { pub fn new() -> Self { Self { field: 1 } } }\n",
-        "fn local() { let value = 42; }\n",
-    );
-    for (pattern, expected_prefix) in [
-        ("pub struct Foo { $$$ }", "pub struct Foo"),
-        ("pub trait Bar { $$$ }", "pub trait Bar"),
-        ("impl Foo { $$$ }", "impl Foo"),
-        ("mod rust", "mod rust;"),
-        ("let value = $EXPR", "let value = 42;"),
-    ] {
-        let matches = ast::search(source, "src/lib.rs", "rust", pattern, 10)
-            .unwrap_or_else(|err| panic!("pattern '{pattern}' should succeed: {err}"));
-        assert_eq!(matches.len(), 1, "pattern: {pattern}");
-        assert!(
-            matches[0]["text"]
-                .as_str()
-                .unwrap()
-                .starts_with(expected_prefix),
-            "pattern '{pattern}' matched unexpected text: {}",
-            matches[0]
-        );
+    #[cfg(feature = "lang-toml")]
+    {
+        let capabilities = languages::require("toml")
+            .unwrap()
+            .ast_search_capabilities();
+        assert!(capabilities.declaration_kinds.is_empty());
+        assert!(capabilities.fragment_probe.is_none());
+        cases.push(Case {
+            case_id: "ast_search_profiles_with_only_complete_syntax_use_the_shared_default",
+            language: "toml",
+            path: "Cargo.toml",
+            source: "edition = \"2021\"",
+            pattern: "edition = \"2021\"",
+            count: Some(1),
+            text: None,
+            prefix: None,
+            capture: None,
+        });
+    }
+    for case in cases {
+        let matches = ast::search(case.source, case.path, case.language, case.pattern, 10)
+            .unwrap_or_else(|error| panic!("{}: {}: {error}", case.case_id, case.pattern));
+        assert!(!matches.is_empty(), "{}: {}", case.case_id, case.pattern);
+        if let Some(count) = case.count {
+            assert_eq!(matches.len(), count, "{}", case.case_id);
+        }
+        if let Some(text) = case.text {
+            assert_eq!(matches[0]["text"], text, "{}", case.case_id);
+        }
+        if let Some(prefix) = case.prefix {
+            assert!(
+                matches[0]["text"].as_str().unwrap().starts_with(prefix),
+                "{}: {:?}",
+                case.case_id,
+                matches
+            );
+        }
+        if let Some((name, value)) = case.capture {
+            assert_eq!(matches[0]["captures"][name], value, "{}", case.case_id);
+        }
     }
 }

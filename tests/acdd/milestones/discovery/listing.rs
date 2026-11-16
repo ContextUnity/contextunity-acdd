@@ -13,7 +13,7 @@ fn milestone_list_and_show_report_scoped_documents_and_sqlite_progress() {
     ] {
         store
             .sync(
-                &Milestone::parse(&root.document(path), "forge-mcp").unwrap(),
+                &Milestone::parse(&root.document(path), "acdd").unwrap(),
                 path,
                 root.root(),
             )

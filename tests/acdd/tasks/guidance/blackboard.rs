@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn default_claim_bundle_carries_task_milestone_and_cross_gate_messages() {
     let (root, store, _) = fixture(DEFAULT_SEAM);
-    let task_id = "forge-mcp/m-test:first";
+    let task_id = "acdd/m-test:first";
 
     // Post message to task
     store
@@ -11,7 +11,7 @@ fn default_claim_bundle_carries_task_milestone_and_cross_gate_messages() {
         .unwrap();
 
     // Post message from another task in same milestone
-    let task_2_id = "forge-mcp/m-test:second";
+    let task_2_id = "acdd/m-test:second";
     store
         .blackboard_post(task_2_id, "agent_2", "decisions", "Milestone level finding")
         .unwrap();
@@ -126,7 +126,7 @@ fn default_claim_bundle_carries_task_milestone_and_cross_gate_messages() {
     );
     assert_eq!(
         claim_res["breadcrumb"],
-        "forge-mcp/forge-mcp/m-test/tasks/first/contract"
+        "acdd/acdd/m-test/tasks/first/contract"
     );
     assert_eq!(
         claim_res["workflow_guidance"]["breadcrumb"],

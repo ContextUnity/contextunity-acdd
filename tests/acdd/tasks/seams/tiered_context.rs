@@ -59,7 +59,7 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
         let root = acdd_workspace(
             contract_seam,
             r#"scope_args_by_pattern:
-  "src/main.rs": "--bin contextunity-forge-mcp"
+  "src/main.rs": "--bin contextunity-acdd"
   "src/**/*.rs": "--lib"
   "tests/*.rs": "--test {file_stem}"
   "tests/acdd/**/*.rs": "--test acdd"
@@ -101,7 +101,7 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
         );
         root.write(
             ".agents/skills/acdd/SKILL.md",
-            "# ContextUnity Forge\n",
+            "# ContextUnity ACDD\n",
         );
         root.write(
             "acdd.yaml",
@@ -165,7 +165,7 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
         });
         fixture.1.restore(&fixture.0);
         let root = &fixture.0;
-        let task_id = "forge-mcp/m-tiered:routing";
+        let task_id = "acdd/m-tiered:routing";
         let profile =
             contextunity_acdd::core::tasks::profile::load_for_workspace(root.root()).unwrap();
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -188,7 +188,7 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
             failures.push(format!("{stage}/{seam}: workspace Rust profile must retain the registered cargo test compatibility command"));
         }
         for (path, expected) in [
-            ("src/main.rs", "--bin contextunity-forge-mcp"),
+            ("src/main.rs", "--bin contextunity-acdd"),
             ("src/caller.rs", "--lib"),
             ("src/routing.rs", "--lib"),
             ("tests/acdd/tasks.rs", "--test acdd"),

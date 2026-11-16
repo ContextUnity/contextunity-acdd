@@ -7,7 +7,7 @@ fn cross_milestone_dependency_diagnostic_gates_readiness_and_claim() {
     let m1_text = "---\nid: m-first\ntitle: First\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\ninvariants: [isolated]\n---\n# First\n```yaml\ntask_ref: producer\ntarget: Deliver producer\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     let mut h = TaskHarness::memory_with_manifest(m1_text, "docs/milestones/m1.md");
     let root = h.root().to_owned();
-    let consumer = Milestone::parse(CROSS_MILESTONE_CONSUMER, "forge-mcp").unwrap();
+    let consumer = Milestone::parse(CROSS_MILESTONE_CONSUMER, "acdd").unwrap();
     h.store
         .sync(&consumer, "docs/milestones/m2.md", &root)
         .unwrap();
@@ -118,13 +118,16 @@ fn check_archived_predecessor_authority(root_mode: &str) {
         } else {
             "extensions/base/docs/milestones"
         };
-        root.write("acdd.yaml", &format!("task_project: old\nmilestones: [docs/milestones, '{dir}']\nowners: {{extensions/base: old}}\naliases: {{old: forge-mcp, forge-mcp: other}}\n"));
+        root.write("acdd.yaml", &format!("task_project: old\nmilestones: [docs/milestones, '{dir}']\nowners: {{extensions/base: old}}\naliases: {{old: acdd, acdd: other}}\n"));
     } else {
         root.write(
             "acdd.yaml",
-            "task_project: old\naliases: {old: forge-mcp, forge-mcp: other}\n",
+            "task_project: old\naliases: {old: acdd, acdd: other}\n",
         );
     }
+    // Reuse the migrated empty database while retaining an isolated store per case.
+    drop(TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap());
+    let empty_store = std::fs::read(root.root().join(".acdd/tasks.sqlite")).unwrap();
     for (authority, dependency, expected_ready) in cases {
         for rel in [
             ".acdd/tasks.sqlite",
@@ -139,15 +142,16 @@ fn check_archived_predecessor_authority(root_mode: &str) {
                 std::fs::remove_file(path).unwrap();
             }
         }
+        std::fs::write(root.root().join(".acdd/tasks.sqlite"), &empty_store).unwrap();
         let mut deferred_archive = None;
         let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
         if authority.ends_with("tombstone") {
             let identity = if authority == "foreign-tombstone" {
-                "forge-mcp/other/m-first"
+                "acdd/other/m-first"
             } else {
-                "forge-mcp/forge-mcp/m-first"
+                "acdd/acdd/m-first"
             };
-            let completed_task_ids = json!(["forge-mcp/m-first:producer"]).to_string();
+            let completed_task_ids = json!(["acdd/m-first:producer"]).to_string();
             store
                 .connection
                 .execute(
@@ -193,7 +197,7 @@ fn check_archived_predecessor_authority(root_mode: &str) {
             }
         }
         let consumer = m2_text.replace("m-first:producer", dependency);
-        let milestone = Milestone::parse(&consumer, "forge-mcp").unwrap();
+        let milestone = Milestone::parse(&consumer, "acdd").unwrap();
         root.write("docs/milestones/m2.md", &consumer);
         store
             .sync(&milestone, "docs/milestones/m2.md", root.root())

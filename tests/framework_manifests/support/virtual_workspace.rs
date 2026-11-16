@@ -81,7 +81,7 @@ impl VirtualWorkspace {
         contextunity_acdd::engine::pipeline::components(&mut facts);
         let graph = linker::link_compact_with_typed_registry(&facts, None, None, registry);
         let mut conn = Connection::open_in_memory()?;
-        let root = std::path::Path::new("/__forge_virtual_workspace__");
+        let root = std::path::Path::new("/__acdd_virtual_workspace__");
         let adapter = Adapter {
             roots: vec![root.into()],
             ..Default::default()

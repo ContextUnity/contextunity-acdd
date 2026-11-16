@@ -10,7 +10,7 @@ use super::in_process_cli;
 
 #[test]
 fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
-    let workspace = TaskHarness::mcp_workspace();
+    let workspace = TaskHarness::mcp_store_workspace();
     workspace.write("acdd.yaml", "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n");
     workspace.write(
         "docs/milestones/UX-001-mcp-response-deduplication-and-agent-efficiency.md",
@@ -281,7 +281,7 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
     );
     assert_eq!(
         mcp_fallback_post["resolution"]["milestone_ref"],
-        "forge-mcp/forge-mcp/docs/milestones/UX-001-mcp-response-deduplication-and-agent-efficiency.md"
+        "acdd/acdd/docs/milestones/UX-001-mcp-response-deduplication-and-agent-efficiency.md"
     );
     assert_eq!(milestone_message_count(), before_fallback_posts + 1);
 
@@ -316,7 +316,7 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
     );
     assert_eq!(
         cli_fallback_post["resolution"]["milestone_ref"],
-        "forge-mcp/forge-mcp/docs/milestones/UX-001-mcp-response-deduplication-and-agent-efficiency.md"
+        "acdd/acdd/docs/milestones/UX-001-mcp-response-deduplication-and-agent-efficiency.md"
     );
     assert_ne!(cli_fallback_post["id"], mcp_fallback_post["id"]);
     assert_eq!(milestone_message_count(), before_fallback_posts + 2);
@@ -418,7 +418,7 @@ fn task_blackboard_mcp_and_cli_share_sqlite_messages() {
 
 #[test]
 fn milestone_blackboard_lists_are_bounded_payload_free_and_inspectable() {
-    let workspace = TaskHarness::mcp_workspace();
+    let workspace = TaskHarness::mcp_store_workspace();
     fs::create_dir_all(workspace.root().join("docs/milestones")).unwrap();
     workspace.write("acdd.yaml", "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n");
     workspace.write(

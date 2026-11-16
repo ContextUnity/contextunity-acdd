@@ -21,8 +21,14 @@ fn read_tool(client: &mut McpTestHarness, arguments: Value) -> Value {
 }
 
 #[test]
-fn acdd_read_symbol_alias_is_discoverable_in_mcp_schema() {
-    let mut client = McpTestHarness::indexed(&[]).expect("MCP initialize");
+fn acdd_read_symbol_alias_matches_selector_with_and_without_path() {
+    let (w, harness) = McpTestHarness::indexed_workspace(&[
+        ("src/lib.rs", "pub fn unique_symbol() -> u32 {\n    42\n}\npub fn example() {}\npub fn paged_symbol() {\n    let x = 1;\n    let y = 2;\n    println!(\"{} {}\", x, y);\n}\n"),
+        ("first.py", "def repeated():\n    return 1\n"),
+        ("second.py", "def repeated():\n    return 2\n"),
+        ("values.py", "def value():\n    return 42\n"),
+    ]);
+    let mut client = harness.expect("MCP initialize");
     let list = client
         .request_value("tools/list", json!({}))
         .expect("tools/list");
@@ -38,7 +44,7 @@ fn acdd_read_symbol_alias_is_discoverable_in_mcp_schema() {
         "code_map_query",
         "code_map_overview",
         "ast_grep_search",
-        "forge_guide",
+        "acdd_guide",
         "session_checkpoint",
         "task_list",
     ] {
@@ -58,17 +64,14 @@ fn acdd_read_symbol_alias_is_discoverable_in_mcp_schema() {
         tool["description"].as_str().unwrap().contains("symbol"),
         "{tool}"
     );
-    client.finish().expect("server must finish successfully");
-}
 
-#[test]
-fn acdd_read_symbol_alias_matches_selector_with_and_without_path() {
-    let mut client =
-        McpTestHarness::indexed(&[("src/lib.rs", "pub fn unique_symbol() -> u32 {\n    42\n}\n")])
-            .expect("MCP initialize");
-    for path in [None, Some("src/lib.rs")] {
-        let mut selector = json!({"selector":"unique_symbol"});
-        let mut symbol = json!({"symbol":"unique_symbol"});
+    for (name, path, expected_path, expected_source) in [
+        ("unique_symbol", None, "src/lib.rs", "42"),
+        ("unique_symbol", Some("src/lib.rs"), "src/lib.rs", "42"),
+        ("repeated", Some("second.py"), "second.py", "return 2"),
+    ] {
+        let mut selector = json!({"selector":name});
+        let mut symbol = json!({"symbol":name});
         if let Some(path) = path {
             selector["path"] = json!(path);
             symbol["path"] = json!(path);
@@ -77,52 +80,34 @@ fn acdd_read_symbol_alias_matches_selector_with_and_without_path() {
         let actual = read_tool(&mut client, symbol);
         assert_eq!(actual["source"], expected["source"]);
         assert!(
-            actual["source"].as_str().unwrap().contains("42"),
+            actual["source"].as_str().unwrap().contains(expected_source),
             "{actual}"
         );
-        assert_eq!(actual["node"]["path"], "src/lib.rs");
+        assert_eq!(actual["node"]["path"], expected_path);
     }
-    client.finish().expect("server must finish successfully");
-}
-
-#[test]
-fn acdd_read_symbol_alias_preserves_ambiguity_and_path_disambiguation() {
-    let mut client = McpTestHarness::indexed(&[
-        ("first.py", "def repeated():\n    return 1\n"),
-        ("second.py", "def repeated():\n    return 2\n"),
-    ])
-    .expect("MCP initialize");
-    let selector = read_response(&mut client, json!({"selector":"repeated"}));
-    let symbol = read_response(&mut client, json!({"symbol":"repeated"}));
-    assert_eq!(selector["result"]["isError"], true, "{selector}");
-    assert_eq!(symbol["result"]["isError"], true, "{symbol}");
-    assert!(
-        symbol.to_string().to_lowercase().contains("ambiguous"),
-        "{symbol}"
+    let mut rejected = vec![
+        (json!({"selector":"repeated"}), "ambiguous"),
+        (json!({"symbol":"repeated"}), "ambiguous"),
+    ];
+    rejected.extend(
+        [
+            ("example", "example"),
+            ("example", "different"),
+            ("example", ""),
+            ("", "example"),
+        ]
+        .map(|(selector, symbol)| {
+            (
+                json!({"selector":selector,"symbol":symbol}),
+                "duplicate field",
+            )
+        }),
     );
-    let actual = read_tool(&mut client, json!({"symbol":"repeated","path":"second.py"}));
-    assert_eq!(actual["node"]["path"], "second.py");
-    assert!(
-        actual["source"].as_str().unwrap().contains("return 2"),
-        "{actual}"
-    );
-    client.finish().expect("server must finish successfully");
-}
-
-#[test]
-fn acdd_read_symbol_alias_rejects_duplicate_selector_fields() {
-    let mut client = McpTestHarness::indexed(&[("src/lib.rs", "pub fn example() {}\n")])
-        .expect("MCP initialize");
-    for (selector, symbol) in [
-        ("example", "example"),
-        ("example", "different"),
-        ("example", ""),
-        ("", "example"),
-    ] {
-        let response = read_response(&mut client, json!({"selector":selector,"symbol":symbol}));
+    for (arguments, diagnostic) in rejected {
+        let response = read_response(&mut client, arguments);
         assert_eq!(response["result"]["isError"], true, "{response}");
         assert!(
-            response.to_string().contains("duplicate field"),
+            response.to_string().to_lowercase().contains(diagnostic),
             "{response}"
         );
     }
@@ -136,14 +121,6 @@ fn acdd_read_symbol_alias_rejects_duplicate_selector_fields() {
             "{result}"
         );
     }
-    client.finish().expect("server must finish successfully");
-}
-
-#[test]
-fn acdd_read_symbol_alias_continues_digest_verified_source_pages() {
-    let mut client = McpTestHarness::indexed(&[(
-        "src/lib.rs", "pub fn paged_symbol() {\n    let x = 1;\n    let y = 2;\n    println!(\"{} {}\", x, y);\n}\n"
-    )]).expect("MCP initialize");
     let first = read_tool(
         &mut client,
         json!({"symbol":"paged_symbol","max_body_lines":1,"leading_lines":0}),
@@ -162,14 +139,6 @@ fn acdd_read_symbol_alias_continues_digest_verified_source_pages() {
     assert_eq!(next["source"], selector_next["source"]);
     assert_eq!(next["source_preview"]["body_offset"], 1, "{next}");
     assert_eq!(next["generation"], first["generation"]);
-    client.finish().expect("server must finish successfully");
-}
-
-#[test]
-fn acdd_read_batch_snippet_exports_source() {
-    let (w, harness) =
-        McpTestHarness::with_files(&[("values.py", "def value():\n    return 42\n")]);
-    let mut client = harness.expect("MCP initialize");
     let response = read_tool(
         &mut client,
         json!({"paths":["values.py"], "selector":"value", "output_file":"exports/snippets.txt"}),
@@ -293,10 +262,26 @@ fn acdd_read_validates_ranges_and_argument_names_at_the_mcp_seam() {
 #[test]
 fn acdd_read_core_modes_and_cli_share_bounded_text_and_exports() {
     use crate::cli::run_cli_json;
+    let linked = Workspace::with_files(&[("lib.rs", "pub fn linked() { /* needle */ }\n")]);
     let w = Workspace::with_files(&[
-        ("acdd.yaml", "profile: minimal\n"),
+        (
+            "acdd.yaml",
+            &format!(
+                "profile: minimal\nroots: [src]\nlinked_workspaces:\n  - name: extra\n    path: {}\n",
+                linked.root().display()
+            ),
+        ),
         ("notes.txt", "first\r\nПривіт 42\r\nthird\r\nfourth\r\n"),
+        ("src/alpha.rs", "pub fn alpha() -> &'static str {\n    \"needle \\\"quoted\\\"\"\n}\n"),
+        ("src/nested/beta.rs", "pub fn beta() {\n    // needle in nested file\n}\n"),
+        ("src/notes.txt", "needle in non-rust file\n"),
+        (".env", "SECRET=needle\n"),
     ]);
+    std::fs::write(
+        w.path("src/m_bad_utf8.bin"),
+        [0xff_u8, 0xfe, b'n', b'e', b'e', b'd'],
+    )
+    .unwrap();
     let mut client = McpTestHarness::new(&w).expect("MCP initialize");
     for (mode, extra, expected) in [
         (
@@ -375,6 +360,66 @@ fn acdd_read_core_modes_and_cli_share_bounded_text_and_exports() {
         )
         .expect("MCP transport");
     assert_eq!(old["result"]["isError"], true);
+    let (_, md_resp) = client
+        .call(
+            "acdd_read",
+            json!({"path": "src/alpha.rs", "mode": "lines"}),
+        )
+        .expect("MCP transport");
+    let md_text = md_resp["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(md_text.contains("```rust\n1: pub fn alpha()"), "{md_text}");
+    assert!(
+        !md_text.contains("\\n") && !md_text.contains("Hints:"),
+        "{md_text}"
+    );
+
+    for (args, expected, forbidden) in [
+        (
+            json!({"path": "src", "mode": "search", "pattern": "needle", "context": 0}),
+            "src/nested/beta.rs:2:",
+            ".env",
+        ),
+        (
+            json!({"path": "src/**/*.rs", "mode": "search", "pattern": "needle", "context": 0}),
+            "src/alpha.rs:2:",
+            "src/notes.txt",
+        ),
+        (
+            json!({"mode": "search", "pattern": "needle", "context": 0}),
+            "src/alpha.rs:2:",
+            "SECRET=needle",
+        ),
+    ] {
+        let res = read_tool(&mut client, args);
+        let content = res["content"].as_str().unwrap();
+        assert!(
+            content.contains(expected) && !content.contains(forbidden),
+            "{content}"
+        );
+    }
+
+    for export_args in [
+        json!({"path": "src", "mode": "search", "pattern": "needle", "line_count": 1, "output_file": "src/notes.txt"}),
+        json!({"paths": ["src/**/*.rs"], "mode": "search", "pattern": "needle", "output_file": "src/alpha.rs"}),
+    ] {
+        let (_, err) = client
+            .call("acdd_read", export_args)
+            .expect("MCP transport");
+        assert_eq!(err["result"]["isError"], true, "{err}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(w.path("src/notes.txt")).unwrap(),
+        "needle in non-rust file\n"
+    );
+
+    let linked_res = read_tool(
+        &mut client,
+        json!({"path": "[extra]/lib.rs", "mode": "search", "pattern": "needle", "context": 0}),
+    );
+    assert!(
+        linked_res["content"].as_str().unwrap().starts_with("1: "),
+        "{linked_res}"
+    );
     assert!(!w.db().exists(), "core reads must not create the index");
     client.finish().expect("server must finish successfully");
 }
@@ -531,69 +576,6 @@ fn acdd_read_handles_path_aliases_and_rejects_unsafe_paths() {
 }
 
 #[test]
-fn acdd_read_delta_never_exposes_sensitive_sibling_through_git_pathspec() {
-    use crate::cli::run_cli_json;
-    let w =
-        Workspace::with_files(&[("acdd.yaml", "profile: minimal\nsensitive: ['secrets/**']\n")]);
-    let paths = [
-        ":(glob)**",
-        "*",
-        "?",
-        "[ab]",
-        ":(literal)secrets/token.txt",
-        "--option.txt",
-    ];
-    for (index, path) in paths.iter().enumerate() {
-        w.write(path, &format!("safe-before-{index}\n"));
-    }
-    w.write("secrets/token.txt", "old-secret\n");
-    w.seed_git().expect("seed real Git baseline");
-    for (index, path) in paths.iter().enumerate() {
-        w.write(path, &format!("safe-after-{index}\n"));
-    }
-    w.write("secrets/token.txt", "new-secret\n");
-    let mut client = McpTestHarness::new(&w).expect("MCP initialize");
-    for (index, path) in paths.iter().enumerate() {
-        let export = format!("exports/delta-{index}.txt");
-        let result = read_tool(
-            &mut client,
-            json!({"path":path,"mode":"delta","output_file":export}),
-        );
-        let content = result["content"].as_str().unwrap();
-        assert!(
-            !content.contains("old-secret") && !content.contains("new-secret"),
-            "sensitive sibling leaked: {result}"
-        );
-        assert!(
-            content.contains(&format!("-safe-before-{index}"))
-                && content.contains(&format!("+safe-after-{index}")),
-            "literal file omitted: {result}"
-        );
-        assert_eq!(
-            content.matches("diff --git ").count(),
-            1,
-            "delta broadened beyond the admitted file: {content}"
-        );
-        assert_eq!(std::fs::read_to_string(w.path(&export)).unwrap(), content);
-        let output = run_cli_json(
-            &w,
-            &["read", "--mode", "delta", "--baseline", "HEAD", "--", path],
-        );
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let cli: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(
-            cli["content"], result["content"],
-            "CLI/MCP delta diverged for {path}"
-        );
-    }
-    client.finish().expect("server must finish successfully");
-}
-
-#[test]
 fn acdd_read_delta_uses_the_admitted_linked_git_context() {
     use crate::cli::run_cli_json;
     let linked = Workspace::with_files(&[]);
@@ -604,6 +586,18 @@ fn acdd_read_delta_uses_the_admitted_linked_git_context() {
             linked.root().display()
         ),
     )]);
+    let primary_paths = [
+        ":(glob)**",
+        "*",
+        "?",
+        "[ab]",
+        ":(literal)secrets/token.txt",
+        "--option.txt",
+    ];
+    for (index, path) in primary_paths.iter().enumerate() {
+        primary.write(path, &format!("safe-before-{index}\n"));
+    }
+    primary.write("secrets/token.txt", "old-secret\n");
     let paths = ["nested/notes.txt", "nested/:(glob)**"];
     for path in paths {
         linked.write(path, "linked-before\n");
@@ -623,41 +617,73 @@ fn acdd_read_delta_uses_the_admitted_linked_git_context() {
         primary.write(format!("[linked]/{path}"), "decoy-after\n");
     }
     linked.write("nested/secrets/token.txt", "secret-after\n");
+    for (index, path) in primary_paths.iter().enumerate() {
+        primary.write(path, &format!("safe-after-{index}\n"));
+    }
+    primary.write("secrets/token.txt", "new-secret\n");
     let mut client = McpTestHarness::new(&primary).expect("MCP initialize");
     let mut failures = Vec::new();
+    let mut cases: Vec<_> = primary_paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            (
+                (*path).to_owned(),
+                Some("HEAD"),
+                format!("safe-before-{index}"),
+                format!("safe-after-{index}"),
+            )
+        })
+        .collect();
     for path in paths {
-        let alias = format!("[linked]/{path}");
-        let raw = read_tool(&mut client, json!({"path":alias,"mode":"raw"}));
-        assert_eq!(raw["content"], "linked-after\n");
         for baseline in [None, Some("linked-only")] {
-            let mut request = json!({"path":alias,"mode":"delta"});
-            let mut args = vec!["read", "--mode", "delta"];
-            if let Some(baseline) = baseline {
-                request["baseline"] = json!(baseline);
-                args.extend(["--baseline", baseline]);
-            }
-            args.extend(["--", &alias]);
-            let (_, response) = client.call("acdd_read", request).expect("MCP transport");
-            let output = run_cli_json(&primary, &args);
-            let cli: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
-            // Exercise both real transports before reporting a runtime-red failure.
-            for (transport, value) in [("MCP", response.to_string()), ("CLI", cli.to_string())] {
-                if !value.contains("-linked-before")
-                    || !value.contains("+linked-after")
-                    || value.contains("decoy-")
-                    || value.contains("secret-")
-                    || value.matches("diff --git ").count() != 1
-                {
-                    failures.push(format!("{transport} {alias} {baseline:?}: {value}"));
-                }
-            }
-            if !output.status.success() {
-                failures.push(format!(
-                    "CLI failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
+            cases.push((
+                format!("[linked]/{path}"),
+                baseline,
+                "linked-before".to_owned(),
+                "linked-after".to_owned(),
+            ));
         }
+    }
+    for (index, (path, baseline, before, after)) in cases.into_iter().enumerate() {
+        let raw = read_tool(&mut client, json!({"path":path,"mode":"raw"}));
+        assert_eq!(raw["content"], format!("{after}\n"));
+        let export = format!("exports/delta-{index}.txt");
+        let mut request = json!({"path":path,"mode":"delta","output_file":export});
+        let mut args = vec!["read", "--mode", "delta"];
+        if let Some(baseline) = baseline {
+            request["baseline"] = json!(baseline);
+            args.extend(["--baseline", baseline]);
+        }
+        args.extend(["--", &path]);
+        let result = read_tool(&mut client, request);
+        let content = result["content"].as_str().unwrap();
+        assert!(
+            content.contains(&format!("-{before}")) && content.contains(&format!("+{after}")),
+            "{result}"
+        );
+        for forbidden in ["decoy-", "secret-", "old-secret", "new-secret"] {
+            assert!(
+                !content.contains(forbidden),
+                "sensitive sibling or decoy leaked: {result}"
+            );
+        }
+        assert_eq!(content.matches("diff --git ").count(), 1, "{result}");
+        assert_eq!(
+            std::fs::read_to_string(primary.path(export)).unwrap(),
+            content
+        );
+        let output = run_cli_json(&primary, &args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cli: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            cli["content"], result["content"],
+            "CLI/MCP delta diverged for {path}"
+        );
     }
     for baseline in ["primary-only", "--output=escaped", "missing-revision"] {
         let (_, response) = client
@@ -695,7 +721,8 @@ fn acdd_read_delta_uses_the_admitted_linked_git_context() {
 }
 
 #[test]
-fn acdd_read_enclosing_hints_resolve_exact_symbols_and_paths() {
+fn acdd_read_codemap_hints_and_outline_use_verified_graph_signals() {
+    use crate::cli::run_cli_json;
     let cases = [("distinct.py", "Second"), ("repeated.py", "First")];
     let mut files: Vec<_> = cases
         .iter()
@@ -706,7 +733,6 @@ fn acdd_read_enclosing_hints_resolve_exact_symbols_and_paths() {
             )
         })
         .collect();
-    files.push(("requirements.txt", "django\n".to_owned()));
     files.push((
         "calculator.py",
         "def compute_total(a, b):\n    x = a * 2\n    y = b * 3\n    return x + y\n\nclass TaxCalculator:\n    def calculate_tax(self, amount):\n        return amount * 0.2\n".to_owned(),
@@ -718,12 +744,126 @@ fn acdd_read_enclosing_hints_resolve_exact_symbols_and_paths() {
             "def shadow():\n    x = 1\n    y = 2\n    return x + y\n".to_owned(),
         ),
     ]);
+    files.extend([
+        (
+            "acdd.yaml",
+            "profile: minimal\nmodules: {codemap: true}\nroots: [.]\n",
+        ),
+        (
+            "model.py",
+            "class Base:\n    pass\n\nclass Child(Base):\n    pass\n\ndef standalone():\n    pass\n\nclass InvalidBase(standalone):\n    pass\n",
+        ),
+        (
+            "service.py",
+            "def compute():\n    return 42\n\ndef invoke():\n    return compute()\n",
+        ),
+        (
+            "tests/test_service.py",
+            "from service import compute\ndef test_compute():\n    assert compute() == 42\n",
+        ),
+    ].map(|(path, source)| (path, source.to_owned())));
     let file_refs: Vec<_> = files
         .iter()
-        .map(|(path, text)| (*path, text.as_str()))
+        .map(|(path, source)| (*path, source.as_str()))
         .collect();
-    let (_workspace, harness) = McpTestHarness::with_files(&file_refs);
+    let (w, harness) = McpTestHarness::indexed_workspace(&file_refs);
     let mut client = harness.expect("MCP initialize");
+    for (arguments, expected) in [
+        (
+            json!({"path":"model.py","mode":"outline","include_hints":true}),
+            false,
+        ),
+        (
+            json!({"path":"model.py","mode":"lines","include_hints":true}),
+            false,
+        ),
+        (
+            json!({"path":"model.py","mode":"raw","include_hints":true}),
+            false,
+        ),
+        (
+            json!({"path":"model.py","mode":"search","pattern":"class","include_hints":true}),
+            false,
+        ),
+        (json!({"selector":"model.py","include_hints":true}), false),
+        (json!({"selector":"Base","include_hints":true}), true),
+        (json!({"selector":"Child","include_hints":true}), false),
+        (json!({"selector":"standalone","include_hints":true}), false),
+    ] {
+        let read = read_tool(&mut client, arguments);
+        let hints = read["Hints"].as_str().unwrap_or("");
+        let implementation = hints
+            .split(';')
+            .find(|call| call.contains("operation: \"implementations\""));
+        assert_eq!(implementation.is_some(), expected, "{read}");
+        if let Some(call) = implementation {
+            let selector = call
+                .split("selector: ")
+                .nth(1)
+                .unwrap()
+                .split(", worktree:")
+                .next()
+                .unwrap();
+            let selector: String = serde_json::from_str(selector).unwrap();
+            let followed = client
+                .payload(
+                    "code_map_query",
+                    json!({"operation":"implementations","selector":selector,"worktree":w.root()}),
+                )
+                .expect("MCP tool should succeed");
+            assert_eq!(followed["nodes"]["total"], 1, "{followed}");
+        }
+    }
+    for args in [
+        vec!["read", "model.py", "--mode", "outline", "--include-hints"],
+        vec!["read", "model.py", "--selector", "Base", "--include-hints"],
+    ] {
+        let output = run_cli_json(&w, &args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let read: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            read["Hints"]
+                .as_str()
+                .unwrap_or("")
+                .contains("operation: \"implementations\""),
+            args.contains(&"Base"),
+            "{read}"
+        );
+    }
+
+    let outline = read_tool(&mut client, json!({"path":"service.py","mode":"outline"}));
+    assert!(
+        outline["content"].as_str().unwrap().contains("compute"),
+        "{outline}"
+    );
+    assert!(
+        !outline["content"].as_str().unwrap().contains("return 42"),
+        "{outline}"
+    );
+    // Default acdd_read suppresses Hints; include_hints=true opts in.
+    let no_hints = read_tool(&mut client, json!({"selector":"compute"}));
+    assert!(no_hints.get("Hints").is_none(), "{no_hints}");
+    let snippet = read_tool(
+        &mut client,
+        json!({"selector":"compute","include_hints":true}),
+    );
+    assert_eq!(snippet["source"], "def compute():\n    return 42\n");
+    let hints = snippet["Hints"].as_str().unwrap();
+    assert!(
+        hints.contains("code_map_explain(") && hints.contains("code_map_tests("),
+        "{snippet}"
+    );
+    assert!(
+        !hints.contains("get_doc") && !hints.contains("task_"),
+        "{snippet}"
+    );
+    assert!(hints.lines().count() <= 3);
+    assert!(snippet["graph_pulse"]["callers"].as_u64().unwrap() >= 2);
+    assert_eq!(snippet["graph_pulse"]["covering_tests"], 1);
     for (path, second) in cases {
         for (line, expected) in [(3, "return 1"), (7, "return 2")] {
             let response = read_tool(
@@ -809,115 +949,6 @@ fn acdd_read_enclosing_hints_resolve_exact_symbols_and_paths() {
         let footer = response["footer"].as_str().expect("enclosing symbol");
         assert!(footer.contains("fn exact"), "{response}");
     }
-    client.finish().expect("server must finish successfully");
-}
-
-#[test]
-fn acdd_read_codemap_hints_and_outline_use_verified_graph_signals() {
-    use crate::cli::run_cli_json;
-    let (w, harness) = McpTestHarness::indexed_workspace(&[
-        (
-            "acdd.yaml",
-            "profile: minimal\nmodules: {codemap: true}\nroots: [.]\n",
-        ),
-        (
-            "model.py",
-            "class Base:\n    pass\n\nclass Child(Base):\n    pass\n\ndef standalone():\n    pass\n\nclass InvalidBase(standalone):\n    pass\n",
-        ),
-        (
-            "service.py",
-            "def compute():\n    return 42\n\ndef invoke():\n    return compute()\n",
-        ),
-        (
-            "tests/test_service.py",
-            "from service import compute\ndef test_compute():\n    assert compute() == 42\n",
-        ),
-    ]);
-    let mut client = harness.expect("MCP initialize");
-    for (arguments, expected) in [
-        (json!({"path":"model.py","mode":"outline","include_hints":true}), false),
-        (json!({"path":"model.py","mode":"lines","include_hints":true}), false),
-        (json!({"path":"model.py","mode":"raw","include_hints":true}), false),
-        (
-            json!({"path":"model.py","mode":"search","pattern":"class","include_hints":true}),
-            false,
-        ),
-        (json!({"selector":"model.py","include_hints":true}), false),
-        (json!({"selector":"Base","include_hints":true}), true),
-        (json!({"selector":"Child","include_hints":true}), false),
-        (json!({"selector":"standalone","include_hints":true}), false),
-    ] {
-        let read = read_tool(&mut client, arguments);
-        let hints = read["Hints"].as_str().unwrap_or("");
-        let implementation = hints
-            .split(';')
-            .find(|call| call.contains("operation: \"implementations\""));
-        assert_eq!(implementation.is_some(), expected, "{read}");
-        if let Some(call) = implementation {
-            let selector = call
-                .split("selector: ")
-                .nth(1)
-                .unwrap()
-                .split(", worktree:")
-                .next()
-                .unwrap();
-            let selector: String = serde_json::from_str(selector).unwrap();
-            let followed = client
-                .payload(
-                    "code_map_query",
-                    json!({"operation":"implementations","selector":selector,"worktree":w.root()}),
-                )
-                .expect("MCP tool should succeed");
-            assert_eq!(followed["nodes"]["total"], 1, "{followed}");
-        }
-    }
-    for args in [
-        vec!["read", "model.py", "--mode", "outline", "--include-hints"],
-        vec!["read", "model.py", "--selector", "Base", "--include-hints"],
-    ] {
-        let output = run_cli_json(&w, &args);
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let read: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(
-            read["Hints"]
-                .as_str()
-                .unwrap_or("")
-                .contains("operation: \"implementations\""),
-            args.contains(&"Base"),
-            "{read}"
-        );
-    }
-
-    let outline = read_tool(&mut client, json!({"path":"service.py","mode":"outline"}));
-    assert!(
-        outline["content"].as_str().unwrap().contains("compute"),
-        "{outline}"
-    );
-    assert!(
-        !outline["content"].as_str().unwrap().contains("return 42"),
-        "{outline}"
-    );
-    // Default acdd_read suppresses Hints; include_hints=true opts in.
-    let no_hints = read_tool(&mut client, json!({"selector":"compute"}));
-    assert!(no_hints.get("Hints").is_none(), "{no_hints}");
-    let snippet = read_tool(&mut client, json!({"selector":"compute","include_hints":true}));
-    assert_eq!(snippet["source"], "def compute():\n    return 42\n");
-    let hints = snippet["Hints"].as_str().unwrap();
-    assert!(
-        hints.contains("code_map_explain(") && hints.contains("code_map_tests("),
-        "{snippet}"
-    );
-    assert!(
-        !hints.contains("get_doc") && !hints.contains("task_"),
-        "{snippet}"
-    );
-    assert!(hints.lines().count() <= 3);
-    assert!(snippet["graph_pulse"]["callers"].as_u64().unwrap() >= 2);
-    assert_eq!(snippet["graph_pulse"]["covering_tests"], 1);
     client.finish().expect("server must finish successfully");
 }
 
@@ -1023,7 +1054,7 @@ fn acdd_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
             "{}",
             String::from_utf8_lossy(&sync.stderr)
         );
-        let task_id = "forge-mcp/m-reader:read";
+        let task_id = "acdd/m-reader:read";
         tasks::claim(
             w.root(),
             tasks::Claim {
@@ -1041,7 +1072,10 @@ fn acdd_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
         assert_eq!(allowed["write_scope"], "ALLOWED", "{allowed}");
         let outside_default = read_tool(&mut client, json!({"path":"other.txt"}));
         assert!(outside_default.get("Hints").is_none(), "{outside_default}");
-        let outside = read_tool(&mut client, json!({"path":"other.txt","include_hints":true}));
+        let outside = read_tool(
+            &mut client,
+            json!({"path":"other.txt","include_hints":true}),
+        );
         assert_eq!(outside["write_scope"], "OUT_OF_SCOPE", "{outside}");
         let hints = outside["Hints"].as_str().unwrap();
         assert!(
@@ -1052,7 +1086,11 @@ fn acdd_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
             !hints.contains("code_map_") && !hints.contains("get_doc"),
             "{outside}"
         );
-        assert_eq!(hints.contains("verify"), with_command, "{outside}");
+        assert_eq!(
+            hints.contains("task_manage(action: \"verify\""),
+            with_command,
+            "{outside}"
+        );
         client.finish().expect("server must finish successfully");
     }
 }
@@ -1110,54 +1148,4 @@ fn minimal_subsystems_filter_tools_and_check_batch_outline_admission() {
         ..Default::default()
     };
     assert!(req_mixed.requires_index(&adapter_both).is_ok());
-}
-
-#[test]
-fn acdd_read_directory_glob_search_and_markdown_fenced_blocks_preserve_raw_code() {
-    let linked = Workspace::with_files(&[("lib.rs", "pub fn linked() { /* needle */ }\n")]);
-    let ws = Workspace::with_files(&[
-        (
-            "acdd.yaml",
-            &format!(
-                "profile: minimal\nroots: [src]\nlinked_workspaces:\n  - name: extra\n    path: {}\n",
-                linked.root().display()
-            ),
-        ),
-        ("src/alpha.rs", "pub fn alpha() -> &'static str {\n    \"needle \\\"quoted\\\"\"\n}\n"),
-        ("src/nested/beta.rs", "pub fn beta() {\n    // needle in nested file\n}\n"),
-        ("src/notes.txt", "needle in non-rust file\n"),
-        (".env", "SECRET=needle\n"),
-    ]);
-    std::fs::write(ws.path("src/m_bad_utf8.bin"), [0xff_u8, 0xfe, b'n', b'e', b'e', b'd']).unwrap();
-    let mut client = McpTestHarness::new(&ws).expect("MCP initialize");
-
-    let (_, md_resp) = client
-        .call("acdd_read", json!({"path": "src/alpha.rs", "mode": "lines"}))
-        .expect("MCP transport");
-    let md_text = md_resp["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(md_text.contains("```rust\n1: pub fn alpha()"), "{md_text}");
-    assert!(!md_text.contains("\\n") && !md_text.contains("Hints:"), "{md_text}");
-
-    for (args, expected, forbidden) in [
-        (json!({"path": "src", "mode": "search", "pattern": "needle", "context": 0}), "src/nested/beta.rs:2:", ".env"),
-        (json!({"path": "src/**/*.rs", "mode": "search", "pattern": "needle", "context": 0}), "src/alpha.rs:2:", "src/notes.txt"),
-        (json!({"mode": "search", "pattern": "needle", "context": 0}), "src/alpha.rs:2:", "SECRET=needle"),
-    ] {
-        let res = read_tool(&mut client, args);
-        let content = res["content"].as_str().unwrap();
-        assert!(content.contains(expected) && !content.contains(forbidden), "{content}");
-    }
-
-    for export_args in [
-        json!({"path": "src", "mode": "search", "pattern": "needle", "line_count": 1, "output_file": "src/notes.txt"}),
-        json!({"paths": ["src/**/*.rs"], "mode": "search", "pattern": "needle", "output_file": "src/alpha.rs"}),
-    ] {
-        let (_, err) = client.call("acdd_read", export_args).expect("MCP transport");
-        assert_eq!(err["result"]["isError"], true, "{err}");
-    }
-    assert_eq!(std::fs::read_to_string(ws.path("src/notes.txt")).unwrap(), "needle in non-rust file\n");
-
-    let linked_res = read_tool(&mut client, json!({"path": "[extra]/lib.rs", "mode": "search", "pattern": "needle", "context": 0}));
-    assert!(linked_res["content"].as_str().unwrap().starts_with("1: "), "{linked_res}");
-    client.finish().expect("server must finish successfully");
 }

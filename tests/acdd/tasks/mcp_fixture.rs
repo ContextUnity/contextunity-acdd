@@ -20,6 +20,12 @@ impl TaskHarness {
         workspace
     }
 
+    pub fn mcp_store_workspace() -> Workspace {
+        let workspace = Workspace::new();
+        workspace.write("acdd.yaml", "roots: []\ndocs: []\ntasks_db: tasks.sqlite\n");
+        workspace
+    }
+
     pub fn mcp_dispatch_call(client: &mut McpTestHarness, tool: &str, mut args: Value) -> Value {
         args["format"] = json!("json");
         let response = client.call(tool, args).expect("MCP call should succeed").1;

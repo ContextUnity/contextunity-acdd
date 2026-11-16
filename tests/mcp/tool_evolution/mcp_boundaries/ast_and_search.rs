@@ -390,7 +390,7 @@ fn ast_language_inference_and_actionable_diagnostics() {
             message.contains("language") && message.contains("path"),
             "{message}"
         );
-        assert!(message.contains("forge_guide"), "{message}");
+        assert!(message.contains("acdd_guide"), "{message}");
         assert!(message.contains("Examples:"), "{message}");
     }
     for language in ["python"]

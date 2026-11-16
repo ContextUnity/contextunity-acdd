@@ -59,7 +59,7 @@ fn directories_root_paths_and_file_autolinks_resolve() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    workspace.write("README.md", "<file:///definitely-not-a-real-forge-file>\n");
+    workspace.write("README.md", "<file:///definitely-not-a-real-acdd-file>\n");
     assert!(!check(&workspace).status.success());
 }
 
@@ -95,7 +95,7 @@ fn uri_schemes_are_case_insensitive_and_external_links_are_not_files() {
     assert!(check(&workspace).status.success());
     workspace.write(
         "README.md",
-        "[missing](FILE:///definitely-not-a-real-forge-file)\n",
+        "[missing](FILE:///definitely-not-a-real-acdd-file)\n",
     );
     assert!(!check(&workspace).status.success());
     workspace.write("README.md", "[local](docs/a:b.md)\n");
@@ -184,7 +184,7 @@ fn json_output_reports_success_and_failure() {
             "--format",
             "json",
             "--root",
-            "/nonexistent_forge_test_dir_12345",
+            "/nonexistent_acdd_test_dir_12345",
         ])
         .output()
         .unwrap();

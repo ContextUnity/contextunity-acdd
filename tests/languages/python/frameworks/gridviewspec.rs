@@ -403,18 +403,7 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
 
 #[cfg(all(feature = "lang-typescript", feature = "lang-html"))]
 #[test]
-fn gridviewspec_runtime_provider_scopes_canonical() {
-    assert_gridviewspec_runtime_provider_scopes(false);
-}
-
-#[cfg(all(feature = "lang-typescript", feature = "lang-html"))]
-#[test]
-fn gridviewspec_runtime_provider_scopes_renamed() {
-    assert_gridviewspec_runtime_provider_scopes(true);
-}
-
-#[cfg(all(feature = "lang-typescript", feature = "lang-html"))]
-fn assert_gridviewspec_runtime_provider_scopes(renamed: bool) {
+fn gridviewspec_runtime_provider_scope() {
     use contextunity_acdd::core::commitments;
 
     // Observed built-in runtime registrations live in a separately indexed
@@ -441,54 +430,56 @@ fn assert_gridviewspec_runtime_provider_scopes(renamed: bool) {
     let runtime_policy = toml::to_string(&runtime_policy).unwrap();
     let scoped = fixture_workspace(&[]);
     let runtime = fixture_workspace(&[]);
-    let rewrite = |text: &str| {
-        if renamed {
-            text.replace("grid_view_spec.types.table_v2", "atelier.tables")
-                .replace("GridViewColumn", "Cell")
-                .replace("registerRenderer", "bindPainter")
-                .replace("gridviewspec_renderer", "atelier_painter")
-        } else {
-            text.to_owned()
-        }
-    };
-    scoped.write(
-        "acdd.yaml",
-        &format!(
+
+    for (case_id, renamed) in [("canonical", false), ("renamed", true)] {
+        let rewrite = |text: &str| {
+            if renamed {
+                text.replace("grid_view_spec.types.table_v2", "atelier.tables")
+                    .replace("GridViewColumn", "Cell")
+                    .replace("registerRenderer", "bindPainter")
+                    .replace("gridviewspec_renderer", "atelier_painter")
+            } else {
+                text.to_owned()
+            }
+        };
+        scoped.write(
+            "acdd.yaml",
+            &format!(
             "roots: [.]\nlinked_workspaces:\n  - name: runtime\n    path: '{}'\n    roots: [.]\n",
             runtime.root().display()
         ),
-    );
-    scoped.write(
-        "pyproject.toml",
-        "[project]\nname='consumer'\ndependencies=['grid-view-spec']\n",
-    );
-    runtime.write("pyproject.toml", "[project]\nname='grid-view-spec'\n");
-    runtime.write("frontend/package.json", "{\"name\":\"runtime-provider\"}");
-    let provider_path = "frontend/src/runtime/renderers/builtins.ts";
-    let runtime_source = rewrite(
+        );
+        scoped.write(
+            "pyproject.toml",
+            "[project]\nname='consumer'\ndependencies=['grid-view-spec']\n",
+        );
+        runtime.write("pyproject.toml", "[project]\nname='grid-view-spec'\n");
+        runtime.write("frontend/package.json", "{\"name\":\"runtime-provider\"}");
+        let provider_path = "frontend/src/runtime/renderers/builtins.ts";
+        let runtime_source = rewrite(
         "import {registerRenderer} from '../../grid-view/registry-api';\nfunction moneyRenderer() { return 'money'; }\nfunction linkRenderer() { return 'link'; }\nexport function initBuiltinRenderers() { registerRenderer('money', moneyRenderer); }\n",
     );
-    runtime.write(provider_path, &runtime_source);
-    let consumer = rewrite(
+        runtime.write(provider_path, &runtime_source);
+        let consumer = rewrite(
         "from grid_view_spec.types.table_v2 import GridViewColumn\ndef render(): return GridViewColumn(renderer='money')\ndef missing(): return GridViewColumn(renderer='r')\ndef dynamic(): return GridViewColumn(renderer=selected)\ndef shadow(GridViewColumn): return GridViewColumn(renderer='money')\n",
     );
-    scoped.write("consumer.py", &consumer);
-    runtime.write("src/consumer.py", &consumer);
-    let policy = rewrite(&runtime_policy);
-    let local_manifest = ".acdd/frameworks/gridviewspec.toml";
-    scoped.write(local_manifest, &policy);
-    runtime.write(local_manifest, &policy);
-    scoped.build();
-    let check = |expected: Option<&str>, status: &str| {
-        let conn = scoped.open();
-        commitments::verify(&conn).unwrap();
-        assert!(query_strings(&conn, "SELECT message FROM errors", []).is_empty());
-        let targets: Vec<String> = query_strings(
+        scoped.write("consumer.py", &consumer);
+        runtime.write("src/consumer.py", &consumer);
+        let policy = rewrite(&runtime_policy);
+        let local_manifest = ".acdd/frameworks/gridviewspec.toml";
+        scoped.write(local_manifest, &policy);
+        runtime.write(local_manifest, &policy);
+        scoped.build();
+        let check = |expected: Option<&str>, status: &str| {
+            let conn = scoped.open();
+            commitments::verify(&conn).unwrap();
+            assert!(query_strings(&conn, "SELECT message FROM errors", []).is_empty());
+            let targets: Vec<String> = query_strings(
             &conn,
             "SELECT d.id FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=s.path_id WHERE p.path='consumer.py' AND s.name='render' AND e.kind='references' ORDER BY d.id",
             [],
         );
-        let wanted: Vec<String> = expected
+            let wanted: Vec<String> = expected
             .map(|name| {
                 query_scalar(
                     &conn,
@@ -498,73 +489,76 @@ fn assert_gridviewspec_runtime_provider_scopes(renamed: bool) {
             })
             .into_iter()
             .collect();
-        assert_eq!(
-            targets, wanted,
-            "configured runtime exact canonical callback, renamed={renamed}"
-        );
-        assert_eq!(
-            persisted_coverage(&conn, "consumer.py", 2, "money").0,
-            status
-        );
-        for function in ["missing", "dynamic", "shadow"] {
-            let count: i64 = query_scalar(
+            assert_eq!(
+                targets, wanted,
+                "configured runtime exact canonical callback, renamed={renamed}"
+            );
+            assert_eq!(
+                persisted_coverage(&conn, "consumer.py", 2, "money").0,
+                status
+            );
+            for function in ["missing", "dynamic", "shadow"] {
+                let count: i64 = query_scalar(
                 &conn,
                 "SELECT count(*) FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=s.path_id WHERE p.path='consumer.py' AND s.name=?1 AND e.kind='references'",
                 [function],
             );
-            assert_eq!(count, 0, "no runtime guess for {function}");
-        }
-        drop(conn);
-        let parity = crate::languages::harness::cold_relations(&scoped);
-        assert_eq!(parity.incremental_verification, Ok(()));
-        assert_eq!(parity.cold_verification, Ok(()));
-        assert_eq!(parity.incremental, parity.cold);
-    };
-    check(Some("moneyRenderer"), "resolved");
-    assert_eq!(
-        persisted_coverage(&scoped.open(), "[runtime]/src/consumer.py", 2, "money").0,
-        "resolved",
-        "same-workspace Python/frontend boundary also requires explicit import"
-    );
-    // Unchanged consumers must replay a callback-only provider mutation.
-    runtime.write(
-        provider_path,
-        &runtime_source.replace("('money', moneyRenderer)", "('money', linkRenderer)"),
-    );
-    scoped.delta(&["[runtime]/frontend/src/runtime/renderers/builtins.ts"]);
-    check(Some("linkRenderer"), "resolved");
-    runtime.write(
-        provider_path,
-        &format!(
-            "{runtime_source}\nexport function duplicate() {{ {}('money', linkRenderer); }}\n",
-            if renamed {
-                "bindPainter"
-            } else {
-                "registerRenderer"
+                assert_eq!(count, 0, "no runtime guess for {function}");
             }
-        ),
-    );
-    scoped.delta(&["[runtime]/frontend/src/runtime/renderers/builtins.ts"]);
-    check(None, "ambiguous");
-    remove_fixture(&runtime, provider_path);
-    scoped.delta(&["[runtime]/frontend/src/runtime/renderers/builtins.ts"]);
-    check(None, "unresolved");
-    runtime.write(provider_path, &runtime_source);
-    scoped.delta(&["[runtime]/frontend/src/runtime/renderers/builtins.ts"]);
-    check(Some("moneyRenderer"), "resolved");
-    scoped.write(
-        local_manifest,
-        &policy.replace(
-            "package = \"runtime-provider\"",
-            "package = \"unrelated-provider\"",
-        ),
-    );
-    scoped.delta(&[local_manifest]);
-    check(None, "unresolved");
-    scoped.write(local_manifest, &policy);
-    scoped.delta(&[local_manifest]);
-    check(Some("moneyRenderer"), "resolved");
-    scoped.write("consumer.py", &format!("{consumer}\n# cached provider\n"));
-    scoped.delta(&["consumer.py"]);
-    check(Some("moneyRenderer"), "resolved");
+            drop(conn);
+            let parity = crate::languages::harness::cold_relations(&scoped);
+            assert_eq!(parity.incremental_verification, Ok(()));
+            assert_eq!(parity.cold_verification, Ok(()));
+            assert_eq!(parity.incremental, parity.cold);
+        };
+        check(Some("moneyRenderer"), "resolved");
+        assert_eq!(
+            persisted_coverage(&scoped.open(), "[runtime]/src/consumer.py", 2, "money").0,
+            "resolved",
+            "same-workspace Python/frontend boundary also requires explicit import"
+        );
+        // Unchanged consumers must replay a callback-only provider mutation.
+        runtime.write(
+            provider_path,
+            &runtime_source.replace("('money', moneyRenderer)", "('money', linkRenderer)"),
+        );
+        scoped.delta(&["[runtime]/frontend/src/runtime/renderers/builtins.ts"]);
+        check(Some("linkRenderer"), "resolved");
+        runtime.write(
+            provider_path,
+            &format!(
+                "{runtime_source}\nexport function duplicate() {{ {}('money', linkRenderer); }}\n",
+                if renamed {
+                    "bindPainter"
+                } else {
+                    "registerRenderer"
+                }
+            ),
+        );
+        scoped.delta(&["[runtime]/frontend/src/runtime/renderers/builtins.ts"]);
+        check(None, "ambiguous");
+        remove_fixture(&runtime, provider_path);
+        scoped.delta(&["[runtime]/frontend/src/runtime/renderers/builtins.ts"]);
+        check(None, "unresolved");
+        runtime.write(provider_path, &runtime_source);
+        scoped.delta(&["[runtime]/frontend/src/runtime/renderers/builtins.ts"]);
+        check(Some("moneyRenderer"), "resolved");
+        scoped.write(
+            local_manifest,
+            &policy.replace(
+                "package = \"runtime-provider\"",
+                "package = \"unrelated-provider\"",
+            ),
+        );
+        scoped.delta(&[local_manifest]);
+        check(None, "unresolved");
+        scoped.write(local_manifest, &policy);
+        scoped.delta(&[local_manifest]);
+        check(Some("moneyRenderer"), "resolved");
+        scoped.write("consumer.py", &format!("{consumer}\n# cached provider\n"));
+        scoped.delta(&["consumer.py"]);
+        check(Some("moneyRenderer"), "resolved");
+
+        let _ = case_id;
+    }
 }

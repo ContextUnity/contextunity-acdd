@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn symmetric_subtask_statuses_normalize_legacy_pending_through_storage() {
     let spec = "---\nid: m-statuses\nstatus: active\n---\n```yaml\ntask_ref: statuses\ntarget: Symmetric status lifecycle\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nsubtasks:\n- subtask_ref: legacy\n  title: Legacy status\n  status: pending\n```\n";
-    let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(spec, "acdd").unwrap();
     assert_eq!(milestone.tasks[0].subtasks[0].status, "ready");
     let mut harness = TaskHarness::memory_with_manifest(spec, "docs/statuses.md");
     let id = harness.id.clone();
@@ -45,7 +45,7 @@ fn symmetric_subtask_statuses_normalize_legacy_pending_through_storage() {
             .contains("TASK_SUBTASK_STATUS_INVALID"));
         assert!(Milestone::parse(
             &spec.replace("status: pending", &format!("status: '{invalid}'")),
-            "forge-mcp"
+            "acdd"
         )
         .is_err());
     }
@@ -78,9 +78,9 @@ fn symmetric_subtask_statuses_normalize_legacy_pending_through_storage() {
 fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
     let root = unconfigured_test_root();
     let source = "---\nid: m-cancelled-tasks\nstatus: active\n---\n```yaml\ntask_ref: producer\ntarget: Producer\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nsubtasks:\n- subtask_ref: child\n  title: Child\n```\n```yaml\ntask_ref: consumer\ntarget: Consumer\nproof_policy: seam-test-first\nscope: [src/consumer.rs]\ndepends_on: [producer]\n```\n";
-    let mut milestone = Milestone::parse(source, "forge-mcp").unwrap();
+    let mut milestone = Milestone::parse(source, "acdd").unwrap();
     let id = milestone.task_id(&milestone.tasks[0]);
-    let mut store = TasksStore::open_in_memory("forge-mcp", "forge-mcp").unwrap();
+    let mut store = TasksStore::open_in_memory("acdd", "acdd").unwrap();
     store.sync(&milestone, "docs/cancelled.md", &root).unwrap();
     let claim = store
         .claim(
@@ -151,7 +151,7 @@ fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
     store.sync(&milestone, "docs/cancelled.md", &root).unwrap();
     assert_eq!(store.inspect(&id).unwrap().status, "ready");
 
-    let mut fresh_store = TasksStore::open_in_memory("forge-mcp", "forge-mcp").unwrap();
+    let mut fresh_store = TasksStore::open_in_memory("acdd", "acdd").unwrap();
     milestone.tasks[0].status = Some("cancelled".into());
     fresh_store
         .sync(&milestone, "docs/cancelled.md", &root)
@@ -170,7 +170,7 @@ fn cancelled_tasks_retain_history_and_do_not_unblock_dependencies() {
 #[test]
 fn completed_cancellations_re_admit_and_restore_dependency_blockers() {
     let source = "---\nid: m-cancelled-tasks\nstatus: active\n---\n```yaml\ntask_ref: producer\ntarget: Producer\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nsubtasks:\n- subtask_ref: child\n  title: Child\n```\n```yaml\ntask_ref: consumer\ntarget: Consumer\nproof_policy: seam-test-first\nscope: [src/consumer.rs]\ndepends_on: [producer]\n```\n";
-    let mut completed_milestone = Milestone::parse(source, "forge-mcp").unwrap();
+    let mut completed_milestone = Milestone::parse(source, "acdd").unwrap();
     let id = completed_milestone.task_id(&completed_milestone.tasks[0]);
     let workspace = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
     workspace.write("src/lib.rs", "pub fn core() {}\n");
@@ -212,7 +212,7 @@ fn completed_cancellations_re_admit_and_restore_dependency_blockers() {
     }
     let downstream = Milestone::parse(
         "---\nid: m-downstream\nstatus: active\n---\n```yaml\ntask_ref: observer\ntarget: Observer\nproof_policy: seam-test-first\nscope: [src/observer.rs]\ndepends_on: [m-cancelled-tasks:producer]\n```\n",
-        "forge-mcp",
+        "acdd",
     )
     .unwrap();
     let downstream_id = downstream.task_id(&downstream.tasks[0]);

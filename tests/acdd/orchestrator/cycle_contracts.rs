@@ -16,7 +16,7 @@ const ROOT_ID: &str = "m-cycle";
 const MANIFEST: &str = "docs/milestones/012-cycle.md";
 
 // Root contracts compose the canonical disk harness; no task runner subprocess is needed.
-fn root_harness(pre: Vec<Value>, post: Vec<Value>) -> TaskHarness {
+fn root_harness(pre: Vec<Value>, post: Vec<Value>, scope: &[&str]) -> TaskHarness {
     let mut profile = runner_profile(DEFAULT_SEAM, "");
     profile.commands.insert("cycle-check".into(), serde_json::from_value(json!({
         "command": "if test -f .acdd/cycle-repaired.log; then printf 'test result: ok. 1 passed; 0 failed\\n'; else printf 'cycle failing command diagnostic\\n' >&2; exit 37; fi",
@@ -29,13 +29,17 @@ fn root_harness(pre: Vec<Value>, post: Vec<Value>) -> TaskHarness {
         }))
         .unwrap(),
     );
-    profile.roles.insert("observer".into(), serde_json::from_value(json!({
-        "runner": format!("python3 {} '{{prompt}}'", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/acdd/fixtures/workflows/wave-role.py"))
-    })).unwrap());
+    profile.roles.insert(
+        "observer".into(),
+        serde_json::from_value(json!({
+            "runner": ".acdd/role_fixture wave-role '{prompt}'"
+        }))
+        .unwrap(),
+    );
     let mut repair = profile.roles["observer"].clone();
-    repair.runner = Some(format!("python3 -c 'import runpy;runpy.run_path(\"{}\");open(\".acdd/cycle-repaired.log\",\"w\").write(\"repaired\")' '{{prompt}}'", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/acdd/fixtures/workflows/wave-role.py")));
+    repair.runner = Some(r#"sh -c ' .acdd/role_fixture wave-role "$1" && printf repaired > .acdd/cycle-repaired.log' sh '{prompt}'"#.into());
     let mut mutating_review = repair.clone();
-    mutating_review.runner = Some(format!("python3 -c 'import runpy;runpy.run_path(\"{}\");open(\"src/lib.rs\",\"a\").write(\"// renewed drift\\n\")' '{{prompt}}'", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/acdd/fixtures/workflows/wave-role.py")));
+    mutating_review.runner = Some(r#"sh -c ' .acdd/role_fixture wave-role "$1" && printf "// renewed drift\\n" >> src/lib.rs' sh '{prompt}'"#.into());
     profile
         .roles
         .insert("mutating_review".into(), mutating_review);
@@ -59,9 +63,11 @@ fn root_harness(pre: Vec<Value>, post: Vec<Value>) -> TaskHarness {
     profile.gates.push(handoff);
     profile.validate().unwrap();
     let source = MilestoneFixtureBuilder::new(ROOT_ID)
-        .task("first", &["src/"])
+        .task("first", scope)
         .build();
-    TaskHarness::disk_with_profile(&source, MANIFEST, profile)
+    let h = TaskHarness::disk_with_profile(&source, MANIFEST, profile);
+    crate::acdd::snapshot::stage_role_helper(h.root());
+    h
 }
 
 fn findings_gates() -> Vec<Value> {
@@ -119,7 +125,192 @@ fn run_waves(h: &TaskHarness) -> anyhow::Result<Value> {
 }
 
 #[test]
-fn review_drift_warns_and_requires_rebound_verification_and_review() {
+fn candidate_path_policy_matrix() {
+    let root = Workspace::new();
+    init_git(root.root());
+    // Make runtime churn Git-visible: ignore rules must not supply the policy.
+    root.write(".git/info/exclude", "");
+    let baseline = candidate_fingerprint(root.root()).unwrap();
+    let mut mismatches = Vec::new();
+    for path in [
+        ".acdd/tasks/current.json",
+        ".acdd/checkpoints.json",
+        ".acdd/tasks.sqlite",
+        ".acdd/tasks.sqlite-wal",
+        ".acdd/tasks.sqlite-shm",
+        ".acdd/tasks.sqlite-journal",
+        ".acdd/tasks.sqlite.lock",
+        ".acdd/runner.log",
+        ".acdd/run.jsonl",
+    ] {
+        root.write(path, "runtime observation\n");
+        let actual = candidate_fingerprint(root.root()).unwrap();
+        if actual != baseline {
+            mismatches.push(path);
+        }
+        root.remove(path);
+    }
+    for path in [
+        ".acdd/profile.yaml",
+        ".acdd/frameworks/custom.yaml",
+        "src/lib.rs",
+    ] {
+        let original = root
+            .path(path)
+            .exists()
+            .then(|| fs::read(root.path(path)).unwrap());
+        root.write(path, "changed authority\n");
+        assert_ne!(
+            candidate_fingerprint(root.root()).unwrap(),
+            baseline,
+            "{path}"
+        );
+        match original {
+            Some(bytes) => fs::write(root.path(path), bytes).unwrap(),
+            None => root.remove(path),
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "runtime paths changed candidate binding: {mismatches:?}"
+    );
+
+    let runtime_paths = [
+        ".acdd/tasks/current.json",
+        ".acdd/checkpoints.json",
+        ".acdd/checkpoints.json.lock",
+        ".acdd/runtime.sqlite",
+        ".acdd/runtime.sqlite-wal",
+        ".acdd/runtime.sqlite-shm",
+        ".acdd/runtime.sqlite-journal",
+        ".acdd/runtime.sqlite.lock",
+        ".acdd/runtime.sqlite.verified.json",
+        ".acdd/runner.log",
+        ".acdd/run.jsonl",
+    ];
+    let authority_paths = [
+        ".acdd/profile.yaml",
+        ".acdd/frameworks/custom.yaml",
+        "src/lib.rs",
+    ];
+    let gates = (0..=runtime_paths.len() + authority_paths.len()).map(|index| json!({
+        "id":format!("snapshot_{index}"), "role":"observer", "proof":"none", "save":{"post":"snapshot"}
+    })).collect();
+    let mut h = root_harness(gates, Vec::new(), &[".acdd/"]);
+    // Force tracked runtime paths so ignore rules cannot accidentally prove exclusion parity.
+    for path in runtime_paths.iter().chain([&authority_paths[1]]) {
+        fs::create_dir_all(h.root().join(path).parent().unwrap()).unwrap();
+        fs::write(h.root().join(path), "baseline\n").unwrap();
+        assert!(git_command(h.root(), &["add", "-f", path])
+            .status()
+            .unwrap()
+            .success());
+    }
+    TaskHarness::claim_at(h.root(), ROOT_ID, "snapshot_0", "snapshotter").unwrap();
+    root_submit(&h, "snapshot_0", "snapshotter", json!({"none_proof":{}})).unwrap();
+    let baseline_commit = root_observations(&h, "snapshot_0")[0]["root_snapshot"]
+        ["snapshot_commit"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let baseline_tree = acdd_tasks::git::git_stdout(
+        h.root(),
+        &["rev-parse", &format!("{baseline_commit}^{{tree}}")],
+        "SNAPSHOT_TEST",
+    )
+    .unwrap();
+    let baseline = candidate_fingerprint(h.root()).unwrap();
+    let mut mismatches = Vec::new();
+    for (index, path) in runtime_paths
+        .iter()
+        .chain(authority_paths.iter())
+        .enumerate()
+    {
+        let original = fs::read(h.root().join(path)).unwrap();
+        let mut changed = original.clone();
+        changed.extend_from_slice(b"\n# changed input\n");
+        fs::write(h.root().join(path), changed).unwrap();
+        let stage = format!("snapshot_{}", index + 1);
+        TaskHarness::claim_at(h.root(), ROOT_ID, &stage, "snapshotter").unwrap();
+        let fingerprint = candidate_fingerprint(h.root()).unwrap();
+        root_submit(&h, &stage, "snapshotter", json!({"none_proof":{}})).unwrap();
+        let snapshot = root_observations(&h, &stage)[0]["root_snapshot"].clone();
+        let commit = snapshot["snapshot_commit"].as_str().unwrap();
+        let tree = acdd_tasks::git::git_stdout(
+            h.root(),
+            &["rev-parse", &format!("{commit}^{{tree}}")],
+            "SNAPSHOT_TEST",
+        )
+        .unwrap();
+        let runtime = runtime_paths.contains(path);
+        if (fingerprint == baseline) != runtime || (tree == baseline_tree) != runtime {
+            mismatches.push(format!(
+                "{path}: fingerprint_unchanged={}, snapshot_unchanged={}",
+                fingerprint == baseline,
+                tree == baseline_tree
+            ));
+        }
+        let files = acdd_tasks::git::git_stdout(
+            h.root(),
+            &["ls-tree", "-r", "--name-only", commit],
+            "SNAPSHOT_TEST",
+        )
+        .unwrap();
+        assert!(
+            runtime_paths
+                .iter()
+                .all(|path| !files.lines().any(|file| file == *path)),
+            "{files}"
+        );
+        assert!(
+            authority_paths
+                .iter()
+                .all(|path| files.lines().any(|file| file == *path)),
+            "{files}"
+        );
+        fs::write(h.root().join(path), original).unwrap();
+    }
+    assert!(
+        mismatches.is_empty(),
+        "shared exclusion policy violated: {mismatches:?}"
+    );
+    fs::write(h.root().join(".git/info/exclude"), "").unwrap();
+    fs::write(h.root().join(".acdd/runner.log"), "tracked runtime\n").unwrap();
+    assert!(std::process::Command::new("git")
+        .current_dir(h.root())
+        .args(["add", "-f", ".acdd/runner.log"])
+        .status()
+        .unwrap()
+        .success());
+    h.advance_to("review").unwrap();
+    let prior = h.store.build_snapshot_candidate(&h.id).unwrap().unwrap().0;
+    fs::remove_file(h.root().join(".acdd/runner.log")).unwrap();
+    fs::write(h.root().join(".acdd/new.log"), "untracked runtime\n").unwrap();
+    let claim = h.claim_next().unwrap();
+    let proof = h.evidence_for_gate(&claim).unwrap();
+    let result = h.submit_evidence(&proof).unwrap();
+    assert!(result["candidate_drift_warning"].is_null(), "{result}");
+    assert_eq!(h.persisted_gate_evidence("build")["commit"], prior);
+    fs::create_dir_all(h.root().join(".acdd/frameworks")).unwrap();
+    fs::write(
+        h.root().join(".acdd/frameworks/custom.yaml"),
+        "authority: changed\n",
+    )
+    .unwrap();
+    let claim = h.claim_next().unwrap();
+    let proof = h.evidence_for_gate(&claim).unwrap();
+    let result = h.submit_evidence(&proof).unwrap();
+    assert!(
+        result["candidate_drift_warning"]["changed_paths"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(".acdd/frameworks/custom.yaml")),
+        "{result}"
+    );
+}
+
+#[test]
+fn candidate_binding_recovery_matrix() {
     let source = MilestoneFixtureBuilder::new("m-drift")
         .task("first", &["src/", "tests/"])
         .build();
@@ -237,103 +428,150 @@ fn review_drift_warns_and_requires_rebound_verification_and_review() {
         .unwrap()
         .receipt
         .is_some());
-}
-
-#[test]
-fn candidate_fingerprint_excludes_runtime_churn_and_retains_authority() {
-    let root = Workspace::new();
-    init_git(root.root());
-    // Make runtime churn Git-visible: ignore rules must not supply the policy.
-    root.write(".git/info/exclude", "");
-    let baseline = candidate_fingerprint(root.root()).unwrap();
-    let mut mismatches = Vec::new();
-    for path in [
-        ".acdd/tasks/current.json",
-        ".acdd/checkpoints.json",
-        ".acdd/tasks.sqlite",
-        ".acdd/tasks.sqlite-wal",
-        ".acdd/tasks.sqlite-shm",
-        ".acdd/tasks.sqlite-journal",
-        ".acdd/tasks.sqlite.lock",
-        ".acdd/runner.log",
-        ".acdd/run.jsonl",
-    ] {
-        root.write(path, "runtime observation\n");
-        let actual = candidate_fingerprint(root.root()).unwrap();
-        if actual != baseline {
-            mismatches.push(path);
-        }
-        root.remove(path);
+    struct RootCaller {
+        native: bool,
+        command: bool,
     }
-    for path in [
-        ".acdd/profile.yaml",
-        ".acdd/frameworks/custom.yaml",
-        "src/lib.rs",
+    for caller in [
+        RootCaller {
+            native: false,
+            command: false,
+        },
+        RootCaller {
+            native: true,
+            command: false,
+        },
+        RootCaller {
+            native: false,
+            command: true,
+        },
     ] {
-        let original = root
-            .path(path)
-            .exists()
-            .then(|| fs::read(root.path(path)).unwrap());
-        root.write(path, "changed authority\n");
-        assert_ne!(
-            candidate_fingerprint(root.root()).unwrap(),
-            baseline,
-            "{path}"
-        );
-        match original {
-            Some(bytes) => fs::write(root.path(path), bytes).unwrap(),
-            None => root.remove(path),
+        let mut gates = vec![
+            json!({"id":"prepare","role":"observer","proof":"none","save":{"post":"snapshot"}}),
+        ];
+        if caller.command {
+            gates.push(json!({"id":"check","command":"cycle-check","proof":"command"}));
         }
-    }
-    assert!(
-        mismatches.is_empty(),
-        "runtime paths changed candidate binding: {mismatches:?}"
-    );
-}
-
-#[test]
-fn scoped_candidate_excludes_tracked_and_untracked_runtime_churn() {
-    let source = MilestoneFixtureBuilder::new("m-scoped-runtime")
-        .task("first", &[".acdd/"])
-        .build();
-    let mut h = TaskHarness::disk_with_profile(&source, MANIFEST, runner_profile(DEFAULT_SEAM, ""));
-    fs::write(h.root().join(".git/info/exclude"), "").unwrap();
-    fs::write(h.root().join(".acdd/runner.log"), "tracked runtime\n").unwrap();
-    assert!(std::process::Command::new("git")
-        .current_dir(h.root())
-        .args(["add", "-f", ".acdd/runner.log"])
-        .status()
-        .unwrap()
-        .success());
-    h.advance_to("review").unwrap();
-    let prior = h.store.build_snapshot_candidate(&h.id).unwrap().unwrap().0;
-    fs::remove_file(h.root().join(".acdd/runner.log")).unwrap();
-    fs::write(h.root().join(".acdd/new.log"), "untracked runtime\n").unwrap();
-    let claim = h.claim_next().unwrap();
-    let proof = h.evidence_for_gate(&claim).unwrap();
-    let result = h.submit_evidence(&proof).unwrap();
-    assert!(result["candidate_drift_warning"].is_null(), "{result}");
-    assert_eq!(h.persisted_gate_evidence("build")["commit"], prior);
-    fs::create_dir_all(h.root().join(".acdd/frameworks")).unwrap();
-    fs::write(
-        h.root().join(".acdd/frameworks/custom.yaml"),
-        "authority: changed\n",
-    )
-    .unwrap();
-    let claim = h.claim_next().unwrap();
-    let proof = h.evidence_for_gate(&claim).unwrap();
-    let result = h.submit_evidence(&proof).unwrap();
-    assert!(
-        result["candidate_drift_warning"]["changed_paths"]
+        gates.push(json!({"id":"inspect","role":"observer","proof":"none","independent_from":"prepare","save":{"immutable":true}}));
+        // Each caller starts with its real authority: a snapshot-only phase or
+        // a phase requiring an observed command, never a test-only router.
+        let h = root_harness(gates, Vec::new(), &["src/"]);
+        if caller.command {
+            fs::write(h.root().join(".acdd/cycle-repaired.log"), "ready").unwrap();
+            let original = fs::read(h.root().join("src/lib.rs")).unwrap();
+            let verify = || {
+                tasks::manage(
+                    h.root(),
+                    tasks::Manage {
+                        action: tasks::ManageAction::Verify,
+                        task_id: Some(ROOT_ID.into()),
+                        worktree: Some(h.root().to_string_lossy().into_owned()),
+                        worker_id: Some("verifier".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()["proof"]
+                    .clone()
+            };
+            for round in 0..2 {
+                TaskHarness::claim_at(h.root(), ROOT_ID, "prepare", "builder").unwrap();
+                root_submit(&h, "prepare", "builder", json!({"none_proof":{}})).unwrap();
+                let old = verify();
+                root_submit(&h, "check", "verifier", old.clone()).unwrap();
+                TaskHarness::claim_at(h.root(), ROOT_ID, "inspect", "reviewer").unwrap();
+                fs::write(h.root().join("src/lib.rs"), format!("// drift {round}\n")).unwrap();
+                assert!(
+                    root_submit(&h, "inspect", "reviewer", json!({"none_proof":{}})).unwrap()
+                        ["candidate_drift_warning"]
+                        .is_object()
+                );
+                fs::write(h.root().join("src/lib.rs"), &original).unwrap();
+                TaskHarness::claim_at(h.root(), ROOT_ID, "prepare", "builder").unwrap();
+                root_submit(&h, "prepare", "builder", json!({"none_proof":{}})).unwrap();
+                let error = root_submit(&h, "check", "verifier", old).unwrap_err();
+                assert!(
+                    format!("{error:#}").contains("TASK_PROOF_UNOBSERVED"),
+                    "{error:#}"
+                );
+                let fresh = verify();
+                root_submit(&h, "check", "verifier", fresh).unwrap();
+                TaskHarness::claim_at(h.root(), ROOT_ID, "inspect", "reviewer").unwrap();
+                if round == 1 {
+                    root_submit(&h, "inspect", "reviewer", json!({"none_proof":{}})).unwrap();
+                } else {
+                    fs::write(h.root().join("src/lib.rs"), "// next drift\n").unwrap();
+                    assert!(
+                        root_submit(&h, "inspect", "reviewer", json!({"none_proof":{}})).unwrap()
+                            ["candidate_drift_warning"]
+                            .is_object()
+                    );
+                    fs::write(h.root().join("src/lib.rs"), &original).unwrap();
+                }
+            }
+            continue;
+        }
+        TaskHarness::claim_at(h.root(), ROOT_ID, "prepare", "builder").unwrap();
+        root_submit(&h, "prepare", "builder", json!({"none_proof":{}})).unwrap();
+        let accepted = root_observations(&h, "prepare");
+        let snapshot = accepted[0]["root_snapshot"].clone();
+        if caller.native {
+            let saved = accepted.last().unwrap();
+            let identity=h.store.connection.query_row("SELECT milestone_id FROM gate_transitions WHERE gate_path='prepare' ORDER BY id DESC LIMIT 1",[],|row|row.get::<_,String>(0)).unwrap();
+            h.store.record_gate_transition(&acdd_tasks::store::GateTransition{
+                milestone_id:identity,subject:"milestone".into(),gate_path:"prepare".into(),action:"pass".into(),proof_kind:"orchestrator".into(),
+                proof_payload:json!({"previous_observation":null,"root_snapshot_fingerprint":saved["root_snapshot_fingerprint"],"post_snapshot":snapshot}),git_tree_sha:git_head(h.root()),worker_id:"builder".into()
+            }).unwrap();
+        } else {
+            TaskHarness::claim_at(h.root(), ROOT_ID, "inspect", "reviewer").unwrap();
+        }
+        let reopened = tasks::store_for_task(h.root(), &h.id).unwrap();
+        assert!(reopened.inspect(&h.id).unwrap().receipt.is_none());
+        fs::write(h.root().join("src/lib.rs"), "// root candidate drift\n").unwrap();
+        let response = if caller.native {
+            TaskHarness::claim_at(h.root(), ROOT_ID, "inspect", "reviewer").unwrap()
+        } else {
+            root_submit(&h, "inspect", "reviewer", json!({"none_proof":{}})).unwrap()
+        };
+        let warning = &response["candidate_drift_warning"];
+        assert!(warning.is_object(), "{response}");
+        assert!(warning["changed_paths"]
             .as_array()
             .unwrap()
-            .contains(&json!(".acdd/frameworks/custom.yaml")),
-        "{result}"
-    );
+            .contains(&json!("src/lib.rs")));
+        assert_ne!(warning["prior_binding"], warning["current_binding"]);
+        if !caller.native {
+            assert_eq!(
+                root_observations(&h, "prepare"),
+                accepted,
+                "historical snapshot is immutable"
+            );
+            let passes:u64=h.store.connection.query_row("SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND gate_path='inspect' AND action='pass'",[],|row|row.get(0)).unwrap();
+            assert_eq!(passes, 0);
+            let retry = root_submit(&h, "inspect", "reviewer", json!({"none_proof":{}}));
+            assert!(retry.is_err() || retry.unwrap()["candidate_drift_warning"].is_object());
+        }
+        TaskHarness::claim_at(h.root(), ROOT_ID, "prepare", "builder").unwrap();
+        root_submit(&h, "prepare", "builder", json!({"none_proof":{}})).unwrap();
+        TaskHarness::claim_at(h.root(), ROOT_ID, "inspect", "reviewer").unwrap();
+        root_submit(&h, "inspect", "reviewer", json!({"none_proof":{}})).unwrap();
+        assert!(TaskHarness::claim_at(h.root(), &h.id, "contract", "task-builder").is_ok());
+        assert!(h.root().join(MANIFEST).exists());
+        let resolved = git_command(
+            h.root(),
+            &["rev-parse", snapshot["snapshot_ref"].as_str().unwrap()],
+        )
+        .output()
+        .unwrap();
+        assert!(resolved.status.success());
+        assert_eq!(
+            String::from_utf8(resolved.stdout).unwrap().trim(),
+            snapshot["snapshot_commit"].as_str().unwrap()
+        );
+    }
 }
 
 #[test]
-fn role_command_rejection_preserves_proof_and_retry_session() {
+fn role_command_outcome_matrix() {
     let root = WorkflowHarness::agents().materialize();
     let mut source: Value =
         serde_yaml::from_str(include_str!("../fixtures/workflows/agents.yaml")).unwrap();
@@ -346,8 +584,21 @@ fn role_command_rejection_preserves_proof_and_retry_session() {
         json!({"contour.paths":"Inspect scoped changes and the command observation."});
     let schema = source["gates"][0]["proof"].clone();
     let mut failures = Vec::new();
-    for (proof_kind, definition) in [("scheme_proof", schema), ("review_proof", json!("review"))] {
+    for (proof_kind, definition, command_passes) in [
+        ("scheme_proof", schema.clone(), true),
+        ("review_proof", json!("review"), true),
+        ("scheme_proof", schema, false),
+    ] {
         source["gates"][0]["proof"] = definition;
+        source["commands"]["check"]["command"] = if command_passes {
+            json!("true")
+        } else {
+            json!("printf 'observed failure\\n' >&2; exit 37")
+        };
+        source["gates"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("contours");
         if proof_kind == "review_proof" {
             source["gates"][0]["contours"] = json!("guidance.contours");
         }
@@ -359,8 +610,26 @@ fn role_command_rejection_preserves_proof_and_retry_session() {
         if root.path("review-rejected").exists() {
             root.remove("review-rejected");
         }
+        if !command_passes {
+            root.write("review-rejected", "");
+        }
         let result =
             run_standalone_workflow(root.root(), Path::new("docs/workflows/agents.yaml"), None);
+        if !command_passes {
+            let error = result.unwrap_err();
+            assert!(
+                format!("{error:#}").contains("WORKFLOW_PROOF_UNOBSERVED"),
+                "{error:#}"
+            );
+            assert_eq!(
+                fs::read_to_string(root.path("workflow-role-sessions.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                1
+            );
+            continue;
+        }
         let result = match result {
             Ok(result) => result,
             Err(error) => {
@@ -405,140 +674,73 @@ fn role_command_rejection_preserves_proof_and_retry_session() {
 }
 
 #[test]
-fn role_command_pass_requires_successful_observed_command() {
-    let root = WorkflowHarness::agents().materialize();
-    let mut source: Value =
-        serde_yaml::from_str(include_str!("../fixtures/workflows/agents.yaml")).unwrap();
-    source["commands"] = json!({"check":{"command":"printf 'observed failure\\n' >&2; exit 37","output":{"require_counts":false}}});
-    source["gates"][0]["command"] = json!("check");
-    source["gates"][0]["proof"] = source["gates"][1]["proof"].clone();
-    // The protocol fixture emits a valid pass. Only the real command observation can veto it.
-    root.write("review-rejected", "");
-    root.write(
-        "docs/workflows/agents.yaml",
-        &serde_yaml::to_string(&source).unwrap(),
-    );
-    let error = run_standalone_workflow(root.root(), Path::new("docs/workflows/agents.yaml"), None)
-        .unwrap_err();
-    assert!(
-        format!("{error:#}").contains("WORKFLOW_PROOF_UNOBSERVED"),
-        "{error:#}"
-    );
-    let sessions = fs::read_to_string(root.path("workflow-role-sessions.jsonl")).unwrap();
-    assert_eq!(
-        sessions.lines().count(),
-        1,
-        "a false pass must not reach independent review"
-    );
-}
-
-#[test]
-fn waves_command_failure_findings_reach_repair_and_clear_on_pass() {
-    let h = root_harness(findings_gates(), Vec::new());
-    let result = run_waves(&h);
-    assert!(format!("{:#}", result.unwrap_err()).contains("WORKFLOW_ATTEMPTS_EXHAUSTED"));
-    let checks = root_observations(&h, "check");
-    assert_eq!(checks.len(), 2);
-    assert_eq!(checks[0]["passed"], false);
-    assert!(
-        checks[0]["findings"].is_object(),
-        "failed command findings: {}",
-        checks[0]["findings"]
-    );
-    let diagnostic = checks[0]["findings"].to_string();
-    for expected in ["cycle-check", "37", "cycle failing command diagnostic"] {
-        assert!(diagnostic.contains(expected), "{diagnostic}");
+fn wave_findings_matrix() {
+    for post_task in [false, true] {
+        let mut h = if post_task {
+            root_harness(Vec::new(), findings_gates(), &["src/"])
+        } else {
+            root_harness(findings_gates(), Vec::new(), &["src/"])
+        };
+        if post_task {
+            h.advance_to_completion().unwrap();
+        }
+        let receipt = serde_json::to_value(h.store.inspect(&h.id).unwrap().receipt).unwrap();
+        let result = run_waves(&h);
+        assert!(format!("{:#}", result.unwrap_err()).contains("WORKFLOW_ATTEMPTS_EXHAUSTED"));
+        let checks: Vec<_> = root_observations(&h, "check")
+            .into_iter()
+            .filter(|row| row.get("passed").is_some())
+            .collect();
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[0]["passed"], false);
+        assert!(
+            checks[0]["findings"].is_object(),
+            "failed command findings: {}",
+            checks[0]["findings"]
+        );
+        let diagnostic = checks[0]["findings"].to_string();
+        for expected in ["cycle-check", "37", "cycle failing command diagnostic"] {
+            assert!(diagnostic.contains(expected), "{diagnostic}");
+        }
+        assert_eq!(checks[1]["passed"], true);
+        assert!(checks[1]["findings"].is_null());
+        let stale = root_observations(&h, "stale")
+            .into_iter()
+            .find(|row| row["passed"] == false)
+            .unwrap();
+        assert!(
+            stale["findings"].is_object(),
+            "direct recovery must start with failure findings"
+        );
+        let recovered = root_observations(&h, "recover")
+            .into_iter()
+            .find(|row| row["passed"] == true)
+            .unwrap();
+        assert!(
+            recovered["findings"].is_null(),
+            "passing command clears preceding command findings"
+        );
+        let roles: Vec<Value> = fs::read_to_string(h.root().join(".acdd/wave-roles.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(roles[0]["gate"], "repair");
+        assert_eq!(
+            roles[0]["findings"], checks[0]["findings"],
+            "RoleObservations must carry current command findings"
+        );
+        assert_eq!(roles[1]["gate"], "inspect");
+        assert!(
+            roles[1]["findings"].is_null(),
+            "passing command must clear repair findings"
+        );
+        assert_eq!(
+            serde_json::to_value(h.store.inspect(&h.id).unwrap().receipt).unwrap(),
+            receipt
+        );
+        assert!(h.root().join(MANIFEST).exists());
     }
-    assert_eq!(checks[1]["passed"], true);
-    assert!(checks[1]["findings"].is_null());
-    let stale = root_observations(&h, "stale")
-        .into_iter()
-        .find(|row| row["passed"] == false)
-        .unwrap();
-    assert!(
-        stale["findings"].is_object(),
-        "direct recovery must start with failure findings"
-    );
-    let recovered = root_observations(&h, "recover")
-        .into_iter()
-        .find(|row| row["passed"] == true)
-        .unwrap();
-    assert!(
-        recovered["findings"].is_null(),
-        "passing command clears preceding command findings"
-    );
-    let roles: Vec<Value> = fs::read_to_string(h.root().join(".acdd/wave-roles.jsonl"))
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert_eq!(roles[0]["gate"], "repair");
-    assert_eq!(
-        roles[0]["findings"], checks[0]["findings"],
-        "RoleObservations must carry current command findings"
-    );
-    assert_eq!(roles[1]["gate"], "inspect");
-    assert!(
-        roles[1]["findings"].is_null(),
-        "passing command must clear repair findings"
-    );
-}
-
-#[test]
-fn waves_verification_failure_findings_reach_repair_and_clear_on_pass() {
-    let mut h = root_harness(Vec::new(), findings_gates());
-    h.advance_to_completion().unwrap();
-    let task_receipt = serde_json::to_value(h.store.inspect(&h.id).unwrap().receipt).unwrap();
-    let result = run_waves(&h);
-    assert!(format!("{:#}", result.unwrap_err()).contains("WORKFLOW_ATTEMPTS_EXHAUSTED"));
-    let checks: Vec<_> = root_observations(&h, "check")
-        .into_iter()
-        .filter(|row| row.get("passed").is_some())
-        .collect();
-    assert_eq!(checks.len(), 2);
-    assert_eq!(checks[0]["passed"], false);
-    assert!(
-        checks[0]["findings"].is_object(),
-        "failed verification findings: {}",
-        checks[0]["findings"]
-    );
-    let diagnostic = checks[0]["findings"].to_string();
-    for expected in ["cycle-check", "37", "cycle failing command diagnostic"] {
-        assert!(diagnostic.contains(expected), "{diagnostic}");
-    }
-    assert_eq!(checks[1]["passed"], true);
-    assert!(checks[1]["findings"].is_null());
-    let stale = root_observations(&h, "stale")
-        .into_iter()
-        .find(|row| row["passed"] == false)
-        .unwrap();
-    assert!(
-        stale["findings"].is_object(),
-        "direct recovery must start with failure findings"
-    );
-    let recovered = root_observations(&h, "recover")
-        .into_iter()
-        .find(|row| row["passed"] == true)
-        .unwrap();
-    assert!(
-        recovered["findings"].is_null(),
-        "passing verification clears preceding command findings"
-    );
-    let roles: Vec<Value> = fs::read_to_string(h.root().join(".acdd/wave-roles.jsonl"))
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert_eq!(roles[0]["findings"], checks[0]["findings"]);
-    assert!(roles[1]["findings"].is_null());
-    assert_eq!(
-        serde_json::to_value(h.store.inspect(&h.id).unwrap().receipt).unwrap(),
-        task_receipt
-    );
-    assert!(
-        h.root().join(MANIFEST).exists(),
-        "failed verification cannot issue handoff receipt"
-    );
 }
 
 #[test]
@@ -546,6 +748,7 @@ fn root_verification_returns_failed_observation_without_passing_proof() {
     let h = root_harness(
         vec![json!({"id":"check","command":"cycle-check","proof":"command"})],
         Vec::new(),
+        &["src/"],
     );
     let result = tasks::manage(
         h.root(),
@@ -614,280 +817,6 @@ fn explicit_candidate_receipt_corruption_still_fails_closed() {
 }
 
 #[test]
-fn root_snapshots_and_fingerprints_share_runtime_and_authority_paths() {
-    let runtime_paths = [
-        ".acdd/tasks/current.json",
-        ".acdd/checkpoints.json",
-        ".acdd/checkpoints.json.lock",
-        ".acdd/runtime.sqlite",
-        ".acdd/runtime.sqlite-wal",
-        ".acdd/runtime.sqlite-shm",
-        ".acdd/runtime.sqlite-journal",
-        ".acdd/runtime.sqlite.lock",
-        ".acdd/runtime.sqlite.verified.json",
-        ".acdd/runner.log",
-        ".acdd/run.jsonl",
-    ];
-    let authority_paths = [
-        ".acdd/profile.yaml",
-        ".acdd/frameworks/custom.yaml",
-        "src/lib.rs",
-    ];
-    let gates = (0..=runtime_paths.len() + authority_paths.len()).map(|index| json!({
-        "id":format!("snapshot_{index}"), "role":"observer", "proof":"none", "save":{"post":"snapshot"}
-    })).collect();
-    let h = root_harness(gates, Vec::new());
-    // Force tracked runtime paths so ignore rules cannot accidentally prove exclusion parity.
-    for path in runtime_paths.iter().chain([&authority_paths[1]]) {
-        fs::create_dir_all(h.root().join(path).parent().unwrap()).unwrap();
-        fs::write(h.root().join(path), "baseline\n").unwrap();
-        assert!(git_command(h.root(), &["add", "-f", path])
-            .status()
-            .unwrap()
-            .success());
-    }
-    TaskHarness::claim_at(h.root(), ROOT_ID, "snapshot_0", "snapshotter").unwrap();
-    root_submit(&h, "snapshot_0", "snapshotter", json!({"none_proof":{}})).unwrap();
-    let baseline_commit = root_observations(&h, "snapshot_0")[0]["root_snapshot"]
-        ["snapshot_commit"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let baseline_tree = acdd_tasks::git::git_stdout(
-        h.root(),
-        &["rev-parse", &format!("{baseline_commit}^{{tree}}")],
-        "SNAPSHOT_TEST",
-    )
-    .unwrap();
-    let baseline = candidate_fingerprint(h.root()).unwrap();
-    let mut mismatches = Vec::new();
-    for (index, path) in runtime_paths
-        .iter()
-        .chain(authority_paths.iter())
-        .enumerate()
-    {
-        let original = fs::read(h.root().join(path)).unwrap();
-        let mut changed = original.clone();
-        changed.extend_from_slice(b"\n# changed input\n");
-        fs::write(h.root().join(path), changed).unwrap();
-        let stage = format!("snapshot_{}", index + 1);
-        TaskHarness::claim_at(h.root(), ROOT_ID, &stage, "snapshotter").unwrap();
-        let fingerprint = candidate_fingerprint(h.root()).unwrap();
-        root_submit(&h, &stage, "snapshotter", json!({"none_proof":{}})).unwrap();
-        let snapshot = root_observations(&h, &stage)[0]["root_snapshot"].clone();
-        let commit = snapshot["snapshot_commit"].as_str().unwrap();
-        let tree = acdd_tasks::git::git_stdout(
-            h.root(),
-            &["rev-parse", &format!("{commit}^{{tree}}")],
-            "SNAPSHOT_TEST",
-        )
-        .unwrap();
-        let runtime = runtime_paths.contains(path);
-        if (fingerprint == baseline) != runtime || (tree == baseline_tree) != runtime {
-            mismatches.push(format!(
-                "{path}: fingerprint_unchanged={}, snapshot_unchanged={}",
-                fingerprint == baseline,
-                tree == baseline_tree
-            ));
-        }
-        let files = acdd_tasks::git::git_stdout(
-            h.root(),
-            &["ls-tree", "-r", "--name-only", commit],
-            "SNAPSHOT_TEST",
-        )
-        .unwrap();
-        assert!(
-            runtime_paths
-                .iter()
-                .all(|path| !files.lines().any(|file| file == *path)),
-            "{files}"
-        );
-        assert!(
-            authority_paths
-                .iter()
-                .all(|path| files.lines().any(|file| file == *path)),
-            "{files}"
-        );
-        fs::write(h.root().join(path), original).unwrap();
-    }
-    assert!(
-        mismatches.is_empty(),
-        "shared exclusion policy violated: {mismatches:?}"
-    );
-}
-
-#[test]
-fn root_immutable_drift_warns_and_withholds_acceptance_across_resume() {
-    let h = root_harness(
-        vec![
-            json!({"id":"prepare","role":"observer","proof":"none","save":{"post":"snapshot"}}),
-            json!({"id":"inspect","role":"observer","proof":"none","independent_from":"prepare","save":{"immutable":true}}),
-        ],
-        Vec::new(),
-    );
-    TaskHarness::claim_at(h.root(), ROOT_ID, "prepare", "builder").unwrap();
-    root_submit(&h, "prepare", "builder", json!({"none_proof":{}})).unwrap();
-    let accepted = root_observations(&h, "prepare");
-    TaskHarness::claim_at(h.root(), ROOT_ID, "inspect", "reviewer").unwrap();
-    fs::write(
-        h.root().join("src/lib.rs"),
-        "pub fn example() { let _ = 2; }\n",
-    )
-    .unwrap();
-    let result = root_submit(&h, "inspect", "reviewer", json!({"none_proof":{}}));
-    assert!(
-        result.is_ok(),
-        "ordinary immutable drift must return a warning: {result:#?}"
-    );
-    let response = result.unwrap();
-    let warning = &response["candidate_drift_warning"];
-    assert!(warning.is_object(), "{response}");
-    assert!(warning["changed_paths"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("src/lib.rs")));
-    assert_ne!(warning["prior_binding"], warning["current_binding"]);
-    assert_eq!(
-        root_observations(&h, "prepare"),
-        accepted,
-        "historical snapshot is immutable"
-    );
-    let accepted_reviews: u64 = h.store.connection.query_row(
-        "SELECT count(*) FROM gate_transitions WHERE subject='milestone' AND gate_path='inspect' AND action='pass'", [], |row| row.get(0)
-    ).unwrap();
-    assert_eq!(
-        accepted_reviews, 0,
-        "drift cannot accept the stale root review"
-    );
-    let resumed = tasks::store_for_task(h.root(), &h.id).unwrap();
-    assert!(resumed.inspect(&h.id).unwrap().receipt.is_none());
-    let retry = root_submit(&h, "inspect", "reviewer", json!({"none_proof":{}}));
-    assert!(
-        retry.is_err() || retry.unwrap()["candidate_drift_warning"].is_object(),
-        "resume cannot erase pending rebinding"
-    );
-    TaskHarness::claim_at(h.root(), ROOT_ID, "prepare", "builder").unwrap();
-    root_submit(&h, "prepare", "builder", json!({"none_proof":{}})).unwrap();
-    TaskHarness::claim_at(h.root(), ROOT_ID, "inspect", "reviewer").unwrap();
-    root_submit(&h, "inspect", "reviewer", json!({"none_proof":{}})).unwrap();
-    assert!(
-        TaskHarness::claim_at(h.root(), &h.id, "contract", "task-builder").is_ok(),
-        "a phase without a command must finish recovery"
-    );
-    assert!(h.root().join(MANIFEST).exists());
-}
-
-#[test]
-fn root_recovery_requires_command_execution_after_each_drift() {
-    let h = root_harness(
-        vec![
-            json!({"id":"prepare","role":"observer","proof":"none","save":{"post":"snapshot"}}),
-            json!({"id":"check","command":"cycle-check","proof":"command"}),
-            json!({"id":"inspect","role":"observer","proof":"none","independent_from":"prepare","save":{"immutable":true}}),
-        ],
-        Vec::new(),
-    );
-    fs::write(h.root().join(".acdd/cycle-repaired.log"), "ready").unwrap();
-    let original = fs::read(h.root().join("src/lib.rs")).unwrap();
-    let verify = || {
-        tasks::manage(
-            h.root(),
-            tasks::Manage {
-                action: tasks::ManageAction::Verify,
-                task_id: Some(ROOT_ID.into()),
-                worktree: Some(h.root().to_string_lossy().into_owned()),
-                worker_id: Some("verifier".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap()["proof"]
-            .clone()
-    };
-    for round in 0..2 {
-        TaskHarness::claim_at(h.root(), ROOT_ID, "prepare", "builder").unwrap();
-        root_submit(&h, "prepare", "builder", json!({"none_proof":{}})).unwrap();
-        let old = verify();
-        root_submit(&h, "check", "verifier", old.clone()).unwrap();
-        TaskHarness::claim_at(h.root(), ROOT_ID, "inspect", "reviewer").unwrap();
-        fs::write(h.root().join("src/lib.rs"), format!("// drift {round}\n")).unwrap();
-        assert!(
-            root_submit(&h, "inspect", "reviewer", json!({"none_proof":{}})).unwrap()
-                ["candidate_drift_warning"]
-                .is_object()
-        );
-        fs::write(h.root().join("src/lib.rs"), &original).unwrap();
-        TaskHarness::claim_at(h.root(), ROOT_ID, "prepare", "builder").unwrap();
-        root_submit(&h, "prepare", "builder", json!({"none_proof":{}})).unwrap();
-        let error = root_submit(&h, "check", "verifier", old).unwrap_err();
-        assert!(
-            format!("{error:#}").contains("TASK_PROOF_UNOBSERVED"),
-            "{error:#}"
-        );
-        let fresh = verify();
-        root_submit(&h, "check", "verifier", fresh).unwrap();
-        TaskHarness::claim_at(h.root(), ROOT_ID, "inspect", "reviewer").unwrap();
-        if round == 1 {
-            root_submit(&h, "inspect", "reviewer", json!({"none_proof":{}})).unwrap();
-        } else {
-            fs::write(h.root().join("src/lib.rs"), "// next drift\n").unwrap();
-            assert!(
-                root_submit(&h, "inspect", "reviewer", json!({"none_proof":{}})).unwrap()
-                    ["candidate_drift_warning"]
-                    .is_object()
-            );
-            fs::write(h.root().join("src/lib.rs"), &original).unwrap();
-        }
-    }
-}
-
-#[test]
-fn manual_root_claim_reads_native_post_snapshot() {
-    let h = root_harness(
-        vec![
-            json!({"id":"prepare","role":"observer","proof":"none","save":{"post":"snapshot"}}),
-            json!({"id":"inspect","role":"observer","proof":"none","independent_from":"prepare","save":{"immutable":true}}),
-        ],
-        Vec::new(),
-    );
-    TaskHarness::claim_at(h.root(), ROOT_ID, "prepare", "builder").unwrap();
-    root_submit(&h, "prepare", "builder", json!({"none_proof":{}})).unwrap();
-    let saved = root_observations(&h, "prepare").pop().unwrap();
-    let snapshot = saved["root_snapshot"].clone();
-    let identity = h.store.connection.query_row("SELECT milestone_id FROM gate_transitions WHERE gate_path='prepare' ORDER BY id DESC LIMIT 1", [], |row| row.get::<_,String>(0)).unwrap();
-    h.store.record_gate_transition(&acdd_tasks::store::GateTransition {
-        milestone_id:identity, subject:"milestone".into(),gate_path:"prepare".into(),action:"pass".into(),proof_kind:"orchestrator".into(),
-        proof_payload:json!({"previous_observation":null,"root_snapshot_fingerprint":saved["root_snapshot_fingerprint"],"post_snapshot":snapshot.clone()}),git_tree_sha:git_head(h.root()),worker_id:"builder".into(),
-    }).unwrap();
-    let reopened = tasks::store_for_task(h.root(), &h.id).unwrap();
-    assert!(reopened.inspect(&h.id).unwrap().receipt.is_none());
-    fs::write(h.root().join("src/lib.rs"), "// native drift\n").unwrap();
-    let result = TaskHarness::claim_at(h.root(), ROOT_ID, "inspect", "reviewer").unwrap();
-    assert!(
-        result["candidate_drift_warning"]["changed_paths"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("src/lib.rs")),
-        "{result}"
-    );
-    assert!(h.root().join(MANIFEST).exists());
-    TaskHarness::claim_at(h.root(), ROOT_ID, "prepare", "builder").unwrap();
-    root_submit(&h, "prepare", "builder", json!({"none_proof":{}})).unwrap();
-    TaskHarness::claim_at(h.root(), ROOT_ID, "inspect", "reviewer").unwrap();
-    root_submit(&h, "inspect", "reviewer", json!({"none_proof":{}})).unwrap();
-    let saved_ref = snapshot["snapshot_ref"].as_str().unwrap();
-    let resolved = std::process::Command::new("git")
-        .current_dir(h.root())
-        .args(["rev-parse", saved_ref])
-        .output()
-        .unwrap();
-    assert!(resolved.status.success());
-    assert_eq!(
-        String::from_utf8(resolved.stdout).unwrap().trim(),
-        snapshot["snapshot_commit"].as_str().unwrap()
-    );
-}
-
-#[test]
 fn waves_immutable_drift_records_warning_and_blocks_handoff() {
     let h = root_harness(
         Vec::new(),
@@ -897,6 +826,7 @@ fn waves_immutable_drift_records_warning_and_blocks_handoff() {
             json!({"id":"milestone_review","role":"observer","proof":"none","independent_from":"prepare"}),
             json!({"id":"mutating_review","role":"mutating_review","proof":"none","independent_from":"milestone_review","save":{"immutable":true},"max_attempts":2}),
         ],
+        &["src/"],
     );
     let mut h = h;
     h.advance_to_completion().unwrap();

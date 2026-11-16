@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn force_deletion_preserves_project_boundaries_and_revision_fencing() {
     let mut h = TaskHarness::memory();
-    let milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(SPEC, "acdd").unwrap();
     let root = h.root().to_owned();
     let id = h.id.clone();
     let store = &mut h.store;

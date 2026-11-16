@@ -650,8 +650,8 @@ impl Server {
             "code_map_search",
             |adapter, policy| {
                 self.read_with_adapter(adapter, |c| {
-                    let default_detail = (p.page.limit.unwrap_or(policy.page_size) > 10)
-                        .then_some(Detail::Compact);
+                    let default_detail =
+                        (p.page.limit.unwrap_or(policy.page_size) > 10).then_some(Detail::Compact);
                     let page = p.page.resolve_with_default_detail(policy, default_detail)?;
                     let res = symbols::search_with_options(
                         c,
@@ -932,7 +932,7 @@ impl Server {
         )
     }
     #[tool(
-        description = "Tree-sitter structural search over admitted source. Language profiles declare complete_syntax, declaration_without_body, fragment_probe, and attribute capabilities. $NAME captures one syntax node; $$$SEQ captures a syntax-node sequence. language must be a compiled profile id (e.g. 'python', 'rust', 'typescript') or omitted if path has a recognized file extension. Call forge_guide with topic=ast for the profile capability matrix and examples."
+        description = "Tree-sitter structural search over admitted source. Language profiles declare complete_syntax, declaration_without_body, fragment_probe, and attribute capabilities. $NAME captures one syntax node; $$$SEQ captures a syntax-node sequence. language must be a compiled profile id (e.g. 'python', 'rust', 'typescript') or omitted if path has a recognized file extension. Call acdd_guide with topic=ast for the profile capability matrix and examples."
     )]
     fn ast_grep_search(&self, Parameters(p): Parameters<Ast>) -> CallToolResult {
         let format = p.page.output_format();
@@ -962,7 +962,7 @@ impl Server {
                                     &compiled
                                 };
                                 anyhow::bail!(
-                                    "Cannot infer AST language. Specify 'language' or provide a file 'path' with a recognized extension.\nCompiled languages: {compiled}.\nExamples: language='python' with pattern='class Widget', or path='src/example.py' with pattern='class Widget'.\nCall forge_guide(topic='ast') for profile capabilities and examples."
+                                    "Cannot infer AST language. Specify 'language' or provide a file 'path' with a recognized extension.\nCompiled languages: {compiled}.\nExamples: language='python' with pattern='class Widget', or path='src/example.py' with pattern='class Widget'.\nCall acdd_guide(topic='ast') for profile capabilities and examples."
                                 );
                             }
                         }
@@ -1036,7 +1036,7 @@ impl Server {
         )
     }
     #[tool(description = "Built-in guide. The default topic is query.")]
-    fn forge_guide(&self, Parameters(p): Parameters<Guide>) -> CallToolResult {
+    fn acdd_guide(&self, Parameters(p): Parameters<Guide>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
         let topic = p.topic.as_deref().unwrap_or("query");
         let topic = if topic.trim().is_empty() {
@@ -1050,11 +1050,11 @@ impl Server {
                 &ResponsePolicy::default(),
                 format,
                 OperationKind::Guide,
-                "forge_guide",
+                "acdd_guide",
                 None,
             );
         }
-        self.responding(format, OperationKind::Guide, "forge_guide", |adapter, _| {
+        self.responding(format, OperationKind::Guide, "acdd_guide", |adapter, _| {
             cli::guide::run_with_adapter(&self.root, topic, p.force, adapter)
         })
     }
@@ -1116,7 +1116,7 @@ fn operation_kind(name: &str, arguments: Option<&serde_json::Map<String, Value>>
         "task_list" | "task_claim" | "task_submit" | "task_manage" | "task_blackboard" => {
             OperationKind::Task
         }
-        "forge_guide" => OperationKind::Guide,
+        "acdd_guide" => OperationKind::Guide,
         "session_checkpoint" => OperationKind::Checkpoint,
         "code_map_query"
             if arguments.is_some_and(|arguments| {
@@ -1159,7 +1159,7 @@ fn looks_like_sql(value: &str) -> bool {
 #[tool_handler(
     name = "contextunity-acdd",
     version = "0.3.0",
-    instructions = "Workspace code graph and task coordination, 20 tools. Responses have a 96 KiB maximum; lower configured byte limits remain authoritative. SQLite budget is 2 seconds. Start with code_map_overview and check coverage before an absence claim. Continue a page with offset and generation. Prefer detail=compact. Selector rules and gate proofs: forge_guide topic=query or acdd."
+    instructions = "Workspace code graph and task coordination, 20 tools. Responses have a 96 KiB maximum; lower configured byte limits remain authoritative. SQLite budget is 2 seconds. Start with code_map_overview and check coverage before an absence claim. Continue a page with offset and generation. Prefer detail=compact. Selector rules and gate proofs: acdd_guide topic=query or acdd."
 )]
 impl ServerHandler for Server {
     async fn list_tools(

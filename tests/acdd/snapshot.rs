@@ -41,6 +41,133 @@ struct RunnerArtifact {
 
 static PRECOMPILED_RUNNER: OnceLock<Mutex<Option<(RunnerCompileKey, RunnerArtifact)>>> =
     OnceLock::new();
+static PRECOMPILED_ROLE_HELPER: OnceLock<Mutex<Option<(RunnerCompileKey, PathBuf)>>> =
+    OnceLock::new();
+type RustcVersionCache = Option<(Vec<(OsString, OsString)>, Vec<u8>)>;
+static RUSTC_VERSION: OnceLock<Mutex<RustcVersionCache>> = OnceLock::new();
+
+fn rustc_version(root: &Path, environment: &[(OsString, OsString)]) -> Vec<u8> {
+    let mut cache = RUSTC_VERSION
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, version)) = cache.as_ref().filter(|(cached, _)| cached == environment) {
+        return version.clone();
+    }
+    let output = runner_rustc_command(root, environment)
+        .args(["--version", "--verbose"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "identify fixture compiler: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    *cache = Some((environment.to_vec(), output.stdout.clone()));
+    output.stdout
+}
+
+fn hash_compile_key(key: &RunnerCompileKey) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.source.hash(&mut hasher);
+    key.compiler.hash(&mut hasher);
+    key.environment.hash(&mut hasher);
+    key.args.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub(crate) fn role_helper_path() -> PathBuf {
+    const ARGS: [&str; 4] = ["--edition=2021", "role_helper.rs", "-o", "role_fixture"];
+    let source = include_bytes!("fixtures/role_helper.rs").to_vec();
+    let mut environment: Vec<_> = std::env::vars_os().collect();
+    environment.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    let scratch_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let key = RunnerCompileKey {
+        source: source.clone(),
+        compiler: rustc_version(scratch_root, &environment),
+        environment: environment.clone(),
+        args: ARGS,
+    };
+    let mut cache = PRECOMPILED_ROLE_HELPER
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, path)) = cache.as_ref().filter(|(cached, path)| cached == &key && path.exists())
+    {
+        return path.clone();
+    }
+    let cache_dir = option_env!("CARGO_TARGET_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_exe().unwrap().parent().unwrap().to_path_buf());
+    fs::create_dir_all(&cache_dir).unwrap();
+    let cached = cache_dir.join(format!("acdd-role-fixture-{:016x}", hash_compile_key(&key)));
+    if !cached.exists() {
+        struct TempGuard(PathBuf);
+        impl Drop for TempGuard {
+            fn drop(&mut self) {
+                let _ = fs::remove_file(&self.0);
+            }
+        }
+        let scratch = Workspace::new();
+        fs::write(scratch.path("role_helper.rs"), &source).unwrap();
+        let temp = TempGuard(cache_dir.join(format!(
+            "acdd-role-fixture-{:016x}.{}.tmp",
+            hash_compile_key(&key),
+            std::process::id()
+        )));
+        let result = runner_rustc_command(scratch.root(), &environment)
+            .args(["--edition=2021", "role_helper.rs", "-o"])
+            .arg(&temp.0)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "compile role helper: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let bytes = fs::read(&temp.0).unwrap();
+        assert!(!contains_bytes(
+            &bytes,
+            scratch.root().to_string_lossy().as_bytes()
+        ));
+        if let Err(err) = fs::rename(&temp.0, &cached) {
+            if !cached.exists() {
+                panic!("publish role helper {}: {err}", cached.display());
+            }
+        }
+    }
+    *cache = Some((key, cached.clone()));
+    cached
+}
+
+pub(crate) fn stage_role_helper(root: &Path) {
+    stage_role_helper_at(&root.join(".acdd/role_fixture"));
+}
+
+pub(crate) fn stage_role_helper_at(path: &Path) {
+    let cached = role_helper_path();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => panic!("remove stale role helper {}: {err}", path.display()),
+    }
+    if fs::hard_link(&cached, path).is_err() {
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&cached, path).is_ok();
+        #[cfg(not(unix))]
+        let linked = false;
+        if !linked {
+            let temp = path.with_extension(format!("{}.tmp", std::process::id()));
+            fs::copy(&cached, &temp).unwrap();
+            if let Err(err) = fs::rename(&temp, path) {
+                let _ = fs::remove_file(&temp);
+                panic!("publish staged role helper {}: {err}", path.display());
+            }
+        }
+    }
+}
 
 struct FixtureFile {
     path: PathBuf,
@@ -56,7 +183,7 @@ pub(crate) struct FixtureSnapshot {
     baseline_commit: String,
     original_branch: String,
     branches: BTreeSet<String>,
-    forge_refs: BTreeMap<String, String>,
+    acdd_refs: BTreeMap<String, String>,
     sqlite_bytes: Vec<u8>,
     fixture_files: Vec<FixtureFile>,
     preserve_runner: bool,
@@ -73,7 +200,7 @@ impl FixtureSnapshot {
             !original_branch.is_empty(),
             "fixture must start on a branch"
         );
-        let (branches, forge_refs) = repository_refs(&path);
+        let (branches, acdd_refs) = repository_refs(&path);
         validate_database_files(&path, true);
         let connection = rusqlite::Connection::open(path.join(".acdd/tasks.sqlite")).unwrap();
         let (busy, _log, _checkpointed): (i64, i64, i64) = connection
@@ -149,7 +276,7 @@ impl FixtureSnapshot {
             baseline_commit,
             original_branch,
             branches,
-            forge_refs,
+            acdd_refs,
             sqlite_bytes,
             fixture_files,
             preserve_runner,
@@ -217,11 +344,11 @@ impl FixtureSnapshot {
         let mut updates = String::new();
         for name in current
             .keys()
-            .filter(|name| !self.forge_refs.contains_key(*name))
+            .filter(|name| !self.acdd_refs.contains_key(*name))
         {
             updates.push_str(&format!("delete {name}\n"));
         }
-        for (name, object) in &self.forge_refs {
+        for (name, object) in &self.acdd_refs {
             if current.get(name) != Some(object) {
                 updates.push_str(&format!("update {name} {object}\n"));
             }
@@ -371,8 +498,8 @@ fn repository_refs(root: &Path) -> (BTreeSet<String>, BTreeMap<String, String>) 
             "for-each-ref",
             "--format=%(refname) %(objectname)",
             "refs/heads/",
-            "refs/forge/",
-            "refs/notes/forge",
+            "refs/acdd/",
+            "refs/notes/acdd",
         ],
     );
     let mut branches = BTreeSet::new();
@@ -381,7 +508,7 @@ fn repository_refs(root: &Path) -> (BTreeSet<String>, BTreeMap<String, String>) 
         let (name, object) = line.split_once(' ').expect("malformed Git ref output");
         if let Some(branch) = name.strip_prefix("refs/heads/") {
             branches.insert(branch.to_owned());
-        } else if name.starts_with("refs/forge/") || name == "refs/notes/forge" {
+        } else if name.starts_with("refs/acdd/") || name == "refs/notes/acdd" {
             proof_refs.insert(name.to_owned(), object.to_owned());
         }
     }
@@ -433,18 +560,9 @@ pub(crate) fn precompile_runner(root: &Workspace) {
     let source = fs::read(path.join("tests/runner_fixture.rs")).unwrap();
     let mut environment: Vec<_> = std::env::vars_os().collect();
     environment.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-    let compiler = runner_rustc_command(&path, &environment)
-        .args(["--version", "--verbose"])
-        .output()
-        .unwrap();
-    assert!(
-        compiler.status.success(),
-        "identify fixture runner compiler: {}",
-        String::from_utf8_lossy(&compiler.stderr)
-    );
     let key = RunnerCompileKey {
         source: source.clone(),
-        compiler: compiler.stdout,
+        compiler: rustc_version(&path, &environment),
         environment: environment.clone(),
         args: RUNNER_COMPILE_ARGS,
     };

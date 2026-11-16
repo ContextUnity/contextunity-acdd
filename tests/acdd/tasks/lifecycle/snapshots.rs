@@ -75,7 +75,7 @@ gates:
     )
     .unwrap();
 
-    let task_id = "forge-mcp/m-candidate:candidate";
+    let task_id = "acdd/m-candidate:candidate";
     let mut harness = TaskHarness::attach(&root, task_id);
     harness.advance_to("deliver").unwrap();
     harness.claim_next().unwrap();
@@ -100,7 +100,7 @@ gates:
 #[test]
 fn on_demand_checkpoint_cannot_override_immutable_candidate_or_claim_checkpoint() {
     let (root, store, _milestone) = fixture(DEFAULT_SEAM);
-    let task_id = "forge-mcp/m-test:first";
+    let task_id = "acdd/m-test:first";
     drop(store);
 
     let mut harness = TaskHarness::attach(&root, task_id);
@@ -127,7 +127,7 @@ fn on_demand_checkpoint_cannot_override_immutable_candidate_or_claim_checkpoint(
     );
 
     // Supplying an on-demand checkpoint under another breadcrumb with the same milestone & subject
-    let fake_breadcrumb = "forge-mcp/forge-mcp/m-test/tasks.other/first/custom";
+    let fake_breadcrumb = "acdd/acdd/m-test/tasks.other/first/custom";
     store
         .save_checkpoint_payload(
             fake_breadcrumb,
@@ -198,9 +198,9 @@ gates:
     )
     .unwrap();
 
-    let task_id = "forge-mcp/m-atomic:guarded";
+    let task_id = "acdd/m-atomic:guarded";
     let db_path = root.root().join(".acdd/tasks.sqlite");
-    let breadcrumb = "forge-mcp/forge-mcp/m-atomic/tasks/guarded/sample".to_owned();
+    let breadcrumb = "acdd/acdd/m-atomic/tasks/guarded/sample".to_owned();
 
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();

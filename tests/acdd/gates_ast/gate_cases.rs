@@ -590,8 +590,8 @@ gates:
         profile,
         "docs/milestones/010-reviews.md",
         manifest,
-        "forge-mcp/m-reviews:first",
-        "task_repository: forge-mcp\ntask_project: forge-mcp\nroots: [src/]\nmilestones: [docs/milestones]\n",
+        "acdd/m-reviews:first",
+        "task_repository: acdd\ntask_project: acdd\nroots: [src/]\nmilestones: [docs/milestones]\n",
         &[("src/lib.rs", "pub fn value() -> u8 { 0 }\n")],
     );
     harness.advance_to("seam.integrate").unwrap();

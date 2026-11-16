@@ -289,7 +289,7 @@ fn repacked_task_commits_sync_and_handoff_cleanly() {
     let archived_path = root.root().join("docs/milestones/archive/010-repack.md");
     assert!(archived_path.exists());
     let archived_doc = root.document("docs/milestones/archive/010-repack.md");
-    let archived_milestone = Milestone::parse(&archived_doc, "forge-mcp").unwrap();
+    let archived_milestone = Milestone::parse(&archived_doc, "acdd").unwrap();
     assert!(
         archived_milestone.tasks[0]
             .receipt
@@ -357,7 +357,7 @@ fn handoff_resolves_repacked_commit_directly_from_markdown_without_prior_sync() 
     let archived_path = root.root().join("docs/milestones/archive/010-direct.md");
     assert!(archived_path.exists());
     let archived_doc = root.document("docs/milestones/archive/010-direct.md");
-    let archived_milestone = Milestone::parse(&archived_doc, "forge-mcp").unwrap();
+    let archived_milestone = Milestone::parse(&archived_doc, "acdd").unwrap();
     assert_eq!(
         archived_milestone.tasks[0]
             .receipt
@@ -411,7 +411,7 @@ fn record_task_commits_false_archives_commitless_markdown_receipt_and_syncs_clea
         .join("docs/milestones/archive/010-commitless.md");
     assert!(archived_path.exists());
     let archived_doc = root.document("docs/milestones/archive/010-commitless.md");
-    let archived_milestone = Milestone::parse(&archived_doc, "forge-mcp").unwrap();
+    let archived_milestone = Milestone::parse(&archived_doc, "acdd").unwrap();
     assert!(
         archived_milestone.tasks[0]
             .receipt
@@ -495,7 +495,7 @@ fn handoff_accepts_content_equivalent_history_rewrite() {
     let store2 = root.store();
     assert!(store2.list(None, "all", None).unwrap().is_empty());
     let archive = root.document("docs/milestones/archive/010-squash.md");
-    let archived = Milestone::parse(&archive, "forge-mcp").unwrap();
+    let archived = Milestone::parse(&archive, "acdd").unwrap();
     assert_eq!(
         archived.tasks[0]
             .receipt

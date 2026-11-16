@@ -799,13 +799,13 @@ pub(super) fn write_node_search_text(search: &mut String, node: &Node, facts: &T
                 search.push_str(name);
                 search.push(':');
                 search.push_str(ty);
-                write_type_tokens(search, "forgetakes", ty);
+                write_type_tokens(search, "acddtakes", ty);
             }
         }
         if let Some(ty) = declared_return_type(node, facts) {
             search.push_str(" returns:");
             search.push_str(&ty);
-            write_type_tokens(search, "forgereturns", &ty);
+            write_type_tokens(search, "acddreturns", &ty);
         }
     }
     if let Some(decorators) = node.details.get("decorators").and_then(Value::as_array) {

@@ -900,7 +900,7 @@ impl DependencyRegistry {
     pub fn standard_manifests_digest_static() -> &'static str {
         STANDARD_FRAMEWORK_MANIFESTS_DIGEST.get_or_init(|| {
             let mut hasher = Sha256::new();
-            hasher.update(b"forge-standard-framework-manifests-v1\0");
+            hasher.update(b"acdd-standard-framework-manifests-v1\0");
             for (name, extension, source) in STANDARD_FRAMEWORK_MANIFESTS {
                 hasher.update((name.len() as u64).to_be_bytes());
                 hasher.update(name.as_bytes());
@@ -1288,7 +1288,7 @@ fn finish_registry(
     registry.typescript_paths.resolve_all();
     registry.prepare_scoped_policies()?;
     let mut hasher = Sha256::new();
-    hasher.update(b"forge-dependency-registry-v1\0");
+    hasher.update(b"acdd-dependency-registry-v1\0");
     let standard_digest = DependencyRegistry::standard_manifests_digest_static();
     hasher.update((standard_digest.len() as u64).to_be_bytes());
     hasher.update(standard_digest.as_bytes());
@@ -1482,29 +1482,29 @@ fn load_framework_manifests(
     registry: &mut DependencyRegistry,
     snapshots: &mut std::collections::BTreeMap<String, sha2::digest::Output<Sha256>>,
 ) -> Result<()> {
-    let forge_directory = root.join(".acdd");
-    let forge_metadata = match fs::symlink_metadata(&forge_directory) {
+    let acdd_directory = root.join(".acdd");
+    let acdd_metadata = match fs::symlink_metadata(&acdd_directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             return Err(error).with_context(|| {
                 format!(
                     "failed to inspect configuration directory {}",
-                    forge_directory.display()
+                    acdd_directory.display()
                 )
             });
         }
     };
-    if forge_metadata.file_type().is_symlink() {
+    if acdd_metadata.file_type().is_symlink() {
         bail!(
             "configuration directory must not be a symlink: {}",
-            forge_directory.display()
+            acdd_directory.display()
         );
     }
-    if !forge_metadata.is_dir() {
+    if !acdd_metadata.is_dir() {
         bail!(
             "configuration path is not a directory: {}",
-            forge_directory.display()
+            acdd_directory.display()
         );
     }
     let directory = root.join(".acdd/frameworks");
@@ -1906,7 +1906,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temporary = TemporaryDirectory(std::env::temp_dir().join(format!(
-            "forge-cross-worktree-registry-{}-{nonce}",
+            "acdd-cross-worktree-registry-{}-{nonce}",
             std::process::id()
         )));
         let first_root = temporary.0.join("commerce");
@@ -2040,7 +2040,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let temporary = TestRoot(std::env::temp_dir().join(format!(
-            "forge-framework-packs-{}-{nonce}",
+            "acdd-framework-packs-{}-{nonce}",
             std::process::id()
         )));
         fs::create_dir(&temporary.0).unwrap();

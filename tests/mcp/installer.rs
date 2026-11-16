@@ -876,115 +876,162 @@ fn termination_during_download_cleans_up_and_preserves_installation() {
 #[test]
 fn verified_release_installs_real_binary_and_companion_skills_without_runtimes() {
     let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
-    for agent in [".claude", ".codex", ".gemini", ".cursor"] {
-        fs::create_dir(installer.home.join(agent)).unwrap();
-    }
-    let output = installer.run(None);
-    assert!(
-        output.status.success(),
-        "assertion failed: verified release installation failed: {output:?}"
-    );
-    let binary = installer.installed_binary();
-    assert!(
-        fs::read(&binary).unwrap() == release_fixture().binary,
-        "installed binary differs from the verified release executable"
-    );
-    assert_ne!(
-        fs::metadata(&binary).unwrap().permissions().mode() & 0o111,
-        0
-    );
-    let version = Command::new(&binary).arg("--version").output().unwrap();
-    assert!(version.status.success());
-    assert_eq!(
-        version.stdout,
-        Command::new(env!("CARGO_BIN_EXE_acdd"))
-            .arg("--version")
-            .output()
-            .unwrap()
-            .stdout
-    );
-    let expected =
-        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/acdd/SKILL.md")).unwrap();
-    for directory in [
-        ".agents/skills",
-        ".claude/skills",
-        ".codex/skills",
-        ".gemini/config/skills",
-        ".cursor/skills",
-    ] {
-        assert_eq!(
-            fs::read(installer.home.join(directory).join("acdd/SKILL.md")).unwrap(),
-            expected,
-            "real companion sync to {directory}"
+    let sha256sum = installer.tools.join("sha256sum");
+    let shasum = installer.tools.join("shasum");
+    let original_sha256sum = fs::read_link(&sha256sum).ok();
+    let original_shasum = fs::read_link(&shasum).ok();
+    for (fallback, aliased) in [(false, false), (true, false), (false, true)] {
+        for directory in [&installer.home, &installer.project] {
+            fs::remove_dir_all(directory).unwrap();
+            fs::create_dir(directory).unwrap();
+        }
+        if fallback {
+            if let Some(target) = &original_sha256sum {
+                fs::remove_file(&sha256sum).unwrap();
+                if shasum.exists() {
+                    fs::remove_file(&shasum).unwrap();
+                }
+                fs::write(
+                    &shasum,
+                    format!("#!/bin/sh\nshift 2\nexec '{}' \"$@\"\n", target.display()),
+                )
+                .unwrap();
+                fs::set_permissions(&shasum, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            assert!(!sha256sum.exists());
+            assert!(shasum.exists());
+        }
+        let hub = installer.home.join(".agents/skills");
+        if aliased {
+            assert!(!installer.tools.join("rsync").exists());
+            fs::create_dir_all(hub.join("user-skill")).unwrap();
+            fs::write(hub.join("user-skill/SKILL.md"), b"user skill").unwrap();
+        }
+        for agent in [".claude", ".codex", ".gemini", ".cursor"] {
+            fs::create_dir(installer.home.join(agent)).unwrap();
+        }
+        if aliased {
+            symlink(&hub, installer.home.join(".codex/skills")).unwrap();
+        }
+        let output = installer.run(None);
+        assert!(
+            output.status.success(),
+            "assertion failed: verified release installation failed: {output:?}"
         );
+        let binary = installer.installed_binary();
+        assert!(
+            fs::read(&binary).unwrap() == release_fixture().binary,
+            "installed binary differs from the verified release executable"
+        );
+        assert_ne!(
+            fs::metadata(&binary).unwrap().permissions().mode() & 0o111,
+            0
+        );
+        let version = Command::new(&binary).arg("--version").output().unwrap();
+        assert!(version.status.success());
+        assert_eq!(
+            version.stdout,
+            Command::new(env!("CARGO_BIN_EXE_acdd"))
+                .arg("--version")
+                .output()
+                .unwrap()
+                .stdout
+        );
+        let expected =
+            fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/acdd/SKILL.md")).unwrap();
+        for directory in [
+            ".agents/skills",
+            ".claude/skills",
+            ".codex/skills",
+            ".gemini/config/skills",
+            ".cursor/skills",
+        ] {
+            assert_eq!(
+                fs::read(installer.home.join(directory).join("acdd/SKILL.md")).unwrap(),
+                expected,
+                "real companion sync to {directory}"
+            );
+        }
+        assert!(
+            !installer.workspace.path("forbidden.log").exists(),
+            "installer invoked a forbidden runtime/compiler"
+        );
+        assert_eq!(installer.config()["mcpServers"]["acdd"]["type"], "stdio");
+        assert_eq!(
+            installer.config()["mcpServers"]["acdd"]["command"],
+            binary.to_str().unwrap()
+        );
+        let messages = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            messages.contains("PATH"),
+            "missing bin-directory PATH warning: {messages}"
+        );
+        if aliased {
+            assert_eq!(
+                fs::read(hub.join("user-skill/SKILL.md")).unwrap(),
+                b"user skill"
+            );
+            assert!(installer.home.join(".codex/skills").is_symlink());
+            assert!(!hub.join("acdd/acdd").exists());
+        }
+        if let Some(target) = original_sha256sum.as_ref().filter(|_| fallback) {
+            fs::remove_file(&shasum).unwrap();
+            symlink(target, &sha256sum).unwrap();
+            if let Some(target) = &original_shasum {
+                symlink(target, &shasum).unwrap();
+            }
+        }
     }
-    assert!(
-        !installer.workspace.path("forbidden.log").exists(),
-        "installer invoked a forbidden runtime/compiler"
-    );
-    assert_eq!(installer.config()["mcpServers"]["acdd"]["type"], "stdio");
-    assert_eq!(
-        installer.config()["mcpServers"]["acdd"]["command"],
-        binary.to_str().unwrap()
-    );
-    let messages = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        messages.contains("PATH"),
-        "missing bin-directory PATH warning: {messages}"
-    );
 }
 
 #[test]
 fn platform_detection_selects_each_agreed_release_asset() {
-    for (os, arch, target) in TARGETS {
-        let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
-        let output = installer.run(Some((os, arch)));
-        assert!(
-            output.status.success(),
-            "{os}/{arch} installation: {output:?}"
-        );
-        let expected = format!("/contextunity-acdd-{target}.tar.gz");
-        assert!(
-            installer
-                .requests
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|path| path == &expected),
-            "wrong archive for {os}/{arch}"
-        );
-        assert_eq!(
-            Sha256::digest(fs::read(installer.installed_binary()).unwrap()).to_vec(),
-            release_fixture().binary_digest
-        );
-    }
-}
-
-#[test]
-fn unsupported_platform_is_rejected_before_download_or_installation() {
     assert!(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("install.sh")
             .is_file(),
         "installer entrypoint is absent"
     );
-    for platform in [("FreeBSD", "x86_64"), ("Linux", "ppc64le")] {
-        let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
+    let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
+    let cases = TARGETS
+        .into_iter()
+        .map(|(os, arch, target)| (os, arch, Some(target)))
+        .chain([("FreeBSD", "x86_64", None), ("Linux", "ppc64le", None)]);
+    for (os, arch, target) in cases {
+        installer.requests.lock().unwrap().clear();
         installer.seed_binary(b"existing binary");
-        let output = installer.run(Some(platform));
-        assert!(
-            !output.status.success(),
-            "unsupported {platform:?} accepted"
-        );
-        assert!(installer.requests.lock().unwrap().is_empty());
+        let output = installer.run(Some((os, arch)));
         assert_eq!(
-            fs::read(installer.installed_binary()).unwrap(),
-            b"existing binary"
+            output.status.success(),
+            target.is_some(),
+            "{os}/{arch}: {output:?}"
         );
+        if let Some(target) = target {
+            let expected = format!("/contextunity-acdd-{target}.tar.gz");
+            assert!(
+                installer
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|path| path == &expected),
+                "wrong archive for {os}/{arch}"
+            );
+            assert_eq!(
+                Sha256::digest(fs::read(installer.installed_binary()).unwrap()).to_vec(),
+                release_fixture().binary_digest
+            );
+        } else {
+            assert!(installer.requests.lock().unwrap().is_empty());
+            assert_eq!(
+                fs::read(installer.installed_binary()).unwrap(),
+                b"existing binary"
+            );
+        }
     }
 }
 
@@ -1077,46 +1124,9 @@ fn incomplete_and_failed_http_downloads_preserve_installation_and_cleanup() {
 }
 
 #[test]
-fn shasum_only_path_installs_verified_release() {
-    let mut installer = InstallerHarness::new(ReleaseIntegrity::Verified);
-    let sha256sum = installer.tools.join("sha256sum");
-    if sha256sum.exists() {
-        let target = fs::read_link(&sha256sum).unwrap();
-        fs::remove_file(&sha256sum).unwrap();
-        let shasum = installer.tools.join("shasum");
-        if shasum.exists() {
-            fs::remove_file(&shasum).unwrap();
-        }
-        fs::write(
-            &shasum,
-            format!("#!/bin/sh\nshift 2\nexec '{}' \"$@\"\n", target.display()),
-        )
-        .unwrap();
-        fs::set_permissions(shasum, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    assert!(!sha256sum.exists());
-    assert!(installer.tools.join("shasum").exists());
-    let output = installer.run(None);
-    assert!(
-        output.status.success(),
-        "shasum install: requests={:?}; output={output:?}",
-        installer.requests.lock().unwrap()
-    );
-    assert_eq!(
-        fs::read(installer.installed_binary()).unwrap(),
-        release_fixture().binary
-    );
-    let teardown = installer.try_teardown();
-    assert!(
-        teardown.is_ok(),
-        "release HTTP origin thread failed: {teardown:?}"
-    );
-}
-
-#[test]
 fn nonfile_binary_destinations_preserve_configuration_and_skills() {
+    let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
     for aliased in [false, true] {
-        let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
         let binary = installer.installed_binary();
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
         let target = if aliased {
@@ -1156,119 +1166,51 @@ fn nonfile_binary_destinations_preserve_configuration_and_skills() {
             "leaked binary stage"
         );
         assert_eq!(
-            fs::symlink_metadata(binary)
+            fs::symlink_metadata(&binary)
                 .unwrap()
                 .file_type()
                 .is_symlink(),
             aliased
         );
+        if aliased {
+            fs::remove_file(&binary).unwrap();
+            fs::remove_dir_all(&target).unwrap();
+        } else {
+            fs::remove_dir_all(&binary).unwrap();
+        }
     }
 }
 
 #[test]
-fn aliased_agent_skill_root_preserves_the_canonical_hub_without_rsync() {
-    let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
-    assert!(!installer.tools.join("rsync").exists());
-    let hub = installer.home.join(".agents/skills");
-    fs::create_dir_all(hub.join("user-skill")).unwrap();
-    fs::write(hub.join("user-skill/SKILL.md"), b"user skill").unwrap();
-    fs::create_dir(installer.home.join(".codex")).unwrap();
-    symlink(&hub, installer.home.join(".codex/skills")).unwrap();
-
-    let output = installer.run(None);
-
-    assert!(
-        output.status.success(),
-        "aliased skill-root install: {output:?}"
-    );
-    assert_eq!(
-        fs::read(hub.join("user-skill/SKILL.md")).unwrap(),
-        b"user skill"
-    );
-    assert_eq!(
-        fs::read(hub.join("acdd/SKILL.md")).unwrap(),
-        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/acdd/SKILL.md")).unwrap()
-    );
-    assert!(installer.home.join(".codex/skills").is_symlink());
-    assert!(!hub.join("acdd/acdd").exists());
-}
-
-#[test]
 fn client_setup_preserves_nested_existing_json_and_user_fields() {
-    for source in [
+    let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
+    let valid = [
         json!({"inputs":[{"id":"token", "default":"braces { } and \\\"quoted\\\" values"}], "mcpSe\rvers":"unrelated user field", "unicode":"Привіт 🦀"}).to_string(),
         json!({"inputs":{"mcpServers":{"nested":"keep"}}, "mcpServers":{
             "other":{"command":"user-server", "env":{"TOKEN":"a}b\\c\"d"}, "args":["{x}",null,42,true]},
             "acdd":{"command":"/obsolete/forge", "type":"stdio", "cwd":"/user/project", "env":{"ACDD_CUSTOM":"keep"}, "args":["--root","/user/project"]}
         }}).to_string(),
         r#"{"mcp\u0053ervers":{"oth\u0065r":{"command":"keep","env":{"GREETING":"\u041f\u0440\u0438\u0432\u0456\u0442"}}}}"#.to_owned(),
-    ] {
-        let existing: Value = serde_json::from_str(&source).unwrap();
-        let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
-        fs::write(
-            installer.project.join(".mcp.json"),
-            source,
-        )
-        .unwrap();
-        let output = installer.run(None);
-        assert!(output.status.success(), "client setup: {output:?}");
-        let mut actual = installer.config();
-        let forge = &mut actual["mcpServers"]["acdd"];
-        assert_eq!(
-            forge["command"],
-            installer.installed_binary().to_str().unwrap()
-        );
-        assert_eq!(forge["type"], "stdio");
-        if let Some(prior) = existing["mcpServers"].get("acdd") {
-            forge["command"] = prior["command"].clone();
-        } else {
-            actual["mcpServers"]
-                .as_object_mut()
-                .unwrap()
-                .remove("acdd");
-            if existing.get("mcpServers").is_none() {
-                actual.as_object_mut().unwrap().remove("mcpServers");
-            }
-        }
-        assert_eq!(
-            actual, existing,
-            "installer changed user-authored JSON fields"
-        );
-        assert!(!installer.workspace.path("forbidden.log").exists());
-    }
-}
 
-#[test]
-fn invalid_client_json_is_preserved_without_overwrite() {
-    assert!(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("install.sh")
-            .is_file(),
-        "installer entrypoint is absent"
+    ];
+    let mut cases: Vec<_> = valid
+        .into_iter()
+        .map(|source| {
+            let expected: Value = serde_json::from_str(&source).unwrap();
+            (source.into_bytes(), Some(expected))
+        })
+        .collect();
+    cases.extend(
+        [
+            "{\"mcpServers\":",
+            "[]",
+            "{\"mcpServers\":[]}",
+            "{\"mcpServers\":null}",
+            "{} trailing",
+        ]
+        .into_iter()
+        .map(|source| (source.as_bytes().to_vec(), None)),
     );
-    for malformed in [
-        "{\"mcpServers\":",
-        "[]",
-        "{\"mcpServers\":[]}",
-        "{\"mcpServers\":null}",
-        "{} trailing",
-    ] {
-        let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
-        fs::write(installer.project.join(".mcp.json"), malformed).unwrap();
-        let output = installer.run(None);
-        assert!(
-            !output.status.success(),
-            "invalid client JSON was accepted: {malformed}"
-        );
-        assert_eq!(
-            fs::read_to_string(installer.project.join(".mcp.json")).unwrap(),
-            malformed
-        );
-    }
-}
-
-#[test]
-fn invalid_client_utf8_preserves_all_installation_state() {
     for invalid in [
         &[0xff][..],
         &[0xc0, 0xaf],
@@ -1280,104 +1222,54 @@ fn invalid_client_utf8_preserves_all_installation_state() {
         &[0xf5, 0x80, 0x80, 0x80],
         &[0xf0, 0x80, 0x80, 0x80],
     ] {
-        let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
+        let mut source = b"{\"user\":\"".to_vec();
+        source.extend_from_slice(invalid);
+        source.extend_from_slice(b"\"}\n");
+        cases.push((source, None));
+    }
+    let config = installer.project.join(".mcp.json");
+    let skill = installer.home.join(".agents/skills/acdd/SKILL.md");
+    fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    for (source, expected) in cases {
         installer.seed_binary(b"existing binary");
-        let skill = installer.home.join(".agents/skills/acdd/SKILL.md");
-        fs::create_dir_all(skill.parent().unwrap()).unwrap();
         fs::write(&skill, b"old skill").unwrap();
-        let mut malformed = b"{\"user\":\"".to_vec();
-        malformed.extend_from_slice(invalid);
-        malformed.extend_from_slice(b"\"}\n");
-        let config = installer.project.join(".mcp.json");
-        fs::write(&config, &malformed).unwrap();
-
+        fs::write(&config, &source).unwrap();
         let output = installer.run(None);
-
-        assert!(
-            !output.status.success(),
-            "invalid UTF8 accepted ({invalid:x?}): {output:?}"
-        );
-        assert_eq!(fs::read(config).unwrap(), malformed);
         assert_eq!(
-            fs::read(installer.installed_binary()).unwrap(),
-            b"existing binary"
+            output.status.success(),
+            expected.is_some(),
+            "client setup {source:x?}: {output:?}"
         );
-        assert_eq!(fs::read(skill).unwrap(), b"old skill");
+        if let Some(existing) = expected {
+            let mut actual = installer.config();
+            let server_entry = &mut actual["mcpServers"]["acdd"];
+            assert_eq!(
+                server_entry["command"],
+                installer.installed_binary().to_str().unwrap()
+            );
+            assert_eq!(server_entry["type"], "stdio");
+            if let Some(prior) = existing["mcpServers"].get("acdd") {
+                server_entry["command"] = prior["command"].clone();
+            } else {
+                actual["mcpServers"].as_object_mut().unwrap().remove("acdd");
+                if existing.get("mcpServers").is_none() {
+                    actual.as_object_mut().unwrap().remove("mcpServers");
+                }
+            }
+            assert_eq!(
+                actual, existing,
+                "installer changed user-authored JSON fields"
+            );
+        } else {
+            assert_eq!(fs::read(&config).unwrap(), source);
+            assert_eq!(
+                fs::read(installer.installed_binary()).unwrap(),
+                b"existing binary"
+            );
+            assert_eq!(fs::read(&skill).unwrap(), b"old skill");
+        }
+        assert!(!installer.workspace.path("forbidden.log").exists());
     }
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn update_reexecutes_the_installed_server_and_preserves_project_configuration() {
-    use std::{os::unix::fs::MetadataExt, time::Instant};
-    let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
-    installer.seed_binary(&release_fixture().binary);
-    for skill in ["acdd", "user-skill"] {
-        fs::create_dir_all(installer.home.join(".agents/skills").join(skill)).unwrap();
-        fs::write(
-            installer
-                .home
-                .join(".agents/skills")
-                .join(skill)
-                .join("SKILL.md"),
-            "old skill content",
-        )
-        .unwrap();
-    }
-    let binary = installer.installed_binary();
-    fs::create_dir(installer.project.join("src")).unwrap();
-    fs::write(
-        installer.project.join("acdd.yaml"),
-        "roots: [src]\nignore: [.forge]\nresponse:\n  page_size: 7\n",
-    )
-    .unwrap();
-    let config_before = fs::read(installer.project.join("acdd.yaml")).unwrap();
-    let mut command = Command::new(&binary);
-    command
-        .arg("--root")
-        .arg(&installer.project)
-        .arg("serve")
-        .env("HOME", &installer.home);
-    let mut server = StdioClient::with_command(&mut command).unwrap();
-    let (_, before) = server.request("tools/list", json!({})).unwrap();
-    assert!(before.get("result").is_some());
-    let original_inode = fs::metadata(&binary).unwrap().ino();
-    let output = installer.run(None);
-    assert!(output.status.success(), "update failed: {output:?}");
-    let installed_inode = fs::metadata(&binary).unwrap().ino();
-    assert_ne!(
-        installed_inode, original_inode,
-        "binary must be atomically replaced"
-    );
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let proc_executable = PathBuf::from(format!("/proc/{}/exe", server.child().id()));
-    while fs::metadata(&proc_executable).unwrap().ino() != installed_inode
-        && Instant::now() < deadline
-    {
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(
-        fs::metadata(&proc_executable).unwrap().ino(),
-        installed_inode,
-        "installer did not reload the running installed server"
-    );
-    let (_, after) = server.request("tools/list", json!({})).unwrap();
-    assert!(
-        after.get("result").is_some(),
-        "MCP session did not survive update: {after}"
-    );
-    assert_eq!(
-        fs::read(installer.project.join("acdd.yaml")).unwrap(),
-        config_before
-    );
-    assert_eq!(
-        fs::read(installer.home.join(".agents/skills/acdd/SKILL.md")).unwrap(),
-        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/acdd/SKILL.md")).unwrap()
-    );
-    assert_eq!(
-        fs::read_to_string(installer.home.join(".agents/skills/user-skill/SKILL.md")).unwrap(),
-        "old skill content"
-    );
 }
 
 #[cfg(target_os = "linux")]
@@ -1409,6 +1301,25 @@ fn update_reexecutes_default_configured_server_without_signaling_other_commands(
         installed.status.success(),
         "initial installation: {installed:?}"
     );
+    for skill in ["acdd", "user-skill"] {
+        fs::create_dir_all(installer.home.join(".agents/skills").join(skill)).unwrap();
+        fs::write(
+            installer
+                .home
+                .join(".agents/skills")
+                .join(skill)
+                .join("SKILL.md"),
+            "old skill content",
+        )
+        .unwrap();
+    }
+    fs::create_dir_all(installer.project.join("src")).unwrap();
+    fs::write(
+        installer.project.join("acdd.yaml"),
+        "roots: [src]\nignore: [.acdd]\nresponse:\n  page_size: 7\n",
+    )
+    .unwrap();
+    let config_before = fs::read(installer.project.join("acdd.yaml")).unwrap();
     let config = installer.config();
     let entry = &config["mcpServers"]["acdd"];
     let args: Vec<&str> = entry
@@ -1426,224 +1337,103 @@ fn update_reexecutes_default_configured_server_without_signaling_other_commands(
         "this seam proves the supported no-subcommand MCP invocation"
     );
     let binary = PathBuf::from(entry["command"].as_str().unwrap());
-    let mut default_command = Command::new(&binary);
-    default_command
-        .args(&args)
-        .current_dir(&installer.project)
-        .env_clear()
-        .env("HOME", &installer.home);
-    let mut default_server = StdioClient::with_command(&mut default_command).unwrap();
-    let (_, initialized) = default_server.request("tools/list", json!({})).unwrap();
-    assert!(initialized.get("result").is_some());
-    let server_pid = default_server.child().id();
-    let old_inode = fs::metadata(&binary).unwrap().ino();
-
-    // Keep a genuine non-server command alive in write(2), with a positional
-    // argument exactly equal to "serve". A literal-token selector must not
-    // mistake this read operation for an MCP server.
-    fs::write(
-        installer.project.join("serve"),
-        "bounded reader payload ".repeat(1800),
-    )
-    .unwrap();
-    let (mut command_output, child_output) = UnixStream::pair().unwrap();
-    command_output
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    let capacity: libc::c_int = 4096;
-    // SAFETY: child_output is a live socket; capacity is a valid integer socket option.
-    let configured = unsafe {
-        libc::setsockopt(
-            child_output.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_SNDBUF,
-            (&capacity as *const libc::c_int).cast(),
-            std::mem::size_of_val(&capacity) as libc::socklen_t,
-        )
-    };
-    assert_eq!(configured, 0, "configure bounded CLI stdout socket");
-    let child_output: OwnedFd = child_output.into();
-    let mut nonserver = CommandCleanup(
-        Command::new(&binary)
-            .args(["--format", "json", "read", "serve", "--mode", "raw"])
-            .current_dir(&installer.project)
-            .env_clear()
-            .env("HOME", &installer.home)
-            .stdout(Stdio::from(child_output))
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    let mut first_byte = [0];
-    command_output.read_exact(&mut first_byte).unwrap();
-    assert_eq!(
-        first_byte,
-        [b'{'],
-        "real read command started serializing its result"
-    );
-    assert!(
-        nonserver.0.try_wait().unwrap().is_none(),
-        "read command must remain blocked on stdout"
-    );
-
-    let foreign_binary = installer.workspace.path("foreign-forge");
-    fs::copy(&binary, &foreign_binary).unwrap();
-    let mut foreign_command = Command::new(&foreign_binary);
-    foreign_command
-        .arg("serve")
-        .current_dir(&installer.project)
-        .env_clear()
-        .env("HOME", &installer.home);
-    let mut foreign_server = StdioClient::with_command(&mut foreign_command).unwrap();
-    let excluded_pids = [nonserver.0.id(), foreign_server.child().id()];
-    // Stop only owned children after they have entered their real production
-    // paths. A wrongly delivered SIGHUP then remains observable in /proc, even
-    // if an MCP server could otherwise reexec the same unchanged foreign image.
-    for pid in excluded_pids {
-        // SAFETY: pid belongs to a live child retained by this test's cleanup owner.
-        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGSTOP) }, 0);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
-            if status
-                .lines()
-                .any(|line| line.starts_with("State:") && line.contains("T (stopped)"))
-            {
-                break;
-            }
-            assert!(Instant::now() < deadline, "owned child {pid} did not stop");
-            thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    let updated = installer.run(None);
-    assert!(updated.status.success(), "update failed: {updated:?}");
-    let replacement_inode = fs::metadata(&binary).unwrap().ino();
-    assert_ne!(
-        replacement_inode, old_inode,
-        "installer must replace the running executable atomically"
-    );
-    let running_executable = PathBuf::from(format!("/proc/{server_pid}/exe"));
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while fs::metadata(&running_executable).unwrap().ino() != replacement_inode
-        && Instant::now() < deadline
-    {
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(
-        fs::metadata(&running_executable).unwrap().ino(),
-        replacement_inode,
-        "assertion failed: default configured MCP server did not exec the installed replacement"
-    );
-    let (_, listed) = default_server.request("tools/list", json!({})).unwrap();
-    assert!(
-        listed.get("result").is_some(),
-        "default MCP stream did not survive update: {listed}"
-    );
-    assert_eq!(default_server.child().id(), server_pid);
-
-    for pid in excluded_pids {
-        let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
-        let pending = status
-            .lines()
-            .filter_map(|line| {
-                let (field, value) = line.split_once(':')?;
-                matches!(field, "SigPnd" | "ShdPnd")
-                    .then(|| u64::from_str_radix(value.trim(), 16).unwrap())
-            })
-            .fold(0, |mask, pending| mask | pending);
-        assert_eq!(
-            pending & (1 << (libc::SIGHUP - 1)),
-            0,
-            "assertion failed: reload signaled excluded child {pid}"
-        );
-        // SAFETY: the owned child is still stopped and will be reaped by its cleanup owner.
-        assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGCONT) }, 0);
-    }
-    let mut remaining_output = Vec::new();
-    command_output.read_to_end(&mut remaining_output).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        if let Some(status) = nonserver.0.try_wait().unwrap() {
-            break status;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "non-server command did not terminate"
-        );
-        thread::sleep(Duration::from_millis(10));
-    };
-    assert!(
-        status.success(),
-        "non-server command did not finish normally"
-    );
-    let (_, foreign_list) = foreign_server.request("tools/list", json!({})).unwrap();
-    assert!(
-        foreign_list.get("result").is_some(),
-        "foreign MCP session was disturbed"
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn update_reexecutes_installed_image_retained_by_hardlink() {
-    use std::{os::unix::fs::MetadataExt, time::Instant};
-
-    {
-        let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
-        let initial = installer.run(None);
-        assert!(
-            initial.status.success(),
-            "initial installation: {initial:?}"
-        );
-        let config = installer.config();
-        let entry = &config["mcpServers"]["acdd"];
-        let binary = PathBuf::from(entry["command"].as_str().unwrap());
-        let args = entry
-            .get("args")
-            .map(|args| {
-                args.as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|arg| arg.as_str().unwrap())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        assert!(
-            args.is_empty(),
-            "use the actual generated default server invocation"
-        );
+    for (explicit, retained_image, foreign_name) in [
+        (false, false, "foreign-binary"),
+        (true, false, "foreign-binary"),
+        (false, true, "acdd (deleted)"),
+    ] {
         let retained = installer.workspace.path("retained-installed-image");
-        fs::hard_link(&binary, &retained).unwrap();
         let original_inode = fs::metadata(&binary).unwrap().ino();
-        assert_eq!(fs::metadata(&binary).unwrap().nlink(), 2);
-        let mut command = Command::new(&binary);
-        command
+        if retained_image {
+            fs::hard_link(&binary, &retained).unwrap();
+            assert_eq!(fs::metadata(&binary).unwrap().nlink(), 2);
+        }
+        let mut default_command = Command::new(&binary);
+        if explicit {
+            default_command
+                .arg("--root")
+                .arg(&installer.project)
+                .arg("serve");
+        }
+        default_command
             .args(&args)
             .current_dir(&installer.project)
             .env_clear()
             .env("HOME", &installer.home);
-        let mut server = StdioClient::with_command(&mut command).unwrap();
-        let (_, initialized) = server.request("tools/list", json!({})).unwrap();
+        let mut default_server = StdioClient::with_command(&mut default_command).unwrap();
+        let (_, initialized) = default_server.request("tools/list", json!({})).unwrap();
         assert!(initialized.get("result").is_some());
-        let pid = server.child().id();
-        let proc_executable = PathBuf::from(format!("/proc/{pid}/exe"));
+        let server_pid = default_server.child().id();
+        let old_inode = fs::metadata(&binary).unwrap().ino();
 
-        // Both processes will have the same /proc exe text after replacement,
-        // but the literal filename identifies only the foreign image's inode.
-        let literal = binary.with_file_name("acdd (deleted)");
-        let mut foreign = {
-            fs::copy(&binary, &literal).unwrap();
-            assert_ne!(fs::metadata(&literal).unwrap().ino(), original_inode);
-            let mut command = Command::new(&literal);
-            command
-                .arg("serve")
+        // Keep a genuine non-server command alive in write(2), with a positional
+        // argument exactly equal to "serve". A literal-token selector must not
+        // mistake this read operation for an MCP server.
+        fs::write(
+            installer.project.join("serve"),
+            "bounded reader payload ".repeat(1800),
+        )
+        .unwrap();
+        let (mut command_output, child_output) = UnixStream::pair().unwrap();
+        command_output
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let capacity: libc::c_int = 4096;
+        // SAFETY: child_output is a live socket; capacity is a valid integer socket option.
+        let configured = unsafe {
+            libc::setsockopt(
+                child_output.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                (&capacity as *const libc::c_int).cast(),
+                std::mem::size_of_val(&capacity) as libc::socklen_t,
+            )
+        };
+        assert_eq!(configured, 0, "configure bounded CLI stdout socket");
+        let child_output: OwnedFd = child_output.into();
+        let mut nonserver = CommandCleanup(
+            Command::new(&binary)
+                .args(["--format", "json", "read", "serve", "--mode", "raw"])
                 .current_dir(&installer.project)
                 .env_clear()
-                .env("HOME", &installer.home);
-            let child = StdioClient::with_command(&mut command).unwrap();
-            let pid = child.child().id();
-            // SAFETY: the PID belongs to this owned initialized MCP child.
+                .env("HOME", &installer.home)
+                .stdout(Stdio::from(child_output))
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let mut first_byte = [0];
+        command_output.read_exact(&mut first_byte).unwrap();
+        assert_eq!(
+            first_byte,
+            [b'{'],
+            "real read command started serializing its result"
+        );
+        assert!(
+            nonserver.0.try_wait().unwrap().is_none(),
+            "read command must remain blocked on stdout"
+        );
+
+        let foreign_binary = if retained_image {
+            binary.with_file_name(foreign_name)
+        } else {
+            installer.workspace.path(foreign_name)
+        };
+        fs::copy(&binary, &foreign_binary).unwrap();
+        assert_ne!(fs::metadata(&foreign_binary).unwrap().ino(), old_inode);
+        let mut foreign_command = Command::new(&foreign_binary);
+        foreign_command
+            .arg("serve")
+            .current_dir(&installer.project)
+            .env_clear()
+            .env("HOME", &installer.home);
+        let mut foreign_server = StdioClient::with_command(&mut foreign_command).unwrap();
+        let excluded_pids = [nonserver.0.id(), foreign_server.child().id()];
+        // Stop only owned children after they have entered their real production
+        // paths. A wrongly delivered SIGHUP then remains observable in /proc, even
+        // if an MCP server could otherwise reexec the same unchanged foreign image.
+        for pid in excluded_pids {
+            // SAFETY: pid belongs to a live child retained by this test's cleanup owner.
             assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGSTOP) }, 0);
             let deadline = Instant::now() + Duration::from_secs(2);
             loop {
@@ -1654,42 +1444,42 @@ fn update_reexecutes_installed_image_retained_by_hardlink() {
                 {
                     break;
                 }
-                assert!(
-                    Instant::now() < deadline,
-                    "owned foreign process did not stop"
-                );
+                assert!(Instant::now() < deadline, "owned child {pid} did not stop");
                 thread::sleep(Duration::from_millis(5));
             }
-            Some(child)
-        };
+        }
 
         let updated = installer.run(None);
-
-        assert!(
-            updated.status.success(),
-            "hardlinked installation update: {updated:?}"
-        );
+        assert!(updated.status.success(), "update failed: {updated:?}");
         let replacement_inode = fs::metadata(&binary).unwrap().ino();
-        assert_ne!(replacement_inode, original_inode);
-        assert_eq!(fs::metadata(&retained).unwrap().ino(), original_inode);
-        assert_eq!(fs::metadata(&retained).unwrap().nlink(), 1);
+        if retained_image {
+            assert_eq!(fs::metadata(&retained).unwrap().ino(), original_inode);
+            assert_eq!(fs::metadata(&retained).unwrap().nlink(), 1);
+        }
+        assert_ne!(
+            replacement_inode, old_inode,
+            "installer must replace the running executable atomically"
+        );
+        let running_executable = PathBuf::from(format!("/proc/{server_pid}/exe"));
         let deadline = Instant::now() + Duration::from_secs(10);
-        while fs::metadata(&proc_executable).unwrap().ino() != replacement_inode
+        while fs::metadata(&running_executable).unwrap().ino() != replacement_inode
             && Instant::now() < deadline
         {
             thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(
-            fs::metadata(&proc_executable).unwrap().ino(),
-            replacement_inode,
-            "active installed image retained by a hardlink did not reload: {updated:?}"
+        fs::metadata(&running_executable).unwrap().ino(),
+        replacement_inode,
+        "assertion failed: default configured MCP server did not exec the installed replacement"
+    );
+        let (_, listed) = default_server.request("tools/list", json!({})).unwrap();
+        assert!(
+            listed.get("result").is_some(),
+            "default MCP stream did not survive update: {listed}"
         );
-        let (_, after) = server.request("tools/list", json!({})).unwrap();
-        assert!(after.get("result").is_some());
-        assert_eq!(server.child().id(), pid);
+        assert_eq!(default_server.child().id(), server_pid);
 
-        if let Some(foreign) = &mut foreign {
-            let pid = foreign.child().id();
+        for pid in excluded_pids {
             let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
             let pending = status
                 .lines()
@@ -1702,13 +1492,54 @@ fn update_reexecutes_installed_image_retained_by_hardlink() {
             assert_eq!(
                 pending & (1 << (libc::SIGHUP - 1)),
                 0,
-                "reload signaled foreign literal-path collision"
+                "assertion failed: reload signaled excluded child {pid}"
             );
-            assert_eq!(fs::read_link(format!("/proc/{pid}/exe")).unwrap(), literal);
-            // SAFETY: this is the same owned stopped MCP child retained above.
+            // SAFETY: the owned child is still stopped and will be reaped by its cleanup owner.
             assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGCONT) }, 0);
-            let (_, listed) = foreign.request("tools/list", json!({})).unwrap();
-            assert!(listed.get("result").is_some());
+        }
+        let mut remaining_output = Vec::new();
+        command_output.read_to_end(&mut remaining_output).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = nonserver.0.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "non-server command did not terminate"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            status.success(),
+            "non-server command did not finish normally"
+        );
+        let (_, foreign_list) = foreign_server.request("tools/list", json!({})).unwrap();
+        assert!(
+            foreign_list.get("result").is_some(),
+            "foreign MCP session was disturbed"
+        );
+        assert_eq!(
+            fs::read(installer.project.join("acdd.yaml")).unwrap(),
+            config_before
+        );
+        assert_eq!(
+            fs::read(installer.home.join(".agents/skills/acdd/SKILL.md")).unwrap(),
+            fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/acdd/SKILL.md")).unwrap()
+        );
+        assert_eq!(
+            fs::read_to_string(installer.home.join(".agents/skills/user-skill/SKILL.md")).unwrap(),
+            "old skill content"
+        );
+        assert_eq!(
+            fs::read_link(format!("/proc/{}/exe", foreign_server.child().id())).unwrap(),
+            foreign_binary
+        );
+        drop(default_server);
+        drop(foreign_server);
+        fs::remove_file(&foreign_binary).unwrap();
+        if retained_image {
+            fs::remove_file(&retained).unwrap();
         }
     }
 }
@@ -1725,8 +1556,8 @@ fn reload_excludes_foreign_executable_with_literal_deleted_suffix() {
         Unlinked,
     }
 
+    let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
     for topology in [Topology::Linked, Topology::Hardlinked, Topology::Unlinked] {
-        let installer = InstallerHarness::new(ReleaseIntegrity::Verified);
         installer.seed_binary(&release_fixture().binary);
         let binary = installer.installed_binary();
         let foreign = binary.with_file_name("acdd (deleted)");
@@ -1812,6 +1643,14 @@ fn reload_excludes_foreign_executable_with_literal_deleted_suffix() {
         let (_, after) = server.request("tools/list", json!({})).unwrap();
         assert!(after.get("result").is_some());
         assert_eq!(server.child().id(), pid);
+        drop(server);
+        if foreign.exists() {
+            fs::remove_file(&foreign).unwrap();
+        }
+        let retained = installer.workspace.path("retained-foreign-image");
+        if retained.exists() {
+            fs::remove_file(retained).unwrap();
+        }
     }
 }
 

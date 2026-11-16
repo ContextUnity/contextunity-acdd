@@ -1,19 +1,25 @@
 //! SQLite-owned active task checkpoints. Git records committed state, never a gate decision.
 
 use super::{now, Task, TasksStore};
-use crate::git::{git_checkpoint, git_command, git_commit_exists};
+use crate::git::git_command;
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
+    io::Write,
     ops::Deref,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 
 const PENDING: &str = "active_checkpoint_pending";
 const ROOT: &str = "active_checkpoint_root";
+
+fn existing_commits(workspace: &Path, candidates: &BTreeSet<String>) -> Result<BTreeSet<String>> {
+    crate::git::git_commits_exist(workspace, candidates)
+}
 
 #[derive(Debug)]
 /// SQL committed, but publication has not completed. Retrying may publish only this checkpoint.
@@ -101,48 +107,50 @@ pub fn ensure_no_intents(root: &Path) -> Result<()> {
 pub(crate) fn ensure_no_intents_except(root: &Path, obsolete: &BTreeSet<String>) -> Result<()> {
     let refs = git_command(
         root,
-        &["for-each-ref", "--format=%(refname)", "refs/forge/state/"],
+        &["for-each-ref", "--format=%(refname)", "refs/acdd/state/"],
     )?;
     if !refs.status.success() {
         return Ok(());
     } // Non-Git workspaces have no keepers.
-    for reference in String::from_utf8(refs.stdout)?.lines() {
-        if obsolete
-            .iter()
-            .any(|owner| reference.starts_with(&format!("refs/forge/state/{owner}/")))
-        {
+    let active_refs: Vec<String> = String::from_utf8(refs.stdout)?
+        .lines()
+        .filter(|reference| {
+            !obsolete
+                .iter()
+                .any(|owner| reference.starts_with(&format!("refs/acdd/state/{owner}/")))
+        })
+        .map(str::to_owned)
+        .collect();
+    if active_refs.is_empty() {
+        return Ok(());
+    }
+    let specs: Vec<String> = active_refs
+        .iter()
+        .map(|reference| format!("{reference}:checkpoint.json"))
+        .collect();
+    let blobs = crate::git::cat_file_batch(root, &specs)?;
+    let expected_common = crate::git::git_common_dir(root)
+        .map_err(|error| anyhow::anyhow!("TASK_RECOVERY_CHECKPOINT_INVALID: {error}"))?;
+    let mut common_cache = BTreeMap::<PathBuf, PathBuf>::new();
+    for (reference, payload) in active_refs.into_iter().zip(blobs) {
+        let Some(bytes) = payload else {
+            // Older candidate-only refs contain no checkpoint or task intent.
+            continue;
+        };
+        let checkpoint: ActiveCheckpoint = serde_json::from_slice(&bytes)?;
+        if !checkpoint.workspace.exists() {
+            let _ = git_command(root, &["update-ref", "-d", &reference]);
             continue;
         }
-        // Older candidate-only refs contain no checkpoint or task intent.
-        // Recovery still requires a strict payload for every active task.
-        if !git_command(
+        let validated = validate_parsed_checkpoint(
             root,
-            &["cat-file", "-e", &format!("{reference}:checkpoint.json")],
-        )?
-        .status
-        .success()
-        {
-            continue;
-        }
-        match read_checkpoint(root, reference) {
-            Ok(cp) => {
-                if cp.intent.is_some() {
-                    return Err(CheckpointPending.into());
-                }
-            }
-            Err(error) => {
-                if let Ok(output) =
-                    git_command(root, &["show", &format!("{reference}:checkpoint.json")])
-                {
-                    if let Ok(cp) = serde_json::from_slice::<ActiveCheckpoint>(&output.stdout) {
-                        if !cp.workspace.exists() {
-                            let _ = git_command(root, &["update-ref", "-d", reference]);
-                            continue;
-                        }
-                    }
-                }
-                return Err(error);
-            }
+            &expected_common,
+            &mut common_cache,
+            &reference,
+            checkpoint,
+        )?;
+        if validated.intent.is_some() {
+            return Err(CheckpointPending.into());
         }
     }
     Ok(())
@@ -328,42 +336,64 @@ impl Publication {
 
     fn publish_with(
         &self,
+        publish_manifest: impl FnMut(&ManifestReplacement) -> Result<()>,
+    ) -> Result<()> {
+        self.publish_with_known(&BTreeMap::new(), publish_manifest)
+    }
+
+    fn publish_with_known(
+        &self,
+        known: &BTreeMap<(PathBuf, String), BTreeSet<String>>,
         mut publish_manifest: impl FnMut(&ManifestReplacement) -> Result<()>,
     ) -> Result<()> {
-        publish_cohort(&self.active)?;
+        publish_cohort(&self.active, known)?;
+        let mut retired_by_repo = BTreeMap::<PathBuf, Vec<(&Path, String)>>::new();
         for state in &self.retired {
             if state.task.is_some() || state.intent.is_some() {
                 bail!("TASK_CHECKPOINT_RETIREMENT_INVALID");
             }
-            let reference = state.reference();
-            let exists = git_command(
-                &state.workspace,
-                &["show-ref", "--verify", "--quiet", &reference],
+            let common = crate::git::git_common_dir(&state.workspace)?;
+            retired_by_repo
+                .entry(common)
+                .or_default()
+                .push((&state.workspace, state.reference()));
+        }
+        for (_repo, items) in retired_by_repo {
+            let repo_root = items[0].0;
+            let refs_out = git_command(
+                repo_root,
+                &["for-each-ref", "--format=%(refname)\t%(objectname)", "refs/acdd/state/"],
             )?;
-            if !exists.status.success() {
-                continue;
+            let mut tip_by_ref = BTreeMap::<String, String>::new();
+            if refs_out.status.success() {
+                for line in String::from_utf8(refs_out.stdout)?.lines() {
+                    if let Some((name, oid)) = line.split_once('\t') {
+                        tip_by_ref.insert(name.to_owned(), oid.to_owned());
+                    }
+                }
             }
-            let previous = crate::git::git_stdout(
-                &state.workspace,
-                &["rev-parse", "--verify", &reference],
-                "TASK_CHECKPOINT_RETIREMENT_FAILED",
-            )?;
-            let deleted = git_command(
-                &state.workspace,
-                &[
-                    "-c",
-                    "core.fsync=committed",
-                    "update-ref",
-                    "-d",
-                    &reference,
-                    &previous,
-                ],
-            )?;
-            if !deleted.status.success() {
-                bail!(
-                    "TASK_CHECKPOINT_RETIREMENT_FAILED: {}",
-                    String::from_utf8_lossy(&deleted.stderr)
-                );
+            let mut updates = String::new();
+            for (_ws, reference) in items {
+                if let Some(previous) = tip_by_ref.get(&reference) {
+                    updates.push_str(&format!("delete {reference} {previous}\n"));
+                }
+            }
+            if !updates.is_empty() {
+                let mut child = Command::new("git")
+                    .args(["-c", "core.fsync=committed", "update-ref", "--stdin"])
+                    .current_dir(repo_root)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()?;
+                child.stdin.take().expect("piped stdin").write_all(updates.as_bytes())?;
+                let deleted = child.wait_with_output()?;
+                if !deleted.status.success() {
+                    bail!(
+                        "TASK_CHECKPOINT_RETIREMENT_FAILED: {}",
+                        String::from_utf8_lossy(&deleted.stderr)
+                    );
+                }
             }
         }
         if let Some(replacement) = &self.manifest_replacement {
@@ -372,6 +402,8 @@ impl Publication {
         Ok(())
     }
 }
+
+type CandidateObjects = (BTreeSet<String>, Vec<(Option<PathBuf>, String)>);
 
 impl ActiveCheckpoint {
     fn allocation_fence(mut self) -> Self {
@@ -395,11 +427,11 @@ impl ActiveCheckpoint {
             .map(|(_, slug)| slug)
             .unwrap_or(&self.task_id);
         format!(
-            "refs/forge/state/{}/{}/{}/{slug}",
+            "refs/acdd/state/{}/{}/{}/{slug}",
             self.repository, self.project, self.milestone_id
         )
     }
-    fn parents(&self) -> Result<Vec<String>> {
+    fn collect_candidate_objects(&self) -> Result<CandidateObjects> {
         let mut candidates = self.prepared_proofs.clone();
         let mut proof_candidates: Vec<(Option<PathBuf>, String)> = self
             .prepared_proofs
@@ -425,15 +457,6 @@ impl ActiveCheckpoint {
                         proof_candidates.push((Some(wt.clone()), sha));
                     }
                 }
-            }
-        }
-        for (worktree, sha) in &proof_candidates {
-            let in_workspace = git_commit_exists(&self.workspace, sha)?;
-            let in_worktree = worktree
-                .as_ref()
-                .is_some_and(|w| git_commit_exists(w, sha).unwrap_or(false));
-            if !in_workspace && !in_worktree {
-                bail!("TASK_CHECKPOINT_PROOF_UNAVAILABLE: {sha} has no object home");
             }
         }
         fn objects(value: &serde_json::Value, into: &mut BTreeSet<String>) {
@@ -472,43 +495,294 @@ impl ActiveCheckpoint {
         for (_, submission) in &self.submissions {
             objects(&serde_json::from_str(submission)?, &mut candidates);
         }
-        candidates
-            .into_iter()
-            .filter_map(|sha| match git_commit_exists(&self.workspace, &sha) {
-                Ok(true) => Some(Ok(sha)),
-                Ok(false) => None,
-                Err(e) => Some(Err(e)),
-            })
-            .collect()
+        Ok((candidates, proof_candidates))
     }
     fn publish(&self) -> Result<()> {
-        let keeper = git_checkpoint(
-            &self.workspace,
-            &self.reference(),
-            &serde_json::to_vec(self)?,
-            &self.parents()?,
-        )?;
-        if self.intent.is_none() {
-            crate::git::release_provisional(&self.workspace, &self.task_id, &keeper)?;
+        self.publish_with_known(&BTreeSet::new()).map(|_| ())
+    }
+    fn publish_with_known(&self, known: &BTreeSet<String>) -> Result<BTreeSet<String>> {
+        let mut known_map = BTreeMap::new();
+        if !known.is_empty() {
+            known_map.insert((self.workspace.clone(), self.task_id.clone()), known.clone());
         }
-        Ok(())
+        let mut parents = publish_checkpoints_batch(std::slice::from_ref(self), &known_map)?;
+        Ok(parents.pop().unwrap_or_default().into_iter().collect())
     }
     /// Refuse ambiguous checkpoints and incomplete multi-task publication cohorts.
     pub fn validate_cohort(&self) -> Result<()> {
-        if self.version != 1 || self.intent.is_some() {
+        validate_cohort_states(std::slice::from_ref(self))
+    }
+}
+
+fn resolve_batch_parents(
+    states: &[ActiveCheckpoint],
+    known: &BTreeMap<(PathBuf, String), BTreeSet<String>>,
+) -> Result<Vec<Vec<String>>> {
+    let mut collected = Vec::with_capacity(states.len());
+    let mut unchecked_by_workspace = BTreeMap::<&Path, BTreeSet<String>>::new();
+    for state in states {
+        let (candidates, proof_candidates) = state.collect_candidate_objects()?;
+        let known_for_state = known.get(&(state.workspace.clone(), state.task_id.clone()));
+        for sha in &candidates {
+            if !known_for_state.is_some_and(|set| set.contains(sha)) {
+                unchecked_by_workspace
+                    .entry(state.workspace.as_path())
+                    .or_default()
+                    .insert(sha.clone());
+            }
+        }
+        collected.push((candidates, proof_candidates, known_for_state));
+    }
+    let mut existing_by_workspace = BTreeMap::<&Path, BTreeSet<String>>::new();
+    for (workspace, unchecked) in unchecked_by_workspace {
+        existing_by_workspace.insert(workspace, existing_commits(workspace, &unchecked)?);
+    }
+    let mut extra_by_worktree = BTreeMap::<PathBuf, BTreeSet<String>>::new();
+    for (index, (_, proof_candidates, known_for_state)) in collected.iter().enumerate() {
+        let ws_existing = existing_by_workspace.get(states[index].workspace.as_path());
+        for (worktree, sha) in proof_candidates {
+            let in_known = known_for_state.is_some_and(|set| set.contains(sha));
+            if !in_known && !ws_existing.is_some_and(|set| set.contains(sha)) {
+                if let Some(wt) = worktree {
+                    extra_by_worktree
+                        .entry(wt.clone())
+                        .or_default()
+                        .insert(sha.clone());
+                }
+            }
+        }
+    }
+    let worktree_existing: BTreeMap<PathBuf, BTreeSet<String>> = extra_by_worktree
+        .into_iter()
+        .map(|(wt, shas)| {
+            let found = existing_commits(&wt, &shas).unwrap_or_default();
+            (wt, found)
+        })
+        .collect();
+
+    let mut result = Vec::with_capacity(states.len());
+    for (index, (candidates, proof_candidates, known_for_state)) in
+        collected.into_iter().enumerate()
+    {
+        let ws_existing = existing_by_workspace.get(states[index].workspace.as_path());
+        let mut existing = BTreeSet::new();
+        for sha in candidates {
+            if known_for_state.is_some_and(|set| set.contains(&sha))
+                || ws_existing.is_some_and(|set| set.contains(&sha))
+            {
+                existing.insert(sha);
+            }
+        }
+        for (worktree, sha) in &proof_candidates {
+            let in_worktree = !existing.contains(sha)
+                && worktree
+                    .as_ref()
+                    .and_then(|w| worktree_existing.get(w))
+                    .is_some_and(|shas| shas.contains(sha));
+            if !existing.contains(sha) && !in_worktree {
+                bail!("TASK_CHECKPOINT_PROOF_UNAVAILABLE: {sha} has no object home");
+            }
+        }
+        result.push(existing.into_iter().collect());
+    }
+    Ok(result)
+}
+
+fn publish_checkpoints_batch(
+    states: &[ActiveCheckpoint],
+    known: &BTreeMap<(PathBuf, String), BTreeSet<String>>,
+) -> Result<Vec<Vec<String>>> {
+    publish_checkpoints_batch_on_repo(states, known, |_, _| Ok(()))
+}
+
+fn publish_checkpoints_batch_on_repo(
+    states: &[ActiveCheckpoint],
+    known: &BTreeMap<(PathBuf, String), BTreeSet<String>>,
+    mut before_repo_publish: impl FnMut(&[usize], &[Vec<String>]) -> Result<()>,
+) -> Result<Vec<Vec<String>>> {
+    if states.is_empty() {
+        return Ok(Vec::new());
+    }
+    let all_parents = resolve_batch_parents(states, known)?;
+    let mut by_repo = BTreeMap::<PathBuf, Vec<(usize, String, Vec<u8>)>>::new();
+    for (index, state) in states.iter().enumerate() {
+        if !state.workspace.is_absolute() {
+            bail!("TASK_CHECKPOINT_HOME_INVALID: object home must be an absolute worktree");
+        }
+        let common = crate::git::git_common_dir(&state.workspace)?;
+        let reference = state.reference();
+        let bytes = serde_json::to_vec(state)?;
+        by_repo
+            .entry(common)
+            .or_default()
+            .push((index, reference, bytes));
+    }
+    for (_common, items) in by_repo {
+        let batch_root = &states[items[0].0].workspace;
+        let entries: Vec<crate::git::GitCheckpointEntry<'_>> = items
+            .iter()
+            .map(|(index, reference, bytes)| crate::git::GitCheckpointEntry {
+                reference,
+                bytes,
+                parents: &all_parents[*index],
+            })
+            .collect();
+        // Register rollback compensation before fast-import mutates any ref in
+        // this batch so a partial multi-ref failure still cleans up updated refs.
+        let indices: Vec<usize> = items.iter().map(|(index, _, _)| *index).collect();
+        before_repo_publish(&indices, &all_parents)?;
+        crate::git::git_checkpoints_batch(batch_root, &entries)?;
+        let release_items: Vec<(&str, &str)> = items
+            .iter()
+            .filter_map(|(index, reference, _)| {
+                states[*index]
+                    .intent
+                    .is_none()
+                    .then_some((states[*index].task_id.as_str(), reference.as_str()))
+            })
+            .collect();
+        crate::git::release_provisional_batch(batch_root, &release_items)?;
+    }
+    Ok(all_parents)
+}
+
+fn validate_cohort_states(states: &[ActiveCheckpoint]) -> Result<()> {
+    let mut unique_keys = BTreeSet::<(PathBuf, String)>::new();
+    for state in states {
+        if state.version != 1 || state.intent.is_some() {
             bail!("TASK_RECOVERY_AMBIGUOUS: unresolved task intent or unsupported checkpoint version; acknowledged state cannot be inferred");
         }
-        for (root, reference) in &self.cohort {
-            let peer = read_checkpoint(root, reference)?;
+        for (root, reference) in &state.cohort {
+            unique_keys.insert((root.clone(), reference.clone()));
+        }
+    }
+    if unique_keys.is_empty() {
+        return Ok(());
+    }
+    let pairs: Vec<(PathBuf, String)> = unique_keys.into_iter().collect();
+    let loaded = read_checkpoints_batch(&pairs)?;
+    let mut peers = BTreeMap::<(PathBuf, String), ActiveCheckpoint>::new();
+    for (key, loaded_cp) in pairs.into_iter().zip(loaded) {
+        let reference = &key.1;
+        let peer = loaded_cp.map_err(|_| {
+            anyhow::anyhow!("TASK_RECOVERY_CHECKPOINT_INVALID: cannot read {reference}")
+        })?;
+        peers.insert(key, peer);
+    }
+    for state in states {
+        for (root, reference) in &state.cohort {
+            let peer = &peers[&(root.clone(), reference.clone())];
             if peer.intent.is_some()
-                || peer.cohort != self.cohort
-                || peer.cohort_id != self.cohort_id
+                || peer.cohort != state.cohort
+                || peer.cohort_id != state.cohort_id
             {
                 bail!("TASK_RECOVERY_AMBIGUOUS: incomplete task publication cohort");
             }
         }
-        Ok(())
     }
+    Ok(())
+}
+
+fn validate_parsed_checkpoint(
+    root: &Path,
+    expected_common: &Path,
+    common_cache: &mut BTreeMap<PathBuf, PathBuf>,
+    reference: &str,
+    checkpoint: ActiveCheckpoint,
+) -> Result<ActiveCheckpoint> {
+    if !checkpoint.workspace.exists() {
+        bail!(
+            "TASK_RECOVERY_CHECKPOINT_INVALID: checkpoint '{reference}' references missing worktree '{}'. The worktree was removed from disk.",
+            checkpoint.workspace.display()
+        );
+    }
+    let home_common = if checkpoint.workspace == root {
+        expected_common.to_path_buf()
+    } else if let Some(cached) = common_cache.get(&checkpoint.workspace) {
+        cached.clone()
+    } else {
+        let resolved = crate::git::git_common_dir(&checkpoint.workspace)
+            .map_err(|error| anyhow::anyhow!("TASK_RECOVERY_CHECKPOINT_INVALID: {error}"))?;
+        common_cache.insert(checkpoint.workspace.clone(), resolved.clone());
+        resolved
+    };
+    if checkpoint.reference() != reference || home_common != expected_common {
+        bail!(
+            "TASK_RECOVERY_CHECKPOINT_INVALID: checkpoint owner does not match its ref or worktree"
+        );
+    }
+    for part in [
+        &checkpoint.repository,
+        &checkpoint.project,
+        &checkpoint.milestone_id,
+    ] {
+        crate::tasks::valid_identity(part)?;
+    }
+    Ok(checkpoint)
+}
+
+pub(crate) fn try_read_checkpoints_batch(
+    queries: &[(PathBuf, String)],
+) -> Result<Vec<Result<Option<ActiveCheckpoint>>>> {
+    if queries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut results: Vec<Option<Result<Option<ActiveCheckpoint>>>> =
+        (0..queries.len()).map(|_| None).collect();
+    let mut by_root = BTreeMap::<&Path, Vec<(usize, &str)>>::new();
+    for (index, (root, reference)) in queries.iter().enumerate() {
+        by_root.entry(root.as_path()).or_default().push((index, reference.as_str()));
+    }
+    let mut common_cache = BTreeMap::<PathBuf, PathBuf>::new();
+    for (root, items) in by_root {
+        let specs: Vec<String> = items
+            .iter()
+            .map(|(_, reference)| format!("{reference}:checkpoint.json"))
+            .collect();
+        let blobs = crate::git::cat_file_batch(root, &specs)?;
+        let expected_common = if let Some(cached) = common_cache.get(root) {
+            cached.clone()
+        } else {
+            let resolved = crate::git::git_common_dir(root)
+                .map_err(|error| anyhow::anyhow!("TASK_RECOVERY_CHECKPOINT_INVALID: {error}"))?;
+            common_cache.insert(root.to_path_buf(), resolved.clone());
+            resolved
+        };
+        for ((index, reference), payload) in items.into_iter().zip(blobs) {
+            let parsed = match payload {
+                None => Ok(None),
+                Some(bytes) => match serde_json::from_slice::<ActiveCheckpoint>(&bytes) {
+                    Ok(cp) => validate_parsed_checkpoint(
+                        root,
+                        &expected_common,
+                        &mut common_cache,
+                        reference,
+                        cp,
+                    )
+                    .map(Some),
+                    Err(error) => Err(error.into()),
+                },
+            };
+            results[index] = Some(parsed);
+        }
+    }
+    Ok(results.into_iter().map(|slot| slot.expect("slot populated")).collect())
+}
+
+pub(crate) fn read_checkpoints_batch(
+    queries: &[(PathBuf, String)],
+) -> Result<Vec<Result<ActiveCheckpoint>>> {
+    Ok(try_read_checkpoints_batch(queries)?
+        .into_iter()
+        .zip(queries)
+        .map(|(result, (_, reference))| match result {
+            Ok(Some(cp)) => Ok(cp),
+            Ok(None) => Err(anyhow::anyhow!(
+                "TASK_RECOVERY_CHECKPOINT_INVALID: cannot read {reference}"
+            )),
+            Err(error) => Err(error),
+        })
+        .collect())
 }
 
 /// Reads a strict checkpoint from a real task ref, leaving all Git objects unchanged.
@@ -526,37 +800,16 @@ fn read_checkpoint_revision(
         bail!("TASK_RECOVERY_CHECKPOINT_INVALID: cannot read {reference}");
     }
     let checkpoint: ActiveCheckpoint = serde_json::from_slice(&output.stdout)?;
-    if !checkpoint.workspace.exists() {
-        bail!(
-            "TASK_RECOVERY_CHECKPOINT_INVALID: checkpoint '{reference}' references missing worktree '{}'. The worktree was removed from disk.",
-            checkpoint.workspace.display()
-        );
-    }
-    let home = crate::git::git_stdout(
-        &checkpoint.workspace,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        "TASK_RECOVERY_CHECKPOINT_INVALID",
-    )?;
-    let discovered = crate::git::git_stdout(
+    let expected_common = crate::git::git_common_dir(root)
+        .map_err(|error| anyhow::anyhow!("TASK_RECOVERY_CHECKPOINT_INVALID: {error}"))?;
+    let mut common_cache = BTreeMap::<PathBuf, PathBuf>::new();
+    validate_parsed_checkpoint(
         root,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        "TASK_RECOVERY_CHECKPOINT_INVALID",
-    )?;
-    if checkpoint.reference() != reference
-        || Path::new(&home).canonicalize()? != Path::new(&discovered).canonicalize()?
-    {
-        bail!(
-            "TASK_RECOVERY_CHECKPOINT_INVALID: checkpoint owner does not match its ref or worktree"
-        );
-    }
-    for part in [
-        &checkpoint.repository,
-        &checkpoint.project,
-        &checkpoint.milestone_id,
-    ] {
-        crate::tasks::valid_identity(part)?;
-    }
-    Ok(checkpoint)
+        &expected_common,
+        &mut common_cache,
+        reference,
+        checkpoint,
+    )
 }
 
 pub(crate) enum StoreHealth {
@@ -642,6 +895,7 @@ pub(crate) struct ManagedTransaction<'a> {
     publication_fence: Option<DatabaseFence>,
     manifest_replacement: Option<ManifestReplacement>,
     before: Vec<ActiveCheckpoint>,
+    known_parents: BTreeMap<(PathBuf, String), BTreeSet<String>>,
     frozen: Option<Vec<ActiveCheckpoint>>,
     retired: Option<String>,
     new_admissions: BTreeSet<String>,
@@ -678,6 +932,7 @@ pub(crate) fn transaction(
         publication_fence: None,
         manifest_replacement: None,
         before: Vec::new(),
+        known_parents: BTreeMap::new(),
         frozen: None,
         retired: None,
         new_admissions: BTreeSet::new(),
@@ -729,19 +984,12 @@ fn task_rows(connection: &Connection) -> Result<BTreeMap<String, Vec<String>>> {
     Ok(rows)
 }
 
-fn publish_cohort(states: &[ActiveCheckpoint]) -> Result<()> {
-    for state in states {
-        state.publish()?;
-    }
-    let mut validated = BTreeSet::new();
-    for state in states {
-        if state.version != 1 || state.intent.is_some() {
-            bail!("TASK_RECOVERY_AMBIGUOUS");
-        }
-        if validated.insert((&state.cohort_id, &state.cohort)) {
-            state.validate_cohort()?;
-        }
-    }
+fn publish_cohort(
+    states: &[ActiveCheckpoint],
+    known: &BTreeMap<(PathBuf, String), BTreeSet<String>>,
+) -> Result<()> {
+    publish_checkpoints_batch(states, known)?;
+    validate_cohort_states(states)?;
     Ok(())
 }
 
@@ -798,35 +1046,43 @@ impl ManagedTransaction<'_> {
         // Old cohorts must be replaced together: no peer may retain an ambiguous
         // acknowledgement merely because another peer receives a newer checkpoint.
         let mut visited_cohorts = BTreeSet::new();
-        loop {
-            let before = states(self, &context, &covered, readmission)?;
+        let mut checked_refs = BTreeSet::new();
+        let mut before = loop {
+            let current = states(self, &context, &covered, readmission)?;
+            let pending_queries: Vec<(PathBuf, String)> = current
+                .iter()
+                .map(|s| (s.workspace.clone(), s.reference()))
+                .filter(|pair| checked_refs.insert(pair.clone()))
+                .collect();
             let mut extended = false;
-            for state in &before {
-                if git_command(
-                    &state.workspace,
-                    &["show-ref", "--verify", "--quiet", &state.reference()],
-                )?
-                .status
-                .success()
-                {
-                    let previous = read_checkpoint(&state.workspace, &state.reference())?;
+            if !pending_queries.is_empty() {
+                let checkpoints = try_read_checkpoints_batch(&pending_queries)?;
+                for result in checkpoints {
+                    let Some(previous) = result? else {
+                        continue;
+                    };
                     if visited_cohorts.insert(previous.cohort.clone()) {
-                        for (root, reference) in previous.cohort {
-                            let peer = read_checkpoint(&root, &reference)?;
-                            extended |= covered.insert(peer.task_id);
+                        let new_peers: Vec<(PathBuf, String)> = previous
+                            .cohort
+                            .into_iter()
+                            .filter(|pair| checked_refs.insert(pair.clone()))
+                            .collect();
+                        if !new_peers.is_empty() {
+                            for peer_res in read_checkpoints_batch(&new_peers)? {
+                                let peer = peer_res?;
+                                extended |= covered.insert(peer.task_id);
+                            }
                         }
                     }
                 }
             }
             if !extended {
-                break;
+                break current;
             }
+        };
+        if !self.covered.is_empty() {
+            before.retain(|state| !self.covered.contains(&state.task_id));
         }
-        let additions = covered
-            .difference(&self.covered)
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let mut before = states(self, &context, &additions, readmission)?;
         // Validate the whole requested cohort before publishing even its first intent.
         for state in &mut before {
             if requested.contains(&state.task_id) {
@@ -836,16 +1092,49 @@ impl ManagedTransaction<'_> {
                     .context("task revision exhausted")?;
             }
         }
-        for state in &before {
-            let mut intent = state.clone();
-            intent.intent = Some(self.intent_token.clone());
-            intent.publish()?;
-            self.before.push(state.clone());
-            if requested.contains(&state.task_id) {
-                self.execute("INSERT INTO task_revisions VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET revision=MAX(revision,excluded.revision)", params![state.task_id, state.max_revision - 1])?;
-            }
-        }
+        let intents: Vec<ActiveCheckpoint> = before
+            .iter()
+            .map(|state| {
+                let mut intent = state.clone();
+                intent.intent = Some(self.intent_token.clone());
+                intent
+            })
+            .collect();
+        self.record_intents_with_compensation(before, &intents, |state| {
+            requested.contains(&state.task_id)
+        })?;
         self.covered.extend(covered);
+        Ok(())
+    }
+
+    fn record_intents_with_compensation(
+        &mut self,
+        states: Vec<ActiveCheckpoint>,
+        intents: &[ActiveCheckpoint],
+        record_revision: impl Fn(&ActiveCheckpoint) -> bool,
+    ) -> Result<()> {
+        let mut slots: Vec<Option<ActiveCheckpoint>> = states.into_iter().map(Some).collect();
+        let mut revision_updates: Vec<(String, u64)> = Vec::new();
+        publish_checkpoints_batch_on_repo(intents, &BTreeMap::new(), |indices, all_parents| {
+            for &index in indices {
+                let state = slots[index].take().expect("unique intent index");
+                self.known_parents
+                    .entry((state.workspace.clone(), state.task_id.clone()))
+                    .or_default()
+                    .extend(all_parents[index].iter().cloned());
+                if record_revision(&state) {
+                    revision_updates.push((state.task_id.clone(), state.max_revision - 1));
+                }
+                self.before.push(state);
+            }
+            Ok(())
+        })?;
+        for (task_id, revision) in revision_updates {
+            self.execute(
+                "INSERT INTO task_revisions VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET revision=MAX(revision,excluded.revision)",
+                params![task_id, revision],
+            )?;
+        }
         Ok(())
     }
 
@@ -889,6 +1178,8 @@ impl ManagedTransaction<'_> {
         let Some(context) = &self.context else {
             return Ok(());
         };
+        let mut fences = Vec::new();
+        let workspace = context.root.canonicalize()?;
         for spec in &milestone.tasks {
             if selected.is_some_and(|selected| selected != spec.task_ref) {
                 continue;
@@ -909,13 +1200,13 @@ impl ManagedTransaction<'_> {
             if revision.is_none() {
                 self.new_admissions.insert(id.clone());
             }
-            let mut fence = ActiveCheckpoint {
+            fences.push(ActiveCheckpoint {
                 version: 1,
                 repository: milestone.repository.clone(),
                 project: milestone.project.clone(),
                 milestone_id: milestone.id.clone(),
                 task_id: id,
-                workspace: context.root.canonicalize()?,
+                workspace: workspace.clone(),
                 task: None,
                 max_revision: revision.unwrap_or(0),
                 claims: Vec::new(),
@@ -929,27 +1220,35 @@ impl ManagedTransaction<'_> {
                 intent: None,
                 cohort: Vec::new(),
                 cohort_id: String::new(),
-            };
-            if git_command(
-                &fence.workspace,
-                &["show-ref", "--verify", "--quiet", &fence.reference()],
-            )?
-            .status
-            .success()
-            {
-                let previous = read_checkpoint(&fence.workspace, &fence.reference())?;
+            });
+        }
+        if fences.is_empty() {
+            return Ok(());
+        }
+        let queries: Vec<(PathBuf, String)> = fences
+            .iter()
+            .map(|fence| (fence.workspace.clone(), fence.reference()))
+            .collect();
+        let previous_checkpoints = try_read_checkpoints_batch(&queries)?;
+        let token = format!("admission-{}-{}", std::process::id(), now());
+        for (fence, prev_result) in fences.iter_mut().zip(previous_checkpoints) {
+            if let Some(previous) = prev_result? {
                 fence.max_revision = fence.max_revision.max(previous.max_revision);
             }
             fence.max_revision = fence
                 .max_revision
                 .checked_add(1)
                 .context("task revision exhausted")?;
-            let mut intent = fence.clone();
-            intent.intent = Some(format!("admission-{}-{}", std::process::id(), now()));
-            intent.publish()?;
-            self.execute("INSERT INTO task_revisions VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET revision=MAX(revision,excluded.revision)",params![fence.task_id,fence.max_revision-1])?;
-            self.before.push(fence);
         }
+        let intents: Vec<ActiveCheckpoint> = fences
+            .iter()
+            .map(|fence| {
+                let mut intent = fence.clone();
+                intent.intent = Some(token.clone());
+                intent
+            })
+            .collect();
+        self.record_intents_with_compensation(fences, &intents, |_| true)?;
         Ok(())
     }
     /// Freeze a handoff's outgoing and foreign dependency deltas before the pruning decision.
@@ -1076,7 +1375,7 @@ impl ManagedTransaction<'_> {
         // No Drop compensation is legal after SQL COMMIT, even when Git publication fails.
         self.before.clear();
         publication
-            .publish_with(&mut publish_manifest)
+            .publish_with_known(&self.known_parents, &mut publish_manifest)
             .map_err(|error| anyhow::Error::new(CheckpointPending).context(error.to_string()))?;
         clear_pending(&context.database)
             .map_err(|error| anyhow::Error::new(CheckpointPending).context(error.to_string()))?;

@@ -1,21 +1,47 @@
 use super::*;
 
-#[test]
-fn loop_rebinding_keeps_the_prior_receiver_from_leaking_past_the_loop() {
-    let (_workspace, db) = build_workspace(&[(
+pub(super) const PERSISTED_FILES: &[(&str, &str)] = &[(
         "loop.py",
         "class Worker:\n    def work(self): pass\ndef run(values):\n    current = Worker()\n    current.work()\n    for current in values:\n        pass\n    current.work()\n",
-    )]);
+    )];
+
+#[test]
+fn loop_rebinding_keeps_the_prior_receiver_from_leaking_past_the_loop() {
+    let db = receiver_snapshot();
     let calls = persisted_coverage(&db, "loop.py", "current.work");
     assert_eq!(calls.len(), 2, "{calls:?}");
     assert_eq!(calls[0].0, "resolved", "{calls:?}");
     assert_eq!(calls[1].0, "unresolved", "{calls:?}");
 }
 #[test]
-fn global_and_nonlocal_receivers_require_interprocedural_state_proof() {
-    let source="class Client:\n    def execute(self): pass\nshared = Client()\ndef global_user():\n    global shared\n    shared.execute()\n    shared = Client()\n    shared.execute()\ndef outer():\n    local = Client()\n    def inner():\n        nonlocal local\n        local.execute()\n        local = Client()\n        local.execute()\n";
-    let facts = ast::extract("scope.py", "python", source).unwrap();
-    for name in ["global_user", "inner"] {
+fn binding_provenance_matrix() {
+    #[derive(Clone, Copy, Debug)]
+    enum Case {
+        GlobalAndNonlocalReceiversRequireInterproceduralStateProof,
+        BindingFactsPreserveSameLineOrderAndEveryInvalidation,
+        TypedLocalBindingsAliasesAndSyncReturnsResolveWithInferredEvidence,
+        PrecedingCallsConditionalRebindingsAndUnknownRhsRemainUnresolved,
+    }
+    struct SourceCase {
+        kind: Case,
+        path: &'static str,
+        source: &'static str,
+    }
+    for row in [
+        // global_and_nonlocal_receivers_require_interprocedural_state_proof
+        SourceCase { kind: Case::GlobalAndNonlocalReceiversRequireInterproceduralStateProof, path: "scope.py", source: "class Client:\n    def execute(self): pass\nshared = Client()\ndef global_user():\n    global shared\n    shared.execute()\n    shared = Client()\n    shared.execute()\ndef outer():\n    local = Client()\n    def inner():\n        nonlocal local\n        local.execute()\n        local = Client()\n        local.execute()\n" },
+        // binding_facts_preserve_same_line_order_and_every_invalidation
+        SourceCase { kind: Case::BindingFactsPreserveSameLineOrderAndEveryInvalidation, path: "flow.py", source: "class Client:\n    def execute(self): pass\ndef run(condition):\n    before.execute(); before = Client(); before.execute()\n    alias = before\n    declared: Client = unknown_factory()\n    annotation_only: Client\n    if condition:\n        before = unknown_factory()\n    alias += unknown\n    first, second = unknown\n    del declared\n" },
+        // typed_local_bindings_aliases_and_sync_returns_resolve_with_inferred_evidence
+        SourceCase { kind: Case::TypedLocalBindingsAliasesAndSyncReturnsResolveWithInferredEvidence, path: "resolved_flow.py", source: "class Client:\n    def execute(self): pass\ndef make() -> Client: return Client()\ndef run():\n    local = Client(); local.execute()\n    alias = local\n    alias.execute()\n    declared: Client = unknown_factory()\n    declared.execute()\n    result = make()\n    result.execute()\n    return make().execute()\n" },
+        // preceding_calls_conditional_rebindings_and_unknown_rhs_remain_unresolved
+        SourceCase { kind: Case::PrecedingCallsConditionalRebindingsAndUnknownRhsRemainUnresolved, path: "unknown_flow.py", source: "class Client:\n    def execute(self): pass\ndef run(condition):\n    local.execute(); local = Client()\n    local = unknown_factory()\n    local.execute()\n    branch = Client()\n    if condition: branch = Client()\n    branch.execute()\n    uninitialized: Client\n    uninitialized.execute()\n" },
+    ] {
+        let source = row.source;
+        let facts = ast::extract(row.path, "python", source).unwrap();
+        match row.kind {
+            Case::GlobalAndNonlocalReceiversRequireInterproceduralStateProof => {
+for name in ["global_user", "inner"] {
         let node = facts.nodes.iter().find(|node| node.name == name).unwrap();
         let details = crate::common::assertions::projected_node_details(&facts, node);
         let flow: ValueFlowFacts = serde_json::from_value(details["value_flow"].clone()).unwrap();
@@ -25,25 +51,9 @@ fn global_and_nonlocal_receivers_require_interprocedural_state_proof() {
             .iter()
             .all(|binding| matches!(binding.value, ValueExpr::Unknown)));
     }
-    let graph = linker::link(&BTreeMap::from([("scope.py".to_owned(), facts)]));
-    let calls: Vec<_> = graph
-        .coverage
-        .iter()
-        .filter(|coverage| {
-            matches!(
-                coverage.expression.as_str(),
-                "shared.execute" | "local.execute"
-            )
-        })
-        .collect();
-    assert_eq!(calls.len(), 4);
-    assert!(calls.iter().all(|coverage| coverage.status == "unresolved"));
-}
-#[test]
-fn binding_facts_preserve_same_line_order_and_every_invalidation() {
-    let source="class Client:\n    def execute(self): pass\ndef run(condition):\n    before.execute(); before = Client(); before.execute()\n    alias = before\n    declared: Client = unknown_factory()\n    annotation_only: Client\n    if condition:\n        before = unknown_factory()\n    alias += unknown\n    first, second = unknown\n    del declared\n";
-    let facts = ast::extract("flow.py", "python", source).unwrap();
-    let run = facts.nodes.iter().find(|node| node.name == "run").unwrap();
+            }
+            Case::BindingFactsPreserveSameLineOrderAndEveryInvalidation => {
+let run = facts.nodes.iter().find(|node| node.name == "run").unwrap();
     let details = crate::common::assertions::projected_node_details(&facts, run);
     let flow: ValueFlowFacts = serde_json::from_value(details["value_flow"].clone()).unwrap();
     let before: Vec<_> = flow
@@ -76,13 +86,27 @@ fn binding_facts_preserve_same_line_order_and_every_invalidation() {
             .iter()
             .any(|binding| binding.name == name && matches!(binding.value, ValueExpr::Unknown)));
     }
-}
-#[test]
-fn typed_local_bindings_aliases_and_sync_returns_resolve_with_inferred_evidence() {
-    let source="class Client:\n    def execute(self): pass\ndef make() -> Client: return Client()\ndef run():\n    local = Client(); local.execute()\n    alias = local\n    alias.execute()\n    declared: Client = unknown_factory()\n    declared.execute()\n    result = make()\n    result.execute()\n    return make().execute()\n";
-    let facts = ast::extract("resolved_flow.py", "python", source).unwrap();
-    let graph = linker::link(&BTreeMap::from([("resolved_flow.py".to_owned(), facts)]));
-    for expression in [
+            }
+            _ => {}
+        }
+        let graph = linker::link(&BTreeMap::from([(row.path.to_owned(), facts)]));
+        match row.kind {
+            Case::GlobalAndNonlocalReceiversRequireInterproceduralStateProof => {
+let calls: Vec<_> = graph
+        .coverage
+        .iter()
+        .filter(|coverage| {
+            matches!(
+                coverage.expression.as_str(),
+                "shared.execute" | "local.execute"
+            )
+        })
+        .collect();
+    assert_eq!(calls.len(), 4);
+    assert!(calls.iter().all(|coverage| coverage.status == "unresolved"));
+            }
+            Case::TypedLocalBindingsAliasesAndSyncReturnsResolveWithInferredEvidence => {
+for expression in [
         "local.execute",
         "alias.execute",
         "declared.execute",
@@ -106,13 +130,9 @@ fn typed_local_bindings_aliases_and_sync_returns_resolve_with_inferred_evidence(
             "{expression}"
         );
     }
-}
-#[test]
-fn preceding_calls_conditional_rebindings_and_unknown_rhs_remain_unresolved() {
-    let source="class Client:\n    def execute(self): pass\ndef run(condition):\n    local.execute(); local = Client()\n    local = unknown_factory()\n    local.execute()\n    branch = Client()\n    if condition: branch = Client()\n    branch.execute()\n    uninitialized: Client\n    uninitialized.execute()\n";
-    let facts = ast::extract("unknown_flow.py", "python", source).unwrap();
-    let graph = linker::link(&BTreeMap::from([("unknown_flow.py".to_owned(), facts)]));
-    for coverage in graph.coverage.iter().filter(|coverage| {
+            }
+            Case::PrecedingCallsConditionalRebindingsAndUnknownRhsRemainUnresolved => {
+for coverage in graph.coverage.iter().filter(|coverage| {
         matches!(
             coverage.expression.as_str(),
             "local.execute" | "branch.execute" | "uninitialized.execute"
@@ -123,5 +143,9 @@ fn preceding_calls_conditional_rebindings_and_unknown_rhs_remain_unresolved() {
             "{}:{}",
             coverage.expression, coverage.line
         );
+    }
+            }
+            _ => {}
+        }
     }
 }

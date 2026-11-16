@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn handoff_retains_opt_out_history_and_records_polish_verification() {
     let root = MilestoneHarness::workspace(DEFAULT_SEAM, "");
+    crate::acdd::snapshot::precompile_runner(&root);
     root.write(
         "acdd.yaml",
         "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nhandoff_pruning: false\n",
@@ -25,7 +26,7 @@ fn handoff_retains_opt_out_history_and_records_polish_verification() {
     })
     .unwrap();
     let claim_time = store
-        .earliest_claim("forge-mcp/m-fallback:")
+        .earliest_claim("acdd/m-fallback:")
         .unwrap()
         .unwrap();
     drop(store);
@@ -108,7 +109,7 @@ fn handoff_retains_opt_out_history_and_records_polish_verification() {
     // the unmerged active document. Archived opt-out SQL history is not rebuilt.
     let stale = root.path("stale-worktree");
     root.add_detached_worktree(&stale, &polish_commit).unwrap();
-    let orphan = "refs/forge/state/forge-mcp/forge-mcp/m-fallback/orphan";
+    let orphan = "refs/acdd/state/acdd/acdd/m-fallback/orphan";
     root.set_ref(orphan, &polish_commit);
     root.remove_file(".acdd/tasks.sqlite");
     root.db_recover().unwrap();

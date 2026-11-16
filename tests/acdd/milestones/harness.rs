@@ -115,7 +115,7 @@ impl LifecycleTask {
     }
 
     pub(super) fn task_id(&self) -> String {
-        format!("forge-mcp/{}:{}", self.id, self.task)
+        format!("acdd/{}:{}", self.id, self.task)
     }
 }
 
@@ -248,7 +248,7 @@ impl MilestoneHarness {
     }
 
     pub(super) fn git_note(&self, commit: &str) -> (Output, Value) {
-        let output = Self::git_at(self.root(), &["notes", "--ref=forge", "show", commit]).unwrap();
+        let output = Self::git_at(self.root(), &["notes", "--ref=acdd", "show", commit]).unwrap();
         let value = serde_json::from_slice(&output.stdout).unwrap();
         (output, value)
     }
@@ -262,7 +262,7 @@ impl MilestoneHarness {
             self.root(),
             &[
                 "notes",
-                "--ref=forge",
+                "--ref=acdd",
                 "add",
                 "-f",
                 "-m",
@@ -489,7 +489,7 @@ if [ "$ACDD_FIXTURE_CRASH" = committed ] && [ -d "$PWD/.acdd/captured" ] && [ ! 
   kill -KILL "$PPID"
   exit 0
 fi
-if [ "$1" = update-ref ] && [ "$2" = refs/notes/forge ]; then
+if [ "$1" = update-ref ] && [ "$2" = refs/notes/acdd ]; then
   mkdir -p "$PWD/.acdd/captured"
   for journal in "$PWD"/.acdd/handoff-*.json; do
     [ ! -f "$journal" ] || cp "$journal" "$PWD/.acdd/captured/"
@@ -501,10 +501,22 @@ if [ "$1" = update-ref ] && [ "$2" = refs/notes/forge ]; then
   fi
 fi
 if [ "$ACDD_FIXTURE_CRASH" = enrolled ] && [ -d "$PWD/.acdd/captured" ]; then
+  case "$*" in *fast-import*)
+    tmp="$PWD/.acdd/fi-$$"
+    cat > "$tmp"
+    /usr/bin/git "$@" < "$tmp" || { code=$?; rm -f "$tmp"; exit $code; }
+    if grep -q 'refs/acdd/state/acdd/acdd/m-close/' "$tmp" && grep -q '"intent":"' "$tmp"; then
+      rm -f "$tmp"
+      kill -KILL "$PPID"
+      exit 0
+    fi
+    rm -f "$tmp"
+    exit 0;;
+  esac
   reference=
   sha=
   for arg do
-    case "$arg" in refs/forge/state/forge-mcp/forge-mcp/m-close/*) reference="$arg";;
+    case "$arg" in refs/acdd/state/acdd/acdd/m-close/*) reference="$arg";;
       *) if [ -n "$reference" ] && [ -z "$sha" ]; then sha="$arg"; fi;;
     esac
   done

@@ -1348,7 +1348,7 @@ impl LanguageProfile for Python {
         AstSearchCapabilities {
             declaration_kinds: &["function_definition", "class_definition"],
             declaration_body_kinds: &["block"],
-            declaration_completions: &[":\n    __FORGE_META_BODY\n", "\n    __FORGE_META_BODY\n"],
+            declaration_completions: &[":\n    __ACDD_META_BODY\n", "\n    __ACDD_META_BODY\n"],
             attribute_kinds: &["decorator"],
             valid_examples: &[
                 "class Example",

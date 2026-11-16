@@ -53,11 +53,11 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
     .unwrap();
     let store = TasksStore::open_project(
         &tasks::database_path(&fixture.foreign).unwrap(),
-        "forge-mcp",
+        "acdd",
         "other",
     )
     .unwrap();
-    for dependency in [&fixture.task_id, "forge-mcp/m-close:__milestone__"] {
+    for dependency in [&fixture.task_id, "acdd/m-close:__milestone__"] {
         MilestoneHarness::seed_dependency(&store, FOREIGN_WAITING, dependency);
     }
     let task = store.inspect("other/m-proof:proof").unwrap();
@@ -70,7 +70,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
     for sha in [&fixture.selected_target, &fixture.foreign_proof] {
         MilestoneHarness::git_at(
             &fixture.foreign,
-            &["update-ref", &format!("refs/forge/evidence/{sha}"), sha],
+            &["update-ref", &format!("refs/acdd/evidence/{sha}"), sha],
         )
         .unwrap();
     }
@@ -161,9 +161,9 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
     );
     root.restore_git_note(&fixture.commit, PRESERVED_NOTE.as_bytes());
     for reference in [
-        "refs/forge/state/forge-mcp/forge-mcp/m-close/keep",
-        "refs/forge/state/other/m-close/keep",
-        "refs/forge/state/m-close/keep",
+        "refs/acdd/state/acdd/acdd/m-close/keep",
+        "refs/acdd/state/other/m-close/keep",
+        "refs/acdd/state/m-close/keep",
     ] {
         root.set_ref(reference, &fixture.commit);
     }
@@ -173,7 +173,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
     unowned["handoff_proof_owners"]
         .as_object_mut()
         .unwrap()
-        .retain(|_, owner| owner["identity"] != "forge-mcp/other/m-foreign");
+        .retain(|_, owner| owner["identity"] != "acdd/other/m-foreign");
     root.set_git_note(&anchor, &unowned);
     let before = read_files(&[ACTIVE, ARCHIVE]);
     let legacy = fixture.handoff().unwrap_err();
@@ -189,8 +189,8 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
     assert_eq!(read_files(&[ACTIVE, ARCHIVE]), before);
     root.restore_git_note(&fixture.commit, PRESERVED_NOTE.as_bytes());
     completed_handoff().unwrap();
-    let parsed = Milestone::parse(&root.document(ARCHIVE), "forge-mcp").unwrap();
-    let accepted = Milestone::parse(&fixture.delivered, "forge-mcp")
+    let parsed = Milestone::parse(&root.document(ARCHIVE), "acdd").unwrap();
+    let accepted = Milestone::parse(&fixture.delivered, "acdd")
         .unwrap()
         .tasks[0]
         .receipt
@@ -218,7 +218,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
         let count: i64 = MilestoneHarness::task_rows(&reopened, table, &fixture.task_id).unwrap();
         assert_eq!(count, 0, "{table}");
     }
-    let foreign_task_store = root.store_in("forge-mcp", "other");
+    let foreign_task_store = root.store_in("acdd", "other");
     let foreign_task = foreign_task_store.inspect(foreign_id).unwrap();
     assert_eq!(foreign_task.task_id, foreign_id);
     let foreign_revisions: i64 =
@@ -232,7 +232,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
         ),
         2
     );
-    let tombstone = MilestoneHarness::tombstone(&reopened, "forge-mcp/forge-mcp/m-close");
+    let tombstone = MilestoneHarness::tombstone(&reopened, "acdd/acdd/m-close");
     assert_eq!(tombstone.terminal, 1);
     assert_eq!(
         tombstone.completed_tasks,
@@ -248,7 +248,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
     let synced = root
         .manage(tasks::Manage {
             action: tasks::ManageAction::Sync,
-            workspace: Some("forge-mcp".into()),
+            workspace: Some("acdd".into()),
             ..Default::default()
         })
         .unwrap();
@@ -269,7 +269,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
     assert!(reopened.list(None, "all", None).unwrap().is_empty());
     root.remove_file("docs/milestones/010-close.md");
     let archived = root.document("docs/milestones/archive/010-close.md");
-    let parsed = Milestone::parse(&archived, "forge-mcp").unwrap();
+    let parsed = Milestone::parse(&archived, "acdd").unwrap();
     let completed = parsed
         .tasks
         .iter()
@@ -328,14 +328,14 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
         note_output.stdout.len() < 2048,
         "Git note must stay below 2 KiB"
     );
-    let compact = &note["milestone_passports"]["forge-mcp/forge-mcp/m-close"];
+    let compact = &note["milestone_passports"]["acdd/acdd/m-close"];
     assert!(compact.get("terminal_tasks").is_none());
     assert!(compact.get("landed_receipts").is_none());
     assert!(compact.get("tasks").is_none());
     assert_eq!(compact["tasks_count"], passport["tasks_count"]);
     assert_eq!(compact["verification"]["tests_passed"], 1);
     assert_eq!(
-        note["milestone_passports"]["forge-mcp/other/m-close"]["retained"],
+        note["milestone_passports"]["acdd/other/m-close"]["retained"],
         true
     );
     assert_eq!(note["external_note"], "preserved");
@@ -344,9 +344,9 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
     let owners = owners["handoff_proof_owners"].as_object().unwrap();
     assert!(!owners
         .values()
-        .any(|owner| owner["identity"] == "forge-mcp/forge-mcp/m-close"));
+        .any(|owner| owner["identity"] == "acdd/acdd/m-close"));
     assert!(owners.values().any(|owner| {
-        owner["identity"] == "forge-mcp/other/m-foreign"
+        owner["identity"] == "acdd/other/m-foreign"
             && owner["proof_shas"]
                 .as_array()
                 .unwrap()
@@ -356,7 +356,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
     assert_eq!(
         owners
             .values()
-            .filter(|owner| owner["identity"] == "forge-mcp/other/m-foreign")
+            .filter(|owner| owner["identity"] == "acdd/other/m-foreign")
             .count(),
         1
     );
@@ -366,9 +366,9 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
         .iter()
         .any(|sha| sha.as_str() == Some(selected_target.as_str())));
     for (reference, retained) in [
-        ("refs/forge/state/forge-mcp/forge-mcp/m-close/keep", false),
-        ("refs/forge/state/other/m-close/keep", true),
-        ("refs/forge/state/m-close/keep", true),
+        ("refs/acdd/state/acdd/acdd/m-close/keep", false),
+        ("refs/acdd/state/other/m-close/keep", true),
+        ("refs/acdd/state/m-close/keep", true),
     ] {
         assert_eq!(root.has_ref(reference), retained);
     }
@@ -377,7 +377,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
         .join("docs/milestones/archive/010-close.md.bak")
         .exists());
     for sha in meta["handoff"]["proof_shas"].as_sequence().unwrap() {
-        let reference = format!("refs/forge/evidence/{}", sha.as_str().unwrap());
+        let reference = format!("refs/acdd/evidence/{}", sha.as_str().unwrap());
         assert_eq!(
             root.has_ref(&reference),
             sha.as_str() == Some(selected_target.as_str())
@@ -505,7 +505,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
             assert_ne!(changed, delivered_active);
             root.write(active, &changed);
         } else if scenario == "altered-active-receipt" {
-            let receipt = Milestone::parse(&delivered_active, "forge-mcp")
+            let receipt = Milestone::parse(&delivered_active, "acdd")
                 .unwrap()
                 .tasks[0]
                 .receipt
@@ -546,8 +546,8 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
             assert!(!root.root().join(active).exists(), "{scenario}");
             if scenario == "torn" {
                 let repaired = root.document(archive);
-                let repaired = Milestone::parse(&repaired, "forge-mcp").unwrap();
-                let original = Milestone::parse(&archived, "forge-mcp").unwrap();
+                let repaired = Milestone::parse(&repaired, "acdd").unwrap();
+                let original = Milestone::parse(&archived, "acdd").unwrap();
                 assert_eq!(
                     serde_json::to_value(&repaired.tasks[0].receipt).unwrap(),
                     serde_json::to_value(&original.tasks[0].receipt).unwrap()
@@ -564,7 +564,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
             assert_eq!(
                 journal_path.parent(),
                 Some(root.path(".acdd").as_path()),
-                "journal outside fixture .forge directory"
+                "journal outside fixture .acdd directory"
             );
             std::fs::remove_file(&journal_path).unwrap();
         }
@@ -578,7 +578,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
 
     let mut foreign_store = TasksStore::open_project(
         &tasks::database_path(&fixture.foreign).unwrap(),
-        "forge-mcp",
+        "acdd",
         "other",
     )
     .unwrap();
@@ -593,7 +593,7 @@ fn foreign_handoff_repairs_archive_and_recovers_interrupted_journal() {
     for _ in 0..2 {
         completed_handoff().unwrap();
         for sha in [&selected_target, &foreign_proof] {
-            let pin = format!("refs/forge/evidence/{sha}");
+            let pin = format!("refs/acdd/evidence/{sha}");
             assert!(!root.has_ref(&pin));
         }
     }

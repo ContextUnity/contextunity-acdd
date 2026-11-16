@@ -1,7 +1,7 @@
 use super::support::*;
 
 const MANIFEST: &str = "docs/milestones/010-scope-sync.md";
-const TASK_ID: &str = "forge-mcp/m-scope-sync:owner";
+const TASK_ID: &str = "acdd/m-scope-sync:owner";
 
 fn scope_fixture() -> Workspace {
     let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
@@ -45,7 +45,7 @@ fn scope_extension_updates_sqlite_and_milestone_manifest() {
     tasks::manage(root.root(), extend_scope("tests/admitted.rs")).unwrap();
 
     let manifest_text = std::fs::read_to_string(root.root().join(MANIFEST)).unwrap();
-    let milestone = Milestone::parse(&manifest_text, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(&manifest_text, "acdd").unwrap();
     let manifest_task = &milestone.tasks[0];
     let extended = stored_task(&root).inspect(TASK_ID).unwrap();
     assert!(extended

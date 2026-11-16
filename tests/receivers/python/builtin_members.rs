@@ -1,8 +1,30 @@
 use super::*;
 
 #[test]
-fn builtin_type_members_are_finite_and_type_specific() {
-    let profile = contextunity_acdd::engine::languages::by_id("python").unwrap();
+fn builtin_member_provenance_matrix() {
+    #[derive(Clone, Copy, Debug)]
+    enum Case {
+        BuiltinTypeMembersAreFiniteAndTypeSpecific,
+        PythonBuiltinTypeMembersRequireUnshadowedTypeNames,
+        PythonNamespaceBuiltinsRequireUnshadowedNames,
+    }
+    struct SourceCase {
+        kind: Case,
+        path: &'static str,
+        source: &'static str,
+    }
+    for row in [
+        // builtin_type_members_are_finite_and_type_specific
+        SourceCase { kind: Case::BuiltinTypeMembersAreFiniteAndTypeSpecific, path: "builtins.py", source: "def use(text: str, items: list, mapping: dict):\n    text.strip()\n    items.append(1)\n    mapping.get('key')\n    text.append(1)\n    converted = str(unknown())\n    converted.strip()\n" },
+        // python_builtin_type_members_require_unshadowed_type_names
+        SourceCase { kind: Case::PythonBuiltinTypeMembersRequireUnshadowedTypeNames, path: "builtin_type_members.py", source: "def standard():\n    dict.fromkeys(('a',))\n    str.maketrans('a', 'b')\ndef shadow(dict, str):\n    dict.fromkeys(('a',))\n    str.maketrans('a', 'b')\n" },
+        // python_namespace_builtins_require_unshadowed_names
+        SourceCase { kind: Case::PythonNamespaceBuiltinsRequireUnshadowedNames, path: "namespace_builtins.py", source: "def standard():\n    globals()\n    locals()\n    input()\ndef shadow(globals, locals, input):\n    globals()\n    locals()\n    input()\n" },
+    ] {
+        let source = row.source;
+        let facts = ast::extract(row.path, "python", source).unwrap();
+        if matches!(row.kind, Case::BuiltinTypeMembersAreFiniteAndTypeSpecific) {
+let profile = contextunity_acdd::engine::languages::by_id("python").unwrap();
     for (receiver, member) in [
         ("str", "strip"),
         ("list", "append"),
@@ -22,10 +44,11 @@ fn builtin_type_members_are_finite_and_type_specific() {
     ] {
         assert!(!profile.builtin_member(receiver, member));
     }
-    let source = "def use(text: str, items: list, mapping: dict):\n    text.strip()\n    items.append(1)\n    mapping.get('key')\n    text.append(1)\n    converted = str(unknown())\n    converted.strip()\n";
-    let facts = ast::extract("builtins.py", "python", source).unwrap();
-    let graph = linker::link(&BTreeMap::from([("builtins.py".to_owned(), facts)]));
-    for expression in [
+        }
+        let graph = linker::link(&BTreeMap::from([(row.path.to_owned(), facts)]));
+        match row.kind {
+            Case::BuiltinTypeMembersAreFiniteAndTypeSpecific => {
+for expression in [
         "text.strip",
         "items.append",
         "mapping.get",
@@ -51,16 +74,9 @@ fn builtin_type_members_are_finite_and_type_specific() {
             .status,
         "unresolved"
     );
-}
-#[test]
-fn python_builtin_type_members_require_unshadowed_type_names() {
-    let source = "def standard():\n    dict.fromkeys(('a',))\n    str.maketrans('a', 'b')\ndef shadow(dict, str):\n    dict.fromkeys(('a',))\n    str.maketrans('a', 'b')\n";
-    let facts = ast::extract("builtin_type_members.py", "python", source).unwrap();
-    let graph = linker::link(&BTreeMap::from([(
-        "builtin_type_members.py".to_owned(),
-        facts,
-    )]));
-    for (line, expression, expected) in [
+            }
+            Case::PythonBuiltinTypeMembersRequireUnshadowedTypeNames => {
+for (line, expression, expected) in [
         (2, "dict.fromkeys", "external"),
         (3, "str.maketrans", "external"),
         (5, "dict.fromkeys", "unresolved"),
@@ -82,16 +98,9 @@ fn python_builtin_type_members_require_unshadowed_type_names() {
             );
         }
     }
-}
-#[test]
-fn python_namespace_builtins_require_unshadowed_names() {
-    let source = "def standard():\n    globals()\n    locals()\n    input()\ndef shadow(globals, locals, input):\n    globals()\n    locals()\n    input()\n";
-    let facts = ast::extract("namespace_builtins.py", "python", source).unwrap();
-    let graph = linker::link(&BTreeMap::from([(
-        "namespace_builtins.py".to_owned(),
-        facts,
-    )]));
-    for (line, expression, expected) in [
+            }
+            Case::PythonNamespaceBuiltinsRequireUnshadowedNames => {
+for (line, expression, expected) in [
         (2, "globals", "external"),
         (3, "locals", "external"),
         (4, "input", "external"),
@@ -113,6 +122,9 @@ fn python_namespace_builtins_require_unshadowed_names() {
                 "{}",
                 coverage.evidence
             );
+        }
+    }
+            }
         }
     }
 }

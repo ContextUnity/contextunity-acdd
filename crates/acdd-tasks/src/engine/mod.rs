@@ -242,7 +242,7 @@ pub enum TaskListDetail {
 #[serde(deny_unknown_fields)]
 /// Parameters for listing tasks in .acdd/tasks.sqlite.
 pub struct List {
-    /// Repository or workspace name filter (e.g. 'forge-mcp', a linked workspace name, or 'all').
+    /// Repository or workspace name filter (e.g. 'acdd', a linked workspace name, or 'all').
     pub repository: Option<String>,
     /// Filter tasks by milestone: relative file path (e.g. 'docs/milestones/030-*.md'), numeric prefix ('030'), milestone ID ('m-...'), or slug. Accepts milestone as an alias.
     #[serde(alias = "milestone")]
@@ -518,7 +518,7 @@ fn default_tasks_db() -> std::path::PathBuf {
     ".acdd/tasks.sqlite".into()
 }
 fn default_repository() -> String {
-    "forge-mcp".into()
+    "acdd".into()
 }
 fn default_milestones() -> Vec<String> {
     vec!["docs/milestones".into()]
@@ -1415,9 +1415,7 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
             if pin_snapshot {
                 if let Some(commit_sha) = snapshot_commit.as_deref() {
                     let worktree = Path::new(&snapshot_worktree);
-                    let repository =
-                        crate::git::git_command(worktree, &["rev-parse", "--git-dir"])?;
-                    if !repository.status.success() {
+                    if crate::git::git_dir(worktree).is_err() {
                         // Non-Git task workspaces have no repository ref to preserve.
                         return Ok(None);
                     }
@@ -1440,7 +1438,7 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
                     } else {
                         snapshot_task_id.replace([':', '\\', ' '], "_")
                     };
-                    let ref_name = format!("refs/forge/snapshots/{clean_ref_path}");
+                    let ref_name = format!("refs/acdd/snapshots/{clean_ref_path}");
                     let update_ref = crate::git::git_command(
                         worktree,
                         &["update-ref", &ref_name, commit_sha],
@@ -1532,6 +1530,8 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
     shorten_task_response_commits(&mut response);
     Ok(response)
 }
+pub use crate::store::ExecutionSubjectKind;
+
 #[cfg(test)]
 mod git_snapshot_contract_tests {
     use super::git_snapshot::TemporaryGitIndex;
@@ -1548,4 +1548,3 @@ mod git_snapshot_contract_tests {
         assert!(!path.exists());
     }
 }
-pub use crate::store::ExecutionSubjectKind;

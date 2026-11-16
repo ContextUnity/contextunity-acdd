@@ -19,16 +19,16 @@ None,
     root.build_to(root.path(".acdd/code-map.sqlite"));
     TaskHarness::claim_at(
         root.root(),
-        "forge-mcp/m-current-boundary:routing",
+        "acdd/m-current-boundary:routing",
         "contract",
         "contract-author",
     )
     .unwrap();
     submit_indexed_boundary(&root, "contract", "tests/connected.rs").unwrap();
     assert_eq!(
-        tasks::store_for_task(root.root(), "forge-mcp/m-current-boundary:routing")
+        tasks::store_for_task(root.root(), "acdd/m-current-boundary:routing")
             .unwrap()
-            .inspect("forge-mcp/m-current-boundary:routing")
+            .inspect("acdd/m-current-boundary:routing")
             .unwrap()
             .stage,
         "contract_review"
@@ -36,176 +36,326 @@ None,
     assert_eq!(std::fs::read(profile_path).unwrap(), profile_before);
 }
 #[test]
-fn contract_seam_requires_current_indexed_paths_at_every_hop() {
+fn current_indexed_path_matrix() {
     assert_safe_git_environment();
     let api = "pub fn route() -> usize { 1 }\n";
-    let caller = "use crate::api::route;\npub fn helper() -> usize { route() }\npub fn outer() -> usize { helper() }\n";
+    let caller = "use crate::api::route;\npub fn helper() -> usize { route() }\npub fn outer() -> usize { helper() }\npub fn wrapper() -> usize { outer() }\n";
     let direct = "use crate::api::route;\n#[test]\nfn test_connected() { let actual = route(); assert_eq!(actual, 1); }\n";
     let indirect = "use crate::caller::helper;\n#[test]\nfn test_connected() { let actual = helper(); assert_eq!(actual, 1); }\n";
-    let mut failures = Vec::new();
-    let mut fixtures: HashMap<(&str, String, &str), (Workspace, FixtureSnapshot)> = HashMap::new();
-    for (case, seam, refresh, reject) in [
-        ("fresh_direct", "src/seam.rs::test_connected", false, false),
-        (
-            "fresh_two_hops",
-            "src/seam.rs::test_connected",
-            false,
-            false,
-        ),
-        ("three_hops", "src/seam.rs::test_connected", false, false),
-        ("four_hops", "src/seam.rs::test_connected", false, false),
-        (
-            "removed_direct_call",
-            "src/seam.rs::test_connected",
-            false,
-            true,
-        ),
-        ("removed_direct_call_file", "src/seam.rs", false, true),
-        (
-            "disconnected_helper",
-            "src/seam.rs::test_connected",
-            false,
-            true,
-        ),
-        ("deleted_helper", "src/seam.rs::test_connected", false, true),
-        ("deleted_target", "src/seam.rs::test_connected", false, true),
-        ("unindexed_new_test", "src/seam.rs", false, true),
-        (
-            "refreshed_disconnected",
-            "src/seam.rs::test_connected",
-            true,
-            true,
-        ),
-        (
-            "refreshed_connected",
-            "src/seam.rs::test_connected",
-            true,
-            false,
-        ),
-        (
-            "unrelated_file_change",
-            "src/seam.rs::test_connected",
-            false,
-            false,
-        ),
-        (
-            "retargeted_import",
-            "src/seam.rs::test_connected",
-            false,
-            true,
-        ),
-        (
-            "retargeted_local_alias",
-            "src/seam.rs::test_connected",
-            false,
-            true,
-        ),
-        (
-            "target_becomes_test",
-            "src/seam.rs::test_connected",
-            false,
-            true,
-        ),
-        (
-            "line_shift_only",
-            "src/seam.rs::test_connected",
-            false,
-            false,
-        ),
-    ] {
-        let local_alias = "use crate::api::route;\nuse crate::other::route as other_route;\n#[test]\nfn test_connected() { let handler = other_route; let handler = route; let actual = handler(); assert_eq!(actual, 1); }\n";
-        let initial = if matches!(
-            case,
-            "fresh_two_hops" | "disconnected_helper" | "deleted_helper"
-        ) {
-            indirect.to_owned()
-        } else if case == "retargeted_local_alias" {
-            local_alias.to_owned()
-        } else if matches!(case, "three_hops" | "four_hops") {
-            let helper = if case == "four_hops" {
-                "wrapper"
-            } else {
-                "outer"
-            };
-            direct
-                .replace("api::route", &format!("caller::{helper}"))
-                .replace("route()", &format!("{helper}()"))
-        } else {
-            direct.to_owned()
-        };
-        let caller_source = if case == "four_hops" {
-            "use crate::api::route;\npub fn helper() -> usize { route() }\npub fn outer() -> usize { helper() }\npub fn wrapper() -> usize { outer() }\n"
-        } else {
-            caller
-        };
-        let fixture = fixtures
-            .entry((caller_source, initial.clone(), seam))
-            .or_insert_with(|| {
-                let root = indexed_boundary_workspace(api, caller_source, &initial, "route", seam);
-                let snapshot = FixtureSnapshot::capture(&root);
-                (root, snapshot)
-            });
-        fixture.1.restore(&fixture.0);
-        let root = &fixture.0;
-        match case {
-            "removed_direct_call" | "removed_direct_call_file" | "refreshed_disconnected" => root
-                .write(
-                    "src/seam.rs",
-                    "#[test]\nfn test_connected() { assert_eq!(1, 2); }\n",
-                ),
-            "disconnected_helper" => root.write(
+    let local_alias = "use crate::api::route;\nuse crate::other::route as other_route;\n#[test]\nfn test_connected() { let handler = other_route; let handler = route; let actual = handler(); assert_eq!(actual, 1); }\n";
+    let test_helper_source = "use crate::api::route;\npub fn helper() -> usize { route() }\n";
+    let helper_seam = "use crate::test_helpers::helper;\n#[test]\nfn test_connected() { let actual = helper(); assert_eq!(actual, 1); }\n";
+    let root = prepare_indexed_boundary_workspace(
+        api,
+        caller,
+        helper_seam,
+        "route",
+        Some(test_helper_source),
+        Some("helper"),
+        "src/seam.rs::test_connected",
+    );
+    // Separate test files keep file-level references confined to the selected path.
+    root.write("src/seam.rs", direct);
+    root.write("src/two_hops.rs", indirect);
+    root.write(
+        "src/three_hops.rs",
+        &direct
+            .replace("api::route", "caller::outer")
+            .replace("route()", "outer()"),
+    );
+    root.write(
+        "src/four_hops.rs",
+        &direct
+            .replace("api::route", "caller::wrapper")
+            .replace("route()", "wrapper()"),
+    );
+    root.write("src/alias_seam.rs", local_alias);
+    root.write("src/helper_seam.rs", helper_seam);
+    root.write("src/lib.rs", "pub mod api;\npub mod caller;\npub mod other;\npub mod test_helpers;\n#[cfg(test)] mod seam;\n#[cfg(test)] mod two_hops;\n#[cfg(test)] mod three_hops;\n#[cfg(test)] mod four_hops;\n#[cfg(test)] mod alias_seam;\n#[cfg(test)] mod helper_seam;\n");
+    commit_fixture_baseline(&root);
+    root.build_to(root.path(".acdd/code-map.sqlite"));
+    let task_id = "acdd/m-current-boundary:routing";
+    let baseline_task = tasks::store_for_task(root.root(), task_id)
+        .unwrap()
+        .inspect(task_id)
+        .unwrap();
+    assert_eq!(baseline_task.status, "ready");
+    assert_eq!(baseline_task.stage, "contract");
+    assert!(baseline_task.worker_id.is_none());
+    let profile_seed = std::fs::read_to_string(root.path(".acdd/profile.yaml")).unwrap();
+    let baseline_head = git_head(root.root());
+    let snapshot = FixtureSnapshot::capture(&root);
+    let baseline_database = std::fs::read(root.path(".acdd/tasks.sqlite")).unwrap();
+    struct Case<'a> {
+        name: &'a str,
+        seam: &'a str,
+        writes: Vec<(&'a str, String)>,
+        refresh: bool,
+        expected_error: Option<&'a str>,
+    }
+    let disconnected = "#[test]\nfn test_connected() { assert_eq!(1, 2); }\n";
+    let stale = Some("TASK_SEAM_STALE");
+    let cases = [
+        Case {
+            name: "fresh_direct",
+            seam: "src/seam.rs::test_connected",
+            writes: vec![],
+            refresh: false,
+            expected_error: None,
+        },
+        Case {
+            name: "fresh_two_hops",
+            seam: "src/two_hops.rs::test_connected",
+            writes: vec![],
+            refresh: false,
+            expected_error: None,
+        },
+        Case {
+            name: "three_hops",
+            seam: "src/three_hops.rs::test_connected",
+            writes: vec![],
+            refresh: false,
+            expected_error: None,
+        },
+        Case {
+            name: "four_hops",
+            seam: "src/four_hops.rs::test_connected",
+            writes: vec![],
+            refresh: false,
+            expected_error: None,
+        },
+        Case {
+            name: "removed_direct_call",
+            seam: "src/seam.rs::test_connected",
+            writes: vec![("src/seam.rs", disconnected.into())],
+            refresh: false,
+            expected_error: stale,
+        },
+        Case {
+            name: "removed_direct_call_file",
+            seam: "src/seam.rs",
+            writes: vec![("src/seam.rs", disconnected.into())],
+            refresh: false,
+            expected_error: stale,
+        },
+        Case {
+            name: "disconnected_helper",
+            seam: "src/two_hops.rs::test_connected",
+            writes: vec![(
                 "src/caller.rs",
-                "pub fn helper() -> usize { 2 }\npub fn outer() -> usize { helper() }\n",
-            ),
-            "deleted_helper" => root.write("src/caller.rs", "pub fn outer() -> usize { 2 }\n"),
-            "deleted_target" => root.write("src/api.rs", "pub fn replacement() -> usize { 1 }\n"),
-            "unindexed_new_test" => root.write(
+                "pub fn helper() -> usize { 2 }\npub fn outer() -> usize { helper() }\n".into(),
+            )],
+            refresh: false,
+            expected_error: stale,
+        },
+        Case {
+            name: "deleted_helper",
+            seam: "src/two_hops.rs::test_connected",
+            writes: vec![("src/caller.rs", "pub fn outer() -> usize { 2 }\n".into())],
+            refresh: false,
+            expected_error: stale,
+        },
+        Case {
+            name: "deleted_target",
+            seam: "src/seam.rs::test_connected",
+            writes: vec![("src/api.rs", "pub fn replacement() -> usize { 1 }\n".into())],
+            refresh: false,
+            expected_error: stale,
+        },
+        Case {
+            name: "unindexed_new_test",
+            seam: "src/seam.rs",
+            writes: vec![(
                 "src/seam.rs",
-                &format!(
-                    "#[test]\nfn test_connected() {{ assert_eq!(1, 2); }}\n{}",
+                format!(
+                    "{disconnected}{}",
                     direct.replace("test_connected", "test_new")
                 ),
-            ),
-            "refreshed_connected" => root.write(
+            )],
+            refresh: false,
+            expected_error: stale,
+        },
+        Case {
+            name: "refreshed_disconnected",
+            seam: "src/seam.rs::test_connected",
+            writes: vec![("src/seam.rs", disconnected.into())],
+            refresh: true,
+            expected_error: Some("TASK_SEAM_DISCONNECTED"),
+        },
+        Case {
+            name: "refreshed_connected",
+            seam: "src/seam.rs::test_connected",
+            writes: vec![(
                 "src/seam.rs",
-                &direct
+                direct
                     .replace("assert_eq!", "assert_ne!")
                     .replace(", 1)", ", 2)"),
-            ),
-            "unrelated_file_change" => {
-                root.write("src/unrelated.rs", "pub fn unrelated() -> usize { 2 }\n")
-            }
-            "retargeted_import" => {
-                root.write(
+            )],
+            refresh: true,
+            expected_error: None,
+        },
+        Case {
+            name: "unrelated_file_change",
+            seam: "src/seam.rs::test_connected",
+            writes: vec![(
+                "src/unrelated.rs",
+                "pub fn unrelated() -> usize { 2 }\n".into(),
+            )],
+            refresh: false,
+            expected_error: None,
+        },
+        Case {
+            name: "retargeted_import",
+            seam: "src/seam.rs::test_connected",
+            writes: vec![
+                (
                     "src/seam.rs",
-                    &direct.replace("use crate::api::route;", "use crate::other::route;"),
-                );
-                root.write("src/other.rs", "pub fn route() -> usize { 2 }\n");
+                    direct.replace("use crate::api::route;", "use crate::other::route;"),
+                ),
+                ("src/other.rs", "pub fn route() -> usize { 2 }\n".into()),
+            ],
+            refresh: false,
+            expected_error: stale,
+        },
+        Case {
+            name: "retargeted_local_alias",
+            seam: "src/alias_seam.rs::test_connected",
+            writes: vec![(
+                "src/alias_seam.rs",
+                local_alias.replace("let handler = route", "let handler = other_route"),
+            )],
+            refresh: false,
+            expected_error: stale,
+        },
+        Case {
+            name: "target_becomes_test",
+            seam: "src/seam.rs::test_connected",
+            writes: vec![(
+                "src/api.rs",
+                "#[test]\npub fn route() -> usize { 1 }\n".into(),
+            )],
+            refresh: false,
+            expected_error: stale,
+        },
+        Case {
+            name: "line_shift_only",
+            seam: "src/seam.rs::test_connected",
+            writes: vec![("src/seam.rs", format!("// shifted line\n{direct}"))],
+            refresh: false,
+            expected_error: None,
+        },
+        Case {
+            name: "fresh_test_marked_helper",
+            seam: "src/helper_seam.rs::test_connected",
+            writes: vec![],
+            refresh: false,
+            expected_error: None,
+        },
+        Case {
+            name: "stale_test_marked_helper",
+            seam: "src/helper_seam.rs::test_connected",
+            writes: vec![(
+                "src/test_helpers.rs",
+                test_helper_source.replace(
+                    "pub fn helper() -> usize { route() }",
+                    "fn helper() -> usize { 1 }",
+                ),
+            )],
+            refresh: false,
+            expected_error: stale,
+        },
+    ];
+    let baseline_refs = TaskHarness::references(root.root(), "refs/acdd/");
+    assert!(baseline_refs.status.success());
+    let baseline_refs: Vec<_> = String::from_utf8(baseline_refs.stdout)
+        .unwrap()
+        .lines()
+        .map(|name| {
+            (
+                name.to_owned(),
+                TaskHarness::revision_text(root.root(), name).unwrap(),
+            )
+        })
+        .collect();
+    let mut failures = Vec::new();
+    let mut previous_clean = None;
+    for case in cases
+        .iter()
+        .filter(|case| case.writes.is_empty() && !case.refresh)
+        .chain(
+            cases
+                .iter()
+                .filter(|case| !case.writes.is_empty() || case.refresh),
+        )
+    {
+        match previous_clean {
+            None => {} // Capture already left the fixture at its baseline.
+            Some(true) => {
+                // A successful submission changes task state and acdd refs even
+                // when the indexed source and worktree remain untouched.
+                let refs = TaskHarness::references(root.root(), "refs/acdd/");
+                assert!(refs.status.success());
+                for name in String::from_utf8(refs.stdout).unwrap().lines() {
+                    if !baseline_refs.iter().any(|(baseline, _)| baseline == name) {
+                        assert!(TaskHarness::delete_reference(root.root(), name)
+                            .status
+                            .success());
+                    }
+                }
+                for (name, commit) in &baseline_refs {
+                    assert!(
+                        TaskHarness::update_reference(root.root(), name, commit, None)
+                            .status
+                            .success()
+                    );
+                }
+                for suffix in ["-wal", "-shm", "-journal"] {
+                    let path = root.path(format!(".acdd/tasks.sqlite{suffix}"));
+                    if path.exists() {
+                        std::fs::remove_file(path).unwrap();
+                    }
+                }
+                std::fs::write(root.path(".acdd/tasks.sqlite"), &baseline_database).unwrap();
             }
-            "retargeted_local_alias" => root.write(
-                "src/seam.rs",
-                &local_alias.replace("let handler = route", "let handler = other_route"),
-            ),
-            "target_becomes_test" => {
-                root.write("src/api.rs", "#[test]\npub fn route() -> usize { 1 }\n")
-            }
-            "line_shift_only" => root.write("src/seam.rs", &format!("// shifted line\n{direct}")),
-            _ => {}
+            Some(false) => snapshot.restore(&root),
         }
-        if refresh {
+        assert_eq!(
+            git_head(root.root()),
+            baseline_head,
+            "{}: fixture HEAD ref",
+            case.name
+        );
+        assert_eq!(
+            std::fs::read(root.path(".acdd/tasks.sqlite")).unwrap(),
+            baseline_database,
+            "{}: task database should return to the shared seed",
+            case.name
+        );
+        let restored = tasks::store_for_task(root.root(), task_id)
+            .unwrap()
+            .inspect(task_id)
+            .unwrap();
+        assert_eq!(restored.status, baseline_task.status);
+        assert_eq!(restored.stage, baseline_task.stage);
+        assert_eq!(restored.claim_revision, baseline_task.claim_revision);
+        assert_eq!(restored.worker_id, baseline_task.worker_id);
+        root.write(
+            ".acdd/profile.yaml",
+            &profile_seed.replace("src/seam.rs::test_connected", case.seam),
+        );
+        TaskHarness::claim_at(root.root(), task_id, "contract", "contract-author").unwrap();
+        for (path, source) in &case.writes {
+            root.write(path, source);
+        }
+        if case.refresh {
             root.build_to(root.path(".acdd/code-map.sqlite"));
         }
-        let result = submit_indexed_boundary(root, "contract", seam);
-        match (reject, result) {
-            (true, Err(error)) => {
+        let result = submit_indexed_boundary(&root, "contract", case.seam);
+        match (case.expected_error, result) {
+            (Some(expected), Err(error)) => {
                 let error = error.to_string();
-                let expected = if case == "refreshed_disconnected" {
-                    "TASK_SEAM_DISCONNECTED"
-                } else {
-                    "TASK_SEAM_STALE"
-                };
                 if !error.contains(expected) {
-                    failures.push(format!("{case}: expected {expected}, got: {error}"));
+                    failures.push(format!("{}: expected {expected}, got: {error}", case.name));
                 }
                 for diagnostic in [
                     "Calls discovered:",
@@ -215,114 +365,38 @@ fn contract_seam_requires_current_indexed_paths_at_every_hop() {
                 ] {
                     if !error.contains(diagnostic) {
                         failures.push(format!(
-                            "{case}: missing '{diagnostic}' diagnostic: {error}"
+                            "{}: missing '{diagnostic}' diagnostic: {error}",
+                            case.name
                         ));
                     }
                 }
                 if expected == "TASK_SEAM_STALE" && !error.contains("acdd scan") {
                     failures.push(format!(
-                        "{case}: stale diagnostic omits refresh action: {error}"
+                        "{}: stale diagnostic omits refresh action: {error}",
+                        case.name
                     ));
                 }
                 assert_eq!(
-                    tasks::store_for_task(root.root(), "forge-mcp/m-current-boundary:routing")
+                    tasks::store_for_task(root.root(), task_id)
                         .unwrap()
-                        .inspect("forge-mcp/m-current-boundary:routing")
+                        .inspect(task_id)
                         .unwrap()
                         .stage,
                     "contract"
                 );
             }
-            (true, Ok(_)) => failures.push(format!(
-                "{case}: accepted a seam without a current indexed production path"
+            (Some(code), Ok(_)) => failures.push(format!(
+                "{}: accepted a seam without a current indexed production path ({code})",
+                case.name
             )),
-            (false, Err(error)) => failures.push(format!(
-                "{case}: valid current indexed seam rejected: {error}"
+            (None, Err(error)) => failures.push(format!(
+                "{}: valid current indexed seam rejected: {error}",
+                case.name
             )),
-            (false, Ok(_)) => {}
+            (None, Ok(_)) => {}
         }
+        previous_clean = Some(case.writes.is_empty() && !case.refresh);
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-#[test]
-fn contract_seam_accepts_test_path_helpers_and_rejects_stale_hops() {
-    let api = "pub fn route() -> usize { 1 }\n";
-    let test_helper_source = "use crate::api::route;\npub fn helper() -> usize { route() }\n";
-    let mut failures = Vec::new();
-
-    let root = prepare_indexed_boundary_workspace(
-        api,
-        "",
-        "use crate::test_helpers::helper;\n#[test]\nfn test_connected() { let actual = helper(); assert_eq!(actual, 1); }\n",
-        "route",
-        Some(test_helper_source),
-        Some("helper"),
-        "src/seam.rs::test_connected",
-    );
-    let task_id = "forge-mcp/m-current-boundary:routing";
-    let baseline_task = tasks::store_for_task(root.root(), task_id)
-        .unwrap()
-        .inspect(task_id)
-        .unwrap();
-    assert_eq!(baseline_task.status, "ready");
-    assert_eq!(baseline_task.stage, "contract");
-    assert!(baseline_task.worker_id.is_none());
-    let baseline_head = git_head(root.root());
-    let snapshot = FixtureSnapshot::capture(&root);
-    let baseline_database = std::fs::read(root.path(".acdd/tasks.sqlite")).unwrap();
-    TaskHarness::claim_at(root.root(), task_id, "contract", "contract-author").unwrap();
-    match submit_indexed_boundary(&root, "contract", "src/seam.rs::test_connected") {
-        Ok(_) => {}
-        Err(error) => failures.push(format!("fresh test-marked helper path rejected: {error}")),
-    }
-
-    snapshot.restore(&root);
-    assert_eq!(git_head(root.root()), baseline_head, "fixture HEAD ref");
-    assert_eq!(
-        std::fs::read(root.path(".acdd/tasks.sqlite")).unwrap(),
-        baseline_database,
-        "task database should return to the shared seed"
-    );
-    let restored_task = tasks::store_for_task(root.root(), task_id)
-        .unwrap()
-        .inspect(task_id)
-        .unwrap();
-    assert_eq!(restored_task.status, baseline_task.status);
-    assert_eq!(restored_task.stage, baseline_task.stage);
-    assert_eq!(restored_task.claim_revision, baseline_task.claim_revision);
-    assert_eq!(restored_task.worker_id, baseline_task.worker_id);
-    TaskHarness::claim_at(root.root(), task_id, "contract", "contract-author").unwrap();
-    root.write(
-        "src/test_helpers.rs",
-        &test_helper_source.replace(
-            "pub fn helper() -> usize { route() }",
-            "fn helper() -> usize { 1 }",
-        ),
-    );
-    match submit_indexed_boundary(&root, "contract", "src/seam.rs::test_connected") {
-        Err(error) if error.to_string().contains("TASK_SEAM_STALE") => {
-            let error = error.to_string();
-            assert!(error.contains("acdd scan"), "{error}");
-            assert!(error.contains("Reached targets:"), "{error}");
-        }
-        Err(error) => failures.push(format!(
-            "stale helper failed at the wrong boundary: {error}"
-        )),
-        Ok(_) => {
-            failures.push("stale test-marked helper path was accepted without reindexing".into())
-        }
-    }
-    let stale_stage = tasks::store_for_task(root.root(), task_id)
-        .unwrap()
-        .inspect(task_id)
-        .unwrap()
-        .stage;
-    if stale_stage != "contract" {
-        failures.push(format!(
-            "stale helper rejection advanced task stage to {stale_stage}"
-        ));
-    }
-
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 #[test]
@@ -349,7 +423,7 @@ fn contract_seam_validates_claimed_worktree_against_shared_primary_index() {
     );
     TaskHarness::claim_in_worktree(
         root.root(),
-        "forge-mcp/m-current-boundary:routing",
+        "acdd/m-current-boundary:routing",
         "contract",
         "contract-author",
         &worktree,
@@ -388,9 +462,9 @@ fn contract_seam_validates_claimed_worktree_against_shared_primary_index() {
                     "{case}: {error}"
                 );
                 assert_eq!(
-                    tasks::store_for_task(root.root(), "forge-mcp/m-current-boundary:routing")
+                    tasks::store_for_task(root.root(), "acdd/m-current-boundary:routing")
                         .unwrap()
-                        .inspect("forge-mcp/m-current-boundary:routing")
+                        .inspect("acdd/m-current-boundary:routing")
                         .unwrap()
                         .stage,
                     "contract"

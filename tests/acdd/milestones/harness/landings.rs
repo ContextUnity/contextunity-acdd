@@ -53,6 +53,7 @@ pub(crate) struct DeliveredProfile<'a> {
 pub(crate) fn delivered(profile: DeliveredProfile<'_>) -> DeliveredBaseline {
     snapshot::assert_safe_git_environment();
     let root = MilestoneHarness::workspace(DEFAULT_SEAM, "");
+    snapshot::precompile_runner(&root);
     if profile.disable_git_maintenance {
         MilestoneHarness::git_at(root.root(), &["config", "maintenance.auto", "false"]).unwrap();
         MilestoneHarness::git_at(root.root(), &["config", "gc.auto", "0"]).unwrap();

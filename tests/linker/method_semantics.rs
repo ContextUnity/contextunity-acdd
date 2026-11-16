@@ -147,19 +147,33 @@ class CustomUnionScope:
         cu.work()
 "#;
 
-fn method_workspace() -> &'static crate::common::sqlite::PersistedSnapshot {
-    static SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
-        std::sync::OnceLock::new();
-    SNAPSHOT.get_or_init(|| {
+fn cached_snapshot(
+    cell: &'static std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot>,
+    files: &[(&str, &str)],
+) -> &'static crate::common::sqlite::PersistedSnapshot {
+    cell.get_or_init(|| {
         let workspace = Workspace::new();
-        workspace.write("record.rs", RECORD_RUST);
-        workspace.write("record.py", RECORD_PYTHON);
-        workspace.write("record.ts", RECORD_TYPESCRIPT);
-        workspace.write("nullable.py", NULLABLE_PYTHON);
-        workspace.write("clean_pep604.py", CLEAN_PEP604_PYTHON);
+        for (path, content) in files {
+            workspace.write(path, content);
+        }
         workspace.build();
         crate::common::sqlite::PersistedSnapshot::from_connection(&workspace.open())
     })
+}
+
+fn method_workspace() -> &'static crate::common::sqlite::PersistedSnapshot {
+    static SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
+        std::sync::OnceLock::new();
+    cached_snapshot(
+        &SNAPSHOT,
+        &[
+            ("record.rs", RECORD_RUST),
+            ("record.py", RECORD_PYTHON),
+            ("record.ts", RECORD_TYPESCRIPT),
+            ("nullable.py", NULLABLE_PYTHON),
+            ("clean_pep604.py", CLEAN_PEP604_PYTHON),
+        ],
+    )
 }
 
 fn stored_node(conn: &rusqlite::Connection, path: &str, name: &str) -> (String, Value) {
@@ -317,7 +331,8 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
     // Only an explicit operation unwraps a standard wrapper's first payload.
     // Sources are parsed and indexed statically, never compiled or executed.
     let mut wrapper_cases = Vec::new();
-    let mut wrapper_source = "struct Service; struct Error;\nimpl Service { fn work(&self) {} }\n".to_owned();
+    let mut wrapper_source =
+        "struct Service; struct Error;\nimpl Service { fn work(&self) {} }\n".to_owned();
     for wrapper in [
         "Option<Service>",
         "Result<Service, Error>",
@@ -358,10 +373,10 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
         "wrapper/operation matrix parse errors: {:?}",
         wrapper_facts.errors
     );
-    let wrapper_matrix_ws = Workspace::new();
-    wrapper_matrix_ws.write("lib.rs", &wrapper_source);
-    wrapper_matrix_ws.build();
-    let wrapper_matrix_conn = wrapper_matrix_ws.open();
+    static WRAPPER_MATRIX_SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
+        std::sync::OnceLock::new();
+    let wrapper_matrix_conn =
+        cached_snapshot(&WRAPPER_MATRIX_SNAPSHOT, &[("lib.rs", &wrapper_source)]).open();
     let wrapper_matrix_edges = read_edges(&wrapper_matrix_conn);
     for &(idx, wrapper, operation, adapter) in &wrapper_cases {
         let payload_ev = format!("payload_{idx}.work");
@@ -430,9 +445,18 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
     }
 
     let ts_factories = [
-        ("typescript", "async function make_0() { return new Service(); }"),
-        ("typescript", "async function make_1(): Promise<Service> { return new Service(); }"),
-        ("typescript", "function make_2(): Promise<Service> { return unknown(); }"),
+        (
+            "typescript",
+            "async function make_0() { return new Service(); }",
+        ),
+        (
+            "typescript",
+            "async function make_1(): Promise<Service> { return new Service(); }",
+        ),
+        (
+            "typescript",
+            "function make_2(): Promise<Service> { return unknown(); }",
+        ),
         ("typescript", "const make_3 = async () => new Service();"),
     ];
     let mut ts_source = "class Service { work() {} }\n".to_owned();
@@ -444,11 +468,14 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
         ));
     }
     let ts_facts = ast::extract("factory.ts", "typescript", &ts_source).unwrap();
-    assert!(ts_facts.errors.is_empty(), "ts factories: {:?}", ts_facts.errors);
-    let ts_ws = Workspace::new();
-    ts_ws.write("factory.ts", &ts_source);
-    ts_ws.build();
-    let ts_conn = ts_ws.open();
+    assert!(
+        ts_facts.errors.is_empty(),
+        "ts factories: {:?}",
+        ts_facts.errors
+    );
+    static TS_FACTORY_SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
+        std::sync::OnceLock::new();
+    let ts_conn = cached_snapshot(&TS_FACTORY_SNAPSHOT, &[("factory.ts", &ts_source)]).open();
     let ts_edges = read_edges(&ts_conn);
     for (idx, (language, factory)) in ts_factories.iter().enumerate() {
         let payload_ev = format!("payload_{idx}.work");
@@ -456,34 +483,49 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
         if !ts_edges.iter().any(|edge| {
             edge.kind == "calls" && edge.dst_name == "work" && edge.evidence == payload_ev
         }) {
-            failures.push(format!("{language}/{factory}: awaited payload lacks work edge"));
+            failures.push(format!(
+                "{language}/{factory}: awaited payload lacks work edge"
+            ));
         }
-        if ts_edges.iter().any(|edge| edge.kind == "calls" && edge.evidence == wrapped_ev)
+        if ts_edges
+            .iter()
+            .any(|edge| edge.kind == "calls" && edge.evidence == wrapped_ev)
             || !has_coverage(&ts_conn, &wrapped_ev, "unresolved")
         {
-            failures.push(format!("{language}/{factory}: un-awaited factory exposed payload"));
+            failures.push(format!(
+                "{language}/{factory}: un-awaited factory exposed payload"
+            ));
         }
     }
     {
-        let js_source = "class Service { work() {} }\nasync function make() { return new Service(); }\n\
+        let js_source =
+            "class Service { work() {} }\nasync function make() { return new Service(); }\n\
              async function caller() { const payload = await make(); payload.work(); \
              const wrapped = make(); wrapped.work(); }\n";
         let js_facts = ast::extract("factory.js", "javascript", js_source).unwrap();
-        assert!(js_facts.errors.is_empty(), "js factory: {:?}", js_facts.errors);
-        let js_ws = Workspace::new();
-        js_ws.write("factory.js", js_source);
-        js_ws.build();
-        let js_conn = js_ws.open();
+        assert!(
+            js_facts.errors.is_empty(),
+            "js factory: {:?}",
+            js_facts.errors
+        );
+        static JS_FACTORY_SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
+            std::sync::OnceLock::new();
+        let js_conn = cached_snapshot(&JS_FACTORY_SNAPSHOT, &[("factory.js", js_source)]).open();
         let js_edges = read_edges(&js_conn);
         if !js_edges.iter().any(|edge| {
             edge.kind == "calls" && edge.dst_name == "work" && edge.evidence == "payload.work"
         }) {
-            failures.push("javascript/async function make(): awaited payload lacks work edge".into());
+            failures
+                .push("javascript/async function make(): awaited payload lacks work edge".into());
         }
-        if js_edges.iter().any(|edge| edge.kind == "calls" && edge.evidence == "wrapped.work")
+        if js_edges
+            .iter()
+            .any(|edge| edge.kind == "calls" && edge.evidence == "wrapped.work")
             || !has_coverage(&js_conn, "wrapped.work", "unresolved")
         {
-            failures.push("javascript/async function make(): un-awaited factory exposed payload".into());
+            failures.push(
+                "javascript/async function make(): un-awaited factory exposed payload".into(),
+            );
         }
     }
 
@@ -502,13 +544,21 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
             neg_rust_src.push('\n');
         }
         let neg_ts_src = "class Service { work() {} } async function make() { return unknown(); } async function caller() { const payload_4 = await make(); payload_4.work(); }";
-        assert!(ast::extract("lib.rs", "rust", &neg_rust_src).unwrap().errors.is_empty());
-        assert!(ast::extract("factory.ts", "typescript", neg_ts_src).unwrap().errors.is_empty());
-        let neg_ws = Workspace::new();
-        neg_ws.write("lib.rs", &neg_rust_src);
-        neg_ws.write("factory.ts", neg_ts_src);
-        neg_ws.build();
-        let neg_conn = neg_ws.open();
+        assert!(ast::extract("lib.rs", "rust", &neg_rust_src)
+            .unwrap()
+            .errors
+            .is_empty());
+        assert!(ast::extract("factory.ts", "typescript", neg_ts_src)
+            .unwrap()
+            .errors
+            .is_empty());
+        static CUSTOM_NEG_SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
+            std::sync::OnceLock::new();
+        let neg_conn = cached_snapshot(
+            &CUSTOM_NEG_SNAPSHOT,
+            &[("lib.rs", &neg_rust_src), ("factory.ts", neg_ts_src)],
+        )
+        .open();
         let neg_edges = read_edges(&neg_conn);
         for (language, expression) in [
             ("rust", "payload_0.work"),
@@ -518,10 +568,14 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
             ("typescript", "payload_4.work"),
             ("rust", "future_5.work"),
         ] {
-            if neg_edges.iter().any(|edge| edge.kind == "calls" && edge.evidence == expression)
+            if neg_edges
+                .iter()
+                .any(|edge| edge.kind == "calls" && edge.evidence == expression)
                 || !has_coverage(&neg_conn, expression, "unresolved")
             {
-                failures.push(format!("{language}: unknown/custom/future receiver gained exact edge"));
+                failures.push(format!(
+                    "{language}: unknown/custom/future receiver gained exact edge"
+                ));
             }
         }
     }
@@ -693,10 +747,9 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
             .is_empty(),
         "{source}"
     );
-    let workspace = Workspace::new();
-    workspace.write("lib.rs", &source);
-    workspace.build();
-    let conn = workspace.open();
+    static ADAPTER_SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
+        std::sync::OnceLock::new();
+    let conn = cached_snapshot(&ADAPTER_SNAPSHOT, &[("lib.rs", &source)]).open();
     let edges = read_edges(&conn);
     for (index, (label, _, _, resolves)) in adapter_cases.iter().enumerate() {
         let evidence = format!("payload_{index}.work");
@@ -730,10 +783,9 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
             .is_empty(),
         "{wrapper_source}"
     );
-    let wrapper_workspace = Workspace::new();
-    wrapper_workspace.write("lib.rs", wrapper_source);
-    wrapper_workspace.build();
-    let wrapper_conn = wrapper_workspace.open();
+    static WRAPPER_SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
+        std::sync::OnceLock::new();
+    let wrapper_conn = cached_snapshot(&WRAPPER_SNAPSHOT, &[("lib.rs", wrapper_source)]).open();
     for (label, expression, status) in [
         ("Option standard member", "maybe.is_some", "external"),
         ("Result standard member", "outcome.is_ok", "external"),
@@ -758,10 +810,11 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
                  fn caller_custom_{idx}(value: Envelope_{idx}) {{ let payload_custom_{idx} = value.{method}(); payload_custom_{idx}.work(); }}\n"
             ));
         }
-        let custom_ws = Workspace::new();
-        custom_ws.write("lib.rs", &custom_source);
-        custom_ws.build();
-        let custom_conn = custom_ws.open();
+        static CUSTOM_METHODS_SNAPSHOT: std::sync::OnceLock<
+            crate::common::sqlite::PersistedSnapshot,
+        > = std::sync::OnceLock::new();
+        let custom_conn =
+            cached_snapshot(&CUSTOM_METHODS_SNAPSHOT, &[("lib.rs", &custom_source)]).open();
         let custom_edges = read_edges(&custom_conn);
         for (idx, _) in custom_methods.iter().enumerate() {
             let evidence = format!("payload_custom_{idx}.work");
@@ -791,10 +844,9 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
             .unwrap()
             .errors
             .is_empty());
-        let dyn_ws = Workspace::new();
-        dyn_ws.write("lib.rs", &dyn_source);
-        dyn_ws.build();
-        let dyn_conn = dyn_ws.open();
+        static DYN_SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
+            std::sync::OnceLock::new();
+        let dyn_conn = cached_snapshot(&DYN_SNAPSHOT, &[("lib.rs", &dyn_source)]).open();
         let dyn_edges = read_edges(&dyn_conn);
         for (idx, &implementors) in dyn_counts.iter().enumerate() {
             let caller_name = format!("dyn_caller_{idx}");
@@ -806,7 +858,10 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
                 )
                 .unwrap();
             let run_name = format!("run_{idx}");
-            let trait_line = 1 + dyn_counts[..idx].iter().map(|count| count + 2).sum::<usize>();
+            let trait_line = 1 + dyn_counts[..idx]
+                .iter()
+                .map(|count| count + 2)
+                .sum::<usize>();
             let trait_method_id: String = dyn_conn
                 .query_row(
                     "SELECT id FROM nodes WHERE name=?1 AND kind='method' AND line=?2",
@@ -833,18 +888,14 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
                 .filter(|edge| edge.src == caller_id)
                 .collect();
             if !outgoing.iter().any(|edge| {
-                edge.kind == "calls"
-                    && edge.dst == trait_method_id
-                    && edge.confidence == "inferred"
+                edge.kind == "calls" && edge.dst == trait_method_id && edge.confidence == "inferred"
             }) {
                 failures.push(format!(
                     "dyn Work/{implementors}: missing inferred trait declaration call"
                 ));
             }
             if outgoing.iter().any(|edge| {
-                edge.kind == "calls"
-                    && edge.confidence == "inferred"
-                    && edge.dst != trait_method_id
+                edge.kind == "calls" && edge.confidence == "inferred" && edge.dst != trait_method_id
             }) {
                 failures.push(format!(
                     "dyn Work/{implementors}: inferred call targets another declaration"
@@ -895,10 +946,9 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
         .unwrap()
         .errors
         .is_empty());
-    let workspace = Workspace::new();
-    workspace.write("lib.rs", macro_source);
-    workspace.build();
-    let conn = workspace.open();
+    static MACRO_SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
+        std::sync::OnceLock::new();
+    let conn = cached_snapshot(&MACRO_SNAPSHOT, &[("lib.rs", macro_source)]).open();
     let macro_id: String = conn
         .query_row(
             "SELECT id FROM nodes WHERE name='invoke' AND kind='macro'",
@@ -944,20 +994,66 @@ fn explicit_payloads_and_bounded_dispatch_survive_index_readback() {
 fn awaited_promise_parameters_and_aliases_survive_index_readback() {
     let shared_cases = [
         ("parameter", "Promise<Service>", "", "p", true),
-        ("parameter alias", "Promise<Service>", "const alias = p;", "alias", true),
-        ("alias chain", "Promise<Service>", "const first = p; const alias = first;", "alias", true),
-        ("typed local", "Promise<Service>", "const alias: Promise<Service> = unknown();", "alias", true),
-        ("factory alias", "Promise<Service>", "const alias = make();", "alias", true),
+        (
+            "parameter alias",
+            "Promise<Service>",
+            "const alias = p;",
+            "alias",
+            true,
+        ),
+        (
+            "alias chain",
+            "Promise<Service>",
+            "const first = p; const alias = first;",
+            "alias",
+            true,
+        ),
+        (
+            "typed local",
+            "Promise<Service>",
+            "const alias: Promise<Service> = unknown();",
+            "alias",
+            true,
+        ),
+        (
+            "factory alias",
+            "Promise<Service>",
+            "const alias = make();",
+            "alias",
+            true,
+        ),
         ("unknown payload", "Promise<Unknown>", "", "p", false),
         ("unsupported generic", "Envelope<Service>", "", "p", false),
-        ("unsupported arity", "Promise<Service, Unknown>", "", "p", false),
-        ("reassigned alias", "Promise<Service>", "let alias = p; alias = unknown();", "alias", false),
-        ("conditional alias write", "Promise<Service>", "let alias = p; if (flag) { alias = unknown(); }", "alias", false),
+        (
+            "unsupported arity",
+            "Promise<Service, Unknown>",
+            "",
+            "p",
+            false,
+        ),
+        (
+            "reassigned alias",
+            "Promise<Service>",
+            "let alias = p; alias = unknown();",
+            "alias",
+            false,
+        ),
+        (
+            "conditional alias write",
+            "Promise<Service>",
+            "let alias = p; if (flag) { alias = unknown(); }",
+            "alias",
+            false,
+        ),
     ];
 
-    let mut source = "class Service { work() {} }\nfunction make(): Promise<Service> { return unknown(); }\n".to_owned();
+    let mut source =
+        "class Service { work() {} }\nfunction make(): Promise<Service> { return unknown(); }\n"
+            .to_owned();
     let mut rendered_cases = Vec::with_capacity(shared_cases.len());
-    for (idx, &(label, parameter_type, setup, receiver, resolves)) in shared_cases.iter().enumerate() {
+    for (idx, &(label, parameter_type, setup, receiver, resolves)) in
+        shared_cases.iter().enumerate()
+    {
         let p_var = format!("p_{idx}");
         let flag_var = format!("flag_{idx}");
         let alias_var = format!("alias_{idx}");
@@ -968,19 +1064,33 @@ fn awaited_promise_parameters_and_aliases_survive_index_readback() {
             .replace("first", &first_var)
             .replace("= p;", &format!("= {p_var};"))
             .replace("(flag)", &format!("({flag_var})"));
-        let receiver_var = if receiver == "alias" { alias_var } else { p_var.clone() };
+        let receiver_var = if receiver == "alias" {
+            alias_var
+        } else {
+            p_var.clone()
+        };
         source.push_str(&format!(
             "async function caller_{idx}({p_var}: {parameter_type}, {flag_var}: boolean) {{ \
              {setup_rewritten} const {payload_var} = await {receiver_var}; {payload_var}.work(); \
              {p_var}.work(); {receiver_var}.work(); }}\n"
         ));
-        rendered_cases.push((label, format!("caller_{idx}"), payload_var, p_var, receiver_var, resolves));
+        rendered_cases.push((
+            label,
+            format!("caller_{idx}"),
+            payload_var,
+            p_var,
+            receiver_var,
+            resolves,
+        ));
     }
-    assert!(ast::extract("awaited.ts", "typescript", &source).unwrap().errors.is_empty());
-    let shared_ws = Workspace::new();
-    shared_ws.write("awaited.ts", &source);
-    shared_ws.build();
-    let shared_conn = shared_ws.open();
+    assert!(ast::extract("awaited.ts", "typescript", &source)
+        .unwrap()
+        .errors
+        .is_empty());
+    static AWAITED_SHARED_SNAPSHOT: std::sync::OnceLock<crate::common::sqlite::PersistedSnapshot> =
+        std::sync::OnceLock::new();
+    let shared_conn =
+        cached_snapshot(&AWAITED_SHARED_SNAPSHOT, &[("awaited.ts", &source)]).open();
 
     for (label, caller_name, payload_var, p_var, receiver_var, resolves) in rendered_cases {
         let payload_ev = format!("{payload_var}.work");
@@ -1016,7 +1126,10 @@ fn awaited_promise_parameters_and_aliases_survive_index_readback() {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert!(is_unresolved, "{label}: {expression} must remain unresolved");
+            assert!(
+                is_unresolved,
+                "{label}: {expression} must remain unresolved"
+            );
             let has_call: bool = shared_conn
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM edges e \
@@ -1031,7 +1144,6 @@ fn awaited_promise_parameters_and_aliases_survive_index_readback() {
     }
 
     // Shadowed Promise class cannot be combined into the shared file without shadowing stdlib Promise for sibling tests.
-    let shadowed_ws = Workspace::new();
     let shadowed_source = "class Service { work() {} }\n\
          function make(): Promise<Service> { return unknown(); }\n\
          async function caller(p: Promise<Service>, flag: boolean) { \
@@ -1041,9 +1153,11 @@ fn awaited_promise_parameters_and_aliases_survive_index_readback() {
         .unwrap()
         .errors
         .is_empty());
-    shadowed_ws.write("awaited.ts", shadowed_source);
-    shadowed_ws.build();
-    let shadowed_conn = shadowed_ws.open();
+    static SHADOWED_PROMISE_SNAPSHOT: std::sync::OnceLock<
+        crate::common::sqlite::PersistedSnapshot,
+    > = std::sync::OnceLock::new();
+    let shadowed_conn =
+        cached_snapshot(&SHADOWED_PROMISE_SNAPSHOT, &[("awaited.ts", shadowed_source)]).open();
     let shadowed_resolved: bool = shadowed_conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM edges e \
@@ -1071,7 +1185,10 @@ fn awaited_promise_parameters_and_aliases_survive_index_readback() {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(is_unresolved, "shadowed Promise: {expression} must remain unresolved");
+        assert!(
+            is_unresolved,
+            "shadowed Promise: {expression} must remain unresolved"
+        );
         let has_call: bool = shadowed_conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM edges e \
@@ -1081,7 +1198,10 @@ fn awaited_promise_parameters_and_aliases_survive_index_readback() {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(!has_call, "shadowed Promise: {expression} gained a call edge");
+        assert!(
+            !has_call,
+            "shadowed Promise: {expression} gained a call edge"
+        );
     }
 }
 

@@ -294,15 +294,15 @@ fn task_lists_share_filters_pagination_and_selection_fixture() {
         for (filter, expected_id) in [
             (
                 tasks::MilestoneStatusFilter::Active,
-                "forge-mcp/m-active:active-task",
+                "acdd/m-active:active-task",
             ),
             (
                 tasks::MilestoneStatusFilter::Planned,
-                "forge-mcp/m-planned:planned-task",
+                "acdd/m-planned:planned-task",
             ),
             (
                 tasks::MilestoneStatusFilter::Completed,
-                "forge-mcp/m-archived:archived-task",
+                "acdd/m-archived:archived-task",
             ),
         ] {
             let listed = h
@@ -329,10 +329,10 @@ fn task_lists_share_filters_pagination_and_selection_fixture() {
             .map(|task| task["task_id"].as_str().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(ids.len(), 4);
-        assert!(ids.contains(&"forge-mcp/m-cancelled:cancelled-task"));
+        assert!(ids.contains(&"acdd/m-cancelled:cancelled-task"));
         for (reference, id) in [
-            ("009", "forge-mcp/m-archived:archived-task"),
-            ("007", "forge-mcp/m-cancelled:cancelled-task"),
+            ("009", "acdd/m-archived:archived-task"),
+            ("007", "acdd/m-cancelled:cancelled-task"),
         ] {
             let listed = h.list_for(reference, None).unwrap();
             assert_eq!(listed["tasks"].as_array().unwrap().len(), 1);
@@ -388,7 +388,7 @@ fn task_lists_share_filters_pagination_and_selection_fixture() {
         let root = h.root().to_owned();
         h.store
             .sync(
-                &Milestone::parse(&source, "forge-mcp").unwrap(),
+                &Milestone::parse(&source, "acdd").unwrap(),
                 path,
                 &root,
             )

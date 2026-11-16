@@ -17,7 +17,7 @@ impl TemporaryGitIndex {
         loop {
             let sequence = SNAPSHOT_INDEX_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let candidate = std::env::temp_dir().join(format!(
-                "forge-snap-{}-{}-{sequence}.index",
+                "acdd-snap-{}-{}-{sequence}.index",
                 std::process::id(),
                 crate::store::now()
             ));
@@ -518,7 +518,7 @@ pub(super) fn commit_candidate_snapshot(
         bail!("TASK_CANDIDATE_BASELINE_MISMATCH: HEAD '{head}' does not match candidate baseline '{candidate_baseline}'");
     }
     let mut message = format!(
-        "forge-task: {}\n\nTarget: {}\n\nCompleted subtasks:",
+        "acdd-task: {}\n\nTarget: {}\n\nCompleted subtasks:",
         single_line_commit_text(&task.task_id),
         single_line_commit_text(&task.spec.target),
     );
@@ -658,7 +658,7 @@ pub(super) fn capture_root_snapshot(
         "TASK_CANDIDATE_MISMATCH: candidate changed while capturing root snapshot"
     );
     let tag = format!("{:x}", sha2::Sha256::digest(identity.as_bytes()));
-    let reference = format!("refs/forge/root-snapshots/{tag}/{commit}");
+    let reference = format!("refs/acdd/root-snapshots/{tag}/{commit}");
     let output = crate::git::git_command(worktree, &["update-ref", &reference, &commit])?;
     ensure!(
         output.status.success(),
@@ -733,12 +733,12 @@ fn capture_scoped_snapshot_excluding(
         bail!("TASK_SNAPSHOT_FAILED: empty tree SHA from write-tree");
     }
 
-    let commit_msg = format!("forge-snapshot: {task_id}");
+    let commit_msg = format!("acdd-snapshot: {task_id}");
     // Materialize exactly the deterministic parentless commit while Git GC is
     // excluded, then transfer it and its tree into a kept pack. The ordinary
     // commit-tree invocation remains the identity check/public process boundary;
     // even GC inside its stdout adapter can now run successfully.
-    let commit_bytes=format!("tree {tree_sha}\nauthor forge-agent <forge@contextunity.local> 946684800 +0000\ncommitter forge-agent <forge@contextunity.local> 946684800 +0000\n\n{commit_msg}\n");
+    let commit_bytes=format!("tree {tree_sha}\nauthor acdd-agent <acdd@contextunity.local> 946684800 +0000\ncommitter acdd-agent <acdd@contextunity.local> 946684800 +0000\n\n{commit_msg}\n");
     let protected = crate::git::git_input(
         worktree,
         &["hash-object", "-t", "commit", "-w", "--stdin"],
@@ -749,10 +749,10 @@ fn capture_scoped_snapshot_excluding(
     let commit_out = std::process::Command::new("git")
         .args(["commit-tree", &tree_sha, "-m", &commit_msg])
         .env("GIT_INDEX_FILE", &temp_index_str)
-        .env("GIT_AUTHOR_NAME", "forge-agent")
-        .env("GIT_AUTHOR_EMAIL", "forge@contextunity.local")
-        .env("GIT_COMMITTER_NAME", "forge-agent")
-        .env("GIT_COMMITTER_EMAIL", "forge@contextunity.local")
+        .env("GIT_AUTHOR_NAME", "acdd-agent")
+        .env("GIT_AUTHOR_EMAIL", "acdd@contextunity.local")
+        .env("GIT_COMMITTER_NAME", "acdd-agent")
+        .env("GIT_COMMITTER_EMAIL", "acdd@contextunity.local")
         .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
         .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
         .current_dir(worktree)
@@ -927,7 +927,7 @@ fn lock_named_snapshot_operation(worktree: &Path) -> Result<NamedSnapshotLock> {
         &["rev-parse", "--absolute-git-dir"],
         "TASK_SNAPSHOT_LOCK_FAILED",
     )?;
-    let lock_path = PathBuf::from(git_dir).join("forge-task-manage-snapshot.lock");
+    let lock_path = PathBuf::from(git_dir).join("acdd-task-manage-snapshot.lock");
 
     #[cfg(unix)]
     {
@@ -1064,7 +1064,7 @@ fn named_snapshot_context(worktree: &Path, name: &str) -> Result<NamedSnapshotCo
         "{:x}",
         <sha2::Sha256 as sha2::Digest>::digest(worktree.to_string_lossy().as_bytes())
     );
-    let reference = format!("refs/forge/snapshots/{namespace}/{name}");
+    let reference = format!("refs/acdd/snapshots/{namespace}/{name}");
     let check = crate::git::git_command(&worktree, &["check-ref-format", reference.as_str()])?;
     if !check.status.success() {
         bail!("TASK_SNAPSHOT_INVALID_NAME: snapshot name is not valid in a Git reference");
@@ -1286,7 +1286,7 @@ pub(super) fn rollback_named_snapshot(
         "TASK_SNAPSHOT_INVALID",
     )?;
     let marker_prefix = format!(
-        "forge-snapshot: task-manage:{}:{}:",
+        "acdd-snapshot: task-manage:{}:{}:",
         context.namespace, name
     );
     let Some(snapshot_head) = message.strip_prefix(&marker_prefix) else {

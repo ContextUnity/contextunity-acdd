@@ -3,10 +3,10 @@ inherit: none
 save: none
 roles:
   author:
-    runner: "python3 artifact-runner.py '{prompt}'"
+    runner: "./workflow-role-fixture artifact-runner '{prompt}'"
 commands:
   check:
-    command: "python3 artifact-check.py {plan_name} {plan_slug} {artifact_path} {prerequisite}"
+    command: "./workflow-role-fixture artifact-check {plan_name} {plan_slug} {artifact_path} {prerequisite}"
     output: { require_counts: false }
 gates:
   - id: prerequisite

@@ -649,7 +649,7 @@ pub(crate) fn fixture(seam: &str) -> (Workspace, TasksStore, Milestone) {
     );
     root.write("docs/010-test.md", SPEC);
     initialize_runner_fixture_with_profile(&root, &runner_profile(seam, ""));
-    let milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(SPEC, "acdd").unwrap();
     let mut store = TasksStore::open(&root.path(".acdd/tasks.sqlite")).unwrap();
     store
         .sync(&milestone, "docs/010-test.md", root.root())

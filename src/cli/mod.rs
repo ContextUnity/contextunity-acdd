@@ -1057,7 +1057,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         Command::Workflow { .. } => (OperationKind::Task, "workflow result", None),
         Command::Plan { .. } => (OperationKind::Task, "plan result", None),
         Command::Clear { .. } => (OperationKind::Task, "clear result", None),
-        Command::Guide { .. } => (OperationKind::Guide, "forge_guide", None),
+        Command::Guide { .. } => (OperationKind::Guide, "acdd_guide", None),
         Command::Checkpoint { .. } => (OperationKind::Checkpoint, "session_checkpoint", None),
         Command::Ast { .. } => (OperationKind::Navigation, "ast_grep_search", None),
         Command::Query {
@@ -1286,7 +1286,7 @@ impl Cli {
                 let formatted = format::render_for_operation(
                     &result,
                     OutputFormat::from(self.format),
-                    "forge_guide",
+                    "acdd_guide",
                     None,
                     OperationKind::Guide,
                 );

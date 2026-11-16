@@ -1,110 +1,56 @@
 use super::*;
 #[test]
-fn array_callback_dom_inference_respects_shadowed_document() {
-    let cases = [
-        (
-            "function run(document: unknown) { document.querySelectorAll('x').forEach(e => e.querySelector('.x')); }",
-            "unresolved",
-        ),
-        (
-            "function run() { document.querySelectorAll('x').forEach(e => e.querySelector('.x')); }",
-            "external",
-        ),
-        (
-            "function run(root: Element) { root.querySelectorAll('x').forEach(e => e.querySelector('.x')); }",
-            "external",
-        ),
-        (
-            "function run(root: Element) { root.\u{00a0}querySelectorAll('x').forEach(e => e.querySelector('.x')); }",
-            "external",
-        ),
+fn dom_callback_receiver_authority() {
+    let cases: &[(&str, &str, &[&str])] = &[
+        (            "function run(document: unknown) { document.querySelectorAll('x').forEach(e => e.querySelector('.x')); }",
+ "unresolved", &["e.querySelector"]),
+        (            "function run() { document.querySelectorAll('x').forEach(e => e.querySelector('.x')); }",
+ "external", &["e.querySelector"]),
+        (            "function run(root: Element) { root.querySelectorAll('x').forEach(e => e.querySelector('.x')); }",
+ "external", &["e.querySelector"]),
+        (            "function run(root: Element) { root.\u{00a0}querySelectorAll('x').forEach(e => e.querySelector('.x')); }",
+ "external", &["e.querySelector"]),
+        (            "document.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); });",
+ "external", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "const button = document.getElementById('submit'); const values = [1, 2].map(value => value + 1); button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); });",
+ "external", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "function run(document) { document.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); }",
+ "unresolved", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "function run(target) { target.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); }",
+ "unresolved", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "function run(target: Element) { target.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); }",
+ "external", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "function run(target: Element) { target.\u{00a0}addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); }",
+ "external", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "class Element { addEventListener() {} } function run(target: Element) { target.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); }",
+ "unresolved", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "class Event { preventDefault() {} stopPropagation() {} } document.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); });",
+ "unresolved", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "document = {}; document.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); });",
+ "unresolved", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "class View { target: HTMLInputElement; constructor(target: HTMLInputElement) { this.target = target; } bind() { this.target.addEventListener('input', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); } }",
+ "external", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "class View { target: HTMLDivElement; bind() { this.target.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); } }",
+ "external", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "class HTMLInputElement { addEventListener() {} } class View { target: HTMLInputElement; bind() { this.target.addEventListener('input', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); } }",
+ "unresolved", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "class View { target: unknown; bind() { this.target.addEventListener('input', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); } }",
+ "unresolved", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "class View { target: HTMLInputElement; static bind() { this.target.addEventListener('input', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); } }",
+ "unresolved", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "class View { target: HTMLInputElement; bind() { function nested() { this.target.addEventListener('input', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); } } }",
+ "unresolved", &["event.preventDefault", "event.stopPropagation", "event.target?.addEventListener"]),
+        (            "function bind() { const gridDiv = document.getElementById('grid'); if (!gridDiv) return; const wrapper = gridDiv.querySelector<HTMLElement>('.header'); if (!wrapper) return; wrapper.addEventListener('click', (e) => { e.stopPropagation(); }); }",
+ "external", &["e.stopPropagation"]),
+        (            "function bind() { const gridDiv = unknown(); const wrapper = gridDiv.querySelector<HTMLElement>('.header'); wrapper.addEventListener('click', (e) => { e.stopPropagation(); }); }",
+ "unresolved", &["e.stopPropagation"]),
+        (            "function bind() { let gridDiv = document.getElementById('grid'); gridDiv = unknown(); const wrapper = gridDiv.querySelector<HTMLElement>('.header'); wrapper.addEventListener('click', (e) => { e.stopPropagation(); }); }",
+ "unresolved", &["e.stopPropagation"]),
+("function run(document) { document.on\\u0063lick = event => event.preventDefault(); } // require", "unresolved", &["event.preventDefault"]),
     ];
-
-    for (source, expected) in cases {
-        let graph = linked("callback-dom.ts", "typescript", source);
-        let rows: Vec<_> = graph
-            .coverage
-            .iter()
-            .filter(|row| row.expression == "e.querySelector")
-            .collect();
-        assert!(!rows.is_empty(), "{source}: {graph:#?}");
-        assert!(
-            rows.iter().all(|row| row.status == expected),
-            "{source}: {rows:#?}"
-        );
-    }
-}
-
-#[test]
-fn dom_event_listener_callback_parameters_follow_verified_receiver_origin() {
-    for (source, expected) in [
-        (
-            "document.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); });",
-            "external",
-        ),
-        (
-            "const button = document.getElementById('submit'); const values = [1, 2].map(value => value + 1); button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); });",
-            "external",
-        ),
-        (
-            "function run(document) { document.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); }",
-            "unresolved",
-        ),
-        (
-            "function run(target) { target.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); }",
-            "unresolved",
-        ),
-        (
-            "function run(target: Element) { target.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); }",
-            "external",
-        ),
-        (
-            "function run(target: Element) { target.\u{00a0}addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); }",
-            "external",
-        ),
-        (
-            "class Element { addEventListener() {} } function run(target: Element) { target.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); }",
-            "unresolved",
-        ),
-        (
-            "class Event { preventDefault() {} stopPropagation() {} } document.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); });",
-            "unresolved",
-        ),
-        (
-            "document = {}; document.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); });",
-            "unresolved",
-        ),
-        (
-            "class View { target: HTMLInputElement; constructor(target: HTMLInputElement) { this.target = target; } bind() { this.target.addEventListener('input', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); } }",
-            "external",
-        ),
-        (
-            "class View { target: HTMLDivElement; bind() { this.target.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); } }",
-            "external",
-        ),
-        (
-            "class HTMLInputElement { addEventListener() {} } class View { target: HTMLInputElement; bind() { this.target.addEventListener('input', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); } }",
-            "unresolved",
-        ),
-        (
-            "class View { target: unknown; bind() { this.target.addEventListener('input', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); } }",
-            "unresolved",
-        ),
-        (
-            "class View { target: HTMLInputElement; static bind() { this.target.addEventListener('input', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); } }",
-            "unresolved",
-        ),
-        (
-            "class View { target: HTMLInputElement; bind() { function nested() { this.target.addEventListener('input', event => { event.preventDefault(); event.stopPropagation(); event.target?.addEventListener('focus', () => {}); }); } } }",
-            "unresolved",
-        ),
-    ] {
-        let graph = linked("listener.ts", "typescript", source);
-        for expression in [
-            "event.preventDefault",
-            "event.stopPropagation",
-            "event.target?.addEventListener",
-        ] {
+    for &(source, expected, expressions) in cases {
+        let graph = linked("callback.ts", "typescript", source);
+        for &expression in expressions {
             let rows: Vec<_> = graph
                 .coverage
                 .iter()
@@ -116,7 +62,8 @@ fn dom_event_listener_callback_parameters_follow_verified_receiver_origin() {
             );
             if expected == "external" {
                 assert!(
-                    rows.iter().all(|row| row.evidence.contains("builtin:web_api")),
+                    rows.iter()
+                        .all(|row| row.evidence.contains("builtin:web_api")),
                     "{rows:#?}"
                 );
             }
@@ -125,55 +72,7 @@ fn dom_event_listener_callback_parameters_follow_verified_receiver_origin() {
 }
 
 #[test]
-fn escaped_dom_event_property_retains_shadowed_global_facts() {
-    let source = "function run(document) { document.on\\u0063lick = event => event.preventDefault(); } // require";
-    let graph = linked("escaped-event.ts", "typescript", source);
-    let rows: Vec<_> = graph
-        .coverage
-        .iter()
-        .filter(|row| row.expression == "event.preventDefault")
-        .collect();
-    assert!(!rows.is_empty(), "{graph:#?}");
-    assert!(
-        rows.iter().all(|row| row.status == "unresolved"),
-        "{rows:#?}"
-    );
-}
-
-#[test]
-fn dom_event_callback_follows_lexical_dom_factory_chain() {
-    for (source, expected) in [
-        (
-            "function bind() { const gridDiv = document.getElementById('grid'); if (!gridDiv) return; const wrapper = gridDiv.querySelector<HTMLElement>('.header'); if (!wrapper) return; wrapper.addEventListener('click', (e) => { e.stopPropagation(); }); }",
-            "external",
-        ),
-        (
-            "function bind() { const gridDiv = unknown(); const wrapper = gridDiv.querySelector<HTMLElement>('.header'); wrapper.addEventListener('click', (e) => { e.stopPropagation(); }); }",
-            "unresolved",
-        ),
-        (
-            "function bind() { let gridDiv = document.getElementById('grid'); gridDiv = unknown(); const wrapper = gridDiv.querySelector<HTMLElement>('.header'); wrapper.addEventListener('click', (e) => { e.stopPropagation(); }); }",
-            "unresolved",
-        ),
-    ] {
-        let graph = linked("dom-factory.ts", "typescript", source);
-        let rows: Vec<_> = graph
-            .coverage
-            .iter()
-            .filter(|row| row.expression == "e.stopPropagation")
-            .collect();
-        assert!(
-            !rows.is_empty() && rows.iter().all(|row| row.status == expected),
-            "{source}: {rows:#?}"
-        );
-        if expected == "external" {
-            assert!(rows.iter().all(|row| row.evidence.contains("builtin:web_api")));
-        }
-    }
-}
-
-#[test]
-fn typescript_dom_platform_extensions_resolve_cleanly() {
+fn dom_platform_event_and_storage_types() {
     let source = r#"
 function runUrl() {
     const url = new URL("https://example.com");
@@ -242,10 +141,7 @@ class Panel {
             );
         }
     }
-}
 
-#[test]
-fn typescript_dom_event_and_storage_platform_types_and_naked_generic_parameter() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     let source = r#"
 function handleDrag(e: DragEvent, target: ParentNode, store: Storage) {
@@ -301,9 +197,9 @@ function identity<T>(value: T): T {
 }
 
 #[test]
-fn parent_and_child_nodes_keep_their_own_dom_members() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write(
+fn dom_factory_hierarchy_members() {
+    let w = crate::languages::PersistedWorkspaceHarness::new();
+    w.write(
         "dom.ts",
         r#"
 function use(target: ParentNode, child: ChildNode, fragment: DocumentFragment) {
@@ -317,29 +213,6 @@ function use(target: ParentNode, child: ChildNode, fragment: DocumentFragment) {
 }
 "#,
     );
-    let conn = workspace.build_and_open();
-    let coverage = |expression: &str| -> String {
-        conn.query_row(
-            "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='dom.ts' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?1",
-            rusqlite::params![expression],
-            |row| row.get(0),
-        )
-        .unwrap()
-    };
-    assert_eq!(coverage("target.querySelector"), "external");
-    assert_eq!(coverage("target.setAttribute"), "unresolved");
-    assert_eq!(coverage("target.classList.add"), "unresolved");
-    assert_eq!(coverage("child.querySelector"), "unresolved");
-    assert_eq!(coverage("child.removeChild"), "external");
-    assert_eq!(coverage("fragment.querySelector"), "external");
-    assert_eq!(coverage("fragment.closest"), "unresolved");
-    drop(conn);
-}
-
-#[cfg(feature = "lang-typescript")]
-#[test]
-fn javascript_web_factory_results_keep_proven_receivers() {
-    let w = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in [
         (
             "dom.js",
@@ -407,42 +280,61 @@ fn javascript_web_factory_results_keep_proven_receivers() {
     }
     w.build();
     let conn = w.open();
-    let coverage = |path: &str, expression: &str| -> (String, String) {
-        conn.query_row(
+    {
+        let coverage = |expression: &str| -> String {
+            conn.query_row(
+            "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='dom.ts' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?1",
+            rusqlite::params![expression],
+            |row| row.get(0),
+        )
+        .unwrap()
+        };
+        assert_eq!(coverage("target.querySelector"), "external");
+        assert_eq!(coverage("target.setAttribute"), "unresolved");
+        assert_eq!(coverage("target.classList.add"), "unresolved");
+        assert_eq!(coverage("child.querySelector"), "unresolved");
+        assert_eq!(coverage("child.removeChild"), "external");
+        assert_eq!(coverage("fragment.querySelector"), "external");
+        assert_eq!(coverage("fragment.closest"), "unresolved");
+    }
+    {
+        let coverage = |path: &str, expression: &str| -> (String, String) {
+            conn.query_row(
             "SELECT status, (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
             rusqlite::params![path, expression],
             |row| Ok((row.get(0)?, row.get(1)?)),
         ).unwrap_or_else(|error| panic!("missing {path}:{expression}: {error}"))
-    };
-    for (path, expression) in [
-        ("dom.js", "element.addEventListener"),
-        ("dom.js", "child.getAttribute"),
-        ("fetch.js", "response.json"),
-        ("fetch.js", "response.text"),
-    ] {
-        let row = coverage(path, expression);
-        assert_eq!(row.0, "external", "{path}:{expression}: {row:?}");
-        assert!(
-            row.1.contains("builtin:web_api"),
-            "{path}:{expression}: {row:?}"
-        );
+        };
+        for (path, expression) in [
+            ("dom.js", "element.addEventListener"),
+            ("dom.js", "child.getAttribute"),
+            ("fetch.js", "response.json"),
+            ("fetch.js", "response.text"),
+        ] {
+            let row = coverage(path, expression);
+            assert_eq!(row.0, "external", "{path}:{expression}: {row:?}");
+            assert!(
+                row.1.contains("builtin:web_api"),
+                "{path}:{expression}: {row:?}"
+            );
+        }
+        for (path, expression) in [
+            ("dom_shadow.js", "element.addEventListener"),
+            ("dom_reassigned.js", "element.addEventListener"),
+            ("fetch_shadow.js", "response.json"),
+            ("fetch_local_function.js", "response.json"),
+            ("fetch_import.js", "response.json"),
+            ("fetch_rebound.js", "response.json"),
+            ("fetch_plain.js", "pending.json"),
+            ("fetch_reassigned.js", "response.json"),
+            ("fetch_unknown.js", "response.unsupported"),
+            ("fetch_bad_property_call.js", "response.status"),
+            ("nested_page.js", "page.locator"),
+            ("nested_page_late.js", "page.locator"),
+        ] {
+            let row = coverage(path, expression);
+            assert_eq!(row.0, "unresolved", "{path}:{expression}: {row:?}");
+        }
+        assert_eq!(coverage("fetch_local.js", "response.json").0, "resolved");
     }
-    for (path, expression) in [
-        ("dom_shadow.js", "element.addEventListener"),
-        ("dom_reassigned.js", "element.addEventListener"),
-        ("fetch_shadow.js", "response.json"),
-        ("fetch_local_function.js", "response.json"),
-        ("fetch_import.js", "response.json"),
-        ("fetch_rebound.js", "response.json"),
-        ("fetch_plain.js", "pending.json"),
-        ("fetch_reassigned.js", "response.json"),
-        ("fetch_unknown.js", "response.unsupported"),
-        ("fetch_bad_property_call.js", "response.status"),
-        ("nested_page.js", "page.locator"),
-        ("nested_page_late.js", "page.locator"),
-    ] {
-        let row = coverage(path, expression);
-        assert_eq!(row.0, "unresolved", "{path}:{expression}: {row:?}");
-    }
-    assert_eq!(coverage("fetch_local.js", "response.json").0, "resolved");
 }

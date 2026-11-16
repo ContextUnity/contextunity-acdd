@@ -1,66 +1,93 @@
 use super::*;
 
-#[cfg(feature = "lang-python")]
 #[test]
-fn nested_manifests_classify_borrowed_package_prefixes() {
-    let workspace = FrameworkHarness::persisted(&[
-        (
-            "packages/tool/requirements-dev.txt",
-            "novel_library>=1.0\\n",
-        ),
-        (
-            "node_modules/ignored/requirements.txt",
-            "ignored_package\\n",
-        ),
-    ]);
-    let registry = DependencyRegistry::collect(Some(workspace.root()));
-    let profile = languages::require("python").unwrap();
-    assert_eq!(
-        registry.classification(profile, "novel_library.client"),
-        Some("external dependency (manifest)")
-    );
-    assert_eq!(
-        registry.classification(profile, "novel_library_other"),
-        Some("external dependency")
-    );
-    assert_eq!(
-        registry.classification(profile, "ignored_package"),
-        Some("external dependency")
-    );
-    assert_eq!(
-        registry.classification(profile, "pathlib.Path"),
-        Some("standard library")
-    );
-}
-#[cfg(feature = "lang-python")]
-#[test]
-fn custom_adapter_collects_enabled_linked_manifests_and_respects_ignored_names() {
-    let registry = FrameworkHarness::discover_with_custom_adapter(
-        &[("excluded/requirements.txt", "ignored_package\n")],
-        &[(
-            "nested/pyproject.toml",
-            "[project]\ndependencies = ['linked-package>=1']\n",
-        )],
-        &[("requirements.txt", "disabled_package\n")],
-    );
-    let profile = languages::require("python").unwrap();
-    assert_eq!(
-        registry.classification(profile, "linked_package.client"),
-        Some("external dependency (manifest)")
-    );
-    assert_eq!(
-        registry.classification(profile, "disabled_package"),
-        Some("external dependency")
-    );
-    assert_eq!(
-        registry.classification(profile, "ignored_package"),
-        Some("external dependency")
-    );
-}
-#[cfg(feature = "lang-typescript")]
-#[test]
-fn npm_lockfile_discovery_respects_workspace_and_ignored_directories() {
-    let registry = FrameworkHarness::discover_with_custom_adapter(
+fn manifest_discovery_matrix() {
+    #[derive(Clone, Copy, Debug)]
+    enum Case {
+        #[cfg(feature = "lang-python")]
+        NestedManifestsClassifyBorrowedPackagePrefixes,
+        #[cfg(feature = "lang-python")]
+        CustomAdapterCollectsEnabledLinkedManifestsAndRespectsIgnoredNames,
+        #[cfg(feature = "lang-typescript")]
+        NpmLockfileDiscoveryRespectsWorkspaceAndIgnoredDirectories,
+    }
+    let owner = FrameworkHarness::persisted(&[]);
+    for case in [
+        #[cfg(feature = "lang-python")]
+        Case::NestedManifestsClassifyBorrowedPackagePrefixes,
+        #[cfg(feature = "lang-python")]
+        Case::CustomAdapterCollectsEnabledLinkedManifestsAndRespectsIgnoredNames,
+        #[cfg(feature = "lang-typescript")]
+        Case::NpmLockfileDiscoveryRespectsWorkspaceAndIgnoredDirectories,
+    ] {
+        match case {
+            #[cfg(feature = "lang-python")]
+            // nested_manifests_classify_borrowed_package_prefixes
+            Case::NestedManifestsClassifyBorrowedPackagePrefixes => {
+                let files = &[
+                    (
+                        "packages/tool/requirements-dev.txt",
+                        "novel_library>=1.0\\n",
+                    ),
+                    (
+                        "node_modules/ignored/requirements.txt",
+                        "ignored_package\\n",
+                    ),
+                ];
+                let root = owner.path("nested-prefix");
+                for (path, source) in files {
+                    owner.write(format!("nested-prefix/{path}"), source);
+                }
+                let registry = DependencyRegistry::collect(Some(&root));
+                let profile = languages::require("python").unwrap();
+                assert_eq!(
+                    registry.classification(profile, "novel_library.client"),
+                    Some("external dependency (manifest)")
+                );
+                assert_eq!(
+                    registry.classification(profile, "novel_library_other"),
+                    Some("external dependency")
+                );
+                assert_eq!(
+                    registry.classification(profile, "ignored_package"),
+                    Some("external dependency")
+                );
+                assert_eq!(
+                    registry.classification(profile, "pathlib.Path"),
+                    Some("standard library")
+                );
+            }
+            #[cfg(feature = "lang-python")]
+            // custom_adapter_collects_enabled_linked_manifests_and_respects_ignored_names
+            Case::CustomAdapterCollectsEnabledLinkedManifestsAndRespectsIgnoredNames => {
+                let registry = FrameworkHarness::discover_with_custom_adapter(
+                    &owner,
+                    &[("excluded/requirements.txt", "ignored_package\n")],
+                    &[(
+                        "nested/pyproject.toml",
+                        "[project]\ndependencies = ['linked-package>=1']\n",
+                    )],
+                    &[("requirements.txt", "disabled_package\n")],
+                );
+                let profile = languages::require("python").unwrap();
+                assert_eq!(
+                    registry.classification(profile, "linked_package.client"),
+                    Some("external dependency (manifest)")
+                );
+                assert_eq!(
+                    registry.classification(profile, "disabled_package"),
+                    Some("external dependency")
+                );
+                assert_eq!(
+                    registry.classification(profile, "ignored_package"),
+                    Some("external dependency")
+                );
+            }
+            #[cfg(feature = "lang-typescript")]
+            // npm_lockfile_discovery_respects_workspace_and_ignored_directories
+            Case::NpmLockfileDiscoveryRespectsWorkspaceAndIgnoredDirectories => {
+                let registry = FrameworkHarness::discover_with_custom_adapter(
+        &owner,
         &[
             (
                 "package-lock.json",
@@ -82,42 +109,46 @@ fn npm_lockfile_discovery_respects_workspace_and_ignored_directories() {
         )],
         &[("yarn.lock", "disabled-only@^1.0.0:\n  version \"1.0.0\"\n")],
     );
-    let profile = languages::require("typescript").unwrap();
-    for module in ["axios", "@vue/runtime-core/jsx-runtime"] {
-        assert_eq!(
-            registry.classification(profile, module),
-            Some("external dependency (manifest)"),
-            "{module}"
-        );
-    }
-    assert_eq!(
-        registry.classification_for_path(profile, "axios", "consumer.ts"),
-        Some("external dependency (manifest: package-lock.json)".to_owned())
-    );
-    assert_eq!(
-        registry.classification_for_path(profile, "axios", "nested/consumer.ts"),
-        Some("external dependency (manifest: nested/yarn.lock)".to_owned())
-    );
-    assert_eq!(
-        registry.classification_for_path(
-            profile,
-            "@vue/runtime-core/jsx-runtime",
-            "[enabled]/consumer.ts"
-        ),
-        Some("external dependency (manifest: [enabled]/pnpm-lock.yaml)".to_owned())
-    );
-    assert_eq!(
-        registry.classification_for_path(profile, "axios", "[enabled]/consumer.ts"),
-        Some("external dependency".to_owned())
-    );
-    for module in ["ignored-only", "vendor-only", "disabled-only"] {
-        assert_eq!(
-            registry.classification(profile, module),
-            Some("external dependency"),
-            "{module}"
-        );
+                let profile = languages::require("typescript").unwrap();
+                for module in ["axios", "@vue/runtime-core/jsx-runtime"] {
+                    assert_eq!(
+                        registry.classification(profile, module),
+                        Some("external dependency (manifest)"),
+                        "{module}"
+                    );
+                }
+                assert_eq!(
+                    registry.classification_for_path(profile, "axios", "consumer.ts"),
+                    Some("external dependency (manifest: package-lock.json)".to_owned())
+                );
+                assert_eq!(
+                    registry.classification_for_path(profile, "axios", "nested/consumer.ts"),
+                    Some("external dependency (manifest: nested/yarn.lock)".to_owned())
+                );
+                assert_eq!(
+                    registry.classification_for_path(
+                        profile,
+                        "@vue/runtime-core/jsx-runtime",
+                        "[enabled]/consumer.ts"
+                    ),
+                    Some("external dependency (manifest: [enabled]/pnpm-lock.yaml)".to_owned())
+                );
+                assert_eq!(
+                    registry.classification_for_path(profile, "axios", "[enabled]/consumer.ts"),
+                    Some("external dependency".to_owned())
+                );
+                for module in ["ignored-only", "vendor-only", "disabled-only"] {
+                    assert_eq!(
+                        registry.classification(profile, module),
+                        Some("external dependency"),
+                        "{module}"
+                    );
+                }
+            }
+        }
     }
 }
+
 #[cfg(feature = "lang-typescript")]
 #[test]
 fn npm_lockfile_imports_record_manifest_external_origin_in_build() {

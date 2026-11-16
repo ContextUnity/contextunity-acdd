@@ -100,19 +100,12 @@ pub(super) fn snapshot(root: &Path, path: PathBuf, settings: &TaskSettings) -> R
 #[cfg(test)]
 mod tests {
     use crate::engine::{milestones::contract::snapshot, tasks::TaskSettings};
-    use std::{
-        fs,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::fs;
 
     #[test]
     fn snapshot_parses_frontmatter_identity_and_task_blocks() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("milestone_contract_{nonce}"));
-        fs::create_dir_all(&root).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
         let path = root.join("045-contract.md");
         fs::write(
             &path,
@@ -121,11 +114,11 @@ mod tests {
         .unwrap();
 
         let settings: TaskSettings = serde_yaml::from_str("").unwrap();
-        let parsed = snapshot(&root, path.clone(), &settings).unwrap();
+        let parsed = snapshot(root, path.clone(), &settings).unwrap();
 
         assert_eq!(parsed.id, "m-contract-seam");
-        assert_eq!(parsed.repository, "forge-mcp");
-        assert_eq!(parsed.project, "forge-mcp");
+        assert_eq!(parsed.repository, "acdd");
+        assert_eq!(parsed.project, "acdd");
         assert_eq!(parsed.tasks.len(), 1);
         assert_eq!(parsed.tasks[0]["task_ref"].as_str(), Some("seam"));
 
@@ -134,9 +127,9 @@ mod tests {
             "owners:\n  extensions/base: base\n  extensions/base/nested: nested\naliases:\n  legacy: canonical\n",
         )
         .unwrap();
-        let settings = TaskSettings::load(&root).unwrap();
+        let settings = TaskSettings::load(root).unwrap();
         for (relative, declared, expected) in [
-            ("docs/milestones/001-default.md", "", "forge-mcp"),
+            ("docs/milestones/001-default.md", "", "acdd"),
             (
                 "extensions/other/docs/milestones/001-inferred.md",
                 "",
@@ -162,10 +155,9 @@ mod tests {
             let path = root.join(relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, format!("---\nid: m-case\ntitle: Case\n{declared}doc_type: contract\n---\n```yaml\ntask_ref: partial\ntarget: Still readable before admission\n```\n")).unwrap();
-            let parsed = snapshot(&root, path, &settings).unwrap();
+            let parsed = snapshot(root, path, &settings).unwrap();
             assert_eq!(parsed.project, expected, "{relative}");
             assert_eq!(parsed.tasks[0]["task_ref"].as_str(), Some("partial"));
         }
-        fs::remove_dir_all(root).unwrap();
     }
 }

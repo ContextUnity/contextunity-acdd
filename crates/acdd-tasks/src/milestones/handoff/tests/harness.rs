@@ -5,7 +5,7 @@ use crate::tasks::profile::ProofKind;
 
 pub(super) const ACTIVE: &str = "docs/milestones/010-native-shared.md";
 pub(super) const ARCHIVE: &str = "docs/milestones/archive/010-native-shared.md";
-const IDENTITY: &str = "forge-mcp/forge-mcp/m-native-shared";
+const IDENTITY: &str = "acdd/acdd/m-native-shared";
 const SOURCE: &str = "---\nid: m-native-shared\ntitle: Reviewed shared handoff\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Reviewed shared handoff\n```yaml\ntask_ref: first\ntarget: First version\nproof_policy: direct-proof\nscope: [src/shared.rs]\n```\n```yaml\ntask_ref: second\ntarget: Reviewed next version\nproof_policy: direct-proof\nscope: [src/shared.rs]\ndepends_on: [first]\n```\n";
 const PROFILE: &str = r#"
 inherit: default
@@ -50,7 +50,7 @@ pub(super) struct FailedCheck {
 impl NativeHandoffHarness {
     pub fn new() -> Result<Self> {
         let directory = tempfile::Builder::new()
-            .prefix("forge-native-handoff-")
+            .prefix("acdd-native-handoff-")
             .tempdir()?;
         let root = directory.path();
         for path in ["src", "docs/milestones", "tests/acdd"] {
@@ -78,7 +78,7 @@ impl NativeHandoffHarness {
         )?;
         Self::git(root, &["commit", "-m", "admit native shared handoff"])?;
         let base = Self::git(root, &["rev-parse", "HEAD"])?;
-        let milestone = crate::core::tasks::Milestone::parse(SOURCE, "forge-mcp")?;
+        let milestone = crate::core::tasks::Milestone::parse(SOURCE, "acdd")?;
         let mut store = TasksStore::open(&root.join(".acdd/tasks.sqlite"))?;
         store.sync(&milestone, ACTIVE, root)?;
         let profile = crate::tasks::profile::load_for_workspace(root)?;

@@ -854,64 +854,43 @@ mod command_proof_tests {
     }
 
     #[test]
-    fn passing_command_rejects_reported_test_failures() {
-        let gate = crate::tasks::profile::GateDef::default();
-        let error = validate_command(
-            &proof(Some((10, 1))),
-            true,
-            &gate,
-            &command(false),
-            acdd_core::response::MAX_OUTPUT_BYTES,
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("zero failures"));
-    }
-
-    #[test]
-    fn passing_command_rejects_missing_required_counts() {
-        let gate = crate::tasks::profile::GateDef::default();
-        let error = validate_command(
-            &proof(None),
-            true,
-            &gate,
-            &command(true),
-            acdd_core::response::MAX_OUTPUT_BYTES,
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("complete test counts"));
-    }
-
-    #[test]
-    fn passing_command_allows_count_free_linter_proofs() {
-        let gate = crate::tasks::profile::GateDef::default();
-        validate_command(
-            &proof(None),
-            true,
-            &gate,
-            &command(false),
-            acdd_core::response::MAX_OUTPUT_BYTES,
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn passing_command_rejects_proof_for_a_different_bound_command() {
-        let gate = crate::tasks::profile::GateDef {
-            command: Some("other_command".into()),
-            ..Default::default()
-        };
-        let error = validate_command(
-            &proof(Some((3, 0))),
-            true,
-            &gate,
-            &command(true),
-            acdd_core::response::MAX_OUTPUT_BYTES,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("other_command"), "{error}");
+    fn command_proof_contract_matrix() {
+        let commands = command(false);
+        let counted_commands = command(true);
+        for (counts, require_counts, bound_command, expected_error) in [
+            (Some((10, 1)), false, None, Some("zero failures")),
+            (None, true, None, Some("complete test counts")),
+            (None, false, None, None),
+            (
+                Some((3, 0)),
+                true,
+                Some("other_command"),
+                Some("other_command"),
+            ),
+        ] {
+            let gate = crate::tasks::profile::GateDef {
+                command: bound_command.map(str::to_owned),
+                ..Default::default()
+            };
+            let result = validate_command(
+                &proof(counts),
+                true,
+                &gate,
+                if require_counts {
+                    &counted_commands
+                } else {
+                    &commands
+                },
+                acdd_core::response::MAX_OUTPUT_BYTES,
+            );
+            match expected_error {
+                Some(expected) => {
+                    let error = result.unwrap_err().to_string();
+                    assert!(error.contains(expected), "{error}");
+                }
+                None => result.unwrap(),
+            }
+        }
     }
 }
 

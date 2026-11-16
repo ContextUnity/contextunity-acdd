@@ -6,7 +6,7 @@ impl MilestoneHarness {
         milestone_content: &str,
         extra_config: &str,
     ) -> MilestoneHarness {
-        let milestone = Milestone::parse(milestone_content, "forge-mcp")
+        let milestone = Milestone::parse(milestone_content, "acdd")
             .expect("receipt workspace requires a valid milestone fixture");
         let mut root = MilestoneHarness::workspace(DEFAULT_SEAM, "");
         root.milestone_id = milestone.id;
@@ -88,7 +88,7 @@ impl MilestoneHarness {
     }
 
     pub(crate) fn sync_document(&self, path: &str, source: &str) -> (Milestone, TasksStore) {
-        let milestone = Milestone::parse(source, "forge-mcp").unwrap();
+        let milestone = Milestone::parse(source, "acdd").unwrap();
         let mut store = TasksStore::open(&self.path(".acdd/tasks.sqlite")).unwrap();
         store.sync(&milestone, path, self.root()).unwrap();
         (milestone, store)

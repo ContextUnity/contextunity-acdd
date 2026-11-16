@@ -24,7 +24,7 @@ const SOURCES: &[(&str, &str, &str)] = &[
 
 #[cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 #[test]
-fn source_registry_matches_disk_scopes_facts_and_linked_graph() {
+fn source_registry_scope_parity_matrix() {
     let workspace = FrameworkHarness::persisted(&[]);
     let linked = FrameworkHarness::persisted(&[]);
     for name in [
@@ -83,72 +83,65 @@ fn source_registry_matches_disk_scopes_facts_and_linked_graph() {
             .edges
             .iter()
             .any(|edge| edge.kind == "uses_model" && edge.src.contains("nested/app.py")));
-    }
-}
-
-#[cfg(all(feature = "lang-python", feature = "lang-typescript"))]
-#[test]
-fn source_registry_matches_disk_linked_scope_canonical_targets() {
-    let workspace = FrameworkHarness::persisted(&[]);
-    let linked = FrameworkHarness::persisted(&[]);
-    for name in ["my-service", "two words", "команда", "[other]"] {
-        let (source, disk) =
-            FrameworkHarness::registry_pair_in(&workspace, &linked, name, MANIFESTS);
-        let app = format!("[{name}]/app.py");
-        let nested = format!("[{name}]/nested/app.py");
-        let files = [
-            (app.as_str(), "python", SOURCES[0].2),
-            (nested.as_str(), "python", SOURCES[1].2),
-        ];
-        let actual_facts = FrameworkHarness::extract_with_registry(&source, &files).unwrap();
-        let expected_facts = FrameworkHarness::extract_with_registry(&disk, &files).unwrap();
-        let actual = linker::link_compact_with_typed_registry(&actual_facts, None, None, &source);
-        let expected = linker::link_compact_with_typed_registry(&expected_facts, None, None, &disk);
-        let actual: contextunity_acdd::core::models::Graph = actual.into();
-        let expected: contextunity_acdd::core::models::Graph = expected.into();
-        assert_eq!(
-            serde_json::to_value(&actual.edges).unwrap(),
-            serde_json::to_value(&expected.edges).unwrap(),
-            "{name}"
-        );
-        assert_eq!(
-            serde_json::to_value(&actual.coverage).unwrap(),
-            serde_json::to_value(&expected.coverage).unwrap(),
-            "{name}"
-        );
-        let nodes = &actual_facts[&app].facts.nodes;
-        let route = nodes
-            .iter()
-            .find(|node| node.name == "GET /records/")
-            .unwrap();
-        let handler = nodes.iter().find(|node| node.name == "records").unwrap();
-        let model = nodes.iter().find(|node| node.name == "Record").unwrap();
-        for (kind, src, dst) in [
-            ("handles", &route.id, &handler.id),
-            ("uses_model", &handler.id, &model.id),
-        ] {
+        if !matches!(name, "a/b" | "../other") {
+            let app = format!("[{name}]/app.py");
+            let nested = format!("[{name}]/nested/app.py");
+            let files = [
+                (app.as_str(), "python", SOURCES[0].2),
+                (nested.as_str(), "python", SOURCES[1].2),
+            ];
+            let actual_facts = FrameworkHarness::extract_with_registry(&source, &files).unwrap();
+            let expected_facts = FrameworkHarness::extract_with_registry(&disk, &files).unwrap();
+            let actual =
+                linker::link_compact_with_typed_registry(&actual_facts, None, None, &source);
+            let expected =
+                linker::link_compact_with_typed_registry(&expected_facts, None, None, &disk);
+            let actual: contextunity_acdd::core::models::Graph = actual.into();
+            let expected: contextunity_acdd::core::models::Graph = expected.into();
             assert_eq!(
-                actual
+                serde_json::to_value(&actual.edges).unwrap(),
+                serde_json::to_value(&expected.edges).unwrap(),
+                "{name}"
+            );
+            assert_eq!(
+                serde_json::to_value(&actual.coverage).unwrap(),
+                serde_json::to_value(&expected.coverage).unwrap(),
+                "{name}"
+            );
+            let nodes = &actual_facts[&app].facts.nodes;
+            let route = nodes
+                .iter()
+                .find(|node| node.name == "GET /records/")
+                .unwrap();
+            let handler = nodes.iter().find(|node| node.name == "records").unwrap();
+            let model = nodes.iter().find(|node| node.name == "Record").unwrap();
+            for (kind, src, dst) in [
+                ("handles", &route.id, &handler.id),
+                ("uses_model", &handler.id, &model.id),
+            ] {
+                assert_eq!(
+                    actual
+                        .edges
+                        .iter()
+                        .filter(|edge| edge.kind == kind && edge.src == *src && edge.dst == *dst)
+                        .count(),
+                    1,
+                    "{name}: exact linked {kind} target"
+                );
+            }
+            let view = actual_facts[&nested]
+                .facts
+                .nodes
+                .iter()
+                .find(|node| node.name == "View")
+                .unwrap();
+            assert!(
+                !actual
                     .edges
                     .iter()
-                    .filter(|edge| edge.kind == kind && edge.src == *src && edge.dst == *dst)
-                    .count(),
-                1,
-                "{name}: exact linked {kind} target"
+                    .any(|edge| edge.kind == "uses_model" && edge.src == view.id),
+                "{name}: linked FastAPI scope must not activate primary Django policy"
             );
         }
-        let view = actual_facts[&nested]
-            .facts
-            .nodes
-            .iter()
-            .find(|node| node.name == "View")
-            .unwrap();
-        assert!(
-            !actual
-                .edges
-                .iter()
-                .any(|edge| edge.kind == "uses_model" && edge.src == view.id),
-            "{name}: linked FastAPI scope must not activate primary Django policy"
-        );
     }
 }

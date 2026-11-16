@@ -66,7 +66,7 @@ fn review_rejection_retains_findings_and_requires_a_new_build() {
         )
         .unwrap();
     drop(harness);
-    let keeper_ref = format!("refs/forge/state/forge-mcp/{}", id.replace(':', "/"));
+    let keeper_ref = format!("refs/acdd/state/acdd/{}", id.replace(':', "/"));
     let checkpoint =
         contextunity_acdd::db::tasks_store::recovery::read_checkpoint(root.root(), &keeper_ref)
             .unwrap();

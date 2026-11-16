@@ -56,7 +56,7 @@ fn contract_seam_follows_public_reexports_from_test_helpers() {
         explanation.to_string().contains("src/test_helpers.rs"),
         "the indexed fixture must expose the current test-helper edge: {explanation}"
     );
-    let task_id = "forge-mcp/m-test:first";
+    let task_id = "acdd/m-test:first";
     TasksStore::claim(
         &mut store,
         task_id,

@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn delivery_requires_terminal_subtasks_with_verification_evidence() {
     let root = acdd_workspace(DEFAULT_SEAM, "");
+    crate::acdd::snapshot::precompile_runner(&root);
     root.write(
         "acdd.yaml",
         "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
@@ -24,7 +25,7 @@ fn delivery_requires_terminal_subtasks_with_verification_evidence() {
         .build();
     let milestone_ref = "docs/milestones/010-delivery-subtasks.md";
     root.write(milestone_ref, &manifest);
-    let milestone = Milestone::parse(&manifest, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(&manifest, "acdd").unwrap();
     let task_id = milestone.task_id(&milestone.tasks[0]);
     let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     store.sync(&milestone, milestone_ref, root.root()).unwrap();
@@ -95,7 +96,7 @@ fn check_blocked_sync_or_create(mode: &str) -> anyhow::Result<(String, bool)> {
     let mode = mode.to_owned();
     let worker = std::thread::spawn(move || -> anyhow::Result<(String, bool)> {
         let mut competing = TasksStore::open(&path)?;
-        let milestone = Milestone::parse(SPEC, "forge-mcp")?;
+        let milestone = Milestone::parse(SPEC, "acdd")?;
         anyhow::ensure!(
             !competing.milestone_tombstoned(&milestone.id)?,
             "competing store must observe the pre-handoff state before blocking"
@@ -137,7 +138,7 @@ fn sync_race_and_initialized_reader_use_disk_wal() {
     assert!(empty_after_conflict);
 
     let (root, _, milestone) = fixture(DEFAULT_SEAM);
-    let task_id = "forge-mcp/m-test:first";
+    let task_id = "acdd/m-test:first";
     let mut harness = TaskHarness::attach(&root, task_id);
     let tx = harness
         .begin_competing_handoff_tombstone(&format!(
@@ -156,7 +157,7 @@ fn in_memory_mutations_reject_archived_milestones_without_changes() {
     for action in ["sync", "create"] {
         let mut h = TaskHarness::memory();
         let root = h.root().to_owned();
-        let milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
+        let milestone = Milestone::parse(SPEC, "acdd").unwrap();
         assert!(!h.store.list(None, "all", None).unwrap().is_empty());
         // Match the committed task and tombstone effects of the handoff race.
         h.begin_competing_handoff_tombstone(&format!(
@@ -262,12 +263,12 @@ fn assert_task_mutation_payloads_for_actions(actions: &[&str]) {
             );
         }
         let task_id = match action {
-            "sync_many" => "forge-mcp/m-test:first",
-            "next" => "forge-mcp/m-test:next",
-            "sync" => "forge-mcp/m-test:sync",
-            "claim" => "forge-mcp/m-test:z-claim",
-            "minimal" => "forge-mcp/m-test:z-minimal",
-            _ => "forge-mcp/m-test:z-context",
+            "sync_many" => "acdd/m-test:first",
+            "next" => "acdd/m-test:next",
+            "sync" => "acdd/m-test:sync",
+            "claim" => "acdd/m-test:z-claim",
+            "minimal" => "acdd/m-test:z-minimal",
+            _ => "acdd/m-test:z-context",
         };
         let value = if matches!(action, "claim" | "minimal") {
             tasks::claim(

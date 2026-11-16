@@ -225,134 +225,161 @@ fn batch_seven<'a>(facts: &BatchFacts<'a>, collision: &Collision, name: &str, ta
     })
 }
 
-fn probe_status(expression: &str) -> String {
-    factory_catalog()
-        .graph
-        .coverage
-        .iter()
-        .find(|row| row.path == "tests/rev7_gap_probe.rs" && row.expression == expression)
-        .map(|row| row.status.to_string())
-        .unwrap_or_else(|| panic!("missing {expression}"))
-}
-
 #[test]
-fn acdd_workspace_factory_propagates_write_and_tuple_projections() {
-    assert_eq!(probe_status("workspace.write"), "resolved");
-    for (expression, expected) in [
-        ("workspace.root", "resolved"),
-        ("workspace.root().join", "external"),
-        ("projections.0.join", "external"),
-        ("projections.1.write", "resolved"),
-    ] {
-        assert_eq!(probe_status(expression), expected, "{expression}");
+fn factory_value_flow_status() {
+    let catalog = factory_catalog();
+    struct Case {
+        case_id: &'static str,
+        path: &'static str,
+        expected: &'static [(&'static str, &'static str)],
     }
-}
-
-#[test]
-fn loop_pair_and_command_receivers_stay_bounded() {
-    for expression in [
-        "w.write",
-        "first.write",
-        "second.write",
-        "cmd.current_dir",
-        "output.status.success",
-        "output.stdout.len",
-        "json.as_object",
-        "yaml.as_mapping",
-    ] {
-        let status = probe_status(expression);
-        assert!(
-            matches!(status.as_str(), "resolved" | "external"),
-            "{expression}: {status}"
-        );
-    }
-}
-
-#[test]
-fn lexical_std_generic_and_alias_receivers_stay_bounded() {
-    for expression in [
-        "value.inner",
-        "value.outer",
-        "tuple_local.outer",
-        "nested.outer",
-        "owned.len",
-        "\"known\".len",
-        "std::path::Path::new(\".\").join(\"child\").exists",
-        "String::from_utf8_lossy(&[]).len",
-        "u32::try_from",
-        "self.leaf.finish",
-        "ChainedClientRev7::new",
-        "client.payload",
-        "response[\"result\"][\"tools\"].as_array",
-        "indexed.as_array",
-        "metadata.file_type().is_file",
-        "std::time::Instant::now().elapsed().as_millis",
-        "tempfile::Builder::new().prefix(\"probe\").tempdir().unwrap().path",
-    ] {
-        let status = probe_status(expression);
-        assert!(
-            matches!(status.as_str(), "resolved" | "external"),
-            "{expression}: {status}"
-        );
-    }
-}
-
-#[test]
-fn batch_parameter_constructor_and_hub_receivers_stay_bounded() {
-    for expression in [
-        "this.leaf.finish",
-        "self.nodes.iter().next().unwrap().finish",
-        "that.nodes.iter_mut().next().unwrap().finish",
-        "plain.finish",
-        "mutable.finish",
-        "named.finish",
-        "anonymous.finish",
-        "facts.leaf.finish",
-        "facts.nodes.iter().next().unwrap().finish",
-        "nodes.into_iter().next().unwrap().finish",
-        "optional.as_deref().unwrap().iter().next().unwrap().finish",
-        "result.as_ref().unwrap().finish",
-        "path.join(\"child\").exists",
-        "collection.as_ref().iter().next().unwrap().finish",
-        "maker.ready",
-        "changed.finish",
-        "tuple_leaf.finish",
-        "tuple_outer.outer",
-        "git",
-        "invoke",
-        "again",
-        "self.nodes",
-        "self.leaf",
-        "collision.finish",
-        "make_hub().leaf().finish",
-        "result_hub()?.leaf().finish",
-        "name.trim().is_empty",
-        "target.parent().unwrap().exists",
-        "std::env::temp_dir().join(\"child\").exists",
-        "transaction_row.get",
-    ] {
-        let status = probe_status(expression);
-        assert!(
-            matches!(status.as_str(), "resolved" | "external"),
-            "{expression}: {status}"
-        );
-    }
-}
-
-#[test]
-fn unknown_cycles_and_unproven_results_fail_closed() {
-    for expression in [
-        "unrelated[\"result\"].as_array",
-        "CycleARev7::new",
-        "unknown.finish",
-        "unproven_result.finish",
-        "unproven_result",
-        "missing.finish",
-        "fake",
-        "number",
-        "unknown.write",
-    ] {
-        assert_eq!(probe_status(expression), "unresolved", "{expression}");
+    let cases = [
+        Case {
+            case_id: "acdd_workspace_factory_propagates_write_and_tuple_projections",
+            path: "tests/rev7_gap_probe.rs",
+            expected: &[
+                ("workspace.write", "resolved"),
+                ("workspace.root", "resolved"),
+                ("workspace.root().join", "external"),
+                ("projections.0.join", "external"),
+                ("projections.1.write", "resolved"),
+            ],
+        },
+        Case {
+            case_id: "loop_pair_and_command_receivers_stay_bounded",
+            path: "tests/rev7_gap_probe.rs",
+            expected: &[
+                ("w.write", "bounded"),
+                ("first.write", "bounded"),
+                ("second.write", "bounded"),
+                ("cmd.current_dir", "bounded"),
+                ("output.status.success", "bounded"),
+                ("output.stdout.len", "bounded"),
+                ("json.as_object", "bounded"),
+                ("yaml.as_mapping", "bounded"),
+            ],
+        },
+        Case {
+            case_id: "lexical_std_generic_and_alias_receivers_stay_bounded",
+            path: "tests/rev7_gap_probe.rs",
+            expected: &[
+                ("value.inner", "bounded"),
+                ("value.outer", "bounded"),
+                ("tuple_local.outer", "bounded"),
+                ("nested.outer", "bounded"),
+                ("owned.len", "bounded"),
+                ("\"known\".len", "bounded"),
+                (
+                    "std::path::Path::new(\".\").join(\"child\").exists",
+                    "bounded",
+                ),
+                ("String::from_utf8_lossy(&[]).len", "bounded"),
+                ("u32::try_from", "bounded"),
+                ("self.leaf.finish", "bounded"),
+                ("ChainedClientRev7::new", "bounded"),
+                ("client.payload", "bounded"),
+                ("response[\"result\"][\"tools\"].as_array", "bounded"),
+                ("indexed.as_array", "bounded"),
+                ("metadata.file_type().is_file", "bounded"),
+                ("std::time::Instant::now().elapsed().as_millis", "bounded"),
+                (
+                    "tempfile::Builder::new().prefix(\"probe\").tempdir().unwrap().path",
+                    "bounded",
+                ),
+            ],
+        },
+        Case {
+            case_id: "batch_parameter_constructor_and_hub_receivers_stay_bounded",
+            path: "tests/rev7_gap_probe.rs",
+            expected: &[
+                ("this.leaf.finish", "bounded"),
+                ("self.nodes.iter().next().unwrap().finish", "bounded"),
+                ("that.nodes.iter_mut().next().unwrap().finish", "bounded"),
+                ("plain.finish", "bounded"),
+                ("mutable.finish", "bounded"),
+                ("named.finish", "bounded"),
+                ("anonymous.finish", "bounded"),
+                ("facts.leaf.finish", "bounded"),
+                ("facts.nodes.iter().next().unwrap().finish", "bounded"),
+                ("nodes.into_iter().next().unwrap().finish", "bounded"),
+                (
+                    "optional.as_deref().unwrap().iter().next().unwrap().finish",
+                    "bounded",
+                ),
+                ("result.as_ref().unwrap().finish", "bounded"),
+                ("path.join(\"child\").exists", "bounded"),
+                (
+                    "collection.as_ref().iter().next().unwrap().finish",
+                    "bounded",
+                ),
+                ("maker.ready", "bounded"),
+                ("changed.finish", "bounded"),
+                ("tuple_leaf.finish", "bounded"),
+                ("tuple_outer.outer", "bounded"),
+                ("git", "bounded"),
+                ("invoke", "bounded"),
+                ("again", "bounded"),
+                ("self.nodes", "bounded"),
+                ("self.leaf", "bounded"),
+                ("collision.finish", "bounded"),
+                ("make_hub().leaf().finish", "bounded"),
+                ("result_hub()?.leaf().finish", "bounded"),
+                ("name.trim().is_empty", "bounded"),
+                ("target.parent().unwrap().exists", "bounded"),
+                ("std::env::temp_dir().join(\"child\").exists", "bounded"),
+                ("transaction_row.get", "bounded"),
+            ],
+        },
+        Case {
+            case_id: "unknown_cycles_and_unproven_results_fail_closed",
+            path: "tests/rev7_gap_probe.rs",
+            expected: &[
+                ("unrelated[\"result\"].as_array", "unresolved"),
+                ("CycleARev7::new", "unresolved"),
+                ("unknown.finish", "unresolved"),
+                ("unproven_result.finish", "unresolved"),
+                ("unproven_result", "unresolved"),
+                ("missing.finish", "unresolved"),
+                ("fake", "unresolved"),
+                ("number", "unresolved"),
+                ("unknown.write", "unresolved"),
+            ],
+        },
+        Case {
+            case_id: "rusqlite_prepare_query_stays_external",
+            path: "tests/rev7_gap_probe.rs",
+            expected: &[
+                ("statement.query", "external"),
+                ("unwrapped.query", "external"),
+            ],
+        },
+        Case {
+            case_id: "imported_tuple_fixture_keeps_root_receiver",
+            path: "tests/acdd/tuple_probe.rs",
+            expected: &[
+                ("root.write", "resolved"),
+                ("root.root", "resolved"),
+                ("root.root().join", "external"),
+            ],
+        },
+    ];
+    for Case {
+        case_id,
+        path,
+        expected,
+    } in cases
+    {
+        for &(expression, expected) in expected {
+            let status = catalog.coverage_status(path, expression);
+            if expected == "bounded" {
+                assert!(
+                    matches!(status, "resolved" | "external"),
+                    "{case_id}: {expression}: {status}"
+                );
+            } else {
+                assert_eq!(status, expected, "{case_id}: {expression}");
+            }
+        }
     }
 }
 
@@ -412,27 +439,4 @@ fn field_read_prefers_declared_field_over_same_name_method() {
         0,
         "a field read must not manufacture a callable edge"
     );
-}
-
-#[test]
-fn rusqlite_prepare_query_stays_external() {
-    for expression in ["statement.query", "unwrapped.query"] {
-        assert_eq!(probe_status(expression), "external", "{expression}");
-    }
-}
-
-#[test]
-fn imported_tuple_fixture_keeps_root_receiver() {
-    let catalog = factory_catalog();
-    for (expression, expected) in [
-        ("root.write", "resolved"),
-        ("root.root", "resolved"),
-        ("root.root().join", "external"),
-    ] {
-        assert_eq!(
-            catalog.coverage_status("tests/acdd/tuple_probe.rs", expression),
-            expected,
-            "imported tuple fixture: {expression}"
-        );
-    }
 }

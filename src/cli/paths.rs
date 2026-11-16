@@ -184,7 +184,7 @@ mod tests {
         let base = std::env::temp_dir()
             .canonicalize()
             .unwrap()
-            .join(format!("forge_cli_paths_{}", std::process::id()));
+            .join(format!("acdd_cli_paths_{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let real_repo = base.join("private_var/repo");
         fs::create_dir_all(real_repo.join(".acdd")).unwrap();

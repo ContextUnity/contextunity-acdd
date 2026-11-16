@@ -428,7 +428,7 @@ pub(super) fn read_passport(
     commit: &str,
     identity: &str,
 ) -> Result<Option<serde_json::Value>> {
-    let output = crate::core::git::git_command(root, &["notes", "--ref=forge", "show", commit])?;
+    let output = crate::core::git::git_command(root, &["notes", "--ref=acdd", "show", commit])?;
     if !output.status.success() {
         if String::from_utf8_lossy(&output.stderr).contains("no note found") {
             return Ok(None);
@@ -474,7 +474,7 @@ pub(super) fn write_passport(
     write_note_entry(root, commit, "milestone_passports", identity, passport)
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HandoffProofOwner {
     pub identity: String,
@@ -489,6 +489,9 @@ pub(super) fn write_handoff_owner(
 ) -> Result<()> {
     if !owner.proof_shas.contains(commit) || owner.proof_shas.len() > 2 {
         bail!("HANDOFF_PROOF_OWNERSHIP_INVALID: preparation must bind its head and target");
+    }
+    if handoff_owners(root)?.iter().any(|existing| existing == owner) {
+        return Ok(());
     }
     let key = digest(&(&owner.identity, &owner.worktree))?;
     write_note_entry(
@@ -524,14 +527,22 @@ pub(super) fn enroll_preparation(
     Ok(())
 }
 
+fn has_acdd_notes_ref(common: &Path) -> bool {
+    common.join("refs/notes/acdd").is_file()
+        || common.join("reftable").exists()
+        || std::fs::read_to_string(common.join("packed-refs"))
+            .is_ok_and(|contents| contents.contains("refs/notes/acdd"))
+}
+
 pub(crate) fn configure_checkpoint_owners(
     store: &mut crate::db::tasks_store::TasksStore,
     root: &Path,
 ) -> Result<()> {
-    if !crate::core::git::git_command(root, &["rev-parse", "--git-dir"])?
-        .status
-        .success()
-    {
+    let Ok(common) = crate::core::git::git_common_dir(root) else {
+        return Ok(());
+    };
+    if !has_acdd_notes_ref(&common) {
+        store.set_preparation_owners(Vec::new());
         return Ok(());
     }
     store.set_preparation_owners(
@@ -548,9 +559,14 @@ pub(crate) fn configure_checkpoint_owners(
 }
 
 pub(super) fn handoff_owners(root: &Path) -> Result<Vec<HandoffProofOwner>> {
+    if let Ok(common) = crate::core::git::git_common_dir(root) {
+        if !has_acdd_notes_ref(&common) {
+            return Ok(Vec::new());
+        }
+    }
     let output = crate::core::git::git_command(
         root,
-        &["notes", "--ref=forge", "show", &preparation_anchor(root)?],
+        &["notes", "--ref=acdd", "show", &preparation_anchor(root)?],
     )?;
     if !output.status.success() {
         if String::from_utf8_lossy(&output.stderr).contains("no note found") {
@@ -617,7 +633,7 @@ fn write_note_entry(
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos();
-    let temporary = format!("refs/notes/forge-passport-{}-{nonce}", std::process::id());
+    let temporary = format!("refs/notes/acdd-passport-{}-{nonce}", std::process::id());
     // Build a note commit on a private ref, then compare-and-swap the shared ref.
     // A competing milestone must not lose its entry in the same commit note.
     let result = (|| {
@@ -683,7 +699,7 @@ fn write_note_entry(
                 );
             }
             let note_path = std::env::temp_dir()
-                .join(format!("forge-note-{}-{nonce}.json", std::process::id()));
+                .join(format!("acdd-note-{}-{nonce}.json", std::process::id()));
             std::fs::write(&note_path, note_json)?;
             let add_result = git_write(
                 root,
@@ -710,7 +726,7 @@ fn write_note_entry(
                 root,
                 &[
                     "update-ref",
-                    "refs/notes/forge",
+                    "refs/notes/acdd",
                     &new,
                     old.as_deref().unwrap_or(&zero),
                 ],
@@ -739,7 +755,7 @@ fn write_note_entry(
 fn note_ref(root: &Path) -> Result<Option<String>> {
     let output = crate::core::git::git_command(
         root,
-        &["rev-parse", "--verify", "--quiet", "refs/notes/forge"],
+        &["rev-parse", "--verify", "--quiet", "refs/notes/acdd"],
     )?;
     if output.status.success() {
         return Ok(Some(String::from_utf8(output.stdout)?.trim().to_owned()));
@@ -935,7 +951,7 @@ pub(super) fn content_digest(root: &Path, commit: &str, milestone_path: &str) ->
         bail!("HANDOFF_CONTENT_UNAVAILABLE: cannot enumerate committed content");
     }
     let mut hash = Sha256::new();
-    hash.update(b"forge-handoff-content-v1\0");
+    hash.update(b"acdd-handoff-content-v1\0");
     for record in tree
         .stdout
         .split(|byte| *byte == 0)

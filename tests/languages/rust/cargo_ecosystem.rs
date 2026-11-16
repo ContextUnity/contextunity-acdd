@@ -1,7 +1,17 @@
 use crate::languages::harness::ExtractorHarness;
 
 #[test]
-fn cargo_imported_constructors_authorize_external_members() {
+fn cargo_external_provider_identity() {
+    struct Case {
+        case_id: &'static str,
+        source: String,
+        paths: &'static [&'static str],
+        expression: String,
+        authorized: bool,
+        allow_absent: bool,
+        evidence: &'static [&'static str],
+    }
+    let mut cases = Vec::new();
     for (label, import, constructor, member, authorized) in [
         (
             "canonical",
@@ -100,32 +110,19 @@ fn cargo_imported_constructors_authorize_external_members() {
         } else {
             ".unwrap()"
         };
-        let source = format!(
-            "{import}\nfn run() {{ let conn = {constructor}{projection}; conn.{member}(); }}"
-        );
-        for path in ["identity.rs", "src/identity.rs"] {
-            let graph = ExtractorHarness::for_lang("rust")
-                .at_path(path)
-                .linked(&source);
-            let coverage = graph
-                .coverage
-                .iter()
-                .find(|row| row.expression == format!("conn.{member}"))
-                .unwrap();
-            assert_eq!(
-                coverage.status == "external",
-                authorized,
-                "{label} at {path}: {coverage:#?}"
-            );
-            if authorized {
-                assert_eq!(
-                    coverage.status, "external",
-                    "{label} at {path}: {coverage:#?}"
-                );
-            }
-        }
+        cases.push(Case {
+            case_id: label,
+            source: format!(
+                "{import}\nfn run() {{ let conn = {constructor}{projection}; conn.{member}(); }}"
+            ),
+            paths: &["identity.rs", "src/identity.rs"],
+            expression: format!("conn.{member}"),
+            authorized,
+            allow_absent: false,
+            evidence: &[],
+        });
     }
-    for (label, source, expected_expr) in [
+    for (label, source, expression) in [
         (
             "duplicate-rust-alias",
             "use regex::Regex as Re; use unregistered_crate::Other as Re; fn run() { let r = Re::new(\"x\").unwrap(); r.is_match(\"x\"); }",
@@ -136,26 +133,11 @@ fn cargo_imported_constructors_authorize_external_members() {
             "mod regex {} fn run(r: regex::Missing) { r.is_match(\"x\"); }",
             "r.is_match",
         ),
-    ] {
-        for path in ["negative.rs", "src/negative.rs"] {
-            let graph = ExtractorHarness::for_lang("rust")
-                .at_path(path)
-                .linked(source);
-            let coverage = graph
-                .coverage
-                .iter()
-                .find(|row| row.expression == expected_expr);
-            assert!(
-                coverage.is_none() || coverage.unwrap().status == "unresolved",
-                "{label} at {path}: expected unresolved, got {coverage:#?}"
-            );
-        }
-    }
-}
 
-#[test]
-fn cargo_ecosystem_receivers_preserve_exact_provider_identity() {
-    let cargo_source = r#"
+    ] {
+        cases.push(Case { case_id: label, source: source.to_owned(), paths: &["negative.rs", "src/negative.rs"], expression: expression.to_owned(), authorized: false, allow_absent: true, evidence: &[] });
+    }
+    let source = r#"
 use rusqlite::Connection;
 use tree_sitter::Parser;
 
@@ -166,41 +148,62 @@ fn run_cargo_crates() {
     parser.set_language(&lang).unwrap();
 }
 "#;
-    let graph = ExtractorHarness::for_lang("rust")
-        .at_path("cargo_test.rs")
-        .linked(cargo_source);
-    let execute_cov = graph
-        .coverage
-        .iter()
-        .find(|c| c.expression == "conn.execute")
-        .expect("missing coverage for conn.execute");
-    assert_eq!(
-        execute_cov.status, "external",
-        "conn.execute must resolve to external via rust-cargo.toml declarative pack: {execute_cov:#?}"
-    );
-    assert!(
-        execute_cov.evidence.contains("rusqlite::Connection")
-            && execute_cov
-                .evidence
-                .contains("receiver origin statically inferred"),
-        "conn.execute must retain its resolved import origin: {execute_cov:#?}"
-    );
-    let parser_cov = graph
-        .coverage
-        .iter()
-        .find(|c| c.expression == "parser.set_language")
-        .expect("missing coverage for parser.set_language");
-    assert_eq!(
-        parser_cov.status, "external",
-        "parser.set_language must resolve to external via rust-cargo.toml declarative pack: {parser_cov:#?}"
-    );
-    assert!(
-        parser_cov.evidence.contains("tree_sitter::Parser")
-            && parser_cov
-                .evidence
-                .contains("receiver origin statically inferred"),
-        "parser.set_language must retain its resolved import origin: {parser_cov:#?}"
-    );
+    for (expression, provider) in [
+        ("conn.execute", "rusqlite::Connection"),
+        ("parser.set_language", "tree_sitter::Parser"),
+    ] {
+        cases.push(Case {
+            case_id: "cargo_ecosystem_receivers_preserve_exact_provider_identity",
+            source: source.to_owned(),
+            paths: &["cargo_test.rs"],
+            expression: expression.to_owned(),
+            authorized: true,
+            allow_absent: false,
+            evidence: if provider == "rusqlite::Connection" {
+                &[
+                    "rusqlite::Connection",
+                    "receiver origin statically inferred",
+                ]
+            } else {
+                &["tree_sitter::Parser", "receiver origin statically inferred"]
+            },
+        });
+    }
+    for case in cases {
+        for path in case.paths {
+            let graph = ExtractorHarness::for_lang("rust")
+                .at_path(path)
+                .linked(&case.source);
+            let row = graph
+                .coverage
+                .iter()
+                .find(|row| row.expression == case.expression);
+            if case.allow_absent {
+                assert!(
+                    row.is_none_or(|row| row.status == "unresolved"),
+                    "{} at {path}: {row:#?}",
+                    case.case_id
+                );
+            } else {
+                let row = row.unwrap_or_else(|| {
+                    panic!("{} at {path}: missing {}", case.case_id, case.expression)
+                });
+                assert_eq!(
+                    row.status == "external",
+                    case.authorized,
+                    "{} at {path}: {row:#?}",
+                    case.case_id
+                );
+                for evidence in case.evidence {
+                    assert!(
+                        row.evidence.contains(evidence),
+                        "{} at {path}: expected {evidence}: {row:#?}",
+                        case.case_id
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -228,6 +231,9 @@ fn check_string_trait_isolation() {
 
 #[test]
 fn git2_walkdir_and_chrono_packs_resolve_external_receivers() {
+    assert!(
+        contextunity_acdd::engine::languages::rust::is_registered_rust_type("walkdir::WalkDir")
+    );
     let eco_source = r#"
 use git2::Repository;
 use walkdir::WalkDir;

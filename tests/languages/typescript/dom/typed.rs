@@ -21,174 +21,94 @@ const NESTED: &str = r#"
     }
 "#;
 
-fn observation<'a>(
-    graph: &'a contextunity_acdd::core::models::Graph,
-    expression: &str,
-) -> &'a contextunity_acdd::core::models::Coverage {
-    graph
-        .coverage
-        .iter()
-        .find(|row| row.expression == expression)
-        .unwrap_or_else(|| panic!("missing {expression}: {graph:#?}"))
-}
+type CoverageExpectation = (&'static str, &'static str);
+type ReceiverCase = (&'static str, &'static str, &'static [CoverageExpectation]);
+
+const CASES: &[ReceiverCase] = &[
+    (
+        "dom.ts",
+        TYPED,
+        &[
+            ("root.querySelectorAll", "external"),
+            ("event.stopPropagation", "external"),
+            ("doc.querySelectorAll", "external"),
+            ("root.unknownMember", "unresolved"),
+            ("doc.closest", "unresolved"),
+        ],
+    ),
+    (
+        "untyped.ts",
+        UNTYPED,
+        &[
+            ("root.querySelectorAll", "unresolved"),
+            ("event.stopPropagation", "unresolved"),
+        ],
+    ),
+    ("local.ts", LOCAL, &[("root.querySelectorAll", "resolved")]),
+    (
+        "nested.ts",
+        NESTED,
+        &[
+            ("element.parentElement?.querySelector", "external"),
+            ("element.ownerDocument?.querySelector", "external"),
+            ("doc.documentElement?.getAttribute", "external"),
+            ("win.document?.getElementById", "external"),
+            ("fromReturn.parentElement?.matches", "external"),
+            ("element.parentElement?.invented", "unresolved"),
+            ("unknown.parentElement?.querySelector", "unresolved"),
+        ],
+    ),
+];
 
 #[test]
-fn typed_receiver_members_require_verified_dom_types() {
-    let source = TYPED;
-    let graph = linked("dom.ts", "typescript", source);
-    let facts = &graph.facts;
-    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    for expression in [
-        "root.querySelectorAll",
-        "event.stopPropagation",
-        "doc.querySelectorAll",
-    ] {
-        let coverage = observation(&graph, expression);
-        assert_eq!(coverage.status, "external", "{expression}: {coverage:#?}");
+fn typed_receiver_linker_contract() {
+    for &(path, source, expectations) in CASES {
+        let graph = linked(path, "typescript", source);
         assert!(
-            coverage.evidence.contains("builtin:web_api"),
-            "{expression}: {coverage:#?}"
+            graph.facts.errors.is_empty(),
+            "{path}: {:?}",
+            graph.facts.errors
         );
-    }
-    for expression in ["root.unknownMember", "doc.closest"] {
-        let unknown = observation(&graph, expression);
-        assert_eq!(unknown.status, "unresolved", "{expression}: {unknown:#?}");
+        for &(expression, expected) in expectations {
+            let row = graph
+                .coverage
+                .iter()
+                .find(|row| row.expression == expression)
+                .unwrap_or_else(|| panic!("{path}:{expression}: {graph:#?}"));
+            assert_eq!(row.status, expected, "{path}:{expression}: {row:#?}");
+            if expected == "external" {
+                assert!(row.evidence.contains("builtin:web_api"), "{row:#?}");
+            }
+            if expected == "resolved" {
+                assert!(
+                    graph.edges.iter().any(|edge| edge.kind == "calls"
+                        && edge.evidence == expression
+                        && graph.facts.nodes.iter().any(|node| node.id == edge.dst
+                            && node.kind == "method"
+                            && node.name == "querySelectorAll")),
+                    "{graph:#?}"
+                );
+            }
+        }
     }
 }
 
 #[test]
-fn untyped_parameters_do_not_gain_dom_members() {
-    let source = UNTYPED;
-    let graph = linked("untyped.ts", "typescript", source);
-    for expression in ["root.querySelectorAll", "event.stopPropagation"] {
-        let coverage = observation(&graph, expression);
-        assert_eq!(coverage.status, "unresolved", "{expression}: {coverage:#?}");
-    }
-}
-
-#[test]
-fn local_element_classes_keep_their_exact_method_provider() {
-    let source = LOCAL;
-    let graph = linked("local.ts", "typescript", source);
-    let facts = &graph.facts;
-    let coverage = graph
-        .coverage
-        .iter()
-        .find(|row| row.expression == "root.querySelectorAll")
-        .unwrap_or_else(|| panic!("missing local Element method: {graph:#?}"));
-    assert_eq!(coverage.status, "resolved", "{coverage:#?}");
-    assert!(
-        graph.edges.iter().any(|edge| {
-            edge.kind == "calls"
-                && edge.evidence == "root.querySelectorAll"
-                && facts.nodes.iter().any(|node| {
-                    node.id == edge.dst && node.kind == "method" && node.name == "querySelectorAll"
-                })
-        }),
-        "local Element method call must retain its indexed provider: {graph:#?}"
-    );
-}
-
-#[test]
-fn typed_untyped_and_local_receiver_statuses_survive_persistence() {
+fn persisted_typed_receiver_contract() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    for (path, source) in [
-        ("dom.ts", TYPED),
-        ("untyped.ts", UNTYPED),
-        ("local.ts", LOCAL),
-    ] {
+    for &(path, source, _) in CASES {
         workspace.write(path, source);
     }
     workspace.build();
     let conn = workspace.open();
-    for expression in [
-        "root.querySelectorAll",
-        "event.stopPropagation",
-        "doc.querySelectorAll",
-    ] {
-        let row = persisted_coverage(&conn, "dom.ts", None, expression);
-        assert_eq!(row.0, "external", "persisted {expression}: {row:?}");
-        assert!(
-            row.1.contains("builtin:web_api"),
-            "persisted {expression}: {row:?}"
-        );
-    }
-    for (path, expression) in [
-        ("dom.ts", "root.unknownMember"),
-        ("dom.ts", "doc.closest"),
-        ("untyped.ts", "root.querySelectorAll"),
-        ("untyped.ts", "event.stopPropagation"),
-    ] {
-        let row = persisted_coverage(&conn, path, None, expression);
-        assert_eq!(
-            row.0, "unresolved",
-            "persisted {path}:{expression}: {row:?}"
-        );
-    }
-    let local = persisted_coverage(&conn, "local.ts", None, "root.querySelectorAll");
-    assert_eq!(
-        local.0, "resolved",
-        "persisted local Element method: {local:?}"
-    );
-    drop(conn);
-}
-
-#[test]
-fn nested_members_and_optional_access_follow_proven_types() {
-    let source = NESTED;
-    let graph = linked("nested.ts", "typescript", source);
-    let facts = &graph.facts;
-    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    for expression in [
-        "element.parentElement?.querySelector",
-        "element.ownerDocument?.querySelector",
-        "doc.documentElement?.getAttribute",
-        "win.document?.getElementById",
-        "fromReturn.parentElement?.matches",
-    ] {
-        let row = observation(&graph, expression);
-        assert_eq!(row.status, "external", "{expression}: {row:#?}");
-        assert!(
-            row.evidence.contains("builtin:web_api"),
-            "{expression}: {row:#?}"
-        );
-    }
-    for expression in [
-        "element.parentElement?.invented",
-        "unknown.parentElement?.querySelector",
-    ] {
-        let row = observation(&graph, expression);
-        assert_eq!(row.status, "unresolved", "{expression}: {row:#?}");
-    }
-}
-
-#[test]
-fn nested_member_status_and_evidence_survive_persistence() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write("nested.ts", NESTED);
-    workspace.build();
-    let conn = workspace.open();
-    for expression in [
-        "element.parentElement?.querySelector",
-        "element.ownerDocument?.querySelector",
-        "doc.documentElement?.getAttribute",
-        "win.document?.getElementById",
-        "fromReturn.parentElement?.matches",
-    ] {
-        let row = persisted_coverage(&conn, "nested.ts", None, expression);
-        assert_eq!(row.0, "external", "persisted {expression}: {row:?}");
-        assert!(
-            row.1.contains("builtin:web_api"),
-            "persisted {expression}: {row:?}"
-        );
-    }
-    for expression in [
-        "element.parentElement?.invented",
-        "unknown.parentElement?.querySelector",
-    ] {
-        let row = persisted_coverage(&conn, "nested.ts", None, expression);
-        assert_eq!(row.0, "unresolved", "persisted {expression}: {row:?}");
+    for &(path, _, expectations) in CASES {
+        for &(expression, expected) in expectations {
+            let row = persisted_coverage(&conn, path, None, expression);
+            assert_eq!(row.0, expected, "{path}:{expression}: {row:?}");
+            if expected == "external" {
+                assert!(row.1.contains("builtin:web_api"), "{row:?}");
+            }
+        }
     }
     contextunity_acdd::core::commitments::verify(&conn).unwrap();
-    drop(conn);
 }

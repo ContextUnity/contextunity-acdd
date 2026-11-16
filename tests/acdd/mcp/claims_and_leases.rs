@@ -156,11 +156,11 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
         .filter_map(|tool| tool["name"].as_str())
         .collect();
     assert!(
-        minimal_names.contains(&"acdd_read") && minimal_names.contains(&"forge_guide"),
-        "expected minimal tools [acdd_read, forge_guide], got {minimal_names:?}"
+        minimal_names.contains(&"acdd_read") && minimal_names.contains(&"acdd_guide"),
+        "expected minimal tools [acdd_read, acdd_guide], got {minimal_names:?}"
     );
     let minimal_guide = client
-        .payload("forge_guide", json!({"topic":"query"}))
+        .payload("acdd_guide", json!({"topic":"query"}))
         .expect("MCP payload should succeed");
     assert_eq!(
         minimal_guide,
@@ -169,7 +169,7 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
     let mut preflight_failures = Vec::new();
     for topic in ["ast", "docs", "acdd"] {
         let guide = client
-            .payload("forge_guide", json!({"topic":topic}))
+            .payload("acdd_guide", json!({"topic":topic}))
             .expect("MCP payload should succeed");
         if guide != json!({}) {
             preflight_failures.push(format!(
@@ -180,7 +180,7 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
 
     workspace.write("acdd.yaml", "profile: minimal\nmodules:\n  acdd: true\n");
     let acdd_without_blackboard = client
-        .payload("forge_guide", json!({"topic":"acdd"}))
+        .payload("acdd_guide", json!({"topic":"acdd"}))
         .expect("MCP payload should succeed");
     if !acdd_without_blackboard["gates"].is_array() {
         preflight_failures.push(format!(
@@ -194,14 +194,14 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
     ] {
         if acdd_without_blackboard.get(field).is_some() {
             preflight_failures.push(format!(
-                "disabled blackboard guidance leaked through forge_guide ({field}): {acdd_without_blackboard}"
+                "disabled blackboard guidance leaked through acdd_guide ({field}): {acdd_without_blackboard}"
             ));
         }
     }
 
     workspace.write("acdd.yaml", "profile: minimal\nmodules:\n  docs: true\n");
     let docs_only_query = client
-        .payload("forge_guide", json!({"topic":"query"}))
+        .payload("acdd_guide", json!({"topic":"query"}))
         .expect("MCP payload should succeed");
     if docs_only_query.get("recovery").is_some() {
         preflight_failures.push(format!(
@@ -214,7 +214,7 @@ fn mcp_task_claim_guidance_includes_rules_without_schema_bloat() {
         ));
     }
 
-    let preflight = TaskHarness::mcp_workspace();
+    let preflight = TaskHarness::mcp_store_workspace();
     preflight.write(
         "acdd.yaml",
         "profile: minimal\nmodules:\n  acdd: true\nroots: []\ndocs: []\nmilestones: [docs/milestones]\ntasks_db: .acdd/tasks.sqlite\n",
@@ -409,7 +409,7 @@ gates:
         }
     }
 
-    let full_primary = TaskHarness::mcp_workspace();
+    let full_primary = TaskHarness::mcp_store_workspace();
     full_primary.write("acdd.yaml", "profile: full\nroots: []\ndocs: []\n");
     let minimal_target = full_primary.root().join(".worktrees/selected-minimal");
     let full_target = full_primary.root().join(".worktrees/selected-full");

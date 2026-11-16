@@ -83,7 +83,7 @@ fn claim_context_intersects_documentation_across_repository_paths() {
     drop(store);
     root.write(".gitignore", CANONICAL_ACDD_GITIGNORE);
     TaskHarness::commit_handoff_fixture_inputs(&root, &[".acdd/profile.yaml"]);
-    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity ACDD\n");
     root.write("acdd.yaml", "roots: [src]\ndocs: [docs, README.md, AGENTS.md, TESTS.md, nested/docs]\ntasks_db: .acdd/tasks.sqlite\n");
     let paths = [
         "README.md",
@@ -143,7 +143,7 @@ fn role_runner_templates_render_active_claim_context() {
     root.write(".gitignore", CANONICAL_ACDD_GITIGNORE);
     TaskHarness::commit_handoff_fixture_inputs(&root, &[".acdd/profile.yaml"]);
     root.write("AGENTS.md", "# Guidance\nLoad the acdd skill.\n");
-    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity ACDD\n");
     root.write("acdd.yaml", "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nacdd_profile: custom_profile.yaml\n");
     let id = milestone.task_id(&milestone.tasks[0]);
     for (mode, runner, prompt) in [
@@ -234,8 +234,8 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
         "docs/linked-guidance.md",
         "# Linked task guidance\nLoad the acdd skill.\n",
     );
-    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
-    linked.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity ACDD\n");
+    linked.write(".agents/skills/acdd/SKILL.md", "# ContextUnity ACDD\n");
     root.write(
         "acdd.yaml",
         &format!(
@@ -258,7 +258,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             root.root(),
             root.root(),
             None,
-            "forge-mcp",
+            "acdd",
             "gpt-6-sol",
             root.root()
                 .canonicalize()
@@ -283,7 +283,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
             missing.root(),
             missing.root(),
             None,
-            "forge-mcp",
+            "acdd",
             "flash",
             missing.root().canonicalize().unwrap().join("AGENTS.md"),
             true,
@@ -341,7 +341,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
         assert_eq!(claimed["workflow_guidance"]["role"], guidance["role"]);
         assert_eq!(claimed["workflow_guidance"]["steps"], guidance["steps"]);
         assert!(claimed["workflow_guidance"]["blackboard_messages"].is_array());
-        if repository == "forge-mcp" && !absent {
+        if repository == "acdd" && !absent {
             let mut store = tasks::store_for_task(root.root(), &id).unwrap();
             let task = store.inspect(&id).unwrap();
             tasks::submit(
@@ -445,7 +445,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
         }
     }
 
-    let missing_id = "forge-mcp/m-guided:guided";
+    let missing_id = "acdd/m-guided:guided";
     missing.write(
         "acdd.yaml",
         "tasks_db: .acdd/tasks.sqlite\nagents_guidance: docs/unavailable.md\n",
@@ -471,7 +471,7 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
     );
 }
 #[test]
-fn task_guidance_requires_named_and_installed_forge_skill() {
+fn task_guidance_requires_named_and_installed_acdd_skill() {
     let specification = "---\nid: m-skill\ntitle: Skill guidance\ndoc_type: contract\n---\n# Skill guidance\n```yaml\ntask_ref: skill\ntarget: Deliver skill guidance\nagent_type: worker\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     let root = acdd_workspace(DEFAULT_SEAM, "");
     root.write("src/lib.rs", "pub fn skill() {}\n");
@@ -641,7 +641,7 @@ fn task_guidance_requires_named_and_installed_forge_skill() {
             std::fs::remove_file(&gitignore_path).unwrap();
         }
         if install_skill {
-            root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
+            root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity ACDD\n");
         } else if skill_path.exists() {
             std::fs::remove_file(&skill_path).unwrap();
         }
@@ -658,7 +658,7 @@ fn task_guidance_requires_named_and_installed_forge_skill() {
             root.root(),
             serde_json::from_value(json!({
                 "action": "inspect",
-                "task_id": "forge-mcp/m-skill:skill"
+                "task_id": "acdd/m-skill:skill"
             }))
             .unwrap(),
         )

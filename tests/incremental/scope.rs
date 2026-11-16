@@ -79,21 +79,80 @@ fn strings(conn: &Connection, sql: &str) -> Vec<String> {
 #[test]
 #[cfg(feature = "lang-rust")]
 fn outside_inventory_paths_are_not_admitted_as_deletions() {
+    enum Rejection {
+        Excluded,
+        Ignored,
+        Unlisted,
+        #[cfg(unix)]
+        Symlink {
+            target: std::path::PathBuf,
+            link: &'static str,
+        },
+    }
     let w = Workspace::new();
     w.write("source.rs", "pub fn source() {}\n");
     w.write("notes.txt", "excluded\n");
     w.build();
-    let error = delta(w.root(), &w.db(), &["notes.txt".into()]).unwrap_err();
-    assert!(
-        format!("{error:#}").contains("modified path outside admitted inventory: notes.txt"),
-        "{error:#}"
-    );
-    w.write(".gitignore", "source.rs\n");
-    let error = delta(w.root(), &w.db(), &["source.rs".into()]).unwrap_err();
-    assert!(
-        format!("{error:#}").contains("modified path outside admitted inventory: source.rs"),
-        "{error:#}"
-    );
+    for (case, submitted, diagnostic) in [
+        (
+            Rejection::Excluded,
+            "notes.txt",
+            "modified path outside admitted inventory: notes.txt",
+        ),
+        (
+            Rejection::Ignored,
+            "source.rs",
+            "modified path outside admitted inventory: source.rs",
+        ),
+        (
+            Rejection::Unlisted,
+            "other.rs",
+            "unlisted source change: source.rs",
+        ),
+        #[cfg(unix)]
+        (
+            Rejection::Symlink {
+                target: w.path("source.rs"),
+                link: "leaf.rs",
+            },
+            "leaf.rs",
+            "leaf.rs",
+        ),
+        #[cfg(unix)]
+        (
+            Rejection::Symlink {
+                target: std::env::temp_dir(),
+                link: "escape",
+            },
+            "escape/out.rs",
+            "escape/out.rs",
+        ),
+    ] {
+        match &case {
+            Rejection::Excluded => {}
+            Rejection::Ignored => w.write(".gitignore", "source.rs\n"),
+            Rejection::Unlisted => {
+                w.write("source.rs", "pub fn changed() {}\n");
+                w.write("other.rs", "pub fn other() {}\n");
+            }
+            #[cfg(unix)]
+            Rejection::Symlink { target, link } => {
+                std::os::unix::fs::symlink(target, w.path(link)).unwrap()
+            }
+        }
+        let error = delta(w.root(), &w.db(), &[submitted.into()]).unwrap_err();
+        assert!(format!("{error:#}").contains(diagnostic), "{error:#}");
+        match case {
+            Rejection::Excluded => {}
+            Rejection::Ignored => w.remove(".gitignore"),
+            Rejection::Unlisted => {
+                w.remove("other.rs");
+                w.write("source.rs", "pub fn source() {}\n");
+            }
+            #[cfg(unix)]
+            Rejection::Symlink { link, .. } => fs::remove_file(w.path(link)).unwrap(),
+        }
+    }
 }
 
 #[test]
@@ -222,7 +281,7 @@ fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
                 "{path}: newly written local facts use the typed binary format"
             );
             reader::decode_local_facts(&facts_blob).unwrap();
@@ -248,7 +307,7 @@ fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
                 "{path}: newly written local facts use the typed binary format"
             );
             reader::decode_local_facts(&facts_blob).unwrap();
@@ -258,32 +317,65 @@ fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
             assert_eq!(incremental, cold, "{sql}");
         }
     }
-    #[cfg(unix)]
-    {
-        fs::remove_file(root_alias).unwrap();
-        fs::remove_file(linked_alias).unwrap();
-    }
-}
-
-#[test]
-#[cfg(feature = "lang-rust")]
-fn distinct_filesystem_spellings_coexist_through_delta() {
-    let w = Workspace::new();
     w.write("Foo.rs", "pub fn upper() {}\n");
     w.write("caf\u{e9}.rs", "pub fn nfc() {}\n");
-    w.build();
-    if contextunity_acdd::core::fs::is_case_insensitive_volume(w.root()) {
-        eprintln!("case coexistence unavailable on case-insensitive volume");
-    } else {
-        w.write("foo.rs", "pub fn lower() {}\n");
-        w.delta(&["foo.rs"]);
-        assert_eq!(
-            strings(
-                &w.open(),
-                "SELECT path FROM files WHERE path IN ('Foo.rs', 'foo.rs') ORDER BY path"
-            ),
-            ["Foo.rs", "foo.rs"]
-        );
+    w.delta(&["Foo.rs", "caf\u{e9}.rs"]);
+    struct Coexistence {
+        path: &'static str,
+        source: &'static str,
+        expected: [&'static str; 2],
+        case_sensitive: bool,
+    }
+    for case in [
+        Coexistence {
+            path: "foo.rs",
+            source: "pub fn lower() {}\n",
+            expected: ["Foo.rs", "foo.rs"],
+            case_sensitive: true,
+        },
+        Coexistence {
+            path: "cafe\u{301}.rs",
+            source: "pub fn nfd() {}\n",
+            expected: ["caf\u{e9}.rs", "cafe\u{301}.rs"],
+            case_sensitive: false,
+        },
+    ] {
+        if case.case_sensitive && contextunity_acdd::core::fs::is_case_insensitive_volume(w.root())
+        {
+            eprintln!("case coexistence unavailable on case-insensitive volume");
+            continue;
+        }
+        w.write(case.path, case.source);
+        if case.case_sensitive {
+            w.delta(&[case.path]);
+            assert_eq!(
+                strings(
+                    &w.open(),
+                    "SELECT path FROM files WHERE path IN ('Foo.rs', 'foo.rs') ORDER BY path"
+                ),
+                ["Foo.rs", "foo.rs"]
+            );
+        } else {
+            let names: Vec<_> = fs::read_dir(w.root())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .filter(|name| name.to_string_lossy().starts_with("caf"))
+                .collect();
+            if names.len() == 1 {
+                eprintln!("Unicode coexistence unavailable on normalization-folding volume");
+                continue;
+            }
+            assert_eq!(names.len(), 2);
+            w.delta(&["cafe\u{301}.rs"]);
+            let paths = strings(&w.open(), "SELECT path FROM files ORDER BY path");
+            for path in ["caf\u{e9}.rs", "cafe\u{301}.rs"] {
+                assert!(paths.iter().any(|p| p == path), "{paths:?}");
+            }
+        }
+        let paths = strings(&w.open(), "SELECT path FROM files ORDER BY path");
+        for path in case.expected {
+            assert!(paths.iter().any(|p| p == path), "{paths:?}");
+        }
         {
             let (incremental_verified, cold_verified, dangling, facts, parity) =
                 cold_comparison(&w);
@@ -292,7 +384,7 @@ fn distinct_filesystem_spellings_coexist_through_delta() {
             assert_eq!(dangling, 0);
             for (path, facts_blob) in facts {
                 assert!(
-                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
                     "{path}: newly written local facts use the typed binary format"
                 );
                 reader::decode_local_facts(&facts_blob).unwrap();
@@ -303,62 +395,11 @@ fn distinct_filesystem_spellings_coexist_through_delta() {
             }
         }
     }
-    w.write("cafe\u{301}.rs", "pub fn nfd() {}\n");
-    let names: Vec<_> = fs::read_dir(w.root())
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name())
-        .filter(|name| name.to_string_lossy().starts_with("caf"))
-        .collect();
-    if names.len() == 1 {
-        eprintln!("Unicode coexistence unavailable on normalization-folding volume");
-        return;
-    }
-    assert_eq!(names.len(), 2);
-    w.delta(&["cafe\u{301}.rs"]);
-    let paths = strings(&w.open(), "SELECT path FROM files ORDER BY path");
-    for path in ["caf\u{e9}.rs", "cafe\u{301}.rs"] {
-        assert!(paths.iter().any(|p| p == path), "{paths:?}");
-    }
+    #[cfg(unix)]
     {
-        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
-        assert!(incremental_verified);
-        assert!(cold_verified);
-        assert_eq!(dangling, 0);
-        for (path, facts_blob) in facts {
-            assert!(
-                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
-                "{path}: newly written local facts use the typed binary format"
-            );
-            reader::decode_local_facts(&facts_blob).unwrap();
-            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
-        }
-        for (sql, incremental, cold) in parity {
-            assert_eq!(incremental, cold, "{sql}");
-        }
+        fs::remove_file(root_alias).unwrap();
+        fs::remove_file(linked_alias).unwrap();
     }
-}
-
-#[test]
-#[cfg(all(feature = "lang-rust", unix))]
-fn delta_rejects_unlisted_changes_and_symlink_boundaries() {
-    use std::os::unix::fs::symlink;
-    let w = Workspace::new();
-    w.write("source.rs", "pub fn before() {}\n");
-    w.build();
-    w.write("source.rs", "pub fn changed() {}\n");
-    w.write("other.rs", "pub fn other() {}\n");
-    let error = delta(w.root(), &w.db(), &["other.rs".into()]).unwrap_err();
-    assert!(format!("{error:#}").contains("unlisted source change: source.rs"));
-    fs::remove_file(w.path("other.rs")).unwrap();
-    w.write("source.rs", "pub fn before() {}\n");
-    symlink(w.path("source.rs"), w.path("leaf.rs")).unwrap();
-    let error = delta(w.root(), &w.db(), &["leaf.rs".into()]).unwrap_err();
-    assert!(format!("{error:#}").contains("leaf.rs"), "{error:#}");
-    fs::remove_file(w.path("leaf.rs")).unwrap();
-    symlink(std::env::temp_dir(), w.path("escape")).unwrap();
-    let error = delta(w.root(), &w.db(), &["escape/out.rs".into()]).unwrap_err();
-    assert!(format!("{error:#}").contains("escape/out.rs"), "{error:#}");
-    fs::remove_file(w.path("escape")).unwrap();
 }
 
 #[test]
@@ -402,7 +443,7 @@ fn one_file_edit_does_not_rewrite_unrelated_component_owners() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
                 "{path}: newly written local facts use the typed binary format"
             );
             reader::decode_local_facts(&facts_blob).unwrap();
@@ -448,7 +489,7 @@ fn src_namespace_edit_relinks_its_consumer_without_invalidating_siblings() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
                 "{path}: newly written local facts use the typed binary format"
             );
             reader::decode_local_facts(&facts_blob).unwrap();
@@ -490,145 +531,108 @@ fn python_import_frontier_uses_semicolon_and_continuation_facts() {
         "alias_consumer.py",
         "from middle_alias import chosen\ndef use_alias(): return chosen()\n",
     );
-    w.build();
-
+    w.write("reexport_provider.py", "class Api: pass\n");
     w.write(
-        "provider.py",
-        "def api(): return 2\ndef service(): return 3\ndef added(): return 4\n",
+        "reexport_middle.py",
+        "import reexport_provider\nExportedApi = reexport_provider.Api\n",
     );
-    let report = w.delta(&["provider.py"]);
-    assert!(
-        report["loaded_fact_files"].as_u64().unwrap_or_default() >= 2,
-        "both intermediate import owners should be evaluated from indexed facts: {report}"
-    );
-    {
-        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
-        assert!(incremental_verified);
-        assert!(cold_verified);
-        assert_eq!(dangling, 0);
-        for (path, facts_blob) in facts {
-            assert!(
-                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
-                "{path}: newly written local facts use the typed binary format"
-            );
-            reader::decode_local_facts(&facts_blob).unwrap();
-            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
-        }
-        for (sql, incremental, cold) in parity {
-            assert_eq!(incremental, cold, "{sql}");
-        }
-    }
-
     w.write(
-        "pkg/nested.py",
-        "def nested_api(): return 2\ndef added(): return 3\n",
+        "reexport_consumer.py",
+        "from reexport_middle import ExportedApi\ndef consume() -> ExportedApi: return ExportedApi()\n",
     );
-    let dotted_report = w.delta(&["pkg/nested.py"]);
-    assert!(
-        dotted_report["loaded_fact_files"]
-            .as_u64()
-            .unwrap_or_default()
-            >= 2,
-        "plain dotted module import should expand from indexed facts: {dotted_report}"
-    );
-    {
-        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
-        assert!(incremental_verified);
-        assert!(cold_verified);
-        assert_eq!(dangling, 0);
-        for (path, facts_blob) in facts {
-            assert!(
-                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
-                "{path}: newly written local facts use the typed binary format"
-            );
-            reader::decode_local_facts(&facts_blob).unwrap();
-            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
-        }
-        for (sql, incremental, cold) in parity {
-            assert_eq!(incremental, cold, "{sql}");
-        }
-    }
-}
-
-#[test]
-#[cfg(feature = "lang-python")]
-fn indexed_reexport_frontier_matches_cold_build() {
-    let w = Workspace::new();
-    w.write("provider.py", "class Api: pass\n");
-    w.write("middle.py", "import provider\nExportedApi = provider.Api\n");
-    w.write(
-        "consumer.py",
-        "from middle import ExportedApi\ndef consume() -> ExportedApi: return ExportedApi()\n",
-    );
-    w.build();
-
-    w.write(
-        "provider.py",
-        "class Api:\n    def value(self): return 1\nclass Added: pass\n",
-    );
-    let report = w.delta(&["provider.py"]);
-    assert_eq!(
-        report["loaded_fact_files"], 2,
-        "the direct import owner and its indexed re-export consumer should be evaluated: {report}"
-    );
-    {
-        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
-        assert!(incremental_verified);
-        assert!(cold_verified);
-        assert_eq!(dangling, 0);
-        for (path, facts_blob) in facts {
-            assert!(
-                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
-                "{path}: newly written local facts use the typed binary format"
-            );
-            reader::decode_local_facts(&facts_blob).unwrap();
-            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
-        }
-        for (sql, incremental, cold) in parity {
-            assert_eq!(incremental, cold, "{sql}");
-        }
-    }
-}
-
-#[test]
-#[cfg(feature = "lang-python")]
-fn python_missing_module_export_facts_expand_conservatively() {
-    let w = Workspace::new();
-    w.write("provider.py", "def value(): return 1\n");
+    w.write("missing_provider.py", "def value(): return 1\n");
     w.write(
         "unexposed_alias.py",
-        "import provider as _provider\nmarker = 0\n",
+        "import missing_provider as _provider\nmarker = 0\n",
     );
     w.write(
         "unexposed_consumer.py",
         "from unexposed_alias import marker\ndef call_constant(): return marker\n",
     );
     w.build();
-    w.write(
-        "provider.py",
-        "def value(): return 2\ndef added(): return 3\n",
+    enum Frontier {
+        SemicolonAndContinuation,
+        Dotted,
+        Reexport,
+        MissingExports,
+    }
+    struct Case {
+        frontier: Frontier,
+        provider: &'static str,
+        source: &'static str,
+    }
+    for case in [
+        Case {
+            frontier: Frontier::SemicolonAndContinuation,
+            provider: "provider.py",
+            source: "def api(): return 2\ndef service(): return 3\ndef added(): return 4\n",
+        },
+        Case {
+            frontier: Frontier::Dotted,
+            provider: "pkg/nested.py",
+            source: "def nested_api(): return 2\ndef added(): return 3\n",
+        },
+        Case {
+            frontier: Frontier::Reexport,
+            provider: "reexport_provider.py",
+            source: "class Api:\n    def value(self): return 1\nclass Added: pass\n",
+        },
+        Case {
+            frontier: Frontier::MissingExports,
+            provider: "missing_provider.py",
+            source: "def value(): return 2\ndef added(): return 3\n",
+        },
+    ] {
+        w.write(case.provider, case.source);
+        let report = w.delta(&[case.provider]);
+        match case.frontier {
+            Frontier::SemicolonAndContinuation => {
+                assert!(
+        report["loaded_fact_files"].as_u64().unwrap_or_default() >= 2,
+        "both intermediate import owners should be evaluated from indexed facts: {report}"
     );
-    let report = w.delta(&["provider.py"]);
-    assert_eq!(
+            }
+            Frontier::Dotted => {
+                let dotted_report = &report;
+                assert!(
+                    dotted_report["loaded_fact_files"]
+                        .as_u64()
+                        .unwrap_or_default()
+                        >= 2,
+                    "plain dotted module import should expand from indexed facts: {dotted_report}"
+                );
+            }
+            Frontier::Reexport => {
+                assert_eq!(
+        report["loaded_fact_files"], 2,
+        "the direct import owner and its indexed re-export consumer should be evaluated: {report}"
+    );
+            }
+            Frontier::MissingExports => {
+                assert_eq!(
         report["loaded_fact_files"],
         2,
         "the direct import owner and its consumer should be evaluated because module export facts are unavailable: {report}"
     );
-    {
-        let (incremental_verified, cold_verified, dangling, facts, parity) = cold_comparison(&w);
-        assert!(incremental_verified);
-        assert!(cold_verified);
-        assert_eq!(dangling, 0);
-        for (path, facts_blob) in facts {
-            assert!(
-                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
-                "{path}: newly written local facts use the typed binary format"
-            );
-            reader::decode_local_facts(&facts_blob).unwrap();
-            assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            }
         }
-        for (sql, incremental, cold) in parity {
-            assert_eq!(incremental, cold, "{sql}");
+        {
+            let (incremental_verified, cold_verified, dangling, facts, parity) =
+                cold_comparison(&w);
+            assert!(incremental_verified);
+            assert!(cold_verified);
+            assert_eq!(dangling, 0);
+            for (path, facts_blob) in facts {
+                assert!(
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
+                    "{path}: newly written local facts use the typed binary format"
+                );
+                reader::decode_local_facts(&facts_blob).unwrap();
+                assert!(!commitments::hash(&facts_blob).is_empty(), "{path}");
+            }
+            for (sql, incremental, cold) in parity {
+                assert_eq!(incremental, cold, "{sql}");
+            }
         }
     }
 }
@@ -657,7 +661,7 @@ fn linked_component_transfer_preserves_unmodified_containment_edges() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
                 "{path}: newly written local facts use the typed binary format"
             );
             reader::decode_local_facts(&facts_blob).unwrap();
@@ -678,7 +682,7 @@ fn linked_component_transfer_preserves_unmodified_containment_edges() {
             assert_eq!(dangling, 0);
             for (path, facts_blob) in facts {
                 assert!(
-                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
                     "{path}: newly written local facts use the typed binary format"
                 );
                 reader::decode_local_facts(&facts_blob).unwrap();
@@ -716,7 +720,7 @@ fn provider_addition_ambiguity_and_removal_relink_consumers_and_docs() {
             assert_eq!(dangling, 0);
             for (path, facts_blob) in facts {
                 assert!(
-                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
                     "{path}: newly written local facts use the typed binary format"
                 );
                 reader::decode_local_facts(&facts_blob).unwrap();
@@ -739,7 +743,7 @@ fn provider_addition_ambiguity_and_removal_relink_consumers_and_docs() {
             assert_eq!(dangling, 0);
             for (path, facts_blob) in facts {
                 assert!(
-                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
                     "{path}: newly written local facts use the typed binary format"
                 );
                 reader::decode_local_facts(&facts_blob).unwrap();
@@ -782,7 +786,7 @@ fn component_representative_mutations_match_cold_builds() {
             assert_eq!(dangling, 0);
             for (path, facts_blob) in facts {
                 assert!(
-                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
                     "{path}: newly written local facts use the typed binary format"
                 );
                 reader::decode_local_facts(&facts_blob).unwrap();
@@ -802,7 +806,7 @@ fn component_representative_mutations_match_cold_builds() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
                 "{path}: newly written local facts use the typed binary format"
             );
             reader::decode_local_facts(&facts_blob).unwrap();
@@ -823,7 +827,7 @@ fn component_representative_mutations_match_cold_builds() {
             assert_eq!(dangling, 0);
             for (path, facts_blob) in facts {
                 assert!(
-                    facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                    facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
                     "{path}: newly written local facts use the typed binary format"
                 );
                 reader::decode_local_facts(&facts_blob).unwrap();
@@ -844,42 +848,35 @@ fn component_representative_mutations_match_cold_builds() {
     );
 }
 
-#[cfg(feature = "lang-rust")]
-fn shared_aggregate_workspace() -> Workspace {
-    let w = Workspace::new();
-    w.write("src/defs.rs", "pub struct Thing; pub trait Trait {}\n");
-    w.write(
-        "impl_a/a.rs",
-        "use src::defs as d; use src::defs::Trait as X; impl X for d::Thing {}\n",
-    );
-    w.write(
-        "impl_b/b.rs",
-        "use src::defs as e; use src::defs::Trait as Y; impl Y for e::Thing {}\n",
-    );
-    w.build();
-    assert_aggregate(&w, "impl_a/a.rs", 2);
-    w
-}
-
 #[test]
 #[cfg(feature = "lang-rust")]
 fn dyn_trait_dispatch_add_change_and_remove_impls_match_cold_builds() {
     let candidates = "SELECT d.id FROM edges e JOIN nodes s ON s.node_hash=e.src_hash \
         JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='caller' \
         AND e.kind='possible_calls' ORDER BY d.id";
+    let w = Workspace::new();
+    w.write(
+        "src/defs.rs",
+        "pub trait Work { fn run(&self); } pub trait Other { fn run(&self); }\n",
+    );
+    w.write(
+        "src/alpha.rs",
+        "use crate::defs::Work; pub struct Alpha; impl Work for Alpha { fn run(&self) {} }\n",
+    );
+    w.write(
+        "src/caller.rs",
+        "use crate::defs::Work; pub fn caller(value: &dyn Work) { value.run(); }\n",
+    );
+    w.build();
     for (operation, initial, replacement, expected) in [
         ("add", None, Some("use crate::defs::Work; pub struct Beta; impl Work for Beta { fn run(&self) {} }\n"), 2),
         ("change", Some("use crate::defs::Work; pub struct Beta; impl Work for Beta { fn run(&self) {} }\n"), Some("use crate::defs::Other; pub struct Beta; impl Other for Beta { fn run(&self) {} }\n"), 1),
         ("remove", Some("use crate::defs::Work; pub struct Beta; impl Work for Beta { fn run(&self) {} }\n"), None, 1),
     ] {
-        let w = Workspace::new();
-        w.write("src/defs.rs", "pub trait Work { fn run(&self); } pub trait Other { fn run(&self); }\n");
-        w.write("src/alpha.rs", "use crate::defs::Work; pub struct Alpha; impl Work for Alpha { fn run(&self) {} }\n");
-        w.write("src/caller.rs", "use crate::defs::Work; pub fn caller(value: &dyn Work) { value.run(); }\n");
         if let Some(source) = initial {
             w.write("src/beta.rs", source);
+            w.delta(&["src/beta.rs"]);
         }
-        w.build();
         let initial_count = if initial.is_some() { 2 } else { 1 };
         assert_eq!(strings(&w.open(), candidates).len(), initial_count, "{operation}: fixture must resolve cross-file trait candidates");
         match replacement {
@@ -893,7 +890,18 @@ fn dyn_trait_dispatch_add_change_and_remove_impls_match_cold_builds() {
         let expected_candidates = strings(&cold, candidates);
         assert_eq!(expected_candidates.len(), expected, "{operation}: cold build fixture must retain bounded dispatch");
         assert_eq!(strings(&w.open(), candidates), expected_candidates, "{operation}: unchanged caller must match cold-build candidate edges; delta={report}");
+        drop(cold);
+        for suffix in ["", "-wal", "-shm", "-journal", ".verified.json"] {
+            let path = std::path::PathBuf::from(format!("{}{suffix}", cold_path.display()));
+            if path.exists() {
+                fs::remove_file(path).unwrap();
+            }
+        }
         assert_cold_parity_and_local_facts(&w);
+        if replacement.is_some() {
+            w.remove("src/beta.rs");
+            w.delta(&["src/beta.rs"]);
+        }
     }
 }
 
@@ -905,7 +913,7 @@ fn assert_cold_parity_and_local_facts(w: &Workspace) {
     assert_eq!(dangling, 0);
     for (path, facts_blob) in facts {
         assert!(
-            facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+            facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
             "{path}: newly written local facts use the typed binary format"
         );
         reader::decode_local_facts(&facts_blob).unwrap();
@@ -933,82 +941,153 @@ fn assert_aggregate(w: &Workspace, owner: &str, count: usize) {
 #[test]
 #[cfg(feature = "lang-rust")]
 fn shared_aggregate_deletion_reseals_transferred_and_unchanged_owners() {
-    for (deleted, surviving) in [
-        ("impl_a/a.rs", "impl_b/b.rs"),
-        ("impl_b/b.rs", "impl_a/a.rs"),
-    ] {
-        let w = shared_aggregate_workspace();
-        w.remove(deleted);
-        let report = w.delta(&[deleted]);
-        assert_eq!(report["affected_owners"], 1, "{report}");
-        assert_eq!(report["reparsed_files"], 0, "{report}");
-        assert_eq!(report["loaded_fact_files"], 0, "{report}");
-        assert_eq!(report["rewritten_files"], 0, "{report}");
-        assert_aggregate(&w, surviving, 1);
-        assert_cold_parity_and_local_facts(&w);
-        w.remove(surviving);
-        w.delta(&[surviving]);
-        assert_aggregate(&w, "", 0);
-        assert_cold_parity_and_local_facts(&w);
+    enum Operation {
+        Delete,
+        Add,
+        Edit,
+        Rename(&'static str),
     }
-}
-
-#[test]
-#[cfg(feature = "lang-rust")]
-fn shared_aggregate_addition_reseals_prior_and_resulting_owners() {
-    for (added, owner) in [
-        ("impl_0/new.rs", "impl_0/new.rs"),
-        ("impl_z/new.rs", "impl_a/a.rs"),
-    ] {
-        let w = shared_aggregate_workspace();
-        w.write(
-            added,
-            "use src::defs as f; use src::defs::Trait as Z; impl Z for f::Thing {}\n",
-        );
-        let report = w.delta(&[added]);
-        assert_eq!(report["affected_owners"], 1, "{report}");
-        assert_eq!(report["reparsed_files"], 1, "{report}");
-        assert_eq!(report["loaded_fact_files"], 0, "{report}");
-        assert_eq!(report["rewritten_files"], 1, "{report}");
-        assert_aggregate(&w, owner, 3);
-        assert_cold_parity_and_local_facts(&w);
+    struct Case {
+        operation: Operation,
+        path: &'static str,
+        owner: &'static str,
+        occurrences: usize,
+        affected_owners: u64,
+        reparsed_files: Option<u64>,
+        rewritten_files: u64,
     }
-}
-
-#[test]
-#[cfg(feature = "lang-rust")]
-fn shared_aggregate_edit_reseals_transferred_and_unchanged_owners() {
-    for (edited, surviving) in [
-        ("impl_a/a.rs", "impl_b/b.rs"),
-        ("impl_b/b.rs", "impl_a/a.rs"),
-    ] {
-        let w = shared_aggregate_workspace();
-        w.write(edited, "pub fn placeholder() {}\n");
-        let report = w.delta(&[edited]);
-        assert_eq!(report["affected_owners"], 1, "{report}");
-        assert_eq!(report["loaded_fact_files"], 0, "{report}");
-        assert_eq!(report["rewritten_files"], 1, "{report}");
-        assert_aggregate(&w, surviving, 1);
-        assert_cold_parity_and_local_facts(&w);
+    let w = Workspace::new();
+    let base = [
+        (
+            "impl_a/a.rs",
+            "use src::defs as d; use src::defs::Trait as X; impl X for d::Thing {}\n",
+        ),
+        (
+            "impl_b/b.rs",
+            "use src::defs as e; use src::defs::Trait as Y; impl Y for e::Thing {}\n",
+        ),
+    ];
+    w.write("src/defs.rs", "pub struct Thing; pub trait Trait {}\n");
+    for (path, source) in base {
+        w.write(path, source);
     }
-}
-
-#[test]
-#[cfg(feature = "lang-rust")]
-fn shared_aggregate_rename_reseals_prior_and_resulting_owners() {
-    for (old, new, owner) in [
-        ("impl_a/a.rs", "impl_z/z.rs", "impl_b/b.rs"),
-        ("impl_b/b.rs", "impl_0/z.rs", "impl_0/z.rs"),
+    w.build();
+    assert_aggregate(&w, "impl_a/a.rs", 2);
+    for case in [
+        Case {
+            operation: Operation::Delete,
+            path: "impl_a/a.rs",
+            owner: "impl_b/b.rs",
+            occurrences: 1,
+            affected_owners: 1,
+            reparsed_files: Some(0),
+            rewritten_files: 0,
+        },
+        Case {
+            operation: Operation::Delete,
+            path: "impl_b/b.rs",
+            owner: "impl_a/a.rs",
+            occurrences: 1,
+            affected_owners: 1,
+            reparsed_files: Some(0),
+            rewritten_files: 0,
+        },
+        Case {
+            operation: Operation::Add,
+            path: "impl_0/new.rs",
+            owner: "impl_0/new.rs",
+            occurrences: 3,
+            affected_owners: 1,
+            reparsed_files: Some(1),
+            rewritten_files: 1,
+        },
+        Case {
+            operation: Operation::Add,
+            path: "impl_z/new.rs",
+            owner: "impl_a/a.rs",
+            occurrences: 3,
+            affected_owners: 1,
+            reparsed_files: Some(1),
+            rewritten_files: 1,
+        },
+        Case {
+            operation: Operation::Edit,
+            path: "impl_a/a.rs",
+            owner: "impl_b/b.rs",
+            occurrences: 1,
+            affected_owners: 1,
+            reparsed_files: None,
+            rewritten_files: 1,
+        },
+        Case {
+            operation: Operation::Edit,
+            path: "impl_b/b.rs",
+            owner: "impl_a/a.rs",
+            occurrences: 1,
+            affected_owners: 1,
+            reparsed_files: None,
+            rewritten_files: 1,
+        },
+        Case {
+            operation: Operation::Rename("impl_z/z.rs"),
+            path: "impl_a/a.rs",
+            owner: "impl_b/b.rs",
+            occurrences: 2,
+            affected_owners: 2,
+            reparsed_files: None,
+            rewritten_files: 1,
+        },
+        Case {
+            operation: Operation::Rename("impl_0/z.rs"),
+            path: "impl_b/b.rs",
+            owner: "impl_0/z.rs",
+            occurrences: 2,
+            affected_owners: 2,
+            reparsed_files: None,
+            rewritten_files: 1,
+        },
     ] {
-        let w = shared_aggregate_workspace();
-        fs::create_dir_all(w.path(new).parent().unwrap()).unwrap();
-        fs::rename(w.path(old), w.path(new)).unwrap();
-        let report = w.delta(&[old, new]);
-        assert_eq!(report["affected_owners"], 2, "{report}");
+        let mut changed = vec![case.path];
+        match case.operation {
+            Operation::Delete => w.remove(case.path),
+            Operation::Add => w.write(
+                case.path,
+                "use src::defs as f; use src::defs::Trait as Z; impl Z for f::Thing {}\n",
+            ),
+            Operation::Edit => w.write(case.path, "pub fn placeholder() {}\n"),
+            Operation::Rename(new) => {
+                fs::create_dir_all(w.path(new).parent().unwrap()).unwrap();
+                fs::rename(w.path(case.path), w.path(new)).unwrap();
+                changed.push(new);
+            }
+        }
+        let report = w.delta(&changed);
+        assert_eq!(report["affected_owners"], case.affected_owners, "{report}");
+        if let Some(reparsed_files) = case.reparsed_files {
+            assert_eq!(report["reparsed_files"], reparsed_files, "{report}");
+        }
         assert_eq!(report["loaded_fact_files"], 0, "{report}");
-        assert_eq!(report["rewritten_files"], 1, "{report}");
-        assert_aggregate(&w, owner, 2);
+        assert_eq!(report["rewritten_files"], case.rewritten_files, "{report}");
+        assert_aggregate(&w, case.owner, case.occurrences);
         assert_cold_parity_and_local_facts(&w);
+        if matches!(case.operation, Operation::Delete) {
+            w.remove(case.owner);
+            w.delta(&[case.owner]);
+            assert_aggregate(&w, "", 0);
+            assert_cold_parity_and_local_facts(&w);
+            changed.push(case.owner);
+        }
+        // Restore both indexed contributions and remove any added/renamed path.
+        for path in &changed {
+            if !base.iter().any(|(base_path, _)| base_path == path) {
+                w.remove(path);
+            }
+        }
+        for (path, source) in base {
+            w.write(path, source);
+        }
+        w.delta(&changed);
+        assert_aggregate(&w, "impl_a/a.rs", 2);
     }
 }
 
@@ -1053,7 +1132,7 @@ fn vue_setup_body_edits_refresh_calls_and_preserve_consumer_contracts() {
         assert_eq!(dangling, 0);
         for (path, facts_blob) in facts {
             assert!(
-                facts_blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"),
+                facts_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"),
                 "{path}: newly written local facts use the typed binary format"
             );
             reader::decode_local_facts(&facts_blob).unwrap();

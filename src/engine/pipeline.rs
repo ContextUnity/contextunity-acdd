@@ -3420,7 +3420,7 @@ mod tests {
     fn unreadable_existing_target_is_not_a_rebuildable_cache() {
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!(
-            "forge-unreadable-{}-{}",
+            "acdd-unreadable-{}-{}",
             std::process::id(),
             NONCE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -3460,7 +3460,7 @@ mod tests {
             }
         }
         let root = TestRoot(std::env::temp_dir().join(format!(
-            "forge-delta-dispatch-{}-{}",
+            "acdd-delta-dispatch-{}-{}",
             std::process::id(),
             NONCE.fetch_add(1, Ordering::Relaxed)
         )));

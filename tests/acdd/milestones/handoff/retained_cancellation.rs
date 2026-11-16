@@ -97,7 +97,7 @@ fn handoff_validates_retained_cancelled_task_history() {
                 root.write(active, &revision);
                 store
                     .sync(
-                        &Milestone::parse(&revision, "forge-mcp").unwrap(),
+                        &Milestone::parse(&revision, "acdd").unwrap(),
                         active,
                         root.root(),
                     )
@@ -160,7 +160,7 @@ fn handoff_validates_retained_cancelled_task_history() {
                     cancelled
                 );
                 root.write(active, &pending);
-                let pending_milestone = Milestone::parse(&pending, "forge-mcp").unwrap();
+                let pending_milestone = Milestone::parse(&pending, "acdd").unwrap();
                 store.sync(&pending_milestone, active, root.root()).unwrap();
                 let task_id = pending_milestone.task_id(&pending_milestone.tasks[2]);
                 dependent_claim = Some(root.claim_task(&task_id, "contract", "dependent-author"));
@@ -239,7 +239,7 @@ fn handoff_validates_retained_cancelled_task_history() {
         if expected_success {
             assert!(!root.root().join(active).exists());
             let archived_text = root.document(archive);
-            let archived = Milestone::parse(&archived_text, "forge-mcp").unwrap();
+            let archived = Milestone::parse(&archived_text, "acdd").unwrap();
             let retained = archived
                 .tasks
                 .iter()
@@ -269,7 +269,7 @@ fn handoff_validates_retained_cancelled_task_history() {
                 assert!(!root.root().join(active).exists());
                 let prepared = root.document(archive);
                 assert_eq!(
-                    Milestone::parse(&prepared, "forge-mcp")
+                    Milestone::parse(&prepared, "acdd")
                         .unwrap()
                         .tasks
                         .len(),

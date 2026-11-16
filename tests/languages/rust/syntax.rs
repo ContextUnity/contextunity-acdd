@@ -120,7 +120,7 @@ impl<'a> SemanticResolver<'a> for DotConstructorResolver<'a> {
 }
 
 #[test]
-fn constructor_spellings_normalize_and_missing_constructors_stay_unknown() {
+fn constructor_and_hint_free_flow() {
     let facts = facts();
     let empty_catalog = std::collections::BTreeMap::new();
     let seam_resolver = SeamValueFlowResolver;
@@ -140,32 +140,7 @@ fn constructor_spellings_normalize_and_missing_constructors_stay_unknown() {
         flow: &flow,
     };
     let index = ValueFlowIndex::build(&empty_catalog, &resolver);
-    for callee in ["Config::new", "Config.new", "Config::create"] {
-        let result = index.resolve_value(
-            class,
-            &call(callee),
-            SourcePosition {
-                line: 20,
-                column: 0,
-            },
-            &resolver,
-        );
-        if callee == "Config::create" {
-            assert!(
-                matches!(result, TypeTarget::Unknown),
-                "missing constructors must stay unknown: {result:?}"
-            );
-        } else {
-            assert!(
-                matches!(result, TypeTarget::Local(node) if node.id == class.id),
-                "constructor spelling must normalize: {callee}: {result:?}"
-            );
-        }
-    }
-}
 
-#[test]
-fn hint_free_value_flow_resolves_only_proven_receiver_chains() {
     let source = r#"
 struct LeafBatch9 {}
 impl LeafBatch9 { fn finish(&self) {} }
@@ -181,16 +156,38 @@ fn probe(name: &str, path: &std::path::PathBuf, hub: HubBatch9, items: Vec<LeafB
     let mut bound = LeafBatch9 {}; bound.finish();
 }
 "#;
-    let mut facts = ExtractorHarness::for_lang("rust")
+    let mut extracted = ExtractorHarness::for_lang("rust")
         .at_path("batch9.rs")
         .extract(source);
-    for reference in &mut facts.references {
+    for reference in &mut extracted.references {
         reference.receiver_hint = None;
     }
     let graph = ExtractorHarness::link_graph(&std::collections::BTreeMap::from([(
         "batch9.rs".into(),
-        facts,
+        extracted,
     )]));
+
+    enum Input {
+        Constructor(&'static str),
+        Receiver(&'static str),
+    }
+    let mut cases = vec![
+        (
+            "constructor_spellings_normalize_and_missing_constructors_stay_unknown",
+            Input::Constructor("Config::new"),
+            true,
+        ),
+        (
+            "constructor_spellings_normalize_and_missing_constructors_stay_unknown",
+            Input::Constructor("Config.new"),
+            true,
+        ),
+        (
+            "constructor_spellings_normalize_and_missing_constructors_stay_unknown",
+            Input::Constructor("Config::create"),
+            false,
+        ),
+    ];
     for (expression, expected) in [
         ("name.trim().is_empty", true),
         ("path.parent().unwrap().exists", true),
@@ -200,16 +197,48 @@ fn probe(name: &str, path: &std::path::PathBuf, hub: HubBatch9, items: Vec<LeafB
         ("item.finish", true),
         ("bound.finish", true),
     ] {
-        let row = graph
-            .coverage
-            .iter()
-            .find(|row| row.expression == expression)
-            .unwrap();
-        assert_eq!(
-            matches!(row.status.as_str(), "resolved" | "external"),
+        cases.push((
+            "hint_free_value_flow_resolves_only_proven_receiver_chains",
+            Input::Receiver(expression),
             expected,
-            "{expression}: {row:?}"
-        );
+        ));
+    }
+    for (case_id, input, expected) in cases {
+        let (expression, observed) = match input {
+            Input::Constructor(callee) => {
+                let result = index.resolve_value(
+                    class,
+                    &call(callee),
+                    SourcePosition {
+                        line: 20,
+                        column: 0,
+                    },
+                    &resolver,
+                );
+                if !expected {
+                    assert!(
+                        matches!(result, TypeTarget::Unknown),
+                        "{case_id}: {callee}: {result:?}"
+                    );
+                }
+                (
+                    callee,
+                    matches!(result, TypeTarget::Local(node) if node.id == class.id),
+                )
+            }
+            Input::Receiver(expression) => {
+                let row = graph
+                    .coverage
+                    .iter()
+                    .find(|row| row.expression == expression)
+                    .unwrap();
+                (
+                    expression,
+                    matches!(row.status.as_str(), "resolved" | "external"),
+                )
+            }
+        };
+        assert_eq!(observed, expected, "{case_id}: {expression}");
     }
 }
 
@@ -278,75 +307,87 @@ impl<'a> SemanticResolver<'a> for SuppliedResolver {
 }
 
 #[test]
-fn supplied_return_authority_controls_nested_wrapper_projections() {
+fn configured_return_authority() {
     let facts = facts();
     let empty_catalog = std::collections::BTreeMap::new();
     let owner = declaration(&facts, "method", "new");
     let at = after(owner);
+    let mut cases = Vec::new();
     for (base, member, wrappers) in [
         ("rusqlite::Rows", "next", 2),
         ("rusqlite::Row", "get", 1),
         ("std::process::Command", "output", 1),
         ("walkdir::WalkDir", "into_iter", 1),
     ] {
-        let expression = supplied_projection(member);
         for returns in [true, false] {
-            let resolver = SuppliedResolver {
-                receiver: configured(base, member, returns),
-                result: Some(TypeTarget::Builtin("Replacement".to_owned())),
+            cases.push((
+                "supplied_return_authority_controls_nested_wrapper_projections",
+                base,
+                member,
+                wrappers,
+                returns,
+                false,
+            ));
+        }
+    }
+    cases.push((
+        "nested_configured_results_without_return_authority_remain_unknown",
+        "rusqlite::Row",
+        "get",
+        1,
+        true,
+        true,
+    ));
+    for (case_id, base, member, wrappers, returns, nested_unknown) in cases {
+        let resolver = SuppliedResolver {
+            receiver: configured(base, member, returns),
+            result: Some(if nested_unknown {
+                configured("std::result::Result", "unwrap", false)
+            } else {
+                TypeTarget::Builtin("Replacement".to_owned())
+            }),
+        };
+        let index = ValueFlowIndex::build(&empty_catalog, &resolver);
+        let mut result = index.resolve_value(owner, &supplied_projection(member), at, &resolver);
+        if !returns {
+            assert!(
+                matches!(result, TypeTarget::Unknown),
+                "{case_id}: {base}.{member}: {result:?}"
+            );
+            continue;
+        }
+        if member == "into_iter" {
+            let TypeTarget::RustIterator { item } = result else {
+                panic!("{case_id}: {base}.{member}: {result:?}");
             };
-            let index = ValueFlowIndex::build(&empty_catalog, &resolver);
-            let mut result = index.resolve_value(owner, &expression, at, &resolver);
-            if !returns {
-                assert!(
-                    matches!(result, TypeTarget::Unknown),
-                    "{base}.{member}: {result:?}"
-                );
-                continue;
-            }
-            if member == "into_iter" {
-                let TypeTarget::RustIterator { item } = result else {
-                    panic!("{base}.{member}: {result:?}");
-                };
-                result = *item;
-            }
-            for depth in 0..wrappers {
-                let TypeTarget::RustWrapper { wrapper, ok, .. } = result else {
-                    panic!("{base}.{member}: {result:?}");
-                };
-                assert_eq!(
-                    wrapper,
-                    if depth == 1 {
-                        acdd_index::linker::value_flow::RustWrapperKind::Option
-                    } else {
-                        acdd_index::linker::value_flow::RustWrapperKind::Result
-                    }
-                );
-                result = *ok;
-            }
+            result = *item;
+        }
+        for depth in 0..wrappers {
+            let TypeTarget::RustWrapper { wrapper, ok, .. } = result else {
+                panic!("{case_id}: {base}.{member}: {result:?}");
+            };
+            assert_eq!(
+                wrapper,
+                if depth == 1 {
+                    acdd_index::linker::value_flow::RustWrapperKind::Option
+                } else {
+                    acdd_index::linker::value_flow::RustWrapperKind::Result
+                }
+            );
+            result = *ok;
+        }
+        if nested_unknown {
+            assert!(
+                matches!(result, TypeTarget::Unknown),
+                "{case_id}: {result:?}"
+            );
+        } else {
             assert!(
                 matches!(result, TypeTarget::Builtin(name) if name == "Replacement"),
-                "{base}.{member}"
+                "{case_id}: {base}.{member}"
             );
         }
     }
-}
-
-#[test]
-fn nested_configured_results_without_return_authority_remain_unknown() {
-    let facts = facts();
-    let empty_catalog = std::collections::BTreeMap::new();
-    let owner = declaration(&facts, "method", "new");
-    let at = after(owner);
-    let resolver = SuppliedResolver {
-        receiver: configured("rusqlite::Row", "get", true),
-        result: Some(configured("std::result::Result", "unwrap", false)),
-    };
-    let index = ValueFlowIndex::build(&empty_catalog, &resolver);
-    let projected = index.resolve_value(owner, &supplied_projection("get"), at, &resolver);
-    assert!(
-        matches!(projected, TypeTarget::RustWrapper { ok, .. } if matches!(*ok, TypeTarget::Unknown))
-    );
 }
 
 #[test]

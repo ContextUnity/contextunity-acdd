@@ -110,8 +110,8 @@ fn seam_observations_are_bound_to_claim_candidate_and_command_plan() {
 #[test]
 fn typed_contract_submission_requires_claim_bound_observation() {
     let root = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
-    let milestone = super::support::Milestone::parse(super::support::SPEC, "forge-mcp").unwrap();
-    let mut store = TasksStore::open_in_memory("forge-mcp", "forge-mcp").unwrap();
+    let milestone = super::support::Milestone::parse(super::support::SPEC, "acdd").unwrap();
+    let mut store = TasksStore::open_in_memory("acdd", "acdd").unwrap();
     store.profile = std::sync::Arc::new(super::support::fixture_profile());
     store
         .sync(&milestone, "docs/010-test.md", root.root())

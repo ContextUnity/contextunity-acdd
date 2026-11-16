@@ -61,7 +61,7 @@ pub(crate) struct GcMatrixFixture {
 impl GcMatrixFixture {
     pub fn begin_case(&self, pending: bool) -> anyhow::Result<(TaskHarness, GcPublicationFixture)> {
         self.baseline.restore(&self.workspace);
-        let mut task = TaskHarness::attach(&self.workspace, "forge-mcp/m-gc:candidate");
+        let mut task = TaskHarness::attach(&self.workspace, "acdd/m-gc:candidate");
         task.advance_to("build")?;
         task.claim_gate("build", "builder");
         self.workspace.write(
@@ -103,27 +103,16 @@ impl TaskHarness {
                 "isolate post-SQL keeper failure\n",
             );
         }
-        workspace.write("fixture-bin/git", r#"#!/usr/bin/env python3
-import subprocess,sys,pathlib,json
-r=subprocess.run(['/usr/bin/git',*sys.argv[1:]],capture_output=True)
-if r.returncode==0 and 'commit-tree' in sys.argv and pathlib.Path('fixture-publication-fault').exists() and '-m' not in sys.argv:
- state=subprocess.run(['/usr/bin/git','show',r.stdout.decode().strip()+':checkpoint.json'],capture_output=True)
- if state.returncode==0:
-  state=json.loads(state.stdout)
-  if state.get('intent') is None and any(row[0]=='build' and row[2]=='passed' for row in state.get('gates',[])):
-   lock=pathlib.Path('.git/refs/forge/state/forge-mcp/forge-mcp/m-gc/candidate.lock')
-   lock.parent.mkdir(parents=True,exist_ok=True);lock.write_text('workspace publication lock')
-if r.returncode==0 and len(sys.argv)>1 and sys.argv[1]=='-c' and 'hash-object' in sys.argv and '-t' in sys.argv and 'commit' in sys.argv:
- gc=subprocess.run(['/usr/bin/git','gc','--prune=now'],capture_output=True)
- pathlib.Path('fixture-gc-construction.json').write_text(json.dumps({'gc_attempted':True,'exit':gc.returncode}))
-if r.returncode==0 and len(sys.argv)>1 and sys.argv[1]=='commit-tree' and '-m' in sys.argv and any(a.startswith('forge-snapshot:') for a in sys.argv):
- sha=r.stdout.decode().strip()
- subprocess.run(['/usr/bin/git','reflog','expire','--expire=now','--all'],check=True,capture_output=True)
- subprocess.run(['/usr/bin/git','gc','--prune=now'],check=True,capture_output=True)
- check=subprocess.run(['/usr/bin/git','cat-file','-e',sha],capture_output=True)
- pathlib.Path('fixture-gc-window.json').write_text(json.dumps({'candidate':sha,'exists_after_gc':check.returncode==0,'gc_attempted':True}))
-sys.stdout.buffer.write(r.stdout);sys.stderr.buffer.write(r.stderr);sys.exit(r.returncode)
-"#);
+        // Most Git calls cannot reach either fault injection point. Avoid
+        // starting the instrumentation binary for those calls while retaining
+        // the same real Git subprocess and publication/GC boundaries.
+        let role_helper = crate::acdd::snapshot::role_helper_path()
+            .to_string_lossy()
+            .replace('\'', "'\\''");
+        workspace.write(
+            "fixture-bin/git",
+            &format!("#!/bin/sh\ncase \"$1\" in\n  -c|commit-tree) exec '{role_helper}' git-instrumented \"$@\" ;;\n  *) exec /usr/bin/git \"$@\" ;;\nesac\n"),
+        );
         std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         Ok(GcPublicationFixture {
@@ -146,7 +135,7 @@ impl GcPublicationFixture {
     pub fn release_publication_lock(&self) -> anyhow::Result<()> {
         fs::remove_file(
             self.root
-                .join(".git/refs/forge/state/forge-mcp/forge-mcp/m-gc/candidate.lock"),
+                .join(".git/refs/acdd/state/acdd/acdd/m-gc/candidate.lock"),
         )?;
         Ok(())
     }

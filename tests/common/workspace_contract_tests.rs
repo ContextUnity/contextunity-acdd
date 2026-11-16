@@ -207,13 +207,12 @@ fn cargo_workspace_declares_independent_crates_and_unidirectional_boundaries() {
     assert_eq!(table_count, 4);
 
     // Verify acdd-tasks crate public API & real store operations
-    let temp_path =
-        std::env::temp_dir().join(format!("test-tasks-store-{}.sqlite", std::process::id()));
+    let store_ws = crate::common::Workspace::new();
+    let temp_path = store_ws.path("test-tasks-store.sqlite");
     let store =
         acdd_tasks::store::TasksStore::open_project(&temp_path, "test-repo", "test-proj").unwrap();
     assert!(acdd_tasks::store::now() > 0);
     drop(store);
-    let _ = std::fs::remove_file(&temp_path);
 }
 
 #[test]

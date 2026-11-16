@@ -17,7 +17,7 @@ fn ergonomic_task_aliases_reach_existing_operations() {
     w.build();
     w.query(&["task", "sync", "--file", "docs/milestones/010-aliases.md"])
         .expect("CLI should succeed");
-    let task_id = "forge-mcp/m-aliases:aliases";
+    let task_id = "acdd/m-aliases:aliases";
     let inspected = w
         .query(&["task", "inspect", task_id])
         .expect("CLI should succeed");
@@ -144,16 +144,16 @@ fn ergonomic_task_aliases_reach_existing_operations() {
 fn guide_topics_preserve_query_and_acdd_shapes_and_reject_unknown_topics() {
     let mut m = McpTestHarness::indexed(&[]).expect("MCP initialize");
     let guide = m
-        .payload("forge_guide", json!({"topic":"query"}))
+        .payload("acdd_guide", json!({"topic":"query"}))
         .expect("MCP tool should succeed");
     assert!(guide["start"].is_string());
     let acdd = m
-        .payload("forge_guide", json!({"topic":"acdd"}))
+        .payload("acdd_guide", json!({"topic":"acdd"}))
         .expect("MCP tool should succeed");
     assert!(acdd["gates"].is_array());
     assert!(acdd["proof_policies"].is_object());
     let rejection = m
-        .text("forge_guide", json!({"topic":"no-such-topic"}))
+        .text("acdd_guide", json!({"topic":"no-such-topic"}))
         .expect_err("tool should reject input");
     let expected: &str = "unknown guide topic";
     assert!(

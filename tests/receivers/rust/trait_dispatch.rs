@@ -1,8 +1,20 @@
 use super::*;
 
 #[test]
-fn rust_trait_methods_require_visible_proven_traits() {
-    let facts: BTreeMap<_, _> = [
+fn visible_trait_dispatch_matrix() {
+    #[derive(Clone, Copy, Debug)]
+    enum Case {
+        TraitMethodsRequireVisibleProvenTraits,
+        TraitDefaultMethodsRequireAVisibleConcreteImpl,
+    }
+    for case in [
+        Case::TraitMethodsRequireVisibleProvenTraits,
+        Case::TraitDefaultMethodsRequireAVisibleConcreteImpl,
+    ] {
+        match case {
+            // rust_trait_methods_require_visible_proven_traits
+            Case::TraitMethodsRequireVisibleProvenTraits => {
+                let facts: BTreeMap<_, _> = [
         ("src/model.rs", "pub struct Service;"),
         ("src/traits.rs", "pub trait Work { fn work(&self); }"),
         ("src/operations.rs", "use crate::model::Service; use crate::traits::Work;\nimpl Work for Service { fn work(&self) {} }"),
@@ -10,33 +22,32 @@ fn rust_trait_methods_require_visible_proven_traits() {
         ("src/no_trait.rs", "use crate::model::Service;\nfn run(client: &Service) { client.work(); }"),
         ("src/hidden_trait.rs", "use crate::model::Service;\nmod hidden { pub trait Hidden { fn hidden(&self); } }\nimpl hidden::Hidden for Service { fn hidden(&self) {} }\nfn run(client: &Service) { client.hidden(); }"),
     ].into_iter().map(|(path, source)| (path.to_owned(), ast::extract(path, "rust", source).unwrap())).collect();
-    let graph = linker::link(&facts);
-    assert!(
-        graph
-            .coverage
-            .iter()
-            .any(|coverage| coverage.path == "src/client.rs"
-                && coverage.expression == "client.work"
-                && coverage.status == "resolved"),
-        "{facts:#?}\n{graph:#?}"
-    );
-    assert!(graph
-        .coverage
-        .iter()
-        .any(|coverage| coverage.path == "src/no_trait.rs"
-            && coverage.expression == "client.work"
-            && coverage.status == "unresolved"));
-    assert!(graph
-        .coverage
-        .iter()
-        .any(|coverage| coverage.path == "src/hidden_trait.rs"
-            && coverage.expression == "client.hidden"
-            && coverage.status == "unresolved"));
-}
-
-#[test]
-fn rust_trait_default_methods_require_a_visible_concrete_impl() {
-    let facts: BTreeMap<_, _> = [
+                let graph = linker::link(&facts);
+                assert!(
+                    graph
+                        .coverage
+                        .iter()
+                        .any(|coverage| coverage.path == "src/client.rs"
+                            && coverage.expression == "client.work"
+                            && coverage.status == "resolved"),
+                    "{facts:#?}\n{graph:#?}"
+                );
+                assert!(graph
+                    .coverage
+                    .iter()
+                    .any(|coverage| coverage.path == "src/no_trait.rs"
+                        && coverage.expression == "client.work"
+                        && coverage.status == "unresolved"));
+                assert!(graph
+                    .coverage
+                    .iter()
+                    .any(|coverage| coverage.path == "src/hidden_trait.rs"
+                        && coverage.expression == "client.hidden"
+                        && coverage.status == "unresolved"));
+            }
+            // rust_trait_default_methods_require_a_visible_concrete_impl
+            Case::TraitDefaultMethodsRequireAVisibleConcreteImpl => {
+                let facts: BTreeMap<_, _> = [
         ("src/model.rs", "pub struct Service;"),
         (
             "src/traits.rs",
@@ -62,50 +73,53 @@ fn rust_trait_default_methods_require_a_visible_concrete_impl() {
     .into_iter()
     .map(|(path, source)| (path.to_owned(), ast::extract(path, "rust", source).unwrap()))
     .collect();
-    let graph = linker::link(&facts);
-    let default_method = facts["src/traits.rs"]
-        .nodes
-        .iter()
-        .find(|node| node.name == "work" && node.kind == "method")
-        .unwrap();
-    let implementations = &facts["src/operations.rs"].nodes;
-    for (expression, target) in [
-        ("client.work", default_method),
-        (
-            "client.overridden",
-            implementations
-                .iter()
-                .find(|node| node.name == "overridden" && node.kind == "method")
-                .unwrap(),
-        ),
-        (
-            "client.required",
-            implementations
-                .iter()
-                .find(|node| node.name == "required" && node.kind == "method")
-                .unwrap(),
-        ),
-    ] {
-        assert!(
-            graph.edges.iter().any(|edge| edge.path == "src/client.rs"
-                && edge.kind == "calls"
-                && edge.evidence == expression
-                && edge.dst == target.id),
-            "{graph:#?}"
-        );
+                let graph = linker::link(&facts);
+                let default_method = facts["src/traits.rs"]
+                    .nodes
+                    .iter()
+                    .find(|node| node.name == "work" && node.kind == "method")
+                    .unwrap();
+                let implementations = &facts["src/operations.rs"].nodes;
+                for (expression, target) in [
+                    ("client.work", default_method),
+                    (
+                        "client.overridden",
+                        implementations
+                            .iter()
+                            .find(|node| node.name == "overridden" && node.kind == "method")
+                            .unwrap(),
+                    ),
+                    (
+                        "client.required",
+                        implementations
+                            .iter()
+                            .find(|node| node.name == "required" && node.kind == "method")
+                            .unwrap(),
+                    ),
+                ] {
+                    assert!(
+                        graph.edges.iter().any(|edge| edge.path == "src/client.rs"
+                            && edge.kind == "calls"
+                            && edge.evidence == expression
+                            && edge.dst == target.id),
+                        "{graph:#?}"
+                    );
+                }
+                assert!(graph
+                    .coverage
+                    .iter()
+                    .any(|coverage| coverage.path == "src/no_trait.rs"
+                        && coverage.expression == "client.work"
+                        && coverage.status == "unresolved"));
+                assert!(graph
+                    .coverage
+                    .iter()
+                    .any(|coverage| coverage.path == "src/no_impl.rs"
+                        && coverage.expression == "other.work"
+                        && coverage.status == "unresolved"));
+            }
+        }
     }
-    assert!(graph
-        .coverage
-        .iter()
-        .any(|coverage| coverage.path == "src/no_trait.rs"
-            && coverage.expression == "client.work"
-            && coverage.status == "unresolved"));
-    assert!(graph
-        .coverage
-        .iter()
-        .any(|coverage| coverage.path == "src/no_impl.rs"
-            && coverage.expression == "other.work"
-            && coverage.status == "unresolved"));
 }
 
 #[test]

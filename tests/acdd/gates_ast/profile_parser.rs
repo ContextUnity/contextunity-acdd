@@ -303,7 +303,7 @@ gates:
 id: m-linked
 required_skills: [acdd]
 repositories:
-  - name: forge-mcp
+  - name: acdd
   - name: tools
     path: tools
 linked_to: [m-upstream]
@@ -327,7 +327,7 @@ concurrency:
   sync_on: snapshot
 ```
 "#,
-        "forge-mcp",
+        "acdd",
     )
     .expect("the production milestone parser should accept the task schema");
     assert_eq!(milestone.required_skills, ["acdd"]);
@@ -368,10 +368,10 @@ concurrency:
     );
     assert_eq!(
         filter_subsystem_tools(
-            ["forge_guide", "task_list", "code_map_overview", "acdd_read"],
+            ["acdd_guide", "task_list", "code_map_overview", "acdd_read"],
             &minimal
         ),
-        ["forge_guide", "acdd_read"]
+        ["acdd_guide", "acdd_read"]
     );
     assert!(
         contextunity_acdd::core::tasks::catalog::disabled_tool_error("acdd_read", &minimal)

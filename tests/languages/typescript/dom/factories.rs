@@ -195,38 +195,213 @@ fn configured_sources() -> Vec<(String, String, String, String, String)> {
 }
 
 #[test]
-fn factory_methods_and_aliases_require_verified_receiver_origin() {
+fn factory_origin_and_member_callability() {
     let conn = baseline().open();
-    for (path, expression) in [
-        ("factory.ts", "button.addEventListener"),
-        ("factory.ts", "alias.addEventListener"),
-        ("factory.ts", "root.querySelector"),
-        ("factory.ts", "found.getAttribute"),
+    for (path, line, expression, expected, evidence) in [
+        (
+            "factory.ts",
+            None,
+            "button.addEventListener",
+            "external",
+            "builtin:web_api",
+        ),
+        (
+            "factory.ts",
+            None,
+            "alias.addEventListener",
+            "external",
+            "builtin:web_api",
+        ),
+        (
+            "factory.ts",
+            None,
+            "root.querySelector",
+            "external",
+            "builtin:web_api",
+        ),
+        (
+            "factory.ts",
+            None,
+            "found.getAttribute",
+            "external",
+            "builtin:web_api",
+        ),
+        ("factory.ts", None, "button.unknownMethod", "unresolved", ""),
+        (
+            "shadow.ts",
+            None,
+            "button.addEventListener",
+            "unresolved",
+            "",
+        ),
+        (
+            "reassigned_document.ts",
+            None,
+            "button.addEventListener",
+            "unresolved",
+            "",
+        ),
+        (
+            "reassigned_result.ts",
+            None,
+            "button.addEventListener",
+            "unresolved",
+            "",
+        ),
+        (
+            "unknown_factory.ts",
+            None,
+            "button.addEventListener",
+            "unresolved",
+            "",
+        ),
+        (
+            "untyped.ts",
+            None,
+            "button.addEventListener",
+            "unresolved",
+            "",
+        ),
+        (
+            "shadow.js",
+            None,
+            "document.addEventListener",
+            "unresolved",
+            "",
+        ),
+        ("shadow.js", None, "event.preventDefault", "unresolved", ""),
+        ("local.ts", None, "button.addEventListener", "resolved", ""),
+        ("literal.ts", None, "input.value.trim", "external", ""),
+        ("literal.ts", None, "script.src.trim", "external", ""),
+        (
+            "literal.ts",
+            None,
+            "document.createElement('input').value.trim",
+            "external",
+            "",
+        ),
+        (
+            "literal.ts",
+            None,
+            "document.createElement('script').src.trim",
+            "external",
+            "",
+        ),
+        ("literal.ts", None, "input.src.trim", "unresolved", ""),
+        ("literal.ts", None, "script.value.trim", "unresolved", ""),
+        ("literal.ts", None, "input.invented", "unresolved", ""),
+        ("literal.ts", Some(2), "input.value", "unresolved", ""),
+        ("literal.js", None, "input.value.trim", "external", ""),
+        ("literal.js", None, "script.src.trim", "external", ""),
+        (
+            "literal.js",
+            None,
+            "document.createElement('input').value.trim",
+            "external",
+            "",
+        ),
+        (
+            "literal.js",
+            None,
+            "document.createElement('script').src.trim",
+            "external",
+            "",
+        ),
+        ("literal.js", None, "input.src.trim", "unresolved", ""),
+        ("literal.js", None, "script.value.trim", "unresolved", ""),
+        ("literal.js", None, "input.invented", "unresolved", ""),
+        ("literal.js", Some(2), "input.value", "unresolved", ""),
+        (
+            "literal_shadow.ts",
+            None,
+            "input.value.trim",
+            "unresolved",
+            "",
+        ),
+        (
+            "literal_shadow.ts",
+            None,
+            "document.createElement('script').src.trim",
+            "unresolved",
+            "",
+        ),
+        (
+            "literal_write.ts",
+            None,
+            "input.value.trim",
+            "unresolved",
+            "",
+        ),
+        (
+            "literal_unknown.ts",
+            None,
+            "dynamic.addEventListener",
+            "external",
+            "",
+        ),
+        (
+            "literal_unknown.ts",
+            None,
+            "dynamic.value.trim",
+            "unresolved",
+            "",
+        ),
+        (
+            "literal_unknown.ts",
+            None,
+            "missing.addEventListener",
+            "external",
+            "",
+        ),
+        (
+            "literal_unknown.ts",
+            None,
+            "spread.addEventListener",
+            "external",
+            "",
+        ),
+        (
+            "literal_unknown.ts",
+            None,
+            "spread.value.trim",
+            "unresolved",
+            "",
+        ),
+        (
+            "literal_unknown.ts",
+            None,
+            "excess.addEventListener",
+            "external",
+            "",
+        ),
+        (
+            "literal_unknown.ts",
+            None,
+            "excess.value.trim",
+            "unresolved",
+            "",
+        ),
+        (
+            "literal_unknown.ts",
+            None,
+            "unknown.addEventListener",
+            "external",
+            "",
+        ),
+        (
+            "literal_unknown.ts",
+            None,
+            "unknown.value.trim",
+            "unresolved",
+            "",
+        ),
     ] {
-        let row = persisted_coverage(&conn, path, None, expression);
-        assert_eq!(row.0, "external");
-        assert!(
-            row.1.contains("builtin:web_api"),
-            "{path}:{expression} {row:?}"
-        );
+        let row = persisted_coverage(&conn, path, line, expression);
+        assert_eq!(row.0, expected, "{path}:{expression}: {row:?}");
+        if !evidence.is_empty() {
+            assert!(row.1.contains(evidence), "{path}:{expression}: {row:?}");
+        }
     }
-    for (path, expression) in [
-        ("factory.ts", "button.unknownMethod"),
-        ("shadow.ts", "button.addEventListener"),
-        ("reassigned_document.ts", "button.addEventListener"),
-        ("reassigned_result.ts", "button.addEventListener"),
-        ("unknown_factory.ts", "button.addEventListener"),
-        ("untyped.ts", "button.addEventListener"),
-        ("shadow.js", "document.addEventListener"),
-        ("shadow.js", "event.preventDefault"),
-    ] {
-        let row = persisted_coverage(&conn, path, None, expression);
-        assert_eq!(row.0, "unresolved");
-    }
-    assert_eq!(
-        persisted_coverage(&conn, "local.ts", None, "button.addEventListener").0,
-        "resolved"
-    );
     let local_edge: i64 = conn.query_row(
         "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='local.ts' AND e.kind='calls' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='local.ts' AND dst.kind='method' AND dst.name='addEventListener'",
         [], |row| row.get(0),
@@ -235,59 +410,129 @@ fn factory_methods_and_aliases_require_verified_receiver_origin() {
 }
 
 #[test]
-fn literal_factory_members_have_finite_element_types() {
+fn property_read_provenance_and_noncallability() {
     let conn = baseline().open();
-    for path in ["literal.ts", "literal.js"] {
-        for (expression, expected) in [
-            ("input.value.trim", "external"),
-            ("script.src.trim", "external"),
-            ("document.createElement('input').value.trim", "external"),
-            ("document.createElement('script').src.trim", "external"),
-            ("input.src.trim", "unresolved"),
-            ("script.value.trim", "unresolved"),
-            ("input.invented", "unresolved"),
+    for (extension, language) in [("ts", "typescript"), ("js", "javascript")] {
+        for (prefix, line, expression, expected, provenance) in [
+            ("property", None, "input.value", "external", true),
+            ("property", None, "script.src", "external", true),
+            (
+                "property",
+                None,
+                "document.createElement('input').value",
+                "external",
+                true,
+            ),
+            (
+                "property",
+                None,
+                "document.createElement('script').src",
+                "external",
+                true,
+            ),
+            ("property", None, "a.trim", "external", false),
+            ("property", None, "b.trim", "external", false),
+            ("property", None, "c.trim", "external", false),
+            ("property", None, "d.trim", "external", false),
+            (
+                "property",
+                None,
+                "document.createElement('input').src",
+                "unresolved",
+                false,
+            ),
+            (
+                "property",
+                None,
+                "document.createElement('script').value",
+                "unresolved",
+                false,
+            ),
+            (
+                "property",
+                None,
+                "document.createElement(tag).value",
+                "unresolved",
+                false,
+            ),
+            (
+                "property",
+                None,
+                "document.createElement(...['input']).value",
+                "unresolved",
+                false,
+            ),
+            (
+                "property",
+                None,
+                "document.createElement('input', 1, 2, 3, 4).value",
+                "unresolved",
+                false,
+            ),
+            (
+                "property",
+                None,
+                "document.createElement('unmapped').value",
+                "unresolved",
+                false,
+            ),
+            (
+                "property",
+                None,
+                "document.createElement('in\\put').value",
+                "unresolved",
+                false,
+            ),
+            ("property", None, "wrong.trim", "unresolved", false),
+            ("property", None, "other.trim", "unresolved", false),
+            ("property", None, "dynamic.trim", "unresolved", false),
+            ("property", None, "spread.trim", "unresolved", false),
+            ("property", None, "fifth.trim", "unresolved", false),
+            ("property", None, "unknown.trim", "unresolved", false),
+            ("property", None, "escaped.trim", "unresolved", false),
+            ("property_alias", None, "v", "unresolved", false),
+            ("property_alias", None, "s", "unresolved", false),
+            ("property_alias", None, "alias", "unresolved", false),
+            ("property_call", None, "input.value", "unresolved", false),
+            (
+                "property_call",
+                None,
+                "document.createElement('input').value",
+                "unresolved",
+                false,
+            ),
+            (
+                "property_call",
+                None,
+                "document.createElement('script').src",
+                "unresolved",
+                false,
+            ),
+            (
+                "property_shadow",
+                None,
+                "document.createElement('input').value",
+                "unresolved",
+                false,
+            ),
+            ("property_shadow", None, "value.trim", "unresolved", false),
+            ("property_shadow", None, "direct.trim", "unresolved", false),
+            (
+                "property_write",
+                None,
+                "document.createElement('input').value",
+                "unresolved",
+                false,
+            ),
+            ("property_write", None, "value.trim", "unresolved", false),
+            ("property_local", Some(1), "item.value", "resolved", false),
+            ("property_local", Some(1), "make().value", "resolved", false),
+            ("property_local", Some(2), "item.value", "unresolved", false),
         ] {
-            let row = persisted_coverage(&conn, path, None, expression);
-            assert_eq!(row.0, expected);
-        }
-    }
-}
-
-#[test]
-fn literal_properties_are_not_callable() {
-    let conn = baseline().open();
-    for path in ["literal.ts", "literal.js"] {
-        let status: String = conn.query_row(
-            "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND line=2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='input.value'",
-            [path], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(status, "unresolved");
-    }
-}
-
-#[test]
-fn property_reads_preserve_literal_factory_provenance() {
-    let conn = baseline().open();
-    for extension in ["ts", "js"] {
-        let path = format!("property.{extension}");
-        for expression in [
-            "input.value",
-            "script.src",
-            "document.createElement('input').value",
-            "document.createElement('script').src",
-            "a.trim",
-            "b.trim",
-            "c.trim",
-            "d.trim",
-        ] {
-            let row = persisted_coverage(&conn, &path, None, expression);
-            assert_eq!(row.0, "external");
-            if !expression.ends_with(".trim") {
-                let language = if extension == "ts" {
-                    "typescript"
-                } else {
-                    "javascript"
-                };
+            let path = format!("{prefix}.{extension}");
+            let row = persisted_coverage(&conn, &path, line, expression);
+            assert_eq!(row.0, expected, "{path}:{expression}: {row:?}");
+            if provenance {
                 for token in [
                     format!("finite {language} configured member"),
                     "pack web".into(),
@@ -296,81 +541,11 @@ fn property_reads_preserve_literal_factory_provenance() {
                 ] {
                     assert!(
                         row.1.contains(&token),
-                        "property provenance {path}:{expression}: missing {token}: {row:?}"
+                        "{path}:{expression}: missing {token}: {row:?}"
                     );
                 }
             }
         }
-    }
-}
-
-#[test]
-fn unknown_or_mismatched_factory_arguments_do_not_prove_property_reads() {
-    let conn = baseline().open();
-    for extension in ["ts", "js"] {
-        let path = format!("property.{extension}");
-        for expression in [
-            "document.createElement('input').src",
-            "document.createElement('script').value",
-            "document.createElement(tag).value",
-            "document.createElement(...['input']).value",
-            "document.createElement('input', 1, 2, 3, 4).value",
-            "document.createElement('unmapped').value",
-            "document.createElement('in\\put').value",
-            "wrong.trim",
-            "other.trim",
-            "dynamic.trim",
-            "spread.trim",
-            "fifth.trim",
-            "unknown.trim",
-            "escaped.trim",
-        ] {
-            let row = persisted_coverage(&conn, &path, None, expression);
-            assert_eq!(row.0, "unresolved");
-        }
-    }
-}
-
-#[test]
-fn property_calls_aliases_and_shadowed_factories_remain_unresolved() {
-    let conn = baseline().open();
-    for extension in ["ts", "js"] {
-        for (prefix, expressions) in [
-            ("property_alias", vec!["v", "s", "alias"]),
-            (
-                "property_call",
-                vec![
-                    "input.value",
-                    "document.createElement('input').value",
-                    "document.createElement('script').src",
-                ],
-            ),
-            (
-                "property_shadow",
-                vec![
-                    "document.createElement('input').value",
-                    "value.trim",
-                    "direct.trim",
-                ],
-            ),
-            (
-                "property_write",
-                vec!["document.createElement('input').value", "value.trim"],
-            ),
-        ] {
-            for expression in expressions {
-                let row =
-                    persisted_coverage(&conn, &format!("{prefix}.{extension}"), None, expression);
-                assert_eq!(row.0, "unresolved");
-            }
-        }
-    }
-}
-
-#[test]
-fn shadowed_plain_reads_emit_no_observation_or_success_edges() {
-    let conn = baseline().open();
-    for extension in ["ts", "js"] {
         let shadow_path = format!("property_shadow.{extension}");
         let absent: i64 = conn.query_row(
             "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='input.value'",
@@ -381,62 +556,18 @@ fn shadowed_plain_reads_emit_no_observation_or_success_edges() {
             .query_row("SELECT count(*) FROM edge_occurrences WHERE (SELECT path FROM path_dictionary WHERE path_id=owner_id)=?1 AND kind IN ('calls','references')", [&shadow_path], |row| row.get(0))
             .unwrap();
         assert_eq!(edges, 0);
-    }
-}
 
-#[test]
-fn local_properties_keep_exact_field_targets_and_stay_noncallable() {
-    let conn = baseline().open();
-    for extension in ["ts", "js"] {
         let local_path = format!("property_local.{extension}");
-        for expression in ["item.value", "make().value"] {
-            let status: String = conn.query_row(
-                "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND line=1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
-                rusqlite::params![local_path,expression], |row| row.get(0),
-            ).unwrap();
-            assert_eq!(status, "resolved");
-        }
         let local_targets: i64 = conn.query_row(
             "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?1 AND dst.kind='field' AND dst.name='value'",
             [&local_path], |row| row.get(0),
         ).unwrap();
         assert_eq!(local_targets, 2);
-        let local_call: String = conn.query_row(
-            "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND line=2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='item.value'",
-            [&local_path], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(local_call, "unresolved");
     }
 }
 
 #[test]
-fn literal_argument_boundaries_keep_generic_methods_without_narrow_properties() {
-    let conn = baseline().open();
-    for (path, expression, expected) in [
-        ("literal_shadow.ts", "input.value.trim", "unresolved"),
-        (
-            "literal_shadow.ts",
-            "document.createElement('script').src.trim",
-            "unresolved",
-        ),
-        ("literal_write.ts", "input.value.trim", "unresolved"),
-        ("literal_unknown.ts", "dynamic.addEventListener", "external"),
-        ("literal_unknown.ts", "dynamic.value.trim", "unresolved"),
-        ("literal_unknown.ts", "missing.addEventListener", "external"),
-        ("literal_unknown.ts", "spread.addEventListener", "external"),
-        ("literal_unknown.ts", "spread.value.trim", "unresolved"),
-        ("literal_unknown.ts", "excess.addEventListener", "external"),
-        ("literal_unknown.ts", "excess.value.trim", "unresolved"),
-        ("literal_unknown.ts", "unknown.addEventListener", "external"),
-        ("literal_unknown.ts", "unknown.value.trim", "unresolved"),
-    ] {
-        let row = persisted_coverage(&conn, path, None, expression);
-        assert_eq!(row.0, expected);
-    }
-}
-
-#[test]
-fn configured_property_mapping_and_provider_evidence_follow_disable_and_restore() {
+fn configured_property_disable_restore() {
     let fixture = FactoryWorkspace::new();
     for (phase, expected) in [(0, "external"), (1, "unresolved"), (2, "external")] {
         match phase {
@@ -463,48 +594,22 @@ fn configured_property_mapping_and_provider_evidence_follow_disable_and_restore(
                 assert!(evidence.contains(&format!("receiver origin external import {origin}")));
             }
         }
-        let parity = crate::languages::harness::cold_relations(&fixture.workspace);
-        assert_eq!(parity.incremental_verification, Ok(()));
-        assert_eq!(parity.cold_verification, Ok(()));
-        assert_eq!(parity.incremental, parity.cold);
-    }
-}
-
-#[test]
-fn disabling_configured_factories_removes_plain_read_observations_and_success_targets() {
-    let fixture = FactoryWorkspace::new();
-    fixture.disable();
-    let conn = fixture.workspace.open();
-    for (path, ordinary, _, _, _) in configured_sources() {
-        let absent: i64 = conn.query_row(
+        if phase == 1 {
+            for (path, ordinary, _, _, _) in configured_sources() {
+                let absent: i64 = conn.query_row(
             "SELECT count(*) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND line=1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
             rusqlite::params![path, ordinary], |r| r.get(0),
         ).unwrap();
-        assert_eq!(
-            absent, 0,
-            "disabled mapping has no ordinary property observation: {path}"
-        );
-        let targets: i64 = conn
+                assert_eq!(
+                    absent, 0,
+                    "disabled mapping has no ordinary property observation: {path}"
+                );
+                let targets: i64 = conn
             .query_row("SELECT count(*) FROM edge_occurrences WHERE (SELECT path FROM path_dictionary WHERE path_id=owner_id)=?1 AND kind IN ('calls','references')", [&path], |r| r.get(0))
             .unwrap();
-        assert_eq!(targets, 0, "disabled mapping has no success target: {path}");
-    }
-    let parity = crate::languages::harness::cold_relations(&fixture.workspace);
-    assert_eq!(parity.incremental_verification, Ok(()));
-    assert_eq!(parity.cold_verification, Ok(()));
-    assert_eq!(parity.incremental, parity.cold);
-}
-
-#[test]
-fn configured_properties_remain_noncallable_across_mapping_disable_and_restore() {
-    let fixture = FactoryWorkspace::new();
-    for phase in 0..3 {
-        match phase {
-            0 => (),
-            1 => fixture.disable(),
-            _ => fixture.restore(),
+                assert_eq!(targets, 0, "disabled mapping has no success target: {path}");
+            }
         }
-        let conn = fixture.workspace.open();
         for (path, _, direct, _, _) in configured_sources() {
             assert_eq!(
                 persisted_coverage(&conn, &path, Some(2), &direct).0,
@@ -512,5 +617,10 @@ fn configured_properties_remain_noncallable_across_mapping_disable_and_restore()
                 "{path}: phase {phase}"
             );
         }
+
+        let parity = crate::languages::harness::cold_relations(&fixture.workspace);
+        assert_eq!(parity.incremental_verification, Ok(()));
+        assert_eq!(parity.cold_verification, Ok(()));
+        assert_eq!(parity.incremental, parity.cold);
     }
 }

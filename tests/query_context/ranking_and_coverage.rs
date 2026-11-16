@@ -26,6 +26,11 @@ pub(super) fn navigation_workspace() -> &'static crate::common::sqlite::Persiste
         workspace.write("symbols.py", "def _(): pass\ndef __(): pass\n");
         workspace.write("two.py", "def _(): pass\n");
         workspace.write("README.md", "# _\n\nDocumentation section.\n");
+        let mut code = String::from("def coverage_matrix_seventeen_references():\n");
+        for i in 0..17 {
+            code.push_str(&format!("    missing_{i:02}()\n"));
+        }
+        workspace.write("code.py", &code);
         workspace.build();
         crate::common::sqlite::PersistedSnapshot::from_connection(&workspace.open())
     })
@@ -291,109 +296,163 @@ fn exact_symbol_match_filters_text_only_candidates_by_default() {
 }
 
 #[test]
-fn natural_document_search_ignores_stop_words_and_boosts_section_titles() {
-    let mut failures = Vec::new();
+fn document_ranking_contract_matrix() {
     let workspace = Workspace::new();
-    workspace.write(
-        "a.md",
-        "# Request Processing\n\nSubscribers receive queued events.\n",
-    );
-    workspace.write(
-        "b.md",
-        "# Architecture\n\nRequest processing routes subscribers.\n",
-    );
-    workspace.build();
-    let conn = workspace.open();
-    let result = reader::search_docs_with_options(
-        &conn,
-        "How is the request processing for subscribers?",
-        &reader::DocSearchOptions {
-            doc_type: None,
-            component: None,
-            include_excerpt: false,
-            page: &options(10),
-        },
-    )
-    .unwrap();
+    for case in ["natural_language", "all_terms"] {
+        match case {
+            "natural_language" => {
+                let mut failures = Vec::new();
+                workspace.write(
+                    "a.md",
+                    "# Request Processing\n\nSubscribers receive queued events.\n",
+                );
+                workspace.write(
+                    "b.md",
+                    "# Architecture\n\nRequest processing routes subscribers.\n",
+                );
+                workspace.build();
+                let conn = workspace.open();
+                let result = reader::search_docs_with_options(
+                    &conn,
+                    "How is the request processing for subscribers?",
+                    &reader::DocSearchOptions {
+                        doc_type: None,
+                        component: None,
+                        include_excerpt: false,
+                        page: &options(10),
+                    },
+                )
+                .unwrap();
 
-    if result["sections"]["total"] != 2 {
-        failures.push(format!("natural query must retrieve 2 sections: {result}"));
-    }
-    if result["sections"]["items"][0]["section_title"] != "Request Processing" {
-        failures.push(format!("title match must rank first: {result}"));
-    }
+                if result["sections"]["total"] != 2 {
+                    failures.push(format!("natural query must retrieve 2 sections: {result}"));
+                }
+                if result["sections"]["items"][0]["section_title"] != "Request Processing" {
+                    failures.push(format!("title match must rank first: {result}"));
+                }
 
-    let stripped = reader::search_docs_with_options(
-        &conn,
-        "request processing subscribers",
-        &reader::DocSearchOptions {
-            doc_type: None,
-            component: None,
-            include_excerpt: false,
-            page: &options(10),
-        },
-    )
-    .unwrap();
-    if result["sections"] != stripped["sections"] {
-        failures.push(format!(
-            "stop words must not affect retrieval or rank: natural={result}, stripped={stripped}"
-        ));
-    }
+                let stripped = reader::search_docs_with_options(
+                    &conn,
+                    "request processing subscribers",
+                    &reader::DocSearchOptions {
+                        doc_type: None,
+                        component: None,
+                        include_excerpt: false,
+                        page: &options(10),
+                    },
+                )
+                .unwrap();
+                if result["sections"] != stripped["sections"] {
+                    failures.push(format!(
+                        "stop words must not affect retrieval or rank: natural={result}, stripped={stripped}"
+                    ));
+                }
 
-    workspace.write("c.md", "# Delivery\n\nSubscribers receive events.\n");
-    drop(conn);
-    workspace.build();
-    let conn = workspace.open();
-    let conceptual = reader::search_docs_with_options(
-        &conn,
-        "request subscribers",
-        &reader::DocSearchOptions {
-            doc_type: None,
-            component: None,
-            include_excerpt: false,
-            page: &options(10),
-        },
-    )
-    .unwrap();
-    if conceptual["sections"]["total"] != 3 {
-        failures.push(format!(
-            "conceptual terms must not require every term, expected total 3: {conceptual}"
-        ));
-    }
+                workspace.write("c.md", "# Delivery\n\nSubscribers receive events.\n");
+                drop(conn);
+                workspace.build();
+                let conn = workspace.open();
+                let conceptual = reader::search_docs_with_options(
+                    &conn,
+                    "request subscribers",
+                    &reader::DocSearchOptions {
+                        doc_type: None,
+                        component: None,
+                        include_excerpt: false,
+                        page: &options(10),
+                    },
+                )
+                .unwrap();
+                if conceptual["sections"]["total"] != 3 {
+                    failures.push(format!(
+                        "conceptual terms must not require every term, expected total 3: {conceptual}"
+                    ));
+                }
 
-    let weighted = reader::search_docs_with_options(
-        &conn,
-        "request",
-        &reader::DocSearchOptions {
-            doc_type: None,
-            component: None,
-            include_excerpt: false,
-            page: &options(10),
-        },
-    )
-    .unwrap();
-    let expected = reader::rows(&conn,
-        "SELECT d.doc_id,bm25(doc_search,3.0,1.0,1.0) rank FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1 ORDER BY rank,d.path,d.doc_id",
-        &[&"\"request\""], 10,
-    ).unwrap();
-    for (actual, expected) in weighted["sections"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .zip(&expected)
-    {
-        assert_eq!(actual["doc_id"], expected["doc_id"]);
-        let actual_rank = actual["rank"].as_f64().unwrap();
-        let expected_rank = expected["rank"].as_f64().unwrap();
-        if (actual_rank - expected_rank).abs() > expected_rank.abs() * 1e-10 {
-            failures.push(format!("section-title BM25 must have exactly 3x body weight: actual={actual_rank}, expected={expected_rank}"));
+                let weighted = reader::search_docs_with_options(
+                    &conn,
+                    "request",
+                    &reader::DocSearchOptions {
+                        doc_type: None,
+                        component: None,
+                        include_excerpt: false,
+                        page: &options(10),
+                    },
+                )
+                .unwrap();
+                let expected = reader::rows(&conn,
+                    "SELECT d.doc_id,bm25(doc_search,3.0,1.0,1.0) rank FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1 ORDER BY rank,d.path,d.doc_id",
+                    &[&"\"request\""], 10,
+                ).unwrap();
+                for (actual, expected) in weighted["sections"]["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .zip(&expected)
+                {
+                    assert_eq!(actual["doc_id"], expected["doc_id"]);
+                    let actual_rank = actual["rank"].as_f64().unwrap();
+                    let expected_rank = expected["rank"].as_f64().unwrap();
+                    if (actual_rank - expected_rank).abs() > expected_rank.abs() * 1e-10 {
+                        failures.push(format!("section-title BM25 must have exactly 3x body weight: actual={actual_rank}, expected={expected_rank}"));
+                    }
+                }
+                assert_eq!(
+                    weighted["sections"]["items"].as_array().unwrap().len(),
+                    expected.len()
+                );
+                assert!(failures.is_empty(), "{}", failures.join("\n"));
+            }
+            "all_terms" => {
+                workspace.write("acdd.yaml", "roots: [.]\ndocs: [docs]\n");
+                workspace.write("docs/alpha.md", "# Alpha\n\nUnrelated text.\n");
+                workspace.write(
+                    "docs/overview.md",
+                    "# Overview\n\nAlpha beta gamma pipeline.\n",
+                );
+                workspace.build();
+                let conn = workspace.open();
+                let result = reader::search_docs_with_options(
+                    &conn,
+                    "alpha beta gamma",
+                    &reader::DocSearchOptions {
+                        doc_type: None,
+                        component: None,
+                        include_excerpt: true,
+                        page: &options(10),
+                    },
+                )
+                .unwrap();
+                assert_eq!(result["sections"]["total"], 2);
+                let sections = result["sections"]["items"].as_array().unwrap();
+                assert_eq!(sections.len(), 2);
+                assert_eq!(sections[0]["path"], "docs/overview.md");
+                assert_eq!(sections[1]["path"], "docs/alpha.md");
+
+                let mut statement = conn
+                    .prepare(
+                        "SELECT d.path,bm25(doc_search,3.0,1.0,1.0) FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1",
+                    )
+                    .unwrap();
+                let ranks = statement
+                    .query_map(["\"alpha\" OR \"beta\" OR \"gamma\""], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+                    })
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap();
+                assert_eq!(ranks.len(), 2);
+                for section in sections {
+                    let (_, expected_rank) = ranks
+                        .iter()
+                        .find(|(path, _)| section["path"] == path.as_str())
+                        .unwrap();
+                    assert_eq!(section["rank"].as_f64().unwrap(), *expected_rank);
+                }
+            }
+            _ => unreachable!(),
         }
     }
-    assert_eq!(
-        weighted["sections"]["items"].as_array().unwrap().len(),
-        expected.len()
-    );
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -1220,28 +1279,71 @@ fn tests_reports_unresolved_references_in_symbol_scope() {
 }
 
 #[test]
-fn compact_coverage_keeps_scope_counts_and_full_detail_keeps_evidence() {
+fn coverage_page_contract_matrix() {
     let workspace = navigation_workspace();
     let conn = workspace.open();
-    let inspected = reader::inspect_paged(&conn, "target_func", false, &options(10)).unwrap();
-    let coverage = &inspected["coverage"];
-    assert!(coverage["total"].as_u64().unwrap() >= 1);
-    let item = &coverage["items"][0];
-    assert_eq!(item["expression"], "unresolved_dependency");
-    assert!(item.get("evidence").is_none());
-    assert!(item.get("path").is_none());
-    assert_eq!(item["status"], "unresolved");
-    assert!(coverage["statuses"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|s| { s["status"] == "unresolved" && s["total"].as_u64().unwrap() > 0 }));
-    let mut full = options(10);
-    full.detail = Detail::Full;
-    let detailed = reader::inspect_paged(&conn, "target_func", false, &full).unwrap();
-    assert_eq!(detailed["coverage"]["total"], coverage["total"]);
-    assert!(detailed["coverage"]["items"][0]["evidence"].is_string());
-    assert_eq!(detailed["coverage"]["items"][0]["path"], "target.py");
+    for case in ["single_reference", "seventeen_references"] {
+        match case {
+            "single_reference" => {
+                let inspected =
+                    reader::inspect_paged(&conn, "target_func", false, &options(10)).unwrap();
+                let coverage = &inspected["coverage"];
+                assert!(coverage["total"].as_u64().unwrap() >= 1);
+                let item = &coverage["items"][0];
+                assert_eq!(item["expression"], "unresolved_dependency");
+                assert!(item.get("evidence").is_none());
+                assert!(item.get("path").is_none());
+                assert_eq!(item["status"], "unresolved");
+                assert!(coverage["statuses"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|s| { s["status"] == "unresolved" && s["total"].as_u64().unwrap() > 0 }));
+                let mut full = options(10);
+                full.detail = Detail::Full;
+                let detailed = reader::inspect_paged(&conn, "target_func", false, &full).unwrap();
+                assert_eq!(detailed["coverage"]["total"], coverage["total"]);
+                assert!(detailed["coverage"]["items"][0]["evidence"].is_string());
+                assert_eq!(detailed["coverage"]["items"][0]["path"], "target.py");
+            }
+            "seventeen_references" => {
+                let mut query = options(4);
+                let mut references = Vec::new();
+                loop {
+                    let result = reader::inspect_paged(
+                        &conn,
+                        "coverage_matrix_seventeen_references",
+                        false,
+                        &query,
+                    )
+                    .unwrap();
+                    let coverage = &result["coverage"];
+                    assert_eq!(coverage["total"], 17);
+                    assert_eq!(
+                        coverage["statuses"],
+                        serde_json::json!([{"status":"unresolved","total":17}])
+                    );
+                    references.extend(
+                        coverage["items"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|item| item["expression"].as_str().unwrap().to_owned()),
+                    );
+                    if !continue_page(&mut query, coverage) {
+                        break;
+                    }
+                }
+                assert_eq!(
+                    references,
+                    (0..17)
+                        .map(|i| format!("missing_{i:02}"))
+                        .collect::<Vec<_>>()
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[test]
@@ -1290,45 +1392,6 @@ fn compact_search_preserves_distinct_selectors_and_locations() {
         assert!(item.get("match_reason").is_none());
     }
     assert!(serde_json::to_vec(&compact).unwrap().len() < serde_json::to_vec(&full).unwrap().len());
-}
-
-#[test]
-fn compact_coverage_pages_keep_scope_totals_and_every_reference() {
-    let workspace = Workspace::new();
-    let mut code = String::from("def target():\n");
-    for i in 0..17 {
-        code.push_str(&format!("    missing_{i:02}()\n"));
-    }
-    workspace.write("code.py", &code);
-    workspace.build();
-    let conn = workspace.open();
-    let mut query = options(4);
-    let mut references = Vec::new();
-    loop {
-        let result = reader::inspect_paged(&conn, "target", false, &query).unwrap();
-        let coverage = &result["coverage"];
-        assert_eq!(coverage["total"], 17);
-        assert_eq!(
-            coverage["statuses"],
-            serde_json::json!([{"status":"unresolved","total":17}])
-        );
-        references.extend(
-            coverage["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|item| item["expression"].as_str().unwrap().to_owned()),
-        );
-        if !continue_page(&mut query, coverage) {
-            break;
-        }
-    }
-    assert_eq!(
-        references,
-        (0..17)
-            .map(|i| format!("missing_{i:02}"))
-            .collect::<Vec<_>>()
-    );
 }
 
 #[test]
@@ -1454,56 +1517,6 @@ fn coverage_is_opt_in_and_snippet_preserves_source_continuation() {
     assert!(
         symbols::snippet_paged(&conn, workspace.root(), "target", &source, &options(30)).is_err()
     );
-}
-
-#[test]
-fn search_docs_prioritizes_all_term_matches_above_single_term_title_hits() {
-    let workspace = Workspace::new();
-    workspace.write("acdd.yaml", "roots: [.]\ndocs: [docs]\n");
-    workspace.write("docs/alpha.md", "# Alpha\n\nUnrelated text.\n");
-    workspace.write(
-        "docs/overview.md",
-        "# Overview\n\nAlpha beta gamma pipeline.\n",
-    );
-    workspace.build();
-    let conn = workspace.open();
-    let result = reader::search_docs_with_options(
-        &conn,
-        "alpha beta gamma",
-        &reader::DocSearchOptions {
-            doc_type: None,
-            component: None,
-            include_excerpt: true,
-            page: &options(10),
-        },
-    )
-    .unwrap();
-    assert_eq!(result["sections"]["total"], 2);
-    let sections = result["sections"]["items"].as_array().unwrap();
-    assert_eq!(sections.len(), 2);
-    assert_eq!(sections[0]["path"], "docs/overview.md");
-    assert_eq!(sections[1]["path"], "docs/alpha.md");
-
-    let mut statement = conn
-        .prepare(
-            "SELECT d.path,bm25(doc_search,3.0,1.0,1.0) FROM doc_search JOIN doc_sections d ON d.rowid=doc_search.rowid WHERE doc_search MATCH ?1",
-        )
-        .unwrap();
-    let ranks = statement
-        .query_map(["\"alpha\" OR \"beta\" OR \"gamma\""], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
-        })
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-    assert_eq!(ranks.len(), 2);
-    for section in sections {
-        let (_, expected_rank) = ranks
-            .iter()
-            .find(|(path, _)| section["path"] == path.as_str())
-            .unwrap();
-        assert_eq!(section["rank"].as_f64().unwrap(), *expected_rank);
-    }
 }
 
 #[test]

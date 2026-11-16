@@ -51,7 +51,7 @@ impl MilestoneHarness {
         task_ref: &str,
         commit: &str,
     ) -> anyhow::Result<(Receipt, String)> {
-        let milestone = Milestone::parse(document, "forge-mcp")?;
+        let milestone = Milestone::parse(document, "acdd")?;
         let task = milestone
             .tasks
             .iter()

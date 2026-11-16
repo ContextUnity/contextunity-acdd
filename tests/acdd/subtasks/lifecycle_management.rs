@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn task_subtasks_lifecycle_management_and_digest_independence() {
     let spec = "---\nid: m-subtasks\ntitle: Subtasks Test\ndoc_type: contract\nstatus: active\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: core-feature\ntarget: Deliver core feature\nproof_policy: seam-test-first\nscope: [src/]\nsubtasks:\n  - subtask_ref: sub-1\n    title: Initial discovery\n    status: in_progress\n    evidence: Found relevant files\n```\n";
-    let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(spec, "acdd").unwrap();
     let task = &milestone.tasks[0];
     assert_eq!(task.subtasks.len(), 1);
     assert_eq!(task.subtasks[0].subtask_ref, "sub-1");
@@ -45,7 +45,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
         .sync(&milestone, "docs/010-subtasks.md", root.root())
         .unwrap();
 
-    let task_id = "forge-mcp/m-subtasks:core-feature";
+    let task_id = "acdd/m-subtasks:core-feature";
     let loaded = store.inspect(task_id).unwrap();
     assert_eq!(loaded.spec.subtasks.len(), 1);
     assert_eq!(loaded.spec.subtasks[0].subtask_ref, "sub-1");
@@ -195,7 +195,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
 
     // Milestone Markdown now contains durable subtasks block
     let updated_doc = std::fs::read_to_string(root.root().join("docs/010-subtasks.md")).unwrap();
-    let delivered_milestone = Milestone::parse(&updated_doc, "forge-mcp").unwrap();
+    let delivered_milestone = Milestone::parse(&updated_doc, "acdd").unwrap();
     let delivered_task = &delivered_milestone.tasks[0];
     assert_eq!(delivered_task.status.as_deref(), Some("completed"));
     assert_eq!(delivered_task.subtasks.len(), 3);
@@ -237,7 +237,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
 
     // Markdown file reflects the reopened state (status: completed and receipt removed, subtasks preserved)
     let reopened_doc = std::fs::read_to_string(root.root().join("docs/010-subtasks.md")).unwrap();
-    let reopened_milestone = Milestone::parse(&reopened_doc, "forge-mcp").unwrap();
+    let reopened_milestone = Milestone::parse(&reopened_doc, "acdd").unwrap();
     assert_eq!(reopened_milestone.tasks[0].status.as_deref(), None);
     assert!(reopened_milestone.tasks[0].receipt.is_none());
     assert_eq!(reopened_milestone.tasks[0].subtasks.len(), 3);
@@ -267,7 +267,7 @@ fn task_subtasks_lifecycle_management_and_digest_independence() {
         "proof_policy: seam-test-first",
         "contract_revision: 2\nproof_policy: seam-test-first",
     );
-    let readmitted_milestone = Milestone::parse(&readmitted_doc, "forge-mcp").unwrap();
+    let readmitted_milestone = Milestone::parse(&readmitted_doc, "acdd").unwrap();
     let readmitted = store
         .sync(&readmitted_milestone, "docs/010-subtasks.md", root.root())
         .unwrap();

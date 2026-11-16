@@ -120,8 +120,7 @@ fn public_facts() -> Value {
     Value::Object(public)
 }
 
-fn expected_public_facts() -> Value {
-    let baseline = baseline();
+fn expected_public_facts(baseline: &Value) -> Value {
     let mut expected = baseline["public_extraction"].clone();
     let caller = expected["src/lib.rs"]["nodes"]
         .as_array_mut()
@@ -153,21 +152,35 @@ fn expected_public_facts() -> Value {
 }
 
 #[test]
-fn delivered_baseline_metadata_and_source_bytes_are_bound() {
+fn baseline_public_extraction() {
     let baseline = baseline();
-    assert_eq!(baseline["format"], "forge-three-tier-baseline-v1");
-    assert_eq!(
-        baseline["release"]["t2_commit"],
-        "04b11483d0cf180bb0a896c2a2f5ca2818f43bb9"
-    );
-    assert_eq!(
-        baseline["snapshot"]["commitments"],
-        baseline["same_root_repeat"]["commitments"]
-    );
-    assert_eq!(
-        baseline["snapshot"]["metadata"],
-        baseline["same_root_repeat"]["metadata"]
-    );
+    for (case_id, actual, expected) in [
+        (
+            "format",
+            &baseline["format"],
+            json!("forge-three-tier-baseline-v1"),
+        ),
+        (
+            "release",
+            &baseline["release"]["t2_commit"],
+            json!("04b11483d0cf180bb0a896c2a2f5ca2818f43bb9"),
+        ),
+        (
+            "commitments",
+            &baseline["snapshot"]["commitments"],
+            baseline["same_root_repeat"]["commitments"].clone(),
+        ),
+        (
+            "metadata",
+            &baseline["snapshot"]["metadata"],
+            baseline["same_root_repeat"]["metadata"].clone(),
+        ),
+    ] {
+        assert_eq!(
+            actual, &expected,
+            "delivered_baseline_metadata_and_source_bytes_are_bound: {case_id}"
+        );
+    }
 
     for source in baseline["sources"].as_array().unwrap() {
         let path = source["path"].as_str().unwrap();
@@ -183,11 +196,7 @@ fn delivered_baseline_metadata_and_source_bytes_are_bound() {
             "{path}"
         );
     }
-}
 
-#[test]
-fn baseline_receiver_adjustments_retain_the_delivered_preconditions() {
-    let baseline = baseline();
     let expected = &baseline["public_extraction"];
     let caller = expected["src/lib.rs"]["nodes"]
         .as_array()
@@ -206,11 +215,8 @@ fn baseline_receiver_adjustments_retain_the_delivered_preconditions() {
         .find(|node| node["id"] == "rs:src/helper.rs:4:run")
         .unwrap();
     assert!(run["details"]["value_flow"]["bindings"].is_null());
-}
 
-#[test]
-fn public_extraction_preserves_baseline_facts_and_meaningful_details() {
-    let expected = expected_public_facts();
+    let expected = expected_public_facts(&baseline);
     let mut public = public_facts();
     for (path, facts) in public.as_object().unwrap() {
         assert!(

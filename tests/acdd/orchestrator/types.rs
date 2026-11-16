@@ -98,16 +98,16 @@ fn runner_configuration_interpolates_runtime_context() {
             "high",
             "builder-session",
             "Implement the claimed scope.",
-            "/tmp/forge-runner",
-            "test-model|high|builder-session|Implement the claimed scope.|/tmp/forge-runner",
+            "/tmp/acdd-runner",
+            "test-model|high|builder-session|Implement the claimed scope.|/tmp/acdd-runner",
         ),
         (
             "another-model",
             "medium",
             "resumed-session",
             "Keep {model} and {session_id} literal: \"quoted\"\nnext line",
-            "/tmp/forge runner",
-            "another-model|medium|resumed-session|Keep {model} and {session_id} literal: \"quoted\"\nnext line|/tmp/forge runner",
+            "/tmp/acdd runner",
+            "another-model|medium|resumed-session|Keep {model} and {session_id} literal: \"quoted\"\nnext line|/tmp/acdd runner",
         ),
     ] {
         let context = RunnerInvocationContext {

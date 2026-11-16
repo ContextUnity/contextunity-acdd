@@ -18,7 +18,7 @@ impl MilestoneHarness {
         let root = self.root().to_string_lossy();
         contextunity_acdd::cli::Cli::try_parse_from(
             [
-                "contextunity-forge-mcp",
+                "contextunity-acdd",
                 "--root",
                 &root,
                 "--format",

@@ -29,7 +29,7 @@ fn seam_scope_directory_prefix_treats_sql_wildcards_as_literal() {
         "#[test]\nfn task_suite_is_present() { assert_eq!(1, 1); }\n",
     );
     root.write("AGENTS.md", "# Instructions\nLoad the acdd skill.\n");
-    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity ACDD\n");
     root.write(
         "acdd.yaml",
         "roots: [src, tests]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
@@ -66,7 +66,7 @@ fn seam_scope_directory_prefix_treats_sql_wildcards_as_literal() {
             )
             .unwrap();
         }
-        let task_id = format!("forge-mcp/{milestone_id}:{task_ref}");
+        let task_id = format!("acdd/{milestone_id}:{task_ref}");
         TaskHarness::claim_at(root.root(), &task_id, "contract", "contract-author").unwrap();
         let task = tasks::store_for_task(root.root(), &task_id)
             .unwrap()
@@ -98,7 +98,7 @@ None,
 "src/seam.rs::test_connected");
     std::fs::remove_file(root.root().join("src/api.rs")).unwrap();
     root.build_to(root.path(".acdd/code-map.sqlite"));
-    let task_id = "forge-mcp/m-current-boundary:routing";
+    let task_id = "acdd/m-current-boundary:routing";
     TaskHarness::claim_at(root.root(), task_id, "contract", "contract-author").unwrap();
     let mut store = tasks::store_for_task(root.root(), task_id).unwrap();
     let claimed = store.inspect(task_id).unwrap();

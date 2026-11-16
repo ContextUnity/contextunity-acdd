@@ -71,7 +71,9 @@ fn shared_scope_baseline() -> DeliveredBaseline {
 
 #[test]
 fn handoff_validates_reviewed_shared_scope_and_repacked_landings_atomically() {
+    let mut landings = shared_scope_baseline();
     check_shared_scope_scenarios(
+        &mut landings,
         &[
             SharedScenario::CorruptedLaterReview,
             SharedScenario::ReviewEnvelopeBuilder,
@@ -80,15 +82,6 @@ fn handoff_validates_reviewed_shared_scope_and_repacked_landings_atomically() {
             SharedScenario::DeliveryEnvelopeOtherWorker,
             SharedScenario::Shared,
             SharedScenario::RepackedShared,
-        ],
-        true,
-    );
-}
-
-#[test]
-fn handoff_validates_receipt_authority_and_repacked_landings_atomically() {
-    check_shared_scope_scenarios(
-        &[
             SharedScenario::UnreviewedShared,
             SharedScenario::NonEquivalentRepack,
             SharedScenario::MalformedReceipt,
@@ -99,11 +92,9 @@ fn handoff_validates_receipt_authority_and_repacked_landings_atomically() {
         ],
         true,
     );
-}
-
-#[test]
-fn handoff_validates_repacked_landings_without_commit_recording_atomically() {
+    landings.snapshot.restore(&landings.root);
     check_shared_scope_scenarios(
+        &mut landings,
         &[
             SharedScenario::RepackedWithoutMarkdownCommits,
             SharedScenario::RetargetedDeliveryUnreviewedShared,
@@ -112,8 +103,11 @@ fn handoff_validates_repacked_landings_without_commit_recording_atomically() {
     );
 }
 
-fn check_shared_scope_scenarios(scenarios: &[SharedScenario], record_commits: bool) {
-    let mut landings = shared_scope_baseline();
+fn check_shared_scope_scenarios(
+    landings: &mut DeliveredBaseline,
+    scenarios: &[SharedScenario],
+    record_commits: bool,
+) {
     let mut delivered_baseline = landings.base.clone();
     let mut delivered_first = landings.deliveries[0].clone();
     let mut delivered_second = landings.deliveries[1].clone();
@@ -146,7 +140,7 @@ fn check_shared_scope_scenarios(scenarios: &[SharedScenario], record_commits: bo
         landings.snapshot = landings.root.checkpoint();
     }
     let second_id = landings.milestone.task_id(&landings.milestone.tasks[1]);
-    let sqlite_delivered = landings.sqlite.take().unwrap();
+    let sqlite_delivered = landings.sqlite.as_ref().unwrap();
     let mut failures = Vec::new();
     let active_ref = "docs/milestones/010-shared-landings.md";
     let archive_ref = "docs/milestones/archive/010-shared-landings.md";
@@ -171,7 +165,7 @@ fn check_shared_scope_scenarios(scenarios: &[SharedScenario], record_commits: bo
                             std::fs::remove_file(auxiliary).unwrap();
                         }
                     }
-                    std::fs::write(db, &sqlite_delivered).unwrap();
+                    std::fs::write(db, sqlite_delivered).unwrap();
                 } else {
                     landings.snapshot.restore(&landings.root);
                 }
@@ -342,7 +336,7 @@ fn check_shared_scope_scenarios(scenarios: &[SharedScenario], record_commits: bo
         };
         if let Some(invalid_commit) = invalid_commit {
             let document = landings.root.document(active_ref);
-            let milestone = Milestone::parse(&document, "forge-mcp").unwrap();
+            let milestone = Milestone::parse(&document, "acdd").unwrap();
             let task = milestone
                 .tasks
                 .iter()
@@ -408,7 +402,7 @@ fn check_shared_scope_scenarios(scenarios: &[SharedScenario], record_commits: bo
             SharedScenario::RetargetedDeliveryUnreviewedShared
         ) {
             let generated_doc = landings.root.document(active_ref);
-            let generated = Milestone::parse(&generated_doc, "forge-mcp").unwrap();
+            let generated = Milestone::parse(&generated_doc, "acdd").unwrap();
             assert!(generated.tasks.iter().all(|task| task
                 .receipt
                 .as_ref()
@@ -500,7 +494,7 @@ fn check_shared_scope_scenarios(scenarios: &[SharedScenario], record_commits: bo
             }
             assert!(!landings.root.path(active_ref).exists(), "{scenario:?}");
             let archived = landings.root.document(archive_ref);
-            let parsed = Milestone::parse(&archived, "forge-mcp").unwrap();
+            let parsed = Milestone::parse(&archived, "acdd").unwrap();
             assert!(reopened.list(None, "all", None).unwrap().is_empty());
             for (index, landed) in [&first_landed, &second_landed].into_iter().enumerate() {
                 assert_eq!(

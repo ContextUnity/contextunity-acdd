@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 /// Standard hashing algorithm identifier.
-pub const ALGORITHM: &str = "forge-owner-sha256-v2";
+pub const ALGORITHM: &str = "acdd-owner-sha256-v2";
 
 /// The logical table domain list for code graph commitments.
 pub const DOMAINS: &[&str] = &[

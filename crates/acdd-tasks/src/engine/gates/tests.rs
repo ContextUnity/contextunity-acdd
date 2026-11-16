@@ -94,7 +94,7 @@ fn retired_public_function_facts(
 fn deleted_source_retires_public_symbols_without_read_errors() {
     set_ast_extractor(retired_public_function_facts);
     let root = std::env::temp_dir().join(format!(
-        "forge-retire-{}-{}",
+        "acdd-retire-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

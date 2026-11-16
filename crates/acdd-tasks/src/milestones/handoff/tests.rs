@@ -169,7 +169,7 @@ fn handoff_and_retry_ignore_foreign_profile_stage() {
     // A target task with a mismatched path must still prevent handoff: identity,
     // not the mutable manifest path, is the ownership boundary.
     let mut rogue = foreign.clone();
-    rogue.task_id = "forge-mcp/m-native-shared:rogue".into();
+    rogue.task_id = "acdd/m-native-shared:rogue".into();
     rogue.milestone_ref = "docs/milestones/elsewhere.md".into();
     rogue.status = "in_progress".into();
     rogue.receipt = None;
@@ -190,7 +190,7 @@ fn handoff_and_retry_ignore_foreign_profile_stage() {
         .connection
         .execute("DELETE FROM tasks WHERE task_id=?1", [&rogue.task_id])
         .unwrap();
-    foreign.task_id = "forge-mcp/foreign-milestone:task".into();
+    foreign.task_id = "acdd/foreign-milestone:task".into();
     foreign.milestone_ref = "docs/milestones/foreign.md".into();
     foreign.stage = "foreign_profile_only_stage".into();
     foreign.status = "in_progress".into();
@@ -220,7 +220,7 @@ fn handoff_and_retry_ignore_foreign_profile_stage() {
     let store = fixture.store().unwrap();
     store.connection.execute_batch(
         "CREATE TRIGGER stop_target_prune BEFORE UPDATE OF milestone_ref ON tasks \
-         WHEN substr(OLD.task_id,1,length('forge-mcp/m-native-shared:')) = 'forge-mcp/m-native-shared:' \
+         WHEN substr(OLD.task_id,1,length('acdd/m-native-shared:')) = 'acdd/m-native-shared:' \
               AND NEW.milestone_ref = 'docs/milestones/archive/010-native-shared.md' \
          BEGIN SELECT RAISE(ABORT, 'injected prune failure'); END;",
     ).unwrap();
@@ -340,7 +340,7 @@ fn handoff_accepts_completed_reviewed_shared_scope() {
     );
     let reopened = fixture.store().unwrap();
     let archived_doc = fixture.document(ARCHIVE).unwrap();
-    let parsed = crate::core::tasks::Milestone::parse(&archived_doc, "forge-mcp").unwrap();
+    let parsed = crate::core::tasks::Milestone::parse(&archived_doc, "acdd").unwrap();
     assert!(reopened.list(None, "all", None).unwrap().is_empty());
     for table in [
         "gate_checkpoints",

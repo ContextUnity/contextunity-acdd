@@ -250,7 +250,7 @@ fn mcp_caps_documents_scalars_checkpoints_and_tool_errors() {
         json!({"nested":["\"\\\nПривіт".repeat(2_000)]}),
     ];
     for (index, invalid_format) in invalid_formats.into_iter().enumerate() {
-        let name = format!("forge-mcp/forge-mcp/m-test/tasks/invalid-format-{index}/build");
+        let name = format!("acdd/acdd/m-test/tasks/invalid-format-{index}/build");
         let (bytes, response) = client
             .call(
                 "session_checkpoint",
@@ -284,7 +284,7 @@ fn mcp_caps_documents_scalars_checkpoints_and_tool_errors() {
         .call(&"\"\\Привіт".repeat(30_000), json!({}))
         .expect("MCP transport");
     assert!(unknown["result"]["isError"] == true || unknown.get("error").is_some());
-    let large_checkpoint = "forge-mcp/forge-mcp/m-test/tasks/large/build";
+    let large_checkpoint = "acdd/acdd/m-test/tasks/large/build";
     client
         .payload(
             "session_checkpoint",

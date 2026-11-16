@@ -11,7 +11,7 @@ use super::{cli_payload, in_process_cli};
 
 #[test]
 fn subtask_mcp_and_cli_operations() {
-    let workspace = TaskHarness::mcp_workspace();
+    let workspace = TaskHarness::mcp_store_workspace();
     fs::create_dir_all(workspace.root().join("docs/milestones")).unwrap();
     let manifest = "---\nid: m-mcp-subtasks\ntitle: MCP Subtasks\ndoc_type: contract\ninvariants: [local-rules]\n---\n```yaml\ntask_ref: sub-demo\ntarget: Subtask demonstration\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
     workspace.write("docs/milestones/010-subtasks.md", manifest);
@@ -24,7 +24,7 @@ fn subtask_mcp_and_cli_operations() {
             json!({"action": "sync", "milestone_ref": "docs/milestones/010-subtasks.md"}),
         )
         .expect("MCP payload should succeed");
-    let task_id = "forge-mcp/m-mcp-subtasks:sub-demo";
+    let task_id = "acdd/m-mcp-subtasks:sub-demo";
 
     // MCP task_manage subtask_add
     let add_res = client

@@ -47,42 +47,136 @@ impl ForwardingColdCache {
 }
 
 #[test]
-fn glob_retarget_remove_and_restore_relink_unchanged_consumers() {
+fn forwarding_retarget_remove_restore() {
     let w = forwarding_workspace();
     let cold_cache = ForwardingColdCache::default();
-    let frozen = fs::read(w.path("src/glob_consumer.rs")).unwrap();
-    for (phase, source, target, status) in [
+    let frozen: Vec<_> = [
+        "src/glob_consumer.rs",
+        "src/consumer.rs",
+        "src/parent/child.rs",
+    ]
+    .into_iter()
+    .map(|path| (path, fs::read(w.path(path)).unwrap()))
+    .collect();
+    for (case_id, path, consumers, phases) in [
         (
-            "retarget glob",
-            "pub use crate::another::*;\n",
-            Some(("src/another.rs", "build")),
-            "resolved",
+            "glob_retarget_remove_and_restore_relink_unchanged_consumers",
+            "src/glob_one.rs",
+            &[("src/glob_consumer.rs", "build")] as &[(&str, &str)],
+            vec![
+                (
+                    "retarget glob",
+                    "pub use crate::another::*;\n".to_owned(),
+                    Some(("src/another.rs", "build")),
+                    "resolved",
+                ),
+                ("remove glob", String::new(), None, "unresolved"),
+                (
+                    "restore glob",
+                    GLOB_ONE.to_owned(),
+                    Some(("src/provider.rs", "build")),
+                    "resolved",
+                ),
+            ],
         ),
-        ("remove glob", "", None, "unresolved"),
         (
-            "restore glob",
-            GLOB_ONE,
-            Some(("src/provider.rs", "build")),
-            "resolved",
+            "named_export_retarget_remove_restore_relinks_all_forwarders",
+            "src/facade.rs",
+            &[
+                ("src/consumer.rs", "invoke"),
+                ("src/consumer.rs", "api::forwarded"),
+                ("src/parent/child.rs", "inherited"),
+            ] as &[(&str, &str)],
+            vec![
+                (
+                    "retarget export",
+                    FACADE.replacen("build as forwarded", "other as forwarded", 1),
+                    Some(("src/provider.rs", "other")),
+                    "resolved",
+                ),
+                (
+                    "remove export",
+                    FACADE.replacen("build as forwarded, ", "", 1),
+                    None,
+                    "unresolved",
+                ),
+                (
+                    "restore export",
+                    FACADE.to_owned(),
+                    Some(("src/provider.rs", "build")),
+                    "resolved",
+                ),
+            ],
+        ),
+        (
+            "parent_alias_rename_and_restore_relinks_child",
+            "src/parent/mod.rs",
+            &[("src/parent/child.rs", "emit")] as &[(&str, &str)],
+            vec![
+                (
+                    "rename parent alias",
+                    PARENT.replace("as writer", "as renamed"),
+                    None,
+                    "unresolved",
+                ),
+                (
+                    "restore parent alias",
+                    PARENT.to_owned(),
+                    Some(("src/provider.rs", "build")),
+                    "resolved",
+                ),
+            ],
+        ),
+        (
+            "provider_remove_and_restore_relinks_transitive_consumers",
+            "src/provider.rs",
+            &[
+                ("src/consumer.rs", "invoke"),
+                ("src/parent/child.rs", "inherited"),
+            ] as &[(&str, &str)],
+            vec![
+                (
+                    "remove provider",
+                    PROVIDER.replace("pub fn build() {}\n", ""),
+                    None,
+                    "unresolved",
+                ),
+                (
+                    "restore provider",
+                    PROVIDER.to_owned(),
+                    Some(("src/provider.rs", "build")),
+                    "resolved",
+                ),
+            ],
         ),
     ] {
-        w.write("src/glob_one.rs", source);
-        w.delta(&["src/glob_one.rs"]);
-        let probes = [("src/glob_consumer.rs", "build", target, status)];
-
-        let conn = w.open();
-        commitments::verify(&conn).unwrap();
-        assert_eq!(errors(&conn), 0, "{phase}");
-        for probe in probes {
-            let actual = observe(&conn, &probe);
-            assert!(!actual.statuses.is_empty(), "{phase}: {probe:?}");
-            assert!(actual.statuses.iter().all(|status| status == probe.3));
-            assert_eq!(actual.canonical.len(), usize::from(probe.2.is_some()));
-            assert_eq!(actual.targets, actual.canonical);
-            assert_eq!(actual.dependencies, actual.expected_dependencies);
+        for (phase, source, target, status) in phases {
+            w.write(path, &source);
+            w.delta(&[path]);
+            let conn = w.open();
+            commitments::verify(&conn).unwrap();
+            assert_eq!(errors(&conn), 0, "{case_id}: {phase}");
+            for &(owner, expression) in consumers {
+                let probe = (owner, expression, target, status);
+                let actual = observe(&conn, &probe);
+                assert!(!actual.statuses.is_empty(), "{case_id}: {phase}: {probe:?}");
+                assert!(
+                    actual.statuses.iter().all(|value| value == status),
+                    "{case_id}: {phase}"
+                );
+                assert_eq!(actual.canonical.len(), usize::from(target.is_some()));
+                assert_eq!(actual.targets, actual.canonical);
+                assert_eq!(actual.dependencies, actual.expected_dependencies);
+            }
+            cold_cache.verify_parity(&w, &conn, phase);
+            for (path, bytes) in &frozen {
+                assert_eq!(
+                    &fs::read(w.path(path)).unwrap(),
+                    bytes,
+                    "{case_id}: {phase}"
+                );
+            }
         }
-        cold_cache.verify_parity(&w, &conn, phase);
-        assert_eq!(fs::read(w.path("src/glob_consumer.rs")).unwrap(), frozen);
     }
 }
 
@@ -140,20 +234,11 @@ fn alternative_cases() -> Vec<AlternativeCase> {
 }
 
 #[test]
-fn incomplete_export_alternatives_delta_to_exact_or_ambiguous_targets() {
-    assert_incomplete_export_alternatives_delta_cases(&alternative_cases()[..3]);
-}
-
-#[test]
-fn incomplete_export_alternatives_delta_to_exact_or_ambiguous_targets_part_two() {
-    assert_incomplete_export_alternatives_delta_cases(&alternative_cases()[3..]);
-}
-
-fn assert_incomplete_export_alternatives_delta_cases(cases: &[AlternativeCase]) {
+fn incomplete_alternative_change_restore() {
     let w = forwarding_workspace();
     let cold_cache = ForwardingColdCache::default();
     let frozen = fs::read(w.path("src/consumer.rs")).unwrap();
-    for &(phase, from, to, expression, target, status) in cases {
+    for &(phase, from, to, expression, target, status) in &alternative_cases() {
         w.write("src/facade.rs", &FACADE.replace(from, to));
         w.delta(&["src/facade.rs"]);
         let member = format!("api::{expression}");
@@ -190,20 +275,6 @@ fn assert_incomplete_export_alternatives_delta_cases(cases: &[AlternativeCase]) 
         assert_eq!(fs::read(w.path("src/consumer.rs")).unwrap(), frozen);
         w.write("src/facade.rs", FACADE);
         w.delta(&["src/facade.rs"]);
-    }
-}
-
-#[test]
-fn restored_incomplete_alternatives_recover_every_initial_binding() {
-    let w = forwarding_workspace();
-    let cold_cache = ForwardingColdCache::default();
-    let phase = "restore incomplete alternatives";
-    for (_, from, to, _, _, _) in alternative_cases() {
-        w.write("src/facade.rs", &FACADE.replace(from, to));
-        w.delta(&["src/facade.rs"]);
-        w.write("src/facade.rs", FACADE);
-        w.delta(&["src/facade.rs"]);
-
         let conn = w.open();
         commitments::verify(&conn).unwrap();
         assert_eq!(errors(&conn), 0, "{phase}");
@@ -215,131 +286,6 @@ fn restored_incomplete_alternatives_recover_every_initial_binding() {
             assert_eq!(actual.targets, actual.canonical);
             assert_eq!(actual.dependencies, actual.expected_dependencies);
         }
-    }
-    let conn = w.open();
-    cold_cache.verify_parity(&w, &conn, phase);
-}
-
-#[test]
-fn named_export_retarget_remove_restore_relinks_all_forwarders() {
-    let w = forwarding_workspace();
-    let cold_cache = ForwardingColdCache::default();
-    for (phase, replacement, target, status) in [
-        (
-            "retarget export",
-            FACADE.replacen("build as forwarded", "other as forwarded", 1),
-            Some(("src/provider.rs", "other")),
-            "resolved",
-        ),
-        (
-            "remove export",
-            FACADE.replacen("build as forwarded, ", "", 1),
-            None,
-            "unresolved",
-        ),
-        (
-            "restore export",
-            FACADE.to_owned(),
-            Some(("src/provider.rs", "build")),
-            "resolved",
-        ),
-    ] {
-        w.write("src/facade.rs", &replacement);
-        w.delta(&["src/facade.rs"]);
-        let probes = [
-            ("src/consumer.rs", "invoke", target, status),
-            ("src/consumer.rs", "api::forwarded", target, status),
-            ("src/parent/child.rs", "inherited", target, status),
-        ];
-
-        let conn = w.open();
-        commitments::verify(&conn).unwrap();
-        assert_eq!(errors(&conn), 0, "{phase}");
-        for probe in probes {
-            let actual = observe(&conn, &probe);
-            assert!(!actual.statuses.is_empty(), "{phase}: {probe:?}");
-            assert!(actual.statuses.iter().all(|status| status == probe.3));
-            assert_eq!(actual.canonical.len(), usize::from(probe.2.is_some()));
-            assert_eq!(actual.targets, actual.canonical);
-            assert_eq!(actual.dependencies, actual.expected_dependencies);
-        }
-        cold_cache.verify_parity(&w, &conn, phase);
-    }
-}
-
-#[test]
-fn parent_alias_rename_and_restore_relinks_child() {
-    let w = forwarding_workspace();
-    let cold_cache = ForwardingColdCache::default();
-    for (phase, replacement, target, status) in [
-        (
-            "rename parent alias",
-            PARENT.replace("as writer", "as renamed"),
-            None,
-            "unresolved",
-        ),
-        (
-            "restore parent alias",
-            PARENT.to_owned(),
-            Some(("src/provider.rs", "build")),
-            "resolved",
-        ),
-    ] {
-        w.write("src/parent/mod.rs", &replacement);
-        w.delta(&["src/parent/mod.rs"]);
-        let probes = [("src/parent/child.rs", "emit", target, status)];
-
-        let conn = w.open();
-        commitments::verify(&conn).unwrap();
-        assert_eq!(errors(&conn), 0, "{phase}");
-        for probe in probes {
-            let actual = observe(&conn, &probe);
-            assert!(!actual.statuses.is_empty(), "{phase}: {probe:?}");
-            assert!(actual.statuses.iter().all(|status| status == probe.3));
-            assert_eq!(actual.canonical.len(), usize::from(probe.2.is_some()));
-            assert_eq!(actual.targets, actual.canonical);
-            assert_eq!(actual.dependencies, actual.expected_dependencies);
-        }
-        cold_cache.verify_parity(&w, &conn, phase);
-    }
-}
-
-#[test]
-fn provider_remove_and_restore_relinks_transitive_consumers() {
-    let w = forwarding_workspace();
-    let cold_cache = ForwardingColdCache::default();
-    for (phase, replacement, target, status) in [
-        (
-            "remove provider",
-            PROVIDER.replace("pub fn build() {}\n", ""),
-            None,
-            "unresolved",
-        ),
-        (
-            "restore provider",
-            PROVIDER.to_owned(),
-            Some(("src/provider.rs", "build")),
-            "resolved",
-        ),
-    ] {
-        w.write("src/provider.rs", &replacement);
-        w.delta(&["src/provider.rs"]);
-        let probes = [
-            ("src/consumer.rs", "invoke", target, status),
-            ("src/parent/child.rs", "inherited", target, status),
-        ];
-
-        let conn = w.open();
-        commitments::verify(&conn).unwrap();
-        assert_eq!(errors(&conn), 0, "{phase}");
-        for probe in probes {
-            let actual = observe(&conn, &probe);
-            assert!(!actual.statuses.is_empty(), "{phase}: {probe:?}");
-            assert!(actual.statuses.iter().all(|status| status == probe.3));
-            assert_eq!(actual.canonical.len(), usize::from(probe.2.is_some()));
-            assert_eq!(actual.targets, actual.canonical);
-            assert_eq!(actual.dependencies, actual.expected_dependencies);
-        }
-        cold_cache.verify_parity(&w, &conn, phase);
+        cold_cache.verify_parity(&w, &conn, "restore incomplete alternatives");
     }
 }

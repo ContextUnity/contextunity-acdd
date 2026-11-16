@@ -154,161 +154,117 @@ mod task_proof_fanout_validation_tests {
     }
 
     #[test]
-    fn nested_schema_proof_envelope_finds_and_fans_out_its_task_map() -> Result<()> {
-        let payload = json!({
-            "evidence": {
-                "proof": {
-                    "scheme_proof": valid_proof()
-                }
-            }
-        });
-        let proof = root_proof_with_task_map(&payload)?
-            .context("typed scheme proof task map was not found")?;
+    fn task_proof_fanout_acceptance_matrix() -> Result<()> {
         let tasks = vec![task("provider", &[]), task("consumer", &["provider"])];
-        let slices = task_proof_slices(proof, &tasks, &contract_matrix())?;
-        let expected_goal = json!("use the API");
-
-        assert_eq!(slices.len(), 2);
-        assert_eq!(
-            slices
+        let matrix = contract_matrix();
+        let proof = valid_proof();
+        for payload in [
+            proof.clone(),
+            json!({"evidence": {"proof": {"scheme_proof": proof}}}),
+        ] {
+            let proof = root_proof_with_task_map(&payload)?
+                .context("typed scheme proof task map was not found")?;
+            let slices = task_proof_slices(proof, &tasks, &matrix)?;
+            let provider = slices
                 .iter()
-                .find(|(task_id, _)| task_id.ends_with(":consumer"))
-                .map(|(_, proof)| &proof["goal"]),
-            Some(&expected_goal)
-        );
+                .find(|(id, _)| id.ends_with(":provider"))
+                .context("provider slice missing")?;
+            let consumer = slices
+                .iter()
+                .find(|(id, _)| id.ends_with(":consumer"))
+                .context("consumer slice missing")?;
+            assert_eq!(slices.len(), 2);
+            assert_eq!(consumer.1["goal"], "use the API");
+            assert_eq!(consumer.1["cited_invariants"], json!(["INV-TEST"]));
+            assert_eq!(consumer.1["blackboard_decision_id"], "decision-1");
+            assert_eq!(provider.1["cited_symbols"], json!(["fn:public_api"]));
+        }
         Ok(())
     }
 
     #[test]
-    fn task_proof_fanout_copies_shared_fields_and_accepts_declared_seams() -> Result<()> {
-        let tasks = vec![task("provider", &[]), task("consumer", &["provider"])];
-        let slices = task_proof_slices(&valid_proof(), &tasks, &contract_matrix())?;
-        let provider = slices
-            .iter()
-            .find(|(task_id, _)| task_id.ends_with(":provider"))
-            .context("provider slice missing")?;
-        let consumer = slices
-            .iter()
-            .find(|(task_id, _)| task_id.ends_with(":consumer"))
-            .context("consumer slice missing")?;
-
-        assert_eq!(slices.len(), 2);
-        assert_eq!(consumer.1["cited_invariants"], json!(["INV-TEST"]));
-        assert_eq!(consumer.1["blackboard_decision_id"], "decision-1");
-        assert_eq!(provider.1["cited_symbols"], json!(["fn:public_api"]));
-        Ok(())
-    }
-
-    #[test]
-    fn task_proof_fanout_rejects_missing_active_task_slices() {
-        let mut proof = valid_proof();
-        proof["tasks"].as_object_mut().unwrap().remove("consumer");
-        let tasks = vec![task("provider", &[]), task("consumer", &["provider"])];
-
-        let error = task_proof_slices(&proof, &tasks, &contract_matrix()).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("missing non-cancelled task_ref 'consumer'"));
-    }
-
-    #[test]
-    fn task_proof_fanout_rejects_unrepresented_dependency_seams() {
-        let mut proof = valid_proof();
-        proof["tasks"]["provider"]["outgoing_seams"] = json!([]);
-        let tasks = vec![task("provider", &[]), task("consumer", &["provider"])];
-
-        let error = task_proof_slices(&proof, &tasks, &contract_matrix()).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("dependency seam 'provider -> consumer'"));
-    }
-
-    #[test]
-    fn task_proof_fanout_rejects_unknown_or_cancelled_seam_partners() {
+    fn task_proof_fanout_rejection_matrix() {
+        let base_proof = valid_proof();
+        let base_tasks = vec![task("provider", &[]), task("consumer", &["provider"])];
+        let matrix = contract_matrix();
         let mut cancelled = task("cancelled", &[]);
         cancelled.status = "cancelled".into();
         let cases = [
-            ("unknown", "missing", false),
-            ("cancelled", "cancelled", true),
+            (
+                "missing slice",
+                "/tasks/consumer",
+                Value::Null,
+                None,
+                "missing non-cancelled task_ref 'consumer'",
+            ),
+            (
+                "missing dependency seam",
+                "/tasks/provider/outgoing_seams",
+                json!([]),
+                None,
+                "dependency seam 'provider -> consumer'",
+            ),
+            (
+                "unknown partner",
+                "/tasks/consumer/incoming_seams",
+                json!([{
+                    "source_task": "missing", "contract_type": "seam_dependency", "contract_ref": "public-api"
+                }]),
+                None,
+                "unknown or cancelled task_ref",
+            ),
+            (
+                "cancelled partner",
+                "/tasks/consumer/incoming_seams",
+                json!([{
+                    "source_task": "cancelled", "contract_type": "seam_dependency", "contract_ref": "public-api"
+                }]),
+                Some(cancelled.clone()),
+                "unknown or cancelled task_ref",
+            ),
+            (
+                "cancelled declarer",
+                "/tasks/cancelled",
+                json!({
+                    "outgoing_seams": [{"target_task": "consumer"}]
+                }),
+                Some(cancelled),
+                "cancelled task_ref 'cancelled' cannot declare seam edges",
+            ),
+            (
+                "unadmitted incoming",
+                "/tasks/consumer/incoming_seams",
+                json!([{
+                    "source_task": "other", "contract_type": "shared_helper", "contract_ref": "other-helper"
+                }]),
+                Some(task("other", &[])),
+                "incoming_seams edge 'other -> consumer'",
+            ),
+            (
+                "unadmitted outgoing",
+                "/tasks/provider/outgoing_seams",
+                json!([{
+                    "target_task": "other", "contract_type": "shared_helper", "contract_ref": "other-helper"
+                }]),
+                Some(task("other", &[])),
+                "outgoing_seams edge 'provider -> other'",
+            ),
         ];
-        for (label, partner_ref, is_cancelled) in cases {
-            let mut proof = valid_proof();
-            proof["tasks"]["consumer"]["incoming_seams"] = json!([{
-                "source_task": partner_ref,
-                "contract_type": "seam_dependency",
-                "contract_ref": "public-api"
-            }]);
-            let mut tasks = vec![task("provider", &[]), task("consumer", &["provider"])];
-            if is_cancelled {
-                tasks.push(cancelled.clone());
+        for (label, pointer, value, extra_task, expected) in cases {
+            let mut proof = base_proof.clone();
+            let mut tasks = base_tasks.clone();
+            if let Some(extra) = extra_task {
+                proof["tasks"][&extra.spec.task_ref] = json!({"goal": "unrelated task"});
+                tasks.push(extra);
             }
-
-            let error = task_proof_slices(&proof, &tasks, &contract_matrix()).unwrap_err();
-            assert!(
-                error.to_string().contains("unknown or cancelled task_ref"),
-                "{label} seam endpoint should be rejected: {error}"
-            );
+            if value.is_null() {
+                proof["tasks"].as_object_mut().unwrap().remove("consumer");
+            } else {
+                *proof.pointer_mut(pointer).unwrap() = value;
+            }
+            let error = task_proof_slices(&proof, &tasks, &matrix).unwrap_err();
+            assert!(error.to_string().contains(expected), "{label}: {error}");
         }
-    }
-
-    #[test]
-    fn task_proof_fanout_rejects_seams_declared_by_cancelled_task_slices() {
-        let mut cancelled = task("cancelled", &[]);
-        cancelled.status = "cancelled".into();
-        let mut proof = valid_proof();
-        proof["tasks"]["cancelled"] = json!({
-            "outgoing_seams": [{"target_task": "consumer"}]
-        });
-        let tasks = vec![
-            task("provider", &[]),
-            task("consumer", &["provider"]),
-            cancelled,
-        ];
-
-        let error = task_proof_slices(&proof, &tasks, &contract_matrix()).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("cancelled task_ref 'cancelled' cannot declare seam edges"));
-    }
-
-    #[test]
-    fn task_proof_fanout_rejects_unadmitted_incoming_seams() {
-        let mut proof = valid_proof();
-        proof["tasks"]["consumer"]["incoming_seams"] = json!([{
-            "source_task": "other",
-            "contract_type": "shared_helper",
-            "contract_ref": "other-helper"
-        }]);
-        proof["tasks"]["other"] = json!({"goal": "unrelated task"});
-        let tasks = vec![
-            task("provider", &[]),
-            task("consumer", &["provider"]),
-            task("other", &[]),
-        ];
-        let error = task_proof_slices(&proof, &tasks, &contract_matrix()).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("incoming_seams edge 'other -> consumer'"));
-    }
-
-    #[test]
-    fn task_proof_fanout_rejects_unadmitted_outgoing_seams() {
-        let mut proof = valid_proof();
-        proof["tasks"]["provider"]["outgoing_seams"] = json!([{
-            "target_task": "other",
-            "contract_type": "shared_helper",
-            "contract_ref": "other-helper"
-        }]);
-        proof["tasks"]["other"] = json!({"goal": "unrelated task"});
-        let tasks = vec![
-            task("provider", &[]),
-            task("consumer", &["provider"]),
-            task("other", &[]),
-        ];
-        let error = task_proof_slices(&proof, &tasks, &contract_matrix()).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("outgoing_seams edge 'provider -> other'"));
     }
 
     #[test]

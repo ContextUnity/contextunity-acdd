@@ -7,7 +7,7 @@ use std::fs;
 #[test]
 fn milestone_handoff_refuses_a_profile_route_without_independent_review() {
     use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
-    let mut h = harness::WaveHarness::new(true);
+    let mut h = harness::WaveHarness::with_minimal_task_gates(true, false);
     let profile_path = h.root().join(".acdd/profile.yaml");
     let mut profile =
         profile::validate_profile_document(&fs::read_to_string(&profile_path).unwrap()).unwrap();
@@ -40,7 +40,7 @@ fn milestone_handoff_refuses_a_profile_route_without_independent_review() {
 #[test]
 fn milestone_failed_verification_cannot_archive_passing_tasks() {
     use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
-    let mut h = harness::WaveHarness::new(true);
+    let mut h = harness::WaveHarness::with_minimal_task_gates(true, false);
     let profile_path = h.root().join(".acdd/profile.yaml");
     let mut profile =
         profile::validate_profile_document(&fs::read_to_string(&profile_path).unwrap()).unwrap();
@@ -78,7 +78,7 @@ fn milestone_failed_verification_cannot_archive_passing_tasks() {
 #[test]
 fn milestone_waves_reject_unobserved_or_stale_role_decisions() {
     use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
-    let mut h = harness::WaveHarness::new(true);
+    let mut h = harness::WaveHarness::with_minimal_task_gates(true, false);
     let stop = h.root().join(".acdd/no-wave-decision");
     fs::write(&stop, "").unwrap();
     let error = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |_| {}).unwrap_err();

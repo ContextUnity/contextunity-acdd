@@ -22,7 +22,7 @@ mod workflows;
 fn run_cli(root: &std::path::Path, arguments: &[&str]) -> anyhow::Result<Value> {
     let cli = Cli::try_parse_from(
         [
-            "contextunity-forge-mcp",
+            "contextunity-acdd",
             "--root",
             root.to_str().unwrap(),
             "--format",

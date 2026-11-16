@@ -16,8 +16,8 @@ fn wave_validation_orders_dependencies_and_rejects_parallel_scope_overlap() {
     let valid = Milestone::parse(
         r#"---
 id: acdd-wave-contract
-repository: forge-mcp
-project: forge-mcp
+repository: acdd
+project: acdd
 ---
 ```yaml
 task_ref: provider
@@ -41,7 +41,7 @@ scope: [src/consumer.rs]
 depends_on: [provider]
 ```
 "#,
-        "forge-mcp",
+        "acdd",
     )
     .expect("the milestone fixture is valid");
     let waves = validate_wave_dag(&valid).expect("the disjoint DAG is valid");
@@ -89,8 +89,8 @@ depends_on: [provider]
     let overlapping = Milestone::parse(
         r#"---
 id: acdd-overlapping-wave-contract
-repository: forge-mcp
-project: forge-mcp
+repository: acdd
+project: acdd
 ---
 ```yaml
 task_ref: first
@@ -105,7 +105,7 @@ proof_policy: seam-test-first
 scope: [src/shared/nested.rs]
 ```
 "#,
-        "forge-mcp",
+        "acdd",
     )
     .expect("the overlapping-scope fixture is valid as a manifest");
     let error =
@@ -118,12 +118,12 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
     let workspace = crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
     workspace.write(
         "acdd.yaml",
-        "tasks_db: .acdd/tasks.sqlite\ntask_repository: forge-mcp\nmilestones: [docs/milestones]\n",
+        "tasks_db: .acdd/tasks.sqlite\ntask_repository: acdd\nmilestones: [docs/milestones]\n",
     );
     let secondary = workspace.root().join("secondary");
     std::fs::create_dir_all(&secondary).expect("secondary participant directory is created");
     crate::acdd::support::init_git(&secondary);
-    let manifest = "---\nid: preflight-fixture\nrepository: forge-mcp\nproject: forge-mcp\nstatus: active\nrequired_skills: [fixture-skill]\nrepositories:\n  - forge-mcp\n  - name: secondary\n    path: secondary\n---\n```yaml\ntask_ref: first\ntarget: Provide the shared seam\nproof_policy: seam-test-first\nscope: [src/first.rs]\nsymbols: [fn:shared_helper]\n```\n```yaml\ntask_ref: second\ntarget: Consume the shared seam\nproof_policy: seam-test-first\nscope: [src/second.rs]\nsymbols: [fn:shared_helper]\ndepends_on: [first]\n```\n";
+    let manifest = "---\nid: preflight-fixture\nrepository: acdd\nproject: acdd\nstatus: active\nrequired_skills: [fixture-skill]\nrepositories:\n  - acdd\n  - name: secondary\n    path: secondary\n---\n```yaml\ntask_ref: first\ntarget: Provide the shared seam\nproof_policy: seam-test-first\nscope: [src/first.rs]\nsymbols: [fn:shared_helper]\n```\n```yaml\ntask_ref: second\ntarget: Consume the shared seam\nproof_policy: seam-test-first\nscope: [src/second.rs]\nsymbols: [fn:shared_helper]\ndepends_on: [first]\n```\n";
     workspace.write("docs/milestones/001-preflight.md", manifest);
 
     let missing = init_from_manifest(
@@ -148,7 +148,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
     );
     workspace.write(
         "acdd.yaml",
-        "tasks_db: .acdd/tasks.sqlite\ntask_repository: forge-mcp\nmilestones: [docs/milestones]\nmodules:\n  profile: minimal\n",
+        "tasks_db: .acdd/tasks.sqlite\ntask_repository: acdd\nmilestones: [docs/milestones]\nmodules:\n  profile: minimal\n",
     );
     workspace.write(".acdd/profile.yaml", "modules:\n  required: [blackboard]\n");
     let disabled_requirement = init_from_manifest(
@@ -171,7 +171,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
 
     workspace.write(
         "acdd.yaml",
-        "tasks_db: .acdd/tasks.sqlite\ntask_repository: forge-mcp\nmilestones: [docs/milestones]\n",
+        "tasks_db: .acdd/tasks.sqlite\ntask_repository: acdd\nmilestones: [docs/milestones]\n",
     );
     let overflow_manifest = manifest.replace(
         "task_ref: first\n",
@@ -213,8 +213,8 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
     );
     let store = TasksStore::open_project(
         &workspace.root().join(".acdd/tasks.sqlite"),
-        "forge-mcp",
-        "forge-mcp",
+        "acdd",
+        "acdd",
     )
     .expect("preflight initializes the project task store");
     let matrix = store
@@ -273,8 +273,8 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
             .expect("the bounded summary payload is JSON");
     assert_eq!(summary_payload["contract_count"], 2);
 
-    let source_task = "forge-mcp/preflight-fixture:first";
-    let recipient = "forge-mcp/preflight-fixture:second";
+    let source_task = "acdd/preflight-fixture:first";
+    let recipient = "acdd/preflight-fixture:second";
     let targeted: BlackboardRequest = serde_json::from_value(serde_json::json!({
         "action": "post",
         "scope": "task",
@@ -350,7 +350,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
         command: contextunity_acdd::cli::task::TaskCommand,
     }
     let parsed = TaskCli::try_parse_from([
-        "forge",
+        "acdd",
         "blackboard",
         "post",
         source_task,
@@ -415,7 +415,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
         command: contextunity_acdd::cli::milestone::MilestoneCommand,
     }
     let parsed = MilestoneCli::try_parse_from([
-        "forge",
+        "acdd",
         "draft",
         "--slug",
         "draft-fixture",
@@ -425,8 +425,9 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
         "Exercise the public milestone draft command.",
     ])
     .expect("milestone draft options are part of the public CLI schema");
-    let draft = contextunity_acdd::cli::milestone::run(workspace.root(), parsed.command)
-        .expect("milestone draft command creates a numbered contract");
+    let draft =
+        contextunity_acdd::cli::milestone::run_with_stdin(workspace.root(), parsed.command, "")
+            .expect("milestone draft command creates a numbered contract");
     assert_eq!(draft["id"], "m-draft-fixture");
     assert!(workspace
         .root()
@@ -438,7 +439,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
             crate::acdd::support::acdd_workspace(crate::acdd::support::DEFAULT_SEAM, "");
         atomic_workspace.write(
             "acdd.yaml",
-            "tasks_db: .acdd/tasks.sqlite\ntask_repository: forge-mcp\nmilestones: [docs/milestones]\n",
+            "tasks_db: .acdd/tasks.sqlite\ntask_repository: acdd\nmilestones: [docs/milestones]\n",
         );
         atomic_workspace.write(
             ".agents/skills/fixture-skill/SKILL.md",
@@ -450,7 +451,7 @@ fn milestone_init_preflight_checks_skills_before_persisting_task_state() {
         atomic_workspace.write("docs/milestones/001-preflight.md", manifest);
 
         let database = atomic_workspace.root().join(".acdd/tasks.sqlite");
-        let store = TasksStore::open_project(&database, "forge-mcp", "forge-mcp")
+        let store = TasksStore::open_project(&database, "acdd", "acdd")
             .expect("the atomicity fixture initializes its task database");
         store
             .connection

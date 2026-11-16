@@ -14,7 +14,7 @@ fn task_claim_projects_only_applicable_spec_acceptance_criteria() {
             "task_ref: second",
             "task_ref: second\nspec: docs/specs/second.md\nacceptance_criteria: [AC-002]",
         );
-    let parsed = Milestone::parse(&source, "forge-mcp");
+    let parsed = Milestone::parse(&source, "acdd");
     assert!(
         parsed.is_ok(),
         "optional spec and AC-* fields must enter manifest authority: {parsed:#?}"

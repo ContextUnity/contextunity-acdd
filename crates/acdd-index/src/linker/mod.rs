@@ -871,7 +871,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
     let mut mark = |phase: &str| {
         if profiling {
             eprintln!(
-                "forge linker {phase}: {:.3}ms",
+                "acdd linker {phase}: {:.3}ms",
                 checkpoint.elapsed().as_secs_f64() * 1000.
             );
             checkpoint = std::time::Instant::now();

@@ -2,35 +2,141 @@ use super::*;
 
 use std::path::PathBuf;
 
-struct TestTempDir(PathBuf);
-
-impl TestTempDir {
-    fn new() -> Result<Self> {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "contextunity-acdd-task-store-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&path)?;
-        Ok(Self(path))
+#[test]
+fn checkpoint_header_rejects_unsupported_versions_and_unresolved_intents() -> Result<()> {
+    let checkpoint = ActiveCheckpoint {
+        version: 1,
+        repository: "repo".into(),
+        project: "project".into(),
+        milestone_id: "milestone".into(),
+        task_id: "repo/milestone:task".into(),
+        workspace: PathBuf::from("/unused"),
+        task: None,
+        max_revision: 0,
+        claims: Vec::new(),
+        claim_session_fingerprints: BTreeMap::new(),
+        gates: Vec::new(),
+        findings: Vec::new(),
+        scopes: Vec::new(),
+        dependencies: Vec::new(),
+        submissions: Vec::new(),
+        prepared_proofs: BTreeSet::new(),
+        intent: None,
+        cohort: Vec::new(),
+        cohort_id: String::new(),
+    };
+    for (version, intent, valid) in [
+        (1, None, true),
+        (99, None, false),
+        (1, Some("unresolved".to_owned()), false),
+    ] {
+        let mut candidate = checkpoint.clone();
+        candidate.version = version;
+        candidate.intent = intent;
+        let result = candidate.validate_cohort();
+        if valid {
+            result?;
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("TASK_RECOVERY_AMBIGUOUS"));
+        }
     }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
+    Ok(())
 }
 
-impl Drop for TestTempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+#[test]
+fn orphaned_intent_preimage_rejects_corruption() -> Result<()> {
+    let source = "---\nid: m-test\nstatus: active\n---\n```yaml\ntask_ref: first\ntarget: First\nproof_policy: seam-test-first\nscope: [src/lib.rs]\n```\n";
+    let milestone = crate::tasks::Milestone::parse(source, "repo")?;
+    let mut store = TasksStore::open_in_memory("repo", "repo")?;
+    store.sync(&milestone, "docs/milestone.md", Path::new("/"))?;
+    let task = store.inspect(&milestone.task_id(&milestone.tasks[0]))?;
+    let acknowledged = ActiveCheckpoint {
+        version: 1,
+        repository: "repo".into(),
+        project: "repo".into(),
+        milestone_id: "m-test".into(),
+        task_id: task.task_id.clone(),
+        workspace: PathBuf::from("/"),
+        task: Some(task),
+        max_revision: 1,
+        claims: vec![(1, "worker".into(), "/".into(), 1, false)],
+        claim_session_fingerprints: BTreeMap::new(),
+        gates: vec![("contract".into(), 1, "pending".into(), None)],
+        findings: Vec::new(),
+        scopes: Vec::new(),
+        dependencies: Vec::new(),
+        submissions: Vec::new(),
+        prepared_proofs: BTreeSet::new(),
+        intent: None,
+        cohort: Vec::new(),
+        cohort_id: String::new(),
+    };
+    let mut genuine = acknowledged.clone();
+    genuine.intent = Some("1-1".into());
+    genuine.max_revision += 1;
+    replay::validate_intent_preimage(&genuine, &acknowledged)?;
+    for case in [
+        "worker",
+        "claim",
+        "claims",
+        "gates",
+        "cohort",
+        "cohort_id",
+        "token",
+        "project",
+    ] {
+        let mut candidate = genuine.clone();
+        match case {
+            "worker" => candidate.task.as_mut().unwrap().worker_id = Some("foreign".into()),
+            "claim" => candidate.task.as_mut().unwrap().claim_revision += 10,
+            "claims" => candidate.claims.clear(),
+            "gates" => candidate.gates.clear(),
+            "cohort" => candidate.cohort.push((PathBuf::from("/"), "ref".into())),
+            "cohort_id" => candidate.cohort_id = "foreign".into(),
+            "token" => candidate.intent = Some("invalid-token".into()),
+            "project" => candidate.project = "foreign".into(),
+            _ => unreachable!(),
+        }
+        assert!(
+            replay::validate_intent_preimage(&candidate, &acknowledged).is_err(),
+            "{case}"
+        );
     }
+    for (max, floor, valid) in [
+        (1, 1, true),
+        (2, 1, true),
+        (101, 1, false),
+        (u64::MAX, u64::MAX, true),
+    ] {
+        assert_eq!(replay::validate_reservation(max, floor).is_ok(), valid);
+    }
+    let mut staging = TasksStore::open_in_memory("repo", "repo")?;
+    staging.begin_recovery_stage()?;
+    let mut foreign = acknowledged.clone();
+    foreign.project = "foreign".into();
+    let error = staging
+        .import_checkpoint(&foreign, acknowledged.task.as_ref().unwrap())
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("TASK_RECOVERY_NAMESPACE_MISMATCH"));
+    let mut peer = acknowledged.clone();
+    replay::validate_acknowledged_peer(&acknowledged, &peer)?;
+    peer.cohort_id = "foreign".into();
+    assert!(replay::validate_acknowledged_peer(&acknowledged, &peer).is_err());
+    peer = genuine.clone();
+    peer.intent = Some("2-2".into());
+    assert!(replay::validate_matching_token(&genuine, &peer).is_err());
+    replay::validate_matching_token(&genuine, &genuine)?;
+    Ok(())
 }
 
 #[test]
 fn pending_manifest_publication_replays_for_non_git_task_store() -> Result<()> {
-    let temp = TestTempDir::new()?;
+    let temp = tempfile::tempdir()?;
     let workspace = temp.path().join("workspace");
     let manifest = workspace.join("docs/milestones/010-scope.md");
     std::fs::create_dir_all(manifest.parent().context("manifest parent")?)?;

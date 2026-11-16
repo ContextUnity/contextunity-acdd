@@ -1,9 +1,9 @@
 use super::*;
 use std::os::unix::process::ExitStatusExt;
 
-const BUSY: &str = "forge-mcp/m-wait:busy";
-const NEXT: &str = "forge-mcp/m-wait:next";
-const CLOSED: &str = "forge-mcp/m-close:__milestone__";
+const BUSY: &str = "acdd/m-wait:busy";
+const NEXT: &str = "acdd/m-wait:next";
+const CLOSED: &str = "acdd/m-close:__milestone__";
 
 #[test]
 fn milestone_handoff_recovers_crash_at_each_journal_phase() {

@@ -58,13 +58,17 @@ fn rewrite_baseline() -> DeliveredBaseline {
 fn handoff_preserves_proofs_across_reviewed_history_rewrites() {
     check_history_rewrites(
         rewrite_baseline(),
-        &["orphan", "amend", "cherry-pick", "merge"],
+        &[
+            "orphan",
+            "amend",
+            "cherry-pick",
+            "merge",
+            "rebase",
+            "squash",
+            "conflict",
+            "gc",
+        ],
     );
-}
-
-#[test]
-fn handoff_preserves_proofs_across_reviewed_history_rebase_squash_conflict_and_gc() {
-    check_history_rewrites(rewrite_baseline(), &["rebase", "squash", "conflict", "gc"]);
 }
 
 fn check_history_rewrites(baseline: DeliveredBaseline, rewrites: &[&str]) {
@@ -174,7 +178,7 @@ fn check_history_rewrites(baseline: DeliveredBaseline, rewrites: &[&str]) {
                 let obsolete = root.create_navigation_commit(&tree, "temporary navigation object");
                 let document = root.document(active);
                 let store = root.open_task_store().unwrap();
-                let milestone = Milestone::parse(&document, "forge-mcp").unwrap();
+                let milestone = Milestone::parse(&document, "acdd").unwrap();
                 let mut receipt = store
                     .inspect(&milestone.task_id(&milestone.tasks[0]))
                     .unwrap()
@@ -223,7 +227,7 @@ fn check_history_rewrites(baseline: DeliveredBaseline, rewrites: &[&str]) {
             serde_json::to_value(&evidence).unwrap()
         );
         let archived_text = root.document(archived);
-        let archived_milestone = Milestone::parse(&archived_text, "forge-mcp").unwrap();
+        let archived_milestone = Milestone::parse(&archived_text, "acdd").unwrap();
         let store = root.open_task_store().unwrap();
         assert!(store.list(None, "all", None).unwrap().is_empty());
         for (index, spec) in archived_milestone.tasks.iter().enumerate() {
@@ -233,14 +237,14 @@ fn check_history_rewrites(baseline: DeliveredBaseline, rewrites: &[&str]) {
         }
         assert!(!root.path(active).exists());
         assert!(root.path(archived).exists());
-        let refs = root.refs_with_prefix("refs/forge/evidence/");
+        let refs = root.refs_with_prefix("refs/acdd/evidence/");
         let meta = MilestoneHarness::frontmatter(&archived_text);
         let retained: std::collections::BTreeSet<_> = refs.lines().collect();
         for sha in meta["handoff"]["proof_shas"].as_sequence().unwrap() {
             assert!(!retained
-                .contains(format!("refs/forge/evidence/{}", sha.as_str().unwrap()).as_str()));
+                .contains(format!("refs/acdd/evidence/{}", sha.as_str().unwrap()).as_str()));
         }
-        assert!(root.refs_with_prefix("refs/forge/snapshots/").is_empty());
+        assert!(root.refs_with_prefix("refs/acdd/snapshots/").is_empty());
     }
 }
 
@@ -296,7 +300,7 @@ fn handoff_preserves_proofs_across_commit_tracking_policies() {
             serde_json::to_value(&evidence).unwrap()
         );
         let archived_text = root.document("docs/milestones/archive/010-history.md");
-        let archived_milestone = Milestone::parse(&archived_text, "forge-mcp").unwrap();
+        let archived_milestone = Milestone::parse(&archived_text, "acdd").unwrap();
         let store = root.open_task_store().unwrap();
         assert!(store.list(None, "all", None).unwrap().is_empty());
         for (index, spec) in archived_milestone.tasks.iter().enumerate() {
@@ -307,13 +311,13 @@ fn handoff_preserves_proofs_across_commit_tracking_policies() {
         }
         assert!(!root.path("docs/milestones/010-history.md").exists());
         assert!(root.path("docs/milestones/archive/010-history.md").exists());
-        let refs = root.refs_with_prefix("refs/forge/evidence/");
+        let refs = root.refs_with_prefix("refs/acdd/evidence/");
         let meta = MilestoneHarness::frontmatter(&archived_text);
         let retained: std::collections::BTreeSet<_> = refs.lines().collect();
         for sha in meta["handoff"]["proof_shas"].as_sequence().unwrap() {
             assert!(!retained
-                .contains(format!("refs/forge/evidence/{}", sha.as_str().unwrap()).as_str()));
+                .contains(format!("refs/acdd/evidence/{}", sha.as_str().unwrap()).as_str()));
         }
-        assert!(root.refs_with_prefix("refs/forge/snapshots/").is_empty());
+        assert!(root.refs_with_prefix("refs/acdd/snapshots/").is_empty());
     }
 }

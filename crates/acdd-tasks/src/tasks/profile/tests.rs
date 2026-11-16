@@ -124,8 +124,13 @@ fn gate_guidance_renders_structured_criteria() {
 }
 
 #[test]
-fn command_scope_patterns_are_retained_when_parsing_profiles() {
-    let profile = parse_profile(
+fn command_scope_contract_matrix() {
+    struct Case {
+        profile: GateProfile,
+        overlay: Option<&'static str>,
+        expected: Vec<(Option<&'static str>, &'static str, Option<&'static str>)>,
+    }
+    let local = parse_profile(
         r#"commands:
   check:
     command: cargo test
@@ -137,7 +142,7 @@ fn command_scope_patterns_are_retained_when_parsing_profiles() {
     let CommandDef::Detailed {
         scope_args_by_pattern,
         ..
-    } = &profile.commands["check"]
+    } = &local.commands["check"]
     else {
         panic!("expected a detailed command");
     };
@@ -145,19 +150,108 @@ fn command_scope_patterns_are_retained_when_parsing_profiles() {
         scope_args_by_pattern["crates/acdd-tasks/**/*.rs"],
         "--package acdd-tasks --lib"
     );
-    assert_eq!(
-        profile
-            .scope_args_for_command_path(
-                &profile.commands["check"],
-                "crates/acdd-tasks/src/tasks/profile.rs",
+    let base = parse_profile(
+        r#"commands:
+  alpha:
+    command: echo alpha
+  beta:
+    command: echo beta
+    scope_args_by_pattern:
+      "**/*.rs": "--beta-only"
+"#,
+    )
+    .unwrap();
+    let cases = [
+        Case {
+            profile: local,
+            overlay: None,
+            expected: vec![
+                (
+                    Some("check"),
+                    "crates/acdd-tasks/src/tasks/profile.rs",
+                    Some("--package acdd-tasks --lib"),
+                ),
+                (None, "crates/acdd-tasks/src/tasks/profile.rs", None),
+            ],
+        },
+        Case {
+            profile: serde_yaml::from_str(
+                r#"scope_args_by_pattern:
+  "**/*.rs": "--lib"
+  "tests/special/*.rs": "--test special"
+  "tests/tie/*.rs": "--test global-tie"
+commands:
+  check:
+    command: cargo test
+    scope_args_by_pattern:
+      "tests/*.rs": "--test {file_stem}"
+      "tests/**/*.rs": "--test nested"
+      "checks/*.rs": "--test {file_stem}"
+      "tests/tie/*.rs": "--test local-tie"
+      "tests/special/deep/*.rs": "--test deep"
+"#,
             )
-            .as_deref(),
-        Some("--package acdd-tasks --lib"),
-    );
-    assert_eq!(
-        profile.scope_args_for_path("crates/acdd-tasks/src/tasks/profile.rs"),
-        None,
-    );
+            .unwrap(),
+            overlay: None,
+            expected: vec![
+                (Some("check"), "src/lib.rs", Some("--lib")),
+                (Some("check"), "tests/example.rs", Some("--test nested")),
+                (
+                    Some("check"),
+                    "tests/special/case.rs",
+                    Some("--test special"),
+                ),
+                (
+                    Some("check"),
+                    "tests/special/deep/case.rs",
+                    Some("--test deep"),
+                ),
+                (Some("check"), "tests/tie/case.rs", Some("--test local-tie")),
+                (Some("check"), "checks/example.rs", Some("--test example")),
+                (Some("check"), "README.md", None),
+                (None, "checks/example.rs", Some("--lib")),
+                (None, "README.md", None),
+                (None, "src/lib.rs", Some("--lib")),
+            ],
+        },
+        Case {
+            profile: base.clone(),
+            overlay: None,
+            expected: vec![
+                (None, "src/lib.rs", None),
+                (Some("alpha"), "src/lib.rs", None),
+                (Some("beta"), "src/lib.rs", Some("--beta-only")),
+            ],
+        },
+        Case {
+            profile: base,
+            overlay: Some(
+                r#"commands:
+  beta:
+    command: echo replacement
+"#,
+            ),
+            expected: vec![
+                (None, "src/lib.rs", None),
+                (Some("beta"), "src/lib.rs", None),
+            ],
+        },
+    ];
+    for case in cases {
+        let mut profile = case.profile;
+        if let Some(overlay) = case.overlay {
+            profile.merge_override(parse_profile(overlay).unwrap());
+        }
+        for (command, path, expected) in case.expected {
+            let actual = match command {
+                Some(command) => {
+                    profile.scope_args_for_command_path(&profile.commands[command], path)
+                }
+                None => profile.scope_args_for_path(path),
+            };
+            assert_eq!(actual.as_deref(), expected, "{command:?}: {path}");
+        }
+    }
 }
 
 #[test]
@@ -181,98 +275,38 @@ fn root_pattern_commands_include_every_matching_language_check() {
 }
 
 #[test]
-fn scope_selection_ranks_profile_and_command_patterns_together() {
-    let profile: GateProfile = serde_yaml::from_str(
-        r#"scope_args_by_pattern:
-  "**/*.rs": "--lib"
-  "tests/special/*.rs": "--test special"
-  "tests/tie/*.rs": "--test global-tie"
-commands:
-  check:
-    command: cargo test
-    scope_args_by_pattern:
-      "tests/*.rs": "--test {file_stem}"
-      "tests/**/*.rs": "--test nested"
-      "checks/*.rs": "--test {file_stem}"
-      "tests/tie/*.rs": "--test local-tie"
-      "tests/special/deep/*.rs": "--test deep"
-"#,
-    )
-    .unwrap();
-    let check_cmd = &profile.commands["check"];
-    for (path, expected) in [
-        ("src/lib.rs", Some("--lib")),
-        ("tests/example.rs", Some("--test nested")),
-        ("tests/special/case.rs", Some("--test special")),
-        ("tests/special/deep/case.rs", Some("--test deep")),
-        ("tests/tie/case.rs", Some("--test local-tie")),
-        ("checks/example.rs", Some("--test example")),
-        ("README.md", None),
-    ] {
-        assert_eq!(
-            profile
-                .scope_args_for_command_path(check_cmd, path)
-                .as_deref(),
-            expected,
-            "{path}"
-        );
+fn profile_structural_merge_matrix() {
+    fn child_condition(profile: &GateProfile) -> String {
+        profile
+            .gates
+            .iter()
+            .find(|gate| gate.tasks.is_some())
+            .unwrap()
+            .tasks
+            .as_ref()
+            .unwrap()
+            .gates[0]
+            .when
+            .as_deref()
+            .unwrap()
+            .to_owned()
     }
-    assert_eq!(
-        profile.scope_args_for_path("checks/example.rs").as_deref(),
-        Some("--lib")
-    );
-    assert_eq!(profile.scope_args_for_path("README.md"), None);
-    assert_eq!(
-        profile.scope_args_for_path("src/lib.rs").as_deref(),
-        Some("--lib")
-    );
-}
-
-#[test]
-fn command_override_does_not_leak_stale_scope_args() {
-    let base = parse_profile(
-        r#"commands:
-  alpha:
-    command: echo alpha
-  beta:
-    command: echo beta
-    scope_args_by_pattern:
-      "**/*.rs": "--beta-only"
-"#,
-    )
-    .unwrap();
-    assert_eq!(base.scope_args_for_path("src/lib.rs"), None);
-    assert_eq!(
-        base.scope_args_for_command_path(&base.commands["alpha"], "src/lib.rs"),
-        None
-    );
-    assert_eq!(
-        base.scope_args_for_command_path(&base.commands["beta"], "src/lib.rs")
-            .as_deref(),
-        Some("--beta-only")
-    );
-
-    let mut over = base.clone();
-    let override_profile = parse_profile(
-        r#"commands:
-  beta:
-    command: echo replacement
-"#,
-    )
-    .unwrap();
-    over.merge_override(override_profile);
-
-    assert_eq!(over.scope_args_for_path("src/lib.rs"), None);
-    assert_eq!(
-        over.scope_args_for_command_path(&over.commands["beta"], "src/lib.rs"),
-        None
-    );
-}
-
-#[test]
-fn inherited_profile_recursively_merges_gate_overrides_by_id() {
-    let mut inherited = parse_profile(
-        r#"inherit: none
+    enum MergeMode {
+        Parsed,
+        Raw,
+        Normalized,
+        Document,
+    }
+    type Expectation = fn(&GateProfile);
+    struct Case {
+        base: GateProfile,
+        initial: Expectation,
+        steps: Vec<(&'static str, MergeMode, Expectation)>,
+    }
+    let cases = [
+        Case {
+            base: parse_profile(
+                r#"inherit: none
 version: 2
 roles:
   contract_author: {}
@@ -296,10 +330,11 @@ gates:
       - id: synthesize
         role: architect
 "#,
-    )
-    .unwrap();
-    let overlay = parse_profile(
-        r#"inherit: default
+            )
+            .unwrap(),
+            initial: |_| {},
+            steps: vec![(
+                r#"inherit: default
 gates:
   - id: tasks
     tasks:
@@ -313,85 +348,85 @@ gates:
       - id: synthesize
         guidance: [milestone.synthesis]
 "#,
-    )
-    .unwrap();
-
-    inherited.merge_override(overlay);
-
-    let tasks = inherited.find_gate("tasks").unwrap();
-    let contract = tasks
-        .tasks
-        .as_ref()
-        .unwrap()
-        .gates
-        .iter()
-        .find(|gate| gate.id.rsplit('.').next() == Some("contract"))
-        .unwrap();
-    assert!(contract.role.is_some());
-    assert_eq!(contract.command.as_deref(), Some("new-contract"));
-    let build = tasks
-        .tasks
-        .as_ref()
-        .unwrap()
-        .gates
-        .iter()
-        .find(|gate| gate.id.rsplit('.').next() == Some("build"))
-        .unwrap();
-    assert_eq!(build.command.as_deref(), Some("new-check"));
-    assert!(build.role.is_some());
-    let synthesize = inherited.find_gate("synthesize").unwrap();
-    assert!(synthesize
-        .guidance
-        .iter()
-        .any(|guidance| guidance == "milestone.synthesis"));
-    assert_eq!(synthesize.role.as_deref(), Some("architect"));
-}
-
-#[test]
-fn inherited_default_tasks_container_recursively_merges_gate_overrides_by_id() {
-    let mut profile = (*compiled()).clone();
-    let overlay = super::normalize::parse_profile_document(
-        "inherit: default\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          command: test\n        - id: build\n          command: check\n",
-    )
-    .unwrap();
-
-    super::normalize::merge_profile_document(&mut profile, overlay);
-
-    assert_eq!(
-        profile
-            .gates
-            .iter()
-            .filter(|gate| gate.tasks.is_some())
-            .count(),
-        1,
-        "the id-less tasks container should merge structurally"
-    );
-    let tasks = profile
-        .gates
-        .iter()
-        .find_map(|gate| gate.tasks.as_ref())
-        .unwrap();
-    let contract = tasks
-        .gates
-        .iter()
-        .find(|gate| gate.id == "contract")
-        .unwrap();
-    assert_eq!(contract.command.as_deref(), Some("test"));
-    assert_eq!(contract.role.as_deref(), Some("contract_author"));
-    assert!(contract
-        .guidance
-        .iter()
-        .any(|guidance| guidance == "task.contract"));
-    let build = tasks.gates.iter().find(|gate| gate.id == "build").unwrap();
-    assert_eq!(build.command.as_deref(), Some("check"));
-    assert_eq!(build.role.as_deref(), Some("builder"));
-    assert_eq!(build.proof.kind(), Some(ProofKind::Command));
-}
-
-#[test]
-fn inherited_task_tracks_merge_by_condition() {
-    let mut profile = super::normalize::parse_profile_document(
-        r#"
+                MergeMode::Parsed,
+                |profile| {
+                    let tasks = profile.find_gate("tasks").unwrap();
+                    let contract = tasks
+                        .tasks
+                        .as_ref()
+                        .unwrap()
+                        .gates
+                        .iter()
+                        .find(|gate| gate.id.rsplit('.').next() == Some("contract"))
+                        .unwrap();
+                    assert!(contract.role.is_some());
+                    assert_eq!(contract.command.as_deref(), Some("new-contract"));
+                    let build = tasks
+                        .tasks
+                        .as_ref()
+                        .unwrap()
+                        .gates
+                        .iter()
+                        .find(|gate| gate.id.rsplit('.').next() == Some("build"))
+                        .unwrap();
+                    assert_eq!(build.command.as_deref(), Some("new-check"));
+                    assert!(build.role.is_some());
+                    let synthesize = profile.find_gate("synthesize").unwrap();
+                    assert!(
+                        synthesize
+                            .guidance
+                            .iter()
+                            .any(|guidance| guidance == "milestone.synthesis")
+                    );
+                    assert_eq!(synthesize.role.as_deref(), Some("architect"));
+                },
+            )],
+        },
+        Case {
+            base: (*compiled()).clone(),
+            initial: |_| {},
+            steps: vec![(
+                "inherit: default\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          command: test\n        - id: build\n          command: check\n",
+                MergeMode::Document,
+                |profile| {
+                    assert_eq!(
+                        profile
+                            .gates
+                            .iter()
+                            .filter(|gate| gate.tasks.is_some())
+                            .count(),
+                        1,
+                        "the id-less tasks container should merge structurally"
+                    );
+                    let tasks = profile
+                        .gates
+                        .iter()
+                        .find_map(|gate| gate.tasks.as_ref())
+                        .unwrap();
+                    let contract = tasks
+                        .gates
+                        .iter()
+                        .find(|gate| gate.id == "contract")
+                        .unwrap();
+                    assert_eq!(contract.command.as_deref(), Some("test"));
+                    assert_eq!(contract.role.as_deref(), Some("contract_author"));
+                    assert!(
+                        contract
+                            .guidance
+                            .iter()
+                            .any(|guidance| guidance == "task.contract")
+                    );
+                    let build = tasks.gates.iter().find(|gate| gate.id == "build").unwrap();
+                    assert_eq!(build.command.as_deref(), Some("check"));
+                    assert_eq!(build.role.as_deref(), Some("builder"));
+                    assert_eq!(build.proof.kind(), Some(ProofKind::Command));
+                },
+            )],
+        },
+        Case {
+            base: {
+                let mut profile = super::normalize::parse_profile_document(
+                    r#"
 inherit: none
 version: 2
 gates:
@@ -406,12 +441,15 @@ gates:
         - id: check
           command: doc-check
 "#,
-    )
-    .unwrap()
-    .profile;
-    super::normalize::normalize_profile(&mut profile);
-    let overlay = super::normalize::parse_profile_document(
-        r#"
+                )
+                .unwrap()
+                .profile;
+                super::normalize::normalize_profile(&mut profile);
+                profile
+            },
+            initial: |_| {},
+            steps: vec![(
+                r#"
 inherit: none
 gates:
   - tasks:
@@ -420,45 +458,70 @@ gates:
         - id: check
           command: doc-check-new
 "#,
-    )
-    .unwrap()
-    .profile;
-
-    profile.merge_override(overlay);
-
-    assert_eq!(profile.gates.len(), 2);
-    let code_check = profile
-        .gates
-        .iter()
-        .find(|gate| gate.tasks.as_ref().and_then(|tasks| tasks.when.as_deref()) == Some("code"))
-        .unwrap()
-        .tasks
-        .as_ref()
-        .unwrap()
-        .gates
-        .iter()
-        .find(|gate| gate.id == "check")
-        .unwrap();
-    assert_eq!(code_check.command.as_deref(), Some("code-check"));
-    let doc_check = profile
-        .gates
-        .iter()
-        .find(|gate| gate.tasks.as_ref().and_then(|tasks| tasks.when.as_deref()) == Some("doc"))
-        .unwrap()
-        .tasks
-        .as_ref()
-        .unwrap()
-        .gates
-        .iter()
-        .find(|gate| gate.id == "check")
-        .unwrap();
-    assert_eq!(doc_check.command.as_deref(), Some("doc-check-new"));
-}
-
-#[test]
-fn layered_task_condition_overrides_recompute_child_conditions() {
-    let mut profile = super::normalize::parse_profile_document(
-        r#"
+                MergeMode::Raw,
+                |profile| {
+                    assert_eq!(profile.gates.len(), 2);
+                    let code_check = profile
+                        .gates
+                        .iter()
+                        .find(|gate| {
+                            gate.tasks.as_ref().and_then(|tasks| tasks.when.as_deref())
+                                == Some("code")
+                        })
+                        .unwrap()
+                        .tasks
+                        .as_ref()
+                        .unwrap()
+                        .gates
+                        .iter()
+                        .find(|gate| gate.id == "check")
+                        .unwrap();
+                    assert_eq!(code_check.command.as_deref(), Some("code-check"));
+                    let doc_check = profile
+                        .gates
+                        .iter()
+                        .find(|gate| {
+                            gate.tasks.as_ref().and_then(|tasks| tasks.when.as_deref())
+                                == Some("doc")
+                        })
+                        .unwrap()
+                        .tasks
+                        .as_ref()
+                        .unwrap()
+                        .gates
+                        .iter()
+                        .find(|gate| gate.id == "check")
+                        .unwrap();
+                    assert_eq!(doc_check.command.as_deref(), Some("doc-check-new"));
+                },
+            )],
+        },
+        Case {
+            base: {
+                let mut profile = GateProfile::default();
+                let base = super::normalize::parse_profile_document(
+    "inherit: none\nversion: 2\ncommands:\n  old:\n    command: old-command\ngates:\n  - id: seam\n    gates:\n      - id: integrate\n        command: old\n",
+)
+.unwrap();
+                super::normalize::merge_profile_document(&mut profile, base);
+                profile
+            },
+            initial: |_| {},
+            steps: vec![(
+                "commands:\n  new:\n    command: new-command\ngates:\n  - id: seam\n    gates:\n      - id: integrate\n        command: new\n",
+                MergeMode::Document,
+                |profile| {
+                    let seam = profile.find_gate("seam").unwrap();
+                    assert_eq!(seam.gates.len(), 1);
+                    assert_eq!(seam.gates[0].id, "seam.integrate");
+                    assert_eq!(seam.gates[0].command.as_deref(), Some("new"));
+                },
+            )],
+        },
+        Case {
+            base: {
+                let mut profile = super::normalize::parse_profile_document(
+                    r#"
 inherit: none
 version: 2
 gates:
@@ -468,54 +531,70 @@ gates:
         - id: check
           when: ready
 "#,
-    )
-    .unwrap()
-    .profile;
-    super::normalize::normalize_profile(&mut profile);
-    let overlay = |condition: &str| {
-        let mut overlay = super::normalize::parse_profile_document(&format!(
-            "inherit: none\nversion: 2\ngates:\n  - tasks:\n      when: {condition}\n      gates:\n        - id: check\n          command: check-{condition}\n"
-        ))
-        .unwrap()
-        .profile;
-        super::normalize::normalize_profile(&mut overlay);
-        overlay
-    };
-    let child_condition = |profile: &GateProfile| {
-        profile
-            .gates
-            .iter()
-            .find(|gate| gate.tasks.is_some())
-            .unwrap()
-            .tasks
-            .as_ref()
-            .unwrap()
-            .gates[0]
-            .when
-            .as_deref()
-            .unwrap()
-            .to_owned()
-    };
-
-    assert_eq!(child_condition(&profile), "code & ready");
-    profile.merge_override(overlay("doc"));
-    assert_eq!(child_condition(&profile), "doc & ready");
-    profile.merge_override(overlay("release"));
-    assert_eq!(child_condition(&profile), "release & ready");
-    assert_eq!(
-        profile
-            .gates
-            .iter()
-            .find(|gate| gate.tasks.is_some())
-            .unwrap()
-            .tasks
-            .as_ref()
-            .unwrap()
-            .gates[0]
-            .command
-            .as_deref(),
-        Some("check-release")
-    );
+                )
+                .unwrap()
+                .profile;
+                super::normalize::normalize_profile(&mut profile);
+                profile
+            },
+            initial: |profile| {
+                assert_eq!(child_condition(profile), "code & ready");
+            },
+            steps: vec![
+                (
+                    "inherit: none\nversion: 2\ngates:\n  - tasks:\n      when: doc\n      gates:\n        - id: check\n          command: check-doc\n",
+                    MergeMode::Normalized,
+                    |profile| {
+                        assert_eq!(child_condition(profile), "doc & ready");
+                    },
+                ),
+                (
+                    "inherit: none\nversion: 2\ngates:\n  - tasks:\n      when: release\n      gates:\n        - id: check\n          command: check-release\n",
+                    MergeMode::Normalized,
+                    |profile| {
+                        assert_eq!(child_condition(profile), "release & ready");
+                        assert_eq!(
+                            profile
+                                .gates
+                                .iter()
+                                .find(|gate| gate.tasks.is_some())
+                                .unwrap()
+                                .tasks
+                                .as_ref()
+                                .unwrap()
+                                .gates[0]
+                                .command
+                                .as_deref(),
+                            Some("check-release")
+                        );
+                    },
+                ),
+            ],
+        },
+    ];
+    for case in cases {
+        let mut profile = case.base;
+        (case.initial)(&profile);
+        for (yaml, mode, expect) in case.steps {
+            match mode {
+                MergeMode::Document => {
+                    let overlay = super::normalize::parse_profile_document(yaml).unwrap();
+                    super::normalize::merge_profile_document(&mut profile, overlay);
+                }
+                MergeMode::Parsed => profile.merge_override(parse_profile(yaml).unwrap()),
+                MergeMode::Raw | MergeMode::Normalized => {
+                    let mut overlay = super::normalize::parse_profile_document(yaml)
+                        .unwrap()
+                        .profile;
+                    if matches!(mode, MergeMode::Normalized) {
+                        super::normalize::normalize_profile(&mut overlay);
+                    }
+                    profile.merge_override(overlay);
+                }
+            }
+            expect(&profile);
+        }
+    }
 }
 
 #[test]
@@ -578,67 +657,53 @@ fn merge_reinfers_proof_from_the_final_gate_attributes() {
 }
 
 #[test]
-fn normalized_nested_gate_ids_merge_with_local_overlay_ids() {
-    let mut profile = GateProfile::default();
-    let base = super::normalize::parse_profile_document(
-        "inherit: none\nversion: 2\ncommands:\n  old:\n    command: old-command\ngates:\n  - id: seam\n    gates:\n      - id: integrate\n        command: old\n",
-    )
-    .unwrap();
-    super::normalize::merge_profile_document(&mut profile, base);
-    let overlay = super::normalize::parse_profile_document(
-        "commands:\n  new:\n    command: new-command\ngates:\n  - id: seam\n    gates:\n      - id: integrate\n        command: new\n",
-    )
-    .unwrap();
-    super::normalize::merge_profile_document(&mut profile, overlay);
-
-    let seam = profile.find_gate("seam").unwrap();
-    assert_eq!(seam.gates.len(), 1);
-    assert_eq!(seam.gates[0].id, "seam.integrate");
-    assert_eq!(seam.gates[0].command.as_deref(), Some("new"));
+fn profile_field_override_matrix() {
+    type Expectation = fn(&GateProfile);
+    let cases: [(&str, &str, Expectation); 4] = [
+        (
+            "inherit: none\ngates:\n  - id: delivery\n    auto_commit: false\n",
+            "gates:\n  - id: delivery\n    command: check\n",
+            |profile| {
+                assert!(!profile.find_gate("delivery").unwrap().auto_commit);
+            },
+        ),
+        (
+            "gates:\n  - id: delivery\n",
+            "gates:\n  - id: delivery\n    auto_commit: false\n",
+            |profile| {
+                assert!(!profile.find_gate("delivery").unwrap().auto_commit);
+            },
+        ),
+        (
+            "inherit: none\ngates:\n  - id: build\n    save:\n      pre: snapshot\n      post: commit\n      immutable: true\n",
+            "gates:\n  - id: build\n    save:\n      post: snapshot\n",
+            |profile| {
+                let save = &profile.find_gate("build").unwrap().persistence;
+                assert_eq!(save.pre, Some(PersistenceAction::Snapshot));
+                assert_eq!(save.post, Some(PersistenceAction::Snapshot));
+                assert!(save.immutable);
+            },
+        ),
+        (
+            "inherit: none\ngates:\n  - id: build\n    symbols: [fn:old]\n",
+            "gates:\n  - id: build\n    symbols: [fn:new]\n",
+            |profile| {
+                assert_eq!(profile.find_gate("build").unwrap().symbols, ["fn:new"]);
+            },
+        ),
+    ];
+    for (base, overlay, expect) in cases {
+        let mut profile = parse_profile(base).unwrap();
+        profile.merge_override(parse_profile(overlay).unwrap());
+        expect(&profile);
+    }
 }
 
 #[test]
-fn merge_preserves_omitted_auto_commit_and_applies_explicit_false() {
-    let mut omitted =
-        parse_profile("inherit: none\ngates:\n  - id: delivery\n    auto_commit: false\n").unwrap();
-    omitted
-        .merge_override(parse_profile("gates:\n  - id: delivery\n    command: check\n").unwrap());
-    assert!(!omitted.find_gate("delivery").unwrap().auto_commit);
-
-    let mut explicit = parse_profile("gates:\n  - id: delivery\n").unwrap();
-    explicit.merge_override(
-        parse_profile("gates:\n  - id: delivery\n    auto_commit: false\n").unwrap(),
-    );
-    assert!(!explicit.find_gate("delivery").unwrap().auto_commit);
-}
-
-#[test]
-fn merge_preserves_unsupplied_save_members() {
-    let mut profile = parse_profile("inherit: none\ngates:\n  - id: build\n    save:\n      pre: snapshot\n      post: commit\n      immutable: true\n").unwrap();
-    profile.merge_override(
-        parse_profile("gates:\n  - id: build\n    save:\n      post: snapshot\n").unwrap(),
-    );
-
-    let save = &profile.find_gate("build").unwrap().persistence;
-    assert_eq!(save.pre, Some(PersistenceAction::Snapshot));
-    assert_eq!(save.post, Some(PersistenceAction::Snapshot));
-    assert!(save.immutable);
-}
-
-#[test]
-fn merge_replaces_supplied_symbols() {
-    let mut profile =
-        parse_profile("inherit: none\ngates:\n  - id: build\n    symbols: [fn:old]\n").unwrap();
-    profile
-        .merge_override(parse_profile("gates:\n  - id: build\n    symbols: [fn:new]\n").unwrap());
-
-    assert_eq!(profile.find_gate("build").unwrap().symbols, ["fn:new"]);
-}
-
-#[test]
-fn named_proof_resolves_against_profile_catalog() {
-    let mut profile = parse_profile(
-        r#"version: 2
+fn named_proof_catalog_matrix() {
+    for (yaml, expected_error) in [
+        (
+            r#"version: 2
 proofs:
   blueprint:
     schema:
@@ -650,28 +715,10 @@ gates:
   - id: synthesize
     proof: blueprint
 "#,
-    )
-    .unwrap();
-    assert!(matches!(
-        &profile.find_gate("synthesize").unwrap().proof,
-        ProofDef::Named(name) if name == "blueprint"
-    ));
-    super::normalize::normalize_profile(&mut profile);
-    let gate = profile.find_gate("synthesize").unwrap();
-    assert!(matches!(&gate.proof, ProofDef::ResolvedNamed { name, .. } if name == "blueprint"));
-    let schema = gate.proof.resolve_schema(&profile.proofs).unwrap();
-    schema
-        .validate_value(&serde_json::json!({"title":"ok"}), "$")
-        .unwrap();
-    assert!(schema
-        .validate_value(&serde_json::json!({"title":1}), "$")
-        .is_err());
-}
-
-#[test]
-fn named_proof_without_catalog_entry_is_rejected() {
-    let error = validate_profile_document(
-        r#"inherit: none
+            None,
+        ),
+        (
+            r#"inherit: none
 version: 2
 roles:
   architect: {}
@@ -680,11 +727,34 @@ gates:
     role: architect
     proof: absent
 "#,
-    )
-    .unwrap_err();
-    let chain = format!("{error:#}");
-    assert!(chain.contains("ACDD_PROFILE_SCHEMA_INVALID"));
-    assert!(chain.contains("absent"));
+            Some("absent"),
+        ),
+    ] {
+        let mut profile = parse_profile(yaml).unwrap();
+        if let Some(name) = expected_error {
+            let error = validate_profile_document(yaml).unwrap_err();
+            let chain = format!("{error:#}");
+            assert!(chain.contains("ACDD_PROFILE_SCHEMA_INVALID"));
+            assert!(chain.contains(name));
+        } else {
+            assert!(matches!(
+                &profile.find_gate("synthesize").unwrap().proof,
+                ProofDef::Named(name) if name == "blueprint"
+            ));
+            super::normalize::normalize_profile(&mut profile);
+            let gate = profile.find_gate("synthesize").unwrap();
+            assert!(
+                matches!(&gate.proof, ProofDef::ResolvedNamed { name, .. } if name == "blueprint")
+            );
+            let schema = gate.proof.resolve_schema(&profile.proofs).unwrap();
+            schema
+                .validate_value(&serde_json::json!({"title":"ok"}), "$")
+                .unwrap();
+            assert!(schema
+                .validate_value(&serde_json::json!({"title":1}), "$")
+                .is_err());
+        }
+    }
 }
 
 #[test]
@@ -763,9 +833,8 @@ gates:
 
 #[test]
 fn commands_for_root_ignores_directory_names_and_discovers_untracked_nested_files() {
-    let r = std::env::temp_dir().join(format!("forge-test-dispatch-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&r);
-    std::fs::create_dir_all(&r).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let r = dir.path();
     let cmd = CommandDef::Pattern(PatternCommands {
         by_pattern: BTreeMap::from([
             ("**/*.rs".into(), "rust-check".into()),
@@ -775,24 +844,23 @@ fn commands_for_root_ignores_directory_names_and_discovers_untracked_nested_file
         timeout_seconds: None,
         output: None,
     });
-    assert_eq!(cmd.commands_for_root(&r), Vec::<&str>::new());
+    assert_eq!(cmd.commands_for_root(r), Vec::<&str>::new());
     std::fs::create_dir(r.join("directory.rs")).unwrap();
-    assert_eq!(cmd.commands_for_root(&r), Vec::<&str>::new());
+    assert_eq!(cmd.commands_for_root(r), Vec::<&str>::new());
     std::fs::remove_dir(r.join("directory.rs")).unwrap();
 
     let _ = std::process::Command::new("git")
         .args(["init", "--quiet"])
-        .current_dir(&r)
+        .current_dir(r)
         .status();
     std::fs::write(r.join("README.md"), "readme").unwrap();
     let _ = std::process::Command::new("git")
         .args(["add", "README.md"])
-        .current_dir(&r)
+        .current_dir(r)
         .status();
     std::fs::create_dir(r.join("nested")).unwrap();
     std::fs::write(r.join("nested/source.py"), "print(1)").unwrap();
-    assert_eq!(cmd.commands_for_root(&r), vec!["python-check"]);
-    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(cmd.commands_for_root(r), vec!["python-check"]);
 }
 
 #[test]

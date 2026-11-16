@@ -8,45 +8,43 @@ use std::{
 };
 
 #[test]
-fn test_root_scope_guard_filesystem_root() {
-    let err = scanner::check_root_scope(Path::new("/"), false);
-    assert!(err.is_err(), "Filesystem root '/' must be rejected");
-    assert!(err
-        .unwrap_err()
-        .to_string()
-        .contains("refusing to index filesystem root"));
-
-    // Allowed when allow_broad is true
-    assert!(scanner::check_root_scope(Path::new("/"), true).is_ok());
-}
-
-#[test]
-fn test_root_scope_guard_multi_repo_container() {
+fn scanner_scope_and_limits_matrix() {
     let workspace = Workspace::new();
-    // Create 2 nested repos without root manifest or root .git
     workspace.write("repo1/.git/config", "");
     workspace.write("repo1/src/lib.py", "def a(): pass");
     workspace.write("repo2/.git/config", "");
     workspace.write("repo2/src/lib.py", "def b(): pass");
+    for (root, allow_broad, manifest, expected_error) in [
+        (
+            Path::new("/"),
+            false,
+            false,
+            Some("refusing to index filesystem root"),
+        ),
+        (Path::new("/"), true, false, None),
+        (
+            workspace.root(),
+            false,
+            false,
+            Some("multi-repository container"),
+        ),
+        (workspace.root(), true, false, None),
+        (workspace.root(), false, true, None),
+    ] {
+        if manifest {
+            workspace.write("acdd.yaml", "limits:\n  allow_broad_root: true\n");
+        }
+        let result = scanner::check_root_scope(root, allow_broad);
+        if let Some(message) = expected_error {
+            assert!(result.unwrap_err().to_string().contains(message));
+        } else {
+            result.unwrap();
+        }
+    }
+    for repo in ["repo1", "repo2"] {
+        fs::remove_dir_all(workspace.path(repo)).unwrap();
+    }
 
-    let err = scanner::check_root_scope(workspace.root(), false);
-    assert!(err.is_err(), "Multi-repo container must be rejected");
-    assert!(err
-        .unwrap_err()
-        .to_string()
-        .contains("multi-repository container"));
-
-    // Allowed if allow_broad is true
-    assert!(scanner::check_root_scope(workspace.root(), true).is_ok());
-
-    // Allowed if root has acdd.yaml manifest
-    workspace.write("acdd.yaml", "limits:\n  allow_broad_root: true\n");
-    assert!(scanner::check_root_scope(workspace.root(), false).is_ok());
-}
-
-#[test]
-fn test_scanner_limits_adapter_config() {
-    let workspace = Workspace::new();
     workspace.write(
         "acdd.yaml",
         r#"
@@ -63,33 +61,7 @@ limits:
     assert_eq!(adapter.limits.max_file_bytes, 1000);
     assert_eq!(adapter.limits.max_total_bytes, 50000);
     assert!(adapter.limits.allow_broad_root);
-}
 
-#[test]
-fn test_scanner_limits_file_byte_limit_enforced() {
-    let workspace = Workspace::new();
-    workspace.write(".git/config", ""); // mark as valid repo
-    workspace.write(
-        "acdd.yaml",
-        r#"
-limits:
-  max_file_bytes: 100
-"#,
-    );
-    workspace.write("src/small.py", "x = 1\n");
-    workspace.write("src/large.py", &"x = 1\n".repeat(50)); // ~300 bytes > 100 bytes
-
-    let err = scanner::scan(workspace.root(), None);
-    assert!(err.is_err());
-    assert!(err
-        .unwrap_err()
-        .to_string()
-        .contains("file exceeds byte limit"));
-}
-
-#[test]
-fn scanner_enforces_configured_file_count_and_byte_limits() {
-    let workspace = Workspace::new();
     workspace.write(".git/config", "");
 
     enum Expected {
@@ -97,7 +69,19 @@ fn scanner_enforces_configured_file_count_and_byte_limits() {
         SuccessFiles(usize),
     }
 
+    let large = "x = 1\n".repeat(50);
+    let boundary = "x".repeat(scanner::DEFAULT_MAX_FILE_BYTES as usize);
+    let oversized = format!("{boundary}x");
+    let byte_files = [
+        ("src/large.py", large.as_str()),
+        ("src/small.py", "x = 1\n"),
+    ];
+    let boundary_files = [("src/boundary.py", boundary.as_str())];
+    let oversized_files = [("src/oversized.py", oversized.as_str())];
     let cases = [
+        ("configured byte limit", "limits:\n  max_file_bytes: 100\n", &byte_files[..], Expected::Error("file exceeds byte limit")),
+        ("default byte boundary", "limits:\n  max_file_bytes: 5242880\n  max_total_bytes: 6000000\n  allow_broad_root: true\n", &boundary_files[..], Expected::SuccessFiles(1)),
+        ("one byte over", "limits:\n  max_file_bytes: 5242880\n  max_total_bytes: 6000000\n  allow_broad_root: true\n", &oversized_files[..], Expected::Error("file exceeds byte limit")),
         (
             "configured file count limit",
             "limits:\n  max_files: 2\n  allow_broad_root: true\n",
@@ -153,33 +137,9 @@ fn scanner_enforces_configured_file_count_and_byte_limits() {
             }
         }
     }
-}
+    fs::remove_dir_all(workspace.path("src")).unwrap();
+    fs::remove_file(workspace.path("acdd.yaml")).unwrap();
 
-#[test]
-fn scanner_accepts_the_default_file_boundary_and_rejects_one_byte_over() {
-    let workspace = Workspace::new();
-    workspace.write(".git/config", "");
-    workspace.write(
-        "acdd.yaml",
-        "limits:\n  max_file_bytes: 5242880\n  max_total_bytes: 6000000\n  allow_broad_root: true\n",
-    );
-    workspace.write_bytes(
-        "src/boundary.py",
-        &vec![b'x'; scanner::DEFAULT_MAX_FILE_BYTES as usize],
-    );
-    assert!(scanner::scan(workspace.root(), None).is_ok());
-
-    workspace.write_bytes(
-        "src/oversized.py",
-        &vec![b'x'; scanner::DEFAULT_MAX_FILE_BYTES as usize + 1],
-    );
-    let error = scanner::scan(workspace.root(), None).unwrap_err();
-    assert!(error.to_string().contains("file exceeds byte limit"));
-}
-
-#[test]
-fn scanner_rejects_a_workspace_over_the_default_file_limit() {
-    let workspace = Workspace::new();
     workspace.write(".git/config", "");
     let source = workspace.root().join("src");
     fs::create_dir_all(&source).unwrap();
@@ -207,6 +167,7 @@ fn scanner_rejects_a_workspace_over_the_default_file_limit() {
             }
             created_paths += 1;
         }
+        fs::remove_file(seed).unwrap();
     }
 
     assert_eq!(scanner::DEFAULT_MAX_FILES, 100_000);
@@ -218,180 +179,12 @@ fn scanner_rejects_a_workspace_over_the_default_file_limit() {
     let msg = error.to_string();
     let prefix = "workspace exceeds file limit (100001 > max_files 100000) at src/";
     assert!(msg.starts_with(prefix) && msg.len() > prefix.len(), "{msg}");
-}
+    fs::remove_dir_all(workspace.path("src")).unwrap();
 
-#[test]
-fn scanner_memory_budget_has_a_defensive_floor_and_cap() {
-    let available = scanner::available_memory_bytes();
-    assert!(available > 0, "available memory must be positive");
-    let budget = scanner::memory_budget_bytes();
-    assert!(budget >= 64 * 1024 * 1024, "budget must be at least 64 MiB");
-    assert!(
-        budget <= 16 * 1024 * 1024 * 1024,
-        "budget must not exceed 16 GB"
-    );
-}
-
-#[test]
-fn scanner_memory_helpers_reexport_the_core_system_contract() {
-    let core_available: fn() -> u64 = contextunity_acdd::core::sys::available_memory_bytes;
-    let scanner_available: fn() -> u64 = scanner::available_memory_bytes;
-    assert!(
-        std::ptr::fn_addr_eq(scanner_available, core_available),
-        "scanner must re-export the canonical core memory helper"
-    );
-
-    let core_budget: fn() -> u64 = contextunity_acdd::core::sys::memory_budget_bytes;
-    let scanner_budget: fn() -> u64 = scanner::memory_budget_bytes;
-    assert!(
-        std::ptr::fn_addr_eq(scanner_budget, core_budget),
-        "scanner must re-export the canonical core budget helper"
-    );
-
-    let available = scanner_available();
-    assert!(available > 0, "available memory must be positive");
-    let budget = scanner_budget();
-    assert!(
-        (64 * 1024 * 1024..=16 * 1024 * 1024 * 1024).contains(&budget),
-        "budget must retain its 64 MiB floor and 16 GiB cap"
-    );
-}
-
-#[test]
-fn delta_preserves_the_configured_file_size_limit() {
-    let workspace = Workspace::new();
-    workspace.write(".git/config", "");
-    workspace.write(
-        "adapter.yaml",
-        "roots: [src]\nlimits:\n  max_files: 10\n  max_file_bytes: 3\n  max_total_bytes: 100000\n",
-    );
-    workspace.write("src/a.py", "x");
-    let database = workspace.root().join(".acdd/code-map.sqlite");
-    let adapter = workspace.root().join("adapter.yaml");
-    writer::build(workspace.root(), &database, Some(&adapter)).unwrap();
-
-    workspace.write("src/a.py", "x=1\n");
-    let error =
-        writer::delta(workspace.root(), &database, &[PathBuf::from("src/a.py")]).unwrap_err();
-    assert!(
-        error.to_string().contains("file exceeds byte limit"),
-        "{error:#}"
-    );
-}
-
-#[test]
-fn delta_accepts_a_root_allowed_by_the_current_adapter() {
-    let workspace = Workspace::new();
-    workspace.write("repo-a/.git/config", "");
-    workspace.write("repo-a/src/a.py", "x = 1\n");
-    workspace.write("repo-b/.git/config", "");
-    workspace.write("repo-b/src/b.py", "y = 2\n");
-    workspace.write(
-        "adapter.yaml",
-        "roots: [repo-a/src, repo-b/src]\nlimits:\n  allow_broad_root: true\n",
-    );
-    let database = workspace.root().join(".acdd/code-map.sqlite");
-    let adapter = workspace.root().join("adapter.yaml");
-    writer::build(workspace.root(), &database, Some(&adapter)).unwrap();
-
-    workspace.write("repo-a/src/a.py", "x = 3\n");
-    let result = writer::delta(
-        workspace.root(),
-        &database,
-        &[PathBuf::from("repo-a/src/a.py")],
-    );
-    assert!(result.is_ok(), "{result:#?}");
-}
-
-#[test]
-fn delta_rebuilds_stale_policy_with_its_explicit_adapter() {
-    let workspace = Workspace::new();
-    workspace.write("repo-a/.git/config", "");
-    workspace.write("repo-a/src/a.py", "x = 1\n");
-    workspace.write("repo-b/.git/config", "");
-    workspace.write("repo-b/src/b.py", "y = 2\n");
-    workspace.write(
-        "adapter.yaml",
-        "roots: [repo-a/src, repo-b/src]\nlimits:\n  allow_broad_root: true\n",
-    );
-    let database = workspace.root().join(".acdd/code-map.sqlite");
-    let adapter = workspace.root().join("adapter.yaml");
-    writer::build(workspace.root(), &database, Some(&adapter)).unwrap();
-
-    let conn = Connection::open(&database).unwrap();
-    let previous_digest: String = conn
-        .query_row(
-            "SELECT digest FROM source_inventory WHERE path='repo-a/src/a.py'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let raw_policy: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key='adapter'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let mut policy: serde_json::Value = serde_json::from_str(&raw_policy).unwrap();
-    assert!(policy.as_object_mut().unwrap().remove("limits").is_some());
-    conn.execute(
-        "UPDATE metadata SET value=?1 WHERE key='adapter'",
-        [policy.to_string()],
-    )
-    .unwrap();
-    conn.execute(
-        "UPDATE metadata SET value='13' WHERE key='schema_version'",
-        [],
-    )
-    .unwrap();
-    drop(conn);
-
-    workspace.write("repo-a/src/a.py", "x = 3\n");
-    writer::delta(
-        workspace.root(),
-        &database,
-        &[PathBuf::from("repo-a/src/a.py")],
-    )
-    .unwrap();
-
-    let conn = Connection::open(&database).unwrap();
-    let current_digest: String = conn
-        .query_row(
-            "SELECT digest FROM source_inventory WHERE path='repo-a/src/a.py'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_ne!(current_digest, previous_digest);
-    let version: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key='schema_version'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(version, scanner::ENGINE_SCHEMA_VERSION);
-    let raw_policy: String = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key='adapter'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let policy: serde_json::Value = serde_json::from_str(&raw_policy).unwrap();
-    assert_eq!(policy["adapter_path"], "adapter.yaml");
-    assert_eq!(policy["limits"]["allow_broad_root"], true);
-}
-
-#[test]
-fn default_scope_excludes_common_generated_directories() {
-    let workspace = Workspace::new();
     workspace.write("src/main.py", "def source(): pass\n");
     workspace.write("src/build_helpers.py", "def source(): pass\n");
     for directory in [
         ".git",
-        ".acdd",
         ".acdd",
         ".venv",
         "vendor",
@@ -420,4 +213,123 @@ fn default_scope_excludes_common_generated_directories() {
         .map(|entry| entry.path.as_str())
         .collect();
     assert_eq!(paths, ["src/build_helpers.py", "src/main.py"]);
+    let core_available: fn() -> u64 = contextunity_acdd::core::sys::available_memory_bytes;
+    let scanner_available: fn() -> u64 = scanner::available_memory_bytes;
+    assert!(
+        std::ptr::fn_addr_eq(scanner_available, core_available),
+        "scanner must re-export the canonical core memory helper"
+    );
+
+    let core_budget: fn() -> u64 = contextunity_acdd::core::sys::memory_budget_bytes;
+    let scanner_budget: fn() -> u64 = scanner::memory_budget_bytes;
+    assert!(
+        std::ptr::fn_addr_eq(scanner_budget, core_budget),
+        "scanner must re-export the canonical core budget helper"
+    );
+
+    let available = scanner_available();
+    assert!(available > 0, "available memory must be positive");
+    let budget = scanner_budget();
+    assert!(
+        (64 * 1024 * 1024..=16 * 1024 * 1024 * 1024).contains(&budget),
+        "budget must retain its 64 MiB floor and 16 GiB cap"
+    );
+}
+
+#[test]
+fn scanner_delta_policy_matrix() {
+    let workspace = Workspace::new();
+    workspace.write("repo-a/.git/config", "");
+    workspace.write("repo-b/.git/config", "");
+    let database = workspace.path(".acdd/code-map.sqlite");
+    let adapter = workspace.path("adapter.yaml");
+    for (name, limits, stale, expected_error) in [
+        (
+            "file bytes",
+            "  max_file_bytes: 3\n  max_files: 10\n  max_total_bytes: 100000\n",
+            false,
+            Some("file exceeds byte limit"),
+        ),
+        ("broad root", "", false, None),
+        ("stale explicit policy", "", true, None),
+    ] {
+        workspace.write("repo-a/src/a.py", "x");
+        workspace.write("repo-b/src/b.py", "y");
+        workspace.write(
+            "adapter.yaml",
+            &format!(
+                "roots: [repo-a/src, repo-b/src]\nlimits:\n  allow_broad_root: true\n{limits}"
+            ),
+        );
+        writer::build(workspace.root(), &database, Some(&adapter)).unwrap();
+        let conn = Connection::open(&database).unwrap();
+        let previous_digest: String = conn
+            .query_row(
+                "SELECT digest FROM source_inventory WHERE path='repo-a/src/a.py'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if stale {
+            let raw: String = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key='adapter'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut policy: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert!(policy.as_object_mut().unwrap().remove("limits").is_some());
+            conn.execute(
+                "UPDATE metadata SET value=?1 WHERE key='adapter'",
+                [policy.to_string()],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE metadata SET value='13' WHERE key='schema_version'",
+                [],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        workspace.write("repo-a/src/a.py", "x = 3\n");
+        let result = writer::delta(
+            workspace.root(),
+            &database,
+            &[PathBuf::from("repo-a/src/a.py")],
+        );
+        if let Some(message) = expected_error {
+            let error = result.unwrap_err();
+            assert!(error.to_string().contains(message), "{name}: {error:#}");
+        } else {
+            result.unwrap();
+            let conn = Connection::open(&database).unwrap();
+            let digest: String = conn
+                .query_row(
+                    "SELECT digest FROM source_inventory WHERE path='repo-a/src/a.py'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_ne!(digest, previous_digest, "{name}");
+            let version: String = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key='schema_version'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(version, scanner::ENGINE_SCHEMA_VERSION);
+            let raw: String = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key='adapter'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let policy: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(policy["adapter_path"], "adapter.yaml");
+            assert_eq!(policy["limits"]["allow_broad_root"], true);
+        }
+    }
 }

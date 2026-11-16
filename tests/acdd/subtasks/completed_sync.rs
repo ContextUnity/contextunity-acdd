@@ -13,13 +13,13 @@ fn completed_tasks_sync_and_inspect_without_panic() {
     let spec = "---\nid: m-completed\ntitle: Completed Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: t1\ntarget: Deliver t1\nproof_policy: direct-proof\nscope: [src/]\n```\n";
     root.write("docs/milestones/010-completed.md", spec);
     commit_handoff_fixture_inputs(&root, &["acdd.yaml", "docs", "src"]);
-    let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(spec, "acdd").unwrap();
     let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     store
         .sync(&milestone, "docs/milestones/010-completed.md", root.root())
         .unwrap();
 
-    let t1_id = "forge-mcp/m-completed:t1";
+    let t1_id = "acdd/m-completed:t1";
 
     // Deliver through the active profile so the final gate records its commit.
     let mut harness = TaskHarness::attach(&root, t1_id);
@@ -49,7 +49,7 @@ fn completed_tasks_sync_and_inspect_without_panic() {
     .unwrap();
     let archive_path = handoff["path"].as_str().unwrap();
     let updated_doc = std::fs::read_to_string(root.root().join(archive_path)).unwrap();
-    let milestone_with_receipt = Milestone::parse(&updated_doc, "forge-mcp").unwrap();
+    let milestone_with_receipt = Milestone::parse(&updated_doc, "acdd").unwrap();
     assert!(completed
         .receipt
         .as_ref()

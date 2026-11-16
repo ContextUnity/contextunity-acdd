@@ -17,7 +17,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-const MAGIC_V4: &[u8] = b"FORGE-EXTRACTION-FACTS\0\x04";
+const MAGIC_V4: &[u8] = b"ACDD-EXTRACTION-FACTS\0\x04";
 const CHECKSUM_BYTES: usize = 32;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -132,7 +132,7 @@ pub fn key(
 /// Computes combined effective ruleset hash from adapter and dependency digests.
 pub fn effective_ruleset_hash(adapter_digest: &str, dependency_digest: &str) -> String {
     let mut input = Vec::with_capacity(adapter_digest.len() + dependency_digest.len() + 32);
-    input.extend_from_slice(b"forge-effective-ruleset-v1\0");
+    input.extend_from_slice(b"acdd-effective-ruleset-v1\0");
     input.extend_from_slice(&(adapter_digest.len() as u64).to_le_bytes());
     input.extend_from_slice(adapter_digest.as_bytes());
     input.extend_from_slice(&(dependency_digest.len() as u64).to_le_bytes());

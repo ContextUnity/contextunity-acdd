@@ -157,7 +157,7 @@ pub(super) fn accepted_gate_evidence(
             )
         })?;
         if let Some(commit) = evidence.commit.as_deref() {
-            if !full_git_sha(commit) || !crate::core::git::git_commit_exists(root, commit)? {
+            if !full_git_sha(commit) {
                 bail!(
                     "TASK_RECEIPT_INVALID: accepted '{}' gate commit is malformed or unavailable",
                     gate.id
@@ -172,11 +172,41 @@ pub(super) fn accepted_gate_evidence(
             if !full_git_sha(baseline) {
                 bail!("TASK_RECEIPT_INVALID: candidate baseline is malformed");
             }
-            if !crate::core::git::git_commit_exists(root, baseline)? {
-                bail!("TASK_RECEIPT_INVALID: candidate baseline is unavailable");
-            }
         }
         accepted.insert(gate.id.clone(), evidence);
+    }
+    let mut commits_to_verify = BTreeSet::new();
+    for gate in &profile.gates {
+        if let Some(evidence) = accepted.get(&gate.id) {
+            if let Some(commit) = evidence.commit.as_deref() {
+                commits_to_verify.insert(commit.to_owned());
+            }
+            if gate.sha_snapshot {
+                if let Some(baseline) = evidence.candidate_baseline_head.as_deref() {
+                    commits_to_verify.insert(baseline.to_owned());
+                }
+            }
+        }
+    }
+    let existing = crate::core::git::git_commits_exist(root, &commits_to_verify)?;
+    for gate in &profile.gates {
+        if let Some(evidence) = accepted.get(&gate.id) {
+            if let Some(commit) = evidence.commit.as_deref() {
+                if !existing.contains(commit) {
+                    bail!(
+                        "TASK_RECEIPT_INVALID: accepted '{}' gate commit is malformed or unavailable",
+                        gate.id
+                    );
+                }
+            }
+            if gate.sha_snapshot {
+                if let Some(baseline) = evidence.candidate_baseline_head.as_deref() {
+                    if !existing.contains(baseline) {
+                        bail!("TASK_RECEIPT_INVALID: candidate baseline is unavailable");
+                    }
+                }
+            }
+        }
     }
     for gate in &profile.gates {
         if let Some(prior) = gate.independent_from.as_deref() {
@@ -530,6 +560,7 @@ pub(super) fn validated_authority(
     let milestone_rel = item.path.strip_prefix(root)?.to_string_lossy().into_owned();
     let mut accepted = BTreeMap::new();
     let mut builders = BTreeSet::new();
+    let mut deferred_retention = BTreeSet::new();
     for task in relevant {
         let spec = milestone
             .tasks
@@ -609,18 +640,15 @@ pub(super) fn validated_authority(
             ) {
                 builders.insert(proof.worker_id.clone());
             }
-            for commit in [
-                proof.commit.as_deref(),
-                proof.candidate_baseline_head.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                crate::core::git::retain_proof_commit(root, commit)?;
+            if !gate.sha_snapshot {
+                if let Some(baseline) = proof.candidate_baseline_head.as_deref() {
+                    deferred_retention.insert(baseline.to_owned());
+                }
             }
         }
         accepted.insert(task.task_id.clone(), json!({"digest":task.digest, "contract_revision":task.contract_revision, "scope":task.spec.scope, "profile":profile.as_ref(), "gates":evidence, "receipt":proof_receipt}));
     }
+    crate::core::git::retain_proof_commits(root, &deferred_retention)?;
     Ok((
         integration::digest(&accepted)?,
         builders.into_iter().collect(),
@@ -690,7 +718,7 @@ pub(super) fn absorb_polish(
     integration::git_write(root, &add, "HANDOFF_POLISH_FAILED")?;
     let message = if source_changed {
         format!(
-            "Integrate milestone polish\n\nForge-Handoff-Source-Polish: {}/{}/{}",
+            "Integrate milestone polish\n\nACDD-Handoff-Source-Polish: {}/{}/{}",
             item.repository, item.project, item.id
         )
     } else {

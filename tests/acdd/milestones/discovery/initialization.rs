@@ -61,7 +61,7 @@ fn milestone_init_allocates_next_number_and_renders_valid_frontmatter() {
     assert!(planned.contains("A concrete outcome."));
     assert!(planned.contains("## Deferred and out-of-scope defects"));
     assert!(planned.contains("deferred_defects: []"));
-    assert!(Milestone::parse(&planned, "forge-mcp")
+    assert!(Milestone::parse(&planned, "acdd")
         .unwrap()
         .deferred_defects
         .is_empty());
@@ -183,7 +183,7 @@ fn in002_companion_runbooks_live_outside_milestone_discovery() {
     .find(|path| path.is_file())
     .expect("read IN-002 manifest from active or archived milestones");
     let manifest_text = std::fs::read_to_string(manifest_path).expect("read IN-002 manifest");
-    let parsed = Milestone::parse(&manifest_text, "forge-mcp").expect("parse IN-002 manifest");
+    let parsed = Milestone::parse(&manifest_text, "acdd").expect("parse IN-002 manifest");
     assert_eq!(parsed.id, "IN-002-contextunity-acdd-one-pass-rename");
 
     let task = |task_ref: &str| {

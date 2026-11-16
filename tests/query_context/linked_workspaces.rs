@@ -18,7 +18,7 @@ fn test_multi_workspace_indexing_and_resilience() {
         .unwrap()
         .as_nanos();
     let temp_base =
-        std::env::temp_dir().join(format!("test_forge_mw_{}_{}", std::process::id(), nonce));
+        std::env::temp_dir().join(format!("test_acdd_mw_{}_{}", std::process::id(), nonce));
 
     // 1. Setup primary workspace (traverse)
     let ws_traverse = temp_base.join("traverse");
@@ -61,7 +61,7 @@ fn test_multi_workspace_indexing_and_resilience() {
 
     // 4. Configure acdd.yaml in traverse linking commerce and gridviewspec
     let adapter_content = format!(
-        r#"format: forge-code-map-policy/v1
+        r#"format: acdd-code-map-policy/v1
 adapter_version: 1
 roots:
   - src
@@ -243,7 +243,7 @@ linked_workspaces:
 
 #[test]
 fn test_linked_workspace_toggle_enabled() {
-    let temp_base = std::env::temp_dir().join(format!("forge_test_enabled_{}", std::process::id()));
+    let temp_base = std::env::temp_dir().join(format!("acdd_test_enabled_{}", std::process::id()));
     let ws_main = temp_base.join("main");
     let ws_sibling = temp_base.join("sibling");
     fs::create_dir_all(ws_main.join("src")).unwrap();
@@ -310,7 +310,7 @@ fn test_linked_workspace_manifest_outside_roots_does_not_cause_admission_loop() 
         .unwrap()
         .as_nanos();
     let temp_base = std::env::temp_dir().join(format!(
-        "test_forge_mw_loop_{}_{}",
+        "test_acdd_mw_loop_{}_{}",
         std::process::id(),
         nonce
     ));

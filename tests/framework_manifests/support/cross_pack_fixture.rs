@@ -292,7 +292,7 @@ def unrelated():
             "DjangoGridViewHost" | "GridViewActionBase" => module,
             _ => "grid_view_spec.types",
         };
-        let missing_member = format!("_forge_missing_{class_name}");
+        let missing_member = format!("_acdd_missing_{class_name}");
         put!(
             format!("grid_receivers/{class_name}.py"),
             &format!("from {import_module} import {symbol} as ExternalBase\nclass Probe{class_name}(ExternalBase):\n    def known_probe(self): return self.{member}\n    def unknown_probe(self): return self.{missing_member}\n"),

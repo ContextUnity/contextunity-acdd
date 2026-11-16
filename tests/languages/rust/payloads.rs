@@ -1,7 +1,5 @@
 use crate::languages::harness::PersistedSnapshot;
 use crate::languages::PersistedWorkspaceHarness;
-use rusqlite::Connection;
-use std::sync::OnceLock;
 
 fn member_rules(returns: Option<&str>) -> String {
     let mut manifest = String::from("enabled = true\nreplace = true\n");
@@ -173,80 +171,99 @@ fn annotated_json_payload() {
     (workspace, cases)
 }
 
-fn baseline() -> &'static (PersistedSnapshot, Vec<String>) {
-    static BASELINE: OnceLock<(PersistedSnapshot, Vec<String>)> = OnceLock::new();
-    BASELINE.get_or_init(|| {
-        let (workspace, cases) = generic_workspace();
-        (PersistedSnapshot::from_connection(&workspace.open()), cases)
-    })
-}
-
-fn call_count(db: &Connection, function: &str, target: &str) -> i64 {
-    db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name=?2 AND e.kind='calls'", [function, target], |row| row.get(0)).unwrap()
-}
-
 #[test]
-fn explicit_payload_generics_keep_local_and_external_type_identity() {
-    let db = baseline().0.open();
-    for function in &baseline().1 {
-        let exact: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name='finish' AND d.qualname LIKE '%LeafBatch10.finish' AND e.kind='calls'", [function], |row| row.get(0)).unwrap();
-        assert_eq!(
-            exact, 1,
-            "{function}: explicit generic must retain the exact Leaf target"
-        );
-        let direct: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name='finish' AND d.qualname LIKE '%LeafBatch10.finish' AND e.kind='calls'", [format!("{function}_direct")], |row| row.get(0)).unwrap();
-        assert_eq!(
-            direct, 1,
-            "{function}: direct generic chain must retain Leaf identity"
-        );
+fn persisted_wrapper_payload_identity() {
+    let (workspace, functions) = generic_workspace();
+    let snapshot = PersistedSnapshot::from_connection(&workspace.open());
+    drop(workspace);
+    let db = snapshot.open();
+    // Each row names the original observable contract and carries its query inputs.
+    enum Expected<'a> {
+        Calls {
+            target: &'a str,
+            exact_leaf: bool,
+            count: i64,
+        },
+        Coverage {
+            expression: &'a str,
+            status: &'a str,
+            origin: Option<&'a str>,
+        },
+    }
+    let mut cases = Vec::new();
+    for function in functions {
+        for name in [function.clone(), format!("{function}_direct")] {
+            cases.push((
+                "explicit_payload_generics_keep_local_and_external_type_identity",
+                name,
+                Expected::Calls {
+                    target: "finish",
+                    exact_leaf: true,
+                    count: 1,
+                },
+            ));
+        }
         for (expression, origin) in [
             ("text.len", "Rust standard library"),
             ("value.is_null", "Value"),
         ] {
-            let (status, evidence): (String, String) = db.query_row("SELECT c.status, v.evidence FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN coverage_evidence v USING(evidence_id) JOIN nodes n ON n.path_id=c.path_id AND c.line BETWEEN n.line AND n.end_line WHERE n.name=?1 AND x.expression=?2", [function.as_str(), expression], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
-            assert_eq!(status, "external", "{function}: {expression}: {evidence}");
-            assert!(
-                evidence.contains(origin),
-                "{function}: {expression}: expected {origin}, got {evidence}"
-            );
+            cases.push((
+                "explicit_payload_generics_keep_local_and_external_type_identity",
+                function.clone(),
+                Expected::Coverage {
+                    expression,
+                    status: "external",
+                    origin: Some(origin),
+                },
+            ));
         }
-        let unknown_edges: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name='finish' AND e.kind='calls'", [format!("{function}_unknown")], |row| row.get(0)).unwrap();
-        assert_eq!(
-            unknown_edges, 0,
-            "unknown generic/untyped results must not invent Leaf identity"
-        );
+        let unknown = format!("{function}_unknown");
+        cases.push((
+            "explicit_payload_generics_keep_local_and_external_type_identity",
+            unknown.clone(),
+            Expected::Calls {
+                target: "finish",
+                exact_leaf: false,
+                count: 0,
+            },
+        ));
         for expression in ["unknown.finish", "untyped.finish"] {
-            let status: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN nodes n ON n.path_id=c.path_id AND c.line BETWEEN n.line AND n.end_line WHERE n.name=?1 AND x.expression=?2", [format!("{function}_unknown").as_str(), expression], |row| row.get(0)).unwrap();
-            assert_eq!(
-                status, "unresolved",
-                "{function}: {expression} must not manufacture Value identity"
-            );
+            cases.push((
+                "explicit_payload_generics_keep_local_and_external_type_identity",
+                unknown.clone(),
+                Expected::Coverage {
+                    expression,
+                    status: "unresolved",
+                    origin: None,
+                },
+            ));
         }
     }
-}
-
-#[test]
-fn unproved_wrapper_projections_cannot_revive_the_original_receiver() {
-    let db = baseline().0.open();
     for (function, expression) in [
         ("missing_unwrap", "h.unwrap().leaf"),
         ("missing_expect", "h.expect(\"missing\").leaf"),
         ("missing_try", "h?.leaf"),
         ("assigned_missing", "changed.leaf"),
     ] {
-        let exact: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name='leaf' AND e.kind='calls'", [function], |row| row.get(0)).unwrap();
-        assert_eq!(
-            exact, 0,
-            "{function}: unknown projection must not revive Hub identity"
-        );
-        let status: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN nodes n ON n.path_id=c.path_id AND c.line BETWEEN n.line AND n.end_line WHERE n.name=?1 AND x.expression=?2", [function, expression], |row| row.get(0)).unwrap();
-        assert_eq!(status, "unresolved", "{function}: {expression}");
+        cases.push((
+            "unproved_wrapper_projections_cannot_revive_the_original_receiver",
+            function.to_owned(),
+            Expected::Calls {
+                target: "leaf",
+                exact_leaf: false,
+                count: 0,
+            },
+        ));
+        cases.push((
+            "unproved_wrapper_projections_cannot_revive_the_original_receiver",
+            function.to_owned(),
+            Expected::Coverage {
+                expression,
+                status: "unresolved",
+                origin: None,
+            },
+        ));
     }
-}
-
-#[test]
-fn declared_and_known_wrapper_payloads_retain_the_exact_leaf_target() {
-    let db = baseline().0.open();
     for function in [
         "declared_unwrap",
         "declared_expect",
@@ -256,22 +273,54 @@ fn declared_and_known_wrapper_payloads_retain_the_exact_leaf_target() {
         "yaml_import_payload",
         "annotated_json_payload",
     ] {
-        assert_eq!(
-            call_count(&db, function, "finish"),
-            1,
-            "{function}: proven Leaf identity"
-        );
+        cases.push((
+            "declared_and_known_wrapper_payloads_retain_the_exact_leaf_target",
+            function.to_owned(),
+            Expected::Calls {
+                target: "finish",
+                exact_leaf: false,
+                count: 1,
+            },
+        ));
     }
-}
-
-#[test]
-fn external_non_wrappers_do_not_gain_wrapper_projections() {
-    let db = baseline().0.open();
     for expression in ["path.unwrap().exists", "path.expect(\"missing\").exists"] {
-        let status: String = db.query_row("SELECT c.status FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) WHERE x.expression=?1", [expression], |row| row.get(0)).unwrap();
-        assert_eq!(
-            status, "unresolved",
-            "unwrapped external non-wrapper: {expression}"
-        );
+        cases.push((
+            "external_non_wrappers_do_not_gain_wrapper_projections",
+            "missing_external".to_owned(),
+            Expected::Coverage {
+                expression,
+                status: "unresolved",
+                origin: None,
+            },
+        ));
+    }
+    for (case_id, function, expected) in cases {
+        match expected {
+            Expected::Calls {
+                target,
+                exact_leaf,
+                count,
+            } => {
+                let observed: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name=?2 AND e.kind='calls' AND (?3=0 OR d.qualname LIKE '%LeafBatch10.finish')", rusqlite::params![function, target, exact_leaf], |row| row.get(0)).unwrap();
+                assert_eq!(observed, count, "{case_id}: {function}: {target}");
+            }
+            Expected::Coverage {
+                expression,
+                status,
+                origin,
+            } => {
+                let (observed, evidence): (String, String) = db.query_row("SELECT c.status, v.evidence FROM resolution_coverage c JOIN coverage_expressions x USING(expression_id) JOIN coverage_evidence v USING(evidence_id) JOIN nodes n ON n.path_id=c.path_id AND c.line BETWEEN n.line AND n.end_line WHERE n.name=?1 AND x.expression=?2", [function.as_str(), expression], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+                assert_eq!(
+                    observed, status,
+                    "{case_id}: {function}: {expression}: {evidence}"
+                );
+                if let Some(origin) = origin {
+                    assert!(
+                        evidence.contains(origin),
+                        "{case_id}: {function}: {expression}: expected {origin}, got {evidence}"
+                    );
+                }
+            }
+        }
     }
 }

@@ -20,6 +20,23 @@ fn build_workspace(files: &[(&str, &str)]) -> (Workspace, rusqlite::Connection) 
     (workspace, connection)
 }
 
+fn receiver_snapshot() -> rusqlite::Connection {
+    use crate::common::sqlite::PersistedSnapshot;
+    static SNAPSHOT: std::sync::OnceLock<PersistedSnapshot> = std::sync::OnceLock::new();
+    SNAPSHOT
+        .get_or_init(|| {
+            let files: Vec<_> = bindings::PERSISTED_FILES
+                .iter()
+                .chain(branch_joins::PERSISTED_FILES)
+                .chain(class_members::PERSISTED_FILES)
+                .copied()
+                .collect();
+            let (_workspace, db) = build_workspace(&files);
+            PersistedSnapshot::from_connection(&db)
+        })
+        .open()
+}
+
 fn persisted_coverage(
     db: &rusqlite::Connection,
     path: &str,

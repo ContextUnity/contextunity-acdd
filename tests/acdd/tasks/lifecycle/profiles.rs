@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn contract_readmission_and_reset_fence_old_evidence() {
     let root = unconfigured_test_root();
-    let mut milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
-    let mut store = TasksStore::open_in_memory("forge-mcp", "forge-mcp").unwrap();
+    let mut milestone = Milestone::parse(SPEC, "acdd").unwrap();
+    let mut store = TasksStore::open_in_memory("acdd", "acdd").unwrap();
     store.sync(&milestone, "docs/010-test.md", &root).unwrap();
     let id = milestone.task_id(&milestone.tasks[0]);
     let first = store
@@ -194,7 +194,7 @@ fn profile_session_and_independence_paths_share_a_harness() {
         }
 
         let claim_error = serde_json::from_value::<tasks::Claim>(json!({
-            "task_id":"forge-mcp/m-test:first",
+            "task_id":"acdd/m-test:first",
             "stage":"contract",
             "worker_id":"builder",
             "worktree":"/tmp/worktree",
@@ -216,7 +216,7 @@ fn profile_session_and_independence_paths_share_a_harness() {
             "{manage_error}"
         );
         let submit_error = serde_json::from_value::<tasks::Submit>(json!({
-            "task_id":"forge-mcp/m-test:first",
+            "task_id":"acdd/m-test:first",
             "stage":"contract",
             "action":"pass",
             "evidence":{},

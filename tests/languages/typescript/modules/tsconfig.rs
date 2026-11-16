@@ -103,281 +103,281 @@ fn tsconfig_paths_choose_first_indexed_alternative_and_relink_on_new_file() {
 }
 
 #[test]
-fn type_only_imports_resolve_indexed_local_interface_provider() {
+fn typescript_type_value_export_identity() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    for (path, source) in [
-        ("app/types.ts", "export interface ColumnStateItem { colId: string }"),
+    {
+        for (path, source) in [
+        ("case3/app/types.ts", "export interface ColumnStateItem { colId: string }"),
         (
-            "app/consumer.ts",
+            "case3/app/consumer.ts",
             "import type { ColumnStateItem } from './types';\nexport function accept(value: ColumnStateItem): void {}\nColumnStateItem();",
         ),
-        ("other/types.ts", "export interface ColumnStateItem { decoy: boolean }"),
+        ("case3/other/types.ts", "export interface ColumnStateItem { decoy: boolean }"),
     ] {
         workspace.write(path, source);
     }
-    workspace.build();
-    let conn = workspace.open();
-    let statuses: Vec<String> = conn.prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='app/consumer.ts' AND line <= 2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='ColumnStateItem' ORDER BY line")
-        .unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect();
-    assert!(
-        !statuses.is_empty(),
-        "type-only import must have persisted coverage"
-    );
-    assert!(
-        statuses.iter().all(|status| status == "resolved"),
-        "type-only import statuses: {statuses:?}"
-    );
-    let targets: Vec<String> = conn.prepare("SELECT DISTINCT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/consumer.ts' AND e.kind='imports' AND dst.name='ColumnStateItem' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
-        .unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect();
-    assert_eq!(targets, ["app/types.ts"]);
-    let invalid_call: String = query_scalar(
-        &conn,
-        "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='app/consumer.ts' AND line=3 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='ColumnStateItem'",
-        [],
-    );
-    assert_eq!(invalid_call, "unresolved");
-    contextunity_acdd::core::commitments::verify(&conn).unwrap();
-    drop(conn);
-}
-
-#[test]
-fn exported_enum_members_require_exact_indexed_provider() {
-    let files = [
+    }
+    {
+        let files = [
         (
-            "app/colors.ts",
+            "case4/app/colors.ts",
             "export enum Color { Red, Blue = 2 } const local = Color.Blue;",
         ),
         (
-            "app/use.ts",
+            "case4/app/use.ts",
             "import { Color } from './colors'; const selected = Color.Red; const missing = Color.Green; function shadow(Color) { return Color.Red; }",
         ),
-        ("app/call.ts", "import { Color } from './colors';\nColor.Red();"),
+        ("case4/app/call.ts", "import { Color } from './colors';\nColor.Red();"),
         (
-            "app/type_use.ts",
+            "case4/app/type_use.ts",
             "import type { Color } from './colors';\ntype Choice = Color;\nconst invalid = Color.Red;\nconst bare = Color;\nfunction consume(value) {} consume(Color);",
         ),
-        ("other/colors.ts", "export enum Color { Green }"),
+        ("case4/other/colors.ts", "export enum Color { Green }"),
     ];
-    let facts: BTreeMap<String, Facts> = extracted_files(&files, Some("typescript"));
-    let provider = &facts["app/colors.ts"];
-    assert!(
-        provider
-            .nodes
-            .iter()
-            .any(|node| node.kind == "enum" && node.name == "Color"),
-        "{:#?}",
-        provider.nodes
-    );
-    for name in ["Red", "Blue"] {
+        let facts: BTreeMap<String, Facts> = extracted_files(&files, Some("typescript"));
+        let provider = &facts["case4/app/colors.ts"];
         assert!(
-            provider.nodes.iter().any(|node| node.kind == "field"
-                && node.name == name
-                && node.qualname.ends_with(&format!("Color.{name}"))),
-            "{name}: {:#?}",
+            provider
+                .nodes
+                .iter()
+                .any(|node| node.kind == "enum" && node.name == "Color"),
+            "{:#?}",
             provider.nodes
         );
-    }
-    let graph = ExtractorHarness::link_graph(&facts);
-    for (path, expression, status) in [
-        ("app/colors.ts", "Color.Blue", "resolved"),
-        ("app/use.ts", "Color.Red", "resolved"),
-        ("app/use.ts", "Color.Green", "unresolved"),
-        ("app/use.ts", "Color.Red", "unresolved"),
-        ("app/type_use.ts", "Color.Red", "unresolved"),
-    ] {
-        assert!(
-            graph.coverage.iter().any(|row| row.path == path
-                && row.expression == expression
-                && row.status == status),
-            "{path}: {expression}: expected {status}, got {:#?}",
-            graph.coverage
-        );
-    }
-    for line in [4, 5] {
-        let runtime: Vec<_> = graph
+        for name in ["Red", "Blue"] {
+            assert!(
+                provider.nodes.iter().any(|node| node.kind == "field"
+                    && node.name == name
+                    && node.qualname.ends_with(&format!("Color.{name}"))),
+                "{name}: {:#?}",
+                provider.nodes
+            );
+        }
+        let graph = ExtractorHarness::link_graph(&facts);
+        for (path, expression, status) in [
+            ("case4/app/colors.ts", "Color.Blue", "resolved"),
+            ("case4/app/use.ts", "Color.Red", "resolved"),
+            ("case4/app/use.ts", "Color.Green", "unresolved"),
+            ("case4/app/use.ts", "Color.Red", "unresolved"),
+            ("case4/app/type_use.ts", "Color.Red", "unresolved"),
+        ] {
+            assert!(
+                graph.coverage.iter().any(|row| row.path == path
+                    && row.expression == expression
+                    && row.status == status),
+                "{path}: {expression}: expected {status}, got {:#?}",
+                graph.coverage
+            );
+        }
+        for line in [4, 5] {
+            let runtime: Vec<_> = graph
+                .coverage
+                .iter()
+                .filter(|row| {
+                    row.path == "case4/app/type_use.ts"
+                        && row.line == line
+                        && row.expression == "Color"
+                })
+                .collect();
+            assert!(
+                !runtime.is_empty() && runtime.iter().all(|row| row.status == "unresolved"),
+                "{runtime:#?}"
+            );
+            assert!(!graph.edges.iter().any(|edge| {
+                edge.path == "case4/app/type_use.ts"
+                    && edge.line == line
+                    && edge.kind == "references"
+                    && edge.evidence == "Color"
+            }));
+        }
+        let selected: Vec<_> = graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                edge.path == "case4/app/use.ts"
+                    && edge.kind == "references"
+                    && edge.evidence == "Color.Red"
+            })
+            .collect();
+        assert_eq!(selected.len(), 1, "{selected:#?}");
+        assert!(provider
+            .nodes
+            .iter()
+            .any(|node| node.id == selected[0].dst && node.name == "Red"));
+        let callable: Vec<_> = graph
             .coverage
             .iter()
             .filter(|row| {
-                row.path == "app/type_use.ts" && row.line == line && row.expression == "Color"
+                row.path == "case4/app/call.ts" && row.line == 2 && row.expression == "Color.Red"
             })
             .collect();
         assert!(
-            !runtime.is_empty() && runtime.iter().all(|row| row.status == "unresolved"),
-            "{runtime:#?}"
+            !callable.is_empty() && callable.iter().all(|row| row.status == "unresolved"),
+            "{callable:#?}"
         );
         assert!(!graph.edges.iter().any(|edge| {
-            edge.path == "app/type_use.ts"
-                && edge.line == line
-                && edge.kind == "references"
-                && edge.evidence == "Color"
+            edge.path == "case4/app/call.ts" && edge.line == 2 && edge.kind == "calls"
         }));
-    }
-    let selected: Vec<_> = graph
-        .edges
-        .iter()
-        .filter(|edge| {
-            edge.path == "app/use.ts" && edge.kind == "references" && edge.evidence == "Color.Red"
-        })
-        .collect();
-    assert_eq!(selected.len(), 1, "{selected:#?}");
-    assert!(provider
-        .nodes
-        .iter()
-        .any(|node| node.id == selected[0].dst && node.name == "Red"));
-    let callable: Vec<_> = graph
-        .coverage
-        .iter()
-        .filter(|row| row.path == "app/call.ts" && row.line == 2 && row.expression == "Color.Red")
-        .collect();
-    assert!(
-        !callable.is_empty() && callable.iter().all(|row| row.status == "unresolved"),
-        "{callable:#?}"
-    );
-    assert!(!graph
-        .edges
-        .iter()
-        .any(|edge| { edge.path == "app/call.ts" && edge.line == 2 && edge.kind == "calls" }));
 
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    for (path, source) in files {
-        workspace.write(path, source);
+        for (path, source) in files {
+            workspace.write(path, source);
+        }
     }
-    workspace.build();
-    let conn = workspace.open();
-    let mut stmt = conn.prepare("SELECT line,status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='app/type_use.ts' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='Color' AND line IN (4,5) ORDER BY line").unwrap();
-    let persisted: Vec<(usize, String)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    for line in [4, 5] {
-        let rows: Vec<_> = persisted.iter().filter(|(at, _)| *at == line).collect();
-        assert!(
-            !rows.is_empty() && rows.iter().all(|(_, status)| status == "unresolved"),
-            "{persisted:?}"
+    {
+        workspace.write("case5/types.ts", "export type Foo = { id: string };\n");
+        workspace.write(
+            "case5/generated.ts",
+            "export interface JsonValue { value: string; }\n",
         );
-    }
-    let runtime_edges: usize = query_scalar(
-        &conn,
-        "SELECT COUNT(*) FROM edge_occurrences e WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/type_use.ts' AND e.line IN (4,5) AND e.kind='references'",
-        [],
-    );
-    assert_eq!(runtime_edges, 0);
-    let mut callable_stmt = conn.prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='app/call.ts' AND line=2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='Color.Red'").unwrap();
-    let callable_rows: Vec<String> = callable_stmt
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    assert!(
-        !callable_rows.is_empty() && callable_rows.iter().all(|status| status == "unresolved"),
-        "{callable_rows:?}"
-    );
-    let callable_edges: usize = query_scalar(
-        &conn,
-        "SELECT COUNT(*) FROM edge_occurrences e WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='app/call.ts' AND e.line=2 AND e.kind='calls'",
-        [],
-    );
-    assert_eq!(callable_edges, 0);
-    contextunity_acdd::core::commitments::verify(&conn).unwrap();
-    drop(stmt);
-    drop(callable_stmt);
-    drop(conn);
-}
-
-#[test]
-fn typescript_export_type_reexport_import_targets() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write("types.ts", "export type Foo = { id: string };\n");
-    workspace.write(
-        "generated.ts",
-        "export interface JsonValue { value: string; }\n",
-    );
-    workspace.write(
-        "barrel.ts",
-        r#"
+        workspace.write(
+            "case5/barrel.ts",
+            r#"
 import type { JsonValue } from "./generated";
 export type { JsonValue };
 export type { Foo } from "./types";
 export type { Outside } from "outside-package";
 "#,
-    );
-    workspace.write(
-        "consumer.ts",
-        r#"
+        );
+        workspace.write(
+            "case5/consumer.ts",
+            r#"
 import type { Foo, JsonValue, Outside } from "./barrel";
 function test(f: Foo, j: JsonValue, o: Outside) {}
 "#,
+        );
+    }
+    {
+        workspace.write(
+            "case6/box.ts",
+            "export class Box { id = 1; }\nexport enum Color { Red = 1 }\n",
+        );
+        workspace.write(
+            "case6/barrel.ts",
+            "export type { Box, Color } from \"./box\";\n",
+        );
+        workspace.write(
+            "case6/only.ts",
+            "export type Foo = { id: string };\nexport { Foo };\n",
+        );
+        workspace.write(
+        "case6/consumer.ts",
+        "import type { Box, Color } from \"./barrel\";\nfunction use(box: Box, color: Color) {}\n",
     );
+        workspace.write("case6/use.js", "import { Foo } from \"./only\";\nFoo();\n");
+    }
     workspace.build();
     let conn = workspace.open();
-
-    let coverage = |path: &str, expression: &str| -> String {
-        query_scalar(
+    {
+        let statuses: Vec<String> = conn.prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='case3/app/consumer.ts' AND line <= 2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='ColumnStateItem' ORDER BY line")
+        .unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect();
+        assert!(
+            !statuses.is_empty(),
+            "type-only import must have persisted coverage"
+        );
+        assert!(
+            statuses.iter().all(|status| status == "resolved"),
+            "type-only import statuses: {statuses:?}"
+        );
+        let targets: Vec<String> = conn.prepare("SELECT DISTINCT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='case3/app/consumer.ts' AND e.kind='imports' AND dst.name='ColumnStateItem' ORDER BY (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)")
+        .unwrap().query_map([], |row| row.get::<_, String>(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(targets, ["case3/app/types.ts"]);
+        let invalid_call: String = query_scalar(
+        &conn,
+        "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='case3/app/consumer.ts' AND line=3 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='ColumnStateItem'",
+        [],
+    );
+        assert_eq!(invalid_call, "unresolved");
+        contextunity_acdd::core::commitments::verify(&conn).unwrap();
+    }
+    {
+        let mut stmt = conn.prepare("SELECT line,status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='case4/app/type_use.ts' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='Color' AND line IN (4,5) ORDER BY line").unwrap();
+        let persisted: Vec<(usize, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for line in [4, 5] {
+            let rows: Vec<_> = persisted.iter().filter(|(at, _)| *at == line).collect();
+            assert!(
+                !rows.is_empty() && rows.iter().all(|(_, status)| status == "unresolved"),
+                "{persisted:?}"
+            );
+        }
+        let runtime_edges: usize = query_scalar(
+        &conn,
+        "SELECT COUNT(*) FROM edge_occurrences e WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='case4/app/type_use.ts' AND e.line IN (4,5) AND e.kind='references'",
+        [],
+    );
+        assert_eq!(runtime_edges, 0);
+        let mut callable_stmt = conn.prepare("SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='case4/app/call.ts' AND line=2 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='Color.Red'").unwrap();
+        let callable_rows: Vec<String> = callable_stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert!(
+            !callable_rows.is_empty() && callable_rows.iter().all(|status| status == "unresolved"),
+            "{callable_rows:?}"
+        );
+        let callable_edges: usize = query_scalar(
+        &conn,
+        "SELECT COUNT(*) FROM edge_occurrences e WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='case4/app/call.ts' AND e.line=2 AND e.kind='calls'",
+        [],
+    );
+        assert_eq!(callable_edges, 0);
+        contextunity_acdd::core::commitments::verify(&conn).unwrap();
+        drop(stmt);
+        drop(callable_stmt);
+    }
+    {
+        let coverage = |path: &str, expression: &str| -> String {
+            query_scalar(
             &conn,
             "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
             rusqlite::params![path, expression],
         )
-    };
+        };
 
-    assert_eq!(coverage("consumer.ts", "Foo"), "resolved");
-    assert_eq!(coverage("consumer.ts", "JsonValue"), "resolved");
-    assert_eq!(coverage("consumer.ts", "Outside"), "unresolved");
+        assert_eq!(coverage("case5/consumer.ts", "Foo"), "resolved");
+        assert_eq!(coverage("case5/consumer.ts", "JsonValue"), "resolved");
+        assert_eq!(coverage("case5/consumer.ts", "Outside"), "unresolved");
 
-    let edge_dst = |path: &str, expression: &str| -> String {
-        query_scalar(
+        let edge_dst = |path: &str, expression: &str| -> String {
+            query_scalar(
             &conn,
             "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)=?2",
             rusqlite::params![path, expression],
         )
-    };
-    assert_eq!(edge_dst("consumer.ts", "Foo"), "types.ts");
-    assert_eq!(edge_dst("consumer.ts", "JsonValue"), "generated.ts");
-
-    drop(conn);
-}
-
-#[test]
-fn export_type_keeps_classes_and_value_export_drops_type_aliases() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write(
-        "box.ts",
-        "export class Box { id = 1; }\nexport enum Color { Red = 1 }\n",
-    );
-    workspace.write("barrel.ts", "export type { Box, Color } from \"./box\";\n");
-    workspace.write(
-        "only.ts",
-        "export type Foo = { id: string };\nexport { Foo };\n",
-    );
-    workspace.write(
-        "consumer.ts",
-        "import type { Box, Color } from \"./barrel\";\nfunction use(box: Box, color: Color) {}\n",
-    );
-    workspace.write("use.js", "import { Foo } from \"./only\";\nFoo();\n");
-    workspace.build();
-    let conn = workspace.open();
-    let coverage = |expression: &str| -> String {
-        query_scalar(
+        };
+        assert_eq!(edge_dst("case5/consumer.ts", "Foo"), "case5/types.ts");
+        assert_eq!(
+            edge_dst("case5/consumer.ts", "JsonValue"),
+            "case5/generated.ts"
+        );
+    }
+    {
+        let coverage = |expression: &str| -> String {
+            query_scalar(
             &conn,
-            "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='consumer.ts' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?1",
+            "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='case6/consumer.ts' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?1",
             rusqlite::params![expression],
         )
-    };
-    assert_eq!(coverage("Box"), "resolved");
-    assert_eq!(coverage("Color"), "resolved");
-    let foo: String = query_scalar(
+        };
+        assert_eq!(coverage("Box"), "resolved");
+        assert_eq!(coverage("Color"), "resolved");
+        let foo: String = query_scalar(
         &conn,
-        "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='use.js' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='Foo'",
+        "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='case6/use.js' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='Foo'",
         [],
     );
-    assert_eq!(foo, "unresolved");
-    let box_dst: String = query_scalar(
+        assert_eq!(foo, "unresolved");
+        let box_dst: String = query_scalar(
         &conn,
-        "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='consumer.ts' AND e.kind='references' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='Box'",
+        "SELECT (SELECT path FROM path_dictionary WHERE path_id=dst.path_id) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='case6/consumer.ts' AND e.kind='references' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)='Box'",
         [],
     );
-    assert_eq!(box_dst, "box.ts");
-    drop(conn);
+        assert_eq!(box_dst, "case6/box.ts");
+    }
 }
 
 #[cfg(feature = "lang-typescript")]

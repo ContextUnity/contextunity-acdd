@@ -491,6 +491,50 @@ impl Default for Workspace {
 
 impl Drop for Workspace {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
+        if fs::remove_dir_all(&self.root).is_ok() {
+            return;
+        }
+        #[cfg(unix)]
+        fn make_writable(path: &Path) -> std::io::Result<()> {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = fs::symlink_metadata(path)?;
+            if metadata.is_symlink() {
+                return Ok(());
+            }
+            let mode = if metadata.is_dir() { 0o700 } else { 0o600 };
+            fs::set_permissions(
+                path,
+                fs::Permissions::from_mode(metadata.permissions().mode() | mode),
+            )?;
+            if metadata.is_dir() {
+                for entry in fs::read_dir(path)? {
+                    make_writable(&entry?.path())?;
+                }
+            }
+            Ok(())
+        }
+        let mut last_error = None;
+        for attempt in 0..5 {
+            #[cfg(unix)]
+            let _ = make_writable(&self.root);
+            match fs::remove_dir_all(&self.root) {
+                Ok(()) => return,
+                Err(error) => {
+                    last_error = Some(error);
+                    if !self.root.exists() {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25 * (attempt + 1)));
+                }
+            }
+        }
+        if let Some(error) = last_error {
+            if self.root.exists() && !std::thread::panicking() {
+                panic!(
+                    "could not remove test workspace {}: {error}",
+                    self.root.display()
+                );
+            }
+        }
     }
 }

@@ -151,107 +151,165 @@ fn module_alias_conversion_delta_matches_cold_build() {
 }
 
 #[test]
-fn absolute_external_import_and_shadowed_alias_have_distinct_evidence() {
-    let w = fixture_workspace(&[]);
-    w.write("consumer.py", "import unknown_package as missing\nimport requests as http\ndef unknown(): return missing.get()\ndef shadowed(http): return http.get()\n");
-    w.build();
-    let conn = w.open();
-    assert_eq!(
-        persisted_coverage(&conn, "consumer.py", 3, "missing.get").0,
-        "external"
-    );
-    assert!(persisted_coverage(&conn, "consumer.py", 3, "missing.get")
-        .1
-        .starts_with("call through external import unknown_package;"));
-    assert!(query_strings(
-        &conn,
-        "SELECT (SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.evidence_id) FROM edges WHERE kind='calls' AND (SELECT evidence FROM coverage_evidence WHERE evidence_id=edges.evidence_id)='missing.get'", [])
-    .is_empty());
-    assert_eq!(
-        persisted_coverage(&conn, "consumer.py", 4, "http.get").0,
-        "unresolved"
-    );
-    assert!(!persisted_coverage(&conn, "consumer.py", 4, "http.get")
-        .1
-        .starts_with("call through external import "));
-}
+fn external_import_authority() {
+    let cases = [
+        ("absolute_external_import_and_shadowed_alias_have_distinct_evidence",
+ "import unknown_package as missing\nimport requests as http\ndef unknown(): return missing.get()\ndef shadowed(http): return http.get()\n",
+ &[(3,
+"missing.get",
+"external",
+"prefix",
+"call through external import unknown_package;",
+true),
+(4,
+"http.get",
+"unresolved",
+"absent",
+"call through external import ",
+false)][..]),
 
-#[test]
-fn duplicate_aliases_and_local_provider_do_not_gain_external_provenance() {
+        ("duplicate_aliases_and_local_provider_do_not_gain_external_provenance",
+ "import requests as client\nimport httpx as client\nimport provider as local\ndef run(): return client.get(), local.get()\n",
+ &[(4,
+"client.get",
+"unresolved",
+"absent",
+"call through external import ",
+false),
+(4,
+"local.get",
+"resolved",
+"absent",
+"call through external import ",
+false)][..]),
+
+        ("local_import_is_scoped_to_its_function",
+ "def first():\n    import requests as http\n    return http.get('https://example.test')\ndef second(): return http.get('https://example.test')\n",
+ &[(3,
+"http.get",
+"",
+"exact",
+"call through external import requests; callable target unverified",
+false),
+(4,
+"http.get",
+"",
+"absent",
+"call through external import ",
+false)][..]),
+
+        ("call_before_external_import_has_no_provenance",
+ "def run(): return http.get('https://example.test')\nimport requests as http\n",
+ &[(1,
+"http.get",
+"unresolved",
+"absent",
+"call through external import ",
+false)][..]),
+
+        ("assignment_rebind_has_no_external_provenance",
+ "import json\njson = object()\ndef run(): return json.loads('{}')\n",
+ &[(3,
+"json.loads",
+"unresolved",
+"absent",
+"call through external import ",
+false)][..]),
+
+        ("imported_cursor_methods_are_finite_and_untyped_logger_names_stay_unknown",
+ "import sqlite3\ndef run(cursor: sqlite3.Cursor, logger):\n    cursor.execute('select 1')\n    cursor.unsupported_method()\n    logger.info('unknown')\n",
+ &[(3,
+"cursor.execute",
+"external",
+"contains",
+"sqlite3.Cursor",
+false),
+(3,
+"cursor.execute",
+"external",
+"contains",
+"line 1",
+false),
+(4,
+"cursor.unsupported_method",
+"unresolved",
+"contains",
+"",
+false),
+(5,
+"logger.info",
+"unresolved",
+"contains",
+"",
+false)][..]),
+
+        ("module_qualified_framework_call_requires_an_earlier_import_position",
+ "models.Record.model_validate({}); from pkg import models\n",
+ &[(1,
+"models.Record.model_validate",
+"unresolved",
+"contains",
+"",
+false)][..]),
+
+        ("module_qualified_framework_call_requires_an_earlier_import_position_after",
+ "from pkg import models; models.Record.model_validate({})\n",
+ &[(1,
+"models.Record.model_validate",
+"external",
+"contains",
+"pydantic",
+false)][..]),
+
+    ];
     let w = fixture_workspace(&[
         ("provider.py", "def get(): return 1\n"),
+        ("pkg/__init__.py", ""),
         (
-            "consumer.py",
-            "import requests as client\nimport httpx as client\nimport provider as local\ndef run(): return client.get(), local.get()\n",
+            "pkg/models.py",
+            "from pydantic import BaseModel\nclass Record(BaseModel):\n    pass\n",
         ),
     ]);
+    for (case_id, source, _) in &cases {
+        w.write(format!("{case_id}.py"), source);
+    }
     w.build();
     let conn = w.open();
-    assert_eq!(
-        persisted_coverage(&conn, "consumer.py", 4, "client.get").0,
-        "unresolved"
-    );
-    assert!(!persisted_coverage(&conn, "consumer.py", 4, "client.get")
-        .1
-        .starts_with("call through external import "));
-    assert_eq!(
-        persisted_coverage(&conn, "consumer.py", 4, "local.get").0,
-        "resolved"
-    );
-    assert!(!persisted_coverage(&conn, "consumer.py", 4, "local.get")
-        .1
-        .starts_with("call through external import "));
-}
+    for (case_id, _, checks) in cases {
+        let path = format!("{case_id}.py");
+        for &(line, expression, expected, rule, text, no_call) in checks {
+            let (status, evidence) = persisted_coverage(&conn, &path, line, expression);
+            if !expected.is_empty() {
+                assert_eq!(
+                    status, expected,
+                    "{case_id}:{line} {expression}: {evidence}"
+                );
+            }
+            assert!(
+                match rule {
+                    "prefix" => evidence.starts_with(text),
 
-#[test]
-fn local_import_is_scoped_to_its_function() {
-    let w = fixture_workspace(&[]);
-    w.write("consumer.py", "def first():\n    import requests as http\n    return http.get('https://example.test')\ndef second(): return http.get('https://example.test')\n");
-    w.build();
-    let conn = w.open();
-    assert_eq!(
-        persisted_coverage(&conn, "consumer.py", 3, "http.get").1,
-        "call through external import requests; callable target unverified"
-    );
-    assert!(!persisted_coverage(&conn, "consumer.py", 4, "http.get")
-        .1
-        .starts_with("call through external import "));
-}
+                    "absent" => !evidence.starts_with(text),
 
-#[test]
-fn call_before_external_import_has_no_provenance() {
-    let w = fixture_workspace(&[]);
-    w.write(
-        "consumer.py",
-        "def run(): return http.get('https://example.test')\nimport requests as http\n",
-    );
-    w.build();
-    let conn = w.open();
-    assert_eq!(
-        persisted_coverage(&conn, "consumer.py", 1, "http.get").0,
-        "unresolved"
-    );
-    assert!(!persisted_coverage(&conn, "consumer.py", 1, "http.get")
-        .1
-        .starts_with("call through external import "));
-}
+                    "exact" => evidence == text,
 
-#[test]
-fn assignment_rebind_has_no_external_provenance() {
-    let w = fixture_workspace(&[]);
-    w.write(
-        "consumer.py",
-        "import json\njson = object()\ndef run(): return json.loads('{}')\n",
-    );
-    w.build();
-    let conn = w.open();
-    assert_eq!(
-        persisted_coverage(&conn, "consumer.py", 3, "json.loads").0,
-        "unresolved"
-    );
-    assert!(!persisted_coverage(&conn, "consumer.py", 3, "json.loads")
-        .1
-        .starts_with("call through external import "));
+                    "contains" => evidence.contains(text),
+
+                    _ => unreachable!(),
+                },
+                "{case_id}:{line} {expression}: {evidence}"
+            );
+            if no_call {
+                let calls: i64 = query_scalar(&conn,
+
+                    "SELECT count(*) FROM edge_occurrences e JOIN path_dictionary p ON p.path_id=e.owner_id JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE p.path=?1 AND e.kind='calls' AND v.evidence=?2",
+
+                    (&path,
+ expression));
+                assert_eq!(calls, 0, "{case_id}: no fabricated target for {expression}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -287,25 +345,6 @@ fn changing_import_provenance_preserves_cold_delta_equivalence() {
         persisted_coverage(&w.open(), "consumer.py", 2, "client.get").1,
         "call through external import requests; callable target unverified"
     );
-}
-
-#[test]
-fn imported_cursor_methods_are_finite_and_untyped_logger_names_stay_unknown() {
-    let w = fixture_workspace(&[]);
-    w.write("consumer.py", "import sqlite3\ndef run(cursor: sqlite3.Cursor, logger):\n    cursor.execute('select 1')\n    cursor.unsupported_method()\n    logger.info('unknown')\n");
-    w.build();
-    let conn = w.open();
-    let (status, evidence) = persisted_coverage(&conn, "consumer.py", 3, "cursor.execute");
-    assert_eq!(status, "external", "{evidence}");
-    assert!(evidence.contains("sqlite3.Cursor"), "{evidence}");
-    assert!(evidence.contains("line 1"), "{evidence}");
-    for (line, expression) in [(4, "cursor.unsupported_method"), (5, "logger.info")] {
-        assert_eq!(
-            persisted_coverage(&conn, "consumer.py", line, expression).0,
-            "unresolved",
-            "{expression}"
-        );
-    }
 }
 
 #[test]
@@ -353,33 +392,4 @@ fn module_qualified_local_subclass_inherits_only_its_own_imported_framework_memb
         persisted_coverage(&conn, "[second]/pkg/consumer.py", 3, expression).0,
         "unresolved"
     );
-}
-
-#[test]
-fn module_qualified_framework_call_requires_an_earlier_import_position() {
-    let w = fixture_workspace(&[
-        ("pkg/__init__.py", ""),
-        (
-            "pkg/models.py",
-            "from pydantic import BaseModel\nclass Record(BaseModel):\n    pass\n",
-        ),
-        (
-            "before.py",
-            "models.Record.model_validate({}); from pkg import models\n",
-        ),
-        (
-            "after.py",
-            "from pkg import models; models.Record.model_validate({})\n",
-        ),
-    ]);
-    w.build();
-    let conn = w.open();
-    assert_eq!(
-        persisted_coverage(&conn, "before.py", 1, "models.Record.model_validate").0,
-        "unresolved"
-    );
-    let (status, evidence) =
-        persisted_coverage(&conn, "after.py", 1, "models.Record.model_validate");
-    assert_eq!(status, "external", "{evidence}");
-    assert!(evidence.contains("pydantic"), "{evidence}");
 }

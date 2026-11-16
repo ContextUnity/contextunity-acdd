@@ -68,7 +68,7 @@ task_depends_on: [m-upstream:producer]
         root.root(),
         serde_json::from_value(serde_json::json!({
             "action": "context",
-            "task_id": "forge-mcp/m-consumer:consumer",
+            "task_id": "acdd/m-consumer:consumer",
         }))
         .expect("context action should deserialize"),
     )
@@ -113,7 +113,7 @@ task_depends_on: [m-upstream:producer]
         root.root(),
         serde_json::from_value(serde_json::json!({
             "action": "context",
-            "task_id": "forge-mcp/m-consumer:consumer",
+            "task_id": "acdd/m-consumer:consumer",
         }))
         .expect("context action should deserialize"),
     )
@@ -140,7 +140,7 @@ task_depends_on: [m-upstream:producer]
             root.root(),
             serde_json::from_value(serde_json::json!({
                 "action": "context",
-                "task_id": "forge-mcp/m-consumer:consumer",
+                "task_id": "acdd/m-consumer:consumer",
             }))
             .expect("context action should deserialize"),
         )
@@ -173,7 +173,7 @@ task_depends_on: [m-upstream:producer]
         root.root(),
         serde_json::from_value(serde_json::json!({
             "action": "context",
-            "task_id": "forge-mcp/m-consumer:consumer",
+            "task_id": "acdd/m-consumer:consumer",
         }))
         .expect("context action should deserialize"),
     )
@@ -252,7 +252,7 @@ fn task_manage_named_snapshot_restores_worktree_and_guards_head_changes() {
     assert!(snapshot.exists("runtime/tasks.sqlite"));
     assert_eq!(
         snapshot.read(".acdd/managed-state"),
-        "preserve Forge state\n"
+        "preserve ACDD state\n"
     );
 
     snapshot

@@ -1,104 +1,5 @@
 use super::{coverage, linked};
 
-#[test]
-fn computed_external_receivers_preserve_provider_evidence() {
-    let source = r#"
-            use std::process::Command;
-            use serde_json::Value;
-            use rusqlite::{Connection, Statement, Row};
-            type Syntax<'a> = tree_sitter::Node<'a>;
-            fn probe_chained(opt: Option<&str>) {
-                let s = opt.unwrap();
-                let is_emp = s.trim().is_empty();
-                opt.and_then(|s| Some(s)).unwrap().trim().is_empty();
-            }
-            fn probe_external(cmd: &mut Command, json: &Value) {
-                cmd.args(["x"]).output();
-                cmd.arg("x").output();
-                json.get("key").unwrap().as_str().unwrap().trim().is_empty();
-                json.as_array().unwrap().is_empty();
-            }
-            fn probe_references(conn: &Connection, stmt: &Statement, row: &Row, node: &Syntax<'_>) {
-                conn.execute("", []); stmt.column_count(); row.get(0); node.kind();
-            }
-        "#;
-    let graph = linked("src/probe_task6_chain.rs", source);
-    let is_empty_ref = graph
-        .coverage
-        .iter()
-        .find(|c| c.expression.ends_with("is_empty"))
-        .expect("is_empty coverage entry");
-    assert_eq!(
-            is_empty_ref.status, "external",
-            "Task 6 Seam Contract: chained s.trim().is_empty() must classify as external Rust standard library built-in: {is_empty_ref:#?}"
-        );
-    assert!(
-        is_empty_ref.evidence.contains("Rust standard library"),
-        "evidence must confirm Rust standard library built-in: {is_empty_ref:#?}"
-    );
-    for expression in [
-        "opt.and_then(|s| Some(s)).unwrap().trim().is_empty",
-        "cmd.args([\"x\"]).output",
-        "cmd.arg(\"x\").output",
-        "json.get(\"key\").unwrap().as_str().unwrap().trim().is_empty",
-        "json.as_array().unwrap().is_empty",
-        "conn.execute",
-        "stmt.column_count",
-        "row.get",
-        "node.kind",
-    ] {
-        let entry = coverage(&graph, expression);
-        assert_eq!(entry.status, "external", "{entry:#?}");
-    }
-}
-
-#[test]
-fn and_then_resolves_only_identity_payload_callbacks() {
-    for (label, expression, resolved) in [
-        (
-            "identity",
-            "opt.and_then(|value| Some(value)).unwrap()",
-            true,
-        ),
-        ("changed", "opt.and_then(|_| Some(B)).unwrap()", false),
-        ("unknown", "opt.and_then(|_| opaque()).unwrap()", false),
-        ("callback", "opt.and_then(callback).unwrap()", false),
-        (
-            "reassigned",
-            "{ let mut value = opt.and_then(|v| Some(v)).unwrap(); value = opaque(); value }",
-            false,
-        ),
-    ] {
-        let source = format!("struct A; impl A {{ fn finish(&self) {{}} }} struct B; impl B {{ fn finish(&self) {{}} }} fn probe(opt: Option<A>) {{ let result = {expression}; result.finish(); }}");
-        let graph = crate::languages::harness::ExtractorHarness::for_lang("rust")
-            .at_path("callbacks.rs")
-            .linked(&source);
-        let caller = graph
-            .facts
-            .nodes
-            .iter()
-            .find(|node| node.name == "probe")
-            .unwrap();
-        let target = graph
-            .facts
-            .nodes
-            .iter()
-            .find(|node| node.qualname.ends_with(".A.finish"))
-            .unwrap();
-        let calls: Vec<_> = graph
-            .edges
-            .iter()
-            .filter(|edge| edge.kind == "calls" && edge.src == caller.id && edge.dst == target.id)
-            .collect();
-        assert_eq!(
-            calls.len(),
-            usize::from(resolved),
-            "{label}: {:#?}",
-            graph.coverage
-        );
-    }
-}
-
 const PAYLOAD_CASES: &[(&str, &str, bool)] = &[
     ("filter", "filter(|_| true)", true),
     ("take", "take(1)", true),
@@ -125,7 +26,31 @@ const ITERATOR_MEMBERS: &[(&str, &str)] = &[
     ("for_each", "|_| {}"),
 ];
 
-fn owned_iterator_graph() -> crate::languages::harness::LinkedFacts {
+#[test]
+fn computed_iterator_receiver_identity() {
+    let computed = linked(
+        "src/probe_task6_chain.rs",
+        r#"
+            use std::process::Command;
+            use serde_json::Value;
+            use rusqlite::{Connection, Statement, Row};
+            type Syntax<'a> = tree_sitter::Node<'a>;
+            fn probe_chained(opt: Option<&str>) {
+                let s = opt.unwrap();
+                let is_emp = s.trim().is_empty();
+                opt.and_then(|s| Some(s)).unwrap().trim().is_empty();
+            }
+            fn probe_external(cmd: &mut Command, json: &Value) {
+                cmd.args(["x"]).output();
+                cmd.arg("x").output();
+                json.get("key").unwrap().as_str().unwrap().trim().is_empty();
+                json.as_array().unwrap().is_empty();
+            }
+            fn probe_references(conn: &Connection, stmt: &Statement, row: &Row, node: &Syntax<'_>) {
+                conn.execute("", []); stmt.column_count(); row.get(0); node.kind();
+            }
+        "#,
+    );
     let mut source = String::from(
         "struct Item; impl Item { fn finish(&self) {} }\n\
          struct A; impl A { fn finish(&self) {} }\n\
@@ -153,14 +78,35 @@ fn owned_iterator_graph() -> crate::languages::harness::LinkedFacts {
     );
     source.push_str("fn guards(option: Option<Item>, result: Result<Item, ()>, items: Vec<Item>) { option.is_some_and(|_| true); option.is_none_or(|_| true); result.is_ok_and(|_| true); result.is_err_and(|_| true); let slice = items.as_slice(); slice.len(); slice.is_empty(); let stream = items.into_iter(); stream.made_up(); }\n");
     source.push_str("struct Inner { nodes: Vec<Item> } struct Facts { inner: Inner } struct Root(std::path::PathBuf); fn fields(facts: &Facts, root: &Root) { for node in facts.inner.nodes.as_slice().iter() { node.finish(); } let nodes = facts.inner.nodes.iter().filter(|_| true).collect(); for collected in nodes { collected.finish(); } root.0.join(\"child\"); }\n");
-    crate::languages::harness::ExtractorHarness::for_lang("rust")
+    let owned = crate::languages::harness::ExtractorHarness::for_lang("rust")
         .at_path("owned_iterators.rs")
-        .linked(&source)
-}
+        .linked(&source);
 
-#[test]
-fn iterator_adapters_keep_receivers_and_reject_unknown_payloads() {
-    let graph = owned_iterator_graph();
+    let mut cases = Vec::new();
+    for expression in [
+        "opt.and_then(|s| Some(s)).unwrap().trim().is_empty",
+        "cmd.args([\"x\"]).output",
+        "cmd.arg(\"x\").output",
+        "json.get(\"key\").unwrap().as_str().unwrap().trim().is_empty",
+        "json.as_array().unwrap().is_empty",
+        "conn.execute",
+        "stmt.column_count",
+        "row.get",
+        "node.kind",
+    ] {
+        cases.push((&computed, expression.to_owned(), "external", ""));
+    }
+    let stdlib = computed
+        .coverage
+        .iter()
+        .find(|row| row.expression.ends_with("is_empty"))
+        .unwrap();
+    cases.push((
+        &computed,
+        stdlib.expression.clone(),
+        "external",
+        "Rust standard library",
+    ));
     for expression in ITERATOR_MEMBERS
         .iter()
         .map(|(member, _)| format!("stream.{member}"))
@@ -176,14 +122,26 @@ fn iterator_adapters_keep_receivers_and_reject_unknown_payloads() {
             .map(str::to_owned),
         )
     {
-        let observed = coverage(&graph, expression);
-        assert_eq!(observed.status, "external", "{observed:#?}");
+        cases.push((&owned, expression, "external", ""));
     }
-
-    let unknown = coverage(&graph, "stream.made_up");
-    assert_eq!(unknown.status, "unresolved", "{unknown:#?}");
-
-    let target = graph
+    cases.push((&owned, "stream.made_up".to_owned(), "unresolved", ""));
+    for (expression, status) in [
+        ("item.finish", "unresolved"),
+        ("node.finish", "resolved"),
+        ("collected.finish", "resolved"),
+        ("root.0.join", "external"),
+    ] {
+        cases.push((&owned, expression.to_owned(), status, ""));
+    }
+    for (graph, expression, status, evidence) in cases {
+        let row = coverage(graph, &expression);
+        assert_eq!(row.status, status, "{expression}: {row:#?}");
+        assert!(
+            row.evidence.contains(evidence),
+            "{expression}: expected {evidence}: {row:#?}"
+        );
+    }
+    let target = owned
         .facts
         .nodes
         .iter()
@@ -204,7 +162,7 @@ fn iterator_adapters_keep_receivers_and_reject_unknown_payloads() {
         assert!(facts.errors.is_empty(), "{adapter}: {facts:#?}");
 
         let expression = format!("item_{index}.finish");
-        let observed = coverage(&graph, &expression);
+        let observed = coverage(&owned, &expression);
         assert_eq!(
             observed.status,
             if *preserves_item {
@@ -214,48 +172,90 @@ fn iterator_adapters_keep_receivers_and_reject_unknown_payloads() {
             },
             "{label}: {observed:#?}"
         );
-        let calls_a_target = graph.edges.iter().any(|edge| {
+        let calls_a_target = owned.edges.iter().any(|edge| {
             edge.kind == "calls" && edge.evidence == expression && edge.dst == target.id
         });
-        assert_eq!(calls_a_target, *preserves_item, "{label}: {graph:#?}");
+        assert_eq!(calls_a_target, *preserves_item, "{label}: {owned:#?}");
     }
 
-    let counts: Vec<_> = graph
+    let counts: Vec<_> = owned
         .coverage
         .iter()
         .filter(|row| row.expression.ends_with(".count"))
         .collect();
-    assert_eq!(counts.len(), 3, "{graph:#?}");
+    assert_eq!(counts.len(), 3, "{owned:#?}");
     for row in counts {
         assert_eq!(row.status, "external", "{row:#?}");
-    }
-    let changed = coverage(&graph, "item.finish");
-    assert_eq!(
-        changed.status, "unresolved",
-        "callback output must remain unknown: {changed:#?}"
-    );
-
-    for (expression, expected) in [
-        ("node.finish", "resolved"),
-        ("collected.finish", "resolved"),
-        ("root.0.join", "external"),
-    ] {
-        let observed = coverage(&graph, expression);
-        assert_eq!(observed.status, expected, "{observed:#?}");
     }
 }
 
 #[test]
-fn query_callbacks_require_proven_rusqlite_receivers() {
-    let source = "use rusqlite::{Connection, Statement}; struct Fake; impl Fake { fn query_row<F>(&self, callback: F) {} } fn probe(conn: &Connection, statement: &mut Statement, fake: Fake) { conn.query_row(\"sql\", [], |row| row.get(0)); conn.query_row::<String, _, _>(\"sql\", [], |typed| typed.get(0)); statement.query_map([], |r| r.get(0)); fake.query_row(|unproven| unproven.get(0)); }";
-    let graph = linked("query_callbacks.rs", source);
-    for (expression, expected) in [
-        ("row.get", "external"),
-        ("typed.get", "external"),
-        ("r.get", "external"),
-        ("unproven.get", "unresolved"),
+fn callback_guard_payload_identity() {
+    enum Expected {
+        CallsToA(bool),
+        Coverage(&'static str, &'static str),
+    }
+    let mut cases = Vec::new();
+    for (label, expression, resolved) in [
+        (
+            "identity",
+            "opt.and_then(|value| Some(value)).unwrap()",
+            true,
+        ),
+        ("changed", "opt.and_then(|_| Some(B)).unwrap()", false),
+        ("unknown", "opt.and_then(|_| opaque()).unwrap()", false),
+        ("callback", "opt.and_then(callback).unwrap()", false),
+        (
+            "reassigned",
+            "{ let mut value = opt.and_then(|v| Some(v)).unwrap(); value = opaque(); value }",
+            false,
+        ),
     ] {
-        let coverage = coverage(&graph, expression);
-        assert_eq!(coverage.status, expected, "{coverage:#?}");
+        let source = format!("struct A; impl A {{ fn finish(&self) {{}} }} struct B; impl B {{ fn finish(&self) {{}} }} fn probe(opt: Option<A>) {{ let result = {expression}; result.finish(); }}");
+        cases.push((
+            label,
+            "callbacks.rs",
+            source,
+            vec![Expected::CallsToA(resolved)],
+        ));
+    }
+    cases.push(("query_callbacks_require_proven_rusqlite_receivers", "query_callbacks.rs", "use rusqlite::{Connection, Statement}; struct Fake; impl Fake { fn query_row<F>(&self, callback: F) {} } fn probe(conn: &Connection, statement: &mut Statement, fake: Fake) { conn.query_row(\"sql\", [], |row| row.get(0)); conn.query_row::<String, _, _>(\"sql\", [], |typed| typed.get(0)); statement.query_map([], |r| r.get(0)); fake.query_row(|unproven| unproven.get(0)); }".to_owned(), vec![Expected::Coverage("row.get", "external"), Expected::Coverage("typed.get", "external"), Expected::Coverage("r.get", "external"), Expected::Coverage("unproven.get", "unresolved")]));
+    for (case_id, path, source, expected) in cases {
+        let graph = linked(path, &source);
+        for expectation in expected {
+            match expectation {
+                Expected::CallsToA(resolved) => {
+                    let caller = graph
+                        .facts
+                        .nodes
+                        .iter()
+                        .find(|node| node.name == "probe")
+                        .unwrap();
+                    let target = graph
+                        .facts
+                        .nodes
+                        .iter()
+                        .find(|node| node.qualname.ends_with(".A.finish"))
+                        .unwrap();
+                    let count = graph
+                        .edges
+                        .iter()
+                        .filter(|edge| {
+                            edge.kind == "calls" && edge.src == caller.id && edge.dst == target.id
+                        })
+                        .count();
+                    assert_eq!(
+                        count,
+                        usize::from(resolved),
+                        "{case_id}: {:#?}",
+                        graph.coverage
+                    );
+                }
+                Expected::Coverage(expression, status) => {
+                    let row = coverage(&graph, expression);
+                    assert_eq!(row.status, status, "{case_id}: {row:#?}");
+                }
+            }
+        }
     }
 }

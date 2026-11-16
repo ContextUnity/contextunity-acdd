@@ -457,14 +457,14 @@ fn plan_clear_and_archive_prune_only_the_selected_sqlite_subject() {
         );
     }
     let head = git_head(root.root());
-    let checkpoint_ref = |id: &str| format!("refs/forge/state/forge-mcp/{}", id.replace(':', "/"));
+    let checkpoint_ref = |id: &str| format!("refs/acdd/state/acdd/{}", id.replace(':', "/"));
     let refs = || -> BTreeMap<String, String> {
         let output = git_command(
             root.root(),
             &[
                 "for-each-ref",
                 "--format=%(refname) %(objectname)",
-                "refs/forge/",
+                "refs/acdd/",
             ],
         )
         .output()
@@ -493,13 +493,13 @@ fn plan_clear_and_archive_prune_only_the_selected_sqlite_subject() {
         let tag = format!("{:x}", Sha256::digest(path.as_bytes()));
         let owner = id.replace(':', "/");
         let prefixes = [
-            format!("refs/forge/snapshots/{namespace}/plan-{}-", &tag[..16]),
-            format!("refs/forge/snapshots/{namespace}/plan-gate-{}-", &tag[..16]),
-            format!("refs/forge/snapshots/{owner}/"),
+            format!("refs/acdd/snapshots/{namespace}/plan-{}-", &tag[..16]),
+            format!("refs/acdd/snapshots/{namespace}/plan-gate-{}-", &tag[..16]),
+            format!("refs/acdd/snapshots/{owner}/"),
         ];
         all.iter()
             .filter(|(name, _)| {
-                *name == &format!("refs/forge/snapshots/{owner}")
+                *name == &format!("refs/acdd/snapshots/{owner}")
                     || prefixes.iter().any(|prefix| name.starts_with(prefix))
             })
             .map(|(name, sha)| (name.clone(), sha.clone()))
@@ -511,7 +511,7 @@ fn plan_clear_and_archive_prune_only_the_selected_sqlite_subject() {
     let owner_rows = |id: &str| {
         let store = tasks::store(root.root()).unwrap();
         let (prefix, task_ref) = id.split_once(':').unwrap();
-        let identity = format!("forge-mcp/{prefix}");
+        let identity = format!("acdd/{prefix}");
         let mut result = BTreeMap::new();
         for (table, predicate) in [
             ("tasks", "t.task_id=o.id"),
@@ -569,7 +569,7 @@ fn plan_clear_and_archive_prune_only_the_selected_sqlite_subject() {
     let store = tasks::store(root.root()).unwrap();
     for task in store.list(None, "all", None).unwrap() {
         let (prefix, task_ref) = task.task_id.split_once(':').unwrap();
-        let breadcrumb = format!("forge-mcp/{prefix}/record/{task_ref}/scratch");
+        let breadcrumb = format!("acdd/{prefix}/record/{task_ref}/scratch");
         store
             .save_checkpoint_payload(
                 &breadcrumb,
@@ -841,42 +841,13 @@ fn plan_completion_preserves_nested_headings_and_projects_evidence_to_the_step()
 fn plan_command_placeholders_consume_the_preceding_role_artifact() {
     let harness = PlanHarness::linear();
     let root = harness.materialize(harness.path);
-    root.write(
-        "artifact-runner.py",
-        r#"import json
-from pathlib import Path
-import subprocess
-import sys
-
-executable, prompt = sys.argv[1:]
-context = json.loads(prompt.split("\n\nGate context:\n", 1)[1])
-taskless = "expected_response" in context
-if taskless:
-    proof = context["expected_response"]["proof"]
-else:
-    evidence = context["workflow_guidance"]["expected_evidence_template"]
-    proof = evidence["proof"]
-payload, = proof.values()
-if Path("synthesized").exists():
-    payload.update(plan_slug="new-plan", artifact_path="new/path")
-else:
-    Path("synthesized").touch()
-    payload.update(plan_slug="old-plan", artifact_path="old/path")
-if taskless:
-    print(json.dumps({"gate":context["gate"], "session_id":context["session_id"],
-                      "decision":"pass", "proof":proof}))
-else:
-    subprocess.run([executable, "--root", str(Path.cwd()), "task", "submit",
-                    context["task_id"], "--stage", context["stage"], "--action", "pass",
-                    "--evidence", json.dumps(evidence)], check=True)
-"#,
-    );
+    crate::acdd::snapshot::stage_role_helper(root.root());
     let mut profile =
         profile::validate_profile_document(include_str!("../fixtures/plans/snapshot.yaml"))
             .unwrap();
     profile.roles.insert(
         "author".into(),
-        serde_json::from_value(json!({"runner":format!("python3 artifact-runner.py '{}' '{{prompt}}'", env!("CARGO_BIN_EXE_acdd"))})).unwrap(),
+        serde_json::from_value(json!({"runner":format!(".acdd/role_fixture plan-artifact-runner '{}' '{{prompt}}'", env!("CARGO_BIN_EXE_acdd"))})).unwrap(),
     );
     profile.commands.insert("record".into(), serde_json::from_value(json!({"command":"printf '%s|%s|%s\\n' {plan_name} {plan_slug} {artifact_path} >> expanded.log", "output":{"require_counts":false}})).unwrap());
     profile.gates[0].tasks.as_mut().unwrap().gates.insert(0, serde_json::from_value(json!({
@@ -900,36 +871,18 @@ else:
 fn failed_plan_command_propagates_current_diagnostics_to_the_repair_role() {
     let harness = PlanHarness::linear();
     let root = harness.materialize(harness.path);
-    fs::create_dir_all(root.path(".acdd")).unwrap();
-    root.write("failed-artifact.py", r#"import json, subprocess, sys
-from pathlib import Path
-exe, prompt = sys.argv[1:]
-context = json.loads(prompt.split("\n\nGate context:\n", 1)[1])
-evidence = context["workflow_guidance"]["expected_evidence_template"]
-next(iter(evidence["proof"].values())).update(artifact_path="generated/path", plan_slug="generated")
-subprocess.run([exe, "--root", str(Path.cwd()), "task", "submit", context["task_id"], "--stage", context["stage"], "--action", "pass", "--evidence", json.dumps(evidence)], check=True)
-"#);
-    root.write(
-        "inspect-findings.py",
-        r#"import json
-from pathlib import Path
-import sys
-context = json.loads(sys.argv[1].split("\n\nGate context:\n", 1)[1])
-Path(".acdd/repair-context.json").write_text(json.dumps(context))
-sys.exit(29)
-"#,
-    );
+    crate::acdd::snapshot::stage_role_helper(root.root());
     let mut profile =
         profile::validate_profile_document(include_str!("../fixtures/plans/snapshot.yaml"))
             .unwrap();
     profile.commands.insert("record".into(), serde_json::from_value(json!({
         "command":"printf 'plan verification diagnostic {artifact_path} {plan_slug}\\n' >&2; exit 37", "output":{"require_counts":false}
     })).unwrap());
-    profile.roles.insert("author".into(), serde_json::from_value(json!({"runner":format!("python3 failed-artifact.py '{}' '{{prompt}}'", env!("CARGO_BIN_EXE_acdd"))})).unwrap());
+    profile.roles.insert("author".into(), serde_json::from_value(json!({"runner":format!(".acdd/role_fixture failed-artifact '{}' '{{prompt}}'", env!("CARGO_BIN_EXE_acdd"))})).unwrap());
     profile.roles.insert(
         "repairer".into(),
         serde_json::from_value(json!({
-            "runner":"python3 inspect-findings.py '{prompt}'"
+            "runner":".acdd/role_fixture inspect-findings '{prompt}'"
         }))
         .unwrap(),
     );

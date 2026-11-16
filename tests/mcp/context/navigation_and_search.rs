@@ -87,7 +87,7 @@ fn mcp_search_previews_and_impact_depth_defaults_are_bounded() {
     let (workspace, harness) = McpTestHarness::indexed_workspace(&files);
     let mut client = harness.expect("MCP initialize");
     let ast_guide = client
-        .payload("forge_guide", json!({"topic":"ast"}))
+        .payload("acdd_guide", json!({"topic":"ast"}))
         .expect("MCP tool should succeed");
     for capability in [
         "complete_syntax",
@@ -206,8 +206,8 @@ fn cli_selector_commands_apply_workspace_path_scope() {
         ("other.py", "def target():\n    return 2\n"),
     ]);
 
-    let forge_dir = workspace.path(".acdd");
-    let db = forge_dir.join("cli.sqlite");
+    let acdd_dir = workspace.path(".acdd");
+    let db = acdd_dir.join("cli.sqlite");
     let run_cli = |args: &[&str]| query_cli_with_database(&workspace, &db, args);
     let mut mcp = harness.expect("MCP initialize");
 
@@ -422,9 +422,15 @@ fn code_map_search_compact_default_single_uri_omits_zero_pulse_and_resolves_inde
     // code_map_search with explicit limit <= 10 or detail=full preserves full details,
     // and unrelated code_map_query retains configured response.detail=full when limit > 10.
     let small_full = client
-        .payload("code_map_search", json!({"pattern":"*","path":"src","limit":5}))
+        .payload(
+            "code_map_search",
+            json!({"pattern":"*","path":"src","limit":5}),
+        )
         .expect("MCP tool should succeed");
-    assert!(small_full["nodes"]["items"][0].get("details").is_some(), "{small_full}");
+    assert!(
+        small_full["nodes"]["items"][0].get("details").is_some(),
+        "{small_full}"
+    );
     let query_full = client
         .payload(
             "code_map_query",
@@ -448,10 +454,20 @@ fn code_map_search_compact_default_single_uri_omits_zero_pulse_and_resolves_inde
     assert_eq!(items.len(), 1, "{mod_hit}");
     assert_eq!(items[0]["match_reason"], "indexed_text", "{mod_hit}");
     assert_eq!(items[0]["line"], 6, "{mod_hit}");
-    assert_eq!(items[0]["match_snippet"], "needle_ref_token();", "{mod_hit}");
+    assert_eq!(
+        items[0]["match_snippet"], "needle_ref_token();",
+        "{mod_hit}"
+    );
     let preview_source = items[0]["source"].as_str().unwrap();
-    assert!(preview_source.len() <= 4096, "preview exceeded cap: {}", preview_source.len());
-    assert!(preview_source.contains("6:     needle_ref_token();"), "{preview_source}");
+    assert!(
+        preview_source.len() <= 4096,
+        "preview exceeded cap: {}",
+        preview_source.len()
+    );
+    assert!(
+        preview_source.contains("6:     needle_ref_token();"),
+        "{preview_source}"
+    );
 
     let (_, md_resp) = client
         .call(

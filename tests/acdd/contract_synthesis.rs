@@ -11,8 +11,8 @@ fn missing_dependency_relationship_is_rejected_with_a_stable_diagnostic() {
     let milestone = Milestone::parse(
         r#"---
 id: acdd-contract-parity
-repository: forge-mcp
-project: forge-mcp
+repository: acdd
+project: acdd
 ---
 ```yaml
 task_ref: producer
@@ -28,7 +28,7 @@ scope: [src/consumer.rs]
 depends_on: [producer]
 ```
 "#,
-        "forge-mcp",
+        "acdd",
     )
     .expect("the milestone fixture is valid");
     let make_entry = |source_task: &str,
@@ -179,8 +179,8 @@ depends_on: [producer]
     let cycle_error = Milestone::parse(
         r#"---
 id: acdd-cycle
-repository: forge-mcp
-project: forge-mcp
+repository: acdd
+project: acdd
 ---
 ```yaml
 task_ref: producer
@@ -197,7 +197,7 @@ scope: [src/consumer.rs]
 depends_on: [producer]
 ```
 "#,
-        "forge-mcp",
+        "acdd",
     )
     .expect_err("cyclic task dependencies must fail");
     assert!(

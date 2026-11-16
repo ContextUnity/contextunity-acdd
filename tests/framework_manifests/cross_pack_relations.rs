@@ -139,7 +139,7 @@ fn declarative_framework_rules_reach_persisted_receivers_routes_and_dependencies
         let missing_status = coverage_status(
             &conn,
             &source_path,
-            &format!("self._forge_missing_{class_name}"),
+            &format!("self._acdd_missing_{class_name}"),
         );
         assert_eq!(
             missing_status, "unresolved",

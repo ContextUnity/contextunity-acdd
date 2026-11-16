@@ -1,4 +1,3 @@
-use crate::languages::PersistedWorkspaceHarness;
 use contextunity_acdd::{
     core::response::{QueryOptions, ResponsePolicy, SourceOptions},
     db::{reader, symbols},
@@ -16,104 +15,61 @@ fn rows(conn: &Connection, sql: &str) -> Vec<String> {
         .collect()
 }
 
-fn assert_snippet(
-    workspace: &PersistedWorkspaceHarness,
-    conn: &Connection,
-    selector: &str,
-    expected: &str,
-) {
-    let policy = ResponsePolicy::default();
-    let options = QueryOptions::resolve(&policy, None, 0, None, None).unwrap();
-    let source = SourceOptions::resolve(&policy, Some(true), Some(0), None, 0).unwrap();
-    let snippet =
-        symbols::snippet_paged(conn, workspace.root(), selector, &source, &options).unwrap();
-    assert!(
-        snippet["source"].as_str().unwrap().contains(expected),
-        "{snippet}"
-    );
-}
-
 #[test]
-fn yaml_indexes_nested_quoted_flow_and_sequence_keys_with_unique_ids() {
+fn persisted_config_key_identity() {
     let w = crate::languages::PersistedWorkspaceHarness::new();
-    let source = "service:\n  port: 8080\n  \"literal.dot\": yes\nflow: {left: {port: 1}, right: {port: 2}}\nitems:\n  - name: first\n  - name: second\n";
-    w.write("settings.yml", source);
+    let cases = [
+        ("yaml_indexes_nested_quoted_flow_and_sequence_keys_with_unique_ids", "settings.yml", "service:\n  port: 8080\n  \"literal.dot\": yes\nflow: {left: {port: 1}, right: {port: 2}}\nitems:\n  - name: first\n  - name: second\n", &[
+            "settings.service", "settings.service.port", "settings.service.\"literal.dot\"",
+            "settings.flow.left.port", "settings.flow.right.port", "settings.items.name",
+        ][..], "settings.yml:2", "port: 8080", "timeout: 15", 0, Some("variable")),
+        ("toml_indexes_tables_array_tables_dotted_and_inline_keys", "settings.toml", "title = \"app\"\n[server]\nport = 8080\n\"literal.dot\" = true\nlimits.cpu = 2\ninline = { left = { value = 1 }, right = { value = 2 } }\n[[workers]]\nname = \"first\"\n[[workers]]\nname = \"second\"\n", &[
+            "settings.title", "settings.server", "settings.server.port", "settings.server.\"literal.dot\"",
+            "settings.server.limits.cpu", "settings.server.inline.left.value", "settings.workers.name",
+        ][..], "settings.toml:3", "port = 8080", "timeout = 15", 2, None),
+    ];
+    for (_, path, source, ..) in cases {
+        w.write(path, source);
+    }
     w.build();
     let conn = w.open();
-    let names = rows(
-        &conn,
-        "SELECT qualname FROM nodes WHERE kind='variable' ORDER BY qualname",
-    );
-    for expected in [
-        "settings.service",
-        "settings.service.port",
-        "settings.service.\"literal.dot\"",
-        "settings.flow.left.port",
-        "settings.flow.right.port",
-        "settings.items.name",
-    ] {
+    for (case_id, path, _, expected, selector, snippet, _, workers, kind) in cases {
+        let mut stmt = conn.prepare("SELECT n.qualname FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND (?2 IS NULL OR n.kind=?2) ORDER BY n.qualname").unwrap();
+        let names: Vec<String> = stmt
+            .query_map(rusqlite::params![path, kind], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        for name in expected {
+            assert!(
+                names.iter().any(|actual| actual == name),
+                "{case_id}: missing {name}: {names:?}"
+            );
+        }
+        let actual_workers: usize = conn.query_row("SELECT count(*) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.kind='namespace' AND n.name='workers'", [path], |row| row.get(0)).unwrap();
+        assert_eq!(actual_workers, workers, "{case_id}");
+        let node = reader::select(&conn, selector).unwrap();
+        assert_eq!(node["name"], "port", "{case_id}");
+        let policy = ResponsePolicy::default();
+        let options = QueryOptions::resolve(&policy, None, 0, None, None).unwrap();
+        let source = SourceOptions::resolve(&policy, Some(true), Some(0), None, 0).unwrap();
+        let result = symbols::snippet_paged(&conn, w.root(), selector, &source, &options).unwrap();
         assert!(
-            names.iter().any(|name| name == expected),
-            "missing {expected}: {names:?}"
+            result["source"].as_str().unwrap().contains(snippet),
+            "{case_id}: {result}"
         );
     }
     let ids = rows(&conn, "SELECT id FROM nodes");
     assert_eq!(ids.len(), ids.iter().collect::<BTreeSet<_>>().len());
     assert!(rows(&conn, "SELECT message FROM errors").is_empty());
-    let node = reader::select(&conn, "settings.yml:2").unwrap();
-    assert_eq!(node["name"], "port");
-    assert_snippet(&w, &conn, "settings.yml:2", "port: 8080");
     drop(conn);
-    w.write("settings.yml", &source.replace("port: 8080", "timeout: 15"));
-    let parity = crate::languages::support::delta_cold(&w, "settings.yml");
-    assert_eq!(parity.incremental_verification, Ok(()));
-    assert_eq!(parity.cold_verification, Ok(()));
-    assert_eq!(parity.incremental, parity.cold);
-}
-
-#[test]
-fn toml_indexes_tables_array_tables_dotted_and_inline_keys() {
-    let w = crate::languages::PersistedWorkspaceHarness::new();
-    let source = "title = \"app\"\n[server]\nport = 8080\n\"literal.dot\" = true\nlimits.cpu = 2\ninline = { left = { value = 1 }, right = { value = 2 } }\n[[workers]]\nname = \"first\"\n[[workers]]\nname = \"second\"\n";
-    w.write("settings.toml", source);
-    w.build();
-    let conn = w.open();
-    let names = rows(&conn, "SELECT qualname FROM nodes ORDER BY qualname");
-    for expected in [
-        "settings.title",
-        "settings.server",
-        "settings.server.port",
-        "settings.server.\"literal.dot\"",
-        "settings.server.limits.cpu",
-        "settings.server.inline.left.value",
-        "settings.workers.name",
-    ] {
-        assert!(
-            names.iter().any(|name| name == expected),
-            "missing {expected}: {names:?}"
-        );
+    for (case_id, path, source, _, _, old, new, _, _) in cases {
+        w.write(path, &source.replace(old, new));
+        let parity = crate::languages::support::delta_cold(&w, path);
+        assert_eq!(parity.incremental_verification, Ok(()), "{case_id}");
+        assert_eq!(parity.cold_verification, Ok(()), "{case_id}");
+        assert_eq!(parity.incremental, parity.cold, "{case_id}");
     }
-    assert_eq!(
-        rows(
-            &conn,
-            "SELECT id FROM nodes WHERE kind='namespace' AND name='workers'"
-        )
-        .len(),
-        2
-    );
-    let ids = rows(&conn, "SELECT id FROM nodes");
-    assert_eq!(ids.len(), ids.iter().collect::<BTreeSet<_>>().len());
-    assert!(rows(&conn, "SELECT message FROM errors").is_empty());
-    assert_snippet(&w, &conn, "settings.toml:3", "port = 8080");
-    drop(conn);
-    w.write(
-        "settings.toml",
-        &source.replace("port = 8080", "timeout = 15"),
-    );
-    let parity = crate::languages::support::delta_cold(&w, "settings.toml");
-    assert_eq!(parity.incremental_verification, Ok(()));
-    assert_eq!(parity.cold_verification, Ok(()));
-    assert_eq!(parity.incremental, parity.cold);
 }
 
 #[test]

@@ -306,9 +306,9 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         expected_flow
     );
     let blob = crate::core::typed_facts::encode_facts(&facts).unwrap();
-    assert!(blob.starts_with(b"FORGE-LOCAL-FACTS\0\x03"));
-    assert!(crate::core::typed_facts::decode_facts(b"FORGE-LOCAL-FACTS\0\x01").is_err());
-    assert!(crate::core::typed_facts::decode_facts(b"FORGE-LOCAL-FACTS\0\x02").is_err());
+    assert!(blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"));
+    assert!(crate::core::typed_facts::decode_facts(b"ACDD-LOCAL-FACTS\0\x01").is_err());
+    assert!(crate::core::typed_facts::decode_facts(b"ACDD-LOCAL-FACTS\0\x02").is_err());
     let reopened = crate::core::typed_facts::decode_facts(&blob).unwrap();
     assert_eq!(
         reopened.flows.named_uncertainties(&node_id),

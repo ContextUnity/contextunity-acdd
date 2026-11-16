@@ -23,14 +23,29 @@ fn return_and_field_facts_exclude_uncertain_callable_semantics_and_nested_scopes
     ));
 }
 #[test]
-fn async_generator_and_decorated_factory_calls_do_not_gain_return_type_proof() {
-    let source="class Client:\n    def execute(self): pass\nasync def asynchronous() -> Client: return Client()\ndef generator() -> Client:\n    yield Client()\n@decorate\ndef decorated() -> Client: return Client()\ndef run():\n    asynchronous().execute()\n    generator().execute()\n    decorated().execute()\n";
-    let facts = ast::extract("uncertain_returns.py", "python", source).unwrap();
-    let graph = linker::link(&BTreeMap::from([(
-        "uncertain_returns.py".to_owned(),
-        facts,
-    )]));
-    for expression in [
+fn callable_return_boundary_matrix() {
+    #[derive(Clone, Copy, Debug)]
+    enum Case {
+        AsyncGeneratorAndDecoratedFactoryCallsDoNotGainReturnTypeProof,
+        MethodReturnAnnotationProvesAChainOnlyForAKnownReceiver,
+    }
+    struct SourceCase {
+        kind: Case,
+        path: &'static str,
+        source: &'static str,
+    }
+    for row in [
+        // async_generator_and_decorated_factory_calls_do_not_gain_return_type_proof
+        SourceCase { kind: Case::AsyncGeneratorAndDecoratedFactoryCallsDoNotGainReturnTypeProof, path: "uncertain_returns.py", source: "class Client:\n    def execute(self): pass\nasync def asynchronous() -> Client: return Client()\ndef generator() -> Client:\n    yield Client()\n@decorate\ndef decorated() -> Client: return Client()\ndef run():\n    asynchronous().execute()\n    generator().execute()\n    decorated().execute()\n" },
+        // method_return_annotation_proves_a_chain_only_for_a_known_receiver
+        SourceCase { kind: Case::MethodReturnAnnotationProvesAChainOnlyForAKnownReceiver, path: "return_chain.py", source: "class Client:\n    def execute(self): pass\nclass Response:\n    def request(self) -> Client: return Client()\ndef known(response: Response): return response.request().execute()\ndef unknown(response): return response.request().execute()\n" },
+    ] {
+        let source = row.source;
+        let facts = ast::extract(row.path, "python", source).unwrap();
+        let graph = linker::link(&BTreeMap::from([(row.path.to_owned(), facts)]));
+        match row.kind {
+            Case::AsyncGeneratorAndDecoratedFactoryCallsDoNotGainReturnTypeProof => {
+for expression in [
         "asynchronous().execute",
         "generator().execute",
         "decorated().execute",
@@ -46,13 +61,9 @@ fn async_generator_and_decorated_factory_calls_do_not_gain_return_type_proof() {
             "{expression}"
         );
     }
-}
-#[test]
-fn method_return_annotation_proves_a_chain_only_for_a_known_receiver() {
-    let source="class Client:\n    def execute(self): pass\nclass Response:\n    def request(self) -> Client: return Client()\ndef known(response: Response): return response.request().execute()\ndef unknown(response): return response.request().execute()\n";
-    let facts = ast::extract("return_chain.py", "python", source).unwrap();
-    let graph = linker::link(&BTreeMap::from([("return_chain.py".to_owned(), facts)]));
-    let calls: Vec<_> = graph
+            }
+            Case::MethodReturnAnnotationProvesAChainOnlyForAKnownReceiver => {
+let calls: Vec<_> = graph
         .coverage
         .iter()
         .filter(|coverage| coverage.expression == "response.request().execute")
@@ -60,4 +71,7 @@ fn method_return_annotation_proves_a_chain_only_for_a_known_receiver() {
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].status, "resolved");
     assert_eq!(calls[1].status, "unresolved");
+            }
+        }
+    }
 }

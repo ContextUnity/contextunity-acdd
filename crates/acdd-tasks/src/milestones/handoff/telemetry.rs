@@ -170,7 +170,7 @@ pub(in crate::milestones) fn retire_unowned_evidence(
         &[
             "for-each-ref",
             "--format=%(refname)",
-            "refs/forge/evidence/",
+            "refs/acdd/evidence/",
         ],
     )?;
     if !refs.status.success() {
@@ -178,7 +178,7 @@ pub(in crate::milestones) fn retire_unowned_evidence(
     }
     for reference in String::from_utf8(refs.stdout)?.lines() {
         if let Some(sha) = reference
-            .strip_prefix("refs/forge/evidence/")
+            .strip_prefix("refs/acdd/evidence/")
             .filter(|sha| full_git_sha(sha))
         {
             if !owners.proofs.contains(sha) {
@@ -208,20 +208,20 @@ pub(super) fn cleanup_handoff_refs(
         if owners.proofs.contains(&sha) {
             continue;
         }
-        refs_to_delete.push(format!("refs/forge/evidence/{sha}"));
+        refs_to_delete.push(format!("refs/acdd/evidence/{sha}"));
     }
     // Delete only the outgoing namespace; active foreign owners remain protected.
     for prefix in [
-        format!("refs/forge/state/{repository}/{project}/{id}/"),
-        format!("refs/forge/state/{project}/{id}/"),
-        format!("refs/forge/state/{id}/"),
+        format!("refs/acdd/state/{repository}/{project}/{id}/"),
+        format!("refs/acdd/state/{project}/{id}/"),
+        format!("refs/acdd/state/{id}/"),
     ] {
-        let shared = if prefix == format!("refs/forge/state/{id}/") {
+        let shared = if prefix == format!("refs/acdd/state/{id}/") {
             owners
                 .identities
                 .iter()
                 .any(|identity| identity.rsplit('/').next() == Some(id))
-        } else if prefix == format!("refs/forge/state/{project}/{id}/") {
+        } else if prefix == format!("refs/acdd/state/{project}/{id}/") {
             owners
                 .identities
                 .iter()
@@ -638,13 +638,13 @@ pub(super) fn prune_snapshot_refs(root: &Path, prefix: &str) {
         .strip_suffix(':')
         .unwrap_or(prefix)
         .replace(['\\', ' '], "_");
-    let target_prefix = format!("refs/forge/snapshots/{clean}/");
+    let target_prefix = format!("refs/acdd/snapshots/{clean}/");
     if let Ok(output) = crate::core::git::git_command(
         root,
         &[
             "for-each-ref",
             "--format=%(refname)",
-            "refs/forge/snapshots/",
+            "refs/acdd/snapshots/",
         ],
     ) {
         let refs: Vec<String> = String::from_utf8_lossy(&output.stdout)

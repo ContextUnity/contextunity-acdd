@@ -55,9 +55,8 @@ fn vue_options_api_registered_components_use_imported_aliases() {
 }
 
 #[cfg(feature = "lang-vue")]
-#[cfg(feature = "lang-vue")]
 #[test]
-fn vue_sfc_template_bridge_resolves_setup_bindings_and_component_imports() {
+fn setup_component_bridge_cardinality() {
     let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(
         "MyButton.vue",
@@ -99,6 +98,17 @@ function onlyInside() { const hidden = 'private'; return hidden; }
             .any(|reference| { reference.expression == "buttonText" && reference.line == 4 }),
         "template interpolation retains its setup binding reference: {facts:#?}"
     );
+
+    {
+        let declarations = (0..192)
+            .map(|index| format!("const item{index} = {index};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source = format!(
+            "<template><p>{{{{ item191 }}}}</p></template><script setup>{declarations}</script>"
+        );
+        w.write("Large.vue", &source);
+    }
     w.build();
     let conn = w.open();
     let calls: i64 = query_scalar(&conn, "SELECT COALESCE(sum(e.occurrence_count),0) FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.path_id)='App.vue' AND e.kind='calls' AND n.name='run'", []);
@@ -137,31 +147,20 @@ function onlyInside() { const hidden = 'private'; return hidden; }
         hidden_status, "unresolved",
         "nested script local is outside template scope"
     );
-}
 
-#[cfg(feature = "lang-vue")]
-#[cfg(feature = "lang-vue")]
-#[test]
-fn vue_sfc_template_bridge_resolves_large_setup_scope() {
-    let declarations = (0..192)
-        .map(|index| format!("const item{index} = {index};"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let source = format!(
-        "<template><p>{{{{ item191 }}}}</p></template><script setup>{declarations}</script>"
-    );
-    let facts = ExtractorHarness::for_lang("vue")
-        .at_path("Large.vue")
-        .extract(&source);
-    let graph = ExtractorHarness::link_graph(&std::collections::BTreeMap::from([(
-        "Large.vue".to_owned(),
-        facts,
-    )]));
-    assert!(
-        graph
-            .coverage
-            .iter()
-            .any(|coverage| { coverage.expression == "item191" && coverage.status == "resolved" }),
-        "last setup declaration resolves in template: {graph:#?}"
-    );
+    {
+        let facts = ExtractorHarness::for_lang("vue")
+            .at_path("Large.vue")
+            .extract(&fs::read_to_string(w.root().join("Large.vue")).unwrap());
+        let graph = ExtractorHarness::link_graph(&std::collections::BTreeMap::from([(
+            "Large.vue".to_owned(),
+            facts,
+        )]));
+        assert!(
+            graph.coverage.iter().any(|coverage| {
+                coverage.expression == "item191" && coverage.status == "resolved"
+            }),
+            "last setup declaration resolves in template: {graph:#?}"
+        );
+    }
 }

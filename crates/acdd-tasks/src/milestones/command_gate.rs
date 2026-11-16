@@ -1034,6 +1034,7 @@ pub(crate) fn run_shell(root: &Path, command_str: &str, timeout: Duration) -> Re
         .checked_add(timeout)
         .context("TASK_COMMAND_TIMEOUT_INVALID: timeout exceeds the supported process lifetime")?;
     let mut timed_out = false;
+    let mut delay_ms = 1;
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -1043,7 +1044,12 @@ pub(crate) fn run_shell(root: &Path, command_str: &str, timeout: Duration) -> Re
             terminate_process_tree(&mut child);
             break child.wait()?;
         }
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(delay_ms));
+        delay_ms = match delay_ms {
+            1 => 2,
+            2 => 5,
+            _ => 10,
+        };
     };
     let stdout = match stdout_receiver.recv_timeout(Duration::from_millis(250)) {
         Ok(output) => output?,
@@ -1291,32 +1297,31 @@ mod command_output_tests {
     }
 
     #[test]
-    fn malformed_count_is_rejected() {
-        let error = parse_command_output("passed=unknown\nfailed=0", "test", Some(&output_spec()))
-            .unwrap_err();
-
-        assert!(error
-            .to_string()
-            .contains("test count is not an unsigned integer"));
-    }
-
-    #[test]
-    fn overflowing_count_total_is_rejected() {
-        let error = parse_command_output(
-            "passed=18446744073709551615\npassed=1\nfailed=0",
-            "test",
-            Some(&output_spec()),
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("test count overflow"));
-    }
-
-    #[test]
-    fn configured_pass_count_without_failed_match_means_zero_failures() {
-        let parsed = parse_command_output("passed=3", "test", Some(&output_spec())).unwrap();
-
-        assert_eq!(parsed.passed, Some(3));
-        assert_eq!(parsed.failed, Some(0));
+    fn command_output_count_matrix() {
+        let spec = output_spec();
+        for (output, expected) in [
+            (
+                "passed=unknown\nfailed=0",
+                Err("test count is not an unsigned integer"),
+            ),
+            (
+                "passed=18446744073709551615\npassed=1\nfailed=0",
+                Err("test count overflow"),
+            ),
+            ("passed=3", Ok((Some(3), Some(0)))),
+        ] {
+            let result = parse_command_output(output, "test", Some(&spec));
+            match expected {
+                Err(expected) => {
+                    let error = result.unwrap_err().to_string();
+                    assert!(error.contains(expected), "{error}");
+                }
+                Ok((passed, failed)) => {
+                    let parsed = result.unwrap();
+                    assert_eq!(parsed.passed, passed);
+                    assert_eq!(parsed.failed, failed);
+                }
+            }
+        }
     }
 }

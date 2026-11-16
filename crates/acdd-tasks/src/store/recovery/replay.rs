@@ -15,7 +15,7 @@ impl TasksStore {
     pub fn cleanup_orphaned_checkpoints(&mut self, root: &Path) -> Result<Vec<String>> {
         let output = git_command(
             root,
-            &["for-each-ref", "--format=%(refname)", "refs/forge/state/"],
+            &["for-each-ref", "--format=%(refname)", "refs/acdd/state/"],
         )?;
         if !output.status.success() {
             return Ok(Vec::new());
@@ -91,7 +91,7 @@ impl TasksStore {
             return Ok(false);
         }
         let reference = format!(
-            "refs/forge/state/{}/{}/{}/{}",
+            "refs/acdd/state/{}/{}/{}/{}",
             authority.repository, authority.project, authority.milestone_id, authority.task_ref
         );
         let Ok(state) = read_checkpoint(&workspace, &reference) else {
@@ -111,14 +111,73 @@ impl TasksStore {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut unenrolled = Vec::new();
+        let stored_root: Option<PathBuf> = if self.workspace_root.is_some() {
+            self.workspace_root.clone()
+        } else {
+            self.connection
+                .query_row(
+                    "SELECT value FROM task_store_metadata WHERE key=?1",
+                    [ROOT],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(PathBuf::from)
+        };
+        let mut candidates = Vec::new();
+        let mut queries = Vec::new();
+        let mut unenrolled = BTreeSet::new();
         for (id, descriptor) in rows {
-            match serde_json::from_str::<Task>(&descriptor) {
-                Ok(task) if self.checkpoint_enrolled(&task)? => (),
-                _ => unenrolled.push(id),
+            let Ok(task) = serde_json::from_str::<Task>(&descriptor) else {
+                unenrolled.insert(id);
+                continue;
+            };
+            let Some(authority) = &task.authority_snapshot else {
+                unenrolled.insert(id);
+                continue;
+            };
+            let home: Option<String> = self
+                .connection
+                .query_row(
+                    "SELECT value FROM task_store_metadata WHERE key=?1",
+                    [format!("checkpoint_home:{}", task.task_id)],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(workspace) = home
+                .map(PathBuf::from)
+                .or_else(|| task.worktree.as_ref().map(PathBuf::from))
+                .or_else(|| stored_root.clone())
+            else {
+                unenrolled.insert(id);
+                continue;
+            };
+            if validate_owner(&task, &workspace, false).is_err() {
+                unenrolled.insert(id);
+                continue;
+            }
+            let reference = format!(
+                "refs/acdd/state/{}/{}/{}/{}",
+                authority.repository, authority.project, authority.milestone_id, authority.task_ref
+            );
+            queries.push((workspace, reference));
+            candidates.push((id, task));
+        }
+        if !queries.is_empty() {
+            let loaded = try_read_checkpoints_batch(&queries)?;
+            for ((id, task), result) in candidates.into_iter().zip(loaded) {
+                let enrolled = matches!(
+                    result,
+                    Ok(Some(state))
+                        if state.intent.is_none()
+                            && serde_json::to_value(&state.task)?
+                                == serde_json::to_value(Some(&task))?
+                );
+                if !enrolled {
+                    unenrolled.insert(id);
+                }
             }
         }
-        Ok(unenrolled)
+        Ok(unenrolled.into_iter().collect())
     }
 
     pub(crate) fn set_preparation_owners(&mut self, owners: Vec<PreparationOwner>) {
@@ -168,22 +227,25 @@ impl TasksStore {
         let Some(root) = root else {
             return Ok(None);
         };
-        if !git_command(&root, &["rev-parse", "--git-dir"])?
-            .status
-            .success()
-        {
+        let Ok(root_common) = crate::git::git_common_dir(&root) else {
             return Ok(None);
-        }
+        };
         let fence = match &self.checkpoint_lock {
             Some(fence) => fence.clone(),
             None => lock_database(&self.database_path)?,
         };
         // A pending operation is reconciled explicitly, never replayed as a new SQL mutation.
         ensure_observable(&self.connection)?;
+        let mut scanned = BTreeSet::from([root_common]);
         ensure_no_intents_except(&root, &self.obsolete_checkpoint_owners)?;
         let homes = self.checkpoint_homes()?;
         for home in homes {
             if home.exists() {
+                if let Ok(common) = crate::git::git_common_dir(&home) {
+                    if !scanned.insert(common) {
+                        continue;
+                    }
+                }
                 ensure_no_intents_except(&home, &self.obsolete_checkpoint_owners)?;
             }
         }
@@ -204,6 +266,8 @@ impl TasksStore {
                 .prepare("SELECT descriptor FROM tasks ORDER BY task_id")?
                 .query_map([], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut candidates = Vec::new();
+            let mut queries = Vec::new();
             for descriptor in descriptors {
                 let task: Task = serde_json::from_str(&descriptor)?;
                 // Enrollment follows current manifest ownership, not physical SQL membership.
@@ -211,33 +275,45 @@ impl TasksStore {
                     authority.repository == self.repository && authority.project == self.project
                 }) {
                     let workspace = task_home(&self.connection, &task, context)?;
+                    if validate_owner(&task, &workspace, false).is_err() {
+                        continue;
+                    }
                     let reference = format!(
-                        "refs/forge/state/{}/{}/{}/{}",
+                        "refs/acdd/state/{}/{}/{}/{}",
                         authority.repository,
                         authority.project,
                         authority.milestone_id,
                         authority.task_ref
                     );
-                    let previous = read_checkpoint(&workspace, &reference).ok();
+                    let owner_key = (
+                        authority.repository.clone(),
+                        authority.project.clone(),
+                        authority.milestone_id.clone(),
+                    );
+                    queries.push((workspace, reference));
+                    candidates.push((task, owner_key.0, owner_key.1, owner_key.2));
+                }
+            }
+            if !queries.is_empty() {
+                let loaded = try_read_checkpoints_batch(&queries)?;
+                for ((task, repository, project, milestone_id), prev_result) in
+                    candidates.into_iter().zip(loaded)
+                {
+                    let previous = prev_result.ok().flatten();
                     let preparation_changed = context.preparations.iter().any(|owner| {
-                        owner.identity
-                            == format!(
-                                "{}/{}/{}",
-                                authority.repository, authority.project, authority.milestone_id
-                            )
+                        owner.identity == format!("{repository}/{project}/{milestone_id}")
                             && previous
                                 .as_ref()
                                 .is_none_or(|state| !owner.proofs.is_subset(&state.prepared_proofs))
                     });
-                    if validate_owner(&task, &workspace, false).is_ok()
-                        && (!self.checkpoint_enrolled(&task)? || preparation_changed)
-                    {
+                    let already_enrolled = previous.as_ref().is_some_and(|state| {
+                        state.intent.is_none()
+                            && serde_json::to_value(&state.task).ok()
+                                == serde_json::to_value(Some(&task)).ok()
+                    });
+                    if !already_enrolled || preparation_changed {
                         owners
-                            .entry((
-                                authority.repository.clone(),
-                                authority.project.clone(),
-                                authority.milestone_id.clone(),
-                            ))
+                            .entry((repository, project, milestone_id))
                             .or_default()
                             .push(task.task_id);
                     }
@@ -311,48 +387,56 @@ impl TasksStore {
         let mut visited = BTreeSet::new();
         let mut orphaned = Vec::new();
         for home in homes.into_iter().filter(|home| home.exists()) {
-            let common = git_command(
-                &home,
-                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-            )?;
-            if !common.status.success() {
+            let Ok(common) = crate::git::git_common_dir(&home) else {
                 continue;
-            }
-            let common = String::from_utf8(common.stdout)?;
-            if !visited.insert(Path::new(common.trim()).canonicalize()?) {
+            };
+            if !visited.insert(common.clone()) {
                 continue;
             }
             let refs = git_command(
                 &home,
-                &["for-each-ref", "--format=%(refname)", "refs/forge/state/"],
+                &[
+                    "for-each-ref",
+                    "--format=%(refname)\t%(objectname)",
+                    "refs/acdd/state/",
+                ],
             )?;
             anyhow::ensure!(
                 refs.status.success(),
                 "TASK_RECOVERY_CHECKPOINT_INVALID: cannot enumerate task refs"
             );
-            for reference in String::from_utf8(refs.stdout)?.lines() {
-                if self
-                    .obsolete_checkpoint_owners
-                    .iter()
-                    .any(|owner| reference.starts_with(&format!("refs/forge/state/{owner}/")))
-                {
+            let candidates: Vec<(String, String)> = String::from_utf8(refs.stdout)?
+                .lines()
+                .filter_map(|line| line.split_once('\t'))
+                .filter(|(reference, _)| {
+                    !self
+                        .obsolete_checkpoint_owners
+                        .iter()
+                        .any(|owner| reference.starts_with(&format!("refs/acdd/state/{owner}/")))
+                })
+                .map(|(reference, tip)| (reference.to_owned(), tip.to_owned()))
+                .collect();
+            if candidates.is_empty() {
+                continue;
+            }
+            let tip_specs: Vec<String> = candidates
+                .iter()
+                .map(|(_, tip)| format!("{tip}:checkpoint.json"))
+                .collect();
+            let tip_blobs = crate::git::cat_file_batch(&home, &tip_specs)?;
+            let mut common_cache = BTreeMap::new();
+            for ((reference, tip), payload) in candidates.into_iter().zip(tip_blobs) {
+                let Some(bytes) = payload else {
                     continue;
-                }
-                if !git_command(
+                };
+                let parsed: ActiveCheckpoint = serde_json::from_slice(&bytes)?;
+                let intent = validate_parsed_checkpoint(
                     &home,
-                    &["cat-file", "-e", &format!("{reference}:checkpoint.json")],
-                )?
-                .status
-                .success()
-                {
-                    continue;
-                }
-                let tip = crate::git::git_stdout(
-                    &home,
-                    &["rev-parse", "--verify", reference],
-                    "TASK_RECOVERY_CHECKPOINT_INVALID",
+                    &common,
+                    &mut common_cache,
+                    &reference,
+                    parsed,
                 )?;
-                let intent = read_checkpoint_revision(&home, reference, &tip)?;
                 if intent.intent.is_none() {
                     continue;
                 }
@@ -361,36 +445,11 @@ impl TasksStore {
                     &["rev-parse", "--verify", &format!("{reference}@{{1}}")],
                     "TASK_RECOVERY_CHECKPOINT_INVALID",
                 )?;
-                let acknowledged = read_checkpoint_revision(&home, reference, &previous)?;
-                anyhow::ensure!(
-                    intent.version == 1
-                        && acknowledged.version == 1
-                        && acknowledged.intent.is_none()
-                        && acknowledged.task_id == intent.task_id,
-                    "TASK_RECOVERY_AMBIGUOUS: orphaned intent has no prior acknowledged checkpoint"
-                );
-                let token = intent.intent.as_deref().context("task intent")?;
-                let (pid, timestamp) = token
-                    .split_once('-')
-                    .context("TASK_RECOVERY_AMBIGUOUS: invalid operation token")?;
-                anyhow::ensure!(
-                    pid.parse::<u32>().is_ok_and(|pid| pid != 0)
-                        && timestamp.parse::<u128>().is_ok_and(|time| time != 0),
-                    "TASK_RECOVERY_AMBIGUOUS: invalid operation token"
-                );
-                let mut expected = acknowledged.clone();
-                expected.intent = intent.intent.clone();
-                expected.max_revision = intent.max_revision;
-                expected.cohort.clear();
-                expected.cohort_id.clear();
-                anyhow::ensure!(
-                    serde_json::to_vec(&expected)? == serde_json::to_vec(&intent)?,
-                    "TASK_RECOVERY_AMBIGUOUS: intent differs from acknowledged preimage for {}",
-                    intent.task_id
-                );
+                let acknowledged = read_checkpoint_revision(&home, &reference, &previous)?;
+                validate_intent_preimage(&intent, &acknowledged)?;
                 orphaned.push((
                     home.clone(),
-                    reference.to_owned(),
+                    reference,
                     tip,
                     previous,
                     intent,
@@ -416,22 +475,14 @@ impl TasksStore {
             return Ok(0);
         }
         for (_, _, _, _, intent, acknowledged) in &orphaned {
-            anyhow::ensure!(
-                intent.intent == orphaned[0].4.intent,
-                "TASK_RECOVERY_AMBIGUOUS: conflicting operation tokens"
-            );
+            validate_matching_token(intent, &orphaned[0].4)?;
             for (root, reference) in &acknowledged.cohort {
                 let peer = orphaned
                     .iter()
                     .find(|entry| entry.5.workspace == *root && entry.1 == *reference)
                     .map(|entry| Ok(entry.5.clone()))
                     .unwrap_or_else(|| read_checkpoint(root, reference))?;
-                anyhow::ensure!(
-                    peer.intent.is_none()
-                        && peer.cohort == acknowledged.cohort
-                        && peer.cohort_id == acknowledged.cohort_id,
-                    "TASK_RECOVERY_AMBIGUOUS: incomplete acknowledged cohort"
-                );
+                validate_acknowledged_peer(acknowledged, &peer)?;
             }
         }
         let context = CheckpointContext {
@@ -500,11 +551,7 @@ impl TasksStore {
                 }
             } else {
                 let floor = revision.max(acknowledged.max_revision);
-                anyhow::ensure!(
-                    intent.max_revision == floor
-                        || floor.checked_add(1) == Some(intent.max_revision),
-                    "TASK_RECOVERY_AMBIGUOUS: invalid reservation bound"
-                );
+                validate_reservation(intent.max_revision, floor)?;
             }
             anyhow::ensure!(
                 serde_json::to_vec(&expected)? == serde_json::to_vec(&sql)?,
@@ -556,6 +603,71 @@ impl TasksStore {
         }
         Ok(orphaned.len())
     }
+}
+
+pub(super) fn validate_matching_token(
+    intent: &ActiveCheckpoint,
+    first: &ActiveCheckpoint,
+) -> Result<()> {
+    anyhow::ensure!(
+        intent.intent == first.intent,
+        "TASK_RECOVERY_AMBIGUOUS: conflicting operation tokens"
+    );
+    Ok(())
+}
+
+pub(super) fn validate_acknowledged_peer(
+    acknowledged: &ActiveCheckpoint,
+    peer: &ActiveCheckpoint,
+) -> Result<()> {
+    anyhow::ensure!(
+        peer.intent.is_none()
+            && peer.cohort == acknowledged.cohort
+            && peer.cohort_id == acknowledged.cohort_id,
+        "TASK_RECOVERY_AMBIGUOUS: incomplete acknowledged cohort"
+    );
+    Ok(())
+}
+
+pub(super) fn validate_reservation(max_revision: u64, floor: u64) -> Result<()> {
+    anyhow::ensure!(
+        max_revision == floor || floor.checked_add(1) == Some(max_revision),
+        "TASK_RECOVERY_AMBIGUOUS: invalid reservation bound"
+    );
+    Ok(())
+}
+
+pub(super) fn validate_intent_preimage(
+    intent: &ActiveCheckpoint,
+    acknowledged: &ActiveCheckpoint,
+) -> Result<()> {
+    anyhow::ensure!(
+        intent.version == 1
+            && acknowledged.version == 1
+            && acknowledged.intent.is_none()
+            && acknowledged.task_id == intent.task_id,
+        "TASK_RECOVERY_AMBIGUOUS: orphaned intent has no prior acknowledged checkpoint"
+    );
+    let token = intent.intent.as_deref().context("task intent")?;
+    let (pid, timestamp) = token
+        .split_once('-')
+        .context("TASK_RECOVERY_AMBIGUOUS: invalid operation token")?;
+    anyhow::ensure!(
+        pid.parse::<u32>().is_ok_and(|pid| pid != 0)
+            && timestamp.parse::<u128>().is_ok_and(|time| time != 0),
+        "TASK_RECOVERY_AMBIGUOUS: invalid operation token"
+    );
+    let mut expected = acknowledged.clone();
+    expected.intent = intent.intent.clone();
+    expected.max_revision = intent.max_revision;
+    expected.cohort.clear();
+    expected.cohort_id.clear();
+    anyhow::ensure!(
+        serde_json::to_vec(&expected)? == serde_json::to_vec(&intent)?,
+        "TASK_RECOVERY_AMBIGUOUS: intent differs from acknowledged preimage for {}",
+        intent.task_id
+    );
+    Ok(())
 }
 
 pub(super) fn task_home(
@@ -667,7 +779,7 @@ pub(super) fn states(
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut state = ActiveCheckpoint {
+        let state = ActiveCheckpoint {
             version: 1, repository: authority.repository.clone(), project: authority.project.clone(), milestone_id: authority.milestone_id.clone(),
             task_id: id.clone(), workspace, task: Some(task), max_revision,
             claims: connection.prepare("SELECT revision,worker_id,worktree,claimed_at,ended FROM task_claims WHERE task_id=?1 ORDER BY revision")?.query_map([&id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?.collect::<rusqlite::Result<_>>()?,
@@ -678,14 +790,16 @@ pub(super) fn states(
             submissions: connection.prepare("SELECT revision,result FROM task_submissions WHERE task_id=?1 ORDER BY revision")?.query_map([&id], |r| Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?,
             scopes, prepared_proofs: BTreeSet::new(), intent: None, cohort: Vec::new(), cohort_id: String::new(),
         };
-        if git_command(
-            &state.workspace,
-            &["show-ref", "--verify", "--quiet", &state.reference()],
-        )?
-        .status
-        .success()
-        {
-            let previous = read_checkpoint(&state.workspace, &state.reference())?;
+        result.push(state);
+    }
+    let queries: Vec<(PathBuf, String)> = result
+        .iter()
+        .map(|state| (state.workspace.clone(), state.reference()))
+        .collect();
+    let previous_checkpoints = try_read_checkpoints_batch(&queries)?;
+    let mut common_cache = BTreeMap::<PathBuf, PathBuf>::new();
+    for (state, previous_result) in result.iter_mut().zip(previous_checkpoints) {
+        if let Some(previous) = previous_result? {
             state.max_revision = state.max_revision.max(previous.max_revision);
             state.prepared_proofs = previous.prepared_proofs;
         }
@@ -696,23 +810,28 @@ pub(super) fn states(
                     state.repository, state.project, state.milestone_id
                 )
             {
-                let home = crate::git::git_stdout(
-                    &state.workspace,
-                    &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-                    "TASK_CHECKPOINT_OWNER_INVALID",
-                )?;
-                let owner_home = crate::git::git_stdout(
-                    &owner.worktree,
-                    &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-                    "TASK_CHECKPOINT_OWNER_INVALID",
-                )?;
+                let home = if let Some(cached) = common_cache.get(&state.workspace) {
+                    cached.clone()
+                } else {
+                    let resolved = crate::git::git_common_dir(&state.workspace)
+                        .map_err(|e| anyhow::anyhow!("TASK_CHECKPOINT_OWNER_INVALID: {e}"))?;
+                    common_cache.insert(state.workspace.clone(), resolved.clone());
+                    resolved
+                };
+                let owner_home = if let Some(cached) = common_cache.get(&owner.worktree) {
+                    cached.clone()
+                } else {
+                    let resolved = crate::git::git_common_dir(&owner.worktree)
+                        .map_err(|e| anyhow::anyhow!("TASK_CHECKPOINT_OWNER_INVALID: {e}"))?;
+                    common_cache.insert(owner.worktree.clone(), resolved.clone());
+                    resolved
+                };
                 if home != owner_home {
                     bail!("TASK_CHECKPOINT_OWNER_INVALID: preparation has a foreign object home");
                 }
                 state.prepared_proofs.extend(owner.proofs.iter().cloned());
             }
         }
-        result.push(state);
     }
     Ok(result)
 }

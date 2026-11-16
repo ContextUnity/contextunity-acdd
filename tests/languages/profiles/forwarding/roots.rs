@@ -70,17 +70,8 @@ fn root_cases() -> Vec<RootCase> {
 }
 
 #[test]
-fn cargo_root_identity_requires_supported_package_and_library_metadata() {
-    assert_cargo_root_identity_cases(&root_cases()[..5]);
-}
-
-#[test]
-fn cargo_root_identity_requires_supported_package_and_library_metadata_rejections() {
-    assert_cargo_root_identity_cases(&root_cases()[5..]);
-}
-
-fn assert_cargo_root_identity_cases(cases: &[RootCase]) {
-    for &(phase, manifest, library, expected) in cases {
+fn cargo_root_accept_reject() {
+    for &(phase, manifest, library, expected) in &root_cases() {
         let w = root_workspace(manifest, library);
         let conn = w.open();
         commitments::verify(&conn).unwrap();
@@ -131,7 +122,7 @@ fn assert_cargo_root_identity_cases(cases: &[RootCase]) {
 }
 
 #[test]
-fn restored_root_identity_recovers_canonical_function_and_constructor_targets() {
+fn cargo_root_restore_and_isolation() {
     for (phase, manifest, library, expected) in root_cases() {
         if !expected {
             continue;
@@ -171,9 +162,7 @@ fn restored_root_identity_recovers_canonical_function_and_constructor_targets() 
         commitments::verify(&cold).unwrap();
         assert_eq!(snapshot(&conn), snapshot(&cold), "{phase}");
     }
-}
 
-fn nested_consumer_workspace() -> PersistedWorkspaceHarness {
     let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write("Cargo.toml", "[package]\nname='root-kit'\n");
     w.write("src/lib.rs", "pub mod provider;\n");
@@ -193,12 +182,7 @@ fn nested_consumer_workspace() -> PersistedWorkspaceHarness {
         "use root_kit::provider::build as execute;\nfn probe() { execute(); }\n",
     );
     w.build();
-    w
-}
 
-#[test]
-fn nested_consumer_package_cannot_acquire_root_library_identity() {
-    let w = nested_consumer_workspace();
     let phase = "nested consumer package boundary";
     let probes = [
         (
@@ -224,11 +208,7 @@ fn nested_consumer_package_cannot_acquire_root_library_identity() {
     let cold = fresh_cold(&w);
     commitments::verify(&cold).unwrap();
     assert_eq!(snapshot(&conn), snapshot(&cold), "{phase}");
-}
 
-#[test]
-fn relative_and_self_imports_keep_package_identity_across_root_metadata_deltas() {
-    let w = nested_consumer_workspace();
     for (phase, manifest) in [
         ("valid root metadata", "[package]\nname='root-kit'\n"),
         ("missing root metadata", "[workspace]\n"),

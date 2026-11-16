@@ -15,7 +15,7 @@ fn first_crlf_task_claim_activates_planned_milestone_and_includes_guidance() {
     root.write(active, &source);
     root.sync(active).unwrap();
     let claim = root
-        .claim_task("forge-mcp/m-start:begin", "contract", "first")
+        .claim_task("acdd/m-start:begin", "contract", "first")
         .unwrap();
     let guidance = &claim["workflow_guidance"];
     const PROTECTED_RULE: &str = "PROTECTED: milestone id, invariants, owners, depends_on, and acdd_profile are immutable while tasks are active. Declare task invariants inside task.invariants.";
@@ -94,7 +94,7 @@ fn milestone_context_and_blackboard_preserve_milestone_notes_until_handoff() {
         "active task profile omitted its review gate"
     );
     let delivery = root.head();
-    let parsed = Milestone::parse(&root.document(root.active_path()), "forge-mcp").unwrap();
+    let parsed = Milestone::parse(&root.document(root.active_path()), "acdd").unwrap();
     let completed = &parsed.tasks[0];
     assert_eq!(completed.status.as_deref(), Some("completed"));
     assert_eq!(completed.agent_type.as_deref(), Some("gpt-6-sol"));

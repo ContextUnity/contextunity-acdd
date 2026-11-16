@@ -949,7 +949,7 @@ mod tests {
     #[test]
     fn exact_path_requires_reported_component_spelling() {
         let root = std::env::temp_dir().join(format!(
-            "forge_exact_spelling_{}_{}",
+            "acdd_exact_spelling_{}_{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -981,9 +981,9 @@ mod tests {
     }
 
     #[test]
-    fn watched_excluded_entries_are_collected_by_inventory_walk() {
+    fn watched_inventory_entries() {
         let root = std::env::temp_dir().join(format!(
-            "forge_watch_{}_{}",
+            "acdd_watch_{}_{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -997,34 +997,33 @@ mod tests {
         fs::write(root.join("ignored.rs"), "pub fn ignored() {}\n").unwrap();
         let root = root.canonicalize().unwrap();
         let adapter = load_adapter(&root, None).unwrap();
-        let watched = ["notes.txt".to_owned(), "ignored.rs".to_owned()]
-            .into_iter()
-            .collect();
-        let report = scan_reusing_watching(&root, &adapter, &[], &watched).unwrap();
-        assert_eq!(report.matched_excluded, watched);
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn watched_symlink_is_rejected_with_its_key() {
-        use std::os::unix::fs::symlink;
-        let root = std::env::temp_dir().join(format!(
-            "forge_watch_symlink_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let _cleanup = TempDirDrop(root.clone());
-        fs::write(root.join("target.rs"), "pub fn target() {}\n").unwrap();
-        symlink(root.join("target.rs"), root.join("leaf.rs")).unwrap();
-        let root = root.canonicalize().unwrap();
-        let adapter = load_adapter(&root, None).unwrap();
-        let watched = ["leaf.rs".to_owned()].into_iter().collect();
-        let err = scan_reusing_watching(&root, &adapter, &[], &watched).unwrap_err();
-        assert!(err.to_string().contains("leaf.rs"), "{err}");
+        for (case_id, paths, rejected_key) in [
+            (
+                "watched_excluded_entries_are_collected_by_inventory_walk",
+                vec!["notes.txt", "ignored.rs"],
+                None::<&str>,
+            ),
+            #[cfg(unix)]
+            (
+                "watched_symlink_is_rejected_with_its_key",
+                vec!["leaf.rs"],
+                Some("leaf.rs"),
+            ),
+        ] {
+            #[cfg(unix)]
+            if rejected_key.is_some() {
+                fs::write(root.join("target.rs"), "pub fn target() {}\n").unwrap();
+                std::os::unix::fs::symlink(root.join("target.rs"), root.join("leaf.rs")).unwrap();
+            }
+            let watched = paths.into_iter().map(str::to_owned).collect();
+            let result = scan_reusing_watching(&root, &adapter, &[], &watched);
+            if let Some(key) = rejected_key {
+                let err = result.unwrap_err();
+                assert!(err.to_string().contains(key), "{case_id}: {err}");
+            } else {
+                assert_eq!(result.unwrap().matched_excluded, watched, "{case_id}");
+            }
+        }
     }
 
     #[test]
@@ -1042,20 +1041,13 @@ mod tests {
     }
 
     #[test]
-    fn explicit_memory_budgets_validate_positive_mib_and_overflow() {
-        assert_eq!(bytes_from_mebibytes(50).unwrap(), 50 * 1024 * 1024);
-        assert!(bytes_from_mebibytes(0).is_err());
-        assert!(bytes_from_mebibytes(u64::MAX).is_err());
-    }
-
-    #[test]
     fn build_scan_excludes_ignored_manifests_from_source_root_ancestors() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "forge_ignored_ancestor_manifests_{}_{}",
+            "acdd_ignored_ancestor_manifests_{}_{}",
             std::process::id(),
             nonce
         ));
@@ -1096,18 +1088,35 @@ mod tests {
     }
 
     #[test]
-    fn yaml_memory_budget_precedes_the_environment() {
-        assert_eq!(
-            memory_budget_mb_from_sources(Some(200), Some("not-a-number")).unwrap(),
-            Some(200)
-        );
-        assert_eq!(
-            memory_budget_mb_from_sources(None, Some("50")).unwrap(),
-            Some(50)
-        );
-        assert!(memory_budget_mb_from_sources(None, Some("0")).is_err());
-        assert!(memory_budget_mb_from_sources(None, Some("bad")).is_err());
-        assert_eq!(memory_budget_mb_from_sources(None, None).unwrap(), None);
+    fn explicit_memory_budget_selection() {
+        // explicit_memory_budgets_validate_positive_mib_and_overflow
+        for (mib, expected) in [(50, Some(50 * 1024 * 1024)), (0, None), (u64::MAX, None)] {
+            let result = bytes_from_mebibytes(mib);
+            if let Some(bytes) = expected {
+                assert_eq!(result.unwrap(), bytes, "{mib} MiB");
+            } else {
+                assert!(result.is_err(), "{mib} MiB must be rejected");
+            }
+        }
+        // yaml_memory_budget_precedes_the_environment
+        for (yaml, environment, expected) in [
+            (Some(200), Some("not-a-number"), Some(Some(200))),
+            (None, Some("50"), Some(Some(50))),
+            (None, Some("0"), None),
+            (None, Some("bad"), None),
+            (None, None, Some(None)),
+        ] {
+            let result = memory_budget_mb_from_sources(yaml, environment);
+            if let Some(budget) = expected {
+                assert_eq!(
+                    result.unwrap(),
+                    budget,
+                    "yaml={yaml:?}, env={environment:?}"
+                );
+            } else {
+                assert!(result.is_err(), "yaml={yaml:?}, env={environment:?}");
+            }
+        }
     }
 
     #[test]
@@ -1134,7 +1143,7 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let path = std::env::temp_dir().join(format!(
-                "forge_cgroup_memory_{}_{}",
+                "acdd_cgroup_memory_{}_{}",
                 std::process::id(),
                 nonce
             ));
@@ -1162,117 +1171,145 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn nested_cgroup_v2_uses_tightest_limit_and_host_headroom() {
+    fn cgroup_available_memory() {
+        struct Case {
+            case_id: &'static str,
+            host: u64,
+            membership: Option<&'static str>,
+            files: &'static [(&'static str, &'static str)],
+            expected: u64,
+        }
+        let nested = &[
+            ("pod/memory.max", "400\n"),
+            ("pod/memory.current", "200\n"),
+            ("pod/container/memory.max", "max\n"),
+        ];
+        let root_limit = &[("memory.max", "500\n"), ("memory.current", "200\n")];
         let fixture = CgroupFixture::new();
-        fixture.write("pod/memory.max", "400\n");
-        fixture.write("pod/memory.current", "200\n");
-        fixture.write("pod/container/memory.max", "max\n");
-        let proc_cgroup = "0::/pod/container\n";
-
-        assert_eq!(
-            available_memory_from_sources(500, Some(proc_cgroup), &fixture.root()),
-            200
-        );
-        assert_eq!(
-            available_memory_from_sources(100, Some(proc_cgroup), &fixture.root()),
-            100
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn unavailable_or_unresolvable_membership_uses_safe_cgroup_root() {
-        let fixture = CgroupFixture::new();
-        fixture.write("memory.max", "500\n");
-        fixture.write("memory.current", "200\n");
-
-        assert_eq!(
-            available_memory_from_sources(600, None, &fixture.root()),
-            300
-        );
-        assert_eq!(
-            available_memory_from_sources(
-                600,
-                Some("0::/namespace/path/not-mounted\n"),
-                &fixture.root()
-            ),
-            300
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn unlimited_or_over_limit_cgroups_fall_back_to_host_memory() {
-        let fixture = CgroupFixture::new();
-        fixture.write("memory.max", "max\n");
-        fixture.write("pod/memory.max", "max\n");
-        fixture.write("pod/container/memory.max", "max\n");
-        let proc_cgroup = "0::/pod/container\n";
-        assert_eq!(
-            available_memory_from_sources(321, Some(proc_cgroup), &fixture.root()),
-            321
-        );
-
-        fixture.write("memory.max", "200\n");
-        fixture.write("memory.current", "100\n");
-        fixture.write("pod/memory.max", "100\n");
-        fixture.write("pod/memory.current", "101\n");
-        fixture.write("pod/container/memory.max", "max\n");
-        assert_eq!(
-            available_memory_from_sources(321, Some(proc_cgroup), &fixture.root()),
-            321
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn malformed_or_unsafe_cgroup_paths_fall_back_to_host_memory() {
-        let fixture = CgroupFixture::new();
-        fixture.write("bad/memory.max", "not-a-limit\n");
-        assert_eq!(
-            available_memory_from_sources(321, Some("0::/bad\n"), &fixture.root()),
-            321
-        );
-
-        fixture.write("memory.max", "max\n");
-        fs::write(fixture.0.join("memory.max"), "max\n").unwrap();
-        let escaped = fixture.0.join("host");
-        fs::create_dir_all(&escaped).unwrap();
-        fs::write(escaped.join("memory.max"), "100\n").unwrap();
-        fs::write(escaped.join("memory.current"), "90\n").unwrap();
-        assert_eq!(
-            available_memory_from_sources(321, Some("0::/../host\n"), &fixture.root()),
-            321
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn cgroup_v1_over_limit_falls_back_without_subtraction_panic() {
-        let fixture = CgroupFixture::new();
-        fixture.write("memory/memory.limit_in_bytes", "100\n");
-        fixture.write("memory/memory.usage_in_bytes", "40\n");
-        let proc_cgroup = "5:cpu,memory:/\n";
-        assert_eq!(
-            available_memory_from_sources(321, Some(proc_cgroup), &fixture.root()),
-            60
-        );
-
-        // The unified path exists, but has no v2 memory-controller files.
-        fs::create_dir_all(fixture.root().join("nested")).unwrap();
-        fixture.write("memory/nested/memory.limit_in_bytes", "100\n");
-        fixture.write("memory/nested/memory.usage_in_bytes", "40\n");
-        let hybrid_cgroups = "0::/nested\n7:memory:/nested\n";
-        assert_eq!(
-            available_memory_from_sources(321, Some(hybrid_cgroups), &fixture.root()),
-            60
-        );
-
-        fixture.write("memory/memory.usage_in_bytes", "101\n");
-        assert_eq!(
-            available_memory_from_sources(321, Some(proc_cgroup), &fixture.root()),
-            321
-        );
+        for case in [
+            Case {
+                case_id: "nested_cgroup_v2_uses_tightest_limit_and_host_headroom::nested",
+                host: 500,
+                membership: Some("0::/pod/container\n"),
+                files: nested,
+                expected: 200,
+            },
+            Case {
+                case_id: "nested_cgroup_v2_uses_tightest_limit_and_host_headroom::host",
+                host: 100,
+                membership: Some("0::/pod/container\n"),
+                files: nested,
+                expected: 100,
+            },
+            Case {
+                case_id: "unavailable_or_unresolvable_membership_uses_safe_cgroup_root::absent",
+                host: 600,
+                membership: None,
+                files: root_limit,
+                expected: 300,
+            },
+            Case {
+                case_id: "unavailable_or_unresolvable_membership_uses_safe_cgroup_root::unresolved",
+                host: 600,
+                membership: Some("0::/namespace/path/not-mounted\n"),
+                files: root_limit,
+                expected: 300,
+            },
+            Case {
+                case_id: "unlimited_or_over_limit_cgroups_fall_back_to_host_memory::unlimited",
+                host: 321,
+                membership: Some("0::/pod/container\n"),
+                files: &[
+                    ("memory.max", "max\n"),
+                    ("pod/memory.max", "max\n"),
+                    ("pod/container/memory.max", "max\n"),
+                ],
+                expected: 321,
+            },
+            Case {
+                case_id: "unlimited_or_over_limit_cgroups_fall_back_to_host_memory::over_limit",
+                host: 321,
+                membership: Some("0::/pod/container\n"),
+                files: &[
+                    ("memory.max", "200\n"),
+                    ("memory.current", "100\n"),
+                    ("pod/memory.max", "100\n"),
+                    ("pod/memory.current", "101\n"),
+                    ("pod/container/memory.max", "max\n"),
+                ],
+                expected: 321,
+            },
+            Case {
+                case_id: "malformed_or_unsafe_cgroup_paths_fall_back_to_host_memory::malformed",
+                host: 321,
+                membership: Some("0::/bad\n"),
+                files: &[("bad/memory.max", "not-a-limit\n")],
+                expected: 321,
+            },
+            Case {
+                case_id: "malformed_or_unsafe_cgroup_paths_fall_back_to_host_memory::traversal",
+                host: 321,
+                membership: Some("0::/../host\n"),
+                files: &[("memory.max", "max\n")],
+                expected: 321,
+            },
+            Case {
+                case_id: "cgroup_v1_over_limit_falls_back_without_subtraction_panic::available",
+                host: 321,
+                membership: Some("5:cpu,memory:/\n"),
+                files: &[
+                    ("memory/memory.limit_in_bytes", "100\n"),
+                    ("memory/memory.usage_in_bytes", "40\n"),
+                ],
+                expected: 60,
+            },
+            Case {
+                case_id: "cgroup_v1_over_limit_falls_back_without_subtraction_panic::hybrid",
+                host: 321,
+                membership: Some("0::/nested\n7:memory:/nested\n"),
+                files: &[
+                    ("memory/memory.limit_in_bytes", "100\n"),
+                    ("memory/memory.usage_in_bytes", "40\n"),
+                    ("memory/nested/memory.limit_in_bytes", "100\n"),
+                    ("memory/nested/memory.usage_in_bytes", "40\n"),
+                ],
+                expected: 60,
+            },
+            Case {
+                case_id: "cgroup_v1_over_limit_falls_back_without_subtraction_panic::over_limit",
+                host: 321,
+                membership: Some("5:cpu,memory:/\n"),
+                files: &[
+                    ("memory/memory.limit_in_bytes", "100\n"),
+                    ("memory/memory.usage_in_bytes", "101\n"),
+                ],
+                expected: 321,
+            },
+        ] {
+            if fixture.root().exists() {
+                fs::remove_dir_all(fixture.root()).unwrap();
+            }
+            for (path, content) in case.files {
+                fixture.write(path, content);
+            }
+            if case.membership == Some("0::/../host\n") {
+                fs::write(fixture.0.join("memory.max"), "max\n").unwrap();
+                let escaped = fixture.0.join("host");
+                fs::create_dir_all(&escaped).unwrap();
+                fs::write(escaped.join("memory.max"), "100\n").unwrap();
+                fs::write(escaped.join("memory.current"), "90\n").unwrap();
+            }
+            if case.membership == Some("0::/nested\n7:memory:/nested\n") {
+                // The unified path exists without v2 memory-controller files.
+                fs::create_dir_all(fixture.root().join("nested")).unwrap();
+            }
+            assert_eq!(
+                available_memory_from_sources(case.host, case.membership, &fixture.root()),
+                case.expected,
+                "{}",
+                case.case_id,
+            );
+        }
     }
 
     #[test]

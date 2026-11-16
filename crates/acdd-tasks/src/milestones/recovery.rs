@@ -72,7 +72,7 @@ fn checkpoints(
     for root in roots {
         let output = git_command(
             root,
-            &["for-each-ref", "--format=%(refname)", "refs/forge/state/"],
+            &["for-each-ref", "--format=%(refname)", "refs/acdd/state/"],
         )?;
         if !output.status.success() {
             bail!("TASK_RECOVERY_CHECKPOINT_INVALID: cannot enumerate task keepers");
@@ -81,7 +81,7 @@ fn checkpoints(
             if archives
                 .keys()
                 .chain(obsolete.iter())
-                .any(|owner| reference.starts_with(&format!("refs/forge/state/{owner}/")))
+                .any(|owner| reference.starts_with(&format!("refs/acdd/state/{owner}/")))
             {
                 continue;
             }

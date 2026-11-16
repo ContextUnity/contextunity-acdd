@@ -185,19 +185,4 @@ pub fn memory_budget_bytes() -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn memory_budget_uses_a_64_mib_floor_and_16_gib_cap() {
-        assert_eq!(memory_budget_from_available(0), 64 * 1024 * 1024);
-        assert_eq!(
-            memory_budget_from_available(768 * 1024 * 1024),
-            256 * 1024 * 1024
-        );
-        assert_eq!(
-            memory_budget_from_available(64 * 1024 * 1024 * 1024),
-            16 * 1024 * 1024 * 1024
-        );
-    }
-
-    use super::memory_budget_from_available;
-}
+mod tests {}

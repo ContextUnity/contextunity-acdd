@@ -3,15 +3,6 @@ use contextunity_acdd::engine::languages::html::extract_html_file;
 
 #[test]
 fn htmx_and_alpine_relations_follow_exact_targets_and_effective_rules() {
-    assert_htmx_and_alpine_relations(false);
-}
-
-#[test]
-fn htmx_and_alpine_renamed_pack_replacements_stay_workspace_local() {
-    assert_htmx_and_alpine_relations(true);
-}
-
-fn assert_htmx_and_alpine_relations(renamed_phase: bool) {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     let methods = ["get", "post", "put", "patch", "delete"];
     let mut backend = String::from(
@@ -216,7 +207,7 @@ fn assert_htmx_and_alpine_relations(renamed_phase: bool) {
             include_str!("../../../crates/acdd-index/src/languages/manifests/alpinejs.toml"),
         ),
     ];
-    if !renamed_phase {
+    {
         observe(true, true, false, "unique");
         // Provider and listener changes traverse the real delta writer, then reopen.
         for state in ["missing", "duplicate", "unique"] {
@@ -256,7 +247,8 @@ fn assert_htmx_and_alpine_relations(renamed_phase: bool) {
             workspace.delta(&[&path]);
             observe(true, true, false, "unique");
         }
-    } else {
+    }
+    {
         let rename = |source: &str| {
             let mut renamed = source.to_owned();
             for (old, new) in [

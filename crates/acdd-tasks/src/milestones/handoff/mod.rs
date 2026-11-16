@@ -348,8 +348,10 @@ fn prepare_handoff_context(
         &commit,
         &target,
     )?;
-    crate::core::git::retain_proof_commit(root, &commit)?;
-    crate::core::git::retain_proof_commit(root, &target)?;
+    crate::core::git::retain_proof_commits(
+        root,
+        &BTreeSet::from([commit.clone(), target.clone()]),
+    )?;
     let owner = integration::HandoffProofOwner {
         identity: format!("{}/{}/{}", item.repository, item.project, item.id),
         worktree: root.canonicalize()?,
@@ -711,8 +713,10 @@ pub fn handoff(
         &target,
     )?;
     let identity = format!("{}/{}/{}", item.repository, item.project, item.id);
-    crate::core::git::retain_proof_commit(root, &sha)?;
-    crate::core::git::retain_proof_commit(root, &target)?;
+    crate::core::git::retain_proof_commits(
+        root,
+        &BTreeSet::from([sha.clone(), target.clone()]),
+    )?;
     let prefix = format!("{}/{}:", item.project, item.id);
     let settings = tasks::TaskSettings::load(root)?;
     store.set_handoff_pruning(settings.handoff_pruning);

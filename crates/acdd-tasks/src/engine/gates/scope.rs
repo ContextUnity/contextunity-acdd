@@ -361,7 +361,11 @@ fn baseline_caller_paths_from_git(
                 "TASK_CANDIDATE_BASELINE_INVALID: could not search baseline callers at {baseline}"
             );
         }
-        for entry in output.stdout.split(|byte| *byte == 0).filter(|p| !p.is_empty()) {
+        for entry in output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|p| !p.is_empty())
+        {
             let raw = String::from_utf8(entry.to_vec())
                 .context("TASK_CANDIDATE_BASELINE_INVALID: grep path is not UTF-8")?;
             let candidate_path = raw.strip_prefix(&prefix).unwrap_or(&raw);

@@ -2,21 +2,22 @@ use super::super::*;
 
 #[cfg(feature = "lang-vue")]
 #[test]
-fn vue_template_bindings() {
+fn vue_template_binding_members() {
     let w = crate::languages::PersistedWorkspaceHarness::new();
-    w.write(
-        "MyButton.vue",
-        r#"<template>
+    {
+        w.write(
+            "MyButton.vue",
+            r#"<template>
   <button>{{ label }}</button>
 </template>
 <script setup lang="ts">
 defineProps<{ label: string }>();
 </script>
 "#,
-    );
-    w.write(
-        "App.vue",
-        r#"<template>
+        );
+        w.write(
+            "App.vue",
+            r#"<template>
   <div>
     <MyButton :label="buttonText" @click="onSubmit" />
     <p>{{ user.name }}</p>
@@ -35,40 +36,111 @@ watch(); watchEffect(); onMounted(); onUnmounted(); onUpdated(); onBeforeMount()
 nextTick(); inject(); provide(); useSlots(); useAttrs(); useI18n(); t();
 </script>
 "#,
+        );
+    }
+    {
+        w.write(
+            "Props.vue",
+            r#"<template>
+  <p>{{ props.label }}</p>
+  <p>{{ props.missing }}</p>
+</template>
+<script setup lang="ts">
+const props = defineProps<{ label: string }>();
+</script>"#,
+        );
+        w.write(
+        "Case2Shadow.vue",
+        r#"<template><div v-for="props in items">{{ props.label }}</div></template>
+<script setup lang="ts">const props = defineProps<{ label: string }>(); const items = [{}];</script>"#,
     );
+        w.write(
+            "Case2Sibling.vue",
+            "<template><p>{{ props.label }}</p></template><script setup>const other = 1;</script>",
+        );
+        w.write(
+        "Duplicate.vue",
+        "<template><p>{{ props.label }}</p></template><script setup lang=\"ts\">const props = defineProps<{ label: string; label: string; label: string }>();</script>",
+    );
+        w.write(
+        "Reassigned.vue",
+        "<template><p>{{ props.label }}</p></template><script setup lang=\"ts\">const props = defineProps<{ label: string }>(); props = { label: 'local' };</script>",
+    );
+        w.write(
+        "DuplicateBinding.vue",
+        "<template><p>{{ props.label }}</p></template><script setup lang=\"ts\">const props = defineProps<{ label: string }>(); const props = defineProps<{ label: string }>();</script>",
+    );
+        w.write(
+        "ShadowedProducer.vue",
+        "<template><p>{{ props.label }}</p></template><script setup lang=\"ts\">function defineProps() { return { label: 'local' }; } const props = defineProps<{ label: string }>();</script>",
+    );
+        w.write(
+        "Ordinary.vue",
+        "<template><p>{{ props.label }}</p></template><script lang=\"ts\">const props = defineProps<{ label: string }>();</script>",
+    );
+    }
+    {
+        w.write(
+            "Nested.vue",
+            r#"<template>
+  <p>{{ props.user.profile.name }}</p>
+  <p>{{ props.user?.profile?.name }}</p>
+  <p>{{ props.user.profile.missing }}</p>
+</template>
+<script setup lang="ts">
+const props = defineProps<{ user?: { profile: { name?: string } } }>();
+</script>"#,
+        );
+        w.write(
+        "Case3Shadow.vue",
+        r#"<template><div v-for="props in items">{{ props.user.profile.name }}</div></template>
+<script setup lang="ts">const props = defineProps<{ user: { profile: { name: string } } }>(); const items = [];</script>"#,
+    );
+        w.write(
+        "Case3Sibling.vue",
+        r#"<template>{{ props.user.profile.name }}</template><script setup lang="ts">const other = 1;</script>"#,
+    );
+        w.write(
+        "SameLine.vue",
+        r#"<template>{{ props.left.name }} {{ props.right.name }}</template><script setup lang="ts">const props = defineProps<{ left: { name: string }; right: { name: string } }>();</script>"#,
+    );
+    }
 
-    let facts = ExtractorHarness::for_lang("vue")
-        .at_path("App.vue")
-        .extract(&fs::read_to_string(w.root().join("App.vue")).unwrap());
-
-    let expressions: Vec<&str> = facts
-        .references
-        .iter()
-        .map(|r| r.expression.as_str())
-        .collect();
-    assert!(
-        expressions.contains(&"MyButton"),
-        "missing template custom component MyButton: {:?}",
-        expressions
-    );
-    assert!(
-        expressions.contains(&"buttonText"),
-        "missing template bound prop buttonText: {:?}",
-        expressions
-    );
-    assert!(
-        expressions.contains(&"onSubmit"),
-        "missing template event handler onSubmit: {:?}",
-        expressions
-    );
-    assert!(
-        expressions.contains(&"user"),
-        "missing template interpolation user: {:?}",
-        expressions
-    );
     w.build();
     let conn = w.open();
-    for name in "ref computed reactive shallowRef shallowReactive toRef toRefs unref isRef watch watchEffect onMounted onUnmounted onUpdated onBeforeMount onBeforeUnmount nextTick inject provide useSlots useAttrs useI18n".split_ascii_whitespace() {
+    {
+        let facts = ExtractorHarness::for_lang("vue")
+            .at_path("App.vue")
+            .extract(&fs::read_to_string(w.root().join("App.vue")).unwrap());
+
+        let expressions: Vec<&str> = facts
+            .references
+            .iter()
+            .map(|r| r.expression.as_str())
+            .collect();
+        assert!(
+            expressions.contains(&"MyButton"),
+            "missing template custom component MyButton: {:?}",
+            expressions
+        );
+        assert!(
+            expressions.contains(&"buttonText"),
+            "missing template bound prop buttonText: {:?}",
+            expressions
+        );
+        assert!(
+            expressions.contains(&"onSubmit"),
+            "missing template event handler onSubmit: {:?}",
+            expressions
+        );
+        assert!(
+            expressions.contains(&"user"),
+            "missing template interpolation user: {:?}",
+            expressions
+        );
+    }
+    {
+        for name in "ref computed reactive shallowRef shallowReactive toRef toRefs unref isRef watch watchEffect onMounted onUnmounted onUpdated onBeforeMount onBeforeUnmount nextTick inject provide useSlots useAttrs useI18n".split_ascii_whitespace() {
         let (status, evidence): (String, String) = conn
             .query_row(
                 "SELECT status, (SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='App.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?1",
@@ -79,166 +151,90 @@ nextTick(); inject(); provide(); useSlots(); useAttrs(); useI18n(); t();
         assert_eq!(status, "external", "Vue runtime call {name}");
         assert!(evidence.contains("builtin:vue_runtime"), "Vue runtime call {name}: {evidence}");
     }
-    let unbound_t: String = query_scalar(&conn, "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='App.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='t'", []);
-    assert_eq!(
-        unbound_t, "unresolved",
-        "t requires a proven callable setup binding"
-    );
-}
-
-#[cfg(feature = "lang-vue")]
-#[cfg(feature = "lang-vue")]
-#[test]
-fn vue_typed_defineprops_template_members() {
-    let w = crate::languages::PersistedWorkspaceHarness::new();
-    w.write(
-        "Props.vue",
-        r#"<template>
-  <p>{{ props.label }}</p>
-  <p>{{ props.missing }}</p>
-</template>
-<script setup lang="ts">
-const props = defineProps<{ label: string }>();
-</script>"#,
-    );
-    w.write(
-        "Shadow.vue",
-        r#"<template><div v-for="props in items">{{ props.label }}</div></template>
-<script setup lang="ts">const props = defineProps<{ label: string }>(); const items = [{}];</script>"#,
-    );
-    w.write(
-        "Sibling.vue",
-        "<template><p>{{ props.label }}</p></template><script setup>const other = 1;</script>",
-    );
-    w.write(
-        "Duplicate.vue",
-        "<template><p>{{ props.label }}</p></template><script setup lang=\"ts\">const props = defineProps<{ label: string; label: string; label: string }>();</script>",
-    );
-    w.write(
-        "Reassigned.vue",
-        "<template><p>{{ props.label }}</p></template><script setup lang=\"ts\">const props = defineProps<{ label: string }>(); props = { label: 'local' };</script>",
-    );
-    w.write(
-        "DuplicateBinding.vue",
-        "<template><p>{{ props.label }}</p></template><script setup lang=\"ts\">const props = defineProps<{ label: string }>(); const props = defineProps<{ label: string }>();</script>",
-    );
-    w.write(
-        "ShadowedProducer.vue",
-        "<template><p>{{ props.label }}</p></template><script setup lang=\"ts\">function defineProps() { return { label: 'local' }; } const props = defineProps<{ label: string }>();</script>",
-    );
-    w.write(
-        "Ordinary.vue",
-        "<template><p>{{ props.label }}</p></template><script lang=\"ts\">const props = defineProps<{ label: string }>();</script>",
-    );
-    w.build();
-    let conn = w.open();
-    let coverage = |path: &str, expression: &str| -> String {
-        query_scalar(&conn, "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2", rusqlite::params![path, expression])
-    };
-    assert_eq!(coverage("Props.vue", "props.label"), "resolved");
-    assert_eq!(coverage("Props.vue", "props.missing"), "unresolved");
-    assert_eq!(coverage("Shadow.vue", "props.label"), "unresolved");
-    assert_eq!(coverage("Sibling.vue", "props.label"), "unresolved");
-    for path in [
-        "Duplicate.vue",
-        "Reassigned.vue",
-        "DuplicateBinding.vue",
-        "ShadowedProducer.vue",
-        "Ordinary.vue",
-    ] {
+        let unbound_t: String = query_scalar(&conn, "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='App.vue' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='t'", []);
         assert_eq!(
-            coverage(path, "props.label"),
-            "unresolved",
-            "unproven typed props in {path}"
+            unbound_t, "unresolved",
+            "t requires a proven callable setup binding"
         );
     }
-    let exact_field_edges: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='Props.vue' AND e.kind='references' AND e.line=2 AND (SELECT path FROM path_dictionary WHERE path_id=src.path_id)='Props.vue' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='Props.vue' AND dst.kind='field' AND dst.name='label'", []);
-    assert_eq!(
-        exact_field_edges, 1,
-        "template member must link to the same-file indexed label field"
-    );
-    for path in [
-        "Duplicate.vue",
-        "Reassigned.vue",
-        "DuplicateBinding.vue",
-        "ShadowedProducer.vue",
-        "Ordinary.vue",
-    ] {
-        let field_edges: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?1 AND dst.name='label'", [path]);
+    {
+        let coverage = |path: &str, expression: &str| -> String {
+            query_scalar(&conn, "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2", rusqlite::params![path, expression])
+        };
+        assert_eq!(coverage("Props.vue", "props.label"), "resolved");
+        assert_eq!(coverage("Props.vue", "props.missing"), "unresolved");
+        assert_eq!(coverage("Case2Shadow.vue", "props.label"), "unresolved");
+        assert_eq!(coverage("Case2Sibling.vue", "props.label"), "unresolved");
+        for path in [
+            "Duplicate.vue",
+            "Reassigned.vue",
+            "DuplicateBinding.vue",
+            "ShadowedProducer.vue",
+            "Ordinary.vue",
+        ] {
+            assert_eq!(
+                coverage(path, "props.label"),
+                "unresolved",
+                "unproven typed props in {path}"
+            );
+        }
+        let exact_field_edges: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes src ON src.node_hash=e.src_hash JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='Props.vue' AND e.kind='references' AND e.line=2 AND (SELECT path FROM path_dictionary WHERE path_id=src.path_id)='Props.vue' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='Props.vue' AND dst.kind='field' AND dst.name='label'", []);
         assert_eq!(
-            field_edges, 0,
-            "unproven typed props cannot provide an exact template target in {path}"
+            exact_field_edges, 1,
+            "template member must link to the same-file indexed label field"
         );
+        for path in [
+            "Duplicate.vue",
+            "Reassigned.vue",
+            "DuplicateBinding.vue",
+            "ShadowedProducer.vue",
+            "Ordinary.vue",
+        ] {
+            let field_edges: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?1 AND dst.name='label'", [path]);
+            assert_eq!(
+                field_edges, 0,
+                "unproven typed props cannot provide an exact template target in {path}"
+            );
+        }
     }
-}
-
-#[cfg(feature = "lang-vue")]
-#[cfg(feature = "lang-vue")]
-#[test]
-fn vue_nested_and_optional_defineprops_template_members() {
-    let w = crate::languages::PersistedWorkspaceHarness::new();
-    w.write(
-        "Nested.vue",
-        r#"<template>
-  <p>{{ props.user.profile.name }}</p>
-  <p>{{ props.user?.profile?.name }}</p>
-  <p>{{ props.user.profile.missing }}</p>
-</template>
-<script setup lang="ts">
-const props = defineProps<{ user?: { profile: { name?: string } } }>();
-</script>"#,
-    );
-    w.write(
-        "Shadow.vue",
-        r#"<template><div v-for="props in items">{{ props.user.profile.name }}</div></template>
-<script setup lang="ts">const props = defineProps<{ user: { profile: { name: string } } }>(); const items = [];</script>"#,
-    );
-    w.write(
-        "Sibling.vue",
-        r#"<template>{{ props.user.profile.name }}</template><script setup lang="ts">const other = 1;</script>"#,
-    );
-    w.write(
-        "SameLine.vue",
-        r#"<template>{{ props.left.name }} {{ props.right.name }}</template><script setup lang="ts">const props = defineProps<{ left: { name: string }; right: { name: string } }>();</script>"#,
-    );
-    w.build();
-    let conn = w.open();
-    let coverage = |path: &str, expression: &str| -> String {
-        conn.query_row(
+    {
+        let coverage = |path: &str, expression: &str| -> String {
+            conn.query_row(
             "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2",
             rusqlite::params![path, expression],
             |row| row.get(0),
         ).unwrap_or_else(|error| panic!("missing {path}:{expression}: {error}"))
-    };
-    for expression in ["props.user.profile.name", "props.user?.profile?.name"] {
+        };
+        for expression in ["props.user.profile.name", "props.user?.profile?.name"] {
+            assert_eq!(
+                coverage("Nested.vue", expression),
+                "resolved",
+                "{expression}"
+            );
+        }
         assert_eq!(
-            coverage("Nested.vue", expression),
-            "resolved",
-            "{expression}"
+            coverage("Nested.vue", "props.user.profile.missing"),
+            "unresolved"
+        );
+        assert_eq!(
+            coverage("Case3Shadow.vue", "props.user.profile.name"),
+            "unresolved"
+        );
+        assert_eq!(
+            coverage("Case3Sibling.vue", "props.user.profile.name"),
+            "unresolved"
+        );
+        for expression in ["props.left.name", "props.right.name"] {
+            assert_eq!(
+                coverage("SameLine.vue", expression),
+                "unresolved",
+                "ambiguous type-literal field {expression}"
+            );
+        }
+        let exact_field_edges: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='Nested.vue' AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='Nested.vue' AND dst.kind='field' AND dst.name='name'", []);
+        assert_eq!(
+            exact_field_edges, 2,
+            "both template expressions link to their same-file typed field"
         );
     }
-    assert_eq!(
-        coverage("Nested.vue", "props.user.profile.missing"),
-        "unresolved"
-    );
-    assert_eq!(
-        coverage("Shadow.vue", "props.user.profile.name"),
-        "unresolved"
-    );
-    assert_eq!(
-        coverage("Sibling.vue", "props.user.profile.name"),
-        "unresolved"
-    );
-    for expression in ["props.left.name", "props.right.name"] {
-        assert_eq!(
-            coverage("SameLine.vue", expression),
-            "unresolved",
-            "ambiguous type-literal field {expression}"
-        );
-    }
-    let exact_field_edges: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='Nested.vue' AND e.kind='references' AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='Nested.vue' AND dst.kind='field' AND dst.name='name'", []);
-    assert_eq!(
-        exact_field_edges, 2,
-        "both template expressions link to their same-file typed field"
-    );
 }

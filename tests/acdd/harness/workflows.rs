@@ -54,18 +54,7 @@ impl WorkflowHarness {
 
     pub fn write_to(&self, root: &Workspace) {
         root.write(self.path, self.source);
-        root.write(
-            "workflow-runner.py",
-            include_str!("../fixtures/workflows/runner.py"),
-        );
-        root.write(
-            "artifact-runner.py",
-            include_str!("../fixtures/workflows/artifact-runner.py"),
-        );
-        root.write(
-            "artifact-check.py",
-            include_str!("../fixtures/workflows/artifact-check.py"),
-        );
+        crate::acdd::snapshot::stage_role_helper_at(&root.path("workflow-role-fixture"));
     }
 
     pub(crate) fn gate_profile(path: &'static str, source: &'static str) -> Self {
@@ -95,10 +84,7 @@ fn shipped_authoring_workflows_execute_repair_and_real_preflights() {
             .unwrap()
     }
     let root = Workspace::new();
-    root.write(
-        "author-runner.py",
-        include_str!("../fixtures/workflows/author-runner.py"),
-    );
+    crate::acdd::snapshot::stage_role_helper(root.root());
     root.write("author-draft", "Чернетка\n");
     root.write("acdd.yaml", "plans: [docs/plans]\n");
     assert!(std::process::Command::new("git")
@@ -126,7 +112,7 @@ fn shipped_authoring_workflows_execute_repair_and_real_preflights() {
         let source = source
             .replace(
                 "codex exec -C \"{worktree}\" -m \"{model}\" -c model_reasoning_effort=\"{reasoning}\" \"{prompt}\"",
-                "python3 author-runner.py \"{prompt}\"",
+                ".acdd/role_fixture author-runner \"{prompt}\"",
             );
         root.write(&path, &source);
         root.write("author-final", final_content);
@@ -481,21 +467,18 @@ fn shipped_polish_workflow_repairs_failed_verification_and_reviews_independently
     use std::path::Path;
 
     let workspace = Workspace::new();
+    crate::acdd::snapshot::stage_role_helper(workspace.root());
     let path = "docs/workflows/code-quality-and-polish.workflow.yaml";
     let source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap();
     // Substitute only the external model process and the expensive repository check.
     let source = source.replace(
         "codex exec -C \"{worktree}\" -m \"{model}\" -c model_reasoning_effort=\"{reasoning}\" \"{prompt}\"",
-        "python3 polish-runner.py \"{prompt}\"",
+        ".acdd/role_fixture polish-runner \"{prompt}\"",
     ).replace(
         "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets",
         "if test -f repaired; then echo 'test result: ok. 1 passed; 0 failed; 0 ignored'; else echo 'test result: FAILED. 0 passed; 1 failed; 0 ignored'; exit 1; fi",
     );
     workspace.write(path, &source);
-    workspace.write(
-        "polish-runner.py",
-        include_str!("../fixtures/workflows/polish-runner.py"),
-    );
     let result =
         workflow::run_standalone_workflow(workspace.root(), Path::new(path), None).unwrap();
     assert_eq!(result["status"], "completed");

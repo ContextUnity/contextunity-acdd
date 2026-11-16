@@ -24,7 +24,7 @@ pub(crate) enum PlanFixture {
 impl PlanHarness {
     fn run(&self, root: &Workspace) -> anyhow::Result<serde_json::Value> {
         let cli = contextunity_acdd::cli::Cli::try_parse_from([
-            "forge",
+            "acdd",
             "--root",
             root.root().to_str().unwrap(),
             "--format",
@@ -109,7 +109,7 @@ impl PlanHarness {
             &[
                 "for-each-ref",
                 "--format=%(objecttype) %(objectname) %(refname)",
-                "refs/forge/",
+                "refs/acdd/",
             ],
         )
         .output()
@@ -174,7 +174,7 @@ fn plans_exclude_configured_database_from_each_snapshot() {
     let refs = harness
         .snapshots(&root)
         .into_iter()
-        .filter(|reference| reference.contains(" refs/forge/snapshots/"))
+        .filter(|reference| reference.contains(" refs/acdd/snapshots/"))
         .collect::<Vec<_>>();
     assert_eq!(refs.len(), 6, "{refs:?}");
     let mut completed = 0;
@@ -199,7 +199,7 @@ fn plans_exclude_configured_database_from_each_snapshot() {
             );
         }
         assert!(root.path("unrelated.txt").exists());
-        if name.starts_with("refs/forge/snapshots/forge-mcp/") {
+        if name.starts_with("refs/acdd/snapshots/acdd/") {
             assert!(!tree.lines().any(|p| p == "unrelated.txt"));
         }
         if tree.lines().any(|path| path == "src/first.rs") {

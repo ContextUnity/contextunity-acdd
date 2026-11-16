@@ -643,7 +643,10 @@ struct SearchMatcher<'a> {
 
 impl<'a> SearchMatcher<'a> {
     fn new(request: &'a ReadRequest) -> Result<Self> {
-        let pattern = request.pattern.as_deref().context("search requires pattern")?;
+        let pattern = request
+            .pattern
+            .as_deref()
+            .context("search requires pattern")?;
         ensure!(!pattern.is_empty(), "search pattern must not be empty");
         let regex = request
             .regex
@@ -667,11 +670,7 @@ fn split_linked_workspace<'a>(
     if raw_path.starts_with('[') {
         if let Some((prefix, rest)) = raw_path.split_once("]/") {
             let ws_name = prefix.trim_start_matches('[');
-            if let Some(lw) = adapter
-                .linked_workspaces
-                .iter()
-                .find(|w| w.name == ws_name)
-            {
+            if let Some(lw) = adapter.linked_workspaces.iter().find(|w| w.name == ws_name) {
                 return Ok((
                     lw.path.as_path(),
                     rest.strip_prefix("./").unwrap_or(rest),
@@ -794,13 +793,18 @@ fn ensure_export_not_in_search_scope(
     };
     if let (Some(dest_name), Ok(can_parent), Ok(can_walk), Ok(can_base)) = (
         dest.file_name(),
-        dest.parent().context("export destination has no parent").and_then(|p| Ok(p.canonicalize()?)),
+        dest.parent()
+            .context("export destination has no parent")
+            .and_then(|p| Ok(p.canonicalize()?)),
         scope.walk_dir.canonicalize(),
         scope.base_root.canonicalize(),
     ) {
         let can_dest = can_parent.join(dest_name);
         if can_dest.starts_with(&can_walk) {
-            let rel_match = can_dest.strip_prefix(&can_base).ok().map(normalize_rel_display);
+            let rel_match = can_dest
+                .strip_prefix(&can_base)
+                .ok()
+                .map(normalize_rel_display);
             let in_scope = match (&scope.glob_matcher, rel_match) {
                 (Some(ov), Some(rel)) => ov.matched(Path::new(&rel), false).is_whitelist(),
                 (None, _) => true,
@@ -885,8 +889,7 @@ fn search_directory_or_glob(
             None => rel_str.clone(),
         };
         if sensitive(adapter, root, &display_path).is_err()
-            || (linked_prefix.is_some()
-                && sensitive_with_case(adapter, &rel_str, base_ci).is_err())
+            || (linked_prefix.is_some() && sensitive_with_case(adapter, &rel_str, base_ci).is_err())
         {
             continue;
         }

@@ -413,7 +413,7 @@ mod unix {
             RunnerSessionPolicy::Fresh => {
                 let mut entropy = [0; 32];
                 File::open("/dev/urandom")?.read_exact(&mut entropy)?;
-                Ok(format!("forge-runner-{}", hex::encode(entropy)))
+                Ok(format!("acdd-runner-{}", hex::encode(entropy)))
             }
         }
     }

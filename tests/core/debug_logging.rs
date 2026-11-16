@@ -66,7 +66,7 @@ roots:
 }
 
 #[test]
-fn debug_logger_writes_to_forge_directory() {
+fn debug_logger_writes_to_acdd_directory() {
     let ws = Workspace::new();
     let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
     let expected_jsonl_file = ws
@@ -215,7 +215,7 @@ fn debug_log_obstructions_report_errors_without_breaking_requests() {
                         serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"})
                     )
                     .unwrap();
-                    writeln!(input, "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{{\"name\":\"forge_guide\",\"arguments\":{{\"topic\":\"query\",\"secret\":\"secret-request-content\"}}}}}}").unwrap();
+                    writeln!(input, "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{{\"name\":\"acdd_guide\",\"arguments\":{{\"topic\":\"query\",\"secret\":\"secret-request-content\"}}}}}}").unwrap();
                 }
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
                 let status = loop {

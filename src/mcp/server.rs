@@ -1033,7 +1033,7 @@ fn parent_identity_contract() {
 #[test]
 fn worktree_name_contract() {
     let root = std::env::temp_dir().join(format!(
-        "forge-worktree-name-{}-{}",
+        "acdd-worktree-name-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

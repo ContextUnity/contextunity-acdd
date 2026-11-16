@@ -1,6 +1,6 @@
 use super::*;
 #[test]
-fn typescript_package_exports_paths_respect_workspace_boundaries() {
+fn declared_workspace_package_paths() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in [
         (
@@ -9,12 +9,12 @@ fn typescript_package_exports_paths_respect_workspace_boundaries() {
         ),
         (
             "components/tool/package.json",
-            r#"{"name":"@suite/tool","exports":{"./entry":{"import":"./src/entry.ts"}}}"#,
+            r#"{"name":"@suite/tool","exports":{"./entry":{"import":"./src/entry.ts"},"./features/*":"./src/features/*.ts","./features/special/*":{"import":"./src/special/*.ts"}}}"#,
         ),
         ("components/tool/src/entry.ts", "export function shared() {}"),
         (
             "packages/tool/package.json",
-            r#"{"name":"@suite/tool","exports":{"./entry":"./src/decoy.ts"}}"#,
+            r#"{"name":"@suite/tool","exports":{"./entry":"./src/decoy.ts","./features/*":"./src/decoy/*.ts"}}"#,
         ),
         ("packages/tool/src/decoy.ts", "export function shared() {}"),
         (
@@ -46,6 +46,23 @@ fn typescript_package_exports_paths_respect_workspace_boundaries() {
     ] {
         workspace.write(path, source);
     }
+    for (path, source) in [
+
+
+
+        ("components/tool/src/features/helper.ts", "export function feature() {}"),
+        (
+            "components/tool/src/features/special/action.ts",
+            "export function special() {}",
+        ),
+        ("components/tool/src/special/action.ts", "export function special() {}"),
+
+        ("packages/tool/src/decoy/helper.ts", "export function feature() {}"),
+        (
+            "apps/one/src/wildcard.ts",
+            "import { feature } from '@suite/tool/features/helper'; import { special } from '@suite/tool/features/special/action'; feature(); special();",
+        ),
+    ] { workspace.write(path, source); }
     workspace.build();
     let conn = workspace.open();
     let call_targets = |path: &str| persisted_call_paths(&conn, path);
@@ -57,6 +74,16 @@ fn typescript_package_exports_paths_respect_workspace_boundaries() {
         call_targets("apps/two/src/main.ts"),
         ["apps/two/src/helper.ts"]
     );
+    {
+        let targets = persisted_call_paths(&conn, "apps/one/src/wildcard.ts");
+        assert_eq!(
+            targets,
+            [
+                "components/tool/src/features/helper.ts",
+                "components/tool/src/special/action.ts"
+            ]
+        );
+    }
     drop(conn);
     workspace.write(
         "apps/one/tsconfig.json",
@@ -74,49 +101,6 @@ fn typescript_package_exports_paths_respect_workspace_boundaries() {
         ]
     );
     drop(delta);
-}
-
-#[test]
-fn package_export_wildcards_select_declared_workspace_and_specific_subpath() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    for (path, source) in [
-        (
-            "package.json",
-            r#"{"private":true,"workspaces":["components/*","apps/*"]}"#,
-        ),
-        (
-            "components/tool/package.json",
-            r#"{"name":"@suite/tool","exports":{"./features/*":"./src/features/*.ts","./features/special/*":{"import":"./src/special/*.ts"}}}"#,
-        ),
-        ("components/tool/src/features/helper.ts", "export function feature() {}"),
-        (
-            "components/tool/src/features/special/action.ts",
-            "export function special() {}",
-        ),
-        ("components/tool/src/special/action.ts", "export function special() {}"),
-        (
-            "packages/tool/package.json",
-            r#"{"name":"@suite/tool","exports":{"./features/*":"./src/decoy/*.ts"}}"#,
-        ),
-        ("packages/tool/src/decoy/helper.ts", "export function feature() {}"),
-        (
-            "apps/one/src/main.ts",
-            "import { feature } from '@suite/tool/features/helper'; import { special } from '@suite/tool/features/special/action'; feature(); special();",
-        ),
-    ] {
-        workspace.write(path, source);
-    }
-    workspace.build();
-    let conn = workspace.open();
-    let targets = persisted_call_paths(&conn, "apps/one/src/main.ts");
-    assert_eq!(
-        targets,
-        [
-            "components/tool/src/features/helper.ts",
-            "components/tool/src/special/action.ts"
-        ]
-    );
-    drop(conn);
 }
 
 #[test]

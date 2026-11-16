@@ -297,7 +297,7 @@ mod milestone_fixture_tests {
     fn milestone_fixture_builder_round_trips_fence_lines_in_task_fields() {
         let template = Milestone::parse(
             MilestoneFixtureBuilder::load_template(MilestoneFixtureTemplate::Cancellation),
-            "forge-mcp",
+            "acdd",
         )
         .unwrap();
         let mut receipt = template.tasks[1].receipt.clone().unwrap();
@@ -320,7 +320,7 @@ mod milestone_fixture_tests {
                 .task_receipt(&receipt)
                 .task_with_deps("second", &["src/shared.rs"], &["first"])
                 .build();
-            let milestone = Milestone::parse(&source, "forge-mcp").unwrap();
+            let milestone = Milestone::parse(&source, "acdd").unwrap();
             assert_eq!(milestone.tasks.len(), 2);
             assert_eq!(milestone.tasks[0].target, content);
             assert_eq!(milestone.tasks[0].invariants, [content]);
@@ -445,7 +445,7 @@ mod milestone_fixture_tests {
     fn milestone_fixture_templates_parse_and_cancellation_imports() {
         let linear = Milestone::parse(
             MilestoneFixtureBuilder::load_template(MilestoneFixtureTemplate::Linear),
-            "forge-mcp",
+            "acdd",
         )
         .unwrap();
         assert_eq!(linear.tasks.len(), 2);
@@ -455,7 +455,7 @@ mod milestone_fixture_tests {
 
         let branching = Milestone::parse(
             MilestoneFixtureBuilder::load_template(MilestoneFixtureTemplate::BranchingDeps),
-            "forge-mcp",
+            "acdd",
         )
         .unwrap();
         assert_eq!(branching.tasks.len(), 4);
@@ -465,7 +465,7 @@ mod milestone_fixture_tests {
 
         let cancellation_source =
             MilestoneFixtureBuilder::load_template(MilestoneFixtureTemplate::Cancellation);
-        let cancellation = Milestone::parse(cancellation_source, "forge-mcp").unwrap();
+        let cancellation = Milestone::parse(cancellation_source, "acdd").unwrap();
         assert_eq!(cancellation.tasks.len(), 3);
         assert_eq!(cancellation.tasks[0].status.as_deref(), Some("planned"));
         assert_eq!(cancellation.tasks[1].status.as_deref(), Some("completed"));
@@ -474,7 +474,7 @@ mod milestone_fixture_tests {
         let workspace = Workspace::new();
         let reference = "docs/milestones/cancellation.md";
         workspace.write(reference, cancellation_source);
-        let mut store = TasksStore::open_in_memory("forge-mcp", "forge-mcp").unwrap();
+        let mut store = TasksStore::open_in_memory("acdd", "acdd").unwrap();
         let imported = store
             .sync(&cancellation, reference, workspace.root())
             .unwrap();

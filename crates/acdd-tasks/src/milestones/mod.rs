@@ -551,7 +551,7 @@ pub fn init(root: &Path, options: Init) -> Result<Value> {
         notes,
         tasks
     );
-    crate::core::tasks::Milestone::parse(&format!("{header}{body}"), "forge-mcp")?;
+    crate::core::tasks::Milestone::parse(&format!("{header}{body}"), "acdd")?;
     let target_dir_rel = target_dir.strip_prefix(root).unwrap_or(&target_dir);
     let relative = target_dir_rel.join(format!("{number}-{slug}.md"));
     let path = root.join(&relative);
@@ -857,7 +857,7 @@ pub fn clear_milestone(root: &Path, selector: &str) -> Result<Value> {
         0 => {
             crate::core::tasks::valid_identity(selector)?;
             let settings = tasks::TaskSettings::load(root)?;
-            let project = settings.task_project.unwrap_or_else(|| "forge-mcp".into());
+            let project = settings.task_project.unwrap_or_else(|| "acdd".into());
             (selector.to_owned(), settings.task_repository, project, None)
         }
         _ => {
@@ -878,15 +878,15 @@ pub fn clear_milestone(root: &Path, selector: &str) -> Result<Value> {
     let prefix = format!("{project}/{id}:");
     let result = store.clear_milestone(&prefix, &id, relative.as_deref())?;
 
-    let exact_state_prefix = format!("refs/forge/state/{repo}/{project}/{id}/");
-    let exact_state_ref = format!("refs/forge/state/{repo}/{project}/{id}");
-    let exact_snapshots_prefix = format!("refs/forge/snapshots/{project}/{id}/");
-    let exact_snapshots_ref = format!("refs/forge/snapshots/{project}/{id}");
+    let exact_state_prefix = format!("refs/acdd/state/{repo}/{project}/{id}/");
+    let exact_state_ref = format!("refs/acdd/state/{repo}/{project}/{id}");
+    let exact_snapshots_prefix = format!("refs/acdd/snapshots/{project}/{id}/");
+    let exact_snapshots_ref = format!("refs/acdd/snapshots/{project}/{id}");
 
-    let state_pattern = format!("refs/forge/state/{repo}/{project}/{id}");
-    let state_pattern_wild = format!("refs/forge/state/{repo}/{project}/{id}/*");
-    let snapshots_pattern = format!("refs/forge/snapshots/{project}/{id}");
-    let snapshots_pattern_wild = format!("refs/forge/snapshots/{project}/{id}/*");
+    let state_pattern = format!("refs/acdd/state/{repo}/{project}/{id}");
+    let state_pattern_wild = format!("refs/acdd/state/{repo}/{project}/{id}/*");
+    let snapshots_pattern = format!("refs/acdd/snapshots/{project}/{id}");
+    let snapshots_pattern_wild = format!("refs/acdd/snapshots/{project}/{id}/*");
 
     let mut refs_pruned = 0;
     let output = crate::core::git::git_command(

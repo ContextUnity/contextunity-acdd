@@ -2,7 +2,7 @@ use super::*;
 
 fn checkpoint_breadcrumb(subject: &str) -> String {
     format!(
-        "forge-mcp/checkpoint-fixture/AC-001-hierarchical-acdd-gates-and-milestone-orchestration/tasks.build/checkpoint-{subject}/build"
+        "acdd/checkpoint-fixture/AC-001-hierarchical-acdd-gates-and-milestone-orchestration/tasks.build/checkpoint-{subject}/build"
     )
 }
 
@@ -349,7 +349,7 @@ fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
         ),
     )]);
     let mut other_client = McpTestHarness::new(&other_workspace).expect("MCP initialize");
-    let other_breadcrumb = "forge-mcp/checkpoint-other/AC-001-hierarchical-acdd-gates-and-milestone-orchestration/tasks.build/checkpoint-shared/build".to_owned();
+    let other_breadcrumb = "acdd/checkpoint-other/AC-001-hierarchical-acdd-gates-and-milestone-orchestration/tasks.build/checkpoint-shared/build".to_owned();
     other_client
         .payload(
             "session_checkpoint",
@@ -494,7 +494,7 @@ fn serialization_counts_second_escaping_and_bounds_a_single_item() {
     let task_records = (0..3)
         .map(|index| {
             json!({
-                "task_id": format!("forge-mcp/m-large:task-{index}"),
+                "task_id": format!("acdd/m-large:task-{index}"),
                 "target": format!("λ{} \"\\", "λ".repeat(32_000)),
                 "subtasks": task_statuses.iter().map(|status| json!({
                     "subtask_ref": status,

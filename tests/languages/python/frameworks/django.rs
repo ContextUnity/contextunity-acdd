@@ -214,8 +214,9 @@ fn statuses(conn: &Connection, expression: &str) -> Vec<(String, String)> {
 }
 
 #[test]
-fn imported_framework_members_keep_their_exact_provider() {
+fn framework_member_authority() {
     let conn = baseline().open();
+
     for &(path, line, expression, provider) in MEMBERS {
         let (status, evidence) = persisted_coverage(&conn, path, line, expression);
         assert_eq!(status, "external", "{path}:{line} {expression}: {evidence}");
@@ -225,23 +226,7 @@ fn imported_framework_members_keep_their_exact_provider() {
         persisted_coverage(&conn, "app/models.py", 17, "self.filter").0,
         "unresolved"
     );
-}
 
-#[test]
-fn finite_method_returns_preserve_exact_resolution_statuses() {
-    let conn = baseline().open();
-    for &(expression, expected) in RETURNS {
-        let actual = statuses(&conn, expression);
-        assert!(
-            !actual.is_empty() && actual.iter().all(|row| row.0 == expected),
-            "finite method return {expression}: expected {expected}, observed {actual:?}"
-        );
-    }
-}
-
-#[test]
-fn external_method_returns_retain_authority_without_inventing_local_calls() {
-    let conn = baseline().open();
     for &(expression, expected) in RETURNS {
         if expected != "external" {
             continue;
@@ -261,16 +246,6 @@ fn external_method_returns_retain_authority_without_inventing_local_calls() {
             calls, 0,
             "external return never invents a local call: {expression}"
         );
-    }
-}
-
-#[test]
-fn external_returns_keep_the_originating_class_separate_from_the_target_rule() {
-    let conn = baseline().open();
-    for &(expression, expected) in RETURNS {
-        if expected != "external" {
-            continue;
-        }
         let origin_class = match expression {
             "selected.exclude"
             | "manager_ordered.exclude"
@@ -306,6 +281,18 @@ fn external_returns_keep_the_originating_class_separate_from_the_target_rule() {
                 "originating class: {expression}: {evidence}"
             );
         }
+    }
+}
+
+#[test]
+fn finite_method_returns_preserve_exact_resolution_statuses() {
+    let conn = baseline().open();
+    for &(expression, expected) in RETURNS {
+        let actual = statuses(&conn, expression);
+        assert!(
+            !actual.is_empty() && actual.iter().all(|row| row.0 == expected),
+            "finite method return {expression}: expected {expected}, observed {actual:?}"
+        );
     }
 }
 

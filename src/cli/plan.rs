@@ -62,8 +62,8 @@ fn prune_plan_snapshots(root: &Path, path: &Path, _slug: &str) -> Result<usize> 
     );
     let tag_prefix = &plan_tag[..16];
 
-    let plan_prefix = format!("refs/forge/snapshots/{namespace}/plan-{tag_prefix}-");
-    let gate_prefix = format!("refs/forge/snapshots/{namespace}/plan-gate-{tag_prefix}-");
+    let plan_prefix = format!("refs/acdd/snapshots/{namespace}/plan-{tag_prefix}-");
+    let gate_prefix = format!("refs/acdd/snapshots/{namespace}/plan-gate-{tag_prefix}-");
     let tasks = if acdd_tasks::database_path(root)?.exists() {
         acdd_tasks::engine::store(root)?.list(Some(&plan_rel.to_string_lossy()), "all", None)?
     } else {
@@ -75,7 +75,7 @@ fn prune_plan_snapshots(root: &Path, path: &Path, _slug: &str) -> Result<usize> 
         &[
             "for-each-ref",
             "--format=%(refname)",
-            "refs/forge/snapshots/",
+            "refs/acdd/snapshots/",
         ],
     )?;
     anyhow::ensure!(
@@ -99,8 +99,8 @@ fn prune_plan_snapshots(root: &Path, path: &Path, _slug: &str) -> Result<usize> 
                 .filter(|task| task.subject_kind == acdd_tasks::store::ExecutionSubjectKind::Plan)
                 .any(|task| {
                     let owner = task.task_id.replace(':', "/");
-                    reference == format!("refs/forge/snapshots/{owner}")
-                        || reference.starts_with(&format!("refs/forge/snapshots/{owner}/"))
+                    reference == format!("refs/acdd/snapshots/{owner}")
+                        || reference.starts_with(&format!("refs/acdd/snapshots/{owner}/"))
                 });
         if matches {
             refs_to_delete.push(reference.to_owned());

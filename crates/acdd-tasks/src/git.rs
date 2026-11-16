@@ -1,9 +1,75 @@
 use anyhow::{bail, Context, Result};
 use std::{
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, ExitStatus, Output},
 };
+
+/// Resolve a worktree's Git directory locally when `.git` is present, falling back to `git rev-parse`.
+pub fn git_dir(worktree: &Path) -> Result<PathBuf> {
+    if !worktree.exists() {
+        bail!(
+            "TASK_GIT_WORKTREE_MISSING: worktree '{}' does not exist on disk",
+            worktree.display()
+        );
+    }
+    let dot_git = worktree.join(".git");
+    match std::fs::symlink_metadata(&dot_git) {
+        Ok(meta) if meta.is_dir() => return Ok(dot_git.canonicalize()?),
+        Ok(meta) if meta.is_file() || meta.file_type().is_symlink() => {
+            if dot_git.is_dir() {
+                return Ok(dot_git.canonicalize()?);
+            }
+            if let Ok(text) = std::fs::read_to_string(&dot_git) {
+                if let Some(target) = text.trim().strip_prefix("gitdir:") {
+                    let raw = Path::new(target.trim());
+                    let resolved = if raw.is_absolute() {
+                        raw.to_path_buf()
+                    } else {
+                        worktree.join(raw)
+                    };
+                    if let Ok(canonical) = resolved.canonicalize() {
+                        return Ok(canonical);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    let resolved = git_stdout(
+        worktree,
+        &["rev-parse", "--path-format=absolute", "--git-dir"],
+        "TASK_GIT_DIR_INVALID",
+    )?;
+    Ok(PathBuf::from(resolved).canonicalize()?)
+}
+
+/// Resolve the repository common `.git` object home locally when `.git` is present.
+pub fn git_common_dir(worktree: &Path) -> Result<PathBuf> {
+    if let Ok(dir) = git_dir(worktree) {
+        let commondir = dir.join("commondir");
+        if commondir.is_file() {
+            if let Ok(rel) = std::fs::read_to_string(&commondir) {
+                let raw = Path::new(rel.trim());
+                let resolved = if raw.is_absolute() {
+                    raw.to_path_buf()
+                } else {
+                    dir.join(raw)
+                };
+                if let Ok(canonical) = resolved.canonicalize() {
+                    return Ok(canonical);
+                }
+            }
+        }
+        return Ok(dir);
+    }
+    let resolved = git_stdout(
+        worktree,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        "TASK_GIT_DIR_INVALID",
+    )?;
+    Ok(PathBuf::from(resolved).canonicalize()?)
+}
 
 /// Short, fail-closed participation in Git's own repository GC exclusion protocol.
 /// Held only while constructing a kept pack, never across a SQLite transaction.
@@ -14,12 +80,8 @@ pub(crate) struct GitGcProtection {
 
 impl GitGcProtection {
     pub(crate) fn acquire(root: &Path) -> Result<Self> {
-        let common = git_stdout(
-            root,
-            &["rev-parse", "--git-common-dir"],
-            "TASK_OBJECT_PROTECTION_FAILED",
-        )?;
-        let common = root.join(common).canonicalize()?;
+        let common = git_common_dir(root)
+            .map_err(|error| anyhow::anyhow!("TASK_OBJECT_PROTECTION_FAILED: {error}"))?;
         let path = common.join("gc.pid");
         let lock = common.join("gc.pid.lock");
         let mut file = std::fs::OpenOptions::new()
@@ -30,16 +92,23 @@ impl GitGcProtection {
             if path.exists() {
                 bail!("TASK_OBJECT_PROTECTION_FAILED: Git GC already owns the repository");
             }
-            let hostname = Command::new("hostname").output()?;
-            if !hostname.status.success() {
-                bail!("TASK_OBJECT_PROTECTION_FAILED: hostname unavailable");
-            }
-            let hostname = String::from_utf8(hostname.stdout)?;
-            let token = format!("{} {}", std::process::id(), hostname.trim());
+            static HOSTNAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+            let hostname = HOSTNAME.get_or_init(|| {
+                let mut buffer = [0u8; 256];
+                // SAFETY: buffer is writable for its full length.
+                let result = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
+                if result != 0 {
+                    return "localhost".to_owned();
+                }
+                let end = buffer
+                    .iter()
+                    .position(|&byte| byte == 0)
+                    .unwrap_or(buffer.len());
+                String::from_utf8_lossy(&buffer[..end]).trim().to_owned()
+            });
+            let token = format!("{} {}", std::process::id(), hostname);
             file.write_all(token.as_bytes())?;
-            file.sync_all()?;
             std::fs::rename(&lock, &path)?;
-            std::fs::File::open(&common)?.sync_all()?;
             Ok(token)
         })();
         if acquired.is_err() {
@@ -95,17 +164,14 @@ pub(crate) fn keep_provisional(
     object: &str,
     _gc: &GitGcProtection,
 ) -> Result<KeptObjects> {
-    let objects = git_stdout(
-        root,
-        &["rev-parse", "--git-path", "objects"],
-        "TASK_OBJECT_PROTECTION_FAILED",
-    )?;
-    let directory = root.join(objects).canonicalize()?.join("pack");
+    let directory = git_common_dir(root)
+        .map_err(|error| anyhow::anyhow!("TASK_OBJECT_PROTECTION_FAILED: {error}"))?
+        .join("objects/pack");
     std::fs::create_dir_all(&directory)?;
     // A distinct, genuine ownership blob prevents two concurrent guards for an
     // identical candidate from sharing (and prematurely releasing) a keep file.
     let owner = ProvisionalPackOwner {
-        kind: "forge-provisional-v1".into(),
+        kind: "acdd-provisional-v1".into(),
         task_id: task_id.into(),
         object: object.into(),
     };
@@ -148,18 +214,24 @@ pub(crate) fn keep_provisional(
     })
 }
 
-/// Release only this task's provisional packs once their objects are actual
-/// ancestors of its durable keeper. Unrelated packs and owners are untouched.
-pub(crate) fn release_provisional(root: &Path, task_id: &str, keeper: &str) -> Result<()> {
-    let directory = root.join(git_stdout(
-        root,
-        &["rev-parse", "--git-path", "objects/pack"],
-        "TASK_OBJECT_PROTECTION_FAILED",
-    )?);
+/// Release matching provisional packs for a batch of `(task_id, reference)` checkpoints
+/// without invoking `git` at all when no `.keep` files match any task in the batch.
+pub(crate) fn release_provisional_batch(root: &Path, items: &[(&str, &str)]) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let directory = git_common_dir(root)
+        .map_err(|error| anyhow::anyhow!("TASK_OBJECT_PROTECTION_FAILED: {error}"))?
+        .join("objects/pack");
     if !directory.exists() {
         return Ok(());
     }
-    for entry in std::fs::read_dir(directory)? {
+    let mut refs_by_task = std::collections::BTreeMap::<&str, &str>::new();
+    for (task_id, reference) in items {
+        refs_by_task.insert(*task_id, *reference);
+    }
+    let mut matches = Vec::new();
+    for entry in std::fs::read_dir(&directory)? {
         let path = entry?.path();
         if path.extension().is_none_or(|ext| ext != "keep") {
             continue;
@@ -168,13 +240,203 @@ pub(crate) fn release_provisional(root: &Path, task_id: &str, keeper: &str) -> R
         else {
             continue;
         };
-        if owner.kind == "forge-provisional-v1"
-            && owner.task_id == task_id
-            && git_ancestor(root, &owner.object, keeper)?
-        {
+        if owner.kind == "acdd-provisional-v1" {
+            if let Some(&reference) = refs_by_task.get(owner.task_id.as_str()) {
+                matches.push((path, owner.object, reference));
+            }
+        }
+    }
+    if matches.is_empty() {
+        return Ok(());
+    }
+    let mut resolved = std::collections::BTreeMap::<&str, String>::new();
+    for (path, object, reference) in matches {
+        let keeper = if let Some(keeper) = resolved.get(reference) {
+            keeper.clone()
+        } else {
+            let keeper = git_stdout(
+                root,
+                &["rev-parse", "--verify", reference],
+                "TASK_CHECKPOINT_GIT_FAILED",
+            )?;
+            resolved.insert(reference, keeper.clone());
+            keeper
+        };
+        if git_ancestor(root, &object, &keeper)? {
             std::fs::remove_file(path)?;
         }
     }
+    Ok(())
+}
+
+/// Batch-read blob contents for arbitrary `<rev>:<path>` specs in one `git cat-file --batch` call.
+pub(crate) fn cat_file_batch(root: &Path, specs: &[String]) -> Result<Vec<Option<Vec<u8>>>> {
+    use std::process::Stdio;
+    if specs.is_empty() {
+        return Ok(Vec::new());
+    }
+    for spec in specs {
+        if spec.contains(['\n', '\r']) {
+            bail!("TASK_CHECKPOINT_GIT_FAILED: invalid batch object spec");
+        }
+    }
+    if !root.exists() {
+        bail!(
+            "TASK_GIT_WORKTREE_MISSING: worktree '{}' does not exist on disk",
+            root.display()
+        );
+    }
+    let mut input = String::with_capacity(specs.iter().map(|s| s.len() + 1).sum());
+    for spec in specs {
+        input.push_str(spec);
+        input.push('\n');
+    }
+    let mut child = Command::new("git")
+        .args(["cat-file", "--batch"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to execute git cat-file --batch in '{}'", root.display()))?;
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let output = child.wait_with_output()?;
+    let write_res = writer.join().expect("git cat-file stdin writer panicked");
+    write_res?;
+    if !output.status.success() {
+        bail!(
+            "TASK_CHECKPOINT_GIT_FAILED: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let stdout = &output.stdout;
+    let mut pos = 0usize;
+    let mut results = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let Some(rel_end) = stdout[pos..].iter().position(|&b| b == b'\n') else {
+            bail!("TASK_CHECKPOINT_GIT_FAILED: truncated git cat-file --batch header");
+        };
+        let header = &stdout[pos..pos + rel_end];
+        pos += rel_end + 1;
+        if header.ends_with(b" missing") || header.ends_with(b" ambiguous") {
+            results.push(None);
+            continue;
+        }
+        let mut parts = header.split(|&b| b == b' ');
+        let _oid = parts.next();
+        let Some(kind) = parts.next() else {
+            bail!("TASK_CHECKPOINT_GIT_FAILED: malformed git cat-file --batch header");
+        };
+        let Some(size_bytes) = parts.next() else {
+            bail!("TASK_CHECKPOINT_GIT_FAILED: missing object size in git cat-file --batch");
+        };
+        let size: usize = std::str::from_utf8(size_bytes)
+            .context("invalid git cat-file size")?
+            .parse()
+            .context("non-numeric git cat-file size")?;
+        let data_end = pos
+            .checked_add(size)
+            .context("overflow in git cat-file size")?;
+        if data_end + 1 > stdout.len() {
+            bail!("TASK_CHECKPOINT_GIT_FAILED: truncated git cat-file --batch body");
+        }
+        if kind != b"blob" {
+            bail!(
+                "TASK_RECOVERY_CHECKPOINT_INVALID: expected blob for '{spec}', found {}",
+                String::from_utf8_lossy(kind)
+            );
+        }
+        let payload = stdout[pos..data_end].to_vec();
+        pos = data_end + 1;
+        results.push(Some(payload));
+    }
+    Ok(results)
+}
+
+/// Checkpoint payload entry for batched `git fast-import` publication.
+pub(crate) struct GitCheckpointEntry<'a> {
+    pub reference: &'a str,
+    pub bytes: &'a [u8],
+    pub parents: &'a [String],
+}
+
+/// Publish one or more task checkpoints to a single repository in one durable `git fast-import`.
+pub(crate) fn git_checkpoints_batch(
+    root: &Path,
+    entries: &[GitCheckpointEntry<'_>],
+) -> Result<()> {
+    use std::process::Stdio;
+    if entries.is_empty() {
+        return Ok(());
+    }
+    if !root.is_absolute() {
+        bail!("TASK_CHECKPOINT_HOME_INVALID: object home must be an absolute worktree");
+    }
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let total_bytes: usize = entries.iter().map(|e| e.bytes.len() + 256).sum();
+    let mut stream = Vec::with_capacity(total_bytes);
+    for entry in entries {
+        if entry.reference.contains(['\n', '\r'])
+            || entry.parents.iter().any(|p| p.contains(['\n', '\r']))
+        {
+            bail!("TASK_CHECKPOINT_GIT_FAILED: invalid newline in fast-import metadata");
+        }
+        if entry.parents.is_empty() {
+            writeln!(stream, "reset {}\n", entry.reference)?;
+        }
+        writeln!(stream, "commit {}", entry.reference)?;
+        writeln!(
+            stream,
+            "committer ACDD checkpoint <checkpoint@acdd.invalid> {now_secs} +0000"
+        )?;
+        writeln!(stream, "data 16")?;
+        stream.extend_from_slice(b"Task checkpoint\n");
+        if let Some((first, rest)) = entry.parents.split_first() {
+            writeln!(stream, "from {first}")?;
+            for parent in rest {
+                writeln!(stream, "merge {parent}")?;
+            }
+        }
+        writeln!(stream, "deleteall")?;
+        writeln!(stream, "M 100644 inline checkpoint.json")?;
+        writeln!(stream, "data {}", entry.bytes.len())?;
+        stream.extend_from_slice(entry.bytes);
+        writeln!(stream, "\n")?;
+    }
+    writeln!(stream, "done")?;
+    let mut child = Command::new("git")
+        .args([
+            "-c",
+            "core.fsync=committed",
+            "-c",
+            "core.logAllRefUpdates=always",
+            "fast-import",
+            "--quiet",
+            "--force",
+        ])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let child_pid = child.id();
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let writer = std::thread::spawn(move || stdin.write_all(&stream));
+    let output = child.wait_with_output()?;
+    let write_res = writer.join().expect("git fast-import stdin writer panicked");
+    if !output.status.success() {
+        if let Ok(dir) = git_dir(root) {
+            let _ = std::fs::remove_file(dir.join(format!("fast_import_crash_{child_pid}")));
+        }
+        bail!(
+            "TASK_CHECKPOINT_GIT_FAILED: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    write_res?;
     Ok(())
 }
 
@@ -219,9 +481,9 @@ pub fn git_checkpoint(
     )?;
     let mut args = vec![
         "-c",
-        "user.name=Forge checkpoint",
+        "user.name=ACDD checkpoint",
         "-c",
-        "user.email=checkpoint@forge.invalid",
+        "user.email=checkpoint@acdd.invalid",
         "commit-tree",
         &tree,
     ];
@@ -295,21 +557,103 @@ pub fn git_status(worktree: &Path, args: &[&str]) -> Result<ExitStatus> {
     Ok(git_command(worktree, args)?.status)
 }
 
+/// Check whether a set of commit objects exist in the worktree's repository in a single `git cat-file --batch-check`.
+pub fn git_commits_exist(
+    worktree: &Path,
+    candidates: &std::collections::BTreeSet<String>,
+) -> Result<std::collections::BTreeSet<String>> {
+    use std::process::Stdio;
+    let candidates: std::collections::BTreeSet<_> = candidates
+        .iter()
+        .filter(|sha| !sha.contains(['\n', '\r']))
+        .cloned()
+        .collect();
+    if candidates.is_empty() {
+        return Ok(std::collections::BTreeSet::new());
+    }
+    if !worktree.exists() {
+        bail!(
+            "TASK_GIT_WORKTREE_MISSING: worktree '{}' does not exist on disk",
+            worktree.display()
+        );
+    }
+    let args = ["cat-file", "--batch-check"];
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(worktree)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to execute git {:?} in '{}'",
+                args,
+                worktree.display()
+            )
+        })?;
+    let input = candidates
+        .iter()
+        .map(|sha| format!("{sha}^{{commit}}\n"))
+        .collect::<String>();
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let output = child.wait_with_output()?;
+    let write_result = writer.join().expect("git stdin writer panicked");
+    if !output.status.success() {
+        return Ok(std::collections::BTreeSet::new());
+    }
+    write_result?;
+    let lines: Vec<_> = output
+        .stdout
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.len() != candidates.len() {
+        bail!("TASK_CHECKPOINT_GIT_FAILED: incomplete cat-file response");
+    }
+    Ok(candidates
+        .iter()
+        .zip(lines)
+        .filter_map(|(sha, line)| {
+            line.split(|&byte| byte == b' ')
+                .nth(1)
+                .filter(|kind| *kind == b"commit")
+                .map(|_| sha.clone())
+        })
+        .collect())
+}
+
 /// Check whether a commit object exists in the worktree's repository.
 pub fn git_commit_exists(worktree: &Path, commit: &str) -> Result<bool> {
     let object = format!("{commit}^{{commit}}");
     Ok(git_status(worktree, &["cat-file", "-e", &object])?.success())
 }
 
-/// Validate a resolved proof object. Retention belongs to its task keeper.
-pub fn retain_proof_commit(worktree: &Path, commit: &str) -> Result<()> {
-    if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("TASK_PROOF_INVALID: expected a resolved proof object ID");
+/// Validate a batch of resolved proof objects in one `git cat-file --batch-check`.
+pub fn retain_proof_commits(
+    worktree: &Path,
+    commits: &std::collections::BTreeSet<String>,
+) -> Result<()> {
+    for commit in commits {
+        if !matches!(commit.len(), 40 | 64)
+            || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            bail!("TASK_PROOF_INVALID: expected a resolved proof object ID");
+        }
     }
-    if !git_commit_exists(worktree, commit)? {
-        bail!("TASK_PROOF_RETENTION_FAILED: proof object {commit} is unavailable");
+    let existing = git_commits_exist(worktree, commits)?;
+    for commit in commits {
+        if !existing.contains(commit) {
+            bail!("TASK_PROOF_RETENTION_FAILED: proof object {commit} is unavailable");
+        }
     }
     Ok(())
+}
+
+/// Validate a resolved proof object. Retention belongs to its task keeper.
+pub fn retain_proof_commit(worktree: &Path, commit: &str) -> Result<()> {
+    retain_proof_commits(worktree, &std::collections::BTreeSet::from([commit.to_owned()]))
 }
 
 /// Return the list of files modified, added, or deleted by a commit.
@@ -501,7 +845,7 @@ pub fn git_clean_file_merge_matches(
             bail!("TASK_MERGE_INVALID: file blob is unavailable");
         }
         let path = std::env::temp_dir().join(format!(
-            "forge-merge-{}-{nonce}-{index}",
+            "acdd-merge-{}-{nonce}-{index}",
             std::process::id()
         ));
         let mut options = std::fs::OpenOptions::new();
@@ -540,9 +884,7 @@ pub fn git_clean_file_merge_matches(
 /// Create a scoped commit on branch HEAD containing only the files in `scope`,
 /// preserving unrelated worktree and index changes.
 pub fn git_scoped_commit(worktree: &Path, scope: &[String], msg: &str) -> Result<String> {
-    let git_dir = git_command(worktree, &["rev-parse", "--git-dir"])
-        .context("TASK_PERSISTENCE_FAILED: git worktree check failed")?;
-    if !git_dir.status.success() {
+    if git_dir(worktree).is_err() {
         bail!("TASK_PERSISTENCE_FAILED: scoped commit requires a Git worktree");
     }
 
@@ -551,7 +893,7 @@ pub fn git_scoped_commit(worktree: &Path, scope: &[String], msg: &str) -> Result
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let temp_index = std::env::temp_dir().join(format!(
-        "forge-scoped-commit-{}-{nonce}.index",
+        "acdd-scoped-commit-{}-{nonce}.index",
         std::process::id()
     ));
     struct IndexCleanup(std::path::PathBuf);

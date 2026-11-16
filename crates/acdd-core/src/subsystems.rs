@@ -14,7 +14,7 @@ pub enum SubsystemPreset {
     Navigator,
     /// Enable task orchestration, blackboard, and checkpoint tools.
     Orchestrator,
-    /// Enable no module-owned tools; `forge_guide` remains available as a core tool.
+    /// Enable no module-owned tools; `acdd_guide` remains available as a core tool.
     Minimal,
 }
 

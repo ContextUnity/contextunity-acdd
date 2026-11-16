@@ -492,7 +492,7 @@ fn task_belongs_to(repository: &str, project: &str, id: &str) -> bool {
 impl TasksStore {
     /// Performs open.
     pub fn open(path: &Path) -> Result<Self> {
-        Self::open_project(path, "forge-mcp", "forge-mcp")
+        Self::open_project(path, "acdd", "acdd")
     }
     /// Performs open project.
     pub fn open_project(path: &Path, repository: &str, project: &str) -> Result<Self> {
@@ -1026,7 +1026,7 @@ impl TasksStore {
             if let Some(state_str) = state_str {
                 let payload: serde_json::Value = serde_json::from_str(&state_str)?;
                 let inner = payload
-                    .get("_forge_checkpoint_payload_v1")
+                    .get("_acdd_checkpoint_payload_v1")
                     .unwrap_or(&payload);
                 let task_id_matches =
                     inner.get("task_id").and_then(|v| v.as_str()) == Some(task_id);
@@ -2766,9 +2766,9 @@ mod tests {
     #[test]
     fn in_memory_shared_cache_writer_contention_returns_locked() -> Result<()> {
         let source = "---\nid: m-contention\nstatus: active\n---\n```yaml\ntask_ref: first\ntarget: Writer contention\nproof_policy: seam-test-first\nscope: [src/lib.rs]\n```\n";
-        let milestone = Milestone::parse(source, "forge-mcp")?;
+        let milestone = Milestone::parse(source, "acdd")?;
         let root = std::path::Path::new(IN_MEMORY_TEST_ROOT);
-        let mut writer = TasksStore::open_in_memory("forge-mcp", "forge-mcp")?;
+        let mut writer = TasksStore::open_in_memory("acdd", "acdd")?;
         writer.sync(&milestone, "docs/contention.md", root)?;
         let mut peer = writer.open_in_memory_peer()?;
         let tx = writer
@@ -2785,7 +2785,7 @@ mod tests {
             matches!(sqlite_error, rusqlite::Error::SqliteFailure(e, _) if e.code == rusqlite::ErrorCode::DatabaseLocked),
             "{error:#}"
         );
-        tx.execute_batch("DELETE FROM task_revisions; DELETE FROM tasks; INSERT INTO milestone_tombstones VALUES('forge-mcp/forge-mcp/m-contention',1,1,'[]');")?;
+        tx.execute_batch("DELETE FROM task_revisions; DELETE FROM tasks; INSERT INTO milestone_tombstones VALUES('acdd/acdd/m-contention',1,1,'[]');")?;
         tx.commit()?;
         let error = peer
             .sync(&milestone, "docs/contention.md", root)
@@ -2811,11 +2811,11 @@ mod tests {
     #[test]
     fn plan_pruning_rolls_back_and_preserves_other_subjects() -> Result<()> {
         let source = "---\nid: plan-one\n---\n```yaml\ntask_ref: first\ntarget: First\nproof_policy: seam-test-first\nscope: [src/lib.rs]\n```\n";
-        let plan = Milestone::parse(source, "forge-mcp")?;
+        let plan = Milestone::parse(source, "acdd")?;
         let mut sibling = plan.clone();
         sibling.id = "plan-two".into();
         let root = Path::new(IN_MEMORY_TEST_ROOT);
-        let mut store = TasksStore::open_in_memory("forge-mcp", "forge-mcp")?;
+        let mut store = TasksStore::open_in_memory("acdd", "acdd")?;
         let selected = store.sync_plan(&plan, "docs/plans/one.md", root)?;
         let other = store.sync_plan(&sibling, "docs/plans/two.md", root)?;
         assert_eq!(selected[0].subject_kind, ExecutionSubjectKind::Plan);
@@ -2837,14 +2837,14 @@ mod tests {
     #[test]
     fn in_memory_task_store_persists_lifecycle_and_enforces_constraints() -> Result<()> {
         let source = "---\nid: m-statuses\nstatus: active\n---\n```yaml\ntask_ref: statuses\ntarget: Status lifecycle\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nsubtasks:\n- subtask_ref: child\n  title: Child\n  status: pending\n```\n";
-        let milestone = Milestone::parse(source, "forge-mcp")?;
+        let milestone = Milestone::parse(source, "acdd")?;
         let id = milestone.task_id(&milestone.tasks[0]);
         let workspace = std::path::Path::new(IN_MEMORY_TEST_ROOT);
         let mut workspace_entries = std::fs::read_dir(workspace)?
             .map(|entry| entry.map(|entry| entry.file_name()))
             .collect::<std::io::Result<Vec<_>>>()?;
         workspace_entries.sort();
-        let mut store = TasksStore::open_in_memory("forge-mcp", "forge-mcp")?;
+        let mut store = TasksStore::open_in_memory("acdd", "acdd")?;
         let generation = || -> Result<i64> {
             Ok(store.connection.query_row(
                 "SELECT value FROM meta WHERE key='generation'",
@@ -2937,16 +2937,8 @@ mod tests {
 
     #[test]
     fn initialized_task_store_opens_during_a_write_transaction() {
-        let directory = std::env::temp_dir().join(format!(
-            "forge-task-reader-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("tasks.sqlite");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tasks.sqlite");
         let mut writer = TasksStore::open(&path).unwrap();
         let tx = writer
             .connection
@@ -2956,7 +2948,6 @@ mod tests {
         tx.rollback().unwrap();
         let failure = opened.err();
         drop(writer);
-        std::fs::remove_dir_all(&directory).unwrap();
         assert!(
             failure.is_none(),
             "initialized store open requires no writer lock: {failure:?}"

@@ -12,9 +12,10 @@ fn native_absorbed_polish_passes_immutable_review_and_handoff() {
     use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     use acdd_tasks::tasks::profile::PersistenceAction;
     let mut h = harness::WaveHarness::with_single_task(true);
+    crate::acdd::snapshot::stage_role_helper(h.root());
     let mut profile = h.read_profile();
     let mut role = profile.roles["wave_role"].clone();
-    role.runner = Some(format!("python3 -c 'import runpy;open(\"docs/polish-note.md\",\"w\").write(\"polished\\n\");runpy.run_path(\"{}\")' '{{prompt}}'", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/acdd/fixtures/workflows/wave-role.py")));
+    role.runner = Some(r#"sh -c 'printf "polished\\n" > docs/polish-note.md && .acdd/role_fixture wave-role "$1"' sh '{prompt}'"#.into());
     profile.roles.insert("polishing_role".into(), role);
     let polish = profile
         .gates
@@ -107,6 +108,7 @@ fn native_immutable_review_rejects_candidate_mutation() {
     use acdd_tasks::engine::orchestrator::waves::run_milestone_waves;
     use acdd_tasks::tasks::profile::PersistenceAction;
     let mut h = harness::WaveHarness::with_single_task(true);
+    crate::acdd::snapshot::stage_role_helper(h.root());
     let mut profile = h.read_profile();
     profile
         .gates
@@ -116,7 +118,7 @@ fn native_immutable_review_rejects_candidate_mutation() {
         .persistence
         .post = Some(PersistenceAction::Snapshot);
     let mut role = profile.roles["wave_role"].clone();
-    role.runner = Some(format!("python3 -c 'import runpy;open(\"src/lib.rs\",\"a\").write(\"// mutation\\n\");runpy.run_path(\"{}\")' '{{prompt}}'", concat!(env!("CARGO_MANIFEST_DIR"), "/tests/acdd/fixtures/workflows/wave-role.py")));
+    role.runner = Some(r#"sh -c 'printf "// mutation\\n" >> src/lib.rs && .acdd/role_fixture wave-role "$1"' sh '{prompt}'"#.into());
     profile.roles.insert("mutating_review".into(), role);
     let review = profile
         .gates

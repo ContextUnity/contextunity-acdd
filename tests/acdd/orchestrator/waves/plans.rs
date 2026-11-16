@@ -83,7 +83,7 @@ fn plan_run_executes_steps_in_place_without_committing() {
         "snapshot-only plan profile: {plan_profile:?}"
     );
     let parsed = Cli::try_parse_from([
-        "contextunity-forge-mcp",
+        "contextunity-acdd",
         "--root",
         root.root().to_str().unwrap(),
         "--format",
@@ -137,7 +137,7 @@ fn plan_discovery_preserves_canonical_step_dependencies() {
         let show = action[1] == "show";
         let parsed = Cli::try_parse_from(
             [
-                "contextunity-forge-mcp",
+                "contextunity-acdd",
                 "--root",
                 root.root().to_str().unwrap(),
                 "--format",
@@ -198,7 +198,7 @@ fn plan_run_honors_explicit_config_and_profile_paths() {
     let head = git_head(root.root());
     let snapshots = harness.snapshots(&root);
     let parsed = Cli::try_parse_from([
-        "contextunity-forge-mcp",
+        "contextunity-acdd",
         "--root",
         root.root().to_str().unwrap(),
         "--db",

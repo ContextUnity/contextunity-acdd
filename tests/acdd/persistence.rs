@@ -150,7 +150,7 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
         .expect("the fixture tasks should be available for recipient validation");
     let sender_id = tasks[0].task_id.clone();
     let recipient_id = tasks[1].task_id.clone();
-    let milestone_ref = "forge-mcp/forge-mcp/docs/010-test.md";
+    let milestone_ref = "acdd/acdd/docs/010-test.md";
     let message_id = store
         .blackboard_post_scoped_with_recipient(
             contextunity_acdd::db::tasks_store::BlackboardPostInput {
@@ -281,8 +281,8 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
     );
 
     let checkpoint = contextunity_acdd::db::tasks_store::GateCheckpoint {
-        breadcrumb: "forge-mcp/forge-mcp/m-test/tasks.build/first/build".into(),
-        milestone_id: "forge-mcp/forge-mcp/m-test".into(),
+        breadcrumb: "acdd/acdd/m-test/tasks.build/first/build".into(),
+        milestone_id: "acdd/acdd/m-test".into(),
         subject: "first".into(),
         gate_path: "tasks.build".into(),
         transition_id: Some(transition_id),
@@ -312,7 +312,7 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&checkpoint_state).unwrap(),
         serde_json::json!({
-            "_forge_checkpoint_payload_v1": refreshed_checkpoint.state_payload.clone()
+            "_acdd_checkpoint_payload_v1": refreshed_checkpoint.state_payload.clone()
         })
     );
     assert_eq!(
@@ -361,7 +361,7 @@ fn task_store_migrates_the_ac001_gate_persistence_contract() {
         .query_row(
             "INSERT INTO task_blackboard \
              (milestone_ref, author, topic, payload, created_at, recipient_task_id) \
-             VALUES ('forge-mcp/docs/010-test.md', 'test', 'notes', 'rfc', 1, 'provider') \
+             VALUES ('acdd/docs/010-test.md', 'test', 'notes', 'rfc', 1, 'provider') \
              RETURNING id",
             [],
             |row| row.get(0),

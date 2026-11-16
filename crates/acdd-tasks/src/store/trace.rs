@@ -3,7 +3,7 @@ use anyhow::{bail, Result};
 use rusqlite::{params, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
-const CHECKPOINT_PAYLOAD_KEY: &str = "_forge_checkpoint_payload_v1";
+const CHECKPOINT_PAYLOAD_KEY: &str = "_acdd_checkpoint_payload_v1";
 
 pub(super) fn ensure_command_output_schema(connection: &Connection) -> Result<()> {
     let proof_exists: bool = connection.query_row(
@@ -430,7 +430,7 @@ impl TasksStore {
                 state_payload=excluded.state_payload,
                 updated_at=CURRENT_TIMESTAMP
              WHERE gate_checkpoints.transition_id IS NULL
-               AND json_extract(gate_checkpoints.state_payload, '$._forge_checkpoint_payload_v1.task_id') IS NULL
+               AND json_extract(gate_checkpoints.state_payload, '$._acdd_checkpoint_payload_v1.task_id') IS NULL
                AND json_extract(gate_checkpoints.state_payload, '$.task_id') IS NULL",
             params![
                 breadcrumb,
@@ -447,7 +447,7 @@ impl TasksStore {
                 .query_row(
                     "SELECT transition_id,
                             COALESCE(
-                                json_extract(state_payload, '$._forge_checkpoint_payload_v1.task_id'),
+                                json_extract(state_payload, '$._acdd_checkpoint_payload_v1.task_id'),
                                 json_extract(state_payload, '$.task_id')
                             )
                      FROM gate_checkpoints WHERE breadcrumb=?1 AND milestone_id=?2",
@@ -605,7 +605,7 @@ impl TasksStore {
             "DELETE FROM gate_checkpoints
              WHERE breadcrumb=?1 AND milestone_id=?2
                AND transition_id IS NULL
-               AND json_extract(state_payload, '$._forge_checkpoint_payload_v1.task_id') IS NULL
+               AND json_extract(state_payload, '$._acdd_checkpoint_payload_v1.task_id') IS NULL
                AND json_extract(state_payload, '$.task_id') IS NULL",
             params![breadcrumb, milestone_id],
         )?;
@@ -617,7 +617,7 @@ impl TasksStore {
             .query_row(
                 "SELECT transition_id,
                         COALESCE(
-                            json_extract(state_payload, '$._forge_checkpoint_payload_v1.task_id'),
+                            json_extract(state_payload, '$._acdd_checkpoint_payload_v1.task_id'),
                             json_extract(state_payload, '$.task_id')
                         )
                  FROM gate_checkpoints

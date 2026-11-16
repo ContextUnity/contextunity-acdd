@@ -1,5 +1,6 @@
 #[cfg(feature = "lang-vue")]
-fn assert_nuxt_vue_pinia_manifest_family(family: &str, renamed: bool) {
+#[test]
+fn persisted_nuxt_vue_pinia_contract() {
     use contextunity_acdd::{core::commitments, db::reader};
     use rusqlite::params;
     use serde_json::Value;
@@ -64,426 +65,387 @@ fn assert_nuxt_vue_pinia_manifest_family(family: &str, renamed: bool) {
         ("count", "amount"),
         ("checkout", "purchase"),
     ];
-    let mut failures = Vec::new();
-    for (case_family, files) in cases {
-        if case_family != family {
-            continue;
-        }
-        for candidate_renamed in [false, true] {
-            if candidate_renamed != renamed {
-                continue;
-            }
-            let renamed = candidate_renamed;
-            let phase = format!("{family}, renamed={renamed}");
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let rewrite = |input: &str| {
-                    renames.iter().fold(input.to_owned(), |text, (from, to)| {
-                        if renamed {
-                            text.replace(from, to)
-                        } else {
-                            text
-                        }
-                    })
-                };
-                let workspace = crate::languages::PersistedWorkspaceHarness::new();
-                let package =
-                    rewrite("{\"dependencies\":{\"nuxt\":\"^3\",\"vue\":\"^3\",\"pinia\":\"^3\"}}");
-                workspace.write("package.json", &package);
-                workspace.write(
-                    rewrite("nuxt.config.ts"),
-                    &rewrite("export default defineNuxtConfig({});\n"),
-                );
-                workspace.write("ordinary.ts", "export function helper() { return 1; }\n");
-                workspace.write("control.ts", "import {helper} from './ordinary';\nexport function ordinary() { return helper(); }\n");
-                for (path, source) in files {
-                    workspace.write(rewrite(path), &rewrite(source));
-                }
-                let override_pack = |name: &str, source: &str, empty: bool| {
-                    let text = if empty {
-                        "replace = true\n".into()
-                    } else {
-                        let parsed: toml::Value = toml::from_str(source).unwrap();
-                        let mut value = serde_json::to_value(parsed).unwrap();
-                        let mut pending = vec![&mut value];
-                        while let Some(value) = pending.pop() {
-                            match value {
-                                Value::String(text) => *text = rewrite(text),
-                                Value::Array(values) => pending.extend(values),
-                                Value::Object(values) => pending.extend(values.values_mut()),
-                                _ => {}
-                            }
-                        }
-                        let parsed: toml::Value = serde_json::from_value(value).unwrap();
-                        format!("replace = true\n{}", toml::to_string(&parsed).unwrap())
-                    };
-                    workspace.write(format!(".acdd/frameworks/{name}.toml"), &text);
-                };
+
+    for renamed in [false, true] {
+        let rewrite = |input: &str| {
+            renames.iter().fold(input.to_owned(), |text, (from, to)| {
                 if renamed {
-                    for (name, source) in packs {
-                        override_pack(name, source, false);
+                    text.replace(from, to)
+                } else {
+                    text
+                }
+            })
+        };
+
+        let workspace = crate::languages::PersistedWorkspaceHarness::new();
+        let package =
+            rewrite("{\"dependencies\":{\"nuxt\":\"^3\",\"vue\":\"^3\",\"pinia\":\"^3\"}}");
+        for (family, files) in cases {
+            let project_path = |path: &str| {
+                rewrite(&if matches!(path, "client.ts" | "App.vue") {
+                    format!("{family}-{path}")
+                } else {
+                    path.to_owned()
+                })
+            };
+            workspace.write(project_path("package.json"), &package);
+            workspace.write(
+                project_path("nuxt.config.ts"),
+                &rewrite("export default defineNuxtConfig({});\n"),
+            );
+            workspace.write(
+                project_path("ordinary.ts"),
+                "export function helper() { return 1; }\n",
+            );
+            workspace.write(project_path("control.ts"), "import {helper} from './ordinary';\nexport function ordinary() { return helper(); }\n");
+            for (path, source) in files {
+                workspace.write(project_path(path), &rewrite(source));
+            }
+        }
+        let override_pack = |name: &str, source: &str, empty: bool| {
+            let text = if empty {
+                "replace = true\n".into()
+            } else {
+                let parsed: toml::Value = toml::from_str(source).unwrap();
+                let mut value = serde_json::to_value(parsed).unwrap();
+                let mut pending = vec![&mut value];
+                while let Some(value) = pending.pop() {
+                    match value {
+                        Value::String(text) => *text = rewrite(text),
+                        Value::Array(values) => pending.extend(values),
+                        Value::Object(values) => pending.extend(values.values_mut()),
+                        _ => {}
                     }
                 }
-                workspace.build();
-                let observe = |rules: bool, packages: bool, changed: bool| {
-                    // This direct production reader is the admitted canonical seam witness.
-                    let conn = workspace.open();
-                    commitments::verify(&conn).unwrap();
-                    let errors: i64 = conn
-                        .query_row("SELECT count(*) FROM errors", [], |row| row.get(0))
-                        .unwrap();
-                    assert_eq!(errors, 0, "{phase}: valid fixture");
-                    let rows = |sql: &str| -> Vec<String> {
-                        conn.prepare(sql)
-                            .unwrap()
-                            .query_map([], |row| row.get(0))
-                            .unwrap()
-                            .collect::<rusqlite::Result<_>>()
-                            .unwrap()
-                    };
-                    let edge = |src: &str,
-                                name: &str,
-                                kind: &str,
-                                dst: &str,
-                                target: &str,
-                                expected: bool| {
-                        let source_ids: Vec<String> = conn.prepare("SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.name LIKE ?2 ORDER BY n.id").unwrap().query_map(params![rewrite(src), rewrite(name)], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
-                        let target_ids: Vec<String> = conn.prepare("SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.name LIKE ?2 ORDER BY n.id").unwrap().query_map(params![rewrite(dst), rewrite(target)], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
-                        let actual: Vec<(String, String)> = conn.prepare("SELECT DISTINCT s.id,d.id FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash JOIN path_dictionary sp ON sp.path_id=s.path_id JOIN path_dictionary dp ON dp.path_id=d.path_id WHERE sp.path=?1 AND s.name LIKE ?2 AND e.kind=?3 AND dp.path=?4 AND d.name LIKE ?5 ORDER BY s.id,d.id").unwrap().query_map(params![rewrite(src),rewrite(name),kind,rewrite(dst),rewrite(target)], |row| Ok((row.get(0)?,row.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
-                        if expected {
-                            assert!(
-                                !source_ids.is_empty(),
-                                "{phase}: missing source {src}:{name}"
-                            );
-                            assert_eq!(
-                                target_ids.len(),
-                                1,
-                                "{phase}: unique canonical {dst}:{target}"
-                            );
-                            assert!(!actual.is_empty() && actual.iter().all(|(s,d)| source_ids.contains(s) && d == &target_ids[0]), "{phase}: exact {src}:{name} --{kind}--> {dst}:{target}, got {actual:?}");
-                        } else {
-                            assert!(actual.is_empty(), "{phase}: forbidden {src}:{name} --{kind}--> {dst}:{target}: {actual:?}");
-                        }
-                    };
-                    let coverage = |path: &str, expression: &str| -> Vec<(String, String)> {
-                        conn.prepare("SELECT c.status,v.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE p.path=?1 AND x.expression=?2 ORDER BY c.line,c.status").unwrap().query_map(params![rewrite(path),rewrite(expression)], |row| Ok((row.get(0)?,row.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap()
-                    };
-                    edge(
-                        "control.ts",
-                        "ordinary",
-                        "calls",
-                        "ordinary.ts",
-                        "helper",
-                        true,
-                    );
-                    let ordinary_imports: usize = conn.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash JOIN path_dictionary sp ON sp.path_id=s.path_id JOIN path_dictionary dp ON dp.path_id=d.path_id WHERE sp.path='control.ts' AND dp.path='ordinary.ts' AND e.kind='imports'", [], |row| row.get(0)).unwrap();
-                    assert_eq!(ordinary_imports, 1, "{phase}: ordinary import survives");
-                    let active = rules && packages;
-                    match family {
-                        "pages" => {
-                            for (function, page, route) in [
-                                ("root", "pages/index.vue", "GET /"),
-                                ("detail", "pages/catalog/detail.vue", "GET /catalog/detail"),
-                                ("catalog", "pages/catalog/index.vue", "GET /catalog"),
-                            ] {
-                                edge(
-                                    "client.ts",
-                                    function,
-                                    "calls_endpoint",
-                                    page,
-                                    route,
-                                    active && !(changed && function == "detail"),
-                                );
-                                if active && !(changed && function == "detail") {
-                                    edge(page, "%", "contains", page, route, true);
-                                }
-                            }
+                let parsed: toml::Value = serde_json::from_value(value).unwrap();
+                format!("replace = true\n{}", toml::to_string(&parsed).unwrap())
+            };
+            workspace.write(format!(".acdd/frameworks/{name}.toml"), &text);
+        };
+        if renamed {
+            for (name, source) in packs {
+                override_pack(name, source, false);
+            }
+        }
+
+        workspace.build();
+        for (family, files) in cases {
+            let phase = format!("{family}, renamed={renamed}");
+            let project_path = |path: &str| {
+                rewrite(&if matches!(path, "client.ts" | "App.vue") {
+                    format!("{family}-{path}")
+                } else {
+                    path.to_owned()
+                })
+            };
+            let observe = |rules: bool, packages: bool, changed: bool| {
+                // This direct production reader is the admitted canonical seam witness.
+                let conn = workspace.open();
+                commitments::verify(&conn).unwrap();
+                let errors: i64 = conn
+                    .query_row("SELECT count(*) FROM errors", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(errors, 0, "{phase}: valid fixture");
+                let rows = |sql: &str| -> Vec<String> {
+                    conn.prepare(sql)
+                        .unwrap()
+                        .query_map([], |row| row.get(0))
+                        .unwrap()
+                        .collect::<rusqlite::Result<_>>()
+                        .unwrap()
+                };
+                let edge = |src: &str,
+                            name: &str,
+                            kind: &str,
+                            dst: &str,
+                            target: &str,
+                            expected: bool| {
+                    let source_ids: Vec<String> = conn.prepare("SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.name LIKE ?2 ORDER BY n.id").unwrap().query_map(params![project_path(src), rewrite(name)], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+                    let target_ids: Vec<String> = conn.prepare("SELECT n.id FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.name LIKE ?2 ORDER BY n.id").unwrap().query_map(params![project_path(dst), rewrite(target)], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+                    let actual: Vec<(String, String)> = conn.prepare("SELECT DISTINCT s.id,d.id FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash JOIN path_dictionary sp ON sp.path_id=s.path_id JOIN path_dictionary dp ON dp.path_id=d.path_id WHERE sp.path=?1 AND s.name LIKE ?2 AND e.kind=?3 AND dp.path=?4 AND d.name LIKE ?5 ORDER BY s.id,d.id").unwrap().query_map(params![project_path(src),rewrite(name),kind,project_path(dst),rewrite(target)], |row| Ok((row.get(0)?,row.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+                    if expected {
+                        assert!(
+                            !source_ids.is_empty(),
+                            "{phase}: missing source {src}:{name}"
+                        );
+                        assert_eq!(
+                            target_ids.len(),
+                            1,
+                            "{phase}: unique canonical {dst}:{target}"
+                        );
+                        assert!(!actual.is_empty() && actual.iter().all(|(s,d)| source_ids.contains(s) && d == &target_ids[0]), "{phase}: exact {src}:{name} --{kind}--> {dst}:{target}, got {actual:?}");
+                    } else {
+                        assert!(actual.is_empty(), "{phase}: forbidden {src}:{name} --{kind}--> {dst}:{target}: {actual:?}");
+                    }
+                };
+                let coverage = |path: &str, expression: &str| -> Vec<(String, String)> {
+                    conn.prepare("SELECT c.status,v.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE p.path=?1 AND x.expression=?2 ORDER BY c.line,c.status").unwrap().query_map(params![project_path(path),rewrite(expression)], |row| Ok((row.get(0)?,row.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+                };
+                edge(
+                    "control.ts",
+                    "ordinary",
+                    "calls",
+                    "ordinary.ts",
+                    "helper",
+                    true,
+                );
+                let ordinary_imports: usize = conn.query_row("SELECT count(*) FROM edge_occurrences e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash JOIN path_dictionary sp ON sp.path_id=s.path_id JOIN path_dictionary dp ON dp.path_id=d.path_id WHERE sp.path=?1 AND dp.path=?2 AND e.kind='imports'", params![project_path("control.ts"), project_path("ordinary.ts")], |row| row.get(0)).unwrap();
+                assert_eq!(ordinary_imports, 1, "{phase}: ordinary import survives");
+                let active = rules && packages;
+                match family {
+                    "pages" => {
+                        for (function, page, route) in [
+                            ("root", "pages/index.vue", "GET /"),
+                            ("detail", "pages/catalog/detail.vue", "GET /catalog/detail"),
+                            ("catalog", "pages/catalog/index.vue", "GET /catalog"),
+                        ] {
                             edge(
                                 "client.ts",
-                                "dynamic",
+                                function,
                                 "calls_endpoint",
-                                "pages/[id].vue",
-                                "%",
-                                false,
+                                page,
+                                route,
+                                active && !(changed && function == "detail"),
                             );
-                            assert!(
-                                coverage("client.ts", "GET /[id]")
-                                    .iter()
-                                    .any(|(s, _)| s == "unresolved"),
-                                "{phase}: unsupported dynamic route"
-                            );
-                        }
-                        "composables" => {
-                            for expression in ["useFetch", "useAsyncData"] {
-                                let observed = coverage("client.ts", expression);
-                                assert_eq!(
-                                    observed.iter().any(|(s, e)| s == "external"
-                                        && e.contains(&rewrite("builtin:nuxt_autoimport"))),
-                                    active,
-                                    "{phase}: Nuxt provenance {expression}: {observed:?}"
-                                );
-                                assert!(
-                                    coverage("plain/client.ts", expression)
-                                        .iter()
-                                        .all(|(_, e)| !e
-                                            .contains(&rewrite("builtin:nuxt_autoimport"))),
-                                    "{phase}: project isolation"
-                                );
-                                edge("shadow.ts", "local", "calls", "shadow.ts", expression, true);
+                            if active && !(changed && function == "detail") {
+                                edge(page, "%", "contains", page, route, true);
                             }
                         }
-                        "sfc" => {
-                            edge(
-                                "App.vue",
-                                "template@%",
-                                "references",
-                                "App.vue",
-                                "title",
-                                rules,
-                            );
-                            edge(
-                                "App.vue",
-                                "%",
-                                "references",
-                                "components/WidgetCard.vue",
-                                "WidgetCard.vue",
-                                active && !changed,
-                            );
-                            for (path, expression, status) in [
-                                ("App.vue", "MissingWidget", "unresolved"),
-                                (
-                                    "collision/App.vue",
-                                    "BaseWidgetCard",
-                                    if rules { "ambiguous" } else { "unresolved" },
-                                ),
-                            ] {
-                                assert!(
-                                    coverage(path, expression).iter().any(|(s, _)| s == status),
-                                    "{phase}: {path}:{expression} {status}"
-                                );
-                            }
+                        edge(
+                            "client.ts",
+                            "dynamic",
+                            "calls_endpoint",
+                            "pages/[id].vue",
+                            "%",
+                            false,
+                        );
+                        assert!(
+                            coverage("client.ts", "GET /[id]")
+                                .iter()
+                                .any(|(s, _)| s == "unresolved"),
+                            "{phase}: unsupported dynamic route"
+                        );
+                    }
+                    "composables" => {
+                        for expression in ["useFetch", "useAsyncData"] {
+                            let observed = coverage("client.ts", expression);
                             assert_eq!(
-                                coverage("App.vue", "emit").iter().any(
-                                    |(s, e)| s == "external" && e.contains("builtin:vue_macro")
-                                ),
-                                rules,
-                                "{phase}: setup emit provenance"
+                                observed.iter().any(|(s, e)| s == "external"
+                                    && e.contains(&rewrite("builtin:nuxt_autoimport"))),
+                                active,
+                                "{phase}: Nuxt provenance {expression}: {observed:?}"
                             );
-                            edge(
-                                "collision/App.vue",
-                                "%",
-                                "references",
-                                "collision/components/Base/WidgetCard.vue",
-                                "%",
-                                false,
+                            assert!(
+                                coverage("plain/client.ts", expression)
+                                    .iter()
+                                    .all(|(_, e)| !e.contains(&rewrite("builtin:nuxt_autoimport"))),
+                                "{phase}: project isolation"
                             );
-                            edge(
+                            edge("shadow.ts", "local", "calls", "shadow.ts", expression, true);
+                        }
+                    }
+                    "sfc" => {
+                        edge(
+                            "App.vue",
+                            "template@%",
+                            "references",
+                            "App.vue",
+                            "title",
+                            rules,
+                        );
+                        edge(
+                            "App.vue",
+                            "%",
+                            "references",
+                            "components/WidgetCard.vue",
+                            "WidgetCard.vue",
+                            active && !changed,
+                        );
+                        for (path, expression, status) in [
+                            ("App.vue", "MissingWidget", "unresolved"),
+                            (
                                 "collision/App.vue",
-                                "%",
-                                "references",
-                                "collision/components/BaseWidgetCard.vue",
-                                "%",
-                                false,
+                                "BaseWidgetCard",
+                                if rules { "ambiguous" } else { "unresolved" },
+                            ),
+                        ] {
+                            assert!(
+                                coverage(path, expression).iter().any(|(s, _)| s == status),
+                                "{phase}: {path}:{expression} {status}"
                             );
                         }
-                        "store" => {
-                            for (src, name, kind, target) in [
-                                ("client.ts", "read", "references", "count"),
-                                ("client.ts", "run", "calls", "checkout"),
-                                ("App.vue", "template@%", "references", "count"),
-                                ("App.vue", "template@%", "calls", "checkout"),
-                            ] {
-                                edge(
-                                    src,
-                                    name,
-                                    kind,
-                                    "store.ts",
-                                    target,
-                                    active && !(changed && target == "count"),
-                                );
-                            }
-                            for (path, name) in [
-                                ("client.ts", "missing"),
-                                ("client.ts", "dynamic"),
-                                ("client.ts", "shadow"),
-                                ("duplicate.ts", "duplicate"),
-                                ("rebound.ts", "rebound"),
-                            ] {
-                                edge(path, name, "calls", "store.ts", "checkout", false);
-                            }
-                            assert!(
-                                coverage("client.ts", "cart.absent")
-                                    .iter()
-                                    .any(|(s, _)| s == "unresolved"),
-                                "{phase}: missing store member"
+                        assert_eq!(
+                            coverage("App.vue", "emit")
+                                .iter()
+                                .any(|(s, e)| s == "external" && e.contains("builtin:vue_macro")),
+                            rules,
+                            "{phase}: setup emit provenance"
+                        );
+                        edge(
+                            "collision/App.vue",
+                            "%",
+                            "references",
+                            "collision/components/Base/WidgetCard.vue",
+                            "%",
+                            false,
+                        );
+                        edge(
+                            "collision/App.vue",
+                            "%",
+                            "references",
+                            "collision/components/BaseWidgetCard.vue",
+                            "%",
+                            false,
+                        );
+                    }
+                    "store" => {
+                        for (src, name, kind, target) in [
+                            ("client.ts", "read", "references", "count"),
+                            ("client.ts", "run", "calls", "checkout"),
+                            ("App.vue", "template@%", "references", "count"),
+                            ("App.vue", "template@%", "calls", "checkout"),
+                        ] {
+                            edge(
+                                src,
+                                name,
+                                kind,
+                                "store.ts",
+                                target,
+                                active && !(changed && target == "count"),
                             );
-                            let mut origins = Vec::new();
-                            let mut statement = conn
-                                .prepare("SELECT facts_blob FROM local_facts WHERE path='store.ts'")
-                                .unwrap();
-                            for row in statement
-                                .query_map([], |row| row.get::<_, Vec<u8>>(0))
-                                .unwrap()
-                            {
-                                let file = reader::decode_local_facts(&row.unwrap()).unwrap();
-                                let projected = crate::common::assertions::projected_facts(&file);
-                                for node in projected["nodes"].as_array().into_iter().flatten() {
-                                    if let Some(facts) =
-                                        node["details"]["value_flow"]["factory_results"].as_array()
-                                    {
-                                        origins.extend(facts.iter().map(|f| {
+                        }
+                        for (path, name) in [
+                            ("client.ts", "missing"),
+                            ("client.ts", "dynamic"),
+                            ("client.ts", "shadow"),
+                            ("duplicate.ts", "duplicate"),
+                            ("rebound.ts", "rebound"),
+                        ] {
+                            edge(path, name, "calls", "store.ts", "checkout", false);
+                        }
+                        assert!(
+                            coverage("client.ts", "cart.absent")
+                                .iter()
+                                .any(|(s, _)| s == "unresolved"),
+                            "{phase}: missing store member"
+                        );
+                        let mut origins = Vec::new();
+                        let mut statement = conn
+                            .prepare("SELECT facts_blob FROM local_facts WHERE path=?1")
+                            .unwrap();
+                        for row in statement
+                            .query_map([project_path("store.ts")], |row| row.get::<_, Vec<u8>>(0))
+                            .unwrap()
+                        {
+                            let file = reader::decode_local_facts(&row.unwrap()).unwrap();
+                            let projected = crate::common::assertions::projected_facts(&file);
+                            for node in projected["nodes"].as_array().into_iter().flatten() {
+                                if let Some(facts) =
+                                    node["details"]["value_flow"]["factory_results"].as_array()
+                                {
+                                    origins.extend(
+                                        facts.iter().map(|f| {
                                             f["origin"]["pack"].as_str().unwrap().to_owned()
-                                        }));
-                                    }
+                                        }),
+                                    );
                                 }
                             }
-                            assert_eq!(
-                                origins.iter().any(|p| p == "vue-runtime"),
-                                active,
-                                "{phase}: durable Pinia origin"
-                            );
                         }
-                        _ => unreachable!(),
-                    }
-                    assert!(
-                        rows("SELECT path||':'||message FROM errors ORDER BY path,line").is_empty()
-                    );
-                };
-                observe(true, true, false);
-                // Provider-only mutation must relink an unchanged consumer from persisted facts.
-                let provider = match family {
-                    "pages" => Some("pages/catalog/detail.vue"),
-                    "sfc" => Some("components/WidgetCard.vue"),
-                    "store" => Some("store.ts"),
-                    _ => None,
-                };
-                if let Some(provider) = provider {
-                    let original = files.iter().find(|(path, _)| *path == provider).unwrap().1;
-                    if family == "store" {
-                        workspace.write(
-                            rewrite(provider),
-                            &rewrite(&original.replace("count", "removedField")),
+                        assert_eq!(
+                            origins.iter().any(|p| p == "vue-runtime"),
+                            active,
+                            "{phase}: durable Pinia origin"
                         );
-                    } else {
-                        workspace.remove(rewrite(provider));
                     }
-                    workspace.delta(&[&rewrite(provider)]);
-                    observe(true, true, true);
-                    let parity = crate::languages::harness::cold_relations(&workspace);
-                    assert_eq!(parity.incremental_verification, Ok(()));
-                    assert_eq!(parity.cold_verification, Ok(()));
-                    assert_eq!(parity.incremental, parity.cold);
-                    drop(parity);
-                    workspace.write(rewrite(provider), &rewrite(original));
-                    workspace.delta(&[&rewrite(provider)]);
-                    observe(true, true, false);
-                    let parity = crate::languages::harness::cold_relations(&workspace);
-                    assert_eq!(parity.incremental_verification, Ok(()));
-                    assert_eq!(parity.cold_verification, Ok(()));
-                    assert_eq!(parity.incremental, parity.cold);
+                    _ => unreachable!(),
                 }
-                workspace.write("package.json", "{\"dependencies\":{\"vue\":\"^3\"}}");
-                workspace.delta(&["package.json"]);
-                observe(true, false, false);
+                assert!(
+                    rows("SELECT path||':'||message FROM errors ORDER BY path,line").is_empty()
+                );
+            };
+            observe(true, true, false);
+            // Provider-only mutation must relink an unchanged consumer from persisted facts.
+            let provider = match family {
+                "pages" => Some("pages/catalog/detail.vue"),
+                "sfc" => Some("components/WidgetCard.vue"),
+                "store" => Some("store.ts"),
+                _ => None,
+            };
+            if let Some(provider) = provider {
+                let original = files.iter().find(|(path, _)| *path == provider).unwrap().1;
+                if family == "store" {
+                    workspace.write(
+                        project_path(provider),
+                        &rewrite(&original.replace("count", "removedField")),
+                    );
+                } else {
+                    workspace.remove(project_path(provider));
+                }
+                workspace.delta(&[&project_path(provider)]);
+                observe(true, true, true);
                 let parity = crate::languages::harness::cold_relations(&workspace);
                 assert_eq!(parity.incremental_verification, Ok(()));
                 assert_eq!(parity.cold_verification, Ok(()));
                 assert_eq!(parity.incremental, parity.cold);
                 drop(parity);
-                workspace.write("package.json", &package);
-                workspace.delta(&["package.json"]);
-                observe(true, true, false);
-                for (name, source) in packs {
-                    override_pack(name, source, true);
-                }
-                workspace.delta(&[
-                    ".acdd/frameworks/nuxt.toml",
-                    ".acdd/frameworks/vue-runtime.toml",
-                ]);
-                observe(false, true, false);
-                let parity = crate::languages::harness::cold_relations(&workspace);
-                assert_eq!(parity.incremental_verification, Ok(()));
-                assert_eq!(parity.cold_verification, Ok(()));
-                assert_eq!(parity.incremental, parity.cold);
-                drop(parity);
-                for (name, source) in packs {
-                    override_pack(name, source, false);
-                }
-                workspace.delta(&[
-                    ".acdd/frameworks/nuxt.toml",
-                    ".acdd/frameworks/vue-runtime.toml",
-                ]);
+                workspace.write(project_path(provider), &rewrite(original));
+                workspace.delta(&[&project_path(provider)]);
                 observe(true, true, false);
                 let parity = crate::languages::harness::cold_relations(&workspace);
                 assert_eq!(parity.incremental_verification, Ok(()));
                 assert_eq!(parity.cold_verification, Ok(()));
                 assert_eq!(parity.incremental, parity.cold);
-                drop(parity);
-                workspace.write("control.ts","import {helper} from './ordinary';\nexport function ordinary() { return helper() + 1; }\n");
-                workspace.delta(&["control.ts"]);
-                observe(true, true, false);
-                let parity = crate::languages::harness::cold_relations(&workspace);
-                assert_eq!(parity.incremental_verification, Ok(()));
-                assert_eq!(parity.cold_verification, Ok(()));
-                assert_eq!(parity.incremental, parity.cold);
-            }));
-            if let Err(error) = result {
-                failures.push(format!(
-                    "{phase}: {}",
-                    error
-                        .downcast_ref::<String>()
-                        .cloned()
-                        .or_else(|| error.downcast_ref::<&str>().map(|s| (*s).into()))
-                        .unwrap_or_else(|| "panic".into())
-                ));
             }
+            workspace.write(
+                project_path("package.json"),
+                "{\"dependencies\":{\"vue\":\"^3\"}}",
+            );
+            workspace.delta(&[&project_path("package.json")]);
+            observe(true, false, false);
+            let parity = crate::languages::harness::cold_relations(&workspace);
+            assert_eq!(parity.incremental_verification, Ok(()));
+            assert_eq!(parity.cold_verification, Ok(()));
+            assert_eq!(parity.incremental, parity.cold);
+            drop(parity);
+            workspace.write(project_path("package.json"), &package);
+            workspace.delta(&[&project_path("package.json")]);
+            observe(true, true, false);
+            for (name, source) in packs {
+                override_pack(name, source, true);
+            }
+            workspace.delta(&[
+                ".acdd/frameworks/nuxt.toml",
+                ".acdd/frameworks/vue-runtime.toml",
+            ]);
+            observe(false, true, false);
+            let parity = crate::languages::harness::cold_relations(&workspace);
+            assert_eq!(parity.incremental_verification, Ok(()));
+            assert_eq!(parity.cold_verification, Ok(()));
+            assert_eq!(parity.incremental, parity.cold);
+            drop(parity);
+            for (name, source) in packs {
+                override_pack(name, source, false);
+            }
+            workspace.delta(&[
+                ".acdd/frameworks/nuxt.toml",
+                ".acdd/frameworks/vue-runtime.toml",
+            ]);
+            observe(true, true, false);
+            let parity = crate::languages::harness::cold_relations(&workspace);
+            assert_eq!(parity.incremental_verification, Ok(()));
+            assert_eq!(parity.cold_verification, Ok(()));
+            assert_eq!(parity.incremental, parity.cold);
+            drop(parity);
+            workspace.write(project_path("control.ts"),"import {helper} from './ordinary';\nexport function ordinary() { return helper() + 1; }\n");
+            workspace.delta(&[&project_path("control.ts")]);
+            observe(true, true, false);
+            let parity = crate::languages::harness::cold_relations(&workspace);
+            assert_eq!(parity.incremental_verification, Ok(()));
+            assert_eq!(parity.cold_verification, Ok(()));
+            assert_eq!(parity.incremental, parity.cold);
+
+            workspace.write(project_path("control.ts"), "import {helper} from './ordinary';\nexport function ordinary() { return helper(); }\n");
+            workspace.delta(&[&project_path("control.ts")]);
         }
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-
-#[cfg(feature = "lang-vue")]
-fn assert_nuxt_vue_pinia_manifest_family_variants(family: &str) {
-    let mut failures = Vec::new();
-    for renamed in [false, true] {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            assert_nuxt_vue_pinia_manifest_family(family, renamed);
-        }));
-        if let Err(error) = result {
-            let message = error
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| {
-                    error
-                        .downcast_ref::<&str>()
-                        .map(|message| (*message).into())
-                })
-                .unwrap_or_else(|| "panic".into());
-            failures.push(format!("{family}, renamed={renamed}: {message}"));
-        }
-    }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-
-#[cfg(feature = "lang-vue")]
-#[test]
-fn nuxt_vue_pinia_manifest_contract_reaches_persisted_graph() {
-    assert_nuxt_vue_pinia_manifest_family_variants("pages");
-}
-
-#[cfg(feature = "lang-vue")]
-#[test]
-fn nuxt_vue_pinia_manifest_contract_composables_reaches_persisted_graph() {
-    assert_nuxt_vue_pinia_manifest_family_variants("composables");
-}
-
-#[cfg(feature = "lang-vue")]
-#[test]
-fn nuxt_vue_pinia_manifest_contract_sfc_reaches_persisted_graph() {
-    assert_nuxt_vue_pinia_manifest_family_variants("sfc");
-}
-
-#[cfg(feature = "lang-vue")]
-#[test]
-fn nuxt_vue_pinia_manifest_contract_store_reaches_persisted_graph() {
-    assert_nuxt_vue_pinia_manifest_family_variants("store");
 }

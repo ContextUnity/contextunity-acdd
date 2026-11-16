@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn rendered_template_context_keys_follow_exact_targets_and_includes() {
+fn rendered_context_provider_cardinality() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    for project in ["shop", "other"] {
+    for project in ["shop", "other", "multiple"] {
         workspace.write(
             format!("{project}/pyproject.toml"),
             &format!("[project]\nname = '{project}'\ndependencies = ['django>=5']\n"),
@@ -26,17 +26,30 @@ fn rendered_template_context_keys_follow_exact_targets_and_includes() {
         "<h1>{{ title }}</h1><h2>{{ headline }}</h2>\n",
     );
     workspace.write("other/templates/page.html", "<h1>{{ title }}</h1>\n");
+    workspace.write(
+        "multiple/views.py",
+        "from django.shortcuts import render\n\ndef page(request):\n    return render(request, 'templates/page.html', {'title': 'Welcome'})\n\ndef other(request):\n    return render(request, 'templates/page.html', {'headline': 'Other'})\n",
+    );
+    workspace.write("multiple/templates/page.html", "<h1>{{ title }}</h1>\n");
     let conn = workspace.build_and_open();
     for (path, expected) in [
         ("shop/templates/page.html", "resolved"),
         ("shop/templates/partials/card.html", "resolved"),
         ("other/templates/page.html", "unresolved"),
+        ("multiple/templates/page.html", "ambiguous"),
     ] {
         let (status, evidence): (String, String) = conn.query_row(
             "SELECT rc.status,ev.evidence FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id JOIN coverage_evidence ev ON ev.evidence_id=rc.evidence_id WHERE pd.path=?1 AND ce.expression='template.variable.title'",
             [path], |row| Ok((row.get(0)?, row.get(1)?)),
         ).unwrap();
         assert_eq!(status, expected, "{path}: {evidence}");
+        if expected == "ambiguous" {
+            let edges: i64 = conn.query_row("SELECT count(*) FROM edges e JOIN path_dictionary pd ON pd.path_id=e.path_id WHERE e.kind='context_provider' AND pd.path=?1", [path], |row| row.get(0)).unwrap();
+            assert_eq!(
+                edges, 0,
+                "a shared template must not emit a context_provider edge"
+            );
+        }
         if status == "resolved" {
             assert!(evidence.contains("shop/views.py"), "{path}: {evidence}");
         }
@@ -153,38 +166,4 @@ fn rendered_template_context_keys_follow_exact_targets_and_includes() {
     }
     commitments::verify(&delta).unwrap();
     commitments::verify(&cold).unwrap();
-}
-
-#[test]
-fn rendered_template_with_multiple_views_stays_ambiguous() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write(
-        "shop/pyproject.toml",
-        "[project]\nname = 'shop'\ndependencies = ['django>=5']\n",
-    );
-    workspace.write(
-        "shop/views.py",
-        "from django.shortcuts import render\n\ndef page(request):\n    return render(request, 'templates/page.html', {'title': 'Welcome'})\n\ndef other(request):\n    return render(request, 'templates/page.html', {'headline': 'Other'})\n",
-    );
-    workspace.write("shop/templates/page.html", "<h1>{{ title }}</h1>\n");
-    let conn = workspace.build_and_open();
-    let (status, evidence): (String, String) = conn
-        .query_row(
-            "SELECT rc.status,ev.evidence FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id JOIN coverage_evidence ev ON ev.evidence_id=rc.evidence_id WHERE pd.path='shop/templates/page.html' AND ce.expression='template.variable.title'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(status, "ambiguous", "{evidence}");
-    let edges: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM edges e JOIN path_dictionary pd ON pd.path_id=e.path_id WHERE e.kind='context_provider' AND pd.path='shop/templates/page.html'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        edges, 0,
-        "a shared template must not emit a context_provider edge"
-    );
 }

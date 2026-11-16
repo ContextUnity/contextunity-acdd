@@ -2,7 +2,7 @@ use super::super::snapshot::FixtureSnapshot;
 use super::*;
 use crate::acdd::tasks::harness::TaskHarness;
 
-const RETIREMENT_TASK: &str = "forge-mcp/m-current-boundary:routing";
+const RETIREMENT_TASK: &str = "acdd/m-current-boundary:routing";
 const RETIREMENT_SEAM: &str = "src/seam.rs::test_connected";
 const RETIREMENT_MANIFEST: &str = "docs/milestones/010-boundary.md";
 
@@ -198,7 +198,10 @@ fn build_revalidates_legacy_empty_baseline_caller_evidence() {
             }
             let result = submit_indexed_boundary(&root, "build", RETIREMENT_SEAM);
             if !external_caller {
-                assert!(result.is_ok(), "{indexed_target}/{external_caller}: {result:?}");
+                assert!(
+                    result.is_ok(),
+                    "{indexed_target}/{external_caller}: {result:?}"
+                );
             } else {
                 let error = result.unwrap_err().to_string();
                 assert!(error.contains("TASK_SCOPE_INCOMPLETE"), "{error}");

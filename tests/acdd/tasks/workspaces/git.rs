@@ -109,7 +109,7 @@ impl TaskHarness {
             &[
                 "for-each-ref",
                 "--format=%(objectname)",
-                "refs/forge/state/",
+                "refs/acdd/state/",
             ],
         );
         let mut outputs = vec![];

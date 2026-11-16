@@ -4,12 +4,12 @@ use super::*;
 fn subtask_update_preserves_evidence_when_none_provided_and_contract_bump_resets_subtasks() {
     let spec_v1 = "---\nid: m-bump\ntitle: Bump Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: feature\ntarget: Deliver feature\nproof_policy: seam-test-first\nscope: [src/]\ncontract_revision: 1\nsubtasks:\n  - subtask_ref: sub-orig\n    title: Original subtask\n    status: pending\n```\n";
     let root = unconfigured_test_root();
-    let milestone_v1 = Milestone::parse(spec_v1, "forge-mcp").unwrap();
-    let mut store = TasksStore::open_in_memory("forge-mcp", "forge-mcp").unwrap();
+    let milestone_v1 = Milestone::parse(spec_v1, "acdd").unwrap();
+    let mut store = TasksStore::open_in_memory("acdd", "acdd").unwrap();
     store
         .sync(&milestone_v1, "docs/010-bump.md", &root)
         .unwrap();
-    let task_id = "forge-mcp/m-bump:feature";
+    let task_id = "acdd/m-bump:feature";
 
     // 1. Update subtask with evidence
     let updated = store
@@ -47,7 +47,7 @@ fn subtask_update_preserves_evidence_when_none_provided_and_contract_bump_resets
 
     // 4. Contract revision bump to v2 with a new specification
     let spec_v2 = "---\nid: m-bump\ntitle: Bump Test\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: feature\ntarget: Deliver feature v2\nproof_policy: seam-test-first\nscope: [src/]\ncontract_revision: 2\nsubtasks:\n  - subtask_ref: sub-new\n    title: New subtask in v2\n    status: pending\n```\n";
-    let milestone_v2 = Milestone::parse(spec_v2, "forge-mcp").unwrap();
+    let milestone_v2 = Milestone::parse(spec_v2, "acdd").unwrap();
     store
         .sync(&milestone_v2, "docs/010-bump.md", &root)
         .unwrap();

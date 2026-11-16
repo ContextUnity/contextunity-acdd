@@ -3,7 +3,7 @@ use super::*;
 pub(crate) const ACTIVE: &str = "docs/milestones/010-close.md";
 pub(crate) const ARCHIVE: &str = "docs/milestones/archive/010-close.md";
 pub(crate) const FOREIGN_WAITING: &str = "other/m-close:waiting";
-pub(crate) const FOREIGN_KEEPER: &str = "refs/forge/state/forge-mcp/other/m-foreign/transfer";
+pub(crate) const FOREIGN_KEEPER: &str = "refs/acdd/state/acdd/other/m-foreign/transfer";
 
 pub(crate) struct ForeignHandoffFixture {
     pub root: MilestoneHarness,

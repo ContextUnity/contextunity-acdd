@@ -58,7 +58,7 @@ fn provisional_snapshot_survives_gc_and_pending_publication() {
         assert!(contextunity_acdd::core::git::git_ancestor(
             task.root(),
             candidate,
-            "refs/forge/state/forge-mcp/forge-mcp/m-gc/candidate"
+            "refs/acdd/state/acdd/acdd/m-gc/candidate"
         )
         .unwrap());
         let parents = TaskHarness::snapshot_parents(task.root(), candidate);
@@ -93,7 +93,7 @@ fn scoped_snapshot_delivery_and_handoff_controls() {
         .unwrap(),
     )
     .unwrap();
-    let task_id = "forge-mcp/m-control:first";
+    let task_id = "acdd/m-control:first";
     let premature = contextunity_acdd::engine::milestones::handoff(
         root.root(),
         "m-control",
@@ -180,7 +180,7 @@ fn scoped_snapshot_delivery_and_handoff_controls() {
     let archived =
         std::fs::read_to_string(root.root().join("docs/milestones/archive/010-control.md"))
             .unwrap();
-    let archived = Milestone::parse(&archived, "forge-mcp").unwrap();
+    let archived = Milestone::parse(&archived, "acdd").unwrap();
     assert_eq!(
         archived.tasks[0]
             .receipt
@@ -193,7 +193,7 @@ fn scoped_snapshot_delivery_and_handoff_controls() {
         .list(None, "all", None)
         .unwrap()
         .is_empty());
-    let refs = TaskHarness::references(root.root(), "refs/forge/snapshots/");
+    let refs = TaskHarness::references(root.root(), "refs/acdd/snapshots/");
     assert!(refs.status.success());
     assert!(refs.stdout.is_empty());
 }

@@ -4,9 +4,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     let (root, task_id, target, contract_snap) = TaskHarness::recovery_fixture().unwrap();
     let task_id = &task_id;
     let stored = tasks::store(root.root()).unwrap().inspect(task_id).unwrap();
-    let checkpoint_ref = format!("refs/forge/state/forge-mcp/{}", task_id.replace(':', "/"));
+    let checkpoint_ref = format!("refs/acdd/state/acdd/{}", task_id.replace(':', "/"));
     // Only the real keeper retains the parentless contract candidate during isolated GC.
-    let snapshot_ref = format!("refs/forge/snapshots/{}", task_id.replace(':', "/"));
+    let snapshot_ref = format!("refs/acdd/snapshots/{}", task_id.replace(':', "/"));
     for output in TaskHarness::collect_unreachable_snapshot(root.root(), &snapshot_ref) {
         assert!(output.status.success(), "{output:?}");
     }
@@ -330,6 +330,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         "#!/bin/sh\nprintf ready > \"$ACDD_CRASH_READY\"\nread answer < \"$ACDD_CRASH_RESUME\"\n",
     )
     .unwrap();
+    let crash_tmp = crate::common::Workspace::new();
     let mut child = Command::new(env!("CARGO_BIN_EXE_acdd"))
         .args([
             "--root",
@@ -344,6 +345,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
             "--evidence",
             &serde_json::to_string(&ev).unwrap(),
         ])
+        .env("TMPDIR", crash_tmp.root())
+        .env("TEMP", crash_tmp.root())
+        .env("TMP", crash_tmp.root())
         .env("ACDD_CRASH_READY", &ready)
         .env("ACDD_CRASH_RESUME", &resume)
         .env(
@@ -574,7 +578,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         TaskHarness::snapshot_content(root.root(), &delivery_commit, "docs/milestones/010-test.md");
     assert!(committed_milestone.status.success());
     let committed_text = String::from_utf8(committed_milestone.stdout).unwrap();
-    let committed_spec = Milestone::parse(&committed_text, "forge-mcp").unwrap();
+    let committed_spec = Milestone::parse(&committed_text, "acdd").unwrap();
     assert_eq!(committed_spec.tasks[0].status.as_deref(), Some("completed"));
     assert_eq!(
         committed_spec.tasks[0]
@@ -592,7 +596,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .status
         .success());
     let written = std::fs::read_to_string(root.root().join("docs/milestones/010-test.md")).unwrap();
-    let milestone = Milestone::parse(&written, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(&written, "acdd").unwrap();
     assert_eq!(
         milestone.tasks[0]
             .receipt
@@ -643,9 +647,9 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         delivery_evidence["candidate_baseline_head"],
         delivery_baseline
     );
-    let refs_out = TaskHarness::references(root.root(), "refs/forge/snapshots/");
+    let refs_out = TaskHarness::references(root.root(), "refs/acdd/snapshots/");
     let refs_text = String::from_utf8_lossy(&refs_out.stdout);
-    assert!(refs_text.contains("refs/forge/snapshots/"));
+    assert!(refs_text.contains("refs/acdd/snapshots/"));
     let ready_tasks = tasks::store(root.root())
         .unwrap()
         .list(None, "ready", None)
@@ -697,7 +701,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     handoff_with_fixture_evidence(root.root(), "m-test", None, "cargo test", 2, 0).unwrap();
     let archive_path = root.root().join("docs/milestones/archive/010-test.md");
     let archived_text = std::fs::read_to_string(&archive_path).unwrap();
-    let archived = Milestone::parse(&archived_text, "forge-mcp").unwrap();
+    let archived = Milestone::parse(&archived_text, "acdd").unwrap();
     assert_eq!(
         archived.tasks[0]
             .receipt
@@ -720,7 +724,7 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
         .list(None, "all", None)
         .unwrap()
         .is_empty());
-    let refs_after = TaskHarness::references(root.root(), "refs/forge/snapshots/");
+    let refs_after = TaskHarness::references(root.root(), "refs/acdd/snapshots/");
     let refs_after_text = String::from_utf8_lossy(&refs_after.stdout)
         .trim()
         .to_string();

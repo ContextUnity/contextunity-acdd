@@ -44,7 +44,7 @@ impl NamedSnapshotHarness {
             "roots: [src]\ndocs: [docs]\nmilestones: [docs/milestones]\ntasks_db: runtime/tasks.sqlite\n",
         );
         root.write("src/lib.rs", "snapshot baseline\n");
-        root.write(".acdd/managed-state", "preserve Forge state\n");
+        root.write(".acdd/managed-state", "preserve ACDD state\n");
         root.write(".git/info/exclude", "\n.acdd/\n");
         git_checked(root.root(), &["add", "acdd.yaml", "src/lib.rs"]);
         git_checked(root.root(), &["commit", "-m", "snapshot fixture baseline"]);
@@ -91,7 +91,7 @@ impl NamedSnapshotHarness {
             &["rev-parse", "--absolute-git-dir"],
         ))
         .expect("Git directory path must be UTF-8");
-        PathBuf::from(git_dir.trim()).join("forge-task-manage-snapshot.lock")
+        PathBuf::from(git_dir.trim()).join("acdd-task-manage-snapshot.lock")
     }
 
     #[cfg(unix)]

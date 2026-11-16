@@ -116,7 +116,7 @@ fn infer_project_from_path_supports_arbitrary_monorepo_structures_universally() 
     }
     assert_eq!(ids.len(), 6);
     assert!(ids.iter().any(|id| id.starts_with("explicit-api/")));
-    assert!(ids.iter().any(|id| id.starts_with("forge-mcp/")));
+    assert!(ids.iter().any(|id| id.starts_with("acdd/")));
     assert!(ids.iter().any(|id| id.starts_with("alpha/")));
     assert!(ids.iter().any(|id| id.starts_with("beta/")));
 }
@@ -387,7 +387,7 @@ fn task_configuration_defaults_and_crlf_preserve_operational_identity() {
             .unwrap()
             .join(".acdd/tasks.sqlite")
     );
-    let crlf = Milestone::parse(&SPEC.replace('\n', "\r\n"), "forge-mcp").unwrap();
+    let crlf = Milestone::parse(&SPEC.replace('\n', "\r\n"), "acdd").unwrap();
     assert_eq!(
         crlf.task_id(&crlf.tasks[0]),
         milestone.task_id(&milestone.tasks[0])
@@ -451,7 +451,7 @@ fn linked_pinned_tasks_ignore_linked_workspace_profile_overrides() {
     let invalid_linked_base = "gates:\n  - id: linked_only\n    role: builder\n    proof: none\n";
 
     for (case, linked_base_path) in [
-        ("forge_config", "acdd.yaml"),
+        ("acdd_config", "acdd.yaml"),
         ("repository_profile", ".acdd/profile.yaml"),
     ] {
         let root = acdd_workspace(DEFAULT_SEAM, "");

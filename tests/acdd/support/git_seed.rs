@@ -257,6 +257,16 @@ fn seed_git_workspace(
     );
     seed_git_with_environment(
         workspace.root(),
+        &["config", "--local", "gc.auto", "0"],
+        environment,
+    );
+    seed_git_with_environment(
+        workspace.root(),
+        &["config", "--local", "maintenance.auto", "false"],
+        environment,
+    );
+    seed_git_with_environment(
+        workspace.root(),
         &["config", "--local", "user.name", "ACDD test"],
         environment,
     );
@@ -353,7 +363,7 @@ pub(crate) fn commit_fixture_baseline(root: &Workspace) {
 }
 
 pub(crate) fn pinned_candidate(root: &std::path::Path, task_id: &str) -> String {
-    let reference = format!("refs/forge/snapshots/{}", task_id.replace(':', "/"));
+    let reference = format!("refs/acdd/snapshots/{}", task_id.replace(':', "/"));
     let output = git_command(root, &["rev-parse", &reference])
         .output()
         .unwrap();

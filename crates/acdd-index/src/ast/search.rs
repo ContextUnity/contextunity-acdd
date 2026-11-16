@@ -146,8 +146,8 @@ fn structural_match(
         return false;
     }
     let token = text(pattern, ps);
-    if token.starts_with("__FORGE_META_") && pattern.named_child_count() == 0 {
-        let name = token.trim_start_matches("__FORGE_META_");
+    if token.starts_with("__ACDD_META_") && pattern.named_child_count() == 0 {
+        let name = token.trim_start_matches("__ACDD_META_");
         let value = json!(text(target, source));
         return match captures.get(name) {
             Some(old) => *old == value,
@@ -225,13 +225,13 @@ fn structural_match(
             return t.is_empty();
         }
         let token = text(p[0], ps);
-        if token.starts_with("__FORGE_MANY_") {
+        if token.starts_with("__ACDD_MANY_") {
             for count in 0..=t.len() {
                 if !budget.step() {
                     return false;
                 }
                 let mut branch = caps.clone();
-                let name = token.trim_start_matches("__FORGE_MANY_");
+                let name = token.trim_start_matches("__ACDD_MANY_");
                 let value = if count == 0 {
                     ""
                 } else {
@@ -373,9 +373,9 @@ fn normalize_search_pattern(pattern: &str) -> NormalizedPattern {
                 token_end = name_start + offset + next.len_utf8();
             }
             let marker = if count > 1 {
-                "__FORGE_MANY_"
+                "__ACDD_MANY_"
             } else {
-                "__FORGE_META_"
+                "__ACDD_META_"
             };
             normalized.source.push_str(marker);
             normalized
@@ -708,15 +708,15 @@ fn prepare_search_pattern(
 /// Extracts target symbol name from a search pattern if uniquely resolved.
 pub fn pattern_symbol_name(pattern: &str, language: &str) -> Result<Option<String>> {
     let profile = languages::require(language)?;
-    let mut parser = profile.create_parser("__forge_pattern__")?;
+    let mut parser = profile.create_parser("__acdd_pattern__")?;
     let mut budget = SearchBudget::unbounded();
     let prepared = match prepare_search_pattern(&mut parser, profile, pattern, &mut budget) {
         Ok(Some(prepared)) => prepared,
         Ok(None) => return Ok(None),
         Err(error) if error.downcast_ref::<PatternSearchDiagnostic>().is_some() => {
-            let mut grammars = vec![profile.grammar("__forge_pattern__")];
+            let mut grammars = vec![profile.grammar("__acdd_pattern__")];
             for extension in profile.extensions() {
-                let grammar = profile.grammar(&format!("__forge_pattern__.{extension}"));
+                let grammar = profile.grammar(&format!("__acdd_pattern__.{extension}"));
                 if grammars.contains(&grammar) {
                     continue;
                 }
@@ -744,7 +744,7 @@ pub fn pattern_symbol_name(pattern: &str, language: &str) -> Result<Option<Strin
     }
     Ok(profile
         .symbol_name(node, &prepared.source)
-        .filter(|name| !name.contains("__FORGE_"))
+        .filter(|name| !name.contains("__ACDD_"))
         .map(str::to_owned))
 }
 

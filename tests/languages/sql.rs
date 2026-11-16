@@ -102,25 +102,26 @@ fn sql_profile_parses_without_tree_sitter_parser() {
 }
 
 #[test]
-fn embedded_sql_statements_classify_table_relations() {
-    for &(sql, name, relation) in TABLE_RELATION_CASES {
-        assert!(
-            contextunity_acdd::engine::languages::sql::extract_embedded_sql_tables(sql)
-                .contains(&(name.to_owned(), relation))
-        );
-    }
-}
-
-#[test]
-fn cte_scope_distinguishes_recursive_and_physical_tables() {
-    for (sql, expected) in [
+fn sql_statement_relation_matrix() {
+    let mut cases: Vec<_> = TABLE_RELATION_CASES
+        .iter()
+        .map(|&(sql, name, relation)| (sql, vec![(name.to_owned(), relation)], false))
+        .collect();
+    cases.extend([
         ("WITH temporary(id) AS (SELECT * FROM temporary) SELECT * FROM temporary", vec!["temporary"]),
         ("WITH RECURSIVE temporary(id) AS (SELECT * FROM temporary) SELECT * FROM temporary", vec![]),
         ("WITH temporary(id) AS (SELECT * FROM orders) SELECT * FROM public.temporary", vec!["orders", "public.temporary"]),
         ("WITH first_cte AS (SELECT * FROM orders), second_cte(id) AS (SELECT * FROM first_cte) SELECT * FROM second_cte", vec!["orders"]),
-    ] {
+    ].into_iter().map(|(sql, names)| (sql, names.into_iter().map(|name| (name.to_owned(), "queries_table")).collect(), true)));
+    for (sql, expected, exact) in cases {
         let actual = contextunity_acdd::engine::languages::sql::extract_embedded_sql_tables(sql);
-        assert_eq!(actual.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), expected, "{sql}");
+        if exact {
+            assert_eq!(actual, expected, "{sql}");
+        } else {
+            for relation in expected {
+                assert!(actual.contains(&relation), "{sql}: {actual:?}");
+            }
+        }
     }
 }
 
@@ -253,8 +254,9 @@ fn indexed_sql_workspace() -> crate::languages::PersistedWorkspaceHarness {
 }
 
 #[test]
-fn quoted_identifiers_and_cte_columns_link_persisted_tables() {
+fn persisted_sql_relation_matrix() {
     let db = sql_baseline().open();
+    let mut cases: Vec<(&str, Vec<&str>, i64)> = Vec::new();
     #[cfg(feature = "lang-python")]
     for (source, target, expected) in [
         ("quoted_orders", "orders", 1),
@@ -262,8 +264,7 @@ fn quoted_identifiers_and_cte_columns_link_persisted_tables() {
         ("cte_columns", "temporary", 0),
         ("cte_columns", "orders", 1),
     ] {
-        let count: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name=?2 AND e.kind='queries_table'", [source,target], |r| r.get(0)).unwrap();
-        assert_eq!(count, expected, "{source} -> {target}");
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name=?2 AND e.kind='queries_table'", vec![source,target], expected));
     }
     #[cfg(feature = "lang-python")]
     for (source, target, expected) in [
@@ -272,52 +273,19 @@ fn quoted_identifiers_and_cte_columns_link_persisted_tables() {
         ("lower_case", "\"foo\"", 1),
         ("lower_case", "\"Foo\"", 0),
     ] {
-        let count: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.qualname=?2 AND e.kind='queries_table'", [source,target], |r| r.get(0)).unwrap();
-        assert_eq!(count, expected, "quoted case: {source} -> {target}");
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.qualname=?2 AND e.kind='queries_table'", vec![source,target], expected));
     }
-    let fake_cte: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='cte_query' AND d.name='temporary' AND e.kind='queries_table'", [], |r| r.get(0)).unwrap();
-    assert_eq!(
-        fake_cte, 0,
-        "CTE name must not be resolved to a physical table"
-    );
-}
-
-#[test]
-fn sqlalchemy_factory_origins_reject_rebound_factories() {
-    let db = sql_baseline().open();
-    #[cfg(feature = "lang-python")]
-    {
-        let edge: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='FactoryOrder' AND d.name='factory_orders' AND e.kind='defines_table'", [], |r| r.get(0)).unwrap();
-        assert_eq!(
-            edge, 1,
-            "declarative_base factory must prove model ancestry"
-        );
-        let qualified: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.name='QualifiedFactory' AND e.kind='defines_table'", [], |r| r.get(0)).unwrap();
-        assert_eq!(qualified, 1, "qualified imported factory must be resolved");
-        let rebound: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.name='ReboundFactory' AND e.kind='defines_table'", [], |r| r.get(0)).unwrap();
-        assert_eq!(rebound, 0, "rebound factory must fail closed");
-    }
-}
-
-#[test]
-fn qualified_and_quoted_tables_retain_distinct_identity() {
-    let db = sql_baseline().open();
-    let qualified: i64 = db
-        .query_row(
-            "SELECT count(*) FROM nodes WHERE kind='table' AND qualname IN ('a.same','b.same')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(qualified, 2, "qualified tables retain distinct identities");
-    let dotted: i64 = db
-        .query_row(
-            "SELECT count(*) FROM nodes WHERE kind='table' AND qualname IN ('\"x.y\"','x.y')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(dotted, 2, "quoted and qualified identities differ");
+    cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='cte_query' AND d.name='temporary' AND e.kind='queries_table'", vec![], 0));
+    cases.push((
+        "SELECT count(*) FROM nodes WHERE kind='table' AND qualname IN ('a.same','b.same')",
+        vec![],
+        2,
+    ));
+    cases.push((
+        "SELECT count(*) FROM nodes WHERE kind='table' AND qualname IN ('\"x.y\"','x.y')",
+        vec![],
+        2,
+    ));
     #[cfg(feature = "lang-python")]
     for (source, target, expected) in [
         ("quoted", "\"x.y\"", 1),
@@ -325,19 +293,9 @@ fn qualified_and_quoted_tables_retain_distinct_identity() {
         ("qualified", "x.y", 1),
         ("qualified", "\"x.y\"", 0),
     ] {
-        let count: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.qualname=?2 AND e.kind='queries_table'", [source,target], |r| r.get(0)).unwrap();
-        assert_eq!(count, expected, "{source} -> {target}");
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.qualname=?2 AND e.kind='queries_table'", vec![source,target], expected));
     }
-}
-
-#[test]
-fn dml_clauses_do_not_become_writes_and_qualified_queries_link() {
-    let db = sql_baseline().open();
-    let fake_dml: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name IN ('upsert','item') AND d.name IN ('SET','CASCADE') AND e.kind='mutates_table'", [], |r| r.get(0)).unwrap();
-    assert_eq!(
-        fake_dml, 0,
-        "UPDATE clauses are not standalone table writes"
-    );
+    cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name IN ('upsert','item') AND d.name IN ('SET','CASCADE') AND e.kind='mutates_table'", vec![], 0));
     for (source, target, expected) in [
         ("exact", "a.same", 1),
         ("exact", "b.same", 0),
@@ -348,49 +306,22 @@ fn dml_clauses_do_not_become_writes_and_qualified_queries_link() {
         ("inline_query", "c.inline_qual", 1),
         ("mixed_from", "inventory", 1),
     ] {
-        let count: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.qualname=?2 AND e.kind='queries_table'", [source,target], |r| r.get(0)).unwrap();
-        assert_eq!(count, expected, "{source} -> {target}");
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.qualname=?2 AND e.kind='queries_table'", vec![source,target], expected));
     }
-    let update_edge: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='rollback_update' AND d.name='orders' AND e.kind='mutates_table'", [], |r| r.get(0)).unwrap();
-    assert_eq!(update_edge, 1, "batch UPDATE with alias and ONLY must link");
-}
-
-#[test]
-fn schema_and_inline_definitions_persist_canonical_sqlx_edges() {
-    let db = sql_baseline().open();
-    let tables: i64 = db
-        .query_row(
-            "SELECT count(*) FROM nodes WHERE kind = 'table' AND name = 'orders'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(tables, 1, "SQL schema tables must be indexed");
-    let inline: i64 = db
-        .query_row(
-            "SELECT count(*) FROM nodes WHERE kind='table' AND name='local_data'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(inline, 1, "inline CREATE must synthesize a table");
-    let inline_link: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='inline_schema' AND d.name='local_data' AND e.kind='defines_table'", [], |row| row.get(0)).unwrap();
-    assert_eq!(inline_link, 1, "inline CREATE must link its owner");
-    let model: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='OrderRow' AND d.name='orders' AND e.kind='queries_table'", [], |row| row.get(0)).unwrap();
-    assert_eq!(
-        model, 1,
-        "query_as must link its unambiguous local result type"
-    );
-    let invalid: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.name IN ('Shared','Imported','Shadow','Other','DeriveOnly') AND e.kind='queries_table'", [], |row| row.get(0)).unwrap();
-    assert_eq!(
-        invalid, 0,
-        "ambiguous, imported, shadowed, unconfigured and derive-only identities must remain unresolved"
-    );
-}
-
-#[test]
-fn language_queries_and_models_reach_persisted_table_relations() {
-    let db = sql_baseline().open();
+    cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='rollback_update' AND d.name='orders' AND e.kind='mutates_table'", vec![], 1));
+    cases.push((
+        "SELECT count(*) FROM nodes WHERE kind = 'table' AND name = 'orders'",
+        vec![],
+        1,
+    ));
+    cases.push((
+        "SELECT count(*) FROM nodes WHERE kind='table' AND name='local_data'",
+        vec![],
+        1,
+    ));
+    cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='inline_schema' AND d.name='local_data' AND e.kind='defines_table'", vec![], 1));
+    cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='OrderRow' AND d.name='orders' AND e.kind='queries_table'", vec![], 1));
+    cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.name IN ('Shared','Imported','Shadow','Other','DeriveOnly') AND e.kind='queries_table'", vec![], 0));
     let mut expected = vec![
         ("order_view", "queries_table"),
         ("load", "queries_table"),
@@ -411,44 +342,46 @@ fn language_queries_and_models_reach_persisted_table_relations() {
     #[cfg(feature = "lang-typescript")]
     expected.push(("ts_load", "queries_table"));
     for (source, kind) in expected {
-        let count: i64 = db.query_row(
-            "SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name='orders' AND e.kind=?2",
-            [source, kind], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(count, 1, "missing {kind} edge from {source}");
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name=?1 AND d.name='orders' AND e.kind=?2", vec![source, kind], 1));
     }
-    let columns: i64 = db.query_row("SELECT count(*) FROM nodes WHERE kind='column' AND qualname IN ('orders.id', 'item.order_id')", [], |row| row.get(0)).unwrap();
-    assert_eq!(columns, 2);
-    let altered: i64 = db.query_row("SELECT count(*) FROM nodes WHERE kind='column' AND qualname='orders.note' AND path_id=(SELECT path_id FROM path_dictionary WHERE path='migration.sql')", [], |row| row.get(0)).unwrap();
-    assert_eq!(altered, 1, "ALTER TABLE must index the added column");
+    cases.push(("SELECT count(*) FROM nodes WHERE kind='column' AND qualname IN ('orders.id', 'item.order_id')", vec![], 2));
+    cases.push(("SELECT count(*) FROM nodes WHERE kind='column' AND qualname='orders.note' AND path_id=(SELECT path_id FROM path_dictionary WHERE path='migration.sql')", vec![], 1));
+    for (query, parameters, expected) in cases {
+        let actual: i64 = db
+            .query_row(query, rusqlite::params_from_iter(&parameters), |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(actual, expected, "{query}: {parameters:?}");
+    }
 }
 
 #[test]
-fn django_defaults_require_real_model_provenance() {
+fn orm_model_provenance_matrix() {
     let db = sql_baseline().open();
+    let mut cases: Vec<(&str, Vec<&str>, i64)> = Vec::new();
     #[cfg(feature = "lang-python")]
     {
-        let defaults: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='Cart' AND d.name='shop_cart' AND e.kind='defines_table'", [], |row| row.get(0)).unwrap();
-        assert_eq!(defaults, 1, "Django default table should link");
-        let other_default: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='Default' AND d.name='shop_default' AND e.kind='defines_table'", [], |row| row.get(0)).unwrap();
-        assert_eq!(
-            other_default, 1,
-            "independent default-only manifest should link"
-        );
-        let empty_defaults: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.name='Empty' AND e.kind='defines_table'", [], |row| row.get(0)).unwrap();
-        assert_eq!(
-            empty_defaults, 0,
-            "class without bases must not define a table"
-        );
-        let false_defaults: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='Fake' AND d.name='shop_fake' AND e.kind='defines_table'", [], |row| row.get(0)).unwrap();
-        assert_eq!(false_defaults, 0, "local models must not imply Django ORM");
-        let override_edges: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='Override' AND d.name='shop_override' AND e.kind='defines_table'", [], |r| r.get(0)).unwrap();
-        assert_eq!(override_edges, 0, "explicit Meta table overrides default");
-        let invalid_models: i64 = db.query_row("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.name IN ('NonModel','Reassigned','FalseSqlAlchemy') AND e.kind='defines_table'", [], |r| r.get(0)).unwrap();
-        assert_eq!(
-            invalid_models, 0,
-            "unproven Django identities remain unresolved"
-        );
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='FactoryOrder' AND d.name='factory_orders' AND e.kind='defines_table'", vec![], 1));
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.name='QualifiedFactory' AND e.kind='defines_table'", vec![], 1));
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.name='ReboundFactory' AND e.kind='defines_table'", vec![], 0));
+    }
+    #[cfg(feature = "lang-python")]
+    {
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='Cart' AND d.name='shop_cart' AND e.kind='defines_table'", vec![], 1));
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='Default' AND d.name='shop_default' AND e.kind='defines_table'", vec![], 1));
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.name='Empty' AND e.kind='defines_table'", vec![], 0));
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='Fake' AND d.name='shop_fake' AND e.kind='defines_table'", vec![], 0));
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='Override' AND d.name='shop_override' AND e.kind='defines_table'", vec![], 0));
+        cases.push(("SELECT count(*) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.name IN ('NonModel','Reassigned','FalseSqlAlchemy') AND e.kind='defines_table'", vec![], 0));
+    }
+    for (query, parameters, expected) in cases {
+        let actual: i64 = db
+            .query_row(query, rusqlite::params_from_iter(&parameters), |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(actual, expected, "{query}: {parameters:?}");
     }
 }
 

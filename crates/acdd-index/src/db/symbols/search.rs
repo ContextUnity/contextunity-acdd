@@ -139,7 +139,7 @@ pub fn search_with_options(
                     .collect::<Vec<_>>()
                     .join(" AND ")
             };
-            let query = format!("({}) OR ({})", term("forgetakes"), term("forgereturns"));
+            let query = format!("({}) OR ({})", term("acddtakes"), term("acddreturns"));
             let budget = reader::QueryBudget::new(conn);
             let matched = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?1 AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?6=1 OR n.language!='markdown'))",

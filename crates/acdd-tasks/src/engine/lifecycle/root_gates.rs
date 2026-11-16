@@ -1,6 +1,52 @@
 use super::proof_fanout::*;
 use super::*;
 
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+    use crate::store::GateTransition;
+
+    #[test]
+    fn post_task_routes_follow_persisted_repair_cycles() {
+        let profile: crate::tasks::profile::GateProfile = serde_json::from_value(json!({
+            "gates": [
+                {"id":"verify", "role":"worker", "proof":"none", "pass":"documentation", "fail":"polish", "max_attempts":2},
+                {"id":"polish", "role":"worker", "proof":"none", "pass":"milestone_review"},
+                {"id":"milestone_review", "role":"worker", "proof":"none", "pass":"verify", "fail":"polish"},
+                {"id":"documentation", "role":"worker", "proof":"none", "pass":"handoff"},
+                {"id":"handoff", "role":"worker", "proof":"none"}
+            ]
+        })).unwrap();
+        let cursors = gate_graph::collect_root_cursors(&profile).unwrap();
+        let store = TasksStore::open_in_memory("repository", "project").unwrap();
+        let milestone = "repository/project/milestone";
+        for (gate, action, attempt, expected) in [
+            ("verify", "fail", 1, "polish"),
+            ("polish", "pass", 1, "milestone_review"),
+            ("milestone_review", "fail", 1, "polish"),
+            ("polish", "pass", 2, "milestone_review"),
+        ] {
+            store
+                .record_gate_transition(&GateTransition {
+                    milestone_id: milestone.into(),
+                    subject: "milestone".into(),
+                    gate_path: gate.into(),
+                    action: action.into(),
+                    proof_kind: "orchestrator".into(),
+                    proof_payload: json!({"attempt": attempt, "findings": null}),
+                    git_tree_sha: "tree".into(),
+                    worker_id: "root-route-test".into(),
+                })
+                .unwrap();
+            let next = pending_root_gate_from_transitions(&store, milestone, &cursors, |_| true)
+                .unwrap()
+                .unwrap();
+            assert_eq!(next.canonical_stage_id, expected);
+            assert_eq!(next.gate.id, expected);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct PendingRootGateAction {
     pub(super) profile: std::sync::Arc<crate::tasks::profile::GateProfile>,

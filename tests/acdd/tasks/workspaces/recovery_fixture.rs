@@ -107,7 +107,7 @@ impl RecoveryContractFixture {
             self.root.root(),
             TaskHarness::pass_request(&self.id, "contract", proof),
         )?;
-        let snapshot_ref = format!("refs/forge/snapshots/{}", self.id.replace(':', "/"));
+        let snapshot_ref = format!("refs/acdd/snapshots/{}", self.id.replace(':', "/"));
         let snapshot = TaskHarness::verified_revision_text(self.root.root(), &snapshot_ref)?;
         Ok((receipt, snapshot))
     }

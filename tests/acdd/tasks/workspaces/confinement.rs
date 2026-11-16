@@ -32,14 +32,14 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
     );
     let spec = "---\nid: m-conflict\ntitle: Conflict Tasks\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: task_a\ntarget: Deliver A\nproof_policy: seam-test-first\nscope: [src/module_a/foo.rs]\nscope_roots: [src/, tests/]\n```\n```yaml\ntask_ref: task_b\ntarget: Deliver B\nproof_policy: seam-test-first\nscope: [src/module_b/bar.rs]\nscope_roots: [src/, tests/]\n```\n";
     root.write("docs/010-conflict.md", spec);
-    let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(spec, "acdd").unwrap();
     let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     store
         .sync(&milestone, "docs/010-conflict.md", root.root())
         .unwrap();
 
-    let task_b_id = "forge-mcp/m-conflict:task_b";
-    let task_a_id = "forge-mcp/m-conflict:task_a";
+    let task_b_id = "acdd/m-conflict:task_b";
+    let task_a_id = "acdd/m-conflict:task_a";
 
     TaskHarness::claim_at(root.root(), task_b_id, "contract", "worker_b").unwrap();
 
@@ -118,7 +118,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
         "task_ref: successor\ntarget: Claim overlapping path\nproof_policy: seam-test-first\ndepends_on: [owner]\nscope:",
     );
     claim_root.write("docs/010-claim-conflict.md", &claim_spec);
-    let claim_milestone = Milestone::parse(&claim_spec, "forge-mcp").unwrap();
+    let claim_milestone = Milestone::parse(&claim_spec, "acdd").unwrap();
     let mut claim_store = TasksStore::open(&claim_root.root().join(".acdd/tasks.sqlite")).unwrap();
     claim_store
         .sync(
@@ -127,7 +127,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
             claim_root.root(),
         )
         .unwrap();
-    let owner_id = "forge-mcp/m-claim-conflict:owner";
+    let owner_id = "acdd/m-claim-conflict:owner";
     TaskHarness::claim_at(claim_root.root(), owner_id, "contract", "owner").unwrap();
     let claim_spec = claim_spec
         .replace(
@@ -135,7 +135,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
             "task_ref: successor\ntarget: Claim overlapping path\nproof_policy: seam-test-first\ncontract_revision: 2\nscope:",
         );
     claim_root.write("docs/010-claim-conflict.md", &claim_spec);
-    let claim_milestone = Milestone::parse(&claim_spec, "forge-mcp").unwrap();
+    let claim_milestone = Milestone::parse(&claim_spec, "acdd").unwrap();
     claim_store
         .sync(
             &claim_milestone,
@@ -146,7 +146,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
     let claim_error = tasks::claim(
         claim_root.root(),
         tasks::Claim {
-            task_id: "forge-mcp/m-claim-conflict:successor".into(),
+            task_id: "acdd/m-claim-conflict:successor".into(),
             stage: "contract".into(),
             worker_id: "successor".into(),
             session_fingerprint: Some(TaskHarness::session_for("successor")),
@@ -168,7 +168,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
     );
     let release_spec = "---\nid: m-scope-release\ntitle: Scope Release Tasks\ndoc_type: contract\ninvariants: [isolated]\n---\n# Tasks\n```yaml\ntask_ref: completed_owner\ntarget: Finish shared scope owner\nproof_policy: seam-test-first\nscope: [src/released/]\nscope_roots: [src/]\n```\n```yaml\ntask_ref: successor\ntarget: Reuse released scope\nproof_policy: seam-test-first\nscope: [src/released/owned.rs]\nscope_roots: [src/]\n```\n";
     release_root.write("docs/010-scope-release.md", release_spec);
-    let mut release_milestone = Milestone::parse(release_spec, "forge-mcp").unwrap();
+    let mut release_milestone = Milestone::parse(release_spec, "acdd").unwrap();
     release_milestone.tasks[0].status = Some("completed".into());
     release_milestone.tasks[0].receipt = Some(Receipt {
         gates: None,
@@ -193,11 +193,11 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
             release_root.root(),
         )
         .unwrap();
-    let completed_owner_id = "forge-mcp/m-scope-release:completed_owner";
+    let completed_owner_id = "acdd/m-scope-release:completed_owner";
     let retained_scope_count =
         TaskHarness::persisted_scope_path_count(&release_store, completed_owner_id).unwrap();
     assert_eq!(retained_scope_count, 1);
-    let successor_id = "forge-mcp/m-scope-release:successor";
+    let successor_id = "acdd/m-scope-release:successor";
     let claimed =
         TaskHarness::claim_at(release_root.root(), successor_id, "contract", "successor").unwrap();
     assert_eq!(claimed["status"], "in_progress");
@@ -226,7 +226,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
         );
         let contract = "---\nid: m-protected\ntitle: Protected scope\ndoc_type: contract\nstatus: active\n---\n# Protected scope\n```yaml\ntask_ref: protected\ntarget: Reject dirty protected configuration\nproof_policy: seam-test-first\nscope: [src/]\n```\n";
         root.write("docs/010-protected.md", contract);
-        let milestone = Milestone::parse(contract, "forge-mcp").unwrap();
+        let milestone = Milestone::parse(contract, "acdd").unwrap();
         let task_id = milestone.task_id(&milestone.tasks[0]);
         let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
         store
@@ -278,7 +278,7 @@ fn scope_extension_rejects_paths_owned_by_sibling_tasks_and_admits_unowned_tests
     );
     let admitted_contract = "---\nid: m-protected-admitted\ntitle: Protected scope admitted\ndoc_type: contract\nstatus: active\n---\n# Protected scope admitted\n```yaml\ntask_ref: protected\ntarget: Admit configuration at planning time\nproof_policy: seam-test-first\nscope: [.acdd/profile.yaml]\nscope_roots: [.acdd/]\n```\n";
     admitted_root.write("docs/010-protected-admitted.md", admitted_contract);
-    let admitted_milestone = Milestone::parse(admitted_contract, "forge-mcp").unwrap();
+    let admitted_milestone = Milestone::parse(admitted_contract, "acdd").unwrap();
     let admitted_id = admitted_milestone.task_id(&admitted_milestone.tasks[0]);
     let mut admitted_store =
         TasksStore::open(&admitted_root.root().join(".acdd/tasks.sqlite")).unwrap();
@@ -324,14 +324,14 @@ fn universal_scope_roots_extend_scope_and_boundary_validation() {
 
     let spec = "---\nid: m-universal\ntitle: Universal Scope Tasks\ndoc_type: contract\nstatus: active\n---\n# Tasks\n```yaml\ntask_ref: catalogue_task\ntarget: Build catalogue service\nproof_policy: seam-test-first\nscope: [packages/catalogue/models/product.py]\nscope_roots:\n  - packages/catalogue/\n  - tests/catalogue/\n  - docs/architecture/catalogue/\n```\n```yaml\ntask_ref: payment_task\ntarget: Build payment handler\nproof_policy: seam-test-first\nscope: [services/payment/handler.py]\n```\n";
     root.write("docs/010-universal.md", spec);
-    let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(spec, "acdd").unwrap();
     let mut store = TasksStore::open(&root.root().join(".acdd/tasks.sqlite")).unwrap();
     store
         .sync(&milestone, "docs/010-universal.md", root.root())
         .unwrap();
 
-    let catalogue_id = "forge-mcp/m-universal:catalogue_task";
-    let payment_id = "forge-mcp/m-universal:payment_task";
+    let catalogue_id = "acdd/m-universal:catalogue_task";
+    let payment_id = "acdd/m-universal:payment_task";
 
     // 1. Extending within declared scope_roots succeeds
     let ext1 = store
@@ -409,11 +409,11 @@ fn universal_scope_roots_extend_scope_and_boundary_validation() {
     root.write("Cargo.toml", "[package]\n");
     let root_spec = "---\nid: m-root\ntitle: Root File Task\ndoc_type: contract\nstatus: active\n---\n# Tasks\n```yaml\ntask_ref: installer_task\ntarget: Deliver installer\nproof_policy: direct-proof\nscope: [install.sh]\n```\n";
     root.write("docs/010-root.md", root_spec);
-    let root_milestone = Milestone::parse(root_spec, "forge-mcp").unwrap();
+    let root_milestone = Milestone::parse(root_spec, "acdd").unwrap();
     store
         .sync(&root_milestone, "docs/010-root.md", root.root())
         .unwrap();
-    let installer_id = "forge-mcp/m-root:installer_task";
+    let installer_id = "acdd/m-root:installer_task";
 
     let err_root_cargo = store
         .extend_scope(installer_id, &["Cargo.toml".into()], root.root())
@@ -448,7 +448,7 @@ fn universal_scope_roots_extend_scope_and_boundary_validation() {
 
     // 6. Milestone::parse rejects tasks where initial scope does not fall into scope_roots
     let invalid_spec = "---\nid: m-inv\ntitle: Invalid\ndoc_type: contract\n---\n# Tasks\n```yaml\ntask_ref: bad\ntarget: Bad\nproof_policy: direct-proof\nscope: [packages/auth/user.py]\nscope_roots: [packages/catalogue/]\n```\n";
-    let parse_err = Milestone::parse(invalid_spec, "forge-mcp").unwrap_err();
+    let parse_err = Milestone::parse(invalid_spec, "acdd").unwrap_err();
     assert!(
         parse_err.to_string().contains("TASK_SCOPE_INVALID"),
         "expected parse error for scope outside scope_roots, got: {parse_err}"
@@ -531,7 +531,7 @@ fn task_profile_resolution_rejects_file_and_parent_symlink_escapes() {
             "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nagents_guidance: AGENTS.md\n",
         );
         root.write("AGENTS.md", "# Agent instructions\nLoad the acdd skill.\n");
-        root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
+        root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity ACDD\n");
         root.write(".gitignore", CANONICAL_ACDD_GITIGNORE);
 
         std::fs::remove_dir_all(root.root().join(".acdd")).unwrap();

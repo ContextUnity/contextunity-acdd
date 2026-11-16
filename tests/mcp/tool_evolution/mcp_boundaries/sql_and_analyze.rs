@@ -669,15 +669,15 @@ fn checkpoint_crud_enforces_scope_and_uses_sqlite_instead_of_legacy_json() {
             "checkpoint breadcrumb required",
         ),
         (
-            json!({"action":"save","name":"forge-mcp/forge-mcp/m-test/tasks/note/build"}),
+            json!({"action":"save","name":"acdd/acdd/m-test/tasks/note/build"}),
             "content required",
         ),
         (
-            json!({"action":"get","name":"forge-mcp/forge-mcp/m-test/tasks/missing/build"}),
+            json!({"action":"get","name":"acdd/acdd/m-test/tasks/missing/build"}),
             "not found",
         ),
         (
-            json!({"action":"delete","name":"forge-mcp/forge-mcp/m-test/tasks/missing/build"}),
+            json!({"action":"delete","name":"acdd/acdd/m-test/tasks/missing/build"}),
             "not found",
         ),
         (
@@ -703,12 +703,12 @@ fn checkpoint_crud_enforces_scope_and_uses_sqlite_instead_of_legacy_json() {
     }
     m.payload(
         "session_checkpoint",
-        json!({"action":"save","name":"forge-mcp/forge-mcp/m-test/tasks/note/build","content":{"state":1}}),
+        json!({"action":"save","name":"acdd/acdd/m-test/tasks/note/build","content":{"state":1}}),
     ).expect("MCP tool should succeed");
     assert_eq!(
         m.payload(
             "session_checkpoint",
-            json!({"action":"get","name":"forge-mcp/forge-mcp/m-test/tasks/note/build"})
+            json!({"action":"get","name":"acdd/acdd/m-test/tasks/note/build"})
         )
         .expect("MCP tool should succeed")["state"],
         1
@@ -716,17 +716,17 @@ fn checkpoint_crud_enforces_scope_and_uses_sqlite_instead_of_legacy_json() {
     assert_eq!(
         m.payload("session_checkpoint", json!({"action":"list"}))
             .expect("MCP tool should succeed"),
-        json!({"forge-mcp/forge-mcp/m-test/tasks/note/build":{"bytes":11}})
+        json!({"acdd/acdd/m-test/tasks/note/build":{"bytes":11}})
     );
     m.payload(
         "session_checkpoint",
-        json!({"action":"delete","name":"forge-mcp/forge-mcp/m-test/tasks/note/build"}),
+        json!({"action":"delete","name":"acdd/acdd/m-test/tasks/note/build"}),
     )
     .expect("MCP tool should succeed");
     let rejection = m
         .text(
             "session_checkpoint",
-            json!({"action":"get","name":"forge-mcp/forge-mcp/m-test/tasks/note/build"}),
+            json!({"action":"get","name":"acdd/acdd/m-test/tasks/note/build"}),
         )
         .expect_err("tool should reject input");
     let expected: &str = "not found";
@@ -753,7 +753,7 @@ fn checkpoint_crud_enforces_scope_and_uses_sqlite_instead_of_legacy_json() {
     let rejection = m
         .text(
             "session_checkpoint",
-            json!({"action":"get","name":"forge-mcp/forge-mcp/m-test/tasks/malformed/build"}),
+            json!({"action":"get","name":"acdd/acdd/m-test/tasks/malformed/build"}),
         )
         .expect_err("tool should reject input");
     let expected: &str = "not found";

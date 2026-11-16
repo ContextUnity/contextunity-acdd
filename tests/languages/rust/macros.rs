@@ -1,8 +1,17 @@
 use super::{coverage, linked};
 
 #[test]
-fn declarative_macros_keep_their_declared_external_identity() {
-    for (label, source, names, expect_external) in [
+fn macro_identity_and_lexical_precedence() {
+    struct Case {
+        case_id: String,
+        path: &'static str,
+        source: String,
+        // expression, expected status, equality, evidence, select last occurrence
+        expected: Vec<(String, &'static str, bool, &'static str, bool)>,
+        clean_parse: bool,
+    }
+    let mut cases = Vec::new();
+    for (label, source, names, external) in [
         (
             "imported",
             r#"
@@ -52,27 +61,160 @@ fn run_unimported_macros() {
             false,
         ),
     ] {
-        let graph = linked("macros.rs", source);
-        for &name in names {
-            let row = coverage(&graph, name);
-            assert_ne!(
-                row.status, "unresolved",
-                "{label} macro {name} must use its declarative signature: {row:#?}"
-            );
-            if expect_external {
-                assert_eq!(
-                    row.status, "external",
-                    "macro {name} status mismatch: {row:#?}"
-                );
-            }
+        let mut expected: Vec<_> = names
+            .iter()
+            .map(|name| {
+                (
+                    (*name).to_owned(),
+                    if external { "external" } else { "unresolved" },
+                    external,
+                    "",
+                    false,
+                )
+            })
+            .collect();
+        if external {
+            expected.extend([
+                (
+                    "tracing::info".to_owned(),
+                    "external",
+                    true,
+                    "macro tracing::",
+                    false,
+                ),
+                (
+                    "log::info".to_owned(),
+                    "external",
+                    true,
+                    "macro log::",
+                    false,
+                ),
+            ]);
         }
-        if expect_external {
-            for provider in ["tracing", "log"] {
-                let expression = format!("{provider}::info");
-                let row = coverage(&graph, &expression);
-                assert_eq!(row.status, "external");
-                assert!(row.evidence.contains(&format!("macro {provider}::")));
-            }
+        cases.push(Case {
+            case_id: format!("declarative_macros_keep_their_declared_external_identity/{label}"),
+            path: "macros.rs",
+            source: source.to_owned(),
+            expected,
+            clean_parse: false,
+        });
+    }
+    cases.push(Case {
+        case_id: "local_macro_definitions_precede_external_identity_and_type_inference".to_owned(),
+        path: "local_macro.rs",
+        source: r#"
+struct A;
+macro_rules! json { () => { 1 }; }
+macro_rules! vec { () => { A }; }
+macro_rules! format { () => { A }; }
+fn run() {
+    let _value = json!();
+    let vector = vec!();
+    vector.len();
+    let formatted = format!();
+    formatted.len();
+}
+"#
+        .to_owned(),
+        expected: ["json", "vec", "format", "vector.len", "formatted.len"]
+            .map(|name| (name.to_owned(), "external", false, "", false))
+            .to_vec(),
+        clean_parse: true,
+    });
+    for name in ["vec", "format"] {
+        for (label, import, definition) in [
+            (
+                "named",
+                format!("use local::{name};"),
+                format!("macro_rules! {name} {{ () => {{ A }}; }} pub(crate) use {name};"),
+            ),
+            (
+                "renamed",
+                format!("use local::custom as {name};"),
+                "macro_rules! custom { () => { A }; } pub(crate) use custom;".to_owned(),
+            ),
+            (
+                "crate",
+                format!("use crate::local::{name};"),
+                format!("macro_rules! {name} {{ () => {{ A }}; }} pub(crate) use {name};"),
+            ),
+        ] {
+            cases.push(Case { case_id: format!("local_macro_definitions_precede_external_identity_and_type_inference/{name}/{label}"), path: "probe.rs", source: format!("struct A; mod local {{ {definition} }} {import} fn run() {{ let item = {name}!(); item.len(); }}"), expected: vec![("item.len".to_owned(), "external", false, "", false)], clean_parse: true });
+        }
+    }
+    for (label, source, expression) in [
+        ("qualified", "mod serde_json { macro_rules! json { () => { 1 }; } pub(crate) use json; } fn run() { serde_json::json!(); }", "serde_json::json"),
+        ("import", "mod local { macro_rules! json { () => { 1 }; } pub(crate) use json; } use local::json; fn run() { json!(); }", "json"),
+        ("renamed-import", "mod local { macro_rules! custom { () => { 1 }; } pub(crate) use custom; } use local::custom as json; fn run() { json!(); }", "json"),
+        ("crate-import", "mod local { macro_rules! json { () => { 1 }; } pub(crate) use json; } use crate::local::json; fn run() { json!(); }", "json"),
+        ("module-alias", "mod local { macro_rules! custom { () => { 1 }; } pub(crate) use custom as json; } use local as serde_json; fn run() { serde_json::json!(); }", "serde_json::json"),
+        ("parent-module", "mod outer { macro_rules! json { () => { 1 }; } mod inner { fn run() { json!(); } } }", "json"),
+        ("parent-control", "mod outer { macro_rules! custom { () => { 1 }; } mod inner { fn run() { custom!(); } } }", "custom"),
+
+    ] {
+        cases.push(Case { case_id: format!("local_macro_imports_resolve_only_in_their_scope/{label}"), path: "probe.rs", source: source.to_owned(), expected: vec![(expression.to_owned(), "external", false, "", false), (expression.to_owned(), "resolved", true, "", false)], clean_parse: true });
+    }
+    for (label, source, expression) in [
+        ("direct-import", "mod local { pub fn available() {} } use local::missing; fn run() { missing(); }", "missing"),
+        ("module-alias", "mod local { pub fn available() {} } use local as alias; fn run() { alias::missing(); }", "alias::missing"),
+        ("macro-member", "mod local { macro_rules! custom { () => { 1 }; } pub(crate) use custom; } use local as serde_json; fn run() { serde_json::json!(); }", "serde_json::json"),
+
+    ] {
+        cases.push(Case { case_id: format!("local_macro_imports_resolve_only_in_their_scope/{label}"), path: "probe.rs", source: source.to_owned(), expected: vec![(expression.to_owned(), "resolved", false, "", false)], clean_parse: true });
+    }
+    cases.push(Case { case_id: "local_macro_imports_resolve_only_in_their_scope/outer".to_owned(), path: "probe.rs", source: "mod local { macro_rules! custom { () => { 1 }; } pub(crate) use custom; } mod child { use crate::local::custom as json; fn scoped() { json!(); } }\nfn run() { json!(); }".to_owned(), expected: vec![("json".to_owned(), "resolved", false, "", true)], clean_parse: true });
+    for (label, source) in [
+        ("sibling-macro", "mod other { macro_rules! vec { () => { 1 }; } } fn run() { let item = vec![1]; item.len(); }"),
+        ("value-namespace", "use std::fmt::format; fn run() { let item = format!(\"hello\"); item.len(); }"),
+        ("later-macro", "fn run() { let item = vec![1]; item.len(); } macro_rules! vec { () => { 1 }; }"),
+        ("foreign-function", "mod local { extern \"C\" { pub fn custom(); } } use local::custom as vec; fn run() { let item = vec![1]; item.len(); }"),
+        ("foreign-static", "mod local { extern \"C\" { pub static custom: u8; } } use local::custom as format; fn run() { let item = format!(\"hello\"); item.len(); }"),
+        ("extern-crate", "mod local { pub extern crate core as custom; } use local::custom as vec; fn run() { let item = vec![1]; item.len(); }"),
+
+    ] {
+        cases.push(Case { case_id: format!("unrelated_namespaces_and_later_macros_do_not_suppress_stdlib_results/{label}"), path: "probe.rs", source: source.to_owned(), expected: vec![("item.len".to_owned(), "external", true, "", false)], clean_parse: true });
+    }
+    cases.push(Case { case_id: "unrelated_namespaces_and_later_macros_do_not_suppress_stdlib_results/ordinary-functions".to_owned(), path: "ordinary_functions.rs", source: r#"
+fn run() {
+    let _json = json();
+    let _format = format();
+    let _vec = vec();
+    let _write = write();
+    let _println = println();
+}
+"#.to_owned(), expected: ["json", "format", "vec", "write", "println"].map(|name| (name.to_owned(), "unresolved", true, "", false)).to_vec(), clean_parse: false });
+    for case in cases {
+        let graph = linked(case.path, &case.source);
+        if case.clean_parse {
+            assert!(
+                graph.facts.errors.is_empty(),
+                "{}: {:?}",
+                case.case_id,
+                graph.facts.errors
+            );
+        }
+        for (expression, status, equal, evidence, last) in case.expected {
+            let row = if last {
+                graph
+                    .coverage
+                    .iter()
+                    .filter(|r| r.expression == expression)
+                    .max_by_key(|r| r.line)
+                    .unwrap()
+            } else {
+                coverage(&graph, &expression)
+            };
+            assert_eq!(
+                row.status == status,
+                equal,
+                "{}: {expression}: {row:#?}",
+                case.case_id
+            );
+            assert!(
+                row.evidence.contains(evidence),
+                "{}: expected {evidence}: {row:#?}",
+                case.case_id
+            );
         }
     }
 }
@@ -148,148 +290,5 @@ fn run_over_eight_chain() {
                 "item.finish on non-iterator B from {iter_name}.{adapter} must not resolve to A.finish: {r4_cov:#?}"
             );
         }
-    }
-}
-
-#[test]
-fn local_macro_definitions_precede_external_identity_and_type_inference() {
-    let source = r#"
-struct A;
-macro_rules! json { () => { 1 }; }
-macro_rules! vec { () => { A }; }
-macro_rules! format { () => { A }; }
-fn run() {
-    let _value = json!();
-    let vector = vec!();
-    vector.len();
-    let formatted = format!();
-    formatted.len();
-}
-"#;
-    let graph = linked("local_macro.rs", source);
-    assert!(graph.facts.errors.is_empty(), "{:?}", graph.facts.errors);
-    for name in ["json", "vec", "format"] {
-        let row = coverage(&graph, name);
-        assert_ne!(
-            row.status, "external",
-            "local macro {name}!() must not inherit an external identity: {row:#?}"
-        );
-    }
-    for expression in ["vector.len", "formatted.len"] {
-        let row = coverage(&graph, expression);
-        assert_ne!(
-            row.status, "external",
-            "local macro output {expression} must not fabricate a stdlib type: {row:#?}"
-        );
-    }
-    for name in ["vec", "format"] {
-        for (label, import, definition) in [
-            (
-                "named",
-                format!("use local::{name};"),
-                format!("macro_rules! {name} {{ () => {{ A }}; }} pub(crate) use {name};"),
-            ),
-            (
-                "renamed",
-                format!("use local::custom as {name};"),
-                "macro_rules! custom { () => { A }; } pub(crate) use custom;".to_owned(),
-            ),
-            (
-                "crate",
-                format!("use crate::local::{name};"),
-                format!("macro_rules! {name} {{ () => {{ A }}; }} pub(crate) use {name};"),
-            ),
-        ] {
-            let source = format!(
-                "struct A; mod local {{ {definition} }} {import} fn run() {{ let item = {name}!(); item.len(); }}"
-            );
-            let graph = linked("probe.rs", &source);
-            assert!(
-                graph.facts.errors.is_empty(),
-                "{name}/{label}: {:?}",
-                graph.facts.errors
-            );
-            let row = coverage(&graph, "item.len");
-            assert_ne!(
-                row.status, "external",
-                "local imported macro {name}/{label} fabricated stdlib type: {row:?}"
-            );
-        }
-    }
-}
-
-#[test]
-fn local_macro_imports_resolve_only_in_their_scope() {
-    for (label, source, expression) in [
-        ("qualified", "mod serde_json { macro_rules! json { () => { 1 }; } pub(crate) use json; } fn run() { serde_json::json!(); }", "serde_json::json"),
-        ("import", "mod local { macro_rules! json { () => { 1 }; } pub(crate) use json; } use local::json; fn run() { json!(); }", "json"),
-        ("renamed-import", "mod local { macro_rules! custom { () => { 1 }; } pub(crate) use custom; } use local::custom as json; fn run() { json!(); }", "json"),
-        ("crate-import", "mod local { macro_rules! json { () => { 1 }; } pub(crate) use json; } use crate::local::json; fn run() { json!(); }", "json"),
-        ("module-alias", "mod local { macro_rules! custom { () => { 1 }; } pub(crate) use custom as json; } use local as serde_json; fn run() { serde_json::json!(); }", "serde_json::json"),
-        ("parent-module", "mod outer { macro_rules! json { () => { 1 }; } mod inner { fn run() { json!(); } } }", "json"),
-        ("parent-control", "mod outer { macro_rules! custom { () => { 1 }; } mod inner { fn run() { custom!(); } } }", "custom"),
-    ] {
-        let graph = linked("probe.rs", source);
-        assert!(graph.facts.errors.is_empty(), "{label}: {:?}", graph.facts.errors);
-        let row = coverage(&graph, expression);
-        assert_ne!(row.status, "external", "{label}: local macro misclassified external: {row:?}");
-        assert_eq!(row.status, "resolved", "{label}: local macro should resolve locally: {row:?}");
-    }
-    for (label, source, expression) in [
-        ("direct-import", "mod local { pub fn available() {} } use local::missing; fn run() { missing(); }", "missing"),
-        ("module-alias", "mod local { pub fn available() {} } use local as alias; fn run() { alias::missing(); }", "alias::missing"),
-        ("macro-member", "mod local { macro_rules! custom { () => { 1 }; } pub(crate) use custom; } use local as serde_json; fn run() { serde_json::json!(); }", "serde_json::json"),
-    ] {
-        let graph = linked("probe.rs", source);
-        assert!(graph.facts.errors.is_empty(), "{label}: {:?}", graph.facts.errors);
-        let row = coverage(&graph, expression);
-        assert_ne!(row.status, "resolved", "{label}: invented member should not be resolved: {row:?}");
-    }
-    let source = "mod local { macro_rules! custom { () => { 1 }; } pub(crate) use custom; } mod child { use crate::local::custom as json; fn scoped() { json!(); } }\nfn run() { json!(); }";
-    let graph = linked("probe.rs", source);
-    assert!(graph.facts.errors.is_empty(), "{:?}", graph.facts.errors);
-    let row = graph
-        .coverage
-        .iter()
-        .filter(|r| r.expression == "json")
-        .max_by_key(|r| r.line)
-        .unwrap();
-    assert_ne!(
-        row.status, "resolved",
-        "child import must not supply exact target for outer json!"
-    );
-}
-
-#[test]
-fn unrelated_namespaces_and_later_macros_do_not_suppress_stdlib_results() {
-    for (label, source) in [
-        ("sibling-macro", "mod other { macro_rules! vec { () => { 1 }; } } fn run() { let item = vec![1]; item.len(); }"),
-        ("value-namespace", "use std::fmt::format; fn run() { let item = format!(\"hello\"); item.len(); }"),
-        ("later-macro", "fn run() { let item = vec![1]; item.len(); } macro_rules! vec { () => { 1 }; }"),
-        ("foreign-function", "mod local { extern \"C\" { pub fn custom(); } } use local::custom as vec; fn run() { let item = vec![1]; item.len(); }"),
-        ("foreign-static", "mod local { extern \"C\" { pub static custom: u8; } } use local::custom as format; fn run() { let item = format!(\"hello\"); item.len(); }"),
-        ("extern-crate", "mod local { pub extern crate core as custom; } use local::custom as vec; fn run() { let item = vec![1]; item.len(); }"),
-    ] {
-        let graph = linked("probe.rs", source);
-        assert!(graph.facts.errors.is_empty(), "{label}: {:?}", graph.facts.errors);
-        let row = coverage(&graph, "item.len");
-        assert_eq!(row.status, "external", "{label}: proven std macro output suppressed: {row:?}");
-    }
-    let source = r#"
-fn run() {
-    let _json = json();
-    let _format = format();
-    let _vec = vec();
-    let _write = write();
-    let _println = println();
-}
-"#;
-    let graph = linked("ordinary_functions.rs", source);
-    for name in ["json", "format", "vec", "write", "println"] {
-        let row = coverage(&graph, name);
-        assert_eq!(
-            row.status, "unresolved",
-            "ordinary function call {name}() must remain unresolved: {row:#?}"
-        );
     }
 }

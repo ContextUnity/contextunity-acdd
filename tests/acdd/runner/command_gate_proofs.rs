@@ -535,7 +535,7 @@ fn shipped_seam_verify_and_zero_argument_submit_persist_observed_proof() {
         },
     )
     .unwrap();
-    let id = "forge-mcp/m-shipped-seam:first".to_owned();
+    let id = "acdd/m-shipped-seam:first".to_owned();
     let mut store = acdd_tasks::engine::store_for_task(root.root(), &id).unwrap();
     store
         .claim(

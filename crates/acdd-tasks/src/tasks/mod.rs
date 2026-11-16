@@ -1764,7 +1764,7 @@ mod status_tests {
     #[test]
     fn subtask_manifest_lifecycle_uses_ready_and_accepts_pending() {
         let source = "---\nid: m-statuses\n---\n```yaml\ntask_ref: statuses\ntarget: Status lifecycle\nproof_policy: seam-test-first\nscope: [src/lib.rs]\nsubtasks:\n- subtask_ref: child\n  title: Child\n```\n";
-        let milestone = Milestone::parse(source, "forge-mcp").unwrap();
+        let milestone = Milestone::parse(source, "acdd").unwrap();
         assert_eq!(milestone.tasks[0].subtasks[0].status, "ready");
         let mut legacy = milestone.tasks[0].subtasks[0].clone();
         legacy.status = "pending".into();
@@ -1781,7 +1781,7 @@ mod status_tests {
                 "  title: Child",
                 &format!("  title: Child\n  status: {input}"),
             );
-            let parsed = Milestone::parse(&with_status, "forge-mcp").unwrap();
+            let parsed = Milestone::parse(&with_status, "acdd").unwrap();
             assert_eq!(parsed.tasks[0].subtasks[0].status, expected);
             assert_eq!(
                 serde_json::to_value(&parsed.tasks[0].subtasks[0]).unwrap()["status"],

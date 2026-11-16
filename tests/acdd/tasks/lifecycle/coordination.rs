@@ -120,7 +120,7 @@ fn tasks_coordinate_claims_dependencies_reset_scope_and_claim_diagnostic() {
 
     {
         let mut h = TaskHarness::memory();
-        let milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
+        let milestone = Milestone::parse(SPEC, "acdd").unwrap();
         assert!(milestone.acdd_profile.is_none());
         assert!(milestone.tasks[0].acdd_profile.is_none());
         let before = h.claim("contract");

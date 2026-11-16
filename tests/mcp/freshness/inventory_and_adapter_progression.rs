@@ -66,7 +66,7 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
         ),
         ("search_docs", json!({"query":"documentation"})),
         ("get_doc", json!({"path_or_id":"docs/intro.md"})),
-        ("forge_guide", json!({"topic":"query"})),
+        ("acdd_guide", json!({"topic":"query"})),
         ("session_checkpoint", json!({"action":"list"})),
     ];
     for (name, arguments) in calls {

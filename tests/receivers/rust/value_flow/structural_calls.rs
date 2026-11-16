@@ -24,117 +24,134 @@ fn rust_async_return_contracts_keep_the_future_boundary() {
 }
 
 #[test]
-fn rust_structural_callees_preserve_generic_factory_and_receiver_identity() {
-    let facts: BTreeMap<_, _> = [
+fn structural_callee_identity_matrix() {
+    #[derive(Clone, Copy, Debug)]
+    enum Case {
+        StructuralCalleesPreserveGenericFactoryAndReceiverIdentity,
+        StructuralExternalCalleesKeepImportOrigins,
+    }
+    for case in [
+        Case::StructuralCalleesPreserveGenericFactoryAndReceiverIdentity,
+        Case::StructuralExternalCalleesKeepImportOrigins,
+    ] {
+        match case {
+            // rust_structural_callees_preserve_generic_factory_and_receiver_identity
+            Case::StructuralCalleesPreserveGenericFactoryAndReceiverIdentity => {
+                let facts: BTreeMap<_, _> = [
         ("src/model.rs", "pub struct Service;"),
         ("src/operations.rs", "use crate::model::Service;\nimpl Service { pub fn work<T>(&self) {} }\npub fn make<T>() -> Service { Service {} }"),
         ("src/client.rs", "use crate::model::Service; use crate::operations::make;\nfn run(client: &Service) {\n    let made = make::<u8>();\n    made.work::<u16>();\n    client\n        .work::<u32>();\n}"),
     ].into_iter().map(|(path, source)| (path.to_owned(), ast::extract(path, "rust", source).unwrap())).collect();
-    let client = &facts["src/client.rs"];
-    assert!(client.errors.is_empty(), "{client:#?}");
-    for (expression, line, column) in [("make", 3, 15), ("made.work", 4, 4), ("client.work", 5, 4)]
-    {
-        assert!(
-            client
-                .references
-                .iter()
-                .any(|reference| reference.kind == "calls"
-                    && reference.expression == expression
-                    && reference.line == line
-                    && reference.column == column
-                    && !reference.dynamic),
-            "{client:#?}"
-        );
-    }
-    let run = client.nodes.iter().find(|node| node.name == "run").unwrap();
-    let details = crate::common::assertions::projected_node_details(client, run);
-    let made = details["value_flow"]["bindings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|binding| binding["name"] == "made")
-        .unwrap();
-    assert_eq!(made["value"]["kind"], "call");
-    assert_eq!(made["value"]["callee"], "make");
-    let graph = linker::link(&facts);
-    let service = facts["src/model.rs"]
-        .nodes
-        .iter()
-        .find(|node| node.name == "Service" && node.kind == "struct")
-        .unwrap();
-    assert_eq!(service.name, "Service");
-    let model_module = facts["src/model.rs"]
-        .nodes
-        .iter()
-        .find(|node| node.kind == "module")
-        .unwrap();
-    assert!(
-        graph
-            .edges
-            .iter()
-            .any(|edge| edge.path == "src/operations.rs"
-                && edge.kind == "imports"
-                && edge.dst == model_module.id),
-        "{graph:#?}"
-    );
-    let factory = facts["src/operations.rs"]
-        .nodes
-        .iter()
-        .find(|node| node.name == "make" && node.kind == "function")
-        .unwrap();
-    let details =
-        crate::common::assertions::projected_node_details(&facts["src/operations.rs"], factory);
-    assert_eq!(details["value_flow"]["return_type"]["name"], "Service");
-    for (expression, target) in [
-        ("make", "make"),
-        ("made.work", "work"),
-        ("client.work", "work"),
-    ] {
-        let target = facts["src/operations.rs"]
-            .nodes
-            .iter()
-            .find(|node| node.name == target)
-            .unwrap();
-        assert!(
-            graph.edges.iter().any(|edge| edge.path == "src/client.rs"
-                && edge.kind == "calls"
-                && edge.evidence == expression
-                && edge.dst == target.id),
-            "{facts:#?}\n{graph:#?}"
-        );
-    }
-}
-
-#[test]
-fn rust_structural_external_callees_keep_import_origins() {
-    let facts = ast::extract(
+                let client = &facts["src/client.rs"];
+                assert!(client.errors.is_empty(), "{client:#?}");
+                for (expression, line, column) in
+                    [("make", 3, 15), ("made.work", 4, 4), ("client.work", 5, 4)]
+                {
+                    assert!(
+                        client
+                            .references
+                            .iter()
+                            .any(|reference| reference.kind == "calls"
+                                && reference.expression == expression
+                                && reference.line == line
+                                && reference.column == column
+                                && !reference.dynamic),
+                        "{client:#?}"
+                    );
+                }
+                let run = client.nodes.iter().find(|node| node.name == "run").unwrap();
+                let details = crate::common::assertions::projected_node_details(client, run);
+                let made = details["value_flow"]["bindings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|binding| binding["name"] == "made")
+                    .unwrap();
+                assert_eq!(made["value"]["kind"], "call");
+                assert_eq!(made["value"]["callee"], "make");
+                let graph = linker::link(&facts);
+                let service = facts["src/model.rs"]
+                    .nodes
+                    .iter()
+                    .find(|node| node.name == "Service" && node.kind == "struct")
+                    .unwrap();
+                assert_eq!(service.name, "Service");
+                let model_module = facts["src/model.rs"]
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == "module")
+                    .unwrap();
+                assert!(
+                    graph
+                        .edges
+                        .iter()
+                        .any(|edge| edge.path == "src/operations.rs"
+                            && edge.kind == "imports"
+                            && edge.dst == model_module.id),
+                    "{graph:#?}"
+                );
+                let factory = facts["src/operations.rs"]
+                    .nodes
+                    .iter()
+                    .find(|node| node.name == "make" && node.kind == "function")
+                    .unwrap();
+                let details = crate::common::assertions::projected_node_details(
+                    &facts["src/operations.rs"],
+                    factory,
+                );
+                assert_eq!(details["value_flow"]["return_type"]["name"], "Service");
+                for (expression, target) in [
+                    ("make", "make"),
+                    ("made.work", "work"),
+                    ("client.work", "work"),
+                ] {
+                    let target = facts["src/operations.rs"]
+                        .nodes
+                        .iter()
+                        .find(|node| node.name == target)
+                        .unwrap();
+                    assert!(
+                        graph.edges.iter().any(|edge| edge.path == "src/client.rs"
+                            && edge.kind == "calls"
+                            && edge.evidence == expression
+                            && edge.dst == target.id),
+                        "{facts:#?}\n{graph:#?}"
+                    );
+                }
+            }
+            // rust_structural_external_callees_keep_import_origins
+            Case::StructuralExternalCalleesKeepImportOrigins => {
+                let facts = ast::extract(
         "src/client.rs",
         "rust",
         "use rusqlite::Row;\nfn run(row: &Row) {\n    row\n        .get::<_, String>(0);\n}",
     )
     .unwrap();
-    assert!(facts.errors.is_empty(), "{facts:#?}");
-    assert!(
-        facts
-            .references
-            .iter()
-            .any(|reference| reference.kind == "calls"
-                && reference.expression == "row.get"
-                && reference.line == 3
-                && reference.column == 4
-                && !reference.dynamic),
-        "{facts:#?}"
-    );
-    let graph = linker::link(&BTreeMap::from([("src/client.rs".to_owned(), facts)]));
-    assert!(
-        graph
-            .coverage
-            .iter()
-            .any(|coverage| coverage.expression == "row.get"
-                && coverage.status == "external"
-                && coverage.evidence.contains("rusqlite::Row")),
-        "{graph:#?}"
-    );
+                assert!(facts.errors.is_empty(), "{facts:#?}");
+                assert!(
+                    facts
+                        .references
+                        .iter()
+                        .any(|reference| reference.kind == "calls"
+                            && reference.expression == "row.get"
+                            && reference.line == 3
+                            && reference.column == 4
+                            && !reference.dynamic),
+                    "{facts:#?}"
+                );
+                let graph = linker::link(&BTreeMap::from([("src/client.rs".to_owned(), facts)]));
+                assert!(
+                    graph
+                        .coverage
+                        .iter()
+                        .any(|coverage| coverage.expression == "row.get"
+                            && coverage.status == "external"
+                            && coverage.evidence.contains("rusqlite::Row")),
+                    "{graph:#?}"
+                );
+            }
+        }
+    }
 }
 
 #[test]

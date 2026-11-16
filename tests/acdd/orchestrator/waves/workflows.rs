@@ -29,7 +29,7 @@ fn workflow_run_executes_root_gates_without_task_state() {
     let harness = WorkflowHarness::ordered();
     let root = harness.materialize();
     let parsed = Cli::try_parse_from([
-        "contextunity-forge-mcp",
+        "contextunity-acdd",
         "--root",
         root.root().to_str().unwrap(),
         "--format",
@@ -107,7 +107,7 @@ fn workflow_discovery_does_not_execute_gates() {
     ] {
         let parsed = Cli::try_parse_from(
             [
-                "contextunity-forge-mcp",
+                "contextunity-acdd",
                 "--root",
                 root.root().to_str().unwrap(),
                 "--format",

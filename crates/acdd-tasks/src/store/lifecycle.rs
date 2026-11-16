@@ -1,7 +1,7 @@
 use super::*;
 
 /// Compatibility marker for unavailable runner session metadata.
-pub const UNKNOWN_SESSION_FINGERPRINT: &str = "__forge_unknown_agent_session__";
+pub const UNKNOWN_SESSION_FINGERPRINT: &str = "__acdd_unknown_agent_session__";
 
 pub(crate) fn current_session_fingerprint(explicit: Option<&str>) -> Option<String> {
     resolve_session_fingerprint(explicit, |key| std::env::var(key).ok())
@@ -1052,7 +1052,7 @@ impl TasksStore {
             .collect::<rusqlite::Result<_>>()?;
         if let Some(root) = &restore.root {
             for id in &ids {
-                let reference = format!("refs/forge/state/{repository}/{}", id.replace(':', "/"));
+                let reference = format!("refs/acdd/state/{repository}/{}", id.replace(':', "/"));
                 if let Ok(sha) = crate::git::git_stdout(
                     root,
                     &["rev-parse", "--verify", &reference],

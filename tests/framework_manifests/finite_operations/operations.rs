@@ -230,21 +230,37 @@ pub(super) fn for_each_fixture(
     name: &str,
     mut scenario: impl FnMut(&OperationFixture, &str),
 ) {
+    let workspace = FrameworkHarness::persisted(&[]);
     for renamed in [false, true] {
-        for_fixture_variant(operation_kind_name(kind), name, renamed, |fixture| {
-            scenario(&fixture, &fixture.label);
-        });
+        for_fixture_variant_in(
+            &workspace,
+            operation_kind_name(kind),
+            name,
+            renamed,
+            |fixture| {
+                scenario(&fixture, &fixture.label);
+            },
+        );
     }
 }
 
-pub(super) fn for_fixture_variant(
+pub(super) fn for_fixture_variant_in(
+    workspace: &Workspace,
     kind: &str,
     name: &str,
     renamed: bool,
     scenario: impl FnOnce(OperationFixture),
 ) {
     let kind = operation_kind_from_name(kind);
-    let workspace = FrameworkHarness::persisted(&[]);
+    // Reset inputs and generated caches so spelling rows cannot inherit providers.
+    for entry in std::fs::read_dir(workspace.root()).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_dir() {
+            std::fs::remove_dir_all(entry.path()).unwrap();
+        } else {
+            std::fs::remove_file(entry.path()).unwrap();
+        }
+    }
     let case = cases::for_kind(kind);
     let rename_pairs = case.rename;
     let rewrite: Box<dyn Fn(&str) -> String> = Box::new(move |text| {
@@ -478,8 +494,8 @@ pub(super) fn targets_on_line(
     )
 }
 
-pub(super) struct OperationFixture {
-    workspace: Workspace,
+pub(super) struct OperationFixture<'a> {
+    workspace: &'a Workspace,
     cold_references: ColdFilesystemReferenceCache,
     pub case: Case,
     pub rewrite: Box<dyn Fn(&str) -> String>,
@@ -487,7 +503,7 @@ pub(super) struct OperationFixture {
     pub label: String,
 }
 
-impl OperationFixture {
+impl OperationFixture<'_> {
     pub(super) fn install_manifest(&self, value: &Value) {
         self.workspace.write(
             (self.rewrite)(self.manifest),
@@ -573,6 +589,6 @@ impl OperationFixture {
 
     pub(super) fn observe_cold(&self) -> ColdObservations<PersistedRows> {
         self.cold_references
-            .observe(&self.workspace, self.workspace.open(), persisted_rows)
+            .observe(self.workspace, self.workspace.open(), persisted_rows)
     }
 }

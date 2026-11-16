@@ -13,8 +13,8 @@ fn explicit_runner_transport_preserves_identity_without_host_lookup() {
 }
 
 #[test]
-fn lifecycle_session_metadata_uses_only_explicit_forge_transport() {
-    for canonical in [None, Some(" "), Some("forge-session")] {
+fn lifecycle_session_metadata_uses_only_explicit_acdd_transport() {
+    for canonical in [None, Some(" "), Some("acdd-session")] {
         let mut environment = BTreeMap::from([
             ("CODEX_THREAD_ID", "codex-session"),
             ("AGY_CONVERSATION_ID", "antigravity-session"),

@@ -18,8 +18,8 @@ fn handoff_preserves_blackboard_history() {
         "docs/milestones/archive/010-close.md",
     ] {
         root.post_blackboard_in(
-            "forge-mcp",
-            "forge-mcp",
+            "acdd",
+            "acdd",
             path,
             "notes",
             "retained until handoff",

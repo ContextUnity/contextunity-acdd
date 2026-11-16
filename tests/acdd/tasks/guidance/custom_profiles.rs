@@ -34,7 +34,7 @@ fn inherited_default_task_claims_validate_proofs_across_lifecycle() {
                 path,
             ],
         );
-        let milestone = Milestone::parse(&manifest, "forge-mcp").unwrap();
+        let milestone = Milestone::parse(&manifest, "acdd").unwrap();
         let id = milestone.task_id(&milestone.tasks[0]);
         let mut store = tasks::store_for_task(workspace.root(), &id).unwrap();
         store.sync(&milestone, path, workspace.root()).unwrap();
@@ -44,7 +44,7 @@ fn inherited_default_task_claims_validate_proofs_across_lifecycle() {
         ] {
             store
                 .record_gate_transition(&GateTransition {
-                    milestone_id: "forge-mcp/forge-mcp/m-default-parity".into(),
+                    milestone_id: "acdd/acdd/m-default-parity".into(),
                     subject: "milestone".into(),
                     gate_path: gate.into(),
                     action: "pass".into(),
@@ -190,7 +190,7 @@ gates:
     );
     workspace.write(".gitignore", CANONICAL_ACDD_GITIGNORE);
     workspace.write("AGENTS.md", "# Task instructions\nLoad the acdd skill.\n");
-    workspace.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
+    workspace.write(".agents/skills/acdd/SKILL.md", "# ContextUnity ACDD\n");
     workspace.write("custom/profile.yaml", PROFILE);
     let manifest = MilestoneFixtureBuilder::new("m-scheme")
         .status("active")
@@ -203,12 +203,12 @@ gates:
     let mut store = tasks::store(workspace.root()).unwrap();
     store
         .sync(
-            &Milestone::parse(&manifest, "forge-mcp").unwrap(),
+            &Milestone::parse(&manifest, "acdd").unwrap(),
             "docs/010-scheme.md",
             workspace.root(),
         )
         .unwrap();
-    let id = "forge-mcp/m-scheme:schema".to_owned();
+    let id = "acdd/m-scheme:schema".to_owned();
     drop(store);
     let mut h = TaskHarness::attach(&workspace, &id);
     h.advance_to("schema_input").unwrap();
@@ -379,12 +379,12 @@ gates:
     let mut store = tasks::store(workspace.root()).unwrap();
     store
         .sync(
-            &Milestone::parse(&manifest, "forge-mcp").unwrap(),
+            &Milestone::parse(&manifest, "acdd").unwrap(),
             "docs/010-named-schema.md",
             workspace.root(),
         )
         .unwrap();
-    let task_id = "forge-mcp/m-named-schema:schema";
+    let task_id = "acdd/m-named-schema:schema";
     drop(store);
 
     let mut harness = TaskHarness::attach(&workspace, task_id);
@@ -404,15 +404,7 @@ gates:
     );
 
     // The runner receives the real root-role prompt and returns its projected proof.
-    workspace.write(
-        "capture-role.py",
-        r#"import json, pathlib, sys
-context = json.loads(sys.argv[1].split('\n\nGate context:\n', 1)[1])
-proof = context['expected_response']['proof']
-pathlib.Path('role-proof.json').write_text(json.dumps(proof))
-print(json.dumps({'gate': context['gate'], 'session_id': context['session_id'], 'decision': 'pass', 'proof': proof}))
-"#,
-    );
+    crate::acdd::snapshot::stage_role_helper(workspace.root());
     workspace.write(
         "docs/workflows/named.yaml",
         r#"version: 2
@@ -427,7 +419,7 @@ proofs:
         summary: {type: string}
 roles:
   builder:
-    runner: "python3 capture-role.py '{prompt}'"
+    runner: ".acdd/role_fixture capture-role '{prompt}'"
 gates:
   - id: design_input
     role: builder
@@ -484,6 +476,7 @@ fn claim_and_root_role_agree_for_configured_proof_shapes() {
         ),
     ];
     let workspace = TaskHarness::workspace();
+    crate::acdd::snapshot::stage_role_helper(workspace.root());
     workspace.write("src/lib.rs", "pub fn work() {}\n");
     workspace.write(".gitignore", CANONICAL_ACDD_GITIGNORE);
     for (name, proof_definition, catalog, expected) in cases {
@@ -502,7 +495,7 @@ fn claim_and_root_role_agree_for_configured_proof_shapes() {
             }),
             _ => json!("printf 'test result: ok. 1 passed; 0 failed\\n'"),
         };
-        let common = format!("{catalog}commands:\n  fixture: {fixture}\nguidance:\n  contour.safety: Check safety\nroles:\n  builder:\n    runner: \"python3 capture-role.py '{{prompt}}'\"\n  independent_reviewer: {{}}\n");
+        let common = format!("{catalog}commands:\n  fixture: {fixture}\nguidance:\n  contour.safety: Check safety\nroles:\n  builder:\n    runner: \".acdd/role_fixture capture-role '{{prompt}}'\"\n  independent_reviewer: {{}}\n");
         let task_profile = if name.starts_with("delivery") {
             format!("inherit: none\n{common}gates:\n  - id: contract\n    role: builder\n    proof: none\n  - id: review\n    role: independent_reviewer\n    proof: review\n    independent_from: contract\n    fail: contract\n  - id: deliver\n    role: independent_reviewer\n{proof_definition}    receipt_review: review\n    fail: contract\n    auto_commit: false\n")
         } else {
@@ -518,18 +511,18 @@ fn claim_and_root_role_agree_for_configured_proof_shapes() {
         let mut store = tasks::store(workspace.root()).unwrap();
         store
             .sync(
-                &Milestone::parse(&manifest, "forge-mcp").unwrap(),
+                &Milestone::parse(&manifest, "acdd").unwrap(),
                 "docs/parity.md",
                 workspace.root(),
             )
             .unwrap();
         drop(store);
         if name.starts_with("delivery") {
-            let mut h = TaskHarness::attach(&workspace, "forge-mcp/m-parity:case");
+            let mut h = TaskHarness::attach(&workspace, "acdd/m-parity:case");
             h.advance_to("review").unwrap();
             let review = TaskHarness::claim_at(
                 workspace.root(),
-                "forge-mcp/m-parity:case",
+                "acdd/m-parity:case",
                 "review",
                 "reviewer",
             )
@@ -540,7 +533,7 @@ fn claim_and_root_role_agree_for_configured_proof_shapes() {
         }
         let claim = TaskHarness::claim_at(
             workspace.root(),
-            "forge-mcp/m-parity:case",
+            "acdd/m-parity:case",
             if name.starts_with("delivery") {
                 "deliver"
             } else {
@@ -555,21 +548,6 @@ fn claim_and_root_role_agree_for_configured_proof_shapes() {
         .unwrap();
         let claim_proof = &claim["workflow_guidance"]["expected_evidence_template"]["proof"];
         assert_eq!(*claim_proof, expected, "{name}");
-        workspace.write("capture-role.py", r#"import json, pathlib, sys
-context = json.loads(sys.argv[1].split('\n\nGate context:\n', 1)[1])
-proof = context['expected_response']['proof']
-pathlib.Path('role-proof.json').write_text(json.dumps(proof))
-if 'review_proof' in proof:
-    proof['review_proof']['notes'] = 'Reviewed safety'
-if 'contract_proof' in proof:
-    proof['contract_proof']['seam_test_ref'] = 'tests/example.rs::test_case'
-    proof['contract_proof']['red_exit_code'] = 101
-if 'command_proof' in proof:
-    proof['command_proof']['command'] = 'fixture'
-if 'seam_test_proof' in proof:
-    proof['seam_test_proof']['seam_test_refs'] = ['tests/example.rs::test_case']
-print(json.dumps({'gate': context['gate'], 'session_id': context['session_id'], 'decision': 'pass', 'proof': proof}))
-"#);
         let workflow = if name.starts_with("delivery") {
             format!("version: 2\ninherit: none\nsave: none\n{common}gates:\n  - id: review\n    role: builder\n    proof: review\n  - id: deliver\n    role: builder\n{proof_definition}")
         } else {
@@ -599,7 +577,7 @@ fn inline_role_mode_adapts_guidance_text() {
     );
     root.write(
         "docs/AGENTS.md",
-        "# Agent Guidance\nUse ContextUnity Forge.\n",
+        "# Agent Guidance\nUse ContextUnity ACDD.\n",
     );
     root.write("src/lib.rs", "pub fn work() -> bool { true }\n");
 

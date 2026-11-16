@@ -315,11 +315,16 @@ fn invalid_user_framework_manifest_fails_before_index_publication() {
         ("shop/templates/page.html", "<h1>{{ title }}</h1>\n"),
     ];
 
+    let workspace = FrameworkHarness::persisted(&project_files);
     for (invalid_kind, extension, manifest) in invalid_manifests {
+        for prior_extension in ["toml", "yaml", "yml"] {
+            let prior = workspace.path(format!(".acdd/frameworks/django.{prior_extension}"));
+            if prior.exists() {
+                std::fs::remove_file(prior).unwrap();
+            }
+        }
         let manifest_path = format!(".acdd/frameworks/django.{extension}");
-        let workspace = FrameworkHarness::persisted(&[]);
         workspace.write(manifest_path.as_str(), manifest.as_str());
-        workspace.write_all(&project_files);
         let result = contextunity_acdd::engine::pipeline::build_with_cache_dir(
             workspace.root(),
             &workspace.db(),

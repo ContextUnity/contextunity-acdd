@@ -112,7 +112,11 @@ fn corrupt_database(workspace: &Workspace, corruption: Corruption) {
 }
 
 fn assert_no_integrity_snapshot_for_current_process() {
-    let prefix = format!("contextunity-acdd-integrity-{}-", std::process::id());
+    let tid = format!("{:?}", std::thread::current().id())
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect::<String>();
+    let prefix = format!("contextunity-acdd-integrity-{}-{tid}-", std::process::id());
     let leftovers: Vec<_> = fs::read_dir(std::env::temp_dir())
         .unwrap()
         .filter_map(|entry| entry.ok())

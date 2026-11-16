@@ -544,9 +544,9 @@ impl LanguageProfile for Rust {
                 "enum_variant_list",
                 "declaration_list",
             ],
-            declaration_completions: &[" {}", "() { __forge_meta_body(); }"],
+            declaration_completions: &[" {}", "() { __acdd_meta_body(); }"],
             fragment_probe: Some(AstSearchProbe {
-                prefix: "fn __forge_ast_pattern_probe() { ",
+                prefix: "fn __acdd_ast_pattern_probe() { ",
                 suffix: " }",
             }),
             attribute_kinds: &["attribute_item"],

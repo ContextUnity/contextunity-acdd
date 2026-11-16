@@ -18,8 +18,8 @@ fn milestone_handoff_prunes_only_its_gate_telemetry_identity() {
 
     let (milestone, mut store) = root.sync_document(old_ref, &manifest);
 
-    let target_identity = format!("forge-mcp/forge-mcp/{}", milestone.id);
-    let neighboring_identity = "forge-mcp/forge-mcp/m-test";
+    let target_identity = format!("acdd/acdd/{}", milestone.id);
+    let neighboring_identity = "acdd/acdd/m-test";
     for (identity, label) in [
         (target_identity.as_str(), "target"),
         (neighboring_identity, "neighbor"),
@@ -69,7 +69,7 @@ fn milestone_handoff_prunes_only_its_gate_telemetry_identity() {
     assert_eq!(expected_tasks.len(), 1);
     TasksStore::handoff_milestone(
         &mut store,
-        &format!("forge-mcp/{}:", milestone.id),
+        &format!("acdd/{}:", milestone.id),
         old_ref,
         new_ref,
         &expected_tasks,
@@ -95,6 +95,7 @@ fn milestone_handoff_prunes_only_its_gate_telemetry_identity() {
 #[test]
 fn manual_delivery_handoff_rewrites_markdown_receipt_to_landed_commit() {
     let root = MilestoneHarness::workspace(DEFAULT_SEAM, "");
+    crate::acdd::snapshot::precompile_runner(&root);
     root.write("src/lib.rs", "pub fn manual_delivery() {}\n");
     root.write(
         "acdd.yaml",
@@ -104,7 +105,10 @@ fn manual_delivery_handoff_rewrites_markdown_receipt_to_landed_commit() {
     profile.find_gate_mut("deliver").unwrap().auto_commit = false;
     root.write(
         "custom/manual.yaml",
-        &crate::acdd::support::standalone_profile_yaml(&profile),
+        &crate::acdd::support::standalone_profile_yaml(&profile).replace(
+            "rustc --test tests/runner_fixture.rs -o .acdd/runner_fixture && ",
+            "test -x .acdd/runner_fixture && ",
+        ),
     );
     let source = MilestoneFixtureBuilder::new("m-manual")
         .title("Manual delivery")
@@ -168,7 +172,7 @@ fn manual_delivery_handoff_rewrites_markdown_receipt_to_landed_commit() {
         .unwrap();
 
     let archive = root.document("docs/milestones/archive/010-manual.md");
-    let archived = Milestone::parse(&archive, "forge-mcp").unwrap();
+    let archived = Milestone::parse(&archive, "acdd").unwrap();
     assert_eq!(
         archived.tasks[0]
             .receipt
@@ -184,6 +188,7 @@ fn manual_delivery_handoff_rewrites_markdown_receipt_to_landed_commit() {
 #[test]
 fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
     let root = MilestoneHarness::workspace(DEFAULT_SEAM, "");
+    crate::acdd::snapshot::precompile_runner(&root);
     root.write("src/lib.rs", "pub fn example() {}\n");
     root.write(
         "acdd.yaml",
@@ -312,7 +317,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
         );
     }
     let written = root.document(milestone_ref);
-    let parsed = Milestone::parse(&written, "forge-mcp").unwrap();
+    let parsed = Milestone::parse(&written, "acdd").unwrap();
     assert_eq!(parsed.deferred_defects.len(), 1);
     assert_eq!(parsed.deferred_defects[0].id, "DEFECT-RECEIPT");
     assert_eq!(
@@ -375,7 +380,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
                 .blackboard_post(&second, "architect", "decisions", "Retain retry notes.")
                 .unwrap();
             let current = root.document(milestone_ref);
-            let parsed = Milestone::parse(&current, "forge-mcp").unwrap();
+            let parsed = Milestone::parse(&current, "acdd").unwrap();
             let mut recovered = Receipt {
                 gates: None,
                 delivery_gate: None,
@@ -455,7 +460,7 @@ fn terminal_delivery_checks_custom_review_rollup_and_stale_candidates() {
         .task("custom", &["src/"])
         .task_target("Deliver a final reviewed candidate");
     let custom = MilestoneHarness::review_workflow("docs/010-custom-review.md", contract, false);
-    let custom_id = "forge-mcp/m-custom-review:custom";
+    let custom_id = "acdd/m-custom-review:custom";
     let custom_baseline = custom.head();
     let mut build_candidate: Option<String> = None;
     let mut final_candidate: Option<String> = None;
@@ -558,7 +563,7 @@ fn terminal_delivery_rejects_reviews_of_an_earlier_candidate() {
         .task("stale", &["src/"])
         .task_target("Reject a stale review source at delivery");
     let stale = MilestoneHarness::review_workflow(stale_ref, contract, true);
-    let stale_id = "forge-mcp/m-stale-review:stale";
+    let stale_id = "acdd/m-stale-review:stale";
     let mut stale_build_candidate: Option<String> = None;
     let mut stale_final_candidate: Option<String> = None;
     let mut task = TaskHarness::attach(&stale, stale_id);

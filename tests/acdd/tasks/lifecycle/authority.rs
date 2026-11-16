@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn specifications_validate_unique_identities_and_governing_digests() {
-    let parsed = Milestone::parse(SPEC, "forge-mcp").unwrap();
+    let parsed = Milestone::parse(SPEC, "acdd").unwrap();
     let first = &parsed.tasks[0];
     let digest = parsed.digest(first).unwrap();
     let mut completed = first.clone();
@@ -29,7 +29,7 @@ fn specifications_validate_unique_identities_and_governing_digests() {
         SPEC.replace("scope: [src/]", "scope: [../outside]"),
         SPEC.replace("id: m-test", "id: []"),
     ] {
-        assert!(Milestone::parse(&malformed, "forge-mcp").is_err());
+        assert!(Milestone::parse(&malformed, "acdd").is_err());
     }
 }
 
@@ -77,7 +77,7 @@ fn task_authority_diagnostics_share_the_synced_manifest_fixture() {
 
     {
         let changed_text = SPEC.replace("target: Deliver first", "target: Deliver changed");
-        let changed = Milestone::parse(&changed_text, "forge-mcp").unwrap();
+        let changed = Milestone::parse(&changed_text, "acdd").unwrap();
         let error = store
             .sync(&changed, "docs/010-test.md", root.root())
             .unwrap_err()
@@ -96,16 +96,16 @@ fn task_authority_diagnostics_share_the_synced_manifest_fixture() {
         let original_id = id.clone();
         let changed_text = SPEC.replace("id: m-test", "id: m-renamed");
         root.write("docs/010-test.md", &changed_text);
-        let changed = Milestone::parse(&changed_text, "forge-mcp").unwrap();
+        let changed = Milestone::parse(&changed_text, "acdd").unwrap();
         let sync_error = store
             .sync(&changed, "docs/010-test.md", root.root())
             .unwrap_err()
             .to_string();
         assert_eq!(
                 sync_error,
-                "AUTHORITY_GAP: milestone 'docs/010-test.md'. milestone id changed from 'm-test' to 'm-renamed'. Do: revert milestone id in docs/010-test.md. Task ids are forge-mcp/m-renamed:first; sync would admit them as new tasks."
+                "AUTHORITY_GAP: milestone 'docs/010-test.md'. milestone id changed from 'm-test' to 'm-renamed'. Do: revert milestone id in docs/010-test.md. Task ids are acdd/m-renamed:first; sync would admit them as new tasks."
             );
-        assert!(store.inspect("forge-mcp/m-renamed:first").is_err());
+        assert!(store.inspect("acdd/m-renamed:first").is_err());
 
         let claim_error = tasks::claim(
             root.root(),
@@ -122,7 +122,7 @@ fn task_authority_diagnostics_share_the_synced_manifest_fixture() {
         .to_string();
         assert_eq!(
                 claim_error,
-                "AUTHORITY_GAP: forge-mcp/m-test:first. milestone 'docs/010-test.md'. milestone id changed from 'm-test' to 'm-renamed'. Do: revert milestone id in docs/010-test.md. Task ids are forge-mcp/m-renamed:first; task cannot be resolved."
+                "AUTHORITY_GAP: acdd/m-test:first. milestone 'docs/010-test.md'. milestone id changed from 'm-test' to 'm-renamed'. Do: revert milestone id in docs/010-test.md. Task ids are acdd/m-renamed:first; task cannot be resolved."
             );
     }
 
@@ -184,14 +184,14 @@ fn milestone_id_guard_ignores_foreign_project_at_the_same_manifest_path() {
     let root = acdd_workspace(DEFAULT_SEAM, "");
     let foreign_root = acdd_workspace(DEFAULT_SEAM, "");
     let database = root.root().join(".acdd/tasks.sqlite");
-    let mut foreign_store = TasksStore::open_project(&database, "forge-mcp", "aaa").unwrap();
-    let mut current_store = TasksStore::open_project(&database, "forge-mcp", "zzz").unwrap();
+    let mut foreign_store = TasksStore::open_project(&database, "acdd", "aaa").unwrap();
+    let mut current_store = TasksStore::open_project(&database, "acdd", "zzz").unwrap();
     let specification = |project: &str, id: &str| {
         format!(
-            "---\nrepository: forge-mcp\nproject: {project}\nid: {id}\ntitle: Shared path\ndoc_type: contract\nstatus: active\n---\n# Shared path\n```yaml\ntask_ref: first\ntarget: Deliver first\nproof_policy: seam-test-first\nscope: [src/]\n```\n"
+            "---\nrepository: acdd\nproject: {project}\nid: {id}\ntitle: Shared path\ndoc_type: contract\nstatus: active\n---\n# Shared path\n```yaml\ntask_ref: first\ntarget: Deliver first\nproof_policy: seam-test-first\nscope: [src/]\n```\n"
         )
     };
-    let foreign = Milestone::parse(&specification("aaa", "m-test"), "forge-mcp").unwrap();
+    let foreign = Milestone::parse(&specification("aaa", "m-test"), "acdd").unwrap();
     foreign_root.write(
         "docs/milestones/010-shared.md",
         &specification("aaa", "m-test"),
@@ -207,12 +207,12 @@ fn milestone_id_guard_ignores_foreign_project_at_the_same_manifest_path() {
             foreign_root.root(),
         )
         .unwrap();
-    let current = Milestone::parse(&specification("zzz", "m-test"), "forge-mcp").unwrap();
+    let current = Milestone::parse(&specification("zzz", "m-test"), "acdd").unwrap();
     current_store
         .sync(&current, "docs/milestones/010-shared.md", root.root())
         .unwrap();
 
-    let renamed = Milestone::parse(&specification("zzz", "m-renamed"), "forge-mcp").unwrap();
+    let renamed = Milestone::parse(&specification("zzz", "m-renamed"), "acdd").unwrap();
     let error = current_store
         .sync(&renamed, "docs/milestones/010-shared.md", root.root())
         .unwrap_err()
@@ -249,7 +249,7 @@ fn milestone_id_guard_ignores_foreign_project_at_the_same_manifest_path() {
                 "docs/milestones/010-shared.md",
                 &specification("zzz", "m-test"),
             );
-            root.write("acdd.yaml", "roots: [src]\ndocs: [docs]\ntask_repository: forge-mcp\ntask_project: zzz\ntasks_db: .acdd/tasks.sqlite\n");
+            root.write("acdd.yaml", "roots: [src]\ndocs: [docs]\ntask_repository: acdd\ntask_project: zzz\ntasks_db: .acdd/tasks.sqlite\n");
             store
                 .connection
                 .execute_batch(
@@ -348,8 +348,8 @@ fn milestone_id_guard_ignores_foreign_project_at_the_same_manifest_path() {
     assert_eq!(
         tombstones,
         vec![
-            ("forge-mcp/aaa/m-test".into(), "[]".into()),
-            ("forge-mcp/zzz/m-test".into(), "[]".into()),
+            ("acdd/aaa/m-test".into(), "[]".into()),
+            ("acdd/zzz/m-test".into(), "[]".into()),
         ]
     );
 }

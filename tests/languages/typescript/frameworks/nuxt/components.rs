@@ -1,201 +1,257 @@
+use crate::languages::typescript::{persisted_coverage, query_scalar};
+
 #[cfg(feature = "lang-vue")]
 #[test]
-fn vue_nuxt_components_directory_resolves_with_project_scope() {
+fn nuxt_component_provider_authority() {
     let w = crate::languages::PersistedWorkspaceHarness::new();
-    for (path, source) in [
-        ("apps/nuxt/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
-        ("apps/nuxt/nuxt.config.ts", "export default defineNuxtConfig({});"),
-        ("apps/nuxt/components/Base/WidgetCard.vue", "<template><article /></template>"),
-        ("apps/nuxt/pages/index.vue", "<template><BaseWidgetCard /></template>"),
-        ("apps/other/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
-        ("apps/other/nuxt.config.ts", "export default defineNuxtConfig({});"),
-        ("apps/other/components/Base/WidgetCard.vue", "<template><aside /></template>"),
-        ("apps/other/pages/index.vue", "<template><base-widget-card /></template>"),
-        ("apps/plain/package.json", r#"{"dependencies":{"vue":"^3"}}"#),
-        ("apps/plain/nuxt.config.ts", "export default defineNuxtConfig({});"),
-        ("apps/plain/components/Base/WidgetCard.vue", "<template><footer /></template>"),
-        ("apps/plain/pages/index.vue", "<template><BaseWidgetCard /></template>"),
-        ("apps/disabled/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
-        ("apps/disabled/nuxt.config.ts", "export default defineNuxtConfig({ components: false });"),
-        ("apps/disabled/components/Base/WidgetCard.vue", "<template><header /></template>"),
-        ("apps/disabled/pages/index.vue", "<template><BaseWidgetCard /></template>"),
-        ("apps/collision/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
-        ("apps/collision/nuxt.config.ts", "export default defineNuxtConfig({});"),
-        ("apps/collision/components/Base/WidgetCard.vue", "<template><article /></template>"),
-        ("apps/collision/components/BaseWidgetCard.vue", "<template><aside /></template>"),
-        ("apps/collision/pages/index.vue", "<template><BaseWidgetCard /></template>"),
-        ("apps/dynamic/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
-        ("apps/dynamic/nuxt.config.ts", "const options = { components: false }; export default defineNuxtConfig({ ...options });"),
-        ("apps/dynamic/components/Base/WidgetCard.vue", "<template><nav /></template>"),
-        ("apps/dynamic/pages/index.vue", "<template><BaseWidgetCard /></template>"),
+    {
+        for (path, source) in [
+        ("case1/apps/nuxt/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
+        ("case1/apps/nuxt/nuxt.config.ts", "export default defineNuxtConfig({});"),
+        ("case1/apps/nuxt/components/Base/WidgetCard.vue", "<template><article /></template>"),
+        ("case1/apps/nuxt/pages/index.vue", "<template><BaseWidgetCard /></template>"),
+        ("case1/apps/other/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
+        ("case1/apps/other/nuxt.config.ts", "export default defineNuxtConfig({});"),
+        ("case1/apps/other/components/Base/WidgetCard.vue", "<template><aside /></template>"),
+        ("case1/apps/other/pages/index.vue", "<template><base-widget-card /></template>"),
+        ("case1/apps/plain/package.json", r#"{"dependencies":{"vue":"^3"}}"#),
+        ("case1/apps/plain/nuxt.config.ts", "export default defineNuxtConfig({});"),
+        ("case1/apps/plain/components/Base/WidgetCard.vue", "<template><footer /></template>"),
+        ("case1/apps/plain/pages/index.vue", "<template><BaseWidgetCard /></template>"),
+        ("case1/apps/disabled/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
+        ("case1/apps/disabled/nuxt.config.ts", "export default defineNuxtConfig({ components: false });"),
+        ("case1/apps/disabled/components/Base/WidgetCard.vue", "<template><header /></template>"),
+        ("case1/apps/disabled/pages/index.vue", "<template><BaseWidgetCard /></template>"),
+        ("case1/apps/collision/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
+        ("case1/apps/collision/nuxt.config.ts", "export default defineNuxtConfig({});"),
+        ("case1/apps/collision/components/Base/WidgetCard.vue", "<template><article /></template>"),
+        ("case1/apps/collision/components/BaseWidgetCard.vue", "<template><aside /></template>"),
+        ("case1/apps/collision/pages/index.vue", "<template><BaseWidgetCard /></template>"),
+        ("case1/apps/dynamic/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
+        ("case1/apps/dynamic/nuxt.config.ts", "const options = { components: false }; export default defineNuxtConfig({ ...options });"),
+        ("case1/apps/dynamic/components/Base/WidgetCard.vue", "<template><nav /></template>"),
+        ("case1/apps/dynamic/pages/index.vue", "<template><BaseWidgetCard /></template>"),
     ] {
         w.write(path, source);
     }
+    }
+    {
+        for (path, source) in [
+        ("case2/apps/nuxt/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
+        ("case2/apps/nuxt/nuxt.config.ts", "export default defineNuxtConfig({ components: false });"),
+        ("case2/apps/nuxt/app.vue", "<template><NuxtLayout><NuxtPage /></NuxtLayout></template>"),
+        ("case2/apps/nuxt/pages/index.vue", "<template><ClientOnly><span /></ClientOnly><UnknownWidget /></template>"),
+        ("case2/apps/nuxt/pages/local.vue", "<template><ClientOnly /></template><script setup>import ClientOnly from '../widgets/ClientOnly.vue';</script>"),
+        ("case2/apps/nuxt/widgets/ClientOnly.vue", "<template><div /></template>"),
+        ("case2/apps/plain/package.json", r#"{"dependencies":{"vue":"^3"}}"#),
+        ("case2/apps/plain/pages/index.vue", "<template><ClientOnly /></template>"),
+    ] {
+        w.write(path, source);
+    }
+    }
+    {
+        for (path, source) in [
+        ("case3/apps/radix/package.json", r#"{"dependencies":{"nuxt":"^3","radix-vue":"^1"}}"#),
+        ("case3/apps/radix/nuxt.config.ts", "export default defineNuxtConfig({ modules: ['radix-vue/nuxt'] });"),
+        ("case3/apps/radix/pages/index.vue", "<template><DialogRoot><DialogPortal><DialogOverlay /><DialogContent><DialogTitle /><DialogDescription /><DialogClose /></DialogContent></DialogPortal></DialogRoot><UnknownRadixTag /></template>"),
+        ("case3/apps/radix/pages/local.vue", "<template><DialogTitle /></template><script setup>import DialogTitle from '../widgets/DialogTitle.vue';</script>"),
+        ("case3/apps/radix/widgets/DialogTitle.vue", "<template><h1 /></template>"),
+        ("case3/apps/disabled/package.json", r#"{"dependencies":{"nuxt":"^3","radix-vue":"^1"}}"#),
+        ("case3/apps/disabled/nuxt.config.ts", "export default defineNuxtConfig({ modules: [] });"),
+        ("case3/apps/disabled/pages/index.vue", "<template><DialogTitle /></template>"),
+        ("case3/apps/undeclared/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
+        ("case3/apps/undeclared/nuxt.config.ts", "export default defineNuxtConfig({ modules: ['radix-vue/nuxt'] });"),
+        ("case3/apps/undeclared/pages/index.vue", "<template><DialogTitle /></template>"),
+    ] {
+        w.write(path, source);
+    }
+    }
+
     w.build();
     let conn = w.open();
-    let status = |path: &str, expression: &str| -> String {
-        conn.query_row(
-            "SELECT status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2 AND line=1",
-            rusqlite::params![path, expression],
-            |row| row.get(0),
-        )
-        .unwrap_or_else(|error| panic!("missing Nuxt template tag {path}:{expression}: {error}"))
-    };
-    for (page, tag, component) in [
+    for (path, expression, expected, evidence) in [
         (
-            "apps/nuxt/pages/index.vue",
+            "case1/apps/nuxt/pages/index.vue",
             "BaseWidgetCard",
-            "apps/nuxt/components/Base/WidgetCard.vue",
+            "resolved",
+            "",
         ),
         (
-            "apps/other/pages/index.vue",
+            "case1/apps/other/pages/index.vue",
             "base-widget-card",
-            "apps/other/components/Base/WidgetCard.vue",
+            "resolved",
+            "",
+        ),
+        (
+            "case1/apps/plain/pages/index.vue",
+            "BaseWidgetCard",
+            "unresolved",
+            "",
+        ),
+        (
+            "case1/apps/disabled/pages/index.vue",
+            "BaseWidgetCard",
+            "unresolved",
+            "",
+        ),
+        (
+            "case1/apps/dynamic/pages/index.vue",
+            "BaseWidgetCard",
+            "unresolved",
+            "",
+        ),
+        (
+            "case1/apps/collision/pages/index.vue",
+            "BaseWidgetCard",
+            "ambiguous",
+            "",
+        ),
+        (
+            "case2/apps/nuxt/pages/index.vue",
+            "ClientOnly",
+            "external",
+            "builtin:nuxt",
+        ),
+        (
+            "case2/apps/nuxt/pages/index.vue",
+            "UnknownWidget",
+            "unresolved",
+            "",
+        ),
+        (
+            "case2/apps/plain/pages/index.vue",
+            "ClientOnly",
+            "unresolved",
+            "",
+        ),
+        (
+            "case2/apps/nuxt/pages/local.vue",
+            "ClientOnly",
+            "resolved",
+            "",
+        ),
+        (
+            "case2/apps/nuxt/app.vue",
+            "NuxtLayout",
+            "external",
+            "builtin:nuxt",
+        ),
+        (
+            "case2/apps/nuxt/app.vue",
+            "NuxtPage",
+            "external",
+            "builtin:nuxt",
+        ),
+        (
+            "case3/apps/radix/pages/index.vue",
+            "DialogRoot",
+            "external",
+            "radix-vue/nuxt",
+        ),
+        (
+            "case3/apps/radix/pages/index.vue",
+            "DialogPortal",
+            "external",
+            "radix-vue/nuxt",
+        ),
+        (
+            "case3/apps/radix/pages/index.vue",
+            "DialogOverlay",
+            "external",
+            "radix-vue/nuxt",
+        ),
+        (
+            "case3/apps/radix/pages/index.vue",
+            "DialogContent",
+            "external",
+            "radix-vue/nuxt",
+        ),
+        (
+            "case3/apps/radix/pages/index.vue",
+            "DialogTitle",
+            "external",
+            "radix-vue/nuxt",
+        ),
+        (
+            "case3/apps/radix/pages/index.vue",
+            "DialogDescription",
+            "external",
+            "radix-vue/nuxt",
+        ),
+        (
+            "case3/apps/radix/pages/index.vue",
+            "DialogClose",
+            "external",
+            "radix-vue/nuxt",
+        ),
+        (
+            "case3/apps/radix/pages/index.vue",
+            "UnknownRadixTag",
+            "unresolved",
+            "",
+        ),
+        (
+            "case3/apps/disabled/pages/index.vue",
+            "DialogTitle",
+            "unresolved",
+            "",
+        ),
+        (
+            "case3/apps/undeclared/pages/index.vue",
+            "DialogTitle",
+            "unresolved",
+            "",
+        ),
+        (
+            "case3/apps/radix/pages/local.vue",
+            "DialogTitle",
+            "resolved",
+            "",
         ),
     ] {
-        assert_eq!(status(page, tag), "resolved", "{page}");
-        let exact_edge: i64 = conn.query_row(
-            "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?2",
-            rusqlite::params![page, component],
-            |row| row.get(0),
-        ).unwrap();
-        assert_eq!(exact_edge, 1, "{page} must point to its own Nuxt component");
+        let (status, observed) = persisted_coverage(&conn, path, Some(1), expression);
+        assert_eq!(status, expected, "{path}:{expression}: {observed}");
+        if !evidence.is_empty() {
+            assert!(
+                observed.contains(evidence),
+                "{path}:{expression}: {observed}"
+            );
+        }
     }
-    for page in [
-        "apps/plain/pages/index.vue",
-        "apps/disabled/pages/index.vue",
-        "apps/dynamic/pages/index.vue",
+    for (path, kind, target_path, target_kind, target_name) in [
+        (
+            "case1/apps/nuxt/pages/index.vue",
+            "references",
+            "case1/apps/nuxt/components/Base/WidgetCard.vue",
+            "",
+            "",
+        ),
+        (
+            "case1/apps/other/pages/index.vue",
+            "references",
+            "case1/apps/other/components/Base/WidgetCard.vue",
+            "",
+            "",
+        ),
+        (
+            "case2/apps/nuxt/pages/local.vue",
+            "references",
+            "case2/apps/nuxt/widgets/ClientOnly.vue",
+            "",
+            "",
+        ),
+        (
+            "case3/apps/radix/pages/local.vue",
+            "references",
+            "case3/apps/radix/widgets/DialogTitle.vue",
+            "",
+            "",
+        ),
     ] {
-        assert_eq!(status(page, "BaseWidgetCard"), "unresolved", "{page}");
+        let count: i64 = query_scalar(&conn, "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)=?1 AND e.kind=?2 AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)=?3 AND (?4='' OR dst.kind=?4) AND (?5='' OR dst.name=?5)", rusqlite::params![path, kind, target_path, target_kind, target_name]);
+        assert_eq!(
+            count, 1,
+            "{path}: exact {kind} target {target_path}:{target_name}"
+        );
     }
-    assert_eq!(
-        status("apps/collision/pages/index.vue", "BaseWidgetCard"),
-        "ambiguous"
-    );
-}
-
-#[cfg(feature = "lang-vue")]
-#[cfg(feature = "lang-vue")]
-#[test]
-fn vue_nuxt_builtin_components_require_project_provenance() {
-    let w = crate::languages::PersistedWorkspaceHarness::new();
-    for (path, source) in [
-        ("apps/nuxt/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
-        ("apps/nuxt/nuxt.config.ts", "export default defineNuxtConfig({ components: false });"),
-        ("apps/nuxt/app.vue", "<template><NuxtLayout><NuxtPage /></NuxtLayout></template>"),
-        ("apps/nuxt/pages/index.vue", "<template><ClientOnly><span /></ClientOnly><UnknownWidget /></template>"),
-        ("apps/nuxt/pages/local.vue", "<template><ClientOnly /></template><script setup>import ClientOnly from '../widgets/ClientOnly.vue';</script>"),
-        ("apps/nuxt/widgets/ClientOnly.vue", "<template><div /></template>"),
-        ("apps/plain/package.json", r#"{"dependencies":{"vue":"^3"}}"#),
-        ("apps/plain/pages/index.vue", "<template><ClientOnly /></template>"),
-    ] {
-        w.write(path, source);
-    }
-    w.build();
-    let conn = w.open();
-    let coverage = |path: &str, expression: &str| -> (String, String) {
-        conn.query_row(
-            "SELECT r.status,e.evidence FROM resolution_coverage r JOIN path_dictionary p ON p.path_id=r.path_id JOIN coverage_expressions x ON x.expression_id=r.expression_id JOIN coverage_evidence e ON e.evidence_id=r.evidence_id WHERE p.path=?1 AND x.expression=?2 AND r.line=1",
-            rusqlite::params![path, expression],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap_or_else(|error| panic!("missing {path}:{expression}: {error}"))
-    };
-    let (status, evidence) = coverage("apps/nuxt/pages/index.vue", "ClientOnly");
-    assert_eq!(status, "external");
-    assert!(evidence.contains("builtin:nuxt"), "{evidence}");
-    for tag in ["NuxtLayout", "NuxtPage"] {
-        let (status, evidence) = coverage("apps/nuxt/app.vue", tag);
-        assert_eq!(status, "external", "{tag}");
-        assert!(evidence.contains("builtin:nuxt"), "{tag}: {evidence}");
-    }
-    assert_eq!(
-        coverage("apps/nuxt/pages/index.vue", "UnknownWidget").0,
-        "unresolved"
-    );
-    assert_eq!(
-        coverage("apps/plain/pages/index.vue", "ClientOnly").0,
-        "unresolved"
-    );
-    assert_eq!(
-        coverage("apps/nuxt/pages/local.vue", "ClientOnly").0,
-        "resolved"
-    );
-    let local_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/nuxt/pages/local.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='apps/nuxt/widgets/ClientOnly.vue'",
-        [], |row| row.get(0),
-    ).unwrap();
-    assert_eq!(
-        local_edge, 1,
-        "explicit local component takes priority over Nuxt built-in"
-    );
-}
-
-#[cfg(feature = "lang-vue")]
-#[cfg(feature = "lang-vue")]
-#[test]
-fn vue_nuxt_module_components_require_registered_provider() {
-    let w = crate::languages::PersistedWorkspaceHarness::new();
-    for (path, source) in [
-        ("apps/radix/package.json", r#"{"dependencies":{"nuxt":"^3","radix-vue":"^1"}}"#),
-        ("apps/radix/nuxt.config.ts", "export default defineNuxtConfig({ modules: ['radix-vue/nuxt'] });"),
-        ("apps/radix/pages/index.vue", "<template><DialogRoot><DialogPortal><DialogOverlay /><DialogContent><DialogTitle /><DialogDescription /><DialogClose /></DialogContent></DialogPortal></DialogRoot><UnknownRadixTag /></template>"),
-        ("apps/radix/pages/local.vue", "<template><DialogTitle /></template><script setup>import DialogTitle from '../widgets/DialogTitle.vue';</script>"),
-        ("apps/radix/widgets/DialogTitle.vue", "<template><h1 /></template>"),
-        ("apps/disabled/package.json", r#"{"dependencies":{"nuxt":"^3","radix-vue":"^1"}}"#),
-        ("apps/disabled/nuxt.config.ts", "export default defineNuxtConfig({ modules: [] });"),
-        ("apps/disabled/pages/index.vue", "<template><DialogTitle /></template>"),
-        ("apps/undeclared/package.json", r#"{"dependencies":{"nuxt":"^3"}}"#),
-        ("apps/undeclared/nuxt.config.ts", "export default defineNuxtConfig({ modules: ['radix-vue/nuxt'] });"),
-        ("apps/undeclared/pages/index.vue", "<template><DialogTitle /></template>"),
-    ] {
-        w.write(path, source);
-    }
-    w.build();
-    let conn = w.open();
-    let coverage = |path: &str, expression: &str| -> (String, String) {
-        conn.query_row(
-            "SELECT r.status,e.evidence FROM resolution_coverage r JOIN path_dictionary p ON p.path_id=r.path_id JOIN coverage_expressions x ON x.expression_id=r.expression_id JOIN coverage_evidence e ON e.evidence_id=r.evidence_id WHERE p.path=?1 AND x.expression=?2 AND r.line=1",
-            rusqlite::params![path, expression],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap_or_else(|error| panic!("missing {path}:{expression}: {error}"))
-    };
-    for tag in [
-        "DialogRoot",
-        "DialogPortal",
-        "DialogOverlay",
-        "DialogContent",
-        "DialogTitle",
-        "DialogDescription",
-        "DialogClose",
-    ] {
-        let (status, evidence) = coverage("apps/radix/pages/index.vue", tag);
-        assert_eq!(status, "external", "{tag}");
-        assert!(evidence.contains("radix-vue/nuxt"), "{tag}: {evidence}");
-    }
-    assert_eq!(
-        coverage("apps/radix/pages/index.vue", "UnknownRadixTag").0,
-        "unresolved"
-    );
-    assert_eq!(
-        coverage("apps/disabled/pages/index.vue", "DialogTitle").0,
-        "unresolved"
-    );
-    assert_eq!(
-        coverage("apps/undeclared/pages/index.vue", "DialogTitle").0,
-        "unresolved"
-    );
-    assert_eq!(
-        coverage("apps/radix/pages/local.vue", "DialogTitle").0,
-        "resolved"
-    );
-    let local_edge: i64 = conn.query_row(
-        "SELECT count(*) FROM edge_occurrences e JOIN nodes dst ON dst.node_hash=e.dst_hash WHERE (SELECT path FROM path_dictionary WHERE path_id=e.owner_id)='apps/radix/pages/local.vue' AND e.kind='references' AND e.line=1 AND (SELECT path FROM path_dictionary WHERE path_id=dst.path_id)='apps/radix/widgets/DialogTitle.vue'",
-        [], |row| row.get(0),
-    ).unwrap();
-    assert_eq!(
-        local_edge, 1,
-        "explicit local component takes priority over registered Nuxt module"
-    );
 }

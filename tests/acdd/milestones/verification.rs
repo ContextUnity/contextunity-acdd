@@ -312,12 +312,6 @@ fn handoff_rejects_stale_or_untrusted_integration_evidence_atomically() {
         "mode",
         "deletion",
         "addition",
-    ]);
-}
-
-#[test]
-fn handoff_rejects_tampered_git_receipt_and_trace_integration_evidence_atomically() {
-    check_integration_evidence_cases(&[
         "documentation",
         "configuration",
         "authority",
@@ -405,7 +399,7 @@ fn milestone_verification_reports_registered_gate_outcomes_without_root_checkpoi
             assert_eq!(result["verification"]["command_id"], "check_full_repo");
         }
         assert!(store
-            .get_checkpoint("forge-mcp/forge-mcp/m-verification/milestone/milestone/state")
+            .get_checkpoint("acdd/acdd/m-verification/milestone/milestone/state")
             .unwrap()
             .is_none());
         drop(store);
@@ -480,7 +474,7 @@ fn milestone_handoff_accepts_integration_evidence_for_cancelled_tasks_and_prunes
         "gate_transitions",
     ] {
         let count =
-            MilestoneHarness::milestone_rows(&store, table, "forge-mcp/forge-mcp/m-cancelled-root")
+            MilestoneHarness::milestone_rows(&store, table, "acdd/acdd/m-cancelled-root")
                 .unwrap();
         assert_eq!(count, 0, "{table} should be pruned at handoff");
     }

@@ -48,7 +48,7 @@ fn milestone_isolation_failure_preserves_owned_worktree_and_foreign_paths() {
 #[test]
 fn milestone_restart_fences_delivered_but_unintegrated_isolated_predecessor() {
     use acdd_tasks::engine::orchestrator::{types::OrchestratorEvent, waves::run_milestone_waves};
-    let mut h = harness::WaveHarness::new(false);
+    let mut h = harness::WaveHarness::with_minimal_task_gates(false, false);
     let mut delivered = None;
     let first = run_milestone_waves(h.root(), "m-wave", &h.options, &mut |event| {
         if let OrchestratorEvent::TaskDelivered { receipt_id, .. } = event {

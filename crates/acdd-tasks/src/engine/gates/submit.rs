@@ -1023,7 +1023,7 @@ impl TasksStore {
                 "contract_revision": task.contract_revision,
             });
             let mut payload_envelope = serde_json::Map::new();
-            payload_envelope.insert("_forge_checkpoint_payload_v1".to_owned(), checkpoint_state);
+            payload_envelope.insert("_acdd_checkpoint_payload_v1".to_owned(), checkpoint_state);
             let state_payload_str =
                 serde_json::to_string(&serde_json::Value::Object(payload_envelope))?;
             tx.execute(

@@ -123,7 +123,7 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
         message["message"]["payload"], "branch-only message",
         "{message}"
     );
-    let task_id = "forge-mcp/m-branch-only:branch-task";
+    let task_id = "acdd/m-branch-only:branch-task";
     let claim = client.payload("task_claim", json!({"task_id":task_id, "stage":"contract", "worker_id":"routing-author", "worktree":"51", "bundle":false})).expect("MCP tool should succeed");
     let canonical_sibling = sibling.canonicalize().unwrap();
     assert_eq!(
@@ -160,8 +160,8 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
         json!({"contract_proof":{"seam_test_ref":"tests/routing.rs", "red_exit_code":101}});
     let rejected = client.payload("task_submit", json!({"task_id":task_id, "stage":"contract", "action":"reject", "worktree":"51", "evidence":evidence, "findings":{"summary":"Release the fixture claim after proving selected-root submission"}})).expect("MCP tool should succeed");
     assert_eq!(rejected["stage"], "contract", "{rejected}");
-    let linked_checkpoint = "forge-mcp/forge-mcp/m-branch-only/tasks/linked-routing/contract";
-    let sibling_checkpoint = "forge-mcp/forge-mcp/m-branch-only/tasks/sibling-routing/contract";
+    let linked_checkpoint = "acdd/acdd/m-branch-only/tasks/linked-routing/contract";
+    let sibling_checkpoint = "acdd/acdd/m-branch-only/tasks/sibling-routing/contract";
     for (selector, value, name) in [
         (".", "linked", linked_checkpoint),
         ("51", "sibling", sibling_checkpoint),

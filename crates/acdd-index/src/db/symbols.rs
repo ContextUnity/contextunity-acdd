@@ -165,7 +165,10 @@ pub fn search_results_with_navigation(
         let mut matched_window: Option<(String, Value)> = None;
         if is_indexed_text && !is_markdown && !pattern.trim().is_empty() {
             if let (Some(path), Some(start), Some(end)) = (
-                object.get("path").and_then(Value::as_str).map(str::to_owned),
+                object
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 object
                     .get("line")
                     .and_then(Value::as_u64)
@@ -179,9 +182,13 @@ pub fn search_results_with_navigation(
                     .entry(path.clone())
                     .or_insert_with(|| verified_source(conn, root, &path).ok());
                 if let Some(text) = cached.as_deref() {
-                    if let Some(matched) =
-                        resolve_indexed_text_match(text, start, end, &pattern, PREVIEW_BYTES_PER_HIT)
-                    {
+                    if let Some(matched) = resolve_indexed_text_match(
+                        text,
+                        start,
+                        end,
+                        &pattern,
+                        PREVIEW_BYTES_PER_HIT,
+                    ) {
                         object.insert("line".into(), json!(matched.line));
                         object.insert("match_snippet".into(), json!(matched.snippet));
                         if previews_enabled && index < PREVIEW_HIT_LIMIT {
@@ -315,8 +322,11 @@ fn resolve_indexed_text_match(
         .collect();
     let and_query = quoted.join(" AND ");
     let or_query = quoted.join(" OR ");
-    let matched_line = fts_matched(&and_query)
-        .or_else(|| (is_natural_query && tokens.len() > 1).then(|| fts_matched(&or_query)).flatten())?;
+    let matched_line = fts_matched(&and_query).or_else(|| {
+        (is_natural_query && tokens.len() > 1)
+            .then(|| fts_matched(&or_query))
+            .flatten()
+    })?;
 
     let raw_line = lines[matched_line - 1].trim();
     let mut snippet: String = raw_line.chars().take(SNIPPET_CHAR_LIMIT).collect();
@@ -1481,6 +1491,9 @@ mod tests {
         let capped = resolve_indexed_text_match(&oversized, 1, 1, "needle", 64).unwrap();
         assert_eq!(capped.line, 1);
         assert!(capped.snippet.contains("needle"));
-        assert!(capped.preview.is_none(), "oversized line must drop preview rather than exceed budget");
+        assert!(
+            capped.preview.is_none(),
+            "oversized line must drop preview rather than exceed budget"
+        );
     }
 }

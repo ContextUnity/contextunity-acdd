@@ -815,7 +815,7 @@ fn indexed_path_to_scope(
 #[test]
 fn missing_scope_files_contract() {
     let root = std::env::temp_dir().join(format!(
-        "forge-missing-scope-{}-{}",
+        "acdd-missing-scope-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

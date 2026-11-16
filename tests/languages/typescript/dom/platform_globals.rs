@@ -1,110 +1,158 @@
 use super::*;
+use crate::languages::harness::PersistedSnapshot;
+
+fn platform_baseline() -> &'static PersistedSnapshot {
+    static BASELINE: std::sync::OnceLock<PersistedSnapshot> = std::sync::OnceLock::new();
+    BASELINE.get_or_init(|| {
+        let workspace = crate::languages::PersistedWorkspaceHarness::new();
+    workspace.write(
+        "runner.cjs",
+        "const { test } = require('node:test');\ntest('case', () => {});\nfunction run(test) { test(); }\n",
+    );
+    workspace.write("web.ts", r#"function run() {
+        document.querySelector('button'); document.getElementById('button');
+        window.addEventListener('click', () => {});
+        fetch('/api'); new Headers(); new Request('/api'); new Response();
+    }"#);
+    for (path, source) in [
+        (
+            "table.ts",
+            "function inspect(table: HTMLTableElement) { table.querySelectorAll('tr'); table.unknownMember(); }",
+        ),
+        (
+            "local.ts",
+            "class HTMLTableElement { querySelectorAll() {} } function inspect(table: HTMLTableElement) { table.querySelectorAll(); }",
+        ),
+        (
+            "untyped.ts",
+            "function inspect(table) { table.querySelectorAll('tr'); }",
+        ),
+    ] {
+        workspace.write(path, source);
+    }
+        workspace.build();
+        PersistedSnapshot::from_connection(&workspace.open())
+    })
+}
+
 #[test]
-fn node_and_web_callable_globals_have_external_origin() {
-    let source = r#"function run() {
+fn platform_global_contract_matrix() {
+    let mut cases = vec![
+        ("runtime.js", "javascript", r#"function run() {
         Buffer.from('data');
         console.log('data');
         setTimeout(() => {}, 0);
         fetch('/api');
-    }"#;
-    let graph = linked("runtime.js", "javascript", source);
-    let facts = &graph.facts;
-    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    for (expression, origin) in [
-        ("Buffer.from", "builtin:node"),
-        ("console.log", "builtin:web_api"),
-        ("setTimeout", "JavaScript/Web platform"),
-        ("fetch", "builtin:web_api"),
-    ] {
-        let coverage = graph
-            .coverage
-            .iter()
-            .find(|row| row.expression == expression)
-            .unwrap_or_else(|| panic!("missing {expression}: {graph:#?}"));
-        assert_eq!(coverage.status, "external", "{expression}: {coverage:#?}");
-        assert!(
-            coverage.evidence.contains(origin),
-            "{expression}: {coverage:#?}"
-        );
-    }
-}
-
-#[test]
-fn node_process_environment_has_external_origin() {
-    let source = "function run() { const environment = process.env; return environment; }";
-    let graph = linked("runtime.js", "javascript", source);
-    let facts = &graph.facts;
-    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    let coverage = graph
-        .coverage
-        .iter()
-        .find(|row| row.expression == "process.env")
-        .unwrap_or_else(|| panic!("missing process.env: {graph:#?}"));
-    assert_eq!(coverage.status, "external", "{coverage:#?}");
-    assert!(coverage.evidence.contains("builtin:node"), "{coverage:#?}");
-
-    let source = "function run(process) { return process.env; }";
-    let graph = linked("shadow.js", "javascript", source);
-    let coverage = graph
-        .coverage
-        .iter()
-        .find(|row| row.expression == "process.env")
-        .unwrap_or_else(|| panic!("missing shadowed process.env: {graph:#?}"));
-    assert_eq!(coverage.status, "unresolved", "{coverage:#?}");
-}
-
-#[test]
-fn web_constructors_have_external_origin() {
-    let source = r#"function run() {
+    }"#, vec![
+            ("Buffer.from", "external", Some("builtin:node"), None),
+            ("console.log", "external", Some("builtin:web_api"), None),
+            ("setTimeout", "external", Some("JavaScript/Web platform"), None),
+            ("fetch", "external", Some("builtin:web_api"), None),
+        ]),
+        ("runtime.js", "javascript", "function run() { const environment = process.env; return environment; }", vec![("process.env", "external", Some("builtin:node"), None)]),
+        ("shadow.js", "javascript", "function run(process) { return process.env; }", vec![("process.env", "unresolved", None, None)]),
+        ("web.js", "javascript", r#"function run() {
         new URL('/api', 'https://example.test');
         new Response('ok');
         new Request('https://example.test');
         new Headers();
+    }"#, ["URL", "Response", "Request", "Headers"].into_iter().map(|expression| (expression, "external", Some("builtin:web_api"), None)).collect()),
+        ("shadow.js", "javascript", "class URL { constructor(value) {} } function run() { new URL('/api'); }", vec![("URL", "resolved", None, Some("shadow.js"))]),
+        ("shadow.js", "javascript", "function run(URL) { new URL('/api'); }", vec![("URL", "unresolved", None, None)]),
+        ("local.ts", "typescript", "function fetch() {} function run() { fetch(); }", vec![("fetch", "resolved", None, Some("local.ts"))]),
+        ("local.ts", "typescript", "class Document { querySelector() {} } function run(document: Document) { document.querySelector(); }", vec![("document.querySelector", "resolved", None, Some("local.ts"))]),
+        ("shadow.ts", "typescript", "function run(fetch, document, window, localStorage, sessionStorage, URL, FormData, HTMLElement) { fetch('/api'); document.querySelector('div'); window.addEventListener('click', handler); localStorage.getItem('key'); sessionStorage.clear(); URL('/api'); FormData(); HTMLElement(); }", ["fetch", "document.querySelector", "window.addEventListener", "localStorage.getItem", "sessionStorage.clear", "URL", "FormData", "HTMLElement"].into_iter().map(|expression| (expression, "unresolved", None, None)).collect()),
+    ];
+    let expressions = "fetch alert confirm prompt document.querySelector document.querySelectorAll document.getElementById document.getElementsByClassName document.getElementsByTagName document.createElement document.createTextNode document.addEventListener document.removeEventListener window.addEventListener window.removeEventListener window.dispatchEvent window.setTimeout window.clearTimeout window.setInterval window.clearInterval window.requestAnimationFrame window.cancelAnimationFrame localStorage.getItem localStorage.setItem localStorage.removeItem localStorage.clear sessionStorage.getItem sessionStorage.setItem sessionStorage.removeItem sessionStorage.clear console.debug console.info console.trace console.table URL FormData HTMLElement";
+    let source = r#"function run() { const handler = () => {};
+        fetch('/api'); alert('message'); confirm('message'); prompt('message');
+        document.querySelector('div'); document.querySelectorAll('div'); document.getElementById('item'); document.getElementsByClassName('item'); document.getElementsByTagName('div');
+        document.createElement('div'); document.createTextNode('text'); document.addEventListener('click', handler); document.removeEventListener('click', handler);
+        window.addEventListener('click', handler); window.removeEventListener('click', handler); window.dispatchEvent(new Event('change'));
+        window.setTimeout(handler, 0); window.clearTimeout(1); window.setInterval(handler, 0); window.clearInterval(1); window.requestAnimationFrame(handler); window.cancelAnimationFrame(1);
+        localStorage.getItem('key'); localStorage.setItem('key', 'value'); localStorage.removeItem('key'); localStorage.clear();
+        sessionStorage.getItem('key'); sessionStorage.setItem('key', 'value'); sessionStorage.removeItem('key'); sessionStorage.clear();
+        console.debug('message'); console.info('message'); console.trace('message'); console.table([]);
+        URL('/path', 'https://example.test'); FormData(); HTMLElement();
     }"#;
-    let graph = linked("web.js", "javascript", source);
-    let facts = &graph.facts;
-    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
-    for expression in ["URL", "Response", "Request", "Headers"] {
-        let coverage = graph
-            .coverage
-            .iter()
-            .find(|row| row.expression == expression)
-            .unwrap_or_else(|| panic!("missing {expression}: {graph:#?}"));
-        assert_eq!(coverage.status, "external", "{expression}: {coverage:#?}");
-        assert!(
-            coverage.evidence.contains("builtin:web_api"),
-            "{expression}: {coverage:#?}"
-        );
+    for (path, language) in [("browser.ts", "typescript"), ("browser.js", "javascript")] {
+        let expected = expressions
+            .split_whitespace()
+            .map(|expression| {
+                let origin = if matches!(
+                    expression.split('.').next(),
+                    Some(
+                        "document"
+                            | "window"
+                            | "localStorage"
+                            | "sessionStorage"
+                            | "fetch"
+                            | "FormData"
+                            | "HTMLElement"
+                            | "URL"
+                    )
+                ) || (language == "javascript"
+                    && expression.starts_with("console."))
+                {
+                    "builtin:web_api"
+                } else {
+                    "JavaScript/Web platform"
+                };
+                (expression, "external", Some(origin), None)
+            })
+            .collect();
+        cases.push((path, language, source, expected));
     }
-
-    for (source, expected_status, local_target) in [
-        (
-            "class URL { constructor(value) {} } function run() { new URL('/api'); }",
-            "resolved",
-            true,
-        ),
-        (
-            "function run(URL) { new URL('/api'); }",
-            "unresolved",
-            false,
-        ),
-    ] {
-        let graph = linked("shadow.js", "javascript", source);
-        let facts = &graph.facts;
-        let coverage = graph
-            .coverage
-            .iter()
-            .find(|row| row.expression == "URL")
-            .unwrap_or_else(|| panic!("missing shadowed URL: {graph:#?}"));
-        assert_eq!(coverage.status, expected_status, "{source}: {coverage:#?}");
-        if local_target {
-            assert!(graph.edges.iter().any(|edge| {
-                edge.kind == "calls"
-                    && edge.evidence == "URL"
-                    && facts.nodes.iter().any(|node| {
-                        node.id == edge.dst && node.kind == "class" && node.name == "URL"
+    for (path, language, source, expectations) in cases {
+        let graph = linked(path, language, source);
+        assert!(
+            graph.facts.errors.is_empty(),
+            "{path}: {:?}",
+            graph.facts.errors
+        );
+        for (expression, status, origin, target_path) in expectations {
+            let coverage = graph
+                .coverage
+                .iter()
+                .find(|row| row.expression == expression)
+                .unwrap_or_else(|| panic!("missing {expression}: {graph:#?}"));
+            assert_eq!(
+                coverage.status, status,
+                "{path}: {expression}: {coverage:#?}"
+            );
+            if let Some(origin) = origin {
+                assert!(
+                    coverage.evidence.contains(origin),
+                    "{path}: {expression}: {coverage:#?}"
+                );
+            }
+            if let Some(target_path) = target_path {
+                let targets: Vec<_> = graph
+                    .edges
+                    .iter()
+                    .filter(|edge| edge.kind == "calls" && edge.evidence == expression)
+                    .map(|edge| {
+                        graph
+                            .facts
+                            .nodes
+                            .iter()
+                            .find(|node| node.id == edge.dst)
+                            .unwrap()
                     })
-            }));
+                    .collect();
+                assert_eq!(
+                    targets
+                        .iter()
+                        .map(|node| node.path.as_str())
+                        .collect::<Vec<_>>(),
+                    [target_path]
+                );
+                if expression == "URL" {
+                    assert!(targets
+                        .iter()
+                        .any(|node| node.kind == "class" && node.name == "URL"));
+                }
+            }
         }
     }
 }
@@ -134,12 +182,7 @@ fn required_node_modules_have_import_provenance() {
 
 #[test]
 fn javascript_named_node_builtin_call_keeps_import_origin_and_shadow_boundary() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write(
-        "runner.cjs",
-        "const { test } = require('node:test');\ntest('case', () => {});\nfunction run(test) { test(); }\n",
-    );
-    let conn = workspace.build_and_open();
+    let conn = platform_baseline().open();
     let coverage = |line: i64| -> (String, String) {
         conn.query_row(
             "SELECT status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=c.evidence_id) FROM resolution_coverage c WHERE (SELECT path FROM path_dictionary WHERE path_id=c.path_id)='runner.cjs' AND c.expression_id=(SELECT expression_id FROM coverage_expressions WHERE expression='test') AND c.line=?1",
@@ -162,8 +205,8 @@ fn javascript_named_node_builtin_call_keeps_import_origin_and_shadow_boundary() 
 }
 
 #[test]
-fn platform_member_contracts_require_unshadowed_known_members() {
-    for (source, expression, expected) in [
+fn platform_member_contract_matrix() {
+    let cases = [
         (
             "function run() { Object.assign({}, {}); JSON.parse('{}'); }",
             "Object.assign",
@@ -184,16 +227,48 @@ fn platform_member_contracts_require_unshadowed_known_members() {
             "Object.unconfirmed",
             "unresolved",
         ),
-    ] {
+    ]
+    .into_iter()
+    .map(|(source, expression, expected)| (source, expression, expected, false))
+    .chain(
+        [
+            (
+                "function run(value: string) { value.trim(); }",
+                "value.trim",
+                "external",
+            ),
+            (
+                "function run(value: string) { value.arbitrary(); }",
+                "value.arbitrary",
+                "unresolved",
+            ),
+            (
+                "class String { trim() {} } function run(value: String) { value.trim(); }",
+                "value.trim",
+                "resolved",
+            ),
+        ]
+        .into_iter()
+        .map(|(source, expression, expected)| {
+            (source, expression, expected, source.starts_with("function"))
+        }),
+    );
+    for (source, expression, expected, no_call_edge) in cases {
         let graph = linked("platform.ts", "typescript", source);
         let coverage = graph
             .coverage
             .iter()
             .find(|coverage| coverage.expression == expression)
             .unwrap();
-        assert_eq!(coverage.status, expected);
+        assert_eq!(coverage.status, expected, "{source}: {expression}");
         if expected == "external" {
             assert!(coverage.evidence.contains("JavaScript/Web platform"));
+        }
+        if no_call_edge {
+            assert!(!graph
+                .edges
+                .iter()
+                .any(|edge| edge.kind == "calls" && edge.evidence == expression));
         }
     }
 }
@@ -269,44 +344,6 @@ fn conversion_globals_are_external_with_local_precedence() {
 }
 
 #[test]
-fn typed_platform_members_are_finite_and_respect_local_shadowing() {
-    for (source, expression, expected) in [
-        (
-            "function run(value: string) { value.trim(); }",
-            "value.trim",
-            "external",
-        ),
-        (
-            "function run(value: string) { value.arbitrary(); }",
-            "value.arbitrary",
-            "unresolved",
-        ),
-        (
-            "class String { trim() {} } function run(value: String) { value.trim(); }",
-            "value.trim",
-            "resolved",
-        ),
-    ] {
-        let graph = linked("platform.ts", "typescript", source);
-        let coverage = graph
-            .coverage
-            .iter()
-            .find(|coverage| coverage.expression == expression)
-            .unwrap();
-        assert_eq!(coverage.status, expected);
-        if expected == "external" {
-            assert!(coverage.evidence.contains("JavaScript/Web platform"));
-        }
-        if source.starts_with("function") {
-            assert!(!graph
-                .edges
-                .iter()
-                .any(|edge| edge.kind == "calls" && edge.evidence == expression));
-        }
-    }
-}
-
-#[test]
 fn commonjs_and_dom_dispatch_preserves_callback_provenance_in_both_orders() {
     for (path, language) in [("listener.js", "javascript"), ("listener.ts", "typescript")] {
         for (listener, expected) in [
@@ -335,54 +372,6 @@ fn commonjs_and_dom_dispatch_preserves_callback_provenance_in_both_orders() {
                     "{path}: {source}: {rows:#?}"
                 );
             }
-        }
-    }
-}
-
-#[test]
-fn finite_browser_globals_are_external_in_javascript_and_typescript() {
-    let expressions = "fetch alert confirm prompt document.querySelector document.querySelectorAll document.getElementById document.getElementsByClassName document.getElementsByTagName document.createElement document.createTextNode document.addEventListener document.removeEventListener window.addEventListener window.removeEventListener window.dispatchEvent window.setTimeout window.clearTimeout window.setInterval window.clearInterval window.requestAnimationFrame window.cancelAnimationFrame localStorage.getItem localStorage.setItem localStorage.removeItem localStorage.clear sessionStorage.getItem sessionStorage.setItem sessionStorage.removeItem sessionStorage.clear console.debug console.info console.trace console.table URL FormData HTMLElement";
-    let source = r#"function run() { const handler = () => {};
-        fetch('/api'); alert('message'); confirm('message'); prompt('message');
-        document.querySelector('div'); document.querySelectorAll('div'); document.getElementById('item'); document.getElementsByClassName('item'); document.getElementsByTagName('div');
-        document.createElement('div'); document.createTextNode('text'); document.addEventListener('click', handler); document.removeEventListener('click', handler);
-        window.addEventListener('click', handler); window.removeEventListener('click', handler); window.dispatchEvent(new Event('change'));
-        window.setTimeout(handler, 0); window.clearTimeout(1); window.setInterval(handler, 0); window.clearInterval(1); window.requestAnimationFrame(handler); window.cancelAnimationFrame(1);
-        localStorage.getItem('key'); localStorage.setItem('key', 'value'); localStorage.removeItem('key'); localStorage.clear();
-        sessionStorage.getItem('key'); sessionStorage.setItem('key', 'value'); sessionStorage.removeItem('key'); sessionStorage.clear();
-        console.debug('message'); console.info('message'); console.trace('message'); console.table([]);
-        URL('/path', 'https://example.test'); FormData(); HTMLElement();
-    }"#;
-    for (path, language) in [("browser.ts", "typescript"), ("browser.js", "javascript")] {
-        let graph = linked(path, language, source);
-        let facts = &graph.facts;
-        assert!(facts.errors.is_empty(), "{facts:#?}");
-        for expression in expressions.split_whitespace() {
-            assert!(
-                graph.coverage.iter().any(|row| row.expression == expression
-                    && row.status == "external"
-                    && row.evidence.contains(
-                        if matches!(
-                            expression.split('.').next(),
-                            Some(
-                                "document"
-                                    | "window"
-                                    | "localStorage"
-                                    | "sessionStorage"
-                                    | "fetch"
-                                    | "FormData"
-                                    | "HTMLElement"
-                                    | "URL"
-                            )
-                        ) || (language == "javascript" && expression.starts_with("console."))
-                        {
-                            "builtin:web_api"
-                        } else {
-                            "JavaScript/Web platform"
-                        }
-                    )),
-                "{language}: {expression}"
-            );
         }
     }
 }
@@ -417,9 +406,7 @@ fn web_and_dom_builtins_resolve_with_external_provenance() {
         }
     }
 
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    workspace.write("web.ts", source);
-    let conn = workspace.build_and_open();
+    let conn = platform_baseline().open();
     for (expression, origin) in [
         ("document.querySelector", "builtin:web_api"),
         ("fetch", "builtin:web_api"),
@@ -437,24 +424,7 @@ fn web_and_dom_builtins_resolve_with_external_provenance() {
 
 #[test]
 fn html_table_element_type_and_members_use_verified_dom_origin() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    for (path, source) in [
-        (
-            "table.ts",
-            "function inspect(table: HTMLTableElement) { table.querySelectorAll('tr'); table.unknownMember(); }",
-        ),
-        (
-            "local.ts",
-            "class HTMLTableElement { querySelectorAll() {} } function inspect(table: HTMLTableElement) { table.querySelectorAll(); }",
-        ),
-        (
-            "untyped.ts",
-            "function inspect(table) { table.querySelectorAll('tr'); }",
-        ),
-    ] {
-        workspace.write(path, source);
-    }
-    let conn = workspace.build_and_open();
+    let conn = platform_baseline().open();
     let coverage = |path: &str, expression: &str| -> Vec<(String, String)> {
         let mut stmt = conn.prepare("SELECT status,(SELECT evidence FROM coverage_evidence WHERE evidence_id=resolution_coverage.evidence_id) FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)=?1 AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)=?2").unwrap();
         let rows = stmt
@@ -488,53 +458,6 @@ fn html_table_element_type_and_members_use_verified_dom_origin() {
     );
     contextunity_acdd::core::commitments::verify(&conn).unwrap();
     drop(conn);
-}
-
-#[test]
-fn browser_names_preserve_local_providers_and_unknown_parameter_boundaries() {
-    assert_eq!(
-        calls(
-            &[(
-                "local.ts",
-                "function fetch() {} function run() { fetch(); }"
-            )],
-            "fetch"
-        ),
-        ["local.ts"]
-    );
-    assert_eq!(
-        calls(
-            &[(
-                "local.ts",
-                "class Document { querySelector() {} } function run(document: Document) { document.querySelector(); }"
-            )],
-            "document.querySelector"
-        ),
-        ["local.ts"]
-    );
-    let graph = linked(
-        "shadow.ts",
-        "typescript",
-        "function run(fetch, document, window, localStorage, sessionStorage, URL, FormData, HTMLElement) { fetch('/api'); document.querySelector('div'); window.addEventListener('click', handler); localStorage.getItem('key'); sessionStorage.clear(); URL('/api'); FormData(); HTMLElement(); }",
-    );
-    for expression in [
-        "fetch",
-        "document.querySelector",
-        "window.addEventListener",
-        "localStorage.getItem",
-        "sessionStorage.clear",
-        "URL",
-        "FormData",
-        "HTMLElement",
-    ] {
-        assert!(
-            graph
-                .coverage
-                .iter()
-                .any(|row| row.expression == expression && row.status == "unresolved"),
-            "{expression}"
-        );
-    }
 }
 
 #[test]

@@ -11,7 +11,7 @@ fn persisted_waves_and_dependency_readiness_agree_without_processes() {
         .task_status("cancelled")
         .task_with_deps("blocked", &["src/blocked.rs"], &["cancelled"])
         .build();
-    let milestone = Milestone::parse(&source, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(&source, "acdd").unwrap();
     let mut h = TaskHarness::memory_with_manifest(&source, MANIFEST);
     let waves = validate_wave_dag(&milestone).unwrap();
     assert_eq!(

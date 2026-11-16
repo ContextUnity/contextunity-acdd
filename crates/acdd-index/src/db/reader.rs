@@ -213,6 +213,10 @@ struct IntegritySnapshot {
 
 impl IntegritySnapshot {
     fn create() -> Result<Self> {
+        let tid = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(char::is_ascii_digit)
+            .collect::<String>();
         for _ in 0..128 {
             let nonce = INTEGRITY_SNAPSHOT_NONCE.fetch_add(1, Ordering::Relaxed);
             let timestamp = std::time::SystemTime::now()
@@ -220,7 +224,7 @@ impl IntegritySnapshot {
                 .unwrap_or_default()
                 .as_nanos();
             let directory = std::env::temp_dir().join(format!(
-                "contextunity-acdd-integrity-{}-{timestamp}-{nonce}",
+                "contextunity-acdd-integrity-{}-{tid}-{timestamp}-{nonce}",
                 std::process::id()
             ));
             let mut builder = fs::DirBuilder::new();
@@ -1667,7 +1671,7 @@ fn document_reference_candidate_page(
     }
     let claims_json = serde_json::to_string(&claims)?;
     let fts_query = if fts_terms.is_empty() {
-        "\"__forge_document_reference_suffix_no_tokens__\"".to_owned()
+        "\"__acdd_document_reference_suffix_no_tokens__\"".to_owned()
     } else {
         fts_terms
             .iter()

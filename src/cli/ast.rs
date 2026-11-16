@@ -60,7 +60,7 @@ pub fn search(
 #[test]
 fn test_prefilter_empty_candidate_fallback() {
     let root = std::env::temp_dir().join(format!(
-        "forge-ast-prefilter-{}-{}",
+        "acdd-ast-prefilter-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

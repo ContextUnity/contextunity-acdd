@@ -15,7 +15,7 @@ fn boundary_guards_follow_configured_proof_kinds_and_non_cargo_commands_keep_pat
     );
     root.write("tests/connected.rs", "use tiered_alias_fixture::routing::route_task;\n#[test]\nfn test_connected() { let actual = route_task(); assert_eq!(actual, 1); }\n");
     root.write("AGENTS.md", "# Instructions\nLoad the acdd skill.\n");
-    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity Forge\n");
+    root.write(".agents/skills/acdd/SKILL.md", "# ContextUnity ACDD\n");
     root.write("acdd.yaml", "roots: [src, tests]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\nacdd_profile: custom_profile.yaml\n");
     root.write(
         "custom_profile.yaml",
@@ -34,7 +34,7 @@ fn boundary_guards_follow_configured_proof_kinds_and_non_cargo_commands_keep_pat
     )
     .unwrap();
 
-    let task_id = "forge-mcp/m-tiered-alias:routing";
+    let task_id = "acdd/m-tiered-alias:routing";
     TaskHarness::claim_at(root.root(), task_id, "spec", "spec-author").unwrap();
     let store = tasks::store_for_task(root.root(), task_id).unwrap();
     let task = store.inspect(task_id).unwrap();

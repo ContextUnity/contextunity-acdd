@@ -4,6 +4,10 @@ mod common;
 
 #[path = "languages/mod.rs"]
 mod languages;
+pub(crate) use languages::support;
+
+#[path = "framework_manifests/mod.rs"]
+mod manifests;
 
 #[test]
 fn helper_modules_are_not_advertised_as_language_profiles() {

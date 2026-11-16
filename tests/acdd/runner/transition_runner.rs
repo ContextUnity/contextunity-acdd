@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     let (root, mut store, _) = fixture(super::support::DEFAULT_SEAM);
-    let task_id = "forge-mcp/m-test:first";
+    let task_id = "acdd/m-test:first";
     let outside_trace_root = root.root().with_extension("task3-outside-traces");
     let shell_quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
     let outside_trace_root_arg = shell_quote(&outside_trace_root.to_string_lossy());
@@ -32,7 +32,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     let fake_cargo = root.root().join(".acdd/task3-bin/cargo");
     fs::write(
         &fake_cargo,
-        "#!/bin/sh\ncase \"$TASK3_MODE\" in\n  contract-red) exec .acdd/task3-bin/contract-red ;;\n  large-fail) head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  build-fail) printf 'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\\n'; exit 1 ;;\n  forge-symlink) mv .acdd .acdd-preserved && ln -s \"$TASK3_OUTSIDE\" .acdd && head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  *) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'; printf 'label=%s\\n' \"$TASK3_LABEL\" ;;\nesac\n",
+        "#!/bin/sh\ncase \"$TASK3_MODE\" in\n  contract-red) exec .acdd/task3-bin/contract-red ;;\n  large-fail) head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  build-fail) printf 'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\\n'; exit 1 ;;\n  acdd-symlink) mv .acdd .acdd-preserved && ln -s \"$TASK3_OUTSIDE\" .acdd && head -c 10000 /dev/zero | tr '\\0' x; exit 1 ;;\n  *) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n'; printf 'label=%s\\n' \"$TASK3_LABEL\" ;;\nesac\n",
     )
     .unwrap();
     #[cfg(unix)]
@@ -117,7 +117,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         .unwrap();
     let ownership_db = root.root().join(".acdd/tasks.sqlite");
     let mut foreign_store =
-        TasksStore::open_project(&ownership_db, "forge-mcp", "another-project").unwrap();
+        TasksStore::open_project(&ownership_db, "acdd", "another-project").unwrap();
     let contract_execution =
         contextunity_acdd::engine::tasks::milestones::execute_command_gate_with_options(
             root.root(),
@@ -372,20 +372,20 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         fs::create_dir_all(&outside_trace_root).unwrap();
         let outside_task_traces = outside_trace_root.join("task-traces");
         assert!(!outside_task_traces.exists());
-        let forge_path = root.root().join(".acdd");
-        let forge_backup = root.root().join(".acdd-preserved");
-        fs::write(root.root().join(".acdd/runner-mode"), "forge-symlink\n").unwrap();
-        let forge_result = execute_build(&["src/lib.rs".to_owned()]);
-        let forged_parent = fs::symlink_metadata(&forge_path)
+        let acdd_path = root.root().join(".acdd");
+        let acdd_backup = root.root().join(".acdd-preserved");
+        fs::write(root.root().join(".acdd/runner-mode"), "acdd-symlink\n").unwrap();
+        let acdd_result = execute_build(&["src/lib.rs".to_owned()]);
+        let forged_parent = fs::symlink_metadata(&acdd_path)
             .is_ok_and(|metadata| metadata.file_type().is_symlink());
-        let outside_untouched = forge_result.is_err() && !outside_task_traces.exists();
+        let outside_untouched = acdd_result.is_err() && !outside_task_traces.exists();
         if forged_parent {
-            fs::remove_file(&forge_path).unwrap();
+            fs::remove_file(&acdd_path).unwrap();
         }
-        if forge_backup.exists() {
-            fs::rename(&forge_backup, &forge_path).unwrap();
+        if acdd_backup.exists() {
+            fs::rename(&acdd_backup, &acdd_path).unwrap();
         }
-        fs::write(forge_path.join("runner-mode"), "green\n").unwrap();
+        fs::write(acdd_path.join("runner-mode"), "green\n").unwrap();
         fs::remove_dir_all(&outside_trace_root).unwrap();
         (
             final_rejected,
@@ -628,7 +628,7 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
     );
     assert!(
         forged_parent_symlink_rejected,
-        "a .forge symlink is rejected before creating task-traces outside the worktree"
+        "a .acdd symlink is rejected before creating task-traces outside the worktree"
     );
     assert!(
         final_proof_ok,

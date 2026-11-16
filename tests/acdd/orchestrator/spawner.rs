@@ -19,14 +19,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn runner_config(mode: &str) -> RunnerConfig {
-    let fixture = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/acdd/orchestrator/runner_fixture.py"
-    )
-    .replace('\'', "'\\''");
+fn role_fixture_path(_root: &Path) -> String {
+    crate::acdd::snapshot::role_helper_path()
+        .to_string_lossy()
+        .replace('\'', "'\\''")
+}
+
+fn runner_config(root: &Path, mode: &str) -> RunnerConfig {
+    let fixture = role_fixture_path(root);
     let runner = format!(
-        "python3 '{fixture}' {mode} {{prompt}} \"{{model}}\" '{{reasoning}}' {{session_id}} '{{worktree}}'"
+        "'{fixture}' runner-fixture {mode} {{prompt}} \"{{model}}\" '{{reasoning}}' {{session_id}} '{{worktree}}'"
     );
     let profile = validate_profile_document(
         &serde_yaml::to_string(&json!({
@@ -64,236 +66,6 @@ fn capture(
         Ok(())
     })?;
     Ok((outcome, stdout, stderr))
-}
-
-fn wait_for_descendant(path: &Path) -> io::Result<i32> {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        if let Ok(contents) = fs::read_to_string(path) {
-            if let Ok(pid) = contents.parse() {
-                return Ok(pid);
-            }
-        }
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "child readiness"));
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn wait_for_process_exit(pid: i32) -> io::Result<bool> {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let running = match fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Ok(record) => !record
-                .rsplit_once(')')
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "missing proc stat state")
-                })?
-                .1
-                .trim_start()
-                .starts_with('Z'),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => return Err(error),
-        };
-        if !running {
-            return Ok(true);
-        }
-        if Instant::now() >= deadline {
-            return Ok(false);
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn prompt_claim() -> Value {
-    json!({
-        "task_id": "fixture/milestone:runner",
-        "stage": "build",
-        "goal": "Preserve inserted {prompt} literally",
-        "allowed_write_scope": ["src/runner.rs"],
-        "applicable_invariants": ["No parallel lifecycle authority"],
-        "workflow_guidance": {
-            "role_runner": {"rendered_prompt": "Already prepared: inserted {model} remains literal."},
-            "expected_evidence_template": {"proof": {"command_proof": {"exit_code": 0}}},
-            "rejection": {"findings": {"summary": "Repair stream cleanup"}}
-        }
-    })
-}
-
-#[test]
-fn runner_preserves_arguments_and_uses_an_isolated_process_group() {
-    let root = Workspace::new();
-    let worktree = root.path("work tree");
-    fs::create_dir(&worktree).unwrap();
-    let config = runner_config("inspect");
-    for prompt in [
-        "",
-        "two words",
-        "quotes '\" \\ newline\nUnicode: λ {session_id}",
-        "$(touch injected); `touch injected`; & | > injected",
-    ] {
-        let context = invocation(&worktree, prompt);
-        let launched = spawn_role_runner(&config, &context, RunnerSessionPolicy::Resume);
-        assert!(
-            launched.is_ok(),
-            "assertion failed: configured runner must spawn: {launched:?}"
-        );
-        let process = launched.unwrap();
-        let pid = process.id();
-        let started_session = process.session_fingerprint().to_owned();
-        let (outcome, stdout, stderr) = capture(process, Duration::from_secs(5)).unwrap();
-        let observed: Value = serde_json::from_slice(&stdout).unwrap();
-        assert_eq!(
-            observed["argv"],
-            json!([
-                prompt,
-                context.model,
-                context.reasoning,
-                context.session_id,
-                context.worktree.to_string_lossy()
-            ])
-        );
-        assert_eq!(observed["cwd"], json!(context.worktree.to_string_lossy()));
-        assert_eq!(observed["pid"], pid);
-        assert_eq!(observed["pgid"], pid);
-        assert_ne!(observed["pgid"], unsafe { libc::getpgrp() });
-        assert_eq!(outcome.process_id, pid);
-        assert_eq!(outcome.session_fingerprint, started_session);
-        assert_eq!(outcome.exit_code, Some(0));
-        assert!(!outcome.timed_out);
-        assert!(stderr.is_empty());
-        assert!(!worktree.join("injected").exists());
-    }
-}
-
-#[test]
-fn runner_requires_only_referenced_model_slots() {
-    let root = Workspace::new();
-    let base = invocation(root.root(), "quoted value {model}");
-    let fixture = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/acdd/orchestrator/runner_fixture.py"
-    );
-    for (template, model, reasoning, valid) in [
-        ("'{prompt}'", "", "", true),
-        ("-m '{model}'", "", "high", false),
-        ("-m '{model}'", "   ", "high", false),
-        (
-            "-c 'model_reasoning_effort={reasoning}'",
-            "model",
-            "",
-            false,
-        ),
-        (
-            "-c 'model_reasoning_effort={reasoning}'",
-            "model",
-            "  ",
-            false,
-        ),
-        ("'{model}' '{reasoning}'", "model with spaces", "high", true),
-    ] {
-        let config = RunnerConfig {
-            runner: format!("python3 '{fixture}' inspect {template}"),
-            prompt_template: None,
-        };
-        let mut context = base.clone();
-        context.model = model.into();
-        context.reasoning = reasoning.into();
-        let result = spawn_role_runner(&config, &context, RunnerSessionPolicy::Resume);
-        if valid {
-            let (outcome, stdout, _) = capture(result.unwrap(), Duration::from_secs(5)).unwrap();
-            assert_eq!(outcome.exit_code, Some(0));
-            let observed: Value = serde_json::from_slice(&stdout).unwrap();
-            let expected = if model.is_empty() {
-                json!([base.prompt])
-            } else {
-                json!([model, reasoning])
-            };
-            assert_eq!(observed["argv"], expected);
-        } else {
-            assert!(
-                matches!(result, Err(RunnerError::InvalidContext(_))),
-                "{result:?}"
-            );
-        }
-    }
-}
-
-#[test]
-fn runner_rejects_malformed_command_templates() {
-    let root = Workspace::new();
-    let context = invocation(root.root(), "data");
-    for runner in [
-        "",
-        "   ",
-        "''",
-        "\"\"",
-        "python3 'unterminated",
-        "python3 \"unterminated",
-        "python3 trailing\\",
-        "python3 nul\0argument",
-    ] {
-        let config = RunnerConfig {
-            runner: runner.into(),
-            prompt_template: None,
-        };
-        let result = spawn_role_runner(&config, &context, RunnerSessionPolicy::Resume);
-        assert!(
-            matches!(result, Err(RunnerError::InvalidCommand(_))),
-            "{result:?}"
-        );
-    }
-}
-
-#[test]
-fn runner_tokenizes_original_quotes_escapes_and_empty_arguments() {
-    let root = Workspace::new();
-    let mut config = runner_config("inspect");
-    config
-        .runner
-        .push_str(r#" '' "" joined' words' escaped\ space "back\slash" "quote\"end" '#'"#);
-    let process = spawn_role_runner(
-        &config,
-        &invocation(root.root(), "literal {model}"),
-        RunnerSessionPolicy::Resume,
-    )
-    .unwrap();
-    let (outcome, stdout, _) = capture(process, Duration::from_secs(5)).unwrap();
-    let observed: Value = serde_json::from_slice(&stdout).unwrap();
-    assert_eq!(outcome.exit_code, Some(0));
-    assert_eq!(
-        observed["argv"].as_array().unwrap()[5..],
-        json!([
-            "",
-            "",
-            "joined words",
-            "escaped space",
-            "back\\slash",
-            "quote\"end",
-            "#"
-        ])
-        .as_array()
-        .unwrap()[..]
-    );
-}
-
-#[test]
-fn runner_rejects_blank_resume_session() {
-    let root = Workspace::new();
-    let mut context = invocation(root.root(), "data");
-    for session in ["", " \t\n", acdd_tasks::store::UNKNOWN_SESSION_FINGERPRINT] {
-        context.session_id = session.into();
-        let result = spawn_role_runner(
-            &runner_config("inspect"),
-            &context,
-            RunnerSessionPolicy::Resume,
-        );
-        assert!(
-            matches!(result, Err(RunnerError::InvalidSession(_))),
-            "{result:?}"
-        );
-    }
 }
 
 #[test]
@@ -350,44 +122,10 @@ fn unsupported_provider_resume_is_rejected_at_profile_and_spawn_boundaries() {
 }
 
 #[test]
-fn codex_exec_shape_preserves_arguments_and_forge_identity() {
-    let root = Workspace::new();
-    let worktree = root.path("work tree");
-    fs::create_dir(&worktree).unwrap();
-    let fixture = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/acdd/orchestrator/runner_fixture.py"
-    );
-    let config = RunnerConfig {
-        runner: format!("python3 '{fixture}' inspect exec -C \"{{worktree}}\" -m \"{{model}}\" -c model_reasoning_effort=\"{{reasoning}}\" \"{{prompt}}\""),
-        prompt_template: None,
-    };
-    let context = invocation(&worktree, "quoted 'prompt' with spaces");
-    let process = spawn_role_runner(&config, &context, RunnerSessionPolicy::Resume).unwrap();
-    let (outcome, stdout, _) = capture(process, Duration::from_secs(5)).unwrap();
-    let observed: Value = serde_json::from_slice(&stdout).unwrap();
-    assert_eq!(outcome.exit_code, Some(0));
-    assert_eq!(
-        observed["argv"],
-        json!([
-            "exec",
-            "-C",
-            worktree.to_string_lossy(),
-            "-m",
-            context.model,
-            "-c",
-            format!("model_reasoning_effort={}", context.reasoning),
-            context.prompt
-        ])
-    );
-    assert_eq!(observed["forge_session"], context.session_id);
-}
-
-#[test]
 fn runner_reports_spawn_failure() {
     let root = Workspace::new();
     let config = RunnerConfig {
-        runner: "/no/such/forge-role-runner {prompt}".into(),
+        runner: "/no/such/acdd-role-runner {prompt}".into(),
         prompt_template: None,
     };
     let result = spawn_role_runner(
@@ -407,7 +145,7 @@ fn monitor_delivers_both_streams_before_child_exit() {
     let acknowledgment = root.path("streams-drained");
     let context = invocation(root.root(), acknowledgment.to_str().unwrap());
     let launched = spawn_role_runner(
-        &runner_config("streams"),
+        &runner_config(root.root(), "streams"),
         &context,
         RunnerSessionPolicy::Resume,
     );
@@ -437,55 +175,10 @@ fn monitor_delivers_both_streams_before_child_exit() {
 }
 
 #[test]
-fn monitor_times_out_and_reaps_the_owned_process_group() {
-    let root = Workspace::new();
-    let ready = root.path("descendant.pid");
-    let context = invocation(root.root(), ready.to_str().unwrap());
-    let launched = spawn_role_runner(
-        &runner_config("hang"),
-        &context,
-        RunnerSessionPolicy::Resume,
-    );
-    assert!(launched.is_ok(), "runner must launch: {launched:?}");
-    let process = launched.unwrap();
-    let pid = process.id();
-    let descendant = wait_for_descendant(&ready).unwrap();
-    let (outcome, _, _) = capture(process, Duration::from_millis(250)).unwrap();
-    assert!(outcome.timed_out);
-    assert_eq!(outcome.exit_code, None);
-    assert!(wait_for_process_exit(descendant).unwrap());
-    let mut status = 0;
-    let waited = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
-    assert_eq!(waited, -1);
-    assert_eq!(
-        io::Error::last_os_error().raw_os_error(),
-        Some(libc::ECHILD)
-    );
-}
-
-#[test]
-fn monitor_bounds_descendant_pipes_after_leader_exit() {
-    let root = Workspace::new();
-    let ready = root.path("orphan.pid");
-    let context = invocation(root.root(), ready.to_str().unwrap());
-    let launched = spawn_role_runner(
-        &runner_config("orphan"),
-        &context,
-        RunnerSessionPolicy::Resume,
-    );
-    assert!(launched.is_ok(), "runner must launch: {launched:?}");
-    let process = launched.unwrap();
-    let descendant = wait_for_descendant(&ready).unwrap();
-    let (outcome, _, _) = capture(process, Duration::from_millis(250)).unwrap();
-    assert!(outcome.timed_out);
-    assert!(wait_for_process_exit(descendant).unwrap());
-}
-
-#[test]
 fn monitor_cleans_up_when_output_sink_fails() {
     let root = Workspace::new();
     let launched = spawn_role_runner(
-        &runner_config("wait"),
+        &runner_config(root.root(), "wait"),
         &invocation(root.root(), "data"),
         RunnerSessionPolicy::Resume,
     );
@@ -509,7 +202,7 @@ fn monitor_cleans_up_when_output_sink_fails() {
 fn dropping_runner_reaps_its_child() {
     let root = Workspace::new();
     let launched = spawn_role_runner(
-        &runner_config("wait"),
+        &runner_config(root.root(), "wait"),
         &invocation(root.root(), "data"),
         RunnerSessionPolicy::Resume,
     );
@@ -537,11 +230,11 @@ fn runner_resumes_builder_identity_and_isolates_fresh_sessions() {
         RunnerSessionPolicy::Fresh,
         RunnerSessionPolicy::Fresh,
     ] {
-        let launched = spawn_role_runner(&runner_config("inspect"), &context, policy);
+        let launched = spawn_role_runner(&runner_config(root.root(), "inspect"), &context, policy);
         assert!(launched.is_ok(), "runner must launch: {launched:?}");
         let (outcome, stdout, _) = capture(launched.unwrap(), Duration::from_secs(5)).unwrap();
         let observed: Value = serde_json::from_slice(&stdout).unwrap();
-        assert_eq!(observed["forge_session"], outcome.session_fingerprint);
+        assert_eq!(observed["acdd_session"], outcome.session_fingerprint);
         assert_eq!(observed["argv"][3], outcome.session_fingerprint);
         assert!(!outcome.session_fingerprint.trim().is_empty());
         if policy == RunnerSessionPolicy::Resume {
@@ -560,146 +253,383 @@ fn runner_resumes_builder_identity_and_isolates_fresh_sessions() {
 }
 
 #[test]
-fn monitor_preserves_nonzero_exit_status() {
+fn runner_argument_matrix() {
     let root = Workspace::new();
-    let launched = spawn_role_runner(
-        &runner_config("exit"),
-        &invocation(root.root(), "data"),
-        RunnerSessionPolicy::Resume,
-    );
-    assert!(launched.is_ok(), "runner must launch: {launched:?}");
-    let (outcome, _, _) = capture(launched.unwrap(), Duration::from_secs(5)).unwrap();
-    assert_eq!(outcome.exit_code, Some(7));
-    assert!(!outcome.timed_out);
-}
-
-#[test]
-fn monitor_preserves_raw_non_utf8_output_without_newlines() {
-    let root = Workspace::new();
-    let process = spawn_role_runner(
-        &runner_config("binary"),
-        &invocation(root.root(), "data"),
-        RunnerSessionPolicy::Resume,
-    )
-    .unwrap();
-    let (outcome, stdout, stderr) = capture(process, Duration::from_secs(5)).unwrap();
-    assert_eq!(outcome.exit_code, Some(0));
-    assert_eq!(stdout, (0..=255).collect::<Vec<u8>>());
-    assert_eq!(stderr, (0..=255).rev().collect::<Vec<u8>>());
-}
-
-#[test]
-fn monitor_reports_signal_exit_without_a_timeout() {
-    let root = Workspace::new();
-    let process = spawn_role_runner(
-        &runner_config("signal"),
-        &invocation(root.root(), "data"),
-        RunnerSessionPolicy::Resume,
-    )
-    .unwrap();
-    let (outcome, _, _) = capture(process, Duration::from_secs(5)).unwrap();
-    assert_eq!(outcome.exit_code, None);
-    assert!(!outcome.timed_out);
-}
-
-#[test]
-fn monitor_checks_deadline_while_output_remains_ready() {
-    let root = Workspace::new();
-    let process = spawn_role_runner(
-        &runner_config("flood"),
-        &invocation(root.root(), "data"),
-        RunnerSessionPolicy::Resume,
-    )
-    .unwrap();
-    let pid = process.id();
-    let mut bytes_seen = 0;
-    let outcome = monitor_runner_process(process, Duration::from_millis(250), &mut |_, bytes| {
-        bytes_seen += bytes.len();
-        Ok(())
-    })
-    .unwrap();
-    assert!(outcome.timed_out);
-    assert!(bytes_seen > 0);
-    let mut status = 0;
-    assert_eq!(
-        unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) },
-        -1
-    );
-    assert_eq!(
-        io::Error::last_os_error().raw_os_error(),
-        Some(libc::ECHILD)
-    );
-}
-
-#[test]
-fn monitor_reaps_owned_child_after_it_leaves_the_original_group() {
-    let root = Workspace::new();
-    let process = spawn_role_runner(
-        &runner_config("move"),
-        &invocation(root.root(), "data"),
-        RunnerSessionPolicy::Resume,
-    )
-    .unwrap();
-    let pid = process.id();
-    let (outcome, stdout, _) = capture(process, Duration::from_millis(250)).unwrap();
-    assert!(outcome.timed_out);
-    assert_eq!(stdout, b"moved\n");
-    let mut status = 0;
-    assert_eq!(
-        unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) },
-        -1
-    );
-    assert_eq!(
-        io::Error::last_os_error().raw_os_error(),
-        Some(libc::ECHILD)
-    );
-}
-
-#[test]
-fn role_prompt_preserves_prepared_text_and_complete_gate_context() {
-    let claim = prompt_claim();
-    let rendered = render_role_prompt(&claim);
-    assert!(rendered.is_ok(), "prepared claim must render: {rendered:?}");
-    let rendered = rendered.unwrap();
-    let (prepared, context) = rendered.split_once("\n\nGate context:\n").unwrap();
-    assert_eq!(
-        prepared,
-        claim["workflow_guidance"]["role_runner"]["rendered_prompt"]
-    );
-    assert_eq!(serde_json::from_str::<Value>(context).unwrap(), claim);
-}
-
-#[test]
-fn role_prompt_rejects_incomplete_claim_authority() {
-    for missing in [
-        "task_id",
-        "goal",
-        "allowed_write_scope",
-        "expected_evidence_template",
-        "rendered_prompt",
+    let worktree = root.path("work tree");
+    fs::create_dir(&worktree).unwrap();
+    let fixture = role_fixture_path(root.root());
+    let base = invocation(&worktree, "");
+    let mut cases = Vec::new();
+    for prompt in [
+        "",
+        "two words",
+        "quotes '\" \\ newline\nUnicode: λ {session_id}",
+        "$(touch injected); `touch injected`; & | > injected",
     ] {
-        let mut claim = prompt_claim();
-        match missing {
-            "expected_evidence_template" => {
-                claim["workflow_guidance"]
-                    .as_object_mut()
-                    .unwrap()
-                    .remove(missing);
+        cases.push((
+            runner_config(root.root(), "inspect"),
+            prompt,
+            json!([
+                prompt,
+                base.model,
+                base.reasoning,
+                base.session_id,
+                worktree.to_string_lossy()
+            ]),
+        ));
+    }
+    let mut quoted = runner_config(root.root(), "inspect");
+    quoted
+        .runner
+        .push_str(r#" '' "" joined' words' escaped\ space "back\slash" "quote\"end" '#'"#);
+    cases.push((
+        quoted,
+        "literal {model}",
+        json!([
+            "literal {model}",
+            base.model,
+            base.reasoning,
+            base.session_id,
+            worktree.to_string_lossy(),
+            "",
+            "",
+            "joined words",
+            "escaped space",
+            "back\\slash",
+            "quote\"end",
+            "#"
+        ]),
+    ));
+    let codex = RunnerConfig {
+        runner: format!("'{fixture}' runner-fixture inspect exec -C \"{{worktree}}\" -m \"{{model}}\" -c model_reasoning_effort=\"{{reasoning}}\" \"{{prompt}}\""),
+        prompt_template: None,
+    };
+    let prompt = "quoted 'prompt' with spaces";
+    cases.push((
+        codex,
+        prompt,
+        json!([
+            "exec",
+            "-C",
+            worktree.to_string_lossy(),
+            "-m",
+            base.model,
+            "-c",
+            format!("model_reasoning_effort={}", base.reasoning),
+            prompt
+        ]),
+    ));
+    for (config, prompt, expected_argv) in cases {
+        let context = invocation(&worktree, prompt);
+        let process = spawn_role_runner(&config, &context, RunnerSessionPolicy::Resume).unwrap();
+        let pid = process.id();
+        let session = process.session_fingerprint().to_owned();
+        let (outcome, stdout, stderr) = capture(process, Duration::from_secs(5)).unwrap();
+        let observed: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(observed["argv"], expected_argv);
+        assert_eq!(observed["cwd"], json!(context.worktree.to_string_lossy()));
+        assert_eq!(observed["pid"], pid);
+        assert_eq!(observed["pgid"], pid);
+        assert_ne!(observed["pgid"], unsafe { libc::getpgrp() });
+        assert_eq!(observed["acdd_session"], context.session_id);
+        assert_eq!(outcome.process_id, pid);
+        assert_eq!(outcome.session_fingerprint, session);
+        assert_eq!(outcome.exit_code, Some(0));
+        assert!(!outcome.timed_out);
+        assert!(stderr.is_empty());
+        assert!(!worktree.join("injected").exists());
+    }
+}
+
+#[test]
+fn runner_configuration_matrix() {
+    enum Expected {
+        Argv(Value),
+        Context,
+        Command,
+        Session,
+    }
+    let root = Workspace::new();
+    let fixture = role_fixture_path(root.root());
+    let base = invocation(root.root(), "quoted value {model}");
+    let mut cases = Vec::new();
+    for (template, model, reasoning, expected) in [
+        ("'{prompt}'", "", "", Expected::Argv(json!([base.prompt]))),
+        ("-m '{model}'", "", "high", Expected::Context),
+        ("-m '{model}'", "   ", "high", Expected::Context),
+        (
+            "-c 'model_reasoning_effort={reasoning}'",
+            "model",
+            "",
+            Expected::Context,
+        ),
+        (
+            "-c 'model_reasoning_effort={reasoning}'",
+            "model",
+            "  ",
+            Expected::Context,
+        ),
+        (
+            "'{model}' '{reasoning}'",
+            "model with spaces",
+            "high",
+            Expected::Argv(json!(["model with spaces", "high"])),
+        ),
+    ] {
+        let mut context = base.clone();
+        context.model = model.into();
+        context.reasoning = reasoning.into();
+        cases.push((
+            RunnerConfig {
+                runner: format!("'{fixture}' runner-fixture inspect {template}"),
+                prompt_template: None,
+            },
+            context,
+            expected,
+        ));
+    }
+    for runner in [
+        "",
+        "   ",
+        "''",
+        "\"\"",
+        "runner 'unterminated",
+        "runner \"unterminated",
+        "runner trailing\\",
+        "runner nul\0argument",
+    ] {
+        cases.push((
+            RunnerConfig {
+                runner: runner.into(),
+                prompt_template: None,
+            },
+            base.clone(),
+            Expected::Command,
+        ));
+    }
+    for session in ["", " \t\n", acdd_tasks::store::UNKNOWN_SESSION_FINGERPRINT] {
+        let mut context = base.clone();
+        context.session_id = session.into();
+        cases.push((runner_config(root.root(), "inspect"), context, Expected::Session));
+    }
+    for (config, context, expected) in cases {
+        let result = spawn_role_runner(&config, &context, RunnerSessionPolicy::Resume);
+        match expected {
+            Expected::Argv(argv) => {
+                let (outcome, stdout, _) =
+                    capture(result.unwrap(), Duration::from_secs(5)).unwrap();
+                assert_eq!(outcome.exit_code, Some(0));
+                let observed: Value = serde_json::from_slice(&stdout).unwrap();
+                assert_eq!(observed["argv"], argv);
             }
-            "rendered_prompt" => {
-                claim["workflow_guidance"]["role_runner"][missing] = Value::Null;
+            Expected::Context => assert!(
+                matches!(result, Err(RunnerError::InvalidContext(_))),
+                "{result:?}"
+            ),
+            Expected::Command => assert!(
+                matches!(result, Err(RunnerError::InvalidCommand(_))),
+                "{result:?}"
+            ),
+            Expected::Session => assert!(
+                matches!(result, Err(RunnerError::InvalidSession(_))),
+                "{result:?}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn monitor_completion_matrix() {
+    let root = Workspace::new();
+    let bytes: Vec<u8> = (0..=255).collect();
+    for (mode, exit_code, expected_streams) in [
+        ("exit", Some(7), None),
+        (
+            "binary",
+            Some(0),
+            Some((
+                bytes.clone(),
+                bytes.iter().rev().copied().collect::<Vec<_>>(),
+            )),
+        ),
+        ("signal", None, None),
+    ] {
+        let process = spawn_role_runner(
+            &runner_config(root.root(), mode),
+            &invocation(root.root(), "data"),
+            RunnerSessionPolicy::Resume,
+        )
+        .unwrap();
+        let (outcome, stdout, stderr) = capture(process, Duration::from_secs(5)).unwrap();
+        assert_eq!(outcome.exit_code, exit_code, "{mode}");
+        assert!(!outcome.timed_out, "{mode}");
+        if let Some((expected_stdout, expected_stderr)) = expected_streams {
+            assert_eq!(stdout, expected_stdout);
+            assert_eq!(stderr, expected_stderr);
+        }
+    }
+}
+
+#[test]
+fn monitor_deadline_matrix() {
+    struct Case {
+        mode: &'static str,
+        descendant: bool,
+        no_exit: bool,
+        output: Option<&'static [u8]>,
+        output_required: bool,
+        reaped: bool,
+    }
+    let root = Workspace::new();
+    for case in [
+        Case {
+            mode: "hang",
+            descendant: true,
+            no_exit: true,
+            output: None,
+            output_required: false,
+            reaped: true,
+        },
+        Case {
+            mode: "orphan",
+            descendant: true,
+            no_exit: false,
+            output: None,
+            output_required: false,
+            reaped: false,
+        },
+        Case {
+            mode: "flood",
+            descendant: false,
+            no_exit: false,
+            output: None,
+            output_required: true,
+            reaped: true,
+        },
+        Case {
+            mode: "move",
+            descendant: false,
+            no_exit: false,
+            output: Some(b"moved\n"),
+            output_required: false,
+            reaped: true,
+        },
+    ] {
+        let ready = root.path(format!("{}.pid", case.mode));
+        let context = invocation(root.root(), ready.to_str().unwrap());
+        let process = spawn_role_runner(
+            &runner_config(root.root(), case.mode),
+            &context,
+            RunnerSessionPolicy::Resume,
+        )
+        .unwrap();
+        let pid = process.id();
+        let descendant = if case.descendant {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Ok(contents) = fs::read_to_string(&ready) {
+                    if let Ok(pid) = contents.parse::<i32>() {
+                        break Some(pid);
+                    }
+                }
+                assert!(Instant::now() < deadline, "{}: child readiness", case.mode);
+                thread::sleep(Duration::from_millis(10));
             }
-            _ => {
-                claim.as_object_mut().unwrap().remove(missing);
+        } else {
+            None
+        };
+        let mut bytes_seen = 0;
+        let mut stdout = Vec::new();
+        let outcome =
+            monitor_runner_process(process, Duration::from_millis(250), &mut |stream, bytes| {
+                bytes_seen += bytes.len();
+                if case.output.is_some() && matches!(stream, RunnerStream::Stdout) {
+                    stdout.extend_from_slice(bytes);
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert!(outcome.timed_out, "{}", case.mode);
+        if case.no_exit {
+            assert_eq!(outcome.exit_code, None);
+        }
+        if case.output_required {
+            assert!(bytes_seen > 0);
+        }
+        if let Some(expected) = case.output {
+            assert_eq!(stdout, expected);
+        }
+        if let Some(descendant) = descendant {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                let running = match fs::read_to_string(format!("/proc/{descendant}/stat")) {
+                    Ok(record) => !record
+                        .rsplit_once(')')
+                        .expect("missing proc stat state")
+                        .1
+                        .trim_start()
+                        .starts_with('Z'),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                    Err(error) => panic!("{error}"),
+                };
+                if !running {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{}: descendant still running",
+                    case.mode
+                );
+                thread::sleep(Duration::from_millis(10));
             }
         }
-        let result = render_role_prompt(&claim);
-        assert!(
-            matches!(result, Err(RunnerError::InvalidContext(_))),
-            "missing {missing}: {result:?}"
-        );
+        if case.reaped {
+            let mut status = 0;
+            assert_eq!(
+                unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) },
+                -1
+            );
+            assert_eq!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::ECHILD)
+            );
+        }
+    }
+}
+
+#[test]
+fn role_prompt_matrix() {
+    let base = json!({
+        "task_id": "fixture/milestone:runner", "stage": "build",
+        "goal": "Preserve inserted {prompt} literally", "allowed_write_scope": ["src/runner.rs"],
+        "applicable_invariants": ["No parallel lifecycle authority"],
+        "workflow_guidance": {
+            "role_runner": {"rendered_prompt": "Already prepared: inserted {model} remains literal."},
+            "expected_evidence_template": {"proof": {"command_proof": {"exit_code": 0}}},
+            "rejection": {"findings": {"summary": "Repair stream cleanup"}}
+        }
+    });
+    let mut cases = vec![(base.clone(), true)];
+    for (parent, field) in [
+        ("", "task_id"),
+        ("", "goal"),
+        ("", "allowed_write_scope"),
+        ("/workflow_guidance", "expected_evidence_template"),
+    ] {
+        let mut claim = base.clone();
+        claim
+            .pointer_mut(parent)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        cases.push((claim, false));
     }
     for (pointer, value) in [
+        (
+            "/workflow_guidance/role_runner/rendered_prompt",
+            Value::Null,
+        ),
         ("/task_id", json!(" ")),
         ("/goal", json!(false)),
         ("/allowed_write_scope", json!([null])),
@@ -711,18 +641,29 @@ fn role_prompt_rejects_incomplete_claim_authority() {
         ("/omitted_fields", json!(["/context_bundle"])),
         ("/omitted_field_count", json!(1)),
     ] {
-        let mut claim = prompt_claim();
+        let mut claim = base.clone();
         if let Some(field) = claim.pointer_mut(pointer) {
             *field = value;
         } else {
             claim[pointer.trim_start_matches('/')] = value;
         }
-        assert!(
-            matches!(
-                render_role_prompt(&claim),
-                Err(RunnerError::InvalidContext(_))
-            ),
-            "invalid {pointer}"
+        cases.push((claim, false));
+    }
+    for (claim, valid) in cases {
+        let result = render_role_prompt(&claim);
+        if !valid {
+            assert!(
+                matches!(result, Err(RunnerError::InvalidContext(_))),
+                "{result:?}"
+            );
+            continue;
+        }
+        let rendered = result.unwrap();
+        let (prepared, context) = rendered.split_once("\n\nGate context:\n").unwrap();
+        assert_eq!(
+            prepared,
+            claim["workflow_guidance"]["role_runner"]["rendered_prompt"]
         );
+        assert_eq!(serde_json::from_str::<Value>(context).unwrap(), claim);
     }
 }

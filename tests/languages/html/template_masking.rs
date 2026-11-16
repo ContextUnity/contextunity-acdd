@@ -1,8 +1,22 @@
 use crate::languages::harness::ExtractorHarness;
 
 #[test]
-fn html_django_template_preprocessor_avoids_syntax_errors_and_extracts_links() {
-    let source = r#"
+fn html_template_masking_boundaries() {
+    struct Case {
+        case_id: &'static str,
+        path: &'static str,
+        source: &'static str,
+        errors: Option<usize>,
+        script_error: bool,
+        includes: &'static [&'static str],
+        extends: &'static [&'static str],
+        function: Option<(&'static str, &'static str, usize)>,
+    }
+    let mut cases = vec![
+        Case {
+            case_id: "html_django_template_preprocessor_avoids_syntax_errors_and_extracts_links",
+            path: "templates/item.html",
+            source: r#"
 {% extends "base.html" %}
 {% load static %}
 {% block content %}
@@ -20,36 +34,35 @@ fn html_django_template_preprocessor_avoids_syntax_errors_and_extracts_links() {
     {% endif %}
 </script>
 {% endblock %}
-"#;
-    let facts = ExtractorHarness::for_lang("html")
-        .at_path("templates/item.html")
-        .extract(source);
-    assert_eq!(
-        facts.errors.len(),
-        0,
-        "Django template must not produce syntax errors: {:?}",
-        facts.errors
-    );
-    let includes: Vec<_> = facts
-        .references
-        .iter()
-        .filter(|r| r.kind == "includes")
-        .collect();
-    assert_eq!(includes.len(), 1);
-    assert_eq!(includes[0].expression, "partials/sidebar.html");
-
-    let extends: Vec<_> = facts
-        .references
-        .iter()
-        .filter(|r| r.kind == "extends")
-        .collect();
-    assert_eq!(extends.len(), 1);
-    assert_eq!(extends[0].expression, "base.html");
-}
-
-#[test]
-fn html_truncated_template_tags_do_not_panic() {
-    for snippet in [
+"#,
+            errors: Some(0),
+            script_error: false,
+            includes: &["partials/sidebar.html"],
+            extends: &["base.html"],
+            function: None,
+        },
+        Case {
+            case_id: "html_template_file_still_reports_syntax_error_in_plain_script",
+            path: "template_with_broken_js.html",
+            source: "\n<div>{{ item.title }}</div>\n<script>\n    function broken( {\n</script>\n",
+            errors: None,
+            script_error: true,
+            includes: &[],
+            extends: &[],
+            function: None,
+        },
+        Case {
+            case_id: "unicode_template_tags_keep_embedded_javascript_byte_coordinates",
+            path: "template.html",
+            source: "<script>{% if λ %}function afterMask() { return 1; }{% endif %}</script>",
+            errors: None,
+            script_error: false,
+            includes: &[],
+            extends: &[],
+            function: Some(("afterMask", "function afterMask", 1)),
+        },
+    ];
+    for source in [
         "{%",
         "{% ",
         "{% include",
@@ -58,50 +71,66 @@ fn html_truncated_template_tags_do_not_panic() {
         "{{",
         "{{ unclosed var",
     ] {
-        let facts = ExtractorHarness::for_lang("html")
-            .at_path("truncated.html")
-            .try_extract(snippet);
-        assert!(facts.is_ok(), "must not panic on: {snippet}");
+        cases.push(Case {
+            case_id: "html_truncated_template_tags_do_not_panic",
+            path: "truncated.html",
+            source,
+            errors: None,
+            script_error: false,
+            includes: &[],
+            extends: &[],
+            function: None,
+        });
     }
-}
-
-#[test]
-fn html_template_file_still_reports_syntax_error_in_plain_script() {
-    let source = r#"
-<div>{{ item.title }}</div>
-<script>
-    function broken( {
-</script>
-"#;
-    let facts = ExtractorHarness::for_lang("html")
-        .at_path("template_with_broken_js.html")
-        .extract(source);
-    assert!(
-        facts
-            .errors
-            .iter()
-            .any(|e| e.message.contains("embedded JavaScript")),
-        "plain script in template file must still report real JS syntax errors: {:?}",
-        facts.errors
-    );
-}
-
-#[test]
-fn unicode_template_tags_keep_embedded_javascript_byte_coordinates() {
-    let source = "<script>{% if λ %}function afterMask() { return 1; }{% endif %}</script>";
-    let facts = ExtractorHarness::for_lang("html")
-        .at_path("template.html")
-        .extract(source);
-    let function = facts
-        .nodes
-        .iter()
-        .find(|node| node.name == "afterMask")
-        .expect("function following a masked Unicode tag is indexed");
-    assert_eq!(function.line, 1);
-    assert_eq!(
-        function.details["column"].as_u64(),
-        Some(source.find("function afterMask").unwrap() as u64)
-    );
+    for case in cases {
+        let facts = ExtractorHarness::for_lang("html")
+            .at_path(case.path)
+            .try_extract(case.source)
+            .unwrap_or_else(|error| panic!("{}: {:?}: {error}", case.case_id, case.source));
+        if let Some(expected) = case.errors {
+            assert_eq!(
+                facts.errors.len(),
+                expected,
+                "{}: {:?}",
+                case.case_id,
+                facts.errors
+            );
+        }
+        if case.script_error {
+            assert!(
+                facts
+                    .errors
+                    .iter()
+                    .any(|e| e.message.contains("embedded JavaScript")),
+                "{}: {:?}",
+                case.case_id,
+                facts.errors
+            );
+        }
+        for (kind, expected) in [("includes", case.includes), ("extends", case.extends)] {
+            let actual: Vec<_> = facts
+                .references
+                .iter()
+                .filter(|r| r.kind == kind)
+                .map(|r| r.expression.as_str())
+                .collect();
+            assert_eq!(actual, expected, "{}: {kind}", case.case_id);
+        }
+        if let Some((name, marker, line)) = case.function {
+            let function = facts
+                .nodes
+                .iter()
+                .find(|node| node.name == name)
+                .expect("masked function indexed");
+            assert_eq!(function.line, line, "{}", case.case_id);
+            assert_eq!(
+                function.details["column"].as_u64(),
+                Some(case.source.find(marker).unwrap() as u64),
+                "{}",
+                case.case_id
+            );
+        }
+    }
 }
 
 #[cfg(feature = "lang-vue")]

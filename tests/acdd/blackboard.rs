@@ -2,8 +2,8 @@ use super::support::*;
 
 #[test]
 fn blackboard_persists_task_scoped_messages_in_chronological_order() {
-    let milestone = Milestone::parse(SPEC, "forge-mcp").unwrap();
-    let mut store = TasksStore::open_in_memory("forge-mcp", "forge-mcp").unwrap();
+    let milestone = Milestone::parse(SPEC, "acdd").unwrap();
+    let mut store = TasksStore::open_in_memory("acdd", "acdd").unwrap();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/acdd");
     assert!(!root.join("acdd.yaml").exists());
     store.sync(&milestone, "docs/010-test.md", &root).unwrap();
@@ -64,7 +64,7 @@ fn blackboard_scope_resolution_isolates_milestone_task_and_subtask_messages() {
         "task_ref: second\ntarget: Coordinate another task\nproof_policy: seam-test-first\nscope: [docs/]",
     );
     root.write("docs/milestones/010-blackboard.md", &manifest);
-    let milestone = Milestone::parse(&manifest, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(&manifest, "acdd").unwrap();
     let (mut store, first, second) =
         sync_blackboard_tasks(&root, "docs/milestones/010-blackboard.md", &milestone);
     store
@@ -257,7 +257,7 @@ fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering()
     );
     root.write(
         "linked/.agents/skills/acdd/SKILL.md",
-        "# ContextUnity Forge\n",
+        "# ContextUnity ACDD\n",
     );
     root.write(
         "acdd.yaml",
@@ -594,7 +594,7 @@ gates:
     );
     let manifest = "---\nid: m-nested-bb\ntitle: Nested blackboard\ndoc_type: contract\nstatus: active\n---\n# Nested blackboard\n```yaml\ntask_ref: first\ntarget: First task\nproof_policy: seam-test-first\nscope: [src/]\n```\n```yaml\ntask_ref: second\ntarget: Second task\nproof_policy: seam-test-first\nscope: [docs/]\n```\n";
     root.write("docs/milestones/010-nested-bb.md", manifest);
-    let milestone = Milestone::parse(manifest, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(manifest, "acdd").unwrap();
     let (mut store, first, second) =
         sync_blackboard_tasks(&root, "docs/milestones/010-nested-bb.md", &milestone);
     store

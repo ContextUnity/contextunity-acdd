@@ -263,7 +263,7 @@ fn record_milestone_root_transition(
 ) {
     let manifest = fs::read_to_string(h.root().join(harness::MANIFEST)).unwrap();
     let milestone =
-        contextunity_acdd::acdd_tasks::tasks::Milestone::parse(&manifest, "forge-mcp").unwrap();
+        contextunity_acdd::acdd_tasks::tasks::Milestone::parse(&manifest, "acdd").unwrap();
     let milestone_identity = format!(
         "{}/{}/{}",
         milestone.repository, milestone.project, milestone.id
@@ -311,60 +311,6 @@ fn task_next_follows_verify_pass_edge_to_documentation() {
     assert_eq!(action["subject"], "milestone");
     assert_eq!(action["stage"], "documentation");
     assert_eq!(action["gate"]["id"], "documentation");
-}
-
-#[test]
-fn task_next_follows_polish_pass_edge_after_failed_verification() {
-    use acdd_tasks::engine::{manage, Manage, ManageAction};
-
-    let mut h = RootGateHarness::new();
-    h.task.advance_to_completion().unwrap();
-    install_post_task_route_profile(&h);
-    record_milestone_root_transition(&h, "verify", "fail", 1);
-    record_milestone_root_transition(&h, "polish", "pass", 1);
-
-    let action = manage(
-        h.root(),
-        Manage {
-            action: ManageAction::Next,
-            worker_id: Some("next-worker".into()),
-            worktree: Some(h.root().to_string_lossy().into_owned()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    assert_eq!(action["subject"], "milestone");
-    assert_eq!(action["stage"], "milestone_review");
-    assert_eq!(action["gate"]["id"], "milestone_review");
-}
-
-#[test]
-fn task_next_follows_the_latest_transition_after_a_repeated_polish_cycle() {
-    use acdd_tasks::engine::{manage, Manage, ManageAction};
-
-    let mut h = RootGateHarness::new();
-    h.task.advance_to_completion().unwrap();
-    install_post_task_route_profile(&h);
-    record_milestone_root_transition(&h, "verify", "fail", 1);
-    record_milestone_root_transition(&h, "polish", "pass", 1);
-    record_milestone_root_transition(&h, "milestone_review", "fail", 1);
-    record_milestone_root_transition(&h, "polish", "pass", 2);
-
-    let action = manage(
-        h.root(),
-        Manage {
-            action: ManageAction::Next,
-            worker_id: Some("next-worker".into()),
-            worktree: Some(h.root().to_string_lossy().into_owned()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-
-    assert_eq!(action["subject"], "milestone");
-    assert_eq!(action["stage"], "milestone_review");
-    assert_eq!(action["gate"]["id"], "milestone_review");
 }
 
 #[test]

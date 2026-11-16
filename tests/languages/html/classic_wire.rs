@@ -99,7 +99,7 @@ fn classic_flow_wire_slots_and_constructor_receiver_survive_cold_build_and_delta
 
 #[cfg(feature = "lang-typescript")]
 #[test]
-fn inline_handlers_resolve_exact_local_classic_script_providers() {
+fn inline_provider_rebinding() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write("site/assets/cart.js", "function openCart() {}\n");
     workspace.write(
@@ -134,6 +134,57 @@ fn inline_handlers_resolve_exact_local_classic_script_providers() {
         assert_eq!(status, "unresolved", "{name}");
     }
     drop(conn);
+    for (case_id, script, expected, rebound) in [
+        (
+            "inline_handlers_resolve_exact_local_classic_script_providers",
+            "function openCart() {}\n",
+            "resolved",
+            false,
+        ),
+        (
+            "inline_handler_provider_rebinding_fails_closed_after_exact_declaration",
+            "function openCart() {}\nopenCart = unknown;\n",
+            "unresolved",
+            true,
+        ),
+        (
+            "inline_handlers_resolve_exact_local_classic_script_providers",
+            "function openCart() {}\n",
+            "resolved",
+            false,
+        ),
+    ] {
+        workspace.write("site/assets/cart.js", script);
+        let extracted = ExtractorHarness::for_lang("javascript")
+            .at_path("site/assets/cart.js")
+            .extract(script);
+        if rebound {
+            assert!(
+                extracted.nodes.iter().any(|node| {
+                    let details =
+                        crate::common::assertions::projected_node_details(&extracted, node);
+                    node.kind == "module"
+                        && details["rebindings"].as_array().is_some_and(|bindings| {
+                            bindings.iter().any(|binding| binding == "openCart")
+                        })
+                }),
+                "the indexed module records the AST binding write"
+            );
+        }
+        workspace.delta(&["site/assets/cart.js"]);
+        let conn = workspace.open();
+        let status: String = query_scalar(&conn, "SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id WHERE pd.path='site/index.html' AND ce.expression='openCart'", []);
+        assert_eq!(status, expected, "{case_id}");
+        commitments::verify(&conn).unwrap();
+        let cold = crate::languages::support::fresh_cold(&workspace);
+        let cold_status: String = query_scalar(&cold, "SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id WHERE pd.path='site/index.html' AND ce.expression='openCart'", []);
+        assert_eq!(cold_status, expected, "{case_id}: cold provider binding");
+        assert_eq!(
+            coverage_aggregate_rows(&conn),
+            coverage_aggregate_rows(&cold)
+        );
+        commitments::verify(&cold).unwrap();
+    }
     workspace.write("site/assets/duplicate.js", "function openCart() {}\n");
     workspace.write(
         "site/index.html",
@@ -159,40 +210,7 @@ fn inline_handlers_resolve_exact_local_classic_script_providers() {
 
 #[cfg(feature = "lang-typescript")]
 #[test]
-fn inline_handler_provider_rebinding_fails_closed_after_exact_declaration() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
-    let script = "function openCart() {}\nopenCart = unknown;\n";
-    workspace.write("site/assets/cart.js", script);
-    let extracted = ExtractorHarness::for_lang("javascript")
-        .at_path("site/assets/cart.js")
-        .extract(script);
-    assert!(
-        extracted.nodes.iter().any(|node| {
-            let details = crate::common::assertions::projected_node_details(&extracted, node);
-            node.kind == "module"
-                && details["rebindings"]
-                    .as_array()
-                    .is_some_and(|bindings| bindings.iter().any(|binding| binding == "openCart"))
-        }),
-        "the indexed module records the AST binding write"
-    );
-    workspace.write(
-        "site/index.html",
-        "<script src='./assets/cart.js'></script><button onclick='openCart()'>Cart</button>\n",
-    );
-    workspace.build();
-    let conn = workspace.open();
-    let status: String = query_scalar(&conn, "SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id WHERE pd.path='site/index.html' AND ce.expression='openCart'", []);
-    assert_eq!(
-        status, "unresolved",
-        "the call target is rebound after the indexed declaration"
-    );
-    commitments::verify(&conn).unwrap();
-}
-
-#[cfg(feature = "lang-typescript")]
-#[test]
-fn included_inline_handlers_follow_only_unique_prior_classic_scripts() {
+fn included_handler_provider_scope() {
     let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write("site/assets/cart.js", "function openCart() {}\n");
     workspace.write("site/assets/other.js", "function openCart() {}\n");
@@ -241,66 +259,6 @@ fn included_inline_handlers_follow_only_unique_prior_classic_scripts() {
         "site/late.html",
         "{% include 'parts/late.html' %}\n<script src='./assets/cart.js'></script>\n",
     );
-    workspace.build();
-    let status = |conn: &rusqlite::Connection, name: &str| -> String {
-        query_scalar(conn, "SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id WHERE pd.path=?1 AND ce.expression='openCart'", [format!("site/parts/{name}.html")])
-    };
-    let conn = workspace.open();
-    for (name, expected) in [
-        ("unique", "resolved"),
-        ("ambiguous", "ambiguous"),
-        ("async", "unresolved"),
-        ("shared", "ambiguous"),
-        ("same_line", "unresolved"),
-        ("late", "unresolved"),
-    ] {
-        assert_eq!(status(&conn, name), expected, "{name}");
-    }
-    commitments::verify(&conn).unwrap();
-    drop(conn);
-    workspace.write(
-        "site/unique.html",
-        "<script async src='./assets/cart.js'></script>\n{% include 'parts/unique.html' %}\n",
-    );
-    workspace.delta(&["site/unique.html"]);
-    let delta = workspace.open();
-    let cold = crate::languages::support::fresh_cold(&workspace);
-    assert_eq!(status(&delta, "unique"), "unresolved");
-    for name in [
-        "unique",
-        "ambiguous",
-        "async",
-        "shared",
-        "same_line",
-        "late",
-    ] {
-        assert_eq!(status(&delta, name), status(&cold, name), "{name}");
-    }
-    commitments::verify(&delta).unwrap();
-    commitments::verify(&cold).unwrap();
-    drop(delta);
-    drop(cold);
-    workspace.write(
-        "site/second.html",
-        "<script async src='./assets/other.js'></script>\n{% include 'parts/shared.html' %}\n",
-    );
-    workspace.delta(&["site/second.html"]);
-    let delta = workspace.open();
-    let cold = crate::languages::support::fresh_cold(&workspace);
-    assert_eq!(
-        status(&delta, "shared"),
-        "unresolved",
-        "one include parent lacks a proven provider"
-    );
-    assert_eq!(status(&delta, "shared"), status(&cold, "shared"));
-    commitments::verify(&delta).unwrap();
-    commitments::verify(&cold).unwrap();
-}
-
-#[cfg(feature = "lang-typescript")]
-#[test]
-fn included_inline_handlers_respect_manifest_scope_and_bounded_ancestry() {
-    let workspace = crate::languages::PersistedWorkspaceHarness::new();
     workspace.write(
         "site/package.json",
         "{\"name\":\"site\",\"version\":\"1.0.0\"}\n",
@@ -338,14 +296,100 @@ fn included_inline_handlers_respect_manifest_scope_and_bounded_ancestry() {
         "<button onclick='openCart()'>Cart</button>\n",
     );
     workspace.build();
+    let status = |conn: &rusqlite::Connection, name: &str| -> String {
+        query_scalar(conn, "SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id WHERE pd.path=?1 AND ce.expression='openCart'", [name])
+    };
+    let cases = [
+        (
+            "included_inline_handlers_follow_only_unique_prior_classic_scripts",
+            "site/parts/unique.html",
+            "resolved",
+        ),
+        (
+            "included_inline_handlers_follow_only_unique_prior_classic_scripts",
+            "site/parts/ambiguous.html",
+            "ambiguous",
+        ),
+        (
+            "included_inline_handlers_follow_only_unique_prior_classic_scripts",
+            "site/parts/async.html",
+            "unresolved",
+        ),
+        (
+            "included_inline_handlers_follow_only_unique_prior_classic_scripts",
+            "site/parts/shared.html",
+            "ambiguous",
+        ),
+        (
+            "included_inline_handlers_follow_only_unique_prior_classic_scripts",
+            "site/parts/same_line.html",
+            "unresolved",
+        ),
+        (
+            "included_inline_handlers_follow_only_unique_prior_classic_scripts",
+            "site/parts/late.html",
+            "unresolved",
+        ),
+        (
+            "included_inline_handlers_respect_manifest_scope_and_bounded_ancestry",
+            "site/sub/child.html",
+            "unresolved",
+        ),
+        (
+            "included_inline_handlers_respect_manifest_scope_and_bounded_ancestry",
+            "site/chain15.html",
+            "resolved",
+        ),
+        (
+            "included_inline_handlers_respect_manifest_scope_and_bounded_ancestry",
+            "site/chain17.html",
+            "unresolved",
+        ),
+    ];
     let conn = workspace.open();
-    for (path, expected) in [
-        ("site/sub/child.html", "unresolved"),
-        ("site/chain15.html", "resolved"),
-        ("site/chain17.html", "unresolved"),
-    ] {
-        let status: String = query_scalar(&conn, "SELECT rc.status FROM resolution_coverage rc JOIN path_dictionary pd ON pd.path_id=rc.path_id JOIN coverage_expressions ce ON ce.expression_id=rc.expression_id WHERE pd.path=?1 AND ce.expression='openCart'", [path]);
-        assert_eq!(status, expected, "{path}");
+    for (case_id, path, expected) in cases {
+        assert_eq!(status(&conn, path), expected, "{case_id}: {path}");
     }
     commitments::verify(&conn).unwrap();
+    drop(conn);
+    for (changed, source, restored, affected) in [
+        (
+            "site/unique.html",
+            "<script async src='./assets/cart.js'></script>\n{% include 'parts/unique.html' %}\n",
+            "<script src='./assets/cart.js'></script>\n{% include 'parts/unique.html' %}\n",
+            "site/parts/unique.html",
+        ),
+        (
+            "site/second.html",
+            "<script async src='./assets/other.js'></script>\n{% include 'parts/shared.html' %}\n",
+            "<script src='./assets/other.js'></script>\n{% include 'parts/shared.html' %}\n",
+            "site/parts/shared.html",
+        ),
+    ] {
+        for (source, changed_provider) in [(source, true), (restored, false)] {
+            workspace.write(changed, source);
+            workspace.delta(&[changed]);
+            let delta = workspace.open();
+            let cold = crate::languages::support::fresh_cold(&workspace);
+            for (case_id, path, expected) in cases {
+                let expected = if changed_provider && path == affected {
+                    "unresolved"
+                } else {
+                    expected
+                };
+                assert_eq!(
+                    status(&delta, path),
+                    expected,
+                    "{case_id}: {changed}: {path}"
+                );
+                assert_eq!(
+                    status(&delta, path),
+                    status(&cold, path),
+                    "{case_id}: {path}"
+                );
+            }
+            commitments::verify(&delta).unwrap();
+            commitments::verify(&cold).unwrap();
+        }
+    }
 }

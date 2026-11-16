@@ -988,7 +988,8 @@ fn render_search_item(output: &mut String, item: &Value, path: &str, index: usiz
         let mut pulse_block = String::new();
         if let Some(callers) = pulse.get("callers") {
             let count = callers.get("count").and_then(Value::as_u64);
-            let unavailable = callers.get("availability").and_then(Value::as_str) == Some("unavailable");
+            let unavailable =
+                callers.get("availability").and_then(Value::as_str) == Some("unavailable");
             if count.is_some_and(|c| c > 0) || unavailable {
                 pulse_block.push_str(&format!(
                     "  - callers: {}\n",
@@ -1028,7 +1029,9 @@ fn render_search_item(output: &mut String, item: &Value, path: &str, index: usiz
                     "  - test discovery: {} (not a verified call path)\n",
                     escape_text(method)
                 )),
-                None if tests.get("availability").and_then(Value::as_str) == Some("unavailable") => {
+                None if tests.get("availability").and_then(Value::as_str)
+                    == Some("unavailable") =>
+                {
                     pulse_block.push_str("  - verified covering tests: unavailable\n");
                 }
                 _ => {}

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn milestone_specification_parses_typed_deferred_defects_block() {
     let spec = include_str!("../../fixtures/milestones/deferred_defects.md");
-    let milestone = Milestone::parse(spec, "forge-mcp").unwrap();
+    let milestone = Milestone::parse(spec, "acdd").unwrap();
     assert_eq!(milestone.deferred_defects.len(), 3);
     assert_eq!(milestone.deferred_defects[0].id, "DEFECT-FRONTMATTER");
     assert_eq!(milestone.deferred_defects[0].source, "task_blackboard");

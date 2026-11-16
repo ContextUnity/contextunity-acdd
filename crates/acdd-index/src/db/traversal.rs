@@ -500,7 +500,7 @@ fn collect_change_snapshot(
         |row| row.get(0),
     )?;
     let mut fingerprint = Sha256::new();
-    fingerprint.update(b"forge-impact-git-change-view-v1");
+    fingerprint.update(b"acdd-impact-git-change-view-v1");
     append_fingerprint(&mut fingerprint, graph_generation.as_bytes());
     append_fingerprint(&mut fingerprint, mode.as_bytes());
     append_fingerprint(&mut fingerprint, path_scope.unwrap_or("").as_bytes());

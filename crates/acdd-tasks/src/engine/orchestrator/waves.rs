@@ -780,7 +780,7 @@ fn run_isolated_task(
                 .context("MILESTONE_CLOCK_INVALID")?
         ))
     );
-    let branch = format!("forge-wave-{}", &token[..24]);
+    let branch = format!("acdd-wave-{}", &token[..24]);
     let path = crate::fs::checked_child(root, Path::new(&format!(".worktrees/{branch}")))?;
     ensure!(
         !path.exists(),
