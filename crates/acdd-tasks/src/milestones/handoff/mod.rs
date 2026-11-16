@@ -32,6 +32,26 @@ fn full_git_sha(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+// Filter by task identity before resolving a profile: unrelated milestones may
+// use different gate graphs in the same database. Identity also catches rows
+// whose milestone_ref has been relocated or corrupted.
+fn handoff_tasks(store: &TasksStore, prefix: &str) -> Result<Vec<Task>> {
+    let _snapshot = crate::db::tasks_store::recovery::read_snapshot(&store.connection)?;
+    let mut statement = store.connection.prepare(
+        "SELECT descriptor FROM tasks WHERE substr(task_id,1,length(?1))=?1 ORDER BY milestone_ref,task_id",
+    )?;
+    let descriptors = statement
+        .query_map([prefix], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut tasks = Vec::with_capacity(descriptors.len());
+    for descriptor in descriptors {
+        let mut task: Task = serde_json::from_str(&descriptor)?;
+        store.resolve_runtime_task(&mut task)?;
+        tasks.push(task);
+    }
+    Ok(tasks)
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HandoffJournal {
@@ -167,11 +187,8 @@ fn resume_journal(
     integration::configure_checkpoint_owners(&mut store, root)?;
     let owners = active_proof_owners(root, &store, &identity)?;
     let prefix = format!("{}/{}:", journal.binding.project, journal.binding.milestone);
-    let stored = store.list(None, "all", None)?;
-    let relevant = stored
-        .iter()
-        .filter(|task| task.task_id.starts_with(&prefix))
-        .collect::<Vec<_>>();
+    let stored = handoff_tasks(&store, &prefix)?;
+    let relevant = stored.iter().collect::<Vec<_>>();
     let relocated = !settings.handoff_pruning
         && relevant.len() == journal.tasks.len()
         && relevant.iter().all(|task| {
@@ -608,13 +625,8 @@ fn retry_handoff(
     };
     let relocated = !settings.handoff_pruning
         && valid
-        && store
-            .list(None, "all", None)?
+        && handoff_tasks(&store, &format!("{}/{}:", item.project, item.id))?
             .iter()
-            .filter(|task| {
-                task.task_id
-                    .starts_with(&format!("{}/{}:", item.project, item.id))
-            })
             .all(|task| {
                 task.milestone_ref == archive_ref
                     && matches!(task.status.as_str(), "completed" | "cancelled")

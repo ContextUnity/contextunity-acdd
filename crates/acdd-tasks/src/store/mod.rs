@@ -1844,20 +1844,9 @@ impl TasksStore {
             if !self.task_id_in_project(&task.task_id) {
                 continue;
             }
-            let profile = self.profile_for_task(&task)?;
-            self.set_runtime_gate(&mut task, &profile)?;
+            let profile = self.resolve_runtime_task(&mut task)?;
             if let Some(requested) = stage {
                 known_stage |= profile.index_of(requested).is_some();
-            }
-            if task.status == "ready"
-                && !dependencies_ready(
-                    &self.connection,
-                    &task.task_id,
-                    &self.repository,
-                    self.workspace_root.as_deref(),
-                )?
-            {
-                task.status = "blocked".into();
             }
             if status != "all" && task.status != status {
                 continue;
@@ -1881,6 +1870,25 @@ impl TasksStore {
             }
         }
         Ok(result)
+    }
+
+    pub(crate) fn resolve_runtime_task(
+        &self,
+        task: &mut Task,
+    ) -> Result<std::sync::Arc<crate::tasks::profile::GateProfile>> {
+        let profile = self.profile_for_task(task)?;
+        self.set_runtime_gate(task, &profile)?;
+        if task.status == "ready"
+            && !dependencies_ready(
+                &self.connection,
+                &task.task_id,
+                &self.repository,
+                self.workspace_root.as_deref(),
+            )?
+        {
+            task.status = "blocked".into();
+        }
+        Ok(profile)
     }
     /// Returns the first accepted claim time for one milestone.
     pub fn earliest_claim(&self, milestone_prefix: &str) -> Result<Option<i64>> {

@@ -864,6 +864,10 @@ archive in `HEAD` uses the same evidence, candidate, and target-base validation 
 cleanup. Missing archive authority returns `HANDOFF_ARCHIVE_INVALID` with recovery
 guidance. A completed archived handoff with valid integration evidence is an idempotent
 success, including project-level pruning opt-out after relocation.
+Readiness checks, journal replay and archived retries select task identities for
+the target milestone before resolving their profiles. Tasks belonging to another
+milestone do not need to use the target milestone's gate graph. Target tasks still
+block handoff when incomplete, including tasks with a mismatched manifest path.
 
 The milestone Engineering Telemetry Passport is persisted in `handoff.passport`.
 It contains duration, task counts,

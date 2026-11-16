@@ -3,6 +3,112 @@ mod harness;
 use harness::{NativeHandoffHarness, ACTIVE, ARCHIVE};
 
 #[test]
+fn handoff_and_retry_ignore_foreign_profile_stage() {
+    let mut fixture = NativeHandoffHarness::new().unwrap();
+    let config = fixture.root().join("acdd.yaml");
+    let contents = fs::read_to_string(&config).unwrap();
+    fs::write(&config, format!("{contents}handoff_pruning: false\n")).unwrap();
+    for args in [
+        vec!["add", "acdd.yaml"],
+        vec!["commit", "-m", "retain handoff history"],
+    ] {
+        assert!(crate::core::git::git_command(fixture.root(), &args)
+            .unwrap()
+            .status
+            .success());
+    }
+    fixture.base = fixture.head().unwrap();
+    for (index, spec) in fixture.milestone.tasks.iter().enumerate() {
+        fixture.write_shared_value(index + 1).unwrap();
+        fixture
+            .complete_task(&fixture.milestone.task_id(spec))
+            .unwrap();
+    }
+    let store = fixture.store().unwrap();
+    let mut foreign = store.list(None, "all", None).unwrap()[0].clone();
+    // A target task with a mismatched path must still prevent handoff: identity,
+    // not the mutable manifest path, is the ownership boundary.
+    let mut rogue = foreign.clone();
+    rogue.task_id = "forge-mcp/m-native-shared:rogue".into();
+    rogue.milestone_ref = "docs/milestones/elsewhere.md".into();
+    rogue.status = "in_progress".into();
+    rogue.receipt = None;
+    store
+        .connection
+        .execute(
+            "INSERT INTO tasks(task_id,milestone_ref,descriptor) VALUES(?1,?2,?3)",
+            rusqlite::params![
+                rogue.task_id,
+                rogue.milestone_ref,
+                serde_json::to_string(&rogue).unwrap()
+            ],
+        )
+        .unwrap();
+    let error = handoff_context(fixture.root(), "m-native-shared", &fixture.base).unwrap_err();
+    assert!(error.to_string().contains("incomplete tasks"), "{error:#}");
+    store
+        .connection
+        .execute("DELETE FROM tasks WHERE task_id=?1", [&rogue.task_id])
+        .unwrap();
+    foreign.task_id = "forge-mcp/foreign-milestone:task".into();
+    foreign.milestone_ref = "docs/milestones/foreign.md".into();
+    foreign.stage = "foreign_profile_only_stage".into();
+    foreign.status = "in_progress".into();
+    foreign.authority_snapshot = None;
+    foreign.receipt = None;
+    let descriptor = serde_json::to_string(&foreign).unwrap();
+    store
+        .connection
+        .execute(
+            "INSERT INTO tasks(task_id,milestone_ref,descriptor) VALUES(?1,?2,?3)",
+            rusqlite::params![foreign.task_id, foreign.milestone_ref, descriptor],
+        )
+        .unwrap();
+    drop(store);
+    let root = fixture.root();
+    let context = handoff_context(root, "m-native-shared", &fixture.base).unwrap();
+    let observed = execute_milestone_verification(root, "m-native-shared", &fixture.base).unwrap();
+    let evidence = NativeHandoffHarness::evidence(
+        &context,
+        &fixture.base,
+        NativeHandoffHarness::observed_verification(&observed["verification"]).unwrap(),
+    )
+    .unwrap();
+    // Abort the actual prune after journal creation, then resume with the same
+    // foreign task still present. This reaches journal replay, not just an
+    // already-archived idempotent retry.
+    let store = fixture.store().unwrap();
+    store.connection.execute_batch(
+        "CREATE TRIGGER stop_target_prune BEFORE UPDATE OF milestone_ref ON tasks \
+         WHEN substr(OLD.task_id,1,length('forge-mcp/m-native-shared:')) = 'forge-mcp/m-native-shared:' \
+              AND NEW.milestone_ref = 'docs/milestones/archive/010-native-shared.md' \
+         BEGIN SELECT RAISE(ABORT, 'injected prune failure'); END;",
+    ).unwrap();
+    drop(store);
+    let error = handoff(root, "m-native-shared", None, &evidence).unwrap_err();
+    assert!(format!("{error:#}").contains("injected prune failure"));
+    assert!(journal_path(root, &evidence.binding).unwrap().exists());
+    let store = fixture.store().unwrap();
+    store
+        .connection
+        .execute_batch("DROP TRIGGER stop_target_prune;")
+        .unwrap();
+    drop(store);
+    handoff(root, "m-native-shared", None, &evidence).unwrap();
+    handoff(root, "m-native-shared", None, &evidence).unwrap();
+    let store = fixture.store().unwrap();
+    let retained: String = store
+        .connection
+        .query_row(
+            "SELECT descriptor FROM tasks WHERE task_id=?1",
+            [&foreign.task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, descriptor);
+}
+
+#[test]
 fn handoff_accepts_completed_reviewed_shared_scope() {
     // Direct calls retain the native public handoff seam in the static index.
     let fixture = NativeHandoffHarness::new().unwrap();

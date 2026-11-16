@@ -312,12 +312,8 @@ pub(super) fn ready_milestone(
     let mut store = TasksStore::open_project(&db, &item.repository, &item.project)?;
     store.set_profile(crate::core::tasks::profile::load_for_workspace(root)?);
     store.set_workspace_root(root);
-    let stored = store.list(None, "all", None)?;
     let prefix = format!("{}/{}:", item.project, item.id);
-    let relevant: Vec<_> = stored
-        .into_iter()
-        .filter(|task| task.task_id.starts_with(&prefix))
-        .collect();
+    let relevant = handoff_tasks(&store, &prefix)?;
     let mut incomplete = Vec::new();
     for spec in &item.tasks {
         let task_ref = spec["task_ref"].as_str().context("task_ref missing")?;
