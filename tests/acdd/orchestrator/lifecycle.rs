@@ -849,7 +849,7 @@ fn task_run_recovers_first_self_rejections_with_fresh_sessions() {
     let options = h.options.clone();
     let mut build_session = None;
     let result = run_task_lifecycle(&root, &task_id, &options, &mut |event| {
-        if matches!(event, OrchestratorEvent::RunnerExited { ref stage, .. } if stage == "contract")
+        if matches!(event, OrchestratorEvent::RunnerExited { ref stage, .. } if stage == "contract_review")
         {
             let claim = h.task.claim_next().unwrap();
             let evidence = h.task.evidence_for_gate(&claim).unwrap();

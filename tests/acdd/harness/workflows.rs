@@ -449,7 +449,7 @@ fn shipped_polish_workflows_validate_and_reject_invalid_definitions() {
         let source = std::fs::read_to_string(root.join(path)).unwrap();
         let runner = "    runner: 'codex exec -C \"{worktree}\" -m \"{model}\" -c model_reasoning_effort=\"{reasoning}\" \"{prompt}\"'\n";
         for (name, changed, execute) in [
-            ("save", source.replace("save: none", "save: log"), false),
+            ("save", source.replace("save: none", "save: commit"), false),
             ("runner", source.replacen(runner, "", 1), true),
             (
                 "independence",

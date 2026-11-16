@@ -998,7 +998,7 @@ fn glob_match_bytes(pattern: &[u8], path: &[u8]) -> bool {
 }
 
 /// Definition of an ACDD lifecycle gate.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct GateDef {
     /// Stable stage identifier persisted in each task.
@@ -1093,6 +1093,40 @@ pub struct GateDef {
     #[doc(hidden)]
     #[serde(skip)]
     pub explicit_fields: BTreeSet<String>,
+}
+
+impl PartialEq for GateDef {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.role == other.role
+            && self.command == other.command
+            && self.gates == other.gates
+            && self.tasks == other.tasks
+            && self.use_template == other.use_template
+            && self.when == other.when
+            && self.declared_when == other.declared_when
+            && self.proof == other.proof
+            && self.tools == other.tools
+            && self.steps == other.steps
+            && self.guidance == other.guidance
+            && self.policy == other.policy
+            && self.symbols == other.symbols
+            && self.reject_routing == other.reject_routing
+            && self.persistence == other.persistence
+            && self.expected_failure == other.expected_failure
+            && self.max_attempts == other.max_attempts
+            && self.receipt == other.receipt
+            && self.absorb_working_tree == other.absorb_working_tree
+            && self.independent_from == other.independent_from
+            && self.receipt_review == other.receipt_review
+            && self.reject_to == other.reject_to
+            && self.on_fail == other.on_fail
+            && self.on_success == other.on_success
+            && self.review_sources == other.review_sources
+            && self.contours == other.contours
+            && self.sha_snapshot == other.sha_snapshot
+            && self.auto_commit == other.auto_commit
+    }
 }
 
 /// Runtime driver selected by the polymorphic gate field matrix.
@@ -1226,9 +1260,25 @@ impl GateProfile {
 
 struct ParsedProfile {
     profile: GateProfile,
-    inherit_defaults: bool,
+    inherit: InheritTarget,
     commands_declared: bool,
+    limit_fields: BTreeSet<String>,
 }
+
+/// The source of a profile's inherited configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InheritTarget {
+    /// Do not inherit another profile.
+    None,
+    /// Inherit the embedded default profile.
+    Default,
+    /// Inherit the active workspace resources.
+    Workspace,
+    /// Inherit resources from a workspace-relative profile.
+    Path(std::path::PathBuf),
+}
+
+pub use load::resolve_effective_workflow_profile;
 
 /// Parse an ACDD profile YAML document. Validation is applied after overrides merge.
 pub fn parse_profile(yaml_str: &str) -> Result<GateProfile> {
@@ -1238,10 +1288,14 @@ pub fn parse_profile(yaml_str: &str) -> Result<GateProfile> {
 /// Merge and validate one profile document against the embedded base profile.
 pub fn validate_profile_document(yaml_str: &str) -> Result<GateProfile> {
     let document = parse_profile_document(yaml_str)?;
-    let mut profile = if document.inherit_defaults {
+    let mut profile = if document.inherit == InheritTarget::Default {
         (*compiled()).clone()
-    } else {
+    } else if document.inherit == InheritTarget::None {
         GateProfile::default()
+    } else {
+        bail!(
+            "ACDD_PROFILE_SCHEMA_INVALID: workspace or path inheritance requires a workspace root"
+        )
     };
     merge_profile_document(&mut profile, document);
     profile.validate()?;
@@ -1320,7 +1374,54 @@ pub fn apply_config_metadata_limit(
     Ok(Arc::new(profile))
 }
 
-/// Split a pinned profile reference into a relative path and optional SHA prefix.
+/// Resolve a selected profile reference using workspace inheritance and configuration limits.
+pub fn load_selected_profile(
+    root: &Path,
+    reference: &str,
+    config: Option<&Path>,
+) -> Result<Arc<GateProfile>> {
+    let mut base = (*compiled()).clone();
+    let mut profile = if reference == "plan" {
+        let local = Path::new("docs/workflows/plan.workflow.yaml");
+        let candidate = crate::tasks::confined_path(root, ".acdd/plan.workflow.yaml")?;
+        let local_path = crate::tasks::confined_path(root, &local.to_string_lossy())?;
+        let (path, source) = if candidate.is_file() {
+            (
+                Path::new(".acdd/plan.workflow.yaml"),
+                std::fs::read_to_string(candidate)?,
+            )
+        } else if local_path.is_file() {
+            (local, std::fs::read_to_string(local_path)?)
+        } else {
+            (local, "version: 2\ninherit: workspace\nsave: snapshot\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          proof: none\n        - id: review\n          role: independent_reviewer\n          independent_from: build\n          fail: build\n          proof: none\n        - id: deliver\n          receipt: true\n          save: snapshot\n          auto_commit: false\n".to_owned())
+        };
+        resolve_effective_workflow_profile(root, path, &source)?
+    } else {
+        let document = load_profile_path(root, reference, false)?;
+        if matches!(
+            document.inherit,
+            InheritTarget::Workspace | InheritTarget::Path(_)
+        ) {
+            let (path, _) = parse_profile_reference(reference, false)?;
+            let source = std::fs::read_to_string(crate::tasks::confined_path(
+                root,
+                &path.to_string_lossy(),
+            )?)?;
+            resolve_effective_workflow_profile(root, &path, &source)?
+        } else {
+            merge_profile_document(&mut base, document);
+            base
+        }
+    };
+    if let Some(path) = config.filter(|path| path.is_file()) {
+        if let Some(limit) = parse_config_metadata_limit(path)?.1 {
+            profile.limits.max_metadata_bytes = limit;
+        }
+    }
+    profile.validate()?;
+    Ok(Arc::new(profile))
+}
+
 /// Resolve workspace profile links and repository defaults, then validate the merged profile.
 pub fn load_for_workspace(root: &Path) -> Result<Arc<GateProfile>> {
     if let Some(settings) = crate::tasks::configuration::current(root) {
@@ -1345,12 +1446,7 @@ pub fn load_for_workspace(root: &Path) -> Result<Arc<GateProfile>> {
             let reference = reference
                 .as_str()
                 .context("acdd_profile in acdd.yaml must be a relative file path string")?;
-            merge_profile_document(&mut base, load_profile_path(root, reference, false)?);
-            if let Some(meta) = acdd_max_metadata_bytes {
-                base.limits.max_metadata_bytes = meta;
-            }
-            base.validate()?;
-            return Ok(Arc::new(base));
+            return load_selected_profile(root, reference, Some(&acdd_config));
         }
     }
     let repository_profile = crate::tasks::confined_path(root, ".acdd/profile.yaml")?;
@@ -1359,6 +1455,16 @@ pub fn load_for_workspace(root: &Path) -> Result<Arc<GateProfile>> {
             .with_context(|| format!("failed to read {}", repository_profile.display()))?;
         let document = parse_profile_document(&text)
             .with_context(|| format!("invalid profile in {}", repository_profile.display()))?;
+        if document.inherit == InheritTarget::Workspace {
+            bail!("ACDD_PROFILE_INVALID: root workspace profile cannot inherit itself");
+        }
+        if matches!(document.inherit, InheritTarget::Path(_)) {
+            return Ok(Arc::new(resolve_effective_workflow_profile(
+                root,
+                Path::new(".acdd/profile.yaml"),
+                &text,
+            )?));
+        }
         merge_profile_document(&mut base, document);
     }
     if let Some(meta) = acdd_max_metadata_bytes {

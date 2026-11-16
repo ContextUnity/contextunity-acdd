@@ -152,11 +152,14 @@ fn transition_runner_compiles_proofs_and_covers_all_task3_subtasks() {
         Some("test-session-contract-author"),
     );
     let zero_arg_submit_ok = submitted.as_ref().is_ok_and(|response| {
-        response["stage"] == "build"
+        response["stage"] == "contract_review"
             && store
                 .inspect(task_id)
-                .is_ok_and(|task| task.stage == "build")
+                .is_ok_and(|task| task.stage == "contract_review")
     });
+    crate::acdd::tasks::harness::TaskHarness::attach(&root, task_id)
+        .advance_to("build")
+        .unwrap();
     store
         .claim(
             task_id,

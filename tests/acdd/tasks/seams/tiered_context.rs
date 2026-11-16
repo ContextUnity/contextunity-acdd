@@ -328,6 +328,9 @@ fn tiered_task_context_enforces_indexed_seams_and_signature_boundaries() {
                 TaskHarness::pass_request(task_id, "contract", &proof),
             )
             .unwrap();
+            TaskHarness::attach(root, task_id)
+                .advance_to("build")
+                .unwrap();
             claim = TaskHarness::claim_at(root.root(), task_id, "build", "builder").unwrap();
             if !claim["workflow_guidance"]["blackboard_messages"]
                 .as_array()

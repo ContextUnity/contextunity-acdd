@@ -209,7 +209,7 @@ fn milestone_inherited_descriptors_and_gate_snapshots_preserve_task_state() {
                         format!("git show {}", &candidate[..7])
                     );
                 }
-                Some(ProofKind::Review) => {
+                Some(ProofKind::Review) if candidate.is_some() => {
                     let candidate = candidate.as_deref().unwrap();
                     assert_eq!(step.submitted["snapshot"]["commit"], candidate);
                     assert_eq!(

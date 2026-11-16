@@ -87,7 +87,7 @@ fn command_submit_validates_evidence_and_uses_cli_mcp_cache() {
             json!({"task_id":id, "stage":"contract", "action":"pass", "timeout_seconds":5}),
         )
         .expect("MCP payload should succeed");
-    assert_eq!(submitted["stage"], "build", "{submitted}");
+    assert_eq!(submitted["stage"], "contract_review", "{submitted}");
     assert_eq!(
         fs::read_to_string(root.root().join(".acdd/counter")).unwrap(),
         "run"

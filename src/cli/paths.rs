@@ -68,23 +68,18 @@ impl ResolvedPaths {
         };
         let loaded = match selected {
             Some(reference) => {
-                let (relative, pin) = profile::parse_profile_reference(&reference, false)?;
-                let path = confined_file(root, &relative)?;
-                let profile = if pin.is_some() {
-                    profile::load_pinned_over(root, &reference, &profile::compiled())?
-                } else {
-                    Arc::new(profile::validate_profile_document(&fs::read_to_string(
-                        path,
-                    )?)?)
-                };
-                profile::apply_config_metadata_limit(config.as_deref(), (*profile).clone())?
+                if reference != "plan" {
+                    let (relative, _) = profile::parse_profile_reference(&reference, false)
+                        .context("CLI_PATH_INVALID: invalid profile reference")?;
+                    confined_file(root, &relative)?;
+                }
+                profile::load_selected_profile(root, &reference, config.as_deref())?
             }
             None if explicit_config => {
                 let repository = root.join(".acdd/profile.yaml");
                 let profile = if repository.exists() {
-                    Arc::new(profile::validate_profile_document(&fs::read_to_string(
-                        confined_file(root, &repository)?,
-                    )?)?)
+                    confined_file(root, &repository)?;
+                    profile::load_selected_profile(root, ".acdd/profile.yaml", config.as_deref())?
                 } else {
                     profile::compiled()
                 };

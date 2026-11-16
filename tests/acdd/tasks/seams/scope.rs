@@ -127,7 +127,7 @@ None,
         );
         if phase == "stub_indexed" {
             result.expect("indexed real production stub must permit red contract proof");
-            assert_eq!(store.inspect(task_id).unwrap().stage, "build");
+            assert_eq!(store.inspect(task_id).unwrap().stage, "contract_review");
             continue;
         }
         let error = result.unwrap_err().to_string();

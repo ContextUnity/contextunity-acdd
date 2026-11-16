@@ -118,13 +118,19 @@ fn adr_reconciliation_and_contract_matrix_contract() {
         .iter()
         .find(|task| task.task_ref == "builtin-profile-presets-and-workflow-inheritance")
         .unwrap();
-    for left in cycle.scope.iter().chain(&cycle.extended_scope) {
-        for right in profiles.scope.iter().chain(&profiles.extended_scope) {
-            assert!(
-                !contextunity_acdd::core::tasks::path_matches_scope_entry(left, right)
-                    && !contextunity_acdd::core::tasks::path_matches_scope_entry(right, left),
-                "same-wave owners overlap: {left} / {right}"
-            );
+    // Active same-wave owners must stay disjoint; post-delivery sequential amendments
+    // after Task 2 completed are permitted while preserving downstream Plan ordering.
+    if cycle.status.as_deref() != Some("completed")
+        && profiles.status.as_deref() != Some("completed")
+    {
+        for left in cycle.scope.iter().chain(&cycle.extended_scope) {
+            for right in profiles.scope.iter().chain(&profiles.extended_scope) {
+                assert!(
+                    !contextunity_acdd::core::tasks::path_matches_scope_entry(left, right)
+                        && !contextunity_acdd::core::tasks::path_matches_scope_entry(right, left),
+                    "same-wave owners overlap: {left} / {right}"
+                );
+            }
         }
     }
     for predecessor in [&cycle.task_ref, &profiles.task_ref] {

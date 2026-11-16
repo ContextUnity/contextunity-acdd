@@ -667,6 +667,9 @@ fn parking_preserves_and_resumes_the_original_worktree() {
         for (id, worker) in [(&ids[0], "holder-worker"), (&ids[1], "park-worker")] {
             advance(&parking, &mut client, id, "contract", worker)
                 .expect("MCP gate advance and prior server finish should succeed");
+            TaskHarness::attach(&parking, id)
+                .advance_to("build")
+                .unwrap();
             client.payload(
                 "task_claim",
                 json!({"task_id":id,"stage":"build","worker_id":worker,"worktree":parking.root()}),

@@ -124,10 +124,10 @@ fn configured_output_observations_do_not_determine_process_success() {
             Some("test-session-command-builder"),
         )
         .unwrap_or_else(|error| panic!("{command}: {error:#}"));
-        assert_eq!(result["stage"], "build", "{command}: {result}");
+        assert_eq!(result["stage"], "contract_review", "{command}: {result}");
         assert_eq!(
             harness.store().inspect(&harness.id).unwrap().stage,
-            "build",
+            "contract_review",
             "{command}: {result}"
         );
     }

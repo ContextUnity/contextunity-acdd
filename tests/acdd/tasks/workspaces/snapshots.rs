@@ -110,36 +110,47 @@ fn scoped_snapshot_delivery_and_handoff_controls() {
         "ready"
     );
     root.write("src/new_feature.rs", "pub fn added() -> usize { 42 }\n");
-    for (stage, worker) in [
-        ("contract", "contract-author"),
-        ("build", "builder"),
-        ("review", "independent-reviewer"),
-        ("deliver", "delivery-reviewer"),
-    ] {
-        TaskHarness::claim_at(root.root(), task_id, stage, worker).unwrap();
+    let harness = TaskHarness::attach(&root, task_id);
+    for gate in harness.executable_gates().unwrap() {
+        let stage = gate.id.as_str();
+        let worker = harness.worker_for_gate(&gate);
+        TaskHarness::claim_at(root.root(), task_id, stage, &worker).unwrap();
         let task = tasks::store(root.root()).unwrap().inspect(task_id).unwrap();
         let mut proof = TaskHarness::default_evidence(&task);
         proof.commit = None;
         if stage == "deliver" {
             root.write("src/new_feature.rs", "pub fn added() -> usize { 99 }\n");
-            let rejected = tasks::submit(
+            let drift = tasks::submit(
                 root.root(),
                 TaskHarness::pass_request(task_id, stage, &proof),
             )
-            .unwrap_err();
-            assert!(
-                rejected.to_string().contains("TASK_CANDIDATE_MISMATCH"),
-                "{rejected}"
+            .unwrap();
+            assert_eq!(drift["stage"], "build");
+            assert_eq!(drift["candidate_drift_warning"]["needs_verification"], true);
+            assert_eq!(
+                drift["candidate_drift_warning"]["needs_independent_review"],
+                true
             );
+            assert!(drift["candidate_drift_warning"]["changed_paths"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("src/new_feature.rs")));
             assert_eq!(
                 tasks::store(root.root())
                     .unwrap()
                     .inspect(task_id)
                     .unwrap()
                     .status,
-                "in_progress"
+                "ready"
             );
             root.write("src/new_feature.rs", "pub fn added() -> usize { 42 }\n");
+            TaskHarness::attach(&root, task_id)
+                .advance_to("deliver")
+                .unwrap();
+            TaskHarness::claim_at(root.root(), task_id, stage, &worker).unwrap();
+            let task = tasks::store(root.root()).unwrap().inspect(task_id).unwrap();
+            proof = TaskHarness::default_evidence(&task);
+            proof.commit = None;
         }
         let result = tasks::submit(
             root.root(),

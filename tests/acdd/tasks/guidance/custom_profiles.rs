@@ -57,18 +57,10 @@ fn inherited_default_task_claims_validate_proofs_across_lifecycle() {
         }
         drop(store);
         let h = TaskHarness::attach(&workspace, &id);
-        let stages: &[&str] = if seam {
-            &["contract", "build", "review", "seam.integrate"]
-        } else {
-            &["contract", "build", "review", "deliver"]
-        };
-        for stage in stages {
-            let worker = if *stage == "review" || *stage == "deliver" {
-                "reviewer"
-            } else {
-                "builder"
-            };
-            let claim = TaskHarness::claim_at(workspace.root(), &id, stage, worker)
+        for gate in h.executable_gates().unwrap() {
+            let stage = gate.id.as_str();
+            let worker = h.worker_for_gate(&gate);
+            let claim = TaskHarness::claim_at(workspace.root(), &id, stage, &worker)
                 .unwrap_or_else(|error| panic!("{stage}: {error:#}"));
             let task = h.store.inspect(&id).unwrap();
             let profile = h.store.profile_for_task(&task).unwrap();
@@ -121,7 +113,7 @@ fn inherited_default_task_claims_validate_proofs_across_lifecycle() {
                 format!("{error:#}").contains("TASK_EVIDENCE_INVALID"),
                 "{stage}: {error:#}"
             );
-            if *stage == "seam.integrate" {
+            if stage == "seam.integrate" {
                 let observed = tasks::verify_task(workspace.root(), &id, None).unwrap();
                 assert!(observed["error"]
                     .as_str()
@@ -136,7 +128,7 @@ fn inherited_default_task_claims_validate_proofs_across_lifecycle() {
             evidence.proof = proof;
             h.submit_evidence(&evidence)
                 .unwrap_or_else(|error| panic!("{stage}: {error:#}"));
-            if *stage == "contract" {
+            if stage == "contract" {
                 workspace.write(".acdd/runner_fixture_green", "");
             }
         }

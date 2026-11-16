@@ -97,24 +97,33 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     assert_eq!(
         explicit_review_commit_error,
         format!(
-            "TASK_CANDIDATE_MISMATCH: {task_id}. task '{task_id}'. supplied commit caller-selected-commit != candidate snapshot {build_snap}. Do: resubmit with commit {build_snap}."
+            "TASK_CANDIDATE_MISMATCH: {task_id}. supplied commit caller-selected-commit != candidate snapshot {build_snap}. Do: inspect task authority and retry with valid lifecycle inputs."
         )
     );
     root.write("src/new_feature.rs", "pub fn new_feature() -> i32 { 99 }\n");
     let stored = tasks::store(root.root()).unwrap().inspect(task_id).unwrap();
     let mut ev = TaskHarness::default_evidence(&stored);
     ev.commit = None;
-    let mismatch_err = submit!("review", &ev).unwrap_err();
+    let drift = submit!("review", &ev).unwrap();
+    assert_eq!(drift["stage"], "build");
+    assert_eq!(drift["candidate_drift_warning"]["needs_verification"], true);
     assert_eq!(
-        mismatch_err.to_string(),
-        format!(
-            "TASK_CANDIDATE_MISMATCH: {task_id}. task '{task_id}' diverged from snapshot {}. D src/new_feature.rs, ?? src/new_feature.rs. Do: restore those paths to snapshot {}.",
-            &build_snap[..7],
-            &build_snap[..7]
-        )
+        drift["candidate_drift_warning"]["needs_independent_review"],
+        true
     );
+    assert!(drift["candidate_drift_warning"]["changed_paths"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("src/new_feature.rs")));
     root.write("src/new_feature.rs", "pub fn new_feature() -> i32 { 42 }\n");
     drop(review_store);
+    TaskHarness::attach(&root, task_id)
+        .advance_to("review")
+        .unwrap();
+    TaskHarness::claim_at(root.root(), task_id, "review", "reviewer").unwrap();
+    ev = TaskHarness::default_evidence(
+        &tasks::store(root.root()).unwrap().inspect(task_id).unwrap(),
+    );
     // A post-validation ref lock forces publication to fail after SQL commit without replaying the gate.
     let keeper_lock = root
         .root()
@@ -253,18 +262,27 @@ fn scoped_git_snapshot_captures_untracked_and_modified_files_and_cleans_up_on_ha
     let stored = tasks::store(root.root()).unwrap().inspect(task_id).unwrap();
     let mut ev = TaskHarness::default_evidence(&stored);
     ev.commit = None;
-    let deliver_err = submit!("deliver", &ev).unwrap_err();
+    let drift = submit!("deliver", &ev).unwrap();
+    assert_eq!(drift["stage"], "build");
+    assert_eq!(drift["candidate_drift_warning"]["needs_verification"], true);
     assert_eq!(
-        deliver_err.to_string(),
-        format!(
-            "TASK_CANDIDATE_MISMATCH: {task_id}. task '{task_id}' diverged from snapshot {}. D src/new_feature.rs, ?? src/new_feature.rs. Do: restore those paths to snapshot {}.",
-            &build_snap[..7],
-            &build_snap[..7]
-        )
+        drift["candidate_drift_warning"]["needs_independent_review"],
+        true
     );
+    assert!(drift["candidate_drift_warning"]["changed_paths"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("src/new_feature.rs")));
 
     // Restore worktree to match candidate
     root.write("src/new_feature.rs", "pub fn new_feature() -> i32 { 42 }\n");
+    TaskHarness::attach(&root, task_id)
+        .advance_to("deliver")
+        .unwrap();
+    TaskHarness::claim_at(root.root(), task_id, "deliver", "delivery").unwrap();
+    ev = TaskHarness::default_evidence(
+        &tasks::store(root.root()).unwrap().inspect(task_id).unwrap(),
+    );
     let delivery_baseline = TaskHarness::verified_revision_text(root.root(), "HEAD").unwrap();
     let milestone_path = root.root().join("docs/milestones/010-test.md");
     let milestone_before_delivery = std::fs::read_to_string(&milestone_path).unwrap();

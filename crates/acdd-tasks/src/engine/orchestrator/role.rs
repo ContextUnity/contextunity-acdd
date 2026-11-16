@@ -476,7 +476,11 @@ print(json.dumps({'gate': context['gate'], 'session_id': context['session_id'], 
             role.runner = Some("python3 capture.py '{prompt}'".into());
         }
         let cursors = collect_cursors(&profile).unwrap();
-        assert_eq!(cursors.len(), 6);
+        assert_eq!(cursors.len(), 7);
+        assert!(cursors
+            .iter()
+            .any(|cursor| cursor.stage_id == "contract_review"
+                && cursor.gate.proof.kind() == Some(crate::tasks::profile::ProofKind::Review)));
         for cursor in cursors {
             let mut task = store.inspect(&id).unwrap();
             task.stage = cursor.stage_id.clone();

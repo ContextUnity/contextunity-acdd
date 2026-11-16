@@ -16,12 +16,21 @@ Unlike **Milestones** (formal contractual releases with `blueprint_synthesis`, t
 
 - **Zero Tasks**: The runner creates no task IDs or SQLite `tasks` rows.
 - **Zero Worktree Branching**: The runner uses the active workspace.
-- **Persistence**: Execution uses `save: none` (in memory); `save: log` and dedicated run logs are not implemented.
+- **Persistence**: `save: none` keeps observations in memory; `save: log` appends structured observations under `.acdd/`.
 - **Use Cases**: Continuous quality checks, polish loops, PR review automation, scheduled health audits, and lifecycle test suites.
 
 ## Example & Test Profiles
 
+The built-in `author-spec`, `author-plan`, `author-milestone`, `author-workflow`,
+and `code-quality-and-polish` workflows inherit workspace resources without
+importing its gate graph. A local `docs/workflows/<name>.workflow.yaml` takes
+precedence. The authoring examples below are self-contained local profiles; use
+`inherit: workspace` and omit local runner, model, and prompt settings to share
+the workspace's configuration. The `plan` profile preset uses snapshot persistence
+and can be overridden by `.acdd/plan.workflow.yaml` or
+`docs/workflows/plan.workflow.yaml`.
+
 - [code-quality-and-polish.workflow.yaml](code-quality-and-polish.workflow.yaml): Standalone `verify -> polish -> review` quality gate.
-- [test-workflow-lifecycle.workflow.yaml](test-workflow-lifecycle.workflow.yaml): Test profile specifying the pure taskless Workflow model (`save: log`, `fail: polish`).
+- [test-workflow-lifecycle.workflow.yaml](test-workflow-lifecycle.workflow.yaml): Test profile specifying the pure taskless Workflow model and repair routing.
 - [test-plan-lifecycle.workflow.yaml](test-plan-lifecycle.workflow.yaml): Test profile specifying the Plan in-place execution model (`save: snapshot`, strictly `tasks:` container).
 - [test-milestone-lifecycle.workflow.yaml](test-milestone-lifecycle.workflow.yaml): Test profile specifying the full 3-tier Milestone lifecycle (`blueprint_synthesis` $\to$ task DAG $\to$ `verify` / `polish` / `milestone_review` $\to$ `handoff`).

@@ -72,16 +72,16 @@ if kind in ("contract", "command", "seamtest"):
     forge("submit", task_id, "--stage", stage, "--action", "pass")
 elif kind == "review":
     evidence = guidance["expected_evidence_template"]
-    if (control / "corrupt-template").exists():
+    if stage == "review" and (control / "corrupt-template").exists():
         del evidence["proof"]["review_proof"]["decision"]
-    if (control / "wrong-wrapper").exists():
+    if stage == "review" and (control / "wrong-wrapper").exists():
         proof = evidence["proof"]
         key, = proof
         evidence["proof"] = {"wrong_proof": proof[key]}
     rejection_path = control / "reject.json"
     action = "pass"
     args = []
-    if rejection_path.exists():
+    if stage == "review" and rejection_path.exists():
         findings = json.loads(rejection_path.read_text())
         rejection_path.rename(control / "rejected.json")
         review = evidence["proof"]["review_proof"]

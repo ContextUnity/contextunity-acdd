@@ -33,6 +33,10 @@ proofs:
         - blackboard_decision_id
         - tasks
       properties:
+        ac_mapping: { type: array, items: { type: string } }
+        c2_boundary_impact: { type: string }
+        adr_required: { type: boolean }
+        sad_updates: { type: array, items: { type: string } }
         cited_invariants:
           type: array
           items:
@@ -180,7 +184,7 @@ roles:
     reuse_on_reject: true
     models:
       - 'sol-6.1:high'
-    guidance: "As contract author, lead architectural synthesis and implementation planning before writing tests. Do not reduce contracts to quick failing tests. Synthesize a concrete architectural plan: trace data flow, define typed invariants, specify negative boundaries, and establish compiling runtime-red seam tests (exit code 101/1/134) as executable proof of the architecture. For existing capabilities, extend table-driven cases additively; for distinct capabilities or contract boundaries, author dedicated, descriptively-named test functions. Never accumulate unrelated scenarios into monolithic test functions. Never modify protected files. Post a build-targeted draft for the builder."
+    guidance: "As contract author, lead architectural synthesis and implementation planning before writing tests. Follow test-contract-seam and test-suite-refactor discipline: trace data flow, define typed invariants and negative boundaries, assert exact error codes and structured payload fields instead of generic substring scans, parameterize homogeneous variants while deleting subsumed or duplicate bootstrap tests, guarantee deterministic resource teardown, and never assert vacuous placeholders ('air'), removed behavior, or bug-fitted workarounds. Ensure contract tests compile cleanly (for compiled languages) and fail strictly on runtime assertions. Never modify protected files. Post a build-targeted draft for the builder."
   builder:
     mode: subagent
     reuse_on_reject: true
@@ -192,7 +196,7 @@ roles:
     reuse_on_reject: true
     models:
       - 'sol-6.1:xhigh'
-    guidance: "Use a reviewer worker independent from the builder. Conduct a broad architectural audit and verify performance and quality invariants. Reject superficial workarounds, ad-hoc string heuristics (e.g. magic substring/path checks), parallel hardcoded lists, or patches designed merely to appease a test. Reject implementations that dump tests into monolithic functions instead of domain-decomposed tests. If an implementation requires repeated duct-tape fixes across review rounds, reject the architecture and require root-cause redesign. Submit review proof across contours, then claim and submit deliver in the same reviewer session."
+    guidance: "Use a reviewer worker independent from the builder. Conduct a broad architectural audit of both production code and every added or modified test (via test-suite-refactor criteria). Reject superficial workarounds, ad-hoc string heuristics, parallel hardcoded lists, uncollapsed test duplicates, generic substring assertions where exact codes or structured fields exist, missing negative boundaries, leaked temp resources, monolithic test functions, or tests pinning removed behavior, vacuous outputs ('air'), or bugs. If an implementation requires repeated duct-tape fixes across review rounds, reject the architecture and require root-cause redesign. Submit review proof across contours, then claim and submit deliver in the same reviewer session."
   architect:
     mode: subagent
     reuse_on_reject: true
@@ -217,16 +221,25 @@ guidance:
     description: "PRODUCTION-SEAM CONTRACT AUTHORING & RUNTIME-RED PROOF"
     criteria:
       - "ARCHITECTURAL BLUEPRINT & PLAN: Contract synthesis is an architectural planning phase, NOT merely authoring a failing test. Before writing code, analyze subsystem data flow, define typed invariants, document negative boundaries, and lay out the implementation steps."
-      - "SEAM VERIFICATION AS ARCHITECTURAL PROOF: The red seam test is the executable proof of the architectural contract. Ensure it compiles cleanly and fails at runtime on assertions (exit code 101/1/134) for contract gate proof."
-      - "PARAMETERIZED EXPANSION VS DEDICATED DOMAIN TESTS: Add parameterized test cases (e.g. table rows) ONLY when expanding input permutations for the same unit/capability. When testing distinct capabilities, tasks, or invariants, author separate, descriptively-named test functions in the appropriate domain module. NEVER accumulate unrelated subtask scenarios or review fixes into a monolithic test function."
-      - "SHARED READ-ONLY & IN-MEMORY FIXTURES: Share immutable read-only SQLite corpora via PersistedSnapshot in OnceLock (never static OnceLock<Workspace/TempDir>, which skips Drop and leaks temp dirs) and prove state/DAG rules in-memory; reserve heavy process or repository harness setup for genuine integration seams."
+      - "PRODUCTION-SEAM PROOF & EXACT ASSERTIONS: Prove invariants through real production entrypoints (test-contract-seam; no synthetic bypasses or mocked-out core logic). Assert exact error codes/variants and typed structured payload fields instead of generic serialized substring matching. Ensure contract tests compile cleanly (for compiled languages) and fail strictly on runtime assertions rather than build or syntax errors."
+      - "PARAMETERIZATION & SUBSUMPTION OF DUPLICATES: Collapse homogeneous input, alias, error, or boundary permutations into a single parameterized table-driven loop with shared immutable setup outside the loop (unless a row genuinely varies initial cold setup). When strengthening coverage, fold unique edges into the stronger seam test and delete weaker or redundant bootstrap/duplicate tests in the same diff. Author separate, descriptively-named tests only for genuinely distinct capabilities or orthogonal workflows; NEVER accumulate unrelated scenarios into monolithic test functions."
+      - "FIXTURE EFFICIENCY & RESOURCE TEARDOWN: Share immutable read-only corpora safely across read-only tests and prove pure domain/state rules in memory; reserve heavy repository, database, or subprocess harnesses for genuine integration seams. Guarantee deterministic cleanup of temporary directories and handles (never store disposable temp resources in process-lifetime globals that skip teardown)."
+      - "ANTI-AIR & NO BUG-FITTING (TEST-SUITE-REFACTOR): Verify every test reaches live production paths and pins admitted behavior — never vacuous placeholders ('air'), removed/dead features, unreachable branches, or accidental bugs."
       - "MINIMAL INTERVENTION: Avoid duplicate mechanisms, redundant wrapper tables, or shadow registries when existing seams can be cleanly extended."
       - "SCOPE INTEGRITY: Never touch protected repository files or expand scope outside admitted task perimeter."
+  task.contract_review:
+    description: "INDEPENDENT CONTRACT TEST AUDIT (ANTI-LAZINESS & TEST-SUITE-REFACTOR)"
+    criteria:
+      - "TEST-CONTRACT-SEAM & TEST-SUITE-REFACTOR AUDIT: Audit the contract test diff against test-contract-seam and test-suite-refactor before implementation begins. Verify every new or modified test reaches live production paths and pins admitted contracts — never vacuous outputs ('air'), removed/dead features, unreachable branches, or bugs."
+      - "EXACT ASSERTIONS & NEGATIVE BOUNDARIES: Reject generic serialized substring matching where exact error codes/variants or structured payload fields apply, and reject contracts omitting negative, invalid-input, or legacy rejection cases."
+      - "NO DUPLICATION & SUBSUMPTION: Reject cloned harness setup inside loops, uncollapsed homogeneous variants, monolithic accumulation tests, and retained subsumed bootstrap/duplicate tests that belong folded and deleted."
+      - "FIXTURES & TEARDOWN: Reject heavy integration/subprocess harnesses for pure in-memory rules and process-lifetime globals lacking deterministic temporary-resource teardown."
+      - "RUNTIME-RED PROOF: Verify contract tests compile cleanly (for compiled languages) and fail strictly on runtime assertions rather than build or syntax errors."
   task.code:
     description: "Implement the accepted seam with the smallest change that satisfies the task contract."
     criteria:
       - "MINIMAL SEAM CHANGE: Implement the accepted contract with the smallest durable change in production modules; avoid duplicate helpers, wrappers, or shadow registries."
-      - "LEAN PARALLELIZABLE TESTS: Collapse homogeneous input, error, or boundary permutations into table-driven loops with heavy Workspace/build setup outside the loop (unless varying initial cold-build layout), share immutable corpora via OnceLock<PersistedSnapshot> without static TempDir leaks, test pure state logic in-process, and keep distinct contracts in separate focused tests."
+      - "LEAN PARALLELIZABLE TESTS: Keep homogeneous input, error, or boundary permutations in parameterized loops with shared immutable setup outside per-case iteration, keep pure state logic in memory with deterministic temporary-resource teardown, preserve domain test separation, and maintain exact error-code and structured-field assertions without weakening the contract."
       - "REVIEW REMEDIATION BY GENERALIZATION (NO TEST BLOAT): When resolving P1/P2 review findings, eliminate the defect class in production code (shared validator or canonical backend delegation) instead of patching locally and spawning standalone bug-fix tests or extra Workspace/McpTestHarness instances; at most add one data row to the existing owning contract matrix if an external boundary was missing."
   task.review:
     description: "INDEPENDENT REVIEW CORE INVARIANTS & ENGINEERING PRINCIPLES"
@@ -237,7 +250,7 @@ guidance:
       - "REVIEW REJECTION BOUNDARY: Reject only for contract failure, scope violation, invariant breach, or a genuine functional or architectural defect. Never reject over doc-comment wording or non-regression stylistic nitpicks."
       - "BROAD ARCHITECTURAL EXPLORATION: Never evaluate diffs in isolation. Thoroughly inspect subsystem integration and extension points using semantic tools and source inspection."
       - "STRICT REJECTION OF HACKS & HEURISTICS: Actively detect and REJECT superficial workarounds, ad-hoc string heuristics (e.g. path shape guesses, magical substring checks), hardcoded parallel lookup lists, or patches designed merely to turn a test green. Require durable, authentic root-cause fixes in the typed data model."
-      - "TEST HYGIENE & ANTI-MONOLITH: Reject diffs that clone heavy harnesses or rebuild corpora inside loop bodies per variant instead of table-driven matrices, hold temp dirs in static OnceLock/LazyLock skipping Drop, omit shared snapshot/in-memory fixtures on immutable corpora, append tests or review probes into monolithic functions, add standalone bug-fix tests or extra harnesses during review remediation (diff test-count budget for review fixes is zero new #[test] functions; at most a row in the existing matrix for an uncovered public boundary), or weaken existing assertions. Enforce domain decomposition into focused, parallelizable test functions."
+      - "TEST QUALITY, REFACTOR AUDIT & ANTI-LAZINESS: Audit every added or modified test against test-contract-seam and test-suite-refactor invariants. REJECT diffs that: (1) duplicate test functions, clone heavy harness setup inside loops instead of parameterized matrices, or keep subsumed bootstrap/redundant tests; (2) use loose serialized substring assertions where exact error codes or structured payload fields apply, or omit negative/legacy boundary variants; (3) dump unrelated scenarios or review probes into monolithic tests, add standalone bug-fix tests or extra harnesses during review remediation (diff test-count budget for review fixes is zero new #[test] functions; at most a row in the existing matrix for an uncovered public boundary), or weaken existing assertions; (4) leak temporary resources in process-lifetime globals lacking teardown or use heavy integration/subprocess harnesses for pure in-memory rules; or (5) test removed/dead features, vacuous outputs ('air'), or implementation bugs instead of live admitted contracts."
       - "ANTI-LOOPING & ARCHITECTURAL RE-EVALUATION: If an implementation fails repeatedly across review rounds or accumulates layers of duct tape, do NOT accept another patch. Reject the implementation, diagnose the defective contract, and require architectural re-synthesis."
       - "MANDATORY PERFORMANCE ALIGNMENT: Verify zero performance regressions: single-pass algorithms, zero duplicate caches, minimal heap allocations, and lean data structures."
       - "CONSTRUCTIVE FINDINGS: Formulate findings constructively with actionable criteria. Do not weaponize minor terminology mismatches to block genuine optimizations."
@@ -381,6 +394,19 @@ gates:
           expected_failure:
             exit_codes: [1, 101, 134]
           save: snapshot
+
+        - id: contract_review
+          role: independent_reviewer
+          guidance: [task.contract_review, hitl.pro]
+          policy: default_review
+          contours: guidance.contours
+          independent_from: contract
+          fail: contract
+          loop:
+            scope: contract
+            symbols: contract
+          save:
+            immutable: true
 
         - id: build
           role: builder

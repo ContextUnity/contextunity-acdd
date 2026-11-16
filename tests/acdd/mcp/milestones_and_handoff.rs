@@ -616,7 +616,7 @@ fn linked_task_mcp_and_cli_resolve_repository_roots_and_guidance() {
         }
         let mut evidence =
             serde_json::to_value(TaskHarness::evidence_for_claim(&claim, proof.clone())).unwrap();
-        if is_review {
+        if is_review && candidate_commit.is_some() {
             let candidate = TaskHarness::verified_revision_text(
                 linked.root(),
                 candidate_commit.as_deref().unwrap(),
@@ -905,6 +905,9 @@ fn task_context_candidate_snapshot_delivery_reject_and_completed_receipt() {
         json!({ "task_id": task_id, "stage": "contract", "action": "pass", "evidence": TaskHarness::evidence_for_claim(&contract_claim, json!({"contract_proof": {"seam_test_ref": "tests/acdd/tasks.rs", "red_exit_code": 101}})) })
     );
 
+    TaskHarness::attach(&workspace, task_id)
+        .advance_to("build")
+        .unwrap();
     // 2. Pass build WITHOUT a commit in evidence
     client = restart_mcp_session(client, &workspace, &TaskHarness::session_for("builder"))
         .expect("MCP session restart should succeed");

@@ -23,7 +23,17 @@ fn pending_root_gate_from_transitions(
     store: &TasksStore,
     milestone_identity: &str,
     cursors: &[gate_graph::GateCursor],
+    applicable: impl FnMut(&gate_graph::GateCursor) -> bool,
+) -> Result<Option<gate_graph::GateCursor>> {
+    pending_root_gate_including_exhausted(store, milestone_identity, cursors, applicable, false)
+}
+
+fn pending_root_gate_including_exhausted(
+    store: &TasksStore,
+    milestone_identity: &str,
+    cursors: &[gate_graph::GateCursor],
     mut applicable: impl FnMut(&gate_graph::GateCursor) -> bool,
+    include_exhausted: bool,
 ) -> Result<Option<gate_graph::GateCursor>> {
     let paths = cursors
         .iter()
@@ -51,7 +61,7 @@ fn pending_root_gate_from_transitions(
                     path == &cursor.canonical_stage_id && action == "fail"
                 })
                 .count();
-            if failures >= limit as usize {
+            if !include_exhausted && failures >= limit as usize {
                 return Ok(None);
             }
         }
@@ -1451,14 +1461,18 @@ pub(super) fn ensure_pre_task_root_gates_passed(
         applicable_pre_task_root_cursors(profile, task, &milestone_tasks, &scope, worktree)?;
     let milestone_identity = milestone_identity_for_task(workspace, task)?;
     let all_cursors = gate_graph::collect_root_cursors(profile)?;
-    if pending_root_gate_from_transitions(store, &milestone_identity, &all_cursors, |candidate| {
-        cursors
-            .iter()
-            .any(|cursor| cursor.canonical_stage_id == candidate.canonical_stage_id)
-    })?
-    .is_some()
-    {
-        bail!("MILESTONE_ROOT_GATE_REQUIRED: root gate recovery or verification remains pending");
+    if let Some(cursor) = pending_root_gate_including_exhausted(
+        store,
+        &milestone_identity,
+        &all_cursors,
+        |candidate| {
+            cursors
+                .iter()
+                .any(|cursor| cursor.canonical_stage_id == candidate.canonical_stage_id)
+        },
+        true,
+    )? {
+        bail!("MILESTONE_PRE_TASK_GATE_PENDING: milestone '{milestone_identity}' has not passed root gate '{}' (gate_path '{}', root_index {}).", cursor.canonical_stage_id, cursor.gate_path, cursor.root_index);
     }
     fan_out_pre_task_proofs_if_ready(store, workspace, task, profile, worktree)?;
     Ok(())

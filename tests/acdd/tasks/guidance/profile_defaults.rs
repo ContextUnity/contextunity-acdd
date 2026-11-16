@@ -22,12 +22,33 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
         .find_map(|g| g.tasks.as_ref())
         .map(|t| &t.gates)
         .expect("task gates exist");
-    for required_id in ["contract", "build", "review", "deliver"] {
+    for required_id in ["contract", "contract_review", "build", "review", "deliver"] {
         assert!(
             task_gates.iter().any(|g| g.id == required_id),
             "expected required gate '{required_id}' to exist"
         );
     }
+    let contract_review_idx = task_gates
+        .iter()
+        .position(|g| g.id == "contract_review")
+        .expect("contract_review gate exists");
+    let contract_idx = task_gates.iter().position(|g| g.id == "contract").unwrap();
+    let build_idx = task_gates.iter().position(|g| g.id == "build").unwrap();
+    assert!(
+        contract_idx < contract_review_idx && contract_review_idx < build_idx,
+        "contract_review must execute between contract and build"
+    );
+    let contract_review = &task_gates[contract_review_idx];
+    assert_eq!(
+        contract_review.role.as_deref(),
+        Some("independent_reviewer")
+    );
+    assert_eq!(
+        contract_review.independent_from.as_deref(),
+        Some("contract")
+    );
+    assert_eq!(contract_review.on_fail.as_deref(), Some("contract"));
+    assert!(contract_review.persistence.immutable);
     let seam_gate = task_gates
         .iter()
         .find(|g| g.id == "seam")
@@ -111,7 +132,7 @@ fn declarative_profile_compiles_defaults_and_respects_role_overrides() {
         .find_map(|g| g.tasks.as_ref())
         .map(|t| &t.gates)
         .expect("task gates exist");
-    for expected_gate in ["contract", "build", "review", "deliver"] {
+    for expected_gate in ["contract", "contract_review", "build", "review", "deliver"] {
         assert!(
             loaded_task_gates.iter().any(|g| g.id == expected_gate),
             "expected task gate '{expected_gate}' to exist in loaded profile"

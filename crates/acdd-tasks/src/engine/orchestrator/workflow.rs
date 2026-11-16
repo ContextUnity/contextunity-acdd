@@ -1,10 +1,10 @@
-use super::role::RoleObservations;
+use super::role::{sync_command_findings, RoleObservations};
 use crate::{
     engine::gate_graph,
     milestones::command_gate::{observe_command_for_id, resolve_command_plan},
     tasks::profile::{
-        validate_profile_document, GateDef, GateDriver, GateProfile, PersistenceAction, ProofDef,
-        ProofKind,
+        resolve_effective_workflow_profile, GateDef, GateDriver, GateProfile, PersistenceAction,
+        ProofDef, ProofKind,
     },
 };
 use anyhow::{bail, ensure, Context, Result};
@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -65,6 +66,9 @@ pub fn resolve_workflow(root: &Path, selector: &str) -> Result<PathBuf> {
         .collect::<Vec<_>>();
     match matches.as_slice() {
         [path] => Ok(path.clone()),
+        [] if builtin_workflow(selector).is_some() => Ok(PathBuf::from(format!(
+            "docs/workflows/{selector}.workflow.yaml"
+        ))),
         [] => bail!("WORKFLOW_NOT_FOUND: {selector}"),
         _ => bail!("WORKFLOW_AMBIGUOUS: {selector}"),
     }
@@ -72,15 +76,44 @@ pub fn resolve_workflow(root: &Path, selector: &str) -> Result<PathBuf> {
 
 /// Read and validate the source through the canonical profile parser.
 pub fn read_workflow(root: &Path, path: &Path) -> Result<GateProfile> {
-    let canonical = root.join(path).canonicalize()?;
+    let source = if root.join(path).exists() {
+        let canonical = root.join(path).canonicalize()?;
+        ensure!(
+            canonical.starts_with(root.canonicalize()?),
+            "WORKFLOW_PATH_INVALID: workflow escapes root"
+        );
+        fs::read_to_string(canonical)?
+    } else {
+        let name = path
+            .to_str()
+            .and_then(|p| p.strip_prefix("docs/workflows/"))
+            .and_then(|p| p.strip_suffix(".workflow.yaml"))
+            .context("WORKFLOW_NOT_FOUND")?;
+        let template = builtin_workflow(name).context("WORKFLOW_NOT_FOUND")?;
+        let mut document: serde_yaml::Value = serde_yaml::from_str(template)?;
+        document["inherit"] = serde_yaml::Value::String("workspace".into());
+        if let Some(roles) = document
+            .get_mut("roles")
+            .and_then(serde_yaml::Value::as_mapping_mut)
+        {
+            for role in roles
+                .values_mut()
+                .filter_map(serde_yaml::Value::as_mapping_mut)
+            {
+                for field in ["runner", "prompt_template", "models"] {
+                    role.remove(serde_yaml::Value::String(field.into()));
+                }
+            }
+        }
+        serde_yaml::to_string(&document)?
+    };
+    let profile = resolve_effective_workflow_profile(root, path, &source)?;
     ensure!(
-        canonical.starts_with(root.canonicalize()?),
-        "WORKFLOW_PATH_INVALID: workflow escapes root"
-    );
-    let profile = validate_profile_document(&fs::read_to_string(canonical)?)?;
-    ensure!(
-        profile.persistence == Some(PersistenceAction::None),
-        "WORKFLOW_SAVE_INVALID: standalone workflows require save: none"
+        matches!(
+            profile.persistence,
+            Some(PersistenceAction::None | PersistenceAction::Logfile)
+        ),
+        "WORKFLOW_SAVE_INVALID: standalone workflows require save: none or log"
     );
     fn validate_taskless(gates: &[GateDef]) -> Result<()> {
         for gate in gates {
@@ -91,8 +124,11 @@ pub fn read_workflow(root: &Path, path: &Path) -> Result<GateProfile> {
             ensure!(
                 [gate.persistence.pre, gate.persistence.post]
                     .into_iter()
-                    .all(|save| save.is_none_or(|save| save == PersistenceAction::None)),
-                "WORKFLOW_SAVE_INVALID: standalone workflow gates require save: none"
+                    .all(|save| save.is_none_or(|save| matches!(
+                        save,
+                        PersistenceAction::None | PersistenceAction::Logfile
+                    ))),
+                "WORKFLOW_SAVE_INVALID: standalone workflow gates require save: none or log"
             );
             validate_taskless(&gate.gates)?;
         }
@@ -103,6 +139,66 @@ pub fn read_workflow(root: &Path, path: &Path) -> Result<GateProfile> {
         validate_taskless(&template.gates)?;
     }
     Ok(profile)
+}
+
+fn builtin_workflow(name: &str) -> Option<&'static str> {
+    match name {
+        "author-plan" => Some(include_str!(
+            "../../../../../docs/workflows/author-plan.workflow.yaml"
+        )),
+        "author-milestone" => Some(include_str!(
+            "../../../../../docs/workflows/author-milestone.workflow.yaml"
+        )),
+        "author-workflow" => Some(include_str!(
+            "../../../../../docs/workflows/author-workflow.workflow.yaml"
+        )),
+        "code-quality-and-polish" => Some(include_str!(
+            "../../../../../docs/workflows/code-quality-and-polish.workflow.yaml"
+        )),
+        "author-spec" => Some(
+            r#"version: 2
+inherit: workspace
+save: none
+roles:
+  architect:
+    guidance: "Specify the goal, non-goals, ambiguities, numbered AC-* acceptance criteria, C1 and C2 boundary impact, ADR requirements, and SAD updates."
+  independent_reviewer:
+    guidance: "Review the goal, non-goals, ambiguities, numbered AC-* acceptance criteria, C1 and C2 boundary impact, ADR requirements, and SAD updates."
+gates:
+  - id: specify
+    role: architect
+    max_attempts: 3
+    proof:
+      scheme:
+        type: object
+        required: [spec_path, summary, goal, non_goals, ambiguities, acceptance_criteria, c1_boundary_impact, c2_boundary_impact, adr_required, sad_updates]
+        properties:
+          spec_path: {type: string}
+          summary: {type: string}
+          goal: {type: string}
+          non_goals: {type: array, items: {type: string}}
+          ambiguities: {type: array, items: {type: string}}
+          acceptance_criteria: {type: array, items: {type: object, required: [id, criterion], properties: {id: {type: string}, criterion: {type: string}}}}
+          c1_boundary_impact: {type: array, items: {type: string}}
+          c2_boundary_impact: {type: array, items: {type: string}}
+          adr_required: {type: array, items: {type: string}}
+          sad_updates: {type: array, items: {type: string}}
+  - id: review
+    role: independent_reviewer
+    independent_from: specify
+    fail: specify
+    max_attempts: 3
+    proof:
+      scheme:
+        type: object
+        required: [decision, summary]
+        properties:
+          decision: {type: string, enum: [pass, reject]}
+          summary: {type: string}
+"#,
+        ),
+        _ => None,
+    }
 }
 
 /// Execute root gates with ephemeral observations and the existing graph router.
@@ -139,13 +235,16 @@ pub fn run_standalone_workflow(root: &Path, path: &Path, goal: Option<&str>) -> 
         ensure!(
             [cursor.gate.persistence.pre, cursor.gate.persistence.post]
                 .into_iter()
-                .all(|save| save.is_none_or(|save| save == PersistenceAction::None)),
+                .all(|save| save.is_none_or(|save| matches!(
+                    save,
+                    PersistenceAction::None | PersistenceAction::Logfile
+                ))),
             "WORKFLOW_SAVE_INVALID: gate cannot persist standalone workflow state"
         );
     }
     let paths = standalone_workflow_scope(path, &profile);
     let mut roles = RoleObservations::default();
-    let outcomes = run_gate_graph(root, &paths, &[], &cursors, |cursor, _| {
+    let outcomes = run_gate_graph(root, &paths, &[], &cursors, |cursor, attempt| {
         roles.note_executed(&cursor.canonical_stage_id);
         if cursor.gate.driver() == Some(GateDriver::Agent) {
             let decision = roles.execute(
@@ -156,6 +255,12 @@ pub fn run_standalone_workflow(root: &Path, path: &Path, goal: Option<&str>) -> 
                 cursor,
                 &profile,
             )?;
+            if profile.persistence == Some(PersistenceAction::Logfile)
+                || [cursor.gate.persistence.pre, cursor.gate.persistence.post]
+                    .contains(&Some(PersistenceAction::Logfile))
+            {
+                append_observation(root, path, &cursor.canonical_stage_id, attempt, &decision)?;
+            }
             return Ok(decision);
         }
         let name = cursor
@@ -193,13 +298,57 @@ pub fn run_standalone_workflow(root: &Path, path: &Path, goal: Option<&str>) -> 
             cursor.gate.policy.as_deref().unwrap_or("seam-test-first"),
             None,
         )?;
-        Ok(GateDecision {
+        let mut decision = GateDecision {
             passed,
             evidence: json!(observations.iter().map(|(command_id, observation)| json!({"command_id": command_id, "observation": observation})).collect::<Vec<_>>()),
             findings: None,
-        })
-    })?;
-    Ok(json!({"status":"completed", "path":path, "outcomes":outcomes}))
+        };
+        sync_command_findings(&cursor.canonical_stage_id, &mut decision, &mut roles);
+        if profile.persistence == Some(PersistenceAction::Logfile)
+            || [cursor.gate.persistence.pre, cursor.gate.persistence.post]
+                .contains(&Some(PersistenceAction::Logfile))
+        {
+            append_observation(root, path, &cursor.canonical_stage_id, attempt, &decision)?;
+        }
+        Ok(decision)
+    });
+    if profile.persistence == Some(PersistenceAction::Logfile) {
+        append_log(
+            root,
+            &json!({"workflow": path, "status": if outcomes.is_ok() { "completed" } else { "failed" }}),
+        )?;
+    }
+    let result = json!({"status":"completed", "path":path, "outcomes":outcomes?});
+    Ok(result)
+}
+
+fn append_observation(
+    root: &Path,
+    path: &Path,
+    gate: &str,
+    attempt: u32,
+    decision: &GateDecision,
+) -> Result<()> {
+    append_log(
+        root,
+        &json!({"workflow": path, "gate": gate, "attempt": attempt, "passed": decision.passed, "evidence": decision.evidence, "findings": decision.findings}),
+    )
+}
+
+fn append_log(root: &Path, record: &Value) -> Result<()> {
+    let directory = crate::tasks::confined_path(root, ".acdd")?;
+    fs::create_dir_all(&directory)?;
+    let log = crate::tasks::confined_path(root, ".acdd/workflow-observations.jsonl")?;
+    let mut file = fs::OpenOptions::new().create(true).append(true).open(log)?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis();
+    let mut record = record.clone();
+    record["timestamp_ms"] = json!(timestamp);
+    let mut bytes = serde_json::to_vec(&record)?;
+    bytes.push(b'\n');
+    file.write_all(&bytes)?;
+    Ok(())
 }
 
 #[derive(Clone)]

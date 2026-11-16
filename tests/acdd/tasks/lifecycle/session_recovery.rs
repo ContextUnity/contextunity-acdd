@@ -40,7 +40,10 @@ fn review_rejection_retains_findings_and_requires_a_new_build() {
             Some(&TaskHarness::session_for(&review.worker_id)),
         )
         .unwrap();
-    assert_eq!(rejected.gate, 1);
+    assert_eq!(
+        rejected.gate as usize,
+        harness.profile().unwrap().index_of("build").unwrap()
+    );
     assert_eq!(rejected.status, "ready");
     assert_eq!(
         harness.store.inspect_details(&id).unwrap()["findings"]
@@ -220,5 +223,5 @@ fn review_rejection_retains_findings_and_requires_a_new_build() {
             )),
         )
         .unwrap();
-    assert_eq!(store.inspect(&id).unwrap().gate, 2);
+    assert_eq!(store.inspect(&id).unwrap().stage, "review");
 }

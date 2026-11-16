@@ -263,9 +263,7 @@ fn terminal_task_delivery_rolls_up_durable_context_and_prunes_blackboard() {
             let rejected: tasks::Submit = TaskHarness::pass_request(&first, stage, &proof);
             let error = root.submit_request(rejected).unwrap_err();
             assert!(
-                error
-                    .to_string()
-                    .contains("TASK_CANDIDATE_BASELINE_MISMATCH"),
+                error.to_string().contains("TASK_CANDIDATE_MISMATCH"),
                 "{error:#}"
             );
             assert_eq!(root.head(), moved_head);

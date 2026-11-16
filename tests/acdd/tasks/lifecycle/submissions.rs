@@ -225,6 +225,14 @@ fn gate_proof_validation_persists_only_the_typed_accepted_payload() {
     ];
 
     for (stage, proof, invalid_cases) in proof_cases {
+        if stage == "build" && h.store.inspect(&h.id).unwrap().stage != stage {
+            let claim = h.claim_next().unwrap();
+            let mut evidence = h.evidence_for_gate(&claim).unwrap();
+            evidence.proof["review_proof"]["extended_scope_review"] =
+                json!({"approved_paths": ["src/reviewed.rs"], "reason_verified": true});
+            h.submit_evidence(&evidence).unwrap();
+        }
+        h.advance_to(stage).unwrap();
         let claim = h.claim_next().unwrap();
         assert_eq!(claim.stage, stage, "proof case for {stage}");
         let mut ev = h.evidence_for_gate(&claim).unwrap();

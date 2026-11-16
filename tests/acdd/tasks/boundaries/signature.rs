@@ -40,6 +40,9 @@ fn check_implicitly_public_trait_method_cases(cases: &[(&str, &str, &str, bool)]
                     break;
                 }
                 submit_indexed_boundary(&root, stage, "src/seam.rs::test_connected").unwrap();
+                TaskHarness::attach(&root, "forge-mcp/m-current-boundary:routing")
+                    .advance_to(&stages[index + 1])
+                    .unwrap();
                 TaskHarness::claim_at(
                     root.root(),
                     "forge-mcp/m-current-boundary:routing",
@@ -223,6 +226,9 @@ mod tests {
         TaskHarness::pass_request(task_id, "contract", &contract_evidence),
     )
     .unwrap();
+    TaskHarness::attach(&root, task_id)
+        .advance_to("build")
+        .unwrap();
     let claim = TaskHarness::claim_at(root.root(), task_id, "build", "builder").unwrap();
     assert_eq!(claim["stage"], "build");
 
@@ -431,6 +437,9 @@ fn signature_boundary_keeps_contract_acceptance_callers_after_symbol_rename_and_
         String::from_utf8_lossy(&baseline.stdout).trim(),
         "caller evidence must be pinned to the Git baseline accepted by the contract gate"
     );
+    TaskHarness::attach(&root, task_id)
+        .advance_to("build")
+        .unwrap();
     TaskHarness::claim_at(root.root(), task_id, "build", "builder").unwrap();
 
     root.write(

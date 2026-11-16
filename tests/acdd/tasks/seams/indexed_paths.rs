@@ -31,7 +31,7 @@ None,
             .inspect("forge-mcp/m-current-boundary:routing")
             .unwrap()
             .stage,
-        "build"
+        "contract_review"
     );
     assert_eq!(std::fs::read(profile_path).unwrap(), profile_before);
 }

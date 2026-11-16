@@ -255,6 +255,9 @@ fn next_prioritizes_independent_delivery_and_review() {
         for id in &ids[..2] {
             advance(&priority, &mut client, id, "contract", "builder")
                 .expect("MCP gate advance and prior server finish should succeed");
+            TaskHarness::attach(&priority, id)
+                .advance_to("build")
+                .unwrap();
             advance(&priority, &mut client, id, "build", "builder")
                 .expect("MCP gate advance and prior server finish should succeed");
         }

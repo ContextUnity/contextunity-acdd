@@ -344,18 +344,12 @@ fn task_guidance_follows_agent_metadata_workspace_config_and_active_stage() {
         if repository == "forge-mcp" && !absent {
             let mut store = tasks::store_for_task(root.root(), &id).unwrap();
             let task = store.inspect(&id).unwrap();
-            store
-                .submit(
-                    &id,
-                    "contract",
-                    &TaskHarness::default_evidence(&task),
-                    "pass",
-                    None,
-                    Some(&TaskHarness::session_for(
-                        task.worker_id.as_deref().unwrap(),
-                    )),
-                )
-                .unwrap();
+            tasks::submit(
+                root.root(),
+                TaskHarness::pass_request(&id, "contract", &TaskHarness::default_evidence(&task)),
+            )
+            .unwrap();
+            TaskHarness::attach(&root, &id).advance_to("build").unwrap();
             let build = inspect();
             assert_eq!(build["workflow_guidance"]["active_stage"], "build");
             assert_eq!(build["workflow_guidance"]["role"], "builder");

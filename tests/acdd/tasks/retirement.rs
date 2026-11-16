@@ -32,6 +32,17 @@ fn check_file_retirement_groups(groups: &[(bool, bool, &[&str])]) {
         }
         TaskHarness::claim_at(root.root(), RETIREMENT_TASK, "contract", "contract-author").unwrap();
         submit_indexed_boundary(&root, "contract", RETIREMENT_SEAM).unwrap();
+        if admit_caller {
+            let mut harness = TaskHarness::attach(&root, RETIREMENT_TASK);
+            let claim = harness.claim_next().unwrap();
+            let mut evidence = harness.evidence_for_gate(&claim).unwrap();
+            evidence.proof["review_proof"]["extended_scope_review"] =
+                json!({"approved_paths": ["src/caller.rs"], "reason_verified": true});
+            harness.submit_evidence(&evidence).unwrap();
+        }
+        TaskHarness::attach(&root, RETIREMENT_TASK)
+            .advance_to("build")
+            .unwrap();
         TaskHarness::claim_at(root.root(), RETIREMENT_TASK, "build", "builder").unwrap();
 
         // extend_scope updates a tracked, uncommitted manifest. Preserve its
@@ -171,6 +182,9 @@ fn build_revalidates_legacy_empty_baseline_caller_evidence() {
             TaskHarness::replace_submission_result(&store, RETIREMENT_TASK, revision, &result)
                 .unwrap();
         }
+        TaskHarness::attach(&root, RETIREMENT_TASK)
+            .advance_to("build")
+            .unwrap();
         TaskHarness::claim_at(root.root(), RETIREMENT_TASK, "build", "builder").unwrap();
         let snapshot = FixtureSnapshot::capture(&root);
 

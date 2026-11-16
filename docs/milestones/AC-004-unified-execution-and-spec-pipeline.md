@@ -256,41 +256,133 @@ receipt:
 
 ```yaml
 task_ref: builtin-profile-presets-and-workflow-inheritance
-target: "Replace boolean inherit_defaults with explicit inherit targets (none | default | workspace | <path>) so standalone/builtin workflows and plan overlays can explicitly write inherit: workspace to pull workspace resources (roles, runner, models, prompt_template, commands, policies, limits, guidance) without importing milestone tasks/gates (rejecting self-referential workspace inheritance on the root workspace profile); embed builtin plan preset and author-* workflows (author-spec, author-plan, author-milestone, author-workflow, code-quality-and-polish), propagate command findings and save: log traces in workflow.rs, extend proofs.blueprint, and prove contracts in workflow_inheritance.rs."
+target: 'Replace boolean inherit_defaults with explicit inherit targets (none | default | workspace | <path>) so standalone/builtin workflows and plan overlays can explicitly write inherit: workspace to pull workspace resources (roles, runner, models, prompt_template, commands, policies, limits, guidance) without importing milestone tasks/gates (rejecting self-referential workspace inheritance on the root workspace profile); embed builtin plan preset and author-* workflows (author-spec, author-plan, author-milestone, author-workflow, code-quality-and-polish), propagate command findings and save: log traces in workflow.rs, extend proofs.blueprint, and prove contracts in workflow_inheritance.rs.'
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 6
 depends_on:
-  - upfront-contract-synthesis-and-dag-prioritization
+- upfront-contract-synthesis-and-dag-prioritization
 scope:
-  - crates/acdd-tasks/src/tasks/profile/mod.rs
-  - crates/acdd-tasks/src/tasks/profile/load.rs
-  - crates/acdd-tasks/src/tasks/profile/normalize.rs
-  - crates/acdd-tasks/src/tasks/profile/validate.rs
-  - crates/acdd-tasks/src/tasks/acdd.profile.yaml
-  - crates/acdd-tasks/src/engine/orchestrator/workflow.rs
-  - docs/workflows/README.md
-  - docs/workflows/author-milestone.workflow.yaml
-  - docs/workflows/author-plan.workflow.yaml
-  - docs/workflows/author-workflow.workflow.yaml
-  - tests/acdd/orchestrator/workflow_inheritance.rs
+- crates/acdd-tasks/src/tasks/profile/mod.rs
+- crates/acdd-tasks/src/tasks/profile/load.rs
+- crates/acdd-tasks/src/tasks/profile/normalize.rs
+- crates/acdd-tasks/src/tasks/profile/validate.rs
+- crates/acdd-tasks/src/tasks/gates.rs
+- crates/acdd-tasks/src/tasks/acdd.profile.yaml
+- crates/acdd-tasks/src/engine/orchestrator/workflow.rs
+- crates/acdd-tasks/src/engine/orchestrator/role.rs
+- crates/acdd-tasks/src/engine/lifecycle/root_gates.rs
+- src/cli/paths.rs
+- docs/workflows/README.md
+- docs/workflows/author-milestone.workflow.yaml
+- docs/workflows/author-plan.workflow.yaml
+- docs/workflows/author-workflow.workflow.yaml
+- tests/acdd/harness/workflows.rs
+- tests/acdd/orchestrator/mod.rs
+- tests/acdd/orchestrator/workflow_inheritance.rs
+- tests/acdd/blackboard.rs
+- tests/acdd/mcp/manage_and_sync.rs
+- tests/acdd/mcp/milestones_and_handoff.rs
+- tests/acdd/mcp/submit_and_validation.rs
+- tests/acdd/mcp/worktrees_and_isolation.rs
+- tests/acdd/milestones/delivery.rs
+- tests/acdd/milestones/lifecycle/task_state.rs
+- tests/acdd/orchestrator/lifecycle.rs
+- tests/acdd/orchestrator/lifecycle/role_fixture.py
+- tests/acdd/runner/output_contracts.rs
+- tests/acdd/runner/transition_runner.rs
+- tests/acdd/tasks/boundaries/signature.rs
+- tests/acdd/tasks/guidance/agent_metadata.rs
+- tests/acdd/tasks/guidance/custom_profiles.rs
+- tests/acdd/tasks/guidance/profile_defaults.rs
+- tests/acdd/tasks/lifecycle/session_recovery.rs
+- tests/acdd/tasks/lifecycle/submissions.rs
+- tests/acdd/tasks/retirement.rs
+- tests/acdd/tasks/seams/indexed_paths.rs
+- tests/acdd/tasks/seams/scope.rs
+- tests/acdd/tasks/seams/tiered_context.rs
+- tests/acdd/tasks/workspaces/recovery_fixture.rs
+- tests/acdd/tasks/workspaces/snapshots.rs
+- tests/acdd/tasks/workspaces/snapshot_recovery/database.rs
+- tests/acdd/tasks/workspaces/snapshot_recovery/git_snapshot.rs
 symbols:
-  - enum:InheritTarget
-  - fn:resolve_effective_workflow_profile
-status: ready
+- enum:InheritTarget
+- fn:resolve_effective_workflow_profile
+status: completed
 subtasks:
-  - subtask_ref: explicit-inherit-target-and-workspace-resources
-    title: "Implement InheritTarget (none | default | workspace | <path>) inheriting workspace resources without milestone tasks/gates, rejecting cyclic or root-workspace self-inheritance, and honoring --profile overrides"
-  - subtask_ref: builtin-workflows-save-log-and-findings
-    title: "Embed author-spec/plan/milestone/workflow/polish builtins, fix workflow.rs failure findings + save: log audit output, and extend proofs.blueprint schema"
+- subtask_ref: explicit-inherit-target-and-workspace-resources
+  title: Implement InheritTarget (none | default | workspace | <path>) inheriting workspace resources without milestone tasks/gates, rejecting cyclic or root-workspace self-inheritance, and honoring --profile overrides
+  status: completed
+  evidence: Explicit none/default/workspace/confined-path inheritance, partial resource precedence, selected workspace profiles, cycle/self/path and legacy boolean rejection; serial inheritance suite 7 passed, strict Clippy and guidance 15 passed; temp count 5193 before and after.
+- subtask_ref: builtin-workflows-save-log-and-findings
+  title: 'Embed author-spec/plan/milestone/workflow/polish builtins, fix workflow.rs failure findings + save: log audit output, and extend proofs.blueprint schema'
+  status: completed
+  evidence: Embedded plan and five workflow presets with local overrides; taskless append-only JSONL observations and command findings; optional blueprint proof fields projected and validated. Serial workflows 14 passed, inheritance 7 passed, guidance 15 passed, tasks lib 91 passed, both strict Clippy checks and diff check passed; temp count 5193 before and after.
+- subtask_ref: default-contract-review-gate-and-profile-driven-tests
+  title: Add language-agnostic test-quality rules and contract_review gate (contract -> contract_review -> build) to default acdd.profile.yaml, restore MILESTONE_PRE_TASK_GATE_PENDING in root_gates.rs, and update ACDD test harnesses to advance via active GateProfile instead of hardcoding contract -> build
+  status: completed
+  evidence: Added language-agnostic test-quality rules and contract_review gate in acdd.profile.yaml; restored MILESTONE_PRE_TASK_GATE_PENDING (+ include_exhausted) in root_gates.rs; updated role.rs cursor count and profile-driven ACDD tests + mod.rs completed-task guard; passed both strict clippy commands, 91 lib tests, and 461/464 acdd integration tests (remaining 3 are Task 0 Wave 2/3 red contracts), git diff --check clean.
+receipt:
+  delivery_gate: deliver
+  candidate_gate: build
+  contract_revision: 6
+  passed_at: 2026-11-16T01:45:26.536443928+00:00
+  evidence:
+    command_proof:
+      command: rust-check-and-test
+      exit_code: 0
+      tests_passed: 1
+      tests_failed: 0
+      log: |
+        [rust-check-and-test::tests/acdd/orchestrator/workflow_inheritance.rs]
+        SCOPE_VIOLATION_WARNING: docs/milestones/AC-004-unified-execution-and-spec-pipeline.md
+        PASS rust-check-and-test::tests/acdd/orchestrator/workflow_inheritance.rs: exit=0 passed=1 failed=0 (546 ms)
+  review:
+    review_proof:
+      decision: pass
+      contours:
+        paths:
+          applicable: true
+          evidence: All 37 task files are admitted at contract revision 6; remaining file is coordinator authority amendment. Protected files untouched.
+        claims:
+          applicable: true
+          evidence: F1-F4 resolved via shared profile selection, complete author-spec traceability, gate-level and failed-terminal logging, and recursive schema-driven projection.
+        concurrency:
+          applicable: true
+          evidence: Pre-task root blocking, transaction boundaries, reviewer independence, and active-wave ownership safeguards remain intact.
+        project_isolation:
+          applicable: true
+          evidence: Confinement and cycle checks enforced; no new ignores or disposable globals; 5283 temp dirs before and after.
+        administration:
+          applicable: true
+          evidence: All 3 subtasks completed; claims 58, 61, 64 passed; trace 88 exit 101; trace 89 exit 0; reviewer claim 67 matches candidate b05f0b85; git diff --check pass.
+      notes: Independent read-only re-review passed (claims 58/61/64 verified, candidate b05f0b85).
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ROLE-COMMAND-REJECTION-PARITY: An agent role paired with command pre-validation can return a valid structured rejection proof even when the observed command exited zero, failing closed only on false-positive pass when observed_pass is false, and preserving reuse_on_reject sessions across failed role retries.'
+    - 'INV-CANDIDATE-DRIFT-WARNING: candidate_fingerprint and git snapshots share the same .acdd/ runtime-path exclusions so runtime churn never triggers drift; non-runtime worktree drift during review/immutable gates emits a structured candidate_drift_warning with changed paths for LLM/reviewer inspection and enforces mandatory candidate rebinding, renewed verification when source/test paths drifted, and renewed independent_reviewer sign-off before issuing any terminal deliver/handoff receipt (reserving hard TASK_CANDIDATE_MISMATCH fail-closed strictly for corrupted/mismatched explicit commit receipts or unrecoverable HEAD divergence).'
+    - 'INV-COMMAND-FAILURE-FINDINGS-PROPAGATION: Failing autonomous command gates across waves, workflows, and plans emit structured failure diagnostics into findings and keep RoleObservations.findings synchronized so on_fail repair roles and reject_routing never receive null or stale diagnostics.'
+    - 'INV-ADR021-UNIFIED-TASK-MODEL: Under amended ADR 0021 (Variant A), Plan and Milestone share the single SQLite TasksStore and task_runner execution contour (with plan steps executing in-place via snapshots, full subtask lifecycle, blackboard, and resume, while Milestone adds worktree isolation, blueprint synthesis, red contract tests, and handoff commits); Workflow stays strictly stateless with respect to tasks and subtasks.'
+    - 'INV-WORKFLOW-PROFILE-INHERITANCE: Standalone and builtin workflows inherit roles (runner, models, prompt_template), commands, policies, and limits from the active repository profile without importing a tasks container, support append-only save: log audit trails without task rows, and keep local docs/workflows overrides higher priority.'
+    - 'INV-SPECIFY-DESIGN-TRACEABILITY: Builtin author-spec and amended blueprint schemas capture Goal, Non-goals, ambiguities, numbered AC-* criteria, C1/C2 boundary impact, ADR requirements, and SAD updates prior to code delivery without weakening core gate proofs.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: unify-plan-execution-on-task-store
 
 ```yaml
 task_ref: unify-plan-execution-on-task-store
-target: "Unify Plan execution (plan.rs) onto TasksStore and task_runner semantics under amended ADR 0021 (in-place/snapshot mode with SQLite step and subtask tracking, resume, findings, placeholder expansion, immutable predecessor guard, and nested ### heading preservation in complete_source); update `plan clear|archive` in src/cli/plan.rs to prune both snapshot/trace state and SQLite plan task/subtask rows while keeping CLI parity and migrating obsolete ADR-021 v1 fixtures to real plan subtask lifecycle tests in unified_plan_engine.rs."
+target: "Unify Plan execution (plan.rs) onto TasksStore and task_runner semantics under amended ADR 0021 (in-place/snapshot mode with SQLite step and subtask tracking, resume, findings, placeholder expansion, immutable predecessor guard, and nested ### heading preservation in complete_source); update `plan clear|archive` in src/cli/plan.rs to prune both snapshot/trace state and SQLite plan task/subtask rows while keeping CLI parity and migrating obsolete ADR-021 v1 fixtures to real plan subtask lifecycle tests in unified_plan_engine.rs; keep pre-task validate_pre_task_root_proof strict at blueprint acceptance while making fan_out_pre_task_proofs_if_ready resilient (Variant C) to post-blueprint depends_on/task_ref evolution via task sync in proof_fanout.rs and blueprints.rs."
 proof_policy: seam-test-first
-contract_revision: 2
+contract_revision: 3
 depends_on:
   - fix-role-command-rejection-and-findings
   - builtin-profile-presets-and-workflow-inheritance
@@ -300,6 +392,7 @@ scope:
   - crates/acdd-tasks/src/milestones/mod.rs
   - crates/acdd-tasks/src/engine/context.rs
   - crates/acdd-tasks/src/engine/lifecycle/root_gates.rs
+  - crates/acdd-tasks/src/engine/lifecycle/proof_fanout.rs
   - crates/acdd-tasks/src/engine/orchestrator/plan.rs
   - crates/acdd-tasks/src/engine/orchestrator/task_runner.rs
   - crates/acdd-tasks/src/store/mod.rs
@@ -308,6 +401,7 @@ scope:
   - crates/acdd-tasks/src/milestones/synthesis.rs
   - src/cli/plan.rs
   - tests/acdd/orchestrator/waves/plans.rs
+  - tests/acdd/orchestrator/waves/blueprints.rs
   - tests/acdd/orchestrator/unified_plan_engine.rs
 symbols:
   - enum:ExecutionSubjectKind
@@ -317,6 +411,8 @@ subtasks:
     title: "Sync Plan steps/subtasks into TasksStore under in-place snapshot mode with resume, subtask transitions, bidirectional Markdown status/evidence projection, and SQLite cleanup in src/cli/plan.rs clear|archive"
   - subtask_ref: plan-execution-invariants-and-tests
     title: "Emit candidate_drift_warning with mandatory rebind/re-verify/re-review before terminal snapshot delivery on immutable plan drift, fix immutable predecessor none-guard, command placeholder expansion, and nested heading preservation while migrating obsolete pre-completed subtask fixtures to real in-place subtask lifecycle tests"
+  - subtask_ref: incremental-post-blueprint-fanout
+    title: "Keep validate_pre_task_root_proof strict on blueprint submission while making fan_out_pre_task_proofs_if_ready Variant-C resilient to post-blueprint depends_on/task sync evolution without re-opening completed root gates (proven in waves/blueprints.rs)"
 ```
 
 ### task: spec-traceability-docs-and-skills-reconciliation

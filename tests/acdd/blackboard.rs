@@ -272,10 +272,16 @@ fn blackboard_milestone_profile_pin_routes_gates_and_fails_closed_on_tampering()
         format!(
             "inherit: none\n{}",
             include_str!("../../crates/acdd-tasks/src/tasks/acdd.profile.yaml")
-                .replace("- id: contract", &format!("- id: \"{gate_id}\""))
+                .replace("- id: contract\n", &format!("- id: \"{gate_id}\"\n"))
                 .replace("symbols: contract", &format!("symbols: \"{gate_id}\""))
                 .replace("id: \"contract\"", &format!("id: \"{gate_id}\""))
                 .replace("symbols: \"contract\"", &format!("symbols: \"{gate_id}\""))
+                .replace(
+                    "independent_from: contract",
+                    &format!("independent_from: {gate_id}")
+                )
+                .replace("fail: contract", &format!("fail: {gate_id}"))
+                .replace("scope: contract", &format!("scope: {gate_id}"))
                 .replace("commands: {}", "commands:\n  test:\n    command: \"true\"",)
         )
     };

@@ -77,18 +77,30 @@ pub(super) fn parse_profile_document(yaml_str: &str) -> Result<ParsedProfile> {
         .as_mapping_mut()
         .context("ACDD_PROFILE_SCHEMA_INVALID: profile document must be a YAML mapping")?;
     let inherit = mapping.remove(serde_yaml::Value::String("inherit".to_owned()));
-    let inherit_defaults = match inherit {
-        None => true,
-        Some(serde_yaml::Value::String(value)) if value == "none" => false,
-        Some(serde_yaml::Value::String(value)) if value == "default" => true,
-        Some(serde_yaml::Value::Bool(value)) => value,
+    let inherit = match inherit {
+        None => InheritTarget::Default,
+        Some(serde_yaml::Value::String(value)) if value == "none" => InheritTarget::None,
+        Some(serde_yaml::Value::String(value)) if value == "default" => InheritTarget::Default,
+        Some(serde_yaml::Value::String(value)) if value == "workspace" => InheritTarget::Workspace,
+        Some(serde_yaml::Value::String(value)) if !value.is_empty() => {
+            InheritTarget::Path(value.into())
+        }
         Some(value) => {
-            bail!(
-                "ACDD_PROFILE_SCHEMA_INVALID: inherit must be 'default' or 'none' when specified, got {value:?}"
-            )
+            bail!("ACDD_PROFILE_SCHEMA_INVALID: invalid inherit target {value:?}")
         }
     };
     let commands_declared = mapping.contains_key(serde_yaml::Value::String("commands".to_owned()));
+    let limit_fields = mapping
+        .get(serde_yaml::Value::String("limits".into()))
+        .and_then(serde_yaml::Value::as_mapping)
+        .map(|limits| {
+            limits
+                .keys()
+                .filter_map(serde_yaml::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
     let fields_document = document.clone();
     let mut profile = serde_yaml::from_value::<GateProfile>(document).map_err(|err| {
         anyhow::anyhow!(
@@ -102,8 +114,9 @@ pub(super) fn parse_profile_document(yaml_str: &str) -> Result<ParsedProfile> {
     }
     Ok(ParsedProfile {
         profile,
-        inherit_defaults,
+        inherit,
         commands_declared,
+        limit_fields,
     })
 }
 
@@ -386,7 +399,7 @@ pub(super) fn resolve_proof_schema<'a>(
 }
 
 pub(super) fn merge_profile_document(base: &mut GateProfile, document: ParsedProfile) {
-    if !document.inherit_defaults {
+    if document.inherit == InheritTarget::None {
         *base = document.profile;
         normalize_profile(base);
         return;
@@ -397,7 +410,25 @@ pub(super) fn merge_profile_document(base: &mut GateProfile, document: ParsedPro
             base.gate_templates.clear();
         }
     }
+    let previous_limits = base.limits.clone();
+    let supplied_limits = document.profile.limits.clone();
     base.merge_override(document.profile);
+    base.limits = previous_limits;
+    if document.limit_fields.contains("diagnostic_inline_bytes") {
+        base.limits.diagnostic_inline_bytes = supplied_limits.diagnostic_inline_bytes;
+    }
+    if document
+        .limit_fields
+        .contains("max_command_timeout_seconds")
+    {
+        base.limits.max_command_timeout_seconds = supplied_limits.max_command_timeout_seconds;
+    }
+    if document.limit_fields.contains("max_metadata_bytes") {
+        base.limits.max_metadata_bytes = supplied_limits.max_metadata_bytes;
+    }
+    if document.limit_fields.contains("max_trace_summary_bytes") {
+        base.limits.max_trace_summary_bytes = supplied_limits.max_trace_summary_bytes;
+    }
 }
 
 pub(super) fn normalize_profile(profile: &mut GateProfile) {

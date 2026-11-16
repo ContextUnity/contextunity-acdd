@@ -113,6 +113,7 @@ impl RecoveryContractFixture {
     }
 
     pub fn begin_build(&self) -> anyhow::Result<()> {
+        TaskHarness::attach(&self.root, &self.id).advance_to("build")?;
         self.root.write("README.md", "# sibling change\n");
         for output in [
             TaskHarness::stage_changes(self.root.root(), &["README.md"]),
