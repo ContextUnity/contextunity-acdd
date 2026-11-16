@@ -23,10 +23,14 @@ Rules for placing, creating, refactoring, and maintaining tests in
   module only for genuinely distinct domain contracts or orthogonal multi-step
   workflows — never by appending unrelated scenarios into an existing workflow
   test, and never by splitting one homogeneous matrix into sibling heavy tests.
-- **Fixture boundaries**: Keep unit/extractor tests in-memory. Do not build
-  heavy filesystem fixtures or `Workspace::new()` inside pure syntax/AST or
-  path-helper tests, and place unit tests inside the owning crate module rather
-  than integration crates.
+- **Fixture boundaries & lowest-level placement**: Keep unit/extractor tests
+  in-memory and keep exhaustive parser, graph, profile, and error-permutation
+  matrices in owning crate unit modules (`crates/*/src/`). Keep `tests/acdd/`
+  and `tests/mcp/` as thin CLI/MCP seam proofs without re-cloning lower-level
+  unit matrices. Do not build heavy filesystem fixtures or `Workspace::new()`
+  inside pure syntax/AST or path-helper tests, and avoid `thread::sleep` or
+  inflated timeouts when deterministic readiness markers or signals synchronize
+  subprocesses cleanly.
 - **Subsume duplicates & review-fix anti-bloat**: When a stronger seam covers
   the contract, fold any unique edge case into it and delete the
   weaker/duplicate test in the same diff. Do **NOT** spawn standalone `#[test]`
@@ -53,8 +57,24 @@ Rules for placing, creating, refactoring, and maintaining tests in
   structs. See [test harness architecture](../docs/architecture/test-harness.md).
 - **Bounded loop & cache discipline**: Do not run full-DB dumps (`persisted_state`)
   or $O(N^2)$ cold index rebuilds inside per-row loops when lightweight checks or
-  batched deltas prove the same invariant. Clean up temporary `.acdd/cold-*` files
-  and avoid 0%-hit `Weak<Workspace>` or per-iteration directory-walk caches.
+  batched deltas prove the same invariant. Partition read-only matrix rows before
+  mutating rows so clean baseline queries skip redundant `FixtureSnapshot::restore`
+  / Git-clean cycles. Clean up temporary `.acdd/cold-*` files and avoid 0%-hit
+  `Weak<Workspace>` or per-iteration directory-walk caches.
+- **Subprocess wrappers & non-blocking CLI ingress**: Route un-instrumented Git
+  calls directly to real `git` via shell `case` dispatch in wrapper shims
+  rather than spawning Python per subprocess. Pass explicit stdin (`run_with_stdin`
+  or `Stdio::null()`) in CLI tests so open SSH/CI stdin pipes never stall
+  `io::stdin().read_to_string()`. Keep `[profile.dev]` and `[profile.test]`
+  at `opt-level = 1` with `debug = "line-tables-only"` in `Cargo.toml` to trim
+  test debuginfo while retaining line numbers in backtraces.
+- **Permission-safe teardown & zero leaks**: `WorkspaceSeed` capture/restore
+  snapshots root permissions alongside children, temporarily normalizes owned
+  directory permissions (`0o700`, without following symlinks) before traversal or
+  deletion so `0555` directories never panic, and restores baseline modes
+  bottom-up. `Workspace::drop` repairs permissions without following symlinks on
+  initial removal failure and panics (when not already unwinding) if cleanup
+  leaves a directory behind.
 - **Seam-preserving decomposition**: Do not replace production seams with
   mockist unit doubles. Ban tautological enum/struct self-equality echoes,
   brittle `Cargo.toml`/CI YAML substring assertions, and multi-hundred-line
@@ -73,9 +93,13 @@ Rules for placing, creating, refactoring, and maintaining tests in
 - **Orchestrator & `WaveHarness` boundary**: Reserve Git worktree and Python
   subprocess harnesses (`WaveHarness`, `LifecycleHarness`) strictly for tests
   proving subprocess execution, signal/timeout recovery, or physical worktree
-  isolation. Drive pure DAG scheduling, dependency readiness, gate transitions,
+  isolation, and use minimal 1–2 gate profiles or compact task containers
+  whenever full 5–6 gate external lifecycles are not required by the invariant
+  under test. Drive pure DAG scheduling, dependency readiness, gate transitions,
   and blackboard routing in-process against lightweight in-memory `TasksStore` /
-  `TaskHarness` fixtures.
+  `TaskHarness` fixtures. For non-CLI role execution matrices, reuse the cached
+  precompiled Rust role helper staged by `tests/acdd/snapshot.rs`; retain the
+  external runner fixtures for tests of that boundary.
 - **In-process MCP**: Prefer in-process handlers / `McpTestHarness`. Reserve
   `StdioClient` / `mkfifo` for dedicated transport smoke tests.
 - **Zero-disk AST**: Language extraction and framework-manifest unit tests stay
@@ -90,15 +114,13 @@ Rules for placing, creating, refactoring, and maintaining tests in
 
 Every `.rs` file directly under `tests/` is a separate Cargo test binary.
 Do NOT create new top-level `tests/<name>.rs` binaries; register new test modules
-under the owning canonical domain binary (`acdd.rs`, `core.rs`, `incremental.rs`,
-`languages.rs`, `framework_manifests.rs`, `linker.rs`, `mcp.rs`,
+under one of the seven canonical domain binaries (`acdd.rs`, `core.rs`,
+`languages.rs`, `linker.rs`, `mcp.rs`,
 `query_context.rs`, `commitment_integrity.rs`). Prefer coherent domain modules:
 
 - `tests/acdd.rs` (`tests/acdd/`): tasks, milestones, blackboard, runners
-- `tests/core.rs` (`tests/core/`): storage, adapters, scanner limits, docs checks, release packaging
-- `tests/incremental.rs` (`tests/incremental/`): delta indexing and scopes
-- `tests/languages.rs` (`tests/languages/`): extraction and language semantics
-- `tests/framework_manifests.rs` (`tests/framework_manifests/`): packs and manifests
+- `tests/core.rs` (`tests/core/`, `tests/incremental/`): storage, adapters, scanner limits, docs checks, release packaging, delta indexing and scopes
+- `tests/languages.rs` (`tests/languages/`, `tests/framework_manifests/`): extraction, language semantics, packs and manifests
 - `tests/linker.rs` (`tests/linker/`, `tests/receivers/`): linking and receivers
 - `tests/mcp.rs` (`tests/mcp/`, `tests/mcp_context/`): MCP protocol, CLI roots, and tools
 - `tests/query_context.rs` (`tests/query_context/`): query options, impact context, linked workspaces, and search
@@ -121,7 +143,7 @@ Subtree `AGENTS.md` files own local partitioning:
 Focused commands:
 
 ```bash
-cargo test --test framework_manifests manifests::<module>::
+cargo test --test languages manifests::<module>::
 cargo test --test languages html::<module>::
 cargo test --test languages typescript::frameworks::<module>::
 cargo test --test linker typed_receivers::rust::<module>::
@@ -139,9 +161,9 @@ When moving, renaming, splitting, or removing a suite file, update this file and
 
 ## 4. Authoring patterns
 
-Read [test harness architecture](../docs/architecture/test-harness.md). Active
+Read [test harness architecture](../docs/architecture/test-harness.md). Archived
 debloat and contract-consolidation plan:
-[test-suite-debloat-and-contract-consolidation.md](../docs/plans/test-suite-debloat-and-contract-consolidation.md)
+[test-suite-debloat-and-contract-consolidation.md](../docs/plans/archive/test-suite-debloat-and-contract-consolidation.md)
 (building on the archived
 [decomposition plan](../docs/plans/archive/test-suite-decomposition-and-shared-fixtures.md)
 and

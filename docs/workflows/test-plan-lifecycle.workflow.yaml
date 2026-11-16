@@ -2,7 +2,7 @@
 # TEST WORKFLOW: Plan Model In-Place Execution & Archive E2E Verification
 # Purpose: Autonomous verification of Model 2 (tasks container without root milestone gates).
 # Invariants:
-#   1. save: snapshot (captures in-flight state in refs/forge/snapshots/, NO auto-commits)
+#   1. save: snapshot (captures in-flight state in refs/acdd/snapshots/, NO auto-commits)
 #   2. In-place execution on current branch without worktree spawning.
 #   3. Zero root milestone gates (no blueprint_synthesis pre-task container, no handoff closure).
 #   4. Archiving via `plan archive` relocates document and prunes SQLite + snapshot refs.

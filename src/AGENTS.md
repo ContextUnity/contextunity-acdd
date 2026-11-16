@@ -105,6 +105,13 @@ See [Performance Architecture](../docs/architecture/performance.md) for complete
 3. **Intern Manifest Rules**: Intern declarative rules at language context scope, never per file.
 4. **Allocator Trimming**: Preserve all 10 explicit `libc::malloc_trim(0)` sites at batch boundaries to keep Peak RSS < 800 MB.
 
+When modifying task storage, subprocess monitors, or CLI/Git helpers across `src/` and `crates/acdd-tasks/`:
+
+1. **Cached Host Identity**: Read and cache the host name once per process (`OnceLock` + `libc::gethostname`) instead of spawning external `hostname` subprocesses on lock acquisition.
+2. **Ephemeral vs. Durable `sync_all`**: Reserve `sync_all()` for durable object packs, databases, and atomic replacements; omit `sync_all()` on transient concurrency locks (`gc.pid`) created with `create_new` + `rename` and unlinked on drop.
+3. **Batched Checkpoint Verification**: Check parent commit existence in a single `git cat-file --batch-check` call instead of per-SHA subprocess loops, and reuse intent-pinned parent sets across two-phase checkpoint publication.
+4. **Adaptive Subprocess Polling & Non-Blocking Ingress**: Use progressive poll backoff (`1ms -> 2ms -> 5ms -> 10ms`) in command exit monitors instead of fixed multi-millisecond sleeps, and keep CLI `io::stdin().read_to_string()` reading separated behind an explicit stdin entrypoint (`run_with_stdin`) so in-process callers and tests never stall on open inherited pipes.
+
 ## 6. Verification Gates
 
 Before delivering any source code change, verify the required gates from [TESTS.md](../TESTS.md):

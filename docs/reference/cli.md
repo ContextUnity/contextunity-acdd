@@ -547,7 +547,7 @@ optional `--commit` resolves a Git selector whose content must match the current
 clean worktree HEAD. Commit the archived manifest and working-file removal after
 handoff; that archive commit is not recorded in its own receipt.
 
-`milestone db-recover [<id-or-number-or-path>]` restores active milestone tasks from durable per-task Git checkpoints (`refs/forge/state/`).
+`milestone db-recover [<id-or-number-or-path>]` restores active milestone tasks from durable per-task Git checkpoints (`refs/acdd/state/`).
 The SQLite task store represents current active state only:
 - **Active state scope**: Archived milestones (`docs/milestones/archive/`) represent terminal history. They are not seeded into the active task database. Archived manifests containing a `handoff.proof_shas` block are checked for well-formed proof list structure (malformed, scalar, or null proof lists fail closed); valid archives are excluded from active task staging, and their receipts are not re-validated against the active gate profile during recovery.
 - **Root-confined active manifests**: Active milestone manifests are loaded strictly from the current workspace root. Manifests in other worktrees (e.g. unmerged branches or other milestones) are never crawled or cross-imported, preventing foreign task pollution.
@@ -558,7 +558,7 @@ The SQLite task store represents current active state only:
 - **Complete task progress restoration**: All accepted gate proofs (`contract`, `build`, etc.), claim revisions, and completed subtasks stored in Git checkpoint snapshots (`checkpoint.json`) are fully restored. Tasks without checkpoints remain admitted in their initial manifest state.
 - **Pending publication reconciliation**: When SQLite is fully up-to-date and an interrupted publication exists, it completes publication of the exact committed checkpoint without replaying SQL mutations, rewinds orphaned precommit intents, and releases interrupted submit claims. See [active recovery](tasks.md#active-task-checkpoints-and-database-recovery) for details.
 
-`milestone clear <id-or-number>` acquires an exclusive physical database fence (`tasks.receipt.lock`), checks that no active checkpoints are pending publication (`TASK_CHECKPOINT_PENDING`), resolves the milestone (failing closed with `MILESTONE_AMBIGUOUS` on multiple candidates), deletes SQLite tasks strictly scoped to the milestone prefix (`substr(task_id, 1, length(?1)) = ?1`), purges blackboard entries, provenance records (`command_execution_proofs`, `gate_execution_attempts`, `gate_execution_runs`), gate execution traces, and gate transitions, and prunes scoped Git state references (`refs/forge/state/<namespace>/<id>/*`) via atomic `git update-ref --stdin`.
+`milestone clear <id-or-number>` acquires an exclusive physical database fence (`tasks.receipt.lock`), checks that no active checkpoints are pending publication (`TASK_CHECKPOINT_PENDING`), resolves the milestone (failing closed with `MILESTONE_AMBIGUOUS` on multiple candidates), deletes SQLite tasks strictly scoped to the milestone prefix (`substr(task_id, 1, length(?1)) = ?1`), purges blackboard entries, provenance records (`command_execution_proofs`, `gate_execution_attempts`, `gate_execution_runs`), gate execution traces, and gate transitions, and prunes scoped Git state references (`refs/acdd/state/<namespace>/<id>/*`) via atomic `git update-ref --stdin`.
 
 ## Universal clear dispatch
 

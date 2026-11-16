@@ -30,14 +30,14 @@ their semantic operation tests rather than giving them pack-specific labels.
 
 Run full framework manifest suite:
 ```bash
-cargo test --test framework_manifests
+cargo test --test languages manifests::
 ```
 
 Run targeted manifest modules:
 ```bash
-cargo test --test framework_manifests fastapi::
-cargo test --test framework_manifests activation::
-cargo test --test framework_manifests finite_operations::
+cargo test --test languages manifests::fastapi::
+cargo test --test languages manifests::activation::
+cargo test --test languages manifests::finite_operations::
 ```
 
 ## Rules and Invariants

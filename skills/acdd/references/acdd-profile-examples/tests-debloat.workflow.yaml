@@ -2,7 +2,7 @@
 # ACDD PLAN PROFILE: Strict Tests Debloat & Contract Consolidation
 #
 # ADR 0021 Work Model 2 (Plan execution, save: snapshot, tasks: container only).
-# Paired with: `docs/plans/test-suite-debloat-and-contract-consolidation.md`
+# Paired with: `docs/plans/archive/test-suite-debloat-and-contract-consolidation.md`
 #
 # Enforces hard non-negotiable debloat gates:
 #   1. Zero tampering with non-test production source files (`src/`, `crates/*/src/` non-test)
@@ -20,7 +20,8 @@ scope_args_by_pattern:
   "tests/acdd/**/*.rs": "--test acdd"
   "tests/mcp/**/*.rs": "--test mcp"
   "tests/query_context/**/*.rs": "--test query_context"
-  "tests/incremental/**/*.rs": "--test incremental"
+  "tests/incremental/**/*.rs": "--test core"
+  "tests/framework_manifests/**/*.rs": "--test languages"
   "tests/linker/**/*.rs": "--test linker"
   "tests/languages/**/*.rs": "--test languages"
   "tests/core/**/*.rs": "--test core"

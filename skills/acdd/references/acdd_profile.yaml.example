@@ -32,7 +32,7 @@ limits:
 
 git_commit_note:
   limits:
-    max_bytes: 2048              # 2 KiB limit for Git notes attached to refs/notes/forge
+    max_bytes: 2048              # 2 KiB limit for Git notes attached to refs/notes/acdd
   format: markdown
   telemetry:
     format: markdown

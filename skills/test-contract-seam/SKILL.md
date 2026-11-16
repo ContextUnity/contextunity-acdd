@@ -33,7 +33,7 @@ repository adapter, the production owner and relevant seam, and the required
 test lanes.
 
 Read proof policy semantics from the active task engine's canonical reference
-and returned workflow guidance. For ACDD, use `forge_guide(topic="acdd")`
+and returned workflow guidance. For ACDD, use `acdd_guide(topic="acdd")`
 and the task evidence schema. The repository supplies test commands and lanes.
 Execute the admitted test-authoring step and record the observed result.
 Bind expected-red claims to an observed failure or recorded pre-fix replay;

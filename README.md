@@ -4,7 +4,7 @@
 [![MCP Protocol](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-green.svg)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 
-ACDD stands for Augmented Context-Driven Development. ContextUnity ACDD is a local-first, zero-daemon Rust engine for AI coding agents that brings together deep code graph navigation, living documentation indexing, and an ACDD lifecycle state machine into a single high-performance binary.
+ACDD stands for Augmented Context-Driven Delivery. ContextUnity ACDD is a local-first, zero-daemon Rust engine for AI coding agents that brings together deep code graph navigation, living documentation indexing, and an ACDD lifecycle state machine into a single high-performance binary.
 
 The same binary acts as both a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (20 tools) for coding assistants and an autonomous command-line interface (CLI) for headless workflows.
 
@@ -78,7 +78,7 @@ Documentation in ContextUnity ACDD is not an afterthought stored in disconnected
 
 ### 3. ACDD — Lifecycle State Machine and Orchestration
 
-**Augmented Context-Driven Development (ACDD)** replaces open-ended, unstructured coding loops with a deterministic verification state machine. It binds Git-tracked contracts (`docs/milestones/*.md`, `docs/plans/*.md`), persistent SQLite state (`.acdd/tasks.sqlite`), and declarative YAML profiles so every worker receives only the context relevant to its active gate:
+**Augmented Context-Driven Delivery (ACDD)** replaces open-ended, unstructured coding loops with a deterministic verification state machine. It binds Git-tracked contracts (`docs/milestones/*.md`, `docs/plans/*.md`), persistent SQLite state (`.acdd/tasks.sqlite`), and declarative YAML profiles so every worker receives only the context relevant to its active gate:
 
 - **Composable Gates & Universal Profiles**: Workflows are assembled from hierarchical agent, command, and container gates. Repositories inherit and specialize the embedded baseline (`crates/acdd-tasks/src/tasks/acdd.profile.yaml`) through a thin `.acdd/profile.yaml` overlay or replace it via `inherit: none`.
 - **Topological DAG Waves & Path Isolation**: Task dependencies (`depends_on`) resolve into execution waves running inside isolated `.worktrees/` protected by exclusive path locks.
@@ -143,7 +143,7 @@ Every core operation is available both to AI agents over MCP and to developers/s
 | **Milestone Handoff** | *CLI only* | `milestone handoff-context`, `verify`, `handoff` |
 | **Structured Plans** | *CLI only* | `plan list`, `plan show`, `plan run` |
 | **Standalone Workflows** | *CLI only* | `workflow list`, `workflow show`, `workflow run` |
-| **Built-in Reference** | `forge_guide` | `guide init`, `guide validate`, `guide lifecycle` |
+| **Built-in Reference** | `acdd_guide` | `guide init`, `guide validate`, `guide lifecycle` |
 
 ---
 

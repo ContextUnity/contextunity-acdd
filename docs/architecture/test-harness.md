@@ -107,7 +107,8 @@ Disk-backed task harnesses obtain claim-bound evidence templates from task conte
 Tests that intentionally submit malformed evidence keep their mutations explicit.
 
 The shipped authoring workflow tests replace the external model command with
-[`author-runner.py`](../../tests/acdd/fixtures/workflows/author-runner.py).
+`author-runner` in
+[`role_helper.rs`](../../tests/acdd/fixtures/role_helper.rs).
 It reads the emitted proof template and produces a rejected draft and a repaired
 artifact. The tests put the directory containing
 `CARGO_BIN_EXE_acdd` on the child process `PATH`; the
@@ -119,7 +120,8 @@ logs. Milestone initialization creates the authored milestone's tasks, but no
 workflow-gate tasks, claims, or synthetic run logs.
 
 The polish test replaces the external model with
-[`polish-runner.py`](../../tests/acdd/fixtures/workflows/polish-runner.py)
+`polish-runner` in
+[`role_helper.rs`](../../tests/acdd/fixtures/role_helper.rs)
 and the expensive repository verification body with a hermetic failing-then-passing
 command. ACDD observes the command and validates the review and routing.
 ADR 0024 is absent from this repository; its lifecycle authority remains a gap,

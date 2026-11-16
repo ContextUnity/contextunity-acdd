@@ -55,8 +55,8 @@ Authoritative inventory for [`IN-002-contextunity-acdd-one-pass-rename`](../mile
 
 ## 5. Preserved Durable Contracts & Exclusions
 
-- Preserved MCP tool names: `code_map_*`, `task_*`, `ast_grep_search`, `forge_guide`, `session_checkpoint`
-- Preserved constants & schemas: `default_repository` (`"forge-mcp"`), `commitments::ALGORITHM` (`"forge-owner-sha256-v2"`), `TASKS_SCHEMA_VERSION`, `CODE_MAP_SCHEMA_VERSION`, `INDEX_SEMANTICS_VERSION`, `ENGINE_SCHEMA_VERSION`
-- Preserved Git ref namespaces: `refs/forge/snapshots/` (`prune_snapshot_refs`)
+- Completed MCP tool rename: `forge_guide` -> `acdd_guide`; `code_map_*`, `task_*`, `ast_grep_search`, and `session_checkpoint` remain unchanged.
+- Completed default repository/project rename: `"forge-mcp"` -> `"acdd"`; commitment algorithm rename: `"forge-owner-sha256-v2"` -> `"acdd-owner-sha256-v2"`. Schema version constants remain unchanged.
+- Completed Git ref namespace rename: `refs/forge/*` -> `refs/acdd/*` for runtime refs and `refs/notes/forge` -> `refs/notes/acdd` for existing handoff passport/preparation ownership notes.
 - Immutable historical records: `docs/milestones/archive/**`, `docs/plans/archive/**`, prior `CHANGELOG.md` release entries, `benchmarks/` corpus data
 - Trace evidence contract: `persist_log` and `record_trace` record execution trace locators consumed verbatim by `read_trace_log`; accepted historical SQLite trace rows are never unconditionally rewritten during offline transfer

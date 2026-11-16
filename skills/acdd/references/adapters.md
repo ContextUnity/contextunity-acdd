@@ -4,7 +4,7 @@ Use the [adapter example](acdd.yaml.example) for a starter `acdd.yaml`. `acdd gu
 
 Each worktree's adapter lives at its repository root and is loaded from the selected MCP root. Linked workspace adapters live in sibling repositories listed by `linked_workspaces` and may supply their own roots and task metadata.
 
-Without an adapter file, ACDD scans `.` respecting `.gitignore`, excludes common build/cache directories (`target`, `node_modules`, `.git`, `.venv`, `__pycache__`), and writes `.acdd/code-map.sqlite`. The task database defaults to `.acdd/tasks.sqlite`; `task_repository` and `task_project` default to `forge-mcp`, `agents_guidance` to `AGENTS.md`, and the milestone directory to `docs/milestones/`.
+Without an adapter file, ACDD scans `.` respecting `.gitignore`, excludes common build/cache directories (`target`, `node_modules`, `.git`, `.venv`, `__pycache__`), and writes `.acdd/code-map.sqlite`. The task database defaults to `.acdd/tasks.sqlite`; `task_repository` and `task_project` default to `acdd`, `agents_guidance` to `AGENTS.md`, and the milestone directory to `docs/milestones/`.
 
 For Git-linked worktrees, relative `tasks_db` paths resolve from the primary worktree root and share task state. Standalone repositories remain independent unless explicitly configured to share a store. Worktree selector precedence for MCP is described in the [tool catalog](tool-catalog.md#discovery-and-search).
 

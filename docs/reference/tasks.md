@@ -29,7 +29,7 @@ Connections use WAL, a 5000 ms busy timeout, NORMAL
 synchronization, foreign keys, and a 256 MiB mmap ceiling. Transactional changes
 increment the `meta` generation; requests retain no cached task connection.
 
-`task_repository` defaults to `forge-mcp`; `task_project` defaults to that
+`task_repository` defaults to `acdd`; `task_project` defaults to that
 repository. Omitted milestone identity fields use the configured pair.
 Matching milestone frontmatter may declare `repository` and
 `project`. IDs are `project/milestone_id:task_ref`. The repository selects the Git checkout and is omitted from the task id. A legacy id `repository/project/milestone_id:task_ref` still resolves when that repository and project match the workspace. Operations and
@@ -48,8 +48,8 @@ Milestone frontmatter `status: in_progress` is read as `active`.
 
 ```yaml
 tasks_db: .acdd/tasks.sqlite
-task_repository: forge-mcp
-task_project: forge-mcp
+task_repository: acdd
+task_project: acdd
 agents_guidance: AGENTS.md
 record_task_commits: true # or false to disable writing task commit hashes into Markdown receipts
 # commit_tracking: milestone_only # optional alternative: all (default) | milestone_only | off
@@ -429,7 +429,7 @@ references, and passed and failed counts.
 
 ```json
 {
-  "task_id": "forge-mcp/m-example:implementation",
+  "task_id": "acdd/m-example:implementation",
   "stage": "build",
   "claim_revision": 7,
   "contract_revision": 1,
@@ -804,7 +804,7 @@ Task `receipt.commit` is navigation metadata: handoff retains known accepted
 ancestor pointers or refreshes a unique scope-equivalent rewritten landing;
 unresolved pointers are omitted. `record_task_commits: false` and `commit_tracking:
 off|milestone_only` omit individual navigation pointers in both SQLite and Markdown.
-Preparing context retains available historical proofs and actual target bases in task keepers until archive publication. New operations create no global `refs/forge/evidence/<sha>` pins.
+Preparing context retains available historical proofs and actual target bases in task keepers until archive publication. New operations create no global `refs/acdd/evidence/<sha>` pins.
 Initial handoff still requires accepted immutable proof objects. Before pruning,
 handoff records every gate commit/baseline, receipt commit, integration commit and
 target base in `handoff.proof_shas`. After durable publication it deletes those
@@ -918,7 +918,7 @@ captured nonempty caller sets continue to protect their caller paths.
 ### Active task checkpoints and database recovery
 
 Git workspaces retain active state in canonical
-`refs/forge/state/{repository}/{project}/{milestone_id}/{task_ref}` keepers.
+`refs/acdd/state/{repository}/{project}/{milestone_id}/{task_ref}` keepers.
 Candidates remain parentless; keeper commit parents retain candidate, baseline,
 receipt and actual prepared target-base objects through garbage collection.
 Snapshot construction briefly excludes repository GC while it writes the objects
@@ -961,7 +961,7 @@ publication fault and run:
 acdd milestone db-recover [<id-or-number-or-path>]
 ```
 
-`db-recover` restores active milestone tasks from durable per-task checkpoints (`refs/forge/state/`).
+`db-recover` restores active milestone tasks from durable per-task checkpoints (`refs/acdd/state/`).
 The SQLite task store represents current active state only:
 - **Active state scope**: Archived milestones (`docs/milestones/archive/`) represent terminal history. They are not seeded into the active task database. Archived manifests containing a `handoff.proof_shas` block are checked for well-formed proof list structure (malformed, scalar, or null proof lists fail closed); valid archives are excluded from active task staging, and their receipts are not re-validated against the active gate profile during recovery.
 - **Root-confined active manifests**: Active milestone manifests are loaded strictly from the current workspace root. Manifests in other worktrees (e.g. unmerged branches or other milestones) are never crawled or cross-imported.
@@ -1113,13 +1113,13 @@ Below is an illustrative payload returned upon claiming a task (`task_claim` or 
 
 ```json
 {
-  "task_id": "forge-mcp/m-sample:language-feature",
+  "task_id": "acdd/m-sample:language-feature",
   "status": "ready",
   "stage": "contract",
   "allowed_write_scope": ["src/engine/languages/html.rs", "tests/languages/html/syntax.rs"],
   "context_bundle": {
     "contract": {
-      "task_id": "forge-mcp/m-sample:language-feature",
+      "task_id": "acdd/m-sample:language-feature",
       "target": "Add HTML template island extraction",
       "stage": "contract",
       "status": "ready",

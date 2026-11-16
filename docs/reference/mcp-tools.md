@@ -17,7 +17,7 @@ A client receives three texts for this server. Keep each fact in one layer.
 | Tool description | `description` on each tool | What that call returns, plus one limit the schema cannot express. |
 | Input schema | Description on each input field | Accepted values, defaults, and pairings such as nonzero `offset` with `generation`. |
 
-Selector grammar, SQL shape, proof objects, and examples stay in this page and in `forge_guide`. Verify a changed sentence against the handler in `src/mcp/tools.rs` and the query implementation it calls. Connection and the first-call check stay in [MCP setup](mcp-setup.md).
+Selector grammar, SQL shape, proof objects, and examples stay in this page and in `acdd_guide`. Verify a changed sentence against the handler in `src/mcp/tools.rs` and the query implementation it calls. Connection and the first-call check stay in [MCP setup](mcp-setup.md).
 
 ## Efficient navigation
 
@@ -177,7 +177,7 @@ absent signals produce no hints. CLI flags use hyphens, for example
 | `search_docs` | Search indexed Markdown by `query` and optional `doc_type`; `include_excerpt=true` adds a bounded match excerpt. |
 | `get_doc` | Retrieve a Markdown document by `path_or_id` and optionally a heading `section`; full responses include source locations, citation links, uniquely verified referenced symbols, and a paged `referenced_symbol_candidates` collection for ambiguous eligible claims. Unscoped claims match symbols in the source document's workspace; an explicit normalized file link can cross workspaces. Compact responses omit candidate details and return a hint to request `detail="full"`. |
 | `session_checkpoint` | List SQLite checkpoints by full breadcrumb and serialized byte size; save, get, or delete an opaque JSON state payload by breadcrumb. |
-| `forge_guide` | Return shared CLI/MCP guidance by `topic`; defaults to `query`, whose topic index reflects enabled capabilities. |
+| `acdd_guide` | Return shared CLI/MCP guidance by `topic`; defaults to `query`, whose topic index reflects enabled capabilities. |
 | `task_list` | List ready tasks in the selected workspace and unique active milestone by default; zero active milestones returns an empty page and multiple active milestones require an explicit milestone selector/status. Accepts `limit` (1–100, default 30), `offset` (default 0), and `generation` (required for nonzero offsets), plus repository, task status, milestone, stage, and detail filters. Pagination reports total matches, actual returned count, byte-omitted records, and a continuation hint; its generation binds the workspace, filters, and task/subtask state, not the code index. Status accepts `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, or `all`. A targeted milestone defaults to all milestone statuses; explicit `milestone_status: "all"` retains archived tasks. Subtasks are compact by default; request `detail: "full"` for titles and evidence. |
 | `task_claim` | Atomically claim the current task gate for a worker and worktree. |
 | `task_submit` | Submit a revision-bound JSON `evidence` object, or omit evidence on automated Contract/Command proof gates to run the registered command or reuse fresh claim-bound proof. Delivery can infer proof from the accepted candidate snapshot without running a command. Optional `timeout_seconds` overrides autonomous execution within profile limits and conflicts with explicit evidence. Passing the active profile's terminal delivery gate (default ID: `deliver`) writes the validated task receipt and context rollup. |
@@ -188,7 +188,7 @@ See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI p
 
 ## Built-in guide
 
-`forge_guide` and CLI `guide TOPIC` use the same producer, resolved adapter and
+`acdd_guide` and CLI `guide TOPIC` use the same producer, resolved adapter and
 response formatter. Omitted or blank MCP topics select `query`; blank topic
 strings also select `query` in the shared API and CLI. The query response retains
 its navigation fields and adds a capability-filtered `topics` array.
@@ -234,7 +234,7 @@ and [CLI guide usage](cli.md#server-guide-and-checkpoints).
 
 All 20 MCP tools support a `worktree` selector, optional on every tool except
 `task_claim` and `task_manage(action: "next")`, which require it for task
-affinity. This includes task tools, `forge_guide`, and `session_checkpoint`.
+affinity. This includes task tools, `acdd_guide`, and `session_checkpoint`.
 The same resolver selects a request-local root, adapter, and index before
 dispatch. `task_submit` accepts a selector optionally without changing evidence
 identity.
@@ -383,7 +383,7 @@ Code source previews from `code_map_search` appear automatically when the total 
 
 `ast_grep_search.language` accepts a compiled profile ID such as `python`, `rust`, or `typescript`. Omit it when `path` names a file with a recognized extension: `{"pattern":"class Widget","path":"src/example.py"}` infers Python. An explicit language takes precedence; directory scopes require an explicit language. A null or empty language also requests inference. When inference fails, the tool returns the compiled language list and usage examples.
 
-Call `forge_guide` with `topic:"ast"` for the profile matrix and syntax examples. Profiles declare these independent capabilities:
+Call `acdd_guide` with `topic:"ast"` for the profile matrix and syntax examples. Profiles declare these independent capabilities:
 
 | Capability | Behavior |
 | --- | --- |

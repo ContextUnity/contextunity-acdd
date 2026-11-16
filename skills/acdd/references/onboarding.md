@@ -64,7 +64,7 @@ do not use `--force` over a tailored adapter.
   patterns for confidential paths that readers must block.
 - Point `docs`, `milestones`, `plans`, and `agents_guidance` to maintained paths.
   Set stable `task_repository` and `task_project` identities for this project,
-  rather than carrying the example's `forge-mcp` identity into another project.
+  rather than carrying the example's `acdd` identity into another project.
 - Retain the default relative `tasks_db` unless the repository requires another
   location. Git-linked worktrees share the primary worktree's relative task
   database. Independent repositories keep independent stores unless sharing

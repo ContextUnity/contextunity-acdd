@@ -21,8 +21,8 @@ ignore:
 sensitive: ['.env*', 'secrets/**']
 
 # Task configuration
-task_repository: "forge-mcp"
-task_project: "forge-mcp"
+task_repository: "acdd"
+task_project: "acdd"
 tasks_db: ".acdd/tasks.sqlite"
 agents_guidance: "AGENTS.md"
 

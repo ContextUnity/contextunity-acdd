@@ -11,7 +11,7 @@ Archived record of completed structural test optimizations landed in `main` comm
 `668951614` (*refactor(tests): consolidate binaries, share PersistedSnapshot fixtures, and align governance docs*).
 Remaining uncompleted items (`tests/acdd/orchestrator/spawner.rs`, `tests/linker/value_flow.rs`,
 and `tests/common/workspace_contract_tests.rs`) and full bug-fix regression debloat were migrated to
-[Test Suite Debloat and Contract Consolidation Plan](../test-suite-debloat-and-contract-consolidation.md).
+[Test Suite Debloat and Contract Consolidation Plan](test-suite-debloat-and-contract-consolidation.md).
 
 ## 1. Decompose Orchestrator Wave Suite and Isolate Pure State Tests
 
