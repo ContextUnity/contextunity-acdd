@@ -2,7 +2,7 @@
 id: AC-004-unified-execution-and-spec-pipeline
 title: Unified Task/Plan Execution, Workflow Inheritance, ADR-0021 Alignment, and Specify-Design Pipeline
 doc_type: contract
-status: active
+status: completed
 depends_on: []
 guidance:
   hitl: pro
@@ -44,6 +44,176 @@ polish_scope:
 - skills/acdd/references/acdd-profile-examples/pentest-security-audit.workflow.yaml
 - skills/acdd/references/acdd-profile-examples/subsystem-feature.milestone.yaml
 started_at: 2026-11-15T21:33:56+00:00
+repository: forge-mcp
+project: forge-mcp
+handoff:
+  completed_at: 2026-11-16T10:45:23.778561633+00:00
+  duration: 13h 11m
+  commit: 4a198bfa87b2ded555e2669f4a20a2651c6e6319
+  target_base: 4562b341bb5bbe349552e92b05ba3ebe72f952f5
+  integration_evidence:
+    binding:
+      version: 1
+      repository: forge-mcp
+      project: forge-mcp
+      milestone: AC-004-unified-execution-and-spec-pipeline
+      authority_digest: 902ae7c28637a071bfde2ea5b105a1636f41159bc05cf5efb81f6d14a0638974
+      implementation_digest: f4abe48e334e739d61c1b64d63981c0c84b0dbb7e55af8caed1db9b686bab89f
+      target_base_digest: 220ed94efd659aa46fe8d89d497608b6c067cef807fe9072aac0b3f816924ca0
+      builders:
+      - codex-sol-builder
+      - codex-terra-builder
+    target_base: main
+    review:
+      worker_id: codex-sol-integration-reviewer
+      decision: pass
+      summary: Reviewed milestone authority, five task commits, representative implementation changes, receipt provenance, polish scope, and documentation. No blocking scope or contract findings. Worktree is clean, protected files are unchanged, and binding and verification evidence match the specified candidate and target base. Supplied verification passed with 1,385 repository tests and 94 member-library tests, zero failures, and unchanged temporary-directory counts.
+      scope_findings: []
+      contract_findings: []
+    verification:
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 1385
+      tests_failed: 0
+      project_command: check_full_repo
+  proof_shas:
+  - 00647944d2ca8a44a78fd9245f8e479180d5f738
+  - 0a68742f43e118cfc350645d445cdf9a94f9d4f7
+  - 0a8933b47fc4fbc11a089f9fc099b84c46a7795d
+  - 0c5bd6f1dd8c6eb06fe0f3c6c30298fa96d7130c
+  - 0da89e287eb5be284cc2e7af7950e7b641a772f9
+  - 0f36fa559634f4179bae29c6639aae691b3d97ab
+  - 10c3bba6d37eb81255b66cedc905c20b6578ef3e
+  - 12356621f2fe24a33dbb9161f44bbfbf1dd4c5e1
+  - 2abde512b0335ec271a0c736b676b174cd03bbf2
+  - 34a50d0c458d08e4842fb830f7b257b03f11be3f
+  - 43ecccff9bd9f7af2c9876f7929fbe189d3ef0b3
+  - 4562b341bb5bbe349552e92b05ba3ebe72f952f5
+  - 4a198bfa87b2ded555e2669f4a20a2651c6e6319
+  - 551f2c2228cf8415c7464b645292165c776b2c21
+  - 57df61b1a00bf31ac02adb58eebce6d7ffef3428
+  - 716149d3ac3e40c079cb0feb8ee2b2d009f2e825
+  - 72d146c1c06a4c9f4e01c00051b0309d86a35802
+  - 750e34dc616a8b5170d58dff65f479403d8d9fcb
+  - 7f5e7187ea74901f5bcbc847fb412536b76666f1
+  - 80a9b33dbb73ea182ddec92195040d0cedbb7c41
+  - 82cfb38e102ac63b9309670db0f2f4adf567cab6
+  - 88822c93f0a03dac7777ce7006fea75126a47bcb
+  - 9123b79baa08a289f913dcc1d04312c10c53503d
+  - 993a87bedb86100f8a45b68e86e03572744c1caf
+  - 9ad9e0fc9948a627d2f99cb6fda43833a2d22f1c
+  - a99c29aa080b7aedc573d8c88e42f6ad006fdc6b
+  - b05f0b856b8f2c8021c457b49d885bcdf329ae17
+  - b8721cf5957934f83fd16608e8f5b7b0b3652dc4
+  - c941ae07208cc5771b253e0df87b29abf399ce99
+  - cb2c0da9dd96fe65f42d8269b7092361a9a63b59
+  - cd9c61af58d81c17d37baff28bba8be907aedf73
+  - dc0023e4bf50f40c9b81c081901900ef2788abcf
+  - e7e02685a510861d04e16fd81c07f86eb9e9211e
+  - f73b0e1b58e1f7c3612ba04b1a070683fcbb54ee
+  passport:
+    version: 1
+    identity: forge-mcp/forge-mcp/AC-004-unified-execution-and-spec-pipeline
+    binding:
+      version: 1
+      repository: forge-mcp
+      project: forge-mcp
+      milestone: AC-004-unified-execution-and-spec-pipeline
+      authority_digest: 902ae7c28637a071bfde2ea5b105a1636f41159bc05cf5efb81f6d14a0638974
+      implementation_digest: f4abe48e334e739d61c1b64d63981c0c84b0dbb7e55af8caed1db9b686bab89f
+      target_base_digest: 220ed94efd659aa46fe8d89d497608b6c067cef807fe9072aac0b3f816924ca0
+      builders:
+      - codex-sol-builder
+      - codex-terra-builder
+    commit: 4a198bfa87b2ded555e2669f4a20a2651c6e6319
+    target_base: 4562b341bb5bbe349552e92b05ba3ebe72f952f5
+    active_authority_digest: 5a5713a056bc2ac630500793a53066868f89bd1f0d9e0baa52f95b9eef04d430
+    started_at: 2026-11-15T21:33:56+00:00
+    completed_at: 2026-11-16T10:45:23.778561633+00:00
+    duration_seconds: 47487
+    tasks_count: 5
+    tasks:
+    - task_id: forge-mcp/AC-004-unified-execution-and-spec-pipeline:builtin-profile-presets-and-workflow-inheritance
+      status: completed
+      first_claimed_at: 1794785405
+      completed_at: 1794793526
+      execution_wall_seconds: 8121
+      review_cycles: 6
+      rejected_reviews: 3
+    - task_id: forge-mcp/AC-004-unified-execution-and-spec-pipeline:fix-role-command-rejection-and-findings
+      status: completed
+      first_claimed_at: 1794780434
+      completed_at: 1794785390
+      execution_wall_seconds: 4956
+      review_cycles: 2
+      rejected_reviews: 1
+    - task_id: forge-mcp/AC-004-unified-execution-and-spec-pipeline:spec-traceability-docs-and-skills-reconciliation
+      status: completed
+      first_claimed_at: 1794813286
+      completed_at: 1794818691
+      execution_wall_seconds: 5405
+      review_cycles: 2
+      rejected_reviews: 1
+    - task_id: forge-mcp/AC-004-unified-execution-and-spec-pipeline:unify-plan-execution-on-task-store
+      status: completed
+      first_claimed_at: 1794793666
+      completed_at: 1794812603
+      execution_wall_seconds: 18937
+      review_cycles: 6
+      rejected_reviews: 4
+    - task_id: forge-mcp/AC-004-unified-execution-and-spec-pipeline:upfront-contract-synthesis-and-dag-prioritization
+      status: completed
+      first_claimed_at: 1794778436
+      completed_at: 1794780404
+      execution_wall_seconds: 1968
+      review_cycles: 2
+      rejected_reviews: 1
+    diff:
+      docs:
+        files: 12
+        added: 868
+        removed: 44
+      other:
+        files: 12
+        added: 629
+        removed: 10
+      src:
+        files: 34
+        added: 2820
+        removed: 609
+      tests:
+        files: 39
+        added: 3778
+        removed: 237
+    ast_symbol_deltas:
+      added: 474
+      removed: 8
+      modified: 165
+    test_suite_results:
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      tests_passed: 1385
+      tests_failed: 0
+      project_command: check_full_repo
+    automatic_project_verification:
+      selection: check_full_repo
+      command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+      exit_code: 0
+      stdout_digest: f5c690a5773fceb26eb0d2dd3e2aaa386d669800fc17373e341e8494875e28d0
+      reused_verification: true
+      implementation_digest: f4abe48e334e739d61c1b64d63981c0c84b0dbb7e55af8caed1db9b686bab89f
+    linter:
+      status: unobserved
+    topology:
+      upstream: []
+      downstream: []
+      unresolved_upstream: []
+    verified_handoff_proof: 8bbc05afd006f2bcf3991458029752199305a22070369f7e904c73b32791fdb9
+  verification:
+    command: cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+    status: passed
+    tests_passed: 1385
+    tests_failed: 0
 ---
 
 # AC-004: Unified Task/Plan Execution, Workflow Inheritance, ADR-0021 Alignment, and Specify-Design Pipeline
@@ -123,6 +293,7 @@ subtasks:
 receipt:
   delivery_gate: deliver
   candidate_gate: build
+  commit: b274167f7d48a700a547480aae9697778147f11e
   contract_revision: 1
   passed_at: 2026-11-15T22:06:44.910817126+00:00
   evidence:
@@ -214,6 +385,7 @@ subtasks:
 receipt:
   delivery_gate: deliver
   candidate_gate: build
+  commit: 84c73460429e0e2c3b37b7f273fdb29e194eb4a4
   contract_revision: 1
   passed_at: 2026-11-15T23:29:50.103470750+00:00
   evidence:
