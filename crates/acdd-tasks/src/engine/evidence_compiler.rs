@@ -338,9 +338,10 @@ pub(super) fn compile_evidence_for_task(
         "TASK_CANDIDATE_BASELINE_INVALID",
     )?;
     if gate.proof.kind() == Some(ProofKind::Delivery) {
-        let (candidate, candidate_baseline) = store
-            .build_snapshot_candidate(task_id)?
-            .context("TASK_SNAPSHOT_NOT_FOUND: no accepted candidate snapshot precedes delivery")?;
+        let candidate = store.build_snapshot_candidate(task_id)?;
+        if candidate.is_none() && task.subject_kind != crate::store::ExecutionSubjectKind::Plan {
+            bail!("TASK_SNAPSHOT_NOT_FOUND: no accepted candidate snapshot precedes delivery");
+        }
         let evidence = Evidence {
             task_id: task_id.to_owned(),
             stage: stage.to_owned(),
@@ -348,8 +349,8 @@ pub(super) fn compile_evidence_for_task(
             contract_revision: task.contract_revision,
             worker_id: worker_id.to_owned(),
             worktree: worktree.to_owned(),
-            commit: Some(candidate),
-            candidate_baseline_head: Some(candidate_baseline),
+            commit: candidate.as_ref().map(|(candidate, _)| candidate.clone()),
+            candidate_baseline_head: candidate.map(|(_, baseline)| baseline),
             proof: json!({"delivery_proof": {"status": "passed"}}),
         };
         return serde_json::to_value(evidence)
@@ -379,7 +380,7 @@ pub(super) fn compile_evidence_for_task(
     if gate.command.is_some()
         && matches!(
             gate.proof.kind(),
-            Some(ProofKind::Contract | ProofKind::Command | ProofKind::SeamTest)
+            Some(ProofKind::Contract | ProofKind::Command | ProofKind::SeamTest | ProofKind::None)
         )
     {
         validate_execution_plan(
@@ -410,6 +411,10 @@ pub(super) fn compile_evidence_for_task(
         Some(ProofKind::SeamTest) => seam_test_proof(&run, &traces, gate, &profile, store)?,
         Some(ProofKind::Delivery) => {
             bail!("TASK_TYPED_EVIDENCE_REQUIRED: delivery gates require an accepted delivery proof")
+        }
+        Some(ProofKind::None) if gate.command.is_some() => {
+            command_proof(&run, &traces, gate, &profile, &worktree_path, store)?;
+            json!({})
         }
         Some(ProofKind::None) => {
             bail!("TASK_TYPED_EVIDENCE_REQUIRED: this gate does not support inferred proof")
@@ -460,7 +465,9 @@ fn seam_test_proof(
         {
             bail!("TASK_AUTO_PROOF_UNAVAILABLE: seam execution contains an unsuccessful command");
         }
-        verify_command_identity(name, command, &entry.trace, profile)?;
+        if !is_plan_run(store, run) {
+            verify_command_identity(name, command, &entry.trace, profile)?;
+        }
         let facts = store
             .execution_proof(run.run_id, &entry.trace.command_id, entry.trace.attempt_id)?
             .context("TASK_AUTO_PROOF_UNAVAILABLE: seam execution has no persisted test facts")?;
@@ -512,7 +519,35 @@ pub(super) fn submit_zero_arg_with_timeout(
         bail!("TASK_STALE_CLAIM: task is not claimed at requested stage");
     }
     let evidence = if matches!(action, Action::Pass) {
-        ensure_command_evidence(root, task_id, timeout_seconds)?
+        match ensure_command_evidence(root, task_id, timeout_seconds) {
+            Ok(evidence) => evidence,
+            Err(error) if task.subject_kind == crate::store::ExecutionSubjectKind::Plan => {
+                let store = store_for_task(root, task_id)?;
+                let profile = store.profile_for_task(&task)?;
+                let gate = crate::engine::claim::cursor_for_stage(&profile, stage)?.gate;
+                let worktree = task.worktree.as_deref().context("TASK_STALE_CLAIM")?;
+                let candidate = store.build_snapshot_candidate(task_id)?;
+                let changed = if gate.persistence.immutable {
+                    if let Some((candidate, _)) = candidate {
+                        crate::engine::git_snapshot::capture_scoped_snapshot(
+                            Path::new(worktree),
+                            task_id,
+                            &task.spec.scope,
+                        )?
+                        .is_some_and(|(current, _, _)| current != candidate)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if !changed {
+                    return Err(error);
+                }
+                json!({"task_id":task_id,"stage":stage,"claim_revision":task.claim_revision,"contract_revision":task.contract_revision,"worker_id":task.worker_id,"worktree":worktree,"proof":{}})
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         compile_rejection_evidence(root, &task)?
     };
@@ -579,7 +614,19 @@ fn compile_rejection_evidence(root: &Path, task: &crate::store::Task) -> Result<
         .commands
         .get(name)
         .context("TASK_COMMAND_UNCONFIGURED: gate command not registered")?;
-    verify_command_identity(name, command, &trace.trace, &profile)?;
+    if task.subject_kind == crate::store::ExecutionSubjectKind::Plan {
+        validate_execution_plan(
+            &path,
+            task,
+            &cursor.gate,
+            &profile,
+            &store,
+            run.run_id,
+            &traces,
+        )?;
+    } else {
+        verify_command_identity(name, command, &trace.trace, &profile)?;
+    }
     let facts = store
         .execution_proof(run.run_id, &trace.trace.command_id, trace.trace.attempt_id)?
         .context("TASK_AUTO_PROOF_UNAVAILABLE: failed command facts missing")?;
@@ -597,6 +644,7 @@ fn compile_rejection_evidence(root: &Path, task: &crate::store::Task) -> Result<
         Some(ProofKind::SeamTest) => {
             json!({"seam_test_proof": {"exit_code": exit, "seam_test_refs": facts.passed_tests, "tests_passed": facts.passed, "tests_failed": facts.failed}})
         }
+        Some(ProofKind::None) if cursor.gate.command.is_some() => json!({"none_proof": {}}),
         _ => bail!("TASK_TYPED_EVIDENCE_REQUIRED: gate does not support mechanical rejection"),
     };
     serde_json::to_value(Evidence {
@@ -651,7 +699,8 @@ fn ensure_command_evidence_with_options(
     if !matches!(
         cursor.gate.proof.kind(),
         Some(ProofKind::Contract | ProofKind::Command | ProofKind::SeamTest)
-    ) {
+    ) && !(cursor.gate.command.is_some() && cursor.gate.proof.kind() == Some(ProofKind::None))
+    {
         bail!("TASK_TYPED_EVIDENCE_REQUIRED: active gate requires caller-supplied typed evidence");
     }
     let name = cursor.gate.command.as_deref().context("TASK_COMMAND_UNCONFIGURED: active gate has no registered command; configure gates.<stage>.command and commands.<id> before autonomous verification")?;
@@ -744,6 +793,11 @@ fn validate_execution_plan(
                         &[test_path.to_owned()],
                         profile,
                     )?;
+                    crate::milestones::command_gate::expand_plan_commands(
+                        store,
+                        task,
+                        &mut expected,
+                    )?;
                     if let Some(symbol) = test_symbol {
                         let runner_sym = crate::milestones::command_gate::runner_test_identifier(
                             test_path, symbol,
@@ -774,7 +828,9 @@ fn validate_execution_plan(
         .chain(&task.spec.extended_scope)
         .cloned()
         .collect::<Vec<_>>();
-    let expected = crate::milestones::resolve_command_plan(root, name, command, &paths, profile)?;
+    let mut expected =
+        crate::milestones::resolve_command_plan(root, name, command, &paths, profile)?;
+    crate::milestones::command_gate::expand_plan_commands(store, task, &mut expected)?;
     if expected.is_empty()
         || !expected
             .iter()
@@ -1061,7 +1117,9 @@ fn contract_proof(
         {
             bail!("TASK_AUTO_PROOF_UNAVAILABLE: contract execution contains an unexpected result");
         }
-        verify_registered_command(gate, profile, &trace.trace)?;
+        if !is_plan_run(store, run) {
+            verify_registered_command(gate, profile, &trace.trace)?;
+        }
         let durable =
             store.execution_proof(run.run_id, &trace.trace.command_id, trace.trace.attempt_id)?;
         let registered = gate
@@ -1137,7 +1195,9 @@ pub(super) fn command_proof(
         {
             bail!("TASK_AUTO_PROOF_UNAVAILABLE: latest claim-bound execution contains an unsuccessful command");
         }
-        verify_command_identity(registered_name, registered, &entry.trace, profile)?;
+        if !is_plan_run(store, run) {
+            verify_command_identity(registered_name, registered, &entry.trace, profile)?;
+        }
         let (command_passed, command_failed, command_log) = if let Some(facts) =
             store.execution_proof(run.run_id, &entry.trace.command_id, entry.trace.attempt_id)?
         {
@@ -1176,6 +1236,12 @@ pub(super) fn command_proof(
     )?;
     proof["command_proof"]["log"] = json!(bounded_string(&log, profile.max_log_bytes()));
     Ok(proof)
+}
+
+fn is_plan_run(store: &crate::store::TasksStore, run: &ClaimBoundExecutionRun) -> bool {
+    store
+        .inspect(&run.subject)
+        .is_ok_and(|task| task.subject_kind == crate::store::ExecutionSubjectKind::Plan)
 }
 
 fn verify_registered_command(

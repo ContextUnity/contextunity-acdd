@@ -166,7 +166,8 @@ pub(super) fn accepted_boundary_callers(
     gate_index: usize,
 ) -> Result<Option<BaselineBoundaryCallers>> {
     let gate_sequence = super::super::claim::gate_sequence(profile)?;
-    let Some(contract_gate) = gate_sequence[..gate_index]
+    let end = gate_index.saturating_add(1).min(gate_sequence.len());
+    let Some(contract_gate) = gate_sequence[..end]
         .iter()
         .rev()
         .find(|cursor| cursor.gate.proof.kind() == Some(ProofKind::Contract))
@@ -301,11 +302,126 @@ fn indexed_caller_paths(
     Ok(callers)
 }
 
+fn baseline_matches(worktree: &Path, snapshot_baseline: &str, baseline: &str) -> bool {
+    if snapshot_baseline == baseline {
+        return true;
+    }
+    let snapshot_tree = crate::git::git_stdout(
+        worktree,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("{snapshot_baseline}^{{tree}}"),
+        ],
+        "TASK_CANDIDATE_BASELINE_INVALID",
+    );
+    let current_tree = crate::git::git_stdout(
+        worktree,
+        &["rev-parse", "--verify", &format!("{baseline}^{{tree}}")],
+        "TASK_CANDIDATE_BASELINE_INVALID",
+    );
+    matches!(
+        (snapshot_tree, current_tree),
+        (Ok(s_tree), Ok(c_tree)) if !s_tree.trim().is_empty() && s_tree.trim() == c_tree.trim()
+    )
+}
+
+fn contains_identifier(text: &str, ident: &str) -> bool {
+    let ident_bytes = ident.as_bytes();
+    if ident_bytes.is_empty() {
+        return false;
+    }
+    text.match_indices(ident).any(|(start, _)| {
+        let before = text[..start].chars().next_back();
+        let after = text[start + ident.len()..].chars().next();
+        before.is_none_or(|c| !c.is_alphanumeric() && c != '_')
+            && after.is_none_or(|c| !c.is_alphanumeric() && c != '_')
+    })
+}
+
+fn baseline_caller_paths_from_git(
+    worktree: &Path,
+    baseline: &str,
+    symbol: &acdd_core::models::Node,
+) -> Result<BTreeSet<String>> {
+    let mut queue = std::collections::VecDeque::from([symbol.name.clone()]);
+    let mut seen_idents = BTreeSet::from([symbol.name.clone()]);
+    let prefix = format!("{baseline}:");
+    let mut callers = BTreeSet::new();
+    while let Some(ident) = queue.pop_front() {
+        let output = crate::git::git_command(
+            worktree,
+            &["grep", "-z", "-l", "-F", "-e", &ident, baseline, "--"],
+        )?;
+        if output.status.code() == Some(1) {
+            continue;
+        }
+        if !output.status.success() {
+            bail!(
+                "TASK_CANDIDATE_BASELINE_INVALID: could not search baseline callers at {baseline}"
+            );
+        }
+        for entry in output.stdout.split(|byte| *byte == 0).filter(|p| !p.is_empty()) {
+            let raw = String::from_utf8(entry.to_vec())
+                .context("TASK_CANDIDATE_BASELINE_INVALID: grep path is not UTF-8")?;
+            let candidate_path = raw.strip_prefix(&prefix).unwrap_or(&raw);
+            let Some(source) = baseline_source(worktree, baseline, candidate_path)? else {
+                continue;
+            };
+            let Some(facts) = extract_typed(candidate_path, &source)? else {
+                continue;
+            };
+            let test_sources: BTreeSet<&str> = facts
+                .facts
+                .nodes
+                .iter()
+                .filter(|node| node.is_test)
+                .map(|node| node.qualname.as_str())
+                .collect();
+            let mut references_ident = false;
+            for reference in &facts.facts.references {
+                if test_sources.contains(reference.source.as_str()) {
+                    continue;
+                }
+                let matches_ident = contains_identifier(&reference.expression, &ident)
+                    || reference.alias.as_deref() == Some(ident.as_str());
+                if matches_ident {
+                    references_ident = true;
+                    if let Some(alias) = reference
+                        .alias
+                        .as_deref()
+                        .filter(|alias| !alias.is_empty() && seen_idents.len() < 16)
+                    {
+                        if seen_idents.insert(alias.to_owned()) {
+                            queue.push_back(alias.to_owned());
+                        }
+                    }
+                }
+            }
+            // Fail closed on any external method/function declaration with the same name when
+            // semantic linking cannot disambiguate trait re-export aliases (`pub use Trait as R`).
+            let implements_or_overrides = ident == symbol.name
+                && symbol.kind == "method"
+                && facts.facts.nodes.iter().any(|node| {
+                    !node.is_test
+                        && matches!(node.kind.as_str(), "function" | "method")
+                        && node.name == symbol.name
+                        && (candidate_path != symbol.path || node.qualname != symbol.qualname)
+                });
+            if references_ident || implements_or_overrides {
+                callers.insert(candidate_path.to_owned());
+            }
+        }
+    }
+    Ok(callers)
+}
+
 pub(super) fn capture_baseline_boundary_callers(
     connection: &rusqlite::Connection,
     worktree: &Path,
     scope: &[String],
     captured_baseline: Option<&str>,
+    prior: Option<&BaselineBoundaryCallers>,
 ) -> Result<BaselineBoundaryCallers> {
     let baseline = match captured_baseline {
         Some(captured) => captured.to_owned(),
@@ -315,6 +431,8 @@ pub(super) fn capture_baseline_boundary_callers(
             "TASK_CANDIDATE_BASELINE_INVALID",
         )?,
     };
+    let prior_matching =
+        prior.filter(|snapshot| baseline_matches(worktree, &snapshot.baseline_commit, &baseline));
     let mut entries = Vec::new();
     for path in baseline_scope_files(worktree, &baseline, scope)? {
         let Some(source) = baseline_source(worktree, &baseline, &path)? else {
@@ -325,14 +443,27 @@ pub(super) fn capture_baseline_boundary_callers(
                 "TASK_CANDIDATE_BASELINE_INVALID: could not parse '{path}' at {baseline}: {error}"
             )
         })? {
+            let caller_paths = match indexed_caller_paths(connection, &symbol)? {
+                Some(paths) => paths,
+                None => match prior_matching.and_then(|snapshot| {
+                    snapshot.entries.iter().find(|entry| {
+                        entry.path == symbol.path
+                            && entry.kind == symbol.kind
+                            && entry.name == symbol.name
+                            && entry.qualname == symbol.qualname
+                            && (entry.target_present || !entry.caller_paths.is_empty())
+                    })
+                }) {
+                    Some(entry) => entry.caller_paths.clone(),
+                    None => baseline_caller_paths_from_git(worktree, &baseline, &symbol)?,
+                },
+            };
             entries.push(BaselineCallerEntry {
                 path: symbol.path.clone(),
                 kind: symbol.kind.clone(),
                 name: symbol.name.clone(),
                 qualname: symbol.qualname.clone(),
-                caller_paths: indexed_caller_paths(connection, &symbol)?.with_context(|| {
-                    format!("TASK_SCOPE_INCOMPLETE: baseline caller evidence unavailable for '{}' in '{}'. Do: restore the baseline symbol and refresh the index before accepting the contract.", symbol.name, symbol.path)
-                })?,
+                caller_paths,
                 target_present: true,
             });
         }
@@ -373,31 +504,8 @@ pub(super) fn validate_public_signature_scope(
     // Preserve accepted task proofs across history integration (rebase/amend/merge)
     // when tree content is identical, but fail closed if baseline content changed.
     if let Some(snapshot) = captured_callers {
-        if snapshot.baseline_commit != baseline {
-            let snapshot_tree = crate::git::git_stdout(
-                worktree,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    &format!("{}^{{tree}}", snapshot.baseline_commit),
-                ],
-                "TASK_CANDIDATE_BASELINE_INVALID",
-            );
-            let current_tree = crate::git::git_stdout(
-                worktree,
-                &["rev-parse", "--verify", &format!("{baseline}^{{tree}}")],
-                "TASK_CANDIDATE_BASELINE_INVALID",
-            );
-            match (snapshot_tree, current_tree) {
-                (Ok(s_tree), Ok(c_tree))
-                    if !s_tree.trim().is_empty() && s_tree.trim() == c_tree.trim() =>
-                {
-                    // Tree content is identical; navigation SHA changed via rebase/amend/squash.
-                }
-                _ => {
-                    bail!("TASK_CANDIDATE_BASELINE_MISMATCH: accepted contract caller evidence is tied to a different Git baseline content");
-                }
-            }
+        if !baseline_matches(worktree, &snapshot.baseline_commit, &baseline) {
+            bail!("TASK_CANDIDATE_BASELINE_MISMATCH: accepted contract caller evidence is tied to a different Git baseline content");
         }
     }
     let baseline_files = baseline_scope_files(worktree, &baseline, scope)?;
@@ -466,13 +574,20 @@ pub(super) fn validate_public_signature_scope(
         let indexed = indexed_caller_paths(connection, &baseline_node)?;
         let captured_presence =
             captured.is_some_and(|entry| entry.target_present || !entry.caller_paths.is_empty());
-        if !captured_presence && indexed.is_none() {
-            bail!("TASK_SCOPE_INCOMPLETE: {task_id}. baseline caller evidence unavailable for '{}' in '{}'. Do: restore the baseline symbol and refresh the index before accepting the contract.", baseline_node.name, baseline_node.path);
-        }
+        let fallback = if !captured_presence && indexed.is_none() {
+            Some(baseline_caller_paths_from_git(
+                worktree,
+                &baseline,
+                &baseline_node,
+            )?)
+        } else {
+            None
+        };
         let mut callers = captured
             .map(|entry| entry.caller_paths.clone())
             .unwrap_or_default();
         callers.extend(indexed.into_iter().flatten());
+        callers.extend(fallback.into_iter().flatten());
         let external = callers
             .into_iter()
             .filter(|caller| !path_is_in_scope(caller, scope))

@@ -380,61 +380,156 @@ receipt:
 
 ```yaml
 task_ref: unify-plan-execution-on-task-store
-target: "Unify Plan execution (plan.rs) onto TasksStore and task_runner semantics under amended ADR 0021 (in-place/snapshot mode with SQLite step and subtask tracking, resume, findings, placeholder expansion, immutable predecessor guard, and nested ### heading preservation in complete_source); update `plan clear|archive` in src/cli/plan.rs to prune both snapshot/trace state and SQLite plan task/subtask rows while keeping CLI parity and migrating obsolete ADR-021 v1 fixtures to real plan subtask lifecycle tests in unified_plan_engine.rs; keep pre-task validate_pre_task_root_proof strict at blueprint acceptance while making fan_out_pre_task_proofs_if_ready resilient (Variant C) to post-blueprint depends_on/task_ref evolution via task sync in proof_fanout.rs and blueprints.rs."
+target: 'Unify Plan execution (plan.rs) onto TasksStore and task_runner semantics under amended ADR 0021 (in-place/snapshot mode with SQLite step and subtask tracking, resume, findings, placeholder expansion, immutable predecessor guard, and nested ### heading preservation in complete_source); update `plan clear|archive` in src/cli/plan.rs to prune both snapshot/trace state and SQLite plan task/subtask rows while keeping CLI parity and migrating obsolete ADR-021 v1 fixtures to real plan subtask lifecycle tests in unified_plan_engine.rs; keep pre-task validate_pre_task_root_proof strict at blueprint acceptance while making fan_out_pre_task_proofs_if_ready resilient (Variant C) to post-blueprint depends_on/task_ref evolution via task sync in proof_fanout.rs and blueprints.rs.'
 proof_policy: seam-test-first
 contract_revision: 3
 depends_on:
-  - fix-role-command-rejection-and-findings
-  - builtin-profile-presets-and-workflow-inheritance
+- fix-role-command-rejection-and-findings
+- builtin-profile-presets-and-workflow-inheritance
 scope:
-  - crates/acdd-tasks/src/engine/mod.rs
-  - crates/acdd-tasks/src/engine/gates/submit.rs
-  - crates/acdd-tasks/src/milestones/mod.rs
-  - crates/acdd-tasks/src/engine/context.rs
-  - crates/acdd-tasks/src/engine/lifecycle/root_gates.rs
-  - crates/acdd-tasks/src/engine/lifecycle/proof_fanout.rs
-  - crates/acdd-tasks/src/engine/orchestrator/plan.rs
-  - crates/acdd-tasks/src/engine/orchestrator/task_runner.rs
-  - crates/acdd-tasks/src/store/mod.rs
-  - crates/acdd-tasks/src/store/lifecycle.rs
-  - crates/acdd-tasks/src/store/subtasks.rs
-  - crates/acdd-tasks/src/milestones/synthesis.rs
-  - src/cli/plan.rs
-  - tests/acdd/orchestrator/waves/plans.rs
-  - tests/acdd/orchestrator/waves/blueprints.rs
-  - tests/acdd/orchestrator/unified_plan_engine.rs
+- crates/acdd-tasks/src/engine/mod.rs
+- crates/acdd-tasks/src/engine/gates/submit.rs
+- crates/acdd-tasks/src/milestones/mod.rs
+- crates/acdd-tasks/src/engine/context.rs
+- crates/acdd-tasks/src/engine/lifecycle/root_gates.rs
+- crates/acdd-tasks/src/engine/lifecycle/proof_fanout.rs
+- crates/acdd-tasks/src/engine/orchestrator/plan.rs
+- crates/acdd-tasks/src/engine/orchestrator/task_runner.rs
+- crates/acdd-tasks/src/store/mod.rs
+- crates/acdd-tasks/src/store/lifecycle.rs
+- crates/acdd-tasks/src/store/subtasks.rs
+- crates/acdd-tasks/src/milestones/synthesis.rs
+- src/cli/plan.rs
+- tests/acdd/orchestrator/waves/plans.rs
+- tests/acdd/orchestrator/waves/blueprints.rs
+- tests/acdd/orchestrator/unified_plan_engine.rs
+- crates/acdd-tasks/src/engine/lifecycle/mod.rs
+- crates/acdd-tasks/src/engine/blackboard.rs
+- crates/acdd-tasks/src/engine/lifecycle/tests.rs
+- crates/acdd-tasks/src/store/recovery/replay.rs
+- crates/acdd-tasks/src/engine/workspaces.rs
+- crates/acdd-tasks/src/milestones/command_gate.rs
+- crates/acdd-tasks/src/engine/evidence_compiler.rs
+- crates/acdd-tasks/src/engine/orchestrator/workflow.rs
+- crates/acdd-tasks/src/engine/gates/scope.rs
 symbols:
-  - enum:ExecutionSubjectKind
-status: ready
+- enum:ExecutionSubjectKind
+status: completed
 subtasks:
-  - subtask_ref: sqlite-backed-plan-steps-and-subtasks
-    title: "Sync Plan steps/subtasks into TasksStore under in-place snapshot mode with resume, subtask transitions, bidirectional Markdown status/evidence projection, and SQLite cleanup in src/cli/plan.rs clear|archive"
-  - subtask_ref: plan-execution-invariants-and-tests
-    title: "Emit candidate_drift_warning with mandatory rebind/re-verify/re-review before terminal snapshot delivery on immutable plan drift, fix immutable predecessor none-guard, command placeholder expansion, and nested heading preservation while migrating obsolete pre-completed subtask fixtures to real in-place subtask lifecycle tests"
-  - subtask_ref: incremental-post-blueprint-fanout
-    title: "Keep validate_pre_task_root_proof strict on blueprint submission while making fan_out_pre_task_proofs_if_ready Variant-C resilient to post-blueprint depends_on/task sync evolution without re-opening completed root gates (proven in waves/blueprints.rs)"
+- subtask_ref: sqlite-backed-plan-steps-and-subtasks
+  title: Sync Plan steps/subtasks into TasksStore under in-place snapshot mode with resume, subtask transitions, bidirectional Markdown status/evidence projection, and SQLite cleanup in src/cli/plan.rs clear|archive
+  status: completed
+  evidence: Unified Plan execution on TasksStore/task_runner with snapshot lifecycle, SQLite step/subtask state, Markdown bidirectional projection, and recoverable plan clear/archive cleanup; verified acdd-tasks --lib (92/92) and unified_plan_engine (8/8).
+- subtask_ref: plan-execution-invariants-and-tests
+  title: Emit candidate_drift_warning with mandatory rebind/re-verify/re-review before terminal snapshot delivery on immutable plan drift, fix immutable predecessor none-guard, command placeholder expansion, and nested heading preservation while migrating obsolete pre-completed subtask fixtures to real in-place subtask lifecycle tests
+  status: completed
+  evidence: Enforced candidate_drift_warning rebind/re-verify/re-review for Plan snapshots, expanded command-plan rejection validation, Markdown fence-aware spans, and fail-closed baseline caller fallback across aliases; verified waves::plans (7/7), tasks::boundaries (8/8), and Sol high review pass (claim 61).
+- subtask_ref: incremental-post-blueprint-fanout
+  title: Keep validate_pre_task_root_proof strict on blueprint submission while making fan_out_pre_task_proofs_if_ready Variant-C resilient to post-blueprint depends_on/task sync evolution without re-opening completed root gates (proven in waves/blueprints.rs)
+  status: completed
+  evidence: Preserved strict validate_pre_task_root_proof at blueprint acceptance while making fan_out_pre_task_proofs_if_ready Variant-C resilient across post-blueprint task sync without reopening completed root gates; verified waves::blueprints (11/11).
+extended_scope:
+- crates/acdd-tasks/src/engine/lifecycle/mod.rs
+- crates/acdd-tasks/src/engine/blackboard.rs
+- crates/acdd-tasks/src/engine/lifecycle/tests.rs
+- crates/acdd-tasks/src/store/recovery/replay.rs
+- crates/acdd-tasks/src/engine/workspaces.rs
+- crates/acdd-tasks/src/milestones/command_gate.rs
+- crates/acdd-tasks/src/engine/evidence_compiler.rs
+- crates/acdd-tasks/src/engine/orchestrator/workflow.rs
+- crates/acdd-tasks/src/engine/gates/scope.rs
+receipt:
+  delivery_gate: deliver
+  candidate_gate: build
+  contract_revision: 3
+  passed_at: 2026-11-16T07:03:23.809635271+00:00
+  evidence:
+    command_proof:
+      command: rust-check-and-test
+      exit_code: 0
+      tests_passed: 1
+      tests_failed: 0
+      log: |
+        [rust-check-and-test::tests/acdd/orchestrator/unified_plan_engine.rs]
+        SCOPE_VIOLATION_WARNING: docs/milestones/AC-004-unified-execution-and-spec-pipeline.md
+        PASS rust-check-and-test::tests/acdd/orchestrator/unified_plan_engine.rs: exit=0 passed=1 failed=0 (3687 ms)
+  review:
+    review_proof:
+      contours:
+        administration:
+          applicable: true
+          evidence: Review claim 61 verified accepted build candidate 57df61b1a00bf31ac02adb58eebce6d7ffef3428 (distinct from builder codex-terra-builder); zero test leaks or task_submit mutations.
+        claims:
+          applicable: true
+          evidence: 'F1-F7 all resolved: Plan TasksStore/task_runner unification, candidate drift rebinding, expanded command proofs, checkpoint retry, subtask projection, fence-aware parsing, Variant-C fanout, and fail-closed alias fallback in scope.rs; strict Clippy + 92 acdd-tasks + 8 unified_plan_engine + 7 waves::plans + 11 waves::blueprints + 8 tasks::boundaries pass.'
+        concurrency:
+          applicable: true
+          evidence: Claim fencing, candidate snapshot binding, and atomic SQLite/checkpoint retirement verified across all 5 suites.
+        paths:
+          applicable: true
+          evidence: All 25 scoped files match candidate snapshot 57df61b1a; protected Cargo.toml/build.rs/.acdd/profile.yaml untouched; all 9 extended_scope files verified.
+        project_isolation:
+          applicable: true
+          evidence: Workspace isolation and temp-directory inventory (5284 before/after, identical SHA-256) verified with zero leaks.
+      decision: pass
+      extended_scope_review:
+        approved_paths:
+        - crates/acdd-tasks/src/engine/lifecycle/mod.rs
+        - crates/acdd-tasks/src/engine/blackboard.rs
+        - crates/acdd-tasks/src/engine/lifecycle/tests.rs
+        - crates/acdd-tasks/src/store/recovery/replay.rs
+        - crates/acdd-tasks/src/engine/workspaces.rs
+        - crates/acdd-tasks/src/milestones/command_gate.rs
+        - crates/acdd-tasks/src/engine/evidence_compiler.rs
+        - crates/acdd-tasks/src/engine/orchestrator/workflow.rs
+        - crates/acdd-tasks/src/engine/gates/scope.rs
+        reason_verified: true
+      notes: Independent Sol high review passed on claim 61, snapshot 57df61b1a00bf31ac02adb58eebce6d7ffef3428; F1-F7 closed without test bloat.
+  decision: pass
+  rollup:
+    verified_invariants:
+    - 'INV-ROLE-COMMAND-REJECTION-PARITY: An agent role paired with command pre-validation can return a valid structured rejection proof even when the observed command exited zero, failing closed only on false-positive pass when observed_pass is false, and preserving reuse_on_reject sessions across failed role retries.'
+    - 'INV-CANDIDATE-DRIFT-WARNING: candidate_fingerprint and git snapshots share the same .acdd/ runtime-path exclusions so runtime churn never triggers drift; non-runtime worktree drift during review/immutable gates emits a structured candidate_drift_warning with changed paths for LLM/reviewer inspection and enforces mandatory candidate rebinding, renewed verification when source/test paths drifted, and renewed independent_reviewer sign-off before issuing any terminal deliver/handoff receipt (reserving hard TASK_CANDIDATE_MISMATCH fail-closed strictly for corrupted/mismatched explicit commit receipts or unrecoverable HEAD divergence).'
+    - 'INV-COMMAND-FAILURE-FINDINGS-PROPAGATION: Failing autonomous command gates across waves, workflows, and plans emit structured failure diagnostics into findings and keep RoleObservations.findings synchronized so on_fail repair roles and reject_routing never receive null or stale diagnostics.'
+    - 'INV-ADR021-UNIFIED-TASK-MODEL: Under amended ADR 0021 (Variant A), Plan and Milestone share the single SQLite TasksStore and task_runner execution contour (with plan steps executing in-place via snapshots, full subtask lifecycle, blackboard, and resume, while Milestone adds worktree isolation, blueprint synthesis, red contract tests, and handoff commits); Workflow stays strictly stateless with respect to tasks and subtasks.'
+    - 'INV-WORKFLOW-PROFILE-INHERITANCE: Standalone and builtin workflows inherit roles (runner, models, prompt_template), commands, policies, and limits from the active repository profile without importing a tasks container, support append-only save: log audit trails without task rows, and keep local docs/workflows overrides higher priority.'
+    - 'INV-SPECIFY-DESIGN-TRACEABILITY: Builtin author-spec and amended blueprint schemas capture Goal, Non-goals, ambiguities, numbered AC-* criteria, C1/C2 boundary impact, ADR requirements, and SAD updates prior to code delivery without weakening core gate proofs.'
+    architectural_notes: []
+    review_summary:
+      decision: pass
+      contours:
+        administration: accepted
+        claims: accepted
+        concurrency: accepted
+        paths: accepted
+        project_isolation: accepted
 ```
 
 ### task: spec-traceability-docs-and-skills-reconciliation
 
 ```yaml
 task_ref: spec-traceability-docs-and-skills-reconciliation
-target: "Add optional spec and acceptance_criteria manifest/task fields with scoped AC-* projection into context_bundle, reconcile CLI guide (src/cli/guide.rs) and docs (AGENTS.md, architecture, milestones, reference/acdd.md, reference/cli.md) and skills (acdd, contract-planning) with C1/C2 + live C3/C4 graph, Option 1 immutable-rebind semantics, and S/M/L Specify-Design cadence, and verify all repository test gates."
+target: "Add optional spec and acceptance_criteria manifest/task fields with scoped AC-* projection into context_bundle, set the embedded default builder model to 'gpt-6.1-terra:medium' in acdd.profile.yaml, replace hardcoded default/repo profile model, gate-count, cursor-count, and command-name assertions across unit and integration tests with dynamic profile projection checks, reconcile CLI guide (src/cli/guide.rs) and docs (AGENTS.md, tests/AGENTS.md, architecture, milestones, reference/acdd.md, reference/profiles.md, reference/cli.md — removing hardcoded versioned builder/reviewer model names where role contracts suffice) and skills (acdd, contract-planning) with C1/C2 + live C3/C4 graph, Option 1 immutable-rebind semantics, and S/M/L Specify-Design cadence, and verify all repository test gates."
 proof_policy: seam-test-first
-contract_revision: 1
+contract_revision: 2
 depends_on:
   - unify-plan-execution-on-task-store
 scope:
   - crates/acdd-tasks/src/tasks/mod.rs
+  - crates/acdd-tasks/src/tasks/acdd.profile.yaml
+  - crates/acdd-tasks/src/tasks/profile/tests.rs
   - crates/acdd-tasks/src/engine/context.rs
+  - crates/acdd-tasks/src/engine/orchestrator/role.rs
   - src/cli/guide.rs
   - AGENTS.md
   - README.md
   - docs/AGENTS.md
+  - tests/AGENTS.md
   - docs/architecture/README.md
   - docs/architecture/specification-and-design-lifecycle.md
   - docs/milestones/AGENTS.md
   - docs/reference/acdd.md
+  - docs/reference/profiles.md
   - docs/reference/cli.md
   - docs/reference/tasks.md
   - skills/AGENTS.md
@@ -445,11 +540,19 @@ scope:
   - skills/acdd/references/acdd-profile-examples/in-place-refactor.plan.yaml
   - skills/contract-planning/SKILL.md
   - tests/acdd/orchestrator/spec_traceability.rs
+  - tests/acdd/tasks/seams/tiered_context.rs
+  - tests/acdd/tasks/guidance/profile_defaults.rs
+  - tests/acdd/tasks/guidance/custom_profiles.rs
+  - tests/acdd/mcp/profiles_and_gates.rs
+  - tests/acdd/gates_ast/profile_parser.rs
+  - tests/acdd/command_gate_harness.rs
 symbols: []
 status: ready
 subtasks:
   - subtask_ref: optional-spec-ac-context-projection
     title: "Support optional spec and acceptance_criteria fields in Milestone/TaskSpec with scoped AC-* injection into context_bundle"
+  - subtask_ref: profile-defaults-and-dynamic-test-assertions
+    title: "Fix embedded builder model ('gpt-6.1-terra:medium') in acdd.profile.yaml and refactor hardcoded profile/model/cursor/command test assertions to read dynamically from resolved profiles"
   - subtask_ref: docs-skills-and-suite-verification
-    title: "Reconcile documentation and skills with ADR 0021 Variant A and Specify/Design paradigms and pass all TESTS.md checks"
+    title: "Reconcile documentation (dropping hardcoded model versions in reference docs) and skills with ADR 0021 Variant A and Specify/Design paradigms and pass all TESTS.md checks"
 ```

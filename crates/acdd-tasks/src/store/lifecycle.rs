@@ -336,6 +336,14 @@ impl TasksStore {
 
     /// Mark an execution run complete only after every reserved command has a persisted trace.
     pub fn complete_execution_run(&mut self, run_id: i64) -> Result<()> {
+        self.complete_execution_run_with_candidate(run_id, None)
+    }
+
+    pub(crate) fn complete_execution_run_with_candidate(
+        &mut self,
+        run_id: i64,
+        candidate: Option<&str>,
+    ) -> Result<()> {
         let repository = self.repository.clone();
         let project = self.project.clone();
         let tx = self
@@ -357,8 +365,8 @@ impl TasksStore {
             );
         }
         tx.execute(
-            "UPDATE gate_execution_runs SET status='completed' WHERE id=?1 AND status='running'",
-            [run_id],
+            "UPDATE gate_execution_runs SET status='completed', candidate_fingerprint=COALESCE(?2,candidate_fingerprint) WHERE id=?1 AND status='running'",
+            params![run_id, candidate],
         )?;
         tx.commit()?;
         Ok(())
@@ -644,8 +652,12 @@ impl TasksStore {
             {
                 continue;
             }
-            let profile =
-                resolve_task_profile(context.workspace_root.as_deref(), &context.profile, &task)?;
+            let profile = resolve_task_profile(
+                &tx,
+                context.workspace_root.as_deref(),
+                &context.profile,
+                &task,
+            )?;
             let profile = crate::engine::claim::flattened_profile(&profile, Some(&task))?;
             let gate = profile
                 .by_stage(&task.stage)
@@ -701,8 +713,12 @@ impl TasksStore {
         };
         let mut task = task;
         task.worktree = Some(selected_worktree.to_string_lossy().into_owned());
-        let profile =
-            resolve_task_profile(context.workspace_root.as_deref(), &context.profile, &task)?;
+        let profile = resolve_task_profile(
+            &tx,
+            context.workspace_root.as_deref(),
+            &context.profile,
+            &task,
+        )?;
         let cursor =
             crate::engine::claim::claim_nested_gate_for_task(&profile, &task.stage, "", &task)?;
         let stage_to_claim = cursor.canonical_stage_id;
@@ -735,7 +751,7 @@ impl TasksStore {
         let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
         tx.enroll(&[id.to_owned()], false)?;
         let mut task = load(&tx, id)?.context(task_not_found_message(id))?;
-        let profile = resolve_task_profile(workspace_root.as_deref(), &base_profile, &task)?;
+        let profile = resolve_task_profile(&tx, workspace_root.as_deref(), &base_profile, &task)?;
         let task_profile = crate::engine::tasks::claim::flattened_profile(&profile, Some(&task))?;
         if matches!(task.status.as_str(), "completed" | "cancelled") {
             task.gate = 0;
@@ -989,6 +1005,114 @@ impl TasksStore {
             mode: if force { "force" } else { "standard" }.into(),
         })
     }
+    /// Remove the SQLite state owned by a plan, atomically.
+    pub fn prune_plan_subject(&mut self, reference: &str) -> Result<Vec<String>> {
+        struct RestoreRefs {
+            root: Option<std::path::PathBuf>,
+            refs: Vec<(String, String)>,
+            armed: bool,
+        }
+        impl Drop for RestoreRefs {
+            fn drop(&mut self) {
+                if !self.armed {
+                    return;
+                }
+                if let Some(root) = &self.root {
+                    for (reference, old) in &self.refs {
+                        if let Ok(current) = crate::git::git_stdout(
+                            root,
+                            &["rev-parse", "--verify", reference],
+                            "TASK_CHECKPOINT_ROLLBACK_FAILED",
+                        ) {
+                            if &current != old {
+                                let _ = crate::git::git_command(
+                                    root,
+                                    &["update-ref", reference, old, &current],
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let scope = self.milestone_scope_ref(reference)?;
+        let id_prefix = self.id_prefix.clone();
+        let namespace = self.namespace.clone();
+        let repository = self.repository.clone();
+        let mut restore = RestoreRefs {
+            root: self.workspace_root.clone(),
+            refs: Vec::new(),
+            armed: true,
+        };
+        let checkpoint = self.checkpoint_context()?;
+        let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
+        let ids: Vec<String> = tx.prepare(
+            "SELECT task_id FROM tasks WHERE milestone_ref=?1 AND json_extract(descriptor,'$.subject_kind')='plan' AND (substr(task_id,1,length(?2))=?2 OR substr(task_id,1,length(?3))=?3)"
+        )?.query_map(params![reference, id_prefix, namespace], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        if let Some(root) = &restore.root {
+            for id in &ids {
+                let reference = format!("refs/forge/state/{repository}/{}", id.replace(':', "/"));
+                if let Ok(sha) = crate::git::git_stdout(
+                    root,
+                    &["rev-parse", "--verify", &reference],
+                    "TASK_CHECKPOINT_MISSING",
+                ) {
+                    restore.refs.push((reference, sha));
+                }
+            }
+        }
+        tx.enroll(&ids, false)?;
+        if let Some(id) = ids.first() {
+            let (parent, _) = id.rsplit_once(':').context("TASK_ID_INVALID")?;
+            tx.freeze_handoff(&format!("{parent}:"), &std::collections::BTreeSet::new())?;
+        }
+        for id in &ids {
+            let (parent, task_ref) = id.rsplit_once(':').context("TASK_ID_INVALID")?;
+            let identity = if parent.starts_with(&namespace) {
+                parent.to_owned()
+            } else {
+                format!("{repository}/{parent}")
+            };
+            tx.execute("DELETE FROM command_execution_proofs WHERE run_id IN (SELECT id FROM gate_execution_runs WHERE subject=?1)", [id])?;
+            tx.execute("DELETE FROM gate_execution_attempts WHERE run_id IN (SELECT id FROM gate_execution_runs WHERE subject=?1)", [id])?;
+            tx.execute("DELETE FROM gate_execution_runs WHERE subject=?1", [id])?;
+            tx.execute("DELETE FROM gate_execution_traces WHERE subject=?1", [id])?;
+            tx.execute(
+                "DELETE FROM gate_checkpoints WHERE milestone_id=?1 AND subject=?2",
+                params![identity, task_ref],
+            )?;
+            tx.execute("DELETE FROM gate_transitions WHERE subject=?1", [id])?;
+            tx.execute("DELETE FROM task_dependencies WHERE dependency_id=?1", [id])?;
+            tx.execute(
+                "DELETE FROM task_blackboard WHERE task_id=?1 OR recipient_task_id=?1",
+                [id],
+            )?;
+            tx.execute(
+                "DELETE FROM task_store_metadata WHERE key=?1",
+                [format!("checkpoint_home:{id}")],
+            )?;
+            tx.execute(
+                "DELETE FROM task_store_metadata WHERE key=?1",
+                [format!("plan_profile:{id}")],
+            )?;
+            tx.execute("DELETE FROM task_revisions WHERE task_id=?1", [id])?;
+            tx.execute("DELETE FROM tasks WHERE task_id=?1", [id])?;
+        }
+        if !ids.is_empty() {
+            tx.execute(
+                "DELETE FROM task_blackboard WHERE milestone_ref=?1 AND task_id IS NULL",
+                [scope],
+            )?;
+        }
+        let result = tx.commit();
+        if result.is_ok() || result.as_ref().is_err_and(super::recovery::is_pending) {
+            restore.armed = false;
+        }
+        result?;
+        Ok(ids)
+    }
+
     /// Performs cleanup.
     pub fn cleanup(&mut self, at: i64) -> Result<Vec<String>> {
         let ids: Vec<String> = self
@@ -1089,7 +1213,8 @@ impl ClaimContext {
         }
         let mut task = load(tx, id)?.context(task_not_found_message(id))?;
         task.worktree = Some(worktree.to_string_lossy().into_owned());
-        let profile = resolve_task_profile(self.workspace_root.as_deref(), &self.profile, &task)?;
+        let profile =
+            resolve_task_profile(tx, self.workspace_root.as_deref(), &self.profile, &task)?;
         if task.status == "parked"
             && (task.parked_worker_id.as_deref() != Some(worker)
                 || task.parked_worktree.as_deref().map(Path::new) != Some(worktree))

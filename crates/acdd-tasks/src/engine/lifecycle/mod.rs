@@ -201,7 +201,7 @@ fn claim_inner(root: &Path, p: Claim) -> Result<Value> {
     let mut task = store.inspect(&p.task_id)?;
     validate_authority(&task, &worktree, workspace, &registry)?;
     registry.check_scope(workspace, &task.spec.scope, Some(&worktree))?;
-    context::validate_claim_gate_requirements(workspace, &task)?;
+    context::validate_claim_gate_requirements(workspace, &store, &task)?;
     let profile = store.profile_for_task(&task)?;
     let root_profile = root_gates::resolve_milestone_profile_for_task(&store, workspace, &task)?;
     task.worktree = Some(worktree.to_string_lossy().into_owned());
@@ -259,6 +259,9 @@ fn finish_claim(
         .context("TASK_BREADCRUMB_INVALID: task reference is missing")?;
     let subagent_role = super::claim::resolve_subagent_role(&cursor);
     let activation = (|| {
+        if claimed.subject_kind == crate::store::ExecutionSubjectKind::Plan {
+            return Ok(());
+        }
         let milestone_prefix = claimed
             .task_id
             .split_once(':')
@@ -840,6 +843,7 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                 &all_tasks,
                 &selected_worktree,
             )?;
+            let profile_store = super::store(root)?;
             let next = store.next(
                 worker,
                 worktree,
@@ -848,7 +852,7 @@ fn manage_inner(root: &Path, p: &mut Manage) -> Result<Value> {
                     registry.check_worktree(workspace, selected)?;
                     validate_authority(task, selected, workspace, &registry)?;
                     registry.check_scope(workspace, &task.spec.scope, Some(selected))?;
-                    context::validate_claim_gate_requirements(workspace, task)?;
+                    context::validate_claim_gate_requirements(workspace, &profile_store, task)?;
                     if let Some(root_state) = pre_task_roots.get(&task.task_id) {
                         if let Some(action) = &root_state.pending {
                             return Err(anyhow::Error::new(PendingRootGateDispatch(

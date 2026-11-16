@@ -592,8 +592,16 @@ pub(super) fn validate_owner(
         .with_context(|| format!("TASK_RECOVERY_AUTHORITY_MISSING: {}", task.task_id))?;
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("TASK_RECOVERY_AUTHORITY_MISSING: {}", task.task_id))?;
-    let settings = super::super::ArchiveSettings::load(workspace)?;
-    let milestone = settings.parse(&text, Path::new(&task.milestone_ref), &authority.repository)?;
+    let milestone = if task.subject_kind == crate::store::ExecutionSubjectKind::Plan {
+        crate::engine::orchestrator::plan::PlanDocument::from_source(
+            Path::new(&task.milestone_ref),
+            text,
+        )?
+        .task_contract(&authority.repository, &authority.project)
+    } else {
+        let settings = super::super::ArchiveSettings::load(workspace)?;
+        settings.parse(&text, Path::new(&task.milestone_ref), &authority.repository)?
+    };
     let spec = milestone
         .tasks
         .iter()

@@ -233,6 +233,20 @@ pub(super) fn task_proof_slices(
         );
     }
 
+    historical_task_proof_slices(proof, milestone_tasks)
+}
+
+// The root proof was validated against the task graph at acceptance time.
+// Later syncs may add tasks or change seams, so replay only slices that existed
+// in that accepted proof and still have an active owner.
+fn historical_task_proof_slices(
+    proof: &Value,
+    milestone_tasks: &[Task],
+) -> Result<Vec<(String, Value)>> {
+    let slices = proof
+        .get("tasks")
+        .and_then(Value::as_object)
+        .context("MILESTONE_TASK_PROOF_INVALID: proof.tasks must be an object")?;
     let shared_fields = [
         "cited_invariants",
         "cited_symbols",
@@ -244,10 +258,11 @@ pub(super) fn task_proof_slices(
         .iter()
         .filter(|task| task.status != "cancelled")
     {
-        let mut payload = slices
-            .get(&task.spec.task_ref)
-            .copied()
-            .and_then(Value::as_object)
+        let Some(slice) = slices.get(&task.spec.task_ref) else {
+            continue;
+        };
+        let mut payload = slice
+            .as_object()
             .context("MILESTONE_TASK_PROOF_INVALID: task slice must be an object")?
             .clone();
         for field in shared_fields {
@@ -450,7 +465,6 @@ pub(in crate::engine) fn fan_out_pre_task_proofs_if_ready(
     if cursors.is_empty() {
         return Ok(Vec::new());
     }
-    let contract_matrix = store.list_contract_matrix(&milestone_identity)?;
     let history = gate_graph::active_milestone_history(&store.connection, &milestone_identity)?;
     for cursor in &cursors {
         let transition_id = history.iter().rev()
@@ -486,7 +500,7 @@ pub(in crate::engine) fn fan_out_pre_task_proofs_if_ready(
         let Some(proof) = root_proof_with_task_map(&payload)? else {
             continue;
         };
-        let task_slices = task_proof_slices(proof, &milestone_tasks, &contract_matrix)?;
+        let task_slices = historical_task_proof_slices(proof, &milestone_tasks)?;
         let source = crate::store::GateTransition {
             milestone_id: milestone_identity.clone(),
             subject: "milestone".to_owned(),

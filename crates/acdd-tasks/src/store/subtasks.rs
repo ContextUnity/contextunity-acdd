@@ -13,6 +13,25 @@ pub(super) fn read_subtask(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubtaskS
     })
 }
 
+fn plan_subtasks_replacement(
+    root: &Path,
+    task: &Task,
+) -> Result<super::recovery::ManifestReplacement> {
+    let path = crate::tasks::confined_path(root, &task.milestone_ref)?;
+    let source = std::fs::read_to_string(path)?;
+    let plan = crate::engine::orchestrator::plan::PlanDocument::from_source(
+        Path::new(&task.milestone_ref),
+        source.clone(),
+    )?;
+    let updated = plan.project_subtasks(&task.spec.task_ref, &task.spec.subtasks)?;
+    super::recovery::ManifestReplacement::new(
+        root,
+        &task.milestone_ref,
+        source.as_bytes(),
+        updated.as_bytes(),
+    )
+}
+
 impl TasksStore {
     /// Add a subtask to an existing task.
     pub fn subtask_add(
@@ -27,6 +46,7 @@ impl TasksStore {
         if title.is_empty() {
             bail!("TASK_SUBTASK_TITLE_EMPTY: subtask title cannot be empty");
         }
+        let workspace_root = self.workspace_root.clone();
         let checkpoint = self.checkpoint_context()?;
         let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
         tx.enroll(&[task_id.to_owned()], false)?;
@@ -58,6 +78,14 @@ impl TasksStore {
             .context("subtask missing after insert")?;
         task.spec.subtasks = subtasks;
         drop(stmt);
+        if task.subject_kind == ExecutionSubjectKind::Plan {
+            tx.stage_manifest_replacement(plan_subtasks_replacement(
+                workspace_root
+                    .as_deref()
+                    .context("TASK_WORKSPACE_MISSING")?,
+                &task,
+            )?)?;
+        }
         save(&tx, &task)?;
         tx.commit()?;
         Ok(result)
@@ -72,6 +100,7 @@ impl TasksStore {
     ) -> Result<SubtaskSpec> {
         self.assert_id(task_id)?;
         let status = crate::tasks::SubtaskStatus::parse(status)?.as_str();
+        let workspace_root = self.workspace_root.clone();
         let checkpoint = self.checkpoint_context()?;
         let mut tx = super::recovery::transaction(&mut self.connection, checkpoint)?;
         tx.enroll(&[task_id.to_owned()], false)?;
@@ -112,6 +141,14 @@ impl TasksStore {
             .context("subtask missing after update")?;
         task.spec.subtasks = subtasks;
         drop(stmt);
+        if task.subject_kind == ExecutionSubjectKind::Plan {
+            tx.stage_manifest_replacement(plan_subtasks_replacement(
+                workspace_root
+                    .as_deref()
+                    .context("TASK_WORKSPACE_MISSING")?,
+                &task,
+            )?)?;
+        }
         save(&tx, &task)?;
         tx.commit()?;
         Ok(result)

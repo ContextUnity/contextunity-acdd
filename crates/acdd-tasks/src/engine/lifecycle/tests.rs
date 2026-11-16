@@ -45,6 +45,7 @@ mod task_proof_fanout_validation_tests {
 
     fn task(task_ref: &str, depends_on: &[&str]) -> Task {
         Task {
+            subject_kind: crate::store::ExecutionSubjectKind::Milestone,
             task_id: format!("project/milestone:{task_ref}"),
             milestone_ref: "milestone".into(),
             spec: TaskSpec {

@@ -64,6 +64,11 @@ fn prune_plan_snapshots(root: &Path, path: &Path, _slug: &str) -> Result<usize> 
 
     let plan_prefix = format!("refs/forge/snapshots/{namespace}/plan-{tag_prefix}-");
     let gate_prefix = format!("refs/forge/snapshots/{namespace}/plan-gate-{tag_prefix}-");
+    let tasks = if acdd_tasks::database_path(root)?.exists() {
+        acdd_tasks::engine::store(root)?.list(Some(&plan_rel.to_string_lossy()), "all", None)?
+    } else {
+        Vec::new()
+    };
 
     let output = acdd_core::git::git_command(
         root,
@@ -87,7 +92,16 @@ fn prune_plan_snapshots(root: &Path, path: &Path, _slug: &str) -> Result<usize> 
         if reference.is_empty() {
             continue;
         }
-        let matches = reference.starts_with(&plan_prefix) || reference.starts_with(&gate_prefix);
+        let matches = reference.starts_with(&plan_prefix)
+            || reference.starts_with(&gate_prefix)
+            || tasks
+                .iter()
+                .filter(|task| task.subject_kind == acdd_tasks::store::ExecutionSubjectKind::Plan)
+                .any(|task| {
+                    let owner = task.task_id.replace(':', "/");
+                    reference == format!("refs/forge/snapshots/{owner}")
+                        || reference.starts_with(&format!("refs/forge/snapshots/{owner}/"))
+                });
         if matches {
             refs_to_delete.push(reference.to_owned());
         }
@@ -100,6 +114,23 @@ fn prune_plan_snapshots(root: &Path, path: &Path, _slug: &str) -> Result<usize> 
         acdd_tasks::git::git_input(root, &["update-ref", "--stdin"], stdin_data.as_bytes())?;
     }
     Ok(refs_to_delete.len())
+}
+
+fn prune_plan_tasks(root: &Path, path: &Path) -> Result<usize> {
+    if !acdd_tasks::database_path(root)?.exists() {
+        return Ok(0);
+    }
+    let mut store = acdd_tasks::engine::store(root)?;
+    store.reconcile_checkpoints()?;
+    let ids = store.prune_plan_subject(&path.to_string_lossy())?;
+    Ok(ids.len())
+}
+
+fn reconcile_plan_cleanup(root: &Path) -> Result<()> {
+    if acdd_tasks::database_path(root)?.exists() {
+        acdd_tasks::engine::store(root)?.reconcile_checkpoints()?;
+    }
+    Ok(())
 }
 
 fn prune_plan_traces(root: &Path, path: &Path, slug: &str) -> Result<usize> {
@@ -203,11 +234,13 @@ pub(super) fn run(root: &Path, command: PlanCommand, settings: &ResolvedPaths) -
     };
     match command {
         PlanCommand::Clear { .. } => {
+            reconcile_plan_cleanup(root)?;
             let slug = path
                 .file_stem()
                 .and_then(|name| name.to_str())
                 .unwrap_or(selector.as_str());
             let refs_pruned = prune_plan_snapshots(root, path, slug)?;
+            let tasks_deleted = prune_plan_tasks(root, path)?;
             let traces_deleted = prune_plan_traces(root, path, slug)?;
             Ok(json!({
                 "plan": slug,
@@ -215,9 +248,11 @@ pub(super) fn run(root: &Path, command: PlanCommand, settings: &ResolvedPaths) -
                 "cleared": true,
                 "refs_pruned": refs_pruned,
                 "traces_deleted": traces_deleted,
+                "tasks_deleted": tasks_deleted,
             }))
         }
         PlanCommand::Archive { .. } => {
+            reconcile_plan_cleanup(root)?;
             let slug = path
                 .file_stem()
                 .and_then(|name| name.to_str())
@@ -251,6 +286,7 @@ pub(super) fn run(root: &Path, command: PlanCommand, settings: &ResolvedPaths) -
             }
 
             let refs_pruned = prune_plan_snapshots(root, path, slug)?;
+            let tasks_deleted = prune_plan_tasks(root, path)?;
             let traces_deleted = prune_plan_traces(root, path, slug)?;
             let src_path = root.join(path);
             fs::rename(&src_path, &dest_path)?;
@@ -261,6 +297,7 @@ pub(super) fn run(root: &Path, command: PlanCommand, settings: &ResolvedPaths) -
                 "to": dest_relative,
                 "refs_pruned": refs_pruned,
                 "traces_deleted": traces_deleted,
+                "tasks_deleted": tasks_deleted,
             }))
         }
         PlanCommand::Show { .. } => {

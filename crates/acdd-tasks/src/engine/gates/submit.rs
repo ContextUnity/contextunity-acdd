@@ -44,17 +44,22 @@ impl TasksStore {
             .iter()
             .take(position)
             .find(|candidate| {
-                candidate.gate.sha_snapshot
+                (candidate.gate.sha_snapshot
+                    || (observed.subject_kind == crate::store::ExecutionSubjectKind::Plan
+                        && candidate.gate.persistence.post
+                            == Some(crate::tasks::profile::PersistenceAction::Snapshot)))
                     && matches!(
                         candidate.gate.proof.kind(),
                         Some(ProofKind::Command | ProofKind::SeamTest)
                     )
             })
             .or_else(|| {
-                cursors
-                    .iter()
-                    .take(position)
-                    .find(|candidate| candidate.gate.sha_snapshot)
+                cursors.iter().take(position).find(|candidate| {
+                    candidate.gate.sha_snapshot
+                        || (observed.subject_kind == crate::store::ExecutionSubjectKind::Plan
+                            && candidate.gate.persistence.post
+                                == Some(crate::tasks::profile::PersistenceAction::Snapshot))
+                })
             })
             .or_else(|| {
                 (cursor.gate.persistence.pre
@@ -80,13 +85,15 @@ impl TasksStore {
         {
             bail!("TASK_STALE_SUBMISSION: candidate drift claim is no longer active");
         }
-        validate_gate_proof(
-            &evidence.proof,
-            &cursor.gate,
-            &profile,
-            true,
-            &task.spec.proof_policy,
-        )?;
+        if task.subject_kind != crate::store::ExecutionSubjectKind::Plan {
+            validate_gate_proof(
+                &evidence.proof,
+                &cursor.gate,
+                &profile,
+                true,
+                &task.spec.proof_policy,
+            )?;
+        }
         let (milestone, _) = super::super::claim::breadcrumb(id, &cursor)?;
         let milestone_id = format!("{}/{}/{}", self.repository, self.project, milestone);
         tx.execute(
@@ -154,10 +161,11 @@ impl TasksStore {
         let observed_cursor =
             super::super::claim::cursor_for_stage(&profile, &observed_task.stage)?;
         let observed_proof = (action == "pass"
-            && matches!(
+            && (matches!(
                 observed_cursor.gate.proof.kind(),
                 Some(ProofKind::Contract | ProofKind::Command | ProofKind::SeamTest)
-            ))
+            ) || (observed_cursor.gate.command.is_some()
+                && observed_cursor.gate.proof.kind() == Some(ProofKind::None))))
         .then(|| {
             super::super::evidence_compiler::compile_evidence_for_task(self, &observed_task, stage)
         });
@@ -344,7 +352,10 @@ impl TasksStore {
                         )?;
                     }
                 }
-                let captured_callers = if gate_def.proof.kind() == Some(ProofKind::Command) {
+                let captured_callers = if matches!(
+                    gate_def.proof.kind(),
+                    Some(ProofKind::Contract | ProofKind::Command)
+                ) {
                     accepted_boundary_callers(&tx, id, &profile, gate_index)?
                 } else {
                     None
@@ -363,6 +374,7 @@ impl TasksStore {
                         worktree,
                         &task.spec.scope,
                         evidence.candidate_baseline_head.as_deref(),
+                        captured_callers.as_ref(),
                     )?);
                 }
             }
@@ -372,22 +384,28 @@ impl TasksStore {
             let observed = observed
                 .get("proof")
                 .context("TASK_AUTO_PROOF_UNAVAILABLE: execution proof is missing")?;
-            let key = match gate_def.proof.kind() {
-                Some(ProofKind::Contract) => "contract_proof",
-                Some(ProofKind::SeamTest) => "seam_test_proof",
-                _ => "command_proof",
-            };
-            let supplied = evidence
-                .proof
-                .get(key)
-                .context("TASK_EVIDENCE_INVALID: typed proof is missing")?;
-            let actual = observed
-                .get(key)
-                .context("TASK_AUTO_PROOF_UNAVAILABLE: observed proof is missing")?;
-            if key == "seam_test_proof" {
-                crate::tasks::gates::validate_observed_seam_test(supplied, actual)?;
+            if gate_def.proof.kind() == Some(ProofKind::None) {
+                if observed != &evidence.proof {
+                    bail!("TASK_EVIDENCE_INVALID: command proof differs from observed result");
+                }
+            } else {
+                let key = match gate_def.proof.kind() {
+                    Some(ProofKind::Contract) => "contract_proof",
+                    Some(ProofKind::SeamTest) => "seam_test_proof",
+                    _ => "command_proof",
+                };
+                let supplied = evidence
+                    .proof
+                    .get(key)
+                    .context("TASK_EVIDENCE_INVALID: typed proof is missing")?;
+                let actual = observed
+                    .get(key)
+                    .context("TASK_AUTO_PROOF_UNAVAILABLE: observed proof is missing")?;
+                if key == "seam_test_proof" {
+                    crate::tasks::gates::validate_observed_seam_test(supplied, actual)?;
+                }
+                validate_observed_proof_fields(key, supplied, actual)?;
             }
-            validate_observed_proof_fields(key, supplied, actual)?;
         }
         if let Some(prior) = gate_def.independent_from.as_deref() {
             let prior_cursor = super::super::claim::cursor_for_stage(&profile, prior)?;
@@ -415,7 +433,86 @@ impl TasksStore {
                 }
             }
         }
-        if gate_def.proof.kind() == Some(ProofKind::Delivery) && action == "pass" {
+        if gate_def.proof.kind() == Some(ProofKind::Delivery)
+            && action == "pass"
+            && task.subject_kind == crate::store::ExecutionSubjectKind::Plan
+        {
+            let drift_epoch: Option<i64> = tx.query_row("SELECT MAX(id) FROM gate_transitions WHERE subject=?1 AND proof_kind='candidate_drift'", [id], |row| row.get(0))?;
+            if let Some(epoch) = drift_epoch {
+                let candidate = evidence
+                    .commit
+                    .as_deref()
+                    .context("CANDIDATE_DRIFT_REBIND_REQUIRED: candidate missing")?;
+                let mut statement = tx.prepare("SELECT gate_path, proof_payload FROM gate_transitions WHERE subject=?1 AND id>?2 AND action='advance' ORDER BY id")?;
+                let transitions = statement
+                    .query_map(params![id, epoch], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let mut verifier: Option<String> = None;
+                let mut reviewed = false;
+                for (_path, raw) in transitions {
+                    let accepted: Evidence = serde_json::from_str(&raw)?;
+                    let Ok(gate) = super::super::claim::cursor_for_stage(&profile, &accepted.stage)
+                    else {
+                        continue;
+                    };
+                    if accepted.commit.as_deref() != Some(candidate) {
+                        continue;
+                    }
+                    if gate.gate.command.is_some() {
+                        verifier = Some(accepted.worker_id);
+                        reviewed = false;
+                    } else if gate.gate.role.is_some()
+                        && gate.gate.independent_from.is_some()
+                        && verifier
+                            .as_deref()
+                            .is_some_and(|worker| worker != accepted.worker_id)
+                    {
+                        reviewed = true;
+                    }
+                }
+                anyhow::ensure!(reviewed, "CANDIDATE_DRIFT_REBIND_REQUIRED: current candidate needs renewed observed verification and independent review");
+            }
+            let mut statement = tx.prepare("SELECT subtask_ref,title,status,evidence FROM task_subtasks WHERE task_id=?1 ORDER BY rowid")?;
+            let subtasks = statement
+                .query_map([id], |row| {
+                    Ok(SubtaskSpec {
+                        subtask_ref: row.get(0)?,
+                        title: row.get(1)?,
+                        status: row.get(2)?,
+                        evidence: row.get(3)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(statement);
+            crate::tasks::gates::validate_subtask_delivery(id, &subtasks)?;
+            let path =
+                super::super::confined_path(Path::new(&evidence.worktree), &task.milestone_ref)?;
+            let text = std::fs::read_to_string(&path)?;
+            let plan = crate::engine::orchestrator::plan::PlanDocument::from_source(
+                Path::new(&task.milestone_ref),
+                text.clone(),
+            )?;
+            let receipt = Receipt {
+                delivery_gate: Some(cursor.canonical_stage_id.clone()),
+                candidate_gate: None,
+                commit: evidence.commit.clone(),
+                contract_revision: task.contract_revision,
+                passed_at: chrono::Utc::now().to_rfc3339(),
+                evidence: evidence.proof.clone(),
+                review: serde_json::json!({}),
+                decision: "pass".into(),
+                rollup: None,
+            };
+            let written =
+                plan.project_completion(&task.spec.task_ref, &serde_json::to_value(&receipt)?)?;
+            document_update = Some((path, text, written));
+            task.spec.subtasks = subtasks;
+            task.receipt = Some(receipt);
+            task.completed_at = Some(now());
+            task.status = "completed".into();
+        } else if gate_def.proof.kind() == Some(ProofKind::Delivery) && action == "pass" {
             let gate_sequence = super::super::claim::gate_sequence(&profile)?;
             let (_snapshot_gate, build) = {
                 let mut found = None;
@@ -913,7 +1010,9 @@ impl TasksStore {
                 serde_json::to_string(&submission)?
             ],
         )?;
-        if task.status == "completed" {
+        if task.status == "completed"
+            && task.subject_kind != crate::store::ExecutionSubjectKind::Plan
+        {
             clear_blackboard(&tx, id)?;
         }
         if let Some((path, _, written)) = &document_update {

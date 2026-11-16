@@ -1023,7 +1023,12 @@ fn validate_authority(
         );
     }
     let text = std::fs::read_to_string(path)?;
-    let milestone = registry.parse_milestone_manifest(workspace, &task.milestone_ref, &text)?;
+    let milestone = if task.subject_kind == crate::store::ExecutionSubjectKind::Plan {
+        orchestrator::plan::PlanDocument::from_source(Path::new(&task.milestone_ref), text)?
+            .task_contract(&workspace.repository, &workspace.project)
+    } else {
+        registry.parse_milestone_manifest(workspace, &task.milestone_ref, &text)?
+    };
     let project = &workspace.project;
     let stored_parts = task
         .task_id
@@ -1220,12 +1225,28 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
     }
     let worktree = Path::new(&evidence.worktree);
     let explicit_commit = evidence.commit.clone();
-    let prior_snapshot = claim::has_predecessor_snapshot(&profile, &task, &p.stage)?;
-    let needs_candidate = !gate.sha_snapshot && (prior_snapshot || gate.persistence.immutable);
+    let plan_prior_snapshot = task.subject_kind == crate::store::ExecutionSubjectKind::Plan
+        && claim::collect_cursors_for_task(&profile, Some(&task))?
+            .iter()
+            .take_while(|cursor| cursor.canonical_stage_id != p.stage)
+            .any(|cursor| {
+                cursor.gate.persistence.post
+                    == Some(crate::tasks::profile::PersistenceAction::Snapshot)
+            });
+    let prior_snapshot =
+        claim::has_predecessor_snapshot(&profile, &task, &p.stage)? || plan_prior_snapshot;
+    let plan_snapshot = task.subject_kind == crate::store::ExecutionSubjectKind::Plan
+        && gate.persistence.post == Some(crate::tasks::profile::PersistenceAction::Snapshot)
+        && !is_delivery;
+    let produces_candidate = gate.sha_snapshot || (plan_snapshot && !gate.persistence.immutable);
+    let needs_candidate = !produces_candidate
+        && (prior_snapshot
+            || (gate.persistence.immutable
+                && task.subject_kind != crate::store::ExecutionSubjectKind::Plan));
     let mut candidate_commit = None;
     let mut provisional_objects = None;
     let mut delivery_rollback = None;
-    if gate.sha_snapshot && p.action.name() == "pass" {
+    if produces_candidate && p.action.name() == "pass" {
         let (snapshot, baseline, objects) =
             git_snapshot::capture_scoped_snapshot(worktree, &p.task_id, &task.spec.scope)?
                 .context("TASK_SNAPSHOT_FAILED: snapshot capture requires a Git worktree")?;
@@ -1364,7 +1385,7 @@ fn submit_inner(root: &Path, p: Submit) -> Result<Value> {
             }
         }
     }
-    let pin_snapshot = p.action.name() == "pass" && gate.sha_snapshot;
+    let pin_snapshot = p.action.name() == "pass" && produces_candidate;
     let snapshot_worktree = evidence.worktree.clone();
     let snapshot_task_id = p.task_id.clone();
     let snapshot_scope = task.spec.scope.clone();
@@ -1527,3 +1548,4 @@ mod git_snapshot_contract_tests {
         assert!(!path.exists());
     }
 }
+pub use crate::store::ExecutionSubjectKind;

@@ -1,8 +1,5 @@
-use super::role::RoleObservations;
-use super::workflow::{run_gate_graph, GateDecision};
 use crate::{
     engine::{gate_graph, git_snapshot},
-    milestones::command_gate::resolve_command_plan,
     tasks::{
         profile::{GateDriver, GateProfile, PersistenceAction, ProofKind},
         SubtaskSpec,
@@ -10,13 +7,12 @@ use crate::{
 };
 use acdd_core::models::DocSection;
 use anyhow::{ensure, Context, Result};
-use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     path::{Path, PathBuf},
 };
 
@@ -43,9 +39,30 @@ pub struct PlanDocument {
     source: String,
 }
 
+fn field_lines(content: &str) -> Vec<(std::ops::Range<usize>, &str)> {
+    let mut lines = Vec::new();
+    let code_blocks = Parser::new(content)
+        .into_offset_iter()
+        .filter_map(|(event, range)| {
+            matches!(event, Event::Start(Tag::CodeBlock(_))).then_some(range)
+        })
+        .collect::<Vec<_>>();
+    let mut offset = 0;
+    for raw in content.split_inclusive('\n') {
+        let line = raw.trim_end_matches(['\r', '\n']);
+        let start = offset;
+        offset += raw.len();
+        if code_blocks.iter().any(|range| range.contains(&start)) {
+            continue;
+        }
+        lines.push((start..start + line.len(), line));
+    }
+    lines
+}
+
 fn fields(content: &str) -> Result<BTreeMap<String, String>> {
     let mut fields = BTreeMap::new();
-    for line in content.lines() {
+    for (_, line) in field_lines(content) {
         if let Some((key, value)) = line
             .trim()
             .strip_prefix("- **")
@@ -71,14 +88,204 @@ fn string_list(value: &str) -> Result<Vec<String>> {
 }
 
 impl PlanDocument {
+    pub(crate) fn project_completion(&self, task_ref: &str, evidence: &Value) -> Result<String> {
+        let step = self
+            .steps
+            .iter()
+            .find(|step| format!("step-{:x}", Sha256::digest(step.title.as_bytes())) == task_ref)
+            .context("TASK_AUTHORITY_MISSING: plan step not found")?;
+        self.complete_source(step, evidence)
+    }
+    /// Project the current subtask state into its owning plan step.
+    pub(crate) fn project_subtasks(
+        &self,
+        task_ref: &str,
+        subtasks: &[SubtaskSpec],
+    ) -> Result<String> {
+        let step = self
+            .steps
+            .iter()
+            .find(|step| format!("step-{:x}", Sha256::digest(step.title.as_bytes())) == task_ref)
+            .context("TASK_AUTHORITY_MISSING: plan step not found")?;
+        let mut heading = None;
+        let mut title = String::new();
+        let mut start = None;
+        let mut end = self.source.len();
+        for (event, range) in Parser::new(&self.source).into_offset_iter() {
+            match event {
+                Event::Start(Tag::Heading {
+                    level: HeadingLevel::H2,
+                    ..
+                }) => {
+                    heading = Some(range.start);
+                    title.clear();
+                }
+                Event::Text(text) | Event::Code(text) if heading.is_some() => title.push_str(&text),
+                Event::End(TagEnd::Heading(HeadingLevel::H2)) => {
+                    if start.is_some() {
+                        end = heading.context("PLAN_HEADING_INVALID")?;
+                        break;
+                    }
+                    if title == step.heading {
+                        start = heading;
+                    }
+                    heading = None;
+                }
+                _ => {}
+            }
+        }
+        let start = start.context("TASK_AUTHORITY_MISSING: plan step heading not found")?;
+        let section = &self.source[start..end];
+        let matching = field_lines(section)
+            .into_iter()
+            .filter(|(_, line)| line.trim_start().starts_with("- **Subtasks**:"))
+            .collect::<Vec<_>>();
+        ensure!(
+            matching.len() <= 1,
+            "PLAN_SOURCE_DRIFT: subtask field is ambiguous"
+        );
+        let replacement = format!("- **Subtasks**: {}", serde_json::to_string(subtasks)?);
+        let mut updated = section.to_owned();
+        if let Some((span, _)) = matching.first() {
+            updated.replace_range(span.clone(), &replacement);
+        } else {
+            let insert = section
+                .find('\n')
+                .map_or(section.len(), |offset| offset + 1);
+            updated.insert_str(insert, &format!("{replacement}\n"));
+        }
+        Ok(format!(
+            "{}{}{}",
+            &self.source[..start],
+            updated,
+            &self.source[end..]
+        ))
+    }
+    /// Parse the same step fields directly when task operations reopen plan authority.
+    pub fn from_source(path: &Path, source: String) -> Result<Self> {
+        let content_start = source
+            .strip_prefix("---\n")
+            .and_then(|body| body.find("\n---\n").map(|end| end + 9))
+            .unwrap_or(0);
+        let mut headings = Vec::new();
+        let mut current = None;
+        for (event, range) in Parser::new(&source).into_offset_iter() {
+            match event {
+                Event::Start(Tag::Heading {
+                    level: HeadingLevel::H2,
+                    ..
+                }) => current = Some((range.start, range.end, String::new())),
+                Event::Text(text) | Event::Code(text) if current.is_some() => {
+                    current.as_mut().unwrap().2.push_str(&text)
+                }
+                Event::End(TagEnd::Heading(HeadingLevel::H2)) => {
+                    if let Some((start, _, title)) = current.take() {
+                        if start >= content_start {
+                            headings.push((start, range.end, title));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let section = |title: String, content: String| DocSection {
+            doc_id: String::new(),
+            path: path.to_string_lossy().into_owned(),
+            section_title: title,
+            doc_type: "plan".into(),
+            content,
+            invariants: vec![],
+            referenced_symbols: vec![],
+            mtime: 0.0,
+            size: source.len() as u64,
+            is_invariant: false,
+        };
+        let mut sections = vec![section(String::new(), String::new())];
+        for (index, (_, end, title)) in headings.iter().enumerate() {
+            let next = headings
+                .get(index + 1)
+                .map(|heading| heading.0)
+                .unwrap_or(source.len());
+            sections.push(section(title.clone(), source[*end..next].to_owned()));
+        }
+        Self::from_sections(path, source, &sections)
+    }
+    /// Project plan authority into the shared task contract model.
+    pub fn task_contract(&self, repository: &str, project: &str) -> crate::tasks::Milestone {
+        let reference = |title: &str| format!("step-{:x}", Sha256::digest(title.as_bytes()));
+        crate::tasks::Milestone {
+            id: format!(
+                "plan-{:x}",
+                Sha256::digest(self.path.to_string_lossy().as_bytes())
+            ),
+            repository: repository.into(),
+            project: project.into(),
+            acdd_profile: None,
+            invariants: vec![],
+            owners: vec![],
+            depends_on: vec![],
+            required_skills: vec![],
+            repositories: vec![],
+            linked_to: vec![],
+            guidance: BTreeMap::new(),
+            concurrency: None,
+            status: None,
+            deferred_defects: vec![],
+            tasks: self
+                .steps
+                .iter()
+                .map(|step| crate::tasks::TaskSpec {
+                    task_ref: reference(&step.title),
+                    target: step.target.clone(),
+                    agent_type: None,
+                    acdd_profile: None,
+                    proof_policy: "seam-test-first".into(),
+                    scope: step.scope.clone(),
+                    extended_scope: vec![],
+                    symbols: vec![],
+                    extended_symbols: vec![],
+                    scope_roots: vec![],
+                    contract_revision: 1,
+                    depends_on: step.depends_on.iter().map(|name| reference(name)).collect(),
+                    concurrency: None,
+                    invariants: vec![],
+                    status: (step.status == "cancelled").then(|| "cancelled".into()),
+                    receipt: None,
+                    subtasks: step.subtasks.clone(),
+                })
+                .collect(),
+        }
+    }
     /// Project canonical numbered step sections from the existing docs extractor.
     pub fn from_sections(path: &Path, source: String, sections: &[DocSection]) -> Result<Self> {
         ensure!(
             !sections.is_empty() && sections.iter().all(|section| section.doc_type == "plan"),
             "PLAN_TYPE_INVALID: expected doc_type: plan"
         );
+        let mut step_headings = BTreeSet::new();
+        let mut heading = None;
+        for event in Parser::new(&source) {
+            match event {
+                Event::Start(Tag::Heading {
+                    level: HeadingLevel::H2,
+                    ..
+                }) => heading = Some(String::new()),
+                Event::Text(text) | Event::Code(text) if heading.is_some() => {
+                    heading.as_mut().unwrap().push_str(&text)
+                }
+                Event::End(TagEnd::Heading(HeadingLevel::H2)) => {
+                    if let Some(title) = heading.take() {
+                        step_headings.insert(title);
+                    }
+                }
+                _ => {}
+            }
+        }
         let mut steps = Vec::new();
         for section in sections.iter().skip(1) {
+            if !step_headings.contains(&section.section_title) {
+                continue;
+            }
             let (number, title) = section
                 .section_title
                 .split_once(". ")
@@ -179,23 +386,29 @@ impl PlanDocument {
 
     fn complete_source(&self, step: &PlanStep, evidence: &Value) -> Result<String> {
         let mut heading = None;
+        let mut step_level = None;
         let mut title = String::new();
         let mut start = None;
         let mut end = self.source.len();
+        let mut nested_start = None;
         for (event, range) in Parser::new(&self.source).into_offset_iter() {
             match event {
-                Event::Start(Tag::Heading { .. }) => {
-                    heading = Some(range.start);
+                Event::Start(Tag::Heading { level, .. }) => {
+                    heading = Some((range.start, level));
                     title.clear();
                 }
                 Event::Text(text) | Event::Code(text) if heading.is_some() => title.push_str(&text),
-                Event::End(TagEnd::Heading(_)) => {
-                    if start.is_some() {
-                        end = heading.context("PLAN_HEADING_INVALID")?;
+                Event::End(TagEnd::Heading(level)) => {
+                    if step_level.is_some_and(|parent| level <= parent) {
+                        end = heading.context("PLAN_HEADING_INVALID")?.0;
                         break;
                     }
-                    if title == step.heading {
-                        start = heading;
+                    if start.is_some() && nested_start.is_none() {
+                        nested_start = heading.map(|(offset, _)| offset);
+                    }
+                    if start.is_none() && title == step.heading {
+                        start = heading.map(|(offset, _)| offset);
+                        step_level = Some(level);
                     }
                     heading = None;
                 }
@@ -205,17 +418,48 @@ impl PlanDocument {
         let start = start.context("PLAN_SOURCE_DRIFT: step heading is missing")?;
         let section = &self.source[start..end];
         let status = format!("- **Status**: {}", step.status);
+        let status_fields = field_lines(section)
+            .into_iter()
+            .filter(|(_, line)| line.trim() == status)
+            .collect::<Vec<_>>();
         ensure!(
-            section.lines().filter(|line| line.trim() == status).count() == 1,
-            "PLAN_SOURCE_DRIFT: status is ambiguous"
+            status_fields.len() == 1,
+            "PLAN_SOURCE_DRIFT: status is missing or ambiguous"
         );
-        let mut updated = section.replacen(&status, "- **Status**: completed", 1);
+        let status_pos = status_fields[0].0.start;
+        let mut updated = section.to_owned();
+        updated.replace_range(status_fields[0].0.clone(), "- **Status**: completed");
+        if let Some(nested) = nested_start.map(|offset| offset - start) {
+            if status_pos > nested {
+                updated.replace_range(
+                    status_pos..status_pos + "- **Status**: completed\n".len(),
+                    "",
+                );
+                updated.insert_str(nested, "- **Status**: completed\n\n");
+            }
+        }
         if let Some(previous) = &step.evidence {
-            updated = updated.replacen(
-                &format!("- **Evidence**: {previous}"),
-                &format!("- **Evidence**: {evidence}"),
-                1,
+            let field = format!("- **Evidence**: {previous}");
+            let matching = field_lines(&updated)
+                .into_iter()
+                .filter(|(_, line)| line.trim() == field)
+                .collect::<Vec<_>>();
+            ensure!(
+                matching.len() == 1,
+                "PLAN_SOURCE_DRIFT: evidence is missing or ambiguous"
             );
+            let span = matching[0].0.clone();
+            updated.replace_range(span, &format!("- **Evidence**: {evidence}"));
+        } else if nested_start.is_some() {
+            let offset = Parser::new(&updated)
+                .into_offset_iter()
+                .filter_map(|(event, range)| match event {
+                    Event::Start(Tag::Heading { .. }) => Some(range.start),
+                    _ => None,
+                })
+                .nth(1)
+                .context("PLAN_HEADING_INVALID")?;
+            updated.insert_str(offset, &format!("- **Evidence**: {evidence}\n\n"));
         } else {
             updated = format!("{}\n- **Evidence**: {evidence}\n\n", updated.trim_end());
         }
@@ -285,232 +529,102 @@ fn plan_profile(profile: &GateProfile, explicit: bool) -> Result<GateProfile> {
 /// Run source-owned steps in-place, persisting completed observations as Git snapshots.
 pub fn run_plan_workflow(
     root: &Path,
-    mut plan: PlanDocument,
+    plan: PlanDocument,
     profile: &GateProfile,
     explicit: bool,
 ) -> Result<Value> {
     let profile = plan_profile(profile, explicit)?;
-    let database = crate::engine::database_path(root)?;
-    let cursors = gate_graph::collect_cursors(&profile)?;
-    let profile_digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&profile)?));
-    let path = crate::tasks::confined_path(root, &plan.path.to_string_lossy())?;
+    let order = plan.order()?;
     for step in &plan.steps {
-        for dependency in &step.depends_on {
-            ensure!(
-                !plan
-                    .steps
-                    .iter()
-                    .any(|step| &step.title == dependency && step.status == "cancelled"),
-                "PLAN_DEPENDENCY_INCOMPLETE: cancelled dependency '{dependency}'"
-            );
-        }
-        for scope in &step.scope {
-            crate::tasks::confined_path(root, scope)?;
-        }
         ensure!(
             step.status != "blocked",
             "PLAN_STEP_BLOCKED: {}",
             step.title
         );
-    }
-    let baseline = crate::git::git_stdout(
-        root,
-        &["rev-parse", "--verify", "HEAD"],
-        "PLAN_GIT_REQUIRED",
-    )?;
-    let mut snapshots = Vec::new();
-    for index in plan.order()? {
-        let step = plan.steps[index].clone();
-        if step.status == "cancelled" {
-            continue;
-        }
-        if step.status == "completed" {
-            ensure!(
-                step.evidence
-                    .as_ref()
-                    .is_some_and(|value| !value.trim().is_empty()),
-                "PLAN_EVIDENCE_MISSING: {}",
-                step.title
-            );
-            continue;
+        for scope in &step.scope {
+            crate::tasks::confined_path(root, scope)?;
         }
         for dependency in &step.depends_on {
             ensure!(
-                plan.steps
+                !plan
+                    .steps
                     .iter()
-                    .any(|step| &step.title == dependency && step.status == "completed"),
+                    .any(|candidate| &candidate.title == dependency
+                        && candidate.status == "cancelled"),
                 "PLAN_DEPENDENCY_INCOMPLETE: {dependency}"
             );
         }
-        ensure!(
-            fs::read_to_string(&path)? == plan.source,
-            "PLAN_SOURCE_DRIFT: source changed during execution"
-        );
-        let mut roles = RoleObservations::default();
-        let mut accepted_candidate = None;
-        let outcomes = run_gate_graph(root, &step.scope, &[], &cursors, |cursor, _| {
-            ensure!(
-                fs::read_to_string(&path)? == plan.source,
-                "PLAN_SOURCE_DRIFT: runner changed source authority"
-            );
-            let before = crate::engine::candidate_fingerprint(root)?;
-            if cursor.gate.persistence.immutable {
-                ensure!(
-                    accepted_candidate.as_ref() == Some(&before),
-                    "TASK_CANDIDATE_MISMATCH: plan candidate differs from its accepted predecessor"
-                );
-            }
-            if cursor.gate.persistence.pre == Some(PersistenceAction::Snapshot) {
-                gate_snapshot(
-                    root,
-                    &plan.path,
-                    &step.title,
-                    &cursor.canonical_stage_id,
-                    "pre",
-                )?;
-            }
-            let decision = (|| -> Result<GateDecision> {
-                if cursor.gate.receipt {
-                    crate::tasks::gates::validate_subtask_delivery(
-                        &format!("{}#{}", plan.path.display(), step.title),
-                        &step.subtasks,
-                    )?;
-                    return Ok(GateDecision {
-                        passed: true,
-                        evidence: json!({"save":"snapshot"}),
-                        findings: None,
-                    });
-                }
-                if cursor.gate.driver() == Some(GateDriver::Agent) {
-                    return roles.execute(
-                        root,
-                        &format!("{}#{}", plan.path.display(), step.title),
-                        &step.target,
-                        &step.scope,
-                        cursor,
-                        &profile,
-                    );
-                }
-                ensure!(
-                    matches!(
-                        cursor.gate.proof.kind(),
-                        Some(
-                            ProofKind::None
-                                | ProofKind::Command
-                                | ProofKind::Contract
-                                | ProofKind::SeamTest
-                        )
-                    ),
-                    "PLAN_PROOF_REQUIRED: {}",
-                    cursor.canonical_stage_id
-                );
-                let name = cursor
-                    .gate
-                    .command
-                    .as_deref()
-                    .context("PLAN_COMMAND_MISSING")?;
-                let definition = profile.commands.get(name).context("PLAN_COMMAND_MISSING")?;
-                let commands = resolve_command_plan(root, name, definition, &step.scope, &profile)?;
-                ensure!(
-                    !commands.is_empty(),
-                    "PLAN_COMMAND_MISSING: no scoped command"
-                );
-                let mut observations = Vec::new();
-                for (id, command, timeout) in commands {
-                    let observation = crate::milestones::command_gate::observe_command_for_id(
-                        root,
-                        &id,
-                        &command,
-                        timeout,
-                        definition.output(),
-                        cursor.gate.expected_failure.as_ref(),
-                    )?;
-                    super::workflow::ensure_command_completed(
-                        &observation,
-                        &cursor.canonical_stage_id,
-                    )?;
-                    observations.push((id, observation));
-                }
-                let passed = crate::engine::evidence_compiler::evaluate_root_command_gate(
-                    &cursor.gate,
-                    &profile,
-                    &observations,
-                    cursor.gate.policy.as_deref().unwrap_or("seam-test-first"),
-                    None,
-                )?;
-                Ok(GateDecision {
-                    passed,
-                    evidence: json!(observations),
-                    findings: None,
-                })
-            })()?;
-            let after = crate::engine::candidate_fingerprint(root)?;
-            if cursor.gate.persistence.immutable {
-                ensure!(
-                    before == after,
-                    "TASK_CANDIDATE_MISMATCH: immutable gate changed its candidate"
-                );
-            }
-            if decision.passed {
-                accepted_candidate = Some(after);
-                if !cursor.gate.receipt
-                    && cursor.gate.persistence.post == Some(PersistenceAction::Snapshot)
-                {
-                    gate_snapshot(
-                        root,
-                        &plan.path,
-                        &step.title,
-                        &cursor.canonical_stage_id,
-                        "post",
-                    )?;
-                }
-            }
-            Ok(decision)
-        })?;
-        ensure!(
-            fs::read_to_string(&path)? == plan.source,
-            "PLAN_SOURCE_DRIFT: runner changed plan source"
-        );
-        ensure!(
-            crate::git::git_stdout(root, &["rev-parse", "HEAD"], "PLAN_HEAD_CHANGED")? == baseline,
-            "PLAN_HEAD_CHANGED: plan execution must preserve HEAD"
-        );
-        let evidence = json!({"profile_digest":profile_digest,"outcomes":outcomes});
-        let updated = plan.complete_source(&step, &evidence)?;
-        crate::fs::atomic_replace(&path, updated.as_bytes())?;
-        let plan_rel = plan.path.strip_prefix(root).unwrap_or(&plan.path);
-        let plan_tag = format!(
-            "{:x}",
-            Sha256::digest(plan_rel.to_string_lossy().as_bytes())
-        );
-        let name = format!(
-            "plan-{}-{:x}",
-            &plan_tag[..16],
-            Sha256::digest(format!(
-                "{}\n{}\n{}",
-                plan.path.display(),
-                profile_digest,
-                updated
-            ))
-        );
-        let snapshot = git_snapshot::create_named_snapshot(root, &database, &name);
-        match snapshot {
-            Ok(snapshot) => snapshots.push(snapshot),
-            Err(error) => {
-                if fs::read_to_string(&path)? == updated {
-                    crate::fs::atomic_replace(&path, plan.source.as_bytes())?;
-                }
-                return Err(error);
-            }
-        }
-        plan.source = updated;
-        plan.steps[index].status = "completed".into();
-        plan.steps[index].evidence = Some(evidence.to_string());
     }
-    Ok(json!({"status":"completed","path":plan.path,"steps":plan.steps,"snapshots":snapshots}))
+    let (repository, project) = crate::engine::project_identity(root)?;
+    let contract = plan.task_contract(&repository, &project);
+    let mut store = crate::engine::store(root)?;
+    store.set_profile(std::sync::Arc::new(profile));
+    let reference = plan.path.to_string_lossy().into_owned();
+    if plan
+        .steps
+        .iter()
+        .all(|step| matches!(step.status.as_str(), "completed" | "cancelled"))
+        && contract.tasks.iter().zip(&plan.steps).all(|(task, step)| {
+            step.status == "cancelled"
+                || (step
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|evidence| !evidence.trim().is_empty())
+                    && store.inspect(&contract.task_id(task)).is_ok_and(|stored| {
+                        stored.status == "completed" && stored.receipt.is_some()
+                    }))
+        })
+    {
+        return Ok(
+            json!({"status":"completed", "path":plan.path, "steps":plan.steps, "snapshots":[]}),
+        );
+    }
+    let tasks = store.sync_plan(&contract, &reference, root)?;
+    drop(store);
+    let options = super::task_runner::TaskRunOptions {
+        worktree: root.to_owned(),
+        worker_id: "plan-coordinator".into(),
+        session_fingerprint: "plan-coordinator-session".into(),
+        runner_timeout: std::time::Duration::from_secs(3600),
+    };
+    let mut snapshots = Vec::new();
+    for index in order {
+        if plan.steps[index].status == "cancelled" {
+            continue;
+        }
+        let id = contract.task_id(&contract.tasks[index]);
+        let task = tasks
+            .iter()
+            .find(|task| task.task_id == id)
+            .context("PLAN_TASK_MISSING")?;
+        super::task_runner::run_task_lifecycle(root, &id, &options, &mut |_| {})?;
+        if task.status != "completed" {
+            let name = format!(
+                "plan-{}-{:x}",
+                &format!("{:x}", Sha256::digest(reference.as_bytes()))[..16],
+                Sha256::digest(id.as_bytes())
+            );
+            snapshots.push(git_snapshot::create_named_snapshot(
+                root,
+                &crate::engine::database_path(root)?,
+                &name,
+            )?);
+        }
+    }
+    let source = std::fs::read_to_string(crate::tasks::confined_path(root, &reference)?)?;
+    let projected = PlanDocument::from_source(&plan.path, source)?;
+    Ok(
+        json!({"status":"completed", "path":plan.path, "steps":projected.steps, "snapshots":snapshots}),
+    )
 }
 
-fn gate_snapshot(root: &Path, path: &Path, step: &str, gate: &str, phase: &str) -> Result<()> {
+pub(crate) fn gate_snapshot(
+    root: &Path,
+    path: &Path,
+    step: &str,
+    gate: &str,
+    phase: &str,
+) -> Result<()> {
     let plan_rel = path.strip_prefix(root).unwrap_or(path);
     let plan_tag = format!(
         "{:x}",

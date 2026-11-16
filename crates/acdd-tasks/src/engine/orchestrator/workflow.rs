@@ -462,7 +462,7 @@ pub(super) fn run_gate_graph(
     Ok(outcomes)
 }
 
-pub(super) fn collect_artifact_tokens(evidence: &Value, tokens: &mut BTreeMap<String, String>) {
+pub(crate) fn collect_artifact_tokens(evidence: &Value, tokens: &mut BTreeMap<String, String>) {
     let source = evidence
         .pointer("/proof/scheme_proof")
         .or_else(|| evidence.get("proof"))

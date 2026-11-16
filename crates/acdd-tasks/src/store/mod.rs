@@ -46,9 +46,23 @@ pub struct DeleteReport {
     pub mode: String,
 }
 
+/// Authority kind of a stateful execution subject.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionSubjectKind {
+    /// Milestone task, including legacy descriptors.
+    #[default]
+    Milestone,
+    /// In-place plan step.
+    Plan,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Represents task data.
 pub struct Task {
+    /// Authority type; absent in legacy descriptors.
+    #[serde(default)]
+    pub subject_kind: ExecutionSubjectKind,
     /// The task id value.
     pub task_id: String,
     /// The milestone ref value.
@@ -389,10 +403,21 @@ fn verify_dirty_acdd_scope(root: &Path, initial_scope: &[String]) -> Result<()> 
 }
 
 fn resolve_task_profile(
+    connection: &Connection,
     workspace_root: Option<&Path>,
     base_profile: &std::sync::Arc<crate::tasks::profile::GateProfile>,
     task: &Task,
 ) -> Result<std::sync::Arc<crate::tasks::profile::GateProfile>> {
+    if task.subject_kind == ExecutionSubjectKind::Plan {
+        let raw: String = connection.query_row(
+            "SELECT value FROM task_store_metadata WHERE key=?1",
+            [format!("plan_profile:{}", task.task_id)],
+            |row| row.get(0),
+        )?;
+        let profile: crate::tasks::profile::GateProfile = serde_json::from_str(&raw)?;
+        profile.validate()?;
+        return Ok(std::sync::Arc::new(profile));
+    }
     match task.profile_pin.as_deref() {
         Some(reference) => {
             let root = workspace_root.context(
@@ -914,7 +939,12 @@ impl TasksStore {
         &self,
         task: &Task,
     ) -> Result<std::sync::Arc<crate::tasks::profile::GateProfile>> {
-        resolve_task_profile(self.workspace_root.as_deref(), &self.profile, task)
+        resolve_task_profile(
+            &self.connection,
+            self.workspace_root.as_deref(),
+            &self.profile,
+            task,
+        )
     }
     /// Resolve the effective milestone root profile from pinned milestone frontmatter or base profile.
     pub fn profile_for_milestone(
@@ -1014,11 +1044,12 @@ impl TasksStore {
                 }
             }
         }
-        for snapshot_gate in exec_gates[..stage_index]
-            .iter()
-            .rev()
-            .filter(|gate| gate.sha_snapshot)
-        {
+        for snapshot_gate in exec_gates[..stage_index].iter().rev().filter(|gate| {
+            gate.sha_snapshot
+                || (task.subject_kind == ExecutionSubjectKind::Plan
+                    && gate.persistence.post
+                        == Some(crate::tasks::profile::PersistenceAction::Snapshot))
+        }) {
             let leaf_alias = snapshot_gate
                 .id
                 .rsplit('.')
@@ -1045,6 +1076,9 @@ impl TasksStore {
                     .context("TASK_GATE_EVIDENCE_CORRUPTED: missing candidate_baseline_head in candidate snapshot evidence")?;
                 return Ok(Some((commit.to_owned(), baseline.to_owned())));
             }
+        }
+        if task.subject_kind == ExecutionSubjectKind::Plan {
+            return Ok(None);
         }
         bail!("TASK_SNAPSHOT_NOT_FOUND: no accepted candidate snapshot precedes this gate");
     }
@@ -1200,7 +1234,30 @@ impl TasksStore {
         reference: &str,
         root: &Path,
     ) -> Result<Vec<Task>> {
-        self.sync_selected(milestone, reference, root, None, None)
+        self.sync_selected(
+            milestone,
+            reference,
+            root,
+            None,
+            None,
+            ExecutionSubjectKind::Milestone,
+        )
+    }
+    /// Synchronize plan steps through the same transactional task admission path.
+    pub fn sync_plan(
+        &mut self,
+        plan: &Milestone,
+        reference: &str,
+        root: &Path,
+    ) -> Result<Vec<Task>> {
+        self.sync_selected(
+            plan,
+            reference,
+            root,
+            None,
+            None,
+            ExecutionSubjectKind::Plan,
+        )
     }
     /// Performs create.
     pub fn create(
@@ -1210,7 +1267,14 @@ impl TasksStore {
         root: &Path,
         task_ref: &str,
     ) -> Result<Vec<Task>> {
-        self.sync_selected(milestone, reference, root, Some(task_ref), None)
+        self.sync_selected(
+            milestone,
+            reference,
+            root,
+            Some(task_ref),
+            None,
+            ExecutionSubjectKind::Milestone,
+        )
     }
 
     /// Synchronize a milestone and publish its contract matrix and first message atomically.
@@ -1234,6 +1298,7 @@ impl TasksStore {
             root,
             None,
             Some((matrix, initial_message)),
+            ExecutionSubjectKind::Milestone,
         )
     }
     /// Remove all persisted state for a cancelled milestone while retaining incoming blockers.
@@ -1315,6 +1380,7 @@ impl TasksStore {
             &'matrix crate::tasks::MilestoneContractMatrix,
             BlackboardPostInput<'message>,
         )>,
+        subject_kind: ExecutionSubjectKind,
     ) -> Result<Vec<Task>> {
         self.set_workspace_root(root);
         if format!("{}/{}/", milestone.repository, milestone.project) != self.namespace {
@@ -1392,6 +1458,24 @@ impl TasksStore {
                 continue;
             }
             let id = milestone.task_id(spec);
+            if subject_kind == ExecutionSubjectKind::Plan {
+                let key = format!("plan_profile:{id}");
+                let profile = serde_json::to_string(self.profile.as_ref())?;
+                let existing: Option<String> = tx
+                    .query_row(
+                        "SELECT value FROM task_store_metadata WHERE key=?1",
+                        [&key],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if existing.as_deref().is_some_and(|value| value != profile) {
+                    bail!("PLAN_PROFILE_CHANGED: clear the plan before changing its profile");
+                }
+                tx.execute(
+                    "INSERT OR IGNORE INTO task_store_metadata(key,value) VALUES(?1,?2)",
+                    params![key, profile],
+                )?;
+            }
             tx.execute("INSERT INTO task_store_metadata VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![format!("checkpoint_home:{id}"), root.canonicalize()?.to_string_lossy()])?;
             let digest = milestone.digest(spec)?;
             let profile_pin = spec
@@ -1420,6 +1504,14 @@ impl TasksStore {
                 )?;
             }
             if let Some(mut existing) = load(&tx, &id)? {
+                if existing.subject_kind != subject_kind
+                    || (subject_kind == ExecutionSubjectKind::Plan
+                        && existing.milestone_ref != reference)
+                {
+                    bail!(
+                        "TASK_SUBJECT_CONFLICT: task identity already belongs to another authority"
+                    );
+                }
                 if cancelled && existing.status == "completed" {
                     bail!("TASK_TERMINAL: reopen the completed task before cancelling it");
                 }
@@ -1593,6 +1685,7 @@ impl TasksStore {
                 result.push(Task {
                     task_id: id,
                     milestone_ref: reference.into(),
+                    subject_kind,
                     spec: spec.clone(),
                     digest,
                     contract_revision: spec.contract_revision,
@@ -1624,6 +1717,7 @@ impl TasksStore {
             let mut task = Task {
                 task_id: id.clone(),
                 milestone_ref: reference.into(),
+                subject_kind,
                 spec: spec.clone(),
                 digest,
                 contract_revision: spec.contract_revision,
@@ -2711,6 +2805,32 @@ mod tests {
         assert!(!Path::new(":memory:")
             .with_extension("receipt.lock")
             .exists());
+        Ok(())
+    }
+
+    #[test]
+    fn plan_pruning_rolls_back_and_preserves_other_subjects() -> Result<()> {
+        let source = "---\nid: plan-one\n---\n```yaml\ntask_ref: first\ntarget: First\nproof_policy: seam-test-first\nscope: [src/lib.rs]\n```\n";
+        let plan = Milestone::parse(source, "forge-mcp")?;
+        let mut sibling = plan.clone();
+        sibling.id = "plan-two".into();
+        let root = Path::new(IN_MEMORY_TEST_ROOT);
+        let mut store = TasksStore::open_in_memory("forge-mcp", "forge-mcp")?;
+        let selected = store.sync_plan(&plan, "docs/plans/one.md", root)?;
+        let other = store.sync_plan(&sibling, "docs/plans/two.md", root)?;
+        assert_eq!(selected[0].subject_kind, ExecutionSubjectKind::Plan);
+        store.connection.execute_batch("CREATE TRIGGER reject_plan_delete BEFORE DELETE ON tasks BEGIN SELECT RAISE(ABORT, 'injected'); END;")?;
+        assert!(store.prune_plan_subject("docs/plans/one.md").is_err());
+        assert!(store.inspect(&selected[0].task_id).is_ok());
+        store
+            .connection
+            .execute_batch("DROP TRIGGER reject_plan_delete")?;
+        assert_eq!(
+            store.prune_plan_subject("docs/plans/one.md")?,
+            vec![selected[0].task_id.clone()]
+        );
+        assert!(store.inspect(&selected[0].task_id).is_err());
+        assert!(store.inspect(&other[0].task_id).is_ok());
         Ok(())
     }
 

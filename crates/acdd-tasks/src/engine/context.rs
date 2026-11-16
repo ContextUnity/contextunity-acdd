@@ -672,9 +672,12 @@ pub(super) fn validate_gate_requirements(
 }
 
 /// Reject a claim whose active profile gate depends on a disabled workspace subsystem.
-pub(super) fn validate_claim_gate_requirements(workspace: &Workspace, task: &Task) -> Result<()> {
-    let details = serde_json::to_value(task)?;
-    let profile = workspace.profile_for_details(&details)?;
+pub(super) fn validate_claim_gate_requirements(
+    workspace: &Workspace,
+    store: &crate::store::TasksStore,
+    task: &Task,
+) -> Result<()> {
+    let profile = store.profile_for_task(task)?;
     let adapter = crate::config::load_workspace_adapter(&workspace.root)
         .context("failed to resolve workspace subsystem configuration")?;
     let stage = if task.status == "completed" {
@@ -730,19 +733,23 @@ pub(super) fn context_bundle(
     task_id: &str,
     mut details: Value,
 ) -> Result<Value> {
-    let profile = workspace.profile_for_details(&details)?;
     let registry = super::workspaces::Registry::load(root)?;
     let proof_store = workspace.open(&registry.database)?;
     let task = proof_store.inspect(task_id)?;
+    let profile = proof_store.profile_for_task(&task)?;
     let root_profile =
         super::lifecycle::resolve_milestone_profile_for_task(&proof_store, workspace, &task)?;
-    let inherited_gate_paths = super::lifecycle::pre_task_root_gate_paths(
-        &proof_store,
-        workspace,
-        &task,
-        &root_profile,
-        root,
-    )?;
+    let inherited_gate_paths = if task.subject_kind == crate::store::ExecutionSubjectKind::Plan {
+        Vec::new()
+    } else {
+        super::lifecycle::pre_task_root_gate_paths(
+            &proof_store,
+            workspace,
+            &task,
+            &root_profile,
+            root,
+        )?
+    };
     let milestone_identity = super::lifecycle::milestone_identity_for_task(workspace, &task)?;
     let inherited_transitions = proof_store.latest_task_proof_advances(
         &milestone_identity,

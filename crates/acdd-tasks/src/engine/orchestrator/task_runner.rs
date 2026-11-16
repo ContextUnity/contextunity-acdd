@@ -144,7 +144,13 @@ pub fn run_task_lifecycle(
             // byte limits. Never clear omission flags from a truncated envelope.
             let details = workspace.guidance_envelope(store.inspect_details(task_id)?)?;
             let details = context::adapt_workspace_guidance(workspace, details)?;
-            let complete = context::context_bundle(root, workspace, task_id, details)?;
+            let mut complete = context::context_bundle(root, workspace, task_id, details)?;
+            if claimed.subject_kind == crate::store::ExecutionSubjectKind::Plan {
+                let findings: Option<String> = store.connection.query_row("SELECT findings FROM task_findings WHERE task_id=?1 ORDER BY revision DESC LIMIT 1", [task_id], |row| row.get(0)).optional()?;
+                if let Some(findings) = findings {
+                    complete["findings"] = serde_json::from_str(&findings)?;
+                }
+            }
             let model = role.models.first();
             let invocation = RunnerInvocationContext {
                 task_id: task_id.to_owned(),
@@ -238,10 +244,15 @@ pub fn run_task_lifecycle(
                 {
                     return Err(error);
                 }
-                let findings = serde_json::json!({
-                    "kind": "command_failure",
-                    "message": error.to_string(),
-                });
+                let failed_store = registry.open(workspace)?;
+                let mut statement = failed_store.connection.prepare("SELECT command_id,command_str,exit_code,output_snippet FROM gate_execution_traces WHERE subject=?1 AND gate_path=?2 ORDER BY rowid DESC LIMIT 1")?;
+                let diagnostics = statement.query_map(params![task_id, format!("tasks.{}", claimed.stage)], |row| {
+                    let snippet: Option<String> = row.get(3)?;
+                    let snippet = snippet.unwrap_or_default();
+                    let diagnostic = if snippet.starts_with("SCOPE_VIOLATION_WARNING:") { snippet.split_once('\n').map_or("", |(_, rest)| rest) } else { &snippet };
+                    Ok((row.get::<_, String>(0)?, serde_json::json!({"command":row.get::<_, String>(1)?, "exit_code":row.get::<_, Option<i64>>(2)?, "timed_out":false, "diagnostic":diagnostic.replace("[stderr]\n", "")})))
+                })?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let findings = serde_json::json!({"code":"COMMAND_FAILED", "gate":claimed.stage, "diagnostics":diagnostics});
                 let rejected = engine::submit_zero_arg(
                     root,
                     task_id,
@@ -259,7 +270,7 @@ pub fn run_task_lifecycle(
                         findings,
                     });
                 }
-                rejected?;
+                rejected.with_context(|| format!("command gate failed: {error:#}"))?;
                 if state.status == "exhausted" {
                     bail!(
                         "TASK_ATTEMPTS_EXHAUSTED: gate '{}' exhausted its configured attempts",
@@ -267,6 +278,18 @@ pub fn run_task_lifecycle(
                     );
                 }
                 continue;
+            }
+            if claimed.subject_kind == crate::store::ExecutionSubjectKind::Plan
+                && gate.persistence.post == Some(crate::tasks::profile::PersistenceAction::Snapshot)
+                && gate.proof.kind() != Some(ProofKind::Delivery)
+            {
+                super::plan::gate_snapshot(
+                    root,
+                    Path::new(&claimed.milestone_ref),
+                    &claimed.task_id,
+                    &claimed.stage,
+                    "post",
+                )?;
             }
             if gate.proof.kind() == Some(ProofKind::Delivery) {
                 let accepted = registry.open(workspace)?.inspect(task_id)?;
@@ -304,6 +327,11 @@ fn handle_gate_rejection(
         .iter()
         .rev()
         .find(|entry| entry["stage"] == stage && entry["state"] == "passed");
+    if record.is_none()
+        && store.inspect(task_id)?.subject_kind == crate::store::ExecutionSubjectKind::Plan
+    {
+        return Ok(None);
+    }
     if record.is_none()
         && rejection["worker_id"].is_null()
         && rejection["rejected_from"].as_str() == Some(stage)

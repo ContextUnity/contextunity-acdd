@@ -536,7 +536,8 @@ impl Workspace {
         if matches!(value["status"].as_str(), Some("completed" | "cancelled")) {
             return Ok(None);
         }
-        let profile = self.profile_for_details(value)?;
+        let id = value["task_id"].as_str().context("task id missing")?;
+        let profile = store.profile_for_task(&store.inspect(id)?)?;
         let stage = value["stage"].as_str().context("task stage missing")?;
         let cursor = super::claim::cursor_for_stage(&profile, stage)?;
         let Some(prior) = cursor.gate.independent_from.as_deref() else {
@@ -587,26 +588,6 @@ impl Workspace {
         shorten_task_response_commits(&mut value);
         Ok(value)
     }
-    pub fn profile_for_details(
-        &self,
-        value: &Value,
-    ) -> Result<std::sync::Arc<crate::tasks::profile::GateProfile>> {
-        let pin = value
-            .get("profile_pin")
-            .and_then(Value::as_str)
-            .or_else(|| {
-                value
-                    .get("spec")
-                    .and_then(|spec| spec.get("acdd_profile"))
-                    .and_then(Value::as_str)
-            });
-        match pin {
-            Some(reference) => {
-                crate::tasks::profile::load_pinned_over(&self.root, reference, &self.gates)
-            }
-            None => Ok(self.gates.clone()),
-        }
-    }
     pub fn guidance_envelope(&self, value: Value) -> Result<Value> {
         let registry = Registry::load(&self.root)?;
         let store = registry.open(self)?;
@@ -620,7 +601,8 @@ impl Workspace {
     ) -> Result<Value> {
         let mut value = self.envelope(value)?;
         let dispatch = self.independent_dispatch(store, &value)?;
-        let profile = self.profile_for_details(&value)?;
+        let id = value["task_id"].as_str().context("task id missing")?;
+        let profile = store.profile_for_task(&store.inspect(id)?)?;
         let stage = if value["status"] == "completed" {
             "completed"
         } else {

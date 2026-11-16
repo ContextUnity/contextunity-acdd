@@ -1450,6 +1450,9 @@ pub(super) fn ensure_pre_task_root_gates_passed(
     task: &Task,
     profile: &crate::tasks::profile::GateProfile,
 ) -> Result<()> {
+    if task.subject_kind == crate::store::ExecutionSubjectKind::Plan {
+        return Ok(());
+    }
     let milestone_tasks = store.list(Some(&task.milestone_ref), "all", None)?;
     let scope = milestone_task_scope(&milestone_tasks);
     let worktree = task

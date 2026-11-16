@@ -160,6 +160,33 @@ fn pre_task_submit_blueprint(h: &RootGateHarness, tasks: Value) -> anyhow::Resul
     )
 }
 
+fn pre_task_review_blueprint(h: &RootGateHarness, proof: Value) -> anyhow::Result<Value> {
+    use acdd_tasks::engine::{claim, submit, Action, Claim, Submit};
+    let worktree = h.root().to_string_lossy().into_owned();
+    claim(
+        h.root(),
+        Claim {
+            task_id: "m-wave".into(),
+            stage: "blueprint_synthesis.review".into(),
+            worker_id: "reviewer".into(),
+            worktree: worktree.clone(),
+            bundle: None,
+            session_fingerprint: None,
+        },
+    )?;
+    submit(
+        h.root(),
+        Submit {
+            task_id: "m-wave".into(),
+            stage: "blueprint_synthesis.review".into(),
+            evidence: serde_json::json!({"worker_id":"reviewer","worktree":worktree,"proof":proof}),
+            action: Action::Pass,
+            findings: None,
+            session_fingerprint: None,
+        },
+    )
+}
+
 #[test]
 fn pre_task_nested_blueprint_failed_synthesis_blocks_all_task_proofs() {
     use acdd_tasks::engine::{claim, submit, Action, Claim, Submit};
@@ -245,6 +272,169 @@ fn pre_task_nested_blueprint_invalid_task_maps_fail_before_fanout() {
         assert_eq!(root_passes, 0);
         assert_eq!(h.task.store.inspect(&h.task.id).unwrap().status, "ready");
     }
+
+    // Acceptance must remain strict even though replay after acceptance is
+    // incremental. Exercise missing and broken seams at the review ingress.
+    use crate::acdd::support::MilestoneFixtureBuilder;
+    use acdd_tasks::engine::{manage, Manage, ManageAction};
+    let mut profile = h.read_profile();
+    profile.gates[0].gates[1].proof = profile.gates[0].gates[0].proof.clone();
+    h.commit_profile(&profile, "typed blueprint review proof");
+    let source = MilestoneFixtureBuilder::new("m-wave")
+        .task("task_a", &["src/a.rs"])
+        .task_with_deps("task_b", &["src/b.rs"], &["task_a"])
+        .task_contract_revision(2)
+        .build();
+    fs::write(h.root().join(harness::MANIFEST), source).unwrap();
+    manage(
+        h.root(),
+        Manage {
+            action: ManageAction::Sync,
+            milestone_ref: Some(harness::MANIFEST.into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    pre_task_submit_blueprint(
+        &h,
+        serde_json::json!({
+            "task_a":{"outgoing_seams":[{"target_task":"task_b"}]},
+            "task_b":{"incoming_seams":[{"source_task":"task_a"}]}
+        }),
+    )
+    .unwrap();
+    for (tasks, detail) in [
+        (
+            serde_json::json!({"task_a":{},"task_b":{}}),
+            "dependency seam 'task_a -> task_b'",
+        ),
+        (
+            serde_json::json!({"task_a":{"outgoing_seams":[{"target_task":"foreign"}]},"task_b":{}}),
+            "unknown or cancelled task_ref 'foreign'",
+        ),
+    ] {
+        let error =
+            pre_task_review_blueprint(&h, serde_json::json!({"scheme_proof":{"tasks":tasks}}))
+                .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("MILESTONE_TASK_PROOF_INVALID") && message.contains(detail),
+            "{message}"
+        );
+        let accepted: i64 = h.task.store.connection.query_row(
+            "SELECT count(*) FROM gate_transitions WHERE (subject='milestone' AND gate_path='blueprint_synthesis.review' AND action='pass') OR (subject!='milestone' AND action='advance')",
+            [], |row| row.get(0)).unwrap();
+        assert_eq!(
+            accepted, 0,
+            "invalid review must not accept a root pass or fan out proof slices"
+        );
+    }
+}
+
+#[test]
+fn post_blueprint_sync_fans_out_incrementally_without_reopening_completed_root_gates() {
+    use crate::acdd::support::MilestoneFixtureBuilder;
+    use acdd_tasks::engine::{claim, manage, Claim, Manage, ManageAction};
+
+    let mut h = pre_task_multi_blueprint_fixture();
+    pre_task_submit_blueprint(
+        &h,
+        serde_json::json!({
+            "task_a":{"goal":"accepted-a"}, "task_b":{"goal":"accepted-b"}
+        }),
+    )
+    .unwrap();
+    pre_task_review_blueprint(&h, serde_json::json!({"none_proof":{}})).unwrap();
+    let root = h.root().to_owned();
+    let root_history = || -> Vec<(i64, String, String, String)> {
+        acdd_tasks::engine::store(&root).unwrap().connection.prepare(
+            "SELECT id,gate_path,action,proof_payload FROM gate_transitions WHERE subject='milestone' ORDER BY id"
+        ).unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))
+            .unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    };
+    let accepted = root_history();
+    assert_eq!(accepted.len(), 2);
+    let milestone = h.task.id.split_once(':').unwrap().0.to_owned();
+    let mut failures = Vec::new();
+    // One disk fixture, two monotonic changes through the real task sync ingress.
+    for (name, source, selected) in [
+        (
+            "new dependency",
+            MilestoneFixtureBuilder::new("m-wave")
+                .task("task_a", &["src/a.rs"])
+                .task_with_deps("task_b", &["src/b.rs"], &["task_a"])
+                .task_contract_revision(2)
+                .build(),
+            "task_a",
+        ),
+        (
+            "new task",
+            MilestoneFixtureBuilder::new("m-wave")
+                .task("task_a", &["src/a.rs"])
+                .task_with_deps("task_b", &["src/b.rs"], &["task_a"])
+                .task_contract_revision(2)
+                .task("task_c", &["src/c.rs"])
+                .build(),
+            "task_c",
+        ),
+    ] {
+        fs::write(h.root().join(harness::MANIFEST), source).unwrap();
+        manage(
+            h.root(),
+            Manage {
+                action: ManageAction::Sync,
+                milestone_ref: Some(harness::MANIFEST.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let id = format!("{milestone}:{selected}");
+        let stage = h.task.store.inspect(&id).unwrap().stage;
+        let result = claim(
+            h.root(),
+            Claim {
+                task_id: id.clone(),
+                stage,
+                worker_id: format!("worker-{selected}"),
+                worktree: h.root().to_string_lossy().into_owned(),
+                bundle: Some(true),
+                session_fingerprint: None,
+            },
+        );
+        assert_eq!(
+            root_history(),
+            accepted,
+            "{name}: completed root gates and accepted proof must remain immutable"
+        );
+        match result {
+            Ok(context) => {
+                if selected == "task_a" {
+                    assert_eq!(
+                        context["context_bundle"]["inherited_proofs"][0]["proof"]["goal"],
+                        "accepted-a"
+                    );
+                } else {
+                    assert!(
+                        !context["context_bundle"]["inherited_proofs"]
+                            .to_string()
+                            .contains("accepted-a"),
+                        "new task must not inherit a foreign slice"
+                    );
+                }
+                let task = h.task.store.inspect(&id).unwrap();
+                h.task
+                    .store
+                    .release_failed_claim(&id, task.claim_revision)
+                    .unwrap();
+            }
+            Err(error) => failures.push(format!("{name}: {error:#}")),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "Variant C must tolerate post-blueprint sync during fan-out: {}",
+        failures.join("\n")
+    );
 }
 
 #[test]

@@ -179,7 +179,7 @@ pub fn execute_command_gate_with_options(
             "TASK_COMMAND_INVALID: supplied command definition does not match registered command '{registered_name}'"
         );
     }
-    let commands_to_run = if let Some(test_ref) = explicit_test {
+    let mut commands_to_run = if let Some(test_ref) = explicit_test {
         let (test_path, test_symbol) = match test_ref.split_once("::") {
             Some((path, symbol)) if !symbol.trim().is_empty() => (path.trim(), Some(symbol.trim())),
             Some(_) => {
@@ -250,6 +250,7 @@ pub fn execute_command_gate_with_options(
     } else {
         resolve_command_plan(root, registered_name, commands, paths, &profile)?
     };
+    expand_plan_commands(&store, &task, &mut commands_to_run)?;
     if commands_to_run.is_empty() {
         bail!("TASK_COMMAND_NO_MATCH: no registered command matched the supplied project paths");
     }
@@ -418,7 +419,12 @@ pub fn execute_command_gate_with_options(
         store.record_execution_trace_with_proof(run.run_id, &trace, Some(&facts))?;
         traces.push(trace);
         if !succeeded {
-            store.complete_execution_run(run.run_id)?;
+            let post = if !gate.persistence.immutable && status == "completed" {
+                Some(crate::engine::tasks::candidate_fingerprint(root)?)
+            } else {
+                None
+            };
+            store.complete_execution_run_with_candidate(run.run_id, post.as_deref())?;
             let trace = traces.last().context(
                 "TASK_TRACE_PERSISTENCE_FAILED: command result disappeared after persistence",
             )?;
@@ -431,8 +437,37 @@ pub fn execute_command_gate_with_options(
             );
         }
     }
-    store.complete_execution_run(run.run_id)?;
+    let post = if !gate.persistence.immutable {
+        Some(crate::engine::tasks::candidate_fingerprint(root)?)
+    } else {
+        None
+    };
+    store.complete_execution_run_with_candidate(run.run_id, post.as_deref())?;
     Ok(traces)
+}
+
+pub(crate) fn expand_plan_commands(
+    store: &crate::store::TasksStore,
+    task: &crate::store::Task,
+    commands: &mut [(String, String, Duration)],
+) -> Result<()> {
+    if task.subject_kind != crate::store::ExecutionSubjectKind::Plan {
+        return Ok(());
+    }
+    let mut tokens = std::collections::BTreeMap::new();
+    let mut statement = store.connection.prepare(
+        "SELECT evidence FROM task_gates WHERE task_id=?1 AND state='passed' ORDER BY revision",
+    )?;
+    let rows = statement.query_map([&task.task_id], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        let evidence: serde_json::Value = serde_json::from_str(&row?)?;
+        crate::engine::orchestrator::workflow::collect_artifact_tokens(&evidence, &mut tokens);
+    }
+    for (_, command, _) in commands {
+        *command =
+            crate::engine::orchestrator::workflow::expand_workflow_placeholders(command, &tokens)?;
+    }
+    Ok(())
 }
 
 pub fn resolve_command_plan(

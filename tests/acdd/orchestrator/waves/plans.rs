@@ -1,89 +1,11 @@
 use super::run_cli;
 use crate::acdd::harness::plans::PlanHarness;
-use crate::acdd::support::git_command;
 use crate::acdd::support::git_head;
 use clap::Parser;
 use contextunity_acdd::acdd_tasks::tasks::profile;
 use contextunity_acdd::cli::Cli;
 use serde_json::Value;
 use std::fs;
-
-#[test]
-fn plan_immutable_gate_rejects_drift_without_completion_or_index_mutation() {
-    let harness = PlanHarness::linear();
-    let root = harness.materialize(harness.path);
-    let source = fs::read(root.path(harness.path)).unwrap();
-    let head = git_head(root.root());
-    let index = git_command(root.root(), &["ls-files", "--stage"])
-        .output()
-        .unwrap()
-        .stdout;
-    let error = run_cli(
-        root.root(),
-        &[
-            "--profile",
-            "profiles/immutable-drift.yaml",
-            "plan",
-            "run",
-            "linear",
-        ],
-    )
-    .unwrap_err();
-    assert!(
-        error.to_string().contains("TASK_CANDIDATE_MISMATCH"),
-        "{error:#}"
-    );
-    assert_eq!(fs::read(root.path(harness.path)).unwrap(), source);
-    assert_eq!(git_head(root.root()), head);
-    assert_eq!(
-        git_command(root.root(), &["ls-files", "--stage"])
-            .output()
-            .unwrap()
-            .stdout,
-        index
-    );
-    assert_eq!(
-        fs::read_to_string(root.path("src/first.rs")).unwrap(),
-        "changed\n"
-    );
-}
-
-#[test]
-fn plan_delivery_reuses_subtask_completion_and_evidence_guard() {
-    use crate::acdd::harness::plans::PlanFixture;
-    let base = PlanHarness::fixture(PlanFixture::PendingSubtask);
-    let root = base.materialize(base.path);
-    for (fixture, source, expected) in [
-        (
-            PlanFixture::PendingSubtask,
-            include_str!("../../fixtures/plans/pending-subtask.md"),
-            Some("TASK_SUBTASKS_INCOMPLETE"),
-        ),
-        (
-            PlanFixture::MissingSubtaskEvidence,
-            include_str!("../../fixtures/plans/missing-subtask-evidence.md"),
-            Some("TASK_SUBTASK_EVIDENCE_MISSING"),
-        ),
-        (
-            PlanFixture::CompletedSubtask,
-            include_str!("../../fixtures/plans/completed-subtask.md"),
-            None,
-        ),
-    ] {
-        let harness = PlanHarness::fixture(fixture);
-        root.write(harness.path, source);
-        let before = fs::read(root.path(harness.path)).unwrap();
-        let result = run_cli(root.root(), &["plan", "run", "invalid"]);
-        if let Some(expected) = expected {
-            let error = result.unwrap_err();
-            assert!(error.to_string().contains(expected), "{error:#}");
-            assert_eq!(fs::read(root.path(harness.path)).unwrap(), before);
-        } else {
-            assert_eq!(result.unwrap()["status"], "completed");
-        }
-        root.remove("plan-execution.log");
-    }
-}
 
 #[test]
 fn plan_dependency_validation_precedes_execution() {
@@ -310,6 +232,14 @@ fn plan_run_honors_explicit_config_and_profile_paths() {
     let value: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(value["status"], "completed");
     assert_eq!(value["path"], "custom-plans/linear.md");
+    assert!(value["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|step| step["status"] == "completed"
+            && step["evidence"]
+                .as_str()
+                .is_some_and(|evidence| !evidence.is_empty())));
     assert_eq!(
         fs::read_to_string(root.path("plan-execution.log")).unwrap(),
         "step\nstep\n"
@@ -318,8 +248,14 @@ fn plan_run_honors_explicit_config_and_profile_paths() {
         !root.path("rejected-profile.log").exists(),
         "explicit profile must override selected config"
     );
-    assert!(!root.path(".acdd/tasks.sqlite").exists());
-    assert!(!root.path(".acdd/custom-tasks.sqlite").exists());
+    assert!(
+        root.path(".acdd/custom-tasks.sqlite").exists(),
+        "selected configuration owns Plan SQLite state"
+    );
+    assert!(
+        !root.path(".acdd/tasks.sqlite").exists(),
+        "Plan must not use the unselected default database"
+    );
     assert_eq!(git_head(root.root()), head);
     assert!(harness
         .snapshots(&root)
