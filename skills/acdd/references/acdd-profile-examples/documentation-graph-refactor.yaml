@@ -39,7 +39,7 @@ roles:
 # =============================================================================
 commands:
   scan_docs_graph_drift:
-    command: "python3 -c 'import os, glob; [print(f) for f in glob.glob(\"docs/**/*.md\", recursive=True)]' > .acdd/docs_inventory.txt"
+    command: "mkdir -p .acdd/tmp && python3 -c 'import glob; [print(f) for f in glob.glob(\"docs/**/*.md\", recursive=True)]' > .acdd/tmp/docs_inventory.txt"
     timeout_seconds: 30
     output: { require_counts: false }
 

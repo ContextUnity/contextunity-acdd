@@ -27,8 +27,15 @@ Rules for placing, creating, refactoring, and maintaining tests in
   heavy filesystem fixtures or `Workspace::new()` inside pure syntax/AST or
   path-helper tests, and place unit tests inside the owning crate module rather
   than integration crates.
-- **Subsume duplicates**: When a stronger seam covers the contract, fold any
-  unique edge case into it and delete the weaker/duplicate test in the same diff.
+- **Subsume duplicates & review-fix anti-bloat**: When a stronger seam covers
+  the contract, fold any unique edge case into it and delete the
+  weaker/duplicate test in the same diff. Do **NOT** spawn standalone `#[test]`
+  functions or extra `Workspace`/`McpTestHarness` setups to close P1/P2 review
+  findings (`review -> build` remediation loops): fix the underlying mechanism by
+  generalization (shared validator, single SQL/engine path) so the defect class
+  cannot recur, and add at most one data row to an existing contract matrix ONLY
+  when a genuine public boundary was missing (zero net new `#[test]` functions
+  during review remediation).
 - **Runtime-red contract proof**: Contract tests compile and fail at runtime
   (exit 101). Do not use compile failures as red proof.
 - **Anti-fake-gating**: Do not hide unoptimized matrices behind `#[ignore]`,
@@ -133,9 +140,11 @@ When moving, renaming, splitting, or removing a suite file, update this file and
 ## 4. Authoring patterns
 
 Read [test harness architecture](../docs/architecture/test-harness.md). Active
-refactor sequencing:
-[test-suite-decomposition-and-shared-fixtures.md](../docs/plans/test-suite-decomposition-and-shared-fixtures.md)
+debloat and contract-consolidation plan:
+[test-suite-debloat-and-contract-consolidation.md](../docs/plans/test-suite-debloat-and-contract-consolidation.md)
 (building on the archived
+[decomposition plan](../docs/plans/archive/test-suite-decomposition-and-shared-fixtures.md)
+and
 [reality-reset plan](../docs/plans/archive/test-suite-diet-and-fixture-hardening.md)).
 
 1. **Extend a capability** — add a table row or a single harness mutation; do not

@@ -21,8 +21,11 @@
 
 When a symbol's unique name is already known, read it directly with
 `acdd_read(selector="SymbolName")`; add `path="..."` to restrict resolution.
-Follow any source continuation to obtain the complete digest-verified body. Use
-search when discovery or disambiguation is needed.
+Follow any source continuation to obtain the complete digest-verified body. Keep
+`ast_grep_search` and `code_map_*` (preferring `detail: "compact"` on searches)
+for AST patterns and graph queries; `rg -n` is allowed for substring/error/config
+searches across directories, and `read_file` is allowed for reading large file
+slices (`>120` lines).
 
 Use Blackboard `notes` for non-obvious technical context, not routine gate
 status, passing tests, or SHAs that add no context. Before rejecting a review,
@@ -31,7 +34,7 @@ ID in the required typed rejection findings; see the linked procedure.
 
 Use ACDD MCP tools or the `acdd` CLI on the surface that provides the needed operation. Follow the active task profile and the `workflow_guidance` returned by task claim for gate sequence, proof policy, roles, models, review contours, and profile-specific behavior. Because repository roles in `.acdd/profile.yaml` use `mode: subagent` without shell `runner:` commands, coordinator/orchestrator sessions MUST NOT call `acdd milestone run` (which fails with `WORKFLOW_RUNNER_REQUIRED`) or edit `.acdd/profile.yaml`; orchestrate gates explicitly via `task_claim` / `task_submit` (or `acdd task claim` / `acdd task submit`) and subagent execution, completing `blueprint_synthesis.synthesize` $\to$ `blueprint_synthesis.review` before claiming tasks. Task builds and reviews run the scoped task seam test and strict Clippy (without forcing full unfiltered test suite execution during task iteration). Follow [TESTS.md](TESTS.md) for the exact task and milestone verification commands and count rules.
 
-The embedded ACDD profile registers `rust-check-and-test` as strict Clippy followed by tests. For automated gates (`contract`, `build`), run `acdd task verify <task_id> --test <test_path::test_fn> [--seam <target>]` (or MCP `task_manage(action: "verify", ...)`), then submit the stage via `task submit <task_id> --stage <stage> --action pass` without manual evidence assembly. Delivery infers proof from the accepted candidate snapshot. Review and schema-defined gates provide their declared typed evidence payload.
+The embedded ACDD profile registers `rust-check-and-test` as strict Clippy followed by tests. For automated gates (`contract`, `build`), run `acdd task verify <task_id> --test <test_path::test_fn> [--seam <target>]` (or MCP `task_manage(action: "verify", ...)`), then submit the stage via `task submit <task_id> --stage <stage> --action pass` without manual evidence assembly. Delivery infers proof from the accepted candidate snapshot. Review and schema-defined gates provide their declared typed evidence payload. Write any temporary agent or workflow scratch files (inventories, baselines, scratch JSON/notes) under `.acdd/tmp/` rather than directly in `.acdd/` (except `.acdd/integration-evidence.json` and engine-managed files).
 
 <!-- acdd:agents-verification:start -->
 When authoring contracts or testing capabilities:
@@ -40,6 +43,7 @@ When authoring contracts or testing capabilities:
 - **Shared read-only fixtures (`PersistedSnapshot`)**: NEVER store `Workspace` or `TempDir` inside a `static OnceLock` / `LazyLock` (statics skip `Drop` on process exit and leak `/tmp/contextunity-test-*`). Share read-only indexed state via `std::sync::OnceLock<PersistedSnapshot>` (`tests/common/sqlite.rs`), dropping the builder `Workspace` inside `get_or_init`, or create local `Workspace` instances when disk source files are required.
 - **In-process state vs subprocess harnesses**: Prove pure DAG scheduling, wave ordering, gate state transitions, and blackboard routing in-process (`TasksStore` / `TaskHarness`); reserve full Git worktree and Python subprocess harnesses (`WaveHarness`) for genuine process, signal, or worktree integration contracts.
 - **Zero new root test binaries & zero tempdir leaks**: Register new integration test modules inside the owning canonical domain binary (`tests/core.rs`, `tests/mcp.rs`, `tests/query_context.rs`, `tests/linker.rs`, `tests/incremental.rs`, `tests/acdd.rs`). Never add new top-level `tests/*.rs` binaries, tautological enum/struct echo checks, brittle manifest/CI YAML substring checks, or helper meta-test bloat, and ensure tests leave zero leaked `/tmp/contextunity-test-*` directories.
+- **Zero review-fix test bloat**: Do NOT spawn standalone `#[test]` functions or extra `Workspace` / `McpTestHarness` instances to close P1/P2 review findings. Fix the mechanism via generalization so the defect class disappears; add at most a row to the owning table-driven contract test ONLY if a real external contract boundary was missing (net new `#[test]` budget during review remediation is zero).
 - **Runtime-red contract proof**: Contract tests must compile cleanly and produce runtime assertion failures for `contract` gate proof.
 - **Autonomous scope extension**: Agents should extend scope autonomously via `extend_scope` to include necessary files, fixtures, tests, and documentation within admitted roots to unblock implementation or verification without halting execution or requesting human permission.
 <!-- acdd:agents-verification:end -->

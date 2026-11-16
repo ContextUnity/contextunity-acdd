@@ -202,14 +202,9 @@ fail-closed behavior, add speculative future scope, or repair only a local
 symptom. Prefer adjudication over implementation when the finding fights
 higher authority.
 
-## 5. Prove the invariant before implementation
+## 5. Prove the invariant via generalization (no bug-fix test bloat)
 
-Add a focused regression only when it protects an observable invariant against
-a plausible recurrence. Do not add a new test merely to assert a static
-constant/allowlist entry, exact source shape, wording, or another implementation
-detail; for trivial maintenance, record direct inspection and existing-gate
-evidence instead. When a regression is warranted, make it fail before production
-changes and name the plausible mutation it must kill.
+First eliminate the defect class in production code (consolidate duplicate branches into one shared validator or delegate to canonical backend semantics instead of layering local patches). **Do NOT spawn standalone `#[test]` functions or extra heavy test harnesses (`Workspace`/`McpTestHarness`) per review finding.** Add at most a data row to an already-existing contract matrix ONLY when an external API/contract boundary was genuinely uncovered; for internal bugs already covered by shared invariants and existing suites, prove closure with production-code generalization, existing gates, and structural analysis instead of adding tests. Do not add a test merely to assert a static constant, allowlist entry, exact source shape, wording, or another implementation detail. When adding a row to an existing contract matrix is genuinely warranted, verify it fails before the production fix and name the mutation it kills.
 
 Match evidence to the boundary:
 
@@ -358,11 +353,7 @@ the following:
 2. Findings are grouped into owner-clusters. Each cluster names one post-fix
    invariant and lists every cross-owner seam it crosses. Patch-per-finding
    ledgers are invalid admission evidence.
-3. Each non-trivial canonical-owner cluster has at least one boundary regression
-   that failed on the pre-fix state and a named mutation or equivalent deliberate
-   break that the regression rejects. For trivial maintenance, record why a new
-   regression would only lock in an implementation detail. Any regression must
-   exercise the full reachable seam, not only the local helper that was patched.
+3. Each non-trivial canonical-owner cluster establishes closure either via the owning seam/contract matrix (expanding an existing table row ONLY when an external boundary was uncovered, never spawning standalone bug-fix `#[test]` functions or duplicate harnesses) OR, for internal defect-class elimination via code generalization, via Code Map / ast-grep residual scans, mutation analysis, and existing passing suites. Any matrix row added for an uncovered boundary must exercise the full reachable seam rather than only a patched local helper.
 4. A migration regression executes the next real canonical mutation against the
    migrated state; schema inspection or row reads alone are insufficient.
 5. A codec or persisted-format regression inventories and exercises every

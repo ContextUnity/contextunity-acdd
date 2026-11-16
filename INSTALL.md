@@ -450,8 +450,9 @@ alwaysApply: true
 # Code Navigation Rules
 
 When working in this repository:
-- Use ACDD MCP tools (`code_map_search`, `code_map_inspect`, `code_map_impact`, `ast_grep_search`) for symbols and code exploration.
+- Use ACDD MCP tools (`code_map_search` with `detail: "compact"`, `code_map_inspect`, `code_map_impact`, `ast_grep_search`) for symbols, AST patterns, and graph exploration.
 - Use `acdd_read(selector="SymbolName")` for reading complete symbol implementations.
+- Use `rg -n` (or `acdd_read(mode="search", path=...)`) for directory substring/error/config searches, and native file reads for large file ranges (`>120` lines).
 - Use `ctx_shell` or standard execution for running builds and tests.
 ```
 
@@ -460,9 +461,9 @@ When working in this repository:
 ```markdown
 # Mandatory Code Navigation via ContextUnity ACDD
 
-- ALWAYS use ACDD MCP tools (`code_map_search`, `code_map_inspect`, `code_map_impact`, `code_map_query`, `code_map_overview`) and `ast_grep_search` as primary tools for searching code and syntax patterns.
-- Use `acdd_read` for reading files, outlines, and symbol implementations.
-- Native grep/read is only permitted as a fallback if ACDD tools find no matches.
+- Use ACDD MCP tools (`code_map_search` with `detail: "compact"`, `code_map_inspect`, `code_map_impact`, `code_map_query`, `code_map_overview`) and `ast_grep_search` for symbol lookup, structural AST patterns, and graph queries.
+- Use `acdd_read(selector="SymbolName")` for digest-verified symbol bodies (with optional `path="..."`).
+- Use `read_file` for reading large file slices (`>120` lines), and `rg -n` (or `acdd_read(mode="search", path=...)`) for searching substrings, error messages, or config files across directories.
 ```
 
 ---

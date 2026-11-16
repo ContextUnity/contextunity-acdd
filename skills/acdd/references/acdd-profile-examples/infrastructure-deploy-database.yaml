@@ -46,7 +46,7 @@ commands:
     output: { require_counts: false }
 
   backup_state_checkpoint:
-    command: "./scripts/backup-db-snapshot.sh --target .acdd/db_pre_deploy.sql"
+    command: "mkdir -p .acdd/tmp && ./scripts/backup-db-snapshot.sh --target .acdd/tmp/db_pre_deploy.sql"
     timeout_seconds: 180
     output: { require_counts: false }
 
@@ -66,7 +66,7 @@ commands:
     output: { require_counts: false }
 
   rollback_deployment_and_db:
-    command: "./scripts/rollback.sh && ./scripts/restore-db-snapshot.sh --source .acdd/db_pre_deploy.sql"
+    command: "./scripts/rollback.sh && ./scripts/restore-db-snapshot.sh --source .acdd/tmp/db_pre_deploy.sql"
     timeout_seconds: 300
     output: { require_counts: false }
 

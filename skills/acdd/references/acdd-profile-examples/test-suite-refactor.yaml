@@ -38,7 +38,7 @@ roles:
 # =============================================================================
 commands:
   freeze_baseline_inventory:
-    command: "pytest --collect-only -q {scope_target} > .acdd/baseline_test_inventory.txt 2>&1 || cargo test --test {scope_target} -- --list > .acdd/baseline_test_inventory.txt"
+    command: "mkdir -p .acdd/tmp && (pytest --collect-only -q {scope_target} > .acdd/tmp/baseline_test_inventory.txt 2>&1 || cargo test --test {scope_target} -- --list > .acdd/tmp/baseline_test_inventory.txt)"
     timeout_seconds: 30
     output: { require_counts: false }
 

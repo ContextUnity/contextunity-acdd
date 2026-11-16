@@ -1,0 +1,221 @@
+# =============================================================================
+# ACDD PLAN PROFILE: Strict Tests Debloat & Contract Consolidation
+#
+# ADR 0021 Work Model 2 (Plan execution, save: snapshot, tasks: container only).
+# Paired with: `docs/plans/test-suite-debloat-and-contract-consolidation.md`
+#
+# Enforces hard non-negotiable debloat gates:
+#   1. Zero tampering with non-test production source files (`src/`, `crates/*/src/` non-test)
+#   2. Strict net reduction in `#[test]` count (`tests_after < tests_before`) in diff
+#   3. Non-increasing heavy harness setups (`Workspace::with_files`, `McpTestHarness::new`, `WaveHarness`)
+#   4. Zero `static OnceLock<Workspace|TempDir>` / `LazyLock` tempdir leaks
+#   5. 1-to-1 observable invariant map reviewed by an independent auditor
+# =============================================================================
+
+version: 2
+inherit: none
+save: snapshot
+
+scope_args_by_pattern:
+  "tests/acdd/**/*.rs": "--test acdd"
+  "tests/mcp/**/*.rs": "--test mcp"
+  "tests/query_context/**/*.rs": "--test query_context"
+  "tests/incremental/**/*.rs": "--test incremental"
+  "tests/linker/**/*.rs": "--test linker"
+  "tests/languages/**/*.rs": "--test languages"
+  "tests/core/**/*.rs": "--test core"
+  "tests/common/**/*.rs": "--test core"
+  "crates/acdd-core/**/*.rs": "--package acdd-core --lib"
+  "crates/acdd-index/**/*.rs": "--package acdd-index --lib"
+  "crates/acdd-tasks/**/*.rs": "--package acdd-tasks --lib"
+
+roles:
+  architect:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:high'
+
+  builder:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-terra:medium'
+      - 'gpt-6.1-sol:medium'
+
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:high'
+
+commands:
+  freeze_step_baseline:
+    command: >-
+      python3 -c '
+      import hashlib, json, pathlib, re
+      root = pathlib.Path(".")
+      tests = harnesses = 0
+      prod_hashes = {}
+      for d in ("tests", "crates"):
+          for p in sorted((root / d).rglob("*.rs")):
+              rel = p.as_posix()
+              txt = p.read_text(encoding="utf-8", errors="ignore")
+              tests += len(re.findall(r"#\[test\]", txt))
+              harnesses += len(re.findall(r"\b(?:Workspace::with_files|Workspace::new|McpTestHarness::new|McpTestHarness::indexed|WaveHarness::new)\b", txt))
+              if d == "crates" and "/tests/" not in rel and not rel.endswith("/tests.rs") and not rel.endswith("_tests.rs"):
+                  prod_hashes[rel] = hashlib.sha256(txt.encode("utf-8")).hexdigest()
+      for p in sorted((root / "src").rglob("*.rs")):
+          rel = p.as_posix()
+          txt = p.read_text(encoding="utf-8", errors="ignore")
+          tests += len(re.findall(r"#\[test\]", txt))
+          if not rel.endswith("tests.rs") and not rel.endswith("_tests.rs"):
+              prod_hashes[rel] = hashlib.sha256(txt.encode("utf-8")).hexdigest()
+      out = root / ".acdd" / "tmp" / "debloat-step-baseline.json"
+      out.parent.mkdir(parents=True, exist_ok=True)
+      out.write_text(json.dumps({"tests": tests, "harnesses": harnesses, "prod_hashes": prod_hashes}))
+      print(f"baseline_tests={tests} baseline_harnesses={harnesses}")
+      '
+    timeout_seconds: 30
+    output: { require_counts: false }
+
+  enforce_debloat_budget:
+    command: >-
+      python3 -c '
+      import hashlib, json, pathlib, re, sys
+      root = pathlib.Path(".")
+      base = json.loads((root / ".acdd" / "tmp" / "debloat-step-baseline.json").read_text())
+      cur_tests = cur_harnesses = 0
+      static_leaks = []
+      prod_tamper = []
+      for d in ("tests", "crates", "src"):
+          for p in sorted((root / d).rglob("*.rs")):
+              rel = p.as_posix()
+              txt = p.read_text(encoding="utf-8", errors="ignore")
+              cur_tests += len(re.findall(r"#\[test\]", txt))
+              if d != "src":
+                  cur_harnesses += len(re.findall(r"\b(?:Workspace::with_files|Workspace::new|McpTestHarness::new|McpTestHarness::indexed|WaveHarness::new)\b", txt))
+              if re.search(r"static\s+[^;]*(?:OnceLock|LazyLock)<[^>]*\b(?:Workspace|TempDir)\b", txt):
+                  static_leaks.append(rel)
+              if rel in base["prod_hashes"] and hashlib.sha256(txt.encode("utf-8")).hexdigest() != base["prod_hashes"][rel]:
+                  prod_tamper.append(rel)
+      dt = cur_tests - base["tests"]
+      dh = cur_harnesses - base["harnesses"]
+      base_t, base_h = base["tests"], base["harnesses"]
+      print(f"step_test_delta={dt} ({base_t}->{cur_tests}) step_harness_delta={dh} ({base_h}->{cur_harnesses})")
+      if prod_tamper: sys.exit(f"DEBLOAT_PROD_TAMPER: {prod_tamper}")
+      if static_leaks: sys.exit(f"DEBLOAT_STATIC_TEMPDIR_LEAK: {static_leaks}")
+      if dt >= 0: sys.exit(f"DEBLOAT_TEST_BUDGET_EXCEEDED: step #[test] count did not strictly decrease (delta={dt})")
+      if dh > 0: sys.exit(f"DEBLOAT_HARNESS_BUDGET_EXCEEDED: step heavy harness count increased (delta={dh})")
+      '
+    timeout_seconds: 30
+    output: { require_counts: false }
+
+  rust-check-and-test:
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: true
+      noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
+      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+    timeout_seconds: 300
+
+policies:
+  debloat_review:
+    independent_worker: true
+    require_all_contours: true
+    audit_extended_scope: true
+
+guidance:
+  debloat.inventory: >
+    Record baseline #[test] and heavy harness counts for the step's scoped files.
+    Classify every test as KEEP (unique contract), MERGE (fold unique assertions into a table-driven matrix sharing one base Workspace or OnceLock<PersistedSnapshot>), or REMOVE (subsumed review-fix bug test / tautological assertion).
+    Target >=30% test-count reduction without any loss of observable production contract coverage.
+
+  debloat.consolidate: >
+    Execute MERGE and REMOVE in the same edit pass. Keep heavy Workspace/McpTestHarness builds outside table loops. Move pure DAG/state checks to in-memory TasksStore.
+    Never touch non-test production code. Every diff MUST end with strictly fewer #[test] functions and fewer or equal heavy harnesses than HEAD.
+
+  debloat.audit: >
+    Verify 1-to-1 invariant mapping (deleted/merged test -> retained matrix row or stronger seam) ensuring zero weakened assertions, zero dropped negative/error boundaries, zero static OnceLock<Workspace/TempDir>, and strictly negative #[test] delta.
+
+  contour.paths:
+    description: "Verify debloat changes stay strictly inside admitted test paths with zero production source modifications."
+    criteria:
+      - "Zero edits to non-test files under src/ or crates/*/src/."
+  contour.claims:
+    description: "Verify every removed or merged test maps 1-to-1 to a retained contract matrix row or stronger seam test."
+    criteria:
+      - "Every deleted or merged test dimension appears in the retained matrix row or a proven stronger seam."
+  contour.concurrency:
+    description: "Verify shared fixtures/OnceLock<PersistedSnapshot> never hold Workspace/TempDir across threads or leak /tmp/contextunity-test-*."
+    criteria:
+      - "Zero static OnceLock<Workspace/TempDir> leaks; shared immutable fixtures drop builders inside get_or_init."
+
+gates:
+  - tasks:
+      gates:
+        - id: inventory
+          role: architect
+          guidance: [debloat.inventory]
+          tools: [acdd_read, code_map_search, code_map_tests, task_blackboard]
+          proof:
+            scheme:
+              type: object
+              required: [baseline_tests, baseline_harnesses, merge_map, remove_list]
+              properties:
+                baseline_tests: { type: integer }
+                baseline_harnesses: { type: integer }
+                merge_map:
+                  type: array
+                  items: { type: string }
+                remove_list:
+                  type: array
+                  items: { type: string }
+          save: snapshot
+
+        - id: freeze_baseline
+          command: freeze_step_baseline
+          proof: none
+
+        - id: consolidate
+          role: builder
+          guidance: [debloat.consolidate]
+          save:
+            pre: snapshot
+            post: snapshot
+
+        - id: enforce_budget
+          command: enforce_debloat_budget
+          proof: command
+          fail: consolidate
+
+        - id: verify_tests
+          command: rust-check-and-test
+          proof: command
+          fail: consolidate
+          save:
+            post: snapshot
+
+        - id: audit
+          role: independent_reviewer
+          guidance: [debloat.audit]
+          policy: debloat_review
+          independent_from: consolidate
+          fail: consolidate
+          loop:
+            scope: consolidate
+          save:
+            immutable: true
+
+        - id: deliver
+          role: independent_reviewer
+          receipt: true
+          need: [audit]
+          independent_from: consolidate
+          fail: consolidate
+          save:
+            immutable: true
+            post: snapshot
