@@ -8,6 +8,7 @@ target/
 __pycache__/
 *.pyc
 .acdd/*.json
+.acdd/tmp/
 !/.acdd/
 !/.acdd/profile.yaml
 !/.acdd/frameworks/

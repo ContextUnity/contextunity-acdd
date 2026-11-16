@@ -312,6 +312,8 @@ pub(crate) fn is_acdd_runtime_file_in(root: Option<&Path>, path: &str) -> bool {
         || norm == ".acdd/tasks"
         || norm == ".acdd/task-traces"
         || norm == ".acdd/runs"
+        || norm == ".acdd/tmp"
+        || norm.starts_with(".acdd/tmp/")
         || norm
             .strip_prefix(".acdd/handoff-")
             .and_then(|s| s.strip_suffix(".json"))

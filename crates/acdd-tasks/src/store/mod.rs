@@ -2622,6 +2622,8 @@ mod tests {
             (".acdd/handoff-abc.json", false, true),
             (".acdd/handoff-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.json", true, false),
             (".acdd/integration-evidence.json", true, false),
+            (".acdd/tmp", true, false),
+            (".acdd/tmp/scratch.json", true, false),
             (".acdd/.acdd-write-123-0", true, false),
             (".acdd/tasks.sqlite", true, false),
             (".acdd/tasks.sqlite-wal", true, false),

@@ -227,6 +227,7 @@ guidance:
     criteria:
       - "MINIMAL SEAM CHANGE: Implement the accepted contract with the smallest durable change in production modules; avoid duplicate helpers, wrappers, or shadow registries."
       - "LEAN PARALLELIZABLE TESTS: Collapse homogeneous input, error, or boundary permutations into table-driven loops with heavy Workspace/build setup outside the loop (unless varying initial cold-build layout), share immutable corpora via OnceLock<PersistedSnapshot> without static TempDir leaks, test pure state logic in-process, and keep distinct contracts in separate focused tests."
+      - "REVIEW REMEDIATION BY GENERALIZATION (NO TEST BLOAT): When resolving P1/P2 review findings, eliminate the defect class in production code (shared validator or canonical backend delegation) instead of patching locally and spawning standalone bug-fix tests or extra Workspace/McpTestHarness instances; at most add one data row to the existing owning contract matrix if an external boundary was missing."
   task.review:
     description: "INDEPENDENT REVIEW CORE INVARIANTS & ENGINEERING PRINCIPLES"
     criteria:
@@ -236,7 +237,7 @@ guidance:
       - "REVIEW REJECTION BOUNDARY: Reject only for contract failure, scope violation, invariant breach, or a genuine functional or architectural defect. Never reject over doc-comment wording or non-regression stylistic nitpicks."
       - "BROAD ARCHITECTURAL EXPLORATION: Never evaluate diffs in isolation. Thoroughly inspect subsystem integration and extension points using semantic tools and source inspection."
       - "STRICT REJECTION OF HACKS & HEURISTICS: Actively detect and REJECT superficial workarounds, ad-hoc string heuristics (e.g. path shape guesses, magical substring checks), hardcoded parallel lookup lists, or patches designed merely to turn a test green. Require durable, authentic root-cause fixes in the typed data model."
-      - "TEST HYGIENE & ANTI-MONOLITH: Reject diffs that clone heavy harnesses or rebuild corpora inside loop bodies per variant instead of table-driven matrices, hold temp dirs in static OnceLock/LazyLock skipping Drop, omit shared snapshot/in-memory fixtures on immutable corpora, append tests or review probes into monolithic functions, or weaken existing assertions. Enforce domain decomposition into focused, parallelizable test functions."
+      - "TEST HYGIENE & ANTI-MONOLITH: Reject diffs that clone heavy harnesses or rebuild corpora inside loop bodies per variant instead of table-driven matrices, hold temp dirs in static OnceLock/LazyLock skipping Drop, omit shared snapshot/in-memory fixtures on immutable corpora, append tests or review probes into monolithic functions, add standalone bug-fix tests or extra harnesses during review remediation (diff test-count budget for review fixes is zero new #[test] functions; at most a row in the existing matrix for an uncovered public boundary), or weaken existing assertions. Enforce domain decomposition into focused, parallelizable test functions."
       - "ANTI-LOOPING & ARCHITECTURAL RE-EVALUATION: If an implementation fails repeatedly across review rounds or accumulates layers of duct tape, do NOT accept another patch. Reject the implementation, diagnose the defective contract, and require architectural re-synthesis."
       - "MANDATORY PERFORMANCE ALIGNMENT: Verify zero performance regressions: single-pass algorithms, zero duplicate caches, minimal heap allocations, and lean data structures."
       - "CONSTRUCTIVE FINDINGS: Formulate findings constructively with actionable criteria. Do not weaponize minor terminology mismatches to block genuine optimizations."
@@ -259,7 +260,7 @@ guidance:
     description: "Defect routing and scope boundaries for review gates"
     criteria:
       - "Route adjacent defects to their owning task or admit scope before edits; record deferred findings durably before delivery."
-      - "Reviewers must accept legitimate defect fixes and verify changes against the declared scope (preventing uncontracted scope creep or overengineering)."
+      - "Reviewers must accept legitimate defect fixes by root-cause generalization and verify changes against the declared scope (preventing uncontracted scope creep, overengineering, or demanding per-finding regression tests)."
   contour.paths:
     description: "Verify changes stay within the task's admitted write perimeter and preserve protected paths."
     criteria:
