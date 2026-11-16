@@ -30,22 +30,22 @@ path = "src/main.rs"
 [features]
 default = ["lang-python", "lang-rust", "lang-typescript", "lang-vue", "lang-proto", "lang-html", "lang-yaml", "lang-toml"]
 all-languages = ["lang-python", "lang-rust", "lang-typescript", "lang-vue", "lang-proto", "lang-html", "lang-yaml", "lang-toml", "lang-go", "lang-java", "lang-csharp", "lang-kotlin", "lang-php", "lang-ruby", "lang-c", "lang-cpp"]
-lang-html = ["dep:tree-sitter-html"]
-lang-yaml = ["dep:tree-sitter-yaml"]
-lang-toml = ["dep:tree-sitter-toml-ng"]
-lang-python = ["dep:tree-sitter-python", "dep:tree-sitter-toml-ng"]
-lang-rust = ["dep:tree-sitter-rust", "dep:tree-sitter-toml-ng"]
-lang-typescript = ["dep:tree-sitter-typescript", "dep:tree-sitter-javascript"]
-lang-vue = ["lang-typescript", "dep:tree-sitter-html"]
-lang-proto = []
-lang-go = ["dep:tree-sitter-go"]
-lang-java = ["dep:tree-sitter-java"]
-lang-csharp = ["dep:tree-sitter-c-sharp"]
-lang-kotlin = ["dep:tree-sitter-kotlin"]
-lang-php = ["dep:tree-sitter-php"]
-lang-ruby = ["dep:tree-sitter-ruby"]
-lang-c = ["dep:tree-sitter-c"]
-lang-cpp = ["dep:tree-sitter-cpp"]
+lang-html = ["acdd-index/lang-html"]
+lang-yaml = ["acdd-index/lang-yaml"]
+lang-toml = ["acdd-index/lang-toml"]
+lang-python = ["acdd-index/lang-python", "acdd-index/lang-toml"]
+lang-rust = ["acdd-index/lang-rust", "acdd-index/lang-toml"]
+lang-typescript = ["acdd-index/lang-typescript"]
+lang-vue = ["lang-typescript", "acdd-index/lang-vue"]
+lang-proto = ["acdd-index/lang-proto"]
+lang-go = ["acdd-index/lang-go"]
+lang-java = ["acdd-index/lang-java"]
+lang-csharp = ["acdd-index/lang-csharp"]
+lang-kotlin = ["acdd-index/lang-kotlin"]
+lang-php = ["acdd-index/lang-php"]
+lang-ruby = ["acdd-index/lang-ruby"]
+lang-c = ["acdd-index/lang-c"]
+lang-cpp = ["acdd-index/lang-cpp"]
 
 [dependencies]
 acdd-core = { path = "crates/acdd-core" }
@@ -56,21 +56,6 @@ rmcp = { version = "3.4", features = ["transport-io", "schemars"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 rusqlite = { version = "0.31", features = ["bundled", "modern_sqlite", "hooks", "limits", "backup"] }
 tree-sitter = "0.22"
-tree-sitter-html = { version = "=0.20.4", optional = true }
-tree-sitter-yaml = { version = "=0.6.1", optional = true }
-tree-sitter-toml-ng = { version = "=0.6.0", optional = true }
-tree-sitter-python = { version = "0.21", optional = true }
-tree-sitter-typescript = { version = "0.21", optional = true }
-tree-sitter-javascript = { version = "0.21", optional = true }
-tree-sitter-rust = { version = "0.21", optional = true }
-tree-sitter-go = { version = "0.21", optional = true }
-tree-sitter-java = { version = "=0.21.0", optional = true }
-tree-sitter-c-sharp = { version = "=0.21.3", optional = true }
-tree-sitter-kotlin = { version = "=0.3.8", optional = true }
-tree-sitter-php = { version = "=0.22.8", optional = true }
-tree-sitter-ruby = { version = "=0.21.0", optional = true }
-tree-sitter-c = { version = "=0.21.4", optional = true }
-tree-sitter-cpp = { version = "=0.22.3", optional = true }
 pulldown-cmark = { version = "0.10", default-features = false }
 rayon = "1.10"
 tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "io-std", "sync", "fs", "signal"] }
