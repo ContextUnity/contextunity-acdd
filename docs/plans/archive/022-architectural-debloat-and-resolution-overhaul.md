@@ -12,7 +12,7 @@ depends_on: []
 # Milestone 022 Architectural De-bloat, Zero-Allocation Linker, and Resolution Health Overhaul
 
 Admitted target branch: `milestone/022-declarative-framework-manifests-and-ecosystem-packs` (`.worktrees/022-declarative-framework-manifests-and-ecosystem-packs`).
-Deferred workspace-split target: [Milestone PF-001](../milestones/archive/PF-001-cold-build-rss-bound-and-linker-diet.md) (`PF-001-T05: split-cargo-workspace-into-independent-crates`).
+Deferred workspace-split target: [Milestone PF-001](../../milestones/archive/PF-001-cold-build-rss-bound-and-linker-diet.md) (`PF-001-T05: split-cargo-workspace-into-independent-crates`).
 
 ---
 
@@ -876,7 +876,7 @@ Block 1's three-file total (`cache.rs`, `writer.rs`, `typed_facts.rs`) is 3,468 
     cargo test --test linker value_flow::
     ```
   - Час загальної лінковки не зростає, оскільки кількість важких бінарників у `tests/` залишається мінімальною (+1 для маніфестів).
-  - Каталог тестів і команди запуску оновлено в [`tests/AGENTS.md`](../../tests/AGENTS.md) та `docs/testing/README.md`.
+  - Каталог тестів і команди запуску оновлено в [`tests/AGENTS.md`](../../../tests/AGENTS.md) та `docs/testing/README.md`.
 
 #### Крок 6.2.6: Повна нормалізація кваліфікованих шляхів Rust (`super::`, `super::super::`, `crate::`, `self::`) та зняття штучних обмежень покриття
 - **Діагноз проблеми**:
@@ -938,7 +938,7 @@ Block 1's three-file total (`cache.rs`, `writer.rs`, `typed_facts.rs`) is 3,468 
 
 ### Review finding: value-flow test relocation
 
-- [`tests/AGENTS.md`](../../tests/AGENTS.md) keeps private reducer implementation checks beside their source and public value-flow cases in [`tests/linker/value_flow.rs`](../../tests/linker/value_flow.rs).
+- [`tests/AGENTS.md`](../../../tests/AGENTS.md) keeps private reducer implementation checks beside their source and public value-flow cases in [`tests/linker/value_flow.rs`](../../../tests/linker/value_flow.rs).
 - Five public value-flow cases now live in `tests/linker/value_flow.rs`. The private merge-summary and borrowed-key checks remain in [`src/engine/linker/value_flow/tests.rs`](../../crates/forge-index/src/linker/value_flow/tests.rs), as required by the source boundary.
 - The strict-order helper test is removed after its boundary cases were added to the public replay test. The unit-level awaited-promise test is removed because [`awaited_promise_parameters_and_aliases_survive_index_readback`](../../tests/linker/method_semantics.rs) proves that contract through the persisted linker path.
 - The §4 Step 4 estimate of about 540 LOC is not a reason to move private implementation checks across the test boundary. The public cases are partitioned; do not claim that the literal LOC transfer target is complete.

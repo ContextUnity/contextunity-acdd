@@ -118,7 +118,7 @@ Source snapshot: `main` at `2c06defd57c80503ad18bd73137a4f3ef084f9b0`,
 [performance guidance](../../architecture/performance.md),
 [indexing architecture](../../architecture/indexing.md),
 [modularity](../../architecture/modularity.md), and
-[ADR 0012](../../adr/0012-zero-regression-serialization-and-cold-build-latency.md).
+`docs/adr/0012-zero-regression-serialization-and-cold-build-latency.md`.
 The rules below retain that snapshot's requirements even when the current branch
 does not contain its newer pipeline/cache owners. Record an inherited gap
 explicitly; absence of an owner is not proof of conformance or authority to add

@@ -202,7 +202,7 @@ Keep new SQL, topology, and search capabilities in
 Use the existing production paths, repository verification commands, and shared
 test suites. This milestone introduces no custom benchmark scripts or additional
 measurement procedure. Run benchmarks only when explicitly requested by the user.
-Follow [ADR 0012](../../adr/0012-zero-regression-serialization-and-cold-build-latency.md)
+Follow `docs/adr/0012-zero-regression-serialization-and-cold-build-latency.md`
 and the [performance architecture](../../architecture/performance.md).
 
 Broader framework rule unification, parameterized route trie indexing across

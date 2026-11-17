@@ -1,10 +1,9 @@
 ---
 id: plan-053-declarative-tree-sitter-queries-study
-title: "Research Study: Declarative Tree-sitter Queries (.scm) for Language Onboarding"
+title: 'Research Study: Declarative Tree-sitter Queries (.scm) for Language Onboarding'
 doc_type: plan
-status: proposed
-date: 2026-10-16
-related_milestones:
+status: planned
+linked_to:
 - m-language-parsers-and-declarative-framework-packs
 ---
 
@@ -12,7 +11,7 @@ related_milestones:
 
 ## 1. Executive Summary
 
-ContextUnity ACDD currently implements language extraction via custom, imperative Rust AST walkers for each language (e.g. `src/engine/languages/rust.rs`, `python.rs`, `typescript/mod.rs`, `vue.rs`). Adding a new programming language (e.g., Go, C#, Kotlin, PHP, Ruby, SQL) currently requires writing hundreds of lines of imperative Rust code manipulating tree cursors and node kinds.
+ContextUnity ACDD currently implements language extraction via custom, imperative Rust AST walkers for each language (e.g. `crates/acdd-index/src/languages/rust/mod.rs`, `python/mod.rs`, `typescript/mod.rs`, `vue/mod.rs`). Adding a new programming language (e.g., Go, C#, Kotlin, PHP, Ruby, SQL) currently requires writing hundreds of lines of imperative Rust code manipulating tree cursors and node kinds.
 
 This research study evaluates introducing **Declarative Tree-sitter Queries (`.scm`)** as an **optional, opt-in extraction mode** (`--features declarative-scm` or configuration flag `engine.declarative_queries = true`).
 

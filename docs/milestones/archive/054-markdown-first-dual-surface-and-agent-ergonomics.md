@@ -78,7 +78,7 @@ handoff:
 ## Outcome and authority
 
 Implement the admitted Markdown default and shared formatting architecture in
-[ADR 0019](../../adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md),
+`docs/adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md`,
 with field semantics in the
 [Markdown contracts](../../reference/mcp-markdown-contracts.md).
 

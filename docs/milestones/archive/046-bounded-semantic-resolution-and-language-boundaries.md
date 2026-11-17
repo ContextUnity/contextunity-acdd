@@ -94,15 +94,15 @@ The graph is stored in SQLite; FTS5 supplies text retrieval, not semantic resolu
 
 ## Architectural constraints and decision delta
 
-[ADR 0008](../../adr/0008-bounded-static-value-flow.md) currently ends inference at conditional branches and reassignments. The proposed extension permits finite candidate evidence for explicitly supported, complete local branch joins only. Unknown or unsupported alternatives retain unknown state; they cannot be dropped to manufacture a unique result. Keep arbitrary dynamic dispatch, mutation, and macro expansion outside exact-call inference.
+`docs/adr/0008-bounded-static-value-flow.md` currently ends inference at conditional branches and reassignments. The proposed extension permits finite candidate evidence for explicitly supported, complete local branch joins only. Unknown or unsupported alternatives retain unknown state; they cannot be dropped to manufacture a unique result. Keep arbitrary dynamic dispatch, mutation, and macro expansion outside exact-call inference.
 
 The contract strictly distinguishes:
 1. `MAX_VALUE_FLOW_TYPE_DEPTH` (existing AST/expression evaluation depth limit).
 2. `MAX_CANDIDATE_BRANCH_JOINS` ($K=8$, maximum candidate set cardinality across local joins). Overflow beyond $K$ widens explicitly to `Unknown/Incomplete` rather than truncating silently.
 
-[ADR 0018](../../adr/0018-layer-dependency-boundaries-and-core-leaf-isolation.md) explicitly permits cohesive multi-pass algorithms to remain intact. Split by responsibility rather than file length. Preserve existing core/engine/db boundaries and avoid generic plugin infrastructure without a concrete consumer.
+`docs/adr/0018-layer-dependency-boundaries-and-core-leaf-isolation.md` explicitly permits cohesive multi-pass algorithms to remain intact. Split by responsibility rather than file length. Preserve existing core/engine/db boundaries and avoid generic plugin infrastructure without a concrete consumer.
 
-[ADR 0010](../../adr/0010-incremental-delta-transitive-dirtying.md) and [ADR 0012](../../adr/0012-zero-regression-serialization-and-cold-build-latency.md) govern incremental consistency, lean projections, compressed facts, and evidence-led performance. Keep unchanged outputs stable; version intentional changes and reject incompatible indexes through existing admission/rebuild paths.
+`docs/adr/0010-incremental-delta-transitive-dirtying.md` and `docs/adr/0012-zero-regression-serialization-and-cold-build-latency.md` govern incremental consistency, lean projections, compressed facts, and evidence-led performance. Keep unchanged outputs stable; version intentional changes and reject incompatible indexes through existing admission/rebuild paths.
 
 > [!IMPORTANT]
 > Invariant: `LanguageLinker` returns a distinction between not-applicable, blocked/unknown, unique and multiple-candidate outcomes. A blocked result cannot fall through to a weaker name match and become exact.

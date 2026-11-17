@@ -773,7 +773,7 @@ The six documentation proposals retained from blackboard 581 are addressed in
 the closure task. [The overview](../../README.md) qualifies symbol linkage;
 [authoring guidance](../../AGENTS.md) distinguishes first-class same-line INV claims
 from alert classification. The overview, [milestone navigation](../README.md), and
-[ADR0014](../../adr/0014-milestone-task-subtask-hierarchy-and-visibility.md) align
+`docs/adr/0014-milestone-task-subtask-hierarchy-and-visibility.md` align
 universal Markdown indexing with separate planning authority. [Indexing
 architecture](../../architecture/indexing.md) provides verified extractor, linker,
 and test navigation; [configuration](../../reference/configuration.md) distinguishes

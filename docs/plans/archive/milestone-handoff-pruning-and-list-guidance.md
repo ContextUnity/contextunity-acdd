@@ -8,8 +8,8 @@ date: 2026-10-23
 # Milestone Handoff, Recovery, and List Guidance
 
 AC-002 delivers four bounded capabilities. The current runtime contracts live in
-[task operations](../reference/tasks.md), [CLI commands](../reference/cli.md),
-and [ADR 0015](../adr/0015-acdd-lifecycle-snapshots-and-proactive-defect-resolution.md).
+[task operations](../../reference/tasks.md), [CLI commands](../../reference/cli.md),
+and `docs/adr/0015-acdd-lifecycle-snapshots-and-proactive-defect-resolution.md`.
 
 ## Terminal State and Dependencies
 
@@ -57,9 +57,9 @@ Current milestone progress continues to use the task store.
 ## Verification and Boundaries
 
 Each task has accepted contract, build, independent review, and delivery proof.
-Use [TESTS.md](../../TESTS.md) for task and final milestone gates. These contracts
+Use [TESTS.md](../../../TESTS.md) for task and final milestone gates. These contracts
 make no measured latency or benchmark claim.
 
 AC-001 profile-v2 runtime and task-level telemetry remain separate planned work.
 The current runnable profile and future v2 proposal are explicitly distinguished
-in the [profile reference](../reference/profiles.md#reference-examples).
+in the [profile reference](../../reference/profiles.md#reference-examples).

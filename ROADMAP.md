@@ -1,0 +1,42 @@
+---
+title: "ContextUnity ACDD Roadmap"
+doc_type: guide
+---
+
+# ContextUnity ACDD Roadmap
+
+ContextUnity ACDD evolves around one local-first Rust workspace: precise Tree-sitter code and documentation navigation (`acdd-index`), a domain-agnostic `GateProfile` (`version: 2`) verification state machine (`acdd-state`), and a strict leaf boundary (`acdd-core`) hosting `DomainProvider` extensions. Admitted commitments, task scopes, and dependency edges live in [milestones](docs/milestones/README.md); exploratory studies live in [plans](docs/plans/README.md).
+
+## `v0.6.0` (Current Release)
+
+- **Unified State Engine (`crates/acdd-state`)**: Replaces legacy task, plan, and workflow engines with `GateProfile` (`version: 2`) and `Run` lifecycles persisted in `.acdd/state.sqlite` under optimistic CAS transactions (`StateBackend`), content-addressed Git `TreeOid` snapshots, 5 declarative `git.integrate` strategies (`manual`, `rebase-ff`, `ff-only`, `no-ff`, `squash`), and 6-tier budgeted `ClaimResp` assembly.
+- **Clean 3-Library-Crate DAG**: Consolidates the workspace into three library crates—strict leaf `acdd-core`, indexing/SQLite graph `acdd-index`, and pure-core state engine `acdd-state`—plus the root host crate `contextunity-acdd` (`src/`).
+- **`DomainProvider` Extension Point**: Decouples domain verification (`checks:`), context injection (`context:`), in-process actions (`call:`), and `<domain>_<name>` plugin tools behind [`DomainProvider`](crates/acdd-core/src/ports.rs) and [`src/state_bridge/`](src/state_bridge/mod.rs).
+- **Indexing, Delta & AST Prefilter Acceleration (`PF-002`)**: Archived [PF-002](docs/milestones/archive/PF-002-indexing-delta-and-query-acceleration.md) covers single-pass positioned spooling on `payloads.bin`, `CompactTag` string pooling, parallel `ExtractionCache` delta extraction with batch Zstd hydration and `TEMP TABLE` frontier lookups, and 100%-recall literal-anchor AST prefiltering.
+- **Borrowed Surface Dispatch, Cross-Crate Deduplication & Ergonomics ([AR-001](docs/milestones/archive/AR-001-borrowed-data-and-composable-execution.md))**: Eliminates redundant request-path adapter reloads (`Adapter` reuse), compacts bounded MCP payloads in place without cloning candidates, threads single-source `acdd-core` config, advisory file locks, Git env scrubbing, hashing, and time primitives across crates, de-monomorphizes CLI/state/linker dispatch (`&mut dyn Write`, `&dyn StateBackend` `exec_tx_dyn`), enforces deterministic linker/directory ordering, hardens WAL-to-`DELETE` sidecar cleanup during staged publication, and adds `code_map_inspect` `symbol`/`file_path` aliases plus single-language `ast_grep_search` directory inference.
+- **Consolidated Architectural Decisions (`0001..0012`)**: Replaces legacy `0.5` ADRs with 12 unified decisions in [Architectural Decisions](docs/adr/README.md).
+
+## `v0.6.x`
+
+- **Declarative Tree-sitter `.scm` Query Profiles ([Study](docs/plans/declarative-tree-sitter-queries-study.md))**: Opt-in `.scm` query extraction (`cfg(feature = "declarative-scm")`) for rapid Tier 1 language onboarding alongside existing imperative semantic linkers.
+
+## `v0.7.0` (Next)
+
+- **Unified Swarm Gates & Peer Board Coordination ([AC-005](docs/milestones/AC-005-unified-swarm-gates-and-peer-board-coordination.md))**: Replace `- tasks:` (`TasksBlock`) with one unified `GateDef.mode: linear | parallel | swarm` model, reusing existing `GateDef.with` as a multi-source coalescing collection binder (`with: spec.tasks | blueprint.tasks`, `with: [spec.tasks, blueprint.tasks]`, `with: input.channels`, `with: poll.items`, `with: { count: N }`) and extending native `GateDef.when` across root, container, and shard gates (`tags`, `spec.*`, `input.*`, `<gate_id>.*`, `item.*`, `event.*`, `diff.*`)—featuring uniform hierarchical cursors (`poll[telegram]`, `implement[core-cleanup].build`), lock-free `save: none` SQLite CAS vs. disjoint-scope/worktree isolation for `save != none`, barrier rejection consolidation, and `@mention` + `thread_id` + zero-token `acdd_blackboard` `wait`.
+
+## `v0.7.x` / `v0.8.0`
+
+- **Universal Repository Memory Synthesis ([AC-006](docs/milestones/AC-006-universal-repository-memory-synthesis.md))**: Git-tracked `docs/memories/*.md` rules synthesized from execution evidence with staleness/supersession governance, deterministic `ClaimResp` injection across `linear`, `parallel`, and `swarm` nodes, and `acdd_memory` BM25 `query` reuse over `doc_search`.
+- **CLI MCP Split & Read-Only Local Observability ([AC-007](docs/milestones/AC-007-unified-observability-board-otlp-and-metrics.md))**: Explicit `acdd mcp` for session-scoped `stdio` MCP (`install.sh` and adapter updates with safe transition handling) separated from `acdd serve [--webui] [--telemetry]` bound strictly read-only on `127.0.0.1` (`--webui` Live Gate Board UI `GET /`, `GET /api/*`, `GET /events` SSE rendering `AC-005` `linear | parallel | swarm` trees and `@mention` threads; `--telemetry` headless `GET /metrics` bounded-cardinality Prometheus `0.0.4` exposition + incremental OTLP/HTTP JSON trace relay from `traces.jsonl`; default `acdd serve` launches both together with zero inbound state mutations).
+
+## `v0.8.x`
+
+- **Zero-Daemon Reactive Core ([AC-008](docs/milestones/AC-008-always-on-reactive-triggers-and-deferred-approvals.md))**: `RoleDef.mode: manual` sleep-at-zero-tokens deferred approvals (resumed via CLI/MCP `approve`/`reject`), `spawner.rs` `env_allowlist` secret scrubbing, claim `lease_expires_at` TTLs, durable SQLite `timers` (`v2 -> v3` migration) and one-shot `acdd tick` pulse (`systemd.timer` / `launchd` / `cron` / CI with `0` idle RAM), durable `inbox` (`dedup_key` + `coalesce_window`) dispatching through `AC-005` concurrent CAS `swarm` execution (`repo.lock` strictly when `save != none`), and paced idempotent `outbox` notifications.
+
+## `v0.9.0`
+
+- **Authenticated Network/IPC Ingress, Interactive Web UI & Streamable HTTP MCP ([AC-009](docs/milestones/AC-009-authenticated-ingress-interactive-webui-and-http-mcp.md))**: Upfront `ADR-0013` Transport & Security layer (`Host`/`Origin` validation, constant-time scoped Bearer tokens, per-source HMAC-SHA256 webhook verification with replay windows, body byte caps, rate limiting), confined `.acdd/acdd.sock` (`0600`, OS-UID auth), `acdd serve --interactive` authenticated Web UI approvals and `@mention` blackboard steering, `acdd serve --incoming` `POST /events` webhook listener, `acdd mcp --http` Streamable HTTP MCP (`POST/GET /mcp` with `Mcp-Session-Id` and token-bound `worker_id` identity), and unified `acdd up` supervisor (`webui`, `telemetry`, `socket`, `incoming`, `mcp_http`, `sleep_until(next_timer)` loop).
+
+## `v0.9.x+`
+
+- **Thin Ecosystem `DomainProvider` Shim-Crates (`crates/acdd-domain-*`)**: Modular domain crates depending only on `acdd-core` and proven Rust ecosystem libraries (such as OpenAPI diff verifiers, SQL migration linters, and JSON Schema/policy evaluators) plugged into `GateProfile` verification gates without modifying `acdd-state` or `acdd-index`; see the [domain extensions guide](docs/architecture/domain-extensions.md).

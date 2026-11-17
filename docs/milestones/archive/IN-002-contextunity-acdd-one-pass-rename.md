@@ -270,12 +270,12 @@ absent call edge does not prove a runtime consumer is absent. Inspect literals,
 build inputs, shell, YAML, and test fixtures as well.
 
 `search_docs` locates the core-leaf invariant in
-[ADR 0018](../adr/0018-layer-dependency-boundaries-and-core-leaf-isolation.md#1-core-leaf-isolation)
+`docs/adr/0018-layer-dependency-boundaries-and-core-leaf-isolation.md`
 and workspace boundaries in
-[performance invariants](../architecture/performance.md#model-and-agent-invariants-immutable-guidelines).
+[performance invariants](../../architecture/performance.md#model-and-agent-invariants-immutable-guidelines).
 The explicit protected-infrastructure exception comes from the user goal and
-[the planning add-on](../../skills/contract-planning/ADDON.md), not a fabricated
-search hit. [ADR 0021](../adr/0021-workflow-plan-and-milestone-lifecycle-hierarchy.md)
+[the planning add-on](../../../skills/contract-planning/ADDON.md), not a fabricated
+search hit. `docs/adr/0021-workflow-plan-and-milestone-lifecycle-hierarchy.md`
 keeps this taskless authoring workflow separate from future milestone task rows.
 
 Production path to prove:
@@ -884,7 +884,7 @@ is an orchestration tool, not a second supported product identity.
    --target-base main`. Its registered `check_full_repo` must still execute
    commitment integrity, strict all-target/all-feature Clippy, and root
    `cargo test --all-targets`. Run `cargo test -p acdd-tasks --lib` separately.
-   Follow [TESTS.md](../../TESTS.md) for trace-bound and deduplicated counts.
+   Follow [TESTS.md](../../../TESTS.md) for trace-bound and deduplicated counts.
 10. Write the exact binding and observed command/count evidence to an ignored
     `.acdd/integration-evidence.json`, then run `acdd milestone handoff
     IN-002-contextunity-acdd-one-pass-rename --evidence-file

@@ -10,7 +10,7 @@ status: approved
 
 This source plan preserves the implementation requirements for universal MCP
 worktree routing and stable server roots. The accepted
-[milestone 056 contract](../milestones/archive/056-universal-multi-worktree-resolution.md#outcome-and-authority)
+[milestone 056 contract](../../milestones/archive/056-universal-multi-worktree-resolution.md#outcome-and-authority)
 owns scope and authority; handoff moves its manifest to that archive path.
 This source plan retains selector and proof requirements.
 
@@ -19,7 +19,7 @@ The supplied baseline design identified three defects addressed by this plan:
 2. **Claim-driven default roots**: an omitted selector could follow an active task claim rather than retain the server root.
 3. **Restricted matching**: exact names and trailing suffixes did not cover numeric milestone aliases or middle slugs.
 
-These are baseline notes, not current runtime claims. See the [MCP worktree reference](../reference/mcp-tools.md#worktree-selection) for the live contract.
+These are baseline notes, not current runtime claims. See the [MCP worktree reference](../../reference/mcp-tools.md#worktree-selection) for the live contract.
 
 This plan establishes a universal multi-worktree MCP interface in which every
 tool can target a worktree per request without claim-driven root changes.

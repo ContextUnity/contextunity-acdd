@@ -14,16 +14,16 @@ depends_on: []
 
 # Blueprint Synthesis, Profile Inheritance, and Artifact Authoring Workflows
 
-This plan specifies the architectural separation between **artifact authoring workflows** (creating a milestone, plan, or workflow before execution) and **artifact execution profiles**, aligns declarative profile inheritance in [`parse_profile_document`](../../crates/acdd-tasks/src/tasks/profile/normalize.rs) and [`merge_profile_document`](../../crates/acdd-tasks/src/tasks/profile/normalize.rs), upgrades the pre-task architectural gate to a reviewed `blueprint_synthesis` container, and fixes nested `seam` subgraph delivery in [`submit_with_pre_persist`](../../crates/acdd-tasks/src/engine/gates/submit.rs).
+This plan specifies the architectural separation between **artifact authoring workflows** (creating a milestone, plan, or workflow before execution) and **artifact execution profiles**, aligns declarative profile inheritance in `parse_profile_document` (`crates/acdd-tasks/src/tasks/profile/normalize.rs`) and `merge_profile_document` (`crates/acdd-tasks/src/tasks/profile/normalize.rs`), upgrades the pre-task architectural gate to a reviewed `blueprint_synthesis` container, and fixes nested `seam` subgraph delivery in `submit_with_pre_persist` (`crates/acdd-tasks/src/engine/gates/submit.rs`).
 
 > [!IMPORTANT]
-> Invariant: The task and milestone engine never hardcodes gate identifiers (`"blueprint_synthesis"`, `"verify"`, `"handoff"`) or bespoke blueprint table names; root-gate ordering is governed strictly by topological position relative to the `- tasks:` container (`cursor.root_index < task_position` versus `cursor.root_index > task_position`), and per-task upstream context is projected from [`GateTransition`](../../crates/acdd-tasks/src/store/trace.rs) rows keyed by `subject = task_id`.
+> Invariant: The task and milestone engine never hardcodes gate identifiers (`"blueprint_synthesis"`, `"verify"`, `"handoff"`) or bespoke blueprint table names; root-gate ordering is governed strictly by topological position relative to the `- tasks:` container (`cursor.root_index < task_position` versus `cursor.root_index > task_position`), and per-task upstream context is projected from `GateTransition` (`crates/acdd-tasks/src/store/trace.rs`) rows keyed by `subject = task_id`.
 
 - **Architectural Principles & Negative Boundaries**:
   - **Zero Gate-ID or Table-Name Hardcoding**: Do not branch on string gate IDs such as `"blueprint_synthesis"` and do not introduce dedicated SQLite tables such as `milestone_task_blueprints`. Reuse `gate_transitions` (`subject = "milestone"` for milestone transitions and `subject = <full_task_id>` for per-task proof slices).
   - **Strict Separation of Authoring vs Execution**: Authoring a milestone (`docs/milestones/`), plan (`docs/plans/`), or workflow (`docs/workflows/`) runs as a standalone workflow (`inherit: none`, `save: none`, no `tasks:` container). Execution of a milestone runs under the hierarchical execution profile (`blueprint_synthesis` $\to$ `tasks` $\to$ `verify` $\to$ `milestone_review` $\to$ `handoff`, with failure routing `polish` $\to$ `verify`).
   - **No Test Authoring in Architectural Blueprint Synthesis**: Role `architect` in `blueprint_synthesis.synthesize` synthesizes grounded architectural blueprints, Clean Architecture layer boundaries, negative boundaries, and cross-task seam specifications without writing compiling red tests. Compiling runtime-red seam tests belong strictly to per-task `tasks.contract` (`role: contract_author`).
-  - **Overlay Profile Inheritance**: Repository profiles (`.forge/acdd/profile.yaml`) inherit the full gate graph, roles, policies, and guidance from [`crates/acdd-tasks/src/tasks/acdd.default.yaml`](../../crates/acdd-tasks/src/tasks/acdd.default.yaml) via `inherit: default` and override only `commands`, `scope_args_by_pattern`, and gate-level `command` bindings by gate `id`.
+  - **Overlay Profile Inheritance**: Repository profiles (`.forge/acdd/profile.yaml`) inherit the full gate graph, roles, policies, and guidance from `crates/acdd-tasks/src/tasks/acdd.default.yaml` via `inherit: default` and override only `commands`, `scope_args_by_pattern`, and gate-level `command` bindings by gate `id`.
   - **End-to-End Trace**:
     `milestone run / task claim -> collect_root_cursors (root_index < task_position) -> blueprint_synthesis.synthesize -> blueprint_synthesis.review -> fan-out proof.tasks[task_ref] into gate_transitions(subject = task_id) -> task claim context_bundle injects subject == task_id proofs -> contract -> build -> review -> [when: seam -> seam.integrate -> seam.review] -> deliver -> post-task root gates (root_index > task_position)`
 
@@ -35,17 +35,17 @@ This plan specifies the architectural separation between **artifact authoring wo
 - **Subtasks**: [{subtask_ref: "1.1", title: "Extend inherit parsing in normalize.rs to accept default/true and none/false", status: "completed", evidence: "Inherit parsing handles default/none and bools in parse_profile_document; covered in tasks::profile::tests"}, {subtask_ref: "1.2", title: "Implement recursive gate-by-id and tasks-container merge before normalize_gate_hierarchy", status: "completed", evidence: "Recursive gate merge implemented in normalize.rs with track condition matching (S1-R1) and child condition clean recomputation (S1-R2); 60 tests passed"}, {subtask_ref: "1.3", title: "Support named proof catalog references (proof: blueprint) in ProofDef resolved against profile.proofs alongside inline proof.scheme", status: "completed", evidence: "ProofDef::Named variant added with schema resolution against profile.proofs and validation in validate.rs; verified with unit tests and independent review"}]
 
 - **Implementation Details**:
-  - In [`parse_profile_document`](../../crates/acdd-tasks/src/tasks/profile/normalize.rs):
+  - In `parse_profile_document` (`crates/acdd-tasks/src/tasks/profile/normalize.rs`):
     - Accept `inherit: default` (or `true` / omitted) as `inherit_defaults = true` and `inherit: none` (or `false`) as `inherit_defaults = false`.
-    - Defer `normalize_gate` / `normalize_gate_hierarchy` until after [`merge_profile_document`](../../crates/acdd-tasks/src/tasks/profile/normalize.rs) completes when `inherit_defaults == true`, preventing partial overlay gates (such as `- id: build` with only `command: rust-check-and-test`) from clobbering inherited `role`, `guidance`, `save`, `policy`, `contours`, `independent_from`, `fail`, and `loop` fields with default empty values.
-  - In [`GateProfile::merge_override`](../../crates/acdd-tasks/src/tasks/profile/normalize.rs):
+    - Defer `normalize_gate` / `normalize_gate_hierarchy` until after `merge_profile_document` (`crates/acdd-tasks/src/tasks/profile/normalize.rs`) completes when `inherit_defaults == true`, preventing partial overlay gates (such as `- id: build` with only `command: rust-check-and-test`) from clobbering inherited `role`, `guidance`, `save`, `policy`, `contours`, `independent_from`, `fail`, and `loop` fields with default empty values.
+  - In `GateProfile::merge_override` (`crates/acdd-tasks/src/tasks/profile/normalize.rs`):
     - Replace the whole-sequence overwrite (`self.gates = other.gates`) with a recursive merge by gate `id` and `- tasks:` container:
       - When an overlay gate matches an existing base gate `id` (or both entries represent the `- tasks:` container), merge only the explicitly supplied fields and recursively merge child `gates:` / `tasks.gates:` by `id`.
       - When an overlay gate has a new `id` not present in the base sequence, append it in declared order.
   - **Top-Level Reusable `proofs:` Catalog (`ProofCatalogDef`) and Inline `proof.scheme`**:
-    - Extend [`ProofDef`](../../crates/acdd-tasks/src/tasks/profile/mod.rs) with a named catalog reference variant (e.g. `Named(String)`) so a gate can declare `proof: blueprint` referencing `proofs.blueprint` in `GateProfile.proofs` (`BTreeMap<String, ProofCatalogDef>`), allowing multiple gates and inherited profiles (`inherit: default`) to share the same schema definition.
-    - During profile normalization (`normalize_gate_hierarchy`) and validation (`validate_gate_proof` in [`crates/acdd-tasks/src/tasks/gates.rs`](../../crates/acdd-tasks/src/tasks/gates.rs)), resolve `ProofDef::Named(name)` against `profile.proofs.get(name).and_then(|entry| entry.schema.as_ref())` (and fail closed with `ACDD_PROFILE_SCHEMA_INVALID` if `name` is neither a built-in `ProofKind` nor a defined entry with a valid `schema` in `profile.proofs`).
-    - Keep inline `proof: { scheme: { type: object, ... } }` (`ProofDef::Scheme`) for single-gate inline schemas, and [`infer_gate_proof`](../../crates/acdd-tasks/src/tasks/profile/normalize.rs) for automatic inference when `proof:` is omitted.
+    - Extend `ProofDef` (`crates/acdd-tasks/src/tasks/profile/mod.rs`) with a named catalog reference variant (e.g. `Named(String)`) so a gate can declare `proof: blueprint` referencing `proofs.blueprint` in `GateProfile.proofs` (`BTreeMap<String, ProofCatalogDef>`), allowing multiple gates and inherited profiles (`inherit: default`) to share the same schema definition.
+    - During profile normalization (`normalize_gate_hierarchy`) and validation (`validate_gate_proof` in `crates/acdd-tasks/src/tasks/gates.rs`), resolve `ProofDef::Named(name)` against `profile.proofs.get(name).and_then(|entry| entry.schema.as_ref())` (and fail closed with `ACDD_PROFILE_SCHEMA_INVALID` if `name` is neither a built-in `ProofKind` nor a defined entry with a valid `schema` in `profile.proofs`).
+    - Keep inline `proof: { scheme: { type: object, ... } }` (`ProofDef::Scheme`) for single-gate inline schemas, and `infer_gate_proof` (`crates/acdd-tasks/src/tasks/profile/normalize.rs`) for automatic inference when `proof:` is omitted.
 
 ## 2. Canonical Default Profile and Slimmed Repository Profile Overlay
 
@@ -56,7 +56,7 @@ This plan specifies the architectural separation between **artifact authoring wo
 - **Subtasks**: [{subtask_ref: "2.1", title: "Define proofs.blueprint schema and replace contract_synthesis with blueprint_synthesis container (synthesize + review) in acdd.default.yaml", status: "completed", evidence: "Defined proofs.blueprint schema and replaced contract_synthesis with blueprint_synthesis container in acdd.default.yaml; verified in 62 passed tests"}, {subtask_ref: "2.2", title: "Add language-neutral conditional seam container and full post-task root gates to acdd.default.yaml", status: "completed", evidence: "Added conditional seam container under tasks and retained post-task root gates; verified with 62 library tests and strict Clippy"}, {subtask_ref: "2.3", title: "Reduce .forge/acdd/profile.yaml to inherit: default with Rust commands, scope_args_by_pattern, and gate command bindings", status: "completed", evidence: "Slimmed .forge/acdd/profile.yaml to inherit: default overlay with Rust commands and gate bindings; validated with independent review"}]
 
 - **Implementation Details**:
-  - **Updates to [`crates/acdd-tasks/src/tasks/acdd.default.yaml`](../../crates/acdd-tasks/src/tasks/acdd.default.yaml)**:
+  - **Updates to `crates/acdd-tasks/src/tasks/acdd.default.yaml`**:
     - Update `roles.architect` and `guidance.milestone.synthesis` to remove test authoring requirements and enforce grounded context, surgical Clean Architecture layer isolation, negative boundaries, and blackboard decision recording.
     - Add `guidance.milestone.blueprint_review` for the independent reviewer auditing the blueprint.
     - Declare reusable `proofs.blueprint` in the top-level `proofs:` catalog and reference `proof: blueprint` on `blueprint_synthesis.synthesize`:
@@ -191,12 +191,12 @@ This plan specifies the architectural separation between **artifact authoring wo
 
 - **Implementation Details**:
   - **Topological Barrier 1 (`cursor.root_index < task_position`)**:
-    - In [`crates/acdd-tasks/src/engine/lifecycle.rs`](../../crates/acdd-tasks/src/engine/lifecycle/mod.rs) and [`collect_root_cursors`](../../crates/acdd-tasks/src/engine/gate_graph.rs), before allowing `task claim` on any task in a milestone, inspect all applicable (`when`) root cursors with `cursor.root_index < task_position`.
+    - In `crates/acdd-tasks/src/engine/lifecycle.rs` (`crates/acdd-tasks/src/engine/lifecycle/mod.rs`) and `collect_root_cursors` (`crates/acdd-tasks/src/engine/gate_graph.rs`), before allowing `task claim` on any task in a milestone, inspect all applicable (`when`) root cursors with `cursor.root_index < task_position`.
     - If any pre-task root cursor lacks an accepted pass transition in `gate_transitions` (`subject = "milestone"`), reject `task claim` with `MILESTONE_PRE_TASK_GATE_PENDING` and report the active root cursor (`canonical_stage_id` and `gate_path`).
   - **Topological Barrier 2 (`cursor.root_index > task_position`)**:
     - Unlock post-task root cursors (`cursor.root_index > task_position`) only after all non-cancelled milestone tasks reach `status == "completed"`.
     - Update `task next` so it surfaces the active pre-task root gate first, then ready wave tasks, and finally active post-task root gates.
-  - **Nested `- id: seam` Delivery Fix in [`submit_with_pre_persist`](../../crates/acdd-tasks/src/engine/gates/submit.rs)**:
+  - **Nested `- id: seam` Delivery Fix in `submit_with_pre_persist` (`crates/acdd-tasks/src/engine/gates/submit.rs`)**:
     - At line 370 of `crates/acdd-tasks/src/engine/gates/submit.rs`, replace `_snapshot_gate.gate.id.rsplit_once('.')` with `_snapshot_gate.canonical_stage_id.rsplit_once('.')`.
     - When `seam.integrate` (`canonical_stage_id = "seam.integrate"`, `gate.id = "integrate"`) produces the latest candidate snapshot and `seam.review` (`canonical_stage_id = "seam.review"`) approves it, `deliver` (`need: [review]`) resolves `branch_prefix = "seam"` and validates `seam.review` against the `seam.integrate` commit instead of failing with `TASK_CANDIDATE_MISMATCH`.
 
@@ -212,7 +212,7 @@ This plan specifies the architectural separation between **artifact authoring wo
   - **Universal Fan-Out on Root Gate Pass**:
     - When a pre-task root gate (or its review container) completes with `action = "pass"` and its validated `proof_payload` (`proof: { scheme: ... }`) contains a `tasks` map (`tasks: { "<task_ref>": { ... } }`):
       - Verify that every non-cancelled task in the milestone has a corresponding entry in `tasks` and that every declared `depends_on` or parallel seam edge is represented in the task's `incoming_seams` / `outgoing_seams`.
-      - Insert a [`GateTransition`](../../crates/acdd-tasks/src/store/trace.rs) row into `gate_transitions` for each task with:
+      - Insert a `GateTransition` (`crates/acdd-tasks/src/store/trace.rs`) row into `gate_transitions` for each task with:
         - `milestone_id`: full namespace-qualified milestone ID,
         - `subject`: `<full_task_id>` (`<milestone_ref>:<task_ref>`),
         - `gate_path`: the root gate's `gate_path` (e.g. `gates.blueprint_synthesis.synthesize`),
@@ -220,9 +220,9 @@ This plan specifies the architectural separation between **artifact authoring wo
         - `proof_kind`: the catalog proof entry name (e.g. `"blueprint"`) or `"scheme"` for inline gate schemas,
         - `proof_payload`: the isolated JSON object for `<task_ref>` (plus shared `cited_invariants`, `cited_symbols`, `global_negative_boundaries`, and `blackboard_decision_id`).
   - **Automatic Per-Task Context Injection on `task claim` / `task context`**:
-    - In [`context_bundle`](../../crates/acdd-tasks/src/engine/context.rs), query `gate_transitions` for the latest accepted (`action = 'advance'`) rows matching `WHERE milestone_id = ?1 AND subject = ?2` (`subject == task_id`).
+    - In `context_bundle` (`crates/acdd-tasks/src/engine/context.rs`), query `gate_transitions` for the latest accepted (`action = 'advance'`) rows matching `WHERE milestone_id = ?1 AND subject = ?2` (`subject == task_id`).
     - Populate `context_bundle` with only that task's inherited proof payloads (and for tasks entering `seam.integrate`, include the current snapshot SHA and stage status of partner tasks referenced in `incoming_seams` / `outgoing_seams`).
-    - Protect the injected per-task proof slice in [`bound_task_response`](../../crates/acdd-tasks/src/engine/lifecycle/mod.rs) so response size bounding never strips the task's architectural blueprint.
+    - Protect the injected per-task proof slice in `bound_task_response` (`crates/acdd-tasks/src/engine/lifecycle/mod.rs`) so response size bounding never strips the task's architectural blueprint.
 
 ## 5. Standalone Artifact Authoring Workflow Profiles
 
@@ -239,7 +239,7 @@ This plan specifies the architectural separation between **artifact authoring wo
        - `review` (`role: independent_reviewer`, `independent_from: synthesize`, `fail: synthesize`): audits scope disjointness, layer isolation, negative boundaries, and symbol authenticity.
        - `preflight` (`command: validate_milestone`): runs `acdd milestone init <manifest_path> --in-place` to verify schema, wave DAG, and scope confinement.
     2. **`author-plan.workflow.yaml`**:
-       - `synthesize` (`role: architect`, inline `proof: { scheme: ... }`): authors `docs/plans/<slug>.md` with `doc_type: plan`, numbered `## N. <Step Title>` headings, valid `- **Target**:`, `- **Scope**:`, `- **Status**: ready`, and acyclic `- **Depends On**:` references matching [`PlanDocument::from_sections`](../../crates/acdd-tasks/src/engine/orchestrator/plan.rs).
+       - `synthesize` (`role: architect`, inline `proof: { scheme: ... }`): authors `docs/plans/<slug>.md` with `doc_type: plan`, numbered `## N. <Step Title>` headings, valid `- **Target**:`, `- **Scope**:`, `- **Status**: ready`, and acyclic `- **Depends On**:` references matching `PlanDocument::from_sections` (`crates/acdd-tasks/src/engine/orchestrator/plan.rs`).
        - `review` (`role: independent_reviewer`, `independent_from: synthesize`, `fail: synthesize`): audits step granularity, in-place `save: snapshot` safety, and scope validity.
        - `preflight` (`command: validate_plan`): runs `acdd plan show <plan_name>`.
     3. **`author-workflow.workflow.yaml`**:

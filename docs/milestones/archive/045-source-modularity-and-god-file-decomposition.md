@@ -37,7 +37,7 @@ handoff:
 
 ## Outcome and purpose
 
-Follow [ADR 0018](../../adr/0018-layer-dependency-boundaries-and-core-leaf-isolation.md). The task titles are the contract.
+Follow `docs/adr/0018-layer-dependency-boundaries-and-core-leaf-isolation.md`. The task titles are the contract.
 
 Task 1 and task 2 share no files. Task 3 follows task 2. Tasks 4 and 5 follow task 1.
 
