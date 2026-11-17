@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use crate::core::format::shorten_hash;
+pub use crate::format::shorten_hash;
 
 /// Short hash width retained for callers that display verified metadata hashes.
 pub const SHORT_HASH_LEN: usize = 8;
@@ -11,7 +11,7 @@ pub const SHORT_HASH_LEN: usize = 8;
 /// Shortens only explicit, verified metadata hash fields.
 /// Continuation generations and nested/user values remain opaque.
 pub fn shorten_hashes_in_value(value: &mut Value) {
-    crate::core::format::shorten_metadata_hashes(value);
+    crate::format::shorten_metadata_hashes(value);
 }
 
 /// Unified tool metadata format retained for source compatibility.
@@ -38,7 +38,7 @@ pub struct ToolMetadata {
 
 /// Compacts only recognized navigation metadata.
 pub fn finalize_mcp_metadata(value: &mut Value) {
-    crate::core::format::finalize_metadata(value);
+    crate::format::finalize_metadata(value);
 }
 
 #[cfg(test)]

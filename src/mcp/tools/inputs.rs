@@ -1,5 +1,5 @@
-use crate::core::format::OutputFormat;
-use crate::core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions};
+use crate::format::OutputFormat;
+use acdd_core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -42,7 +42,7 @@ fn aliased_string<'a>(
 }
 
 // An empty schema object accepts any JSON value and stays valid for MCP clients.
-fn checkpoint_content_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+fn any_json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     serde_json::Map::new().into()
 }
 
@@ -118,10 +118,15 @@ pub struct Selector {
 #[derive(Deserialize, JsonSchema)]
 /// Represents inspect data.
 pub struct Inspect {
-    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline.
-    pub selector: String,
-    /// Restrict selector resolution to a workspace-relative file or directory.
+    /// Exact symbol ID or name; path forms include path:name, path:known_kind:name, path:line, and path#Lline. Accepts 'symbol' as a unified alias.
+    #[serde(default)]
+    pub selector: Option<String>,
+    /// Alternative to selector; provide exactly one of selector or symbol.
+    pub symbol: Option<String>,
+    /// Restrict selector resolution to a workspace-relative file or directory; accepts 'file_path' as a unified alias.
     pub path: Option<String>,
+    /// Alternative to path; restrict selector resolution to a workspace-relative file or directory.
+    pub file_path: Option<String>,
     #[serde(default = "yes")]
     /// Whether show doc applies.
     pub show_doc: bool,
@@ -142,6 +147,19 @@ pub struct Inspect {
     pub page: PageInput,
 }
 impl Inspect {
+    pub(super) fn selector(&self) -> anyhow::Result<&str> {
+        Ok(aliased_value(
+            self.selector.as_deref(),
+            &[self.symbol.as_deref()],
+            "selector",
+        )?
+        .unwrap_or(""))
+    }
+
+    pub(super) fn path(&self) -> anyhow::Result<Option<&str>> {
+        aliased_value(self.path.as_deref(), &[self.file_path.as_deref()], "path")
+    }
+
     pub(super) fn source(
         &self,
         policy: &ResponsePolicy,
@@ -206,12 +224,18 @@ impl Snippet {
             "selector",
         )?
         .map(str::to_owned);
-        if self.read.path.is_none() {
-            self.read.path = self.file_path.take();
-        }
-        if self.read.pattern.is_none() {
-            self.read.pattern = self.query.take();
-        }
+        self.read.path = aliased_value(
+            self.read.path.as_deref(),
+            &[self.file_path.as_deref()],
+            "path",
+        )?
+        .map(str::to_owned);
+        self.read.pattern = aliased_value(
+            self.read.pattern.as_deref(),
+            &[self.query.as_deref()],
+            "pattern",
+        )?
+        .map(str::to_owned);
         if let Some(lines) = self.lines.take() {
             match lines {
                 LinesInput::Integer(count) => {
@@ -286,16 +310,17 @@ impl Snippet {
     }
 
     pub(super) fn source(&self, policy: &ResponsePolicy) -> anyhow::Result<SourceOptions> {
-        anyhow::ensure!(
-            self.source_offset == 0 || self.page.generation.is_some(),
-            "source continuation requires generation from the previous preview; pass the previous page's generation or restart at source_offset=0"
-        );
-        SourceOptions::resolve_full_symbol(
+        let source = SourceOptions::resolve_full_symbol(
             policy,
             self.leading_lines,
             self.max_body_lines,
             self.source_offset,
-        )
+        )?;
+        anyhow::ensure!(
+            source.has_valid_paging_anchor(self.page.generation.as_deref()),
+            "source continuation requires generation from the previous preview; pass the previous page's generation or restart at source_offset=0"
+        );
+        Ok(source)
     }
 }
 
@@ -308,17 +333,18 @@ fn source_options(
     generation: Option<&str>,
     required: bool,
 ) -> anyhow::Result<SourceOptions> {
-    anyhow::ensure!(
-        source_offset == 0 || generation.is_some(),
-        "source continuation requires generation from the previous preview; pass the previous page's generation or restart at source_offset=0"
-    );
-    SourceOptions::resolve(
+    let source = SourceOptions::resolve(
         policy,
         if required { Some(true) } else { show_source },
         leading_lines,
         max_body_lines,
         source_offset,
-    )
+    )?;
+    anyhow::ensure!(
+        source.has_valid_paging_anchor(generation),
+        "source continuation requires generation from the previous preview; pass the previous page's generation or restart at source_offset=0"
+    );
+    Ok(source)
 }
 #[derive(Deserialize, JsonSchema)]
 /// Represents explain data.
@@ -354,20 +380,14 @@ impl Explain {
         policy: &ResponsePolicy,
         required: bool,
     ) -> anyhow::Result<SourceOptions> {
-        anyhow::ensure!(
-            self.source_offset == 0 || self.page.generation.is_some(),
-            "source continuation requires generation from the previous preview; pass the previous page's generation or restart at source_offset=0"
-        );
-        SourceOptions::resolve(
+        source_options(
             policy,
-            if required {
-                Some(true)
-            } else {
-                self.show_source
-            },
+            self.show_source,
             self.leading_lines,
             self.max_body_lines,
             self.source_offset,
+            self.page.generation.as_deref(),
+            required,
         )
     }
 }
@@ -514,7 +534,7 @@ pub struct Ast {
     pub pattern: String,
     /// Alternative to pattern; provide exactly one of pattern or query.
     pub query: Option<String>,
-    /// REQUIRED unless 'path' is a single file with a recognized extension (e.g. 'src/lib.rs'). Always pass 'language' (e.g. 'rust', 'python', 'typescript') when 'path' is omitted or is a directory. The language value (e.g. 'python', 'rust', 'typescript'). Optional if 'path' has a recognized file extension.
+    /// The language value (e.g. 'python', 'rust', 'typescript'). Optional when 'path' has a recognized file extension or resolves to an indexed single-language directory; required for multi-language scopes.
     pub language: Option<String>,
     /// Optional path value.
     pub path: Option<String>,
@@ -602,17 +622,186 @@ pub struct Guide {
     #[schemars(schema_with = "output_format_schema")]
     pub format: Option<OutputFormat>,
 }
-#[derive(Deserialize, JsonSchema)]
-/// Represents checkpoint data.
-pub struct Checkpoint {
-    /// The action value.
-    pub action: String,
-    /// Optional name value.
-    pub name: Option<String>,
-    #[schemars(schema_with = "checkpoint_content_schema")]
-    /// Optional content value.
-    pub content: Option<Value>,
-    /// Worktree selector: omit to keep the canonical server root; `.` selects it explicitly. Absolute paths or values containing `/` or `\` are resolved explicitly (relative paths start at the server root) and must name a directory. Otherwise, canonical-path-deduplicated registered Git worktrees and immediate `.worktrees/` children are matched in order: exact name, literal prefix (or zero-normalized numeric milestone prefix), suffix, then substring. The first non-empty tier must be unique (`WORKTREE_AMBIGUOUS`); no match returns `WORKTREE_NOT_FOUND`.
+/// Worktree routing selector or boolean `create_worktree` flag for `acdd_state(action: "start")`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum WorktreeInput {
+    /// Boolean flag used by `acdd_state(action: "start")` (`worktree: true` creates a managed run worktree).
+    Flag(bool),
+    /// Explicit worktree path or unique name selector (empty selects the server root).
+    Selector(String),
+}
+
+impl WorktreeInput {
+    pub(super) fn as_selector(&self) -> Option<&str> {
+        match self {
+            Self::Flag(_) => None,
+            Self::Selector(s) => Some(s.as_str()),
+        }
+    }
+
+    pub(super) fn as_flag(&self) -> Option<bool> {
+        match self {
+            Self::Flag(b) => Some(*b),
+            Self::Selector(_) => None,
+        }
+    }
+}
+
+/// Supported actions for the canonical `acdd_state` MCP tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpStateAction {
+    /// Read-only status of the active run (`StateQuery::Status`).
+    Status,
+    /// Read-only paginated list of runs and tombstones (`StateQuery::List`).
+    List,
+    /// Read-only details for a run or specific node cursor (`StateQuery::Show`).
+    Show,
+    /// Read-only ready node cursors and topological execution waves (`StateQuery::Next`).
+    Next,
+    /// Read-only aggregate state observability metrics and Prometheus text (`StateQuery::Observability`).
+    Observability,
+    /// Start a new `Run` from a spec file or ephemeral `--goal` (`StateCommand::Start`).
+    Start,
+    /// Draft the next sequentially numbered spec document in a configured collection (`StateCommand::Draft`).
+    Draft,
+    /// Extend a task's admitted write scope (`StateCommand::ExtendScope`).
+    ExtendScope,
+    /// Reopen a gate or task container (`StateCommand::Reopen`).
+    Reopen,
+    /// Synchronize spec edits and optional profile rebind into an active `Run` (`StateCommand::Sync`).
+    Sync,
+    /// Update a subtask's status and mandatory terminal evidence (`StateCommand::Subtask`).
+    Subtask,
+    /// Capture an explicit manual Git snapshot (`StateCommand::Snapshot`).
+    Snapshot,
+    /// Confined-restore working-tree files from a snapshot ref or OID (`StateCommand::Rollback`).
+    Rollback,
+    /// Integrate completed task branches into the run worktree (`StateCommand::Integrate`).
+    Integrate,
+    /// Clear/cancel an active `Run` into `run_tombstones` (`StateCommand::Clear`).
+    Clear,
+    /// Execute automated DAG waves (`StateCommand::Run`).
+    Run,
+}
+
+impl McpStateAction {
+    pub(super) fn is_read_only(self) -> bool {
+        matches!(
+            self,
+            Self::Status | Self::List | Self::Show | Self::Next | Self::Observability
+        )
+    }
+}
+
+/// Canonical `acdd_state` MCP tool input covering 11 `StateCommand` actions and 5 read-only `StateQuery` actions.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StateInput {
+    /// State action (`status`, `list`, `show`, `next`, `observability`, `start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `rollback`, `integrate`, `clear`, `run`).
+    pub action: McpStateAction,
+    /// Optional run ID or run name selector.
+    pub run: Option<String>,
+    /// Target node cursor (`<gate>`, `<task_ref>`, `<task_ref>.<gate>`).
+    pub node: Option<String>,
+    /// Path to an existing spec Markdown file (`start`; mutually exclusive with `goal`).
+    pub spec_path: Option<String>,
+    /// Ephemeral goal text materializing `.acdd/run/<run_id>/spec.md` (`start`).
+    pub goal: Option<String>,
+    /// Optional explicit run name override (`start`).
+    pub run_name: Option<String>,
+    /// Optional profile override (`start`, `draft`).
+    pub profile: Option<String>,
+    /// Optional initial scope globs for ephemeral `goal` runs (`start`).
+    pub scope: Option<Vec<String>>,
+    /// Target integration base branch/ref for worktree isolation runs (`start`).
+    pub target_base: Option<String>,
+    /// Create a managed run worktree under `.worktrees/<run_name>` (`start`).
+    pub create_worktree: Option<bool>,
+    /// Force `in_place` isolation for this run (`start`).
+    pub in_place: Option<bool>,
+    /// Explicit worktree path override (`start`).
+    pub worktree_path: Option<String>,
+    /// Target spec collection key from `acdd.yaml` `specs:` (`draft`, e.g. `milestones`, `plans`).
+    pub collection: Option<String>,
+    /// URL/file slug for the drafted spec document (`draft`).
+    pub slug: Option<String>,
+    /// Optional ID prefix override within the collection (`draft`).
+    pub prefix: Option<String>,
+    /// Optional human-readable title (`draft`).
+    pub title: Option<String>,
+    /// Additional repository-relative paths or globs to admit (`extend_scope`).
+    pub paths: Option<Vec<String>>,
+    /// Justification/cancellation reason (`extend_scope`, `reopen`, `clear`).
+    pub reason: Option<String>,
+    /// Optional worker identity check (`extend_scope`).
+    pub worker_id: Option<String>,
+    /// Cascade-stale downstream dependent tasks (`reopen`).
+    pub cascade: Option<bool>,
+    /// Rebind non-completed gates against the latest resolved profile (`sync`).
+    pub rebind_profile: Option<bool>,
+    /// Target task reference (`subtask`, `integrate`).
+    pub task_ref: Option<String>,
+    /// Target subtask reference (`subtask`).
+    pub subtask_ref: Option<String>,
+    /// Status filter (`list`: `active | completed | cancelled`) or new subtask status (`subtask`: `pending | in_progress | completed | cancelled`).
+    pub status: Option<String>,
+    /// Alias for `status` on `subtask`.
+    pub subtask_status: Option<String>,
+    /// Required non-empty evidence when `subtask` status is `completed` or `cancelled`.
+    pub evidence: Option<String>,
+    /// Optional manual snapshot label (`snapshot`).
+    pub label: Option<String>,
+    /// Snapshot ref, commit OID, or tree OID to restore (`rollback`).
+    pub target: Option<String>,
+    /// Integration strategy override (`integrate`: `manual | rebase-ff | ff-only | no-ff | squash`).
+    pub strategy: Option<String>,
+    /// Explicitly permit committing/integrating onto `main` / `master` (`integrate`, `run`).
+    pub allow_main: Option<bool>,
+    /// Force cleanup of dirty managed worktrees (`clear`).
+    pub force: Option<bool>,
+    /// Maximum concurrent wave jobs (`run`).
+    pub jobs: Option<usize>,
+    /// Dry-run mode computing waves without mutating state (`run`).
+    pub dry_run: Option<bool>,
+    /// Optional workspace filter (`list`).
+    pub workspace: Option<String>,
+    /// Include closed `run_tombstones` (`list`).
+    pub include_tombstones: Option<bool>,
+    /// Page size (`1..=100`) (`list`, `next`).
+    pub limit: Option<usize>,
+    /// Zero-based page offset (`list`).
+    pub offset: Option<usize>,
+    /// Optional `runs.generation` pin for stable pagination (`list`).
+    pub generation: Option<u64>,
+    /// Include Prometheus 0.0.4 text output (`observability`).
+    pub include_prometheus: Option<bool>,
+    /// Worktree routing selector (or boolean `true` on `action="start"` to create a managed worktree).
+    pub worktree: Option<WorktreeInput>,
+    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    #[serde(default)]
+    #[schemars(schema_with = "output_format_schema")]
+    pub format: Option<OutputFormat>,
+}
+
+/// Canonical `acdd_claim` MCP tool input (`StateCommand::Claim`).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimInput {
+    /// Optional run ID or run name selector.
+    pub run: Option<String>,
+    /// Target node cursor (`<gate>`, `<task_ref>`, `<task_ref>.<gate>`), or omit to auto-select the next ready node.
+    pub node: Option<String>,
+    /// Claiming worker identity.
+    pub worker_id: String,
+    /// Force take-over of an existing active claim.
+    #[serde(default)]
+    pub force: bool,
+    /// Explicitly authorize stealing an active claim from another host/remote session.
+    #[serde(default)]
+    pub steal_remote: bool,
+    /// Worktree selector.
     pub worktree: Option<String>,
     /// Output format. Omit for readable Markdown; choose JSON for machine clients.
     #[serde(default)]
@@ -620,156 +809,243 @@ pub struct Checkpoint {
     pub format: Option<OutputFormat>,
 }
 
-fn deserialize_task_input<'de, D, T>(
-    deserializer: D,
-    extract_worktree: bool,
-) -> Result<(T, Option<OutputFormat>, Option<String>), D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned,
-{
-    use serde::de::Error as _;
-
-    let mut properties = serde_json::Map::<String, Value>::deserialize(deserializer)?;
-    let format = properties
-        .remove("format")
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(D::Error::custom)?;
-    let worktree = if extract_worktree {
-        serde_json::from_value(properties.remove("worktree").unwrap_or(Value::Null))
-            .map_err(D::Error::custom)?
-    } else {
-        None
-    };
-    let request = serde_json::from_value(Value::Object(properties)).map_err(D::Error::custom)?;
-    Ok((request, format, worktree))
+/// Canonical `acdd_verify` MCP tool input (`StateCommand::Verify`).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyInput {
+    /// Optional run ID or run name selector.
+    pub run: Option<String>,
+    /// Target node cursor (`<gate>`, `<task_ref>.<gate>`).
+    pub node: String,
+    /// Optional claiming worker identity check.
+    pub worker_id: Option<String>,
+    /// Optional `--test` filter target (required for `proof: contract`).
+    pub test_target: Option<String>,
+    /// Optional expected `claim_revision`.
+    pub claim_revision: Option<u32>,
+    /// Worktree selector.
+    pub worktree: Option<String>,
+    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    #[serde(default)]
+    #[schemars(schema_with = "output_format_schema")]
+    pub format: Option<OutputFormat>,
 }
 
-macro_rules! task_input {
-    ($name:ident, $inner:ty) => {
-        #[derive(JsonSchema)]
-        /// Existing task request fields plus an optional output format.
-        #[schemars(deny_unknown_fields)]
-        pub struct $name {
-            #[serde(flatten)]
-            #[schemars(flatten)]
-            /// The operation's original typed request fields.
-            pub request: $inner,
-            /// Output format. Omit for readable Markdown; choose JSON for machine clients.
-            #[serde(default)]
-            #[schemars(schema_with = "output_format_schema")]
-            pub format: Option<OutputFormat>,
-        }
+/// Submission action (`pass` or `reject`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpSubmitAction {
+    /// Accept the gate and advance downstream transitions.
+    Pass,
+    /// Reject the gate with structured findings and route to `fail:`.
+    Reject,
+}
 
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                let (request, format, _) =
-                    deserialize_task_input::<D, $inner>(deserializer, false)?;
-                Ok(Self { request, format })
-            }
+impl From<McpSubmitAction> for acdd_state::types::SubmitAction {
+    fn from(value: McpSubmitAction) -> Self {
+        match value {
+            McpSubmitAction::Pass => Self::Pass,
+            McpSubmitAction::Reject => Self::Reject,
         }
-    };
-    ($name:ident, $inner:ty, routing_worktree) => {
-        #[derive(JsonSchema)]
-        /// Existing task request fields plus an optional worktree selector and output format.
-        #[schemars(deny_unknown_fields)]
-        pub struct $name {
-            #[serde(flatten)]
-            #[schemars(flatten)]
-            /// The operation's original typed request fields.
-            pub request: $inner,
-            /// Worktree selector: omit to keep the canonical server root; `.` selects it explicitly. Absolute paths or values containing `/` or `\` are resolved explicitly (relative paths start at the server root) and must name a directory. Otherwise, canonical-path-deduplicated registered Git worktrees and immediate `.worktrees/` children are matched in order: exact name, literal prefix (or zero-normalized numeric milestone prefix), suffix, then substring. The first non-empty tier must be unique (`WORKTREE_AMBIGUOUS`); no match returns `WORKTREE_NOT_FOUND`.
-            #[serde(default)]
-            pub worktree: Option<String>,
-            /// Output format. Omit for readable Markdown; choose JSON for machine clients.
-            #[serde(default)]
-            #[schemars(schema_with = "output_format_schema")]
-            pub format: Option<OutputFormat>,
-        }
+    }
+}
 
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                let (request, format, worktree) =
-                    deserialize_task_input::<D, $inner>(deserializer, true)?;
-                Ok(Self {
-                    request,
-                    worktree,
-                    format,
+/// Finding severity level (`critical | high | medium | low`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpFindingSeverity {
+    Critical,
+    High,
+    Medium,
+    Low,
+}
+
+impl From<McpFindingSeverity> for acdd_state::types::FindingSeverity {
+    fn from(value: McpFindingSeverity) -> Self {
+        match value {
+            McpFindingSeverity::Critical => Self::Critical,
+            McpFindingSeverity::High => Self::High,
+            McpFindingSeverity::Medium => Self::Medium,
+            McpFindingSeverity::Low => Self::Low,
+        }
+    }
+}
+
+/// Structured review finding item required when rejecting a gate.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpFindingItem {
+    /// Severity level (`critical`, `high`, `medium`, `low`).
+    pub severity: McpFindingSeverity,
+    /// Optional repository-relative path affected by the finding.
+    pub path: Option<String>,
+    /// Concrete defect description.
+    pub message: String,
+    /// Actionable remediation required before re-submission.
+    pub remediation: String,
+}
+
+/// Structured findings payload required for `acdd_submit(action: "reject")`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpRejectionFindings {
+    /// Concise summary of why the gate was rejected.
+    pub summary: String,
+    /// Optional blackboard message ID referencing the posted findings thread.
+    pub blackboard_message_id: Option<i64>,
+    /// One or more structured finding items.
+    pub items: Vec<McpFindingItem>,
+}
+
+impl From<McpRejectionFindings> for acdd_state::types::RejectionFindings {
+    fn from(value: McpRejectionFindings) -> Self {
+        Self {
+            summary: value.summary,
+            blackboard_message_id: value.blackboard_message_id,
+            items: value
+                .items
+                .into_iter()
+                .map(|item| acdd_state::types::FindingItem {
+                    severity: item.severity.into(),
+                    path: item.path,
+                    message: item.message,
+                    remediation: item.remediation,
                 })
-            }
+                .collect(),
         }
-    };
-}
-
-task_input!(TaskListInput, crate::engine::tasks::List, routing_worktree);
-task_input!(TaskClaimInput, crate::engine::tasks::Claim);
-
-fn optional_submit_evidence(schema: &mut schemars::Schema) {
-    if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
-        required.retain(|field| field.as_str() != Some("evidence"));
     }
 }
 
-#[derive(JsonSchema)]
-#[schemars(deny_unknown_fields, transform = optional_submit_evidence)]
-/// A gate submission with optional autonomous proof compilation.
-pub struct TaskSubmitInput {
-    #[serde(flatten)]
-    #[schemars(flatten)]
-    /// The original gate submission fields; omit evidence to execute an automated gate.
-    pub request: crate::engine::tasks::Submit,
-    /// Runtime timeout in seconds for an automated submission, bounded by the active profile.
-    pub timeout_seconds: Option<u64>,
-    /// Worktree routing selector; execution remains bound to the claimed worktree.
+/// Per-contour review attestation inside `review_evidence`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpReviewContourResult {
+    /// Whether this contour applied to the reviewed diff/artifacts.
+    pub applicable: bool,
+    /// Concrete verification evidence (must be non-empty on `pass`).
+    pub evidence: String,
+}
+
+/// Typed evidence payload required for `proof: review` submissions.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpReviewEvidence {
+    /// Review outcome matching `action` (`pass` or `reject`).
+    pub decision: McpSubmitAction,
+    /// Map keyed 1:1 by the gate's declared `contours`.
+    pub contours: std::collections::BTreeMap<String, McpReviewContourResult>,
+    /// Concise review summary.
+    pub summary: String,
+    /// Optional non-blocking notes.
+    pub notes: Option<String>,
+}
+
+impl From<McpReviewEvidence> for acdd_state::types::ReviewEvidence {
+    fn from(value: McpReviewEvidence) -> Self {
+        Self {
+            decision: value.decision.into(),
+            contours: value
+                .contours
+                .into_iter()
+                .map(|(k, v)| {
+                    (
+                        k,
+                        acdd_state::types::ReviewContourResult {
+                            applicable: v.applicable,
+                            evidence: v.evidence,
+                        },
+                    )
+                })
+                .collect(),
+            summary: value.summary,
+            notes: value.notes,
+        }
+    }
+}
+
+/// Canonical `acdd_submit` MCP tool input (`StateCommand::Submit`).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SubmitInput {
+    /// Optional run ID or run name selector.
+    pub run: Option<String>,
+    /// Target node cursor (`<gate>`, `<task_ref>.<gate>`).
+    pub node: String,
+    /// Submission action (`pass` or `reject`).
+    pub action: McpSubmitAction,
+    /// Submitting worker identity.
+    pub worker_id: String,
+    /// Optional expected `claim_revision`.
+    pub claim_revision: Option<u32>,
+    /// Optional `--test` target forwarded if `submit` auto-triggers `verify`.
+    pub test_target: Option<String>,
+    /// Typed review evidence for `proof: review`.
+    pub review_evidence: Option<McpReviewEvidence>,
+    /// Structured rejection findings required for `action: "reject"`.
+    pub rejection_findings: Option<McpRejectionFindings>,
+    /// Custom schema JSON evidence (`proof: blueprint` or custom `proofs:` schema).
+    #[schemars(schema_with = "any_json_schema")]
+    pub custom_evidence: Option<Value>,
+    /// Verified invariant identifiers attested by this submission.
+    #[serde(default)]
+    pub verified_invariants: Vec<String>,
+    /// Optional human-readable summary for receipt rollups.
+    pub summary: Option<String>,
+    /// Explicitly permit committing onto `main` / `master`.
+    #[serde(default)]
+    pub allow_main: bool,
+    /// Worktree selector.
     pub worktree: Option<String>,
+    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
     #[serde(default)]
     #[schemars(schema_with = "output_format_schema")]
-    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
     pub format: Option<OutputFormat>,
-    #[schemars(skip)]
-    /// Whether the caller supplied an explicit evidence value.
-    pub evidence_provided: bool,
 }
 
-impl<'de> Deserialize<'de> for TaskSubmitInput {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::Error as _;
-
-        let mut properties = serde_json::Map::<String, Value>::deserialize(deserializer)?;
-        let timeout_seconds =
-            serde_json::from_value(properties.remove("timeout_seconds").unwrap_or(Value::Null))
-                .map_err(D::Error::custom)?;
-        let evidence_provided = properties.contains_key("evidence");
-        properties.entry("evidence").or_insert(Value::Null);
-        let (request, format, worktree) =
-            deserialize_task_input::<_, crate::engine::tasks::Submit>(
-                Value::Object(properties),
-                true,
-            )
-            .map_err(D::Error::custom)?;
-        Ok(Self {
-            request,
-            timeout_seconds,
-            worktree,
-            format,
-            evidence_provided,
-        })
-    }
+/// Blackboard operation (`read` or `post`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpBlackboardAction {
+    /// Read paginated blackboard entries over `StateQueryEngine` (`SQLITE_OPEN_READ_ONLY`).
+    Read,
+    /// Post a new message to the run blackboard (`StateCommand::BlackboardPost`).
+    Post,
 }
 
-task_input!(TaskManageInput, crate::engine::tasks::Manage);
-task_input!(
-    TaskBlackboardInput,
-    crate::engine::tasks::BlackboardRequest,
-    routing_worktree
-);
+/// Canonical `acdd_blackboard` MCP tool input (`StateQuery::BlackboardRead` + `StateCommand::BlackboardPost`).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BlackboardInput {
+    /// Blackboard action (`read` or `post`).
+    pub action: McpBlackboardAction,
+    /// Optional run ID or run name selector.
+    pub run: Option<String>,
+    /// Optional source node cursor filter (`read`) or source node (`post`).
+    pub node: Option<String>,
+    /// Optional target recipient node cursor (`read` filter or `post` target).
+    pub recipient_node: Option<String>,
+    /// Optional subtask reference (`post`).
+    pub subtask_ref: Option<String>,
+    /// Optional gate label (`post`).
+    pub gate: Option<String>,
+    /// Author identity (`post`; defaults to `"mcp"` when omitted).
+    pub author: Option<String>,
+    /// Topic (`draft | notes | findings | blockers | decisions | deferred`; required for `post`, optional filter for `read`).
+    pub topic: Option<String>,
+    /// Optional status filter for `read` (`open | acknowledged | resolved | carried_over`).
+    pub status: Option<String>,
+    /// Message text or JSON payload (required for `post`).
+    pub payload: Option<String>,
+    /// Page size (`1..=100`, default `50`) for `read`.
+    pub limit: Option<usize>,
+    /// Zero-based page offset for `read`.
+    pub offset: Option<usize>,
+    /// Optional `runs.generation` pin for stable `read` pagination.
+    pub generation: Option<u64>,
+    /// Worktree selector.
+    pub worktree: Option<String>,
+    /// Output format. Omit for readable Markdown; choose JSON for machine clients.
+    #[serde(default)]
+    #[schemars(schema_with = "output_format_schema")]
+    pub format: Option<OutputFormat>,
+}

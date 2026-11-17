@@ -1,4 +1,8 @@
-use crate::{db::cache::Identity, engine::scanner};
+use acdd_core::{fs::canonicalize_macos_var, telemetry::unix_epoch_ms};
+use acdd_index::{
+    db::{cache, cache::Identity, reader},
+    scanner,
+};
 use anyhow::Result;
 use rmcp::ServiceExt;
 use rusqlite::OptionalExtension;
@@ -6,7 +10,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::Instant,
 };
 
 const INVENTORY_FRESHNESS_TTL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -50,7 +54,7 @@ impl Drop for AdmissionGuard {
     }
 }
 
-fn reader_evictor(slot: &Arc<Mutex<ConnectionSlot>>) -> Arc<crate::db::cache::IdleReader> {
+fn reader_evictor(slot: &Arc<Mutex<ConnectionSlot>>) -> Arc<cache::IdleReader> {
     let slot = Arc::downgrade(slot);
     Arc::new(move |db| {
         let Some(slot) = slot.upgrade() else {
@@ -59,7 +63,7 @@ fn reader_evictor(slot: &Arc<Mutex<ConnectionSlot>>) -> Arc<crate::db::cache::Id
         match slot.try_lock() {
             Ok(mut slot) => {
                 if slot.as_ref().is_some_and(|cached| {
-                    crate::db::cache::registry_path(&cached.database_path) == db
+                    cache::registry_path(&cached.database_path) == db
                 }) {
                     *slot = None;
                 }
@@ -99,6 +103,41 @@ struct Freshness {
     refresh: &'static str,
 }
 
+fn rebase_path(path: &std::path::Path, from_root: &std::path::Path, to_root: &std::path::Path) -> PathBuf {
+    if let Ok(relative) = path.strip_prefix(from_root) {
+        return to_root.join(relative);
+    }
+    if path.is_absolute() {
+        if let Some(canon_path) = acdd_core::fs::canonicalize_with_missing_tail(path) {
+            if let Ok(relative) = canon_path.strip_prefix(from_root) {
+                return to_root.join(relative);
+            }
+        }
+    }
+    path.to_owned()
+}
+
+fn rebase_invocation_settings(
+    settings: &crate::state_bridge::InvocationSettings,
+    target_root: &std::path::Path,
+) -> crate::state_bridge::InvocationSettings {
+    let rebased_root = canonicalize_macos_var(target_root);
+    let from_root = canonicalize_macos_var(&settings.root);
+    crate::state_bridge::InvocationSettings {
+        root: rebased_root.clone(),
+        config: settings
+            .config
+            .as_deref()
+            .map(|p| rebase_path(p, &from_root, &rebased_root)),
+        profile: settings
+            .profile
+            .as_deref()
+            .map(|p| rebase_path(p, &from_root, &rebased_root)),
+        state_db: settings.state_db.clone(),
+        code_db: rebase_path(&settings.code_db, &from_root, &rebased_root),
+    }
+}
+
 #[derive(Clone)]
 /// Represents server data.
 pub struct Server {
@@ -108,22 +147,21 @@ pub struct Server {
     pub db: PathBuf,
     /// The connection value.
     pub connection: Arc<Mutex<ConnectionSlot>>,
-    reader_evictor: Arc<crate::db::cache::IdleReader>,
+    reader_evictor: Arc<cache::IdleReader>,
     request_adapter: Option<RequestAdapter>,
     extraction_cache_dir: Option<PathBuf>,
-    pub(crate) invocation: Option<crate::acdd_tasks::tasks::configuration::InvocationSettings>,
+    pub(crate) invocation: Option<crate::state_bridge::InvocationSettings>,
     pub(crate) session_fingerprint: Option<String>,
+    extra_domain_providers: Vec<Arc<dyn acdd_core::ports::DomainProvider>>,
 }
 impl Server {
     /// Returns this server slot's active registry entry count.
     #[doc(hidden)]
     pub fn reader_registration_count(&self) -> Result<usize> {
-        crate::db::cache::idle_reader_registration_count(&self.reader_evictor)
+        cache::idle_reader_registration_count(&self.reader_evictor)
     }
     /// Creates a new instance.
     pub fn new(root: PathBuf, db: PathBuf) -> Self {
-        let invocation = crate::acdd_tasks::tasks::configuration::current(&root)
-            .map(|settings| (*settings).clone());
         let connection = Arc::new(Mutex::new(None));
         let reader_evictor = reader_evictor(&connection);
         Self {
@@ -133,8 +171,11 @@ impl Server {
             reader_evictor,
             request_adapter: None,
             extraction_cache_dir: None,
-            invocation,
-            session_fingerprint: crate::acdd_tasks::store::host_session_fingerprint(),
+            invocation: None,
+            session_fingerprint: Some(
+                acdd_state::usecases::lifecycle::current_session_fingerprint(),
+            ),
+            extra_domain_providers: Vec::new(),
         }
     }
 
@@ -147,19 +188,49 @@ impl Server {
     /// Retains immutable invocation settings for the lifetime of this server.
     pub fn with_invocation_settings(
         mut self,
-        settings: crate::acdd_tasks::tasks::configuration::InvocationSettings,
+        settings: crate::state_bridge::InvocationSettings,
     ) -> Self {
-        self.invocation = Some(settings.rebase(&self.root));
+        self.invocation = Some(rebase_invocation_settings(&settings, &self.root));
         self
     }
 
+    /// Attaches additional external `DomainProvider` instances (e.g., plugin tools).
+    pub fn with_domain_providers(
+        mut self,
+        providers: Vec<Arc<dyn acdd_core::ports::DomainProvider>>,
+    ) -> Self {
+        self.extra_domain_providers = providers;
+        self
+    }
+
+    pub(crate) fn state_db(&self) -> Option<&std::path::Path> {
+        self.invocation
+            .as_ref()
+            .and_then(|settings| settings.state_db.as_deref())
+    }
+
+    pub(crate) fn domain_providers(
+        &self,
+        adapter: &scanner::Adapter,
+    ) -> std::result::Result<
+        Arc<acdd_core::ports::CompositeDomainProvider>,
+        acdd_core::errors::StateError,
+    > {
+        crate::state_bridge::build_domain_providers_with_extra(
+            &self.root,
+            adapter,
+            self.extra_domain_providers.clone(),
+        )
+    }
+
     pub(crate) fn load_adapter(&self, root: &std::path::Path) -> std::io::Result<scanner::Adapter> {
+        let root = scanner::canonical_root(root)?;
         let settings = self
             .invocation
             .as_ref()
-            .map(|settings| settings.rebase(root));
+            .map(|settings| rebase_invocation_settings(settings, &root));
         scanner::load_adapter(
-            root,
+            &root,
             settings
                 .as_ref()
                 .and_then(|settings| settings.config.as_deref()),
@@ -186,7 +257,7 @@ impl Server {
             Some(cache_dir) => {
                 crate::engine::pipeline::build_with_cache_dir(root, &self.db, adapter, cache_dir)
             }
-            None => crate::db::writer::build(root, &self.db, adapter),
+            None => crate::engine::pipeline::build(root, &self.db, adapter),
         }
     }
 
@@ -211,7 +282,7 @@ impl Server {
         let invocation = self
             .invocation
             .as_ref()
-            .map(|settings| settings.rebase(&root));
+            .map(|settings| rebase_invocation_settings(settings, &root));
         Self {
             root,
             db,
@@ -221,6 +292,7 @@ impl Server {
             extraction_cache_dir: self.extraction_cache_dir.clone(),
             invocation,
             session_fingerprint: self.session_fingerprint.clone(),
+            extra_domain_providers: self.extra_domain_providers.clone(),
         }
     }
 
@@ -245,24 +317,20 @@ impl Server {
             Ok(metadata) if !metadata.is_file() => anyhow::bail!("database must be a regular file"),
             Ok(_) => {}
         }
-        let _generation_lock = crate::db::cache::shared_lock(&self.db)?;
-        let open_path = crate::core::fs::confined_database_open_path(&self.db)?;
-        let conn = rusqlite::Connection::open_with_flags(
-            &open_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )?;
-        conn.execute_batch("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; BEGIN DEFERRED")?;
+        let _generation_lock = cache::shared_lock(&self.db)?;
+        let conn = reader::open_raw_confined_readonly(&self.db)?;
+        conn.execute_batch("BEGIN DEFERRED")?;
         let has_metadata_table: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='metadata')",
             [],
             |row| row.get(0),
         )?;
         if !has_metadata_table {
-            crate::db::reader::validate_database_header(&self.db)?;
-            crate::db::reader::validate_database_integrity(&conn)?;
+            reader::validate_database_header(&self.db)?;
+            reader::validate_database_integrity(&conn)?;
             return Ok(true);
         }
-        crate::db::reader::validate_workspace(&conn, &self.root)?;
+        reader::validate_workspace(&conn, &self.root)?;
         let engine: String = conn.query_row(
             "SELECT value FROM metadata WHERE key='indexer_engine'",
             [],
@@ -276,8 +344,8 @@ impl Server {
             [],
             |r| r.get(0),
         )?;
-        if schema_version != crate::engine::scanner::ENGINE_SCHEMA_VERSION {
-            crate::db::reader::validate_database_integrity(&conn)?;
+        if schema_version != scanner::ENGINE_SCHEMA_VERSION {
+            reader::validate_database_integrity(&conn)?;
             return Ok(true);
         }
         let semantics: Option<String> = conn
@@ -287,16 +355,16 @@ impl Server {
                 |r| r.get(0),
             )
             .optional()?;
-        if semantics.as_deref() != Some(crate::engine::scanner::INDEX_SEMANTICS_VERSION) {
-            crate::db::reader::validate_database_integrity(&conn)?;
+        if semantics.as_deref() != Some(scanner::INDEX_SEMANTICS_VERSION) {
+            reader::validate_database_integrity(&conn)?;
             return Ok(true);
         }
         let admit_rebuild = || -> Result<bool> {
-            crate::db::reader::validate_database_integrity(&conn)?;
-            crate::db::reader::open(&self.db, &self.root)?;
+            reader::validate_database_integrity(&conn)?;
+            reader::open(&self.db, &self.root)?;
             Ok(true)
         };
-        let persisted = crate::core::config::read_policy(&self.root, &conn)?;
+        let persisted = reader::read_policy(&self.root, &conn)?;
         if current_adapter.adapter_path != persisted.adapter_path {
             return admit_rebuild();
         }
@@ -395,7 +463,7 @@ impl Server {
                     {
                         return None;
                     }
-                    crate::db::cache::identity(&self.db)
+                    cache::identity(&self.db)
                         .ok()
                         .filter(|identity| *identity == cached.identity)
                 });
@@ -406,7 +474,7 @@ impl Server {
                 continue;
             }
             let mut identity =
-                admitted_identity.map_or_else(|| crate::db::cache::identity(&self.db), Ok)?;
+                admitted_identity.map_or_else(|| cache::identity(&self.db), Ok)?;
             if slot
                 .as_ref()
                 .is_none_or(|cached| cached.identity != identity)
@@ -414,10 +482,10 @@ impl Server {
                 *slot = None;
                 // Sample identity after closing any stale reader connection so WAL close
                 // cleanup on the dropped connection does not invalidate our own baseline.
-                identity = crate::db::cache::identity(&self.db)?;
+                identity = cache::identity(&self.db)?;
                 let mut diagnostics = Vec::new();
                 let connection =
-                    crate::db::reader::open_with_diagnostics(&self.db, &root, &mut |message| {
+                    reader::open_with_diagnostics(&self.db, &root, &mut |message| {
                         eprintln!("{message}");
                         diagnostics.push(message);
                     })?;
@@ -438,7 +506,7 @@ impl Server {
                 if let Some(connection) = &cached.connection {
                     connection.execute_batch("BEGIN DEFERRED")?;
                 } else {
-                    cached.connection = Some(crate::db::reader::open_with_diagnostics(
+                    cached.connection = Some(reader::open_with_diagnostics(
                         &self.db,
                         &root,
                         &mut |message| {
@@ -474,12 +542,12 @@ impl Server {
                     })?,
                 )
             };
-            let previous = crate::db::reader::inventory_snapshot(conn)?;
+            let previous = reader::inventory_snapshot(conn)?;
             let started = Instant::now();
             let watched = previous.iter().map(|entry| entry.path.clone()).collect();
             let scan = scanner::scan_reusing_watching(&root, adapter, &previous, &watched)?;
             let manifests =
-                crate::engine::languages::dependency_registry::DependencyRegistry::try_collect_with_paths(
+                acdd_index::languages::dependency_registry::DependencyRegistry::try_collect_with_paths(
                     &root,
                     Some(adapter),
                     &scan.dependency_manifests,
@@ -520,11 +588,11 @@ impl Server {
                 })
                 .copied()
                 .collect();
-            let current_identity = crate::db::cache::identity(&self.db)?;
+            let current_identity = cache::identity(&self.db)?;
             if current_identity != identity {
                 anyhow::bail!(
                     "generation changed during source admission ({}); retry against the current snapshot",
-                    crate::db::cache::describe_diff(&identity, &current_identity)
+                    cache::describe_diff(&identity, &current_identity)
                 );
             }
             let latest_adapter = self.load_adapter(&root)?;
@@ -538,7 +606,7 @@ impl Server {
                     status: "source_inventory_matched",
                     output_root: metadata("output_root")?,
                     corpus_hash: metadata("corpus_hash")?,
-                    checked_at_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+                    checked_at_unix_ms: unix_epoch_ms(),
                     files_checked: scan.files,
                     inventory_scan_ms,
                     refresh,
@@ -571,7 +639,7 @@ impl Server {
                     Ok(_) => {
                         refresh = "delta";
                     }
-                    Err(error) if error.is::<crate::db::writer::SourceSnapshotMismatch>() => {
+                    Err(error) if error.is::<crate::engine::pipeline::SourceSnapshotMismatch>() => {
                         let backoff_ms = (25 * (1 << attempt)).min(200);
                         std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
                         continue;
@@ -606,7 +674,7 @@ impl Server {
             .connection
             .lock()
             .map_err(|_| anyhow::anyhow!("database connection lock poisoned"))?;
-        crate::db::cache::register_idle_reader(&self.db, &self.reader_evictor)?;
+        cache::register_idle_reader(&self.db, &self.reader_evictor)?;
         let previous =
             ADMITTING_SLOT.with(|current| current.replace(Arc::as_ptr(&self.connection) as usize));
         let admission_guard = AdmissionGuard(previous);
@@ -620,8 +688,8 @@ impl Server {
             }
         };
         // Initial admission can create the database parent; refresh its canonical key.
-        crate::db::cache::register_idle_reader(&self.db, &self.reader_evictor)?;
-        let _read_lock = crate::db::cache::shared_lock(&self.db)?;
+        cache::register_idle_reader(&self.db, &self.reader_evictor)?;
+        let _read_lock = cache::shared_lock(&self.db)?;
         let cached = slot
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("database unavailable"))?;
@@ -630,7 +698,7 @@ impl Server {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("database connection unavailable"))?;
         let result = f(connection);
-        let after = crate::db::cache::identity(&self.db);
+        let after = cache::identity(&self.db);
         let ended = connection.execute_batch("ROLLBACK");
         if let Err(error) = ended {
             *slot = None;
@@ -647,7 +715,7 @@ impl Server {
             }
         };
         if after != cached.identity {
-            let diff = crate::db::cache::describe_diff(&cached.identity, &after);
+            let diff = cache::describe_diff(&cached.identity, &after);
             *slot = None;
             anyhow::bail!(
                 "generation changed during query ({diff}); retry against the current snapshot"
@@ -670,31 +738,67 @@ impl Server {
     }
 }
 
+fn canonicalize_existing_dir(path: &std::path::Path) -> Result<PathBuf> {
+    let canon = path.canonicalize()?;
+    Ok(canonicalize_macos_var(&canon))
+}
+
 impl Server {
     /// Resolves an explicit worktree while keeping the unselected server root stable.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn resolve_target_root_and_db(
         &self,
         requested_worktree: Option<&str>,
     ) -> Result<(PathBuf, PathBuf)> {
-        let root = self.root.canonicalize()?;
+        self.resolve_target_root_and_db_with_adapter(requested_worktree, None)
+    }
+
+    /// Resolves an explicit worktree using a caller-supplied root [`scanner::Adapter`] when available.
+    pub(crate) fn resolve_target_root_and_db_with_adapter(
+        &self,
+        requested_worktree: Option<&str>,
+        root_adapter: Option<&scanner::Adapter>,
+    ) -> Result<(PathBuf, PathBuf)> {
+        let root = canonicalize_existing_dir(&self.root)?;
         let target = match requested_worktree {
             None => root.clone(),
             Some(requested) => {
                 let requested = requested.trim();
                 if requested.is_empty() {
-                    anyhow::bail!(
-                        "WORKTREE_NOT_FOUND: worktree must not be empty. Do: pass a path or unique name."
-                    );
+                    root.clone()
+                } else {
+                    let repository = acdd_core::git::primary_worktree_root(&root)
+                        .map(|p| canonicalize_macos_var(&p))
+                        .unwrap_or_else(|| root.clone());
+                    let loaded_owned;
+                    let adapter_ref = match root_adapter {
+                        Some(adapter) => Some(adapter),
+                        None => {
+                            loaded_owned = self.load_adapter(&root).ok();
+                            loaded_owned.as_ref()
+                        }
+                    };
+                    let linked: Vec<(String, PathBuf)> = adapter_ref
+                        .map(|adapter| {
+                            adapter
+                                .linked_workspaces
+                                .iter()
+                                .filter_map(|lw| {
+                                    canonicalize_existing_dir(&lw.path)
+                                        .ok()
+                                        .map(|p| (lw.name.clone(), p))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    resolve_explicit_worktree_with_linked(&root, &repository, &linked, requested)?
                 }
-                let repository = crate::engine::tasks::primary_worktree_root(&root)
-                    .unwrap_or_else(|| root.clone());
-                resolve_explicit_worktree(&root, &repository, requested)?
             }
         };
         let db = if target == root {
             self.db.clone()
         } else if let Some(settings) = &self.invocation {
-            settings.rebase(&target).code_db
+            rebase_invocation_settings(settings, &target).code_db
         } else {
             crate::cli::default_db(&target)
         };
@@ -702,39 +806,14 @@ impl Server {
     }
 }
 
-fn resolve_explicit_worktree(
-    root: &std::path::Path,
+fn collect_worktree_candidates(
     repository: &std::path::Path,
-    requested: &str,
-) -> Result<PathBuf> {
-    if requested == "." {
-        return Ok(root.to_path_buf());
-    }
-
-    let requested_path = std::path::Path::new(requested);
-    if requested_path.is_absolute() || requested.contains('/') || requested.contains('\\') {
-        let path = if requested_path.is_absolute() {
-            requested_path.to_path_buf()
-        } else {
-            root.join(requested_path)
-        };
-        match std::fs::metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => return Ok(path.canonicalize()?),
-            Ok(_) => anyhow::bail!(
-                "WORKTREE_NOT_FOUND: explicit worktree path '{}' is not a directory",
-                path.display()
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                anyhow::bail!("WORKTREE_NOT_FOUND: explicit worktree path '{requested}' not found")
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-
+    linked_workspaces: &[(String, PathBuf)],
+) -> Result<BTreeSet<PathBuf>> {
     let mut candidates = BTreeSet::new();
-    if repository.join(".git").exists() {
+    if repository.join(".git").exists() || acdd_core::git::git_common_dir(repository).is_ok() {
         let output =
-            crate::core::git::git_command(repository, &["worktree", "list", "--porcelain", "-z"])?;
+            acdd_core::git::git_command(repository, &["worktree", "list", "--porcelain", "-z"])?;
         if !output.status.success() {
             anyhow::bail!(
                 "WORKTREE_RESOLUTION_FAILED: could not list Git worktrees for '{}': {}",
@@ -752,13 +831,124 @@ fn resolve_explicit_worktree(
 
     match std::fs::read_dir(repository.join(".worktrees")) {
         Ok(entries) => {
+            let mut paths = Vec::new();
             for entry in entries {
-                insert_worktree_candidate(&entry?.path(), &mut candidates)?;
+                paths.push(entry?.path());
+            }
+            paths.sort();
+            for path in paths {
+                insert_worktree_candidate(&path, &mut candidates)?;
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
+
+    for (_, lw_path) in linked_workspaces {
+        insert_worktree_candidate(lw_path, &mut candidates)?;
+    }
+
+    Ok(candidates)
+}
+
+fn is_owned_worktree_path(
+    canon: &std::path::Path,
+    root: &std::path::Path,
+    repo_common_dir: Option<&std::path::Path>,
+    candidates: &BTreeSet<PathBuf>,
+    linked_workspaces: &[(String, PathBuf)],
+) -> bool {
+    if canon == root || candidates.contains(canon) {
+        return true;
+    }
+    if let Some(rcd) = repo_common_dir {
+        if let Ok(cand_common) = acdd_core::git::git_common_dir(canon) {
+            if canonicalize_macos_var(&cand_common) == rcd {
+                return true;
+            }
+        }
+    }
+    for (_, lw_path) in linked_workspaces {
+        if canon == lw_path || canon.starts_with(lw_path) {
+            return true;
+        }
+        if let (Ok(cand_common), Ok(lw_common)) = (
+            acdd_core::git::git_common_dir(canon),
+            acdd_core::git::git_common_dir(lw_path),
+        ) {
+            if canonicalize_macos_var(&cand_common) == canonicalize_macos_var(&lw_common) {
+                return true;
+            }
+        }
+    }
+    repo_common_dir.is_none() && canon.starts_with(root)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn resolve_explicit_worktree(
+    root: &std::path::Path,
+    repository: &std::path::Path,
+    requested: &str,
+) -> Result<PathBuf> {
+    resolve_explicit_worktree_with_linked(root, repository, &[], requested)
+}
+
+fn resolve_explicit_worktree_with_linked(
+    root: &std::path::Path,
+    repository: &std::path::Path,
+    linked_workspaces: &[(String, PathBuf)],
+    requested: &str,
+) -> Result<PathBuf> {
+    let root = canonicalize_existing_dir(root)?;
+    let repository = canonicalize_existing_dir(repository)?;
+    if requested == "." {
+        return Ok(root);
+    }
+
+    let candidates = collect_worktree_candidates(&repository, linked_workspaces)?;
+    let repo_common_dir = acdd_core::git::git_common_dir(&repository)
+        .ok()
+        .map(|p| canonicalize_macos_var(&p));
+
+    let requested_path = std::path::Path::new(requested);
+    if requested_path.is_absolute() || requested.contains('/') || requested.contains('\\') {
+        let path = if requested_path.is_absolute() {
+            requested_path.to_path_buf()
+        } else {
+            root.join(requested_path)
+        };
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_dir() => {
+                let canon = canonicalize_existing_dir(&path)?;
+                if !is_owned_worktree_path(
+                    &canon,
+                    &root,
+                    repo_common_dir.as_deref(),
+                    &candidates,
+                    linked_workspaces,
+                ) {
+                    anyhow::bail!(
+                        "WORKTREE_NOT_FOUND: explicit worktree path '{}' is outside this repository's git_common_dir and linked_workspaces",
+                        path.display()
+                    );
+                }
+                return Ok(canon);
+            }
+            Ok(_) => anyhow::bail!(
+                "WORKTREE_NOT_FOUND: explicit worktree path '{}' is not a directory",
+                path.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                anyhow::bail!("WORKTREE_NOT_FOUND: explicit worktree path '{requested}' not found")
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    let linked_names: BTreeMap<&std::path::Path, &str> = linked_workspaces
+        .iter()
+        .map(|(name, path)| (path.as_path(), name.as_str()))
+        .collect();
 
     for tier in [
         WorktreeMatchTier::Exact,
@@ -769,7 +959,8 @@ fn resolve_explicit_worktree(
         let mut first_match = None;
         let mut ambiguous = false;
         for candidate in &candidates {
-            if !candidate_matches(candidate, requested, tier) {
+            let alias = linked_names.get(candidate.as_path()).copied();
+            if !candidate_matches_with_alias(candidate, alias, requested, tier) {
                 continue;
             }
             if first_match.is_some() {
@@ -781,7 +972,10 @@ fn resolve_explicit_worktree(
         if ambiguous {
             let matches = candidates
                 .iter()
-                .filter(|candidate| candidate_matches(candidate, requested, tier))
+                .filter(|candidate| {
+                    let alias = linked_names.get(candidate.as_path()).copied();
+                    candidate_matches_with_alias(candidate, alias, requested, tier)
+                })
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -805,7 +999,7 @@ fn insert_worktree_candidate(
 ) -> Result<()> {
     match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_dir() => {
-            candidates.insert(path.canonicalize()?);
+            candidates.insert(canonicalize_existing_dir(path)?);
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -822,10 +1016,7 @@ enum WorktreeMatchTier {
     Substring,
 }
 
-fn candidate_matches(path: &std::path::Path, requested: &str, tier: WorktreeMatchTier) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
+fn name_matches(name: &str, requested: &str, tier: WorktreeMatchTier) -> bool {
     match tier {
         WorktreeMatchTier::Exact => name == requested,
         WorktreeMatchTier::Prefix => {
@@ -834,6 +1025,19 @@ fn candidate_matches(path: &std::path::Path, requested: &str, tier: WorktreeMatc
         WorktreeMatchTier::Suffix => name.ends_with(requested),
         WorktreeMatchTier::Substring => name.contains(requested),
     }
+}
+
+fn candidate_matches_with_alias(
+    path: &std::path::Path,
+    alias: Option<&str>,
+    requested: &str,
+    tier: WorktreeMatchTier,
+) -> bool {
+    let dir_matches = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name_matches(name, requested, tier));
+    dir_matches || alias.is_some_and(|name| name_matches(name, requested, tier))
 }
 
 fn matches_numeric_worktree_prefix(name: &str, requested: &str) -> bool {
@@ -910,15 +1114,15 @@ pub async fn serve_with_cache_dir(
     db: PathBuf,
     cache_dir: Option<PathBuf>,
 ) -> Result<()> {
-    serve_with_settings(root, db, cache_dir, None).await
+    serve_with_state_config(root, db, cache_dir, None).await
 }
 
-/// Serves stdio retaining explicit configuration and profile selections across requests.
-pub async fn serve_with_settings(
+/// Serves stdio retaining explicit 0.6.0 [`crate::state_bridge::InvocationSettings`] across requests.
+pub async fn serve_with_state_config(
     root: PathBuf,
     db: PathBuf,
     cache_dir: Option<PathBuf>,
-    settings: Option<crate::acdd_tasks::tasks::configuration::InvocationSettings>,
+    settings: Option<crate::state_bridge::InvocationSettings>,
 ) -> Result<()> {
     #[cfg(unix)]
     {
@@ -949,7 +1153,7 @@ async fn serve_session(
     root: PathBuf,
     db: PathBuf,
     cache_dir: Option<PathBuf>,
-    settings: Option<crate::acdd_tasks::tasks::configuration::InvocationSettings>,
+    settings: Option<crate::state_bridge::InvocationSettings>,
     #[cfg(unix)] initial_parent_pid: u32,
 ) -> Result<()> {
     let mut server = Server::new(root, db);
@@ -998,7 +1202,16 @@ async fn serve_session(
                             None => { command.env_remove(MCP_SESSION_ENV); }
                         }
                         if let Some(settings) = &settings {
-                            settings.configure_child(&mut command);
+                            if let Some(config) = &settings.config {
+                                command.env("ACDD_CONFIG", config);
+                            }
+                            if let Some(profile) = &settings.profile {
+                                command.env("ACDD_PROFILE", profile);
+                            }
+                            if let Some(state_db) = &settings.state_db {
+                                command.env("ACDD_STATE_DB", state_db);
+                            }
+                            command.env("ACDD_DB", &settings.code_db);
                         }
                         if let Some(cache_dir) = cache_dir.as_ref() {
                             command.env("ACDD_EXTRACTION_CACHE_DIR", cache_dir);
@@ -1032,26 +1245,81 @@ fn parent_identity_contract() {
 #[cfg(test)]
 #[test]
 fn worktree_name_contract() {
-    let root = std::env::temp_dir().join(format!(
+    struct TempDirCleanup(PathBuf);
+    impl Drop for TempDirCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let base = std::env::temp_dir().join(format!(
         "acdd-worktree-name-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        unix_epoch_ms()
     ));
+    let _cleanup = TempDirCleanup(base.clone());
+    let root = base.join("repo");
+    let external = base.join("unrelated-external");
+    let linked_ws = base.join("linked-ws");
     let selected = root.join(".worktrees/049-selected");
     std::fs::create_dir_all(&selected).unwrap();
-    let selected = selected.canonicalize().unwrap();
+    std::fs::create_dir_all(&external).unwrap();
+    std::fs::create_dir_all(&linked_ws).unwrap();
+
+    let canon_root = canonicalize_existing_dir(&root).unwrap();
+    let selected = canonicalize_existing_dir(&selected).unwrap();
+    let canon_linked = canonicalize_existing_dir(&linked_ws).unwrap();
+
+    let server = Server::new(root.clone(), root.join(".acdd/code-map.sqlite"));
+    assert_eq!(
+        server.resolve_target_root_and_db(None).unwrap().0,
+        canon_root
+    );
+    assert_eq!(
+        server.resolve_target_root_and_db(Some("")).unwrap().0,
+        canon_root
+    );
+    assert_eq!(
+        server.resolve_target_root_and_db(Some("   ")).unwrap().0,
+        canon_root
+    );
+
     let result = resolve_explicit_worktree(&root, &root, "selected");
     let aliases: Vec<_> = ["049", "49", "049-sel", "9-selec"]
         .into_iter()
         .map(|alias| (alias, resolve_explicit_worktree(&root, &root, alias)))
         .collect();
+
+    let outside_err = resolve_explicit_worktree_with_linked(
+        &root,
+        &root,
+        &[("backend".to_owned(), canon_linked.clone())],
+        external.to_str().unwrap(),
+    )
+    .unwrap_err();
+    assert!(outside_err.to_string().contains("WORKTREE_NOT_FOUND"));
+
+    let linked_by_alias = resolve_explicit_worktree_with_linked(
+        &root,
+        &root,
+        &[("backend".to_owned(), canon_linked.clone())],
+        "backend",
+    )
+    .unwrap();
+    assert_eq!(linked_by_alias, canon_linked);
+
+    let linked_by_path = resolve_explicit_worktree_with_linked(
+        &root,
+        &root,
+        &[("backend".to_owned(), canon_linked.clone())],
+        canon_linked.to_str().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(linked_by_path, canon_linked);
+
     std::fs::create_dir_all(root.join(".worktrees/050-selected")).unwrap();
     let ambiguous = resolve_explicit_worktree(&root, &root, "selected");
     let missing = resolve_explicit_worktree(&root, &root, "absent");
-    std::fs::remove_dir_all(&root).unwrap();
     assert_eq!(result.unwrap(), selected);
     for (alias, result) in aliases {
         assert_eq!(

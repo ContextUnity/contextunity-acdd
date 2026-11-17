@@ -1,5 +1,5 @@
-use crate::core::format::{self, DiscoveryKind, OperationKind, OutputFormat};
-use crate::core::response::{ResponsePolicy, MAX_OUTPUT_BYTES};
+use crate::format::{self, DiscoveryKind, OperationKind, OutputFormat};
+use acdd_core::response::{ResponsePolicy, MAX_OUTPUT_BYTES};
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{json, Value};
 use std::{
@@ -88,7 +88,7 @@ pub(crate) fn result_for_presented(
 ) -> CallToolResult {
     let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
     match value {
-        Ok(value) => {
+        Ok(mut value) => {
             if discovery == Some(DiscoveryKind::Ast) && value.get("diagnostic").is_some() {
                 let diagnostic = &value["diagnostic"];
                 let rendered = match output_format {
@@ -106,89 +106,92 @@ pub(crate) fn result_for_presented(
                     )
                 };
             }
-            let mut compacted = value.clone();
-            format::compact(&mut compacted, operation, explain);
+            // Capture only active/candidate generation tokens before compacting in place,
+            // so tail trimming can restore tokens if the compacted response exceeds budget.
+            let saved_generations = GenerationSnapshot::capture(&value);
+            format::compact(&mut value, operation, explain);
             let rendered =
-                render_for_operation(&compacted, output_format, title, discovery, operation);
+                render_for_operation(&value, output_format, title, discovery, operation);
             if success_text_bytes(&rendered) <= budget {
                 return CallToolResult::success(vec![ContentBlock::text(rendered)]);
             }
 
-            // Preserve candidate tokens until tail trimming has decided which pages
-            // remain active; compact only after the retained set is known.
-            let mut trimmed_value = value;
-            let output_too_large = |value: &Value| {
-                oversized_response_error(
-                    value,
-                    output_format,
-                    operation,
-                    title,
-                    explain,
-                    discovery,
-                    budget,
-                )
-            };
-            let mut trimmed = if title == "acdd_read" {
-                trim_snippet_source_to_budget(
-                    &mut trimmed_value,
-                    output_format,
-                    operation,
-                    title,
-                    explain,
-                    discovery,
-                    budget,
-                )
-            } else {
-                false
-            };
-            if title != "acdd_read" {
-                loop {
-                    let mut compact_candidate = trimmed_value.clone();
-                    format::compact(&mut compact_candidate, operation, explain);
-                    let candidate = render_for_operation(
-                        &compact_candidate,
-                        output_format,
-                        title,
-                        discovery,
-                        operation,
-                    );
-                    let allow_tasks = title == "task_list"
-                        || (operation == OperationKind::Navigation
-                            && trimmed_value.get("tasks").is_some());
-                    if success_text_bytes(&candidate) <= budget
-                        || !trim_page_tails(
-                            &mut trimmed_value,
-                            allow_tasks,
-                            matches!(operation, OperationKind::Navigation | OperationKind::Sql),
-                        )
-                    {
-                        break;
-                    }
-                    trimmed = true;
-                }
+            if let Some(snapshot) = &saved_generations {
+                snapshot.restore(&mut value);
             }
-            if !trimmed {
-                if title == "acdd_read" && trimmed_value.get("source_preview").is_some() {
-                    return bounded_error(
-                        "Snippet line exceeds the serialized response byte budget; use a larger response budget or read the local source file. No partial line was returned.",
+            if title == "acdd_read" {
+                let trimmed = trim_snippet_source_to_budget(
+                    &mut value,
+                    output_format,
+                    operation,
+                    title,
+                    explain,
+                    discovery,
+                    budget,
+                );
+                if !trimmed {
+                    if value.get("source_preview").is_some() {
+                        return bounded_error(
+                            "Snippet line exceeds the serialized response byte budget; use a larger response budget or read the local source file. No partial line was returned.",
+                            budget,
+                        );
+                    }
+                    return oversized_response_error(
+                        &value,
+                        output_format,
+                        operation,
+                        title,
+                        explain,
+                        discovery,
                         budget,
                     );
                 }
-                return output_too_large(&trimmed_value);
+                format::compact(&mut value, operation, explain);
+                let rendered =
+                    render_for_operation(&value, output_format, title, discovery, operation);
+                if success_text_bytes(&rendered) > budget {
+                    return oversized_response_error(
+                        &value,
+                        output_format,
+                        operation,
+                        title,
+                        explain,
+                        discovery,
+                        budget,
+                    );
+                }
+                return CallToolResult::success(vec![ContentBlock::text(rendered)]);
             }
-            format::compact(&mut trimmed_value, operation, explain);
-            let rendered =
-                render_for_operation(&trimmed_value, output_format, title, discovery, operation);
-            if success_text_bytes(&rendered) > budget {
-                return output_too_large(&trimmed_value);
+
+            let allow_tasks = operation == OperationKind::Navigation && value.get("tasks").is_some();
+            let allow_items = matches!(operation, OperationKind::Navigation | OperationKind::Sql);
+            while trim_page_tails(&mut value, allow_tasks, allow_items) {
+                format::compact(&mut value, operation, explain);
+                let candidate =
+                    render_for_operation(&value, output_format, title, discovery, operation);
+                if success_text_bytes(&candidate) <= budget {
+                    return CallToolResult::success(vec![ContentBlock::text(candidate)]);
+                }
+                if let Some(snapshot) = &saved_generations {
+                    snapshot.restore(&mut value);
+                }
             }
-            CallToolResult::success(vec![ContentBlock::text(rendered)])
+            format::compact(&mut value, operation, explain);
+            oversized_response_error(
+                &value,
+                output_format,
+                operation,
+                title,
+                explain,
+                discovery,
+                budget,
+            )
         }
         Err(error) => {
-            if let Some(crate::db::reader::SelectorError::Ambiguous {
+            if let Some(acdd_index::db::reader::SelectorError::Ambiguous {
                 selector,
                 candidates,
-            }) = error.downcast_ref::<crate::db::reader::SelectorError>()
+            }) = error.downcast_ref::<acdd_index::db::reader::SelectorError>()
             {
                 let bounded =
                     |text: &str, maximum: usize| text.chars().take(maximum).collect::<String>();
@@ -214,17 +217,19 @@ pub(crate) fn result_for_presented(
                 });
                 return CallToolResult::error(vec![ContentBlock::text(envelope.to_string())]);
             }
-            if let Some(claim) = error.downcast_ref::<crate::db::tasks_store::TaskAlreadyClaimed>()
-            {
-                return CallToolResult::error(vec![ContentBlock::text(
-                    serde_json::json!({
-                        "error": {
-                            "code": "TASK_ALREADY_CLAIMED",
-                            "message": claim.to_string(),
-                        }
-                    })
-                    .to_string(),
-                )]);
+            if let Some(state_err) = error.downcast_ref::<acdd_core::errors::StateError>() {
+                let mut err_obj = serde_json::Map::new();
+                err_obj.insert("code".into(), json!(state_err.code.as_str()));
+                err_obj.insert("message".into(), json!(state_err.message));
+                if let Some(hint) = &state_err.hint {
+                    err_obj.insert("hint".into(), json!(hint));
+                }
+                let text = json!({ "error": Value::Object(err_obj) }).to_string();
+                return if text.len() <= budget {
+                    CallToolResult::error(vec![ContentBlock::text(text)])
+                } else {
+                    bounded_error(&format!("{}: {}", state_err.code, state_err.message), budget)
+                };
             }
             let interrupted = error.chain().any(|cause| {
                 matches!(
@@ -317,10 +322,9 @@ fn trim_snippet_source_to_budget(
         original_leading: leading_lines,
         omitted_leading,
     };
-    let fits = |candidate: &Value| {
-        let mut compacted = candidate.clone();
-        format::compact(&mut compacted, operation, explain);
-        let rendered = render_for_operation(&compacted, output_format, title, discovery, operation);
+    let fits = |candidate: &mut Value| {
+        format::compact(candidate, operation, explain);
+        let rendered = render_for_operation(candidate, output_format, title, discovery, operation);
         success_text_bytes(&rendered) <= budget
     };
 
@@ -333,7 +337,7 @@ fn trim_snippet_source_to_budget(
             while low <= high {
                 let kept_body = low + (high - low) / 2;
                 let body_text = body_parts[..kept_body].concat();
-                let Some(candidate) = snippet_source_candidate(
+                let Some(mut candidate) = snippet_source_candidate(
                     value,
                     &source_page,
                     kept_leading,
@@ -343,7 +347,7 @@ fn trim_snippet_source_to_budget(
                 ) else {
                     return false;
                 };
-                if fits(&candidate) {
+                if fits(&mut candidate) {
                     best = Some((kept_body, candidate));
                     low = kept_body.saturating_add(1);
                 } else {
@@ -358,12 +362,12 @@ fn trim_snippet_source_to_budget(
     } else if body_offset == total_body_lines {
         for kept_leading in (0..=leading_lines).rev() {
             let leading_text = leading_parts[leading_lines - kept_leading..].concat();
-            let Some(candidate) =
+            let Some(mut candidate) =
                 snippet_source_candidate(value, &source_page, kept_leading, 0, &leading_text, "")
             else {
                 return false;
             };
-            if fits(&candidate) {
+            if fits(&mut candidate) {
                 *value = candidate;
                 return true;
             }
@@ -533,68 +537,74 @@ pub fn compact_mcp_metadata(value: &mut Value) {
     super::metadata::finalize_mcp_metadata(value);
 }
 
-/// Performs checkpoint result.
-pub fn checkpoint_result(value: anyhow::Result<Value>, policy: &ResponsePolicy) -> CallToolResult {
-    checkpoint_result_for(
-        value,
-        policy,
-        OutputFormat::default(),
-        "session_checkpoint",
-        "",
-    )
-}
-
-pub(crate) fn checkpoint_result_for(
-    value: anyhow::Result<Value>,
+/// Formats a state or plugin tool output in Markdown or JSON, enforcing the active `ResponsePolicy`.
+pub(crate) fn state_result(
+    rendered_or_value: anyhow::Result<(String, Value)>,
     policy: &ResponsePolicy,
     output_format: OutputFormat,
     title: &str,
-    action: &str,
 ) -> CallToolResult {
-    match value {
-        Ok(value) => {
-            let budget = policy.max_output_bytes.clamp(1024, MAX_OUTPUT_BYTES) - ENVELOPE_RESERVE;
-            let rendered = format::render_checkpoint(&value, output_format, title, action);
-            if success_text_bytes(&rendered) <= budget {
-                CallToolResult::success(vec![ContentBlock::text(rendered)])
-            } else {
-                bounded_error(
-                    "Checkpoint output exceeds the response byte limit. Read the complete saved content from the local .acdd/checkpoints.json file; checkpoint contents are unchanged and are not paginated.",
-                    budget,
-                )
-            }
+    match rendered_or_value {
+        Ok((markdown, json_value)) => {
+            let text = match output_format {
+                OutputFormat::Markdown => markdown,
+                OutputFormat::Json => {
+                    serde_json::to_string(&json_value).unwrap_or_else(|_| "null".to_owned())
+                }
+            };
+            enforce(CallToolResult::success(vec![ContentBlock::text(text)]), policy)
         }
         Err(error) => result_for(
             Err(error),
             policy,
             output_format,
-            OperationKind::Checkpoint,
+            OperationKind::Task,
             title,
             None,
         ),
     }
 }
 
+struct GenerationSnapshot {
+    generation: Option<Value>,
+    children: Vec<(String, GenerationSnapshot)>,
+}
+
+impl GenerationSnapshot {
+    fn capture(value: &Value) -> Option<Self> {
+        let obj = value.as_object()?;
+        let generation = obj.get("generation").cloned();
+        let mut children = Vec::new();
+        for (key, child) in obj {
+            if let Some(snap) = Self::capture(child) {
+                children.push((key.clone(), snap));
+            }
+        }
+        (generation.is_some() || !children.is_empty()).then_some(Self {
+            generation,
+            children,
+        })
+    }
+
+    fn restore(&self, value: &mut Value) {
+        let Some(obj) = value.as_object_mut() else {
+            return;
+        };
+        if let Some(gen) = &self.generation {
+            obj.insert("generation".into(), gen.clone());
+        }
+        for (key, snap) in &self.children {
+            if let Some(child) = obj.get_mut(key) {
+                snap.restore(child);
+            }
+        }
+    }
+}
+
 /// Performs serialized bytes.
 pub fn serialized_bytes(result: &CallToolResult) -> usize {
-    let mut counter = JsonByteCounter::default();
-    serde_json::to_writer(&mut counter, result).map_or(usize::MAX, |()| counter.bytes)
-}
-
-#[derive(Default)]
-struct JsonByteCounter {
-    bytes: usize,
-}
-
-impl io::Write for JsonByteCounter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.bytes = self.bytes.saturating_add(bytes.len());
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
+    let mut counter = acdd_core::format::JsonByteCounter::default();
+    serde_json::to_writer(&mut counter, result).map_or(usize::MAX, |()| counter.0)
 }
 
 fn success_text_bytes(text: &str) -> usize {
@@ -611,8 +621,7 @@ fn oversized_response_error(
     discovery: Option<DiscoveryKind>,
     budget: usize,
 ) -> CallToolResult {
-    let is_task_list = title == "task_list"
-        || (operation == OperationKind::Navigation && value.get("tasks").is_some());
+    let is_task_list = operation == OperationKind::Navigation && value.get("tasks").is_some();
     let message = if is_task_list {
         if value
             .get("tasks")
@@ -664,11 +673,9 @@ pub fn enforce(result: CallToolResult, policy: &ResponsePolicy) -> CallToolResul
 
 /// Performs bounded error.
 pub fn bounded_error(message: &str, budget: usize) -> CallToolResult {
-    let mut end = message.len().min(budget);
+    let mut end = acdd_core::format::utf8_floor_boundary(message, budget);
     loop {
-        while !message.is_char_boundary(end) {
-            end -= 1;
-        }
+        end = acdd_core::format::utf8_floor_boundary(message, end);
         let text = if end < message.len() {
             format!("{} [error truncated; narrow the request]", &message[..end])
         } else {
@@ -735,12 +742,12 @@ fn trim_page_tails(value: &mut Value, allow_tasks: bool, allow_items: bool) -> b
                                     hint.insert("generation".into(), json!(generation));
                                     page.insert("continuation_hint".into(), Value::Object(hint));
                                 } else {
-                                    page.insert("continuation_hint".into(), json!(format!("Repeat task_list with the same filters ({filters}) and generation={generation}, offset={next}.")));
+                                    page.insert("continuation_hint".into(), json!(format!("Repeat the same tool with the same filters ({filters}) and generation={generation}, offset={next}.")));
                                 }
                             } else {
                                 page.remove("next_offset");
                                 page.insert("continuation_hint".into(), json!(format!(
-                            "No next page. Repeat task_list with the same filters ({filters}) at offset=0 to refresh; generation={generation}."
+                            "No next page. Repeat the same tool with the same filters ({filters}) at offset=0 to refresh; generation={generation}."
                         )));
                             }
                         }
@@ -949,5 +956,26 @@ mod tests {
         let message = result.content[0].as_text().unwrap().text.as_str();
         assert!(message.contains("2-second SQLite budget"), "{message}");
         assert!(message.contains("reduce traversal depth"), "{message}");
+    }
+
+    #[test]
+    fn state_error_formats_structured_code_message_and_hint() {
+        let err = acdd_core::errors::StateError::new(
+            acdd_core::errors::ErrorCode::FeatureDisabled,
+            "state subsystem disabled",
+        )
+        .with_hint("enable modules.state");
+        let res = state_result(
+            Err(err.into()),
+            &ResponsePolicy::default(),
+            OutputFormat::Json,
+            "acdd_state",
+        );
+        assert_eq!(res.is_error, Some(true));
+        let payload: Value =
+            serde_json::from_str(res.content[0].as_text().unwrap().text.as_str()).unwrap();
+        assert_eq!(payload["error"]["code"], "FEATURE_DISABLED");
+        assert_eq!(payload["error"]["message"], "state subsystem disabled");
+        assert_eq!(payload["error"]["hint"], "enable modules.state");
     }
 }
