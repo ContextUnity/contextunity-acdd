@@ -1,22 +1,69 @@
-use crate::engine::scanner;
+//! Built-in CLI and MCP guidance topics and workspace initialization (`acdd init`).
+
+use acdd_core::config::load_adapter;
+use acdd_core::git::git_command;
+use acdd_index::scanner;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
+use std::fs;
 use std::path::Path;
-/// The template value.
-pub const TEMPLATE: &str =
-    "roots:\n  - .\nignore:\n  - target\n  - node_modules\n  - .venv\n  - .git\n";
+
+/// Canonical `0.6.0` `acdd.yaml` template.
+pub const TEMPLATE: &str = "\
+roots:
+  - .
+ignore:
+  - target
+  - node_modules
+  - .venv
+  - .git
+specs:
+  milestones:
+    path: docs/milestones
+    profile: workspace
+    prefixes: [AC]
+    digits: 3
+  plans:
+    path: docs/plans
+    profile: in_place
+    prefixes: [PLAN]
+    digits: 3
+profiles_dirs:
+  - .acdd/profiles
+  - docs/workflows
+state_db: .acdd/state.sqlite
+retain_traces: 20
+";
+
+/// Canonical `.gitignore` block ensuring `.acdd/profile.yaml`, `profiles/**`, and `frameworks/**` remain tracked while runtime state/locks/traces stay ignored.
+pub const CANONICAL_GITIGNORE_BLOCK: &str = "\
+/.worktrees/
+!/.acdd/
+!/.acdd/profile.yaml
+!/.acdd/profiles/
+!/.acdd/profiles/**
+!/.acdd/frameworks/
+!/.acdd/frameworks/**
+.acdd/*.sqlite*
+.acdd/*.lock
+.acdd/*.log
+.acdd/*.json
+.acdd/*.jsonl
+.acdd/run/
+.acdd/tmp/";
+
 const TOPICS: &[(&str, Option<&str>)] = &[
     ("query", None),
     ("init", None),
     ("adapter", None),
     ("validate", None),
-    ("code", Some("codemap")),
-    ("ast", Some("codemap")),
+    ("code", Some("code")),
+    ("ast", Some("code")),
     ("docs", Some("docs")),
-    ("lifecycle", Some("acdd")),
-    ("acdd", Some("acdd")),
-    ("gates", Some("acdd")),
-    ("subtasks", Some("acdd")),
+    ("lifecycle", Some("state")),
+    ("acdd", Some("state")),
+    ("gates", Some("state")),
+    ("subtasks", Some("state")),
 ];
 
 /// Produce guide content using the invocation's selected configuration.
@@ -25,9 +72,8 @@ pub fn run(root: &Path, topic: &str, force: bool) -> Result<Value> {
     if topic.trim() == "init" {
         return initialize(&root, force);
     }
-    let settings = acdd_tasks::tasks::configuration::current(&root);
-    let adapter =
-        scanner::load_adapter(&root, settings.as_ref().and_then(|s| s.config.as_deref()))?;
+    let explicit_config = std::env::var_os("ACDD_CONFIG").map(std::path::PathBuf::from);
+    let adapter = scanner::load_adapter(&root, explicit_config.as_deref())?;
     run_with_adapter(&root, topic, force, &adapter)
 }
 
@@ -62,7 +108,7 @@ pub fn run_with_adapter(
                     .map(|(topic, _)| *topic)
                     .collect::<Vec<_>>()),
             );
-            if !adapter.modules.is_enabled("codemap") {
+            if !adapter.modules.is_enabled("code") {
                 for key in [
                     "start",
                     "sql_schema",
@@ -79,7 +125,7 @@ pub fn run_with_adapter(
             if !adapter.modules.is_enabled("docs") {
                 fields.remove("documents");
             }
-            if !adapter.modules.is_enabled("codemap") && !adapter.modules.is_enabled("docs") {
+            if !adapter.modules.is_enabled("code") && !adapter.modules.is_enabled("docs") {
                 fields.remove("pages");
             }
         }
@@ -97,124 +143,267 @@ pub fn run_with_adapter(
     Ok(value)
 }
 
-fn initialize(root: &Path, force: bool) -> Result<Value> {
-    let path = root.join("acdd.yaml");
-    if path.exists() && !force {
-        bail!("acdd.yaml already exists; pass force to replace");
+/// Initialize `acdd.yaml`, `.acdd/profile.yaml` (`inherit: code` or `inherit: default`), and canonical `.gitignore` block.
+pub fn initialize(root: &Path, force: bool) -> Result<Value> {
+    let acdd_yaml = root.join("acdd.yaml");
+    let profile_yaml = root.join(".acdd/profile.yaml");
+
+    if acdd_yaml.exists() && profile_yaml.exists() && !force {
+        bail!("acdd.yaml and .acdd/profile.yaml already exist; pass --force to replace");
     }
-    crate::core::fs::atomic_write(&path, TEMPLATE.as_bytes(), false)?;
-    Ok(json!({"path":path,"created":true}))
+
+    let mut wrote_config = false;
+    if !acdd_yaml.exists() || force {
+        acdd_core::fs::atomic_write(&acdd_yaml, TEMPLATE.as_bytes(), false)?;
+        wrote_config = true;
+    }
+
+    let adapter = load_adapter(root, Some(&acdd_yaml))?;
+    let code_enabled = adapter.modules.is_enabled("code");
+    let inherit = if code_enabled { "code" } else { "default" };
+    let profile_content = format!(
+        "version: 2\ninherit: {inherit}\n\n# Bind abstract command slots (`test`, `build_check`, `verify_all`) for your project:\n# commands:\n#   test: \"cargo test --lib {{test_filter}}\"\n#   build_check: \"cargo clippy --workspace --all-targets -- -D warnings && cargo test --lib\"\n#   verify_all: \"cargo test --workspace\"\n"
+    );
+
+    let mut wrote_profile = false;
+    if !profile_yaml.exists() || force {
+        if let Some(parent) = profile_yaml.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        acdd_core::fs::atomic_write(&profile_yaml, profile_content.as_bytes(), false)?;
+        wrote_profile = true;
+    }
+
+    let gitignore_path = root.join(".gitignore");
+    let existing_gitignore = if gitignore_path.exists() {
+        fs::read_to_string(&gitignore_path)?
+    } else {
+        String::new()
+    };
+    let updated_gitignore = upsert_canonical_gitignore(&existing_gitignore);
+    if updated_gitignore != existing_gitignore || !gitignore_path.exists() {
+        acdd_core::fs::atomic_write(&gitignore_path, updated_gitignore.as_bytes(), false)?;
+    }
+
+    let mut git_check_ignore_verified = false;
+    if root.join(".git").exists() {
+        let ignored_state = git_command(root, &["check-ignore", "-q", ".acdd/state.sqlite"])?
+            .status
+            .success();
+        let ignored_profile = git_command(root, &["check-ignore", "-q", ".acdd/profile.yaml"])?
+            .status
+            .success();
+        if !ignored_state {
+            bail!(
+                "GITIGNORE_VERIFICATION_FAILED: .gitignore did not ignore .acdd/state.sqlite; check repository ignore rules"
+            );
+        }
+        if ignored_profile {
+            bail!(
+                "GITIGNORE_VERIFICATION_FAILED: .gitignore must not ignore .acdd/profile.yaml"
+            );
+        }
+        git_check_ignore_verified = true;
+    }
+
+    Ok(json!({
+        "root": root,
+        "config_path": acdd_yaml,
+        "profile_path": profile_yaml,
+        "inherit": inherit,
+        "created_config": wrote_config,
+        "created_profile": wrote_profile,
+        "gitignore_path": gitignore_path,
+        "git_check_ignore_verified": git_check_ignore_verified,
+    }))
+}
+
+/// Insert or replace the canonical `.acdd/` `.gitignore` block idempotently.
+pub fn upsert_canonical_gitignore(existing: &str) -> String {
+    let block_lines: Vec<&str> = CANONICAL_GITIGNORE_BLOCK.lines().collect();
+    let legacy_or_managed = |line: &str| {
+        let trimmed = line.trim();
+        matches!(
+            trimmed,
+            ".acdd" | ".acdd/" | "/.acdd" | "/.acdd/" | "/.worktrees/" | ".worktrees/"
+        ) || block_lines.contains(&trimmed)
+    };
+
+    let mut kept: Vec<&str> = Vec::new();
+    for line in existing.lines() {
+        if !legacy_or_managed(line) {
+            kept.push(line);
+        }
+    }
+    while kept.last().is_some_and(|l| l.trim().is_empty()) {
+        kept.pop();
+    }
+
+    let mut out = String::new();
+    if !kept.is_empty() {
+        out.push_str(&kept.join("\n"));
+        out.push_str("\n\n");
+    }
+    out.push_str(CANONICAL_GITIGNORE_BLOCK);
+    out.push('\n');
+    out
 }
 
 fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<Value> {
     match topic {
         "lifecycle" => Ok(json!({
-            "purpose":"Advance admitted work through its active profile and observed proof gates.",
-            "authority":"The selected active profile and task_claim workflow_guidance are authoritative. Gate names and order in examples are illustrative; follow the returned current gate, role, scope and proof policy.",
-            "steps":[
-                "Use task_list to discover ready work, then task_claim with task_id, worker_id, stage and worktree to obtain the current claim and complete context.",
-                "Implement inside admitted scope. Call task_manage(action=verify, task_id=TASK_ID, test=tests/seam.rs::case) to observe proof, then task_submit for the claimed gate. Submission consumes accepted proof and follows profile transitions.",
-                "Inspect structured rejection findings and the configured upstream target; resume the retained builder rather than starting an unrelated replacement.",
-                "For configured headless runners use acdd task run TASK_ID --in-place or milestone run MILESTONE --in-place --target-base main. Complete required subtasks before delivery; use the existing immutable-candidate and receipt pipeline."
+            "purpose": "Advance admitted work through its active GateProfile (`version: 2`) and observed proof gates.",
+            "authority": "The resolved GateProfile and `acdd_claim` contract + guidance are authoritative. Gate names and transitions are profile data, not hardcoded stages.",
+            "steps": [
+                "Use `acdd next` / `acdd_state(action: \"next\")` or `acdd status` to discover ready cursors, then `acdd claim` / `acdd_claim` with `node`, `worker_id`, and `worktree`.",
+                "Implement strictly inside admitted write scope (`in_write_scope: ALLOWED` in `acdd_read`). Call `acdd verify <cursor> [--test <target>]` / `acdd_verify` to observe fresh trace evidence.",
+                "Submit via `acdd submit <cursor> --action pass|reject` / `acdd_submit`. Rejections require structured `findings` (`summary`, `items[]` with `severity`, `message`, `remediation`).",
+                "For automated DAG execution, run `acdd run [--jobs N]` / `acdd_state(action: \"run\")`. Complete all subtasks with non-empty `evidence` before container receipt gates."
             ],
-            "runners":"Configured role runner processes receive actual separate session identities and fingerprints through explicit ACDD_AGENT_SESSION_ID transport, plus the gate prompt/context. Independent gate checks compare worker_id against the accepted prior worker; runner session fingerprints remain recovery metadata and runner isolation controls. Rejections resume the target builder session with structured findings when reuse is configured. Only an accepted structured submission passes a task gate; process exit zero alone is insufficient.",
-            "blackboard":"Use task_blackboard for decisions, findings and blockers; inspect full payloads and follow the current claim's gate targeting.",
-            "recovery":{
-                "TASK_ALREADY_CLAIMED":"Inspect the active owner and worktree. Resume the owning worker or coordinate release/recovery before claiming; preserve its work and proofs.",
-                "TASK_STALE_CLAIM":"Inspect current task and claim revision, obtain a fresh applicable claim, then rerun claim-bound verification; do not reuse stale evidence.",
-                "TASK_AUTO_PROOF_UNAVAILABLE":"Run task verify for the admitted seam under the active claim and registered command, inspect the actual observation, then submit again.",
-                "TASK_CANDIDATE_MISMATCH":"Preserve both work and accepted snapshot. Inspect drift and follow rejection back to the admitted build/contract owner before editing or regenerating candidate proof.",
-                "TASK_GIT_WORKTREE_MISSING":"Worktree directory was removed from disk. Run task cleanup to prune orphaned state checkpoints and metadata, or recreate the worktree.",
-                "TASK_RECOVERY_CHECKPOINT_INVALID":"Checkpoint references a missing or desynchronized worktree. Run task cleanup or milestone db-recover to auto-heal orphaned state refs."
+            "runners": "Role runners receive `ACDD_RUN_ID`, `ACDD_NODE_CURSOR`, `ACDD_CLAIM_REVISION`, `ACDD_WORKER_ID`, `ACDD_AGENT_SESSION_ID`, `ACDD_WORKTREE`, `ACDD_STATE_DB`, `ACDD_CODE_DB`, and `TRACEPARENT`, with rendered ClaimResp delivered over stdin. Verification commands run sanitized without orchestrator env leakage.",
+            "blackboard": "Use `acdd blackboard` / `acdd_blackboard` for `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred` entries.",
+            "recovery": {
+                "TASK_ALREADY_CLAIMED": "Node holds an active claim by another worker/session. Resume the owning worker or pass `--force` when taking over a dead local PID (or `--steal-remote`).",
+                "STALE_CLAIM_REVISION": "Re-claim or fetch the current `claim_revision` via `acdd status` / `acdd show`, then re-run `acdd verify`.",
+                "TASK_PROOF_UNOBSERVED": "Run `acdd verify <cursor> --test <target>` under the active claim and current tree before submitting.",
+                "TASK_CANDIDATE_MISMATCH": "Working tree drifted from an immutable claim snapshot or predecessor `need:` snapshot. Inspect drift, `acdd rollback <ref>` or `acdd reopen <node>`, then re-verify.",
+                "TASK_NOT_INTEGRATED": "Completed task deltas are missing from the run worktree. Run `acdd integrate` before post-task root gates.",
+                "CONFIG_MIGRATION_REQUIRED": "Legacy 0.5.x keys found in acdd.yaml. Follow docs/runbooks/migration-0.6.md."
             },
-            "example":{"mcp":{"name":"task_list","arguments":{"status":"ready"}},"cli":"acdd task list --status ready"},
-            "references":["AGENTS.md","docs/reference/tasks.md","docs/reference/cli.md"]
+            "example": {
+                "mcp": { "name": "acdd_state", "arguments": { "action": "next" } },
+                "cli": "acdd next"
+            },
+            "references": ["AGENTS.md", "docs/reference/tasks.md", "docs/reference/cli.md"]
         })),
         "gates" => Ok(json!({
-            "purpose":"Follow the selected profile's conditions, routes, persistence and observed-proof requirements.",
-            "steps":["Read the current claim workflow_guidance and active profile before choosing a gate or proof.","Verify the admitted seam without advancing; submit only current claim-bound observations.","Follow configured pass/fail and finding-class loop routes. Refresh verification after candidate changes."],
-            "when":{
-                "code":"At least one scope path is non-doc code.",
-                "doc":"The scope is nonempty and all scope paths are documentation.",
-                "db_migration":"Scope includes SQL files or migration paths.",
-                "seam":"Task concurrency is Speculative or Parallel; test presence alone does not select this condition.",
-                "public_api":"Scope exposes an exported AST callable."
+            "purpose": "Follow the active GateProfile's `when:` tag expressions, `pass:`/`fail:` routes, `save:` policy, `checks:`, `context:`, and proof contracts.",
+            "steps": [
+                "Inspect the active profile and `acdd_claim` contract before running commands or reviews.",
+                "Use `acdd verify` / `acdd_verify` to observe `command:`, `call:`, `checks:`, and scope barriers without mutating gate state.",
+                "Submit only fresh, claim-bound observations via `acdd submit` / `acdd_submit`."
+            ],
+            "when": "Boolean expression over task tags (`tag`, `!tag`, `&`/`+`, `|`, parentheses); valid on `- tasks:` blocks and `task_gate`s, forbidden on `root_gate`s.",
+            "transitions": "`pass:` and `fail:` select explicit next gate targets; `max_attempts` caps retries and root/container cycle counts before `escalated`. `independent_from` enforces `worker_id` inequality.",
+            "persistence": "`git.isolation` (`worktree | in_place`), `git.worktrees` (`manual | managed`), `git.commit_mode` (`plumbing | cli | manual`), and `git.integrate` (`manual | rebase-ff | ff-only | no-ff | squash`). `save.pre` / `save.post` apply `none | snapshot | commit`; `immutable: true` enforces `current_tree == claim_tree`.",
+            "verification": "`verify` records `gate_traces` with RFC-8785 SHA-256 `execution_digest` bound to `contract_revision`, resolved commands, `test_target`, `checks:` salts (`index_generation` + `live_files_digest`), and `candidate_tree_before == candidate_tree_after`.",
+            "example": {
+                "mcp": { "name": "acdd_verify", "arguments": { "node": "t1.contract", "test_target": "tests/seam.rs::case" } },
+                "cli": "acdd verify t1.contract --test tests/seam.rs::case"
             },
-            "transitions":"The profile's pass target selects the next successful gate (default: next applicable gate); fail routes and max_attempts control retries/exhaustion. Classified findings select configured loop/reject_routing targets such as scope or symbols. Gate names and routes are profile data, not a fixed sequence.",
-            "persistence":"save.pre and save.post apply configured persistence around execution. Parentless Git snapshot commits retain content without advancing branch history. Branch commits and automatic receipt commits occur only when configured. immutable: true fences the accepted candidate; a mismatched candidate fails with TASK_CANDIDATE_MISMATCH. Candidate drift must be rebound through the configured rejection or rebind flow, with renewed verification and independent review before a terminal receipt.",
-            "verification":"task verify / task_manage(action=verify) observes without advancing; task submit consumes fresh claim-bound proof. gate_execution_traces persist actual command execution; commands.output.tests declares parsing of individual test outcomes and seam_test_refs records individually observed seams. Caller-supplied JSON is not an execution observation and cannot replace registered command proof or immutable candidate bindings.",
-            "example":{"mcp":{"name":"task_manage","arguments":{"action":"verify","task_id":"TASK_ID","test":"tests/seam.rs::case"}},"cli":"acdd task verify TASK_ID --test tests/seam.rs::case"},
-            "references":["docs/reference/tasks.md","docs/reference/acdd.md","docs/reference/cli.md"]
+            "references": ["docs/reference/tasks.md", "docs/reference/profiles.md", "docs/reference/cli.md"]
         })),
         "subtasks" => Ok(json!({
-            "purpose":"Keep bounded task slices and their evidence visible before delivery.",
-            "steps":["Use task_manage(action=subtask_add) to declare a concrete bounded target.","Use subtask_update with status and honest evidence for work actually verified; subtask_list reads the current slices.","Complete or cancel every subtask before delivery. A completed subtask requires nonempty evidence; cancelled is also permitted."],
-            "delivery":{
-                "terminal_statuses":["completed","cancelled"],"evidence_required_for":["completed"],
-                "unfinished":"ready, in_progress, blocked or pending subtasks fail TASK_SUBTASKS_INCOMPLETE.",
-                "missing_evidence":"A completed subtask with missing, empty or whitespace-only evidence fails TASK_SUBTASK_EVIDENCE_MISSING.",
-                "evidence_boundary":"subtask_update stores an evidence string; it does not independently execute or verify that command. Gate proof still requires observed verification."
+            "purpose": "Track bounded task slices and mandatory terminal evidence before container `receipt: true` gates.",
+            "steps": [
+                "Declare concrete subtasks in the spec Markdown (`- [ ] <ref>: <title>`).",
+                "Update subtask status via `acdd subtask <task_ref> <subtask_ref> --status in_progress|completed|cancelled [--evidence ...]` or `acdd_state(action: \"subtask\", ...)`.",
+                "Every subtask must reach `completed` or `cancelled` with non-empty `evidence` before a `receipt: true` gate passes."
+            ],
+            "delivery": {
+                "terminal_statuses": ["completed", "cancelled"],
+                "evidence_required_for": ["completed", "cancelled"],
+                "evidence_boundary": "Subtask evidence records what was verified; gate proof still requires observed `acdd verify` traces."
             },
-            "example":{"mcp":{"name":"task_manage","arguments":{"action":"subtask_list","task_id":"TASK_ID"}},"cli":"acdd task subtask list TASK_ID"},
-            "references":["docs/reference/tasks.md","docs/reference/cli.md"]
+            "example": {
+                "mcp": { "name": "acdd_state", "arguments": { "action": "show", "node": "t1" } },
+                "cli": "acdd show t1"
+            },
+            "references": ["docs/reference/tasks.md", "docs/reference/cli.md"]
         })),
         "code" => {
             let query = topic_value(root, "query", adapter)?;
-            let mut steps = ["start", "symbols", "snippets", "queries", "tests", "recovery"].into_iter().map(|key| query[key].clone()).collect::<Vec<_>>();
+            let mut steps = ["start", "symbols", "snippets", "queries", "tests", "recovery"]
+                .into_iter()
+                .map(|key| query[key].clone())
+                .collect::<Vec<_>>();
             steps.push(json!("Use ast_grep_search for structural patterns; guide ast describes profile capabilities. Treat candidate relationships and lexical test suggestions as navigation, not verified calls or coverage."));
-            Ok(json!({"purpose":"Navigate indexed code through the existing query guidance and verified relationships.","steps":steps,"example":{"mcp":{"name":"code_map_overview","arguments":{}},"cli":"acdd query overview"},"references":["docs/reference/mcp-tools.md","docs/reference/cli.md"]}))
+            Ok(json!({
+                "purpose": "Navigate indexed code through the existing query guidance and verified relationships.",
+                "steps": steps,
+                "example": { "mcp": { "name": "code_map_overview", "arguments": {} }, "cli": "acdd query overview" },
+                "references": ["docs/reference/mcp-tools.md", "docs/reference/cli.md"]
+            }))
         }
-        "adapter" => Ok(
-            json!({"filename":"acdd.yaml","template":TEMPLATE,"keys":["roots","eligible_roots","docs","milestones","plans","ignore","excluded_directory_names","excluded_file_names","linked_workspaces","workspaces"],"roots":"relative plain paths or .; symlinks and parent traversal rejected","ignore":"exact file or directory basenames","linked_workspaces":"array of {name, path, enabled?, roots, docs, ignore}; indexes external/sibling worktrees into unified graph; enabled (default true) allows toggling workspaces; skips unavailable worktrees and auto-rebuilds","default":"workspace root; gitignore and common build directories excluded"}),
-        ),
-        "docs" => Ok(
-            json!({"frontmatter":"---\ndoc_type: architecture\ntitle: Module contract\n---","invariant":"> [!IMPORTANT] INV-MODULE-RULE: Document the rule and reference [`symbol.name`](../src/module.rs).","types":["architecture","adr","guide","api","plan"],
-                "purpose":"Find and read documentation, then author valid metadata, links and invariants.",
-                "steps":["Use search_docs(query, include_excerpt=true) to find relevant sections; CLI: acdd docs search TERM.","Use get_doc(path_or_id, detail=compact) for an outline, then section for the exact content; CLI: acdd docs get docs/guide.md.","Use acdd_read(path, mode=lines) for source text; preserve frontmatter, relative links and uniquely linked symbol/invariant claims."],
-                "example":{"mcp":{"name":"search_docs","arguments":{"query":"guide"}},"cli":"acdd docs search guide"},"references":["docs/AGENTS.md","docs/reference/mcp-tools.md","docs/reference/cli.md"]}),
-        ),
+        "adapter" => Ok(json!({
+            "filename": "acdd.yaml",
+            "template": TEMPLATE,
+            "keys": [
+                "roots",
+                "eligible_roots",
+                "docs",
+                "ignore",
+                "excluded_directory_names",
+                "excluded_file_names",
+                "specs",
+                "profiles_dirs",
+                "state_db",
+                "retain_traces",
+                "modules",
+                "linked_workspaces",
+                "owners",
+                "aliases",
+                "response",
+                "limits",
+                "sensitive",
+                "DEBUG"
+            ],
+            "specs": "Map of collection name -> { path, profile, prefixes, digits } (defaults: milestones -> docs/milestones, plans -> docs/plans); paths must not overlap by components.",
+            "modules": "Enable/disable subsystems (`code`, `docs`, `state`, `blackboard`, `memory`, `domains.<id>`). Disabling `state` physically prevents `state.sqlite` creation and hides the 5 MCP state tools.",
+            "linked_workspaces": "Array of { name, path, enabled?, roots, docs, ignore }; indexes sibling worktrees and resolves cross-repo `depends_on`.",
+            "default": "Workspace root; `.git`, `.worktrees`, `.acdd` runtime artifacts, and common build directories excluded."
+        })),
+        "docs" => Ok(json!({
+            "frontmatter": "---\ndoc_type: architecture\ntitle: Module contract\n---",
+            "invariant": "> [!IMPORTANT] INV-MODULE-RULE: Document the rule and reference [`symbol.name`](../src/module.rs).",
+            "types": ["architecture", "adr", "guide", "api", "plan"],
+            "purpose": "Find and read documentation, then author valid metadata, links and invariants.",
+            "steps": [
+                "Use `search_docs(query, include_excerpt=true)` to find relevant sections; CLI: `acdd docs search TERM`.",
+                "Use `get_doc(path_or_id, detail=compact)` for an outline, then `section` for the exact content; CLI: `acdd docs get docs/guide.md`.",
+                "Use `acdd_read(path, mode=lines)` for source text; preserve frontmatter, relative links, and uniquely linked symbol/invariant claims."
+            ],
+            "example": { "mcp": { "name": "search_docs", "arguments": { "query": "guide" } }, "cli": "acdd docs search guide" },
+            "references": ["docs/AGENTS.md", "docs/reference/mcp-tools.md", "docs/reference/cli.md"]
+        })),
         "acdd" => Ok(json!({
-            "purpose":"Choose Workflow, Plan or Milestone execution under the canonical profile and proof authorities.",
-            "steps":["Use workflow list/show/run for standalone root graphs; plan list/show/run for structured documentation steps; milestone run for admitted task waves and bound handoff.","Follow the active profile and claim workflow_guidance. Listed gate names are examples, not a hardcoded lifecycle.","Keep observed command/review evidence current with candidate content before submission or handoff."],
-            "subjects":{
-                "workflow":"A taskless root-gate graph uses save: none and no task rows or claims. Use workflow list, workflow show SELECTOR and workflow run SELECTOR. Persistent autonomous run/audit logging remains planned.",
-                "plan":"Source-owned plan steps execute in the active working tree with snapshots and no automatic branch commit. Use plan list, plan show SELECTOR and plan run SELECTOR --in-place. Explicit execution profiles must be task-only and snapshot-only.",
-                "milestone":"An admitted milestone follows synthesis, topological task waves, root verification, independent integration review and content-bound handoff. Use milestone run ID --in-place --target-base main, or owned isolated task worktrees. Existing task lifecycle, receipt, recovery and handoff owners remain authoritative."
+            "purpose": "Execute specs, plans, workflows, or ephemeral `--goal` runs under one unified `0.6.0` GateProfile engine and 19 static + external DomainProvider plugin tools.",
+            "steps": [
+                "Initialize with `acdd init` (selects `inherit: code` or `inherit: default`, writes canonical `.gitignore`).",
+                "Validate workspace config, active profile, `DomainProvider` capabilities, and active specs with `acdd validate`.",
+                "Start a run via `acdd start <spec_path>` or `acdd start --goal \"...\"`, then claim/verify/submit with flat CLI commands (`claim`, `verify`, `submit`, `next`, `status`, `show`, `integrate`, `clear`, `run`, `tool`) or the 5 MCP state tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`)."
+            ],
+            "mcp_tools": {
+                "code": ["code_map_overview", "code_map_search", "code_map_inspect", "code_map_impact", "code_map_analyze", "code_map_explain", "code_map_tests", "code_map_prove_removal", "code_map_query", "ast_grep_search"],
+                "docs": ["get_doc", "search_docs"],
+                "core": ["acdd_read", "acdd_guide"],
+                "state": ["acdd_state", "acdd_claim", "acdd_verify", "acdd_submit", "acdd_blackboard"],
+                "plugins": "<domain>_<name> from active DomainProviders (also callable via `acdd tool <domain>_<name>`)"
             },
-            "example":{"mcp":{"name":"task_list","arguments":{}},"cli":"acdd task list"},
-            "references":["docs/adr/0021-workflow-plan-and-milestone-lifecycle-hierarchy.md","docs/reference/cli.md","docs/reference/tasks.md"],
-            "gates": ["blueprint_synthesis", "contract", "build", "review", "deliver", "verify", "polish", "milestone_review", "handoff"],
-            "proof_policies": {
-                "seam-test-first": "Greenfield: a compiling runtime-red seam at contract and passing green at build. Follow the selected profile's exact expected failure and count policy.",
-                "direct-proof": "Pre-existing code: validate existing seam directly, exit code 0 accepted at contract.",
-                "deferred-final-test": "Task-level policy: exit code 0 accepted at contract; milestone-level final test runs before milestone handoff."
-            },
+            "example": { "mcp": { "name": "acdd_state", "arguments": { "action": "status" } }, "cli": "acdd status" },
+            "references": ["docs/adr/0003-unified-profile-graph-and-state-machine.md", "docs/adr/0004-domain-provider-spi-and-plugin-tools.md", "docs/reference/cli.md", "docs/reference/tasks.md"],
             "blackboard_topics": {
-                "draft": "Contract drafts and proposed changes.",
-                "notes": "Build notes, proof observations, and general context.",
+                "draft": "Exploratory drafts cleared on container receipt.",
+                "notes": "Non-obvious technical context cleared on container receipt.",
                 "findings": "Review findings and verified defects.",
-                "blockers": "Issues preventing the active work from proceeding.",
-                "decisions": "Decisions and trade-offs retained in the delivery receipt.",
-                "deferred": "Deferred findings retained in the delivery receipt."
+                "blockers": "Issues preventing active work from proceeding.",
+                "decisions": "Decisions retained in the delivery receipt.",
+                "deferred": "Deferred items carried over to run closure."
             },
-            "blackboard_gate_targeting": "An optional gate field targets a message to one gate id from the active task profile. Claim context includes untargeted and active-gate messages; active decisions, findings, and blockers remain visible across gates in context_bundle.",
-            "blackboard_schema_version": 5,
             "review_contours": ["paths", "claims", "concurrency", "project_isolation", "administration"],
-            "subtask_rules": "Subtask must name concrete target, expected status, and verification command. Not completed with partial implementation. Use subtask_add to deepen tasks, not root task proliferation.",
-            "commit_authority": "Follow current user authorization and repository AGENTS.md for task commits, integration and cleanup. Guidance alone grants no delivery or history-editing permission. Remote publication requires explicit approval.",
-            "reference": "Load the acdd skill for the procedure, AGENTS.md for worktrees and permissions, docs/reference/tasks.md for API and evidence schemas."
+            "commit_authority": "Follow current user authorization and repository AGENTS.md for commits, integration, and cleanup. Remote publication requires explicit user approval."
         })),
         "query" => Ok(json!({
             "start": "Call code_map_overview to identify indexed paths and coverage.",
-            "sql_schema": "nodes(node_id, id, kind, name, qualname, path_id, line, end_line, is_test, language, generated, details, node_hash, owner_path_id); path_dictionary(path_id, path); edges(src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count); files(path, status, digest, size, language, is_test, generated, path_hash); doc_sections(doc_id, path, section_title, doc_type, content, invariants, referenced_symbols, is_invariant). Paths: FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id. Edge endpoints: FROM edges e JOIN nodes src ON e.src_hash=src.node_hash JOIN nodes dst ON e.dst_hash=dst.node_hash. nodes and edges have no path text column; edges have no src/dst text columns or compatibility views.",
-            "symbols": "Use code_map_search with FTS terms or prefix* pattern. Hits include their indexed signature and inspect_selector arguments for code_map_inspect with show_source=true. Previews appear automatically for at most three total hits; set include_preview=true to include up to three previews on larger result sets. Selectors accept an exact ID, path:name, path:known_kind:name, path:line, or path#Lline. Bare names never get hijacked into modules. Compact inspect and explain include signature, docstring, receiver-aware container, inbound/outbound call counts, and up to five direct callers/callees; set include_coverage=true when resolution evidence is needed.",
-            "snippets": "Use acdd_read(selector=...) for digest-verified symbol bodies, or acdd_read(path=..., mode=lines|raw|search|delta|outline) for layered file reads. CLI: acdd read <path> --mode <mode>. Core reads work in minimal workspaces; conditional Hints reflect enabled graph and task signals.",
+            "sql_schema": "nodes(node_id, id, kind, name, qualname, path_id, line, end_line, is_test, language, generated, details, node_hash, owner_path_id); path_dictionary(path_id, path); edges(src_hash, kind, dst_hash, path_id, line, evidence_id, confidence_id, occurrence_count); files(path, status, digest, size, language, is_test, generated, path_hash); doc_sections(doc_id, path, section_title, doc_type, content, invariants, referenced_symbols, is_invariant). Paths: FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id. Edge endpoints: FROM edges e JOIN nodes src ON e.src_hash=src.node_hash JOIN nodes dst ON e.dst_hash=dst.node_hash.",
+            "symbols": "Use code_map_search with FTS terms or prefix* pattern. Compact inspect and explain include signature, docstring, receiver-aware container, inbound/outbound call counts, and up to five direct callers/callees.",
+            "snippets": "Use acdd_read(selector=...) for digest-verified symbol bodies, or acdd_read(path=..., mode=lines|raw|search|delta|outline) for layered file reads. CLI: acdd read <path> --mode <mode>.",
             "tests": "Call code_map_tests on a narrow symbol or module; broad scopes are rejected before unbounded traversal.",
-            "queries": "Use code_map_inspect and code_map_explain for symbols, code_map_analyze for diagnostics, and code_map_impact for traversal. Use code_map_query for sql (pass sql='SELECT ...' directly), untested, implementations, slice, unwired, and duplicates; pages use limit, offset, and generation.",
-            "diagnostics": "Call code_map_analyze with target='' for workspace totals; use an indexed path for a smaller scope or an exact file for paged rows. Cycles require include_cycles=true.",
+            "queries": "Use code_map_inspect and code_map_explain for symbols, code_map_analyze for diagnostics, and code_map_impact for traversal. Use code_map_query for sql, untested, implementations, slice, unwired, and duplicates; pages use limit, offset, and generation.",
+            "diagnostics": "Call code_map_analyze with target='' for workspace totals; cycles require include_cycles=true.",
             "documents": "Use search_docs with include_excerpt=true to find sections, get_doc with detail='compact' for section outlines, and get_doc with section='...' to read a specific section.",
-            "pages": "Start with compact detail and a small limit. Continue with the returned next_offset and generation for the same selector and filters. For tighter agent context, set adapter response.page_size=10 and response.max_output_bytes=16384.",
-            "recovery": "On a computation budget error, narrow the selector or path and reduce depth; lowering limit alone may not reduce count or traversal work. On a byte limit error, use compact detail, a smaller limit, or fewer SQL columns."
+            "pages": "Start with compact detail and a small limit. Continue with the returned next_offset and generation for the same selector and filters.",
+            "recovery": "On a computation budget error, narrow the selector or path and reduce depth."
         })),
         "ast" => Ok(json!({
             "capabilities": {
@@ -233,81 +422,21 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "$NAME": "Capture one syntax node.",
                 "$$$SEQ": "Capture a sequence of zero or more syntax nodes."
             },
-            "examples": ["fn $NAME($$$ARGS) {}", "client.fetch($ARG)", "@$DEC\\ndef $NAME($$$ARGS):", "<div id=\"$ID\">$$$CHILDREN</div>"],
+            "examples": ["fn $NAME($$$ARGS) {}", "client.fetch($ARG)", "@$DEC\ndef $NAME($$$ARGS):", "<div id=\"$ID\">$$$CHILDREN</div>"],
             "diagnostics": "Unsupported fragments and invalid syntax return a structured diagnostic with language, error span, actionable hint, and profile examples."
         })),
         "validate" => {
             let scan = scanner::scan_with_adapter(root, adapter)?;
-            Ok(
-                json!({"valid":true,"root":root,"roots":adapter.roots,"files":scan.files,"bytes":scan.bytes}),
-            )
+            Ok(json!({
+                "valid": true,
+                "root": root,
+                "roots": adapter.roots,
+                "files": scan.files,
+                "bytes": scan.bytes
+            }))
         }
-        _ => bail!("unknown guide topic; expected init,adapter,docs,acdd,query,ast,validate,lifecycle,gates,subtasks,code"),
-    }
-}
-fn checkpoint_name(name: Option<&str>) -> Result<&str> {
-    let breadcrumb = name.ok_or_else(|| anyhow::anyhow!("checkpoint breadcrumb required"))?;
-    if breadcrumb.is_empty() || breadcrumb.len() > 2048 || breadcrumb.contains('\0') {
-        bail!("checkpoint breadcrumb must contain 1..=2048 bytes");
-    }
-    Ok(breadcrumb)
-}
-
-fn checkpoint_git_tree(root: &Path) -> Result<String> {
-    if root.join(".git").exists() {
-        crate::core::git::git_stdout(
-            root,
-            &["rev-parse", "HEAD^{tree}"],
-            "TASK_CHECKPOINT_GIT_FAILED",
-        )
-    } else {
-        Ok("unversioned".into())
-    }
-}
-
-/// List, save, get, or delete a state payload addressed by its full gate breadcrumb.
-pub fn checkpoint(
-    root: &Path,
-    action: &str,
-    name: Option<&str>,
-    content: Option<Value>,
-) -> Result<Value> {
-    let store = crate::engine::tasks::store(root)?;
-    match action {
-        "list" => {
-            let entries = store
-                .list_checkpoints()?
-                .iter()
-                .map(|checkpoint| {
-                    Ok((
-                        checkpoint.breadcrumb.clone(),
-                        json!({"bytes":serde_json::to_vec(&checkpoint.state_payload)?.len()}),
-                    ))
-                })
-                .collect::<Result<serde_json::Map<String, Value>>>()?;
-            Ok(Value::Object(entries))
-        }
-        "get" => {
-            let breadcrumb = checkpoint_name(name)?;
-            store
-                .get_checkpoint(breadcrumb)?
-                .map(|checkpoint| checkpoint.state_payload)
-                .ok_or_else(|| anyhow::anyhow!("checkpoint not found"))
-        }
-        "save" | "delete" => {
-            let breadcrumb = checkpoint_name(name)?;
-            if action == "save" {
-                let value =
-                    content.ok_or_else(|| anyhow::anyhow!("checkpoint content required"))?;
-                if serde_json::to_vec(&value)?.len() > 1024 * 1024 {
-                    bail!("checkpoint exceeds 1 MiB");
-                }
-                store.save_checkpoint_payload(breadcrumb, &checkpoint_git_tree(root)?, value)?;
-            } else if !store.delete_checkpoint(breadcrumb)? {
-                bail!("checkpoint not found");
-            }
-            Ok(json!({"action":action,"name":breadcrumb}))
-        }
-        _ => bail!("checkpoint action must be list,get,save,delete"),
+        _ => bail!(
+            "unknown guide topic; expected init,adapter,docs,acdd,query,ast,validate,lifecycle,gates,subtasks,code"
+        ),
     }
 }

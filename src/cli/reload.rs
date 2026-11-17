@@ -181,7 +181,7 @@ fn matching_servers(executable: &std::path::Path, uid: libc::uid_t) -> Result<Ve
             std::io::Error::last_os_error()
         );
     }
-    let canonical_executable = crate::core::fs::resolve_path_with_existing_prefix(executable);
+    let canonical_executable = acdd_core::fs::resolve_path_with_existing_prefix(executable);
     let executable_device = std::fs::metadata(&canonical_executable)
         .ok()
         .map(|meta| meta.dev());
@@ -303,7 +303,7 @@ fn executable_matches(
 ) -> bool {
     use std::os::unix::ffi::OsStrExt;
     proc_path.as_os_str().as_bytes() == executable.as_os_str().as_bytes()
-        || crate::core::fs::resolve_path_with_existing_prefix(proc_path) == canonical_executable
+        || acdd_core::fs::resolve_path_with_existing_prefix(proc_path) == canonical_executable
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -448,7 +448,7 @@ mod tests {
         symlink(&real_dir, &alias_dir).unwrap();
 
         let alias_bin = alias_dir.join("acdd");
-        let canonical = crate::core::fs::resolve_path_with_existing_prefix(&alias_bin);
+        let canonical = acdd_core::fs::resolve_path_with_existing_prefix(&alias_bin);
         assert!(executable_matches(&real_bin, &alias_bin, &canonical));
         assert!(!executable_matches(
             &base.join("other/acdd"),

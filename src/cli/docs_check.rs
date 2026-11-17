@@ -466,7 +466,7 @@ fn line_range(anchor: &str) -> Option<Result<(usize, usize)>> {
 pub(super) fn check(
     root: &Path,
     format: OutputFormat,
-    output: &mut impl std::io::Write,
+    output: &mut dyn std::io::Write,
 ) -> Result<()> {
     let result = check_links(root);
     match (format, result) {
@@ -497,7 +497,10 @@ pub(super) fn check(
     }
 }
 
-fn check_links(root: &Path) -> Result<usize> {
+pub(crate) fn collect_link_errors(
+    root: &Path,
+    scoped_rel_paths: Option<&[String]>,
+) -> Result<(usize, Vec<String>)> {
     let mut files = Vec::new();
     for entry in WalkDir::new(root).into_iter().filter_entry(|entry| {
         entry.depth() == 0
@@ -511,7 +514,21 @@ fn check_links(root: &Path) -> Result<usize> {
         if entry.file_type().is_file()
             && acdd_core::fs::is_doc_path(&entry.path().to_string_lossy())
         {
-            files.push(entry.into_path());
+            let path = entry.into_path();
+            if let Some(scope) = scoped_rel_paths {
+                if !scope.is_empty() {
+                    let rel = path
+                        .strip_prefix(root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let policy = acdd_core::path_policy::WorkspacePathPolicy::default();
+                    if !policy.is_scope_admitted(&rel, scope) {
+                        continue;
+                    }
+                }
+            }
+            files.push(path);
         }
     }
     files.sort();
@@ -519,6 +536,11 @@ fn check_links(root: &Path) -> Result<usize> {
     let mut documents: HashMap<PathBuf, Document> = HashMap::new();
     let mut errors = Vec::new();
     for source in files {
+        let is_archive = source
+            .strip_prefix(root)
+            .unwrap_or(&source)
+            .components()
+            .any(|component| component.as_os_str() == "archive");
         let document = load(&source)?;
         for link in &document.links {
             let destination = link.target.as_str();
@@ -563,6 +585,9 @@ fn check_links(root: &Path) -> Result<usize> {
             };
             let display = source.strip_prefix(root).unwrap_or(&source).display();
             if !target.exists() {
+                if is_archive && !acdd_core::fs::is_doc_path(&target.to_string_lossy()) {
+                    continue;
+                }
                 errors.push(format!(
                     "{display}:{}: missing target {}",
                     link.line, link.target
@@ -607,8 +632,85 @@ fn check_links(root: &Path) -> Result<usize> {
         }
         documents.insert(source, document);
     }
+    Ok((files_checked, errors))
+}
+
+fn check_links(root: &Path) -> Result<usize> {
+    let (files_checked, errors) = collect_link_errors(root, None)?;
     if !errors.is_empty() {
         bail!("{}", errors.join("\n"));
     }
     Ok(files_checked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_link_errors;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let p = std::env::temp_dir().join(format!(
+                "acdd-ut-{tag}-{}-{}",
+                std::process::id(),
+                NONCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = fs::remove_dir_all(&p);
+            fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn archive_skips_missing_code_targets_while_active_docs_still_fail() {
+        let dir = TempDir::new("docs-check");
+        let root = dir.path();
+        fs::create_dir_all(root.join("docs/archive")).unwrap();
+        fs::write(root.join("README.md"), "# Root\n").unwrap();
+        // Historical archive doc pointing at deleted Rust source and valid README succeeds;
+        // missing doc target inside archive still fails, and missing code target in active doc fails.
+        fs::write(
+            root.join("docs/archive/old-milestone.md"),
+            "[deleted code](../../src/deleted_mod.rs)\n[readme](../../README.md)\n",
+        )
+        .unwrap();
+        fs::write(root.join("docs/active.md"), "[readme](../README.md)\n").unwrap();
+
+        let (checked, errors) = collect_link_errors(root, None).unwrap();
+        assert!(checked >= 3);
+        assert!(errors.is_empty(), "expected no errors, got {errors:?}");
+
+        let cases = [
+            (
+                "docs/active.md",
+                "[missing code](../src/missing.rs)\n",
+                "active doc missing code target",
+            ),
+            (
+                "docs/archive/old-milestone.md",
+                "[missing doc](../gone.md)\n",
+                "archive doc missing markdown target",
+            ),
+        ];
+        for (rel, content, label) in cases {
+            let prev = fs::read_to_string(root.join(rel)).unwrap();
+            fs::write(root.join(rel), content).unwrap();
+            let (_, errs) = collect_link_errors(root, None).unwrap();
+            assert!(!errs.is_empty(), "expected error for {label}");
+            fs::write(root.join(rel), prev).unwrap();
+        }
+    }
 }

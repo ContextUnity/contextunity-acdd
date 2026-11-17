@@ -1,4 +1,7 @@
-use acdd_tasks::tasks::profile::{self, GateProfile};
+//! Confined CLI path and profile resolution helpers (`ADR-0002`).
+
+use acdd_core::config::{load_adapter, Adapter};
+use acdd_state::profile::{resolve_profile_ref, ResolvedGateProfile};
 use anyhow::{bail, ensure, Context, Result};
 use std::{
     fs,
@@ -9,95 +12,64 @@ use std::{
 /// Immutable path choices for one in-process CLI invocation.
 pub(super) struct ResolvedPaths {
     pub config: Option<PathBuf>,
-    pub profile: Arc<GateProfile>,
+    pub adapter: Adapter,
+    pub profile_ref: Option<String>,
+    #[allow(dead_code)]
+    pub profile: Arc<ResolvedGateProfile>,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub explicit_profile: bool,
-    pub plans: Vec<String>,
 }
 
 impl ResolvedPaths {
     pub fn resolve(root: &Path, config: Option<&Path>, profile: Option<&Path>) -> Result<Self> {
-        let explicit_config = config.is_some();
-        let config = match config {
+        let config_path = match config {
             Some(path) => Some(confined_file(root, path)?),
             None => root
                 .join("acdd.yaml")
                 .is_file()
                 .then(|| root.join("acdd.yaml")),
         };
-        let value = config
-            .as_ref()
-            .map(|path| -> Result<serde_yaml::Value> {
-                Ok(serde_yaml::from_str(&fs::read_to_string(path)?)?)
-            })
-            .transpose()?;
-        let configured = value.as_ref().and_then(|value| value.get("acdd_profile"));
-        let selected = match profile {
-            Some(path) => Some(if path.is_absolute() {
+        let adapter = load_adapter(root, config_path.as_deref())
+            .map_err(|err| anyhow::anyhow!("ACDD_PROFILE_SCHEMA_INVALID: {err}"))?;
+        let profile_ref = match profile {
+            Some(path) => {
                 let raw = path.to_string_lossy();
-                let (target, pin) = match raw.rsplit_once(':') {
-                    Some((prefix, suffix))
-                        if !prefix.is_empty()
-                            && !suffix.is_empty()
-                            && !suffix.contains(['/', '\\']) =>
-                    {
-                        (Path::new(prefix), Some(suffix))
-                    }
-                    _ => (path, None),
-                };
-                let confined = confined_file(root, target)?;
-                let canonical_root = root.canonicalize()?;
-                let relative = confined
-                    .strip_prefix(&canonical_root)
-                    .context("CLI_PATH_INVALID: profile escapes root")?
-                    .to_string_lossy();
-                match pin {
-                    Some(pin) => format!("{relative}:{pin}"),
-                    None => relative.into_owned(),
-                }
-            } else {
-                path.to_string_lossy().into_owned()
-            }),
-            None => configured
-                .map(|reference| {
-                    reference
-                        .as_str()
-                        .map(str::to_owned)
-                        .context("acdd_profile must be a path string")
-                })
-                .transpose()?,
-        };
-        let loaded = match selected {
-            Some(reference) => {
-                if reference != "plan" {
-                    let (relative, _) = profile::parse_profile_reference(&reference, false)
-                        .context("CLI_PATH_INVALID: invalid profile reference")?;
-                    confined_file(root, &relative)?;
-                }
-                profile::load_selected_profile(root, &reference, config.as_deref())?
-            }
-            None if explicit_config => {
-                let repository = root.join(".acdd/profile.yaml");
-                let profile = if repository.exists() {
-                    confined_file(root, &repository)?;
-                    profile::load_selected_profile(root, ".acdd/profile.yaml", config.as_deref())?
+                if matches!(raw.as_ref(), "default" | "code" | "in_place" | "workspace") {
+                    Some(raw.into_owned())
                 } else {
-                    profile::compiled()
-                };
-                profile::apply_config_metadata_limit(config.as_deref(), (*profile).clone())?
+                    let (target_str, pin) = match raw.rsplit_once(':') {
+                        Some((prefix, suffix))
+                            if !prefix.is_empty()
+                                && !suffix.is_empty()
+                                && !suffix.contains(['/', '\\']) =>
+                        {
+                            (prefix, Some(suffix))
+                        }
+                        _ => (raw.as_ref(), None),
+                    };
+                    let confined = confined_file(root, Path::new(target_str))?;
+                    let canonical_root = root.canonicalize()?;
+                    let relative = confined
+                        .strip_prefix(&canonical_root)
+                        .context("CLI_PATH_INVALID: profile escapes root")?
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    Some(match pin {
+                        Some(pin) => format!("{relative}:{pin}"),
+                        None => relative,
+                    })
+                }
             }
-            None => profile::load_for_workspace(root)?,
+            None => None,
         };
-        let plans = value
-            .as_ref()
-            .and_then(|value| value.get("plans"))
-            .map(|value| serde_yaml::from_value::<Vec<String>>(value.clone()))
-            .transpose()?
-            .unwrap_or_else(|| vec!["docs/plans".into()]);
+        let effective_ref = profile_ref.as_deref().unwrap_or("workspace");
+        let resolved = resolve_profile_ref(effective_ref, Some(root), Some(&adapter.modules))?;
         Ok(Self {
-            config,
-            profile: loaded,
+            config: config_path,
+            adapter,
+            profile_ref,
+            profile: Arc::new(resolved),
             explicit_profile: profile.is_some(),
-            plans,
         })
     }
 }
@@ -119,7 +91,7 @@ pub(super) fn confined_file(root: &Path, path: &Path) -> Result<PathBuf> {
 }
 
 /// Verifies that a relative path does not escape `root` and that none of its ancestor
-/// directories or destination components traverse a symlink (ADR 0005).
+/// directories or destination components traverse a symlink (`ADR-0002`).
 pub(super) fn verify_no_symlink_traversal(
     root: &Path,
     relative: &Path,
@@ -189,7 +161,7 @@ mod tests {
         let real_repo = base.join("private_var/repo");
         fs::create_dir_all(real_repo.join(".acdd")).unwrap();
         let profile_file = real_repo.join(".acdd/profile.yaml");
-        fs::write(&profile_file, "version: 2\n").unwrap();
+        fs::write(&profile_file, "version: 2\ninherit: default\n").unwrap();
 
         let alias_repo = base.join("var_repo");
         symlink(&real_repo, &alias_repo).unwrap();
