@@ -11,7 +11,7 @@ compilation, Rust CLI scaffolder, or embedded templates.
 Read the complete request, repository instructions, existing configuration,
 architecture, and accepted decisions before proposing changes. Distinguish
 navigation setup, ACDD setup, and delivery planning: complete the requested
-parts without assuming permission to execute proposed milestones. Preserve
+parts without assuming permission to execute proposed specs. Preserve
 tailored files and unrelated changes; merge relevant settings instead of
 replacing files wholesale. Resolve a conflicting architectural decision with
 its owner before committing to that decision.
@@ -42,19 +42,16 @@ Record only facts needed for setup:
   dependency manifests. Verify their paths, purpose, roots, and ownership;
   adjacency alone does not establish a dependency.
 
-For example, a useful discovery request is: “Onboard this repository using its
-existing test and lint commands; include the confirmed sibling API repository
-for navigation, preserve its independent task lifecycle, and propose one first
-milestone.” Translate that request into observed paths and commands before
-writing configuration. Ask only for consequential facts the repository and
-conversation cannot establish.
-
 ## Configure the adapter
 
 Read [adapter defaults](adapters.md) and adapt the
 [canonical adapter example](acdd.yaml.example) into `acdd.yaml`.
-`acdd guide init` can create a starter when no adapter exists;
-do not use `--force` over a tailored adapter.
+`acdd init` can create a starter when no adapter exists;
+do not use `--force` over a tailored adapter. If an existing repository still
+uses `0.5.x` keys (`milestones`, `plans`, `tasks_db`, `task_repository`,
+`task_project`, `acdd_profile`), convert `acdd.yaml`, `.gitignore`,
+`.acdd/profile.yaml` (`version: 2`), and open specs first per the `0.6.0`
+migration guide.
 
 - Set `roots` to real repository-relative source roots, or `.` when appropriate.
   Include all relevant workspace source trees, such as both `src` and `crates`
@@ -62,54 +59,46 @@ do not use `--force` over a tailored adapter.
 - Set `ignore` from actual build/cache directory basenames, respecting existing
   `.gitignore`; do not use invented glob semantics for `ignore`. Use `sensitive`
   patterns for confidential paths that readers must block.
-- Point `docs`, `milestones`, `plans`, and `agents_guidance` to maintained paths.
-  Set stable `task_repository` and `task_project` identities for this project,
-  rather than carrying the example's `acdd` identity into another project.
-- Retain the default relative `tasks_db` unless the repository requires another
-  location. Git-linked worktrees share the primary worktree's relative task
-  database. Independent repositories keep independent stores unless sharing
-  is an explicit architectural choice.
+- Configure `specs:` collections (`milestones` with `path: docs/milestones`,
+  `profile: workspace`, `prefixes: [AC]`; `plans` with `path: docs/plans`,
+  `profile: in_place`, `prefixes: [PLAN]`), `profiles_dirs` (`[.acdd/profiles, docs/workflows]`),
+  `state_db: .acdd/state.sqlite`, `retain_traces: 20`, and `modules:` (`code`, `docs`, `state`, `blackboard`).
+- Retain the default relative `state_db` unless the repository requires another
+  location. Git-linked worktrees resolve `<primary_worktree>/.acdd/state.sqlite`
+  and share state locks/backups under `<git_common_dir>/acdd/`.
 - Add only verified `linked_workspaces`: unique `name`, existing relative
-  sibling `path`, `enabled`, and its real `roots` (plus relevant docs/ignores).
-  Adapt the commented sibling entry in the canonical example rather than
-  copying its fictitious path. Linked navigation does not itself authorize
-  sibling edits, a shared task store, or cross-repository delivery. Enable its
-  `tasks` settings only when linked task discovery is requested and supported
-  by the live schema; use that repository's milestone and guidance paths.
+  sibling `path`, `enabled`, and its real `roots` (plus relevant `docs`/`ignore`).
 
-Check the installed `guide adapter` output and selected configuration when a
-field's semantics are uncertain. Keep configuration inside the consuming
-repository. Do not add scanners or template-rendering code to ACDD.
+Check `acdd guide adapter` when a field's semantics are uncertain. Keep
+configuration inside the consuming repository. Do not add scanners or
+template-rendering code to ACDD.
 
 ## Synthesize a project profile
 
-For ACDD setup, adapt the [canonical ACDD profile](acdd_profile.yaml.example) to
-`.acdd/profile.yaml` and select it through the adapter's `acdd_profile`.
-Use the [domain examples catalog](acdd-profile-examples/README.md) only for a
-relevant domain; examples are starting points, and the installed schema is the
-authority. Do not copy ACDD's Rust-specific guidance, models, protected files,
-or commands into an unrelated project.
+For ACDD setup, write a compact overlay in `.acdd/profile.yaml` (`version: 2`,
+`inherit: code` when `modules.code: true` or `inherit: default` otherwise,
+`gates_merge: patch`), or adapt the
+[canonical ACDD profile](acdd_profile.yaml.example) when defining a standalone
+(`inherit: none`) profile. Use the
+[domain examples catalog](acdd-profile-examples/README.md) only for a relevant
+domain; examples are starting points, and the installed schema (`acdd validate`)
+is the authority. Do not copy ACDD's Rust-specific guidance, models, protected
+files, or commands into an unrelated project.
 
-Bind registered `commands` to verified local tooling. For each command, establish
-its working directory, prerequisites, failure exit behavior, timeout, and actual
-output. Configure `output` counts/test matching when the proof policy requires
-them; a successful process with no recognized tests is not test proof. Use
-`scope_args_by_pattern` only with arguments the real command accepts, and keep
-full repository verification distinct from focused task checks. For example,
-derive a JavaScript check from that package's script and lockfile rather than
-guessing `npm test`, and preserve its existing package manager.
+Bind registered `commands` (`test`, `rust-check-and-test`, `check_full_repo`, etc.)
+to verified local tooling. For each command, establish its working directory,
+prerequisites, failure exit behavior, timeout, `{test_filter}` support when used
+by `proof: contract`, and actual output parsing (`compile_errors`, `counts`,
+`tests`). Use `scope_args_by_pattern` only with arguments the real command
+accepts, and keep full repository verification distinct from focused task checks.
 
-Keep `version: 2`, roles, reusable guidance, proofs,
-commands, and gate references consistent. Adapt the canonical upfront
-`blueprint_synthesis` (`synthesize` and `review`), nested `tasks`, and post-task
-verification structure to the admitted workflow;
-resolve every referenced command, role, proof, guidance key, and failure target.
-Preserve independent review and the chosen persistence/immutable candidate
-boundaries. Optional role runners must match tools actually available to the
-project; ACDD does not create a runner merely because instructions mention one.
+Keep `version: 2`, `git:`, `roles`, `guidance`, `contours`, `proofs`, `commands`,
+and `gates` references consistent. Preserve independent review (`independent_from`)
+and candidate immutability (`save.immutable: true`) boundaries. Optional
+`roles.<name>.runner` commands must match tools actually available to the project.
 
-Validate the profile before claims. Follow the resulting claim's
-`workflow_guidance`, expected evidence, and proof policy for actual execution;
+Validate the profile before claims. Follow the resulting `acdd_claim`
+`guidance`, expected proof contract, and active profile for actual execution;
 do not prescribe a universal gate list or hardcoded model in `AGENTS.md`.
 
 ## Merge the agent router
@@ -121,7 +110,8 @@ taxonomies and delivery conventions unless adopted by this project.
 
 Require the shared `acdd` skill and ACDD MCP/CLI navigation when
 available, including overview/coverage, indexed symbol and AST search, direct
-`acdd_read(selector="KnownSymbol")`, task lifecycle tools, and Blackboard
+`acdd_read(selector="KnownSymbol")`, state lifecycle tools (`acdd_state`,
+`acdd_claim`, `acdd_verify`, `acdd_submit`), and `acdd_blackboard`
 context. State the local fallback when ACDD is unavailable. Route verification,
 test placement, architecture, and documentation to their owning files. Record
 only established project invariants and Git permissions; setup does not grant
@@ -140,22 +130,18 @@ precise uniquely resolvable code claim when a verified governance edge is
 intended; otherwise distinguish a proposed constraint from implemented behavior.
 Resolve all copied links from their destination files.
 
-Propose a bounded first milestone from the user's actual goal. Give it an
-outcome, acceptance criteria, owner paths, invariants, and independently scoped
-tasks. For each task specify `task_ref`, target, proof policy, contract revision,
-write scope including affected tests/docs, real dependencies, and its production
-seam proof. Use the
+Propose a bounded first spec from the user's actual goal (`acdd draft milestones <slug>`
+or `acdd start --goal "..."` for ephemeral runs). Give it an outcome, acceptance
+criteria, owner paths, invariants, and independently scoped tasks (`task_ref`,
+`target`, `scope`, `depends_on`, `tags`, `invariants`, `acceptance_criteria`,
+`contract_revision: 1`, `subtasks`). Use the
 [manifest example](acdd-profile-examples/milestone-manifest-with-skills.md.example)
 for shape, removing unrelated skills, repositories, dependencies, and domains.
-Check required skills are actually installed before admitting execution.
 
-Keep speculative sequencing in `docs/plans/` as proposals, following the live
-plan schema. Leave the milestone unstarted when execution was not requested.
-When admission is authorized, use the installed milestone lifecycle tools and
-their validation rather than editing SQLite or manufacturing status/receipts.
-Independent tasks need no dependency edge; order tasks only for real contracts
-or overlapping writes. Cross-repository participation requires explicit owner
-scope and integration proof, beyond merely linking their code graphs.
+Keep speculative sequencing in `docs/plans/` using `in_place` profiles. Leave
+the spec unstarted when execution was not requested. When admission is
+authorized, use `acdd start` / `acdd_state` rather than editing SQLite or
+manufacturing status/receipts.
 
 ## Validate and hand back
 
@@ -163,21 +149,20 @@ Run installed commands from the consuming repository root:
 
 ```sh
 acdd validate .acdd/profile.yaml
-acdd guide validate
+acdd validate
 ```
 
-Run the first command only when a profile was created or changed. It validates
-profiles and milestone manifests; it is not an adapter validator. `guide
-validate` scans with the selected adapter. Validate each proposed milestone with
-`acdd validate <repository-relative-manifest.md>` and inspect
-diagnostics rather than accepting example YAML on appearance alone. Use the
-installed command help for options when versions differ.
+Run the first command when a profile was created or changed, and `acdd validate`
+to validate the workspace adapter, active profiles, and open spec manifests.
+Validate each proposed spec with `acdd validate <repository-relative-spec.md>`
+and inspect diagnostics rather than accepting example YAML on appearance alone.
 
 After indexing, inspect `code_map_overview` for the correct root, roots/coverage,
 languages, and linked workspaces. Check a representative source symbol and
 documentation page. Review the diff for preserved settings, valid links, and
-scope; run `git diff --check`. Adapt the [ignore example](gitignore.example) if
-runtime state needs exclusion while profiles remain tracked.
+scope; run `git diff --check`. Adapt the [ignore example](gitignore.example) so
+runtime state under `.acdd/` and `/.worktrees/` stays excluded while
+`.acdd/profile.yaml`, `.acdd/profiles/**`, and `.acdd/frameworks/**` remain tracked.
 
 Report changed files, observed verification, remaining prerequisites, and the
 proposed next delivery step. Schema and link checks establish artifact validity;

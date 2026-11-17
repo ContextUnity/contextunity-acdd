@@ -7,13 +7,14 @@ doc_type: architecture
 
 The architecture documentation describes verified system structure, contracts, and recommended performance values:
 
-- [Specification, design, and verification lifecycle](specification-and-design-lifecycle.md): Specify/Clarify (`AC-*`), SAD/ADR + C1–C2 boundaries vs. live indexed C3–C4 graph, and S/M/L cadence across `Workflow`, `Plan`, and `Milestone`.
+- [Specification, design, and verification lifecycle](specification-and-design-lifecycle.md): Specify/Clarify (`AC-*`), SAD/ADR + C1–C2 boundaries vs. live indexed C3–C4 graph, and S/M/L cadence across `GateProfile` and `Run` lifecycles.
 - [Indexing and resolution](indexing.md): Scanner, AST fact extraction, symbol linking, and storage boundaries.
 - [SQLite concurrency and isolation](concurrency.md): Reader isolation, generation locking, RAII guards, and WAL mode pragmas.
 - [Cross-platform and macOS boundaries](cross-platform.md): Canonical root and URI boundaries, volume-dependent case and Unicode spelling, SQLite WAL/`Identity` lifecycle, BSD socket portability, and fail-loud diagnostics.
-- [Engine modularity and traits](modularity.md): `LanguageProfile`, `TemplatePreprocessor`, and `LanguageLinker` extensibility contracts.
-- [Test harness and seam architecture](test-harness.md): Declarative `<Domain>Harness` contracts, in-memory lifecycle stepping, session isolation, and test-suite decomposition.
+- [Engine modularity and traits](modularity.md): `LanguageProfile`, `TemplateMasker`, and `LanguageLinker` extensibility contracts.
+- [Domain extensions (DomainProvider shim-crates)](domain-extensions.md): Connecting new verification entities via thin `crates/acdd-domain-*` crates wired into `src/state_bridge/mod.rs`.
+- [Test harness and seam architecture](test-harness.md): Declarative `<Domain>Harness` contracts, `RunHarness` in-memory lifecycle stepping, session isolation, and test-suite decomposition.
 - [Performance guidance and compaction](performance.md): Recommended latency values, FTS5 BM25 hybrid search, inventory debouncing, and Zstd storage compaction.
-- [Response presentation](../reference/mcp-markdown-contracts.md): Pure formatting and operation-aware compaction in `src/core/format/`; CLI and MCP adapters own resolved coordinates, transport framing, and existing response budgets under [ADR 0019](../adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md).
+- [Response presentation](../reference/mcp-markdown-contracts.md): Pure formatting and operation-aware compaction in `src/format/`; CLI and MCP adapters own resolved coordinates, transport framing, and existing response budgets under [ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md).
 
 Related architectural decisions are recorded in [Architectural Decisions](../adr/README.md).

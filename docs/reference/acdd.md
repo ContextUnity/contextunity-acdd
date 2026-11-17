@@ -1,11 +1,16 @@
 ---
-title: "Augmented Context-Driven Delivery (ACDD)"
+title: "Augmented Context & Durable Dispatch (ACDD)"
 doc_type: guide
 ---
 
-# Augmented Context-Driven Delivery (ACDD)
+# Augmented Context & Durable Dispatch (ACDD)
 
-**Augmented Context-Driven Delivery (ACDD)** is ACDD's lifecycle state machine for structured AI and human software engineering. Instead of letting coding agents run open-ended loops over an entire repository, ACDD binds Git-tracked specifications, SQLite state, and declarative YAML profiles into atomic, verifiable **gates** that deliver only the context needed for the active step.
+**Augmented Context & Durable Dispatch (ACDD)** is ACDD's declarative lifecycle
+state machine (`crates/acdd-state` + `crates/acdd-core`) for structured AI and
+human software engineering. Instead of letting coding agents run open-ended
+loops over an entire repository, ACDD binds Git-tracked specifications, SQLite
+run state, and declarative `v2` YAML `GateProfile` graphs into atomic, verifiable
+**gates** that deliver only the context needed for the active step.
 
 ---
 
@@ -13,279 +18,200 @@ doc_type: guide
 
 ACDD separates *what* must be built from *how* work is governed and verified:
 
-1. **Git-Tracked Authority (`docs/milestones/*.md`, `docs/plans/*.md`)**: Humans and architects keep contracts, task write perimeters (`scope`), dependency edges (`depends_on`), and proof policies in Markdown under Git.
+1. **Git-Tracked Authority (`docs/milestones/*.md`, `docs/plans/*.md`)**: Humans
+   and architects keep contracts, `### task:` specifications, write perimeters
+   (`scope`), dependency edges (`depends_on`), and proof policies in Markdown
+   under Git (`specs:` collections in `acdd.yaml`). Milestone and task `spec`
+   references and `acceptance_criteria` project only the claimed task's criteria
+   into `ClaimResp.contract`.
+2. **Persistent Run Queue & Proof Store (`.acdd/state.sqlite`)**: ACDD
+   synchronizes specifications and profile graphs into the primary worktree's
+   `.acdd/state.sqlite` (`runs`, `gate_nodes`, `task_dependencies`, `subtasks`,
+   `gate_claims`, `gate_traces`, `gate_artifacts`, `blackboard`,
+   `run_tombstones`). Rebuilding `.acdd/code-map.sqlite` never resets active run
+   state or traces.
+3. **Declarative Governance Profile (`version: 2` `GateProfile`)**: Defines Git
+   isolation/integration (`git:`), persistence (`save:`), roles, commands,
+   `DomainProvider` hooks (`call`, `checks`, `context`, `tools_add`/`tools_remove`),
+   proof schemas, guidance slots, review contours, and ordered gates with `pass` /
+   `fail` edges.
 
-Milestone and task `spec` references and `acceptance_criteria` identify the
-applicable specification and `AC-*` criteria. A claim projects its own task's
-criteria into `context_bundle.contract`; sibling task criteria remain outside
-that projection. Blueprint proof maps acceptance criteria to design and task
-slices without replacing the gate's typed proof.
-2. **Persistent Queue and Proof Store (`.acdd/tasks.sqlite`)**: ACDD synchronizes contracts into SQLite (`tasks`, `gate_transitions`, `task_claims`, `task_blackboard`). Rebuilding `.acdd/code-map.sqlite` never resets active task state or receipts.
-3. **Declarative Governance Profile (`profile.yaml`)**: Defines the ordered gate graph, required proof schemas, role assignments, command catalogs, HITL escalation rules, and review contours.
+### Stage-Tailored Context Injection (`ClaimResp`)
 
-### Stage-Tailored Context Injection
+Claiming a gate returns the budgeted `ClaimResp` bundle ([ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md), [`crates/acdd-state/src/context.rs`](../../crates/acdd-state/src/context.rs))
+ordered across 6 priority tiers inside `ResponsePolicy.max_output_bytes`:
 
-Claiming a gate returns two complementary payloads ([ADR 0016](../adr/0016-lean-stage-tailored-task-context-bundles.md)):
+1. **Tier 1 (`contract` + `guidance`)**: Mandatory claimed task/gate specification
+   and resolved gate guidance entries (reserved inside `max_guidance_bytes`,
+   never truncated; fails with `GUIDANCE_BUDGET_EXCEEDED` if oversized).
+2. **Tier 2 (`unresolved_findings` + failed trace tail)**: Structured findings and
+   the tail of the latest failed trace log after a reject/fail rewind.
+3. **Tier 3 (`pre_task_slice`)**: Pre-task blueprint slice (`proof.tasks[<task_ref>]`)
+   emitted by `blueprint_synthesis`.
+4. **Tier 4 (`dependency_receipts`)**: Receipts from completed dependency tasks.
+5. **Tier 5 (`blackboard`)**: Up to 15 relevant blackboard entries capped at 500
+   characters each (including `decisions`, `findings`, and `blockers` callouts).
+6. **Tier 6 (`context_lenses`)**: Dynamic `DomainProvider` lenses declared on the
+   gate's `context:` list (e.g., `docs.adrs`, `docs.invariants`, `code.symbols`,
+   `code.tests`, `code.external_callers`), trimmed cleanly by section if needed
+   and reported in `omitted_sections`.
 
-- **`workflow_guidance`**: Names the active `role`, operational instructions, acceptance criteria, `NO_PREFLIGHT_SUBAGENTS`, scoped verification commands (`scoped_commands`), and the exact expected evidence template (`expected_evidence_template`).
+MCP state tools and flat CLI commands share `src/format/lifecycle.rs` Markdown
+rendering by default or structured JSON via `format: "json"` / `--format json`;
+see the [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
 
-Task claim templates and taskless role `expected_response.proof` use the same
-profile-resolved proof projection. Placeholder values describe the required
-shape and must be replaced with actual observations and review evidence.
-- **`context_bundle`**: Supplies only the artifacts required for the active gate:
-  - **Contract and build gates**: Admitted write scope, indexed symbol signatures, external callers, covering tests, ADR invariant summaries, target RFC/blackboard messages, and the task's own inherited root-gate proof slice (such as its per-task `blueprint_synthesis` slice from `gate_transitions` with `subject = <full_task_id>`).
-  - **Review gates**: The immutable candidate snapshot diff and claimed contract context.
-  - **Delivery gates**: Receipt rules, verification status, and subtask completion checks.
+### One Unified `Run` + `GateProfile` Engine
 
-Recent `task_blackboard` entries ride along inside the bundle; historical gate logs remain in SQLite until inspected via `task inspect`. MCP task tools and CLI task commands render Markdown by default (preserving guidance, evidence, and caution callouts for blockers) or structured JSON via `format: "json"` / `--format json`; see the [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
+Under [ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md)
+and [ADR 0004](../adr/0004-domain-provider-spi-and-plugin-tools.md),
+ACDD runs all workflows through one state machine (`crates/acdd-state`), selected
+by `GateProfile` `git:` and `save:` policies:
 
-### Three Execution Tiers
-
-ACDD applies one shared gate, proof, and guidance engine across three operational models ([ADR 0021](../adr/0021-workflow-plan-and-milestone-lifecycle-hierarchy.md)):
-
-| Tier | Authority Source | Scope & Task Queue | Save Mode | Primary Use Case |
-|---|---|---|---|---|
-| **Milestones** | `docs/milestones/*.md` | Root pre-task & closure gates + `- tasks:` DAG waves in isolated worktrees | `commit` (receipts + fast-forward integration) | Multi-task feature delivery with upfront architecture synthesis and verified handoff |
-| **Plans** | `docs/plans/*.md` (`doc_type: plan`) | `- tasks:` container executed in-place without root preflight or handoff gates | `snapshot` (no auto-commits) | Multi-step documentation-driven changes on the current branch |
-| **Workflows** | `docs/workflows/*.yaml` | Root gates only (no `- tasks:` container) | `none` or `log` | Autonomous sweeps, quality loops, and standalone artifact authoring |
+| Mode / Embedded Profile | Spec / Input | Isolation & `save` | Primary Use Case |
+| --- | --- | --- | --- |
+| **`default` / `code`** | `docs/milestones/*.md` or custom spec | `git.isolation: worktree`, `save: commit` | Multi-task milestones with `blueprint_synthesis`, task worktrees, and verified `handoff` |
+| **`in_place`** | `docs/plans/*.md` or feature spec | `git.isolation: in_place`, `save: snapshot` | Multi-step changes on the active branch without worktrees or auto-commits |
+| **Ephemeral (`acdd start --goal`)** | Materialized `.acdd/run/<run_id>/spec.md` + `--scope` | `git.isolation: in_place` (or custom profile `save: none`) | Ad-hoc goal sweeps, autonomous QA, and single-run tasks |
 
 ---
 
 ## 2. How Gates Work
 
-Everything in an ACDD workflow is a **gate** declared under `gates:` in a YAML profile. Every gate has one primary driver:
+Everything in a `v2` `GateProfile` is a **gate** declared under `gates:`. Every
+gate uses one primary proof/execution contract:
 
-- **Agent gate** (`role: <role_id>`): Claimed by a worker session (`task claim` / `task_claim`) and completed via `task submit` / `task_submit` with the required typed proof. An agent gate may also bind a registered `command:` so `task verify` can observe compiler and test results on the worker's behalf.
-A gate with both `role` and `command` uses the role driver and also verifies the registered command. Taskless role stdout must contain one JSON object, optionally enclosed in a complete Markdown code fence. A `scheme_proof.decision` must agree with the outer decision. Rejections require nonempty structured findings, supplied at the top level or in schema-declared proof finding fields; duplicated findings must agree.
+- **Role / review / delivery gate** (`role: <role_id>`): Claimed via `acdd claim`
+  / `acdd_claim` and completed via `acdd submit` / `acdd_submit`. Review gates
+  declare `proof: review` and non-empty `contours:`; delivery/handoff gates
+  declare `receipt: true` and `save.post: commit` (or `snapshot` in `in_place`).
+- **Command / contract gate** (`command: <command_id>`, optionally paired with a `role:`):
+  Executed via `acdd verify` / `acdd_verify` (or headless `acdd run`) against the
+  registered command slot and `test_filter`. Passing `command` proofs require
+  exit code `0` and `tests_failed == 0`; runtime-red `proof: contract` gates
+  require non-zero exit matching `expected_failure.exit_codes` and `--test`.
+- **Domain action / check gate** (`call: <domain>.<action>`, `checks: [<domain>.<check>]`):
+  Invokes `DomainProvider` capabilities registered in `src/state_bridge/` (such
+  as `code.seam` reachability and `code.signature_scope` in `src/state_bridge/code_domain.rs`,
+  or `docs.links` in `src/state_bridge/docs_domain.rs`).
+- **Container gate** (`gates: [...]`): Groups sequential child gates under dotted
+  hierarchical cursors (e.g., `blueprint_synthesis.synthesize` -> `blueprint_synthesis.review`).
+- **Task container** (`- tasks: { when?, gates: [...] }`): Expands its child gate
+  sequence for each matching admitted task, scheduled in topological DAG waves
+  from `depends_on` / `task_dependencies`.
 
-- **Command gate** (`command: <command_id>`, no `role`): Executed deterministically by ACDD (zero LLM tokens), parsing test counts and failure codes directly from command output.
-- **Container gate** (`gates: [...]`): Groups sequential child gates under a dotted hierarchical path (for example `blueprint_synthesis.synthesize` $\to$ `blueprint_synthesis.review`, or `seam.integrate` $\to$ `seam.review`).
-- **Task container** (`- tasks: { gates: [...] }`): Expands its child gate sequence for every admitted task, scheduled in topological DAG waves derived from `depends_on` / `task_depends_on`.
+### Hierarchical gate cursors and `code.seam` checks
 
-### Hierarchical gate cursors and seam proofs
+Profile containers expand into `gate_nodes` rows (`container`, `root_gate`,
+`task`, `task_gate`) addressed by dotted `NodeCursor` identifiers
+(`blueprint_synthesis.synthesize`, `<task_ref>.contract`, `verify`, `handoff`).
+Pre-task root gates run before `- tasks:` blocks unlock; when a pre-task gate
+like `blueprint_synthesis.synthesize` submits `proof: blueprint` containing
+`tasks.<task_ref>`, `acdd-state` injects strictly that task's slice as Tier 3
+(`pre_task_slice`) when claiming that task.
 
-A profile gate can contain child gates. [`claim_nested_gate`](../../crates/acdd-tasks/src/engine/claim.rs) resolves the persisted stage to its active leaf gate, applies that leaf's role and proof requirements, and accepts qualified child stage IDs. Passing a child advances the cursor to the next child.
-
-Each reachable applicable (`when`) root gate on the accepted route before `- tasks:` executes with `subject = "milestone"` and blocks task claims (`MILESTONE_PRE_TASK_GATE_PENDING`) until it passes in `gate_transitions`. After the reachable route passes, when an accepted pre-task root gate passes with a `proof.scheme` payload containing `tasks: { "<task_ref>": { ... } }`, the engine fans out each task's slice into `gate_transitions` with `subject = <full_task_id>` (`<milestone_ref>:<task_ref>`) and automatically injects only that task's slice into `context_bundle` upon `task claim`. Claims expose the active gate path and breadcrumb in `workflow_guidance`; task-specific RFCs and gate-targeted blackboard messages appear there alongside active broadcasts, while the general `blackboard` field retains task, sibling, and milestone context. Replaying persisted transitions preserves the accepted route: gates bypassed by routing do not block claims, while a missing reachable pass does.
-
-[`validate_seam_reachability`](../../crates/acdd-tasks/src/engine/gates/seam.rs) checks the current test source against indexed call and import evidence, follows module imports and public re-exports, and permits up to four test-helper hops before requiring an admitted production target. When source drift invalidates an indexed route, the gate reports `TASK_SEAM_STALE` with an index-refresh action. A disconnected seam reports discovered calls, coverage, reached targets, and the reason traversal stopped. The task engine rejects disconnected contract seams and public signature changes whose indexed callers fall outside admitted scope.
+Domain checks wired via `checks: [code.seam]` (implemented in
+[`src/state_bridge/code_domain.rs`](../../src/state_bridge/code_domain.rs)) verify
+indexed test reachability into admitted production scope (`calls`, `imports`,
+`possible_calls`, etc.) and reject out-of-scope public signature callers before
+completion.
 
 ### Independence, Routing, Conditions, and Persistence
 
-- **Independent Worker Enforcement (`independent_from`)**: For any gate declaring `independent_from`, claim and submission compare its `worker_id` against the accepted worker of that predecessor. Session metadata is optional and does not decide gate independence. Lifecycle metadata uses explicit in-process identity or `ACDD_AGENT_SESSION_ID`, without host scraping. Configured runners use distinct ACDD session fingerprints and isolated process groups.
-- **Dispatch Directives**: Submission to an independent next gate returns a structured `dispatch` object derived from the active role and prior worker, along with the `[INDEPENDENT GATE DISPATCH REQUIRED]` directive and suggested worker `{task_slug}-{gate}`. The coordinator performs that dispatch; reading guidance launches no process. See [gate dispatch and evidence](tasks.md#gates-and-evidence).
-- **Failure & Loop Routing (`pass`, `fail`, `loop`)**: Passing advances sequentially or to the named `pass:` target; rejecting or failing routes to `fail:`. Declaring `loop: { scope: <gate>, symbols: <gate> }` on a review gate routes back to the builder with structured reviewer findings (`task_findings`). With `reuse_on_reject: true`, ACDD supplies the accepted builder identity through `{session_id}` and `ACDD_AGENT_SESSION_ID`; this does not preserve provider conversation history or widen admitted scope or symbols.
-- **Conditional Gates (`when`) & Multi-Attempt Limits (`max_attempts`)**: Gates with `when: seam` run only when the task participates in cross-task seam dependencies. An explicit `max_attempts` limits failures at that gate; successful visits do not consume the budget. Omitting it leaves failure routing unbounded. Root milestone replay reconstructs the budget from the replayed observations. A timed-out or signal-interrupted root command stops execution with an error instead of following a failure route.
-- **Save & Immutability (`save`)**: Controls snapshots and commits around a gate. Candidate drift requires rebinding and renewed verification and independent review before a terminal receipt; corrupted explicit receipts or unrecoverable HEAD divergence fail closed.
-
-Native milestone root gates capture declared snapshots before execution and after
-an accepted decision without moving `HEAD`. Immutable gates compare their input
-with the accepted snapshot in the same phase and reject changes during execution.
-Replayed observations remain bound to their authority, profile, candidate, and
-snapshot references; changed content requires fresh downstream observations and
-does not reopen accepted task receipts.
+- **Independent Worker Enforcement (`independent_from`)**: Claim and submission
+  verify that `worker_id` differs from the accepted worker of each named
+  predecessor gate (`TASK_REVIEW_NOT_INDEPENDENT`).
+- **Forward & Rejection Routing (`pass`, `fail`)**: Passing advances sequentially
+  or to `pass:`. Rejecting (`--action reject`) or failing routes to `fail:` with
+  mandatory structured `RejectionFindings`. Roles with `reuse_on_reject: true`
+  instruct the runner/coordinator to return findings to the prior worker.
+- **Conditional Task Tracks (`when`) & Retry Budgets (`max_attempts`)**: `- tasks:`
+  and `task_gate` nodes support boolean `when:` tag expressions evaluated
+  against each task's effective `tags` (`tags:` in profile + task YAML). Explicit
+  `max_attempts` (default `3`, `>= 1`) caps failures/cycles before escalation.
+- **Save & Candidate Immutability (`save`)**: `save.pre: snapshot` captures a
+  claim tree (`claim_tree`); `save.immutable: true` rejects candidate drift at
+  submit (`TASK_CANDIDATE_MISMATCH`); `save.post: commit` creates a scoped Git
+  commit (with optional `git_commit_note`) without polluting untracked engine
+  paths excluded by `WorkspacePathPolicy`.
 
 ---
 
-## 3. How Universal Profiles Work
+## 3. Embedded Profiles & Repository Overlays
 
-ACDD profiles are **universal and language-agnostic**. The gate graph, roles, review policies, proof schemas, and guidance rules live in the profile catalog independently of programming language or test runner; repository profiles only bind local commands and path patterns.
-
-### Loading Precedence
-
-ACDD resolves the active profile from highest to lowest priority ([ACDD profiles](profiles.md)):
-
-1. **Task pin**: `acdd_profile: "<path>:<sha256_prefix>"` in task YAML metadata.
-2. **Milestone frontmatter**: `acdd_profile: "<path>:<sha256_prefix>"` in the milestone Markdown header.
-3. **Workspace adapter**: `acdd_profile: "<path>"` in `acdd.yaml`.
-4. **Repository default**: `.acdd/profile.yaml`.
-5. **Embedded baseline**: Built-in [`acdd.profile.yaml`](../../crates/acdd-tasks/src/tasks/acdd.profile.yaml).
-
-### Inheritance (`inherit: default` vs `inherit: none`)
-
-Every profile specifies one of two compilation modes:
-
-- **`inherit: default`** (also the default when `inherit` is omitted): Inherits all `proofs`, `roles`, `guidance`, `policies`, `limits`, `polish_scope`, and `gates` from the embedded baseline. Keyed maps (`roles`, `commands`, `guidance`, `policies`, `proofs`, `scope_args_by_pattern`) merge by key. The `gates:` tree merges **recursively by gate `id` (and by the `- tasks:` container)** before normalization, so an overlay only needs to bind project commands (for example `command: rust-check-and-test`) onto inherited gates without repeating roles, contours, or proofs.
-- **`inherit: none`**: Compiles strictly from the file's own declarations with no inherited gates, roles, policies, proofs, or guidance. Standalone workflows (such as artifact authoring under `docs/workflows/`) and fully custom team lifecycles use `inherit: none`.
-
-### Language-Agnostic Customization Mechanisms
-
-- **Pattern-Dispatched `commands` & `scope_args_by_pattern`**: Command definitions support `by_pattern:` (matching `**/*.rs`, `**/*.py`, `**/*.{ts,tsx,js,jsx,vue}`, `**/*.go`, etc.) and `{scope_target}` expansion. When verifying a scoped test or module, `scope_args_by_pattern` turns touched file paths into target-specific flags (such as `--lib` or `--test <target>`). Declarative `output:` regex rules extract test counts (`tests_passed`, `tests_failed`) and individual test names so zero-exit runs without recognized tests cannot satisfy test proof gates.
-- **Guidance Slots (`hitl` and `contours`)**: Gates can request parameterized guidance slots such as `hitl`, which milestone frontmatter binds via `guidance: { hitl: pro }` (resolving to `hitl.pro` by default, or `hitl.careless`, `hitl.curious`, `hitl.paranoic`). Review gates reference `contours: guidance.contours` to pull all `contour.*` entries from the active guidance catalog.
-
-### Typical Repository Overlay (`.acdd/profile.yaml`)
-
-Most repositories only need a compact overlay that inherits the full default gate machine and binds their language commands:
+Profiles follow the loading precedence documented in [ACDD profiles](profiles.md)
+and [Workspace configuration](configuration.md#declarative-acdd-profile-and-role-configuration).
+Repositories typically customize `.acdd/profile.yaml` with `version: 2`,
+`inherit: code` (or `default` / `in_place`), `gates_merge: patch`, and project
+command bindings:
 
 ```yaml
 version: 2
-inherit: default
-
-scope_args_by_pattern:
-  "src/**/*.rs": "--lib"
-  "tests/*.rs": "--test {file_stem}"
+inherit: code
+gates_merge: patch
 
 commands:
-  test:
-    command: "cargo test"
-  rust-check-and-test:
-    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
-  check_full_repo:
-    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
-
-gates:
-  - tasks:
-      gates:
-        - id: contract
-          command: test
-        - id: build
-          command: rust-check-and-test
-        - id: seam
-          gates:
-            - id: integrate
-              command: rust-check-and-test
-  - id: verify
-    command: check_full_repo
+  test: "cargo test --lib {test_filter}"
+  build_check: "cargo clippy --all-targets -- -D warnings && cargo test --lib"
+  verify_all: "cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
 ```
-
-For full field schemas, output parser rules, and multi-domain templates, see [ACDD profiles](profiles.md), the standalone template [`acdd_profile.yaml.example`](acdd_profile.yaml.example) (symlinked from the ACDD skill), and the [domain examples catalog](../../skills/acdd/references/acdd-profile-examples/README.md).
 
 ---
 
-## Built-in Default Profile Walkthrough (`acdd.profile.yaml`)
+## Built-in Default Profile Walkthrough (`default.yaml` & `code.yaml`)
 
-The embedded baseline [`crates/acdd-tasks/src/tasks/acdd.profile.yaml`](../../crates/acdd-tasks/src/tasks/acdd.profile.yaml) (`version: 2`) defines a complete three-phase milestone lifecycle. Because `commands: {}` and `scope_args_by_pattern: {}` are intentionally empty in the baseline, repository overlays supply concrete build/lint/test commands via `inherit: default`.
+[`crates/acdd-state/src/profile/embedded/default.yaml`](../../crates/acdd-state/src/profile/embedded/default.yaml)
+defines the canonical three-phase milestone lifecycle (`commands: test`,
+`build_check`, `verify_all` are marked `unbound: true` in `default.yaml` so
+overlays must bind concrete commands before running). Embedded
+[`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml) inherits
+`default.yaml` (`gates_merge: patch`) and binds the 19 `default_tools`,
+`code.seam` checks, and `docs.*` / `code.*` context lenses:
 
 ```text
 Phase 1: Pre-Task Root Container (`blueprint_synthesis`)
-  └─ synthesize (architect, proof: blueprint) ──► review (independent_reviewer, fail -> synthesize)
+  └─ synthesize (role: architect, proof: blueprint) ──► review (role: independent_reviewer, fail -> synthesize)
           │
-          ▼  (fans out per-task blueprint slices into gate_transitions; lifts task claim barrier)
+          ▼  (fans out per-task blueprint slices; unlocks `- tasks:` wave)
 Phase 2: Per-Task DAG Container (`- tasks:`, executed in topological waves)
-  └─ contract (contract_author, red exit [1, 101, 134])
-       └─► build (builder, snapshot)
-             └─► review (independent_reviewer, 5 contours, immutable, fail -> build)
-                   └─► [if seam] seam.integrate (builder, seam_test) ──► seam.review (independent_reviewer)
-                         └─► deliver (independent_reviewer, need: [review], receipt + commit + telemetry)
+  └─ contract (role: contract_author, command: test, proof: contract, expected_failure [1, 101, 134], save.post: snapshot)
+       └─► contract_review (role: independent_reviewer, proof: review, contours [paths, claims], fail -> contract)
+             └─► build (role: builder, command: build_check, proof: command, save.post: snapshot)
+                   └─► review (role: independent_reviewer, proof: review, 5 contours, immutable, fail -> build)
+                         └─► deliver (role: independent_reviewer, need [build, review], receipt: true, save.post: commit)
           │
-          ▼  (all tasks terminal)
-Phase 3: Post-Task Milestone Closure
-  └─ verify (command: check_full_repo, max 2)
-       ├─ fail ──► polish (architect, polish_scope, pass -> verify)
-       └─ pass ──► milestone_review (independent_reviewer, immutable, fail -> polish)
-                     └─ pass ──► handoff (receipt + absorb + commit)
+          ▼  (all non-cancelled tasks completed)
+Phase 3: Post-Task Closure
+  └─ verify (command: verify_all, proof: command, max_attempts: 3)
+       ├─ fail ──► polish (role: builder, command: verify_all, explicit polish scope, pass -> verify)
+       └─ pass ──► integration_review (role: independent_reviewer, independent_from [polish, tasks.build], need [verify], immutable, fail -> polish)
+                     └─ pass ──► handoff (role: independent_reviewer, need [verify, integration_review], receipt: true, save { immutable, commit, archive, prune })
 ```
 
-### Global Settings, Proofs, Roles, and Contours
+### Roles, Contours, and Guidance Slots in `default.yaml`
 
-- **Limits & Telemetry (`limits`, `git_commit_note`)**: Bounds metadata (`max_metadata_bytes: 2048`), trace summaries (`max_trace_summary_bytes: 2048`), inline diagnostics (`diagnostic_inline_bytes: 4096`), and command timeout (`max_command_timeout_seconds: 1800`). Attaches Markdown commit telemetry (duration, tasks summary, review cycles, diff breakdown, AST delta, test suite counts, and topology) under `git_commit_note`.
-- **`polish_scope`**: Permits bounded root-level polish adjustments inside `.acdd/**`, `docs/**`, `skills/**`, `AGENTS.md`, `**/AGENTS.md`, `README.md`, and `.gitignore`.
-- **Proof Catalog (`proofs`)**:
-  - `blueprint`: Grounded architectural plan requiring `cited_invariants`, `cited_symbols`, `global_negative_boundaries`, `blackboard_decision_id`, and a per-task dictionary `tasks` (each specifying `layer`, `summary`, `exported_interfaces`, `negative_boundaries`, `incoming_seams`, `outgoing_seams`).
-  - `contract`: Requires `contract_proof` (`seam_test_ref`, non-zero `red_exit_code`).
-  - `command`: Requires `command_proof` (`command`, `exit_code: 0`, plus `tests_passed` / `tests_failed: 0` when required).
-  - `review`: Requires `review_proof` (`decision: pass | reject`, `contours`, optional `extended_scope_review` and `notes`).
-  - `seam_test`: Requires `seam_test_proof` (`exit_code: 0`, `seam_test_refs`, optional test counts).
-  - `delivery`: Requires `delivery_proof` (`delivered`, `commit_sha`, `receipt_id`).
-- **Roles (`roles`)**: All four roles use `mode: subagent` and `reuse_on_reject: true`. Headless runners receive a retained ACDD identity on rejection; that identity alone does not resume provider conversation state. Runner templates requesting unsupported provider conversation resumption are rejected during profile validation and before spawning:
-  - `architect`: Synthesizes the milestone blueprint, grounds decisions on `task_blackboard`, and performs milestone integration polish.
-  - `contract_author`: Designs each task's data flow, invariants, negative boundaries, and compiling runtime-red seam test, and posts a `build`-targeted `draft` to `task_blackboard`.
-  - `builder`: Implements approved contracts and joint seam integrations inside admitted scope.
-  - `independent_reviewer`: Audits blueprint synthesis, tasks, seam integration, and final milestone cohesion while remaining independent (`worker_id`) from the author or builder.
-- **Policies (`policies`)**: Enforces `require_zero_exit: true` (`max_log_bytes: 98304`) for commands, `atomic_receipt: true` for delivery, and `default_review` (`independent_worker: true`, `require_all_contours: true`, `audit_extended_scope: true`).
-- **Review Contours (`contour.*`)**: Every review gate receives five analytical focus lenses (`guidance.contours`):
-  1. `contour.paths`: Changed/staged/untracked/generated files remain inside initial scope and admitted extensions; protected paths untouched.
-  2. `contour.claims`: Contract invariants and claims trace directly to production code and real seam tests, including fail-closed error paths.
-  3. `contour.concurrency`: Transaction bounds, revision fencing, lock order, and rollback semantics hold under concurrent updates.
-  4. `contour.project_isolation`: Workspace roots, task/project IDs, symlink confinement, and profile isolation stay confined to the owning repository.
-  5. `contour.administration`: Schema guards, profile pins, Git hooks, candidate parent integrity, and receipts remain intact.
-- **HITL Tiers (`hitl.*`)**: Supports `careless`, `curious`, `pro` (default across built-in gates), and `paranoic`.
-
-### Phase 1: `blueprint_synthesis` (Pre-Task Root Container)
-
-Runs once for the milestone (`subject = "milestone"`) before any task inside `- tasks:` can be claimed:
-
-1. **`blueprint_synthesis.synthesize`**:
-   - **Role & Tools**: `architect`, tools `[code_map_inspect, code_map_impact, code_map_overview, code_map_search, ast_grep_search, acdd_read, task_blackboard]`.
-   - **Guidance & Save**: `[milestone.synthesis, hitl.pro]`; `save: { pre: snapshot, post: snapshot }`.
-   - **Behavior**: Explores existing symbols, invariants, and extension seams (without authoring tests yet), records an architectural decision on `task_blackboard`, and submits `proof: blueprint`. On submission, ACDD validates grounded citations and awaits review before unlocking tasks.
-2. **`blueprint_synthesis.review`**:
-   - **Role & Independence**: `independent_reviewer`, `independent_from: synthesize`, `fail: synthesize`, `policy: default_review`, `contours: guidance.contours`, `save: { immutable: true }`.
-   - **Guidance & Tools**: `[milestone.blueprint_review, hitl.pro]`; read/blackboard navigation tools.
-   - **Behavior**: Verifies cited symbols/invariants, Clean Architecture layer placement, per-task completeness, seam consistency across tasks, and the recorded blackboard decision. Accepting `blueprint_synthesis.review` fans out `proof.tasks[<task_ref>]` slices into `gate_transitions` (`subject = <full_task_id>`) and lifts the `MILESTONE_PRE_TASK_GATE_PENDING` barrier.
-
-### Phase 2: `- tasks:` (Per-Task DAG Container)
-
-Executed for each task in topological `depends_on` order inside `.worktrees/<milestone>-<task-slug>`:
-
-1. **`contract`**:
-   - **Role & Tools**: `contract_author`, `tools: [acdd_read]`, `guidance: [task.contract, hitl.pro]`.
-   - **Validation & Save**: `expected_failure: { exit_codes: [1, 101, 134] }`, `save: snapshot`.
-   - **Behavior**: Reads its injected blueprint slice, synthesizes the task's typed invariants and negative boundaries, writes a compiling runtime-red seam test against authentic production paths (no mocks/stubs around complexity), verifies the red exit code, and posts a `build`-targeted blackboard `draft`.
-2. **`build`**:
-   - **Role & Guidance**: `builder`, `guidance: [task.code, hitl.pro]`, `save: { pre: snapshot, post: snapshot }`.
-   - **Behavior**: Inherits the repository's `command:` binding (such as `rust-check-and-test`) from `.acdd/profile.yaml`. Implements the contract within admitted scope until strict linters and the seam test pass (exit code `0`) observed via `task verify`.
-3. **`review`**:
-   - **Role & Policy**: `independent_reviewer`, `policy: default_review`, `contours: guidance.contours`, `guidance: [task.review, hitl.pro]`.
-   - **Independence & Loop**: `independent_from: build`, `fail: build`, `loop: { scope: build, symbols: contract }`, `save: { immutable: true }`.
-   - **Behavior**: Audits the immutable candidate snapshot across subsystems (duplicate detection, anti-monolith test hygiene, performance alignment, heuristics rejection, and the 5 contours). Rejections post structured `task_findings` and resume the same `builder` session without expanding admitted scope or symbols.
-4. **`seam` (`when: seam` Conditional Container)**:
-   - Runs only for tasks participating in cross-task seam dependencies:
-   - **`seam.integrate`**: `builder`, `proof: seam_test`, `guidance: [task.deferred_final_test, hitl.pro]`, `save: { pre: snapshot, post: snapshot }`. Integrates and verifies joint cross-task tests (`seam_test_refs`).
-   - **`seam.review`**: `independent_reviewer`, `guidance: [task.seam_review, hitl.pro]`, `policy: default_review`, `contours: guidance.contours`, `independent_from: integrate`, `fail: integrate`, `loop: { scope: integrate, symbols: contract }`, `save: { immutable: true }`.
-5. **`deliver`**:
-   - **Role & Evidence**: `independent_reviewer` (claims and submits in the same session as `review`, remaining `independent_from: build`), `guidance: [hitl.pro]`, `receipt: true`, `need: [review]`, `fail: build`.
-   - **Save**: `save: { immutable: true, post: commit, git_commit_note: telemetry }`.
-   - **Behavior**: Verifies all subtasks are terminal with non-empty evidence and candidate hash matches `review`, creates the atomic delivery commit with telemetry Git note, and records the immutable cryptographic receipt in SQLite.
-
-### Phase 3: Post-Task Milestone Closure Gates
-
-Once all tasks in `- tasks:` reach terminal delivery (or matching cancellation), the milestone advances through its root closure pipeline:
-
-1. **`verify`**:
-   - **Driver**: Command gate (`proof: command`, `max_attempts: 2`; project overlays bind `command: check_full_repo`).
-   - **Routing**: `pass: milestone_review`, `fail: polish`. Runs full repository verification against the integrated milestone branch with zero token cost.
-2. **`polish`**:
-   - **Driver**: Agent gate (`role: architect`, `max_attempts: 2`, `guidance: [milestone.polish, hitl]`, `tools: [acdd_read, search_docs, get_doc, task_blackboard]`, `save: { pre: snapshot, post: snapshot }`).
-   - **Routing**: `pass: verify`. Repairs integration failures or milestone-review findings within `polish_scope` and sends the milestone back through a fresh automated `verify` check.
-3. **`milestone_review`**:
-   - **Driver**: Agent gate (`role: independent_reviewer`, `max_attempts: 2`, `policy: default_review`, `guidance: [milestone.review]`, `contours: guidance.contours`, `independent_from: polish`, `save: { immutable: true }`).
-   - **Routing**: `pass: handoff`, `fail: polish`. Performs holistic integration audit of the milestone diff against the target base (`main`), performance invariants, and duplicate checks. Any edits or documentation gaps send the candidate back to `polish` $\to$ `verify`.
-4. **`handoff`**:
-   - **Driver**: Terminal gate (`receipt: true`, `absorb: true`, `save: commit`).
-   - **Behavior**: Binds final authority, implementation, and target-base digests alongside the observed `verify` trace and independent integration review, records the milestone receipt and `milestone_tombstones`, prunes completed SQLite task rows, and archives the manifest to `docs/milestones/archive/`.
+- **Roles**: `architect` (`subagent`, `reuse_on_reject: true`), `contract_author`
+  (`subagent`, `reuse_on_reject: true`), `builder` (`subagent`, `reuse_on_reject: true`),
+  and `independent_reviewer` (`subagent`, `reuse_on_reject: false`).
+- **Contours**: `paths`, `claims`, `concurrency`, `project_isolation`, and
+  `administration`.
+- **Guidance slots**: `milestone.synthesis`, `milestone.blueprint_review`,
+  `milestone.polish`, `milestone.review`, `milestone.handoff`, `task.contract`,
+  `task.contract_review`, `task.code`, `task.review`, and `hitl.pro`.
 
 ---
 
-## Headless task, milestone, plan and workflow execution
+## 4. Headless Execution (`acdd run`)
 
-The [CLI orchestration commands](cli.md#structured-plans) share canonical profiles, gate cursors, proof validation, and process supervision. Task runners advance the persisted task lifecycle. Milestone runners validate dependency waves, dispatch that lifecycle serially in-place or through owned isolated worktrees, and integrate accepted deliveries before the next task. Root gate observations stay in transition records; profile, authority, and content bindings control restart reuse without introducing a second task or gate registry.
-
-[`run_standalone_workflow`](../../crates/acdd-tasks/src/engine/orchestrator/workflow.rs) executes a workflow's taskless root graph with ephemeral observations and `save: none`. Commands reuse the existing output parser and supervised process executor. Agent roles receive distinct sessions and must return a structured decision with typed proof; rejections carry structured findings to the retained target session, and exit status alone cannot supply role acceptance. Task containers and persistent receipts are refused for these workflows.
-
-Command placeholders, including those on role-driven gates, use string fields from accepted producer decisions in observation order; the latest accepted observation wins when fields collide. Re-executing a gate invalidates its previous fields before its command is resolved, and rejected decisions supply none. Other producers' fields remain available. `plan_slug` and `plan_name` alias one another when only one is present. Unresolved placeholders and values containing unsafe path characters are rejected before command execution.
-
-Root command observations check the configured output counts and proof catalog. Contract proof checks the observed runtime failure and configured signature; seam proof checks observed test identities and counts. Commands that intentionally produce no test summary use `output.require_counts: false`.
-
-### Standalone Artifact Authoring Workflows
-
-Before execution begins, teams can author new milestones, plans, or workflows under `docs/workflows/` (`inherit: none`, `save: none`):
-
-- **`author-milestone.workflow.yaml`**: `synthesize` (`role: architect`, inline `proof.scheme`) $\to$ `review` (`role: independent_reviewer`, `independent_from: synthesize`, `fail: synthesize`) $\to$ `preflight` (`command: validate_milestone` running `acdd milestone init {manifest_path} --in-place`). Produces grounded manifests in `docs/milestones/<id>.md` with acyclic waves, disjoint scopes, and Clean Architecture layers.
-- **`author-plan.workflow.yaml`**: `synthesize` (`role: architect`, inline `proof.scheme`) $\to$ `review` (`role: independent_reviewer`, `independent_from: synthesize`, `fail: synthesize`) $\to$ `preflight` (`command: validate_plan` running `acdd plan show {plan_name}`). Produces structured plans in `docs/plans/<slug>.md`.
-- **`author-workflow.workflow.yaml`**: `synthesize` (`role: architect`, inline `proof.scheme`) $\to$ `review` (`role: independent_reviewer`, `independent_from: synthesize`, `fail: synthesize`) $\to$ `preflight` (`command: validate_workflow` running `acdd workflow show {workflow_name}`). Produces standalone taskless workflows in `docs/workflows/<name>.workflow.yaml`.
-
-The milestone preflight initializes the authored manifest's tasks in the task
-store. The standalone workflow gates themselves do not create task rows or
-claims; `save: none` does not create synthetic `.acdd/runs` logs.
-
-[`run_plan_workflow`](../../crates/acdd-tasks/src/engine/orchestrator/plan.rs) projects indexed `doc_type: plan` sections to source-owned steps in validated dependency order. Snapshot persistence preserves HEAD and staged content, explicit execution profiles must be task-only and snapshot-only, delivery enforces the subtask completion/evidence guard, completed steps with evidence are not replayed, and concurrent source edits fail closed.
-
-Plan snapshots exclude the configured `tasks_db` and its SQLite journal, WAL,
-shared-memory, and lock sidecars, as well as `.acdd`. Database paths remain
-subject to the workspace configuration's confinement checks.
-
-Milestone verification executes the exact current root command cursor. Handoff validates an independent role decision and ACDD-observed command results bound to final authority, implementation, and explicit target-base content. See [milestone commands](cli.md#repository-milestones) and [global options](cli.md#global-options).
+`acdd run` (`--jobs N`, `--allow-main`, `--dry-run`) drives the active `Run`'s
+DAG waves using `crates/acdd-state/src/runner/`:
+- Mechanical `command:` / `call:` gates run directly via `verify` + `submit`.
+- Role-assigned gates require an explicit `runner:` template on `roles.<role>`
+  (otherwise failing closed with `WORKFLOW_RUNNER_REQUIRED`).
+- Each spawned runner receives a fresh session fingerprint, isolated process
+  group, and rendered `ClaimResp` on stdin; exit status `0` without an accepted
+  submission fails closed with `RUNNER_NO_SUBMISSION`.
+- See [CLI reference](cli.md#headless-run-execution) and
+  [State, tasks & lifecycle](tasks.md) for wave execution and recovery details.
 
 ---
 

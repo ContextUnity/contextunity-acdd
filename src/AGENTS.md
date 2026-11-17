@@ -9,40 +9,44 @@ This document defines the architectural layering, import boundaries, modularity 
 
 ## 1. Architectural Layers and Import Boundaries
 
-The codebase operates on a 5-layer hierarchy:
+The workspace operates as **3 library crates (`acdd-core`, `acdd-index`, `acdd-state`)** plus **the root host crate `contextunity-acdd` (`src/`)** in a strict unidirectional hierarchy:
 
 ```text
-       ┌───────────┐       ┌───────────┐
-       │  src/cli  │       │  src/mcp  │
-       └─────┬─────┘       └─────┬─────┘
-             │                   │
-             └─────────┬─────────┘
-                       ▼
-               ┌───────────────┐
-               │  src/engine   │◄────┐
-               └───────┬───────┘     │ (legacy cycle frozen)
-                       │             │
-                       ▼             │
-               ┌───────────────┐     │
-               │    src/db     ├─────┘
-               └───────┬───────┘
-                       ▼
-               ┌───────────────┐
-               │   src/core    │ (strict leaf)
-               └───────────────┘
+  src/cli (clap) ─────────┐
+  src/mcp (19 static      ├──► src/state_bridge (CodeDomainProvider, DocsDomainProvider,
+       + plugin tools)    │        │              + external DomainProvider extension pattern)
+  src/format              │        ▼                          ▼
+                          └──► crates/acdd-state          crates/acdd-index
+                                ├── machine/ (100% Pure)   (rusqlite code-map,
+                                ├── usecases/               tree-sitter, docs)
+                                ├── git_ops/, runner/         │
+                                └── store/sqlite/             │
+                                       │                      │
+                                       └──────────┬───────────┘
+                                                  ▼
+                               crates/acdd-core (config, ids, errors, path_policy,
+                                                 schema, ports, fs, git, sys, lock, format, telemetry)
 ```
 
-> [!IMPORTANT]
-> Invariant: `src/core` is a strict leaf. It never imports `src/engine`, `src/db`, `src/mcp`, or `src/cli`. Direct `rusqlite` use in `src/core/commitments` stays. Pure receipt checks (`validate_durable_receipt`, `validate_durable_receipt_with_profile`, `REVIEW_CONTOURS`) stay in `core::tasks::gates`. Shell verification, milestone receipt writes, delivery-tree Git checks, and `tasks_store` coordination live in `src/engine/tasks/gates.rs`. See [ADR 0018](../docs/adr/0018-layer-dependency-boundaries-and-core-leaf-isolation.md).
+Crate-local instructions:
+- [`crates/acdd-core/AGENTS.md`](../crates/acdd-core/AGENTS.md)
+- [`crates/acdd-index/AGENTS.md`](../crates/acdd-index/AGENTS.md)
+- [`crates/acdd-state/AGENTS.md`](../crates/acdd-state/AGENTS.md)
 
 > [!IMPORTANT]
-> Invariant: The legacy mutual import cycle between `src/engine` and `src/db` is frozen against any new import edges. Breaking this cycle requires abstract storage and graph-builder ports in `src/core`, which is deferred to a dedicated architectural milestone.
+> Invariant: `crates/acdd-core` is a strict leaf crate (forbidding `acdd-index`, `acdd-state`, `rusqlite`, `tree-sitter`, `zstd`, `rayon`, `hashbrown`, `clap`, `rmcp`, and `tokio`). `crates/acdd-state` never depends on `crates/acdd-index`, `tree-sitter`, `clap`, `rmcp`, or `tokio`. Inside `crates/acdd-state`, `machine/` is a 100% pure functional core (no `std::fs`, `std::process`, `std::net`, or `rusqlite`), and `rusqlite` imports are confined exclusively to `crates/acdd-state/src/store/sqlite/`. See [ADR 0001](../docs/adr/0001-crate-dag-and-layer-boundaries.md) and [ADR 0003](../docs/adr/0003-unified-profile-graph-and-state-machine.md).
 
-- **`src/core`**: Foundational domain models, cryptographic commitments, response pagination budgets, and OS/filesystem primitives. Strict leaf.
-- **`src/db`**: SQLite persistence, schema migrations, reader snapshot isolation, FTS5 symbol indexing, and graph traversal caches. Depends on `src/core`. Legacy imports from `src/engine` are frozen.
-- **`src/engine`**: AST fact extraction, language profiles, cross-file symbol linking, filesystem scanner, and ACDD task/milestone execution policies. Depends on `src/core` and `src/db`.
-- **`src/mcp`**: JSON-RPC Model Context Protocol server, tool dispatch, and schema generation. Depends on `src/engine`, `src/db`, and `src/core`.
-- **`src/cli`**: Command-line entry points and subcommand routing. Depends on `src/engine`, `src/db`, and `src/core`.
+> [!IMPORTANT]
+> Invariant: `src/state_bridge` is imported by `src/cli` and `src/mcp`, and never by `src/engine` or any workspace crate (`crates/*`). Proxy modules (`src/core/*`, `src/db/*`) are banned; host modules import types directly from `acdd_core::*`, `acdd_index::*`, `acdd_state::*`, and `crate::format::*`.
+
+- **`crates/acdd-core`**: Strict leaf crate owning decoded identifiers (`ids`), diagnostic codes (`errors`), normalized `WorkspacePathPolicy` predicates (`path_policy`), self-contained `SchemaDef` (`schema`), `DomainProvider` SPI (`ports`), workspace `Adapter` configuration (`config`, `subsystems`), response budgets (`response`), confined filesystem/Git/lock wrappers (`fs`, `git`, `lock`), hashing/JSON counting (`format`), cgroup memory calculation (`sys`), and telemetry wire DTOs (`telemetry`). See [crates/acdd-core/AGENTS.md](../crates/acdd-core/AGENTS.md).
+- **`crates/acdd-index`**: Tree-sitter AST fact extraction, language profiles, cross-file symbol linking, filesystem scanner, documentation parser, Merkle commitments (`commitments`), compact graph/fact encoding (`models`, `typed_facts`, `interner`), and `code-map.sqlite` persistence (`db`). See [crates/acdd-index/AGENTS.md](../crates/acdd-index/AGENTS.md).
+- **`crates/acdd-state`**: Domain-agnostic `GateProfile` (`version: 2`) parser/validator, `SpecDocument` parser, pure `machine/` transitions, `StateBackend` (`StateReader` / `StateTx`) persistence, `git_ops/`, `runner/`, `context`, `observability`, and `harness::RunHarness`. See [crates/acdd-state/AGENTS.md](../crates/acdd-state/AGENTS.md).
+- **`src/state_bridge`**: Host `CodeDomainProvider` (`code.seam`, `code.signature_scope`, `code.symbols`, `code.tests`, `code.external_callers`), `DocsDomainProvider` (`docs.links`, `docs.adrs`, `docs.invariants`), and `StateEngine` / `StateQueryEngine` initialization. External `crates/acdd-domain-*` shim-crates follow an opt-in extension pattern (none shipped in-tree; see [domain extensions](../docs/architecture/domain-extensions.md)).
+- **`src/engine`**: Host indexing pipeline orchestration (`pipeline`) and layered file/symbol reader (`reader`).
+- **`src/format`**: Shared Markdown/JSON presentation and workspace-confined `file://` URI attachment ([ADR 0006](../docs/adr/0006-budgeted-gate-context-and-dual-surface-parity.md)).
+- **`src/mcp`**: JSON-RPC Model Context Protocol server (`19` static built-in tools plus registered `DomainProvider` plugin tools), input validation, and response byte-budget enforcement.
+- **`src/cli`**: Flat `0.6.0` command-line entry points (`32` commands: `init`, `start`, `draft`, `status`, `list`, `show`, `next`, `claim`, `verify`, `submit`, `extend-scope`, `reopen`, `sync`, `subtask`, `blackboard`, `snapshot`, `rollback`, `integrate`, `clear`, `run`, `tool`, `read`, `validate`, `serve`, `reload`, `build`, `scan`, `delta`, `query`, `docs`, `ast`, `guide`).
 
 ## 2. Balanced Modularity and Code Deduplication
 
@@ -56,11 +60,11 @@ The codebase operates on a 5-layer hierarchy:
 > Invariant: Proven duplicates (identical logic repeated across files or passes) must be extracted into focused shared helpers. Domain algorithms representing distinct rules (e.g. language-specific AST profiles, linker passes, snapshot verification) must not be prematurely compressed.
 
 > [!IMPORTANT]
-> Invariant: **Holistic Root-Cause Analysis Over Test-Patching**: Never apply narrow heuristics, single-case string checks, arbitrary UTF-8 byte slices, or localized workarounds just to satisfy a failing test case or review finding. Always investigate the problem comprehensively: define the complete domain grammar, verify Unicode safety, ensure fail-closed disambiguation (ADR 0007), and respect filesystem confinement boundaries (ADR 0005). Deduplication is mandatory: before authoring traversal, validation, or path resolution logic, search for existing abstractions in `src/core` or `crates/acdd-tasks` and extend or reuse them.
+> Invariant: **Holistic Root-Cause Analysis Over Test-Patching**: Never apply narrow heuristics, single-case string checks, arbitrary UTF-8 byte slices, or localized workarounds just to satisfy a failing test case or review finding. Always investigate the problem comprehensively: define the complete domain grammar, verify Unicode safety, ensure fail-closed disambiguation ([ADR 0012](../docs/adr/0012-fail-closed-selectors-and-readonly-sql-sandbox.md)), and respect filesystem confinement boundaries ([ADR 0002](../docs/adr/0002-workspace-confinement-and-path-policy.md)). Deduplication is mandatory: before authoring traversal, validation, or path resolution logic, search for existing abstractions in `crates/acdd-core` or `crates/acdd-state` and extend or reuse them.
 
 ### When to Keep Together (DO NOT Split)
 - **High Domain Cohesion**: Closely related data structures, types, and their direct transformation logic belonging to the same semantic unit.
-- **Tightly Coupled Pipelines**: Complex static analysis algorithms (`src/engine/linker/value_flow.rs`, `src/engine/linker/semantic_context.rs`, and the core reference linking loop in `src/engine/linker.rs`) where splitting would require exposing private internal state, inventing synthetic glue DTOs, or creating circular imports.
+- **Tightly Coupled Pipelines**: Complex static analysis algorithms (`crates/acdd-index/src/linker/value_flow.rs`, `crates/acdd-index/src/linker/semantic_context.rs`, and `crates/acdd-index/src/linker/mod.rs`) where splitting would require exposing private internal state, inventing synthetic glue DTOs, or creating circular imports.
 - **Linear Readability**: Keeping a cohesive multi-pass algorithm readable top-to-bottom in a single file is preferred over scattering logic across shallow delegating helpers.
 
 ### When to Split (DO Split)
@@ -71,57 +75,53 @@ The codebase operates on a 5-layer hierarchy:
 ## 3. Canonical Helper Ownership
 
 > [!IMPORTANT]
-> Invariant: Shared infrastructure operations have exactly one canonical owner in `src/core`. Do not invent local variants or duplicate raw subprocess calls in downstream engine or milestone files.
+> Invariant: Shared infrastructure operations have exactly one canonical owner in `crates/acdd-core`. Do not invent local variants or duplicate raw subprocess calls in downstream engine or state modules.
 
 > [!IMPORTANT]
-> Invariant: When moving shared utility functions into `src/core`, existing locations must retain `pub use` re-exports to preserve compilation and interface compatibility across untargeted callers.
+> Invariant: Import shared utilities directly from `acdd_core::*` rather than creating proxy re-export modules in `src/`.
 
-1. **Git Process Execution (`crate::core::git`)**:
-   - `core::git` owns the low-level subprocess runner: working directory (`cwd`) binding, exit status checks, and stdout capture (`git_command`, `git_stdout`, `git_status`, `git_commit_exists`).
-   - High-level Git workflows (temporary index manipulation, rollback guards, and tree candidate snapshotting) remain domain logic in `src/engine/tasks/git_snapshot.rs`.
-   - Special-case Git invocations (piped stdin, custom `GIT_INDEX_FILE` environment variables, or background child spawning) retain their specialized contracts.
-2. **Filesystem and Atomic Writes (`crate::core::fs`)**:
-   - `core::fs` owns workspace path validation (`canonical_root`, `checked_child`, `safe_relative`).
-   - `core::fs::atomic_write` handles secure file creation with mode setting (`0o600`/`0o755`), directory creation, and symlink validation.
-   - `core::fs::atomic_replace` handles same-directory atomic replacement preserving existing file mode and umask for milestone markdown contracts.
-   - Both operations share internal atomic temp-file write and rename routines (`commit_atomic_temp`) to eliminate boilerplate duplication while preserving distinct permission semantics.
-3. **System Memory and Budgets (`crate::core::sys`)**:
-   - `core::sys` is the sole owner of Linux cgroup v1/v2 memory parsing, headroom computation, and memory budget calculations.
+1. **Git Process Execution (`acdd_core::git`)**:
+   - `acdd_core::git` (`crates/acdd-core/src/git.rs`) owns the low-level subprocess runner: env scrubbing (`scrub_git_env` / `STRIPPED_GIT_ENV_VARS`), working directory (`cwd`) binding, exit status checks, `primary_worktree_root`, `git_common_dir`, and stdout/raw capture (`run_git_*`, `git_command`, `git_stdout`, `git_status`).
+   - High-level Git workflows (snapshot management, scoped commits, integration strategies, and worktree lifecycle) remain domain logic in `crates/acdd-state/src/git_ops/` (`snapshot.rs`, `commit.rs`, `integrate.rs`, `worktree.rs`).
+2. **Filesystem and Path Confinement (`acdd_core::fs` & `acdd_core::path_policy`)**:
+   - `acdd_core::path_policy::WorkspacePathPolicy` owns pure normalized workspace path predicates (`is_engine_managed`, `is_candidate_included`, `is_scope_admitted`, `is_agent_writable`).
+   - `acdd_core::fs` (`crates/acdd-core/src/fs.rs`) owns workspace path validation (`canonical_root`, `canonicalize_macos_var`, `checked_child`, `safe_relative`, `ensure_confined_dir_all`, `check_ancestors_no_symlinks`, `confined_database_open_path`), secure `atomic_write` (`0o600`/`0o755`), and `atomic_replace`.
+3. **Advisory File Locks (`acdd_core::lock`)**:
+   - `acdd_core::lock` (`crates/acdd-core/src/lock.rs`) owns blocking and bounded-retry shared/exclusive OS file locks via `std::fs::File::try_lock*` / `lock*` with `O_NOFOLLOW` regular-file opening (`0o600`). Do not reimplement `libc::flock` polling loops downstream.
+4. **Configuration, Hashing, and Formatting (`acdd_core::config` & `acdd_core::format`)**:
+   - `acdd_core::config` (`crates/acdd-core/src/config.rs`) is the sole owner of `Adapter`, `AdapterFile`, `LinkedWorkspace`, `ScannerLimits`, and `load_adapter`.
+   - `acdd_core::format` (`crates/acdd-core/src/format.rs`) owns `stable_hash64`, `sha256_hex`, streaming `sha256_serde_json`, `canonical_json_sha256`, `JsonByteCounter` / `estimate_json_bytes`, and `utf8_floor_boundary` / `utf8_tail`.
+5. **System Memory and Telemetry (`acdd_core::{sys, telemetry}`)**:
+   - `acdd_core::sys` (`crates/acdd-core/src/sys.rs`) owns Linux cgroup v1/v2 memory parsing and budget calculations; `acdd_core::telemetry` owns W3C trace IDs and UTC timestamp helpers (`now_utc_iso_ms`, `unix_epoch_ms`).
 
 ## 4. Module Layout and `build.rs` Conventions
 
 > [!IMPORTANT]
-> Invariant: `#[path = "..."]` attributes are permitted only when required by `build.rs` code generation and `OUT_DIR` language profile registration. Internal submodules must use standard Rust module hierarchy once the root path resolves to `mod.rs`.
+> Invariant: `#[path = "..."]` attributes are permitted only when required by `crates/acdd-index/build.rs` code generation (`OUT_DIR/language_profiles.rs`) or explicit submodule layout constraints. Internal submodules must use standard Rust module hierarchy once the root path resolves to `mod.rs`.
 
 - When decomposing an oversized module, convert it into an idiomatic directory module (`<name>/mod.rs` with sibling submodules `<name>/<submodule>.rs`).
-- `build.rs` generates language profile registrations into `OUT_DIR/language_profiles.rs`. Modifying language profile file discovery requires updating `build.rs` in the same scope.
+- `crates/acdd-index/build.rs` generates language profile registrations into `OUT_DIR/language_profiles.rs` and computes `ACDD_LANGUAGE_PROFILE_DIGEST` from `crates/acdd-core/src/**` and `crates/acdd-index/src/**`. Root `build.rs` is removed; modifying language profile discovery requires updating `crates/acdd-index/build.rs`.
 
-## 5. Performance Invariants for Source Changes
+## 5. Production Rust & Optimization Standards
 
-See [Performance Architecture](../docs/architecture/performance.md) for complete invariant definitions and empirical baselines. When modifying `src/db/` or `src/engine/`:
+See [Performance Architecture](../docs/architecture/performance.md) for measured pipeline invariants. Apply these engineering rules across `src/` and `crates/*`:
 
-1. **No Nested Parallel Iteration**: Do not nest Rayon `.par_iter()` inside already parallelized file chunk workers. Use sequential `.iter()` in `prepare_catalog_rows`.
-2. **Zero Ingestion Node Clones**: Do not clone `Node` or heap strings in `flush_node_batch`. Use borrowed serializers (`NavigationDetails`) directly.
-3. **Intern Manifest Rules**: Intern declarative rules at language context scope, never per file.
-4. **Allocator Trimming**: Preserve all 10 explicit `libc::malloc_trim(0)` sites at batch boundaries to keep Peak RSS < 800 MB.
-
-When modifying task storage, subprocess monitors, or CLI/Git helpers across `src/` and `crates/acdd-tasks/`:
-
-1. **Cached Host Identity**: Read and cache the host name once per process (`OnceLock` + `libc::gethostname`) instead of spawning external `hostname` subprocesses on lock acquisition.
-2. **Ephemeral vs. Durable `sync_all`**: Reserve `sync_all()` for durable object packs, databases, and atomic replacements; omit `sync_all()` on transient concurrency locks (`gc.pid`) created with `create_new` + `rename` and unlinked on drop.
-3. **Batched Checkpoint Verification**: Check parent commit existence in a single `git cat-file --batch-check` call instead of per-SHA subprocess loops, and reuse intent-pinned parent sets across two-phase checkpoint publication.
-4. **Adaptive Subprocess Polling & Non-Blocking Ingress**: Use progressive poll backoff (`1ms -> 2ms -> 5ms -> 10ms`) in command exit monitors instead of fixed multi-millisecond sleeps, and keep CLI `io::stdin().read_to_string()` reading separated behind an explicit stdin entrypoint (`run_with_stdin`) so in-process callers and tests never stall on open inherited pipes.
+1. **Ownership at Boundaries**: Borrow `&Adapter`, `&ResponsePolicy`, `&Path`, and `&str` across dispatch and query paths. Move consumed `BuildCandidate` values and non-debug CLI results instead of cloning. Compact bounded `serde_json::Value` payloads in place without per-step `.clone()`. Instantiate `domain_providers` lazily only for tools that use them.
+2. **De-Monomorphization**: Route CLI dispatch through `&mut dyn std::io::Write`, `acdd-state` usecases through `&dyn StateBackend` (`exec_tx_dyn`), and `acdd-index` linker/writer helpers through `&Facts` / `&mut dyn std::io::Write`. Thin generic wrappers (`impl AsRef<Path>`, `impl Serialize`) must delegate immediately to non-generic inner functions (`fn inner(path: &Path)`).
+3. **Determinism**: Sort `fs::read_dir` entries and map keys (`BTreeMap` or explicit `.sort()`) before assigning sequential IDs (`SymbolId`) or emitting serialized rows, edges, or Merkle commitments.
+4. **Cross-Platform SQLite & FS Safety**: Resolve SQLite paths with `confined_database_open_path` before `SQLITE_OPEN_NOFOLLOW`; handle WAL-without-`-shm` in read-only openings (`OPEN_READ_WRITE` + `PRAGMA query_only = ON` with `OPEN_READ_ONLY` fallback) alongside `trusted_schema = OFF` and `busy_timeout`; checkpoint WAL (`TRUNCATE`), switch `PRAGMA journal_mode = DELETE;`, and unlink regular-file sidecars under exclusive lock before staged DB/backup publication; write private files via `0o600` `atomic_write`.
+5. **Indexing & Subprocess Hot Paths**: Preserve zero nested Rayon `.par_iter()`, zero `Node`/string clones in `flush_node_batch`, interned manifest rules, `libc::malloc_trim(0)` at batch boundaries, `OnceLock` cached host identity, ephemeral vs. durable `sync_all`, batched `git cat-file --batch-check`, progressive subprocess poll backoff (`1ms -> 2ms -> 5ms -> 10ms`), and explicit `run_with_stdin` ingress separation.
 
 ## 6. Verification Gates
 
 Before delivering any source code change, verify the required gates from [TESTS.md](../TESTS.md):
 
-1. **Task-Level Proof**: Run the focused test seam and scoped suite proving the admitted change (e.g. `cargo test --test <target> <filter>`).
+1. **Task-Level Proof**: Run the focused test seam and scoped suite proving the admitted change (e.g. `cargo test --test <target> <filter>` or `cargo test -p <crate> --lib <filter>`).
 2. **Strict Linter**:
    ```bash
-   cargo clippy --all-targets --all-features -- -D warnings
+   cargo clippy --workspace --all-targets --all-features -- -D warnings
    ```
-3. **Milestone Handoff Gate**: Run the single compound verification command before milestone handoff:
+3. **Milestone Handoff Gate**: Run the workspace verification commands before handoff:
    ```bash
-   cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets
+   cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --lib && cargo test --workspace --all-targets
    ```

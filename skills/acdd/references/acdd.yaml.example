@@ -1,5 +1,5 @@
 # Example acdd.yaml adapter
-# Points to repository resources, guidance, and optional ACDD profile file.
+# Points to repository resources, spec collections, and module toggles.
 
 roots:
   - src
@@ -7,24 +7,40 @@ roots:
 docs:
   - README.md
   - docs
-milestones:
-  - docs/milestones
-plans:
-  - docs/plans
 ignore:
   - target
   - node_modules
   - .venv
   - .git
+  - .acdd
 
 # Reader paths blocked before reads and exports (gitignore-style patterns).
 sensitive: ['.env*', 'secrets/**']
 
-# Task configuration
-task_repository: "acdd"
-task_project: "acdd"
-tasks_db: ".acdd/tasks.sqlite"
-agents_guidance: "AGENTS.md"
+# Specification collections and unified state configuration (0.6.0)
+specs:
+  milestones:
+    path: docs/milestones
+    profile: workspace
+    prefixes: [AC]
+    digits: 3
+  plans:
+    path: docs/plans
+    profile: in_place
+    prefixes: [PLAN]
+    digits: 3
+
+profiles_dirs:
+  - .acdd/profiles
+  - docs/workflows
+state_db: ".acdd/state.sqlite"
+retain_traces: 20
+
+modules:
+  code: true
+  docs: true
+  state: true
+  blackboard: true
 
 # Linked workspaces (optional)
 # linked_workspaces:
@@ -33,13 +49,8 @@ agents_guidance: "AGENTS.md"
 #     enabled: true
 #     roots:
 #       - src
-#     tasks:
-#       enabled: true
-#       milestones_dir: docs/milestones
-#       agents_guidance: AGENTS.md
-
-# Optional path link to repository ACDD profile (defaults to .acdd/profile.yaml if omitted):
-acdd_profile: ".acdd/profile.yaml"
+#     docs:
+#       - docs
 
 # MCP response policy
 response:

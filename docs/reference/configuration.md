@@ -5,7 +5,10 @@ title: Workspace configuration
 
 # Workspace configuration
 
-`acdd.yaml` is optional. Without it, ACDD scans the workspace root and excludes common build and cache directories. `guide init` writes a starter file. Put the adapter in the workspace root; `build` and `scan` can select another in-root file with `--adapter`.
+`acdd.yaml` is optional. Without it, ACDD scans the workspace root and excludes
+common build and cache directories. `acdd init` writes a starter repository
+configuration. Put the adapter in the workspace root; CLI flags `--config`
+(`ACDD_CONFIG`) and `--state-db` (`ACDD_STATE_DB`) override defaults cleanly.
 
 ## Indexing scope
 
@@ -14,10 +17,22 @@ roots:
   - src
 docs:
   - docs
-milestones:
-  - docs/milestones
-plans:
-  - docs/plans
+specs:
+  milestones:
+    path: docs/milestones
+    profile: workspace
+    prefixes: [AC]
+    digits: 3
+  plans:
+    path: docs/plans
+    profile: in_place
+    prefixes: [PLAN]
+    digits: 3
+profiles_dirs:
+  - .acdd/profiles
+  - docs/workflows
+state_db: .acdd/state.sqlite
+retain_traces: 20
 ignore:
   - target
   - node_modules
@@ -31,7 +46,39 @@ linked_workspaces:
       - docs
 ```
 
-`roots` and `docs` are literal, relative directories or paths inside the workspace. `milestones` and `plans` default to `docs/milestones` and `docs/plans` when omitted. Their `*` segments match one directory component (for example, `extensions/*/docs/milestones`). Markdown and MDX in admitted documentation locations, including milestone and plan documents, remain searchable and available for graph navigation; this does not change which configured directories task discovery reads. Non-document files in those directories stay outside the source index. `ignore` matches file or directory basenames. The scanner admits compiled source extensions and Markdown/MDX within these roots; scan roots do not define import or package roots. Unavailable linked workspaces are skipped. A linked entry with `enabled: false` is excluded; omission of `enabled` means true.
+`roots` and `docs` are literal, relative directories or paths inside the
+workspace. `specs:` declares named specification collections (`milestones` and
+`plans` by default), each configuring `path`, optional default `profile`, allowed
+`prefixes`, and numeric ID zero-padding `digits` (`1..=16`, default `3`).
+`specs.<name>.path` entries must be normalized relative paths that do not overlap
+by path components. Legacy top-level `milestones:` and `plans:` lists remain
+accepted alongside `specs:` only for migration/compatibility and are superseded
+by `specs:`. Markdown and MDX in admitted documentation locations, including
+milestone and plan documents, remain searchable and available for graph
+navigation. Non-document files in those directories stay outside the source
+index. `ignore` matches file or directory basenames. The scanner admits
+compiled source extensions and Markdown/MDX within these roots; scan roots do
+not define import or package roots. Unavailable linked workspaces are skipped. A
+linked entry with `enabled: false` is excluded; omission of `enabled` means
+true.
+
+### Configuration digest isolation (`adapter.digest`)
+
+Changing operational, presentation, or state settings does **not** invalidate
+the code/docs index (`code.sqlite`). When computing `adapter.digest`, ACDD
+explicitly excludes:
+- `response`
+- `DEBUG` / `debug`
+- `modules` and `profile`
+- `state_db`
+- `retain_traces`
+- `profiles_dirs`
+- `specs` (and non-path spec metadata such as `profile`, `prefixes`, `digits`)
+
+Only source/docs indexing inputs (`roots`, `docs`, `ignore`, `sensitive`,
+`limits`, `linked_workspaces`, `owners`, `aliases`, `adapter_version`) affect
+`adapter.digest`. Changing `state_db`, `retain_traces`, `profiles_dirs`,
+`modules`, `response`, or `specs` never triggers a cold code-map rebuild.
 
 The default basename exclusions cover `.git`, `.acdd`, `target`, `node_modules`, `.venv`, `__pycache__`, `build`, `dist`, `coverage`, `.cache`, `.next`, `.nuxt`, `.svelte-kit`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, and `.gradle`. The scanner also honors `.gitignore` and skips symbolic links. Add project-specific generated directories with `ignore`; authored source under an excluded basename can be scoped explicitly with a different directory name.
 
@@ -82,61 +129,47 @@ linked_workspaces:
 
 Ignore names are literal basenames, not glob patterns. Add a directory such as `static` only when the library builds all of its contents from sources retained elsewhere. Keep authored host assets and source-level type contracts. Excluded bundles neither enter the index nor trigger source refresh when rebuilt.
 
-## Task storage
+## State storage and module toggles
 
-Task operations read `acdd.yaml`; an omitted `tasks_db` defaults to
-`.acdd/tasks.sqlite`. Relative paths automatically resolve against the primary
-worktree root in linked git worktrees (via `git rev-parse --git-common-dir`)
-or the local configuration directory in standalone workspaces, enabling zero-config
-cross-worktree task coordination without machine-specific absolute paths.
-`task_repository` and `task_project` select the
-qualified task namespace. See [repository tasks](tasks.md) for identity,
-concurrency, receipts, and administration. Code indexing works without task
-storage configuration.
+State operations read `acdd.yaml`; an omitted `state_db` defaults to
+`.acdd/state.sqlite`, resolved against the **primary worktree root** (discovered
+via `git rev-parse --path-format=absolute --git-common-dir`) or the workspace
+root in non-Git workspaces. CLI `--state-db` / `ACDD_STATE_DB` overrides
+`state_db`. `retain_traces` controls how many run trace directories under
+`<primary_worktree>/.acdd/run/<run_id>/traces.jsonl` are retained across cleanup
+(default `20`, must be `>= 1`). See [state, tasks & lifecycle](tasks.md) for
+storage tables, advisory locks under `<git_common_dir>/acdd/`, snapshots, and
+recovery. Code indexing works without state storage configuration.
 
-Code-map output guards reject unreadable existing database targets rather than
-replacing them, including custom task database names not configured in this
-workspace. Readable non-SQLite cache files remain rebuildable.
-
-Subproject identity uses milestone `project` frontmatter, then the longest
-matching `owners` prefix, then path inference, then the workspace default.
-Root `owners` maps repository-relative directory prefixes to project names;
-prefixes match whole path components. Root `aliases` maps the selected name to a
-canonical name once, including the configured default project. Alias lookup is
-not recursive: with `old: current` and `current: next`, selecting `old` yields
-`current`. Discovery, synchronization, task authority, receipts, and
-milestone show/handoff use this same identity. Directories containing only declared
-projects register those projects; a directory with undeclared manifests also
-retains its configured or inferred owner. Empty directories and directories with
-only a README do not create subproject workspaces. When milestone initialization
-emits `project` frontmatter, it writes the pre-alias spelling so later parsing
-applies aliases exactly once.
+`modules:` configures MCP subsystem and `DomainProvider` plugin availability:
 
 ```yaml
-owners:
-  extensions/base: base
-aliases:
-  legacy-base: base
+modules:
+  code: true
+  docs: true
+  state: true
+  blackboard: true
+  memory: false
+  domains:
+    code: true
+    docs: true
 ```
 
-Code-map output and task storage use separate databases. Index commands reject
-reserved task filenames, the configured `tasks_db` path, and existing task schemas
-with `TASK_DATABASE_COLLISION`. A present invalid task configuration also rejects
-index output because its reserved path cannot be validated. Opening a task store
-rejects code-map filenames and schemas. New task-store initialization shares the
-index publication lock; opening an initialized task store needs no writer lock.
+Or using preset form (`profile: full | navigator | orchestrator | minimal` with
+optional `enabled`, `disabled`, `required`, and `domains` maps). Disabling
+`state` automatically disables `blackboard`; core tools `acdd_read` and
+`acdd_guide` remain available even under `minimal`. External `DomainProvider`
+plugins are toggled via `modules.domains.<domain_id>: true | false`.
 
-Set root `agents_guidance` to a path inside the root repository. It defaults to
-`AGENTS.md`. Claim and inspect include that path and stage-specific
-`workflow_guidance`. A `TASK_GUIDANCE_MISSING` warning is raised if the `agents_guidance`
-file is missing, does not reference `acdd`, the `acdd` skill
-is not installed, or `.gitignore` lacks the canonical protective rules.
+Code-map output guards reject unreadable existing database targets and refuse
+to overwrite `.acdd/state.sqlite` or the configured `state_db` path. Opening the
+state store rejects code-map database filenames and schemas. Run initialization
+and state/backup locking use bounded advisory locks under `<git_common_dir>/acdd/`.
 
-Linked entries opt into the primary task store with `tasks.enabled: true`.
-`tasks.milestones_dir` defaults to `docs/milestones`, and `tasks.agents_guidance`
-defaults to `AGENTS.md`, both relative to the linked repository root.
-Omitted or disabled task entries are excluded. See [linked repository tasks](tasks.md#linked-repository-tasks)
-for synchronization, namespace selection, and scope confinement.
+Subproject identity uses spec `project` frontmatter, then the longest matching
+`owners` prefix, then path inference, then the workspace default (`aliases` maps
+legacy owner names once). Set `specs` collections above to govern discovery,
+default profile selection, and `acdd draft` ID generation.
 
 ## MCP response policy
 
@@ -157,68 +190,65 @@ The root `acdd.yaml` and the file selected with CLI `--adapter` are configuratio
 
 ## Declarative ACDD profile and role configuration
 
-`handoff_pruning` is a project setting in `acdd.yaml`, enabled by default
-for every workflow. Handoff removes terminal milestone tasks and their SQLite
-claims, gate evidence, revisions, subtasks, and blackboard messages, retaining a
-small tombstone and the durable archive manifest. Set `handoff_pruning: false`
-to retain SQLite task history with its milestone reference relocated to the
-archive. This setting belongs at the adapter root, outside `acdd_profile`.
-
-The ACDD workflow engine supports declarative customization of gates, review contours, and agent roles via YAML profiles.
+The ACDD unified state engine (`crates/acdd-state`) governs runs declaratively
+using **v2 `GateProfile` YAML** files (`version: 2`).
 
 ### Loading precedence
-1. Task specification: `acdd_profile: "<path>:<sha256_prefix>"` in `task.spec.acdd_profile`
-2. Milestone frontmatter: `acdd_profile: "<path>:<sha256_prefix>"` in milestone YAML frontmatter
-3. Adapter path link in `acdd.yaml` under `acdd_profile: "<path>"`
-4. Default repository path `.acdd/profile.yaml`
-5. Embedded `acdd.profile.yaml` (baseline defaults)
+1. Explicit CLI flag `--profile <name|path[:sha256_prefix]>` / `ACDD_PROFILE`
+   or `acdd start --profile ...`
+2. Spec frontmatter `profile: <name|path[:sha256_prefix]>` (optional `sha256` pin)
+3. Collection default `specs.<collection>.profile` in `acdd.yaml`
+4. Custom profile files searched under `profiles_dirs` (`.acdd/profiles/`,
+   `docs/workflows/`)
+5. Repository default `.acdd/profile.yaml` (resolved by `"workspace"`, falling
+   back to embedded `"default"` if absent)
+6. Embedded built-in profiles (`default`, `code`, `in_place`)
 
-Profiles in linked workspaces are strictly **ignored**; only the active workspace root defines the ACDD profile.
+Profiles in linked workspaces are strictly **ignored**; only the active
+workspace root defines the ACDD profile.
 
-In `acdd.yaml`, `acdd_profile` specifies a path link to the profile file (e.g. `acdd_profile: ".acdd/profile.yaml"`), keeping the adapter decoupled from the profile specification.
+Any present or referenced profile with invalid YAML syntax, legacy `0.5.x` keys,
+or unrecognized fields fails closed with `ACDD_PROFILE_SCHEMA_INVALID`
+diagnostics. Existing `0.5.x` configuration and `.acdd/profile.yaml` files are
+upgraded manually per the [0.6.0 migration guide](../runbooks/migration-0.6.md).
 
-Any present or referenced configuration file with invalid YAML syntax or unrecognized fields fails closed with `ACDD_PROFILE_SCHEMA_INVALID` diagnostics. Task stage operations (claims, submissions, CLI/MCP stage arguments) validate that the stage exists in the active profile. If a task references a stage not defined in the active profile's `gates`, ACDD fails closed with `TASK_STAGE_UNKNOWN`, naming the unrecognized stage and the active profile's available gates, advising to either migrate the task records or pin the intended profile via `acdd_profile: <path>:<sha256_prefix>`.
+### Gate IDs, proofs, policies, and DomainProvider hooks
 
-### Gate IDs, proof kinds, commands, and policies
+Each gate declares a stable `id` (`[A-Za-z0-9_-]`), optional `role`, `command`,
+`call: <domain>.<action>` (+ `with:`), `checks: [<domain>.<check>]`,
+`context: [<domain>.<lens>]`, `tools` / `tools_add` / `tools_remove`, `proof`,
+`save`, `pass` / `fail` routing edges, `independent_from`, `need`, and optional
+`when` predicates. Built-in proof kinds are `none`, `contract` (requiring
+`command`, `expected_failure`, and `test_filter`), `command`, `call`, and
+`review` (requiring `role` and `contours`); named catalog schemas (`proofs:`)
+and inline `{ scheme: ... }` JSON Schemas bind typed `--evidence` payloads.
+Delivery/handoff gates use `receipt: true` with `save.post: commit` (and
+`archive: true` / `prune: true` for run finalization). See [ACDD Profiles Reference](profiles.md)
+for complete schema documentation.
 
-Each gate declares a stable `id`. The `proof` field is optional because [`infer_gate_proof`](../../crates/acdd-tasks/src/tasks/profile/normalize.rs) automatically infers the internal verification mode (`ProofKind`) from the gate's structural attributes in priority order: `receipt: true` $\implies$ `delivery`, `expected_failure` $\implies$ `contract`, `command` $\implies$ `command`, `policy` or `contours` $\implies$ `review`, and otherwise `none`. Explicit `proof` values (`contract`, `command`, `seam_test`, `review`, `delivery`, `none`) override inference, `proof: <catalog_name>` references a reusable schema in the top-level `proofs:` catalog (`ProofCatalogDef`), and `proof: { scheme: ... }` defines an inline recursive JSON Schema on the gate; the submitted payload must then use `scheme_proof` and match that schema. When any pre-task root gate (`cursor.root_index < task_position`) passes with a `scheme_proof` containing `tasks: { "<task_ref>": { ... } }`, ACDD writes a `gate_transitions` row per task (`subject = <full_task_id>`) and automatically injects only that task's slice into `context_bundle` upon `task claim`. Gate IDs contain ASCII letters, digits, `_`, and `-`, and task rows persist qualified leaf stage IDs directly in `stage`.
+### Profile pinning and tampering protection
 
-`commands` is a registry keyed by command ID. Each entry can be a shell command string, a `by_pattern` glob dispatcher, or an object with `command` and optional `description`. A command-proof gate accepts only a registered command ID or its registered command text. `policies` holds nested YAML settings; overrides merge recursively. Cognitive review contours live under `guidance.contour.<name>` (e.g. `guidance.contour.paths`, `guidance.contour.claims`), where each contour specifies criteria and descriptions; overrides merge per contour key. Role entries merge by role. Under `inherit: default` (the default when `inherit` is omitted), `gates:` merges recursively by gate `id` (and `- tasks:` container) with the embedded baseline before hierarchy normalization, so repository overlays only need to specify gate overrides such as `command` bindings; setting `inherit: none` compiles a standalone gate graph from scratch. References such as `fail`, `independent_from`, and `need` must name valid preceding gates; delivery `need` sources must be review-proof gates. When a nested container branch (such as `- id: seam` with `when: seam`) produces a newer candidate snapshot at `seam.integrate` and approves it at `seam.review`, `deliver` resolves the container prefix via `canonical_stage_id` and validates `seam.review` against the `seam.integrate` snapshot.
-
-Schema nodes support `object`, `array`, `string`, `integer`, `number`, `boolean`, and `null`. Objects can declare `properties`, `required`, `additionalProperties`, and `enum`; arrays require an `items` schema. The compiler rejects invalid fields, undefined required properties, invalid child schemas, unresolved gate references, and task profiles without a terminal delivery gate. See the [canonical profile example](acdd_profile.yaml.example) (symlinked from the ACDD skill) for an executable multi-gate workflow.
-
-### Profile pinning, SQLite metadata, and tampering protection
-
-Custom profiles pinned at planning time use the single-line string format combining file path and SHA-256 hash prefix:
-
-```yaml
-acdd_profile: ".acdd/profile.yaml:a1b2c3d"
-```
-
-- **Format**: `<path>:<sha256_prefix>`, where `<path>` is the relative path to the profile file, followed by a colon and at least 7 lowercase hexadecimal characters representing the SHA-256 hash prefix of the file.
-- **SQLite Metadata**: During `task sync`, the pinned `<path>:<sha256_prefix>` is persisted into task metadata in SQLite.
-- **Integrity Validation**: On every gate claim and execution, ACDD verifies that the file hash on disk matches the recorded prefix in SQLite. If mismatched or missing, ACDD fails closed with `TASK_PROFILE_TAMPERED`.
-- **Targeted Loading**: Profile compilation strictly loads the targeted profile file (compiled over embedded defaults); neighbor files in `.acdd/` are not implicitly merged.
-- **Protected scope**: Configuration paths under `.acdd/**` are protected system paths and cannot be added dynamically via `extend_scope` (`TASK_SCOPE_PROTECTED`) during execution.
-- **Dirty system file prohibition**: During `task_claim`, gate execution, and `task_submit`, ACDD checks worktree git status. If any file under `.acdd/**` is dirty (modified, unstaged, staged, or untracked) and is not explicitly admitted in the active task's initial planning-time `task.spec.scope`, ACDD fails closed with `TASK_SCOPE_VIOLATION`. Only tasks explicitly contracted to alter profiles at planning time (declaring the path in initial `scope`) can legally modify it during `build`.
-- **Zero runtime backward compatibility boundary**: Zero backward compatibility applies strictly to SQLite runtime storage and active milestone manifests. Runtime code speaks exclusively clean entities (`command_proof`, clean gate tokens, canonical topics). Historical archive receipts in `docs/milestones/archive/` are historical artifacts exempt from active profile receipt schema validation.
-- **Delivery auto_commit, baseline HEAD consistency, and handoff navigation**: When `auto_commit: true` (default in profile), delivery automatically creates a Git commit from the candidate snapshot tree of the nearest predecessor gate with snapshot persistence (`save: snapshot` or `save.post: snapshot`, which is `build` in the default profile, whose candidate tree SHA is verified across all `need` review gates) plus the milestone receipt, with parent `HEAD`. ACDD verifies that `git rev-parse HEAD` matches `candidate_baseline_head` (the exact commit SHA of HEAD captured when the candidate snapshot was created). If HEAD has diverged (i.e. unreviewed commits exist on the branch), delivery fails closed with `TASK_DELIVERY_COMMIT_FAILED`. Hooks are enforced. If `git commit` fails, the SQLite transaction rolls back atomically, leaving the task uncompleted at `deliver` with an explicit error, allowing the independent reviewer to reject the task with findings back to `fail` (e.g. `build`) or retry. The created delivery commit SHA is saved in the task's delivery receipt in SQLite. After branch integration, handoff validates content-bound final review/verification and immutable task proofs. Branch history may be rebased or squashed without preserving per-task landing SHAs. Task commit pointers are optional navigation: known or uniquely content-equivalent pointers are refreshed; unresolved pointers are omitted. `record_task_commits: false` (or `commit_tracking: off` / `milestone_only`) omits individual navigation pointers in both Markdown and SQLite. Accepted gate proofs and protected Git proof objects remain unchanged. See [handoff evidence](tasks.md#milestone-cli-lifecycle).
+Custom profiles pinned at planning time use `<path>:<sha256_prefix>` (at least 7
+lowercase hex characters). During `acdd start` and `acdd sync`, ACDD records the
+normalized profile snapshot and hash in SQLite (`runs`); claims and submissions
+verify the persisted profile identity and fail closed on unauthorized tamper or
+un-migrated `0.5.x` keys.
 
 ### Role and model configuration
 
-Agent execution and model guidance are configured per **role**, not per task.
-`mode` accepts `subagent` or `inline` and effectively defaults to `subagent`.
-`reuse_on_reject` effectively defaults to `true`; when a review rewinds to a
-builder stage, this retains the prior builder's worker ID in rejection guidance.
-`models` is an ordered list of model specifications, with `models[0]` as the
-primary recommendation. Entries can be specified as compact strings with optional
-reasoning (`model:reasoning` or `model`, e.g. `'gpt6-luna:xhigh'`, `'composer-2.5'`)
-or structured mappings (`{ model: "sol-6.1", reasoning: "high" }`).
-An empty model list defaults to the active session model. Recommendations merge
-field-wise across profile overrides.
+Agent execution and model guidance are configured per **role** (`roles:`):
+- `mode`: `subagent` (default) or `inline`
+- `reuse_on_reject`: explicit boolean (`false` by default; `true` in embedded roles that retain builder sessions on reject)
+- `models`: ordered list of `'model:reasoning'`, `'model'`, or `{ model, reasoning? }`
+- `guidance`: advisory role text
+- `runner` / `prompt_template`: optional command and prompt templates for automated `acdd run`
 
 ```yaml
 # .acdd/profile.yaml
+version: 2
+inherit: default
+gates_merge: patch
+
 roles:
   builder:
     models:
@@ -231,43 +261,34 @@ roles:
     guidance: "Run independent review on a dedicated high-reasoning model."
 ```
 
-During `task_claim` or `task_manage(inspect)`, ACDD provides the resolved
-`role`, `mode` (`subagent` or `inline`), and `role_guide` in `workflow_guidance`. `role` specifies the active role
-identifier, `mode` specifies whether the role executes as an isolated subagent or inline in the current agent (with role guidance automatically adapted for inline execution), and `role_guide` combines advisory guidance with configured
-recommended models (e.g. `Recommended model: gpt6-luna:xhigh or sol-6.1:high.`).
-After a `fail` rewind, `workflow_guidance.rejection`
-contains `rejected_from`, the prior builder `worker_id` when reuse is enabled,
-and the persisted `findings`; a clean forward run has `rejection: null`.
-When reuse is enabled, guidance adds the targeted step
-`Return task to builder '{worker_id}' with review rejection findings to repair defects.`
+During `acdd claim` / `acdd_claim` and `acdd show` / `acdd_state(action: "show")`,
+ACDD projects resolved role guidance, recommended models, active `tools`, and
+bound `ClaimResp` tiers (`contract`, `guidance`, `diff`, `context`, `blackboard`,
+`traces`). After a reject transition along `fail:`, rejection findings and prior
+worker reuse instructions are injected cleanly.
 
-### Repository gitignore and profile versioning
+### Repository `.gitignore` and protected paths
 
-Because declarative profiles and custom adapters live inside `.acdd/` (including `.acdd/profile.yaml`, other `.acdd/**` files, and `.acdd/frameworks/**` extensions), repositories must not exclude the entire `.acdd/` directory in `.gitignore`. Ignore only ACDD runtime state:
+Because `.acdd/profile.yaml`, `.acdd/profiles/**`, and `.acdd/frameworks/**` are
+committed repository assets, do **not** ignore the whole `.acdd/` directory. Keep
+ACDD runtime state ignored while unignoring configuration assets:
 
 ```gitignore
 !/.acdd/
 !/.acdd/profile.yaml
+!/.acdd/profiles/
+!/.acdd/profiles/**
 !/.acdd/frameworks/
 !/.acdd/frameworks/**
 .acdd/*.sqlite*
 .acdd/*.lock
 .acdd/*.log
 .acdd/*.jsonl
+.acdd/run/
 .acdd/tasks/
-.acdd/checkpoints.json
 ```
 
-Place this active-rule block after all other project ignore patterns. The four negations restore `.acdd/`, its profile, and the framework tree; the final six patterns keep ACDD runtime state ignored. ACDD requires this exact final active-rule suffix and checks its effective matches during task guidance validation, so earlier wildcard ignores and negations cannot hide nested configuration files or expose runtime paths. Blank lines and comments may follow; another active pattern may not. ACDD warns when `.gitignore` is missing, omits a rule, or has another active pattern after this block. A shallow exception such as `!.acdd/*.yaml` does not restore nested configuration beneath an ignored `.acdd/` directory. The canonical template is `skills/acdd/references/gitignore.example`.
-
-### Guidance file and skill reference validation
-
-Task operations require repository guidance (configured via `agents_guidance`, defaulting to `AGENTS.md`) and the `acdd` skill:
-- **Skill reference**: The guidance file must explicitly reference the `acdd` skill (exact token matching or contextual `acdd skill` mentions). Match visible Markdown text, including link labels; link destinations do not count.
-- **Skill installation**: The skill must be installed either in the repository (`.agents/skills/acdd/SKILL.md`) or globally (`~/.agents/skills/acdd/SKILL.md`).
-- **Profile tracking**: Keep `.acdd/profile.yaml` and `.acdd/frameworks/**` trackable with the final protection block and six canonical runtime ignore rules above. Keep the block after all other active `.gitignore` rules.
-
-See [MCP tools](mcp-tools.md) for continuation arguments and [limits and freshness](../runbooks/limits-and-freshness.md) for computation budgets.
+See [MCP tools](mcp-tools.md) for response paging and [limits and freshness](../runbooks/limits-and-freshness.md) for computation budgets.
 ## Sensitive reader paths
 
 Configure `sensitive` in `acdd.yaml` with workspace-relative gitignore-style

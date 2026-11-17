@@ -1,17 +1,35 @@
 # =============================================================================
 # ACDD PROFILE EXAMPLE: Full Milestone Profile (Root Gates + Tasks Container)
 #
-# ADR 0021 Work Model 3: Milestone contains upfront blueprint_synthesis
-# (`synthesize` -> `review`), the per-task execution container (`tasks:` executed
-# via DAG waves), and post-task closure (`verify`, `polish`, `milestone_review`,
-# `handoff`).
+# ADR 0003 Unified Profile Engine: Worktree milestone contains upfront
+# blueprint_synthesis (`synthesize` -> `review`), the per-task execution
+# container (`tasks:` executed via DAG waves), and post-task closure
+# (`verify`, `polish`, `integration_review`, `handoff`).
 # =============================================================================
 
 version: 2
 inherit: none
 
-# Milestones execute in isolated worktrees and use `save: commit` (commits + receipts + snapshots + logs):
+git:
+  isolation: worktree
+  worktrees: manual
+  commit_mode: plumbing
+  integrate: manual
+
 save: commit
+
+git_commit_notes:
+  default:
+    ref_name: refs/notes/acdd
+    max_bytes: 2048
+    format: markdown
+    sections:
+      - duration
+      - tasks_summary
+      - review_cycles
+      - diff_breakdown
+      - test_suite
+      - topology
 
 roles:
   architect:
@@ -34,7 +52,7 @@ roles:
 
   independent_reviewer:
     mode: subagent
-    reuse_on_reject: true
+    reuse_on_reject: false
     models:
       - 'gpt-6.1-sol:xhigh'
 
@@ -43,20 +61,23 @@ scope_args_by_pattern:
   "src/**/*.rs": "--lib"
   "crates/acdd-core/**/*.rs": "--package acdd-core --lib"
   "crates/acdd-index/**/*.rs": "--package acdd-index --lib"
-  "crates/acdd-tasks/**/*.rs": "--package acdd-tasks --lib"
+  "crates/acdd-state/**/*.rs": "--package acdd-state --lib"
   "tests/*.rs": "--test {file_stem}"
   "tests/acdd/**/*.rs": "--test acdd"
 
 commands:
   rust-check-and-test:
-    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter}"
+    test_filter: "{test}"
     output:
       counts:
         passed: '(?m)\b(\d+) passed\b'
         failed: '(?m)\b(\d+) failed\b'
       require_counts: true
       noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
-      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+      compile_errors:
+        include: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+        exclude: ['^error: test failed']
       tests:
         target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
         passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
@@ -65,12 +86,43 @@ commands:
     timeout_seconds: 300
 
   check_full_repo:
-    command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    command: "cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --lib"
     timeout_seconds: 1800
 
   test:
-    command: "cargo test"
-    description: "Compatibility command for task contract and seam testing."
+    command: "cargo test {scope_target} {test_filter}"
+    test_filter: "{test}"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: false
+      compile_errors:
+        include: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+        exclude: ['^error: test failed']
+    description: "Scoped contract command for runtime-red seam testing."
+
+contours:
+  paths:
+    description: "Verify changes stay within admitted write scope."
+    criteria:
+      - "Compare modified files against task scope."
+  claims:
+    description: "Verify accepted contract claims with fresh traces."
+    criteria:
+      - "Trace invariants to production code and passing checks."
+  concurrency:
+    description: "Verify CAS preconditions and lock ordering."
+    criteria:
+      - "Confirm revision fencing and rollback safety."
+  project_isolation:
+    description: "Verify confinement to the active workspace."
+    criteria:
+      - "Confirm paths and Git ops stay confined."
+  administration:
+    description: "Verify schema integrity and durable receipt commits."
+    criteria:
+      - "Verify commit tree parity and receipt signatures."
 
 proofs:
   blueprint:
@@ -122,16 +174,7 @@ proofs:
                 type: array
                 items: { type: object }
 
-policies:
-  default_review:
-    independent_worker: true
-    require_all_contours: true
-    audit_extended_scope: true
-
 gates:
-  # ---------------------------------------------------------------------------
-  # Upfront Blueprint Synthesis Container (Executed ONCE before task claims)
-  # ---------------------------------------------------------------------------
   - id: blueprint_synthesis
     gates:
       - id: synthesize
@@ -140,25 +183,38 @@ gates:
         save:
           pre: snapshot
           post: snapshot
+        pass: review
       - id: review
         role: independent_reviewer
-        policy: default_review
-        independent_from: synthesize
+        proof: review
+        contours: [claims, project_isolation, administration]
+        independent_from: [synthesize]
         fail: synthesize
         save:
           immutable: true
 
-  # ---------------------------------------------------------------------------
-  # Per-Task Execution Container (Executed per Task in DAG Wave Order)
-  # ---------------------------------------------------------------------------
   - tasks:
       gates:
         - id: contract
           role: contract_author
           proof: contract
           command: test
+          expected_failure:
+            exit_codes: [1, 101, 134]
           save:
             post: snapshot
+          pass: contract_review
+
+        - id: contract_review
+          role: independent_reviewer
+          proof: review
+          contours: [paths, claims]
+          independent_from: [contract]
+          need: [contract]
+          save:
+            immutable: true
+          pass: build
+          fail: contract
 
         - id: build
           role: builder
@@ -167,78 +223,77 @@ gates:
           save:
             pre: snapshot
             post: snapshot
+          pass: review
 
         - id: review
           role: independent_reviewer
-          policy: default_review
-          independent_from: build
+          proof: review
+          contours: [paths, claims, concurrency, project_isolation, administration]
+          independent_from: [build]
+          need: [build]
           fail: build
-          loop:
-            scope: build
-            symbols: contract
           save:
             immutable: true
-
-        - id: seam
-          when: seam
-          gates:
-            - id: integrate
-              role: builder
-              command: rust-check-and-test
-              save:
-                pre: snapshot
-                post: snapshot
-            - id: review
-              role: independent_reviewer
-              policy: default_review
-              independent_from: integrate
-              fail: integrate
-              loop:
-                scope: integrate
-                symbols: contract
-              save:
-                immutable: true
+          pass: deliver
 
         - id: deliver
           role: independent_reviewer
           receipt: true
-          need:
-            - review
-          independent_from: build
+          need: [build, review]
+          independent_from: [build]
           fail: build
           save:
             immutable: true
             post: commit
-            git_commit_note: telemetry
+            git_commit_note: default
 
-  # ---------------------------------------------------------------------------
-  # Milestone Verification & Closure Pipeline (Option 1B cycle)
-  # ---------------------------------------------------------------------------
   - id: verify
     command: check_full_repo
+    proof: command
     max_attempts: 2
-    pass: milestone_review
+    pass: integration_review
     fail: polish
 
   - id: polish
-    role: architect
+    role: builder
+    scope:
+      - ".acdd/profile.yaml"
+      - ".acdd/profiles/**"
+      - ".acdd/frameworks/**"
+      - "docs/**"
+      - "skills/**"
+      - "AGENTS.md"
+      - "**/AGENTS.md"
+      - "README.md"
+      - ".gitignore"
+    command: check_full_repo
+    proof: command
     pass: verify
     save:
       pre: snapshot
       post: snapshot
 
-  - id: milestone_review
+  - id: integration_review
     role: independent_reviewer
-    policy: default_review
-    independent_from: polish
+    proof: review
+    max_attempts: 2
+    contours: [paths, claims, concurrency, project_isolation, administration]
+    independent_from: [polish, "tasks.build"]
+    need: [verify]
     pass: handoff
     fail: polish
     save:
       immutable: true
 
   - id: handoff
+    role: independent_reviewer
+    independent_from: [polish, "tasks.build"]
+    need: [verify, integration_review]
     receipt: true
-    absorb: true
+    fail: polish
     save:
+      immutable: true
       post: commit
-      git_commit_note: telemetry
+      archive: true
+      prune: true
+      git_commit_note: default

@@ -5,7 +5,7 @@ doc_type: reference
 
 # Markdown and JSON presentation contracts
 
-[ADR 0019](../adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md)
+[ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md)
 owns the output decision.
 [Milestone 054](../milestones/archive/054-markdown-first-dual-surface-and-agent-ergonomics.md)
 owns implementation and acceptance.
@@ -77,70 +77,47 @@ metadata. Task and checkpoint content retains all data admitted by its operation
 
 ## Task lifecycle
 
-`task_list`, `task_claim`, `task_submit`, and `task_manage` use dedicated Markdown
-layouts. Task rows retain the returned task identity, target, actual status and
-profile stage, owner, agent type, revision, declared `depends_on` references, and
-the requested subtask detail. Task and subtask status rows use Markdown checkboxes;
-only `completed` is checked, while `cancelled` and every other status remain
-unchecked and keep their actual status label. A cancelled task is never rendered
-as completed. Listing filters and stored status transitions stay in the task engine.
+`acdd_state`, `acdd_claim`, `acdd_verify`, and `acdd_submit` (and their flat
+CLI equivalents `status`/`list`/`show`/`next`, `claim`, `verify`, `submit`) use
+dedicated Markdown layouts. Run and task rows retain identity, target, actual
+status and gate cursor, owner, worker/role, revision, declared `depends_on`
+references, and requested subtask detail. Task and subtask status rows use
+Markdown checkboxes; only `completed` is checked, while `cancelled` and every
+other status remain unchecked and keep their actual status label. A cancelled
+task is never rendered as completed. Listing filters and stored state
+transitions stay in `crates/acdd-state`.
 
-`task_list` defaults to the unique active milestone in the selected workspace;
-no active milestone returns an empty page, and multiple active milestones require
-an explicit milestone selector or milestone status. Pages accept `limit` (1–100,
-default 30), `offset`, and `generation`; nonzero offsets require the prior task-view
-generation. The token binds workspace, milestone, filters, and complete task and
-subtask state, independently of the code index. Task or subtask changes and filter
-changes reject stale continuations; index-only changes do not. Results include
-`total`, actual `returned`, optional `next_offset`, `has_more`, `generation`, and
-`byte_omitted`. Trimming retains complete tasks with every nested subtask.
+`acdd_state(action: "list")` / `acdd list` pages active runs (and optionally
+`run_tombstones` via `include_tombstones: true`) with `limit` (1–100), `offset`,
+and `runs.generation`. Nonzero offsets require the prior generation pin.
+Trimming retains complete run records.
 
-`task_list` accepts safe logical milestone aliases such as `UX-001`,
-`docs/milestones/UX-001`, and `milestones/UX-001.md`, including one leading
-slash on those logical forms. Existing IDs, numeric prefixes, complete slugs,
-configured manifest paths, and archive paths retain direct resolution. Traversal,
-arbitrary absolute paths, foreign roots, ambiguity, and invalid existing
-manifests fail closed. Only after no milestone matches does the list operation
-resolve a full task ID or unique task slug to its parent. JSON carries one
-`resolution` object with `kind`, original `input`, canonical `task_id`, parent
-`milestone_id`, and `milestone_ref`; Markdown renders one correction note:
-`[auto-resolved task '<input>' to parent milestone '<milestone_id>']`. Direct
-milestone matches take precedence and do not emit a note.
+Claim and context layouts (`ClaimResp`) show lifecycle state, the admitted
+6-tier contract (`contract`, `guidance`, `diff`, `context`, `blackboard`,
+`traces`), active gate guidance, exact scoped commands and evidence templates,
+applicable invariants, scope, dependencies, subtasks, and available domain
+context lenses (`docs.*`, `code.*`). Identical contract data already shown in
+lifecycle state is not repeated. Show/status layouts retain available gate
+traces, claim revisions, findings, candidate snapshots, and durable receipts.
 
-Claim and context layouts show lifecycle state, the admitted contract, active
-stage guidance, exact registered commands and evidence templates, applicable
-invariants, scope, dependencies, subtask DoD, and available ADR, symbol, test,
-finding, candidate-snapshot, and receipt context. Identical contract data already
-shown in lifecycle state is not repeated; distinct instructions and evidence are
-retained. `bundle: false` stays minimal and only presents fields supplied by that
-mode. Inspect and submit layouts retain available gate history, claim attempts,
-findings, candidate bindings, and durable receipts.
+Inspection Markdown links resolvable scope coordinates against the selected
+workspace root. Missing or unsafe paths remain plain text, and JSON scope arrays
+stay unchanged. Arbitrary JSON values, including persisted findings with `path`
+and `uri` fields, remain literal data.
 
-Task-inspection Markdown links each resolvable scope coordinate against the
-selected task workspace root. Missing or unsafe paths remain plain text, and
-the task scope arrays stay unchanged in JSON. Task presentation resolves these
-paths with the workspace adapter without opening the code map.
-Arbitrary JSON values, including persisted task findings with `path` and `uri`
-fields, remain literal data; only workspace-resolved scope presentation metadata
-produces coordinate links.
-
-Full inspect uses `## Task record`; claim context keeps `## Contract`. Inspect
-Markdown retains the task specification as canonical and omits equal scope,
-target, proof-policy, and task-invariant projections from `authority_snapshot`
-and response-level fields. Equal scope paths appear once. When the write scope
-extends its initial scope, Markdown shows the initial paths and added paths
-separately. It preserves distinct authority values, milestone invariants,
-revisions, receipts, gates, attempts, and findings. Inspect omits the contract
-digest; the Markdown formatter also omits a digest field if one is supplied.
+Full `show` keeps the run/task specification as canonical; extended write scopes
+show initial paths and added paths separately. Inspect/show retains gate trace
+records (`gate_traces`), attempts, and findings without exposing internal-only
+scratch metadata.
 
 Only blackboard messages whose topic is `blockers` become
 `> [!CAUTION] BLOCKER (#id) by author` callouts. The callout keeps the original
-message ID, scope, task/subtask identity, gate, timestamp, and supplied body.
-When the context contains a truncated body summary, Markdown marks the summary and
-includes the existing `task_blackboard(action: "inspect", message_id: id)`
-recovery. Other topics keep separate headings and their original payloads. The
-formatter adds no task-state transitions, response fields, or budget beyond the
-existing task and blackboard bounds. JSON retains the same semantic task values.
+message ID, scope, source/recipient node identity, gate, status
+(`open | acknowledged | resolved | carried_over`), timestamp, and supplied body.
+When context contains a truncated body summary, Markdown marks the summary and
+points to `acdd_blackboard(action: "read", ...)` full-body inspection. Other
+topics keep separate headings and their original payloads. JSON retains the same
+semantic values.
 
 Use headings for task/stage/revision/status/worktree and the admitted contract:
 target, dependencies, write scope, invariants, subtasks and DoD. Preserve the
@@ -148,7 +125,7 @@ complete active `workflow_guidance`, stage rules, proof policies, role/model
 guidance, exact scoped commands, evidence templates and claim identities.
 Preserve rejected findings, candidate bindings, and durable receipts.
 
-Honor existing ADR 0016 stage tailoring and `bundle: false`; do not add raw
+Honor existing ADR 0006 stage tailoring and `bundle: false`; do not add raw
 historical archives to lean operations. Full inspect remains the on-demand
 history operation and preserves its available gate/finding/attempt evidence.
 Render task lists with actual status and dependencies; cancellation is not
@@ -164,7 +141,7 @@ Embedded blackboard context in claim/context and contract-stage bundles uses
 the same blocker callout specified below. Preserve the message identity,
 author, scope, gate, timestamp, supplied body and existing full-body recovery.
 The lifecycle task owns this embedded presentation; the coordination task owns
-standalone blackboard presentation. Existing stage selection and ADR 0016
+standalone blackboard presentation. Existing stage selection and ADR 0006
 summary bounds remain binding; formatting adds no new truncation.
 
 ## Code discovery
@@ -360,28 +337,17 @@ authorization or removal proof semantics.
 
 ## Coordination and documentation
 
-Blackboard supports `post`, `read`, and `inspect`; topics are `draft`,
-`notes`, `findings`, `blockers`, `decisions`, and `deferred`.
-Group read results by their actual topic while preserving the page's newest-first order,
-message identity, exact hierarchy scope, gate, author, timestamp and payload.
-Render each `topic: blockers` message as `> [!CAUTION] BLOCKER (#<id>) by <author>`,
-followed by scope, gate, timestamp and the supplied message body. Other topics
-remain visibly distinct and do not acquire blocker severity. Preserve complete
-IDs/authors/gates and body content; do not shorten them for display. Read pages
-currently contain metadata without payload; use the existing bounded inspect
-operation for a body, or display its exact recovery request when unavailable.
-Existing claim summaries may bound body text; preserve that indication and
-`task_blackboard(action: "inspect", message_id: <id>)` full-body recovery.
-Grouping does not invent reply-parent edges or unresolved/resolved blocker
-state. Preserve every read-page continuation and explicit summary truncation.
-
-An explicit milestone-scoped blackboard request uses the same logical alias and
-task-parent resolution as `task_list`. A fallback returns the same structured
-`resolution` object and one Markdown correction note. Reads and inspect preserve
-all existing message IDs and scope fields; a fallback post creates exactly one
-message in the canonical parent milestone scope, which is the `milestone_ref`
-reported by the blackboard resolution. Task/subtask-scoped filters,
-lifecycle operations, and milestone sync do not reinterpret task selectors.
+Blackboard supports `read` and `post` (`acdd_blackboard` / `acdd blackboard`);
+topics are `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred`,
+with statuses `open`, `acknowledged`, `resolved`, and `carried_over`.
+Preserve topic, message identity, source/recipient node cursor, subtask ref,
+gate, author, timestamp, and payload. Render each `topic: blockers` message as
+`> [!CAUTION] BLOCKER (#<id>) by <author>`, followed by scope, gate, timestamp,
+and the supplied message body. Other topics remain visibly distinct and do not
+acquire blocker severity. Preserve complete IDs/authors/gates and body content;
+when a claim bundle bounds long bodies, mark the summary and retain
+`acdd_blackboard(action: "read", ...)` full-body recovery. Preserve every
+read-page `runs.generation` continuation.
 
 Documentation search renders path/section/type and an excerpt only when supplied.
 Get-document uses `path_or_id` and the actual section selector, renders source
@@ -399,32 +365,24 @@ drives its resolved URI anchor. Preserve both coordinates and their independent
 pagination in JSON and Markdown. Omit empty
 relation headings unless the page is an intentional compact omission stub.
 
-Checkpoint actions are `list|get|save|delete`. List returns names and stored
-byte sizes; save/delete return action and name. The store does not supply save
-timestamps or file counts. Get returns arbitrary saved JSON values exactly,
-rendered losslessly in Markdown (a JSON fence for nontext data is acceptable).
-Do not compact user fields or invent restore effects. Preserve checkpoint
-validation, atomic writes, existing 1 MiB storage limit, and separate
-nonpaginated oversized-response error.
-
 ## Producer and consumer bindings
 
 | Surface | Live producer / adapter | Presentation consumer |
 | --- | --- | --- |
-| Format and compaction | Shared `src/core/format/` | `src/mcp/response.rs`, CLI stdout; `src/mcp/metadata.rs` retains compatibility exports |
+| Format and compaction | Shared `src/format/` | `src/mcp/response.rs`, CLI stdout; `src/mcp/metadata.rs` retains compatibility exports |
 | Request validation | `src/mcp/tools/inputs.rs`, `src/mcp/tools.rs`, `src/cli/mod.rs` | All existing shared operations |
-| Symbols and source | `src/db/symbols.rs`, `src/db/symbols/` | Inspect/search/snippet Markdown and JSON |
-| Overview | `src/db/reader.rs`, scanner/config roots and task state | Overview Markdown and JSON |
-| Resolution reasons | `src/db/reader.rs` canonical `diagnostic_reason`; discovery supplies same-scope bounded aggregate counts | Overview reason breakdown, with external reference counts separate |
-| Ecosystem manifests | Discovery task supplies bounded producer; existing directory components alone are insufficient | Overview component entries |
-| AST | `src/cli/ast.rs`, `src/engine/ast/`, `src/engine/languages/` | AST results and language-specific alerts |
-| Relations / Git impact | `src/db/traversal.rs`, `src/db/symbols/test_discovery.rs` | Explain/impact/tests/query/removal |
-| Test breadcrumbs | `src/db/symbols/test_discovery.rs` hydrates only returned `connection.call_path` IDs; `src/core/format/traversal.rs` renders them | Linked ordered test -> helper -> target breadcrumb |
-| Diagnostics / docs | `src/db/reader.rs`, `src/engine/docs.rs` | Analyze/search-doc/get-doc |
-| Tasks | `src/engine/tasks/`, `src/db/tasks_store/`, `src/cli/task.rs` | Task tools, CLI tasks, workflow agents |
-| Blocker alerts | Canonical `blockers` topic, stored message/inspect payload and existing context summaries | Standalone blackboard and embedded claim/contract callouts |
-| Checkpoints | `src/cli/guide.rs` | MCP checkpoint and CLI checkpoint |
-| Test intent | No baseline producer; deferred to post-054 architecture / next planning | No inferred badges |
+| Symbols and source | `crates/acdd-index/src/db/symbols.rs`, `crates/acdd-index/src/db/symbols/` | Inspect/search/snippet Markdown and JSON |
+| Overview | `crates/acdd-index/src/db/reader.rs`, scanner/config roots and `src/cli/discovery` (`active_runs`) | Overview Markdown and JSON |
+| Resolution reasons | `crates/acdd-index/src/db/reader.rs` canonical `diagnostic_reason`; discovery supplies same-scope bounded aggregate counts | Overview reason breakdown, with external reference counts separate |
+| Ecosystem manifests | Discovery component producer | Overview component entries |
+| AST | `src/cli/ast.rs`, `crates/acdd-index/src/ast/`, `crates/acdd-index/src/languages/` | AST results and language-specific alerts |
+| Relations / Git impact | `crates/acdd-index/src/db/traversal.rs`, `crates/acdd-index/src/db/symbols/test_discovery.rs` | Explain/impact/tests/query/removal |
+| Test breadcrumbs | `crates/acdd-index/src/db/symbols/test_discovery.rs` hydrates only returned `connection.call_path` IDs; `src/format/traversal.rs` renders them | Linked ordered test -> helper -> target breadcrumb |
+| Diagnostics / docs | `crates/acdd-index/src/db/reader.rs`, `crates/acdd-index/src/docs.rs` | Analyze/search-doc/get-doc |
+| State & Lifecycle | `crates/acdd-state/src/`, `src/state_bridge/`, `src/format/lifecycle.rs` | `acdd_state`/`acdd_claim`/`acdd_verify`/`acdd_submit`/`acdd_blackboard`, flat CLI, `acdd run` |
+| Blocker alerts | Canonical `blockers` topic, stored blackboard rows and existing claim summaries | Standalone blackboard and embedded `ClaimResp` callouts |
+| Guide & Init | `src/cli/guide.rs` | `acdd_guide` and `acdd guide` / `acdd init` |
+| Test intent | Deferred (no baseline producer) | No inferred badges |
 
 ## Presentation examples
 
@@ -519,7 +477,7 @@ claim/contract context; other topics remain in their own topic groups:
 ```
 
 For a metadata-only read or an existing bounded summary, retain its exact message
-ID and `task_blackboard(action: "inspect", message_id: 42)` recovery. The alert
+ID and `acdd_blackboard(action: "read", ...)` full-body recovery. The alert
 does not assert that a stored blocker has an independently tracked resolution state.
 
 ## Proof sensitivity

@@ -38,7 +38,7 @@
     {
       "id": "source_snippet",
       "scenario": "Read the exact implementation of run_matcher_pipeline",
-      "acdd": {"tool": "get_code_snippet", "arguments": {"selector": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py:run_matcher_pipeline"}},
+      "acdd": {"tool": "acdd_read", "arguments": {"selector": "extensions/commerce/src/contextunity/commerce/modules/matcher/pipeline.py:run_matcher_pipeline"}},
       "codebase": {"tool": "get_code_snippet", "arguments": {"project": "${project}", "qualified_name": "${project}.extensions.commerce.src.contextunity.commerce.modules.matcher.pipeline.run_matcher_pipeline"}},
       "match": "Strong match: both should return the same Python implementation."
     },
@@ -157,16 +157,9 @@
     {
       "id": "tool_guide",
       "scenario": "Ask for agent guidance on using graph tools",
-      "acdd": {"tool": "forge_guide", "arguments": {"topic": "query"}},
+      "acdd": {"tool": "acdd_guide", "arguments": {"topic": "query"}},
       "codebase": {"tool": "get_graph_schema", "arguments": {"project": "${project}"}},
       "match": "Not equivalent: Codebase schema does not provide a tool-selection guide."
-    },
-    {
-      "id": "session_checkpoint",
-      "scenario": "List saved session checkpoints without changing state",
-      "acdd": {"tool": "session_checkpoint", "arguments": {"action": "list"}},
-      "codebase": null,
-      "match": "No Codebase counterpart."
     }
   ]
 }

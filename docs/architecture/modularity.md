@@ -10,37 +10,37 @@ doc_type: architecture
 ContextUnity ACDD separates code parsing, AST fact extraction, cross-file symbol linking, and storage graph generation into modular, decoupled layers.
 
 ```text
-src/engine/
+crates/acdd-index/src/
 ├── ast/                    # Tree-sitter extraction and relation facts
 ├── languages/
 │   ├── mod.rs              # LanguageProfile contract and linker registry
 │   ├── support/            # Shared syntax extraction helpers
 │   │   ├── mod.rs
 │   │   └── c_family.rs
-│   ├── template.rs          # Shared byte-preserving template masker
-│   ├── html/                # HTML extraction and configured request attributes
+│   ├── template.rs         # Shared byte-preserving template masker
+│   ├── html/               # HTML extraction and configured request attributes
 │   │   ├── mod.rs
-│   │   ├── javascript.rs    # Embedded JavaScript islands
+│   │   ├── javascript.rs   # Embedded JavaScript islands
 │   │   └── request_attributes.rs # Manifest-driven HTML request operation
-│   ├── vue/                 # Vue grammar and template extraction
+│   ├── vue/                # Vue grammar and template extraction
 │   │   ├── mod.rs
 │   │   ├── setup_facts.rs
 │   │   └── template.rs
-│   ├── python/              # Python profile extraction
+│   ├── python/             # Python profile extraction
 │   │   ├── mod.rs
-│   │   └── dependencies.rs  # Python package dependency extraction
-│   ├── manifests/           # Typed framework rule data
+│   │   └── dependencies.rs # Python package dependency extraction
+│   ├── manifests/          # Typed framework rule data
 │   ├── dependency_registry.rs # Workspace dependencies and framework rules
 │   ├── registries/         # JavaScript package and TypeScript path registries
-│   ├── rust/                # Rust profile extraction
-│   ├── typescript/          # TypeScript/JavaScript profile extraction
+│   ├── rust/               # Rust profile extraction
+│   ├── typescript/         # TypeScript/JavaScript profile extraction
 │   └── toml_manifest.rs    # TOML traversal for package dependency metadata
 ├── linker.rs               # Shared graph construction and dispatch
 └── linker/
     ├── traits.rs
     ├── framework_relations.rs
     ├── resolution/
-    │   ├── mod.rs                 # Per-file resolver and phase order
+    │   ├── mod.rs          # Per-file resolver and phase order
     │   ├── imports.rs
     │   ├── framework_projections.rs
     │   ├── value_flow_phase.rs
@@ -49,12 +49,12 @@ src/engine/
     ├── semantic_context/components.rs
     ├── value_flow.rs
     ├── value_flow/initialize.rs
-    ├── python/               # Python receiver, resolution, semantic context, and flow
-    ├── rust/                 # Rust resolution support, semantic context, and flow
-    ├── javascript/           # JavaScript-family CommonJS bindings and resolution
-    ├── typescript/           # TypeScript resolution and semantic context
-    ├── vue/                  # Vue resolution, semantic context, and value flow
-    └── html/                 # HTML relation, script, and template linking
+    ├── python/             # Python receiver, resolution, semantic context, and flow
+    ├── rust/               # Rust resolution support, semantic context, and flow
+    ├── javascript/         # JavaScript-family CommonJS bindings and resolution
+    ├── typescript/         # TypeScript resolution and semantic context
+    ├── vue/                # Vue resolution, semantic context, and value flow
+    └── html/               # HTML relation, script, and template linking
 ```
 
 ## Extensibility Contracts
@@ -78,7 +78,7 @@ Decouples language-specific import and receiver resolutions from the core SQLite
 - Import resolution (e.g. Python `__init__.py` re-export chains, TypeScript `tsconfig.json` path mapping, Rust `use crate::` paths).
 - Receiver inference (method binding on class instances, struct instances, or prototypes).
 - Standard library and external package classification, ensuring third-party symbols are properly marked `external_origin` rather than leaking into `unresolved`.
-- Framework semantics come from typed `FrameworkManifest` data consumed by finite operations. Bundled tables live under `src/engine/languages/manifests/` and are embedded in the binary. Workspace manifests load from `.acdd/frameworks/` and are available in their workspace. They merge project rules before bundled rules by default or with `extend: true`; `replace: true` selects the project table alone. Unknown top-level fields are rejected, so manifests cannot add opaque legacy string sections. Typed AST rules compile into grammar-specific `RuleIR` candidates; class receivers retain their borrowed linker rule lookup, and `semantic_rules` facts join through the shared linker. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
+- Framework semantics come from typed `FrameworkManifest` data consumed by finite operations. Bundled tables live under `crates/acdd-index/src/languages/manifests/` and are embedded in the binary. Workspace manifests load from `.acdd/frameworks/` and are available in their workspace. They merge project rules before bundled rules by default or with `extend: true`; `replace: true` selects the project table alone. Unknown top-level fields are rejected, so manifests cannot add opaque legacy string sections. Typed AST rules compile into grammar-specific `RuleIR` candidates; class receivers retain their borrowed linker rule lookup, and `semantic_rules` facts join through the shared linker. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
 - `DependencyRegistry` owns workspace dependency discovery and framework-manifest loading. JavaScript package metadata and TypeScript path mappings live in `languages/registries/`; Python dependency declarations are extracted in `python/dependencies.rs`. `LanguageProfile::manifest_filenames` continues to describe external package metadata inputs.
 
 ### 4. Three-Tier Language Architecture

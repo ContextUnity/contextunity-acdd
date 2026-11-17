@@ -5,7 +5,13 @@ title: MCP tool reference
 
 # MCP tool reference
 
-The server exposes 20 tools over standard input and output. Start with `code_map_overview` to identify the indexed workspace. Search for a symbol, inspect its exact identifier, then use graph tools at a narrow scope. Check the reported path and line in source before acting on a structural inference.
+The server exposes **19 built-in static tools** over standard input and output
+(10 code tools, 2 docs tools, 2 core tools, 5 state tools), plus any dynamic
+`<domain>_<name>` plugin tools registered by active `DomainProvider`
+implementations. Start with `code_map_overview` to identify the indexed
+workspace. Search for a symbol, inspect its exact identifier, then use graph
+tools at a narrow scope. Check the reported path and line in source before acting
+on a structural inference.
 
 ## Description layers
 
@@ -26,6 +32,8 @@ MCP navigation accepts unified parameter spellings alongside the canonical field
 | Tool | Canonical field | Accepted aliases |
 | --- | --- | --- |
 | `code_map_search` | `pattern` | `query` |
+| `code_map_inspect` | `selector`, `path` | `symbol`, `file_path` respectively |
+| `acdd_read` | `path`, `selector`, `pattern`, `line_count` | `file_path`, `symbol`, `query`, `max_lines` (`lines`) respectively |
 | `ast_grep_search` | `pattern` | `query` |
 | `search_docs` | `query`, `component` | `pattern`, `path` respectively |
 | `get_doc` | `path_or_id` | `path`, `selector` |
@@ -36,7 +44,7 @@ Aliases are explicit optional properties in the published `tools/list` schemas;
 the canonical field is not required when an alias supplies the value. Handlers
 normalize these fields before querying. Supply one spelling per value; a nonempty
 canonical field together with an alias is a duplicate-field error. `code_map_query` resolves its separate
-optional fields as described under [SQL](#sql-and-checkpoints).
+optional fields as described under [SQL](#sql-queries).
 
 Start with `code_map_overview` to confirm the selected workspace and indexed
 coverage. Reuse a sufficient search preview instead of fetching the same source
@@ -52,41 +60,34 @@ section with `get_doc(path_or_id="...", section="...")`; full detail includes co
 `code_map_analyze(lint=true)` reads stored syntax diagnostics;
 `include_cycles=true` opts into cycle analysis.
 
-Inspect the connected server's tool schemas before selecting a checkout. On a
-universal-routing server, pass `worktree` to any tool when the server root is not
-the intended checkout, including task operations. Follow the availability and
-affinity rules under [worktree selection](#worktree-selection). The client's
-current directory does not select an MCP request root.
+Inspect the connected server's tool schemas before selecting a checkout. Pass
+optional `worktree` on any tool call when the server root is not the intended
+checkout. Follow the resolution rules under [worktree selection](#worktree-selection).
+The client's current directory does not select an MCP request root.
 
 ## Output format
 
 Every tool schema accepts an optional `format` value: `markdown` or `json`.
 Omit it for readable Markdown; `format: "json"` returns the semantic value as
 JSON text for clients that decode the result. The same selection is available on
-navigation, task, guide, and checkpoint tools. Invalid values are rejected before
-the operation runs, including checkpoint writes. Formatting does not change query
-scope, pagination, task evidence, or saved checkpoint content. SQL rows and
-checkpoint values remain opaque user data.
+navigation, docs, guide, state, and plugin tools. Invalid values are rejected
+before the operation runs. Formatting does not change query scope, pagination,
+or state evidence.
 
-Markdown blackboard reads group the returned page by topic while keeping the
-page's newest-first order within each group. Blockers use a caution callout that
-retains their identity and available metadata; payload-free summaries show the
-exact inspect request. Topic grouping creates no reply or resolution state.
+Markdown blackboard reads preserve topic, gate, status (`open | acknowledged | resolved | carried_over`),
+and newest-first ordering. Blockers use a caution callout that retains their
+identity and available metadata.
 
-Task tools use the dedicated lifecycle layout: summaries retain dependencies and
-actual statuses, while claims and contexts preserve active guidance and available
-evidence. See the [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
+State tools use the dedicated lifecycle layout: summaries retain dependencies,
+run/gate statuses, budgeted `ClaimResp` tiers (`contract`, `guidance`, `diff`,
+`context`, `blackboard`, `traces`), and verification observations. See the
+[task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
 
 Claim/context blackboard bundles include untargeted and current-gate messages.
 Active `decisions`, `findings`, and `blockers` also remain eligible across gates,
-retaining their original gate and subject to context response bounds. The `blueprint_synthesis.synthesize` architect records architectural decisions with
-`topic=decisions`. The guide lists `blueprint_synthesis`, `contract`, `build`, `review`,
-`deliver`, `verify`, `polish`, `milestone_review`, and `handoff`; the active profile
-determines the configured sequence.
-
-Explicit gate `tools` are module requirements. Empty lists on contract, command,
-and review proof gates receive advisory navigation tools filtered by enabled
-modules; embedded gates therefore remain usable with navigation disabled.
+retaining their original gate and subject to the 6-tier `ClaimResp` byte budget.
+Explicit gate `tools` / `tools_add` / `tools_remove` declare role tool
+allowlists layered over `default_tools` in the active v2 `GateProfile`.
 
 ## Tools
 
@@ -165,7 +166,7 @@ absent signals produce no hints. CLI flags use hyphens, for example
 | --- | --- |
 | `code_map_overview` | Workspace, index, language and documentation summary; request `coverage_by_workspace` for persisted primary and linked workspace coverage counts. |
 | `code_map_search` | Search symbols by `pattern`; exact name or qualified-name matches have priority. When matching parameter or return types also exist, they appear in ranked results alongside exact names. Otherwise exact-name matches retain the exclusive default. Prefixes and natural-language terms use ranked FTS5 BM25 exploratory search. Hits include an indexed `signature` and `inspect_selector` arguments for `code_map_inspect` with `show_source:true`. Previews appear automatically when the total is at most three; set `include_preview:true` for larger result sets. Supports `include_docs`, `group_by_file`, prefix patterns such as `parse*`, and optional file or directory `path` scope. |
-| `code_map_inspect` | Resolve a `selector` and return a compact signature, docstring, receiver-aware container, call counts, and direct caller/callee preview. Paged `documented_in` citations retain one linked row per cited section, with full-detail content shown beneath its citation. Inspect Markdown omits its duplicate `documents` JSON page while JSON keeps both pages. Bounded `governing_invariants` add verified documentation context. Set `include_coverage=true` for paged resolution evidence. |
+| `code_map_inspect` | Resolve a `selector` (`symbol` alias) and optional `path` (`file_path` alias) and return a compact signature, docstring, receiver-aware container, call counts, and direct caller/callee preview. Paged `documented_in` citations retain one linked row per cited section, with full-detail content shown beneath its citation. Inspect Markdown omits its duplicate `documents` JSON page while JSON keeps both pages. Bounded `governing_invariants` add verified documentation context. Set `include_coverage=true` for paged resolution evidence. |
 | `acdd_read` | Layered text, search, Git delta, Markdown/code outline, and digest-verified symbol reads by `path` or `selector`; optional confined `output_file` export. |
 | `code_map_explain` | Explain direct inbound or outbound relationships for a `selector`; edge rows include both public endpoint IDs and direction relative to the selected node. Full detail also includes stored edge evidence. |
 | `code_map_impact` | Find inbound (default) or outbound dependencies for a `selector`, or analyze one Git change view (`staged`, `unstaged`, or `head`); provide exactly one of `selector` and `changes`. Selector results also page affected documentation and governing invariants. Depth defaults to one edge. |
@@ -176,68 +177,52 @@ absent signals produce no hints. CLI flags use hyphens, for example
 | `ast_grep_search` | Match a language-specific AST `pattern` in admitted source. Indexed file lists and FTS terms narrow candidate files before Tree-sitter parses their contents. |
 | `search_docs` | Search indexed Markdown by `query` and optional `doc_type`; `include_excerpt=true` adds a bounded match excerpt. |
 | `get_doc` | Retrieve a Markdown document by `path_or_id` and optionally a heading `section`; full responses include source locations, citation links, uniquely verified referenced symbols, and a paged `referenced_symbol_candidates` collection for ambiguous eligible claims. Unscoped claims match symbols in the source document's workspace; an explicit normalized file link can cross workspaces. Compact responses omit candidate details and return a hint to request `detail="full"`. |
-| `session_checkpoint` | List SQLite checkpoints by full breadcrumb and serialized byte size; save, get, or delete an opaque JSON state payload by breadcrumb. |
 | `acdd_guide` | Return shared CLI/MCP guidance by `topic`; defaults to `query`, whose topic index reflects enabled capabilities. |
-| `task_list` | List ready tasks in the selected workspace and unique active milestone by default; zero active milestones returns an empty page and multiple active milestones require an explicit milestone selector/status. Accepts `limit` (1–100, default 30), `offset` (default 0), and `generation` (required for nonzero offsets), plus repository, task status, milestone, stage, and detail filters. Pagination reports total matches, actual returned count, byte-omitted records, and a continuation hint; its generation binds the workspace, filters, and task/subtask state, not the code index. Status accepts `ready`, `in_progress`, `blocked`, `parked`, `completed`, `cancelled`, or `all`. A targeted milestone defaults to all milestone statuses; explicit `milestone_status: "all"` retains archived tasks. Subtasks are compact by default; request `detail: "full"` for titles and evidence. |
-| `task_claim` | Atomically claim the current task gate for a worker and worktree. |
-| `task_submit` | Submit a revision-bound JSON `evidence` object, or omit evidence on automated Contract/Command proof gates to run the registered command or reuse fresh claim-bound proof. Delivery can infer proof from the accepted candidate snapshot without running a command. Optional `timeout_seconds` overrides autonomous execution within profile limits and conflicts with explicit evidence. Passing the active profile's terminal delivery gate (default ID: `deliver`) writes the validated task receipt and context rollup. |
-| `task_manage` | Create/sync specifications, inspect/context, delete, extend scope, manage subtasks, reset/reopen, verify the claimed command with `action: "verify"` and `task_id` (optional `timeout_seconds`), or atomically dispatch with `action: "next"`, `worker_id`, and `worktree`. Verify caches command proof without advancing the task; see [command verification](tasks.md#iterative-command-verification). Next returns the claimed gate with its context bundle, prioritizing independent delivery/review, the worker's unblocked parked work, then ordinary ready work by wave and task ID. See the [action schema](tasks.md#five-flat-mcp-tools). |
-| `task_blackboard` | Post, read, or inspect milestone-, task-, and subtask-scoped SQLite messages. `scope` selects the hierarchy level; `milestone_ref`, `task_id`, and `subtask_ref` identify or constrain it, with fail-closed resolution for omitted ambiguous context. `post` requires `topic` and `payload`, accepts optional `author`, and returns `{id}`. `read` accepts `topic`, `limit` (default 10, maximum 50), and `offset`; it returns newest-first payload-free `{messages}` and `{pagination}` from the resolved context. `inspect` with `message_id` searches configured task workspaces and returns the first matching message including its payload, ignoring optional `scope`, `task_id`, `milestone_ref`, and `subtask_ref`; without `message_id`, it returns the scoped read page. |
+| `acdd_state` | Unified `0.6.0` run & lifecycle controller with 16 `action` values: read-only (`status`, `list`, `show`, `next`, `observability`) and mutating (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `rollback`, `integrate`, `clear`, `run`). |
+| `acdd_claim` | Atomically claim a ready or active node (`node` optional to auto-select next ready node) and materialize its 6-tier `ClaimResp` bundle (`contract`, `guidance`, `diff`, `context`, `blackboard`, `traces`). |
+| `acdd_verify` | Execute gate verification (`command:`, `call:`, `checks:` `DomainProvider` verifiers, write-scope perimeter) without advancing state; accepts optional `test_target` and `claim_revision`. |
+| `acdd_submit` | Submit `pass` or `reject` for a claimed node (`claim_revision`-bound), supporting `review_evidence`, `rejection_findings`, `custom_evidence`, `verified_invariants`, `summary`, `test_target`, and `allow_main`. |
+| `acdd_blackboard` | Read (`action: "read"`) or post (`action: "post"`) scoped blackboard messages (`draft \| notes \| findings \| blockers \| decisions \| deferred`) with status filters (`open \| acknowledged \| resolved \| carried_over`) and `runs.generation` paging. |
 
-See [repository tasks](tasks.md) for schemas, receipts, configuration, and CLI parity, and the `acdd` skill for the task lifecycle.
+In addition to the 19 built-in static tools above, active `DomainProvider` plugins
+can register domain-scoped tools as `<domain>_<name>` (dispatched dynamically by
+`src/mcp/tools.rs` when `modules.domains.<domain>` is enabled). See
+[state, tasks & lifecycle](tasks.md) for action schemas, receipts, and recovery,
+and the `acdd` skill for agent execution workflows.
 
 ## Built-in guide
 
-`acdd_guide` and CLI `guide TOPIC` use the same producer, resolved adapter and
-response formatter. Omitted or blank MCP topics select `query`; blank topic
-strings also select `query` in the shared API and CLI. The query response retains
-its navigation fields and adds a capability-filtered `topics` array.
+`acdd_guide` and CLI `acdd guide <topic>` use the same producer, resolved
+adapter, and response formatter. Omitted or blank MCP topics select `query`. The
+`query` response retains its navigation fields and adds a capability-filtered
+`topics` array across the 11 topics:
 
 | Topic | Guidance | Required capability |
 | --- | --- | --- |
 | `query` | Existing navigation and topic index | Always available |
-| `init`, `adapter`, `validate` | Configuration creation, syntax and selected-adapter validation | Always available |
-| `code`, `ast` | Verified navigation, structural search and language capabilities | `codemap` |
-| `docs` | Search, outlines, source reads, frontmatter and invariants | `docs` |
-| `lifecycle` | Claims, proof, submission, role runners, rejection recovery and delivery | `acdd` |
-| `acdd` | Implemented Workflow, Plan and Milestone execution | `acdd` |
-| `gates` | Conditions, profile routes, persistence and observed proof | `acdd` |
-| `subtasks` | Slice status, evidence and delivery checks | `acdd` |
+| `init`, `adapter`, `validate` | Configuration creation, syntax, and workspace validation | Always available |
+| `code`, `ast` | Verified navigation, structural search, and language capabilities | `code` |
+| `docs` | Search, outlines, source reads, frontmatter, and invariants | `docs` |
+| `lifecycle` | Claims, verification, submission, role runners, rejection recovery, and commits | `state` |
+| `acdd` | Unified `0.6.0` `Run` / `GateProfile` lifecycle (`worktree`, `in_place`, `none`) | `state` |
+| `gates` | Conditions, profile routes, persistence, and `DomainProvider` hooks | `state` |
+| `subtasks` | Subtask status, mandatory evidence, and delivery checks | `state` |
 
 Known disabled topics return `{}` on both surfaces. Disabling `blackboard`
-removes its ACDD fields and lifecycle instructions. Unknown topics retain the
-`unknown guide topic` diagnostic. `init` bypasses adapter loading and requires
-`force: true` (CLI `--force`) to replace an existing configuration.
+removes blackboard fields from `acdd` / `lifecycle` guidance. Unknown topics
+return the `unknown guide topic` diagnostic. `init` bypasses adapter loading and
+requires `force: true` (CLI `--force`) to replace existing files.
 
-The six guidance topics provide `purpose`, `steps`, an `example` containing MCP
-`name`/`arguments` and CLI text, and `references`. `acdd` and `docs` retain their
-existing keys. Request `format: "json"` for these structured values; omitted
-format and `format: "markdown"` use the shared readable Markdown renderer with
-the configured response budget.
-
-```json
-{"topic":"lifecycle","format":"json"}
-```
-
-Use the returned active profile and claim `workflow_guidance` as authority;
-guide gate names are examples. Verification observes without advancing, and
-submission consumes current claim-bound proof. Subtask delivery permits
-`completed` or `cancelled`, with nonempty evidence required for completed
-subtasks. Storing an evidence string does not execute its verification command.
-The guide describes current runner identities and independent-gate checks;
-future identity-policy changes are not implemented by this interface. Workflow
-execution uses `save: none`; persistent autonomous run logging remains planned.
-See [headless execution](acdd.md#headless-task-milestone-plan-and-workflow-execution)
-and [CLI guide usage](cli.md#server-guide-and-checkpoints).
+The guidance topics return structured Markdown or JSON (`format: "json"`).
+See [headless execution](cli.md#headless-run-execution) and
+[CLI server and guide usage](cli.md#server-guide-and-plugin-tools).
 
 ## Worktree selection
 
-All 20 MCP tools support a `worktree` selector, optional on every tool except
-`task_claim` and `task_manage(action: "next")`, which require it for task
-affinity. This includes task tools, `acdd_guide`, and `session_checkpoint`.
-The same resolver selects a request-local root, adapter, and index before
-dispatch. `task_submit` accepts a selector optionally without changing evidence
-identity.
+All 19 built-in MCP tools (plus registered `<domain>_<name>` plugin tools)
+accept an optional `worktree` selector — no tool requires it unconditionally.
+When supplied, the same resolver selects a request-local root, adapter, and index
+before dispatch.
 
 Use `"."` for the server root. An absolute path or a path relative to the
 server root that contains a separator selects an existing directory directly;
@@ -381,7 +366,7 @@ Code source previews from `code_map_search` appear automatically when the total 
 
 ## AST pattern capabilities
 
-`ast_grep_search.language` accepts a compiled profile ID such as `python`, `rust`, or `typescript`. Omit it when `path` names a file with a recognized extension: `{"pattern":"class Widget","path":"src/example.py"}` infers Python. An explicit language takes precedence; directory scopes require an explicit language. A null or empty language also requests inference. When inference fails, the tool returns the compiled language list and usage examples.
+`ast_grep_search.language` accepts a compiled profile ID such as `python`, `rust`, or `typescript`. Omit it when `path` names a file with a recognized extension (`{"pattern":"class Widget","path":"src/example.py"}` infers Python) or when `path` (or the workspace root when `path` is omitted) is an indexed directory containing sources of a single compiled language. An explicit language takes precedence; multi-language directories require an explicit language. A null or empty language also requests inference. When inference fails, the tool returns the compiled language list and usage examples.
 
 Call `acdd_guide` with `topic:"ast"` for the profile matrix and syntax examples. Profiles declare these independent capabilities:
 
@@ -396,12 +381,7 @@ The registered matrix is: Rust supports all four capabilities; Python and TypeSc
 
 Unsupported fragments and invalid syntax produce an MCP tool error with the diagnostic code, profile language, one-based line and column range, repair hint, and indented valid examples. The error text presents these fields directly without appending a raw JSON dump.
 
-## SQL and checkpoints
-
-Markdown checkpoint lists show the returned full breadcrumbs and serialized
-byte sizes; save and delete display the actual action and breadcrumb. Get
-preserves the stored JSON value losslessly and does not interpret user fields
-such as `generation`, `freshness`, or `items` as ACDD metadata.
+## SQL queries
 
 `code_map_query` accepts operations `overview`, `inspect`, `explain`, `impact`, `slice`, `unwired`, `sql`, `untested`, `implementations`, and `duplicates`. Use `code_map_query(sql="SELECT count(*) FROM nodes")` to select SQL mode directly, or `code_map_query(operation="sql", selector="SELECT ...")`. A SELECT/WITH statement in `operation`, or in `query` when `operation` is omitted or blank, also selects SQL mode. In these inferred forms, the statement resolves from `sql`, then `query`, then `selector`, then SQL text in `operation`. With an explicit operation and no inferred form, the selector resolves from `target`, then `selector`, then `query`; `target` remains valid only for `untested` and `duplicates`. SQL accepts exactly one read-only `SELECT` or `WITH` statement. Writes and additional statements remain rejected, with the same query budgets and pagination. For structural cycle analysis, use `code_map_analyze` with `include_cycles=true`. Cycles are static graph findings.
 
@@ -421,27 +401,7 @@ JOIN nodes dst ON e.dst_hash = dst.node_hash
 ORDER BY src.id, e.kind, dst.id;
 ```
 
-Missing-table or missing-column SQL errors retain the SQLite error and append a schema hint.
-
-`session_checkpoint` stores values in SQLite `gate_checkpoints`, scoped to the
-active task-store project. Its schema-compatible `name` field carries the
-complete breadcrumb for `save`, `get`, and `delete`:
-`{repository}/{project}/{milestone_id}/{gate_path}/{task_id}/{stage_id}`. The
-milestone, gate path, task, and stage components identify the active gate; the
-repository and project prefix namespace the locator. `name` is 1–2,048 bytes
-and cannot contain a NUL byte. Slash-separated components are accepted.
-
-`list` takes no `name` and returns each stored breadcrumb with its serialized
-JSON byte size. `save` requires both `name` and JSON `content` and writes or
-replaces a scratchpad payload at that exact breadcrumb. `get` requires `name`
-and returns the stored JSON value. `delete` requires `name` and removes the exact
-scratchpad breadcrumb. Values are limited to 1 MiB. A breadcrumb from another
-project is rejected. Gate-transition checkpoints are engine-owned: `save` and
-`delete` return `TASK_CHECKPOINT_OWNED` for rows with a lifecycle transition, and
-the milestone verification cursor is reserved even before its first transition.
-The tool continues to read these rows with `get`. Scratchpad data is local
-session state, separate from the source index; the tool does not read or write
-`.acdd/checkpoints.json`.
+Missing-table or missing-column SQL errors retain the SQLite error and append a schema hint. State persistence (runs, gates, subtasks, claims, traces, artifacts, blackboard, tombstones) lives separately in `.acdd/state.sqlite`; see [state, tasks & lifecycle](tasks.md).
 
 ## Syntax diagnostics on demand
 
@@ -482,4 +442,4 @@ Compact responses omit candidate data and return a hint to request full detail; 
 
 Lines that declare `INV-*` rules are indexed as invariant nodes. A `governs` / `governed_by` edge requires a uniquely resolved code claim within the invariant node's inclusive line span (with `end_line` at least `line`). Explicit source-file targets confine resolution to that file; unscoped claims use the document's workspace and the same first-tier uniqueness rule as `documents` edges. Inspect, impact, and task context can surface verified governing rules with a single-line rule and source path/line. Navigation includes at most five direct rules and five IDs governing one-hop callers or callees; omitted counts and source references keep the response bounded. This graph context does not replace or truncate task contract invariants, profile guidance, decisions, commands, or proof receipts.
 
-Archived documents under any `archive/` directory (`docs/milestones/archive/`, `docs/plans/archive/`, or `.../archive/...`, including paths prefixed by a linked workspace) are excluded from default `search_docs` results and overview documentation hubs. Pass a `component` or its `path` alias targeting `archive` to search them explicitly. `get_doc` can still read them directly. Archived documents emit no `documents`, `references_doc`, `governs`, or `governed_by` edges, so they contribute no live `documented_in`, `affected_docs`, or invariant governance. Document-to-document citations remain available. In task context bundles (`context_bundle.adrs` and `scope_symbols[].documented_by`), all indexed non-archive documentation across the repository is intersected while excluding `archive/**`, `docs/milestones/**`, and `docs/contracts/**`. See [ADR 0019](../adr/0019-mcp-markdown-output-and-dead-metadata-compaction.md#archive-exclusion-from-documentation-search-and-code-documentation-graph).
+Archived documents under any `archive/` directory (`docs/milestones/archive/`, `docs/plans/archive/`, or `.../archive/...`, including paths prefixed by a linked workspace) are excluded from default `search_docs` results and overview documentation hubs. Pass a `component` or its `path` alias targeting `archive` to search them explicitly. `get_doc` can still read them directly. Archived documents emit no `documents`, `references_doc`, `governs`, or `governed_by` edges, so they contribute no live `documented_in`, `affected_docs`, or invariant governance. Document-to-document citations remain available. In task context bundles (`context_bundle.adrs` and `scope_symbols[].documented_by`), all indexed non-archive documentation across the repository is intersected while excluding `archive/**`, `docs/milestones/**`, and `docs/contracts/**`. See [ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md#archive-exclusion-from-documentation-search-and-code-documentation-graph).

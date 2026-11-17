@@ -19,7 +19,7 @@ PRAGMA mmap_size = 268435456;
 PRAGMA busy_timeout = 5000;
 ```
 
-Graph write transactions (`BEGIN IMMEDIATE`) are owned by `crates/acdd-index/src/db/writer.rs` and `crates/acdd-index/src/db/delta.rs`; task-state writes use the separate `crates/acdd-tasks` storage boundary. Task orchestration lives in `crates/acdd-tasks/src/engine/`. The MCP surface registers 20 tools. A mutex guards the reader slot through each query transaction, serializing reads within one server instance. The current-thread Tokio runtime also runs synchronous tool handlers serially. A reader pool alone would not make public MCP requests execute concurrently.
+Graph write transactions (`BEGIN IMMEDIATE`) are owned by `crates/acdd-index/src/db/writer.rs` and `crates/acdd-index/src/db/delta.rs`; state-engine writes use `crates/acdd-state/src/store/sqlite/` (`StateBackend` / `StateTx`) paired with strictly read-only `StateReader` queries (`SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only = ON`). Host orchestration bridges live in `src/state_bridge/`. The MCP surface registers 19 built-in static tools plus optional `DomainProvider` plugin tools (`<domain>_<name>`), running blocking state/lock calls inside `tokio::task::spawn_blocking`. A mutex guards the code-map reader slot through each query transaction, serializing reads within one server instance. A reader pool alone would not make public MCP requests execute concurrently.
 
 ## Snapshot admission and reader fencing
 

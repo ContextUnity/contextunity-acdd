@@ -11,59 +11,30 @@ isolation.
 
 ## Task-level proof
 
-Run the focused test command required by the admitted task contract (e.g. `cargo test --test <target> <seam_filter>` or scoped test module). Record the exact command, exit code, passing count, and failing count in the active `build` and `review` evidence. This focused test proof uses the narrowest real production seam that proves the task without forcing slow, unrelated suite execution during task iteration.
+Run the focused test command required by the admitted task contract (e.g. `cargo test --test <target> <seam_filter>` or `cargo test -p <crate> --lib <filter>`). Record the exact command, exit code, passing count, and failing count in the active `build` and `review` evidence. This focused test proof uses the narrowest real production seam that proves the task without forcing slow, unrelated suite execution during task iteration.
 
 For Rust task builds and reviews, run strict Clippy alongside the focused test:
-`cargo clippy --all-targets --all-features -- -D warnings`. Record its exact command and exit code with the build evidence; Clippy contributes no test count.
-The embedded ACDD profile registers the scoped verification command:
-`cargo clippy --all-targets --all-features -- -D warnings && cargo test`.
-Claim context supplies `workflow_guidance.scoped_commands` with the contract seam and indexed covering-test targets; use the scoped command matching the task proof (with test filter) and record its exact string. Full unfiltered suite execution (`cargo test --all-targets`) is deferred to the milestone handoff gate.
+`cargo clippy <scope_target> --all-features -- -D warnings` (or workspace-wide `cargo clippy --workspace --all-targets --all-features -- -D warnings`). Record its exact command and exit code with the build evidence; Clippy contributes no test count.
+The repository profile (`.acdd/profile.yaml`) registers `rust-check-and-test` as `cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter}`.
+Claim context (`acdd_claim` / `acdd claim`) supplies `workflow_guidance` with the contract seam and indexed covering-test targets; use the scoped command matching the task proof (with `--test <filter>`) and record its exact string. Full unfiltered suite execution (`cargo test --workspace --all-targets`) is deferred to the terminal verification gate.
 
 ## Milestone handoff gate
 
-Before `milestone handoff`, run each command from the repository root:
+Before terminal `handoff`, run each command from the repository root:
 
 1. `cargo test --test commitment_integrity`
-2. `cargo clippy --all-targets --all-features -- -D warnings`
-3. `cargo test --all-targets`
-4. `cargo test -p acdd-tasks --lib`
+2. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+3. `cargo test -p acdd-core --lib && cargo test -p acdd-state --lib` (and `cargo test --workspace --lib` covering all 3 library crates `acdd-core`, `acdd-index`, `acdd-state`, and root `--lib`)
+4. `cargo test --workspace --all-targets`
+5. `cargo run -- docs check && cargo run -- validate`
 
-Also verify temporary directory cleanup across test runs: compare `/tmp/contextunity-test-*` counts immediately before and after executing tests so shared fixtures (`PersistedSnapshot`, local `Workspace` drops, child processes) leave zero leaked directories (`BEFORE == AFTER`).
+Also verify temporary directory cleanup across test runs: compare `/tmp/contextunity-test-*` counts immediately before and after executing tests so shared fixtures (`PersistedSnapshot`, local `Workspace` drops, `RunHarness`, child processes) leave zero leaked directories (`BEFORE == AFTER`).
 
-The root package's `--all-targets` run does not include the `acdd-tasks`
-member's library unit tests. Record the separate member-library result alongside
-the root suite result.
+The root package's `--all-targets` run without `--workspace` does not execute workspace member library unit tests (`acdd-core`, `acdd-index`, `acdd-state`). Record the workspace library result (`cargo test --workspace --lib` and/or `cargo test -p acdd-core --lib && cargo test -p acdd-state --lib`) alongside the integration suite result.
 
-Prepare the binding with `milestone handoff-context <id> --target-base main` and
-obtain independent integration review against that exact final content and base.
-Follow the documentation-agent scan in [AGENTS.md](AGENTS.md#documentation-scan-before-handoff)
-before final verification. Handoff context commits admitted working-tree polish
-before producing the review binding. On that content, run
-`milestone verify <id> --target-base main` to execute the first applicable root
-command and persist its observation. The current repository profile's
-`check_full_repo` runs commands 1–3 above; run command 4 separately. Confirm
-the observed command still covers commands 1–3, and run any missing checks
-separately if the profile changes. Obtain fresh independent review.
+Follow the documentation-agent scan in [AGENTS.md](AGENTS.md#documentation-scan-before-handoff) before final verification. The repository profile's `check_full_repo` runs commands 1–3 (`commitment_integrity`, workspace strict Clippy, and `cargo test --workspace --lib`); run `cargo test --workspace --all-targets` and `cargo run -- docs check && cargo run -- validate` alongside it when verifying terminal delivery. Obtain independent review against the settled diff and target base; any source or documentation change after review invalidates prior verification and requires fresh verification and review.
 
-For initial handoff, copy the successful observation's `command`, `exit_code`,
-`tests_passed`, and `tests_failed` into the corresponding `verification` fields
-of `IntegrationEvidence`. ACDD matches the command and applicable counts to
-its latest trace; do not replace its observed count with a deduplicated count.
-Separately report the unique passed-test count from `cargo test --all-targets`,
-counting the standalone commitment run only once and excluding Clippy, and report
-the member-library count without adding it to the trace-bound value. Supply the
-record to `milestone handoff <id> --evidence-file /tmp/handoff-evidence.json`;
-see the [record fields](docs/reference/tasks.md#milestone-cli-lifecycle).
-For source polish, select its registered project verification command through
-`verification.project_command`; handoff verifies or reuses the recorded observation.
-Select the registered lint command explicitly through `verification.lint_command`;
-handoff verifies or reuses its recorded successful observation. These observations do not
-replace the mandatory commands or their count rules. Changed content or authority
-requires fresh final review and verification.
-
-Use `test-suite-refactor` only when the admitted change splits, replaces,
-deduplicates, or removes a typed test suite. It is not a general final-verification
-step.
+Use `test-suite-refactor` only when the admitted change splits, replaces, deduplicates, or removes a typed test suite. It is not a general final-verification step.
 
 ## Test authoring and fixture invariants
 
@@ -80,17 +51,17 @@ To prevent test-suite bloat, redundant execution storms, and synthetic masking, 
    - Shared fixture variations belong in canonical template files under `tests/acdd/fixtures/` or structured fluent builders (`MilestoneFixtureBuilder`). Tests must reference templates or configure variations via typed builder methods, keeping test files maintainable and concise.
 
 3. **In-Process Engine Seams Over OS Process Spawning**:
-   - Integration tests proving milestone and task lifecycle logic must invoke the in-process Rust API directly (`milestone_engine::handoff`, `tasks::manage`, `TasksStore`).
+   - Integration tests proving run and gate lifecycle logic must invoke the in-process Rust API directly (`StateEngine::execute`, `StateQueryEngine::query`, `RunHarness`).
    - OS-level binary execution (`std::process::Command::new(env!("CARGO_BIN_EXE_..."))`) is restricted exclusively to dedicated CLI smoke tests (1–2 per subcommand) to verify CLI argument parsing and exit codes. Never drive domain matrix permutations through subprocess spawning.
 
-4. **In-Memory Store First & Orchestrator Subprocess Boundary**:
-   - Pure state-machine logic, gate transitions, DAG wave ordering, dependency blocking, and blackboard routing must run against in-memory SQLite stores (`TasksStore::open_in_memory(":memory:?cache=shared")`) in < 5ms without disk files, Git worktrees, or external Python/shell subprocesses.
-   - Reserve `WaveHarness` Git worktrees and Python runner subprocesses strictly for tests asserting subprocess lifecycle, signal/timeout cancellation, process recovery, or concurrent worktree filesystem isolation.
+4. **In-Memory Store First & Subprocess Boundary**:
+   - Pure state-machine logic, gate transitions, DAG wave ordering, dependency blocking, and blackboard routing must run against in-memory SQLite stores (`RunHarness::in_memory()`) in `< 5ms` without disk files, Git worktrees, or external subprocesses (full `cargo test --test acdd` runs in `< 15s`).
+   - Reserve Git worktrees and child-process runner tests (`runner_and_waves.rs`) strictly for tests asserting subprocess lifecycle, signal/timeout cancellation, process recovery, or concurrent worktree filesystem isolation.
 
 5. **Universal Declarative Test Harnesses (`<Domain>Harness`)**:
    - Integration tests must express domain intent, not procedural plumbing.
-   - Individual test functions MUST NOT interleave manual Git subprocess scripting (`git checkout`, `git commit`, `git worktree`), raw SQLite mutations (`INSERT INTO task_blackboard`), or 80-line JSON evidence payloads.
-   - Every major cluster must provide a cohesive domain harness (`MilestoneHarness`, `TaskHarness`, `McpTestHarness`, `ExtractorHarness`).
+   - Individual test functions MUST NOT interleave manual Git subprocess scripting (`git checkout`, `git commit`, `git worktree`), raw SQLite mutations (`INSERT INTO blackboard_messages`), or 80-line JSON evidence payloads.
+   - Every major cluster must provide a cohesive domain harness (`RunHarness`, `McpTestHarness`, `ExtractorHarness`).
    - All environment lifecycle mechanics, Git commits, evidence synthesis, and blackboard updates must be encapsulated within the respective harness. Keep each test's setup, action, and assertions clear.
 
 6. **Seam-Preserving Functional Decomposition Over Monolithic Mega-Tests**:
@@ -106,9 +77,9 @@ To prevent test-suite bloat, redundant execution storms, and synthetic masking, 
    - Protocol and tool tests in `tests/mcp/` and `tests/acdd/mcp.rs` MUST dispatch JSON-RPC requests directly through the in-process server handler (`server.handle_request(&req)`).
    - Spawning background child processes (`StdioClient::new()`, `mkfifo`, subprocess pipes) is strictly restricted to exactly 1–2 transport smoke tests in `tests/mcp/`. Never drive matrix permutations, tool freshness checks, or response compaction through OS child processes.
 
-9. **Plan & Workflow Orchestrator Testing Invariant (`INV-PLAN-WORKFLOW-HARNESS`)**:
-   - All tests for structured plans (`docs/plans/*.md`) and standalone workflows (`docs/workflows/*.yaml`) in Milestone AC-003 MUST use `PlanHarness` and `WorkflowHarness` with canonical static templates under `tests/acdd/fixtures/plans/` and `tests/acdd/fixtures/workflows/`.
-   - Ad-hoc markdown/YAML heredoc copy-pasting, direct procedural bash-like scripting, and external CLI subprocess spawning are strictly banned for plan and workflow orchestrator test suites.
+9. **Fixture Matrix & Unified `RunHarness` Invariant (`INV-ACDD-RUN-HARNESS`)**:
+   - All spec and profile fixtures under `tests/acdd/fixtures/{milestones,plans,workflows}` are audited in `tests/acdd/fixtures_matrix.rs` using `RunHarness` and `validate_profile_document` ([ADR 0003](docs/adr/0003-unified-profile-graph-and-state-machine.md)).
+   - Ad-hoc markdown/YAML heredoc copy-pasting, direct procedural bash-like scripting, and external CLI subprocess spawning are strictly banned for state-engine test suites.
 
 10. **Profile-Driven Universal Lifecycle & Worker Independence (`INV-TEST-PROFILE-DRIVEN-LIFECYCLE`)**:
     - Task integration and lifecycle tests must NOT hardcode private gate lists (`&["contract", "build", "review", "deliver"]`).
@@ -138,18 +109,12 @@ When writing or extending tests in this repository, agents MUST follow the **Pro
 ### Available `<Domain>Harness` Implementations
 | Harness | Subsystem / Scope | Canonical Fixtures | Key Production Seams |
 | :--- | :--- | :--- | :--- |
-| `MilestoneHarness` | Milestone graph, DAG dependencies, verification evidence, handoff | `tests/acdd/fixtures/milestones/` (`linear.md`, `branching_deps.md`, `cancellation.md`) | `milestone_engine::handoff`, `milestone_engine::handoff_context` |
-| `TaskHarness` | Task state machine, claim, submit, profile-driven lifecycle, blackboard | In-memory SQLite for state-only cases; Git workspaces for persisted lifecycles | `tasks::claim`, `tasks::submit`, `tasks::manage` |
-| `PlanHarness` | Plan fixtures, workspace materialization, and snapshot inspection | `tests/acdd/fixtures/plans/` (`linear.md`, `dag.md`) | `docs::extract_with_details`, plan runner |
-| `WorkflowHarness` | Root-gate profile validation and workspace materialization | `tests/acdd/fixtures/workflows/` (`simple.yaml`, `rejection_routing.yaml`) | `profile::validate_profile_document`, workflow runner |
+| `RunHarness` | Unified `GateProfile` (`v2`), DAG gates, claims, verification, blackboard, git ops, runner waves | `tests/acdd/fixtures/{milestones,plans,workflows}/` (`< 15s` full suite) | `StateEngine::execute`, `StateQueryEngine::query`, `validate_profile_document` |
 | `ExtractorHarness` | Syntax parsing, AST extraction, fact emission (zero disk I/O) | In-memory code snippets | `languages::rust::extract`, `languages::python::extract` |
 | `McpTestHarness` | MCP JSON-RPC protocol, tool routing, response compaction | Real Workspace files, SQLite, and workspace-local extraction cache | Production RMCP server over an in-process duplex stream |
 
-Run the plan and workflow harness checks with
-`cargo test --test acdd acdd::harness::`. These checks exercise Markdown
-extraction and the shared gate-profile schema from ADR 0021; they do not prove
-structured plan parsing, DAG execution, role dispatch, or persistence effects.
-Runner tests exercise those behaviors separately with materialized fixtures.
+Run the unified ACDD state-engine integration suite with
+`cargo test --test acdd` (`< 15s` total across `fixtures_matrix`, `profiles_and_inheritance`, `lifecycle_and_state`, `blackboard`, `verification_and_git`, and `runner_and_waves`).
 
 ---
 
@@ -160,82 +125,77 @@ When verifying a new edge case, diagnostic error code, or parameter variation on
 - **Do NOT** copy-paste an entire 100-line test function.
 - If the test is table-driven, add **one row** to the existing case table:
   ```rust
-  for (scenario, expected_error) in [
-      ("stale_evidence", HandoffError::EvidenceStale),
-      ("missing_subtask_evidence", HandoffError::SubtaskEvidenceMissing),
+  for (scenario, expected_code) in [
+      ("proof_unobserved", ErrorCode::TaskProofUnobserved),
+      ("not_integrated", ErrorCode::TaskNotIntegrated),
   ] {
-      // parameterized assertion
+      // parameterized assertion against RunHarness
   }
   ```
-- If testing a mutation or rejection condition, use a 1-line declarative mutator on the harness:
+- If testing a mutation or rejection condition, mutate one argument or state condition on a shared `RunHarness`:
   ```rust
   #[test]
-  fn handoff_rejects_when_verification_fails() {
-      let mut h = MilestoneHarness::linear("m-reject");
-      h.complete_all_tasks();
-      let err = h.handoff_with_mutated_evidence(|ev| ev.verification.exit_code = 1).unwrap_err();
-      assert_matches!(err, HandoffError::VerificationFailed { exit_code: 1, .. });
+  fn verify_rejects_unclaimed_node_cursor() {
+      let harness = RunHarness::in_memory().unwrap();
+      let err = harness.verify("t1.build", None).unwrap_err();
+      assert_eq!(err.code, ErrorCode::StaleClaimRevision);
   }
   ```
 
 #### Scenario 2: Authoring a New Contract Invariant (New Feature / Rule)
 When a task introduces a distinct new behavioral contract or fail-closed invariant:
-- Author a dedicated, descriptively named `#[test]` function in the appropriate domain module.
+- Author a dedicated, descriptively named `#[test]` function in the owning domain module.
 - Load a canonical fixture via the harness and express only the distinct domain preconditions, action, and assertion:
   ```rust
   #[test]
-  fn plan_document_sections_preserve_the_declared_type() {
-      let h = PlanHarness::linear();
-      assert!(!h.sections.is_empty());
-      assert!(h.sections.iter().all(|section| section.doc_type == "plan"));
+  fn spec_document_sections_preserve_the_declared_type() {
+      let sections = docs::extract_with_details("docs/plans/linear.md", src, 0.0, &[]).unwrap();
+      assert!(!sections.is_empty());
   }
   ```
-  This example exercises production Markdown extraction. Separate runner tests
-  cover structured plan execution and subtask delivery guards.
 
 #### Scenario 3: Connecting an Existing Seam to a New Consumer
-When a new subsystem emerges (e.g. a consumer of `PlanHarness` or `TasksStore`):
+When a new subsystem emerges (e.g. a new `DomainProvider` or `StateBackend` consumer):
 1. **Extend the Harness API additively**: Once the production consumer exists,
    add its invocation to the domain harness so tests share the real wiring.
 2. **Author the Integration Seam Test**: Instantiate producer state via the
    harness, execute the consumer, and assert observable state transitions across
-   both components without mocking either collaborator. Harness checks alone
-   prove document extraction and gate-profile validation; exercise the runner
-   separately to verify execution and persistence.
+   both components without mocking either collaborator.
 
 ---
 
 ### Non-Negotiable Test Authoring Rules (Anti-Pattern Checklist)
 - ❌ **NEVER** write `let source = "---\nid: ...";` in test functions (use `tests/acdd/fixtures/` or typed builder).
 - ❌ **NEVER** invoke `std::process::Command::new("git")` or `Command::new(env!("CARGO_BIN_EXE_..."))` in domain tests.
-- ❌ **NEVER** execute raw SQL `store.connection.execute("INSERT INTO ...")` in domain test functions when a reusable store/harness primitive exists.
+- ❌ **NEVER** execute raw SQL `conn.execute("INSERT INTO ...")` in domain test functions when a reusable store/harness primitive exists.
 - ❌ **NEVER** dump static non-domain functions onto `<Domain>Harness` (e.g. `McpTestHarness::seed_git` or `McpTestHarness::edge_rows`) or alias harness types (`use McpTestHarness as Client` / `as Mcp`).
 - ❌ **NEVER** inline a single-caller helper as a 100-line `(|| -> Result<_> { ... })()` IIFE block returning a one-off `*Observation` struct, or leave zero-method `*Observation` struct shells in `harness.rs`.
 - ❌ **NEVER** run full-DB dumps (`persisted_state`) or $O(N^2)$ sequential cold index rebuilds inside per-row rejection/delta loops when lightweight checks or batched file updates prove the same contract.
-- ❌ **NEVER** synthesize 40–80 lines of raw JSON evidence manually (use `h.default_evidence()` and declarative mutators), or hide setup bugs behind silent `"unavailable"` digest fallbacks in happy-path fixture helpers.
+- ❌ **NEVER** synthesize 40–80 lines of raw JSON evidence manually (use `default_evidence()` and declarative mutators), or hide setup bugs behind silent `"unavailable"` digest fallbacks in happy-path fixture helpers.
 - ❌ **NEVER** combine unrelated workflows into 300-line mega-tests, author multi-hundred-line meta-test suites for test-only helpers, or write tautological enum/struct echo checks and brittle `Cargo.toml`/CI YAML substring assertions.
 - ❌ **NEVER** call `Workspace::build()` repeatedly per test when `>= 2` read-only query, search, or linker tests inspect the same immutable fixture corpus (share one read-only index via `OnceLock`).
-- ❌ **NEVER** spawn `WaveHarness` Git worktrees and Python runner subprocesses for pure in-memory DAG scheduling, dependency blocking, or SQLite state-transition assertions.
+- ❌ **NEVER** spawn Git worktrees and child-process runner harnesses for pure in-memory DAG scheduling, dependency blocking, or SQLite state-transition assertions (use `RunHarness::in_memory()`).
 - ❌ **NEVER** add new top-level `tests/<name>.rs` Cargo test binaries; register new modules inside the owning canonical domain binary.
-- ❌ **NEVER** mechanically chop a cohesive single-domain test file (e.g. 800–1,600 lines testing one tool or language surface) or hide test assertions in `*Harness` helpers to chase an arbitrary line count. Decompose multi-subsystem monoliths (>1,500–2,000 lines mixing unrelated contracts such as `tests/acdd/mcp.rs`, `tests/mcp/context.rs`, `tests/mcp/tool_evolution/mcp_boundaries.rs`, or `tests/acdd/orchestrator/waves.rs`) by domain cohesion, keeping `tests/commitment_integrity/*` under `< 500` lines since its submodules are already partitioned by domain.
+- ❌ **NEVER** mechanically chop a cohesive single-domain test file (e.g. 800–1,600 lines testing one tool or language surface) or hide test assertions in `*Harness` helpers to chase an arbitrary line count. Decompose multi-subsystem monoliths (>1,500–2,000 lines mixing unrelated contracts such as `tests/mcp/context.rs` or `tests/mcp/tool_evolution/mcp_boundaries.rs`) by domain cohesion, keeping `tests/commitment_integrity/*` under `< 500` lines since its submodules are already partitioned by domain.
 
 ## Test lanes
 
-Run the default repository suite with `cargo test --all-targets`. All current
-registered scenarios, including Git/history and scale cases, stay in this lane.
-The current Rust tree has no `#[ignore]` tests or `ACDD_TESTS_GIT` /
-`ACDD_EXTENDED_TESTS` test switches, so there is no separate ignored or
-environment-gated lane. Record passed, failed, and ignored counts; the default
-run currently reports zero ignored tests.
+Run the workspace repository suite with `cargo test --workspace --all-targets`.
+All current registered scenarios, including Git/history and scale cases, stay
+in this lane. The current Rust tree has no `#[ignore]` tests or
+`ACDD_TESTS_GIT` / `ACDD_EXTENDED_TESTS` test switches, so there is no separate
+ignored or environment-gated lane. Record passed, failed, and ignored counts;
+the default run reports zero ignored tests.
 
-Run the `acdd-tasks` member-library suite separately with
-`cargo test -p acdd-tasks --lib`; use
-`cargo test -p acdd-tasks --lib handoff_accepts_completed_reviewed_shared_scope`
-for focused development on its native handoff seam.
+Run the core and state-engine library unit tests with:
+`cargo test -p acdd-core --lib && cargo test -p acdd-state --lib` (or run all
+workspace member libraries together via `cargo test --workspace --lib`).
 
-The milestone tests live in `tests/acdd/milestones/`. Run their default cases
-with `cargo test --test acdd milestones`; select an individual module with
-`cargo test --test acdd milestones::<module>::`.
+The unified `acdd` integration suite lives in `tests/acdd/` (`< 15s` total).
+Run all modules with `cargo test --test acdd`, or select a single module:
+`cargo test --test acdd <module>::` (`fixtures_matrix`,
+`profiles_and_inheritance`, `lifecycle_and_state`, `blackboard`,
+`verification_and_git`, `runner_and_waves`).
 
 ## Cross-checking macOS targets from Linux
 

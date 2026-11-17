@@ -1,6 +1,6 @@
 # IN-002 One-Pass Rename Inventory
 
-Authoritative inventory for [`IN-002-contextunity-acdd-one-pass-rename`](../milestones/IN-002-contextunity-acdd-one-pass-rename.md). Stored under `docs/runbooks/` because `is_milestone_manifest_name` (`crates/acdd-tasks/src/milestones/mod.rs`) treats uppercase `<TAG>-<NUM>-*.md` files inside `docs/milestones/` as milestone manifests.
+Authoritative inventory for [`IN-002-contextunity-acdd-one-pass-rename`](../milestones/archive/IN-002-contextunity-acdd-one-pass-rename.md). Stored under `docs/runbooks/` because `is_milestone_manifest_name` (`crates/acdd-tasks/src/milestones/mod.rs`) treats uppercase `<TAG>-<NUM>-*.md` files inside `docs/milestones/` as milestone manifests.
 
 ## 1. Cargo, Crates, and Build Identities (Wave 1)
 

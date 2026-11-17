@@ -21,31 +21,23 @@ ACDD bounds file admission, graph traversal, queries, and tool responses. A reje
 | AST search | `offset + limit` at most 10,000 matches; 1,000,000 steps and 2 seconds per file; 5-second MCP request budget | Constrain the path and pattern. |
 | SQL analysis | 2-second query progress budget; 8 MiB converted result budget | Page results and limit selected columns. |
 | Cycle analysis | At most 1,000,000 selected nodes for a path target; 500,000 edges across the graph | Omit cycles if the graph exceeds the edge budget. |
-| Checkpoint value | 1 MiB | Save a smaller JSON value. |
+| State pagination | Default 50; range 1–100 (`list`, `blackboard`) | Pass `--limit`, `--offset`, and `--generation` (`runs.generation`). |
 
 These are protective ceilings, not latency promises. A query may finish earlier, return a partial page, or fail on a narrower budget. The configured response limit is independent of the index size.
 
 ## Keeping the index current
 
-All 20 MCP tools support the same `worktree` selector, optional except on task
-claim and `task_manage(action="next")`. Omission retains the stable server
-root. Explicit selection uses that branch's index and adapter/configuration;
-Git-linked worktrees share the task database, but their indexes and checkpoints
-remain worktree-local.
+All 19 built-in static MCP tools (and any registered `<domain>_<name>` plugin tools) support the optional `worktree` selector. Omission retains the stable server root. Explicit selection uses that worktree's adapter and `.acdd/code-map.sqlite`, while Git-linked worktrees resolve the primary worktree's shared `.acdd/state.sqlite` via `git rev-parse --path-format=absolute --git-common-dir`.
 
-The default database is `<root>/.acdd/code-map.sqlite`; override it with `--db` or `ACDD_DB`. The default workspace is `.`; use `--root` or `ACDD_WORKSPACE_ROOT` for another root. `build` creates a full index. `delta` updates changed and deleted files. The MCP server validates workspace identity and adapter configuration on each request, then updates or rebuilds stale data. It reuses a successful source-inventory check for up to five seconds when the adapter digest and database identity remain valid, so an external source edit can remain unreflected during that interval. CLI indexed queries use the existing index, so refresh it with `build` or `delta` after source edits.
+The default code index is `<root>/.acdd/code-map.sqlite`; override it with `--db` or `ACDD_DB`. The default state database is `<primary_worktree>/.acdd/state.sqlite`; override it with `--state-db`, `ACDD_STATE_DB`, or `state_db` in `acdd.yaml`. The default workspace is `.`; use `--root` or `ACDD_WORKSPACE_ROOT` for another root. `build` creates a full index. `delta` updates changed and deleted files. The MCP server validates workspace identity and adapter configuration on each request, then updates or rebuilds stale data. It reuses a successful source-inventory check for up to five seconds when the adapter digest and database identity remain valid, so an external source edit can remain unreflected during that interval. CLI indexed queries use the existing index, so refresh it with `build` or `delta` after source edits.
 
-If a source file has changed since it was indexed, `acdd_read` snippet mode rejects stale content by digest. Refresh the index and retry. Core text modes read the current file directly. Response settings such as page size and source preview length do not require a rebuild; changes to admitted roots, linked workspaces, or enabled language profiles do.
+If a source file has changed since it was indexed, `acdd_read` snippet mode rejects stale content by digest. Refresh the index and retry. Core text modes read the current file directly. Response settings such as page size, source preview length, `state_db`, `retain_traces`, `profiles_dirs`, and `modules.state` do not change `adapter.digest` and do not trigger an index rebuild; changes to admitted roots, `specs.*.path`, linked workspaces, `modules.code`, `modules.docs`, or enabled language profiles do.
 
 ## Query and source safety
 
 `code_map_analyze` accepts one read-only `SELECT` or `WITH` statement and rejects write and administrative SQL. It runs against a read-only connection. Set `include_cycles=true` only when cycle findings are needed; cycle analysis has separate graph limits. A structural result is evidence from indexed source, not a guarantee about runtime behavior.
 
-Source bodies are omitted from inspect and explain MCP responses by default. Opt in through the configured preview settings or request `acdd_read`. Inspect and explain previews default to 5 leading lines and the configured body limit (200 by default, constrained to 1–500); these preview defaults are unchanged. `acdd_read` snippet mode defaults to the full selected symbol and returns it whenever the complete serialized response fits the configured 1,024–98,304 byte limit. Otherwise it pages at complete-line boundaries with accurate offsets; every continuation requires the previous page's explicit generation. A single oversized line returns a budget error and a local-file recovery hint, never partial code. An explicit `max_body_lines` value is normalized to at least one and honored. Indexed symbol source reads verify the indexed digest. Task-list continuations instead bind the selected task workspace, filters, and full task/subtask state; they are independent of code-index generations. See [MCP tools](../reference/mcp-tools.md) for the request fields.
-
-MCP checkpoints remain local to the selected worktree. Git-linked worktrees do not share checkpoint files merely because their task database is shared.
-
-Local checkpoints live in `.acdd/checkpoints.json`. A name must be 1–200 UTF-8 bytes and cannot contain `..`, `/`, `\`, or a NUL byte. `save` requires valid JSON content; `get` and `delete` report missing names as errors.
+Source bodies are omitted from inspect and explain MCP responses by default. Opt in through the configured preview settings or request `acdd_read`. Inspect and explain previews default to 5 leading lines and the configured body limit (200 by default, constrained to 1–500); these preview defaults are unchanged. `acdd_read` snippet mode defaults to the full selected symbol and returns it whenever the complete serialized response fits the configured 1,024–98,304 byte limit. Otherwise it pages at complete-line boundaries with accurate offsets; every continuation requires the previous page's explicit generation. A single oversized line returns a budget error and a local-file recovery hint, never partial code. An explicit `max_body_lines` value is normalized to at least one and honored. Indexed symbol source reads verify the indexed digest. Read-only state queries (`acdd status`, `list`, `show`, `next`, `blackboard --action read`, `acdd_state` read actions, `acdd_blackboard(action="read")`) open `state.sqlite` strictly with `SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only = ON` and never create a missing database file; `list` and `blackboard` continuations bind `runs.generation`. See [MCP tools](../reference/mcp-tools.md) for the request fields.
 ## Reader layer admission
 
 Use `acdd_read(path="notes.txt", mode="lines")` for index-independent text.

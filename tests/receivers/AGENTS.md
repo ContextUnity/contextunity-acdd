@@ -17,18 +17,13 @@ Tests are divided by language backend into focused subdirectories:
 - Split test files strictly by logical domain and contract boundaries;
   avoid artificial splits solely for line count.
 
-The module path filter uses the backend module in `typed.rs`; focused commands
-such as `rust::field_chains::` and `python::branch_joins::` run inside the
-existing `linker` Cargo target.
+Tests in `tests/receivers/{rust,python}` are wired through `tests/linker/receivers/`
+inside the existing `linker` Cargo target; focused commands such as
+`rust::field_chains::` and `python::branch_joins::` filter backend modules directly.
 
 ## Verification Commands
 
-Run full receiver test suite:
-```bash
-cargo test --test linker receivers::
-```
-
-Run language-specific receiver suite:
+Run language-specific receiver suites:
 ```bash
 cargo test --test linker rust::
 cargo test --test linker python::

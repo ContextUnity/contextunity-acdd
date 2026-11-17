@@ -5,7 +5,7 @@ doc_type: guide
 
 # Installation, Workspace Setup, and Operational Guide
 
-ContextUnity ACDD is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and an ACDD task lifecycle state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (20 tools) and as a command-line interface (CLI).
+ContextUnity ACDD (`0.6.0`) is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and a unified `GateProfile` state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (19 built-in tools plus optional `DomainProvider` plugin tools) and as a command-line interface (CLI).
 
 This guide walks you through installing ACDD MCP, configuring your workspace, selecting profiles, installing companion skills globally, establishing repository rules, authoring indexed documentation, and running milestones, plans, and workflows.
 
@@ -180,19 +180,21 @@ codex mcp add acdd -- acdd
 
 ## 2. Workspace Initialization and `acdd.yaml`
 
-`acdd.yaml` located at the root of your project is the adapter configuration file. It declares which directories to index, where documentation lives, milestone and plan directories, task store paths, and output budgets.
+`acdd.yaml` located at the root of your project is the adapter configuration file. It declares which directories to index, where documentation lives, `specs:` collections, profile directories, state store path, `modules:` flags, and output budgets.
 
 ### Quick Bootstrap
 
-Generate a starter adapter file automatically:
+Generate a starter `acdd.yaml`, `.acdd/profile.yaml`, and canonical `.gitignore` rules automatically:
 
 ```bash
-acdd guide init
+acdd init
 ```
+
+Upgrading an existing `0.5.x` workspace? Follow the step-by-step [0.5.x to 0.6.0 migration runbook](docs/runbooks/migration-0.6.md) and verify with `acdd validate`.
 
 ### Complete Configuration Schema
 
-A fully featured `acdd.yaml` template:
+A fully featured `0.6.0` `acdd.yaml` template:
 
 ```yaml
 # Source directories to parse and index into .acdd/code-map.sqlite
@@ -205,13 +207,34 @@ docs:
   - README.md
   - docs
 
-# Directory containing Markdown milestone specifications
-milestones:
-  - docs/milestones
+# Specification collections (mapped to profiles and sequential IDs)
+specs:
+  milestones:
+    path: docs/milestones
+    profile: workspace
+    prefixes: [AC]
+    digits: 3
+  plans:
+    path: docs/plans
+    profile: in_place
+    prefixes: [PLAN]
+    digits: 3
 
-# Directory containing Markdown plan documents
-plans:
-  - docs/plans
+# Directories searched for standalone/named GateProfile YAML files
+profiles_dirs:
+  - .acdd/profiles
+  - docs/workflows
+
+# State database path and run trace retention
+state_db: ".acdd/state.sqlite"
+retain_traces: 20
+
+# Subsystem activation flags
+modules:
+  code: true
+  docs: true
+  state: true
+  blackboard: true
 
 # Paths and directories excluded from code indexing (literal basenames)
 ignore:
@@ -219,20 +242,12 @@ ignore:
   - node_modules
   - .venv
   - .git
+  - .acdd
 
 # Patterns blocked from reader operations and export (gitignore syntax)
 sensitive:
   - '.env*'
   - 'secrets/**'
-
-# Task lifecycle database and primary agent guidance routing file
-task_repository: "my-project"
-task_project: "my-project"
-tasks_db: ".acdd/tasks.sqlite"
-agents_guidance: "AGENTS.md"
-
-# Path to ACDD gate profile (defaults to .acdd/profile.yaml if omitted)
-acdd_profile: ".acdd/profile.yaml"
 
 # Multi-repository linking: federate external repositories into unified code graph
 linked_workspaces:
@@ -270,18 +285,21 @@ response:
 Run the following checks from your repository root:
 
 ```bash
-# 1. Validate configuration syntax, roots, and adapter paths
-acdd guide validate
+# 1. Validate configuration syntax, profiles, DomainProvider capabilities, and specs
+acdd validate
 
-# 2. Build or refresh the code graph in .acdd/code-map.sqlite
+# 2. Verify documentation links and anchors
+acdd docs check
+
+# 3. Build or refresh the code graph in .acdd/code-map.sqlite
 acdd scan
 # Or full build:
 acdd build .
 
-# 3. Query the graph overview to confirm language coverage and symbol counts
+# 4. Query the graph overview to confirm language coverage and symbol counts
 acdd query overview
 
-# 4. Verify documentation indexing
+# 5. Verify documentation indexing
 acdd docs search "setup"
 ```
 
@@ -289,48 +307,49 @@ When connected to an AI agent via MCP, calling `code_map_overview` returns the s
 
 ### Setting up `.gitignore`
 
-ACDD uses `.acdd/` for runtime caches, indexes, and SQLite databases while persisting committed gate profiles and framework manifests. Configure your `.gitignore` using the canonical pattern:
+ACDD uses `.acdd/` for runtime caches, indexes, and SQLite databases while persisting committed gate profiles and framework manifests. Configure your `.gitignore` using the canonical pattern (written automatically by `acdd init`):
 
 ```gitignore
-# Allow committed configuration and profiles inside .acdd/
+/.worktrees/
 !/.acdd/
 !/.acdd/profile.yaml
+!/.acdd/profiles/
+!/.acdd/profiles/**
 !/.acdd/frameworks/
 !/.acdd/frameworks/**
-
-# Exclude local runtime state, indexes, and session logs
 .acdd/*.sqlite*
 .acdd/*.lock
 .acdd/*.log
+.acdd/*.json
 .acdd/*.jsonl
-.acdd/tasks/
-.acdd/checkpoints.json
+.acdd/run/
+.acdd/tmp/
+.acdd/backup-0.5/
 ```
 
 ---
 
 ## 3. Profiles: Built-in vs Custom Universal Profile
 
-Profiles govern task lifecycle stages, verification rules, review contours, roles, and contextual guidance injected into agent claims under ACDD (Augmented Context-Driven Delivery).
+Profiles (`GateProfile`, `version: 2`) govern lifecycle stages, `git:` isolation/integration policy, verification rules, review contours, roles, and contextual guidance injected into agent claims under ACDD.
 
 ### Profile Resolution Order
 
-When an agent claims a task gate, ACDD resolves the active profile in the following priority:
-1. **Task pin**: Specific profile pinned directly on the task (`path:sha256-prefix`).
-2. **Milestone pin**: Profile pinned on the containing milestone manifest.
-3. **Workspace configuration**: `acdd_profile` path declared in `acdd.yaml`.
-4. **Repository default**: `.acdd/profile.yaml` file if present.
-5. **Compiled built-in fallback**: The embedded default profile.
+When starting a run (`acdd start`) or validating (`acdd validate`), ACDD resolves the active profile in the following priority:
+1. **CLI `--profile` flag**: Explicit built-in name (`default`, `code`, `in_place`), `profiles_dirs` entry, or workspace-relative path.
+2. **Spec frontmatter `profile:`**: Profile declared in the specification Markdown frontmatter (e.g. `profile: workspace` or `profile: in_place`).
+3. **Collection default**: `specs.<collection>.profile` configured in `acdd.yaml`.
+4. **Repository default**: `.acdd/profile.yaml` if present.
+5. **Compiled built-in fallback**: The embedded `default` profile.
 
-If a profile is pinned with a SHA-256 hash prefix, ACDD verifies the file digest on every claim and fails with `TASK_PROFILE_TAMPERED` if any unauthorized modification occurs.
+If an `inherit:` reference includes a SHA-256 prefix (`<path>:<sha256_prefix>`), ACDD verifies the parent file digest on every load and fails closed if tampered.
 
-### Built-in Profile
+### Built-in Profiles
 
-The built-in profile provides a 4-stage sequential lifecycle:
-- **`contract`**: Author writes a failing seam test proving the behavioral requirement (runtime exit code 101).
-- **`build`**: Implementer writes code and verifies with a passing test command (exit code 0).
-- **`review`**: Independent reviewer verifies changes against 5 review contours (`paths`, `claims`, `concurrency`, `project_isolation`, `administration`).
-- **`deliver`**: Delivers changes, writes durable proof receipt into SQLite and milestone Markdown, and clears scratch blackboard messages.
+ACDD embeds three `version: 2` profiles (`crates/acdd-state/src/profile/embedded/`):
+- **`default`**: Domain-agnostic lifecycle (`blueprint_synthesis` -> per-task `contract`, `contract_review`, `build`, `review`, `deliver` -> `verify`, `polish`, `integration_review`, `handoff`) with `git.isolation: worktree`.
+- **`code`**: Inherits `default`, enables all 19 built-in tools, attaches `code.seam` verification checks, and binds `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, and `code.external_callers` context lenses.
+- **`in_place`**: Inherits `default` with `git.isolation: in_place` and `save: snapshot` for single-checkout plan execution.
 
 ### Authoring a Custom Universal Profile (`version: 2`)
 
@@ -338,48 +357,52 @@ Create `.acdd/profile.yaml` to tailor commands, roles, and review contours to yo
 
 ```yaml
 version: 2
-inherit: default
+inherit: code
+gates_merge: patch
 
-# Scoped command mappings referenced by inherited gates
+# Scoped command mappings referenced by patched gates
 commands:
   rust-check-and-test:
     by_pattern:
-      "**/*.py": "pytest"
-      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
-      "**/*.go": "go test ./..."
-      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+      "**/*.py": "pytest {test_filter}"
+      "**/*.{ts,tsx,js,jsx,vue}": "npm test -- {test_filter}"
+      "**/*.go": "go test ./... {test_filter}"
+      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test {test_filter}"
+    test_filter: "{test}"
     description: "Run strict checks and tests across project languages."
     timeout_seconds: 300
     output:
       counts: {passed: '(?m)\b(\d+) passed\b', failed: '(?m)\b(\d+) failed\b'}
       require_counts: true
 
+  test:
+    command: "cargo test {test_filter}"
+    test_filter: "{test}"
+    output:
+      counts: {passed: '(?m)\b(\d+) passed\b', failed: '(?m)\b(\d+) failed\b'}
+      require_counts: false
+
   check_full_repo:
-    by_pattern:
-      "**/*.py": "pytest"
-      "**/*.{ts,tsx,js,jsx,vue}": "npm test"
-      "**/*.go": "go test ./..."
-      "**/*.rs": "cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
-    description: "Run full-repository verification before milestone handoff."
+    command: "cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-targets"
+    description: "Run full-repository verification before handoff."
     timeout_seconds: 1800
 
-# Overlay command bindings onto the embedded acdd.profile.yaml gate tree
+# Patch command bindings onto the inherited gate tree
 gates:
   - tasks:
       gates:
+        - id: contract
+          command: test
         - id: build
           command: rust-check-and-test
-        - id: seam
-          when: seam
-          gates:
-            - id: integrate
-              command: rust-check-and-test
   - id: verify
+    command: check_full_repo
+  - id: polish
     command: check_full_repo
 ```
 
 > [!TIP]
-> Always validate custom profiles using `acdd validate --profile .acdd/profile.yaml`.
+> Always validate custom profiles using `acdd validate .acdd/profile.yaml`.
 > See [ACDD Architecture & Default Profile Guide](docs/reference/acdd.md) and [ACDD Profiles Reference](docs/reference/profiles.md) for gate mechanics and inheritance details, or inspect [`skills/acdd/references/acdd_profile.yaml.example`](skills/acdd/references/acdd_profile.yaml.example) for a standalone `inherit: none` template.
 
 ---
@@ -433,8 +456,8 @@ Place an `AGENTS.md` in your repository root based on [`skills/acdd/references/a
 
 1. **Mandatory MCP Navigation**: Instruct agents to use `code_map_*`, `ast_grep_search`, and `acdd_read` for code exploration.
 2. **Direct Single-Shot Symbol Reads**: Direct agents to call `acdd_read(selector="SymbolName")` directly when a symbol name is known, avoiding multi-step search grep calls.
-3. **Blackboard Context**: Mandate posting technical notes, findings, and blockers to `task_blackboard`.
-4. **Verification Seams**: Point agents to the active task profile and `TESTS.md` for exact verification commands.
+3. **State & Blackboard Context**: Route lifecycle state through `acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, and mandate posting technical notes, findings, and blockers to `acdd_blackboard`.
+4. **Verification Seams**: Point agents to the active `.acdd/profile.yaml` and `TESTS.md` for exact verification commands.
 
 ### Configuring IDE / Agent Platform Rules
 
@@ -512,155 +535,86 @@ ACDD marks the section with `is_invariant: true` and connects it to the governed
 
 ---
 
-## 7. Working with Milestones, Plans, and Workflows
+## 7. Working with Runs, Specs, Plans, and Workflows
 
-### Milestone Lifecycle
+All stateful execution in ACDD `0.6.0` uses the unified flat CLI (`acdd draft`, `acdd start`, `acdd list`, `acdd show`, `acdd next`, `acdd claim`, `acdd verify`, `acdd submit`, `acdd integrate`, `acdd run`) backed by `.acdd/state.sqlite` and `GateProfile` v2.
 
-Milestones represent committed units of architectural progress containing structured task contracts.
+### Spec & Run Lifecycle
 
-#### 1. Creating and Drafting Milestones
-
-```bash
-# Draft a new milestone manifest
-acdd milestone draft --num 045 --slug auth-refactor --title "Refactor Auth Pipeline"
-
-# Or initialize an existing milestone manifest into the task store:
-acdd milestone init docs/milestones/045-auth-refactor.md
-```
-
-#### 2. Listing and Inspecting Milestones
+#### 1. Drafting and Starting a Run
 
 ```bash
-# List active milestones and completion progress
-acdd milestone list --status active
+# Draft the next sequentially numbered spec in a configured collection (e.g. milestones or plans)
+acdd draft milestones auth-refactor --prefix AC --title "Refactor Auth Pipeline"
 
-# Show complete milestone contract and task definitions
-acdd milestone show 045 --full
+# Start a worktree-isolated run from an existing spec manifest:
+acdd start docs/milestones/AC-045-auth-refactor.md --worktree --target-base main
+
+# Or start an ephemeral goal run without writing a permanent spec file:
+acdd start --goal "Fix parser edge case" --scope "src/parser/**" --in-place
 ```
 
-#### 3. Running Headless Milestone Execution
-
-ACDD can orchestrate the entire milestone lifecycle through dependency waves:
+#### 2. Listing, Inspecting, and Executing Automated Waves
 
 ```bash
-acdd milestone run 045 --target-base main
+# List active runs and optional closed tombstones
+acdd list --status active
+
+# Inspect full run or node status
+acdd show
+acdd show t1
+
+# Execute automated DAG waves when roles configure shell runners:
+acdd run --jobs 2
 ```
 
-#### 4. Milestone Handoff and Verification
+#### 3. Gate Execution Work Loop (`claim` -> `verify` -> `submit`)
 
-When all tasks in a milestone are delivered:
+Agents advance gates through atomic claims, observed verification, and claim-bound submissions:
 
 ```bash
-# 1. Absorb uncommitted polish and generate exact content binding
-acdd milestone handoff-context 045 --target-base main > /tmp/045-binding.json
+# 1. Inspect ready node cursors
+acdd next
 
-# 2. Run repository verification (executes profile check commands)
-acdd milestone verify 045 --target-base main
+# 2. Claim a ready node (or omit cursor to auto-select)
+acdd claim t1.contract --worker agent-1 --worktree .
 
-# 3. Complete handoff with independent review evidence file
-acdd milestone handoff 045 --evidence-file .acdd/integration-evidence.json
+# 3. Run gate verification without advancing state (records fresh trace)
+acdd verify t1.contract --test tests/auth_test.rs::test_token_expiry
+
+# 4. Submit pass against the observed trace (or --action reject --findings '<JSON>')
+acdd submit t1.contract --action pass
 ```
 
-`handoff` verifies content digests, reuses verified command traces, archives the milestone manifest to `docs/milestones/archive/`, and cleans up task state.
-
----
-
-### Task Lifecycle Work Loop
-
-Agents advance tasks through the state machine using atomic claims, proof verification, and evidence submission:
-
-#### 1. Listing Available Tasks
+#### 4. Collaboration via `acdd_blackboard` and Scope Extensions
 
 ```bash
-# List ready tasks in the active milestone
-acdd task list
+# Post a technical note or review finding
+acdd blackboard --action post --node t1 --topic notes --payload "Token validation logic split into validator.rs"
+
+# Read messages for a run or node
+acdd blackboard --action read --node t1
+
+# Extend a task's admitted write scope with an explicit reason
+acdd extend-scope t1 --path src/auth/utils.rs --reason "Share token helper across auth modules"
 ```
 
-#### 2. Claiming a Task Gate
+#### 5. Task Integration and Terminal Handoff
 
 ```bash
-acdd task claim <task-id> --stage contract --worker agent-1 --worktree .
+# Integrate completed task branches into the run worktree
+acdd integrate --strategy rebase-ff
+
+# Run terminal verification and submit handoff (commits receipt, archives spec, prunes run)
+acdd verify verify
+acdd submit verify --action pass
+acdd claim integration_review --worker integration-reviewer
+acdd submit integration_review --action pass --evidence '{"decision":"pass","contours":{...},"summary":"..."}'
+acdd submit handoff --action pass
 ```
 
-The claim response returns:
-- **`workflow_guidance`**: Role guidance, step-by-step instructions, and acceptance criteria.
-- **Context bundle**: Task write scope, governed architectural decisions, in-scope symbols, covering tests, and recent blackboard messages.
+### In-Place Plans, Standalone Workflows, and Plugin Tools
 
-#### 3. Verifying Gate Proof
-
-For automated gates (`contract`, `build`), run `task verify` to execute the registered test/check command and cache the observation in SQLite:
-
-```bash
-# Verify failing contract seam test (exit code 101) or passing build (exit code 0)
-acdd task verify <task-id> --test tests/auth_test.rs::test_token_expiry
-```
-
-#### 4. Submitting Gate Evidence
-
-After a successful `task verify`, submitting the gate passes automatically using the cached observation:
-
-```bash
-# Submit passing transition (proof inferred from cached verification)
-acdd task submit <task-id> --stage contract --action pass
-```
-
-Automated verification via `task verify` caches the execution trace in SQLite, allowing evidence-free submission. For manual or schema-driven gates that require explicit typed evidence payloads (such as independent `review`), see the [canonical evidence contract](docs/reference/tasks.md#gates-and-evidence).
-
-#### 5. Collaboration via `task_blackboard`
-
-Agents exchange notes, findings, and architectural decisions without cluttering Git history:
-
-```bash
-# Post technical note or review finding
-acdd task blackboard post <task-id> --topic notes --payload "Token validation logic split into validator.rs"
-
-# Read messages for a task
-acdd task blackboard read <task-id>
-```
-
-#### 6. Autonomous Scope Extension
-
-When implementation legitimately requires modifying an unlisted file inside admitted roots:
-
-```bash
-acdd task extend-scope <task-id> src/auth/utils.rs
-```
-
-> [!NOTE]
-> Arguments are positional file paths. Paths must reside within the task's admitted `scope_roots` or frozen base roots. Scope extension fails closed if a path is exclusively locked by another active concurrent task or attempts to alter protected profile paths under `.acdd/**`.
-
----
-
-### Structured Plans and Standalone Workflows
-
-Beyond milestones, ACDD supports executing documentation plans and root-gate workflows:
-
-#### Documentation Plans (`doc_type: plan`)
-
-Execute structured multi-step plans without worktree branch isolation:
-
-```bash
-# List plans in docs/plans/
-acdd plan list
-
-# Inspect plan steps and dependencies
-acdd plan show docs/plans/migration-plan.md
-
-# Execute plan steps in dependency order
-acdd plan run docs/plans/migration-plan.md
-```
-
-#### Standalone Root-Gate Workflows
-
-Execute lightweight taskless workflows with ephemeral observations from `docs/workflows/`:
-
-```bash
-# List standalone workflows in docs/workflows/*.yaml
-acdd workflow list
-
-# Inspect workflow graph
-acdd workflow show docs/workflows/ci-check.yaml
-
-# Execute workflow in the current workspace
-acdd workflow run docs/workflows/ci-check.yaml
-```
+- **In-Place Plans (`docs/plans/*.md`)**: Start with `acdd start docs/plans/migration-plan.md --in-place` (or `profile: in_place` in frontmatter). Snapshots replace commits so work runs cleanly in the current checkout.
+- **Standalone Workflows (`docs/workflows/*.workflow.yaml`)**: Start taskless root-gate workflows with `acdd start --goal "Audit docs links" --profile docs-refactor-and-reconcile`.
+- **External `DomainProvider` Plugin Tools**: Invoke registered plugin tools from CLI via `acdd tool <domain>_<name> --args '{"key":"value"}'` or directly over MCP.

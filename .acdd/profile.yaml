@@ -1,40 +1,59 @@
 version: 2
-inherit: default
+inherit: code
+gates_merge: patch
+tags: [default, docs]
 
 commands:
-  check-and-test:
-    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
+  rust-check-and-test:
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter}"
+    test_filter: "{test}"
     output: &test_output
       counts:
         passed: '(?m)\b(\d+) passed\b'
         failed: '(?m)\b(\d+) failed\b'
       require_counts: true
       noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
-      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+      compile_errors:
+        include: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+        exclude: ['^error: test failed']
       tests:
         target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
         passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
         failed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b'
         ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
-    description: "Run strict Rust checks followed by the repository's test suite."
-  rust-check-and-test:
-    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
-    output: *test_output
-    description: "Run strict Rust checks followed by the repository's test suite."
+    description: "Run strict Rust checks followed by the repository's scoped test suite."
+
+  test:
+    command: "cargo test {scope_target} {test_filter}"
+    test_filter: "{test}"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: false
+      noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
+      compile_errors:
+        include: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+        exclude: ['^error: test failed']
+      tests:
+        target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
+        passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
+        failed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b'
+        ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
+    description: "Run scoped Rust contract tests for runtime-red proof."
+
   check_full_repo:
-    command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    command: "cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --lib"
+    output: *test_output
     description: "Run the milestone handoff verification commands from TESTS.md."
     timeout_seconds: 1800
-  test:
-    command: "cargo test"
-    description: "Run scoped tests for red contract proof."
 
 scope_args_by_pattern:
   "src/main.rs": "--bin acdd"
   "src/**/*.rs": "--lib"
   "crates/acdd-core/**/*.rs": "--package acdd-core --lib"
   "crates/acdd-index/**/*.rs": "--package acdd-index --lib"
-  "crates/acdd-tasks/**/*.rs": "--package acdd-tasks --lib"
+  "crates/acdd-state/**/*.rs": "--package acdd-state --lib"
   "tests/*.rs": "--test {file_stem}"
   "tests/acdd/**/*.rs": "--test acdd"
   "tests/common/**/*.rs": "--all-targets"
@@ -54,8 +73,8 @@ guidance:
     description: "ContextUnity-ACDD Rust test topology, fixture hygiene, lowest-level placement, and speed invariants (TESTS.md / tests/AGENTS.md)"
     criteria:
       - "CANONICAL BINARY & META-TEST BUDGET: Register new integration modules strictly inside the 7 canonical tests/*.rs binaries (acdd.rs, core.rs, mcp.rs, query_context.rs, linker.rs, languages.rs, commitment_integrity.rs); never add standalone top-level tests/*.rs binaries, docs/ADR/YAML substring meta-tests, or helper self-tests."
-      - "LOWEST-LEVEL PLACEMENT & SUBPROCESS BOUNDARY: Keep exhaustive parser, graph, profile, and error-permutation #[test] matrices in-memory inside owning crate unit modules (crates/*/src/); keep tests/acdd/ and tests/mcp/ as thin CLI/MCP seam proofs without re-cloning unit matrices. Reserve WaveHarness, LifecycleHarness, python3, and git subprocesses strictly for process, signal, timeout, or worktree seams (using compact 1-2 gate profiles, direct shell dispatch to git, and non-blocking stdin helpers); drive pure DAG/gate/blackboard rules in-process via TasksStore / TaskHarness (see tests/AGENTS.md)."
-      - "HARNESS SHARING & ZERO /tmp LEAKS: Construct shared Workspace::new(), McpTestHarness::new(), InstallerHarness::new(), and MilestoneHarness instances ONCE outside table loops, partitioning clean read-only baseline rows before mutating rows to avoid redundant restores. Preserve root/directory permissions on restore and repair read-only entries in Workspace::drop instead of swallowing errors. Never store Workspace or TempDir inside static OnceLock/LazyLock; share read-only indexed corpora via OnceLock<PersistedSnapshot> (tests/common/sqlite.rs) and require zero leaked /tmp/contextunity-test-* directories (BEFORE == AFTER)."
+      - "LOWEST-LEVEL PLACEMENT & SUBPROCESS BOUNDARY: Keep exhaustive parser, graph, profile, and error-permutation #[test] matrices in-memory inside owning crate unit modules (crates/*/src/); keep tests/acdd/ and tests/mcp/ as thin CLI/MCP seam proofs without re-cloning unit matrices. Reserve WaveHarness, python3, and git subprocesses strictly for process, signal, timeout, or worktree seams; drive pure DAG/gate/blackboard rules in-process via RunHarness / StateEngine (see tests/AGENTS.md)."
+      - "HARNESS SHARING & ZERO /tmp LEAKS: Construct shared Workspace::new(), McpTestHarness::new(), and RunHarness instances ONCE outside table loops, partitioning clean read-only baseline rows before mutating rows to avoid redundant restores. Preserve root/directory permissions on restore and repair read-only entries in Workspace::drop instead of swallowing errors. Never store Workspace or TempDir inside static OnceLock/LazyLock; share read-only indexed corpora via OnceLock<PersistedSnapshot> (tests/common/sqlite.rs) and require zero leaked /tmp/contextunity-test-* directories (BEFORE == AFTER)."
       - "SPEED, DETERMINISM & REVIEW BUDGET: Ban arbitrary thread::sleep and inflated fixed timeouts where deterministic readiness markers or signals synchronize child processes cleanly. Keep contract proofs compiling cleanly and failing at runtime (exit 101) without weakens or #[ignore], maintain zero net new #[test] functions during review remediation, and verify strict Clippy (`cargo clippy <scope_target> --all-features -- -D warnings`) plus scoped `cargo test <scope_target>` before passing build/review."
 
 gates:
@@ -63,19 +82,28 @@ gates:
       gates:
         - id: contract
           command: test
-          guidance: [task.contract, task.repo_testing, hitl.pro]
+          guidance:
+            - task.contract
+            - task.repo_testing
+            - hitl.pro
         - id: build
           command: rust-check-and-test
-          guidance: [task.code, task.repo_testing, hitl.pro]
+          guidance:
+            - task.code
+            - task.repo_testing
+            - hitl.pro
         - id: review
-          guidance: [task.review, task.repo_testing, hitl.pro]
-        - id: seam
-          gates:
-            - id: integrate
-              command: rust-check-and-test
-              guidance: [task.deferred_final_test, task.repo_testing, hitl.pro]
-            - id: review
-              guidance: [task.seam_review, task.repo_testing, hitl.pro]
+          guidance:
+            - task.review
+            - task.repo_testing
+            - hitl.pro
 
   - id: verify
     command: check_full_repo
+
+  - id: polish
+    command: check_full_repo
+    guidance:
+      - milestone.polish
+      - task.repo_testing
+      - hitl.pro

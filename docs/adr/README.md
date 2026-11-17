@@ -5,30 +5,27 @@ doc_type: guide
 
 # Architectural Decisions
 
-Accepted decisions live here as owner-approved ADR files with stable IDs, status, governing constraints, and links to affected contracts. Decisions are ordered by foundational architectural significance.
+Accepted decisions live here as owner-approved ADR files with stable IDs, governing invariants, and links to affected architecture and code contracts. Consolidated `0.6.0` decisions are organized into three groups:
 
-## Accepted Decisions
+## Group I: System Architecture, Layering & State Engine
 
-1. [ADR 0001: Dual-Surface Parity Between CLI and MCP](0001-dual-surface-parity.md)
-2. [ADR 0002: SQLite Snapshot Admission and Reader Isolation](0002-generational-sqlite-concurrency.md)
-3. [ADR 0003: Two-Phase Staged Indexing and Atomic Publication](0003-two-phase-staged-publication.md)
-4. [ADR 0004: Deterministic Merkle Tree Commitments for Index Integrity](0004-deterministic-merkle-commitments.md)
-5. [ADR 0005: Filesystem Root Guard and Symlink Traversal Safety](0005-filesystem-root-guard-and-symlink-safety.md)
-6. [ADR 0006: Read-Only SQL Execution Sandbox and Injection Guards](0006-read-only-sql-execution-guards.md)
-7. [ADR 0007: Fail-Closed Selector Disambiguation Pipeline](0007-fail-closed-selector-disambiguation.md)
-8. [ADR 0008: Bounded Static Value Flow and Receiver Resolution](0008-bounded-static-value-flow.md)
-9. [ADR 0009: Manifest-Driven External Origin Classification](0009-manifest-external-origin-classification.md)
-10. [ADR 0010: Incremental Delta Invalidation and Transitive Export Dirtying](0010-incremental-delta-transitive-dirtying.md)
-11. [ADR 0011: Bounded MCP Response Budgets and Continuation Paging](0011-bounded-mcp-response-budgets.md)
-12. [ADR 0012: Lean Serialization and Measured Performance](0012-zero-regression-serialization-and-cold-build-latency.md)
-13. [ADR 0013: Data-Driven Framework Manifests](0013-data-driven-framework-manifests.md)
-14. [ADR 0014: Task Hierarchy, Visibility, and Blackboard Coordination](0014-milestone-task-subtask-hierarchy-and-visibility.md)
-15. [ADR 0015: ACDD Lifecycle Snapshots and Proactive Defect Resolution](0015-acdd-lifecycle-snapshots-and-proactive-defect-resolution.md)
-16. [ADR 0016: Lean Stage-Tailored Task Context Bundles and Response Bounding](0016-lean-stage-tailored-task-context-bundles.md)
-17. [ADR 0017: Serde-Driven Framework Manifest Formats](0017-serde-framework-manifest-formats.md)
-18. [ADR 0018: Layer Dependency Boundaries and Core Leaf Isolation](0018-layer-dependency-boundaries-and-core-leaf-isolation.md)
-19. [ADR 0019: Markdown-First Dual Surface Output and Dead Metadata Compaction](0019-mcp-markdown-output-and-dead-metadata-compaction.md)
-20. [ADR 0020: Hierarchical ACDD Gates, Modular Catalogs, and Milestone Orchestration](0020-hierarchical-acdd-gates-and-milestone-orchestration.md)
-21. [ADR 0021: Workflow, Plan, and Milestone Lifecycle Hierarchy](0021-workflow-plan-and-milestone-lifecycle-hierarchy.md)
+1. [ADR 0001: Crate DAG and Layer Boundaries](0001-crate-dag-and-layer-boundaries.md)
+2. [ADR 0002: Workspace Confinement and Path Policy](0002-workspace-confinement-and-path-policy.md)
+3. [ADR 0003: Unified Profile Graph and State Machine](0003-unified-profile-graph-and-state-machine.md)
+4. [ADR 0004: DomainProvider SPI and Plugin Tools](0004-domain-provider-spi-and-plugin-tools.md)
+5. [ADR 0005: Content-Addressed Git Snapshots and Integration](0005-content-addressed-git-snapshots-and-integration.md)
+6. [ADR 0006: Budgeted Gate Context and Dual-Surface Parity](0006-budgeted-gate-context-and-dual-surface-parity.md)
 
-Decision amendments require explicit architectural admission. A superseding ADR links the accepted decision it replaces and the affected current architecture in [Architecture](../architecture/README.md).
+## Group II: Indexing, Storage & Concurrency
+
+7. [ADR 0007: SQLite Code-Map Concurrency and Staged Publication](0007-sqlite-code-map-concurrency-and-staged-publication.md)
+8. [ADR 0008: Merkle Commitments and Compressed Fact Storage](0008-merkle-commitments-and-compressed-fact-storage.md)
+9. [ADR 0009: Incremental Delta and Transitive Relinking](0009-incremental-delta-and-transitive-relinking.md)
+
+## Group III: Language Semantics, Resolution & Safety
+
+10. [ADR 0010: Static Value Flow and Receiver Resolution](0010-static-value-flow-and-receiver-resolution.md)
+11. [ADR 0011: Language Linkers and Framework Manifests](0011-language-linkers-and-framework-manifests.md)
+12. [ADR 0012: Fail-Closed Selectors and Read-Only SQL Sandbox](0012-fail-closed-selectors-and-readonly-sql-sandbox.md)
+
+Decision amendments require explicit architectural admission. See [Architecture](../architecture/README.md) for living component topology and extension guides.

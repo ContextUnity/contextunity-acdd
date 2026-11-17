@@ -3,7 +3,6 @@
 Thank you for your interest in contributing to **ContextUnity ACDD**! We welcome community contributions, bug reports, documentation enhancements, and feature proposals.
 
 > [!NOTE]
-> - **Workflows and Plans**: Standalone root-gate workflows (`workflow run`) and structured documentation plans (`plan run`) are currently under active testing and validation.
 > - **Extended Language Scope**: While default languages are stable, the extended language profiles (`--features all-languages` covering Go, Java, C#, Kotlin, PHP, Ruby, C, C++) need further refinement and community contributions to improve language linkers and AST extractions.
 
 ---
@@ -47,12 +46,16 @@ Before submitting a Pull Request, ensure all checks pass:
 
 2. **Strict Clippy (Zero Warnings)**:
    ```bash
-   cargo clippy --all-targets -- -D warnings
+   cargo clippy --workspace --all-targets --all-features -- -D warnings
    ```
 
-3. **Test Suite**:
+3. **Workspace Test Suite & Validation**:
    ```bash
-   cargo test --locked
+   cargo test --test commitment_integrity
+   cargo test --workspace --lib
+   cargo test --workspace --all-targets
+   cargo run -- docs check
+   cargo run -- validate
    ```
 
 4. **Required Gates**:

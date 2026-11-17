@@ -126,31 +126,31 @@ For clients without a `cwd` setting, pass the repository root to ACDD:
 
 ## First request and subsequent reads
 
-All 20 MCP tools support the same `worktree` selector; it is optional except
-for `task_claim` and `task_manage(action: "next")`, which require it for task
-affinity. See [worktree selection](mcp-tools.md#worktree-selection) for
-exact-name, prefix, zero-normalized number, suffix, substring, and path
-precedence. Omitting the selector always retains the server root, regardless
-of task claims. Selected worktree manifests, configuration, indexes, and
-checkpoints stay local to that branch, while Git-linked worktrees use the
-shared task database. Requests do not transmit the client's current directory.
+All 19 built-in MCP tools (plus any registered `<domain>_<name>` plugin tools)
+support the same optional `worktree` selector. See
+[worktree selection](mcp-tools.md#worktree-selection) for exact-name, prefix,
+zero-normalized number, suffix, substring, and path precedence. Omitting the
+selector always retains the server root, regardless of active claims. Selected
+worktree manifests, configuration, and code indexes stay local to that branch,
+while Git-linked worktrees share `<primary_worktree>/.acdd/state.sqlite`.
+Requests do not transmit the client's current directory.
 
 The server keeps connected clients alive regardless of inactivity. On Unix it
 exits when its launching parent disappears, including while awaiting MCP
 initialization. SIGHUP reload preserves the established session and stdio pipes.
 There is no inactivity shutdown setting.
 
-Reconnect the client and call `code_map_overview`. The first database-backed call creates `<root>/.acdd/code-map.sqlite` automatically. The result reports the indexed workspace, generation, counts, and coverage. No `guide init` or manual `build` is required for MCP use.
+Reconnect the client and call `code_map_overview`. The first database-backed call creates `<root>/.acdd/code-map.sqlite` automatically. The result reports the indexed workspace, generation, counts, and coverage. No `acdd init` or manual `build` is required for MCP use.
 
 Before later database reads, ACDD checks the adapter and admitted source inventory. Changed files trigger an incremental update or full rebuild as needed. A changed response policy affects output without reindexing. `ast_grep_search` scans admitted source directly, so use `code_map_overview` when you want to initialize or verify the SQLite index.
 
-For a first exploration, use `code_map_search` with `{"pattern":"parse*"}`, inspect an ID returned by search, then ask `code_map_impact` with `depth=1`. The [tool reference](mcp-tools.md) lists all 20 tools and their fields.
+For a first exploration, use `code_map_search` with `{"pattern":"parse*"}`, inspect an ID returned by search, then ask `code_map_impact` with `depth=1`. The [tool reference](mcp-tools.md) lists all 19 built-in tools, plugin tools, and their fields.
 
 ## If the server does not appear
 
 - **Executable not found:** run `command -v acdd` in a terminal and put that absolute path in `command`.
 - **Wrong repository:** compare `code_map_overview`'s workspace with the intended root. Set `cwd` or `--root` explicitly.
-- **Indexing error:** inspect the MCP client's server log and validate `acdd.yaml` with `acdd guide validate` from the repository.
+- **Indexing error:** inspect the MCP client's server log and validate `acdd.yaml` and `.acdd/profile.yaml` with `acdd validate` from the repository.
 - **CLI results are stale:** CLI readers use the index on disk. Run `acdd build .` or `delta` after source changes; MCP reads refresh automatically.
 
 The [adapter reference](configuration.md) covers admission rules and linked workspaces; [limits and freshness](../runbooks/limits-and-freshness.md) covers scan and response budgets.

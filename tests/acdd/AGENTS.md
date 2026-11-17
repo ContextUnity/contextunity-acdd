@@ -1,40 +1,15 @@
-# ACDD Test Suite — Router and Module Invariants
+# ACDD Test Suite — Router and Module Invariants (0.6.0)
 
-This document defines the architectural boundaries and test authoring invariants for the ACDD test suite (`tests/acdd.rs`, `tests/acdd/`).
+This suite proves the `acdd-state` + `acdd-core` integration contracts using
+`acdd_state::harness::RunHarness` (`< 15s` wall-clock budget, table-driven
+matrices, zero `thread::sleep`, zero `/tmp/contextunity-test-*` leaks).
 
-## Sub-domain Routes
+## Modules
 
-- **Blackboard Coordination**: [blackboard.rs](blackboard.rs) — Targeted routing, topics, RFC message delivery, and payload size bounds (`INV-PAYLOAD-OVERFLOW-GUARD`).
-- **MCP Tool Contracts**: [mcp.rs](mcp.rs) — JSON-RPC tool contracts (`task_claim`, `task_submit`, `task_manage`, `task_blackboard`, `task_list`).
-- **Milestone Lifecycles**: [milestones/AGENTS.md](milestones/AGENTS.md) — Milestone initialization, synthesis, DAG verification, handoff, and recovery.
-- **Orchestrator & Wave Execution**: [orchestrator/mod.rs](orchestrator/mod.rs) — Role spawner, task lifecycle runner, and wave DAG dispatch.
-- **Subtask Lifecycle**: [subtasks.rs](subtasks.rs) — Subtask state transitions, evidence validation, and dependency ordering.
-- **Task Engine & Lifecycles**: [tasks/AGENTS.md](tasks/AGENTS.md) — Task state machine, seam reachability, signature boundaries, workspaces, and retirement.
-- **Shared Test Harnesses**: [support.rs](support.rs) and [tests/common/](../common/) — Reusable workspace builders, temp stores, and fixture factories.
-
-## Non-Negotiable Invariants
-
-### 1. Domain Cohesion over Monolithic God-Files
-- Organize test files strictly along distinct behavioral domains.
-- Never dump unrelated test concerns into an existing suite simply because it touches tasks or milestones. When a new behavioral domain or subsystem emerges, create a dedicated domain file or directory.
-
-### 2. Shared Harness Reuse (`INV-TEST-HARNESS-REUSE`)
-- **Zero Boilerplate Copy-Paste**: Do not inline repetitive file tree construction (e.g. `root.write("src/api.rs", ...)`).
-- Use `tests/acdd/support.rs` and `tests/common/` factories (`acdd_workspace`, `Workspace`, and fixture builders). Common setup must be parameterized, not duplicated.
-
-### 3. Table-Driven Permutations (`INV-TABLE-DRIVEN-PERMUTATION`)
-- When testing permutations across languages (TypeScript, Python, JavaScript), status codes, or error states, use structured test case tables:
-  ```rust
-  for (lang, ext, code) in cases {
-      assert_boundary(lang, ext, code);
-  }
-  ```
-- Subsume duplicate test functions into a single table-driven function.
-
-### 4. Positive Seams and Runtime-Red Contracts
-- Extended capabilities must strengthen existing domain seams additively.
-- Contract gate tests must compile cleanly and produce runtime assertion failures (exit code 101). Never introduce compilation errors.
-
-### 5. Orchestrator Subprocess vs In-Memory DAG Boundary
-- Keep pure DAG scheduling, dependency blocking, gate transitions, and blackboard routing tests in-process against in-memory `TasksStore` fixtures. Reserve Git worktree + Python subprocess `WaveHarness` runs strictly for subprocess spawning, signal/timeout recovery, or worktree isolation tests.
-- Partition `orchestrator/waves.rs` into domain submodules by behavioral concern (scheduling, recovery, escalation, cancellation) rather than accumulating unrelated orchestration contracts in one file.
+- [fixtures_matrix.rs](fixtures_matrix.rs): Full audit of all 47 fixtures under `fixtures/{milestones,plans,workflows}` split into valid `0.6.0` fixtures vs negative contract fixtures (`ErrorCode`).
+- [profiles_and_inheritance.rs](profiles_and_inheritance.rs): Embedded profiles, `inherit` + SHA-256 pinning, `gates_merge: patch`, `when:` expressions, `{test_filter}` quoting, `DomainProvider` capabilities, and `modules:` fail-closed validation.
+- [lifecycle_and_state.rs](lifecycle_and_state.rs): `RunHarness` in-memory & disk `StateEngine` / `StateQueryEngine` lifecycle (`Start`, `Draft`, `Claim`, `Subtask`, `ExtendScope`, `Reopen`, `Sync`, `Clear`, read-only zero-DB-creation, `modules.state: false`).
+- [blackboard.rs](blackboard.rs): Blackboard topics, recipient routing, pagination, `modules.blackboard: false`, and deferred rollup.
+- [verification_and_git.rs](verification_and_git.rs): `Verify`, `Submit`, `proof: contract/command/review`, `git.commit_mode`, `git.integrate`, `Snapshot`/`Rollback`, `TASK_NOT_INTEGRATED`, `MainBranchProtected`, and `archive` / `run_tombstones`.
+- [runner_and_waves.rs](runner_and_waves.rs): `StateCommand::Run` workflow execution, retries, fail-closed halt, timeout process-group kill, and role runner env/stdin/session continuity.
+- [support.rs](support.rs): Shared test helpers (`make_engine_config`, Git repo seeding, `MockDomainProvider`).

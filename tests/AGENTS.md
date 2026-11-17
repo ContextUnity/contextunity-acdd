@@ -47,7 +47,7 @@ Rules for placing, creating, refactoring, and maintaining tests in
   hacks. Build shared base state once; mutate one field per row.
 - **No inline milestone heredocs**: Use fixtures / `MilestoneFixtureBuilder`,
   not raw multi-line milestone strings in tests.
-- **In-process engine**: Prefer `milestone_engine::*` / `tasks::*`. Reserve
+- **In-process engine**: Prefer `StateEngine` / `RunHarness` (`acdd-state`). Reserve
   `std::process::Command` for dedicated CLI smoke tests.
 - **Harness discipline**: Shared setup lives in `tests/common` or a domain
   harness. A harness function needs ≥2 callers. The `#[test]` keeps the mutation
@@ -90,22 +90,23 @@ Rules for placing, creating, refactoring, and maintaining tests in
   `McpTestHarness` or CLI commands), create local `Workspace` values so `Drop`
   runs at test exit, and verify zero leaked `/tmp/contextunity-test-*`
   directories (`BEFORE == AFTER`).
-- **Orchestrator & `WaveHarness` boundary**: Reserve Git worktree and Python
-  subprocess harnesses (`WaveHarness`, `LifecycleHarness`) strictly for tests
-  proving subprocess execution, signal/timeout recovery, or physical worktree
-  isolation, and use minimal 1–2 gate profiles or compact task containers
-  whenever full 5–6 gate external lifecycles are not required by the invariant
-  under test. Drive pure DAG scheduling, dependency readiness, gate transitions,
-  and blackboard routing in-process against lightweight in-memory `TasksStore` /
-  `TaskHarness` fixtures. For non-CLI role execution matrices, reuse the cached
-  precompiled Rust role helper staged by `tests/acdd/snapshot.rs`; retain the
-  external runner fixtures for tests of that boundary.
+- **In-process state vs subprocess harnesses**: Reserve Git worktrees and
+  child-process runner tests (`runner_and_waves.rs`) strictly for tests proving
+  subprocess execution, signal/timeout recovery, or physical worktree isolation,
+  and use minimal 1–2 gate profiles or compact containers whenever full
+  multi-gate lifecycles are not required by the invariant under test. Drive pure
+  DAG scheduling, dependency readiness, gate transitions, and blackboard routing
+  in-process against lightweight in-memory `RunHarness::in_memory()` /
+  `StateEngine` fixtures (`< 5 ms` per scenario; full `tests/acdd` `< 15 s`). For
+  non-CLI role execution matrices, reuse compact test scripts; retain external
+  runner fixtures for tests of that boundary.
 - **In-process MCP**: Prefer in-process handlers / `McpTestHarness`. Reserve
   `StdioClient` / `mkfifo` for dedicated transport smoke tests.
 - **Zero-disk AST**: Language extraction and framework-manifest unit tests stay
   in-memory (no tempdir Git/SQLite) unless the claim requires disk.
-- **Plan/workflow fixtures**: Keep Markdown/profile extract fixtures thin until
-  AC-003 admits execution. Do not grow execution harnesses ahead of the engine.
+- **Spec/profile fixtures**: Audit all valid and negative spec/profile fixtures
+  under `tests/acdd/fixtures/{milestones,plans,workflows}` through
+  `tests/acdd/fixtures_matrix.rs` using `RunHarness` and `validate_profile_document`.
 <!-- acdd:test-invariants:end -->
 - For semantic receiver evidence, cover exact resolution separately from
   possible targets through the linker and persisted query seam.
@@ -118,7 +119,7 @@ under one of the seven canonical domain binaries (`acdd.rs`, `core.rs`,
 `languages.rs`, `linker.rs`, `mcp.rs`,
 `query_context.rs`, `commitment_integrity.rs`). Prefer coherent domain modules:
 
-- `tests/acdd.rs` (`tests/acdd/`): tasks, milestones, blackboard, runners
+- `tests/acdd.rs` (`tests/acdd/`): unified `acdd-state` + `acdd-core` `RunHarness` suite (`< 15s`: fixtures matrix, profiles/inheritance, lifecycle/state, blackboard, verification/Git, runner/waves)
 - `tests/core.rs` (`tests/core/`, `tests/incremental/`): storage, adapters, scanner limits, docs checks, release packaging, delta indexing and scopes
 - `tests/languages.rs` (`tests/languages/`, `tests/framework_manifests/`): extraction, language semantics, packs and manifests
 - `tests/linker.rs` (`tests/linker/`, `tests/receivers/`): linking and receivers
@@ -130,11 +131,12 @@ under one of the seven canonical domain binaries (`acdd.rs`, `core.rs`,
 Subtree `AGENTS.md` files own local partitioning:
 
 - [`tests/acdd/AGENTS.md`](acdd/AGENTS.md)
-- [`tests/acdd/milestones/AGENTS.md`](acdd/milestones/AGENTS.md)
-- [`tests/acdd/tasks/AGENTS.md`](acdd/tasks/AGENTS.md)
-- [`tests/acdd/tasks/workspaces/AGENTS.md`](acdd/tasks/workspaces/AGENTS.md)
 - [`tests/framework_manifests/AGENTS.md`](framework_manifests/AGENTS.md)
 - [`tests/languages/html/AGENTS.md`](languages/html/AGENTS.md)
+- [`tests/languages/profiles/AGENTS.md`](languages/profiles/AGENTS.md)
+- [`tests/languages/python/frameworks/AGENTS.md`](languages/python/frameworks/AGENTS.md)
+- [`tests/languages/rust/AGENTS.md`](languages/rust/AGENTS.md)
+- [`tests/languages/typescript/dom/AGENTS.md`](languages/typescript/dom/AGENTS.md)
 - [`tests/languages/typescript/frameworks/AGENTS.md`](languages/typescript/frameworks/AGENTS.md)
 - [`tests/receivers/AGENTS.md`](receivers/AGENTS.md)
 - [`tests/receivers/rust/AGENTS.md`](receivers/rust/AGENTS.md)
@@ -146,8 +148,8 @@ Focused commands:
 cargo test --test languages manifests::<module>::
 cargo test --test languages html::<module>::
 cargo test --test languages typescript::frameworks::<module>::
-cargo test --test linker typed_receivers::rust::<module>::
-cargo test --test linker typed_receivers::python::<module>::
+cargo test --test linker rust::
+cargo test --test linker python::
 cargo test --test linker value_flow::
 ```
 
@@ -174,10 +176,10 @@ and
 2. **New contract** — new descriptively named `#[test]` in the owning module;
    drive the real seam through the existing harness.
 3. **Split by domain cohesion, not arbitrary line counts**: Decompose multi-subsystem
-   monoliths (>1,500–2,000 lines mixing unrelated contracts such as `tests/acdd/mcp.rs`,
-   `tests/mcp/context.rs`, `tests/mcp/tool_evolution/mcp_boundaries.rs`, or
-   `tests/acdd/orchestrator/waves.rs`) or shared
-   infrastructure (`tests/acdd/support/*`) into focused domain submodules. Do NOT
+   monoliths (>1,500–2,000 lines mixing unrelated contracts such as
+   `tests/mcp/context.rs` or
+   `tests/mcp/tool_evolution/mcp_boundaries.rs`) or shared
+   infrastructure (`tests/acdd/support.rs`) into focused domain submodules. Do NOT
    mechanically chop a cohesive single-domain test file (e.g., 800–1,600 lines testing
    one tool or language surface) or hide test assertions in harness helpers just to
    hit an arbitrary line count. Keep `tests/commitment_integrity/*` under `< 500`

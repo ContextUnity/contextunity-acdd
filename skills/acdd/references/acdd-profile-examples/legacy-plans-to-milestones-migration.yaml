@@ -4,11 +4,19 @@
 # Aligned with: `planner`, `agent-instructions`, and `acdd` skills
 # Goal: Ingest legacy, unstructured design plans (`docs/plans/*.md`) and ad-hoc
 #       tasks, refactoring them into a strictly ordered, validated DAG of formal
-#       ACDD milestone contracts in `docs/milestones/`.
+#       ACDD spec contracts in `docs/milestones/`.
 # =============================================================================
 
 version: 2
 inherit: none
+
+git:
+  isolation: worktree
+  worktrees: manual
+  commit_mode: plumbing
+  integrate: manual
+
+save: commit
 
 # =============================================================================
 # 1. ROLES CATALOG (`roles`)
@@ -30,7 +38,7 @@ roles:
 
   governance_auditor:
     mode: subagent
-    reuse_on_reject: true
+    reuse_on_reject: false
     models:
       - 'claude-opus-5.5'
       - 'gpt-6.1-sol:xhigh'
@@ -40,25 +48,22 @@ roles:
 # =============================================================================
 commands:
   validate_manifest_syntax:
-    # Validates YAML frontmatter, schema types, and task definitions in docs/milestones/
     command: "test -d docs/milestones && find docs/milestones -name \"*.md\" | xargs grep -l '^doc_type: contract' > /dev/null"
     timeout_seconds: 30
     output: { require_counts: false }
 
   verify_dag_acyclicity:
-    # Autonomous python check confirming depends_on references form a valid acyclic graph
     command: >
       python3 -c '
       import glob, re, sys
       deps = {}
       for f in glob.glob("docs/milestones/*.md"):
           content = open(f).read()
-          m_id = re.search(r"^id:\s*(m-[a-z0-9-]+)", content, re.M)
+          m_id = re.search(r"^id:\s*(AC-[0-9]+|m-[a-z0-9-]+)", content, re.M)
           if not m_id: continue
           mid = m_id.group(1)
-          raw_deps = re.findall(r"-\s+(m-[a-z0-9-]+)", content.split("---")[1] if "---" in content else "")
+          raw_deps = re.findall(r"-\s+(AC-[0-9]+|m-[a-z0-9-]+)", content.split("---")[1] if "---" in content else "")
           deps[mid] = raw_deps
-      # Cycle detection
       visited, rec_stack = set(), set()
       def is_cyclic(node):
           visited.add(node); rec_stack.add(node)
@@ -76,32 +81,39 @@ commands:
     output: { require_counts: false }
 
   guard_source_code_untouched:
-    # Planning workflows must never modify production source code or test harnesses
     command: "! git diff --name-only | grep -E '^(src/|tests/|crates/|app/|lib/)'"
     timeout_seconds: 15
     output: { require_counts: false }
 
   verify_plan_admission_traceability:
-    # Confirms that migrated plans in docs/plans/ have status: admitted and link to their milestones
-    command: "grep -l 'status: admitted' docs/plans/*.md > /dev/null 2>&1 || true"
+    command: "grep -l 'status: completed' docs/plans/*.md > /dev/null 2>&1 || true"
     timeout_seconds: 15
     output: { require_counts: false }
 
 # =============================================================================
-# 3. POLICIES CATALOG (`policies`)
+# 3. CONTOURS CATALOG (`contours`)
 # =============================================================================
-policies:
-  migration_review_policy:
-    independent_worker: true
-    require_all_contours: true
-    audit_extended_scope: true
-    enforce_dag_acyclicity: true
-    enforce_zero_code_tampering: true
-    enforce_schema_validity: true
+contours:
+  dag_topology:
+    description: "Verify that all depends_on milestone IDs exist and form a strictly acyclic directed graph."
+    criteria:
+      - "Verify all referenced milestone IDs exist."
+      - "Ensure DAG is acyclic."
 
-  migration_delivery_policy:
-    auto_commit: true
-    enforce_clean_worktree: true
+  invariant_completeness:
+    description: "Verify that each generated milestone defines testable, non-trivial invariants (INV-*)."
+    criteria:
+      - "Confirm invariants protect boundaries and failure modes."
+
+  task_scope_atomicity:
+    description: "Verify that tasks have disjoint, bounded scope paths."
+    criteria:
+      - "Confirm scope boundaries do not overlap across parallel tasks."
+
+  no_code_tampering:
+    description: "Verify that the git diff contains zero edits to implementation code, libraries, or test suites."
+    criteria:
+      - "Confirm changes are strictly bounded to docs/milestones/ and docs/plans/."
 
 # =============================================================================
 # 4. GUIDANCE CATALOG (`guidance`)
@@ -114,93 +126,75 @@ guidance:
     Ensure zero orphaned steps: every requirement in the plan must map to a milestone task.
 
   migration.draft_milestones: >
-    Generate standard ACDD milestone contracts in `docs/milestones/0XX-<slug>.md`.
-    Populate frontmatter: `id: m-<slug>`, `title`, `doc_type: contract`, `status: planned`,
+    Generate standard ACDD spec contracts in `docs/milestones/AC-XXX-<slug>.md`.
+    Populate frontmatter: `id: AC-XXX`, `title`, `doc_type: contract`, `status: planned`,
     `owners: [...]`, `invariants: [...]`, and `required_skills: [...]`.
-    Decompose deliverables into atomic tasks with explicit `scope: [...]`, `proof_policy: seam-test-first`,
-    and concrete subtasks.
-    Update legacy plans in `docs/plans/` to `status: admitted` and reference the admitting milestone.
-
-  contour.dag_topology:
-    description: "Verify that all depends_on milestone IDs exist and form a strictly acyclic directed graph."
-    criteria:
-      - "Verify all referenced milestone IDs exist."
-      - "Ensure DAG is acyclic."
-
-  contour.invariant_completeness:
-    description: "Verify that each generated milestone defines testable, non-trivial invariants (INV-*)."
-    criteria:
-      - "Confirm invariants protect boundaries and failure modes."
-
-  contour.task_scope_atomicity:
-    description: "Verify that tasks have disjoint, bounded scope paths."
-    criteria:
-      - "Confirm scope boundaries do not overlap across parallel tasks."
-
-  contour.no_code_tampering:
-    description: "Verify that the git diff contains zero edits to implementation code, libraries, or test suites."
-    criteria:
-      - "Confirm changes are strictly bounded to docs/milestones/ and docs/plans/."
+    Decompose deliverables into atomic tasks with explicit `scope: [...]` and concrete subtasks.
 
 # =============================================================================
 # 5. GATES DEFINITION (`gates`)
 # =============================================================================
 gates:
-  # ---------------------------------------------------------------------------
   # Gate 1: Portfolio DAG Architecture & Decomposition (Agent)
-  # ---------------------------------------------------------------------------
   - id: contract
     role: portfolio_architect
-    proof: contract
     guidance:
       - migration.synthesize_dag
+    pass: implement
 
-  # ---------------------------------------------------------------------------
   # Gate 2: Implementation Container Gate (Manifest Authoring + Automated Guards)
-  # ---------------------------------------------------------------------------
   - id: implement
     gates:
-      # Step 2a: Draft formal milestone contracts and reconcile legacy plans
       - id: author_manifests
         role: milestone_specifier
         guidance:
           - migration.draft_milestones
+        pass: guard_code_untouched
 
-      # Step 2b: Guard that no source code files were edited
       - id: guard_code_untouched
         command: guard_source_code_untouched
         proof: command
+        pass: check_manifest_syntax
         fail: author_manifests
 
-      # Step 2c: Validate YAML frontmatter and milestone schema syntax
       - id: check_manifest_syntax
         command: validate_manifest_syntax
         proof: command
+        pass: check_dag_acyclicity
         fail: author_manifests
 
-      # Step 2d: Validate global DAG acyclicity across all milestone dependencies
       - id: check_dag_acyclicity
         command: verify_dag_acyclicity
         proof: command
         fail: author_manifests
-        save: snapshot
+        save:
+          post: snapshot
+    pass: review
 
-  # ---------------------------------------------------------------------------
   # Gate 3: Governance & Invariant Review (Independent Agent)
-  # ---------------------------------------------------------------------------
   - id: review
     role: governance_auditor
-    policy: migration_review_policy
     proof: review
+    contours:
+      - dag_topology
+      - invariant_completeness
+      - task_scope_atomicity
+      - no_code_tampering
+    independent_from:
+      - implement
+    need:
+      - implement
+    pass: deliver
     fail: implement
+    save:
+      immutable: true
 
-  # ---------------------------------------------------------------------------
-  # Gate 4: Autonomous Delivery (Zero-Token Commit)
-  # ---------------------------------------------------------------------------
+  # Gate 4: Autonomous Delivery (Git Commit & Receipt)
   - id: deliver
     role: governance_auditor
-    proof: delivery
     receipt: true
+    independent_from:
+      - implement
     need:
       - review
     fail: implement

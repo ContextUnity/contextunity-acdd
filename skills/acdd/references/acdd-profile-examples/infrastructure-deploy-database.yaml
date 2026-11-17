@@ -8,6 +8,14 @@
 version: 2
 inherit: none
 
+git:
+  isolation: worktree
+  worktrees: manual
+  commit_mode: plumbing
+  integrate: manual
+
+save: commit
+
 # =============================================================================
 # 1. ROLES CATALOG (`roles`)
 # =============================================================================
@@ -27,7 +35,7 @@ roles:
 
   release_reviewer:
     mode: subagent
-    reuse_on_reject: true
+    reuse_on_reject: false
     models:
       - 'gpt-6.1-sol:xhigh'
 
@@ -71,7 +79,29 @@ commands:
     output: { require_counts: false }
 
 # =============================================================================
-# 3. GUIDANCE CATALOG (`guidance`)
+# 3. CONTOURS CATALOG (`contours`)
+# =============================================================================
+contours:
+  infra_safety:
+    description: "Verify that destructive schema operations (table drop, column rename) are deferred to subsequent cleanup milestones."
+    criteria:
+      - "Ensure zero-downtime expand-contract migration patterns."
+      - "Verify new database columns are nullable or have defaults."
+
+  downtime_guards:
+    description: "Verify healthcheck endpoints, readiness probes, and database lock timeouts."
+    criteria:
+      - "Check readiness probe configuration."
+      - "Verify lock timeout settings on DDL statements."
+
+  claims:
+    description: "Verify evidence and migration rollback scripts."
+    criteria:
+      - "Verify dry-run verification logs are present."
+      - "Confirm rollback scripts execute cleanly."
+
+# =============================================================================
+# 4. GUIDANCE CATALOG (`guidance`)
 # =============================================================================
 guidance:
   infra.contract: >
@@ -82,34 +112,7 @@ guidance:
 
   infra.code: >
     Apply Terraform configs, Kubernetes manifests, or Django migration files.
-    Stay strictly within admitted task.scope.
-
-  contour.infra_safety:
-    description: "Verify that destructive schema operations (table drop, column rename) are deferred to subsequent cleanup milestones."
-    criteria:
-      - "Ensure zero-downtime expand-contract migration patterns."
-      - "Verify new database columns are nullable or have defaults."
-
-  contour.downtime_guards:
-    description: "Verify healthcheck endpoints, readiness probes, and database lock timeouts."
-    criteria:
-      - "Check readiness probe configuration."
-      - "Verify lock timeout settings on DDL statements."
-
-  contour.claims:
-    description: "Verify evidence and migration rollback scripts."
-    criteria:
-      - "Verify dry-run verification logs are present."
-      - "Confirm rollback scripts execute cleanly."
-
-# =============================================================================
-# 4. POLICIES CATALOG (`policies`)
-# =============================================================================
-policies:
-  strict_release:
-    independent_worker: true
-    require_all_contours: true
-    require_clean_healthcheck: true
+    Stay strictly within admitted task scope.
 
 # =============================================================================
 # 5. HIERARCHICAL GATES PIPELINE (`gates`)
@@ -119,16 +122,20 @@ gates:
   - id: migration_contract
     role: infra_architect
     guidance: [infra.contract]
-    proof: contract
+    pass: preflight_checks
 
   # Gate 2: Preflight Static Validation (Autonomous Command Gate - 0 tokens)
   - id: preflight_checks
     gates:
       - id: lint_infra
         command: check_infra_syntax
+        proof: command
+        pass: dry_run_migrations
 
       - id: dry_run_migrations
         command: check_migration_dry_run
+        proof: command
+    pass: live_deployment
 
   # Gate 3: Live Staged Deployment Container with Automated Rollback Fallback
   - id: live_deployment
@@ -136,41 +143,61 @@ gates:
       # Step 3.1: State & DB Snapshot Checkpoint
       - id: snapshot_checkpoint
         command: backup_state_checkpoint
+        proof: command
+        pass: execute_migrations
 
       # Step 3.2: Forward Migration Execution
       - id: execute_migrations
         command: apply_db_migrations
+        proof: command
+        pass: apply_containers
         fail: rollback
 
       # Step 3.3: Rolling Deployment
       - id: apply_containers
         command: deploy_rolling_containers
+        proof: command
+        pass: smoke_validation
         fail: rollback
 
       # Step 3.4: Automated Synthetic Smoke Healthcheck
       - id: smoke_validation
         command: verify_smoke_healthcheck
-        pass: release_audit
+        proof: command
         fail: rollback
-        save: snapshot
+        save:
+          post: snapshot
 
       # Rollback Gate: Triggered autonomously if deployment or smoke check fails
       - id: rollback
         command: rollback_deployment_and_db
+        proof: command
         pass: snapshot_checkpoint
-        fail: live_deployment
+    pass: release_audit
 
   # Gate 4: Independent Operational Review & Release Seal
   - id: release_audit
     role: release_reviewer
-    policy: strict_release
     proof: review
+    contours:
+      - infra_safety
+      - downtime_guards
+      - claims
+    independent_from:
+      - migration_contract
+    need:
+      - live_deployment
+    pass: deliver
+    fail: live_deployment
+    save:
+      immutable: true
 
   # Gate 5: Autonomous Final Receipt & Commit
   - id: deliver
     role: release_reviewer
-    proof: delivery
     receipt: true
+    independent_from:
+      - migration_contract
     need:
       - release_audit
     fail: live_deployment

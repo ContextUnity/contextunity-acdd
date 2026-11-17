@@ -8,7 +8,7 @@ This directory contains the primary and recommended companion skills for AI codi
 
 | Skill | Description | Primary Role / Phase |
 |---|---|---|
-| [`acdd`](acdd/SKILL.md) | **Primary ACDD Skill**: Guides agents in navigating the 20 MCP tools, running the canonical code discovery workflow, and managing ACDD task lifecycles. | All Agent Sessions |
+| [`acdd`](acdd/SKILL.md) | **Primary ACDD Skill**: Guides agents in navigating the 19 built-in MCP tools (plus `DomainProvider` plugin tools), running the canonical code discovery workflow, and managing ACDD `GateProfile` / `Run` lifecycles. | All Agent Sessions |
 | [`test-contract-seam`](test-contract-seam/SKILL.md) | Guides the authoring of red seam tests (TDD) that prove behavioral contracts through observable production interfaces rather than private mocks. | `contract` & `build` Gates |
 | [`test-suite-refactor`](test-suite-refactor/SKILL.md) | Governs splitting monolithic test suites, improving typing, and eliminating duplicate or brittle tests without coverage regression. | Refactoring & Hardening |
 | [`agent-instructions`](agent-instructions/SKILL.md) | Standards for authoring and revising `AGENTS.md`, `SKILL.md`, and project documentation following affirmative, imperative guidelines. | Governance & Docs |

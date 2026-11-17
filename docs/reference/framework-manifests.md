@@ -178,7 +178,7 @@ SQL uses an always-available scanner profile without a Tree-sitter grammar or a 
 
 `DependencyRegistry` lives in `src/engine/languages/dependency_registry.rs` and collects workspace dependencies together with framework rules. JavaScript package metadata and TypeScript path mappings use separate registries under `src/engine/languages/registries/`; Python package declarations are extracted in `src/engine/languages/python/dependencies.rs`. `LanguageProfile::manifest_filenames` names external package metadata inputs such as `package.json`, `pyproject.toml`, and `Cargo.toml`; it does not name framework rule files.
 
-See [ADR 0013](../adr/0013-data-driven-framework-manifests.md) for the linker and grammar boundaries and [ADR 0017](../adr/0017-serde-framework-manifest-formats.md) for the accepted file formats and parser contract.
+See [ADR 0011](../adr/0011-language-linkers-and-framework-manifests.md) for the linker and grammar boundaries, accepted file formats, and parser contract.
 
 ## Imported calls to actual files
 

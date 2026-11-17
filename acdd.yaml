@@ -2,15 +2,13 @@ DEBUG: true
 roots:
   - src
   - crates
-  - tests
-  - build.rs
 docs:
   - README.md
   - INSTALL.md
   - TESTS.md
+  - ROADMAP.md
   - docs/AGENTS.md
   - docs/README.md
-  - docs/roadmap.md
   - docs/adr
   - docs/architecture
   - docs/milestones
@@ -18,11 +16,29 @@ docs:
   - docs/workflows
   - docs/reference
   - docs/runbooks
-milestones:
-  - docs/milestones
-plans:
-  - docs/plans
-acdd_profile: .acdd/profile.yaml
+specs:
+  milestones:
+    path: docs/milestones
+    profile: workspace
+    prefixes:
+      - AC
+    digits: 3
+  plans:
+    path: docs/plans
+    profile: in_place
+    prefixes:
+      - PLAN
+    digits: 3
+profiles_dirs:
+  - .acdd/profiles
+  - docs/workflows
+state_db: .acdd/state.sqlite
+retain_traces: 20
+modules:
+  code: true
+  docs: true
+  state: true
+  blackboard: true
 ignore:
   - target
   - vendor

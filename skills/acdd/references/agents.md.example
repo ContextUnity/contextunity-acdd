@@ -6,15 +6,15 @@ Use this short router in a repository root `AGENTS.md` when ContextUnity ACDD is
 <!-- acdd:start -->
 # Repository Agent Instructions
 
-- Load the shared `acdd` skill for generic ACDD MCP, CLI, and task tool guidance.
-- Load the shared `contract-planning` skill when authoring, auditing, or revising milestones, plans, and task contracts.
+- Load the shared `acdd` skill for generic ACDD MCP, CLI, and state lifecycle guidance.
+- Load the shared `contract-planning` skill when authoring, auditing, or revising specs, plans, and task contracts.
 - Follow its Blackboard procedure for claim context, progress reports, and gate or agent handoffs.
-- Follow the milestone domain taxonomy (docs/milestones/README.md#milestone-taxonomy-and-naming-groups); milestone numbers are domain decades (01x-06x), not sequential counters.
-- Follow the active task profile and the `workflow_guidance` returned by `task claim` or `task next` for gate sequence, proof policy, role and model selection, review contours, and profile-specific behavior.
-- Read task reference for operation and evidence schemas, and `TESTS.md` for required verification commands.
+- Follow the spec taxonomy (docs/milestones/README.md); spec numbers are sequential per prefix (`<PREFIX>-<NNN>`).
+- Follow the active gate profile and the `guidance` returned by `acdd_claim` or `acdd next` for gate sequence, proof contract, role and model selection, review contours, and profile-specific behavior.
+- Read `docs/reference/tasks.md` for operation and evidence schemas, and `TESTS.md` for required verification commands.
 - Read the nearest `AGENTS.md` for test placement and other subtree-owned rules.
 
-## Milestone and contract planning
+## Spec and contract planning
 
 When creating or revising milestones and plans, load `contract-planning`:
 - Audit architectural viability and essential complexity before drafting tasks.
@@ -25,32 +25,32 @@ When creating or revising milestones and plans, load `contract-planning`:
 ## Documentation scan before handoff
 
 Before final handoff, the coordinator launches a documentation agent against the
-milestone's final diff and admitted documentation scope. The agent loads
+run's final diff and admitted documentation scope. The agent loads
 `agent-instructions` and owner instructions, updates affected documentation,
 instructions, ADR/invariant descriptions and skill examples, and records its scan
-on the milestone blackboard. Resolve decision conflicts with the owner; review
+on the run blackboard. Resolve decision conflicts with the owner; review
 edits independently before final verification. Repeat affected checks after code
 changes. This is an instruction-level workflow; ACDD launches no agents.
 
 ## Worktrees and Git permissions
 
-Worktrees live at `.worktrees/<milestone-prefix>-<slug>` for milestones and `.worktrees/<milestone-prefix>-<task-slug>` for concurrent tasks. Tasks may also execute in-place (`--in-place` / `worktree: "."`) without spawning dedicated worktrees when concurrent isolation is not required.
+Managed worktrees live at `.worktrees/<run_name>` for runs and `.worktrees/<run_name>-<task_ref>` for concurrent tasks. Tasks may also execute in-place (`git.isolation: in_place` / `--in-place` / `worktree: "."`) without spawning dedicated worktrees when concurrent isolation is not required.
 
 ### Permitted Git operations inside active workflows
 
 - Task delivery:
-  - With `auto_commit: true`, ACDD automatically creates the delivery commit and records the receipt in SQLite; do not create duplicate commits.
-  - With `auto_commit: false`, create exactly one scoped task commit containing task changes and the generated receipt after delivery.
-  - Snapshot immutability: Never modify files during `deliver` stage or after `review`. Any edit triggers `TASK_CANDIDATE_MISMATCH`.
+  - With `git.commit_mode: plumbing` (or `cli`) and `save.post: commit`, ACDD creates the scoped delivery commit with `Acdd-Claim` trailer and records the receipt; do not create duplicate commits.
+  - With `git.commit_mode: manual` or `save.post: snapshot`, create scoped commits manually when required after delivery.
+  - Snapshot immutability: Never modify files during `deliver` or after `review` when `save.immutable: true`. Any edit triggers `TASK_CANDIDATE_MISMATCH`.
 - Integration and cleanup:
-  - Preserve accepted task proofs while integrating branches. Rebase, cherry-pick, merge, amend, and squash may change navigation SHAs without reopening completed tasks.
-  - Delivered task branches merge into the milestone branch; temporary task worktrees are removed upon delivery integration.
-  - Milestone landing: fast-forward the milestone branch into `main` (`git merge --ff-only <milestone-branch>`) and remove the milestone worktree and branch upon verified handoff.
+  - Preserve accepted task proofs while integrating branches. `rebase-ff`, `ff-only`, `no-ff`, `squash`, or cherry-pick preserve content parity (`TreeOid`).
+  - Delivered task branches merge into the run branch (`acdd integrate`); temporary task worktrees are removed upon delivery integration.
+  - Run landing: fast-forward the run branch into `main` (`git merge --ff-only <run-branch>`) and remove the run worktree and branch upon verified handoff.
 
 ### Operations requiring explicit user approval
 
-- Commits on `main`: Do not create Git commits directly on `main` without explicit user approval (use task branches or admitted in-place workflows).
-- Dangerous Git operations: History rewrites (`git reset --hard`, destructive rebases, force pushes), branch deletion outside task/milestone cleanup, and repository-level state clearing require explicit user approval.
+- Commits on `main`: Do not create Git commits directly on `main` without explicit user approval (use task branches or admitted `in_place` workflows).
+- Dangerous Git operations: History rewrites (`git reset --hard`, destructive rebases, force pushes), branch deletion outside task/run cleanup, and repository-level state clearing require explicit user approval.
 - Remote publications: `git push`, tagging, releases, and credential publication require explicit user approval.
 <!-- acdd:end -->
 ```

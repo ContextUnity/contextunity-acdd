@@ -1,16 +1,23 @@
 # =============================================================================
 # ACDD SCENARIO EXAMPLE: Standalone Clean-Room CI Verification Gate
-# File pattern: {scenario}.workflow.yaml (ADR 0021 — Stateless Workflow Engine)
+# File pattern: {scenario}.workflow.yaml (ADR 0003 — Unified Profile State Engine)
 #
-# Self-contained CI verification pipeline (`inherit: none`, `save: log`) suitable
+# Self-contained CI verification pipeline (`inherit: none`, `save: none`) suitable
 # for headless CI environments and pre-release checks without tasks or worktrees.
-# Structural template: configure `runner:` per role (or switch to `inherit:
-# workspace` under AC-004) before launching `acdd workflow run`.
+# Structural template: configure `runner:` per role (or switch to `inherit: workspace`)
+# before launching `acdd run --profile ...`.
 # =============================================================================
 
 version: 2
 inherit: none
-save: log
+
+git:
+  isolation: in_place
+  worktrees: manual
+  commit_mode: manual
+  integrate: manual
+
+save: none
 
 roles:
   ci_fixer:
@@ -21,43 +28,49 @@ roles:
 
   release_auditor:
     mode: subagent
-    reuse_on_reject: true
+    reuse_on_reject: false
     models:
       - 'gpt-6.1-sol:xhigh'
 
 commands:
   lint_and_fmt:
-    command: "cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings"
+    command: "cargo fmt --check && cargo clippy --workspace --all-targets --all-features -- -D warnings"
     output:
       require_counts: false
     timeout_seconds: 600
 
   workspace_tests:
-    command: "cargo test --workspace"
+    command: "cargo test --workspace --lib"
     output:
       counts:
         passed: '(?m)\b(\d+) passed\b'
         failed: '(?m)\b(\d+) failed\b'
       require_counts: true
+      compile_errors:
+        include: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+        exclude: ['^error: test failed']
     timeout_seconds: 1200
 
-policies:
-  ci_signoff:
-    independent_worker: true
-    require_all_contours: true
-
-guidance:
-  contour.reproducibility: "Verify deterministic builds and clean git status after checks."
-  contour.regressions: "Verify zero skipped or weakened assertions across test suites."
+contours:
+  reproducibility:
+    description: "Verify deterministic builds and clean git status after checks."
+    criteria:
+      - "Verify deterministic builds and clean git status after checks."
+  regressions:
+    description: "Verify zero skipped or weakened assertions across test suites."
+    criteria:
+      - "Verify zero skipped or weakened assertions across test suites."
 
 gates:
   - id: verify_lint
     command: lint_and_fmt
+    proof: command
     pass: verify_tests
     fail: repair
 
   - id: verify_tests
     command: workspace_tests
+    proof: command
     pass: release_audit
     fail: repair
 
@@ -76,9 +89,13 @@ gates:
 
   - id: release_audit
     role: release_auditor
-    policy: ci_signoff
-    contours: guidance.contours
-    independent_from: repair
+    contours:
+      - reproducibility
+      - regressions
+    independent_from:
+      - repair
+    need:
+      - verify_tests
     max_attempts: 2
     proof: *gate_decision
     fail: repair

@@ -11,6 +11,14 @@
 version: 2
 inherit: none
 
+git:
+  isolation: worktree
+  worktrees: manual
+  commit_mode: plumbing
+  integrate: manual
+
+save: commit
+
 # =============================================================================
 # 1. ROLES CATALOG (`roles`)
 # =============================================================================
@@ -38,7 +46,7 @@ roles:
 
   reviewer:
     mode: subagent
-    reuse_on_reject: true
+    reuse_on_reject: false
     models:
       - 'gpt-6.1-sol:xhigh'
 
@@ -47,7 +55,13 @@ roles:
 # =============================================================================
 commands:
   check_task_backend:
-    command: "ruff check {scope_target} && basedpyright {scope_target} && pytest -q {scope_target}"
+    command: "ruff check {scope_target} && basedpyright {scope_target} && pytest -q {scope_target} {test_filter}"
+    test_filter: "-k {test}"
+    output:
+      counts:
+        passed: '(?m)(\d+) passed'
+        failed: '(?m)(\d+) failed'
+      require_counts: false
     timeout_seconds: 60
 
   check_migration_safety:
@@ -56,7 +70,8 @@ commands:
     output: { require_counts: false }
 
   run_playwright_seam:
-    command: "pytest tests/e2e/ -k {seam_target} --browser chromium --headless"
+    command: "pytest tests/e2e/ {test_filter} --browser chromium --headless"
+    test_filter: "-k {test}"
     timeout_seconds: 120
 
   check_full_repo:
@@ -64,7 +79,34 @@ commands:
     timeout_seconds: 600
 
 # =============================================================================
-# 3. GUIDANCE CATALOG (`guidance`)
+# 3. CONTOURS CATALOG (`contours`)
+# =============================================================================
+contours:
+  django_safety:
+    description: "Verify migration safety, CSRF tokens, and absence of raw SQL."
+    criteria:
+      - "Verify no non-nullable fields added without defaults."
+      - "Verify CSRF token presence on mutation endpoints."
+      - "Verify absence of unescaped raw SQL."
+
+  query_efficiency:
+    description: "Audit database query counts to prevent N+1 regressions."
+    criteria:
+      - "Ensure select_related and prefetch_related are used on relations."
+      - "Audit query counts in integration test assertions."
+
+  paths:
+    description: "Verify changes stay within admitted scope."
+    criteria:
+      - "Compare changed files with task scope."
+
+  claims:
+    description: "Verify evidence and Playwright test runs."
+    criteria:
+      - "Confirm all seam tests and Playwright flows pass."
+
+# =============================================================================
+# 4. GUIDANCE CATALOG (`guidance`)
 # =============================================================================
 guidance:
   commerce.contract: >
@@ -76,60 +118,29 @@ guidance:
   commerce.code: >
     Implement minimal Django views, models, or HTMX components.
     Prevent N+1 query regressions with select_related / prefetch_related.
-    Stay strictly within admitted task.scope.
+    Stay strictly within admitted task scope.
 
   commerce.e2e: >
     Author or execute Playwright MCP browser interaction flow.
     Verify DOM state transitions, cart/checkout mutations, and HTMX swap responses.
 
-  contour.django_safety:
-    description: "Verify migration safety, CSRF tokens, and absence of raw SQL."
-    criteria:
-      - "Verify no non-nullable fields added without defaults."
-      - "Verify CSRF token presence on mutation endpoints."
-      - "Verify absence of unescaped raw SQL."
-
-  contour.query_efficiency:
-    description: "Audit database query counts to prevent N+1 regressions."
-    criteria:
-      - "Ensure select_related and prefetch_related are used on relations."
-      - "Audit query counts in integration test assertions."
-
-  contour.paths:
-    description: "Verify changes stay within admitted scope."
-    criteria:
-      - "Compare changed files with task scope."
-
-  contour.claims:
-    description: "Verify evidence and Playwright test runs."
-    criteria:
-      - "Confirm all seam tests and Playwright flows pass."
-
-# =============================================================================
-# 4. POLICIES CATALOG (`policies`)
-# =============================================================================
-policies:
-  default_review:
-    independent_worker: true
-    require_all_contours: true
-    audit_extended_scope: true
-
-  default_delivery:
-    auto_commit: true
-    enforce_clean_worktree: true
-
 # =============================================================================
 # 5. HIERARCHICAL GATES PIPELINE (`gates`)
 # =============================================================================
 gates:
-  # Declarative task lifecycle
   - tasks:
       gates:
       # Step 1: Architectural & Seam Contract
       - id: contract
         role: architect
+        command: check_task_backend
         guidance: [commerce.contract]
         proof: contract
+        expected_failure:
+          exit_codes: [1]
+        save:
+          post: snapshot
+        pass: implement
 
       # Step 2: Implementation & Code Verification
       - id: implement
@@ -138,16 +149,21 @@ gates:
             role: builder
             guidance: [commerce.code]
             proof: none
+            pass: verify_backend
 
           # Command Gate: Fast Static & Unit Verification (0 tokens)
           - id: verify_backend
             command: check_task_backend
+            proof: command
+            pass: verify_migrations
             fail: code
 
           # Command Gate: Schema / Migration Divergence Check (0 tokens)
           - id: verify_migrations
             command: check_migration_safety
+            proof: command
             fail: code
+        pass: e2e_validation
 
       # Step 3: End-to-End Browser / Playwright Verification
       - id: e2e_validation
@@ -155,29 +171,42 @@ gates:
         guidance: [commerce.e2e]
         command: run_playwright_seam
         proof: command
+        pass: full_repo_verify
         fail: implement
 
       # Step 4: Full-Stack Verification (0 tokens)
       - id: full_repo_verify
         command: check_full_repo
         proof: command
+        pass: review
         fail: implement
-        save: snapshot
+        save:
+          post: snapshot
 
       # Step 5: Cognitive Review
       - id: review
         role: reviewer
-        policy: default_review
         proof: review
-        contours: guidance.contours
+        contours:
+          - django_safety
+          - query_efficiency
+          - paths
+          - claims
+        independent_from:
+          - implement
+        need:
+          - full_repo_verify
+        pass: deliver
         fail: implement
+        save:
+          immutable: true
 
       # Step 6: Delivery
       - id: deliver
         role: reviewer
-        policy: default_delivery
-        proof: delivery
         receipt: true
+        independent_from:
+          - implement
         need:
           - review
         fail: implement

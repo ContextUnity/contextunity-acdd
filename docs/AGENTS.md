@@ -20,7 +20,7 @@ Follow the documentation layers in the shared `acdd` skill.
 Keep each contract on one page and link its consumers. Record accepted decisions in `adr/` under owner
 approval; delivery agents escalate decision changes to that process.
 
-Use `roadmap.md` for one or two paragraphs of strategic context. Read admitted
+Use [`ROADMAP.md`](../ROADMAP.md) for release direction and strategic context. Read admitted
 commitments, ordering, and dependencies from `milestones/`.
 
 ## MCP client surface
@@ -115,7 +115,7 @@ When creating, reviewing, or materially amending a milestone (`docs/milestones/`
 
 ## Milestone documentation alignment
 
-Rely on `workflow_guidance` returned by `task claim` for current gates, operational rules, and review criteria; use the [task reference](reference/tasks.md) for schema definitions and offline operations.
+Rely on the `ClaimResp` guidance and contract returned by `acdd claim` / `acdd_claim` for current gates, operational rules, and review criteria; use the [state & task operations reference](reference/tasks.md) for schema definitions and offline operations.
 
 When designing milestone tasks or authoring contracts that modify public interfaces, CLI/MCP tools, lifecycle diagnostics, or architecture, admit the corresponding documentation files (under `docs/`) directly in the task's initial `scope` so code and documentation co-evolve without scope extension friction. Do not defer documentation changes caused by the task's own contract.
 

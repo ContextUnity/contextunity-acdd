@@ -1,51 +1,54 @@
 # =============================================================================
 # STANDALONE WORKFLOW: Root-Gate Workflow Authoring & Validation
 #
-# ADR 0021 Work Model 1: Standalone root-gate workflow (inherit: none, save: none).
+# ADR 0003 Unified Profile Engine: Standalone root-gate workflow (inherit: none, save: none).
 # Role architect synthesizes a standalone root-gate workflow in docs/workflows/<name>.workflow.yaml
 # with inherit: none, save: none, no tasks: container, no receipt: true, and valid
 # pass:, fail:, and independent_from transitions.
 # Role independent_reviewer audits gate graph transitions, role separation, and inline proof schemas.
-# Gate preflight validates the workflow document via `workflow show`.
+# Gate preflight validates the workflow document via `acdd validate`.
 # =============================================================================
 
 version: 2
 inherit: none
+
+git:
+  isolation: in_place
+  worktrees: manual
+  commit_mode: manual
+  integrate: manual
+
 save: none
 
 roles:
   architect:
     mode: subagent
     reuse_on_reject: true
-    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
+    runner: 'codex exec -m gpt-6.1-sol -c model_reasoning_effort=high -'
     prompt_template: >-
-      Execute {role} for standalone workflow {task_id}, gate {stage}, in {worktree}.
-      Goal: {goal}. {role_guidance}
+      Execute architect for run {run_id}, gate {node_cursor}, in {worktree}.
+      Contract: {contract}. Guidance: {guidance}.
     guidance: "Author a standalone root-gate workflow in docs/workflows/<name>.workflow.yaml with version: 2, inherit: none, save: none, pure gate graph without tasks, no receipts, and valid pass/fail/independent_from transitions."
     models:
       - 'gpt-6.1-sol:high'
 
   independent_reviewer:
     mode: subagent
-    reuse_on_reject: true
-    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
+    reuse_on_reject: false
+    runner: 'codex exec -m gpt-6.1-sol -c model_reasoning_effort=xhigh -'
     prompt_template: >-
-      Execute {role} for standalone workflow {task_id}, gate {stage}, in {worktree}.
-      Goal: {goal}. {role_guidance}
+      Execute independent_reviewer for run {run_id}, gate {node_cursor}, in {worktree}.
+      Contract: {contract}. Guidance: {guidance}.
     guidance: "Audit the authored workflow profile for pure gate graph topology, absence of tasks container, role independence, and valid inline proof schemas."
     models:
       - 'gpt-6.1-sol:xhigh'
 
 commands:
   validate_workflow:
-    command: "acdd workflow show {workflow_name}"
+    command: "acdd validate {scope_target}"
     timeout_seconds: 60
-    output: { require_counts: false }
-
-policies:
-  default_review:
-    independent_worker: true
-    require_all_contours: true
+    output:
+      require_counts: false
 
 gates:
   - id: synthesize
@@ -60,7 +63,7 @@ gates:
       - acdd_read
       - get_doc
       - search_docs
-      - task_blackboard
+      - acdd_blackboard
     proof:
       scheme:
         type: object
@@ -86,8 +89,10 @@ gates:
   - id: review
     role: independent_reviewer
     max_attempts: 3
-    policy: default_review
-    independent_from: synthesize
+    independent_from:
+      - synthesize
+    need:
+      - synthesize
     tools:
       - code_map_inspect
       - code_map_impact
@@ -96,7 +101,7 @@ gates:
       - acdd_read
       - get_doc
       - search_docs
-      - task_blackboard
+      - acdd_blackboard
     proof:
       scheme:
         type: object
@@ -119,3 +124,4 @@ gates:
 
   - id: preflight
     command: validate_workflow
+    proof: command

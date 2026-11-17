@@ -54,4 +54,4 @@ When explicitly instructed to run benchmarks:
 2. Compile release binary: `cargo build --release`.
 3. Allow host to settle to idle baseline.
 4. Execute single controlled run: `python3 benchmarks/run_benchmarks.py --profile <profile>`.
-5. Run full test suite: `cargo test --all-targets`.
+5. Run full test suite: `cargo test --workspace --all-targets`.

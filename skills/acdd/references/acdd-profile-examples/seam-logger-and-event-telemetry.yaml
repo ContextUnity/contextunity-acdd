@@ -2,108 +2,50 @@
 # HIERARCHICAL ACDD PROFILE: SEAM TELEMETRY LOGGER & OBSERVABILITY PIPELINE
 #
 # Target Workflow:
-# Demonstrates heterogeneous task coordination (Code + Docs + Observer) across
-# a topological seam, with an autonomous Command Gate dispatching seam telemetry
-# (0 LLM tokens) to an external webhook/monitoring endpoint upon joint integration.
-#
-# Key Architectural Features:
-# 1. Heterogeneous Task Coordination:
-#    - type: ["code"]     -> runs contract, build, integrate, and review.
-#    - type: ["doc"]      -> skips test compilation; runs doc_audit and doc review.
-#    - type: ["observer"] -> automated telemetry listener or audit watcher.
-# 2. Pure Topological `when: seam`:
-#    - Activates for ANY task with active dependencies or dependents in the DAG.
-#    - Child sub-gate `integrate` has `when: code` (only code tasks compile tests).
-# 3. Autonomous Seam Telemetry Dispatcher (`seam_notify`):
-#    - A zero-token Command Gate inside `seam` that reads the SQLite evidence
-#      envelope ({milestone_id}, {task_id}, {candidate_sha}, {seam_test_refs})
-#      and dispatches a structured JSON event to an observability webhook / bus.
-# 4. Declarative Proofs Catalog (`proofs:`):
-#    - Uses schema-validated proofs (contract, command, review, seam_test, delivery).
+# Demonstrates heterogeneous task coordination (code + docs + observer) using
+# tag-based `when:` blocks, `checks: [code.seam]`, and autonomous 0-token
+# Command Gates dispatching seam telemetry upon delivery.
 # =============================================================================
 
 version: 2
 inherit: none
 
+git:
+  isolation: worktree
+  worktrees: manual
+  commit_mode: plumbing
+  integrate: manual
+
+save: commit
+
+tags:
+  - code
+  - docs
+  - observer
+  - public_api
+
 # =============================================================================
 # 0. GIT COMMIT NOTE & RESOURCE BUDGETS
 # =============================================================================
-git_commit_note:
-  limits:
-    max_bytes: 2048              # 2 KiB hard limit on Git notes payload
-  telemetry:
+git_commit_notes:
+  default:
+    ref_name: refs/notes/acdd
+    max_bytes: 2048
     format: markdown
     sections:
-      - duration: true
-      - tasks_summary: true
-      - review_cycles: true
-      - diff_breakdown: true
-      - ast_delta: true
-      - test_suite: true
-      - topology: true
+      - duration
+      - tasks_summary
+      - review_cycles
+      - diff_breakdown
+      - test_suite
+      - topology
 
 limits:
-  max_metadata_bytes: 2048       # 2 KiB limit for arbitrary task metadata / payloads
-  max_trace_summary_bytes: 2048  # Tail output size for SQLite execution traces
+  max_metadata_bytes: 2048
+  max_trace_summary_bytes: 2048
 
 # =============================================================================
-# 1. DECLARATIVE PROOFS CATALOG (`proofs`)
-# Proof schemas are declared here in YAML, eliminating hardcoded Rust enums.
-# =============================================================================
-proofs:
-  contract:
-    description: "Proof of runtime assertion failure (exit 101/1/134) proving red seam baseline"
-    schema:
-      type: object
-      required: [exit_code, stderr]
-      properties:
-        exit_code: { type: integer }
-        stderr: { type: string }
-        contract_test_ref: { type: string }
-
-  command:
-    description: "Autonomous command execution proof (exit code 0, clean linter/tests)"
-    schema:
-      type: object
-      required: [exit_code]
-      properties:
-        exit_code: { type: integer, const: 0 }
-        tests_passed: { type: integer }
-        tests_failed: { type: integer, const: 0 }
-
-  review:
-    description: "Independent cognitive review sign-off across focus lenses"
-    schema:
-      type: object
-      required: [verdict, reviewer]
-      properties:
-        verdict: { type: string, enum: ["approved", "rejected"] }
-        reviewer: { type: string }
-        contours_reviewed: { type: array, items: { type: string } }
-        notes: { type: string }
-
-  seam_test:
-    description: "Joint seam integration proof verifying all referenced cross-task tests passed"
-    schema:
-      type: object
-      required: [exit_code, seam_test_refs]
-      properties:
-        exit_code: { type: integer, const: 0 }
-        seam_test_refs: { type: array, items: { type: string } }
-        tests_passed: { type: integer }
-        tests_failed: { type: integer, const: 0 }
-
-  delivery:
-    description: "Autonomous delivery receipt and atomic Git commit proof"
-    schema:
-      type: object
-      required: [commit_sha, receipt_id]
-      properties:
-        commit_sha: { type: string }
-        receipt_id: { type: string }
-
-# =============================================================================
-# 2. ROLES CATALOG (`roles`)
+# 1. ROLES CATALOG (`roles`)
 # =============================================================================
 roles:
   architect:
@@ -122,7 +64,7 @@ roles:
 
   reviewer:
     mode: subagent
-    reuse_on_reject: true
+    reuse_on_reject: false
     models:
       - 'gpt-6.1-sol:xhigh'
       - 'claude-opus-5.5'
@@ -133,178 +75,160 @@ roles:
     models:
       - 'gpt-6.1-sol:medium'
 
-  seam_auditor:
-    mode: subagent
-    reuse_on_reject: true
-    models:
-      - 'gpt-6.1-sol:medium'
-
 # =============================================================================
-# 3. COMMANDS CATALOG (`commands`)
+# 2. COMMANDS CATALOG (`commands`)
 # =============================================================================
 commands:
   check_task:
-    # Pattern-based language-agnostic test dispatcher:
+    test_filter: "{test}"
     by_pattern:
-      "**/*.py": "pytest {scope_target} --quiet"
-      "**/*.{ts,tsx}": "npm test -- {scope_target}"
-      "**/*.rs": "cargo clippy --lib --test {scope_target} && cargo test --test {scope_target} -- --nocapture"
+      "**/*.py": "pytest {scope_target} {test_filter} --quiet"
+      "**/*.{ts,tsx}": "npm test -- {scope_target} {test_filter}"
+      "**/*.rs": "cargo clippy --lib --test {scope_target} -- -D warnings && cargo test --test {scope_target} {test_filter} -- --nocapture"
     timeout_seconds: 60
 
   check_docs:
-    # Validates doc anchors, internal markdown links, and AGENTS.md rules
-    command: "./scripts/validate_markdown_links.sh && markdownlint docs/"
+    command: "acdd docs check"
     timeout_seconds: 30
     output: { require_counts: false }
 
   check_full_repo:
-    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    command: "cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --lib"
     timeout_seconds: 600
 
   dispatch_seam_webhook:
-    # Autonomous Seam Telemetry Dispatcher:
-    # Emits an event payload to the team Slack/Discord/Datadog webhook or internal bus.
-    # Reads environment variables injected by ACDD from SQLite execution envelope:
-    #   $ACDD_MILESTONE_ID   -> active milestone ID
-    #   $ACDD_TASK_ID        -> active task slug
-    #   $ACDD_CANDIDATE_SHA  -> git tree candidate SHA
-    #   $ACDD_SEAM_TEST_REFS -> comma-separated seam test identifiers
-    #   $ACDD_BLACKBOARD_RFC -> latest accepted contract RFC title
     command: >
       curl -s -f -X POST "${SEAM_OBSERVABILITY_URL:-https://httpbin.org/post}" \
         -H "Content-Type: application/json" \
         -H "X-ACDD-Event: seam.integrated" \
-        -d "{\"milestone\":\"$ACDD_MILESTONE_ID\",\"task\":\"$ACDD_TASK_ID\",\"candidate\":\"$ACDD_CANDIDATE_SHA\",\"seam_tests\":\"$ACDD_SEAM_TEST_REFS\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+        -d "{\"run\":\"$ACDD_RUN_ID\",\"node\":\"$ACDD_NODE_CURSOR\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
         || echo "Seam telemetry dispatched locally (fallback)"
     timeout_seconds: 15
     output: { require_counts: false }
 
   notify_seam_blackboard:
-    # Posts a structured audit receipt to task_blackboard for observer tasks
     command: >
-      acdd task blackboard post \
-        --milestone "$ACDD_MILESTONE_ID" \
-        --topic "seam:integrated" \
-        --message "Task $ACDD_TASK_ID reconciled seam tests ($ACDD_SEAM_TEST_REFS) at candidate $ACDD_CANDIDATE_SHA"
+      acdd blackboard post \
+        --run "$ACDD_RUN_ID" \
+        --topic notes \
+        --payload "Node $ACDD_NODE_CURSOR reconciled in $ACDD_WORKTREE"
     timeout_seconds: 10
     output: { require_counts: false }
 
 # =============================================================================
-# 4. UNIFIED GUIDANCE CATALOG (`guidance`)
+# 3. CONTOURS CATALOG (`contours`)
+# =============================================================================
+contours:
+  paths:
+    description: "Verify change boundaries: all modified files must be strictly within admitted scope."
+    criteria:
+      - "Compare every changed file with task scope."
+  claims:
+    description: "Verify evidence: every acceptance claim must be proven by a reproducible test run."
+    criteria:
+      - "Confirm each admitted contract claim has at least one passing seam test."
+  concurrency:
+    description: "Verify thread safety, SQLite transaction fences, and lock acquisition order."
+    criteria:
+      - "Check transaction boundaries and concurrency safety."
+  project_isolation:
+    description: "Verify workspace isolation: ensure zero modification to sibling/external workspaces."
+    criteria:
+      - "Confirm workspace resolution uses active repository root."
+  administration:
+    description: "Verify administrative integrity: no unauthorized edits to receipts or Git hooks."
+    criteria:
+      - "Verify profile hashes and compiled gate references fail closed on tampering."
+
+# =============================================================================
+# 4. GUIDANCE CATALOG (`guidance`)
 # =============================================================================
 guidance:
   milestone.synthesis: >
-    Analyze requirements across all milestone tasks. Group code, doc, and observer tasks
-    into parallel waves. Build cross-task seam matrix in SQLite.
+    Analyze requirements across all tasks. Group code, doc, and observer tasks
+    into parallel waves and record the architectural decision via acdd_blackboard.
 
   task.contract: >
     Author additive production-seam test for this task. Verify runtime-red assertion
     failure (exit 101/1/134) with clear assertion message.
 
   task.code: >
-    Implement minimal code to turn the red seam test green. Stay strictly within task.scope.
+    Implement minimal code to turn the red seam test green. Stay strictly within task scope.
 
   task.doc_audit: >
     Update documentation, architecture records (ADRs), and user guides to reflect newly
     introduced interfaces. Verify all clickable file links and markdown anchors.
 
-  task.deferred_final_test: >
-    Audit test reachability across task boundaries. Replace temporary mocks with real
-    production callers. Ensure all referenced seam_test_refs execute and pass cleanly.
-
-  task.seam_review: >
-    Review reconciled seam diff across coupled tasks. Verify zero regressions, no
-    mock leakage, and that contract invariants are preserved across code and doc boundaries.
-
   milestone.review: >
-    Evaluate integrated milestone changes against milestone invariants and ADRs.
+    Evaluate integrated run changes against invariants and ADRs.
     Confirm all seam receipts and telemetry events were verified.
 
-  contour.paths:
-    description: "Verify change boundaries: all modified files must be strictly within admitted scope."
-    criteria:
-      - "Compare every changed file with task scope."
-  contour.claims:
-    description: "Verify evidence: every acceptance claim must be proven by a reproducible test run."
-    criteria:
-      - "Confirm each admitted contract claim has at least one passing seam test."
-  contour.concurrency:
-    description: "Verify thread safety, SQLite transaction fences (IMMEDIATE), and lock acquisition order."
-    criteria:
-      - "Check transaction boundaries and concurrency safety."
-  contour.project_isolation:
-    description: "Verify workspace isolation: ensure zero modification to sibling/external workspaces."
-    criteria:
-      - "Confirm workspace resolution uses active repository root."
-  contour.administration:
-    description: "Verify administrative integrity: no unauthorized edits to receipts or Git hooks."
-    criteria:
-      - "Verify profile hashes and compiled gate references fail closed on tampering."
-
 # =============================================================================
-# 5. POLICIES & TEMPLATES
+# 5. PROOFS CATALOG (`proofs`)
 # =============================================================================
-policies:
-  default_review:
-    independent_worker: true
-    require_all_contours: true
-    audit_extended_scope: true
+proofs:
+  blueprint:
+    description: "Architectural blueprint with grounded citations"
+    schema:
+      type: object
+      required: [cited_invariants, cited_symbols, blackboard_decision_id]
+      properties:
+        cited_invariants: { type: array, items: { type: string } }
+        cited_symbols: { type: array, items: { type: string } }
+        blackboard_decision_id: { type: string }
 
 # =============================================================================
 # 6. HIERARCHICAL GATES TREE (`gates`)
 # =============================================================================
 gates:
-  # Gate 1: Upfront Blueprint Synthesis Container (synthesize -> review)
   - id: blueprint_synthesis
     gates:
       - id: synthesize
         role: architect
+        proof: blueprint
         guidance: [milestone.synthesis]
         save:
           pre: snapshot
           post: snapshot
+        pass: review
       - id: review
         role: reviewer
-        policy: default_review
         proof: review
-        contours: guidance.contours
-        independent_from: synthesize
+        contours: [paths, claims, concurrency, project_isolation, administration]
+        independent_from: [synthesize]
         fail: synthesize
         save:
           immutable: true
 
-  # Gate 2: Milestone Tasks Container (First-class declarative task lifecycle)
-  # Default task type: type: ["code"]. Heterogeneous tasks declare type: ["doc"] or type: ["observer"].
   - tasks:
       gates:
-      # Sub-Gate 2.1: Contract Gate (Agent Gate - when: code)
-      # Doc-only or observer tasks skip this gate automatically.
       - id: contract
         command: check_task
         when: code
         role: architect
         guidance: [task.contract]
         proof: contract
+        checks: [code.seam]
         expected_failure:
           exit_codes: [1, 101, 134]
         save:
           post: snapshot
+        pass: build
 
-      # Sub-Gate 2.2: Local Code Implementation (Agent Gate - when: code)
       - id: build
         when: code
         role: builder
         guidance: [task.code]
         command: check_task
         proof: command
+        checks: [code.seam]
         save:
           pre: snapshot
           post: snapshot
+        pass: review
 
-      # Sub-Gate 2.3: Documentation Audit (Agent Gate - when: doc)
-      # Triggers only for documentation tasks (e.g. type: ["doc"]).
       - id: doc_audit
-        when: doc
+        when: docs
         role: doc_writer
         guidance: [task.doc_audit]
         command: check_docs
@@ -312,98 +236,65 @@ gates:
         save:
           pre: snapshot
           post: snapshot
+        pass: review
 
-      # Sub-Gate 2.4: Cognitive Review of Individual Candidate (Agent Gate)
-      # Evaluates candidate snapshot against review contours.
       - id: review
         role: reviewer
-        policy: default_review
         proof: review
-        contours: guidance.contours
-        independent_from: build
+        contours: [paths, claims, concurrency, project_isolation, administration]
+        independent_from: [build]
         fail: build
         save:
           immutable: true
+        pass: telemetry_notify
 
-      # Sub-Gate 2.5: Joint Seam Integration & Telemetry Logging (Container Gate)
-      # Activates whenever a task has active dependencies or dependents in the DAG (pure topological property).
-      # Works seamlessly for Code + Code, Code + Doc, or Code + Observer task clusters!
-      - id: seam
-        when: seam
-        gates:
-          # Step 1: Joint Seam Test Integration (when: code)
-          # Code tasks reconcile tests across boundaries; doc/observer tasks skip this sub-gate.
-          - id: integrate
-            when: code
-            role: builder
-            guidance: [task.deferred_final_test]
-            command: check_task
-            proof: seam_test         # Verifies element-by-element that all seam_test_refs ran and passed
-            save:
-              post: snapshot
+      - id: telemetry_notify
+        command: dispatch_seam_webhook
+        proof: command
+        pass: blackboard_notify
+        fail: build
 
-          # Step 2: Autonomous Seam Telemetry Dispatcher (Command Gate: 0 LLM Tokens)
-          # Runs autonomously! Dispatches an event payload to external webhook/telemetry pipeline.
-          - id: seam_telemetry
-            command: dispatch_seam_webhook
-            proof: command
-            fail: integrate
+      - id: blackboard_notify
+        command: notify_seam_blackboard
+        proof: command
+        pass: deliver
+        fail: build
 
-          # Step 3: Local Blackboard Seam Event Recording (Command Gate: 0 LLM Tokens)
-          # Posts an event receipt to task_blackboard so observer agents or UI dashboards can inspect it.
-          - id: record_blackboard_event
-            command: notify_seam_blackboard
-            proof: command
-            fail: integrate
-
-          # Step 4: Cognitive Seam Review (Agent Gate)
-          # Independent reviewer evaluates the reconciled seam and verified event receipt.
-          - id: review
-            role: reviewer
-            guidance: [task.seam_review]
-            proof: review
-            independent_from: seam.integrate
-            fail: integrate
-            save:
-              immutable: true
-
-      # Sub-Gate 2.6: Autonomous Task Delivery (0 Tokens: Git Commit & Receipt)
-      # Coordinated delivery barrier coordinates speculative tasks on the seam;
-      # sequential hard blockers deliver immediately without deadlock.
       - id: deliver
-        proof: delivery
+        role: reviewer
         receipt: true
+        need: [review, blackboard_notify]
+        independent_from: [build]
+        fail: build
         save:
           immutable: true
           post: commit
-          git_commit_note: telemetry
+          git_commit_note: default
 
-  # Gate 3: Milestone Integration Verification & Polish
-  # Conditional SemVer increment at milestone integration level
-  - id: api_version_bump
-    when: public_api
-    role: builder
-    proof: command
-
-  # Autonomous full repository verification
   - id: verify
     command: check_full_repo
+    proof: command
+    pass: integration_review
 
-  # Milestone-level invariant review
-  - id: review
+  - id: integration_review
     role: reviewer
-    policy: default_review
     guidance: [milestone.review]
     proof: review
-    contours: guidance.contours
+    contours: [paths, claims, concurrency, project_isolation, administration]
+    independent_from: ["tasks.build"]
+    need: [verify]
+    pass: handoff
     save:
       immutable: true
 
-  # Gate 4: Terminal Milestone Handoff
   - id: handoff
-    role: architect
-    proof: delivery
-    absorb: true
+    role: reviewer
+    independent_from: ["tasks.build"]
+    need: [verify, integration_review]
+    receipt: true
     save:
+      immutable: true
       post: commit
-      git_commit_note: telemetry
+      archive: true
+      prune: true
+      git_commit_note: default

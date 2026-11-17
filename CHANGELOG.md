@@ -6,6 +6,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-17
+
+This release replaces the legacy task engine with a unified, domain-agnostic profile, workflow graph, and SQLite state engine (`crates/acdd-core` + `crates/acdd-state`), introduces pluggable `DomainProvider` extensions, flattens the CLI and MCP surface around `.acdd/state.sqlite`, consolidates ADRs to `0001..0012`, promotes `ROADMAP.md`, and documents manual `0.5 -> 0.6` upgrading in [migration-0.6.md](docs/runbooks/migration-0.6.md).
+
+### Added
+
+- **Leaf SPI & Unified State Engine (`crates/acdd-core`, `crates/acdd-state`)**:
+  - Consolidated pure validated IDs (`ids`), error codes (`errors`), normalized `WorkspacePathPolicy` predicates (`path_policy`), `SchemaDef` (`schema`), and `DomainProvider` SPI (`ports`) into the strict leaf crate `acdd-core`.
+  - Introduced `acdd-state` with a 9-table `.acdd/state.sqlite` store, CAS precondition/versioning transitions, unified `git:` isolation & `save:` strategies, 6-tier budget context compiler, wave scheduler/runner, and deterministic failpoint recovery.
+  - Wired host `src/state_bridge/` (`CodeDomainProvider` + `DocsDomainProvider`) with live worktree AST checks, `index_generation`/`live_files_digest` cache keying, and read-only SQLite query enforcement, plus the [domain extensions guide](docs/architecture/domain-extensions.md) for thin `crates/acdd-domain-*` shim-crates.
+- **Flat CLI & 19+Plugin MCP Surface**:
+  - Unified lifecycle CLI commands (`init`, `start`, `draft`, `status`, `list`, `show`, `next`, `claim`, `verify`, `submit`, `extend-scope`, `reopen`, `sync`, `subtask`, `blackboard`, `snapshot`, `rollback`, `integrate`, `clear`, `run`, `tool`, `validate`).
+  - Exposed 19 built-in MCP tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`, `acdd_guide`, `acdd_read`, plus code-map, AST, and doc tools) alongside dynamic `<domain>_<name>` plugin tools gated by `acdd.yaml` `modules:`.
+- **Consolidated Architecture, Performance (`PF-002`, `AR-001`) & Roadmap (`0001..0012`)**:
+  - Implemented and archived `PF-002` (`docs/milestones/archive/PF-002-indexing-delta-and-query-acceleration.md`): single-pass positioned `payloads.bin` spooling, expanded `CompactTag` + `ACDD-LOCAL-FACTS` binary string-table pooling, parallel `ExtractionCache` delta with batch Zstd hydration and `TEMP TABLE` frontier lookups, and 100%-recall literal-anchor AST prefiltering (`PreparedAstMatcher`).
+  - Implemented and archived `AR-001` (`docs/milestones/archive/AR-001-borrowed-data-and-composable-execution.md`): borrowed surface dispatch and single `Adapter` reuse, in-place MCP payload compaction, moved cold-extraction candidates, borrowed runner role context, workspace-wide deduplication onto `acdd-core` (`format`, `fs`, `lock`, `git`, `telemetry`, `config`), de-monomorphized CLI (`&mut dyn Write`) and state (`&dyn StateBackend` `exec_tx_dyn`) dispatch, deterministic linker/directory ordering, and `code_map_inspect` `symbol`/`file_path` aliases plus single-language directory auto-inference on `ast_grep_search`.
+  - Hardened macOS/APFS SQLite safety (`PRAGMA journal_mode = DELETE` on `state.bak.sqlite`, non-creating read-only WAL fallback, canonicalized `NOFOLLOW` paths).
+  - Consolidated legacy ADRs into 12 accepted decisions (`docs/adr/0001..0012`) and promoted `ROADMAP.md` to the repository root.
+
+### Changed
+
+- **Workspace Version `0.6.0` & 3-Library-Crate DAG**: Bumped all workspace crates (`contextunity-acdd`, `acdd-core`, `acdd-index`, `acdd-state`) to `0.6.0`.
+
+### Removed
+
+- **Legacy Task Engine & Surface (`crates/acdd-tasks`)**: Decommissioned `crates/acdd-tasks`, `src/engine/tasks.rs`, legacy CLI groups (`milestone`, `plan`, `workflow`, `task`, `checkpoint`), and legacy MCP tools (`task_*`, `session_checkpoint`, `forge_guide`).
+
 ## [0.5.3] - 2026-11-15
 
 This release completes the unified `contextunity-acdd` ecosystem transition (Milestone IN-002), brings extensive cross-platform macOS/Linux hardening (Milestone AR-001), strengthens orchestrator and multi-agent wave lifecycles, and resolves release publishing and test maintenance bottlenecks.
@@ -159,7 +186,8 @@ Initial public release of the pure-Rust `contextunity-forge-mcp` MCP server and 
 
 - **Initial Native Rust Forge Engine**: Released the standalone `contextunity-forge-mcp` MCP server and CLI featuring Tree-sitter AST indexing (`.forge/code-map.sqlite`), single-shot digest-verified symbol reads (`forge_read`), `ast_grep_search`, living documentation indexing, deterministic Merkle commitments, and SQLite task/milestone lifecycle management.
 
-[Unreleased]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/ContextUnity/contextunity-forge-mcp/compare/v0.5.1-alpha.2...v0.5.2
 [0.5.1-alpha.2]: https://github.com/ContextUnity/contextunity-forge-mcp/compare/v0.5.1-alpha.1...v0.5.1-alpha.2

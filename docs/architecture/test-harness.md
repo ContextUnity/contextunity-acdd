@@ -49,7 +49,7 @@ Placement rules live in `tests/AGENTS.md`. This page states only durable boundar
 3. **Cohesive harness methods (no static namespace dumping).** Every method on
    `<Domain>Harness` must construct or operate on that harness's domain state
    (`&self` / `&mut self`). Do not dump static Git commands, unrelated SQL queries,
-   or file utilities onto `McpTestHarness` or `TaskHarness` merely to avoid raw calls
+   or file utilities onto `McpTestHarness` or `RunHarness` merely to avoid raw calls
    in a test file; place shared workspace/Git helpers on `Workspace` and shared SQL
    helpers in `tests/common/sqlite.rs`.
 4. **Canonical harness names (no type aliasing).** Never alias a harness type
@@ -78,10 +78,10 @@ Placement rules live in `tests/AGENTS.md`. This page states only durable boundar
    `observe_fixture_evidence`) must fail immediately on unexpected setup errors.
    Never silently fall back to `"unavailable"` digests or swallow non-contract command
    failures; provide separate explicit constructors for malformed-input tests.
-10. **In-process default & in-memory when sufficient.** Call engine/task/MCP/CLI APIs
-    in-process and use in-memory SQLite (`TasksStore::open_in_memory`) or AST
+10. **In-process default & in-memory when sufficient.** Call engine/state/MCP/CLI APIs
+    in-process and use in-memory SQLite (`RunHarness::in_memory()` / `:memory:`) or AST
     fixtures for DAG ordering, blocking, gate transitions, and blackboard rules.
-    Reserve full Git/Python `WaveHarness` subprocess runs strictly for process,
+    Reserve full Git/process `RunHarness::on_disk()` or runner subprocesses strictly for process,
     signal, recovery, or concurrent worktree isolation behavior.
 11. **Zero new root binaries & no meta-test bloat.** Register new suites in
     canonical domain binaries instead of adding top-level `tests/<name>.rs` binaries;
@@ -89,9 +89,8 @@ Placement rules live in `tests/AGENTS.md`. This page states only durable boundar
     (`SeedGitTemplate`, `FixtureSnapshot`, `McpTestHarness`), tautological
     struct/enum echoes, or brittle `Cargo.toml`/CI YAML substring assertions.
 12. **Split by domain cohesion, not arbitrary line counts.** Decompose multi-subsystem
-    monoliths (>1,500–2,000 lines mixing unrelated contracts such as `tests/acdd/mcp.rs`,
-    `tests/mcp/context.rs`, `tests/mcp/tool_evolution/mcp_boundaries.rs`, or
-    `tests/acdd/orchestrator/waves.rs`) into focused domain submodules. Never
+    monoliths (>1,500–2,000 lines mixing unrelated contracts) into focused domain submodules
+    such as `tests/acdd/{lifecycle_and_state,verification_and_git,profiles_and_inheritance,blackboard,runner_and_waves,fixtures_matrix}.rs`. Never
     mechanically split a single cohesive domain file (e.g., 800–1,600 lines testing
     one tool or language surface) or hide test assertions in harness helpers just to
     hit an arbitrary 500/800-line ceiling.
@@ -99,33 +98,19 @@ Placement rules live in `tests/AGENTS.md`. This page states only durable boundar
 ## External role processes
 
 External role fixtures substitute for an unavailable language model. They consume
-production role or claim guidance and submit through ACDD; the engine still owns
+production `ClaimResp` stdin guidance and submit through ACDD; the engine still owns
 identity, state transitions, validation, and command observations. Mechanical
 gates run verification and submit without invented command results. Malformed
 scenario controls remain explicit and must not repair a broken emitted template.
-Disk-backed task harnesses obtain claim-bound evidence templates from task context.
+Disk-backed harnesses obtain claim-bound context from `acdd claim` / `StateCommand::Claim`.
 Tests that intentionally submit malformed evidence keep their mutations explicit.
 
-The shipped authoring workflow tests replace the external model command with
-`author-runner` in
-[`role_helper.rs`](../../tests/acdd/fixtures/role_helper.rs).
-It reads the emitted proof template and produces a rejected draft and a repaired
-artifact. The tests put the directory containing
-`CARGO_BIN_EXE_acdd` on the child process `PATH`; the
-shipped `plan show`, `workflow show`, and `milestone init --in-place`
-preflights execute the real compiled CLI. Schema validation, routing, placeholder
-expansion, independent session identity, and persistence remain production
-behavior. The plan and workflow runs create no task database or `.acdd/runs`
-logs. Milestone initialization creates the authored milestone's tasks, but no
-workflow-gate tasks, claims, or synthetic run logs.
-
-The polish test replaces the external model with
-`polish-runner` in
-[`role_helper.rs`](../../tests/acdd/fixtures/role_helper.rs)
-and the expensive repository verification body with a hermetic failing-then-passing
-command. ACDD observes the command and validates the review and routing.
-ADR 0024 is absent from this repository; its lifecycle authority remains a gap,
-not an implemented decision.
+Role runner tests exercise [`support.rs`](../../tests/acdd/support.rs) and
+[`runner_and_waves.rs`](../../tests/acdd/runner_and_waves.rs) against the compiled
+`acdd` binary (`CARGO_BIN_EXE_acdd`) with real `acdd claim`, `acdd verify`,
+`acdd submit`, and `acdd validate` execution, verifying `ACDD_AGENT_SESSION_ID`,
+`reuse_on_reject`, process-group timeout termination, and fail-closed
+`RUNNER_NO_SUBMISSION` enforcement.
 
 ## Existing harnesses
 
@@ -134,12 +119,10 @@ cross-mount another suite's private files via `#[path = "../..."]`.
 
 | Harness | Suite | Role |
 | --- | --- | --- |
-| `TaskHarness` | `tests/acdd/tasks` | Task claim/submit/lifecycle |
-| `MilestoneHarness` | `tests/acdd/milestones` | Milestone sync/handoff/fixtures |
+| `RunHarness` | `crates/acdd-state/src/harness.rs` + `tests/acdd/` | Unified in-memory (`:memory:`) and disk-backed `StateEngine` / `StateQueryEngine` lifecycle, git ops, waves, and blackboard testing |
 | `McpTestHarness` | `tests/common/mcp_harness.rs` + `tests/mcp` | In-process MCP requests/tools (transport + session only) |
 | `CommitmentHarness` | `tests/commitment_integrity` | In-memory/disk commitment sealing, verification, and savepoint tamper probes |
 | Language / framework support | `tests/languages`, `tests/framework_manifests` | In-memory extract/index helpers and shared-cache cold parity checks |
-| `PlanHarness` / `WorkflowHarness` | `tests/acdd/harness` | Canonical plan and workflow fixtures, workspace materialization, and plan snapshot inspection for production runner tests |
 
 God-object growth, static utility dumping, and orphaned `*Observation` struct
 modules in domain harnesses are defects. Prefer small, composable primitives on the

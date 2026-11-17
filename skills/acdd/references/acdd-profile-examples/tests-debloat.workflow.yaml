@@ -1,19 +1,26 @@
 # =============================================================================
 # ACDD PLAN PROFILE: Strict Tests Debloat & Contract Consolidation
 #
-# ADR 0021 Work Model 2 (Plan execution, save: snapshot, tasks: container only).
-# Paired with: `docs/plans/archive/test-suite-debloat-and-contract-consolidation.md`
+# ADR 0003 Unified Profile Engine (Plan in-place execution: `git.isolation: in_place`,
+# `save: snapshot`, `tasks:` container only).
 #
 # Enforces hard non-negotiable debloat gates:
 #   1. Zero tampering with non-test production source files (`src/`, `crates/*/src/` non-test)
 #   2. Strict net reduction in `#[test]` count (`tests_after < tests_before`) in diff
-#   3. Non-increasing heavy harness setups (`Workspace::with_files`, `McpTestHarness::new`, `WaveHarness`)
+#   3. Non-increasing heavy harness setups (`Workspace::with_files`, `McpTestHarness::new`, `RunHarness`)
 #   4. Zero `static OnceLock<Workspace|TempDir>` / `LazyLock` tempdir leaks
 #   5. 1-to-1 observable invariant map reviewed by an independent auditor
 # =============================================================================
 
 version: 2
 inherit: none
+
+git:
+  isolation: in_place
+  worktrees: manual
+  commit_mode: plumbing
+  integrate: manual
+
 save: snapshot
 
 scope_args_by_pattern:
@@ -28,7 +35,7 @@ scope_args_by_pattern:
   "tests/common/**/*.rs": "--test core"
   "crates/acdd-core/**/*.rs": "--package acdd-core --lib"
   "crates/acdd-index/**/*.rs": "--package acdd-index --lib"
-  "crates/acdd-tasks/**/*.rs": "--package acdd-tasks --lib"
+  "crates/acdd-state/**/*.rs": "--package acdd-state --lib"
 
 roles:
   architect:
@@ -46,7 +53,7 @@ roles:
 
   independent_reviewer:
     mode: subagent
-    reuse_on_reject: true
+    reuse_on_reject: false
     models:
       - 'gpt-6.1-sol:high'
 
@@ -63,7 +70,7 @@ commands:
               rel = p.as_posix()
               txt = p.read_text(encoding="utf-8", errors="ignore")
               tests += len(re.findall(r"#\[test\]", txt))
-              harnesses += len(re.findall(r"\b(?:Workspace::with_files|Workspace::new|McpTestHarness::new|McpTestHarness::indexed|WaveHarness::new)\b", txt))
+              harnesses += len(re.findall(r"\b(?:Workspace::with_files|Workspace::new|McpTestHarness::new|McpTestHarness::indexed)\b", txt))
               if d == "crates" and "/tests/" not in rel and not rel.endswith("/tests.rs") and not rel.endswith("_tests.rs"):
                   prod_hashes[rel] = hashlib.sha256(txt.encode("utf-8")).hexdigest()
       for p in sorted((root / "src").rglob("*.rs")):
@@ -95,7 +102,7 @@ commands:
               txt = p.read_text(encoding="utf-8", errors="ignore")
               cur_tests += len(re.findall(r"#\[test\]", txt))
               if d != "src":
-                  cur_harnesses += len(re.findall(r"\b(?:Workspace::with_files|Workspace::new|McpTestHarness::new|McpTestHarness::indexed|WaveHarness::new)\b", txt))
+                  cur_harnesses += len(re.findall(r"\b(?:Workspace::with_files|Workspace::new|McpTestHarness::new|McpTestHarness::indexed)\b", txt))
               if re.search(r"static\s+[^;]*(?:OnceLock|LazyLock)<[^>]*\b(?:Workspace|TempDir)\b", txt):
                   static_leaks.append(rel)
               if rel in base["prod_hashes"] and hashlib.sha256(txt.encode("utf-8")).hexdigest() != base["prod_hashes"][rel]:
@@ -113,21 +120,32 @@ commands:
     output: { require_counts: false }
 
   rust-check-and-test:
-    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter}"
+    test_filter: "{test}"
     output:
       counts:
         passed: '(?m)\b(\d+) passed\b'
         failed: '(?m)\b(\d+) failed\b'
       require_counts: true
       noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
-      errors: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+      compile_errors:
+        include: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+        exclude: ['^error: test failed']
     timeout_seconds: 300
 
-policies:
-  debloat_review:
-    independent_worker: true
-    require_all_contours: true
-    audit_extended_scope: true
+contours:
+  paths:
+    description: "Verify debloat changes stay strictly inside admitted test paths with zero production source modifications."
+    criteria:
+      - "Zero edits to non-test files under src/ or crates/*/src/."
+  claims:
+    description: "Verify every removed or merged test maps 1-to-1 to a retained contract matrix row or stronger seam test."
+    criteria:
+      - "Every deleted or merged test dimension appears in the retained matrix row or a proven stronger seam."
+  concurrency:
+    description: "Verify shared fixtures/OnceLock<PersistedSnapshot> never hold Workspace/TempDir across threads or leak /tmp/contextunity-test-*."
+    criteria:
+      - "Zero static OnceLock<Workspace/TempDir> leaks; shared immutable fixtures drop builders inside get_or_init."
 
 guidance:
   debloat.inventory: >
@@ -136,24 +154,11 @@ guidance:
     Target >=30% test-count reduction without any loss of observable production contract coverage.
 
   debloat.consolidate: >
-    Execute MERGE and REMOVE in the same edit pass. Keep heavy Workspace/McpTestHarness builds outside table loops. Move pure DAG/state checks to in-memory TasksStore.
+    Execute MERGE and REMOVE in the same edit pass. Keep heavy Workspace/McpTestHarness builds outside table loops. Move pure DAG/state checks to in-memory RunHarness.
     Never touch non-test production code. Every diff MUST end with strictly fewer #[test] functions and fewer or equal heavy harnesses than HEAD.
 
   debloat.audit: >
     Verify 1-to-1 invariant mapping (deleted/merged test -> retained matrix row or stronger seam) ensuring zero weakened assertions, zero dropped negative/error boundaries, zero static OnceLock<Workspace/TempDir>, and strictly negative #[test] delta.
-
-  contour.paths:
-    description: "Verify debloat changes stay strictly inside admitted test paths with zero production source modifications."
-    criteria:
-      - "Zero edits to non-test files under src/ or crates/*/src/."
-  contour.claims:
-    description: "Verify every removed or merged test maps 1-to-1 to a retained contract matrix row or stronger seam test."
-    criteria:
-      - "Every deleted or merged test dimension appears in the retained matrix row or a proven stronger seam."
-  contour.concurrency:
-    description: "Verify shared fixtures/OnceLock<PersistedSnapshot> never hold Workspace/TempDir across threads or leak /tmp/contextunity-test-*."
-    criteria:
-      - "Zero static OnceLock<Workspace/TempDir> leaks; shared immutable fixtures drop builders inside get_or_init."
 
 gates:
   - tasks:
@@ -161,7 +166,7 @@ gates:
         - id: inventory
           role: architect
           guidance: [debloat.inventory]
-          tools: [acdd_read, code_map_search, code_map_tests, task_blackboard]
+          tools: [acdd_read, code_map_search, code_map_tests, acdd_blackboard]
           proof:
             scheme:
               type: object
@@ -175,11 +180,14 @@ gates:
                 remove_list:
                   type: array
                   items: { type: string }
-          save: snapshot
+          save:
+            post: snapshot
+          pass: freeze_baseline
 
         - id: freeze_baseline
           command: freeze_step_baseline
           proof: none
+          pass: consolidate
 
         - id: consolidate
           role: builder
@@ -187,15 +195,18 @@ gates:
           save:
             pre: snapshot
             post: snapshot
+          pass: enforce_budget
 
         - id: enforce_budget
           command: enforce_debloat_budget
           proof: command
+          pass: verify_tests
           fail: consolidate
 
         - id: verify_tests
           command: rust-check-and-test
           proof: command
+          pass: audit
           fail: consolidate
           save:
             post: snapshot
@@ -203,19 +214,20 @@ gates:
         - id: audit
           role: independent_reviewer
           guidance: [debloat.audit]
-          policy: debloat_review
-          independent_from: consolidate
+          proof: review
+          contours: [paths, claims, concurrency]
+          independent_from: [consolidate]
+          need: [verify_tests]
           fail: consolidate
-          loop:
-            scope: consolidate
           save:
             immutable: true
+          pass: deliver
 
         - id: deliver
           role: independent_reviewer
           receipt: true
-          need: [audit]
-          independent_from: consolidate
+          need: [verify_tests, audit]
+          independent_from: [consolidate]
           fail: consolidate
           save:
             immutable: true

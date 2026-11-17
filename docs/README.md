@@ -5,11 +5,11 @@ title: Documentation
 
 # Documentation
 
-The [repository README](../README.md) explains how the code map, the documentation index, and the task queue work together, and where an agent receives a bounded slice of context. These pages are the contracts behind that explanation. Read [documentation instructions](AGENTS.md) before editing them.
+The [repository README](../README.md) explains how the code map, the documentation index, and the unified state engine work together, and where an agent receives a bounded slice of context. These pages are the contracts behind that explanation. Read [documentation instructions](AGENTS.md) before editing them.
 
 If you are connecting a client, start with [MCP setup](reference/mcp-setup.md): install the binary, point it at the workspace, and check the first index. The adapter fields behind that setup — roots, linked repositories, response size — are in [configuration](reference/configuration.md).
 
-If you are planning work, read [ACDD](reference/acdd.md) for the loop, [task operations](reference/tasks.md) for claims, evidence, and receipts, and [ACDD profiles](reference/profiles.md) for gates, roles, and pins on a milestone or a task. Admitted work lives in [milestones](milestones/README.md). Proposals that are not yet admitted live in [plans](plans/README.md). [Roadmap](roadmap.md) is the short strategic note above both.
+If you are planning work, read [ACDD](reference/acdd.md) for the loop, [state & task operations](reference/tasks.md) for runs, claims, verification, and receipts, and [ACDD profiles](reference/profiles.md) for v2 gate topologies, `git:` policies, roles, and `DomainProvider` capabilities. Admitted work lives in [milestones](milestones/README.md). Proposals that are not yet admitted live in [plans](plans/README.md). [Roadmap](../ROADMAP.md) is the short strategic note above both.
 
 If you are writing pages ACDD should retrieve, follow [documentation instructions](AGENTS.md). Headings become searchable sections. A backticked code claim is a candidate for linking; only a unique eligible declaration in the first non-empty match tier becomes a verified edge. Use an exact declaration name and, when needed, a source-file link to confine resolution. ACDD keeps ambiguous candidates for navigation without treating them as verified coverage. See the [documentation query contract](reference/mcp-tools.md#documentation-queries).
 
@@ -27,7 +27,7 @@ Operational ceilings, freshness, and what a failed query looks like are in [limi
 - [Configuration](reference/configuration.md)
 - [ACDD](reference/acdd.md)
 - [ACDD profiles](reference/profiles.md)
-- [Repository tasks](reference/tasks.md)
+- [State & task operations](reference/tasks.md)
 - [Languages](reference/languages.md)
 - [Framework manifests](reference/framework-manifests.md)
 
@@ -42,7 +42,7 @@ Operational ceilings, freshness, and what a failed query looks like are in [limi
 
 ## Direction
 
-- [Roadmap](roadmap.md)
+- [Roadmap](../ROADMAP.md)
 - [Plans](plans/README.md)
 - [Milestones](milestones/README.md)
 - [Historical archive](archive/README.md)

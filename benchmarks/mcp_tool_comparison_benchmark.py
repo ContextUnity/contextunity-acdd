@@ -571,10 +571,6 @@ def benchmark(
 
 def redact_sensitive_results(path: pathlib.Path) -> None:
     result = json.loads(path.read_text())
-    examples = result.get("response_examples", {})
-    for key in list(examples):
-        if key.startswith("session_checkpoint:"):
-            del examples[key]
     metadata = result.setdefault("metadata", {})
     metadata["corpus_parity_caveat"] = (
         "Both tools read one immutable temporary source copy and the benchmark targets the same relative symbols, "
@@ -617,12 +613,6 @@ def redact_sensitive_results(path: pathlib.Path) -> None:
         "Quality and agent-clarity assessments in the companion report are manual, evidence-based rubric scores, "
         "not an automated LLM judge or formal correctness proof."
     )
-    metadata["session_checkpoint_scope"] = (
-        "Read-only list was remeasured five times against the isolated snapshot, which has no .acdd/checkpoints.json; examples are omitted and no checkpoint state was written."
-    )
-    metadata["redactions"] = [
-        "session_checkpoint response examples omitted; byte counts and hashes remain"
-    ]
     path.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
 
 
@@ -646,7 +636,6 @@ def replace_scenario_results(target_path: pathlib.Path, source_path: pathlib.Pat
     )
     reasons = {
         "ast_pattern_search": "replacement run used a validated positive AST pattern and same-file text-search scope",
-        "session_checkpoint": "replacement run verified read-only list against the isolated snapshot without checkpoint state",
         "codebase_low_confidence_summary": "supplemental five-repeat Codebase-only triage query using an explicit confidence threshold",
         "codebase_low_confidence_examples": "supplemental five-repeat Codebase-only candidate query using the same confidence threshold",
     }

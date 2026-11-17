@@ -1,0 +1,108 @@
+# =============================================================================
+# ACDD SCENARIO EXAMPLE: Batch Repository Memory Synthesis ("Dream") Workflow
+# File pattern: {scenario}.workflow.yaml (ADR 0003 + AC-006 Memory Synthesis)
+#
+# Off-hot-path consolidation pass over archived specs (`docs/**/archive/*.md`)
+# and `run_tombstones` that curates durable `docs/memories/*.md` rules without
+# mutating source code or creating Git commits automatically (`save: none`).
+# =============================================================================
+
+version: 2
+inherit: none
+
+git:
+  isolation: in_place
+  worktrees: manual
+  commit_mode: manual
+  integrate: manual
+
+save: none
+
+default_tools:
+  - acdd_read
+  - acdd_guide
+  - acdd_state
+  - acdd_claim
+  - acdd_verify
+  - acdd_submit
+  - acdd_blackboard
+  - get_doc
+  - search_docs
+
+roles:
+  memory_curator:
+    mode: subagent
+    reuse_on_reject: true
+    models:
+      - 'gpt-6.1-sol:high'
+    guidance: "Inspect recent archived specs and run closure evidence, synthesize concise evidence-backed operational memories under docs/memories/*.md, and prune stale or superseded entries."
+
+  memory_reviewer:
+    mode: subagent
+    reuse_on_reject: false
+    models:
+      - 'gpt-6.1-sol:xhigh'
+    guidance: "Verify every curated memory cites real execution evidence, stays within byte/count bounds, avoids code edits, and passes docs link checks."
+
+commands:
+  verify_memory_docs:
+    command: "(! git status --porcelain | grep -qE '^.. (src|crates|tests)/') && acdd docs check"
+    output:
+      require_counts: false
+    timeout_seconds: 120
+
+contours:
+  fact_grounding:
+    description: "Verify every admitted memory cites observed execution evidence and a source subject."
+    criteria:
+      - "Reject speculative rules or ordinary diff summaries without execution evidence."
+  privacy_and_isolation:
+    description: "Verify memories remain confined to docs/memories/*.md with zero code or secret leaks."
+    criteria:
+      - "Confirm zero edits outside docs/memories/ and zero credential exposure."
+  deduplication:
+    description: "Verify redundant, stale, or superseded memories are merged or retired."
+    criteria:
+      - "Confirm consolidated memories stay concise and non-contradictory."
+
+guidance:
+  memory.dream_curate: "Consolidate recurring operational findings from archived specs and run_tombstones into bounded docs/memories/*.md entries."
+  memory.dream_review: "Audit consolidated memories against fact_grounding, privacy_and_isolation, and deduplication contours."
+
+gates:
+  - id: dream_curate
+    role: memory_curator
+    guidance:
+      - memory.dream_curate
+    command: verify_memory_docs
+    proof:
+      scheme:
+        type: object
+        required: [decision, summary, updated_memories, retired_memories]
+        properties:
+          decision: { type: string, enum: [pass, reject] }
+          summary: { type: string }
+          updated_memories:
+            type: array
+            items: { type: string }
+          retired_memories:
+            type: array
+            items: { type: string }
+    max_attempts: 3
+    pass: dream_review
+
+  - id: dream_review
+    role: memory_reviewer
+    guidance:
+      - memory.dream_review
+    proof: review
+    contours:
+      - fact_grounding
+      - privacy_and_isolation
+      - deduplication
+    independent_from:
+      - dream_curate
+    need:
+      - dream_curate
+    max_attempts: 2
+    fail: dream_curate

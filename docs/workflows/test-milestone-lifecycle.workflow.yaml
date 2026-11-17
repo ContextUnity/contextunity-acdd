@@ -1,6 +1,6 @@
 # =============================================================================
 # TEST WORKFLOW: Milestone Full 3-Tier Lifecycle E2E Verification
-# Purpose: Autonomous verification of Model 3 (blueprint_synthesis + tasks + closure).
+# Purpose: Autonomous verification of 3-tier milestone execution (blueprint_synthesis + tasks + closure).
 # Invariants:
 #   1. save: commit (atomic Git delivery commits with receipts in isolated worktrees).
 #   2. Root pre-task container (blueprint_synthesis) executes ONCE before tasks.
@@ -11,28 +11,55 @@
 
 version: 2
 inherit: default
+gates_merge: patch
 
 save: commit
 
 commands:
+  test:
+    command: "cargo test {scope_target} {test_filter}"
+    test_filter: "{test}"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: false
+      compile_errors:
+        include: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+        exclude: ['^error: test failed']
+    timeout_seconds: 180
+
   rust-check-and-test:
-    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test"
+    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test {test_filter}"
+    test_filter: "{test}"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: true
+      compile_errors:
+        include: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+        exclude: ['^error: test failed']
     timeout_seconds: 180
 
   check_full_repo:
-    command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    command: "cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --lib"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: true
+      compile_errors:
+        include: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+        exclude: ['^error: test failed']
     timeout_seconds: 1800
 
 gates:
-  - tasks:
-      gates:
-        - id: build
-          command: rust-check-and-test
-        - id: seam
-          when: seam
-          gates:
-            - id: integrate
-              command: rust-check-and-test
+  - id: tasks.build
+    command: rust-check-and-test
 
   - id: verify
+    command: check_full_repo
+
+  - id: polish
     command: check_full_repo

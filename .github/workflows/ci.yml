@@ -35,5 +35,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Lint workspace
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Test workspace
-        run: cargo test --workspace --all-targets
+      - name: Commitment integrity
+        run: cargo test --test commitment_integrity
+      - name: Test workspace libraries
+        run: cargo test --workspace --lib
+      - name: Test workspace & check temp directory leaks
+        run: |
+          set -euo pipefail
+          tmp_root="${TMPDIR:-/tmp}"
+          tmp_root="${tmp_root%/}"
+          before=$(find "$tmp_root" -maxdepth 1 -name 'contextunity-test-*' 2>/dev/null | wc -l)
+          cargo test --workspace --all-targets
+          after=$(find "$tmp_root" -maxdepth 1 -name 'contextunity-test-*' 2>/dev/null | wc -l)
+          echo "contextunity-test-* before=$before after=$after"
+          test "$before" -eq "$after"
+      - name: Validate docs and workspace
+        run: |
+          cargo run -- docs check
+          cargo run -- validate

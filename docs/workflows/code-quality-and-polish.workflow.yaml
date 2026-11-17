@@ -1,45 +1,53 @@
 # =============================================================================
 # STANDALONE WORKFLOW EXAMPLE: Code Quality & Polish Loop
 #
-# ADR 0021 Work Model 1: Pure gate graph without tasks.
-# Run via: `acdd workflow run code-quality-and-polish`
+# ADR 0003 Unified Profile Engine: Pure gate graph without tasks.
+# Run via: `acdd run --profile docs/workflows/code-quality-and-polish.workflow.yaml`
 # =============================================================================
 
 version: 2
 inherit: none
+
+git:
+  isolation: in_place
+  worktrees: manual
+  commit_mode: manual
+  integrate: manual
+
 save: none
 
 roles:
   builder:
     mode: subagent
     reuse_on_reject: true
-    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
-    prompt_template: 'Perform {stage} as {role} in {worktree}. Goal: {goal}. {role_guidance} Return a structured decision and proof.'
+    runner: 'codex exec -m gpt-6.1-sol -c model_reasoning_effort=medium -'
+    prompt_template: 'Perform {node_cursor} in {worktree} (run {run_id}). Guidance: {guidance}. Return a structured decision and proof.'
     models:
       - 'gpt-6.1-sol:medium'
 
   independent_reviewer:
     mode: subagent
-    reuse_on_reject: true
-    runner: 'codex exec -C "{worktree}" -m "{model}" -c model_reasoning_effort="{reasoning}" "{prompt}"'
-    prompt_template: 'Perform {stage} as {role} in {worktree}. Goal: {goal}. {role_guidance} Return a structured decision and proof.'
+    reuse_on_reject: false
+    runner: 'codex exec -m gpt-6.1-sol -c model_reasoning_effort=xhigh -'
+    prompt_template: 'Perform {node_cursor} in {worktree} (run {run_id}). Guidance: {guidance}. Return a structured decision and proof.'
     models:
       - 'gpt-6.1-sol:xhigh'
 
 commands:
   check_full_repo:
-    command: "cargo test --test commitment_integrity && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets"
+    command: "cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --lib"
+    output:
+      counts:
+        passed: '(?m)\b(\d+) passed\b'
+        failed: '(?m)\b(\d+) failed\b'
+      require_counts: true
     timeout_seconds: 600
-
-policies:
-  default_review:
-    independent_worker: true
-    require_all_contours: true
 
 # Pure gate sequence with cyclic repair:
 gates:
   - id: verify
     command: check_full_repo
+    proof: command
     fail: polish
 
   - id: polish
@@ -57,8 +65,10 @@ gates:
 
   - id: review
     role: independent_reviewer
-    policy: default_review
-    independent_from: polish
+    independent_from:
+      - polish
+    need:
+      - polish
     max_attempts: 3
     proof: *decision_proof
     fail: polish

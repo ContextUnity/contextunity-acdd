@@ -3,13 +3,21 @@
 #
 # Use case: Coordinated multi-repository initiative (e.g. backend, frontend, infra)
 # Execution:
-# - Each repo advances tasks in parallel isolated worktrees
-# - Cross-repo schema contracts are synthesized upfront in `milestone_contract_matrix`
+# - Each repo advances tasks in parallel isolated worktrees (`linked_workspaces`)
+# - Cross-repo schema contracts are synthesized upfront (`cross_repo_synthesis`)
 # - Autonomous umbrella integration gate verifies end-to-end compatibility before handoff
 # =============================================================================
 
 version: 2
 inherit: none
+
+git:
+  isolation: worktree
+  worktrees: manual
+  commit_mode: plumbing
+  integrate: manual
+
+save: commit
 
 # =============================================================================
 # 1. ROLES CATALOG (`roles`)
@@ -30,7 +38,7 @@ roles:
 
   integration_reviewer:
     mode: subagent
-    reuse_on_reject: true
+    reuse_on_reject: false
     models:
       - 'gpt-6.1-sol:xhigh'
 
@@ -38,66 +46,56 @@ roles:
 # 2. COMMANDS CATALOG (`commands`)
 # =============================================================================
 commands:
-  # Multi-language/multi-repo scoped verification
   check_task:
-    by_pattern:
-      "backend/**/*.py": "cd backend && ruff check {scope_target} && pytest -q {scope_target}"
-      "frontend/**/*.{ts,tsx,vue}": "cd frontend && npm run typecheck && npm test -- {scope_target}"
-      "infra/**/*.{tf,yaml}": "cd infra && terraform fmt -check && terraform validate"
-    timeout_seconds: 90
+    test_filter: "{test}"
     output: { require_counts: false }
+    timeout_seconds: 90
+    by_pattern:
+      "backend/**/*.py": "cd backend && ruff check {scope_target} && pytest -q {scope_target} {test_filter}"
+      "frontend/**/*.{ts,tsx,vue}": "cd frontend && npm run typecheck && npm test -- {scope_target} {test_filter}"
+      "infra/**/*.{tf,yaml}": "cd infra && terraform fmt -check && terraform validate {test_filter}"
 
-  # Cross-repository live contract & integration check
   verify_cross_repo_e2e:
     command: "./scripts/run-cross-service-integration.sh --env test --headless"
     timeout_seconds: 300
     output: { require_counts: false }
 
-  # Full repository sanity check
   check_all_services:
     command: "pytest backend/tests/ && npm --prefix frontend test && terraform -chdir=infra validate"
     timeout_seconds: 600
 
 # =============================================================================
-# 3. GUIDANCE CATALOG (`guidance`)
+# 3. CONTOURS CATALOG (`contours`)
 # =============================================================================
-guidance:
-  umbrella.synthesis: >
-    Analyze cross-service boundaries and data contracts across all repositories.
-    Publish OpenAPI, protobuf, or event schemas into SQLite `milestone_contract_matrix`.
-    Consumer services bind seam tests directly to the synthesized matrix schema.
-
-  service.code: >
-    Implement production code confined to the assigned service repository worktree.
-    Adhere strictly to the published cross-repo schema in `milestone_contract_matrix`.
-
-  contour.cross_repo_compatibility:
+contours:
+  cross_repo_compatibility:
     description: "Verify backward and forward wire compatibility."
     criteria:
       - "Ensure that schema additions are non-breaking and default-tolerant."
       - "Check that protobuf/OpenAPI/event schema changes preserve wire compatibility."
 
-  contour.isolation:
+  isolation:
     description: "Verify service isolation across repositories."
     criteria:
       - "Verify that commits in service A do not introduce hard runtime dependencies on unreleased states of service B."
 
-  contour.paths:
+  paths:
     description: "Verify repository boundaries and file perimeters."
     criteria:
       - "Ensure changes are confined to the assigned service repository worktree."
 
 # =============================================================================
-# 4. POLICIES CATALOG (`policies`)
+# 4. GUIDANCE CATALOG (`guidance`)
 # =============================================================================
-policies:
-  umbrella_review:
-    independent_worker: true
-    require_all_contours: true
+guidance:
+  umbrella.synthesis: >
+    Analyze cross-service boundaries and data contracts across all repositories.
+    Publish OpenAPI, protobuf, or event schemas in the blueprint proof and acdd_blackboard.
+    Consumer services bind seam tests directly to the synthesized contract schema.
 
-  umbrella_delivery:
-    auto_commit: true
-    enforce_clean_worktree: true
+  service.code: >
+    Implement production code confined to the assigned service repository worktree.
+    Adhere strictly to the published cross-repo schema.
 
 # =============================================================================
 # 5. HIERARCHICAL GATES PIPELINE (`gates`)
@@ -107,55 +105,69 @@ gates:
   - id: cross_repo_synthesis
     role: lead_architect
     guidance: [umbrella.synthesis]
-    proof: contract
 
   # Gate 2: Parallel Multi-Repo Task Delivery Container
   - tasks:
       gates:
-      # 2.1 Service-level Seam Contract
       - id: contract
         role: lead_architect
+        command: check_task
         proof: contract
+        expected_failure:
+          exit_codes: [1]
+        save:
+          post: snapshot
+        pass: implement
 
-      # 2.2 In-Repo Implementation & Local Verification
       - id: implement
         gates:
           - id: code
             role: service_builder
             guidance: [service.code]
             proof: none
+            pass: verify_service
 
           - id: verify_service
             command: check_task
+            proof: command
             fail: code
+        pass: umbrella_integration_verify
 
-      # 2.3 Cross-Repo Integration Verification
       - id: umbrella_integration_verify
         command: verify_cross_repo_e2e
         proof: command
+        pass: full_umbrella_verify
         fail: implement
 
-      # 2.4 Final Coordinated Verification
       - id: full_umbrella_verify
         command: check_all_services
         proof: command
+        pass: review
         fail: implement
-        save: snapshot
+        save:
+          post: snapshot
 
-      # 2.5 Service Review
       - id: review
         role: integration_reviewer
-        policy: umbrella_review
         proof: review
-        contours: guidance.contours
+        contours:
+          - cross_repo_compatibility
+          - isolation
+          - paths
+        independent_from:
+          - implement
+        need:
+          - full_umbrella_verify
+        pass: deliver
         fail: implement
+        save:
+          immutable: true
 
-      # 2.6 Service Delivery
       - id: deliver
         role: integration_reviewer
-        policy: umbrella_delivery
-        proof: delivery
         receipt: true
+        independent_from:
+          - implement
         need:
           - review
         fail: implement

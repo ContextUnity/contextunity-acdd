@@ -1,15 +1,22 @@
 # =============================================================================
 # ACDD SCENARIO EXAMPLE: In-Place Feature / Refactor Plan Profile
-# File pattern: {scenario}.plan.yaml (ADR 0021 — Unified Task Engine: Plan Mode)
+# File pattern: {scenario}.plan.yaml (ADR 0003 — Unified Profile State Engine)
 #
-# Executes plan steps and subtasks in the active working tree (`save: snapshot`,
-# zero automatic commits), omitting milestone blueprint/contract/handoff gates.
-# Switch `inherit: none` to `inherit: workspace` to inherit
+# Executes plan tasks and subtasks in the active working tree (`git.isolation: in_place`,
+# `save: snapshot`, zero automatic commits), omitting milestone blueprint/contract/handoff gates.
+# Switch `inherit: none` to `inherit: in_place` or `inherit: workspace` to inherit
 # repository `roles`, `runner`, `commands`, and `scope_args_by_pattern`.
 # =============================================================================
 
 version: 2
 inherit: none
+
+git:
+  isolation: in_place
+  worktrees: manual
+  commit_mode: plumbing
+  integrate: manual
+
 save: snapshot
 
 roles:
@@ -21,30 +28,38 @@ roles:
 
   independent_reviewer:
     mode: subagent
-    reuse_on_reject: true
+    reuse_on_reject: false
     models:
       - 'gpt-6.1-sol:xhigh'
 
+contours:
+  paths:
+    description: "Verify changes stay within admitted write scope."
+    criteria:
+      - "Compare modified files with task scope."
+  claims:
+    description: "Verify build evidence and passing test counts."
+    criteria:
+      - "Confirm scoped clippy and tests pass cleanly."
+
 scope_args_by_pattern:
   "src/**/*.rs": "--lib"
-  "crates/acdd-tasks/**/*.rs": "--package acdd-tasks --lib"
+  "crates/acdd-state/**/*.rs": "--package acdd-state --lib"
   "tests/acdd/**/*.rs": "--test acdd"
 
 commands:
   rust-check-and-test:
-    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target}"
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter}"
+    test_filter: "{test}"
     output:
       counts:
         passed: '(?m)\b(\d+) passed\b'
         failed: '(?m)\b(\d+) failed\b'
       require_counts: true
+      compile_errors:
+        include: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+        exclude: ['^error: test failed']
     timeout_seconds: 300
-
-policies:
-  default_review:
-    independent_worker: true
-    require_all_contours: true
-    audit_extended_scope: true
 
 gates:
   - tasks:
@@ -56,14 +71,20 @@ gates:
           save:
             pre: snapshot
             post: snapshot
+          pass: review
 
         - id: review
           role: independent_reviewer
-          policy: default_review
-          independent_from: build
+          proof: review
+          contours:
+            - paths
+            - claims
+          independent_from:
+            - build
+          need:
+            - build
+          pass: deliver
           fail: build
-          loop:
-            scope: build
           save:
             immutable: true
 
@@ -71,8 +92,10 @@ gates:
           role: independent_reviewer
           receipt: true
           need:
+            - build
             - review
-          independent_from: build
+          independent_from:
+            - build
           fail: build
           save:
             immutable: true

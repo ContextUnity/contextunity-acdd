@@ -41,4 +41,9 @@ lean-ctx's supported scope, use a permitted native tool; do not bypass a denial
 or expand access automatically. Verify the working directory before commands
 that change files; stop if the requested directory was rejected or replaced.
 
+Observe `ctx_shell` command-guard rules:
+- Never run inline `python3 -c` or `python3 - <<'PY'` heredocs; write a script file first and execute `python3 <script.py>`.
+- Never start a command with `$VAR`.
+- Never use `find -exec`; pipe `find ... -print0 | xargs -0` instead.
+
 Compression does not prescribe response length, jargon, or a separate workflow.

@@ -1,17 +1,24 @@
 # =============================================================================
 # ACDD SCENARIO EXAMPLE: Resource-Inheriting Repository Polish Workflow
-# File pattern: {scenario}.workflow.yaml (ADR 0021 — Stateless Workflow Engine)
+# File pattern: {scenario}.workflow.yaml (ADR 0003 — Unified Profile State Engine)
 #
 # Demonstrates a stateless polish workflow (`verify_repo` -> `polish` ->
-# `review_polish`) reusing repository role/command conventions with `save: log`.
+# `review_polish`) reusing repository role/command conventions with `save: none`.
 # Structural template: with `inherit: none`, bind `runner:` per role before
-# running `acdd workflow run`; `inherit: workspace` can reuse compatible
-# roles, policies, and commands from the workspace.
+# running `acdd run --profile ...`; `inherit: workspace` can reuse compatible
+# roles and commands from the workspace.
 # =============================================================================
 
 version: 2
 inherit: none
-save: log
+
+git:
+  isolation: in_place
+  worktrees: manual
+  commit_mode: manual
+  integrate: manual
+
+save: none
 
 roles:
   builder:
@@ -22,28 +29,27 @@ roles:
 
   independent_reviewer:
     mode: subagent
-    reuse_on_reject: true
+    reuse_on_reject: false
     models:
       - 'gpt-6.1-sol:xhigh'
 
 commands:
   check_full_repo:
-    command: "cargo clippy --all-targets --all-features -- -D warnings && cargo test --workspace"
+    command: "cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --lib"
     output:
       counts:
         passed: '(?m)\b(\d+) passed\b'
         failed: '(?m)\b(\d+) failed\b'
       require_counts: true
+      compile_errors:
+        include: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+        exclude: ['^error: test failed']
     timeout_seconds: 1200
-
-policies:
-  polish_review:
-    independent_worker: true
-    require_all_contours: true
 
 gates:
   - id: verify_repo
     command: check_full_repo
+    proof: command
     pass: review_polish
     fail: polish
 
@@ -62,8 +68,10 @@ gates:
 
   - id: review_polish
     role: independent_reviewer
-    policy: polish_review
-    independent_from: polish
+    independent_from:
+      - polish
+    need:
+      - verify_repo
     max_attempts: 2
     proof: *polish_decision
     fail: polish

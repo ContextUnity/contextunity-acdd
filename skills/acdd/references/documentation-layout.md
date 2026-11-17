@@ -6,7 +6,7 @@ Use these page roles in an indexed repository. Create a directory only when it h
 | --- | --- |
 | `docs/AGENTS.md` | Authoring rules for the documentation tree |
 | `docs/README.md` | Navigation |
-| `docs/roadmap.md` | One or two paragraphs of strategic context |
+| `ROADMAP.md` | Release direction and strategic context |
 | `docs/architecture/` | Current system topology |
 | `docs/adr/` | Accepted decisions |
 | `docs/reference/` | Interfaces, configuration, CLI, tools, schemas |

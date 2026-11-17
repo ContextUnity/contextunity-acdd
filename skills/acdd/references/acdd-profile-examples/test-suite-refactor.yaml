@@ -9,6 +9,14 @@
 version: 2
 inherit: none
 
+git:
+  isolation: worktree
+  worktrees: manual
+  commit_mode: plumbing
+  integrate: manual
+
+save: commit
+
 # =============================================================================
 # 1. ROLES CATALOG (`roles`)
 # =============================================================================
@@ -29,7 +37,7 @@ roles:
 
   coverage_auditor:
     mode: subagent
-    reuse_on_reject: true
+    reuse_on_reject: false
     models:
       - 'gpt-6.1-sol:xhigh'
 
@@ -56,7 +64,27 @@ commands:
     timeout_seconds: 600
 
 # =============================================================================
-# 3. GUIDANCE CATALOG (`guidance`)
+# 3. CONTOURS CATALOG (`contours`)
+# =============================================================================
+contours:
+  coverage_invariants:
+    description: "Verify that no production observable dimension was removed."
+    criteria:
+      - "Confirm that test count reductions correspond strictly to subsumed duplicate cases."
+      - "Ensure zero weakening of production branch or edge-case coverage."
+
+  purity:
+    description: "Verify tests exercise real collaborating domain components rather than synthetic stubs."
+    criteria:
+      - "Ensure mocks do not mock the unit under test or leak across test boundaries."
+
+  paths:
+    description: "Verify changes are confined to admitted test directories."
+    criteria:
+      - "Ensure changes stay within tests/ scope."
+
+# =============================================================================
+# 4. GUIDANCE CATALOG (`guidance`)
 # =============================================================================
 guidance:
   refactor.inventory: >
@@ -69,82 +97,68 @@ guidance:
     Decompose monolithic test files along domain and behavioral boundaries.
     Ensure every remaining test has explicit type hints and typed fixtures.
 
-  contour.coverage_invariants:
-    description: "Verify that no production observable dimension was removed."
-    criteria:
-      - "Confirm that test count reductions correspond strictly to subsumed duplicate cases."
-      - "Ensure zero weakening of production branch or edge-case coverage."
-
-  contour.purity:
-    description: "Verify tests exercise real collaborating domain components rather than synthetic stubs."
-    criteria:
-      - "Ensure mocks do not mock the unit under test or leak across test boundaries."
-
-  contour.paths:
-    description: "Verify changes are confined to admitted test directories."
-    criteria:
-      - "Ensure changes stay within tests/ scope."
-
-# =============================================================================
-# 4. POLICIES CATALOG (`policies`)
-# =============================================================================
-policies:
-  strict_audit:
-    independent_worker: true
-    require_all_contours: true
-    enforce_baseline_parity: true
-
 # =============================================================================
 # 5. HIERARCHICAL GATES PIPELINE (`gates`)
 # =============================================================================
 gates:
   - tasks:
       gates:
-      # Step 1: Inventory & Classification Baseline (Agent Gate)
       - id: inventory
         role: test_architect
         guidance: [refactor.inventory]
         command: freeze_baseline_inventory
-        proof: contract
+        proof: command
+        pass: refactor_cycle
 
-      # Step 2: Test De-duplication & Typing Cycle
       - id: refactor_cycle
         gates:
           - id: consolidate_and_type
             role: refactorer
             guidance: [refactor.consolidate]
             proof: none
+            pass: verify_green_tests
 
-          # Command Gate: Verify all refactored tests compile and pass green (0 tokens)
           - id: verify_green_tests
             command: verify_scoped_refactor
+            proof: command
+            pass: verify_typing
             fail: consolidate_and_type
 
-          # Command Gate: Verify strict typing and linter standards (0 tokens)
           - id: verify_typing
             command: verify_suite_parity_and_linter
+            proof: command
             fail: consolidate_and_type
+        pass: full_suite_verify
 
-      # Step 3: Full Test Suite Verification (Autonomous Command Gate - 0 tokens)
       - id: full_suite_verify
         command: verify_full_test_harness
         proof: command
+        pass: coverage_audit
         fail: refactor_cycle
-        save: snapshot
+        save:
+          post: snapshot
 
-      # Step 4: Independent Coverage Preservation Audit
       - id: coverage_audit
         role: coverage_auditor
-        policy: strict_audit
         proof: review
-        contours: guidance.contours
+        contours:
+          - coverage_invariants
+          - purity
+          - paths
+        independent_from:
+          - refactor_cycle
+        need:
+          - full_suite_verify
+        pass: deliver
         fail: refactor_cycle
+        save:
+          immutable: true
 
-      # Step 5: Atomic Delivery
       - id: deliver
         role: coverage_auditor
-        proof: delivery
         receipt: true
+        independent_from:
+          - refactor_cycle
         need:
           - coverage_audit
         fail: refactor_cycle

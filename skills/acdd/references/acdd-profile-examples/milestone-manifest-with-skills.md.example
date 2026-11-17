@@ -17,7 +17,6 @@ invariants:
 # =============================================================================
 # EXPLICIT REQUIRED SKILLS DECLARATION
 #
-# `milestone init <manifest.md>` checks required skills before preparing worktrees.
 # Declare only skills installed for the consuming repository's workflow.
 # =============================================================================
 required_skills:
@@ -29,8 +28,7 @@ required_skills:
 # =============================================================================
 # MULTI-REPOSITORY METADATA DECLARATION
 #
-# Declares participant repositories. `milestone init <manifest.md>` validates
-# their paths and prepares worktrees unless --in-place is selected.
+# Declares participant repositories resolved via `linked_workspaces` in `acdd.yaml`.
 # =============================================================================
 repositories:
   - name: backend
@@ -56,13 +54,12 @@ Deliver a high-conversion, resilient checkout flow powered by Django SSR + HTMX 
 ```yaml
 task_ref: backend-order-checkout-api
 target: "Implement idempotent order creation, stock reservation, and tax calculation endpoints in Django"
-proof_policy: seam-test-first
 contract_revision: 1
 scope:
   - backend/src/checkout/services.py
   - backend/src/checkout/views.py
   - backend/tests/test_checkout_api.py
-status: ready
+status: planned
 subtasks:
   - subtask_ref: stock-reservation-seam-test
     title: "Prove stock reservation through the checkout seam"
@@ -77,13 +74,12 @@ subtasks:
 ```yaml
 task_ref: frontend-htmx-checkout-island
 target: "Implement reactive checkout Island component with client validation and HTMX partial swaps"
-proof_policy: seam-test-first
 contract_revision: 1
 scope:
   - frontend/src/views/checkout/island.html
   - frontend/src/views/checkout/payment_form.html
   - tests/e2e/checkout/test_checkout_flow.py
-status: ready
+status: planned
 subtasks:
   - subtask_ref: payment-form-swap-markup
     title: "Render payment form swaps"
