@@ -90,7 +90,7 @@ impl<'source, 'tree> ScopeAnalysis<'source, 'tree> {
     fn module_exports(
         &self,
         bindings: &ScopeBindings,
-    ) -> Option<(Vec<acdd_core::semantic::ExportBinding>, serde_json::Value)> {
+    ) -> Option<(Vec<crate::semantic::ExportBinding>, serde_json::Value)> {
         match self.state.as_ref() {
             #[cfg(feature = "lang-python")]
             Some(LanguageAnalysis::Python(state)) => state
@@ -128,7 +128,7 @@ impl<'source, 'tree> ScopeAnalysis<'source, 'tree> {
     fn finish(
         self,
         collect_module_aliases: bool,
-    ) -> (acdd_core::semantic::ValueFlowFacts, Option<HashSet<String>>) {
+    ) -> (crate::semantic::ValueFlowFacts, Option<HashSet<String>>) {
         match self.state {
             #[cfg(feature = "lang-python")]
             Some(LanguageAnalysis::Python(state)) => {
@@ -579,7 +579,7 @@ struct VisitState<'a, 'flow> {
     root_summary: Option<ScopeBindings>,
     prepared_root_bindings: Option<ScopeBindings>,
     prepared_scope_bindings: HashMap<usize, ScopeBindings>,
-    projections: HashMap<String, acdd_core::semantic::ValueFlowFacts>,
+    projections: HashMap<String, crate::semantic::ValueFlowFacts>,
 }
 struct ScopeTraversal<'scope, 'source, 'tree> {
     frames: Vec<ScopeFrame<'source, 'tree>>,
@@ -764,7 +764,7 @@ impl SinglePassExtractor<'_> {
                 let node_owner = traversal
                     .frames
                     .last()
-                    .map_or(owner, |frame| frame.owner.as_str());
+                    .map_or(owner, |frame| frame.owner.as_ref());
                 let ctx = SyntaxContext {
                     node,
                     source: context.source,
@@ -793,7 +793,7 @@ impl SinglePassExtractor<'_> {
                     {
                         traversal.deferred.push(PythonAction::Orm {
                             node,
-                            owner: node_owner.to_owned(),
+                            owner: std::sync::Arc::from(node_owner),
                             frontiers: (
                                 facts.nodes.len(),
                                 facts.edges.len(),
@@ -901,7 +901,7 @@ impl SinglePassExtractor<'_> {
                 .filter(|_| state.prepared_root_bindings.is_none());
             let mut frame = ScopeFrame::new(
                 node,
-                owner.to_owned(),
+                std::sync::Arc::from(owner),
                 None,
                 state.prepared_root_bindings.is_none(),
                 context,
@@ -990,7 +990,7 @@ impl SinglePassExtractor<'_> {
         let parent_owner = traversal
             .frames
             .last()
-            .map_or(owner, |frame| frame.owner.as_str());
+            .map_or(owner, |frame| frame.owner.as_ref());
         let kind = match context.syntax.as_ref() {
             Some(_) => syntax_kind.and_then(languages::CompiledSyntaxKind::declaration),
             None => context
@@ -998,6 +998,9 @@ impl SinglePassExtractor<'_> {
                 .symbol_with_context(node, source, context.file),
         };
         if let Some(kind) = kind {
+            let kind = crate::models::compact_graph::CompactTag::known(kind).unwrap_or(kind);
+            let language =
+                crate::models::compact_graph::CompactTag::known(language).unwrap_or(language);
             let name = context
                 .profile
                 .symbol_name(node, source)
@@ -1013,15 +1016,18 @@ impl SinglePassExtractor<'_> {
             let line = node.start_position().row + offset + 1;
             let mut id = format!("{prefix}:{path}:{line}:{name}");
             if !state.ids.insert(id.clone()) {
-                id.push_str(&format!(":{}", node.start_position().column));
+                use std::fmt::Write;
+                let _ = write!(id, ":{}", node.start_position().column);
                 state.ids.insert(id.clone());
             }
             state.symbols.insert(node.id(), id.clone());
+            let shared_id: std::sync::Arc<str> = std::sync::Arc::from(id.as_str());
+            let shared_name: std::sync::Arc<str> = std::sync::Arc::from(name.as_str());
             let prepared_bindings = state.prepared_scope_bindings.remove(&node.id());
             let mut frame = ScopeFrame::new(
                 node,
-                id.clone(),
-                Some(name.clone()),
+                std::sync::Arc::clone(&shared_id),
+                Some(shared_name),
                 true,
                 context,
                 prepared_bindings,
@@ -1115,7 +1121,7 @@ impl SinglePassExtractor<'_> {
                 if state.flows.is_some() {
                     details.insert("param_types".into(), serde_json::Value::Null);
                     Some(Box::new(
-                        acdd_core::typed_facts::NodeSemanticEntry::with_parameters(std::mem::take(
+                        crate::typed_facts::NodeSemanticEntry::with_parameters(std::mem::take(
                             &mut metadata.param_types,
                         )),
                     ))
@@ -1189,7 +1195,7 @@ impl SinglePassExtractor<'_> {
         let node_owner = traversal
             .frames
             .last()
-            .map_or(owner, |frame| frame.owner.as_str());
+            .map_or(owner, |frame| frame.owner.as_ref());
         let ctx = SyntaxContext {
             node,
             source,
@@ -1217,7 +1223,7 @@ impl SinglePassExtractor<'_> {
             .as_ref()
             .is_some_and(|_| syntax_kind.is_some_and(|kind| kind.is_member_access()))
         {
-            facts.references.push(acdd_core::models::Reference {
+            facts.references.push(crate::models::Reference {
                 source: node_owner.to_owned(),
                 expression: text(node, source).into(),
                 kind: "reads".into(),
@@ -1267,7 +1273,7 @@ enum PythonAction<'tree> {
     Candidate(languages::python::DeferredEvent<'tree>),
     Orm {
         node: Syntax<'tree>,
-        owner: String,
+        owner: std::sync::Arc<str>,
         frontiers: (usize, usize, usize),
     },
     Publication(ScopePublication<'tree>),
@@ -1380,23 +1386,23 @@ fn restore_append_order<T>(values: &mut Vec<T>, base_len: usize, batches: Vec<(u
 
 struct ScopeFrame<'source, 'tree> {
     root: Syntax<'tree>,
-    owner: String,
+    owner: std::sync::Arc<str>,
     node_index: Option<usize>,
-    name: Option<String>,
-    metadata_return: Option<acdd_core::semantic::TypeExpr>,
-    metadata_ownership: Option<acdd_core::semantic::ObjectOwnershipFact>,
+    name: Option<std::sync::Arc<str>>,
+    metadata_return: Option<crate::semantic::TypeExpr>,
+    metadata_ownership: Option<crate::semantic::ObjectOwnershipFact>,
     bindings: Option<BindingCollector<'source, 'tree>>,
     prepared_bindings: Option<ScopeBindings>,
     analysis: Option<ScopeAnalysis<'source, 'tree>>,
-    legacy_flow: Option<acdd_core::semantic::ValueFlowFacts>,
+    legacy_flow: Option<crate::semantic::ValueFlowFacts>,
     reserved_flow_slot: bool,
     suspended_at: Option<usize>,
 }
 impl<'source, 'tree> ScopeFrame<'source, 'tree> {
     fn new(
         root: Syntax<'tree>,
-        owner: String,
-        name: Option<String>,
+        owner: std::sync::Arc<str>,
+        name: Option<std::sync::Arc<str>>,
         collect_bindings: bool,
         context: &VisitContext<'source>,
         prepared_bindings: Option<ScopeBindings>,
@@ -1552,13 +1558,13 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
 
 struct ScopePublication<'tree> {
     root: Syntax<'tree>,
-    owner: String,
+    owner: std::sync::Arc<str>,
     node_index: Option<usize>,
-    name: Option<String>,
+    name: Option<std::sync::Arc<str>>,
     reserved_flow_slot: bool,
-    flow: Option<Box<acdd_core::semantic::ValueFlowFacts>>,
+    flow: Option<Box<crate::semantic::ValueFlowFacts>>,
     bindings: ScopeBindings,
-    module_outputs: Option<(Vec<acdd_core::semantic::ExportBinding>, serde_json::Value)>,
+    module_outputs: Option<(Vec<crate::semantic::ExportBinding>, serde_json::Value)>,
 }
 
 impl ScopePublication<'_> {
@@ -1569,7 +1575,7 @@ impl ScopePublication<'_> {
         facts: &mut Facts,
     ) {
         let mut prepared_flow = self.flow;
-        let mut empty_flow = acdd_core::semantic::ValueFlowFacts::default();
+        let mut empty_flow = crate::semantic::ValueFlowFacts::default();
         let flow = prepared_flow.as_deref_mut().unwrap_or(&mut empty_flow);
         let mut bindings = self.bindings;
         let module_outputs = self.module_outputs;
@@ -1577,11 +1583,11 @@ impl ScopePublication<'_> {
         let Some(node) = self
             .node_index
             .and_then(|index| facts.nodes.get_mut(index))
-            .filter(|node| node.id == self.owner)
+            .filter(|node| node.id == *self.owner)
         else {
             return;
         };
-        if let Some(projections) = state.projections.remove(&self.owner) {
+        if let Some(projections) = state.projections.remove(&*self.owner) {
             if projections.fact_limit_exceeded {
                 flow.fact_limit_exceeded = true;
             }
@@ -1590,10 +1596,10 @@ impl ScopePublication<'_> {
                 projections.facts.retain(|fact| {
                     matches!(
                         fact,
-                        acdd_core::semantic::FrameworkFact::ComponentConfiguration(_)
-                            | acdd_core::semantic::FrameworkFact::SymbolAttachment(_)
-                            | acdd_core::semantic::FrameworkFact::NamedBinding(_)
-                            | acdd_core::semantic::FrameworkFact::EndpointRequest(_)
+                        crate::semantic::FrameworkFact::ComponentConfiguration(_)
+                            | crate::semantic::FrameworkFact::SymbolAttachment(_)
+                            | crate::semantic::FrameworkFact::NamedBinding(_)
+                            | crate::semantic::FrameworkFact::EndpointRequest(_)
                     )
                 });
                 if !projections.facts.is_empty() {
@@ -1613,10 +1619,10 @@ impl ScopePublication<'_> {
                     .retain(|fact| {
                         !matches!(
                             fact,
-                            acdd_core::semantic::FrameworkFact::ComponentConfiguration(_)
+                            crate::semantic::FrameworkFact::ComponentConfiguration(_)
                         )
                     });
-                let configurations: Vec<acdd_core::semantic::ComponentConfigurationFact> =
+                let configurations: Vec<crate::semantic::ComponentConfigurationFact> =
                     serde_json::from_value(configurations.clone())
                         .expect("parser-owned typed component configurations");
                 for fact in configurations {
@@ -1630,10 +1636,10 @@ impl ScopePublication<'_> {
                     .retain(|fact| {
                         !matches!(
                             fact,
-                            acdd_core::semantic::FrameworkFact::SymbolAttachment(_)
+                            crate::semantic::FrameworkFact::SymbolAttachment(_)
                         )
                     });
-                let attachments: Vec<acdd_core::semantic::SymbolAttachmentFact> =
+                let attachments: Vec<crate::semantic::SymbolAttachmentFact> =
                     serde_json::from_value(value.clone()).expect("parser-owned symbol attachments");
                 for fact in attachments {
                     flow.push_symbol_attachment(fact);
@@ -1644,9 +1650,9 @@ impl ScopePublication<'_> {
                     .get_or_insert_with(Default::default)
                     .facts
                     .retain(|fact| {
-                        !matches!(fact, acdd_core::semantic::FrameworkFact::NamedBinding(_))
+                        !matches!(fact, crate::semantic::FrameworkFact::NamedBinding(_))
                     });
-                let bindings: Vec<acdd_core::semantic::NamedBindingFact> =
+                let bindings: Vec<crate::semantic::NamedBindingFact> =
                     serde_json::from_value(value.clone()).expect("parser-owned named bindings");
                 for fact in bindings {
                     flow.push_named_binding(fact);
@@ -1657,9 +1663,9 @@ impl ScopePublication<'_> {
                     .get_or_insert_with(Default::default)
                     .facts
                     .retain(|fact| {
-                        !matches!(fact, acdd_core::semantic::FrameworkFact::EndpointRequest(_))
+                        !matches!(fact, crate::semantic::FrameworkFact::EndpointRequest(_))
                     });
-                let requests: Vec<acdd_core::semantic::EndpointRequestFact> =
+                let requests: Vec<crate::semantic::EndpointRequestFact> =
                     serde_json::from_value(value.clone()).expect("parser-owned endpoint requests");
                 for fact in requests {
                     flow.push_endpoint_request(fact);
@@ -1730,7 +1736,7 @@ impl ScopePublication<'_> {
                 let previous = if let Some(flows) = state.flows.as_mut() {
                     if matches!(
                         flows.state(node),
-                        Some(acdd_core::typed_facts::FlowState::Invalid(_))
+                        Some(crate::typed_facts::FlowState::Invalid(_))
                     ) {
                         preserve_invalid = true;
                         None
@@ -1742,13 +1748,13 @@ impl ScopePublication<'_> {
                     if raw.is_null() {
                         None
                     } else if raw["fact_limit_exceeded"] == true
-                        || acdd_core::typed_facts::encoded_scope_fact_count(raw)
-                            > acdd_core::semantic::DEFAULT_FACTS_PER_SCOPE
+                        || crate::typed_facts::encoded_scope_fact_count(raw)
+                            > crate::semantic::DEFAULT_FACTS_PER_SCOPE
                     {
                         preserve_invalid = true;
                         None
                     } else {
-                        match acdd_core::semantic::ValueFlowFacts::deserialize(raw) {
+                        match crate::semantic::ValueFlowFacts::deserialize(raw) {
                             Ok(previous) => Some(previous),
                             Err(_) => {
                                 preserve_invalid = true;
@@ -1763,10 +1769,10 @@ impl ScopePublication<'_> {
                             projections.facts.retain(|fact| {
                                 matches!(
                                     fact,
-                                    acdd_core::semantic::FrameworkFact::ComponentConfiguration(_)
-                                        | acdd_core::semantic::FrameworkFact::SymbolAttachment(_)
-                                        | acdd_core::semantic::FrameworkFact::NamedBinding(_)
-                                        | acdd_core::semantic::FrameworkFact::EndpointRequest(_)
+                                    crate::semantic::FrameworkFact::ComponentConfiguration(_)
+                                        | crate::semantic::FrameworkFact::SymbolAttachment(_)
+                                        | crate::semantic::FrameworkFact::NamedBinding(_)
+                                        | crate::semantic::FrameworkFact::EndpointRequest(_)
                                 )
                             });
                             if !projections.facts.is_empty() {
@@ -1791,7 +1797,7 @@ impl ScopePublication<'_> {
             }
         }
         if state.flows.is_some() {
-            acdd_core::typed_facts::NodeSemanticEntry::set_bindings(
+            crate::typed_facts::NodeSemanticEntry::set_bindings(
                 node,
                 bindings.all,
                 bindings.rebindings,
@@ -1912,7 +1918,7 @@ fn syntax_doc(context: &VisitContext<'_>, node: Syntax<'_>) -> String {
 #[cfg(all(test, feature = "lang-python"))]
 mod legacy_hook_tests {
     use super::*;
-    use acdd_core::{
+    use crate::{
         semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
         typed_facts::TypedFacts,
     };
@@ -1966,7 +1972,7 @@ mod legacy_hook_tests {
                 },
                 {
                     ValueFlowFacts {
-                        framework: Some(Box::new(acdd_core::semantic::FrameworkScopeFacts {
+                        framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
                             alias_type: Some(TypeExpr::Named {
                                 name: "Alias".into(),
                             }),

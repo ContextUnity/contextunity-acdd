@@ -748,6 +748,434 @@ pub fn pattern_symbol_name(pattern: &str, language: &str) -> Result<Option<Strin
         .map(str::to_owned))
 }
 
+struct PreparedVariant {
+    prepared: PreparedPattern,
+    required_anchors: Vec<String>,
+}
+
+/// Reusable compiled structural AST pattern matcher for multi-file queries.
+///
+/// Compiles `PreparedPattern` and initializes `tree_sitter::Parser` once per distinct
+/// language grammar, and extracts restrictive literal identifier anchors for 100%-recall
+/// candidate prefiltering before parsing candidate files.
+pub struct PreparedAstMatcher {
+    profile: &'static dyn LanguageProfile,
+    pattern: String,
+    parser: Parser,
+    active_grammar: Option<tree_sitter::Language>,
+    prepared_by_grammar: Vec<(tree_sitter::Language, PreparedVariant)>,
+}
+
+impl PreparedAstMatcher {
+    /// Compiles a matcher for `language` and `pattern` without binding a single file path.
+    pub fn new(language: &str, pattern: &str) -> Result<Self> {
+        let profile = languages::require(language)?;
+        let parser = profile.create_parser("__acdd_pattern__")?;
+        Ok(Self {
+            profile,
+            pattern: pattern.to_owned(),
+            parser,
+            active_grammar: None,
+            prepared_by_grammar: Vec::new(),
+        })
+    }
+
+    /// Returns the mandatory literal identifier anchors required for `path`'s grammar.
+    pub fn required_anchors(&mut self, path: &str) -> Result<Vec<String>> {
+        let mut budget = SearchBudget::unbounded();
+        let Some(variant) = self.prepare_variant(path, &mut budget)? else {
+            return Ok(Vec::new());
+        };
+        Ok(variant.required_anchors.clone())
+    }
+
+    /// Returns `true` if `source` can possibly match the prepared pattern for `path`.
+    pub fn source_may_match(&mut self, path: &str, source: &str) -> Result<bool> {
+        let language_id = self.profile.id();
+        let mut budget = SearchBudget::unbounded();
+        let Some(variant) = self.prepare_variant(path, &mut budget)? else {
+            return Ok(true);
+        };
+        Ok(source_satisfies_anchors(
+            language_id,
+            &variant.required_anchors,
+            source,
+        ))
+    }
+
+    /// Searches one source file using the cached `PreparedPattern` and reused `Parser`.
+    pub fn search_page(
+        &mut self,
+        source: &str,
+        path: &str,
+        offset: usize,
+        limit: usize,
+        deadline: std::time::Instant,
+    ) -> Result<SearchPage> {
+        anyhow::ensure!(
+            limit > 0
+                && offset
+                    .checked_add(limit)
+                    .is_some_and(|end| end <= SEARCH_MATCH_HORIZON),
+            "AST search offset + limit must be 1..=10000; narrow path or pattern"
+        );
+        self.search_with_budget(source, path, offset, limit, SearchBudget::bounded(deadline))
+    }
+
+    fn prepare_variant(
+        &mut self,
+        path: &str,
+        budget: &mut SearchBudget,
+    ) -> Result<Option<&PreparedVariant>> {
+        let grammar = self.profile.grammar(path);
+        if self.active_grammar.as_ref() != Some(&grammar) {
+            self.parser.set_language(&grammar)?;
+            self.active_grammar = Some(grammar.clone());
+        }
+        if let Some(index) = self
+            .prepared_by_grammar
+            .iter()
+            .position(|(cached, _)| *cached == grammar)
+        {
+            return Ok(Some(&self.prepared_by_grammar[index].1));
+        }
+        let Some(prepared) =
+            prepare_search_pattern(&mut self.parser, self.profile, &self.pattern, budget)?
+        else {
+            return Ok(None);
+        };
+        let required_anchors = extract_required_anchors(&prepared, self.profile);
+        self.prepared_by_grammar.push((
+            grammar,
+            PreparedVariant {
+                prepared,
+                required_anchors,
+            },
+        ));
+        Ok(Some(
+            &self
+                .prepared_by_grammar
+                .last()
+                .expect("variant just pushed")
+                .1,
+        ))
+    }
+
+    fn search_with_budget(
+        &mut self,
+        source: &str,
+        path: &str,
+        offset: usize,
+        limit: usize,
+        mut budget: SearchBudget,
+    ) -> Result<SearchPage> {
+        let bounded = budget.deadline.is_some();
+        if self.prepare_variant(path, &mut budget)?.is_none() {
+            return Ok(SearchPage::limited(Vec::new(), 0));
+        }
+        let grammar = self.profile.grammar(path);
+        let variant = &self
+            .prepared_by_grammar
+            .iter()
+            .find(|(cached, _)| *cached == grammar)
+            .expect("variant prepared above")
+            .1;
+        if !source_satisfies_anchors(self.profile.id(), &variant.required_anchors, source) {
+            return Ok(SearchPage {
+                items: Vec::new(),
+                matched: 0,
+                complete: true,
+                work_limited: false,
+            });
+        }
+        let pn = variant
+            .prepared
+            .node(self.profile)
+            .context("search pattern root is empty")?;
+        let capabilities = self.profile.ast_search_capabilities();
+        if !budget.prepare_parser(&mut self.parser) {
+            return Ok(SearchPage::limited(Vec::new(), 0));
+        }
+        let tree = match self.parser.parse(source, None) {
+            Some(tree) => tree,
+            None if bounded => return Ok(SearchPage::limited(Vec::new(), 0)),
+            None => bail!("parse cancelled"),
+        };
+        let mut stack = vec![tree.root_node()];
+        let mut matches = Vec::new();
+        let mut matched_count = 0;
+        let mut visited = 0;
+        while let Some(n) = stack.pop() {
+            visited += 1;
+            if !budget.step() || (bounded && visited > 100_000) {
+                return Ok(SearchPage::limited(matches, matched_count));
+            }
+            let mut captures = serde_json::Map::new();
+            let matched = structural_match(
+                pn,
+                n,
+                &variant.prepared.source,
+                source,
+                &mut captures,
+                &mut budget,
+                StructuralMatchOptions {
+                    capabilities: &capabilities,
+                    declaration_root: variant.prepared.mode == PatternMode::Declaration,
+                    declaration_prefix_end: variant.prepared.declaration_prefix_end,
+                },
+            );
+            if budget.exhausted {
+                return Ok(SearchPage::limited(matches, matched_count));
+            }
+            if matched {
+                matched_count += 1;
+                if matched_count > offset {
+                    if matches.len() == limit {
+                        return Ok(SearchPage {
+                            items: matches,
+                            matched: matched_count,
+                            complete: false,
+                            work_limited: false,
+                        });
+                    }
+                    matches.push(json!({"path":path,"line":n.start_position().row+1,"end_line":n.end_position().row+1,"text":text(n,source),"captures":captures}));
+                    if !bounded && matches.len() >= limit {
+                        return Ok(SearchPage {
+                            items: matches,
+                            matched: matched_count,
+                            complete: false,
+                            work_limited: false,
+                        });
+                    }
+                }
+            }
+            let mut c = n.walk();
+            let children: Vec<_> = n.named_children(&mut c).collect();
+            stack.extend(children.into_iter().rev());
+        }
+        Ok(SearchPage {
+            items: matches,
+            matched: matched_count,
+            complete: true,
+            work_limited: false,
+        })
+    }
+}
+
+fn source_satisfies_anchors(language_id: &str, anchors: &[String], source: &str) -> bool {
+    if anchors.is_empty() {
+        return true;
+    }
+    if supports_unicode_identifier_escapes(language_id) && source.contains("\\u") {
+        return true;
+    }
+    anchors.iter().all(|anchor| source.contains(anchor.as_str()))
+}
+
+fn supports_unicode_identifier_escapes(language_id: &str) -> bool {
+    matches!(
+        language_id,
+        "javascript"
+            | "typescript"
+            | "tsx"
+            | "vue"
+            | "java"
+            | "kotlin"
+            | "csharp"
+            | "rust"
+            | "python"
+            | "go"
+            | "c"
+            | "cpp"
+            | "php"
+    )
+}
+
+fn is_literal_container_kind(kind: &str) -> bool {
+    kind.contains("string")
+        || kind.contains("char")
+        || kind.contains("regex")
+        || kind.contains("template")
+        || kind.contains("heredoc")
+}
+
+fn is_language_keyword(language_id: &str, token: &str) -> bool {
+    let common = matches!(
+        token,
+        "if" | "else"
+            | "for"
+            | "while"
+            | "loop"
+            | "break"
+            | "continue"
+            | "return"
+            | "import"
+            | "from"
+            | "export"
+            | "default"
+            | "class"
+            | "struct"
+            | "enum"
+            | "trait"
+            | "impl"
+            | "interface"
+            | "type"
+            | "const"
+            | "let"
+            | "var"
+            | "async"
+            | "await"
+            | "try"
+            | "catch"
+            | "finally"
+            | "throw"
+            | "new"
+            | "in"
+            | "as"
+            | "is"
+            | "of"
+            | "true"
+            | "false"
+            | "null"
+            | "self"
+            | "this"
+            | "super"
+            | "static"
+            | "public"
+            | "private"
+            | "protected"
+            | "void"
+            | "switch"
+            | "case"
+    );
+    if common {
+        return true;
+    }
+    match language_id {
+        "rust" => matches!(
+            token,
+            "fn" | "pub" | "mut" | "mod" | "use" | "crate" | "match" | "where" | "ref" | "move"
+                | "dyn" | "unsafe" | "extern" | "Self" | "macro_rules"
+        ),
+        "python" => matches!(
+            token,
+            "def" | "lambda" | "pass" | "yield" | "raise" | "with" | "None" | "True" | "False"
+                | "and" | "or" | "not" | "elif" | "except" | "global" | "nonlocal" | "assert"
+                | "del"
+        ),
+        "typescript" | "javascript" | "vue" => matches!(
+            token,
+            "function" | "undefined" | "typeof" | "instanceof" | "delete" | "yield" | "declare"
+                | "namespace" | "readonly" | "implements" | "extends" | "abstract" | "keyof"
+                | "infer"
+        ),
+        "go" => matches!(
+            token,
+            "func" | "package" | "defer" | "go" | "chan" | "select" | "range" | "map" | "fallthrough"
+                | "nil"
+        ),
+        "java" | "kotlin" | "csharp" => matches!(
+            token,
+            "extends" | "implements" | "package" | "final" | "abstract" | "synchronized"
+                | "volatile" | "transient" | "native" | "fun" | "val" | "object" | "when"
+                | "internal" | "override" | "sealed" | "using" | "namespace"
+        ),
+        _ => false,
+    }
+}
+
+fn is_valid_literal_anchor(language_id: &str, token: &str) -> bool {
+    !token.is_empty()
+        && !token.starts_with("__ACDD_")
+        && !token.starts_with("__acdd_")
+        && token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && token.bytes().any(|b| b.is_ascii_alphabetic() || b == b'_')
+        && !is_language_keyword(language_id, token)
+}
+
+fn extract_required_anchors(
+    prepared: &PreparedPattern,
+    profile: &dyn LanguageProfile,
+) -> Vec<String> {
+    let Some(root) = prepared.node(profile) else {
+        return Vec::new();
+    };
+    let capabilities = profile.ast_search_capabilities();
+    let mut anchors = Vec::new();
+
+    #[allow(clippy::too_many_arguments)]
+    fn walk(
+        node: Syntax<'_>,
+        source: &str,
+        language_id: &str,
+        capabilities: &AstSearchCapabilities,
+        declaration_root: bool,
+        declaration_prefix_end: Option<usize>,
+        out: &mut Vec<String>,
+    ) {
+        if declaration_prefix_end.is_some_and(|end| node.start_byte() >= end) {
+            return;
+        }
+        let kind = node.kind();
+        if kind.contains("comment") || is_literal_container_kind(kind) {
+            return;
+        }
+        let token = text(node, source);
+        if token.starts_with("__ACDD_META_") || token.starts_with("__ACDD_MANY_") {
+            return;
+        }
+        if node.child_count() == 0 {
+            if is_valid_literal_anchor(language_id, token)
+                && !out.iter().any(|existing| existing == token)
+            {
+                out.push(token.to_owned());
+            }
+            return;
+        }
+        let omit_declaration_body = capabilities.declaration_kinds.contains(&kind)
+            && (declaration_root
+                || node.named_children(&mut node.walk()).any(|child| {
+                    capabilities.declaration_body_kinds.contains(&child.kind())
+                        && child
+                            .named_children(&mut child.walk())
+                            .all(|nested| nested.kind().contains("comment"))
+                }));
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if declaration_prefix_end.is_some_and(|end| child.start_byte() >= end) {
+                break;
+            }
+            if child.kind().contains("comment")
+                || (omit_declaration_body
+                    && capabilities.declaration_body_kinds.contains(&child.kind()))
+            {
+                continue;
+            }
+            walk(
+                child,
+                source,
+                language_id,
+                capabilities,
+                false,
+                None,
+                out,
+            );
+        }
+    }
+
+    walk(
+        root,
+        &prepared.source,
+        profile.id(),
+        &capabilities,
+        prepared.mode == PatternMode::Declaration,
+        prepared.declaration_prefix_end,
+        &mut anchors,
+    );
+    anchors.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+    anchors
+}
+
 fn search_range(
     source: &str,
     path: &str,
@@ -755,82 +1183,8 @@ fn search_range(
     pattern: &str,
     offset: usize,
     limit: usize,
-    mut budget: SearchBudget,
+    budget: SearchBudget,
 ) -> Result<SearchPage> {
-    let bounded = budget.deadline.is_some();
-    let profile = languages::require(language)?;
-    let mut parser = profile.create_parser(path)?;
-    let Some(prepared) = prepare_search_pattern(&mut parser, profile, pattern, &mut budget)? else {
-        return Ok(SearchPage::limited(Vec::new(), 0));
-    };
-    let pn = prepared
-        .node(profile)
-        .context("search pattern root is empty")?;
-    let capabilities = profile.ast_search_capabilities();
-    if !budget.prepare_parser(&mut parser) {
-        return Ok(SearchPage::limited(Vec::new(), 0));
-    }
-    let tree = match parser.parse(source, None) {
-        Some(tree) => tree,
-        None if bounded => return Ok(SearchPage::limited(Vec::new(), 0)),
-        None => bail!("parse cancelled"),
-    };
-    let mut stack = vec![tree.root_node()];
-    let mut matches = Vec::new();
-    let mut matched_count = 0;
-    let mut visited = 0;
-    while let Some(n) = stack.pop() {
-        visited += 1;
-        if !budget.step() || (bounded && visited > 100_000) {
-            return Ok(SearchPage::limited(matches, matched_count));
-        }
-        let mut captures = serde_json::Map::new();
-        let matched = structural_match(
-            pn,
-            n,
-            &prepared.source,
-            source,
-            &mut captures,
-            &mut budget,
-            StructuralMatchOptions {
-                capabilities: &capabilities,
-                declaration_root: prepared.mode == PatternMode::Declaration,
-                declaration_prefix_end: prepared.declaration_prefix_end,
-            },
-        );
-        if budget.exhausted {
-            return Ok(SearchPage::limited(matches, matched_count));
-        }
-        if matched {
-            matched_count += 1;
-            if matched_count > offset {
-                if matches.len() == limit {
-                    return Ok(SearchPage {
-                        items: matches,
-                        matched: matched_count,
-                        complete: false,
-                        work_limited: false,
-                    });
-                }
-                matches.push(json!({"path":path,"line":n.start_position().row+1,"end_line":n.end_position().row+1,"text":text(n,source),"captures":captures}));
-                if !bounded && matches.len() >= limit {
-                    return Ok(SearchPage {
-                        items: matches,
-                        matched: matched_count,
-                        complete: false,
-                        work_limited: false,
-                    });
-                }
-            }
-        }
-        let mut c = n.walk();
-        let children: Vec<_> = n.named_children(&mut c).collect();
-        stack.extend(children.into_iter().rev());
-    }
-    Ok(SearchPage {
-        items: matches,
-        matched: matched_count,
-        complete: true,
-        work_limited: false,
-    })
+    let mut matcher = PreparedAstMatcher::new(language, pattern)?;
+    matcher.search_with_budget(source, path, offset, limit, budget)
 }

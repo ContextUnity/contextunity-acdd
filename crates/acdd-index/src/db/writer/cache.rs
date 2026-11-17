@@ -4,10 +4,12 @@ use crate::core::models::Node;
 use crate::core::models::Reference;
 #[cfg(test)]
 use crate::core::typed_facts::FlowState;
-use crate::core::{commitments, typed_facts::TypedFacts};
+use crate::core::{
+    format::{sha256_bytes, sha256_serde_json_hex},
+    typed_facts::TypedFacts,
+};
 use anyhow::Context;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -32,7 +34,7 @@ pub(super) struct PreparedCatalogStorage {
     pub(super) leaves: BTreeMap<String, BTreeMap<String, String>>,
 }
 
-acdd_core::struct_codecs! {
+crate::struct_codecs! {
     PreparedCatalogStorage {
         facts,
         search_texts,
@@ -41,6 +43,9 @@ acdd_core::struct_codecs! {
     };
 }
 
+const RAW_PREPARED_STORAGE_MAGIC: &[u8] = b"ACDD-RAW-STORAGE\0\x01";
+
+#[allow(dead_code)]
 pub(super) fn encode_prepared_catalog_storage_payload(
     prepared: &PreparedCatalogStorage,
 ) -> anyhow::Result<Vec<u8>> {
@@ -48,6 +53,15 @@ pub(super) fn encode_prepared_catalog_storage_payload(
     encode_prepared_catalog_storage_with_borrowed_nodes(|raw| {
         prepared.encode(raw);
     })
+}
+
+pub(super) fn encode_raw_prepared_catalog_storage_with_borrowed_nodes<F: FnOnce(&mut Vec<u8>)>(
+    encode_body: F,
+) -> Vec<u8> {
+    let mut raw = Vec::with_capacity(512);
+    raw.extend_from_slice(RAW_PREPARED_STORAGE_MAGIC);
+    encode_body(&mut raw);
+    raw
 }
 
 pub(super) fn encode_prepared_catalog_storage_with_borrowed_nodes<F: FnOnce(&mut Vec<u8>)>(
@@ -78,6 +92,17 @@ pub(super) fn decode_prepared_catalog_storage_payload(
 ) -> anyhow::Result<PreparedCatalogStorage> {
     use crate::core::typed_facts::binary::BinaryDecode;
     use std::io::Read;
+
+    if let Some(raw) = bytes.strip_prefix(RAW_PREPARED_STORAGE_MAGIC) {
+        let mut cursor = 0;
+        let prepared = PreparedCatalogStorage::decode(raw, &mut cursor)
+            .context("corrupted prepared catalog storage")?;
+        anyhow::ensure!(
+            cursor == raw.len(),
+            "corrupted prepared catalog storage"
+        );
+        return Ok(prepared);
+    }
 
     thread_local! {
         static DECODER: RefCell<(zstd::zstd_safe::DCtx<'static>, Vec<u8>)> =
@@ -126,7 +151,7 @@ pub fn key(
         extractor_version,
         effective_ruleset_hash,
     };
-    commitments::hash(&serde_json::to_vec(&identity).expect("cache identity is JSON serializable"))
+    sha256_serde_json_hex(&identity).expect("cache identity is JSON serializable")
 }
 
 /// Computes combined effective ruleset hash from adapter and dependency digests.
@@ -137,7 +162,7 @@ pub fn effective_ruleset_hash(adapter_digest: &str, dependency_digest: &str) -> 
     input.extend_from_slice(adapter_digest.as_bytes());
     input.extend_from_slice(&(dependency_digest.len() as u64).to_le_bytes());
     input.extend_from_slice(dependency_digest.as_bytes());
-    commitments::hash(&input)
+    crate::core::format::sha256_hex(&input)
 }
 
 /// File-backed persistent extraction cache.
@@ -287,7 +312,7 @@ fn encode_entry_into(key: &str, facts: &TypedFacts, bytes: &mut Vec<u8>) -> anyh
     let payload_offset = bytes.len();
     facts.encode(bytes);
     let payload_len = bytes.len() - payload_offset;
-    let checksum = Sha256::digest(&bytes[payload_offset..]);
+    let checksum = sha256_bytes(&bytes[payload_offset..]);
     bytes[payload_len_offset..payload_len_offset + 8]
         .copy_from_slice(&(payload_len as u64).to_le_bytes());
     bytes[checksum_offset..checksum_offset + CHECKSUM_BYTES].copy_from_slice(&checksum);
@@ -315,7 +340,7 @@ fn decode_entry(bytes: &[u8], expected_key: &str, max_payload_bytes: u64) -> Opt
     let payload_len = usize::try_from(payload_len).ok()?;
     let payload_end = cursor.checked_add(payload_len)?;
     let payload = bytes.get(cursor..payload_end)?;
-    if payload_end != bytes.len() || Sha256::digest(payload).as_slice() != stored_checksum {
+    if payload_end != bytes.len() || sha256_bytes(payload).as_slice() != stored_checksum {
         return None;
     }
     let mut payload_cursor = 0;
@@ -326,7 +351,7 @@ fn decode_entry(bytes: &[u8], expected_key: &str, max_payload_bytes: u64) -> Opt
     Some(facts)
 }
 
-pub use acdd_core::typed_facts::binary::{decode_references, encode_references};
+pub use crate::typed_facts::binary::{decode_references, encode_references};
 
 #[cfg(test)]
 mod tests;

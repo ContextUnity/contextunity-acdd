@@ -49,7 +49,7 @@ fn invalid_cache_magic_and_collection_lengths_are_misses() {
         let mut bytes = MAGIC_V4.to_vec();
         "key".encode(&mut bytes);
         (payload.len() as u64).encode(&mut bytes);
-        bytes.extend_from_slice(&Sha256::digest(&payload));
+        bytes.extend_from_slice(&sha256_bytes(&payload));
         bytes.extend_from_slice(&payload);
         assert!(decode_entry(&bytes, "key", 1024).is_none());
     }
