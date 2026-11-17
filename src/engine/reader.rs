@@ -1,6 +1,6 @@
 //! Layered reader shared by the CLI and MCP transports.
 
-use crate::core::response::{QueryOptions, SourceOptions};
+use acdd_core::response::{QueryOptions, SourceOptions};
 use acdd_core::{
     config::{resolve_file_path, Adapter},
     model::{ReadBounds, ReadMode, ReadResult},
@@ -188,31 +188,157 @@ fn admitted_file(root: &Path, adapter: &Adapter, path: &str) -> Result<std::path
     Ok(file)
 }
 
-fn active_task(root: &Path, adapter: &Adapter) -> Result<Option<acdd_tasks::store::Task>> {
-    if !adapter.modules.is_enabled("acdd") {
+pub(crate) fn resolve_worktree_active_run_node(
+    state_db: &Path,
+    worktree: &Path,
+    predicate: &dyn Fn(&acdd_state::types::GateNodeRecord) -> bool,
+) -> std::result::Result<
+    Option<(
+        acdd_state::types::RunRecord,
+        acdd_state::types::RunGraphSnapshot,
+        acdd_state::types::GateNodeRecord,
+    )>,
+    acdd_core::errors::StateError,
+> {
+    if !std::fs::symlink_metadata(state_db).is_ok_and(|m| m.file_type().is_file()) {
         return Ok(None);
     }
-    let Ok(database) = acdd_tasks::engine::database_path(root) else {
+    let reader = acdd_state::store::sqlite::SqliteStateReader::new(state_db.to_path_buf());
+    let wt_canon = acdd_core::fs::canonicalize_macos_var(worktree);
+    let wt_canon_str = wt_canon.to_string_lossy();
+    let wt_raw_str = worktree.to_string_lossy();
+    let run = match acdd_state::store::traits::StateReader::resolve_active_run_by_worktree(
+        &reader,
+        &wt_canon_str,
+    )? {
+        Some(r) => Some(r),
+        None if wt_raw_str != wt_canon_str => {
+            acdd_state::store::traits::StateReader::resolve_active_run_by_worktree(
+                &reader,
+                &wt_raw_str,
+            )?
+        }
+        None => None,
+    };
+    let Some(run) = run else {
         return Ok(None);
     };
-    if !std::fs::symlink_metadata(&database).is_ok_and(|m| m.file_type().is_file()) {
+    let Some(graph) =
+        acdd_state::store::traits::StateReader::load_run_graph(&reader, &run.run_id)?
+    else {
+        return Ok(None);
+    };
+    let matches_wt = |candidate: Option<&str>| {
+        candidate.is_some_and(|w| {
+            w == wt_canon_str.as_ref()
+                || w == wt_raw_str.as_ref()
+                || acdd_core::fs::canonicalize_macos_var(Path::new(w)) == wt_canon
+        })
+    };
+    let active_node = graph
+        .nodes
+        .iter()
+        .find(|n| predicate(n) && matches_wt(n.worktree.as_deref()))
+        .or_else(|| {
+            if matches_wt(run.worktree.as_deref()) {
+                let mut candidates = graph.nodes.iter().filter(|n| predicate(n));
+                let first = candidates.next();
+                if candidates.next().is_none() {
+                    first
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .cloned();
+    Ok(active_node.map(|node| (run, graph, node)))
+}
+
+fn active_node_context(root: &Path, adapter: &Adapter) -> Result<Option<ActiveNodeContext>> {
+    if !adapter.modules.is_enabled("state") {
         return Ok(None);
     }
-    let store = acdd_tasks::engine::store(root)?;
-    let tasks: Vec<_> = store
-        .list(None, "in_progress", None)?
-        .into_iter()
-        .filter(|t| {
-            t.worktree
-                .as_deref()
-                .and_then(|p| Path::new(p).canonicalize().ok())
-                .as_deref()
-                == Some(root)
+    let primary = acdd_core::git::primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
+    let state_db = adapter.resolve_state_db_path(&primary);
+    let Some((run, graph, node)) = resolve_worktree_active_run_node(&state_db, root, &|n| {
+        n.status == acdd_state::types::NodeStatus::InProgress
+            && matches!(
+                n.kind,
+                acdd_state::types::NodeKind::RootGate | acdd_state::types::NodeKind::TaskGate
+            )
+    })?
+    else {
+        return Ok(None);
+    };
+    let node_cursor = acdd_core::ids::NodeCursor::from_node_id(&node.node_id)?.to_string();
+    let admitted_scope = acdd_state::machine::container_scope(&graph, &node);
+    let has_command = serde_json::from_str::<acdd_state::profile::ResolvedGateProfile>(&run.profile_json)
+        .ok()
+        .and_then(|profile| {
+            let cursor = acdd_core::ids::NodeCursor::from_node_id(&node.node_id).ok()?;
+            let gate_def = find_gate_in_profile(&profile, &cursor)?;
+            Some(
+                gate_def
+                    .command
+                    .as_ref()
+                    .is_some_and(|cmd| profile.commands.contains_key(cmd)),
+            )
         })
-        .collect();
-    Ok((tasks.len() == 1)
-        .then(|| tasks.into_iter().next())
-        .flatten())
+        .unwrap_or(false);
+
+    Ok(Some(ActiveNodeContext {
+        run_id: run.run_id,
+        node_cursor,
+        node,
+        admitted_scope,
+        has_command,
+    }))
+}
+
+fn find_gate_in_profile<'a>(
+    profile: &'a acdd_state::profile::ResolvedGateProfile,
+    cursor: &acdd_core::ids::NodeCursor,
+) -> Option<&'a acdd_state::profile::GateDef> {
+    match cursor {
+        acdd_core::ids::NodeCursor::Root(gates) => {
+            let mut list = &profile.gates;
+            for (idx, g) in gates.iter().enumerate() {
+                let found = list.iter().find(|def| def.id == g.as_str())?;
+                if idx + 1 == gates.len() {
+                    return Some(found);
+                }
+                list = &found.gates;
+            }
+            None
+        }
+        acdd_core::ids::NodeCursor::Task { gates, .. } => {
+            let first = gates.first()?;
+            for item in &profile.gates {
+                if let Some(ref tasks_block) = item.tasks {
+                    if let Some(found) = tasks_block.gates.iter().find(|def| def.id == first.as_str()) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Active `in_progress` node context resolved read-only from `state.sqlite` for `acdd_read`.
+pub struct ActiveNodeContext {
+    /// Active run identifier.
+    pub run_id: acdd_core::ids::RunId,
+    /// Active node cursor (`<gate>` or `<task_ref>.<gate>`).
+    pub node_cursor: String,
+    /// Active `GateNodeRecord`.
+    pub node: acdd_state::types::GateNodeRecord,
+    /// Effective admitted write scope for the node's container.
+    pub admitted_scope: Vec<String>,
+    /// Whether the active gate configures a registered command.
+    pub has_command: bool,
 }
 
 /// Read a file or symbol using already admitted graph state when available.
@@ -409,7 +535,7 @@ fn acdd_read_single(
         .as_deref()
         .is_some_and(|p| p.ends_with(".md") || p.ends_with(".markdown"));
     request.requires_index(adapter)?;
-    let task = active_task(root, adapter).ok().flatten();
+    let node_ctx = active_node_context(root, adapter).ok().flatten();
     let mut value = if mode == ReadMode::Snippet {
         let conn = conn.context("snippet requires the code index")?;
         let selector = request
@@ -418,7 +544,7 @@ fn acdd_read_single(
             .or(request.path.as_deref())
             .context("snippet requires selector")?;
         // Resolve metadata first; enforce policy before the snippet owner reads source.
-        let inspection = crate::db::reader::inspect_paged_with_path(
+        let inspection = acdd_index::db::reader::inspect_paged_with_path(
             conn,
             selector,
             request
@@ -433,7 +559,7 @@ fn acdd_read_single(
             .as_str()
             .context("selected symbol has no path")?;
         admitted_file(root, adapter, path)?;
-        let mut value = crate::db::symbols::snippet_paged_with_response_budget(
+        let mut value = acdd_index::db::symbols::snippet_paged_with_response_budget(
             conn,
             root,
             selector,
@@ -493,7 +619,7 @@ fn acdd_read_single(
             let file = admitted_file(root, adapter, path)?;
             let (content, truncated) = match mode {
                 ReadMode::Delta => (
-                    compute_file_delta(root, &file, request.baseline.as_deref(), task.as_ref())?,
+                    compute_file_delta(root, &file, request.baseline.as_deref(), node_ctx.as_ref())?,
                     false,
                 ),
                 ReadMode::Outline => {
@@ -503,11 +629,14 @@ fn acdd_read_single(
                     );
                     let text = std::fs::read_to_string(&file)?;
                     if markdown {
-                        (crate::engine::docs::render_outline(path, &text)?, false)
+                        (
+                            acdd_index::docs::render_outline(path, &text, &adapter.spec_paths())?,
+                            false,
+                        )
                     } else {
-                        let profile = crate::engine::languages::for_path(&file)
+                        let profile = acdd_index::languages::for_path(&file)
                             .context("no compiled language profile for outline")?;
-                        let facts = crate::engine::ast::extract(path, profile.id(), &text)?;
+                        let facts = acdd_index::ast::extract(path, profile.id(), &text)?;
                         (
                             facts
                                 .nodes
@@ -538,6 +667,16 @@ fn acdd_read_single(
             content,
             truncated,
         })?;
+        if mode == ReadMode::Delta {
+            if let Some(ctx) = &node_ctx {
+                if let Some(ref baseline) = ctx.node.baseline_commit {
+                    val["baseline_commit"] = json!(baseline.as_str());
+                }
+                if let Some(ref claim_tree) = ctx.node.claim_tree {
+                    val["claim_tree"] = json!(claim_tree.as_str());
+                }
+            }
+        }
         if !single_file {
             if let (Some(output), Some(destination)) = (&request.output_file, export_dest) {
                 let content = exportable_content(&val).context("read has no exportable content")?;
@@ -561,18 +700,16 @@ fn acdd_read_single(
             }
         }
     }
-    if let Some(task) = &task {
-        value["write_scope"] = json!(if task
-            .spec
-            .scope
-            .iter()
-            .chain(&task.spec.extended_scope)
-            .any(|p| acdd_tasks::tasks::path_matches_scope_entry(&path, p))
+    if let Some(ctx) = &node_ctx {
+        let allowed = if ctx.admitted_scope.is_empty()
+            && ctx.node.kind == acdd_state::types::NodeKind::RootGate
         {
-            "ALLOWED"
+            true
         } else {
-            "OUT_OF_SCOPE"
-        });
+            acdd_core::path_policy::WorkspacePathPolicy::default()
+                .is_scope_admitted(&path, &ctx.admitted_scope)
+        };
+        value["in_write_scope"] = json!(if allowed { "ALLOWED" } else { "OUT_OF_SCOPE" });
     }
     let footer_hint = if mode == ReadMode::Lines {
         if let (Some(conn), Some(start_line)) = (conn, request.start_line) {
@@ -607,8 +744,8 @@ fn acdd_read_single(
             adapter,
             &path,
             &value,
-            task.as_ref(),
-            value["write_scope"] == "OUT_OF_SCOPE",
+            node_ctx.as_ref(),
+            value["in_write_scope"] == "OUT_OF_SCOPE",
         )?;
         if let Some(ref footer) = footer_hint {
             if hints.is_empty() {
@@ -638,7 +775,7 @@ fn acdd_read_single(
 
 struct SearchMatcher<'a> {
     pattern: &'a str,
-    regex: Option<acdd_tasks::regex::Regex>,
+    regex: Option<regex::Regex>,
 }
 
 impl<'a> SearchMatcher<'a> {
@@ -650,7 +787,7 @@ impl<'a> SearchMatcher<'a> {
         ensure!(!pattern.is_empty(), "search pattern must not be empty");
         let regex = request
             .regex
-            .then(|| acdd_tasks::regex::Regex::new(pattern))
+            .then(|| regex::Regex::new(pattern))
             .transpose()?;
         Ok(Self { pattern, regex })
     }
@@ -1087,42 +1224,47 @@ pub fn extract_file_slice(
     Ok((output, truncated))
 }
 
-/// Compute a path-confined unified diff against HEAD or the task candidate baseline.
+/// Compute a path-confined unified diff against HEAD or the active node baseline/claim_tree.
 pub fn compute_file_delta(
-    root: &Path,
+    _root: &Path,
     file: &Path,
     baseline: Option<&str>,
-    task: Option<&acdd_tasks::store::Task>,
+    node_ctx: Option<&ActiveNodeContext>,
 ) -> Result<String> {
     // Resolve Git from the admitted physical file, including linked repositories.
-    // Task authority remains bound to the primary workspace below.
     let git_directory = file.parent().context("delta file has no parent")?;
     let path = file
         .file_name()
         .and_then(|name| name.to_str())
         .context("delta filename is not UTF-8")?;
-    let task_baseline = if baseline.is_none() {
-        task.map(|task| {
-            acdd_tasks::engine::store(root).and_then(|store| {
-                acdd_tasks::store::task_candidate_baseline(&store.connection, &task.task_id)
-            })
+    let node_baseline = if baseline.is_none() {
+        node_ctx.and_then(|ctx| {
+            ctx.node
+                .baseline_commit
+                .as_ref()
+                .map(|c| c.as_str().to_owned())
+                .or_else(|| ctx.node.claim_tree.as_ref().map(|t| t.as_str().to_owned()))
         })
-        .transpose()?
-        .flatten()
     } else {
         None
     };
-    let revision = baseline.or(task_baseline.as_deref()).unwrap_or("HEAD");
+    let revision = baseline.or(node_baseline.as_deref()).unwrap_or("HEAD");
     ensure!(
         !revision.starts_with('-') && !revision.is_empty(),
         "invalid delta baseline"
     );
-    let resolved = acdd_core::git::git_command(
-        git_directory,
-        &["rev-parse", "--verify", &format!("{revision}^{{commit}}")],
-    )?;
-    ensure!(resolved.status.success(), "delta baseline is not a commit");
-    let commit = String::from_utf8(resolved.stdout)?;
+    let resolved = acdd_core::git::git_command(git_directory, &["rev-parse", "--verify", revision])?;
+    ensure!(
+        resolved.status.success(),
+        "delta baseline is not a valid git revision or tree"
+    );
+    let oid = String::from_utf8(resolved.stdout)?;
+    let kind_out = acdd_core::git::git_command(git_directory, &["cat-file", "-t", oid.trim()])?;
+    let obj_type = String::from_utf8_lossy(&kind_out.stdout);
+    ensure!(
+        kind_out.status.success() && matches!(obj_type.trim(), "commit" | "tree"),
+        "delta baseline must resolve to a commit or tree"
+    );
     let output = acdd_core::git::git_command(
         git_directory,
         &[
@@ -1132,7 +1274,7 @@ pub fn compute_file_delta(
             "--no-ext-diff",
             "--no-textconv",
             "--unified=3",
-            commit.trim(),
+            oid.trim(),
             "--",
             path,
         ],
@@ -1156,7 +1298,7 @@ fn graph_signals(
         "WITH selected(hash) AS (SELECT n.node_hash FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE (?1!='' AND n.id=?1) OR (?1='' AND p.path=?2)) SELECT count(*),count(DISTINCT CASE WHEN e.kind='calls' AND e.dst_hash IN (SELECT hash FROM selected) THEN e.src_hash END),coalesce(sum(e.kind IN ('implements','inherits') AND e.dst_hash IN (SELECT hash FROM selected)),0),coalesce(sum(e.kind='governs' AND e.dst_hash IN (SELECT hash FROM selected)),0) FROM edges e WHERE e.src_hash IN (SELECT hash FROM selected) OR e.dst_hash IN (SELECT hash FROM selected)",
         params![id,path], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
     let page = QueryOptions::resolve(&adapter.response, Some(1), 0, None, None)?;
-    let tests = crate::db::symbols::tests_paged_with_path(
+    let tests = acdd_index::db::symbols::tests_paged_with_path(
         conn,
         if id.is_empty() { path } else { id },
         None,
@@ -1193,7 +1335,7 @@ pub fn render_read_hints(
     adapter: &Adapter,
     path: &str,
     value: &Value,
-    task: Option<&acdd_tasks::store::Task>,
+    node_ctx: Option<&ActiveNodeContext>,
     out_of_scope: bool,
 ) -> Result<String> {
     let mut calls: Vec<(&str, String)> = Vec::new();
@@ -1256,40 +1398,34 @@ pub fn render_read_hints(
             }
         }
     }
-    if let Some(task) = task {
+    if let Some(ctx) = node_ctx {
         if out_of_scope {
             calls.push((
-                "task_manage",
+                "acdd_state",
                 format!(
-                    "task_manage(action: \"extend_scope\", task_id: {}, paths: [{}])",
-                    json!(task.task_id),
+                    "acdd_state(action: \"extend_scope\", run: {}, node: {}, paths: [{}])",
+                    json!(ctx.run_id.as_str()),
+                    json!(ctx.node_cursor),
                     json!(path)
                 ),
             ));
         }
-        let profile = acdd_tasks::tasks::profile::load_for_task(
-            root,
-            task.spec.acdd_profile.as_deref(),
-            task.profile_pin.as_deref(),
-        )?;
-        if profile
-            .by_stage(&task.stage)
-            .and_then(|gate| gate.command.as_ref())
-            .is_some_and(|command| profile.commands.contains_key(command))
-        {
+        if ctx.has_command {
             calls.push((
-                "task_manage",
+                "acdd_verify",
                 format!(
-                    "task_manage(action: \"verify\", task_id: {})",
-                    json!(task.task_id)
+                    "acdd_verify(run: {}, node: {})",
+                    json!(ctx.run_id.as_str()),
+                    json!(ctx.node_cursor)
                 ),
             ));
         }
         calls.push((
-            "task_blackboard",
+            "acdd_blackboard",
             format!(
-                "task_blackboard(action: \"read\", scope: \"task\", task_id: {})",
-                json!(task.task_id)
+                "acdd_blackboard(action: \"read\", run: {}, node: {})",
+                json!(ctx.run_id.as_str()),
+                json!(ctx.node_cursor)
             ),
         ));
     }
@@ -1322,8 +1458,42 @@ pub fn render_read_hints(
 
 #[cfg(test)]
 mod tests {
-    use super::sensitive_with_case;
+    use super::{acdd_read_tool, sensitive_with_case, ReadMode, ReadRequest};
     use acdd_core::config::Adapter;
+    use acdd_core::response::{QueryOptions, SourceOptions};
+    use acdd_core::ids::WorkerId;
+    use acdd_core::ports::CompositeDomainProvider;
+    use acdd_state::usecases::{
+        ClaimReq, StartReq, StateCommand, StateCommandOutput, StateEngine, StateEngineConfig,
+    };
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let p = std::env::temp_dir().join(format!(
+                "acdd-ut-{tag}-{}-{}",
+                std::process::id(),
+                NONCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = fs::remove_dir_all(&p);
+            fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn sensitive_policy_honors_case_insensitive_volume_flag() {
@@ -1337,5 +1507,111 @@ mod tests {
         assert!(sensitive_with_case(&adapter, ".ENV.local", true).is_err());
         assert!(sensitive_with_case(&adapter, "SECRETS/token.txt", true).is_err());
         assert!(sensitive_with_case(&adapter, "src/lib.rs", true).is_ok());
+    }
+
+    #[test]
+    fn read_with_state_module_resolves_active_node_scope_delta_and_hints() {
+        let dir = TempDir::new("reader-state");
+        let root = dir.path().canonicalize().unwrap();
+        let run_git = |args: &[&str]| {
+            let out = acdd_core::git::git_command(&root, args).unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        run_git(&["init"]);
+        run_git(&["config", "user.email", "test@example.com"]);
+        run_git(&["config", "user.name", "Test"]);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join(".acdd")).unwrap();
+        fs::write(
+            root.join(".acdd/profile.yaml"),
+            "version: 2\nroles:\n  builder:\n    mode: subagent\ncommands:\n  build_check: \"cargo check --lib\"\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          command: build_check\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/scoped.rs"), "pub fn a() -> i32 { 1 }\n").unwrap();
+        fs::write(root.join("src/other.rs"), "pub fn b() -> i32 { 2 }\n").unwrap();
+        run_git(&["add", "."]);
+        run_git(&["commit", "-m", "init"]);
+        let base_commit = run_git(&["rev-parse", "HEAD"]);
+        let base_tree = run_git(&["rev-parse", "HEAD^{tree}"]);
+
+        let adapter = Adapter::default();
+        let engine = StateEngine::open(
+            StateEngineConfig {
+                workspace_root: root.clone(),
+                worktree: root.clone(),
+                state_db_override: None,
+                code_db_path: None,
+                spec_collections: adapter.specs.clone(),
+                profiles_dirs: adapter.profiles_dirs.clone(),
+                linked_workspaces: std::collections::BTreeMap::new(),
+                modules: adapter.modules.clone(),
+                response_policy: adapter.response.clone(),
+                retain_traces: adapter.retain_traces,
+            },
+            Arc::new(CompositeDomainProvider::new(vec![]).unwrap()),
+        )
+        .unwrap();
+        let started = engine
+            .execute(StateCommand::Start(StartReq {
+                spec_path: None,
+                goal: Some("edit scoped".into()),
+                run_name: None,
+                profile: None,
+                scope: vec!["src/scoped.rs".into()],
+                target_base: None,
+                worktree: false,
+                in_place: true,
+                worktree_path: None,
+            }))
+            .unwrap();
+        let run_id = match started {
+            StateCommandOutput::Start(resp) => resp.run.run_id.to_string(),
+            other => panic!("unexpected start output: {other:?}"),
+        };
+        engine
+            .execute(StateCommand::Claim(ClaimReq {
+                run: Some(run_id),
+                node: None,
+                worker_id: WorkerId::new("w1").unwrap(),
+                session_fingerprint: None,
+                force: false,
+                steal_remote: false,
+                worktree: Some(root.clone()),
+            }))
+            .unwrap();
+
+        fs::write(root.join("src/scoped.rs"), "pub fn a() -> i32 { 42 }\n").unwrap();
+
+        let page = QueryOptions::resolve(&adapter.response, None, 0, None, None).unwrap();
+        let source = SourceOptions::resolve(&adapter.response, None, None, None, 0).unwrap();
+        let req_allowed = ReadRequest {
+            path: Some("src/scoped.rs".into()),
+            mode: ReadMode::Delta,
+            include_hints: true,
+            ..Default::default()
+        };
+        let allowed = acdd_read_tool(&root, &adapter, &req_allowed, &page, &source, None).unwrap();
+        assert_eq!(allowed["in_write_scope"], "ALLOWED");
+        assert_eq!(allowed["baseline_commit"], base_commit);
+        assert_eq!(allowed["claim_tree"], base_tree);
+        assert!(allowed["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("+pub fn a() -> i32 { 42 }"));
+        let hints = allowed["Hints"].as_str().unwrap_or_default();
+        assert!(hints.contains("acdd_blackboard"), "{hints}");
+
+        let req_outside = ReadRequest {
+            path: Some("src/other.rs".into()),
+            mode: ReadMode::Lines,
+            include_hints: true,
+            ..Default::default()
+        };
+        let outside = acdd_read_tool(&root, &adapter, &req_outside, &page, &source, None).unwrap();
+        assert_eq!(outside["in_write_scope"], "OUT_OF_SCOPE");
+        let outside_hints = outside["Hints"].as_str().unwrap_or_default();
+        assert!(outside_hints.contains("acdd_state"), "{outside_hints}");
+        assert!(outside_hints.contains("acdd_blackboard"), "{outside_hints}");
     }
 }

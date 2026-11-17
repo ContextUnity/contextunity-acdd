@@ -1,33 +1,42 @@
 //! Indexing pipeline orchestration for cold builds and incremental delta runs.
 
-use crate::core::{
-    commitments,
+use acdd_core::{
     config::{
         self, checked_child, load_adapter, resolve_file_path, resolve_memory_budget_bytes, Adapter,
-        ENGINE_SCHEMA_VERSION, INDEX_SEMANTICS_VERSION,
+        ENGINE_SCHEMA_VERSION,
     },
     fs::canonical_root,
+};
+use acdd_index::{
+    ast,
+    commitments,
+    db::{
+        cache, commitments as db_commitments, reader as db_reader,
+        writer::{
+            self as db_writer,
+            cache::{self as extraction_cache, ExtractionCache},
+            delta_persist, StagedFilePayload, StagedPayloadBlob,
+        },
+    },
+    docs,
+    languages::{self, dependency_registry::DependencyRegistry, module_name},
+    linker,
     models::{stable_hash64, Edge, Facts, FileEntry, Node},
+    scanner::{self, BuildCandidate},
     semantic::SymbolCatalog,
     typed_facts::{decode_facts, TypedFacts},
-};
-use crate::db::writer::{
-    cache::{self, ExtractionCache},
-    StagedFilePayload, StagedPayloadBlob,
-};
-use crate::engine::{
-    ast, docs,
-    languages::{dependency_registry::DependencyRegistry, module_name},
-    linker,
-    scanner::{self, BuildCandidate},
+    INDEX_SEMANTICS_VERSION,
 };
 use anyhow::{bail, Context, Result};
+use rayon::prelude::*;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Value};
+#[cfg(not(unix))]
+use std::io::{Seek, SeekFrom};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
-    io::{Read, Seek, SeekFrom},
+    io::Read,
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     sync::{
@@ -395,16 +404,17 @@ fn extract_typed(
 ) -> Result<TypedFacts> {
     let path = resolve_file_path(root, adapter, &file.path)?;
     let source = fs::read_to_string(&path)?;
-    extract_typed_source(file, &source, dependencies)
+    extract_typed_source(file, &source, dependencies, &adapter.spec_paths())
 }
 
 fn extract_typed_source(
     file: &FileEntry,
     source: &str,
     dependencies: &DependencyRegistry,
+    spec_paths: &[String],
 ) -> Result<TypedFacts> {
     let source_digest = commitments::hash(source.as_bytes());
-    extract_typed_source_with_digest(file, source, &source_digest, dependencies)
+    extract_typed_source_with_digest(file, source, &source_digest, dependencies, spec_paths)
 }
 
 fn extract_typed_source_with_digest(
@@ -412,6 +422,7 @@ fn extract_typed_source_with_digest(
     source: &str,
     source_digest: &str,
     dependencies: &DependencyRegistry,
+    spec_paths: &[String],
 ) -> Result<TypedFacts> {
     if source_digest != file.digest {
         return Err(SourceSnapshotMismatch(format!(
@@ -421,7 +432,12 @@ fn extract_typed_source_with_digest(
         .into());
     }
     let mut typed = if file.is_doc {
-        let parsed = docs::extract_with_details(&file.path, source, file.mtime_ns as f64 / 1e9)?;
+        let parsed = docs::extract_with_details(
+            &file.path,
+            source,
+            file.mtime_ns as f64 / 1e9,
+            spec_paths,
+        )?;
         let sections = parsed
             .iter()
             .map(|(doc, _)| doc.clone())
@@ -510,7 +526,7 @@ fn sanitize_extracted_facts(facts: &mut TypedFacts) {
 
 fn extract_candidate(
     root: &Path,
-    candidate: &BuildCandidate,
+    candidate: BuildCandidate,
     adapter: &Adapter,
     dependencies: &DependencyRegistry,
     extraction_cache: &ExtractionCache,
@@ -557,28 +573,35 @@ fn extract_candidate(
         .into());
     }
     let source_digest = commitments::hash(source.as_bytes());
-    let file = candidate.clone().into_entry(source_digest.clone());
-    let key = cache::key(
-        &source_digest,
-        &candidate.path,
-        &candidate.language,
+    let file = candidate.into_entry(source_digest);
+    let key = extraction_cache::key(
+        &file.digest,
+        &file.path,
+        &file.language,
         INDEX_SEMANTICS_VERSION,
         effective_ruleset_hash,
     );
-    let cache_limit = candidate
+    let cache_limit = file
         .bytes
         .saturating_mul(64)
         .max(512 * 1024)
         .min(adapter.limits.max_file_bytes.saturating_mul(16));
     if let Some(mut facts) = extraction_cache.load(&key, cache_limit) {
-        let mtime = candidate.mtime_ns as f64 / 1e9;
+        let mtime = file.mtime_ns as f64 / 1e9;
         for section in &mut facts.docs {
             section.mtime = mtime;
         }
         sanitize_extracted_facts(&mut facts);
         return Ok((file, facts, true));
     }
-    let facts = extract_typed_source_with_digest(&file, source, &source_digest, dependencies)?;
+    let spec_paths = adapter.spec_paths();
+    let facts = extract_typed_source_with_digest(
+        &file,
+        source,
+        &file.digest,
+        dependencies,
+        &spec_paths,
+    )?;
     extraction_cache.store(&key, &facts);
     Ok((file, facts, false))
 }
@@ -806,13 +829,18 @@ fn extraction_worker(context: ExtractionWorkerContext) {
         let Ok(work) = next else {
             break;
         };
+        let PipelineWork {
+            sequence,
+            candidate,
+            permit,
+        } = work;
         if control.is_cancelled() {
-            drop(work);
+            drop(permit);
             continue;
         }
         if test_hooks
             .as_deref()
-            .is_some_and(|hooks| hooks.overlap && work.sequence == 1)
+            .is_some_and(|hooks| hooks.overlap && sequence == 1)
         {
             let hooks = test_hooks.as_deref().expect("checked above");
             hooks.overlap_participants.fetch_add(1, Ordering::AcqRel);
@@ -821,26 +849,17 @@ fn extraction_worker(context: ExtractionWorkerContext) {
         let extraction_started = Instant::now();
         let extracted = extract_candidate(
             &root,
-            &work.candidate,
+            candidate,
             &adapter,
             &dependencies,
             &extraction_cache,
             &effective_ruleset_hash,
             &mut source,
         )
-        .and_then(|(file, facts, cache_hit)| {
-            let mut files = BTreeMap::from([(file.path.clone(), facts)]);
-            assign_components(&mut files, &BTreeMap::new());
-            let prepared_facts = files
-                .get(&file.path)
-                .context("single extracted file missing after component assignment")?;
-            let storage_rows = crate::db::writer::prepare_catalog_storage_with_facts(
-                &file,
-                &files,
-                Some(prepared_facts),
-            )?;
-            let facts = files.remove(&file.path).expect("single extracted file");
-            let encoded_facts = crate::core::typed_facts::encode_facts(&facts)?;
+        .and_then(|(file, mut facts, cache_hit)| {
+            assign_file_component(&file.path, &mut facts, None);
+            let storage_rows = db_writer::prepare_catalog_storage_with_facts(&file, &facts)?;
+            let encoded_facts = acdd_index::typed_facts::encode_facts(&facts)?;
             let mut catalog = SymbolCatalog::default();
             catalog.insert_typed(file.path.clone(), facts, false);
             Ok((file, catalog, encoded_facts, storage_rows, cache_hit))
@@ -858,7 +877,7 @@ fn extraction_worker(context: ExtractionWorkerContext) {
                 let message = error.to_string();
                 control.cancel(&message);
                 let _ = result_tx.send(Err(message));
-                drop(work);
+                drop(permit);
                 continue;
             }
         };
@@ -873,7 +892,7 @@ fn extraction_worker(context: ExtractionWorkerContext) {
             catalog,
             encoded_facts,
             storage_rows,
-            permit: work.permit,
+            permit,
         };
         if let Err(error) = result_tx.send(Ok(item)) {
             control.cancel(format!("cold pipeline SQLite consumer stopped: {error}"));
@@ -881,13 +900,51 @@ fn extraction_worker(context: ExtractionWorkerContext) {
     }
 }
 
-fn spool_payload_blob(file: &mut std::fs::File, bytes: &[u8]) -> Result<StagedPayloadBlob> {
-    let offset = file.seek(SeekFrom::End(0))?;
-    std::io::Write::write_all(file, bytes)?;
-    Ok(StagedPayloadBlob {
-        offset,
-        length: u64::try_from(bytes.len()).context("staged payload length overflow")?,
-    })
+#[cfg(unix)]
+fn write_all_at(file: &std::fs::File, mut offset: u64, mut bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    while !bytes.is_empty() {
+        match file.write_at(bytes, offset) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "failed to write staged payload blob",
+                ));
+            }
+            Ok(written) => {
+                bytes = &bytes[written..];
+                offset = offset.checked_add(written as u64).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "staged payload spool offset overflow",
+                    )
+                })?;
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+fn spool_payload_blob(
+    file: &mut std::fs::File,
+    next_offset: &mut u64,
+    bytes: &[u8],
+) -> Result<StagedPayloadBlob> {
+    let offset = *next_offset;
+    let length = u64::try_from(bytes.len()).context("staged payload length overflow")?;
+    #[cfg(unix)]
+    write_all_at(file, offset, bytes)?;
+    #[cfg(not(unix))]
+    {
+        file.seek(SeekFrom::Start(offset))?;
+        std::io::Write::write_all(file, bytes)?;
+    }
+    *next_offset = offset
+        .checked_add(length)
+        .context("staged payload spool offset overflow")?;
+    Ok(StagedPayloadBlob { offset, length })
 }
 
 fn consume_pipeline_results(
@@ -898,10 +955,8 @@ fn consume_pipeline_results(
     counters: &PipelineCounters,
     test_hooks: Option<&PipelineTestHooks>,
 ) -> Result<PipelineConsumerOutput> {
-    let mut payload_spool = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(payload_spool_path)?;
+    let mut payload_spool = OpenOptions::new().write(true).open(payload_spool_path)?;
+    let mut next_offset: u64 = 0;
     let transaction = connection.transaction()?;
     let mut statement =
         transaction.prepare_cached("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)")?;
@@ -944,8 +999,10 @@ fn consume_pipeline_results(
         match inserted {
             Ok(_) => {
                 let path = file.path.clone();
-                let encoded_facts_ref = spool_payload_blob(&mut payload_spool, &encoded_facts)?;
-                let storage_rows_ref = spool_payload_blob(&mut payload_spool, &storage_rows)?;
+                let encoded_facts_ref =
+                    spool_payload_blob(&mut payload_spool, &mut next_offset, &encoded_facts)?;
+                let storage_rows_ref =
+                    spool_payload_blob(&mut payload_spool, &mut next_offset, &storage_rows)?;
                 drop(encoded_facts);
                 drop(storage_rows);
                 entries.push(file);
@@ -1009,40 +1066,48 @@ fn component_owners<'a>(paths: impl Iterator<Item = &'a str>) -> BTreeMap<String
     owners
 }
 
+fn assign_file_component(
+    path: &str,
+    f: &mut TypedFacts,
+    owners: Option<&BTreeMap<String, String>>,
+) {
+    f.facts.retain_nodes(|n| n.kind != "component");
+    f.edges.retain(|e| !e.src.starts_with("component:"));
+    if !f.nodes.iter().any(|n| n.kind == "module") {
+        return;
+    }
+    let root = path.split_once('/').map_or(".", |(root, _)| root);
+    let id = format!("component:{root}");
+    if owners.is_some_and(|owners| owners.get(root).map(String::as_str) == Some(path)) {
+        f.nodes.push(Node {
+            native_semantic: None,
+            id: id.clone(),
+            kind: "component".into(),
+            name: root.into(),
+            qualname: root.into(),
+            path: root.into(),
+            line: 1,
+            end_line: 1,
+            is_test: false,
+            language: "workspace".into(),
+            generated: false,
+            details: serde_json::Value::Null,
+        });
+    }
+    f.edges.push(Edge {
+        src: id,
+        dst: format!("module:{path}"),
+        kind: "contains".into(),
+        path: path.to_owned(),
+        line: 1,
+        evidence: "component ownership".into(),
+        confidence: "exact".into(),
+    });
+}
+
 fn assign_components(facts: &mut BTreeMap<String, TypedFacts>, owners: &BTreeMap<String, String>) {
     for (path, f) in facts {
-        f.facts.retain_nodes(|n| n.kind != "component");
-        f.edges.retain(|e| !e.src.starts_with("component:"));
-        if !f.nodes.iter().any(|n| n.kind == "module") {
-            continue;
-        }
-        let root = path.split_once('/').map_or(".", |(root, _)| root);
-        let id = format!("component:{root}");
-        if owners.get(root) == Some(path) {
-            f.nodes.push(Node {
-                native_semantic: None,
-                id: id.clone(),
-                kind: "component".into(),
-                name: root.into(),
-                qualname: root.into(),
-                path: root.into(),
-                line: 1,
-                end_line: 1,
-                is_test: false,
-                language: "workspace".into(),
-                generated: false,
-                details: serde_json::Value::Null,
-            });
-        }
-        f.edges.push(Edge {
-            src: id,
-            dst: format!("module:{path}"),
-            kind: "contains".into(),
-            path: path.clone(),
-            line: 1,
-            evidence: "component ownership".into(),
-            confidence: "exact".into(),
-        });
+        assign_file_component(path, f, Some(owners));
     }
 }
 
@@ -1063,7 +1128,7 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
             .unwrap_or_else(|_| root.to_path_buf())
             .join(output)
     };
-    let norm_output = crate::core::fs::normalize_path(&output_abs);
+    let norm_output = acdd_core::fs::normalize_path(&output_abs);
 
     let file_name = norm_output
         .file_name()
@@ -1072,61 +1137,67 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
 
     // 1. Rejection by filename pattern (case-insensitive and covering common variants)
     let file_name_lower = file_name.to_ascii_lowercase();
-    if file_name_lower == "tasks.sqlite"
-        || file_name_lower.starts_with("tasks.sqlite")
-        || file_name_lower == "tasks.db"
-        || file_name_lower.ends_with(".tasks.sqlite")
-        || file_name_lower == "tasks.sqlite3"
-    {
+    if is_reserved_state_or_task_filename(&file_name_lower) {
         bail!(
-            "TASK_DATABASE_COLLISION: Refusing to use task database path '{}' as code map output. The code map database must be separate (default: '.acdd/code-map.sqlite').",
+            "TASK_DATABASE_COLLISION: Refusing to use task/state database path '{}' as code map output. The code map database must be separate (default: '.acdd/code-map.sqlite').",
             output.display()
         );
     }
 
-    // 2. Rejection by configured tasks_db path
-    let settings = crate::engine::tasks::TaskSettings::load(root);
+    // 2. Rejection by configured state_db (and legacy tasks_db if pre-migration) paths
     let base =
-        crate::engine::tasks::primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
-    if let Err(error) = &settings {
-        if root.join("acdd.yaml").try_exists().unwrap_or(true)
-            || base.join("acdd.yaml").try_exists().unwrap_or(true)
-        {
-            bail!(
-                "TASK_DATABASE_COLLISION: Cannot validate the reserved tasks database because task configuration is invalid ({error:#}). Refusing code map output '{}'.",
-                output.display()
-            );
-        }
-    }
-    if let Ok(settings) = settings {
-        let task_db_path = if settings.tasks_db.is_absolute() {
-            settings.tasks_db.clone()
-        } else {
-            base.join(&settings.tasks_db)
-        };
-        let same_path = crate::core::fs::same_filesystem_path(&output_abs, &task_db_path);
-        if same_path {
-            bail!(
-                "TASK_DATABASE_COLLISION: Refusing to use configured tasks database '{}' as code map output. The code map database must be separate (default: '.acdd/code-map.sqlite').",
-                output.display()
-            );
-        }
-        if let Err(err) = settings.path(root) {
-            let default_db_path = root.join(".acdd/code-map.sqlite");
-            let default_base_db_path = base.join(".acdd/code-map.sqlite");
-            if crate::core::fs::same_filesystem_path(&output_abs, &default_db_path)
-                || crate::core::fs::same_filesystem_path(&output_abs, &default_base_db_path)
-            {
-                bail!(
-                    "TASK_DATABASE_COLLISION: Configured tasks database conflicts with code map output '{}' ({}).",
-                    output.display(),
-                    err
-                );
+        acdd_core::git::primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
+    for candidate_root in [root, base.as_path()] {
+        let cfg_path = candidate_root.join("acdd.yaml");
+        if cfg_path.is_file() {
+            if let Ok(raw) = fs::read_to_string(&cfg_path) {
+                if let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&raw) {
+                    if let Some(legacy_tasks_db) = yaml.get("tasks_db").and_then(|v| v.as_str()) {
+                        let task_db_path = if Path::new(legacy_tasks_db).is_absolute() {
+                            PathBuf::from(legacy_tasks_db)
+                        } else {
+                            base.join(legacy_tasks_db)
+                        };
+                        if acdd_core::fs::same_filesystem_path(&output_abs, &task_db_path) {
+                            bail!(
+                                "TASK_DATABASE_COLLISION: Refusing to use configured tasks database '{}' as code map output. The code map database must be separate (default: '.acdd/code-map.sqlite').",
+                                output.display()
+                            );
+                        }
+                    }
+                }
             }
         }
     }
+    let state_adapter = if root.join("acdd.yaml").exists() {
+        Some(load_adapter(root, None))
+    } else if base != root && base.join("acdd.yaml").exists() {
+        Some(load_adapter(&base, None))
+    } else {
+        None
+    };
+    let state_db_path = match state_adapter {
+        Some(Ok(adapter)) => adapter.resolve_state_db_path(&base),
+        Some(Err(error)) => {
+            bail!(
+                "TASK_DATABASE_COLLISION: Cannot validate configured state_db because acdd.yaml is invalid ({error}). Refusing code map output '{}'.",
+                output.display()
+            );
+        }
+        None => base.join(config::DEFAULT_STATE_DB),
+    };
+    if acdd_core::fs::same_filesystem_path(&output_abs, &state_db_path)
+        || (base != root
+            && !Path::new(&state_db_path).is_absolute()
+            && acdd_core::fs::same_filesystem_path(&output_abs, &root.join(&state_db_path)))
+    {
+        bail!(
+            "TASK_DATABASE_COLLISION: Refusing to use configured state database '{}' as code map output. The code map database must be separate (default: '.acdd/code-map.sqlite').",
+            output.display()
+        );
+    }
 
-    // 3. Rejection by existing task table schema (with fail-closed validation)
+    // 3. Rejection by existing task/state table schema (with fail-closed validation)
     match fs::symlink_metadata(&output_abs) {
         Ok(meta) => {
             if !meta.is_file() {
@@ -1138,7 +1209,7 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
             if meta.len() == 0 {
                 return Ok(());
             }
-            let header = crate::db::reader::validate_database_header(&output_abs);
+            let header = db_reader::validate_database_header(&output_abs);
             if let Err(error) = &header {
                 if error
                     .downcast_ref::<std::io::Error>()
@@ -1151,15 +1222,7 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
                 }
             }
             if header.is_ok() {
-                let open_path = crate::core::fs::confined_database_open_path(&output_abs)?;
-                let conn = Connection::open_with_flags(
-                    &open_path,
-                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-                )
-                .and_then(|c| {
-                    c.busy_timeout(std::time::Duration::from_secs(2))?;
-                    Ok(c)
-                });
+                let conn = db_reader::open_raw_confined_readonly(&output_abs);
                 match conn {
                     Ok(conn) => {
                         let is_task_db = conn.query_row(
@@ -1168,7 +1231,10 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
                                 WHERE type='table' AND name IN (
                                     'tasks', 'task_gates', 'task_claims', 'task_subtasks',
                                     'task_blackboard', 'task_findings', 'task_submissions',
-                                    'task_revisions', 'task_store_metadata'
+                                    'task_revisions', 'task_store_metadata',
+                                    'runs', 'gate_nodes', 'task_dependencies', 'subtasks',
+                                    'gate_claims', 'gate_traces', 'gate_artifacts',
+                                    'blackboard', 'run_tombstones'
                                 )
                             )",
                             [],
@@ -1213,6 +1279,16 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
+fn is_reserved_state_or_task_filename(file_name_lower: &str) -> bool {
+    matches!(
+        file_name_lower,
+        "tasks.sqlite" | "tasks.db" | "tasks.sqlite3" | "state.sqlite" | "state.db" | "state.sqlite3"
+    ) || file_name_lower.starts_with("tasks.sqlite")
+        || file_name_lower.ends_with(".tasks.sqlite")
+        || file_name_lower.starts_with("state.sqlite")
+        || file_name_lower.ends_with(".state.sqlite")
+}
+
 fn ensure_no_publication_sidecars(output: &Path, allow_files: bool) -> Result<()> {
     for suffix in ["-wal", "-shm", "-journal"] {
         let mut name = output.as_os_str().to_owned();
@@ -1252,7 +1328,7 @@ fn atomic_build(
     let mut ancestor = PathBuf::new();
     for part in parent.components() {
         ancestor.push(part);
-        if !crate::core::fs::is_system_root_symlink(&ancestor)
+        if !acdd_core::fs::is_system_root_symlink(&ancestor)
             && fs::symlink_metadata(&ancestor).is_ok_and(|m| m.file_type().is_symlink())
         {
             bail!("output parent must not traverse a symlink");
@@ -1301,7 +1377,7 @@ fn atomic_build(
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         conn.execute_batch("PRAGMA page_size=32768;")?;
-        crate::db::writer::prepare_pipeline_schema(
+        db_writer::prepare_pipeline_schema(
             &mut conn,
             memory_budget,
             test_hooks.as_deref().is_some_and(|h| h.fail_consumer),
@@ -1312,7 +1388,7 @@ fn atomic_build(
             adapter,
             dependencies: Arc::clone(&dependencies),
             extraction_cache: Arc::clone(&extraction_cache),
-            effective_ruleset_hash: Arc::<str>::from(cache::effective_ruleset_hash(
+            effective_ruleset_hash: Arc::<str>::from(extraction_cache::effective_ruleset_hash(
                 &adapter.digest,
                 dependencies.digest(),
             )),
@@ -1350,14 +1426,14 @@ fn atomic_build(
         }
         let facts = streamed.catalog.into_files();
 
-        let mut report = crate::db::writer::populate_owned(
+        let mut report = db_writer::populate_owned(
             &mut streamed.connection,
             root,
             adapter,
             &streamed.entries,
             facts,
             &graph,
-            crate::db::writer::BuildInputs {
+            db_writer::BuildInputs {
                 manifest_digest: dependencies.digest(),
                 memory_budget,
                 schema_ready: true,
@@ -1398,7 +1474,7 @@ fn atomic_build(
             bail!("candidate database failed integrity check: {integrity}");
         }
         report["verify_ms"] = json!(verifying.elapsed().as_secs_f64() * 1000.);
-        crate::db::cache::checkpoint(&streamed.connection, false)?;
+        cache::checkpoint(&streamed.connection, false)?;
         streamed.connection.close().map_err(|(_, e)| e)?;
         if let Some(action) = test_hooks
             .as_ref()
@@ -1406,18 +1482,18 @@ fn atomic_build(
         {
             action(&output);
         }
-        let _generation_lock = crate::db::cache::exclusive_lock(&output)?;
-        let _idle_readers_guard = crate::db::cache::release_idle_readers(&output)?;
+        let _generation_lock = cache::exclusive_lock(&output)?;
+        let _idle_readers_guard = cache::release_idle_readers(&output)?;
         validate_code_map_target(root, &output)?;
         if ensure_no_publication_sidecars(&output, false).is_err() {
             ensure_no_publication_sidecars(&output, true)?;
             if output.exists() {
-                let open_path = crate::core::fs::confined_database_open_path(&output)?;
+                let open_path = acdd_core::fs::confined_database_open_path(&output)?;
                 let connection = Connection::open_with_flags(
                     open_path,
                     OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
                 )?;
-                crate::db::cache::checkpoint(&connection, true)?;
+                cache::checkpoint(&connection, true)?;
                 let _ = connection.query_row("PRAGMA journal_mode=DELETE;", [], |_| Ok(()));
                 connection.close().map_err(|(_, err)| err)?;
             }
@@ -1444,7 +1520,7 @@ fn atomic_build(
         }
         ensure_no_publication_sidecars(&output, false)?;
         fs::rename(&temporary, &output)?;
-        let receipt = crate::db::cache::publish_verified(
+        let receipt = cache::publish_verified(
             &output,
             root,
             report["output_root"]
@@ -1539,7 +1615,7 @@ fn build_inner(
         output,
         adapter_path,
         Arc::new(ExtractionCache::new(
-            cache::default_cache_root()
+            extraction_cache::default_cache_root()
                 .map(|path| acdd_core::fs::resolve_workspace_path(root, &path)),
         )),
         test_hooks,
@@ -1598,6 +1674,86 @@ fn build_inner_with_cache(
 // Incremental Delta Indexing
 // ---------------------------------------------------------------------------
 
+struct TempFrontierWriteGuard<'a> {
+    conn: &'a Connection,
+    restore_query_only: bool,
+}
+
+impl<'a> TempFrontierWriteGuard<'a> {
+    fn enter(conn: &'a Connection) -> Result<Self> {
+        let restore_query_only: bool = conn.query_row("PRAGMA query_only", [], |r| r.get(0))?;
+        if restore_query_only {
+            conn.execute_batch("PRAGMA query_only = OFF;")?;
+        }
+        Ok(Self {
+            conn,
+            restore_query_only,
+        })
+    }
+}
+
+impl Drop for TempFrontierWriteGuard<'_> {
+    fn drop(&mut self) {
+        if self.restore_query_only {
+            let _ = self.conn.execute_batch("PRAGMA query_only = ON;");
+        }
+    }
+}
+
+fn ensure_temp_frontier_tables(conn: &Connection) -> Result<()> {
+    let _guard = TempFrontierWriteGuard::enter(conn)?;
+    // Set memory temp storage before creating temp tables; ignore if a prior
+    // integrity/commitment check already initialized the temp schema in this tx.
+    let temp_store: i64 = conn.query_row("PRAGMA temp_store", [], |r| r.get(0))?;
+    if temp_store != 2 {
+        let _ = conn.execute_batch("PRAGMA temp_store = MEMORY;");
+    }
+    conn.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS delta_modified_paths(key TEXT PRIMARY KEY);
+         CREATE TEMP TABLE IF NOT EXISTS delta_changed_resolution(key TEXT PRIMARY KEY);
+         CREATE TEMP TABLE IF NOT EXISTS delta_frontier_text(key TEXT PRIMARY KEY);
+         CREATE TEMP TABLE IF NOT EXISTS delta_frontier_text_2(key TEXT PRIMARY KEY);
+         CREATE TEMP TABLE IF NOT EXISTS delta_frontier_int(key INTEGER PRIMARY KEY);",
+    )?;
+    Ok(())
+}
+
+fn populate_temp_text_frontier<'a>(
+    conn: &Connection,
+    table: &str,
+    values: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let _guard = TempFrontierWriteGuard::enter(conn)?;
+    conn.execute_batch(&format!(
+        "CREATE TEMP TABLE IF NOT EXISTS {table}(key TEXT PRIMARY KEY);
+         DELETE FROM temp.{table};"
+    ))?;
+    let mut stmt =
+        conn.prepare_cached(&format!("INSERT OR IGNORE INTO temp.{table}(key) VALUES(?1)"))?;
+    for value in values {
+        stmt.execute([value])?;
+    }
+    Ok(())
+}
+
+fn populate_temp_int_frontier(
+    conn: &Connection,
+    table: &str,
+    values: impl IntoIterator<Item = i64>,
+) -> Result<()> {
+    let _guard = TempFrontierWriteGuard::enter(conn)?;
+    conn.execute_batch(&format!(
+        "CREATE TEMP TABLE IF NOT EXISTS {table}(key INTEGER PRIMARY KEY);
+         DELETE FROM temp.{table};"
+    ))?;
+    let mut stmt =
+        conn.prepare_cached(&format!("INSERT OR IGNORE INTO temp.{table}(key) VALUES(?1)"))?;
+    for value in values {
+        stmt.execute([value])?;
+    }
+    Ok(())
+}
+
 fn delta_components(
     conn: &Connection,
     modified: &BTreeSet<String>,
@@ -1608,11 +1764,14 @@ fn delta_components(
     let previous = st
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
         .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
-    let mut st = conn.prepare("SELECT owner.path FROM nodes n JOIN path_dictionary owner ON owner.path_id=n.owner_path_id WHERE n.kind='module' AND owner.path NOT IN(SELECT value FROM json_each(?1))")?;
+    populate_temp_text_frontier(
+        conn,
+        "delta_modified_paths",
+        modified.iter().map(String::as_str),
+    )?;
+    let mut st = conn.prepare("SELECT owner.path FROM nodes n JOIN path_dictionary owner ON owner.path_id=n.owner_path_id WHERE n.kind='module' AND owner.path NOT IN(SELECT key FROM temp.delta_modified_paths)")?;
     let paths = st
-        .query_map([serde_json::to_string(modified)?], |r| {
-            r.get::<_, String>(0)
-        })?
+        .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let current = component_owners(paths.iter().map(String::as_str).chain(
         facts.iter().filter_map(|(path, f)| {
@@ -1699,20 +1858,38 @@ fn changed_rust_impl_methods(
     conn: &Connection,
     changed_rust_paths: &BTreeSet<String>,
     facts: &BTreeMap<String, TypedFacts>,
+    old_modified_facts: &BTreeMap<String, TypedFacts>,
 ) -> Result<BTreeSet<String>> {
+    if changed_rust_paths.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let missing_paths: Vec<&str> = changed_rust_paths
+        .iter()
+        .filter(|path| !old_modified_facts.contains_key(*path))
+        .map(String::as_str)
+        .collect();
+    let fetched_old: BTreeMap<String, TypedFacts> = if missing_paths.is_empty() {
+        BTreeMap::new()
+    } else {
+        populate_temp_text_frontier(conn, "delta_frontier_text", missing_paths)?;
+        let mut st = conn.prepare(
+            "SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT key FROM temp.delta_frontier_text)",
+        )?;
+        let raw_blobs = st
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        raw_blobs
+            .into_par_iter()
+            .map(|(path, blob)| Ok((path, decode_facts(&blob)?)))
+            .collect::<Result<BTreeMap<_, _>>>()?
+    };
     let mut changed_methods = BTreeSet::new();
     for path in changed_rust_paths {
-        let old_blob: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT facts_blob FROM local_facts WHERE path=?1",
-                [path],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let old_shapes = old_blob
-            .as_deref()
-            .map(decode_facts)
-            .transpose()?
+        let old_shapes = old_modified_facts
+            .get(path)
+            .or_else(|| fetched_old.get(path))
             .map(|typed| rust_impl_shapes(&typed.facts))
             .transpose()?
             .unwrap_or_default();
@@ -1762,7 +1939,7 @@ fn route_include_closure(
             if modified.contains(&path) || inventory.contains_key(path.as_str()) {
                 module_paths.insert(
                     (
-                        crate::core::config::workspace_path(&path).0.to_owned(),
+                        config::workspace_path(&path).0.to_owned(),
                         module,
                     ),
                     path,
@@ -1771,7 +1948,7 @@ fn route_include_closure(
         }
     }
     for (path, typed) in facts {
-        let workspace = crate::core::config::workspace_path(path).0.to_owned();
+        let workspace = config::workspace_path(path).0.to_owned();
         for module in typed
             .facts
             .nodes
@@ -1810,7 +1987,7 @@ fn route_include_closure(
 
     let mut relations = BTreeSet::new();
     for (parent, module) in include_rows {
-        let workspace = crate::core::config::workspace_path(&parent).0.to_owned();
+        let workspace = config::workspace_path(&parent).0.to_owned();
         if let Some(child) = module_paths.get(&(workspace, module)) {
             relations.insert((parent, child.clone()));
         }
@@ -1840,16 +2017,16 @@ fn semantic_fact_owners(
     let mut keys = BTreeSet::new();
     for (_, typed) in facts.iter().filter(|(path, _)| seeds.contains(*path)) {
         for (_, entry) in typed.facts.semantic.entries() {
-            let crate::core::typed_facts::SemanticState::Valid { facts: values, .. } = &entry.state
+            let acdd_index::typed_facts::SemanticState::Valid { facts: values, .. } = &entry.state
             else {
-                if let crate::core::typed_facts::SemanticState::Invalid { error, .. } = &entry.state
+                if let acdd_index::typed_facts::SemanticState::Invalid { error, .. } = &entry.state
                 {
                     anyhow::bail!("{error}");
                 }
                 unreachable!();
             };
             for fact in values {
-                keys.insert(crate::engine::languages::semantic::dependency_key(
+                keys.insert(languages::semantic::dependency_key(
                     &fact.identity,
                 ));
             }
@@ -1859,25 +2036,28 @@ fn semantic_fact_owners(
                 if typed.facts.semantic.state(index).is_some() {
                     continue;
                 }
-                for fact in crate::engine::languages::semantic::decode(node)? {
-                    keys.insert(crate::engine::languages::semantic::dependency_key(
+                for fact in languages::semantic::decode(node)? {
+                    keys.insert(languages::semantic::dependency_key(
                         &fact.identity,
                     ));
                 }
             }
         }
     }
-    let mut old = conn.prepare("SELECT k.key FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN path_dictionary p ON p.path_id=s.owner_id WHERE s.kind_id=1 AND p.path IN(SELECT value FROM json_each(?1)) AND typeof(k.key)='text' AND k.key LIKE 'semantic:%'")?;
-    for key in old.query_map([serde_json::to_string(seeds)?], |row| {
-        row.get::<_, String>(0)
-    })? {
-        keys.insert(key?);
+    if !seeds.is_empty() {
+        populate_temp_text_frontier(conn, "delta_frontier_text", seeds.iter().map(String::as_str))?;
+        let mut old = conn.prepare("SELECT k.key FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN path_dictionary p ON p.path_id=s.owner_id WHERE s.kind_id=1 AND p.path IN(SELECT key FROM temp.delta_frontier_text) AND typeof(k.key)='text' AND k.key LIKE 'semantic:%'")?;
+        for key in old.query_map([], |row| row.get::<_, String>(0))? {
+            keys.insert(key?);
+        }
     }
-    let mut owners = conn.prepare("SELECT DISTINCT p.path FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN path_dictionary p ON p.path_id=s.owner_id WHERE s.kind_id=1 AND k.key IN(SELECT value FROM json_each(?1))")?;
+    if keys.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    populate_temp_text_frontier(conn, "delta_frontier_text", keys.iter().map(String::as_str))?;
+    let mut owners = conn.prepare("SELECT DISTINCT p.path FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN path_dictionary p ON p.path_id=s.owner_id WHERE s.kind_id=1 AND k.key IN(SELECT key FROM temp.delta_frontier_text)")?;
     let paths = owners
-        .query_map([serde_json::to_string(&keys)?], |row| {
-            row.get::<_, String>(0)
-        })?
+        .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(paths
         .into_iter()
@@ -1890,7 +2070,7 @@ fn named_projection_candidates(
     facts: &BTreeMap<String, TypedFacts>,
     seeds: &BTreeSet<String>,
     inventory: &BTreeMap<&str, &FileEntry>,
-    dependencies: &crate::engine::languages::dependency_registry::DependencyRegistry,
+    dependencies: &languages::dependency_registry::DependencyRegistry,
     changed_resolution: &BTreeSet<String>,
     previous_owners: Option<&BTreeSet<String>>,
 ) -> Result<BTreeSet<String>> {
@@ -1922,15 +2102,26 @@ fn named_projection_candidates(
     }
     // Only modified/deleted inputs need an old snapshot comparison. Unchanged
     // affected providers contribute selectors after their one canonical load.
-    if let Some(previous_owners) = previous_owners {
+    if let Some(previous_owners) = previous_owners.filter(|owners| !owners.is_empty()) {
+        populate_temp_text_frontier(
+            conn,
+            "delta_frontier_text",
+            previous_owners.iter().map(String::as_str),
+        )?;
         let mut old = conn.prepare(
-        "SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT value FROM json_each(?1))",
-    )?;
-        for row in old.query_map([serde_json::to_string(previous_owners)?], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-        })? {
-            let (path, blob) = row?;
-            collect(&path, &decode_facts(&blob)?);
+            "SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT key FROM temp.delta_frontier_text)",
+        )?;
+        let raw_blobs = old
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let decoded: Vec<(String, TypedFacts)> = raw_blobs
+            .into_par_iter()
+            .map(|(path, blob)| Ok((path, decode_facts(&blob)?)))
+            .collect::<Result<_>>()?;
+        for (path, typed) in &decoded {
+            collect(path, typed);
         }
     }
     let mut selected = BTreeSet::new();
@@ -1942,7 +2133,7 @@ fn named_projection_candidates(
             let admitted = unavailable_scopes
                 .contains(&linker::named_binding_scope(path, dependencies))
                 || dependencies.language_context_for_path(path).syntax_rules.iter().any(|rule| {
-                    matches!(&rule.operation, crate::engine::languages::manifests::syntax::SyntaxOperation::NamedBinding { domain, .. }
+                    matches!(&rule.operation, languages::manifests::syntax::SyntaxOperation::NamedBinding { domain, .. }
                         if unavailable_owners.iter().any(|owner| dependencies.named_scope_admits(path, owner, domain)))
                 });
             if admitted {
@@ -1984,12 +2175,16 @@ fn persisted_possible_call_owners(
     if changed_rust_paths.is_empty() {
         return Ok(BTreeSet::new());
     }
-    let encoded_paths = serde_json::to_string(changed_rust_paths)?;
+    populate_temp_text_frontier(
+        conn,
+        "delta_frontier_text",
+        changed_rust_paths.iter().map(String::as_str),
+    )?;
     let mut owners = BTreeSet::new();
     let mut statement = conn.prepare(
-        "SELECT DISTINCT owner.path FROM edge_occurrences candidate JOIN nodes target ON target.node_hash=candidate.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id JOIN path_dictionary owner ON owner.path_id=candidate.owner_id WHERE candidate.kind='possible_calls' AND target_path.path IN(SELECT value FROM json_each(?1))",
+        "SELECT DISTINCT owner.path FROM edge_occurrences candidate JOIN nodes target ON target.node_hash=candidate.dst_hash JOIN path_dictionary target_path ON target_path.path_id=target.path_id JOIN path_dictionary owner ON owner.path_id=candidate.owner_id WHERE candidate.kind='possible_calls' AND target_path.path IN(SELECT key FROM temp.delta_frontier_text)",
     )?;
-    for row in statement.query_map([encoded_paths], |row| row.get::<_, String>(0))? {
+    for row in statement.query_map([], |row| row.get::<_, String>(0))? {
         owners.insert(row?);
     }
     Ok(owners)
@@ -2002,12 +2197,16 @@ fn unchanged_trait_dispatch_owners(
     if implementation_methods.is_empty() {
         return Ok(BTreeSet::new());
     }
-    let encoded_methods = serde_json::to_string(implementation_methods)?;
+    populate_temp_text_frontier(
+        conn,
+        "delta_frontier_text",
+        implementation_methods.iter().map(String::as_str),
+    )?;
     let mut owners = BTreeSet::new();
     let mut statement = conn.prepare(
-        "SELECT DISTINCT owner.path FROM edge_occurrences call JOIN nodes declaration ON declaration.node_hash=call.dst_hash JOIN path_dictionary owner ON owner.path_id=call.owner_id WHERE call.kind='calls' AND declaration.kind='method' AND declaration.name IN(SELECT value FROM json_each(?1)) AND EXISTS(SELECT 1 FROM resolution_coverage coverage JOIN coverage_expressions expression ON expression.expression_id=coverage.expression_id WHERE coverage.path_id=call.owner_id AND coverage.line=call.line AND coverage.status='unresolved' AND expression.expression='trait_object_dispatch')",
+        "SELECT DISTINCT owner.path FROM edge_occurrences call JOIN nodes declaration ON declaration.node_hash=call.dst_hash JOIN path_dictionary owner ON owner.path_id=call.owner_id WHERE call.kind='calls' AND declaration.kind='method' AND declaration.name IN(SELECT key FROM temp.delta_frontier_text) AND EXISTS(SELECT 1 FROM resolution_coverage coverage JOIN coverage_expressions expression ON expression.expression_id=coverage.expression_id WHERE coverage.path_id=call.owner_id AND coverage.line=call.line AND coverage.status='unresolved' AND expression.expression='trait_object_dispatch')",
     )?;
-    for row in statement.query_map([encoded_methods], |row| row.get::<_, String>(0))? {
+    for row in statement.query_map([], |row| row.get::<_, String>(0))? {
         owners.insert(row?);
     }
     Ok(owners)
@@ -2175,7 +2374,7 @@ fn module_exposes_provider_contract(
         return Ok(true);
     }
 
-    let contracts = crate::engine::linker::contracts::Contracts::new_typed(typed);
+    let contracts = linker::contracts::Contracts::new_typed(typed);
     for node in typed
         .facts
         .nodes
@@ -2204,37 +2403,87 @@ fn module_exposes_provider_contract(
     Ok(false)
 }
 
-fn resolution_identity_changed(conn: &Connection, path: &str, facts: &TypedFacts) -> Result<bool> {
-    let old_blob: Option<Vec<u8>> = conn
-        .query_row(
-            "SELECT facts_blob FROM local_facts WHERE path=?1",
-            [path],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(old_blob) = old_blob else {
-        return Ok(true);
-    };
-    let old_facts = decode_facts(&old_blob)?;
-    let old_contracts = crate::engine::linker::contracts::Contracts::new_typed(&old_facts);
-    let new_contracts = crate::engine::linker::contracts::Contracts::new_typed(facts);
+fn resolution_identity_changed_facts(
+    old_facts: &TypedFacts,
+    facts: &TypedFacts,
+) -> Result<bool> {
+    let old_contracts = linker::contracts::Contracts::new_typed(old_facts);
+    let new_contracts = linker::contracts::Contracts::new_typed(facts);
     Ok(old_contracts.resolution_digest(&old_facts.facts)?
         != new_contracts.resolution_digest(&facts.facts)?)
 }
 
-fn reference_identity_changed(conn: &Connection, path: &str, facts: &TypedFacts) -> Result<bool> {
-    let old: Option<Vec<u8>> = conn
-        .query_row(
-            "SELECT facts_blob FROM local_facts WHERE path=?1",
-            [path],
-            |row| row.get::<_, Vec<u8>>(0),
-        )
-        .optional()?;
-    let Some(old) = old else {
-        return Ok(true);
-    };
-    let old = decode_facts(&old)?;
-    Ok(linker::reference_identity_changed(path, &old, facts))
+fn extract_typed_with_cache(
+    root: &Path,
+    file: &FileEntry,
+    adapter: &Adapter,
+    dependencies: &DependencyRegistry,
+    extraction_cache: &ExtractionCache,
+    effective_ruleset_hash: &str,
+    source: &mut String,
+) -> Result<TypedFacts> {
+    let path = resolve_file_path(root, adapter, &file.path)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut source_file = options.open(&path)?;
+    let source_capacity =
+        usize::try_from(file.bytes).context("source size exceeds addressable memory")?;
+    source.clear();
+    source.try_reserve_exact(source_capacity)?;
+    source_file
+        .by_ref()
+        .take(adapter.limits.max_file_bytes.saturating_add(1))
+        .read_to_string(source)?;
+    if source.len() as u64 > adapter.limits.max_file_bytes {
+        return Err(SourceSnapshotMismatch(format!(
+            "source changed during extraction: {}",
+            file.path
+        ))
+        .into());
+    }
+    let source_digest = commitments::hash(source.as_bytes());
+    if source_digest != file.digest {
+        return Err(SourceSnapshotMismatch(format!(
+            "source changed during extraction: {}",
+            file.path
+        ))
+        .into());
+    }
+    let key = extraction_cache::key(
+        &source_digest,
+        &file.path,
+        &file.language,
+        INDEX_SEMANTICS_VERSION,
+        effective_ruleset_hash,
+    );
+    let cache_limit = file
+        .bytes
+        .saturating_mul(64)
+        .max(512 * 1024)
+        .min(adapter.limits.max_file_bytes.saturating_mul(16));
+    if let Some(mut facts) = extraction_cache.load(&key, cache_limit) {
+        let mtime = file.mtime_ns as f64 / 1e9;
+        for section in &mut facts.docs {
+            section.mtime = mtime;
+        }
+        sanitize_extracted_facts(&mut facts);
+        return Ok(facts);
+    }
+    let spec_paths = adapter.spec_paths();
+    let facts = extract_typed_source_with_digest(
+        file,
+        source,
+        &source_digest,
+        dependencies,
+        &spec_paths,
+    )?;
+    extraction_cache.store(&key, &facts);
+    Ok(facts)
 }
 
 fn reference_keys(facts: &TypedFacts) -> Vec<&str> {
@@ -2308,14 +2557,10 @@ fn delta_inner(
     let selected_adapter = selected_adapter
         .map(|path| load_adapter(&root, Some(path)))
         .transpose()?;
-    let generation_lock = crate::db::cache::exclusive_lock(db)?;
-    let _idle_readers_guard = crate::db::cache::release_idle_readers(db)?;
+    let generation_lock = cache::exclusive_lock(db)?;
+    let _idle_readers_guard = cache::release_idle_readers(db)?;
     let (schema_compatible, previous_adapter_path) = {
-        let open_path = crate::core::fs::confined_database_open_path(db)?;
-        let probe = Connection::open_with_flags(
-            &open_path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )?;
+        let probe = db_reader::open_raw_confined_readonly(db)?;
         let schema_compatible = probe
             .query_row(
                 "SELECT value FROM metadata WHERE key='schema_version'",
@@ -2350,14 +2595,14 @@ fn delta_inner(
             .or(previous_adapter_path.as_deref());
         return rebuild_with_cache_dir(&root, db, adapter_path, cache_dir);
     }
-    let admitted = crate::db::reader::open(db, &root)?;
-    let admitted_identity = crate::db::cache::identity(db)?;
+    let admitted = db_reader::open(db, &root)?;
+    let admitted_identity = cache::identity(db)?;
     let expected: String = admitted.query_row(
         "SELECT value FROM metadata WHERE key='output_root'",
         [],
         |r| r.get(0),
     )?;
-    let adapter = config::read_policy(&root, &admitted)?;
+    let adapter = db_reader::read_policy(&root, &admitted)?;
     let current_adapter = match selected_adapter {
         Some(adapter) => adapter,
         None => load_adapter(&root, adapter.adapter_path.as_deref())?,
@@ -2368,7 +2613,7 @@ fn delta_inner(
     }
     let manifests_changed = modified.iter().any(|path| {
         path.file_name().and_then(|name| name.to_str()).is_some_and(
-            crate::engine::languages::dependency_registry::is_dependency_manifest_filename,
+            languages::dependency_registry::is_dependency_manifest_filename,
         )
     });
     if current_adapter.digest != adapter.digest
@@ -2386,7 +2631,7 @@ fn delta_inner(
             cache_dir,
         );
     }
-    let previous = crate::db::reader::inventory_snapshot(&admitted)?;
+    let previous = db_reader::inventory_snapshot(&admitted)?;
     let watched: BTreeSet<String> = previous
         .iter()
         .map(|entry| entry.path.clone())
@@ -2456,24 +2701,86 @@ fn delta_inner(
             }
         }
     }
+    ensure_temp_frontier_tables(&admitted)?;
+    populate_temp_text_frontier(
+        &admitted,
+        "delta_modified_paths",
+        modified.iter().map(String::as_str),
+    )?;
     let extracting = Instant::now();
-    let mut facts = BTreeMap::new();
-    let mut changed_resolution = BTreeSet::new();
-    for path in &modified {
-        if let Some(file) = inventory.get(path.as_str()) {
-            let extracted = extract_typed(&root, file, &adapter, &dependencies)?;
-            if !previous.contains_key(path.as_str())
-                || resolution_identity_changed(&admitted, path, &extracted)?
-                || (linker::needs_reference_identity(path, &extracted)
-                    && reference_identity_changed(&admitted, path, &extracted)?)
-            {
-                changed_resolution.insert(path.clone());
-            }
-            facts.insert(path.clone(), extracted);
-        } else {
-            changed_resolution.insert(path.clone());
-        }
-    }
+    let extraction_cache = Arc::new(ExtractionCache::new(match cache_dir {
+        Some(dir) => Some(dir.to_owned()),
+        None => extraction_cache::default_cache_root()
+            .map(|path| acdd_core::fs::resolve_workspace_path(&root, &path)),
+    }));
+    let effective_ruleset_hash =
+        extraction_cache::effective_ruleset_hash(&adapter.digest, dependencies.digest());
+    let modified_files: Vec<&FileEntry> = modified
+        .iter()
+        .filter_map(|path| inventory.get(path.as_str()).copied())
+        .collect();
+    let extracted_pairs: Vec<(String, TypedFacts)> = modified_files
+        .par_iter()
+        .map_init(String::new, |source, &file| {
+            let extracted = extract_typed_with_cache(
+                &root,
+                file,
+                &adapter,
+                &dependencies,
+                &extraction_cache,
+                &effective_ruleset_hash,
+                source,
+            )?;
+            Ok((file.path.clone(), extracted))
+        })
+        .collect::<Result<_>>()?;
+    let mut facts: BTreeMap<String, TypedFacts> = extracted_pairs.into_iter().collect();
+    let mut changed_resolution: BTreeSet<String> = modified
+        .iter()
+        .filter(|path| !inventory.contains_key(path.as_str()) || !previous.contains_key(path.as_str()))
+        .cloned()
+        .collect();
+    let existing_modified: Vec<&str> = facts
+        .keys()
+        .filter(|path| previous.contains_key(path.as_str()))
+        .map(String::as_str)
+        .collect();
+    let old_modified_facts: BTreeMap<String, TypedFacts> = if existing_modified.is_empty() {
+        BTreeMap::new()
+    } else {
+        populate_temp_text_frontier(&admitted, "delta_frontier_text", existing_modified.iter().copied())?;
+        let mut st = admitted.prepare(
+            "SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT key FROM temp.delta_frontier_text)",
+        )?;
+        let raw_blobs = st
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let decoded: Vec<(String, TypedFacts)> = raw_blobs
+            .into_par_iter()
+            .map(|(path, blob)| Ok((path, decode_facts(&blob)?)))
+            .collect::<Result<_>>()?;
+        let map: BTreeMap<String, TypedFacts> = decoded.into_iter().collect();
+        let identity_changed: Vec<String> = existing_modified
+            .par_iter()
+            .filter_map(|&path| {
+                let new_facts = facts.get(path)?;
+                let Some(old_facts) = map.get(path) else {
+                    return Some(Ok(path.to_owned()));
+                };
+                match resolution_identity_changed_facts(old_facts, new_facts) {
+                    Ok(true) => Some(Ok(path.to_owned())),
+                    Ok(false) => (linker::needs_reference_identity(path, new_facts)
+                        && linker::reference_identity_changed(path, old_facts, new_facts))
+                    .then(|| Ok(path.to_owned())),
+                    Err(err) => Some(Err(err)),
+                }
+            })
+            .collect::<Result<_>>()?;
+        changed_resolution.extend(identity_changed);
+        map
+    };
     let mut names = BTreeSet::new();
     let callable_providers = linker::configured_callable_provider_paths(
         &changed_resolution,
@@ -2486,10 +2793,15 @@ fn delta_inner(
     if !callable_providers.is_empty() {
         // Configuration-only changes seed old exports before unchanged consumer
         // selection. These indexed names grant no callable resolution authority.
-        let mut st = admitted.prepare(
-            "SELECT json_extract(binding.value,'$.name'),json_extract(binding.value,'$.local') FROM path_dictionary p JOIN nodes n INDEXED BY idx_nodes_path ON n.path_id=p.path_id JOIN json_each(n.details,'$.exports') binding WHERE p.path IN(SELECT value FROM json_each(?1)) AND n.kind='module'",
+        populate_temp_text_frontier(
+            &admitted,
+            "delta_frontier_text",
+            callable_providers.iter().map(String::as_str),
         )?;
-        for row in st.query_map([serde_json::to_string(&callable_providers)?], |row| {
+        let mut st = admitted.prepare(
+            "SELECT json_extract(binding.value,'$.name'),json_extract(binding.value,'$.local') FROM path_dictionary p JOIN nodes n INDEXED BY idx_nodes_path ON n.path_id=p.path_id JOIN json_each(n.details,'$.exports') binding WHERE p.path IN(SELECT key FROM temp.delta_frontier_text) AND n.kind='module'",
+        )?;
+        for row in st.query_map([], |row| {
             Ok((
                 row.get::<_, Option<String>>(0)?,
                 row.get::<_, Option<String>>(1)?,
@@ -2499,12 +2811,16 @@ fn delta_inner(
             names.extend(public.into_iter().chain(local));
         }
     }
-    let encoded = serde_json::to_string(&changed_resolution)?;
-    {
+    populate_temp_text_frontier(
+        &admitted,
+        "delta_changed_resolution",
+        changed_resolution.iter().map(String::as_str),
+    )?;
+    if !changed_resolution.is_empty() {
         let mut st = admitted.prepare(
-            "SELECT owner.path,n.name,n.qualname,n.kind FROM nodes n JOIN path_dictionary owner ON owner.path_id=n.owner_path_id WHERE owner.path IN(SELECT value FROM json_each(?1))",
+            "SELECT owner.path,n.name,n.qualname,n.kind FROM nodes n JOIN path_dictionary owner ON owner.path_id=n.owner_path_id WHERE owner.path IN(SELECT key FROM temp.delta_changed_resolution)",
         )?;
-        for row in st.query_map([&encoded], |r| {
+        for row in st.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -2519,7 +2835,7 @@ fn delta_inner(
             }
             if !matches!(kind.as_str(), "field" | "method" | "route" | "document") {
                 let mod_name = module_name(&owner);
-                let (_, local_path) = crate::core::config::workspace_path(&owner);
+                let (_, local_path) = config::workspace_path(&owner);
                 let local_module = module_name(local_path);
                 let src_module = local_path
                     .split_once("/src/")
@@ -2545,19 +2861,40 @@ fn delta_inner(
             }
         }
     }
-    {
-        let mut st = admitted.prepare(
-            "SELECT facts_blob FROM local_facts WHERE path IN(SELECT value FROM json_each(?1))",
-        )?;
-        for row in st.query_map([&encoded], |row| row.get::<_, Vec<u8>>(0))? {
-            let old = decode_facts(&row?)?;
-            names.extend(linker::configured_result_names(&old, &dependencies));
+    if !changed_resolution.is_empty() {
+        let mut missing_old_resolution = Vec::new();
+        for path in &changed_resolution {
+            if let Some(old) = old_modified_facts.get(path) {
+                names.extend(linker::configured_result_names(old, &dependencies));
+            } else {
+                missing_old_resolution.push(path.as_str());
+            }
+        }
+        if !missing_old_resolution.is_empty() {
+            populate_temp_text_frontier(
+                &admitted,
+                "delta_frontier_text",
+                missing_old_resolution,
+            )?;
+            let mut st = admitted.prepare(
+                "SELECT facts_blob FROM local_facts WHERE path IN(SELECT key FROM temp.delta_frontier_text)",
+            )?;
+            let raw_blobs = st
+                .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let decoded: Vec<TypedFacts> = raw_blobs
+                .into_par_iter()
+                .map(|blob| decode_facts(&blob))
+                .collect::<Result<_>>()?;
+            for old in &decoded {
+                names.extend(linker::configured_result_names(old, &dependencies));
+            }
         }
     }
     for path in &changed_resolution {
         let mod_name = module_name(path);
         names.insert(mod_name.clone());
-        let (_, local_path) = crate::core::config::workspace_path(path);
+        let (_, local_path) = config::workspace_path(path);
         let local_module = module_name(local_path);
         names.insert(local_module.clone());
         let src_module = local_path
@@ -2623,11 +2960,9 @@ fn delta_inner(
     {
         if !changed_resolution.is_empty() {
             let mut st = admitted.prepare(
-                "SELECT p.path FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.target_hash IN(SELECT path_hash FROM files WHERE path IN(SELECT value FROM json_each(?1)))",
+                "SELECT p.path FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.target_hash IN(SELECT path_hash FROM files WHERE path IN(SELECT key FROM temp.delta_changed_resolution))",
             )?;
-            for owner in st.query_map([serde_json::to_string(&changed_resolution)?], |r| {
-                r.get::<_, String>(0)
-            })? {
+            for owner in st.query_map([], |r| r.get::<_, String>(0))? {
                 affected.insert(owner?);
             }
         }
@@ -2649,12 +2984,16 @@ fn delta_inner(
                     targets
                 });
             if !html_targets.is_empty() {
-                let target_hashes: Vec<_> = html_targets.keys().copied().collect();
-                let mut st = admitted.prepare(
-                    "SELECT p.path,d.symbol,d.target_hash FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.kind='renders' AND d.target_hash IN(SELECT value FROM json_each(?1))",
+                populate_temp_int_frontier(
+                    &admitted,
+                    "delta_frontier_int",
+                    html_targets.keys().copied(),
                 )?;
-                let family = crate::engine::languages::LanguageFamily("python");
-                for row in st.query_map([serde_json::to_string(&target_hashes)?], |r| {
+                let mut st = admitted.prepare(
+                    "SELECT p.path,d.symbol,d.target_hash FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.kind='renders' AND d.target_hash IN(SELECT key FROM temp.delta_frontier_int)",
+                )?;
+                let family = languages::LanguageFamily("python");
+                for row in st.query_map([], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
@@ -2662,7 +3001,7 @@ fn delta_inner(
                     ))
                 })? {
                     let (owner, symbol, hash) = row?;
-                    let Some(target) = crate::engine::languages::html::local_template_target(
+                    let Some(target) = languages::html::local_template_target(
                         &owner,
                         &symbol,
                         &dependencies.language_context_for_path(&owner),
@@ -2675,8 +3014,8 @@ fn delta_inner(
                         && html_targets
                             .get(&hash)
                             .is_some_and(|paths| paths.contains(&target.as_str()))
-                        && crate::core::config::workspace_path(&owner).0
-                            == crate::core::config::workspace_path(&target).0
+                        && config::workspace_path(&owner).0
+                            == config::workspace_path(&target).0
                         && dependencies.nearest_manifest_scope_for_path(family, &owner)
                             == dependencies.nearest_manifest_scope_for_path(family, &target)
                     {
@@ -2685,14 +3024,21 @@ fn delta_inner(
                 }
             }
         }
-        let name_hashes: Vec<_> = names.iter().map(|name| stable_hash64(name)).collect();
-        let encoded_names = serde_json::to_string(&names)?;
-        let encoded_hashes = serde_json::to_string(&name_hashes)?;
-        let mut st = admitted.prepare("SELECT p.path FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash LEFT JOIN nodes key_node ON typeof(k.key)='integer' AND key_node.node_id=k.key JOIN path_dictionary p ON p.path_id=s.owner_id WHERE s.kind_id=1 AND s.key_hash IN(SELECT value FROM json_each(?1)) AND (CASE WHEN typeof(k.key)='integer' THEN key_node.qualname ELSE k.key END) IN(SELECT value FROM json_each(?2))")?;
-        for owner in st.query_map(params![encoded_hashes, encoded_names], |r| {
-            r.get::<_, String>(0)
-        })? {
-            affected.insert(owner?);
+        if !names.is_empty() {
+            populate_temp_int_frontier(
+                &admitted,
+                "delta_frontier_int",
+                names.iter().map(|name| stable_hash64(name)),
+            )?;
+            populate_temp_text_frontier(
+                &admitted,
+                "delta_frontier_text",
+                names.iter().map(String::as_str),
+            )?;
+            let mut st = admitted.prepare("SELECT p.path FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash LEFT JOIN nodes key_node ON typeof(k.key)='integer' AND key_node.node_id=k.key JOIN path_dictionary p ON p.path_id=s.owner_id WHERE s.kind_id=1 AND s.key_hash IN(SELECT key FROM temp.delta_frontier_int) AND (CASE WHEN typeof(k.key)='integer' THEN key_node.qualname ELSE k.key END) IN(SELECT key FROM temp.delta_frontier_text)")?;
+            for owner in st.query_map([], |r| r.get::<_, String>(0))? {
+                affected.insert(owner?);
+            }
         }
     }
     let changed_rust_paths: BTreeSet<_> = changed_resolution
@@ -2705,7 +3051,13 @@ fn delta_inner(
         })
         .cloned()
         .collect();
-    let changed_impl_methods = changed_rust_impl_methods(&admitted, &changed_rust_paths, &facts)?;
+    let changed_impl_methods = changed_rust_impl_methods(
+        &admitted,
+        &changed_rust_paths,
+        &facts,
+        &old_modified_facts,
+    )?;
+    drop(old_modified_facts);
     affected.extend(persisted_possible_call_owners(
         &admitted,
         &changed_rust_paths,
@@ -2733,17 +3085,21 @@ fn delta_inner(
         .collect();
     let mut visited_imports = import_frontier.clone();
     let mut expanded_imports = import_frontier.clone();
-    let mut importing_owners = admitted.prepare(
-        "SELECT DISTINCT owner.path,target.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files target ON target.path_hash=d.target_hash WHERE d.kind='imports' AND target.path IN(SELECT value FROM json_each(?1))",
-    )?;
     while !import_frontier.is_empty() {
-        let importers = importing_owners
-            .query_map([serde_json::to_string(&import_frontier)?], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?;
+        populate_temp_text_frontier(
+            &admitted,
+            "delta_frontier_text",
+            import_frontier.iter().map(String::as_str),
+        )?;
+        let mut importing_owners = admitted.prepare_cached(
+            "SELECT DISTINCT owner.path,target.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files target ON target.path_hash=d.target_hash WHERE d.kind='imports' AND target.path IN(SELECT key FROM temp.delta_frontier_text)",
+        )?;
+        let importers: Vec<(String, String)> = importing_owners
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(importing_owners);
         let mut next = BTreeSet::new();
-        for importer in importers {
-            let (owner, upstream) = importer?;
+        for (owner, upstream) in importers {
             let supported = inventory.get(owner.as_str()).is_some_and(|file| {
                 matches!(
                     file.language.as_str(),
@@ -2768,7 +3124,6 @@ fn delta_inner(
         }
         import_frontier = next;
     }
-    drop(importing_owners);
     let route_include_paths = route_include_closure(&admitted, &facts, &modified, &inventory)?;
     let mut replace_files = modified.clone();
     replace_files.extend(route_include_paths.iter().cloned());
@@ -2782,16 +3137,14 @@ fn delta_inner(
             .is_some_and(|file| matches!(file.language.as_str(), "html" | "python"))
     });
     let old_loader_roots: Vec<(String, String)> = if template_inputs_changed {
-        let mut st = admitted.prepare("SELECT p.path,n.name FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE p.path IN(SELECT value FROM json_each(?1)) AND n.kind='template_loader_root'")?;
-        let rows = st.query_map([serde_json::to_string(&modified)?], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?;
+        let mut st = admitted.prepare("SELECT p.path,n.name FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE p.path IN(SELECT key FROM temp.delta_modified_paths) AND n.kind='template_loader_root'")?;
+        let rows = st.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect::<rusqlite::Result<_>>()?
     } else {
         Vec::new()
     };
     if template_inputs_changed {
-        let family = crate::engine::languages::LanguageFamily("python");
+        let family = languages::LanguageFamily("python");
         let mut changed_roots = Vec::new();
         for (provider, directory) in &old_loader_roots {
             if modified.contains(provider) {
@@ -2828,7 +3181,7 @@ fn delta_inner(
     }
     #[cfg(feature = "lang-html")]
     if template_inputs_changed {
-        let family = crate::engine::languages::LanguageFamily("python");
+        let family = languages::LanguageFamily("python");
         let modified_python: Vec<_> = modified
             .iter()
             .filter(|path| {
@@ -2839,12 +3192,15 @@ fn delta_inner(
             })
             .collect();
         if !modified_python.is_empty() {
-            let mut old_targets = admitted.prepare(
-                "SELECT DISTINCT f.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE d.kind='renders' AND owner.path IN(SELECT value FROM json_each(?1))",
+            populate_temp_text_frontier(
+                &admitted,
+                "delta_frontier_text",
+                modified_python.iter().map(|path| path.as_str()),
             )?;
-            for row in old_targets.query_map([serde_json::to_string(&modified_python)?], |row| {
-                row.get::<_, String>(0)
-            })? {
+            let mut old_targets = admitted.prepare(
+                "SELECT DISTINCT f.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE d.kind='renders' AND owner.path IN(SELECT key FROM temp.delta_frontier_text)",
+            )?;
+            for row in old_targets.query_map([], |row| row.get::<_, String>(0))? {
                 let target = row?;
                 if inventory
                     .get(target.as_str())
@@ -2858,7 +3214,7 @@ fn delta_inner(
                     continue;
                 };
                 let scope = dependencies.nearest_manifest_scope_for_path(family, provider);
-                let workspace = crate::core::config::workspace_path(provider).0;
+                let workspace = config::workspace_path(provider).0;
                 for node in provider_facts
                     .nodes
                     .iter()
@@ -2874,7 +3230,7 @@ fn delta_inner(
                         if inventory
                             .get(target.as_str())
                             .is_some_and(|file| file.language == "html")
-                            && crate::core::config::workspace_path(&target).0 == workspace
+                            && config::workspace_path(&target).0 == workspace
                             && dependencies.nearest_manifest_scope_for_path(family, &target)
                                 == scope
                         {
@@ -2894,23 +3250,29 @@ fn delta_inner(
             .cloned()
             .collect();
         let mut visited = frontier.clone();
-        let mut old_includes = admitted.prepare(
-            "SELECT owner.path,f.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE d.kind='includes' AND owner.path IN(SELECT value FROM json_each(?1))",
-        )?;
         for _ in 0..16 {
             if frontier.is_empty() {
                 break;
             }
+            populate_temp_text_frontier(
+                &admitted,
+                "delta_frontier_text",
+                frontier.iter().map(String::as_str),
+            )?;
+            let mut old_includes = admitted.prepare_cached(
+                "SELECT owner.path,f.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE d.kind='includes' AND owner.path IN(SELECT key FROM temp.delta_frontier_text)",
+            )?;
+            let rows: Vec<(String, String)> = old_includes
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            drop(old_includes);
             let mut next = BTreeSet::new();
-            for row in old_includes.query_map([serde_json::to_string(&frontier)?], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })? {
-                let (owner, target) = row?;
+            for (owner, target) in rows {
                 if inventory
                     .get(target.as_str())
                     .is_some_and(|file| file.language == "html")
-                    && crate::core::config::workspace_path(&owner).0
-                        == crate::core::config::workspace_path(&target).0
+                    && config::workspace_path(&owner).0
+                        == config::workspace_path(&target).0
                     && dependencies.nearest_manifest_scope_for_path(family, &owner)
                         == dependencies.nearest_manifest_scope_for_path(family, &target)
                     && visited.insert(target.clone())
@@ -2928,7 +3290,7 @@ fn delta_inner(
                     .iter()
                     .filter(|reference| reference.kind == "includes")
                 {
-                    let Some(target) = crate::engine::languages::html::local_template_target(
+                    let Some(target) = languages::html::local_template_target(
                         owner,
                         &reference.expression,
                         &dependencies.language_context_for_path(owner),
@@ -2938,8 +3300,8 @@ fn delta_inner(
                     if inventory
                         .get(target.as_str())
                         .is_some_and(|file| file.language == "html")
-                        && crate::core::config::workspace_path(owner).0
-                            == crate::core::config::workspace_path(&target).0
+                        && config::workspace_path(owner).0
+                            == config::workspace_path(&target).0
                         && dependencies.nearest_manifest_scope_for_path(family, owner)
                             == dependencies.nearest_manifest_scope_for_path(family, &target)
                         && visited.insert(target.clone())
@@ -2986,10 +3348,13 @@ fn delta_inner(
             }
         }
         if !roots.is_empty() {
-            let mut st = admitted.prepare("SELECT DISTINCT p.path FROM nodes n INDEXED BY idx_nodes_name JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.name IN(SELECT value FROM json_each(?1)) AND n.kind='template_loader_root'")?;
-            for row in st.query_map([serde_json::to_string(&roots)?], |row| {
-                row.get::<_, String>(0)
-            })? {
+            populate_temp_text_frontier(
+                &admitted,
+                "delta_frontier_text",
+                roots.iter().map(String::as_str),
+            )?;
+            let mut st = admitted.prepare("SELECT DISTINCT p.path FROM nodes n INDEXED BY idx_nodes_name JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.name IN(SELECT key FROM temp.delta_frontier_text) AND n.kind='template_loader_root'")?;
+            for row in st.query_map([], |row| row.get::<_, String>(0))? {
                 let provider = row?;
                 if inventory.contains_key(provider.as_str()) && !modified.contains(&provider) {
                     load_owners.insert(provider);
@@ -2999,7 +3364,7 @@ fn delta_inner(
     }
     #[cfg(feature = "lang-html")]
     if template_inputs_changed {
-        let family = crate::engine::languages::LanguageFamily("javascript");
+        let family = languages::LanguageFamily("javascript");
         let mut frontier: BTreeSet<_> = affected
             .iter()
             .filter(|path| {
@@ -3010,9 +3375,6 @@ fn delta_inner(
             .cloned()
             .collect();
         let mut visited = frontier.clone();
-        let mut incoming = admitted.prepare(
-            "SELECT DISTINCT d.target_hash, owner.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id WHERE d.kind='includes' AND d.target_hash IN(SELECT value FROM json_each(?1))",
-        )?;
         for _ in 0..16 {
             if frontier.is_empty() {
                 break;
@@ -3021,20 +3383,28 @@ fn delta_inner(
             for path in &frontier {
                 targets.entry(stable_hash64(path)).or_default().push(path);
             }
-            let hashes: Vec<_> = targets.keys().copied().collect();
+            populate_temp_int_frontier(
+                &admitted,
+                "delta_frontier_int",
+                targets.keys().copied(),
+            )?;
+            let mut incoming = admitted.prepare_cached(
+                "SELECT DISTINCT d.target_hash, owner.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id WHERE d.kind='includes' AND d.target_hash IN(SELECT key FROM temp.delta_frontier_int)",
+            )?;
+            let rows: Vec<(i64, String)> = incoming
+                .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            drop(incoming);
             let mut next = BTreeSet::new();
-            for row in incoming.query_map([serde_json::to_string(&hashes)?], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })? {
-                let (hash, owner) = row?;
+            for (hash, owner) in rows {
                 let Some(owner_file) = inventory.get(owner.as_str()) else {
                     continue;
                 };
                 if owner_file.language != "html"
                     || !targets.get(&hash).is_some_and(|paths| {
                         paths.iter().any(|target| {
-                            crate::core::config::workspace_path(&owner).0
-                                == crate::core::config::workspace_path(target).0
+                            config::workspace_path(&owner).0
+                                == config::workspace_path(target).0
                                 && dependencies.nearest_manifest_scope_for_path(family, &owner)
                                     == dependencies.nearest_manifest_scope_for_path(family, target)
                         })
@@ -3052,13 +3422,25 @@ fn delta_inner(
             frontier = next;
         }
     }
-    {
-        let mut st = admitted.prepare("SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT value FROM json_each(?1))")?;
-        for row in st.query_map([serde_json::to_string(&load_owners)?], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
-        })? {
-            let (path, blob) = row?;
-            let f = decode_facts(&blob)?;
+    if !load_owners.is_empty() {
+        populate_temp_text_frontier(
+            &admitted,
+            "delta_frontier_text",
+            load_owners.iter().map(String::as_str),
+        )?;
+        let mut st = admitted.prepare(
+            "SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT key FROM temp.delta_frontier_text)",
+        )?;
+        let raw_blobs = st
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let decoded: Vec<(String, TypedFacts)> = raw_blobs
+            .into_par_iter()
+            .map(|(path, blob)| Ok((path, decode_facts(&blob)?)))
+            .collect::<Result<_>>()?;
+        for (path, f) in decoded {
             facts.insert(path, f);
             loaded_fact_files += 1;
         }
@@ -3105,9 +3487,8 @@ fn delta_inner(
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             selected
         };
-        let mut st = admitted.prepare("SELECT facts_blob FROM local_facts WHERE path=?1")?;
         let mut attempted = BTreeSet::new();
-        let mut named_frontier = facts.keys().cloned().collect();
+        let mut named_frontier: BTreeSet<String> = facts.keys().cloned().collect();
         loop {
             // Cached providers can themselves reference another named definition.
             // Query each newly hydrated frontier through the same compact index.
@@ -3121,22 +3502,38 @@ fn delta_inner(
                 None,
             )?);
             named_frontier.clear();
-            for path in linker::required_full_typed_facts(
+            let missing_paths: Vec<String> = linker::required_full_typed_facts(
                 &facts,
                 &affected,
                 &catalog,
                 &dependencies,
                 &named_candidates,
                 &route_catalog,
-            ) {
-                if facts.contains_key(&path) || !attempted.insert(path.clone()) {
-                    continue;
-                }
-                if let Some(raw) = st
-                    .query_row([&path], |row| row.get::<_, Vec<u8>>(0))
-                    .optional()?
-                {
-                    facts.insert(path.clone(), decode_facts(&raw)?);
+            )
+            .into_iter()
+            .filter(|path| !facts.contains_key(path) && attempted.insert(path.clone()))
+            .collect();
+            if !missing_paths.is_empty() {
+                populate_temp_text_frontier(
+                    &admitted,
+                    "delta_frontier_text",
+                    missing_paths.iter().map(String::as_str),
+                )?;
+                let mut st = admitted.prepare_cached(
+                    "SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT key FROM temp.delta_frontier_text)",
+                )?;
+                let raw_blobs = st
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                drop(st);
+                let decoded: Vec<(String, TypedFacts)> = raw_blobs
+                    .into_par_iter()
+                    .map(|(path, raw)| Ok((path, decode_facts(&raw)?)))
+                    .collect::<Result<_>>()?;
+                for (path, typed) in decoded {
+                    facts.insert(path.clone(), typed);
                     named_frontier.insert(path);
                     loaded_fact_files += 1;
                 }
@@ -3146,7 +3543,7 @@ fn delta_inner(
             }
         }
     }
-    let composed_routes = crate::engine::ast::route_includes::compose_route_includes(&mut facts);
+    let composed_routes = ast::route_includes::compose_route_includes(&mut facts);
     affected.extend(composed_routes.iter().cloned());
     replace_files.extend(composed_routes);
     assign_components(&mut facts, &component_owners);
@@ -3211,12 +3608,20 @@ fn delta_inner(
             }
         }
     }
-    let encoded = serde_json::to_string(&tokens)?;
-    let suffix_ids = serde_json::to_string(&suffix_ids)?;
+    populate_temp_text_frontier(
+        &admitted,
+        "delta_frontier_text",
+        tokens.iter().map(String::as_str),
+    )?;
+    populate_temp_text_frontier(
+        &admitted,
+        "delta_frontier_text_2",
+        suffix_ids.iter().map(String::as_str),
+    )?;
     {
-        let sql = "SELECT n.id,n.kind,n.name,n.qualname,p.path,n.line,n.end_line,n.is_test,n.language,n.generated,n.details,EXISTS(SELECT 1 FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash WHERE s.kind_id=2 AND s.key_hash=n.node_hash AND k.key=n.id) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id IN(SELECT id FROM nodes WHERE kind='module' UNION SELECT id FROM nodes WHERE name IN(SELECT value FROM json_each(?1)) UNION SELECT id FROM nodes WHERE qualname IN(SELECT value FROM json_each(?1)) UNION SELECT n2.id FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN nodes n2 ON n2.node_hash=s.key_hash AND n2.id=k.key WHERE s.kind_id=2 UNION SELECT value FROM json_each(?2))";
+        let sql = "SELECT n.id,n.kind,n.name,n.qualname,p.path,n.line,n.end_line,n.is_test,n.language,n.generated,n.details,EXISTS(SELECT 1 FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash WHERE s.kind_id=2 AND s.key_hash=n.node_hash AND k.key=n.id) FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id IN(SELECT id FROM nodes WHERE kind='module' UNION SELECT id FROM nodes WHERE name IN(SELECT key FROM temp.delta_frontier_text) UNION SELECT id FROM nodes WHERE qualname IN(SELECT key FROM temp.delta_frontier_text) UNION SELECT n2.id FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash JOIN nodes n2 ON n2.node_hash=s.key_hash AND n2.id=k.key WHERE s.kind_id=2 UNION SELECT key FROM temp.delta_frontier_text_2)";
         let mut st = admitted.prepare(sql)?;
-        let nodes = st.query_map(params![encoded, suffix_ids], |r| {
+        let nodes = st.query_map([], |r| {
             Ok(Node {
                 native_semantic: None,
                 id: r.get(0)?,
@@ -3246,7 +3651,7 @@ fn delta_inner(
             }
             facts
                 .entry(node.path.clone())
-                .or_insert_with(TypedFacts::default)
+                .or_default()
                 .push_node(node);
         }
     }
@@ -3269,7 +3674,7 @@ fn delta_inner(
     // Only a receipt matching the admitted generation may be recovered after
     // SQLite has rolled back and closed its writer.
     let trusted_receipt =
-        match crate::db::cache::matches_with_reason(db, &root, &expected, &admitted_identity) {
+        match cache::matches_with_reason(db, &root, &expected, &admitted_identity) {
             Ok(()) => true,
             Err(reason) => {
                 eprintln!(
@@ -3280,8 +3685,8 @@ fn delta_inner(
             }
         };
 
-    let persist_result = crate::db::writer::delta_persist::persist_delta(
-        crate::db::writer::delta_persist::DeltaPersistenceInputs {
+    let persist_result = delta_persist::persist_delta(
+        delta_persist::DeltaPersistenceInputs {
             db,
             root: &root,
             expected: &expected,
@@ -3312,40 +3717,35 @@ fn delta_inner(
             }
             if trusted_receipt {
                 let recovery = (|| -> anyhow::Result<()> {
-                    let after = crate::db::cache::identity(db)?;
+                    let after = cache::identity(db)?;
                     if after == admitted_identity {
-                        return crate::db::cache::matches_with_reason(db, &root, &expected, &after);
+                        return cache::matches_with_reason(db, &root, &expected, &after);
                     }
-                    crate::db::cache::matches_with_reason(
+                    cache::matches_with_reason(
                         db,
                         &root,
                         &expected,
                         &admitted_identity,
                     )?;
-                    let open_path = crate::core::fs::confined_database_open_path(db)?;
-                    let conn = rusqlite::Connection::open_with_flags(
-                        open_path,
-                        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                            | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
-                    )?;
+                    let conn = db_reader::open_raw_confined_readonly(db)?;
                     let seal: String = conn.query_row(
                         "SELECT value FROM metadata WHERE key='output_root'",
                         [],
                         |row| row.get(0),
                     )?;
                     anyhow::ensure!(seal == expected, "rollback output root changed");
-                    crate::core::commitments::verify(&conn)?;
+                    db_commitments::verify(&conn)?;
                     drop(conn);
                     if let Some(hook) =
                         test_hooks.and_then(|hooks| hooks.during_delta_verification.as_ref())
                     {
                         hook(db);
                     }
-                    let stable = crate::db::cache::identity(db)?;
+                    let stable = cache::identity(db)?;
                     anyhow::ensure!(
                         after == stable,
                         "database changed during rollback verification ({})",
-                        crate::db::cache::describe_diff(&after, &stable)
+                        cache::describe_diff(&after, &stable)
                     );
                     if let Some(hook) =
                         test_hooks.and_then(|hooks| hooks.before_delta_receipt_publish.as_ref())
@@ -3353,13 +3753,13 @@ fn delta_inner(
                         hook(db);
                     }
                     anyhow::ensure!(
-                        crate::db::cache::publish_verified_identity(db, &root, &expected, &stable)?,
+                        cache::publish_verified_identity(db, &root, &expected, &stable)?,
                         "rollback receipt publication refused"
                     );
                     Ok(())
                 })();
                 if let Err(recovery_error) = recovery {
-                    if let Err(invalidation_error) = crate::db::cache::invalidate_checked(db) {
+                    if let Err(invalidation_error) = cache::invalidate_checked(db) {
                         eprintln!(
                             "delta receipt invalidation failed for {}: {invalidation_error:#}",
                             db.display()
@@ -3481,7 +3881,7 @@ mod tests {
         }
         let db = root.0.join(".acdd/code-map.sqlite");
         let candidates = |path: &Path| {
-            let conn = crate::db::reader::open(path, &root.0).unwrap();
+            let conn = db_reader::open(path, &root.0).unwrap();
             let mut statement = conn.prepare("SELECT d.id FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash WHERE s.name='caller' AND e.kind='possible_calls' ORDER BY d.id").unwrap();
             let result = statement
                 .query_map([], |row| row.get::<_, String>(0))
@@ -3569,7 +3969,7 @@ mod tests {
 
     #[test]
     fn unavailable_or_ambiguous_import_facts_expand_conservatively() {
-        use crate::core::models::{Facts, Node, Reference};
+        use acdd_index::models::{Facts, Node, Reference};
 
         let missing_facts_db = Connection::open_in_memory().unwrap();
         missing_facts_db
@@ -3643,7 +4043,7 @@ mod tests {
 
     #[test]
     fn return_contract_and_known_private_import_bound_the_python_frontier() {
-        use crate::core::{
+        use acdd_index::{
             models::{Facts, Node, Reference},
             semantic::{TypeExpr, ValueFlowFacts},
         };
