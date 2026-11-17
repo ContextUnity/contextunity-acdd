@@ -2,13 +2,11 @@
 
 use crate::db::commitments;
 use crate::db::schema::SCHEMA_DDL;
-use acdd_core::models::compact_graph::Graph as CompactGraph;
-use acdd_core::semantic::CatalogStoragePayload;
-use acdd_core::typed_facts::{encode_facts, TypedFacts};
-use acdd_core::{
-    config::{self, Adapter},
-    models::*,
-};
+use crate::models::compact_graph::Graph as CompactGraph;
+use crate::models::*;
+use crate::semantic::CatalogStoragePayload;
+use crate::typed_facts::{encode_facts, TypedFacts};
+use acdd_core::config::{self, Adapter};
 use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
 use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
@@ -16,7 +14,6 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{Read, Seek, SeekFrom},
     path::Path,
     sync::Arc,
     time::Instant,
@@ -60,15 +57,49 @@ pub struct StagedFilePayload {
     pub storage_rows: Option<StagedPayloadBlob>,
 }
 
-fn read_staged_payload(file: &mut File, payload: StagedPayloadBlob) -> Result<Vec<u8>> {
-    file.seek(SeekFrom::Start(payload.offset))?;
+fn read_staged_payload(file: &File, payload: StagedPayloadBlob) -> Result<Vec<u8>> {
     let length = usize::try_from(payload.length).context("staged payload length overflow")?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(length)
         .context("cannot reserve memory for staged payload")?;
     bytes.resize(length, 0);
-    file.read_exact(&mut bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        let mut offset = payload.offset;
+        let mut remaining = bytes.as_mut_slice();
+        while !remaining.is_empty() {
+            match file.read_at(remaining, offset) {
+                Ok(0) => {
+                    bail!(
+                        "unexpected EOF reading staged payload at offset {} (remaining {} bytes)",
+                        offset,
+                        remaining.len()
+                    );
+                }
+                Ok(read_bytes) => {
+                    remaining = &mut remaining[read_bytes..];
+                    offset = offset
+                        .checked_add(read_bytes as u64)
+                        .context("staged payload offset overflow")?;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        use std::io::{Read, Seek, SeekFrom};
+        static SPOOL_READ_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = SPOOL_READ_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut reader = file;
+        reader.seek(SeekFrom::Start(payload.offset))?;
+        reader.read_exact(&mut bytes)?;
+    }
     Ok(bytes)
 }
 
@@ -76,117 +107,21 @@ fn decode_prepared_storage(bytes: &[u8]) -> Result<PreparedCatalogStorage> {
     cache::decode_prepared_catalog_storage_payload(bytes)
 }
 
-fn encode_node_for_storage(node: &Node, buf: &mut Vec<u8>) {
-    use acdd_core::typed_facts::binary::BinaryEncode;
-    node.id.encode(buf);
-    node.kind.encode(buf);
-    node.name.encode(buf);
-    node.qualname.encode(buf);
-    node.path.encode(buf);
-    node.line.encode(buf);
-    node.end_line.encode(buf);
-    node.is_test.encode(buf);
-    node.language.encode(buf);
-    node.generated.encode(buf);
-    let details = match &node.details {
-        Value::Object(details) if !details.is_empty() => {
-            let has_retained = details.iter().any(|(key, value)| {
-                (key.as_str() == "default_export" && *value == true)
-                    || matches!(key.as_str(), "doc" | "docstring")
-            });
-            if has_retained {
-                let details = details
-                    .iter()
-                    .filter(|(key, value)| {
-                        (key.as_str() == "default_export" && *value == true)
-                            || matches!(key.as_str(), "doc" | "docstring")
-                    })
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect::<serde_json::Map<_, _>>();
-                Value::Object(details)
-            } else {
-                Value::Null
-            }
-        }
-        _ => Value::Null,
-    };
-    details.encode(buf);
-    0u8.encode(buf);
-}
-
 /// Prepares encoded catalog storage rows for a file using extracted typed facts.
 pub fn prepare_catalog_storage_with_facts(
     file: &FileEntry,
-    single: &BTreeMap<String, TypedFacts>,
-    extracted_facts: Option<&TypedFacts>,
+    facts: &TypedFacts,
 ) -> Result<Vec<u8>> {
-    use acdd_core::typed_facts::binary::BinaryEncode;
+    use crate::typed_facts::binary::BinaryEncode;
 
-    let facts = extracted_facts
-        .or_else(|| single.get(&file.path))
-        .context("missing prepared storage file")?;
-
-    let search_texts = facts
-        .nodes
-        .iter()
-        .map(|node| {
-            let mut text = String::new();
-            write_node_search_text(&mut text, node, facts);
-            text
-        })
-        .collect::<Vec<_>>();
-    let reference_keys = facts
-        .reference_keys()
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let leaves = seal::file_domain_leaves(std::slice::from_ref(file), single, &reference_keys)?;
-    let storage_leaves: BTreeMap<String, BTreeMap<String, String>> = leaves
-        .into_iter()
-        .map(|(domain, leaves)| (domain.to_owned(), leaves))
-        .collect();
-
-    let mut bytes = cache::encode_prepared_catalog_storage_with_borrowed_nodes(|raw| {
-        let count = u32::try_from(facts.nodes.len()).unwrap_or(0);
-        count.encode(raw);
-        for node in &facts.nodes {
-            encode_node_for_storage(node, raw);
-        }
-        0u32.encode(raw);
-        0u32.encode(raw);
-        let docs_count = u32::try_from(facts.docs.len()).unwrap_or(0);
-        docs_count.encode(raw);
-        for doc in &facts.docs {
-            doc.encode(raw);
-        }
-        let errors_count = u32::try_from(facts.errors.len()).unwrap_or(0);
-        errors_count.encode(raw);
-        for error in &facts.errors {
-            error.encode(raw);
-        }
-        0u32.encode(raw);
-        0u32.encode(raw);
-        0u32.encode(raw);
-        0u32.encode(raw);
-        0u32.encode(raw);
-
-        search_texts.encode(raw);
-        reference_keys.encode(raw);
-        storage_leaves.encode(raw);
-    })?;
+    let prepared = prepare_catalog_rows(file, facts)?;
+    let mut bytes =
+        cache::encode_raw_prepared_catalog_storage_with_borrowed_nodes(|raw| prepared.encode(raw));
     bytes.shrink_to_fit();
     Ok(bytes)
 }
 
-fn prepare_catalog_rows(
-    file: &FileEntry,
-    single: &BTreeMap<String, TypedFacts>,
-    extracted_facts: Option<&TypedFacts>,
-) -> Result<PreparedCatalogStorage> {
-    let facts = extracted_facts
-        .or_else(|| single.get(&file.path))
-        .context("missing prepared storage file")?;
-
+fn prepare_catalog_rows(file: &FileEntry, facts: &TypedFacts) -> Result<PreparedCatalogStorage> {
     let search_texts = facts
         .nodes
         .iter()
@@ -201,7 +136,7 @@ fn prepare_catalog_rows(
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let leaves = seal::file_domain_leaves(std::slice::from_ref(file), single, &reference_keys)?;
+    let leaves = seal::file_domain_leaves(file, facts, &reference_keys)?;
     let nodes = facts
         .nodes
         .iter()
@@ -345,7 +280,7 @@ pub fn populate_owned(
     payload_spool_path: Option<&Path>,
 ) -> Result<Value> {
     let streamed_payloads = !staged_payloads.is_empty();
-    let mut payload_spool = if streamed_payloads {
+    let payload_spool = if streamed_payloads {
         Some(File::open(
             payload_spool_path.context("missing staged payload spool path")?,
         )?)
@@ -396,7 +331,7 @@ pub fn populate_owned(
             ("schema_version", config::ENGINE_SCHEMA_VERSION.to_owned()),
             (
                 "index_semantics_version",
-                config::INDEX_SEMANTICS_VERSION.to_owned(),
+                crate::INDEX_SEMANTICS_VERSION.to_owned(),
             ),
             ("indexer_engine", "contextunity-acdd-rust".to_owned()),
             ("workspace_root", root.to_string_lossy().into_owned()),
@@ -414,7 +349,7 @@ pub fn populate_owned(
             ("inventory_snapshot", serde_json::to_string(entries)?),
             (
                 "corpus_hash",
-                commitments::hash(&serde_json::to_vec(entries)?),
+                crate::core::format::sha256_serde_json_hex(entries)?,
             ),
         ] {
             cached(
@@ -454,7 +389,7 @@ pub fn populate_owned(
                     .context("missing composed source payload")?;
                 let encoded_facts = read_staged_payload(
                     payload_spool
-                        .as_mut()
+                        .as_ref()
                         .context("missing staged payload spool")?,
                     staged.encoded_facts,
                 )?;
@@ -482,25 +417,17 @@ pub fn populate_owned(
                         })
                         .collect::<Result<Vec<_>>>()?;
                     let spool = payload_spool
-                        .as_mut()
+                        .as_ref()
                         .context("missing staged payload spool")?;
-                    let hydrated = staged
-                        .into_iter()
-                        .map(|(file, lean, staged)| {
-                            let encoded_facts = read_staged_payload(spool, staged.encoded_facts)?;
-                            let storage_rows = staged
-                                .storage_rows
-                                .map(|payload| read_staged_payload(spool, payload))
-                                .transpose()?;
-                            Ok((file, lean, encoded_facts, storage_rows))
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    let prepared = hydrated
+                    let prepared = staged
                         .into_par_iter()
-                        .map(|(file, lean, encoded_facts, storage_rows)| {
+                        .map(|(file, lean, staged)| {
                             let restoring = Instant::now();
-                            let (storage, encoded) = if let Some(storage) = storage_rows {
-                                let storage = decode_prepared_storage(&storage)?;
+                            let encoded_facts = read_staged_payload(spool, staged.encoded_facts)?;
+                            let (storage, encoded) = if let Some(storage_blob) = staged.storage_rows
+                            {
+                                let storage_bytes = read_staged_payload(spool, storage_blob)?;
+                                let storage = decode_prepared_storage(&storage_bytes)?;
                                 (storage, encoded_facts)
                             } else {
                                 let full = restore_catalog_file(
@@ -510,8 +437,7 @@ pub fn populate_owned(
                                     &composed_sources,
                                 )?;
                                 let encoded = encode_facts(&full)?;
-                                let single = BTreeMap::from([(file.path.clone(), full)]);
-                                (prepare_catalog_rows(file, &single, None)?, encoded)
+                                (prepare_catalog_rows(file, &full)?, encoded)
                             };
                             let local_facts_leaf = seal::local_facts_leaf(
                                 &file.path,
@@ -736,8 +662,8 @@ fn restore_catalog_file(
 }
 
 fn catalog_payload(path: &str, encoded: &[u8]) -> Result<CatalogStoragePayload> {
-    let facts = acdd_core::typed_facts::decode_facts(encoded)?;
-    Ok(acdd_core::semantic::SymbolCatalog::default().insert_typed(path.to_owned(), facts, true))
+    let facts = crate::typed_facts::decode_facts(encoded)?;
+    Ok(crate::semantic::SymbolCatalog::default().insert_typed(path.to_owned(), facts, true))
 }
 
 fn retain_graph_storage_facts(facts: &mut TypedFacts) {
@@ -745,7 +671,7 @@ fn retain_graph_storage_facts(facts: &mut TypedFacts) {
         .nodes
         .iter()
         .any(|node| node.kind == "module" && node.language == "html");
-    let mut flows = acdd_core::typed_facts::FlowStore::default();
+    let mut flows = crate::typed_facts::FlowStore::default();
     for node in &mut facts.facts.nodes {
         if let Some(flow) = facts.flows.get_mut(&node.id) {
             let template_contexts: Vec<_> = flow
@@ -754,18 +680,18 @@ fn retain_graph_storage_facts(facts: &mut TypedFacts) {
                 .into_iter()
                 .flat_map(|framework| framework.facts)
                 .filter_map(|fact| match fact {
-                    acdd_core::semantic::FrameworkFact::TemplateContext(context) => Some(context),
+                    crate::semantic::FrameworkFact::TemplateContext(context) => Some(context),
                     _ => None,
                 })
                 .collect();
             if !template_contexts.is_empty() {
                 flows.insert(
                     node.id.clone(),
-                    acdd_core::semantic::ValueFlowFacts {
-                        framework: Some(Box::new(acdd_core::semantic::FrameworkScopeFacts {
+                    crate::semantic::ValueFlowFacts {
+                        framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
                             facts: template_contexts
                                 .into_iter()
-                                .map(acdd_core::semantic::FrameworkFact::TemplateContext)
+                                .map(crate::semantic::FrameworkFact::TemplateContext)
                                 .collect(),
                             ..Default::default()
                         })),

@@ -8,7 +8,7 @@ mod coverage_leaves;
 mod domain_leaves;
 mod snapshot;
 
-pub use acdd_core::commitments::{
+pub use crate::commitments::{
     aggregate_domain_digest, compute_merkle_root, hash, DomainCommitment, MerkleCommitment,
     ALGORITHM, DOMAINS,
 };
@@ -75,7 +75,7 @@ fn append_fts_posting(
     append_text(buffer, column);
     append_integer(buffer, offset);
 }
-fn new_leaf_hasher(table: &str, owner: &str) -> Sha256 {
+pub(crate) fn new_leaf_hasher(table: &str, owner: &str) -> Sha256 {
     let mut h = Sha256::new();
     h.update(ALGORITHM);
     h.update(table);
@@ -95,20 +95,38 @@ fn shape(table: &str) -> (&'static str, &'static str, &'static str) {
     }
 }
 #[inline]
-fn encode_text(h: &mut impl sha2::digest::Update, s: &str) {
-    h.update(b"t");
-    h.update(&(s.len() as u64).to_le_bytes());
-    h.update(s.as_bytes());
+pub(crate) fn encode_text(h: &mut impl sha2::digest::Update, s: &str) {
+    encode_text_bytes(h, s.as_bytes());
 }
 
 #[inline]
-fn encode_int(h: &mut impl sha2::digest::Update, n: i64) {
+pub(crate) fn encode_text_bytes(h: &mut impl sha2::digest::Update, s: &[u8]) {
+    h.update(b"t");
+    h.update(&(s.len() as u64).to_le_bytes());
+    h.update(s);
+}
+
+#[inline]
+pub(crate) fn encode_int(h: &mut impl sha2::digest::Update, n: i64) {
     h.update(b"i");
     h.update(&n.to_le_bytes());
 }
 
 #[inline]
-fn encode_null(h: &mut impl sha2::digest::Update) {
+pub(crate) fn encode_real(h: &mut impl sha2::digest::Update, value: f64) {
+    h.update(b"r");
+    h.update(&value.to_bits().to_le_bytes());
+}
+
+#[inline]
+pub(crate) fn encode_blob(h: &mut impl sha2::digest::Update, value: &[u8]) {
+    h.update(b"b");
+    h.update(&(value.len() as u64).to_le_bytes());
+    h.update(value);
+}
+
+#[inline]
+pub(crate) fn encode_null(h: &mut impl sha2::digest::Update) {
     h.update(b"n");
 }
 

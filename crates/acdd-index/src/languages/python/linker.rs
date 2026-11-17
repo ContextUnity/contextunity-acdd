@@ -303,8 +303,8 @@ pub(super) fn reference_identity_changed(path: &str, old: &Facts, new: &Facts) -
     imports(old) != imports(new)
 }
 
-pub(super) fn required_full_facts<F: AsRef<Facts>>(
-    facts: &BTreeMap<String, F>,
+pub(super) fn required_full_facts(
+    facts: &dyn crate::FactsLookup,
     affected: &BTreeSet<String>,
     catalog: &[(&str, &str)],
 ) -> BTreeSet<String> {
@@ -313,8 +313,7 @@ pub(super) fn required_full_facts<F: AsRef<Facts>>(
     };
     let mut requested = HashMap::<&str, HashSet<String>>::new();
     let mut cross_workspace = HashSet::<String>::new();
-    for (path, file) in facts {
-        let file = file.as_ref();
+    for (path, file) in facts.iter_facts() {
         let Some(module) = file
             .nodes
             .iter()

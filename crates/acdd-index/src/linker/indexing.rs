@@ -5,7 +5,7 @@ use crate::{
     },
     linker::traits::{ImportContext, ModulesByNamespace, PackageExports},
 };
-use acdd_core::models::{Facts, Node, Reference};
+use crate::models::{Facts, Node, Reference};
 use hashbrown::{HashMap, HashSet};
 use std::{collections::BTreeMap, path::Path};
 
@@ -18,23 +18,22 @@ pub(super) struct NamespaceIndexes<'a> {
 }
 
 impl<'a> NamespaceIndexes<'a> {
-    pub(super) fn build<F: AsRef<Facts>>(
-        all: &'a BTreeMap<String, F>,
+    pub(super) fn build(
+        all: &'a dyn crate::FactsLookup,
         nodes: &[&'a Node],
         root: Option<&Path>,
         dependency_registry: &'a DependencyRegistry,
         interner: &mut LinkerInterner<'a>,
     ) -> Self {
         let profiles: HashMap<&str, &'static dyn LanguageProfile> = all
-            .iter()
+            .iter_facts()
             .filter_map(|(path, facts)| {
-                let facts = facts.as_ref();
                 facts
                     .nodes
                     .iter()
                     .find(|node| node.kind == "module")
                     .and_then(|node| languages::by_id(&node.language))
-                    .map(|profile| (path.as_str(), profile))
+                    .map(|profile| (path, profile))
             })
             .collect();
         let indexed_javascript_modules: std::collections::HashSet<&str> = profiles
@@ -43,14 +42,13 @@ impl<'a> NamespaceIndexes<'a> {
             .map(|(path, _)| languages::module_stem(path).trim_end_matches("/index"))
             .collect();
         let rust_library_modules: HashMap<&str, (&str, &Node)> = all
-            .iter()
+            .iter_facts()
             .filter_map(|(path, facts)| {
                 let (workspace, local_path) = languages::workspace_path(path);
                 if local_path != "src/lib.rs" {
                     return None;
                 }
                 let module = facts
-                    .as_ref()
                     .nodes
                     .iter()
                     .find(|node| node.kind == "module" && node.language == "rust")?;
@@ -59,9 +57,8 @@ impl<'a> NamespaceIndexes<'a> {
             })
             .collect();
         let mut normalized_imports: HashMap<(&str, &str), Option<ImportPath>> = HashMap::new();
-        for (path, facts) in all {
-            let facts = facts.as_ref();
-            let profile = profiles.get(path.as_str()).copied();
+        for (path, facts) in all.iter_facts() {
+            let profile = profiles.get(path).copied();
             #[cfg(feature = "lang-rust")]
             let root_rust_crate = profile
                 .filter(|profile| profile.id() == "rust")
@@ -81,7 +78,7 @@ impl<'a> NamespaceIndexes<'a> {
             {
                 let module = reference.module.as_deref().unwrap_or(&reference.expression);
                 normalized_imports
-                    .entry((path.as_str(), module))
+                    .entry((path, module))
                     .or_insert_with(|| {
                         if profile.is_some_and(|profile| profile.id() == "rust") {
                             let local_import = module.strip_prefix("self::").unwrap_or(module);
@@ -320,11 +317,11 @@ pub(super) struct InheritanceIndexes<'a> {
 
 impl<'a> InheritanceIndexes<'a> {
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn build<'index, F: AsRef<Facts>>(
-        all: &'a BTreeMap<String, F>,
+    pub(super) fn build<'index>(
+        all: &'a dyn crate::FactsLookup,
         interner: &LinkerInterner<'a>,
         #[cfg(feature = "lang-rust")] flows: Option<
-            &'index HashMap<SymbolId, &'a acdd_core::typed_facts::FlowState>,
+            &'index HashMap<SymbolId, &'a crate::typed_facts::FlowState>,
         >,
         by_id: &'index HashMap<SymbolId, &'a Node>,
         by_qual: &'index HashMap<&'a str, Vec<&'a Node>>,
@@ -336,8 +333,7 @@ impl<'a> InheritanceIndexes<'a> {
         dependency_registry: &'a DependencyRegistry,
     ) -> Self {
         let mut inheritance_imports: HashMap<(&str, &str, &str), Vec<&Reference>> = HashMap::new();
-        for (path, facts) in all {
-            let facts = facts.as_ref();
+        for (path, facts) in all.iter_facts() {
             if !facts
                 .nodes
                 .iter()
@@ -355,7 +351,7 @@ impl<'a> InheritanceIndexes<'a> {
                     interner.lookup_node(by_id, import.source.as_str()),
                 ) {
                     inheritance_imports
-                        .entry((path.as_str(), owner.qualname.as_str(), alias))
+                        .entry((path, owner.qualname.as_str(), alias))
                         .or_default()
                         .push(import);
                 }

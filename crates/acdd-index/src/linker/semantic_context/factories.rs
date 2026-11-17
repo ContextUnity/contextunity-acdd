@@ -1,14 +1,11 @@
 use super::*;
 
 impl<'a> Context<'a> {
-    pub(super) fn prepare_factory_bindings<F: AsRef<Facts>>(
-        &mut self,
-        all: &'a BTreeMap<String, F>,
-    ) {
-        use acdd_core::semantic::ValueExpr;
+    pub(super) fn prepare_factory_bindings(&mut self, all: &'a dyn crate::FactsLookup) {
+        use crate::semantic::ValueExpr;
         for owner in all
-            .values()
-            .flat_map(|facts| &facts.as_ref().nodes)
+            .values_facts()
+            .flat_map(|facts| &facts.nodes)
             .filter(|owner| {
                 matches!(owner.language.as_str(), "typescript" | "javascript" | "vue")
                     && (matches!(owner.kind.as_str(), "function" | "method" | "module")
@@ -117,10 +114,10 @@ impl<'a> Context<'a> {
                         return false;
                     }
                     return match &binding.value {
-                        acdd_core::semantic::ValueExpr::Call { callee, .. } => {
+                        crate::semantic::ValueExpr::Call { callee, .. } => {
                             self.factory_callee(lexical, callee, binding.position)
                         }
-                        acdd_core::semantic::ValueExpr::Alias { name } => {
+                        crate::semantic::ValueExpr::Alias { name } => {
                             self.factory_receiver(lexical, name, binding.position, depth + 1)
                         }
                         _ => false,

@@ -89,9 +89,9 @@ pub(super) fn component_names(
 }
 
 impl<'a> super::Context<'a> {
-    pub(super) fn prepare_component_environments<F: AsRef<Facts>>(
+    pub(super) fn prepare_component_environments(
         &mut self,
-        all: &'a BTreeMap<String, F>,
+        all: &'a dyn crate::FactsLookup,
         dependencies: &languages::dependency_registry::DependencyRegistry,
     ) {
         use languages::manifests::syntax::SyntaxOperation;
@@ -104,9 +104,8 @@ impl<'a> super::Context<'a> {
             HashMap::new();
         let mut callable_catalog: HashMap<ComponentRuleKey, std::sync::Arc<CallableScope<'a>>> =
             HashMap::new();
-        for (path, source) in all {
+        for (path, source) in all.iter_facts() {
             let Some(module) = source
-                .as_ref()
                 .nodes
                 .iter()
                 .find(|node| node.kind == "module")
@@ -193,9 +192,8 @@ impl<'a> super::Context<'a> {
                 } else {
                     format!("{scope}/{config_file}")
                 };
-                let config = all.get(&config_path).and_then(|facts| {
+                let config = all.get_facts(&config_path).and_then(|facts| {
                     facts
-                        .as_ref()
                         .nodes
                         .iter()
                         .find(|node| node.kind == "module")
@@ -227,7 +225,7 @@ impl<'a> super::Context<'a> {
                             .and_then(|id| self.flows?.get(&id))
                     })
                     .and_then(|state| match state {
-                        acdd_core::typed_facts::FlowState::Valid { facts, .. } => {
+                        crate::typed_facts::FlowState::Valid { facts, .. } => {
                             Some(facts.component_configurations())
                         }
                         _ => None,
@@ -257,7 +255,7 @@ impl<'a> super::Context<'a> {
                                 modules: HashMap::new(),
                                 incomplete: false,
                             };
-                            for (provider_path, file) in all {
+                            for (provider_path, file) in all.iter_facts() {
                                 let Some(selector) = descriptor.exports.iter().find(|selector| {
                                     relative_under_directory(
                                         provider_path,
@@ -272,7 +270,7 @@ impl<'a> super::Context<'a> {
                                 };
                                 let Some(provider) = scoped_provider_modules(
                                     provider_path,
-                                    file.as_ref(),
+                                    file,
                                     scope,
                                     dependencies,
                                 )
@@ -340,7 +338,7 @@ impl<'a> super::Context<'a> {
                                     }
                                 }
                                 let relative = if scope.is_empty() {
-                                    Some(provider_path.as_str())
+                                    Some(provider_path)
                                 } else {
                                     relative_under_directory(provider_path, "", scope)
                                 };
@@ -392,7 +390,7 @@ impl<'a> super::Context<'a> {
                         if let hashbrown::hash_map::Entry::Vacant(entry) = result_catalog.entry(key)
                         {
                             let mut exports = HashMap::<SymbolId, Vec<(&Node, SymbolId)>>::new();
-                            for (provider_path, provider) in all {
+                            for (provider_path, provider) in all.iter_facts() {
                                 if !addition.exports.iter().any(|entry| {
                                     relative_under_directory(provider_path, scope, &entry.directory)
                                         .is_some_and(|tail| {
@@ -403,7 +401,7 @@ impl<'a> super::Context<'a> {
                                 }
                                 let Some(provider) = scoped_provider_modules(
                                     provider_path,
-                                    provider.as_ref(),
+                                    provider,
                                     scope,
                                     dependencies,
                                 )
@@ -563,7 +561,7 @@ impl<'a> super::Context<'a> {
                     continue;
                 }
                 let candidates = &mut self.component_candidates[index];
-                for (provider_path, provider) in all {
+                for (provider_path, provider) in all.iter_facts() {
                     let Some((pascal, kebab)) =
                         component_names(provider_path, scope, directory, extension)
                     else {
@@ -571,7 +569,7 @@ impl<'a> super::Context<'a> {
                     };
                     let Some(provider_module) = scoped_provider_modules(
                         provider_path,
-                        provider.as_ref(),
+                        provider,
                         scope,
                         dependencies,
                     )

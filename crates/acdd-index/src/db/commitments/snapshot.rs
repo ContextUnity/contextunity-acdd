@@ -5,8 +5,9 @@ use super::{
     FTS,
 };
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::Instant;
 
 #[derive(Default)]
@@ -41,11 +42,8 @@ pub(crate) fn fts_commitment_digests(conn: &Connection) -> Result<BTreeMap<&'sta
             let handles: Vec<_> = (0..workers)
                 .map(|worker| {
                     scope.spawn(move || -> Result<Vec<_>> {
-                        let reader = Connection::open_with_flags(
-                            candidate,
-                            OpenFlags::SQLITE_OPEN_READ_ONLY,
-                        )?;
-                        reader.pragma_update(None, "query_only", true)?;
+                        let reader =
+                            crate::db::reader::open_raw_confined_readonly(Path::new(candidate))?;
                         // Keep adjacent posting/config pairs together with two
                         // workers, so the two posting streams run independently.
                         FTS[worker * FTS.len() / workers..(worker + 1) * FTS.len() / workers]

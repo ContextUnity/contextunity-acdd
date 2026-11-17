@@ -1,11 +1,12 @@
+use acdd_core::lock::{acquire_exclusive_bounded, acquire_shared_bounded, FileLockGuard};
 use anyhow::{bail, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, OnceLock, Weak},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// Process-local reader eviction callback owned by the reader's lifecycle.
@@ -134,47 +135,24 @@ fn suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn generation_lock(path: &Path, exclusive: bool) -> Result<File> {
+fn generation_lock(path: &Path, exclusive: bool) -> Result<FileLockGuard> {
     #[cfg(unix)]
     {
-        use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(suffix(path, ".lock"))?;
-        if !file.metadata()?.is_file() {
-            bail!("database lock must be a regular file");
-        }
-        let operation = if exclusive {
-            libc::LOCK_EX
+        let lock_path = suffix(path, ".lock");
+        let timeout = Duration::from_secs(30);
+        let poll_interval = Duration::from_millis(25);
+        let result = if exclusive {
+            acquire_exclusive_bounded(&lock_path, timeout, poll_interval)
         } else {
-            libc::LOCK_SH
+            acquire_shared_bounded(&lock_path, timeout, poll_interval)
         };
-        let started = Instant::now();
-        loop {
-            if unsafe { libc::flock(file.as_raw_fd(), operation | libc::LOCK_NB) } == 0 {
-                return Ok(file);
-            }
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            if error.kind() == std::io::ErrorKind::WouldBlock {
-                if started.elapsed() >= Duration::from_secs(30) {
-                    bail!("database generation lock is busy; retry after active readers finish");
-                }
+        result.map_err(|error| {
+            if error.to_string().starts_with("timed out acquiring ") {
+                anyhow::anyhow!("database generation lock is busy; retry after active readers finish")
             } else {
-                return Err(error.into());
+                error
             }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        })
     }
     #[cfg(not(unix))]
     {
@@ -184,12 +162,12 @@ fn generation_lock(path: &Path, exclusive: bool) -> Result<File> {
 }
 
 /// Acquires a shared lock on the SQLite generation lock file.
-pub fn shared_lock(path: &Path) -> Result<File> {
+pub fn shared_lock(path: &Path) -> Result<FileLockGuard> {
     generation_lock(path, false)
 }
 
 /// Acquires an exclusive lock on the SQLite generation lock file.
-pub fn exclusive_lock(path: &Path) -> Result<File> {
+pub fn exclusive_lock(path: &Path) -> Result<FileLockGuard> {
     generation_lock(path, true)
 }
 

@@ -17,8 +17,8 @@ pub mod route_includes;
 pub mod routes;
 pub mod search;
 use crate::languages::{self, FileContext, LanguageProfile, SyntaxContext};
-use acdd_core::models::*;
-use acdd_core::typed_facts::{FlowStore, TypedFacts};
+use crate::models::*;
+use crate::typed_facts::{FlowStore, TypedFacts};
 use anyhow::Result;
 pub use search::{
     pattern_symbol_name, search, search_page, PatternErrorSpan, PatternSearchDiagnostic,
@@ -427,7 +427,7 @@ pub fn extract_typed_with_registry(
         }
     }
     for node in &mut typed.facts.nodes {
-        acdd_core::typed_facts::NodeSemanticEntry::ingest(node);
+        crate::typed_facts::NodeSemanticEntry::ingest(node);
     }
     typed.facts.semantic.mark_complete();
     compact_node_details(&mut typed.facts, path);

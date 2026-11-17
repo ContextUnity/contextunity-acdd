@@ -19,13 +19,13 @@ pub(crate) struct TypeScriptMembers<'a> {
 }
 
 impl<'a> TypeScriptMembers<'a> {
-    pub(crate) fn build<F: AsRef<Facts>>(
-        all: &'a BTreeMap<String, F>,
+    pub(crate) fn build(
+        all: &'a dyn crate::FactsLookup,
         resolver: &impl SemanticResolver<'a>,
     ) -> Self {
         let classes: Vec<_> = all
-            .values()
-            .flat_map(|facts| &facts.as_ref().nodes)
+            .values_facts()
+            .flat_map(|facts| &facts.nodes)
             .filter(|node| {
                 matches!(node.language.as_str(), "typescript" | "javascript" | "vue")
                     && (matches!(node.kind.as_str(), "class" | "interface" | "enum")
@@ -38,10 +38,9 @@ impl<'a> TypeScriptMembers<'a> {
         let mut own_fields = HashMap::<&str, MemberMap<'a>>::new();
         let mut parents = HashMap::<&str, Option<Vec<&Node>>>::new();
         for class in &classes {
-            let Some(facts) = all.get(&class.path) else {
+            let Some(facts) = all.get_facts(&class.path) else {
                 continue;
             };
-            let facts = facts.as_ref();
             let prefix = format!("{}.", class.qualname);
             let methods = own.entry(class.id.as_str()).or_default();
             for method in &facts.nodes {
@@ -831,14 +830,13 @@ pub(crate) fn required_configuration_facts(
     required
 }
 
-fn required_full_facts<F: AsRef<Facts>>(
-    facts: &BTreeMap<String, F>,
+fn required_full_facts(
+    facts: &dyn crate::FactsLookup,
     _affected: &BTreeSet<String>,
     catalog: &[(&str, &str)],
 ) -> BTreeSet<String> {
     let mut requested = HashSet::new();
-    for (path, file) in facts.iter().filter(|(_, file)| javascript(file.as_ref())) {
-        let file = file.as_ref();
+    for (path, file) in facts.iter_facts().filter(|(_, file)| javascript(file)) {
         let imports = file
             .references
             .iter()

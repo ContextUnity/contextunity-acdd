@@ -18,10 +18,9 @@ fn has_node_binding(
         .is_some_and(|bindings| bindings.binary_search(&name).is_ok())
 }
 
-pub(super) fn phase_value_flow<'a, 'file, F>(resolver: &mut FileResolver<'a, 'file, F>)
+pub(super) fn phase_value_flow<'a, 'file>(resolver: &mut FileResolver<'a, 'file>)
 where
     'a: 'file,
-    F: AsRef<Facts> + Sync,
 {
     let input = resolver.input;
     let path = resolver.path;
@@ -111,7 +110,7 @@ where
             && matches!(node.language.as_str(), "javascript" | "typescript" | "vue")
     });
     let configured_component_macro =
-        |name: &str, at: acdd_core::semantic::SourcePosition, owner: &str| {
+        |name: &str, at: crate::semantic::SourcePosition, owner: &str| {
             let Some((rule, role)) = file_language_context.component_macro(name) else {
                 return false;
             };
@@ -242,7 +241,7 @@ where
             }
         };
         let commonjs_external_admitted =
-            |name: &str, owner: Option<&Node>, at: acdd_core::semantic::SourcePosition| {
+            |name: &str, owner: Option<&Node>, at: crate::semantic::SourcePosition| {
                 let Some(module) = commonjs_module else {
                     return true;
                 };
@@ -291,7 +290,7 @@ where
                 scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
             }
         };
-        let mut alias_import_positions: HashMap<(&str, &str), acdd_core::semantic::SourcePosition> =
+        let mut alias_import_positions: HashMap<(&str, &str), crate::semantic::SourcePosition> =
             HashMap::new();
         for reference in references
             .iter()

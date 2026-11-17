@@ -1,7 +1,7 @@
 use super::*;
 use crate::languages::{dependency_registry::DependencyRegistry, ImportPath, LanguageProfile};
 use crate::linker::traits::{import_provider_modules, ModulesByNamespace, PackageExports};
-use acdd_core::typed_facts::FlowState;
+use crate::typed_facts::FlowState;
 
 type ExternalAliases<'a> = HashMap<&'a str, Option<(String, usize)>>;
 mod documentation;
@@ -10,18 +10,15 @@ mod framework_projections;
 mod imports;
 mod value_flow_phase;
 
-fn chained_member_receiver<'a, 'idx, F>(
+fn chained_member_receiver<'a, 'idx>(
     receiver: &'idx value_flow::TypeTarget<'a>,
     fields: &str,
     owner: &'a Node,
     path: &str,
-    at: acdd_core::semantic::SourcePosition,
-    input: &ResolutionInput<'a, F>,
+    at: crate::semantic::SourcePosition,
+    input: &ResolutionInput<'a>,
     profile: Option<&dyn LanguageProfile>,
-) -> Option<Cow<'idx, value_flow::TypeTarget<'a>>>
-where
-    F: AsRef<Facts> + Sync,
-{
+) -> Option<Cow<'idx, value_flow::TypeTarget<'a>>> {
     let value_flow = input.value_flow;
     let semantic_context = input.semantic_context;
     let mut receiver = Cow::Borrowed(receiver);
@@ -155,8 +152,9 @@ fn document_symbol_candidates<'a>(
     None
 }
 
-pub(super) struct ResolutionInput<'a, F> {
-    pub(super) all: &'a BTreeMap<String, F>,
+#[derive(Clone, Copy)]
+pub(super) struct ResolutionInput<'a> {
+    pub(super) all: &'a (dyn crate::FactsLookup + Sync),
     pub(super) interner: &'a interner::LinkerInterner<'a>,
     pub(super) owners: Option<&'a std::collections::BTreeSet<String>>,
     pub(super) dependency_registry: &'a DependencyRegistry,
@@ -193,8 +191,8 @@ struct LinkerContext<'a> {
     html_scripts: html::scripts::Registry<'a>,
 }
 
-pub(super) struct FileResolver<'a, 'file, F> {
-    input: &'file ResolutionInput<'a, F>,
+pub(super) struct FileResolver<'a, 'file> {
+    input: &'file ResolutionInput<'a>,
     linker: &'file LinkerContext<'a>,
     path: &'file str,
     path_arc: std::sync::Arc<str>,
@@ -215,13 +213,12 @@ pub(super) struct FileResolver<'a, 'file, F> {
     template_rules: Vec<&'file languages::manifests::syntax::SyntaxRule>,
 }
 
-impl<'a, 'file, F> FileResolver<'a, 'file, F>
+impl<'a, 'file> FileResolver<'a, 'file>
 where
     'a: 'file,
-    F: AsRef<Facts> + Sync,
 {
     fn new(
-        input: &'file ResolutionInput<'a, F>,
+        input: &'file ResolutionInput<'a>,
         path: &'file str,
         facts: &'a Facts,
         references: &'file [Reference],
@@ -270,15 +267,7 @@ where
     }
 }
 
-impl<'a, F> Copy for ResolutionInput<'a, F> {}
-
-impl<'a, F> Clone for ResolutionInput<'a, F> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>) -> Vec<GraphPart> {
+pub(super) fn resolve<'a>(input: ResolutionInput<'a>) -> Vec<GraphPart> {
     let ResolutionInput {
         all,
         owners,
@@ -325,12 +314,12 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
     };
 
     let prepared_files: Vec<_> = all
-        .iter()
+        .iter_facts()
         .filter(|(path, _)| owners.is_none_or(|owner_paths| owner_paths.contains(*path)))
         .map(|(path, file)| {
             (
-                path.as_str(),
-                file.as_ref(),
+                path,
+                file,
                 dependency_registry.language_context_for_path(path),
             )
         })
@@ -342,7 +331,7 @@ pub(super) fn resolve<'a, F: AsRef<Facts> + Sync>(input: ResolutionInput<'a, F>)
             let path = *path;
             let facts = *facts;
             let restored_references = occurrences.and_then(|files| files.get(path)).map(|bytes| {
-                acdd_core::semantic::decode_catalog_references(bytes, &facts.references)
+                crate::semantic::decode_catalog_references(bytes, &facts.references)
             });
             let references = restored_references.as_deref().unwrap_or(&facts.references);
             let profile = profiles.get(path).copied();

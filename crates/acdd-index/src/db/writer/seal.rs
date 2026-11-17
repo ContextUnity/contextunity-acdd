@@ -1,7 +1,11 @@
 use super::ingest::PreparedCoverage;
 use super::{CompactGraph, FileEntry, TypedFacts};
-use acdd_core::{
+use crate::{
     commitments::{ALGORITHM, DOMAINS},
+    db::commitments::{
+        encode_blob, encode_int as encode_integer, encode_real, encode_text, encode_text_bytes,
+        key as leaf_key, new_leaf_hasher,
+    },
     models::{compact_graph::Edge, is_test, stable_hash64, Node},
 };
 use anyhow::{ensure, Context, Result};
@@ -126,23 +130,38 @@ pub(super) fn local_facts_leaf(
     encode_integer(&mut hasher, i64::from(is_test));
     encode_integer(&mut hasher, 0);
     encode_blob(&mut hasher, facts_blob);
-    let key = leaf_key("local_facts", path)?;
+    let key = leaf_key("local_facts", path);
     let digest = hex::encode(hasher.finalize());
     Ok((key, digest))
 }
 
 pub(super) fn file_domain_leaves(
-    entries: &[FileEntry],
-    facts: &BTreeMap<String, TypedFacts>,
+    file: &FileEntry,
+    file_facts: &TypedFacts,
     reference_keys: &[String],
 ) -> Result<BTreeMap<&'static str, Leaves>> {
     let mut domains = BTreeMap::new();
-    let projected_nodes = project_file_domains(entries, facts, &mut domains, true)?;
+    let mut docs = OwnerHashers::new();
+    hash_doc_sections(&file_facts.docs, &mut docs)?;
+    domains.insert("doc_sections", finish_hashers("doc_sections", docs)?);
+    let mut projected_nodes = Vec::with_capacity(file_facts.nodes.len());
+    for (idx, node) in file_facts.nodes.iter().enumerate() {
+        let node_id = i64::try_from(idx + 1).context("node ID overflow")?;
+        projected_nodes.push(ProjectedNode {
+            owner: &file.path,
+            node,
+            node_id,
+            node_hash: stable_hash64(&node.id),
+        });
+    }
     domains.insert(
         "shared_owners",
-        project_shared_owner_domain(facts, &projected_nodes, Some(reference_keys))?,
+        project_shared_owner_entries(
+            std::iter::once((file.path.as_str(), file_facts)),
+            &projected_nodes,
+            Some(reference_keys),
+        )?,
     );
-    domains.retain(|domain, _| matches!(*domain, "doc_sections" | "shared_owners"));
     Ok(domains)
 }
 
@@ -195,19 +214,6 @@ pub(super) fn logical_domain_leaves(
     Ok(domains)
 }
 
-fn new_leaf_hasher(table: &str, owner: &str) -> Sha256 {
-    let mut hasher = Sha256::new();
-    hasher.update(ALGORITHM);
-    hasher.update(table);
-    hasher.update((owner.len() as u64).to_le_bytes());
-    hasher.update(owner.as_bytes());
-    hasher
-}
-
-fn leaf_key(table: &str, owner: &str) -> Result<String> {
-    Ok(format!("leaf:{}", serde_json::to_string(&(table, owner))?))
-}
-
 fn row_hasher<'map, 'owner>(
     hashers: &'map mut OwnerHashers<'owner>,
     table: &str,
@@ -220,37 +226,11 @@ fn row_hasher<'map, 'owner>(
     hasher
 }
 
-fn encode_text(hasher: &mut Sha256, value: &str) {
-    encode_text_bytes(hasher, value.as_bytes());
-}
-
-fn encode_text_bytes(hasher: &mut Sha256, value: &[u8]) {
-    hasher.update(b"t");
-    hasher.update((value.len() as u64).to_le_bytes());
-    hasher.update(value);
-}
-
-fn encode_integer(hasher: &mut Sha256, value: i64) {
-    hasher.update(b"i");
-    hasher.update(value.to_le_bytes());
-}
-
-fn encode_real(hasher: &mut Sha256, value: f64) {
-    hasher.update(b"r");
-    hasher.update(value.to_bits().to_le_bytes());
-}
-
-fn encode_blob(hasher: &mut Sha256, value: &[u8]) {
-    hasher.update(b"b");
-    hasher.update((value.len() as u64).to_le_bytes());
-    hasher.update(value);
-}
-
 fn finish_hashers(table: &'static str, hashers: OwnerHashers<'_>) -> Result<Leaves> {
-    hashers
+    Ok(hashers
         .into_iter()
-        .map(|(owner, hasher)| Ok((leaf_key(table, owner)?, hex::encode(hasher.finalize()))))
-        .collect()
+        .map(|(owner, hasher)| (leaf_key(table, owner), hex::encode(hasher.finalize())))
+        .collect())
 }
 
 fn project_file_domains<'a>(
@@ -306,27 +286,8 @@ fn project_file_domains<'a>(
             encode_text(hasher, &error.message);
         }
 
-        let mut file_docs: Vec<_> = file_facts
-            .docs
-            .iter()
-            .filter(|_| include_documents)
-            .collect();
-        file_docs.sort_unstable_by(|left, right| left.doc_id.cmp(&right.doc_id));
-        for doc in file_docs {
-            let size = i64::try_from(doc.size).context("document size exceeds SQLite range")?;
-            let invariants = serde_json::to_string(&doc.invariants)?;
-            let referenced = serde_json::to_string(&doc.referenced_symbols)?;
-            let hasher = row_hasher(&mut docs, "doc_sections", &doc.path);
-            encode_text(hasher, &doc.doc_id);
-            encode_text(hasher, &doc.path);
-            encode_text(hasher, &doc.section_title);
-            encode_text(hasher, &doc.doc_type);
-            encode_text(hasher, &doc.content);
-            encode_text(hasher, &invariants);
-            encode_text(hasher, &referenced);
-            encode_real(hasher, doc.mtime);
-            encode_integer(hasher, size);
-            encode_integer(hasher, i64::from(doc.is_invariant));
+        if include_documents {
+            hash_doc_sections(&file_facts.docs, &mut docs)?;
         }
 
         for node in &file_facts.nodes {
@@ -538,8 +499,48 @@ fn project_graph_domains<'a>(
     Ok(())
 }
 
+fn hash_doc_sections<'a>(
+    file_docs_slice: &'a [crate::models::DocSection],
+    docs: &mut OwnerHashers<'a>,
+) -> Result<()> {
+    if file_docs_slice.is_empty() {
+        return Ok(());
+    }
+    let mut file_docs: Vec<_> = file_docs_slice.iter().collect();
+    file_docs.sort_unstable_by(|left, right| left.doc_id.cmp(&right.doc_id));
+    for doc in file_docs {
+        let size = i64::try_from(doc.size).context("document size exceeds SQLite range")?;
+        let invariants = serde_json::to_string(&doc.invariants)?;
+        let referenced = serde_json::to_string(&doc.referenced_symbols)?;
+        let hasher = row_hasher(docs, "doc_sections", &doc.path);
+        encode_text(hasher, &doc.doc_id);
+        encode_text(hasher, &doc.path);
+        encode_text(hasher, &doc.section_title);
+        encode_text(hasher, &doc.doc_type);
+        encode_text(hasher, &doc.content);
+        encode_text(hasher, &invariants);
+        encode_text(hasher, &referenced);
+        encode_real(hasher, doc.mtime);
+        encode_integer(hasher, size);
+        encode_integer(hasher, i64::from(doc.is_invariant));
+    }
+    Ok(())
+}
+
 fn project_shared_owner_domain<'a>(
     facts: &'a BTreeMap<String, TypedFacts>,
+    projected_nodes: &[ProjectedNode<'a>],
+    prepared_references: Option<&'a [String]>,
+) -> Result<Leaves> {
+    project_shared_owner_entries(
+        facts.iter().map(|(owner, f)| (owner.as_str(), f)),
+        projected_nodes,
+        prepared_references,
+    )
+}
+
+fn project_shared_owner_entries<'a>(
+    entries: impl Iterator<Item = (&'a str, &'a TypedFacts)>,
     projected_nodes: &[ProjectedNode<'a>],
     prepared_references: Option<&'a [String]>,
 ) -> Result<Leaves> {
@@ -552,11 +553,11 @@ fn project_shared_owner_domain<'a>(
         id_by_node_id.insert(node.node_id, node.node.id.as_str());
     }
 
-    for (owner, file_facts) in facts {
-        if let Some(owner_nodes) = nodes_by_owner.get(owner.as_str()) {
+    for (owner, file_facts) in entries {
+        if let Some(owner_nodes) = nodes_by_owner.get(owner) {
             for projected in owner_nodes {
                 let key_hash = register_shared_key(&mut key_by_hash, &projected.node.qualname)?;
-                owner_rows.push((owner.as_str(), 0, key_hash, projected.node_id));
+                owner_rows.push((owner, 0, key_hash, projected.node_id));
             }
         }
         let keys = prepared_references.map_or_else(
@@ -565,13 +566,13 @@ fn project_shared_owner_domain<'a>(
         );
         for key in keys {
             let key_hash = register_shared_key(&mut key_by_hash, key)?;
-            owner_rows.push((owner.as_str(), 1, key_hash, 0));
+            owner_rows.push((owner, 1, key_hash, 0));
         }
-        if let Some(owner_nodes) = nodes_by_owner.get(owner.as_str()) {
+        if let Some(owner_nodes) = nodes_by_owner.get(owner) {
             for projected in owner_nodes {
                 if projected.node.details["default_export"] == true {
                     let key_hash = register_shared_key(&mut key_by_hash, &projected.node.id)?;
-                    owner_rows.push((owner.as_str(), 2, key_hash, 0));
+                    owner_rows.push((owner, 2, key_hash, 0));
                 }
             }
         }
@@ -637,7 +638,7 @@ fn project_shared_owner_domain<'a>(
             }
         }
         leaves.insert(
-            leaf_key("shared_owners", owner)?,
+            leaf_key("shared_owners", owner),
             hex::encode(hasher.finalize()),
         );
     }
@@ -730,7 +731,7 @@ fn project_coverage_domains<'a>(
             encode_text(&mut hasher, row.language);
         }
         owner_language.insert(
-            leaf_key("coverage_owner_language", &owner)?,
+            leaf_key("coverage_owner_language", &owner),
             hex::encode(hasher.finalize()),
         );
     }
@@ -746,7 +747,7 @@ fn project_coverage_domains<'a>(
             encode_integer(&mut hasher, count);
         }
         language_count_leaves.insert(
-            leaf_key("coverage_language_counts", &owner)?,
+            leaf_key("coverage_language_counts", &owner),
             hex::encode(hasher.finalize()),
         );
     }
@@ -848,7 +849,7 @@ fn project_dependency_domain<'a>(
             encode_text(&mut hasher, row.resolution);
         }
         leaves.insert(
-            leaf_key("dependencies", owner)?,
+            leaf_key("dependencies", owner),
             hex::encode(hasher.finalize()),
         );
     }

@@ -1,9 +1,8 @@
 use super::*;
 
-pub(super) fn phase_framework_projections<'a, 'file, F>(resolver: &mut FileResolver<'a, 'file, F>)
+pub(super) fn phase_framework_projections<'a, 'file>(resolver: &mut FileResolver<'a, 'file>)
 where
     'a: 'file,
-    F: AsRef<Facts> + Sync,
 {
     let input = resolver.input;
     let path = resolver.path;

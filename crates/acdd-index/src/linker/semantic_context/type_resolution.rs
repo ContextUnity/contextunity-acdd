@@ -152,11 +152,11 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         &self,
         owner: &'a Node,
         callee: &str,
-        site: Option<&acdd_core::semantic::CallSiteEvidence>,
+        site: Option<&crate::semantic::CallSiteEvidence>,
         at: SourcePosition,
         fallback: Option<TypeTarget<'a>>,
     ) -> Option<TypeTarget<'a>> {
-        use acdd_core::semantic::StaticArgument;
+        use crate::semantic::StaticArgument;
         if owner.language == "rust" && callee == "__rust_identity_some" {
             return Some(if self.unshadowed_global(owner, "Some", at) {
                 fallback.unwrap_or(TypeTarget::Unknown)
@@ -242,10 +242,10 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 .is_some_and(|state| {
                     matches!(
                         state,
-                        acdd_core::typed_facts::FlowState::Valid { facts, .. }
+                        crate::typed_facts::FlowState::Valid { facts, .. }
                             if facts.component_macros().any(|fact| {
                                 fact.callee == callee
-                                    && fact.role == acdd_core::semantic::ComponentMacroRole::Props
+                                    && fact.role == crate::semantic::ComponentMacroRole::Props
                                     && fact.position <= at
                             })
                     )
@@ -349,11 +349,11 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
         None
     }
 
-    fn value_flow(&self, node: &'a Node) -> Option<&'a acdd_core::semantic::ValueFlowFacts> {
+    fn value_flow(&self, node: &'a Node) -> Option<&'a crate::semantic::ValueFlowFacts> {
         let node_id = self.symbol_id(&node.id)?;
         match self.flows?.get(&node_id).copied()? {
-            acdd_core::typed_facts::FlowState::Valid { facts, .. } => Some(facts),
-            acdd_core::typed_facts::FlowState::Invalid(_) => None,
+            crate::typed_facts::FlowState::Valid { facts, .. } => Some(facts),
+            crate::typed_facts::FlowState::Invalid(_) => None,
         }
     }
 
@@ -362,7 +362,7 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
             self.flows.is_some_and(|flows| {
                 matches!(
                     flows.get(&node_id),
-                    Some(acdd_core::typed_facts::FlowState::Invalid(_))
+                    Some(crate::typed_facts::FlowState::Invalid(_))
                 )
             })
         })
@@ -375,15 +375,15 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
     fn raw_value_flow(&self, node: &'a Node) -> Option<&'a serde_json::Value> {
         let node_id = self.symbol_id(&node.id)?;
         match self.flows?.get(&node_id).copied()? {
-            acdd_core::typed_facts::FlowState::Invalid(value) => Some(value),
-            acdd_core::typed_facts::FlowState::Valid { .. } => None,
+            crate::typed_facts::FlowState::Invalid(value) => Some(value),
+            crate::typed_facts::FlowState::Valid { .. } => None,
         }
     }
     fn resolve_applied(
         &self,
         owner: &'a Node,
         base: &str,
-        args: &[acdd_core::semantic::TypeExpr],
+        args: &[crate::semantic::TypeExpr],
         at: SourcePosition,
     ) -> TypeTarget<'a> {
         let clean_base = base.rsplit_once('.').map_or(base, |(_, name)| name);
@@ -455,10 +455,10 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
     fn resolve_payload(
         &self,
         owner: &'a Node,
-        expression: &acdd_core::semantic::TypeExpr,
+        expression: &crate::semantic::TypeExpr,
         at: SourcePosition,
     ) -> TypeTarget<'a> {
-        let acdd_core::semantic::TypeExpr::Applied { base, args } = expression else {
+        let crate::semantic::TypeExpr::Applied { base, args } = expression else {
             return TypeTarget::Unknown;
         };
         if args.is_empty() {

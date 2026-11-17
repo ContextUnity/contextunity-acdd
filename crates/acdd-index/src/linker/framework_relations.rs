@@ -111,16 +111,16 @@ fn extend_semantic_state<'a>(
 }
 
 impl<'a> PreparedSemanticFacts<'a> {
-    pub(super) fn build<F: AsRef<Facts> + Sync>(
-        all: &'a BTreeMap<String, F>,
+    pub(super) fn build(
+        all: &'a (dyn crate::FactsLookup + Sync),
         interner: &'a LinkerInterner<'a>,
     ) -> Self {
-        let files: Vec<_> = all
+        let entries: Vec<_> = all.iter_facts().collect();
+        let files: Vec<_> = entries
             .par_iter()
-            .filter_map(|(path, source)| {
+            .filter_map(|&(path, source)| {
                 let mut facts = Vec::new();
                 let mut errors = Vec::new();
-                let source = source.as_ref();
                 if source.semantic.is_complete() {
                     for (_, entry) in source.semantic.entries() {
                         extend_semantic_state(
@@ -283,8 +283,8 @@ pub(super) fn project_scope(
 /// Route handlers, HTTP clients, HTML requests, and template render contexts
 /// are indexed independently by their source profiles. This pass joins those
 /// explicit facts after language resolution and returns only graph output.
-pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
-    all: &'a BTreeMap<String, F>,
+pub(super) fn compose<'a>(
+    all: &'a (dyn crate::FactsLookup + Sync),
     owners: Option<&std::collections::BTreeSet<String>>,
     flows: Option<&'a HashMap<SymbolId, &'a FlowState>>,
     dependencies: &languages::dependency_registry::DependencyRegistry,
@@ -310,10 +310,10 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
     }
     let route_index = routes::RouteIndex::build(nodes);
     let http_target_contexts = routes::HttpTargetContexts::build(
-        all.iter()
+        all.iter_facts()
             .filter(|(path, _)| owners.is_none_or(|owners| owners.contains(*path)))
             .filter(|(_, source)| {
-                source.as_ref().references.iter().any(|reference| {
+                source.references.iter().any(|reference| {
                     reference.kind == "calls_endpoint"
                         && matches!(
                             &reference.receiver_hint,
@@ -321,7 +321,7 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
                         )
                 })
             })
-            .map(|(path, _)| path.as_str()),
+            .map(|(path, _)| path),
         dependencies,
     );
     use languages::semantic::{SemanticFactRole, SemanticIdentity};
@@ -356,11 +356,14 @@ pub(super) fn compose<'a, F: AsRef<Facts> + Sync>(
     #[cfg(feature = "lang-html")]
     let expressions = html_templates::ExpressionRegistry::build(all);
 
-    all.par_iter()
+    let owned_files: Vec<_> = all
+        .iter_facts()
         .filter(|(path, _)| owners.is_none_or(|owners| owners.contains(*path)))
-        .map(|(path, source)| {
-            let facts = source.as_ref();
-            let path_arc = std::sync::Arc::<str>::from(path.as_str());
+        .collect();
+    owned_files
+        .par_iter()
+        .map(|&(path, facts)| {
+            let path_arc = std::sync::Arc::<str>::from(path);
             let mut graph = Graph {
                 edges: Vec::new(),
                 coverage: Vec::new(),

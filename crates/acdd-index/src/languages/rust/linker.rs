@@ -4,7 +4,7 @@ use crate::linker::traits::{
     insert_package_export, package_export, resolve_default_import, ImportContext, ImportResolution,
     LanguageLinker, ModulesByNamespace, PackageExports,
 };
-use acdd_core::models::{Facts, Node};
+use crate::models::{Facts, Node};
 use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeMap;
 
@@ -101,11 +101,11 @@ struct ModuleVisibility {
 }
 
 impl ModuleVisibility {
-    fn build<F: AsRef<Facts>>(all: &BTreeMap<String, F>) -> Self {
+    fn build(all: &dyn crate::FactsLookup) -> Self {
         let mut domains = HashMap::new();
         for declaration in all
-            .values()
-            .flat_map(|facts| &facts.as_ref().nodes)
+            .values_facts()
+            .flat_map(|facts| &facts.nodes)
             .filter(|node| {
                 node.language == "rust"
                     && node.kind == "module_declaration"
@@ -174,15 +174,15 @@ impl<'a> AliasTargets<'a> {
     }
 }
 
-fn direct_members<'a, F: AsRef<Facts>>(
-    all: &'a BTreeMap<String, F>,
+fn direct_members<'a>(
+    all: &'a dyn crate::FactsLookup,
     module: &'a Node,
     name: &str,
 ) -> Vec<&'a Node> {
     let qualified = format!("{}.{}", module.qualname, name);
-    all.get(module.path.as_str())
+    all.get_facts(module.path.as_str())
         .into_iter()
-        .flat_map(|facts| facts.as_ref().nodes.iter())
+        .flat_map(|facts| facts.nodes.iter())
         .filter(|node| {
             node.qualname == qualified && !matches!(node.kind.as_str(), "module" | "impl")
         })
@@ -297,8 +297,8 @@ fn is_crate_visible(node: &Node, requester: &str) -> bool {
             .is_some_and(|scope| within(requester, &scope))
 }
 
-struct AliasResolver<'a, 'lookup, F: AsRef<Facts>> {
-    all: &'a BTreeMap<String, F>,
+struct AliasResolver<'a, 'lookup> {
+    all: &'a dyn crate::FactsLookup,
     modules_by_namespace: &'lookup ModulesByNamespace<'a>,
     normalized_imports: &'lookup HashMap<(&'a str, &'a str), Option<ImportPath>>,
     memo: HashMap<(AliasKey<'a>, usize), AliasTargets<'a>>,
@@ -306,7 +306,7 @@ struct AliasResolver<'a, 'lookup, F: AsRef<Facts>> {
     module_visibility: &'lookup ModuleVisibility,
 }
 
-impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
+impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
     fn resolve(
         &mut self,
         module: &'a Node,
@@ -341,7 +341,7 @@ impl<'a, 'lookup, F: AsRef<Facts>> AliasResolver<'a, 'lookup, F> {
             }
             return Some(result);
         }
-        let facts = self.all.get(module.path.as_str())?.as_ref();
+        let facts = self.all.get_facts(module.path.as_str())?;
         let named = facts.references.iter().any(|reference| {
             reference.kind == "imports"
                 && reference.source == module.id
@@ -545,8 +545,8 @@ pub(crate) struct RustForwarding<'a> {
 }
 
 impl<'a> RustForwarding<'a> {
-    pub(crate) fn build<F: AsRef<Facts>>(
-        all: &'a BTreeMap<String, F>,
+    pub(crate) fn build(
+        all: &'a dyn crate::FactsLookup,
         modules_by_namespace: &ModulesByNamespace<'a>,
         normalized_imports: &HashMap<(&'a str, &'a str), Option<ImportPath>>,
         interner: &mut LinkerInterner<'a>,
@@ -566,9 +566,9 @@ impl<'a> RustForwarding<'a> {
         let mut restricted_bindings: HashMap<&str, HashMap<&str, AliasTargets<'a>>> =
             HashMap::new();
         let modules: Vec<_> = all
-            .values()
+            .values_facts()
             .flat_map(|facts| {
-                facts.as_ref().nodes.iter().filter(|node| {
+                facts.nodes.iter().filter(|node| {
                     matches!(node.kind.as_str(), "module" | "module_declaration")
                         && node.language == "rust"
                 })
@@ -576,7 +576,9 @@ impl<'a> RustForwarding<'a> {
             .collect();
         let mut names_by_module = HashMap::<&str, HashSet<&str>>::new();
         for module in &modules {
-            let facts = all[module.path.as_str()].as_ref();
+            let Some(facts) = all.get_facts(module.path.as_str()) else {
+                continue;
+            };
             let names = names_by_module.entry(module.path.as_str()).or_default();
             names.extend(["std", "core"]);
             names.extend(
@@ -604,9 +606,11 @@ impl<'a> RustForwarding<'a> {
         for _ in 0..RUST_ALIAS_DEPTH {
             let mut additions = Vec::new();
             for module in &modules {
+                let Some(facts) = all.get_facts(module.path.as_str()) else {
+                    continue;
+                };
                 for reference in
-                    all[module.path.as_str()]
-                        .as_ref()
+                    facts
                         .references
                         .iter()
                         .filter(|reference| {
@@ -651,8 +655,7 @@ impl<'a> RustForwarding<'a> {
             }
         }
 
-        for facts in all.values() {
-            let facts = facts.as_ref();
+        for facts in all.values_facts() {
             let Some(module) = facts
                 .nodes
                 .iter()
@@ -1196,17 +1199,17 @@ fn resolve_type<'a>(
 }
 
 impl<'a> RustMembers<'a> {
-    pub(crate) fn build<F: AsRef<Facts>>(
-        all: &'a BTreeMap<String, F>,
+    pub(crate) fn build(
+        all: &'a dyn crate::FactsLookup,
         interner: &LinkerInterner<'a>,
-        flows: Option<&HashMap<SymbolId, &acdd_core::typed_facts::FlowState>>,
+        flows: Option<&HashMap<SymbolId, &crate::typed_facts::FlowState>>,
         forwarding: &RustForwarding<'a>,
     ) -> Self {
         let mut by_qual = HashMap::<&str, Vec<&Node>>::new();
         let mut by_id = HashMap::<&str, &Node>::new();
         for node in all
-            .values()
-            .flat_map(|facts| &facts.as_ref().nodes)
+            .values_facts()
+            .flat_map(|facts| &facts.nodes)
             .filter(|node| node.language == "rust")
         {
             by_qual.entry(&node.qualname).or_default().push(node);
@@ -1225,9 +1228,8 @@ impl<'a> RustMembers<'a> {
         let mut traits: TraitImplMap<'a> = HashMap::new();
         let mut visible_traits: HashMap<&'a str, HashSet<&'a str>> = HashMap::new();
         let mut trait_defaults = HashMap::<&str, Vec<&Node>>::new();
-        for facts in all.values() {
+        for facts in all.values_facts() {
             for edge in facts
-                .as_ref()
                 .edges
                 .iter()
                 .filter(|edge| edge.kind == "contains")
@@ -1257,8 +1259,7 @@ impl<'a> RustMembers<'a> {
         }
         let mut deref_candidates = HashMap::<&str, Option<&Node>>::new();
         let mut unproven_deref_members = Vec::new();
-        for facts in all.values() {
-            let facts = facts.as_ref();
+        for facts in all.values_facts() {
             let Some(module) = facts
                 .nodes
                 .iter()
@@ -1344,13 +1345,13 @@ impl<'a> RustMembers<'a> {
                                 .lookup_symbol(&target.id)
                                 .and_then(|target_id| flows.get(&target_id).copied());
                             match state {
-                                Some(acdd_core::typed_facts::FlowState::Valid {
+                                Some(crate::typed_facts::FlowState::Valid {
                                     facts, ..
                                 }) => facts.alias_type.clone(),
                                 _ => None,
                             }
                         } else {
-                            acdd_core::semantic::ValueFlowFacts::deserialize_for_scope(
+                            crate::semantic::ValueFlowFacts::deserialize_for_scope(
                                 &target.details["value_flow"],
                                 false,
                             )
@@ -1358,7 +1359,7 @@ impl<'a> RustMembers<'a> {
                             .and_then(|facts| facts.alias_type.clone())
                         };
                         match alias {
-                            Some(acdd_core::semantic::TypeExpr::Named { name }) => {
+                            Some(crate::semantic::TypeExpr::Named { name }) => {
                                 resolve_type(facts, target, &name, &by_qual).filter(|node| {
                                     node.kind == "struct" && node.details["deref_unproven"] != true
                                 })
@@ -1403,8 +1404,7 @@ impl<'a> RustMembers<'a> {
         for receiver in invalid {
             index.deref_targets.remove(receiver);
         }
-        for facts in all.values() {
-            let facts = facts.as_ref();
+        for facts in all.values_facts() {
             let Some(module) = facts
                 .nodes
                 .iter()
@@ -1696,15 +1696,14 @@ impl<'a> RustMembers<'a> {
     }
 }
 
-fn required_full_facts<F: AsRef<Facts>>(
-    facts: &BTreeMap<String, F>,
+fn required_full_facts(
+    facts: &dyn crate::FactsLookup,
     affected: &std::collections::BTreeSet<String>,
     catalog: &[(&str, &str)],
 ) -> std::collections::BTreeSet<String> {
     let workspaces: HashSet<_> = facts
-        .iter()
+        .iter_facts()
         .filter(|(path, facts)| {
-            let facts = facts.as_ref();
             affected.contains(*path)
                 && facts.nodes.iter().any(|node| node.language == "rust")
                 && facts.references.iter().any(|reference| {

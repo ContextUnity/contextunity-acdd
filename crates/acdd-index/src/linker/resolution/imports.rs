@@ -1,9 +1,8 @@
 use super::*;
 
-pub(super) fn phase_imports<'a, 'file, F>(resolver: &mut FileResolver<'a, 'file, F>)
+pub(super) fn phase_imports<'a, 'file>(resolver: &mut FileResolver<'a, 'file>)
 where
     'a: 'file,
-    F: AsRef<Facts> + Sync,
 {
     let input = resolver.input;
     let path = resolver.path;
@@ -141,9 +140,9 @@ where
                         .strip_prefix(&target_module.qualname)
                         .is_some_and(|suffix| suffix.starts_with('.'))
                 {
-                    if let Some(target_facts) = all.get(&target_module.path) {
+                    if let Some(target_facts) = all.get_facts(&target_module.path) {
                         for parent_import in
-                            target_facts.as_ref().references.iter().filter(|import| {
+                            target_facts.references.iter().filter(|import| {
                                 import.kind == "imports"
                                     && import.source == target_module.id
                                     && import.alias.as_deref().is_some_and(|alias| alias != "*")
@@ -178,7 +177,6 @@ where
                                 continue;
                             }
                             if target_facts
-                                .as_ref()
                                 .references
                                 .iter()
                                 .filter(|import| {

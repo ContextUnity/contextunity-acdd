@@ -115,10 +115,22 @@ impl<'a> NamedBindings<'a> {
         dependencies: &'a DependencyRegistry,
         nodes: &HashMap<SymbolId, &'a Node>,
     ) -> Self {
+        Self::build_lookup(all, interner, flows, uncertainties, faults, dependencies, nodes)
+    }
+
+    pub(crate) fn build_lookup(
+        all: &'a dyn crate::FactsLookup,
+        interner: &LinkerInterner<'a>,
+        flows: Option<&'a HashMap<SymbolId, &'a FlowState>>,
+        uncertainties: Option<&'a HashMap<SymbolId, &'a [NamedDefinitionUncertainty]>>,
+        faults: Option<&HashSet<SymbolId>>,
+        dependencies: &'a DependencyRegistry,
+        nodes: &HashMap<SymbolId, &'a Node>,
+    ) -> Self {
         let mut index = Self::default();
         let mut scanned_reference_scopes: HashSet<(PathId, usize)> = HashSet::new();
         let mut pinned_rules: Vec<std::sync::Arc<languages::LanguageContext>> = Vec::new();
-        for (path, file) in all {
+        for (path, file) in all.iter_facts() {
             let scope = interner
                 .lookup_path(project(path, dependencies))
                 .expect("project scope is interned");
@@ -161,7 +173,7 @@ impl<'a> NamedBindings<'a> {
                     }
                 }
             }
-            for owner in &file.as_ref().nodes {
+            for owner in &file.nodes {
                 let owner_id = interner
                     .lookup_symbol(&owner.id)
                     .expect("named-binding owner id is interned");
@@ -375,7 +387,7 @@ impl<'a> NamedBindings<'a> {
         if !position_paths.is_empty() {
             // Keep every competing node at a demanded path, including duplicate
             // positions and nodes stored under a different inventory key.
-            for owner in all.values().flat_map(|file| &file.as_ref().nodes) {
+            for owner in all.values_facts().flat_map(|file| &file.nodes) {
                 let path = interner.lookup_path(&owner.path).expect("catalog path");
                 if position_paths.contains(&path) {
                     index

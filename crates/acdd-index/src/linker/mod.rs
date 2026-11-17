@@ -654,8 +654,8 @@ fn language_context_key_hash(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
-    all: &'a BTreeMap<String, F>,
+fn link_compact_impl<'a, 'maps, 'uncertainties>(
+    all: &'a (dyn crate::FactsLookup + Sync),
     public_all: Option<&'a BTreeMap<String, Facts>>,
     owners: Option<&std::collections::BTreeSet<String>>,
     root: Option<&Path>,
@@ -675,7 +675,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
         .collect();
     let mut context_representatives = HashMap::<u64, Vec<(&str, Vec<&str>)>>::new();
     let mut context_scopes = Vec::with_capacity(families.len());
-    for path in all.keys() {
+    for path in all.keys_facts() {
         let (workspace, _) = languages::workspace_path(path);
         context_scopes.clear();
         for family in &families {
@@ -715,7 +715,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
                     ) {
                         let scope_key = (scope.to_owned(), rule.pack.clone(), rule.id.clone());
                         if component_name_scopes.insert(scope_key) {
-                            for provider_path in all.keys() {
+                            for provider_path in all.keys_facts() {
                                 if let Some((pascal, kebab)) = semantic_context::component_names(
                                     provider_path,
                                     scope,
@@ -807,7 +807,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
         }
     }
 
-    for path in all.keys() {
+    for path in all.keys_facts() {
         interner.intern_path(languages::workspace_path(path).0);
         for family in [
             languages::LanguageFamily("javascript"),
@@ -819,7 +819,9 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
         }
     }
     if let Some(flows) = flows {
-        for state in flows.values() {
+        let mut flow_entries: Vec<_> = flows.iter().map(|(&id, &state)| (id, state)).collect();
+        flow_entries.sort_unstable_by_key(|(id, _)| *id);
+        for (_, state) in flow_entries {
             if let crate::core::typed_facts::FlowState::Valid { facts, .. } = state {
                 for binding in &facts.bindings {
                     interner.intern_symbol(&binding.name);
@@ -857,12 +859,19 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
         }
     }
     if let Some(uncertainties) = uncertainties {
-        for marker in uncertainties.values().flat_map(|markers| markers.iter()) {
-            interner.intern_owned_symbol(std::sync::Arc::<str>::from(marker.domain.as_str()));
-            interner.intern_owned_symbol(std::sync::Arc::<str>::from(marker.origin.pack.as_str()));
-            interner.intern_owned_symbol(std::sync::Arc::<str>::from(marker.origin.rule.as_str()));
-            if let crate::core::semantic::StaticString::Literal { value } = &marker.key {
-                interner.intern_owned_symbol(std::sync::Arc::<str>::from(value.as_str()));
+        let mut uncertainty_entries: Vec<_> = uncertainties
+            .iter()
+            .map(|(&id, &markers)| (id, markers))
+            .collect();
+        uncertainty_entries.sort_unstable_by_key(|(id, _)| *id);
+        for (_, markers) in uncertainty_entries {
+            for marker in markers {
+                interner.intern_owned_symbol_str(&marker.domain);
+                interner.intern_owned_symbol_str(&marker.origin.pack);
+                interner.intern_owned_symbol_str(&marker.origin.rule);
+                if let crate::core::semantic::StaticString::Literal { value } = &marker.key {
+                    interner.intern_owned_symbol_str(value);
+                }
             }
         }
     }
@@ -878,28 +887,30 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
         }
     };
     let (parts, sort_per_file) = {
-        let nodes: Vec<&Node> = all.values().flat_map(|f| f.as_ref().nodes.iter()).collect();
+        let nodes: Vec<&Node> = all
+            .values_facts()
+            .flat_map(|f| f.nodes.iter())
+            .collect();
         let sort_per_file = nodes.len() >= 8192 && all.len() >= 32;
         let mut by_name: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(nodes.len());
         let mut by_qual: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(nodes.len());
         let mut by_suffix: HashMap<&str, Vec<&Node>> = HashMap::new();
         let mut by_id: HashMap<interner::SymbolId, &Node> = HashMap::with_capacity(nodes.len());
         let mut by_module: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(all.len());
-        let needs_discovery = all.iter().any(|(path, facts)| {
-            let facts = facts.as_ref();
+        let needs_discovery = all.iter_facts().any(|(path, facts)| {
             owners.is_none_or(|o| o.contains(path))
                 && facts
                     .docs
                     .iter()
                     .any(|doc| !doc.referenced_symbols.is_empty())
         });
+        let mut node_bindings: NodeBindingIndex = HashMap::new();
+        let mut node_rebindings: NodeBindingIndex = HashMap::new();
         for n in &nodes {
+            let node_id = interner.lookup_symbol(&n.id).expect("node id is interned");
             by_name.entry(&n.name).or_default().push(n);
             by_qual.entry(&n.qualname).or_default().push(n);
-            by_id.insert(
-                interner.lookup_symbol(&n.id).expect("node id is interned"),
-                n,
-            );
+            by_id.insert(node_id, n);
             by_module.entry(&n.path).or_default().push(n);
             if needs_discovery {
                 for (i, c) in n.qualname.char_indices() {
@@ -908,12 +919,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
                     }
                 }
             }
-        }
-        let mut node_bindings: NodeBindingIndex = HashMap::new();
-        let mut node_rebindings: NodeBindingIndex = HashMap::new();
-        for n in &nodes {
             if n.binding_count() > 0 {
-                let node_id = interner.lookup_symbol(&n.id).expect("node id is interned");
                 node_bindings.insert(
                     node_id,
                     n.binding_names()
@@ -926,7 +932,6 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
                 );
             }
             if n.rebinding_count() > 0 {
-                let node_id = interner.lookup_symbol(&n.id).expect("node id is interned");
                 node_rebindings.insert(
                     node_id,
                     n.rebinding_names()
@@ -939,7 +944,6 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
                 );
             }
             if n.kind == "module" && n.language == "python" {
-                let node_id = interner.lookup_symbol(&n.id).expect("node id is interned");
                 if let Some(crate::core::typed_facts::FlowState::Valid { facts, .. }) =
                     flows.and_then(|states| states.get(&node_id))
                 {
@@ -966,8 +970,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
             names.dedup();
         }
         let mut children_by_parent: HashMap<interner::SymbolId, Vec<&Node>> = HashMap::new();
-        for f in all.values() {
-            let f = f.as_ref();
+        for f in all.values_facts() {
             for e in &f.edges {
                 if e.kind == "contains" {
                     let Some(source_id) = interner.lookup_symbol(&e.src) else {
@@ -988,9 +991,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
         let namespace_indexes =
             indexing::NamespaceIndexes::build(all, &nodes, root, dependency_registry, interner);
         let borrowed_all = public_all.is_none().then(|| {
-            all.iter()
-                .map(|(path, facts)| (path.as_str(), facts.as_ref()))
-                .collect::<BTreeMap<_, _>>()
+            all.iter_facts().collect::<BTreeMap<_, _>>()
         });
         let package_exports = indexing::package_exports(
             &namespace_indexes.profiles,
@@ -1180,13 +1181,13 @@ fn link_compact_impl<'a, 'maps, 'uncertainties, F: AsRef<Facts> + Sync>(
     result
 }
 
-fn manifest_entrypoint_edges<F: AsRef<Facts>>(
-    all: &BTreeMap<String, F>,
+fn manifest_entrypoint_edges(
+    all: &dyn crate::FactsLookup,
     owners: Option<&std::collections::BTreeSet<String>>,
     graph: &mut Graph,
 ) {
-    let mut candidates: HashMap<(String, String), Vec<&Node>> = HashMap::new();
-    for node in all.values().flat_map(|file| &file.as_ref().nodes) {
+    let mut candidates: BTreeMap<(String, String), Vec<&Node>> = BTreeMap::new();
+    for node in all.values_facts().flat_map(|file| &file.nodes) {
         if node.kind != "main_registration" {
             continue;
         }
@@ -1213,7 +1214,7 @@ fn manifest_entrypoint_edges<F: AsRef<Facts>>(
         if owners.is_some_and(|owners| !owners.contains(&registration.path)) {
             continue;
         }
-        let Some(file) = all.get(&registration.path).map(AsRef::as_ref) else {
+        let Some(file) = all.get_facts(&registration.path) else {
             continue;
         };
         let Some(module) = file.nodes.iter().find(|node| node.kind == "module") else {

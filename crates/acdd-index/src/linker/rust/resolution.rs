@@ -1,20 +1,17 @@
 use super::super::semantic_context::LanguageMemberLookup;
 use crate::languages::LanguageProfile;
-use acdd_core::models::{compact_graph::Graph, Node, ReceiverHint, Reference};
+use crate::models::{compact_graph::Graph, Node, ReceiverHint, Reference};
 use hashbrown::HashMap;
 
 pub use crate::languages::rust::declarative_macro_classification;
 
-pub(in crate::linker) fn dynamic_receiver_member<'a, F>(
-    input: &super::super::resolution::ResolutionInput<'a, F>,
+pub(in crate::linker) fn dynamic_receiver_member<'a>(
+    input: &super::super::resolution::ResolutionInput<'a>,
     path: &str,
     reference: &Reference,
     owner: Option<&'a Node>,
     graph: &mut Graph,
-) -> bool
-where
-    F: AsRef<acdd_core::models::Facts> + Sync,
-{
+) -> bool {
     use super::super::{semantic_context::Member, value_flow::TypeTarget};
 
     let Some(owner) = owner.filter(|owner| owner.language == "rust") else {
@@ -85,9 +82,9 @@ where
 
 fn fallback_receiver_value(
     expression: &str,
-    at: acdd_core::semantic::SourcePosition,
-) -> Option<acdd_core::semantic::ValueExpr> {
-    use acdd_core::semantic::{CallSiteEvidence, TypeExpr, ValueExpr};
+    at: crate::semantic::SourcePosition,
+) -> Option<crate::semantic::ValueExpr> {
+    use crate::semantic::{CallSiteEvidence, TypeExpr, ValueExpr};
     if expression.len() > 512 {
         return None;
     }

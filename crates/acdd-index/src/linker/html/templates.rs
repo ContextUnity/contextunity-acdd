@@ -9,17 +9,16 @@ pub(in crate::linker) struct TemplateRootRegistry<'a> {
 }
 
 impl<'a> TemplateRootRegistry<'a> {
-    pub(in crate::linker) fn build<F: AsRef<Facts> + Sync>(
-        all: &'a BTreeMap<String, F>,
+    pub(in crate::linker) fn build(
+        all: &'a dyn crate::FactsLookup,
         dependencies: &languages::dependency_registry::DependencyRegistry,
         flows: Option<&'a HashMap<super::super::interner::SymbolId, &'a FlowState>>,
         interner: &super::super::interner::LinkerInterner<'a>,
     ) -> Self {
         let mut by_root: HashMap<&str, Vec<(&Node, &crate::core::semantic::ExtractionRuleOrigin)>> =
             HashMap::new();
-        for (path, source) in all {
+        for (path, source) in all.iter_facts() {
             let mut roots = source
-                .as_ref()
                 .nodes
                 .iter()
                 .filter(|node| node.kind == "template_loader_root" && node.language == "python")
@@ -106,10 +105,10 @@ impl<'a> TemplateRootRegistry<'a> {
     }
 }
 
-fn source_imports_are_external<F: AsRef<Facts> + Sync>(
+fn source_imports_are_external(
     owner: &str,
     node: &Node,
-    all: &BTreeMap<String, F>,
+    all: &dyn crate::FactsLookup,
     dependencies: &languages::dependency_registry::DependencyRegistry,
 ) -> bool {
     let Some(profile) = languages::by_id("python") else {
@@ -150,7 +149,7 @@ fn source_imports_are_external<F: AsRef<Facts> + Sync>(
                     } else {
                         format!("{directory}/{stem}{suffix}")
                     };
-                    all.contains_key(&candidate)
+                    all.contains_facts(&candidate)
                 })
         };
         let mut directory = owner
@@ -185,16 +184,15 @@ fn template_library_name<'a>(path: &'a str, directory: &str) -> Option<&'a str> 
         })
 }
 
-pub(in crate::linker) fn required_full_facts<F: AsRef<Facts>>(
-    facts: &BTreeMap<String, F>,
+pub(in crate::linker) fn required_full_facts(
+    facts: &dyn crate::FactsLookup,
     catalog: &[(&str, &str)],
     dependencies: &languages::dependency_registry::DependencyRegistry,
 ) -> BTreeSet<String> {
     let mut required = BTreeSet::new();
     let mut python_catalog_by_scope: Option<HashMap<(&str, &str), Vec<&str>>> = None;
-    for (owner, facts) in facts {
+    for (owner, facts) in facts.iter_facts() {
         let mut loads = facts
-            .as_ref()
             .references
             .iter()
             .filter(|reference| reference.kind == "template_loads")
@@ -321,15 +319,14 @@ pub(in crate::linker) struct Registry<'a> {
 }
 
 impl<'a> Registry<'a> {
-    pub(in crate::linker) fn build<F: AsRef<Facts> + Sync>(
-        all: &'a BTreeMap<String, F>,
+    pub(in crate::linker) fn build(
+        all: &'a dyn crate::FactsLookup,
         flows: Option<&HashMap<super::super::interner::SymbolId, &FlowState>>,
         interner: &super::super::interner::LinkerInterner<'_>,
         dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Self {
         let mut by_scope: HashMap<String, HashMap<&'a str, Vec<Library<'a>>>> = HashMap::new();
-        for (path, source) in all {
-            let facts = source.as_ref();
+        for (path, facts) in all.iter_facts() {
             let Some(module) = facts
                 .nodes
                 .iter()
@@ -524,10 +521,9 @@ pub(in crate::linker) struct ExpressionRegistry<'a> {
 }
 
 impl<'a> ExpressionRegistry<'a> {
-    pub(in crate::linker) fn build<F: AsRef<Facts> + Sync>(all: &'a BTreeMap<String, F>) -> Self {
+    pub(in crate::linker) fn build(all: &'a dyn crate::FactsLookup) -> Self {
         let mut files = HashMap::new();
-        for (path, source) in all {
-            let facts = source.as_ref();
+        for (path, facts) in all.iter_facts() {
             let Some(module) = facts
                 .nodes
                 .iter()
@@ -557,7 +553,7 @@ impl<'a> ExpressionRegistry<'a> {
                 .filter(|reference| reference.kind == "template_bindings")
                 .collect();
             files.insert(
-                path.as_str(),
+                path,
                 TemplateFile {
                     module,
                     variables,
@@ -674,30 +670,28 @@ pub(in crate::linker) struct RenderContextRegistry<'a> {
 }
 
 impl<'a> RenderContextRegistry<'a> {
-    pub(in crate::linker) fn build<F: AsRef<Facts> + Sync>(
-        all: &'a BTreeMap<String, F>,
+    pub(in crate::linker) fn build(
+        all: &'a dyn crate::FactsLookup,
         flows: Option<&HashMap<super::super::interner::SymbolId, &FlowState>>,
         semantic_context: &semantic_context::Context<'a>,
         dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Self {
         let modules: HashMap<&'a str, &'a Node> = all
-            .iter()
+            .iter_facts()
             .filter_map(|(path, source)| {
                 source
-                    .as_ref()
                     .nodes
                     .iter()
                     .find(|node| node.kind == "module" && node.language == "html")
-                    .map(|node| (path.as_str(), node))
+                    .map(|node| (path, node))
             })
             .collect();
         let mut includes: HashMap<&'a str, Vec<&'a str>> = HashMap::new();
-        for (path, source) in all {
-            if !modules.contains_key(path.as_str()) {
+        for (path, source) in all.iter_facts() {
+            if !modules.contains_key(path) {
                 continue;
             }
             let mut include_refs = source
-                .as_ref()
                 .references
                 .iter()
                 .filter(|reference| reference.kind == "includes")
@@ -711,7 +705,7 @@ impl<'a> RenderContextRegistry<'a> {
                     languages::html::local_template_target(path, &reference.expression, &context)
                 {
                     if let Some((&target_path, _)) = modules.get_key_value(target.as_str()) {
-                        includes.entry(path.as_str()).or_default().push(target_path);
+                        includes.entry(path).or_default().push(target_path);
                     }
                 }
             }
@@ -719,9 +713,8 @@ impl<'a> RenderContextRegistry<'a> {
         let mut providers = Vec::new();
         let mut by_template: HashMap<&'a str, Vec<usize>> = HashMap::new();
         let mut by_provider: HashMap<&'a str, Vec<(usize, &'a Node)>> = HashMap::new();
-        for (path, source) in all {
+        for (path, source) in all.iter_facts() {
             let Some(import_owner) = source
-                .as_ref()
                 .nodes
                 .iter()
                 .find(|node| node.kind == "module" && node.language == "python")
@@ -735,7 +728,7 @@ impl<'a> RenderContextRegistry<'a> {
             };
             let rules = dependencies.language_context_for_path(path);
             let workspace = languages::workspace_path(path).0;
-            for node in source.as_ref().nodes.iter().filter(|node| {
+            for node in source.nodes.iter().filter(|node| {
                 node.language == "python"
                     && matches!(node.kind.as_str(), "module" | "function" | "method")
             }) {
@@ -816,7 +809,7 @@ impl<'a> RenderContextRegistry<'a> {
                         };
                         by_template.entry(current).or_default().push(index);
                         by_provider
-                            .entry(path.as_str())
+                            .entry(path)
                             .or_default()
                             .push((index, module));
                         if let Some(children) = includes.get(current) {
@@ -1028,8 +1021,8 @@ pub(in crate::linker) fn builtin_in_scope(
     )
 }
 
-pub(in crate::linker) fn resolve_reference<F: AsRef<Facts> + Sync>(
-    input: &ResolutionInput<'_, F>,
+pub(in crate::linker) fn resolve_reference(
+    input: &ResolutionInput<'_>,
     templates: &Registry<'_>,
     path: &str,
     loads: &[&Reference],

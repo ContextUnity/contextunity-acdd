@@ -30,9 +30,9 @@ fn position(value: &Value) -> Option<SourcePosition> {
 }
 
 impl<'a> CommonJsBindings<'a> {
-    pub(crate) fn build<F: AsRef<Facts>>(all: &'a BTreeMap<String, F>) -> Self {
+    pub(crate) fn build(all: &'a dyn crate::FactsLookup) -> Self {
         let mut result = Self::default();
-        for facts in all.values().map(AsRef::as_ref) {
+        for facts in all.values_facts() {
             for owner in facts.nodes.iter().filter(|node| {
                 node.kind == "module"
                     && matches!(node.language.as_str(), "javascript" | "typescript" | "vue")

@@ -49,8 +49,8 @@ pub(crate) struct PythonReceivers<'a> {
 }
 
 impl<'a> PythonReceivers<'a> {
-    pub(crate) fn build<F: AsRef<Facts>>(
-        all: &'a BTreeMap<String, F>,
+    pub(crate) fn build(
+        all: &'a dyn crate::FactsLookup,
         mut resolve: impl FnMut(&'a Node, &'a Reference) -> Base<'a>,
         mut framework_receiver: impl FnMut(
             &str,
@@ -62,8 +62,8 @@ impl<'a> PythonReceivers<'a> {
         )>,
     ) -> Self {
         let classes: HashMap<&str, &Node> = all
-            .values()
-            .flat_map(|facts| &facts.as_ref().nodes)
+            .values_facts()
+            .flat_map(|facts| &facts.nodes)
             .filter(|node| node.language == "python" && node.kind == "class")
             .map(|node| (node.id.as_str(), node))
             .collect();
@@ -103,8 +103,7 @@ impl<'a> PythonReceivers<'a> {
             candidates.first().copied()
         };
         let mut mutating_members: HashMap<&str, Vec<&str>> = HashMap::new();
-        for facts in all.values() {
-            let facts = facts.as_ref();
+        for facts in all.values_facts() {
             for reference in facts.references.iter().filter(|r| r.kind == "mutates") {
                 if let Some(("self" | "cls", member)) = reference.expression.split_once('.') {
                     mutating_members
@@ -117,8 +116,8 @@ impl<'a> PythonReceivers<'a> {
         let mut mutation_owners = HashMap::new();
         let mut assigned_members = HashSet::new();
         if !mutating_members.is_empty() {
-            for facts in all.values() {
-                for node in &facts.as_ref().nodes {
+            for facts in all.values_facts() {
+                for node in &facts.nodes {
                     let Some(members) = mutating_members.get(node.id.as_str()) else {
                         continue;
                     };
@@ -137,8 +136,7 @@ impl<'a> PythonReceivers<'a> {
                 }
             }
         }
-        for facts in all.values() {
-            let facts = facts.as_ref();
+        for facts in all.values_facts() {
             let assigned_fields: HashSet<&str> = facts
                 .edges
                 .iter()
@@ -243,20 +241,23 @@ impl<'a> PythonReceivers<'a> {
                 }
             }
         }
+        let mut class_ids: Vec<&'a str> = classes.keys().copied().collect();
+        class_ids.sort_unstable();
         let mut orders = HashMap::new();
-        for id in classes.keys() {
+        for &id in &class_ids {
             linearize(id, &bases, &mut orders, &mut HashSet::new());
         }
         Self {
             members: own,
             supers: HashMap::new(),
         }
-        .finish(&classes, &orders, &mut framework_receiver)
+        .finish(&classes, &class_ids, &orders, &mut framework_receiver)
     }
 
     fn finish(
         mut self,
         classes: &HashMap<&'a str, &'a Node>,
+        class_ids: &[&'a str],
         orders: &HashMap<&'a str, Option<Vec<Base<'a>>>>,
         framework_receiver: &mut impl FnMut(
             &str,
@@ -268,7 +269,7 @@ impl<'a> PythonReceivers<'a> {
         )>,
     ) -> Self {
         let own = std::mem::take(&mut self.members);
-        for id in classes.keys() {
+        for &id in class_ids {
             let Some(Some(order)) = orders.get(id) else {
                 if let Some(members) = own.get(id) {
                     self.members.insert(id, members.clone());

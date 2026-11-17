@@ -8,7 +8,7 @@ use crate::{
     },
     linker::interner::{LinkerInterner, PathId, SymbolId},
 };
-use acdd_core::models::{Facts, Node, Reference};
+use crate::models::{Facts, Node, Reference};
 use hashbrown::HashMap;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -354,7 +354,7 @@ pub(crate) fn resolve_default_import<'ctx, 'a, 'input>(
 #[cfg(test)]
 mod tests {
     use super::filter_stubs_and_overloads;
-    use acdd_core::models::Node;
+    use crate::models::Node;
 
     fn node(id: &str, is_stub: bool, is_overload: bool) -> Node {
         Node {

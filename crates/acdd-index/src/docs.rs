@@ -21,8 +21,8 @@ struct ActiveLink {
 }
 
 /// Render only parsed Markdown headings, preserving their hierarchy.
-pub fn render_outline(path: &str, source: &str) -> Result<String> {
-    let sections = extract_with_details(path, source, 0.0)?;
+pub fn render_outline(path: &str, source: &str, spec_paths: &[String]) -> Result<String> {
+    let sections = extract_with_details(path, source, 0.0, spec_paths)?;
     Ok(sections
         .iter()
         .filter_map(|(section, _)| {
@@ -52,6 +52,7 @@ pub fn extract_with_details(
     path: &str,
     source: &str,
     mtime: f64,
+    spec_paths: &[String],
 ) -> Result<Vec<(DocSection, Value)>> {
     let (meta, body, body_offset) = if let Some(rest) = source
         .strip_prefix("---\n")
@@ -213,7 +214,7 @@ pub fn extract_with_details(
             doc_type: meta
                 .doc_type
                 .clone()
-                .unwrap_or_else(|| default_doc_type(path).into()),
+                .unwrap_or_else(|| default_doc_type(path, spec_paths).into()),
             content: content.into(),
             is_invariant: !invariants.is_empty()
                 || content.lines().any(|line| invariant_id(line).is_some()),
@@ -249,28 +250,61 @@ pub fn extract_with_details(
 }
 
 /// Performs extract.
-pub fn extract(path: &str, source: &str, mtime: f64) -> Result<Vec<DocSection>> {
-    Ok(extract_with_details(path, source, mtime)?
+pub fn extract(
+    path: &str,
+    source: &str,
+    mtime: f64,
+    spec_paths: &[String],
+) -> Result<Vec<DocSection>> {
+    Ok(extract_with_details(path, source, mtime, spec_paths)?
         .into_iter()
         .map(|(doc, _)| doc)
         .collect())
 }
 
-/// Returns the default `doc_type` inferred from path when frontmatter omits `doc_type`.
-pub fn default_doc_type(path: &str) -> &'static str {
+/// Returns the default `doc_type` inferred from path and configured `specs.*.path` when frontmatter omits `doc_type`.
+pub fn default_doc_type(path: &str, spec_paths: &[String]) -> &'static str {
     let relative = path
         .strip_prefix('[')
         .and_then(|rest| rest.split_once("]/").map(|(_, rel)| rel))
-        .unwrap_or(path);
-    if relative.starts_with("docs/milestones/")
-        || relative.contains("/docs/milestones/")
-        || relative.starts_with("docs/contracts/")
-        || relative.contains("/docs/contracts/")
-    {
-        "contract"
-    } else {
-        "guide"
+        .unwrap_or(path)
+        .trim_start_matches("./")
+        .replace('\\', "/");
+    let rel_parts: Vec<&str> = relative
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let Some(file_name) = rel_parts.last().copied() else {
+        return "guide";
+    };
+    if file_name == "README.md" || file_name == "AGENTS.md" {
+        return "guide";
     }
+    for spec_path in spec_paths {
+        let spec_norm = spec_path
+            .trim()
+            .replace('\\', "/")
+            .trim_start_matches("./")
+            .trim_matches('/')
+            .to_owned();
+        if spec_norm.is_empty() {
+            continue;
+        }
+        let spec_parts: Vec<&str> = spec_norm
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
+        if !spec_parts.is_empty()
+            && rel_parts.len() > spec_parts.len()
+            && rel_parts[..spec_parts.len()] == spec_parts[..]
+        {
+            let tail = &rel_parts[spec_parts.len()..];
+            if !tail.iter().any(|segment| segment.contains("archive")) {
+                return "contract";
+            }
+        }
+    }
+    "guide"
 }
 
 fn is_symbol_token(value: &str) -> bool {
@@ -351,6 +385,34 @@ fn append_wikilinks(content: &str, start_line: usize, citations: &mut Vec<Value>
             let advance = after_open + close + 2;
             consumed += advance;
             rest = &line[consumed..];
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_doc_type_classifies_configured_spec_paths_and_exclusions() {
+        let specs = vec![
+            "docs/milestones".to_owned(),
+            "docs/plans".to_owned(),
+            "docs/rfcs".to_owned(),
+        ];
+        let cases = [
+            ("docs/milestones/AC-001.md", "contract"),
+            ("[linked]/docs/plans/PLAN-002.md", "contract"),
+            ("docs/rfcs/RFC-003.md", "contract"),
+            ("docs/milestones/archive/AC-001.md", "guide"),
+            ("docs/milestones/AC-001-archive.md", "guide"),
+            ("docs/milestones/README.md", "guide"),
+            ("docs/plans/AGENTS.md", "guide"),
+            ("docs/architecture/README.md", "guide"),
+            ("docs/contracts/legacy.md", "guide"),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(default_doc_type(path, &specs), expected, "{path}");
         }
     }
 }

@@ -1,6 +1,6 @@
 use crate::ast::{relations, text};
-use acdd_core::models::Facts;
-use acdd_core::semantic::{
+use crate::models::Facts;
+use crate::semantic::{
     BindingFact, FieldFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts,
 };
 use std::{

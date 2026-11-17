@@ -34,16 +34,15 @@ pub(in crate::linker) struct Registry<'a> {
 }
 
 impl<'a> Registry<'a> {
-    pub(in crate::linker) fn build<F: AsRef<Facts> + Sync>(
-        all: &'a BTreeMap<String, F>,
+    pub(in crate::linker) fn build(
+        all: &'a dyn crate::FactsLookup,
         normalized_imports: &HashMap<(&str, &str), Option<ImportPath>>,
         modules_by_namespace: &HashMap<LanguageFamily, HashMap<String, Vec<&'a Node>>>,
         dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Self {
         let mut by_owner: HashMap<&str, HashMap<&str, Vec<Provider<'a>>>> = HashMap::new();
         let mut incoming: HashMap<&str, Vec<Include<'a>>> = HashMap::new();
-        for (path, source) in all {
-            let facts = source.as_ref();
+        for (path, facts) in all.iter_facts() {
             if !facts
                 .nodes
                 .iter()
@@ -65,11 +64,10 @@ impl<'a> Registry<'a> {
                 else {
                     continue;
                 };
-                let Some((target_path, target_facts)) = all.get_key_value(&target) else {
+                let Some((target_path, target_facts)) = all.get_entry(&target) else {
                     continue;
                 };
                 if !target_facts
-                    .as_ref()
                     .nodes
                     .iter()
                     .any(|node| node.kind == "module" && node.language == "html")
@@ -81,10 +79,10 @@ impl<'a> Registry<'a> {
                     continue;
                 }
                 incoming
-                    .entry(target_path.as_str())
+                    .entry(target_path)
                     .or_default()
                     .push(Include {
-                        parent: path.as_str(),
+                        parent: path,
                         line: reference.line,
                     });
             }
@@ -97,7 +95,7 @@ impl<'a> Registry<'a> {
             }) {
                 let module = reference.module.as_deref().unwrap_or(&reference.expression);
                 let Some(normalized) = normalized_imports
-                    .get(&(path.as_str(), module))
+                    .get(&(path, module))
                     .and_then(Option::as_ref)
                     .filter(|import| import.relative)
                 else {
@@ -120,10 +118,10 @@ impl<'a> Registry<'a> {
                 let (Some(provider), None) = (matching.next(), matching.next()) else {
                     continue;
                 };
-                let Some(provider_facts) = all.get(&provider.path) else {
+                let Some(provider_facts) = all.get_facts(&provider.path) else {
                     continue;
                 };
-                for function in provider_facts.as_ref().nodes.iter().filter(|node| {
+                for function in provider_facts.nodes.iter().filter(|node| {
                     node.kind == "function"
                         && node.qualname.rsplit_once('.').is_some_and(|(owner, name)| {
                             owner == provider.qualname && name == node.name
@@ -133,7 +131,7 @@ impl<'a> Registry<'a> {
                             .any(|candidate| candidate == node.name.as_str())
                 }) {
                     by_owner
-                        .entry(path.as_str())
+                        .entry(path)
                         .or_default()
                         .entry(&function.name)
                         .or_default()

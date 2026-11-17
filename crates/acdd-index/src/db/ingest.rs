@@ -1,12 +1,12 @@
 use super::*;
-use acdd_core::typed_facts::encode_facts;
+use crate::typed_facts::encode_facts;
 use std::borrow::Cow;
 
 const COLD_LOCAL_FACTS_BATCH_ROWS: usize = 500;
 
 fn compare_coverage_rows(
-    left: &acdd_core::models::compact_graph::Coverage,
-    right: &acdd_core::models::compact_graph::Coverage,
+    left: &crate::models::compact_graph::Coverage,
+    right: &crate::models::compact_graph::Coverage,
 ) -> std::cmp::Ordering {
     left.path
         .as_bytes()
@@ -22,7 +22,7 @@ type HtmlCoverageOwners<'a> =
 
 /// Canonical borrowed coverage input shared by SQL persistence and sealing.
 pub(super) struct PreparedCoverage<'a> {
-    pub(super) rows: Vec<&'a acdd_core::models::compact_graph::Coverage>,
+    pub(super) rows: Vec<&'a crate::models::compact_graph::Coverage>,
     file_languages: hashbrown::HashMap<&'a str, &'a str>,
     html_owners: HtmlCoverageOwners<'a>,
     html_islands: hashbrown::HashMap<&'a str, Vec<(usize, usize)>>,
@@ -121,7 +121,7 @@ impl<'a> PreparedCoverage<'a> {
 
     pub(super) fn owner_language(
         &self,
-        row: &acdd_core::models::compact_graph::Coverage,
+        row: &crate::models::compact_graph::Coverage,
     ) -> Option<&'a str> {
         self.html_owners
             .get(row.path.as_ref())
@@ -131,7 +131,7 @@ impl<'a> PreparedCoverage<'a> {
 
     pub(super) fn language<'b>(
         &'b self,
-        row: &acdd_core::models::compact_graph::Coverage,
+        row: &crate::models::compact_graph::Coverage,
         fallback: Option<&'b str>,
     ) -> Option<&'b str> {
         if let Some(language) = self.owner_language(row) {
@@ -884,8 +884,8 @@ fn declared_return_type<'a>(node: &'a Node, facts: &TypedFacts) -> Option<Cow<'a
     (!output.is_empty()).then_some(Cow::Owned(output))
 }
 
-fn write_return_type(output: &mut String, ty: &acdd_core::semantic::TypeExpr) {
-    use acdd_core::semantic::TypeExpr;
+fn write_return_type(output: &mut String, ty: &crate::semantic::TypeExpr) {
+    use crate::semantic::TypeExpr;
     match ty {
         TypeExpr::Named { name } | TypeExpr::Applied { base: name, .. } => {
             output.push_str(name);
@@ -1011,8 +1011,8 @@ struct StoredDependency<'a> {
 
 #[derive(Default)]
 struct DependencyInput<'a> {
-    edges: Vec<(usize, &'a [acdd_core::models::compact_graph::Edge])>,
-    coverage: Vec<&'a [acdd_core::models::compact_graph::Coverage]>,
+    edges: Vec<(usize, &'a [crate::models::compact_graph::Edge])>,
+    coverage: Vec<&'a [crate::models::compact_graph::Coverage]>,
 }
 
 fn persist_dependencies(

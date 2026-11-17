@@ -8,7 +8,7 @@ use super::interner::{PathId, SymbolId};
 use super::traits::{import_provider_modules, ImportContext, ModulesByNamespace, PackageExports};
 use super::value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget};
 use crate::languages::{self, ImportPath};
-use acdd_core::{
+use crate::{
     models::{Facts, Node, ReceiverHint, Reference},
     semantic::SourcePosition,
 };
@@ -109,8 +109,8 @@ type FactoryImport<'a> = Option<(&'a Node, SymbolId, SourcePosition)>;
 
 #[derive(Clone, Copy)]
 enum FactoryBinding<'a> {
-    Declaration(&'a acdd_core::semantic::BindingFact),
-    Initializer(&'a acdd_core::semantic::BindingFact),
+    Declaration(&'a crate::semantic::BindingFact),
+    Initializer(&'a crate::semantic::BindingFact),
     Invalid,
 }
 
@@ -126,7 +126,7 @@ pub(super) struct Context<'a> {
     interner: &'a super::interner::LinkerInterner<'a>,
     dependencies: &'a languages::dependency_registry::DependencyRegistry,
     named: super::named_bindings::NamedBindings<'a>,
-    flows: Option<&'a HashMap<SymbolId, &'a acdd_core::typed_facts::FlowState>>,
+    flows: Option<&'a HashMap<SymbolId, &'a crate::typed_facts::FlowState>>,
     by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,
     by_id: &'a HashMap<SymbolId, &'a Node>,
     node_bindings: &'a super::NodeBindingIndex,
@@ -719,18 +719,18 @@ impl<'a> Context<'a> {
             column: candidate.details["column"].as_u64().unwrap_or(0) as usize,
         } < at
     }
-    pub(super) fn with_flows<F: AsRef<Facts>>(
+    pub(super) fn with_flows(
         mut self,
-        flows: Option<&'a HashMap<SymbolId, &'a acdd_core::typed_facts::FlowState>>,
+        flows: Option<&'a HashMap<SymbolId, &'a crate::typed_facts::FlowState>>,
         uncertainties: Option<
-            &'a HashMap<SymbolId, &'a [acdd_core::semantic::NamedDefinitionUncertainty]>,
+            &'a HashMap<SymbolId, &'a [crate::semantic::NamedDefinitionUncertainty]>,
         >,
         faults: Option<&HashSet<SymbolId>>,
-        all: &'a BTreeMap<String, F>,
+        all: &'a dyn crate::FactsLookup,
         dependencies: &'a languages::dependency_registry::DependencyRegistry,
     ) -> Self {
         self.flows = flows;
-        self.named = super::named_bindings::NamedBindings::build(
+        self.named = super::named_bindings::NamedBindings::build_lookup(
             all,
             self.interner,
             flows,
@@ -771,9 +771,9 @@ impl<'a> Context<'a> {
         owner: &'a Node,
         domain: &str,
         key: &str,
-        origin: Option<&acdd_core::semantic::ExtractionRuleOrigin>,
+        origin: Option<&crate::semantic::ExtractionRuleOrigin>,
     ) -> Symbol<'a> {
-        use acdd_core::semantic::{NamedBindingRole, NamedTargetKind, SymbolOperand};
+        use crate::semantic::{NamedBindingRole, NamedTargetKind, SymbolOperand};
         let scope = super::named_bindings::project(&owner.path, self.dependencies);
         let Some(scope_id) = self.interner.lookup_path(scope) else {
             return Symbol::Unknown;
@@ -863,7 +863,7 @@ impl<'a> Context<'a> {
         key: &str,
         kind: &str,
     ) -> Option<Symbol<'a>> {
-        use acdd_core::semantic::StaticString;
+        use crate::semantic::StaticString;
         if kind != "filter" {
             return None;
         }
@@ -915,7 +915,7 @@ impl<'a> Context<'a> {
     }
 
     fn prepare_registry_bindings(&mut self) {
-        use acdd_core::semantic::{NamedBindingRole, SymbolOperand, TypeExpr};
+        use crate::semantic::{NamedBindingRole, SymbolOperand, TypeExpr};
         let prepared: Vec<_> = self
             .named
             .registries
@@ -1047,7 +1047,7 @@ impl<'a> Context<'a> {
         name: &str,
         at: SourcePosition,
     ) -> Option<Symbol<'a>> {
-        use acdd_core::semantic::{NamedBindingRole, StaticString, ValueExpr};
+        use crate::semantic::{NamedBindingRole, StaticString, ValueExpr};
         use languages::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
         let (root, _) = name.split_once('.')?;
         let rules = self.dependencies.language_context_for_path(&owner.path);

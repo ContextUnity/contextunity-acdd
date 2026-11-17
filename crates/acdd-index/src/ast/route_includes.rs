@@ -1,7 +1,7 @@
 use super::routes::prefixed_path;
 use crate::languages;
-use acdd_core::models::{Edge, Node};
-use acdd_core::typed_facts::TypedFacts;
+use crate::models::{Edge, Node};
+use crate::typed_facts::TypedFacts;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 

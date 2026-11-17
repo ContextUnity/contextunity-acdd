@@ -49,8 +49,8 @@ pub(in crate::linker) fn returned_object_field_writes<'node, 'reference>(
 }
 
 #[cfg(feature = "lang-typescript")]
-pub(in crate::linker) fn has_returned_object_builtin_this_member<F>(
-    input: &ResolutionInput<'_, F>,
+pub(in crate::linker) fn has_returned_object_builtin_this_member(
+    input: &ResolutionInput<'_>,
     path: &str,
     reference: &Reference,
     expression: &str,
@@ -104,8 +104,8 @@ pub(in crate::linker) fn has_returned_object_builtin_this_member<F>(
 }
 
 #[cfg(feature = "lang-typescript")]
-pub(in crate::linker) fn object_factory_this_member<'a, F>(
-    input: &ResolutionInput<'a, F>,
+pub(in crate::linker) fn object_factory_this_member<'a>(
+    input: &ResolutionInput<'a>,
     path: &str,
     reference: &Reference,
     aliases: &HashMap<&str, HashMap<&str, Vec<&'a Node>>>,

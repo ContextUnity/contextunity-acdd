@@ -1,9 +1,8 @@
 use super::*;
 
-pub(super) fn phase_documentation<'a, 'file, F>(resolver: &mut FileResolver<'a, 'file, F>)
+pub(super) fn phase_documentation<'a, 'file>(resolver: &mut FileResolver<'a, 'file>)
 where
     'a: 'file,
-    F: AsRef<Facts> + Sync,
 {
     let input = resolver.input;
     let path = resolver.path;
@@ -38,7 +37,7 @@ where
                 let Some((target_path, anchor)) = resolve_document_target(path, target) else {
                     continue;
                 };
-                let Some(target_facts) = all.get(target_path.as_ref()).map(|facts| facts.as_ref())
+                let Some(target_facts) = all.get_facts(target_path.as_ref())
                 else {
                     continue;
                 };

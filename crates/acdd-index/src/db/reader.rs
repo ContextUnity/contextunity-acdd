@@ -9,7 +9,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::Read,
     ops::Deref,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -121,37 +121,6 @@ impl std::fmt::Display for SelectorError {
 
 impl std::error::Error for SelectorError {}
 
-struct JsonSizeCounter {
-    bytes: usize,
-    limit: usize,
-    exceeded: bool,
-}
-
-impl JsonSizeCounter {
-    fn new(limit: usize) -> Self {
-        Self {
-            bytes: 0,
-            limit,
-            exceeded: false,
-        }
-    }
-}
-
-impl Write for JsonSizeCounter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > self.limit.saturating_sub(self.bytes) {
-            self.exceeded = true;
-            return Err(std::io::Error::other("serialized JSON exceeds budget"));
-        }
-        self.bytes += bytes.len();
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 /// Error indicating that index schema or semantics changed and a full rebuild is required.
 #[derive(Debug)]
 pub struct IndexRebuildRequired(pub &'static str);
@@ -219,10 +188,7 @@ impl IntegritySnapshot {
             .collect::<String>();
         for _ in 0..128 {
             let nonce = INTEGRITY_SNAPSHOT_NONCE.fetch_add(1, Ordering::Relaxed);
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
+            let timestamp = crate::core::telemetry::unix_epoch_ms();
             let directory = std::env::temp_dir().join(format!(
                 "contextunity-acdd-integrity-{}-{tid}-{timestamp}-{nonce}",
                 std::process::id()
@@ -300,7 +266,7 @@ pub fn validate_database_integrity(conn: &Connection) -> Result<()> {
 /// Read connection held together with its generation guard lock.
 pub struct LockedConnection {
     connection: Connection,
-    _lock: File,
+    _lock: acdd_core::lock::FileLockGuard,
 }
 
 impl Deref for LockedConnection {
@@ -308,6 +274,45 @@ impl Deref for LockedConnection {
 
     fn deref(&self) -> &Self::Target {
         &self.connection
+    }
+}
+
+/// Opens an existing SQLite database in confined read-only mode.
+///
+/// Opens with `READ_ONLY | NOFOLLOW` first so SQLite reports a true read-only
+/// handle (`sqlite3_db_readonly == 1`) when `-shm` is present or journal mode
+/// is `DELETE`, and falls back to `READ_WRITE | NOFOLLOW` with
+/// `PRAGMA query_only = ON` when a WAL-header database without `-shm` fails
+/// with `SQLITE_CANTOPEN (14)`.
+pub fn open_raw_confined_readonly(db_path: &Path) -> Result<Connection> {
+    let confined = crate::core::fs::confined_database_open_path(db_path)?;
+    let configure = |conn: &Connection| -> rusqlite::Result<()> {
+        conn.execute_batch(
+            "PRAGMA query_only = ON; PRAGMA trusted_schema = OFF; PRAGMA busy_timeout = 5000;",
+        )
+    };
+    let ro_attempt = Connection::open_with_flags(
+        &confined,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .and_then(|conn| {
+        configure(&conn)?;
+        conn.query_row("PRAGMA schema_version", [], |_| Ok(()))?;
+        Ok(conn)
+    });
+    match ro_attempt {
+        Ok(conn) => Ok(conn),
+        Err(rusqlite::Error::SqliteFailure(err, _))
+            if err.code == rusqlite::ErrorCode::CannotOpen =>
+        {
+            let conn = Connection::open_with_flags(
+                &confined,
+                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+            )?;
+            configure(&conn)?;
+            Ok(conn)
+        }
+        Err(err) => Err(err.into()),
     }
 }
 
@@ -341,14 +346,8 @@ pub fn open_with_diagnostics(
     let open_path = crate::core::fs::confined_database_open_path(path)?;
     let before = super::cache::identity(&open_path)?;
     validate_database_header(&open_path)?;
-    let conn = Connection::open_with_flags(
-        &open_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )?;
-    conn.execute_batch(
-        "PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; PRAGMA mmap_size=268435456;",
-    )?;
-    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    let conn = open_raw_confined_readonly(&open_path)?;
+    conn.execute_batch("PRAGMA mmap_size=268435456;")?;
     conn.execute_batch("BEGIN DEFERRED")?;
     let has_metadata_table: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='metadata')",
@@ -383,7 +382,7 @@ pub fn open_with_diagnostics(
             |r| r.get(0),
         )
         .optional()?;
-    if semantics.as_deref() != Some(crate::core::config::INDEX_SEMANTICS_VERSION) {
+    if semantics.as_deref() != Some(crate::INDEX_SEMANTICS_VERSION) {
         validate_database_integrity(&conn)?;
         return Err(IndexRebuildRequired("incompatible index semantics; rebuild index").into());
     }
@@ -704,7 +703,8 @@ pub(super) fn rows_with_mode(
                 ValueRef::Text(bytes) => bytes.len().saturating_add(2),
                 ValueRef::Blob(bytes) => bytes.len().saturating_mul(2).saturating_add(2),
             };
-            let minimum_key_bytes = serde_json::to_vec(name)?.len().saturating_add(1);
+            let minimum_key_bytes =
+                crate::core::format::estimate_json_bytes(name).saturating_add(1);
             minimum_row_bytes = minimum_row_bytes
                 .saturating_add(usize::from(property_count > 0))
                 .saturating_add(minimum_key_bytes)
@@ -739,16 +739,14 @@ pub(super) fn rows_with_mode(
         let available_row_bytes = MAX_QUERY_RESULT_BYTES
             .saturating_sub(total_bytes)
             .saturating_sub(row_separator_bytes);
-        let mut row_size = JsonSizeCounter::new(available_row_bytes);
-        if let Err(error) = serde_json::to_writer(&mut row_size, &value) {
-            if row_size.exceeded {
-                bail!(QUERY_RESULT_TOO_LARGE);
-            }
-            return Err(error.into());
+        let mut row_size = crate::core::format::JsonByteCounter(0);
+        serde_json::to_writer(&mut row_size, &value)?;
+        if row_size.0 > available_row_bytes {
+            bail!(QUERY_RESULT_TOO_LARGE);
         }
         total_bytes = total_bytes
             .saturating_add(row_separator_bytes)
-            .saturating_add(row_size.bytes);
+            .saturating_add(row_size.0);
         result.push(Value::Object(value));
         if result.len() >= limit {
             break;
@@ -2373,13 +2371,7 @@ fn annotate_diagnostic_page(page: &mut Value, source: &str) {
 }
 
 fn bounded_diagnostic_snippet(line: &str) -> String {
-    if line.len() <= 512 {
-        return line.to_owned();
-    }
-    let mut end = 512;
-    while !line.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = crate::core::format::utf8_floor_boundary(line, 512);
     line[..end].to_owned()
 }
 
@@ -2415,4 +2407,14 @@ fn diagnostic_reason(
         Some("shadowed_binding") => Some("shadowed_binding"),
         _ => None,
     }
+}
+
+/// Reads adapter policy from the index SQLite `metadata` table.
+pub fn read_policy(root: &Path, conn: &Connection) -> Result<acdd_core::config::Adapter> {
+    let raw: String =
+        conn.query_row("SELECT value FROM metadata WHERE key='adapter'", [], |r| {
+            r.get(0)
+        })?;
+    let value: serde_json::Value = serde_json::from_str(&raw)?;
+    acdd_core::config::read_policy_from_value(root, &value)
 }

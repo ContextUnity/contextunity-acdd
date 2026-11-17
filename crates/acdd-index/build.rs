@@ -86,7 +86,7 @@ fn generate_profiles() {
         })
         .collect();
 
-    let _ = generate_framework_manifests();
+    emit_language_profile_digest(&enabled);
 
     let mut source = String::new();
     source.push_str("/// Language features recognized by this build.\n");
@@ -115,6 +115,69 @@ fn generate_profiles() {
     let output =
         std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output directory"));
     std::fs::write(output.join("language_profiles.rs"), source).expect("write language registry");
+}
+
+fn emit_language_profile_digest(enabled: &[&(String, std::path::PathBuf)]) {
+    use sha2::Digest;
+
+    let mut fingerprint_files = vec![
+        std::path::PathBuf::from("../../Cargo.lock"),
+        std::path::PathBuf::from("../../Cargo.toml"),
+        std::path::PathBuf::from("../acdd-core/Cargo.toml"),
+        std::path::PathBuf::from("Cargo.toml"),
+        std::path::PathBuf::from("build.rs"),
+        std::path::PathBuf::from("build_manifests.rs"),
+    ];
+    fingerprint_files.extend(generate_framework_manifests());
+
+    let mut pending = vec![
+        std::path::PathBuf::from("../acdd-core/src"),
+        std::path::PathBuf::from("src"),
+    ];
+    while let Some(dir) = pending.pop() {
+        println!("cargo:rerun-if-changed={}", dir.display());
+        for entry in std::fs::read_dir(&dir).expect("read profile fingerprint directory") {
+            let entry = entry.expect("read profile fingerprint entry");
+            let path = entry.path();
+            if entry
+                .file_type()
+                .expect("read profile fingerprint type")
+                .is_dir()
+            {
+                pending.push(path);
+            } else if matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("rs" | "toml")
+            ) {
+                fingerprint_files.push(path);
+            }
+        }
+    }
+    fingerprint_files.sort();
+    fingerprint_files.dedup();
+
+    let mut digest = sha2::Sha256::new();
+    for (name, _) in enabled {
+        digest.update(format!("lang-{name}"));
+        digest.update([0]);
+    }
+    for path in fingerprint_files {
+        println!("cargo:rerun-if-changed={}", path.display());
+        let contents = std::fs::read(&path).expect("read profile fingerprint input");
+        digest.update(
+            path.to_str()
+                .expect("UTF-8 profile fingerprint path")
+                .replace('\\', "/")
+                .as_bytes(),
+        );
+        digest.update([0]);
+        digest.update((contents.len() as u64).to_le_bytes());
+        digest.update(contents);
+    }
+    println!(
+        "cargo:rustc-env=ACDD_LANGUAGE_PROFILE_DIGEST={:x}",
+        digest.finalize()
+    );
 }
 
 fn generate_framework_manifests() -> Vec<std::path::PathBuf> {

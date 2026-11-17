@@ -1,5 +1,5 @@
 use super::{text, Syntax};
-use acdd_core::models::{Edge, Facts, Node, Reference};
+use crate::models::{Edge, Facts, Node, Reference};
 
 pub(crate) fn reference(facts: &mut Facts, owner: &str, expression: &str, kind: &str, line: usize) {
     if expression.is_empty() || expression == "_" {

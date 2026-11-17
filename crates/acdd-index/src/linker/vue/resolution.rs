@@ -43,17 +43,14 @@ pub(in crate::linker) fn is_component_template_member(
         })
 }
 
-pub(in crate::linker) fn template_lexical_binding<'a, F>(
-    input: &ResolutionInput<'a, F>,
+pub(in crate::linker) fn template_lexical_binding<'a>(
+    input: &ResolutionInput<'a>,
     path: &str,
     reference: &Reference,
     owner: Option<&'a Node>,
     first: &str,
     component_module: Option<&'a Node>,
-) -> Option<&'a Node>
-where
-    F: AsRef<Facts> + Sync,
-{
+) -> Option<&'a Node> {
     let owner = owner?;
     if let Some(first_id) = input.interner.lookup_symbol(first) {
         let mut lexical_scope = owner.qualname.as_str();
@@ -87,8 +84,8 @@ where
     })
 }
 
-pub(in crate::linker) fn component_slot_member<'a, 'aliases, F, A>(
-    input: &ResolutionInput<'a, F>,
+pub(in crate::linker) fn component_slot_member<'a, 'aliases, A>(
+    input: &ResolutionInput<'a>,
     path: &str,
     owner: &'a Node,
     first: &str,
@@ -96,7 +93,6 @@ pub(in crate::linker) fn component_slot_member<'a, 'aliases, F, A>(
     alias_for: A,
 ) -> Option<Member<'a>>
 where
-    F: AsRef<Facts> + Sync,
     'a: 'aliases,
     A: Fn(&str, Option<&'a Node>, bool) -> Option<&'aliases Vec<&'a Node>>,
 {
@@ -141,8 +137,8 @@ where
     None
 }
 
-pub(in crate::linker) fn resolve_component_tag<'a, F>(
-    input: &ResolutionInput<'a, F>,
+pub(in crate::linker) fn resolve_component_tag<'a>(
+    input: &ResolutionInput<'a>,
     path: &str,
     reference: &Reference,
     owner: Option<&Node>,

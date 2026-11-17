@@ -1,5 +1,5 @@
 use super::interner::{LinkerInterner, SymbolId};
-use acdd_core::{
+use crate::{
     models::{Facts, Node, ReceiverHint, Reference},
     semantic::{SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
 };
@@ -247,7 +247,7 @@ pub trait SemanticResolver<'a> {
         &self,
         _scope: &'a Node,
         _callee: &str,
-        _site: Option<&acdd_core::semantic::CallSiteEvidence>,
+        _site: Option<&crate::semantic::CallSiteEvidence>,
         _at: SourcePosition,
         _fallback: Option<TypeTarget<'a>>,
     ) -> Option<TypeTarget<'a>> {
@@ -357,7 +357,7 @@ pub struct SemanticLimits {
 impl Default for SemanticLimits {
     fn default() -> Self {
         Self {
-            facts_per_scope: acdd_core::semantic::DEFAULT_FACTS_PER_SCOPE,
+            facts_per_scope: crate::semantic::DEFAULT_FACTS_PER_SCOPE,
             name_bytes: 4_096,
             alias_depth: 64,
         }
@@ -541,8 +541,8 @@ fn initialize_scope<'a>(
     let encoded = &node.details["value_flow"];
     let typed = resolver.value_flow(node);
     let oversized = typed.is_some_and(|facts| {
-        acdd_core::typed_facts::scope_fact_count(facts) > limits.facts_per_scope
-    }) || acdd_core::typed_facts::encoded_scope_fact_count(encoded)
+        crate::typed_facts::scope_fact_count(facts) > limits.facts_per_scope
+    }) || crate::typed_facts::encoded_scope_fact_count(encoded)
         > limits.facts_per_scope;
     let decoded = if oversized {
         Ok(ScopeFacts::Borrowed(&EMPTY_SCOPE_FACTS))
@@ -697,8 +697,8 @@ impl<'a> ValueFlowIndex<'a> {
         )
     }
 
-    pub(crate) fn build_parallel<F: AsRef<Facts>>(
-        all: &'a BTreeMap<String, F>,
+    pub(crate) fn build_parallel(
+        all: &'a dyn crate::FactsLookup,
         nodes: Vec<&'a Node>,
         interner: &LinkerInterner<'a>,
         by_id: &HashMap<SymbolId, &'a Node>,
@@ -2312,7 +2312,7 @@ pub(crate) fn valid_scope_facts(
         && (node.kind != "module"
             || !facts
                 .component_macros()
-                .any(|fact| fact.role == acdd_core::semantic::ComponentMacroRole::Slots))
+                .any(|fact| fact.role == crate::semantic::ComponentMacroRole::Slots))
     {
         return false;
     }
@@ -2327,7 +2327,7 @@ pub(crate) fn valid_scope_facts(
         return false;
     }
     node.parameter_count()
-        .saturating_add(acdd_core::typed_facts::scope_fact_count(facts))
+        .saturating_add(crate::typed_facts::scope_fact_count(facts))
         <= limits.facts_per_scope
         && node
             .parameter_types()

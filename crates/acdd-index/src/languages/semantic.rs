@@ -137,9 +137,8 @@ pub fn decode(node: &super::Node) -> anyhow::Result<Vec<SemanticFact>> {
 
 /// Computes stable dependency key for a semantic identity.
 pub fn dependency_key(identity: &SemanticIdentity) -> String {
-    use sha2::{Digest, Sha256};
     format!(
-        "semantic:{:x}",
-        Sha256::digest(serde_json::to_vec(identity).expect("identity serializes"))
+        "semantic:{}",
+        crate::core::format::sha256_serde_json_hex(identity).expect("identity serializes")
     )
 }

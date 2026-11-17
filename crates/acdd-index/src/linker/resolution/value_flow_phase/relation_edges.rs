@@ -1,7 +1,7 @@
 use super::*;
 
-pub(super) fn emit_inherited_method_edges<F>(
-    input: &ResolutionInput<'_, F>,
+pub(super) fn emit_inherited_method_edges(
+    input: &ResolutionInput<'_>,
     graph: &mut Graph,
     path: &str,
     candidate: &Node,

@@ -1,8 +1,8 @@
 use super::*;
 
 impl<'a> ValueFlowIndex<'a> {
-    pub(super) fn build_initialized<F: AsRef<Facts>>(
-        all: &'a BTreeMap<String, F>,
+    pub(super) fn build_initialized(
+        all: &'a dyn crate::FactsLookup,
         nodes: Vec<&'a Node>,
         interner: &super::super::interner::LinkerInterner<'a>,
         by_id: &HashMap<super::super::interner::SymbolId, &'a Node>,
@@ -531,7 +531,7 @@ impl<'a> ValueFlowIndex<'a> {
                 index.fields = fields;
             }
         }
-        for reference in all.values().flat_map(|facts| &facts.as_ref().references) {
+        for reference in all.values_facts().flat_map(|facts| &facts.references) {
             if !matches!(
                 reference.receiver_hint,
                 Some(

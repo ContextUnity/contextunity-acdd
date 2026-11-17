@@ -13,7 +13,6 @@ use ignore::WalkBuilder;
 use rayon::prelude::*;
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 fn error(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
@@ -23,7 +22,8 @@ fn error(message: impl Into<String>) -> std::io::Error {
 mod adapter;
 pub mod discovery;
 pub use crate::core::config::*;
-pub use crate::core::config::{ENGINE_SCHEMA_VERSION, INDEX_SEMANTICS_VERSION};
+pub use crate::core::config::ENGINE_SCHEMA_VERSION;
+pub use crate::INDEX_SEMANTICS_VERSION;
 pub use crate::core::models::FileEntry;
 
 #[derive(Debug, Clone, Serialize)]
@@ -290,7 +290,7 @@ pub fn language(path: &Path) -> Option<(&'static str, bool)> {
 
 /// Performs digest.
 pub fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    crate::core::format::sha256_hex(bytes)
 }
 
 /// Performs entry with rel.

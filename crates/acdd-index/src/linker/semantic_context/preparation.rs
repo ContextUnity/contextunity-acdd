@@ -1,19 +1,15 @@
 use super::*;
 
 impl<'a> Context<'a> {
-    pub(super) fn prepare_callable_aliases<F: AsRef<Facts>>(
-        &mut self,
-        all: &'a BTreeMap<String, F>,
-    ) {
+    pub(super) fn prepare_callable_aliases(&mut self, all: &'a dyn crate::FactsLookup) {
         let mut updates = Vec::new();
-        for (path, file) in all {
+        for (path, file) in all.iter_facts() {
             let Some(path_id) = self.interner.lookup_path(path) else {
                 continue;
             };
             if !self.callable_scopes.contains_key(&path_id) {
                 continue;
             }
-            let file = file.as_ref();
             if self.interner.file_import_mask_for_path(path_id) == 0
                 && !file
                     .references
@@ -73,8 +69,8 @@ impl<'a> Context<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(in crate::linker) fn build<F: AsRef<Facts>>(
-        all: &'a BTreeMap<String, F>,
+    pub(in crate::linker) fn build(
+        all: &'a dyn crate::FactsLookup,
         interner: &'a super::super::interner::LinkerInterner<'a>,
         modules: &'a ModulesByNamespace<'a>,
         by_module: &'a HashMap<&'a str, Vec<&'a Node>>,
@@ -136,8 +132,7 @@ impl<'a> Context<'a> {
             Option<std::sync::Arc<ArgumentFactories>>,
         > = HashMap::new();
         let mut pinned_rules: Vec<std::sync::Arc<languages::LanguageContext>> = Vec::new();
-        for (path, facts) in all {
-            let facts = facts.as_ref();
+        for (path, facts) in all.iter_facts() {
             let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else {
                 continue;
             };
@@ -264,8 +259,7 @@ impl<'a> Context<'a> {
                     .insert(path_id, argument_factories.clone());
             }
         }
-        for (path, facts) in all {
-            let facts = facts.as_ref();
+        for (path, facts) in all.iter_facts() {
             let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else {
                 continue;
             };
@@ -293,7 +287,7 @@ impl<'a> Context<'a> {
                     continue;
                 };
                 let key = (
-                    path.as_str(),
+                    path,
                     reference.module.as_deref().unwrap_or(&reference.expression),
                 );
                 let Some(normalized) = normalized_imports.get(&key).and_then(Option::as_ref) else {
@@ -405,8 +399,8 @@ impl<'a> Context<'a> {
             rust_forwarding,
         );
         for node in all
-            .values()
-            .flat_map(|facts| &facts.as_ref().nodes)
+            .values_facts()
+            .flat_map(|facts| &facts.nodes)
             .filter(|node| node.kind == "method")
         {
             let Some((parent, _)) = node.qualname.rsplit_once('.') else {

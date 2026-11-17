@@ -1,5 +1,5 @@
 use super::*;
-use acdd_core::models::ReceiverHint;
+use crate::models::ReceiverHint;
 use crate::ast::{relations, routes};
 
 mod dom;
@@ -57,7 +57,7 @@ fn simple_reference(
 
 pub(crate) fn finalize_configured_projections(
     facts: &mut Facts,
-    flows: Option<&mut acdd_core::typed_facts::FlowStore>,
+    flows: Option<&mut crate::typed_facts::FlowStore>,
     file: &FileContext,
 ) {
     projections::finalize_projections(facts, flows, file);
@@ -1593,7 +1593,7 @@ impl LanguageProfile for TypeScript {
         root: Syntax<'_>,
         source: &str,
         bindings: &ast::ScopeBindings,
-    ) -> Option<Vec<acdd_core::semantic::ExportBinding>> {
+    ) -> Option<Vec<crate::semantic::ExportBinding>> {
         Some(value_flow::exports(root, source, bindings))
     }
 
@@ -1604,7 +1604,7 @@ impl LanguageProfile for TypeScript {
         path: &str,
         file: &FileContext,
     ) -> Option<&'static str> {
-        if !acdd_core::models::is_test(path)
+        if !crate::models::is_test(path)
             || !matches!(
                 node.kind(),
                 "function_declaration"
@@ -1623,12 +1623,12 @@ impl LanguageProfile for TypeScript {
         root: Syntax<'_>,
         source: &str,
         facts: &mut Facts,
-        exports: &[acdd_core::semantic::ExportBinding],
+        exports: &[crate::semantic::ExportBinding],
     ) {
         visibility::finalize_file_visibility(self.javascript, root, source, facts, exports);
     }
 
-    fn value_flow(&self, node: Syntax<'_>, source: &str) -> acdd_core::semantic::ValueFlowFacts {
+    fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::semantic::ValueFlowFacts {
         value_flow::extract(node, source)
     }
 
@@ -1648,7 +1648,7 @@ impl LanguageProfile for TypeScript {
         source: &str,
         name: &str,
         file: &FileContext,
-    ) -> (SymbolMetadata, acdd_core::semantic::ValueFlowFacts) {
+    ) -> (SymbolMetadata, crate::semantic::ValueFlowFacts) {
         let (parameters, returned, _) = value_flow::jsdoc(node, source);
         let metadata = self.metadata_with_documented(node, source, name, file, parameters);
         let flow = value_flow::extract_with_return(node, source, || returned);
@@ -2004,7 +2004,7 @@ impl LanguageProfile for TypeScript {
         rules: &super::LanguageContext,
         rule_ir: &super::manifests::RuleIRHandle,
         route_context: &crate::ast::routes::RouteContext,
-        projections: &mut HashMap<String, acdd_core::semantic::ValueFlowFacts>,
+        projections: &mut HashMap<String, crate::semantic::ValueFlowFacts>,
     ) {
         extract_projections(ctx, rules);
         if matches!(ctx.node.kind(), "method_definition" | "method_declaration") {

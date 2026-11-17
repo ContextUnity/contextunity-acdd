@@ -1,6 +1,6 @@
 use super::*;
 use crate::ast::relations;
-use acdd_core::models::ReceiverHint;
+use crate::models::ReceiverHint;
 mod cli_registration;
 pub(crate) mod linker;
 pub(crate) mod patterns;
@@ -263,7 +263,7 @@ fn call_result_hint(node: Syntax<'_>, source: &str) -> Option<ReceiverHint> {
         return None;
     }
     let value = value_flow::value(receiver, source);
-    if matches!(value, acdd_core::semantic::ValueExpr::Project { .. }) {
+    if matches!(value, crate::semantic::ValueExpr::Project { .. }) {
         if let Ok(serialized) = serde_json::to_string(&value) {
             return Some(ReceiverHint::CallResult {
                 callee: format!("value:{serialized}"),
@@ -638,7 +638,7 @@ impl LanguageProfile for Rust {
         root: Syntax<'_>,
         source: &str,
         _bindings: &crate::ast::ScopeBindings,
-    ) -> Option<Vec<acdd_core::semantic::ExportBinding>> {
+    ) -> Option<Vec<crate::semantic::ExportBinding>> {
         let mut exports = Vec::new();
         let mut cursor = root.walk();
         for declaration in root
@@ -653,7 +653,7 @@ impl LanguageProfile for Rust {
                 {
                     if let Some(name) = declaration.child_by_field_name("name") {
                         let name = text(name, source).to_owned();
-                        exports.push(acdd_core::semantic::ExportBinding {
+                        exports.push(crate::semantic::ExportBinding {
                             local: Some(name.clone()),
                             name,
                             module: None,
@@ -681,7 +681,7 @@ impl LanguageProfile for Rust {
             exports.extend(imports.into_iter().map(|(target, name)| {
                 let star = name == "*";
                 let local = (!star).then(|| name.clone());
-                acdd_core::semantic::ExportBinding {
+                crate::semantic::ExportBinding {
                     name,
                     local,
                     module: star.then_some(target),
@@ -692,7 +692,7 @@ impl LanguageProfile for Rust {
         }
         Some(exports)
     }
-    fn value_flow(&self, node: Syntax<'_>, source: &str) -> acdd_core::semantic::ValueFlowFacts {
+    fn value_flow(&self, node: Syntax<'_>, source: &str) -> crate::semantic::ValueFlowFacts {
         value_flow::extract(node, source)
     }
     fn scope_analysis<'source, 'tree>(
@@ -1093,7 +1093,7 @@ impl LanguageProfile for Rust {
                 if root { "crate" } else { "self" },
                 declaration.name
             );
-            facts.references.push(acdd_core::models::Reference {
+            facts.references.push(crate::models::Reference {
                 source: parent,
                 expression: module.clone(),
                 kind: "imports".into(),
@@ -1248,7 +1248,7 @@ impl LanguageProfile for Rust {
                             .all(|character| character.is_alphanumeric() || character == '_')
                         && !matches!(
                             value_flow::type_expr(ty, source),
-                            acdd_core::semantic::TypeExpr::Unknown
+                            crate::semantic::TypeExpr::Unknown
                         )
                     {
                         param_types.insert(name.to_owned(), text(ty, source).trim().to_owned());

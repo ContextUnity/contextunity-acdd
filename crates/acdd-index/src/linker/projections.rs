@@ -3,7 +3,7 @@ use super::{
     value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget},
 };
 use crate::languages::dependency_registry::DependencyRegistry;
-use acdd_core::{
+use crate::{
     models::{compact_graph::Graph, Node},
     semantic::{NamedBindingRole, StaticString, SymbolOperand, ValueFlowFacts},
 };
@@ -20,7 +20,7 @@ fn declaration(symbol: Symbol<'_>) -> Result<Option<&Node>, ()> {
 fn operand<'a>(
     owner: &'a Node,
     value: &SymbolOperand,
-    at: acdd_core::semantic::SourcePosition,
+    at: crate::semantic::SourcePosition,
     role: SymbolRole,
     context: &semantic_context::Context<'a>,
     nodes: &HashMap<super::interner::SymbolId, &'a Node>,
@@ -110,8 +110,8 @@ pub(super) fn compose<'a>(
             _ => "configured attachment".into(),
         };
         let kind = match fact.relation {
-            acdd_core::semantic::AttachmentRelation::UsesModel => "uses_model",
-            acdd_core::semantic::AttachmentRelation::References => "references",
+            crate::semantic::AttachmentRelation::UsesModel => "uses_model",
+            crate::semantic::AttachmentRelation::References => "references",
         };
         match (source, target) {
             (Ok(Some(source)), target) => {

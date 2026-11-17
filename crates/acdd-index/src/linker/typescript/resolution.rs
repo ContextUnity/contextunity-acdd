@@ -113,8 +113,8 @@ pub(in crate::linker) fn lexical_this_calls<'facts, 'references>(
         .collect()
 }
 
-pub(in crate::linker) fn property_reference<'a, F>(
-    input: &ResolutionInput<'a, F>,
+pub(in crate::linker) fn property_reference<'a>(
+    input: &ResolutionInput<'a>,
     reference: &Reference,
     ordinary_member_receivers: &HashSet<&str>,
     active_profile: Option<&dyn LanguageProfile>,
@@ -171,8 +171,8 @@ pub(in crate::linker) fn property_reference<'a, F>(
 }
 
 #[cfg(feature = "lang-typescript")]
-pub(in crate::linker) fn lexical_this_member<'a, F>(
-    input: &ResolutionInput<'a, F>,
+pub(in crate::linker) fn lexical_this_member<'a>(
+    input: &ResolutionInput<'a>,
     path: &str,
     reference: &Reference,
     expression: &str,

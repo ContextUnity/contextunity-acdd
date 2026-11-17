@@ -7,8 +7,8 @@ use crate::languages::{dependency_registry::DependencyRegistry, LanguageProfile}
 use crate::linker::traits::ModulesByNamespace;
 use crate::linker::value_flow::{Symbol, TypeTarget};
 #[cfg(feature = "lang-rust")]
-use acdd_core::models::Facts;
-use acdd_core::models::Node;
+use crate::models::Facts;
+use crate::models::Node;
 #[cfg(feature = "lang-rust")]
 use hashbrown::HashMap;
 #[cfg(feature = "lang-rust")]
@@ -178,24 +178,26 @@ pub(in crate::linker) fn external_annotation_type<'a>(
 }
 
 #[cfg(feature = "lang-rust")]
-pub(in crate::linker) fn import_globs<'a, F: AsRef<Facts>>(
+pub(in crate::linker) fn import_globs<'a>(
     context: &mut Context<'a>,
-    all: &'a BTreeMap<String, F>,
+    all: &'a dyn crate::FactsLookup,
     by_id: &'a HashMap<super::super::interner::SymbolId, &'a Node>,
     normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
     modules: &'a ModulesByNamespace<'a>,
     rust_forwarding: &'a languages::rust::linker::RustForwarding<'a>,
 ) {
-    let rust_modules = all.values().filter_map(|facts| {
-        let facts = facts.as_ref();
-        facts
-            .nodes
-            .iter()
-            .find(|node| node.kind == "module" && node.language == "rust")
-            .map(|module| (facts, module))
-    });
+    let rust_modules: Vec<_> = all
+        .values_facts()
+        .filter_map(|facts| {
+            facts
+                .nodes
+                .iter()
+                .find(|node| node.kind == "module" && node.language == "rust")
+                .map(|module| (facts, module))
+        })
+        .collect();
 
-    for (facts, module) in rust_modules.clone() {
+    for &(facts, module) in &rust_modules {
         let Some(reference) = facts.references.iter().find(|reference| {
             reference.kind == "imports"
                 && reference.source == module.id
@@ -327,8 +329,7 @@ pub(in crate::linker) fn import_globs<'a, F: AsRef<Facts>>(
 
     // Build alias counts per owner across all import references to detect conflicting aliases
     let mut alias_counts: hashbrown::HashMap<(&str, &str), usize> = hashbrown::HashMap::new();
-    for facts in all.values() {
-        let facts = facts.as_ref();
+    for facts in all.values_facts() {
         for reference in facts.references.iter().filter(|r| r.kind == "imports") {
             let bound_alias = reference
                 .alias
@@ -344,8 +345,7 @@ pub(in crate::linker) fn import_globs<'a, F: AsRef<Facts>>(
         }
     }
 
-    for facts in all.values() {
-        let facts = facts.as_ref();
+    for facts in all.values_facts() {
         for reference in facts.references.iter().filter(|r| r.kind == "imports") {
             let expr = reference.module.as_deref().unwrap_or(&reference.expression);
             let first = expr.split("::").next().unwrap_or(expr);
@@ -418,8 +418,7 @@ pub(in crate::linker) fn import_globs<'a, F: AsRef<Facts>>(
     let mut conflicts = hashbrown::HashSet::new();
     for _ in 0..64 {
         let mut additions = Vec::new();
-        for facts in all.values() {
-            let facts = facts.as_ref();
+        for facts in all.values_facts() {
             for reference in facts.references.iter().filter(|reference| {
                 reference.kind == "imports"
                     && reference.alias.as_deref() == Some("*")

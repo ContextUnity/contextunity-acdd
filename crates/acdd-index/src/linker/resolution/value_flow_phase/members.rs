@@ -1,16 +1,13 @@
 use super::*;
 
-pub(super) fn resolve_computed_call<F>(
-    input: &ResolutionInput<'_, F>,
+pub(super) fn resolve_computed_call(
+    input: &ResolutionInput<'_>,
     path: &str,
     reference: &Reference,
     active_profile: Option<&dyn LanguageProfile>,
     builtin_origin: Option<&'static str>,
     graph: &mut Graph,
-) -> bool
-where
-    F: AsRef<Facts> + Sync,
-{
+) -> bool {
     if !(matches!(reference.kind.as_str(), "calls" | "handles")
         || (reference.kind == "references"
             && active_profile

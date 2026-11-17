@@ -4,7 +4,7 @@ use super::super::value_flow::{
     resolve_type, ReadTrace, RustWrapperKind, SemanticLimits, SemanticResolver, Symbol, SymbolRole,
     TypeTarget, ValueFlowIndex,
 };
-use acdd_core::{
+use crate::{
     models::Node,
     semantic::{SourcePosition, TypeExpr},
 };

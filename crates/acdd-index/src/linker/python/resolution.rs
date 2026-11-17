@@ -220,8 +220,8 @@ pub(in crate::linker) fn imported_module_member<'a>(
 
 /// Borrowed Python view of the shared resolution inputs needed by Python member lookup.
 /// The resolution phase builds it from its existing `FileResolver` field borrows.
-pub(in crate::linker) struct PythonResolutionView<'ctx, 'a, 'keys, F> {
-    pub(in crate::linker) input: &'ctx super::super::resolution::ResolutionInput<'a, F>,
+pub(in crate::linker) struct PythonResolutionView<'ctx, 'a, 'keys> {
+    pub(in crate::linker) input: &'ctx super::super::resolution::ResolutionInput<'a>,
     pub(in crate::linker) path: &'ctx str,
     pub(in crate::linker) file_module: &'ctx str,
     pub(in crate::linker) aliases: &'ctx HashMap<&'keys str, HashMap<&'a str, Vec<&'a Node>>>,
@@ -240,11 +240,10 @@ pub(in crate::linker) fn dynamic_receiver_member<
     'result,
     'aliases,
     'external,
-    F,
     AliasFor,
     ExternalFor,
 >(
-    context: &PythonResolutionView<'ctx, 'a, 'keys, F>,
+    context: &PythonResolutionView<'ctx, 'a, 'keys>,
     reference: &Reference,
     path_constructor_aliases: &HashMap<(&str, &str), &Reference>,
     candidates: &mut Vec<&'a Node>,
@@ -455,8 +454,8 @@ where
 
 /// Returns whether the first visible Python import is available at this reference position.
 /// Non-Python references and scopes with no matching import retain the shared resolver's fallthrough.
-pub(in crate::linker) fn import_visible_at<'ctx, 'a, 'keys, F>(
-    context: &PythonResolutionView<'ctx, 'a, 'keys, F>,
+pub(in crate::linker) fn import_visible_at<'ctx, 'a, 'keys>(
+    context: &PythonResolutionView<'ctx, 'a, 'keys>,
     reference: &Reference,
     definition_scope: bool,
 ) -> bool {
@@ -517,8 +516,8 @@ pub(in crate::linker) fn import_visible_at<'ctx, 'a, 'keys, F>(
 
 /// Looks up the Python member for a typed, implicit, or imported class receiver.
 /// A returned `Some(Unknown)` is a handled lookup; `None` preserves shared resolution fallback.
-pub(in crate::linker) fn implicit_receiver_member<'ctx, 'a, 'keys, F>(
-    context: &PythonResolutionView<'ctx, 'a, 'keys, F>,
+pub(in crate::linker) fn implicit_receiver_member<'ctx, 'a, 'keys>(
+    context: &PythonResolutionView<'ctx, 'a, 'keys>,
     reference: &Reference,
     typed_receiver: Option<super::super::ReceiverType<'a>>,
     known_receiver: bool,

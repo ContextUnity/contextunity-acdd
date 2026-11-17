@@ -317,7 +317,7 @@ pub fn persist_delta(
     cached(
         &tx,
         "INSERT OR REPLACE INTO metadata VALUES('corpus_hash',?1)",
-        [commitments::hash(&serde_json::to_vec(entries)?)],
+        [crate::core::format::sha256_serde_json_hex(entries)?],
     )?;
     cached(
         &tx,
