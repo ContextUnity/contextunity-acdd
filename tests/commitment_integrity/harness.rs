@@ -1,5 +1,5 @@
-pub(super) use contextunity_acdd::core::commitments;
-use contextunity_acdd::core::schema::SCHEMA_DDL;
+pub(super) use acdd_index::db::commitments;
+use acdd_index::db::SCHEMA_DDL;
 use rusqlite::params;
 use rusqlite::Connection;
 

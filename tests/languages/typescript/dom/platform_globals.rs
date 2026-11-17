@@ -418,7 +418,7 @@ fn web_and_dom_builtins_resolve_with_external_provenance() {
         assert_eq!(row.0, "external", "persisted {expression}: {row:?}");
         assert!(row.1.contains(origin), "persisted {expression}: {row:?}");
     }
-    contextunity_acdd::core::commitments::verify(&conn).unwrap();
+    acdd_index::db::commitments::verify(&conn).unwrap();
     drop(conn);
 }
 
@@ -456,7 +456,7 @@ fn html_table_element_type_and_members_use_verified_dom_origin() {
         !untyped.is_empty() && untyped.iter().all(|(status, _)| status == "unresolved"),
         "{untyped:?}"
     );
-    contextunity_acdd::core::commitments::verify(&conn).unwrap();
+    acdd_index::db::commitments::verify(&conn).unwrap();
     drop(conn);
 }
 

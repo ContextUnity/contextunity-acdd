@@ -158,7 +158,7 @@ fn configured_template_rules_follow_effective_rules_and_delta() {
     assert!(
         cached.iter().flat_map(|facts| &facts.references).any(|reference| reference.kind == "includes"
             && reference.expression == "part.html"
-            && matches!(&reference.receiver_hint, Some(contextunity_acdd::core::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack == "zcustom" && origin.rule == "dialect")),
+            && matches!(&reference.receiver_hint, Some(acdd_index::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack == "zcustom" && origin.rule == "dialect")),
         "late pack retains actual typed include origin"
     );
     drop(observations);

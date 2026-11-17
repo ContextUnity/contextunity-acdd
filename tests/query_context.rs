@@ -3,10 +3,9 @@
 mod common;
 
 #[cfg(feature = "lang-python")]
-use contextunity_acdd::{
-    core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions},
-    db::{reader, symbols, traversal, writer},
-};
+use acdd_core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions};
+use acdd_index::db::{reader, symbols, traversal};
+use contextunity_acdd::engine::pipeline as writer;
 #[cfg(feature = "lang-python")]
 use rusqlite::{
     hooks::{AuthAction, AuthContext, Authorization},
@@ -91,6 +90,9 @@ fn persisted_state(conn: &Connection) -> Value {
     })
 }
 
+#[cfg(all(feature = "lang-python", feature = "lang-rust", feature = "lang-typescript"))]
+#[path = "query_context/ast_grep_candidate_prefilter.rs"]
+mod ast_grep_candidate_prefilter;
 #[cfg(feature = "lang-python")]
 #[path = "query_context/diagnostics_and_source.rs"]
 mod diagnostics_and_source;

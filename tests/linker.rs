@@ -1,5 +1,7 @@
 #[path = "common/mod.rs"]
 pub mod common;
+#[path = "linker/early_interning_and_compact_facts.rs"]
+mod early_interning_and_compact_facts;
 #[path = "linker/receivers/inherited.rs"]
 mod inherited_receivers;
 #[path = "linker/method_semantics.rs"]

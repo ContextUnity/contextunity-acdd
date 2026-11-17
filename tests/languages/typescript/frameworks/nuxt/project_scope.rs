@@ -70,7 +70,7 @@ fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
             "ignored root, ancestor, and linked package manifests must not activate Nuxt: {path} {expression} -> {rows:?}"
         );
     }
-    contextunity_acdd::core::commitments::verify(&conn).unwrap();
+    acdd_index::db::commitments::verify(&conn).unwrap();
     drop(conn);
 
     // Unimported names cannot acquire authority from directory or spelling conventions,
@@ -92,7 +92,7 @@ fn ignored_root_ancestor_and_linked_manifests_do_not_activate_nuxt() {
     let consumer = workspace.read("src/unconfigured.ts");
     let assert_unconfigured = || {
         let conn = workspace.open();
-        contextunity_acdd::core::commitments::verify(&conn).unwrap();
+        acdd_index::db::commitments::verify(&conn).unwrap();
         for expression in ["useForeign", "useNeighbor", "usePlain", "remoteStore"] {
             let states: Vec<String> = conn.prepare("SELECT c.status FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE p.path='src/unconfigured.ts' AND x.expression=?1 ORDER BY c.line").unwrap().query_map([expression], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
             assert_eq!(
@@ -226,6 +226,6 @@ fn nuxt_components_import_links_tsx_to_vue_only_for_declared_nuxt() {
             && plain_statuses == ["unresolved"],
         "#components must resolve through the declared Nuxt linker while a plain Vue tag stays unresolved; nuxt statuses={nuxt_statuses:?}, import targets={nuxt_import_targets:?}, plain statuses={plain_statuses:?}"
     );
-    contextunity_acdd::core::commitments::verify(&conn).unwrap();
+    acdd_index::db::commitments::verify(&conn).unwrap();
     drop(conn);
 }

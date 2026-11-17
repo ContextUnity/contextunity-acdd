@@ -210,7 +210,7 @@ fn cold_build_populates_document_fts_search() {
 #[test]
 fn mcp_caps_documents_scalars_checkpoints_and_tool_errors() {
     let readme = format!("# Huge document\n{}", "\"\\Привіт\t".repeat(30_000));
-    let (_workspace, harness) = McpTestHarness::with_files(&[
+    let (workspace, harness) = McpTestHarness::with_files(&[
         (
             "acdd.yaml",
             "roots: [.]\ntasks_db: .acdd/tasks.sqlite\nresponse:\n  max_output_bytes: 1024\n",
@@ -249,16 +249,13 @@ fn mcp_caps_documents_scalars_checkpoints_and_tool_errors() {
         json!(true),
         json!({"nested":["\"\\\nПривіт".repeat(2_000)]}),
     ];
-    for (index, invalid_format) in invalid_formats.into_iter().enumerate() {
-        let name = format!("acdd/acdd/m-test/tasks/invalid-format-{index}/build");
+    for invalid_format in invalid_formats {
         let (bytes, response) = client
             .call(
-                "session_checkpoint",
+                "acdd_state",
                 json!({
-                    "format":invalid_format,
-                    "action":"save",
-                    "name":name.clone(),
-                    "content":{"must_not_persist":true}
+                    "format": invalid_format,
+                    "action": "list",
                 }),
             )
             .expect("MCP transport");
@@ -272,38 +269,14 @@ fn mcp_caps_documents_scalars_checkpoints_and_tool_errors() {
                 .unwrap();
         assert_eq!(error["error"]["code"], "INVALID_FORMAT", "{error}");
         assert!(
-            client
-                .payload("session_checkpoint", json!({"action":"list"}))
-                .expect("checkpoint list should succeed")
-                .get(&name)
-                .is_none(),
-            "invalid format persisted checkpoint {name}"
+            !workspace.path(".acdd/state.sqlite").exists(),
+            "invalid format created state database"
         );
     }
     let (_, unknown) = client
         .call(&"\"\\Привіт".repeat(30_000), json!({}))
         .expect("MCP transport");
     assert!(unknown["result"]["isError"] == true || unknown.get("error").is_some());
-    let large_checkpoint = "acdd/acdd/m-test/tasks/large/build";
-    client
-        .payload(
-            "session_checkpoint",
-            json!({"action":"save","name":large_checkpoint,"content":"\"\\Привіт".repeat(20_000)}),
-        )
-        .expect("MCP tool should succeed");
-    let (_, response) = client
-        .call(
-            "session_checkpoint",
-            json!({"action":"get","name":large_checkpoint}),
-        )
-        .expect("MCP transport");
-    assert_eq!(response["result"]["isError"], true, "{response}");
-    assert_eq!(
-        client
-            .payload("session_checkpoint", json!({"action":"list"}))
-            .expect("MCP tool should succeed"),
-        json!({(large_checkpoint):{"bytes":320002}})
-    );
     let (_, response) = client
         .call("get_doc", json!({"path_or_id":"README.md","limit":101}))
         .expect("MCP transport");
@@ -514,7 +487,7 @@ fn mcp_tool_catalog_allows_optional_json_and_markdown_formats() {
 
 #[test]
 fn task_submit_format_preserves_optional_input_and_evidence_semantics() {
-    use contextunity_acdd::mcp::tools::TaskSubmitInput;
+    use contextunity_acdd::mcp::tools::SubmitInput;
 
     for (format, expected) in [
         (None, None),
@@ -522,34 +495,36 @@ fn task_submit_format_preserves_optional_input_and_evidence_semantics() {
         (Some(json!("json")), Some(OutputFormat::Json)),
     ] {
         for evidence in [None, Some(json!({"proof": "caller supplied"}))] {
-            let mut input = json!({"task_id":"format-contract", "stage":"build", "action":"pass"});
+            let mut input = json!({
+                "node": "t1.build",
+                "action": "pass",
+                "worker_id": "format-contract"
+            });
             if let Some(format) = &format {
                 input["format"] = format.clone();
             }
             if let Some(evidence) = &evidence {
-                input["evidence"] = evidence.clone();
+                input["custom_evidence"] = evidence.clone();
             }
-            let parsed: TaskSubmitInput = serde_json::from_value(input).unwrap();
+            let parsed: SubmitInput = serde_json::from_value(input).unwrap();
             assert_eq!(parsed.format, expected);
             assert_eq!(
                 parsed.format.unwrap_or_default(),
                 expected.unwrap_or(OutputFormat::Markdown)
             );
-            assert_eq!(parsed.evidence_provided, evidence.is_some());
-            assert_eq!(parsed.request.evidence, evidence.unwrap_or(Value::Null));
+            assert_eq!(parsed.custom_evidence, evidence);
         }
     }
     for invalid in [
         json!("yaml"),
         json!(""),
         json!("JSON"),
-        Value::Null,
         json!(7),
         json!({}),
     ] {
-        let input = json!({"task_id":"format-contract", "stage":"build", "action":"pass", "format":invalid});
-        assert!(serde_json::from_value::<TaskSubmitInput>(input).is_err());
+        let input = json!({"node":"t1.build", "action":"pass", "worker_id":"format-contract", "format":invalid});
+        assert!(serde_json::from_value::<SubmitInput>(input).is_err());
     }
-    let unknown = json!({"task_id":"format-contract", "stage":"build", "action":"pass", "format":"json", "unknown":true});
-    assert!(serde_json::from_value::<TaskSubmitInput>(unknown).is_err());
+    let unknown = json!({"node":"t1.build", "action":"pass", "worker_id":"format-contract", "format":"json", "unknown":true});
+    assert!(serde_json::from_value::<SubmitInput>(unknown).is_err());
 }

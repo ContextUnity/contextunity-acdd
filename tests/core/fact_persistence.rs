@@ -1,5 +1,6 @@
 use crate::common::Workspace;
-use contextunity_acdd::db::{reader, writer};
+use acdd_index::db::reader;
+use contextunity_acdd::engine::pipeline as writer;
 use rusqlite::Connection;
 use std::path::PathBuf;
 
@@ -55,7 +56,7 @@ fn navigation_storage_preserves_compressed_analysis_and_delta_calls() {
         calls, 1,
         "cached complete local analysis supports receiver resolution during delta"
     );
-    contextunity_acdd::core::commitments::verify(&conn).unwrap();
+    acdd_index::db::commitments::verify(&conn).unwrap();
     let root: String = conn
         .query_row(
             "SELECT value FROM metadata WHERE key='output_root'",

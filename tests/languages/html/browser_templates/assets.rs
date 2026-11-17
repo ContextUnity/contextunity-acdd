@@ -296,7 +296,7 @@ fn coverage_owner_attribution() {
             rusqlite::params!["11", "schema_version"],
         )
         .unwrap();
-    let error = contextunity_acdd::db::reader::open(&workspace.db(), workspace.root()).unwrap_err();
+    let error = acdd_index::db::reader::open(&workspace.db(), workspace.root()).unwrap_err();
     assert!(
         error.to_string().contains("incompatible database schema"),
         "{error}"

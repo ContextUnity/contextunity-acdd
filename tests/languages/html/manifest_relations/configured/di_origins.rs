@@ -41,7 +41,7 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
             .flat_map(|facts| &facts.references)
             .filter(|reference| reference.kind == "injects" && reference.source == endpoint)
             .map(|reference| match &reference.receiver_hint {
-                Some(contextunity_acdd::core::models::ReceiverHint::ConfiguredReference {
+                Some(acdd_index::models::ReceiverHint::ConfiguredReference {
                     origin,
                 }) => {
                     assert!(!origin.rule.is_empty());
@@ -112,10 +112,10 @@ fn configured_di_origins_follow_effective_rules_and_delta() {
     workspace.rename_file(first, renamed).unwrap();
     workspace.rename_file(second, renamed_second).unwrap();
     let registry =
-        contextunity_acdd::engine::languages::dependency_registry::DependencyRegistry::collect(
+        acdd_index::languages::dependency_registry::DependencyRegistry::collect(
             Some(workspace.root()),
         );
-    let replay = contextunity_acdd::engine::linker::link_with_registry(
+    let replay = acdd_index::linker::link_with_registry(
         &stale,
         None,
         Some(workspace.root()),

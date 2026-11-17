@@ -7,7 +7,7 @@ fn mcp_navigation_is_independent_of_task_store_special_files() {
 
     for kind in ["Fifo", "Directory", "FifoAlias"] {
         let workspace = Workspace::new();
-        workspace.write("acdd.yaml", "tasks_db: .acdd/state.sqlite\n");
+        workspace.write("acdd.yaml", "state_db: .acdd/state.sqlite\n");
         let target = workspace.path(".acdd/state.sqlite");
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         match kind {

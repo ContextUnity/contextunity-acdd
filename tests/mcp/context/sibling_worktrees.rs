@@ -5,11 +5,11 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
     let primary = Workspace::with_files(&[
         (
             "acdd.yaml",
-            "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
+            "roots: [src]\ndocs: [docs]\nstate_db: .acdd/state.sqlite\n",
         ),
         (
             ".acdd/profile.yaml",
-            "version: 2\ninherit: none\nroles:\n  worker: {mode: subagent}\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          role: worker\n          proof: contract\n        - id: build\n          role: worker\n          proof: none\n        - id: review\n          role: worker\n          proof: none\n          independent_from: build\n        - id: deliver\n          role: worker\n          receipt: true\n          need: []\n          save: snapshot\n",
+            "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          role: worker\n          proof: none\n          pass: build\n        - id: build\n          role: worker\n          proof: none\n          pass: review\n        - id: review\n          role: worker\n          proof: none\n          independent_from: [build]\n          need: [build]\n          pass: deliver\n        - id: deliver\n          role: worker\n          receipt: true\n          need: [build, review]\n          save:\n            post: snapshot\n",
         ),
         ("src/lib.rs", "pub fn primary_only() {}\n"),
     ]);
@@ -74,9 +74,11 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
             1
         );
     }
+    let branch_manifest_content = "---\nid: m-branch-only\ntitle: Branch only\ndoc_type: milestone\nstatus: active\n---\n# Branch only\n\n### task: branch-task\n\n```yaml\ntask_ref: branch-task\ntarget: branch task\nscope: [src/lib.rs]\n```\n";
+    primary.write("docs/milestones/060-branch-only.md", branch_manifest_content);
     let branch_manifest = sibling.join("docs/milestones/060-branch-only.md");
     fs::create_dir_all(branch_manifest.parent().unwrap()).unwrap();
-    fs::write(&branch_manifest, "---\nid: m-branch-only\ntitle: Branch only\ndoc_type: contract\nstatus: active\n---\n\n### task: branch-task\n\n```yaml\ntask_ref: branch-task\ntarget: branch task\nproof_policy: direct-proof\nscope: [src/lib.rs]\n```\n").unwrap();
+    fs::write(&branch_manifest, branch_manifest_content).unwrap();
     for alias in ["051", "51", "051-ex", "external", "1-exter"] {
         assert_eq!(
             client
@@ -88,43 +90,47 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
     drop(claims);
     primary.remove(".acdd/tasks.sqlite");
     fs::write(sibling.join("AGENTS.md"), "Load the acdd skill.\n").unwrap();
-    let sync = client
+    let started = client
         .payload(
-            "task_manage",
-            json!({"action":"sync", "milestone_ref":"060", "worktree":"51"}),
+            "acdd_state",
+            json!({"action":"start", "spec_path":"docs/milestones/060-branch-only.md", "in_place":true, "worktree":"51"}),
         )
-        .expect("MCP tool should succeed");
-    assert!(sync.to_string().contains("branch-task"), "{sync}");
+        .expect("MCP start should succeed");
+    assert!(started.to_string().contains("branch-task"), "{started}");
+    let run_id = started["run"]["run_id"]
+        .as_str()
+        .or_else(|| started["run_id"].as_str())
+        .unwrap()
+        .to_owned();
     let list = client
         .payload(
-            "task_list",
-            json!({"milestone_ref":"060", "status":"all", "worktree":"51"}),
+            "acdd_state",
+            json!({"action":"list", "status":"active", "worktree":"51", "format":"json"}),
         )
-        .expect("MCP tool should succeed");
-    assert!(list.to_string().contains("branch-task"), "{list}");
+        .expect("MCP list should succeed");
+    assert!(!list["page"]["runs"].as_array().unwrap().is_empty(), "{list}");
     let posted = client.payload(
-        "task_blackboard",
-        json!({"action":"post", "scope":"milestone", "milestone_ref":"060", "topic":"notes", "payload":"branch-only message", "worktree":"51"}),
-    ).expect("MCP tool should succeed");
+        "acdd_blackboard",
+        json!({"action":"post", "run":&run_id, "topic":"notes", "author":"routing-author", "payload":"branch-only message", "worktree":"51"}),
+    ).expect("MCP blackboard post should succeed");
     let board = client
         .payload(
-            "task_blackboard",
-            json!({"action":"read", "scope":"milestone", "milestone_ref":"060", "worktree":"51"}),
+            "acdd_blackboard",
+            json!({"action":"read", "run":&run_id, "worktree":"51", "format":"json"}),
         )
-        .expect("MCP tool should succeed");
-    assert_eq!(board["messages"][0]["id"], posted["id"], "{board}");
-    let message = client
-        .payload(
-            "task_blackboard",
-            json!({"action":"inspect", "message_id":posted["id"], "worktree":"51"}),
-        )
-        .expect("MCP tool should succeed");
+        .expect("MCP blackboard read should succeed");
+    assert_eq!(board["items"][0]["id"], posted["entry"]["id"], "{board}");
     assert_eq!(
-        message["message"]["payload"], "branch-only message",
-        "{message}"
+        board["items"][0]["payload"], "branch-only message",
+        "{board}"
     );
-    let task_id = "acdd/m-branch-only:branch-task";
-    let claim = client.payload("task_claim", json!({"task_id":task_id, "stage":"contract", "worker_id":"routing-author", "worktree":"51", "bundle":false})).expect("MCP tool should succeed");
+    let node_id = "branch-task.contract";
+    let claim = client
+        .payload(
+            "acdd_claim",
+            json!({"node":node_id, "worker_id":"routing-author", "worktree":"51"}),
+        )
+        .expect("MCP claim should succeed");
     let canonical_sibling = sibling.canonicalize().unwrap();
     assert_eq!(
         claim["worktree"],
@@ -133,59 +139,55 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
     );
     let session = crate::sqlite_fixture::claim_session_fingerprint(
         &primary,
-        task_id,
+        "task:branch-task:contract",
         claim["claim_revision"].as_u64().unwrap(),
     )
     .unwrap();
     assert_eq!(session, "linked-routing-session");
+    let rejected = client
+        .payload(
+            "acdd_submit",
+            json!({
+                "node": node_id,
+                "action": "reject",
+                "worker_id": "routing-author",
+                "claim_revision": claim["claim_revision"],
+                "worktree": "51",
+                "rejection_findings": {
+                    "summary": "Release the fixture claim after proving selected-root submission",
+                    "items": [{
+                        "severity": "medium",
+                        "message": "Contract fixture rejection test",
+                        "remediation": "Re-claim and pass"
+                    }]
+                }
+            }),
+        )
+        .expect("MCP reject should succeed");
+    assert_eq!(
+        rejected["node_cursor"]["Task"]["gates"][0], "contract",
+        "{rejected}"
+    );
     client
         .payload(
-            "task_manage",
-            json!({"action":"reset", "task_id":task_id, "worktree":"51"}),
+            "acdd_state",
+            json!({"action":"reopen", "node":node_id, "reason":"reopen for next check", "worktree":"51"}),
         )
-        .expect("MCP tool should succeed");
+        .expect("MCP reopen should succeed");
+    let shown = client
+        .payload(
+            "acdd_state",
+            json!({"action":"show", "node":node_id, "worktree":"051", "format":"json"}),
+        )
+        .expect("MCP show should succeed");
+    assert_eq!(shown["node"]["status"], "ready", "{shown}");
     let next = client
         .payload(
-            "task_manage",
-            json!({"action":"next", "worker_id":"routing-author", "worktree":"051"}),
+            "acdd_state",
+            json!({"action":"next", "worktree":"051", "format":"json"}),
         )
-        .expect("MCP tool should succeed");
-    assert_eq!(
-        next["worktree"],
-        canonical_sibling.to_str().unwrap(),
-        "{next}"
-    );
-    let mut evidence = next["workflow_guidance"]["expected_evidence_template"].clone();
-    evidence["proof"] =
-        json!({"contract_proof":{"seam_test_ref":"tests/routing.rs", "red_exit_code":101}});
-    let rejected = client.payload("task_submit", json!({"task_id":task_id, "stage":"contract", "action":"reject", "worktree":"51", "evidence":evidence, "findings":{"summary":"Release the fixture claim after proving selected-root submission"}})).expect("MCP tool should succeed");
-    assert_eq!(rejected["stage"], "contract", "{rejected}");
-    let linked_checkpoint = "acdd/acdd/m-branch-only/tasks/linked-routing/contract";
-    let sibling_checkpoint = "acdd/acdd/m-branch-only/tasks/sibling-routing/contract";
-    for (selector, value, name) in [
-        (".", "linked", linked_checkpoint),
-        ("51", "sibling", sibling_checkpoint),
-    ] {
-        client
-            .payload(
-                "session_checkpoint",
-                json!({"action":"save", "name":name, "content":value, "worktree":selector}),
-            )
-            .expect("MCP tool should succeed");
-    }
-    for (selector, value, name) in [
-        (None, "linked", linked_checkpoint),
-        (Some("51"), "sibling", sibling_checkpoint),
-    ] {
-        let mut args = json!({"action":"get", "name":name});
-        if let Some(selector) = selector {
-            args["worktree"] = json!(selector);
-        }
-        let checkpoint = client
-            .payload("session_checkpoint", args)
-            .expect("MCP tool should succeed");
-        assert_eq!(checkpoint, json!(value));
-    }
+        .expect("MCP next should succeed");
+    assert_eq!(next["waves"], json!([["branch-task"]]), "{next}");
 
     assert!(custom_db.is_file());
     assert!(!linked.join(".acdd/code-map.sqlite").exists());

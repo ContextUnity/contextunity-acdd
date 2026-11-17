@@ -1,9 +1,7 @@
 use crate::common::Workspace;
-use contextunity_acdd::{
-    core::{commitments, models::DocSection},
-    db::{reader, writer},
-    engine::{pipeline, scanner},
-};
+use acdd_index::models::DocSection;
+use acdd_index::{db::{commitments, reader}, scanner};
+use contextunity_acdd::engine::{pipeline, pipeline as writer};
 use rayon::prelude::*;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
@@ -12,7 +10,7 @@ use std::collections::BTreeMap;
 #[test]
 fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() -> anyhow::Result<()>
 {
-    use contextunity_acdd::core::models::stable_hash64;
+    use acdd_core::format::stable_hash64;
 
     let item_count = 251;
     let workspace = Workspace::new();
@@ -165,8 +163,8 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() ->
         .map(|node| (node.id.clone(), node))
         .collect();
     let live_versus_durable_nodes: Vec<(
-        contextunity_acdd::core::models::Node,
-        Option<contextunity_acdd::core::models::Node>,
+        acdd_index::models::Node,
+        Option<acdd_index::models::Node>,
     )> = extracted_facts
         .iter()
         .flat_map(|facts| facts.nodes.iter().cloned())
@@ -209,7 +207,7 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() ->
         assert_eq!(stored.2, source.language);
         assert_eq!(
             stored.3,
-            contextunity_acdd::core::models::is_test(&source.path)
+            acdd_index::models::is_test(&source.path)
         );
         assert!(!stored.4);
         assert_eq!(stored.6, "blob");

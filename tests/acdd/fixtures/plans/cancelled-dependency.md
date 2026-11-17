@@ -1,19 +1,24 @@
 ---
+id: PLAN-CANCELLED-DEP
 title: Cancelled Dependency
 doc_type: plan
 ---
 
 # Cancelled Dependency
 
-## 1. First Step
+### task: first-step
+```yaml
+task_ref: first-step
+target: Cancelled prerequisite
+scope: [src/first.rs]
+status: cancelled
+```
 
-- **Target**: Cancelled prerequisite
-- **Scope**: src/first.rs
-- **Status**: cancelled
-
-## 2. Second Step
-
-- **Target**: Require a completed prerequisite
-- **Scope**: src/second.rs
-- **Status**: pending
-- **Depends On**: [First Step]
+### task: second-step
+```yaml
+task_ref: second-step
+target: Require a completed prerequisite
+scope: [src/second.rs]
+depends_on: [first-step]
+status: planned
+```

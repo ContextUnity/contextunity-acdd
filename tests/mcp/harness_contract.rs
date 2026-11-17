@@ -128,71 +128,83 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
             McpTestHarness::with_session(&workspace, "builder-session").expect("MCP initialize");
         builder
             .payload(
-                "task_manage",
-                json!({"action":"sync","milestone_ref":"010"}),
+                "acdd_state",
+                json!({"action":"start","spec_path":"docs/milestones/010-session.md","in_place":true}),
             )
-            .expect("MCP tool should succeed");
+            .expect("MCP start should succeed");
         let build_claim = builder
             .payload(
-                "task_claim",
-                json!({"task_id":"test/m-session:first","stage":"build","worker_id":"builder","worktree":workspace.root(),"bundle":false}),
+                "acdd_claim",
+                json!({"node":"first.build","worker_id":"builder","worktree":workspace.root()}),
             )
-            .expect("MCP tool should succeed");
-        let claimed_task_id = build_claim["task_id"]
-            .as_str()
-            .expect("initial task claim includes its task id");
+            .expect("MCP claim should succeed");
+        assert_eq!(
+            build_claim["node_cursor"]["Task"]["gates"][0], "build",
+            "{build_claim}"
+        );
         builder
             .payload(
-                "task_submit",
+                "acdd_submit",
                 json!({
-                    "task_id":claimed_task_id,
-                    "stage":"build",
+                    "node":"first.build",
                     "action":"pass",
-                    "evidence": {
-                        "task_id":claimed_task_id,
-                        "stage":"build",
-                        "claim_revision":build_claim["claim_revision"],
-                        "contract_revision":build_claim["contract_revision"],
-                        "worker_id":"builder",
-                        "worktree":workspace.root(),
-                        "proof":{"none_proof":{}}
-                    }
+                    "worker_id":"builder",
+                    "claim_revision":build_claim["claim_revision"],
                 }),
             )
-            .expect("MCP tool should succeed");
-        let args = if next {
-            json!({"action":"next","worker_id":"reviewer","worktree":workspace.root()})
-        } else {
-            json!({"task_id":"test/m-session:first","stage":"review","worker_id":"reviewer","worktree":workspace.root(),"bundle":false})
-        };
-        let tool = if next { "task_manage" } else { "task_claim" };
+            .expect("MCP submit should succeed");
         let mut reviewer =
             McpTestHarness::with_session(&workspace, "review-session").expect("MCP initialize");
-        let mut reused_worker = args.clone();
-        reused_worker["worker_id"] = json!("builder");
-        reused_worker["format"] = json!("json");
-        let (_, same) = reviewer.call(tool, reused_worker).expect("MCP transport");
         if next {
-            let state = mcp_payload(&same);
-            assert_eq!(state["status"], "idle", "{same}");
-            assert_eq!(state["worker_id"], "builder", "{same}");
+            let next_out = reviewer
+                .payload(
+                    "acdd_state",
+                    json!({"action":"next","worktree":workspace.root(),"format":"json"}),
+                )
+                .expect("MCP next should succeed");
+            assert_eq!(next_out["waves"], json!([["first"]]), "{next_out}");
         } else {
+            let same_claim = reviewer
+                .payload(
+                    "acdd_claim",
+                    json!({"node":"first.review","worker_id":"builder","worktree":workspace.root(),"format":"json"}),
+                )
+                .expect("MCP claim as builder");
+            let (_, same) = reviewer
+                .call(
+                    "acdd_submit",
+                    json!({
+                        "node":"first.review",
+                        "action":"pass",
+                        "worker_id":"builder",
+                        "claim_revision":same_claim["claim_revision"],
+                        "worktree":workspace.root(),
+                        "format":"json",
+                    }),
+                )
+                .expect("MCP transport");
             assert!(
                 same.to_string().contains("TASK_REVIEW_NOT_INDEPENDENT"),
                 "{same}"
             );
         }
-        let claimed = builder
-            .payload(tool, args)
-            .expect("MCP tool should succeed");
-        assert_eq!(claimed["stage"], "review", "{claimed}");
+        let claimed = reviewer
+            .payload(
+                "acdd_claim",
+                json!({"node":"first.review","worker_id":"reviewer","force":!next,"steal_remote":!next,"worktree":workspace.root()}),
+            )
+            .expect("MCP reviewer claim should succeed");
+        assert_eq!(
+            claimed["node_cursor"]["Task"]["gates"][0], "review",
+            "{claimed}"
+        );
         let persisted = crate::sqlite_fixture::claim_session_fingerprint(
             &workspace,
-            "test/m-session:first",
+            "task:first:review",
             claimed["claim_revision"].as_u64().unwrap(),
         )
         .unwrap();
-        assert_eq!(persisted, "builder-session");
+        assert_eq!(persisted, "review-session");
         builder.finish().expect("server must finish successfully");
         reviewer.finish().expect("server must finish successfully");
     }
@@ -207,68 +219,75 @@ fn mcp_submission_uses_claimed_worker_proof_across_transports() {
             McpTestHarness::with_session(&workspace, "builder-session").expect("MCP initialize");
         builder
             .payload(
-                "task_manage",
-                json!({"action":"sync","milestone_ref":"010"}),
+                "acdd_state",
+                json!({"action":"start","spec_path":"docs/milestones/010-session.md","in_place":true}),
             )
-            .expect("MCP tool should succeed");
+            .expect("MCP start should succeed");
         let build_claim = builder
             .payload(
-                "task_claim",
-                json!({"task_id":"test/m-session:first","stage":"build","worker_id":"builder","worktree":workspace.root(),"bundle":false}),
+                "acdd_claim",
+                json!({"node":"first.build","worker_id":"builder","worktree":workspace.root()}),
             )
-            .expect("MCP tool should succeed");
-        let claimed_task_id = build_claim["task_id"]
-            .as_str()
-            .expect("initial task claim includes its task id");
+            .expect("MCP claim should succeed");
         builder
             .payload(
-                "task_submit",
+                "acdd_submit",
                 json!({
-                    "task_id":claimed_task_id,
-                    "stage":"build",
+                    "node":"first.build",
                     "action":"pass",
-                    "evidence": {
-                        "task_id":claimed_task_id,
-                        "stage":"build",
-                        "claim_revision":build_claim["claim_revision"],
-                        "contract_revision":build_claim["contract_revision"],
-                        "worker_id":"builder",
-                        "worktree":workspace.root(),
-                        "proof":{"none_proof":{}}
-                    }
+                    "worker_id":"builder",
+                    "claim_revision":build_claim["claim_revision"],
                 }),
             )
-            .expect("MCP tool should succeed");
+            .expect("MCP submit should succeed");
         let mut reviewer =
             McpTestHarness::with_session(&workspace, "review-session").expect("MCP initialize");
-        reviewer.payload("task_claim", json!({"task_id":"test/m-session:first","stage":"review","worker_id":"reviewer","worktree":workspace.root(),"bundle":false})).expect("MCP tool should succeed");
-        let checked = reviewer
+        let review_claim = reviewer
             .payload(
-                "task_manage",
-                json!({"action":"verify","task_id":"test/m-session:first"}),
+                "acdd_claim",
+                json!({"node":"first.review","worker_id":"reviewer","worktree":workspace.root()}),
             )
-            .expect("MCP tool should succeed");
-        let mut args = json!({"task_id":"test/m-session:first","stage":"review","action":"pass"});
+            .expect("MCP reviewer claim should succeed");
         if !automatic {
-            args["evidence"] = checked["evidence"].clone();
+            reviewer
+                .payload(
+                    "acdd_verify",
+                    json!({"node":"first.review","worker_id":"reviewer","worktree":workspace.root()}),
+                )
+                .expect("MCP verify should succeed");
         }
         assert_eq!(
             reviewer
                 .payload(
-                    "task_manage",
-                    json!({"action":"inspect","task_id":"test/m-session:first"})
+                    "acdd_state",
+                    json!({"action":"show","node":"first.review","worktree":workspace.root(),"format":"json"})
                 )
-                .expect("MCP tool should succeed")["stage"],
-            "review"
+                .expect("MCP show should succeed")["node"]["node_id"],
+            "task:first:review"
         );
+        let mut second_transport =
+            McpTestHarness::with_session(&workspace, "review-session").expect("MCP initialize");
+        let submitted = second_transport
+            .payload(
+                "acdd_submit",
+                json!({
+                    "node":"first.review",
+                    "action":"pass",
+                    "worker_id":"reviewer",
+                    "claim_revision":review_claim["claim_revision"],
+                    "worktree":workspace.root(),
+                }),
+            )
+            .expect("MCP submit across transport should succeed");
         assert_eq!(
-            builder
-                .payload("task_submit", args)
-                .expect("MCP tool should succeed")["stage"],
-            "deliver"
+            submitted["node_cursor"]["Task"]["gates"][0], "review",
+            "{submitted}"
         );
         builder.finish().expect("server must finish successfully");
         reviewer.finish().expect("server must finish successfully");
+        second_transport
+            .finish()
+            .expect("server must finish successfully");
     }
 }
 
@@ -281,7 +300,13 @@ fn mcp_session_context_is_absent_from_schemas_and_rejected_in_json() {
     let catalog = client
         .request_value("tools/list", json!({}))
         .expect("MCP transport");
-    for name in ["task_claim", "task_submit", "task_manage"] {
+    for name in [
+        "acdd_claim",
+        "acdd_submit",
+        "acdd_state",
+        "acdd_verify",
+        "acdd_blackboard",
+    ] {
         let schema = catalog["result"]["tools"]
             .as_array()
             .unwrap()
@@ -294,13 +319,19 @@ fn mcp_session_context_is_absent_from_schemas_and_rejected_in_json() {
             "{name}: {schema}"
         );
         let mut arguments = match name {
-            "task_claim" => {
-                json!({"task_id":"test/m-session:first","stage":"build","worker_id":"builder","worktree":workspace.root()})
+            "acdd_claim" => {
+                json!({"node":"first.build","worker_id":"builder","worktree":workspace.root()})
             }
-            "task_submit" => {
-                json!({"task_id":"test/m-session:first","stage":"build","action":"pass"})
+            "acdd_submit" => {
+                json!({"node":"first.build","action":"pass","worker_id":"builder"})
             }
-            _ => json!({"action":"next","worker_id":"builder","worktree":workspace.root()}),
+            "acdd_verify" => {
+                json!({"node":"first.build","worktree":workspace.root()})
+            }
+            "acdd_blackboard" => {
+                json!({"action":"read","worktree":workspace.root()})
+            }
+            _ => json!({"action":"next","worktree":workspace.root()}),
         };
         arguments["session_fingerprint"] = json!("spoof");
         let (_, response) = client.call(name, arguments).expect("MCP transport");

@@ -1,12 +1,9 @@
 pub(super) use crate::common::Workspace;
-pub(super) use contextunity_acdd::{
-    core::commitments,
-    db::{reader, writer},
-    engine::{
-        ast,
-        languages::{self, dependency_registry::DependencyRegistry, LanguageFamily},
-        linker,
-    },
+pub(super) use acdd_index::{
+    ast,
+    db::{commitments, reader, writer},
+    languages::{self, dependency_registry::DependencyRegistry, LanguageFamily},
+    linker,
 };
 pub(super) use rusqlite::{params, Connection};
 pub(super) use serde_json::Value;
@@ -63,7 +60,7 @@ impl FrameworkHarness {
     pub(super) fn link_sources(
         &self,
         files: &[(&str, &str, &str)],
-    ) -> anyhow::Result<contextunity_acdd::core::models::Graph> {
+    ) -> anyhow::Result<acdd_index::models::Graph> {
         let facts = Self::extract_with_registry(&self.registry, files)?;
         Ok(linker::link_compact_with_typed_registry(&facts, None, None, &self.registry).into())
     }
@@ -71,7 +68,7 @@ impl FrameworkHarness {
     pub(super) fn extract_with_registry(
         registry: &DependencyRegistry,
         files: &[(&str, &str, &str)],
-    ) -> anyhow::Result<BTreeMap<String, contextunity_acdd::acdd_core::typed_facts::TypedFacts>>
+    ) -> anyhow::Result<BTreeMap<String, contextunity_acdd::acdd_index::typed_facts::TypedFacts>>
     {
         files
             .iter()
@@ -91,14 +88,14 @@ impl FrameworkHarness {
         path: &str,
         language: &str,
         source: &str,
-    ) -> anyhow::Result<contextunity_acdd::core::models::Facts> {
+    ) -> anyhow::Result<acdd_index::models::Facts> {
         ast::extract_typed_with_registry(path, language, source, Self::bundled_registry())
             .map(|facts| facts.into_public())
     }
 
     pub(super) fn link(
-        facts: &BTreeMap<String, contextunity_acdd::core::models::Facts>,
-    ) -> contextunity_acdd::core::models::Graph {
+        facts: &BTreeMap<String, acdd_index::models::Facts>,
+    ) -> acdd_index::models::Graph {
         linker::link_with_registry(facts, None, None, Self::bundled_registry())
     }
 }

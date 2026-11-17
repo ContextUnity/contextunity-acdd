@@ -9,7 +9,6 @@ doc_type: contract
 ```yaml
 task_ref: {{TASK}}
 target: {{TARGET}}
-proof_policy: seam-test-first
 scope: [src/]
 contract_revision: {{REVISION}}
 subtasks:

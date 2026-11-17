@@ -9,7 +9,7 @@ type LinkCase<'a> = (
     &'a [EdgeExpectation<'a>],
 );
 
-fn python_extracted(path: &str, source: &str) -> contextunity_acdd::core::models::Facts {
+fn python_extracted(path: &str, source: &str) -> acdd_index::models::Facts {
     ExtractorHarness::for_lang("python")
         .at_path(path)
         .extract(source)
@@ -74,7 +74,7 @@ fn python_scope_metadata() {
 
 #[test]
 fn computed_receiver_hints_are_structural_and_preserve_original_expression() {
-    use contextunity_acdd::core::semantic::{SourcePosition, ValueExpr};
+    use acdd_index::semantic::{SourcePosition, ValueExpr};
     let source = "def run():\n    'value'.upper()\n    r'value'.strip()\n    b'value'.upper()\n    f'{value}'.upper()\n    Widget().execute()\n    package.Widget().execute()\n    super().execute()\n    super(Widget, self).execute()\n    response.request().consume()\n    factory().request().consume()\n";
     let facts = python_extracted("computed.py", source);
     assert!(facts.errors.is_empty(), "{:?}", facts.errors);

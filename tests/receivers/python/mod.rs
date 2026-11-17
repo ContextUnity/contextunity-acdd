@@ -1,11 +1,6 @@
 #![cfg(feature = "lang-python")]
-use contextunity_acdd::{
-    core::{
-        commitments,
-        semantic::{TypeExpr, ValueExpr, ValueFlowFacts},
-    },
-    engine::{ast, linker},
-};
+use acdd_index::semantic::{TypeExpr, ValueExpr, ValueFlowFacts};
+use acdd_index::{ast, db::commitments, linker};
 use std::collections::BTreeMap;
 
 use crate::common::Workspace;

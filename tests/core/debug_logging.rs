@@ -1,5 +1,6 @@
 use crate::common::Workspace;
-use contextunity_acdd::{core::debug_log, engine::scanner};
+use acdd_index::scanner;
+use contextunity_acdd::telemetry as debug_log;
 use std::fs;
 use std::process::Command;
 
@@ -215,7 +216,7 @@ fn debug_log_obstructions_report_errors_without_breaking_requests() {
                         serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"})
                     )
                     .unwrap();
-                    writeln!(input, "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{{\"name\":\"acdd_guide\",\"arguments\":{{\"topic\":\"query\",\"secret\":\"secret-request-content\"}}}}}}").unwrap();
+                    writeln!(input, "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{{\"name\":\"acdd_read\",\"arguments\":{{\"path\":\"secret-request-content\"}}}}}}").unwrap();
                 }
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
                 let status = loop {

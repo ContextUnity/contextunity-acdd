@@ -3,7 +3,6 @@ id: m-cancellation
 title: Mixed task outcomes
 doc_type: contract
 status: active
-started_at: 2026-10-01T10:00:00Z
 ---
 # Mixed task outcomes
 
@@ -11,7 +10,6 @@ started_at: 2026-10-01T10:00:00Z
 ```yaml
 task_ref: planned
 target: Deliver planned work
-proof_policy: seam-test-first
 scope: [src/planned.rs]
 status: planned
 ```
@@ -20,35 +18,25 @@ status: planned
 ```yaml
 task_ref: delivered
 target: Preserve a completed task
-proof_policy: seam-test-first
 scope: [src/delivered.rs]
 status: completed
 receipt:
+  run_id: run-cancel-1
+  node_cursor: "task:delivered:deliver"
+  gate_id: deliver
+  worker_id: builder-1
+  claim_revision: 1
   contract_revision: 1
-  passed_at: 2026-10-01T10:00:00Z
-  evidence:
-    seam_test_proof:
-      exit_code: 0
-      seam_test_refs: [tests/acdd/tasks.rs]
-      tests_passed: 1
-      tests_failed: 0
-  review:
-    review_proof:
-      decision: pass
-      contours:
-        paths: {applicable: true, evidence: public-seam verification}
-        claims: {applicable: true, evidence: public-seam verification}
-        concurrency: {applicable: true, evidence: public-seam verification}
-        project_isolation: {applicable: true, evidence: public-seam verification}
-        administration: {applicable: true, evidence: public-seam verification}
-  decision: pass
+  candidate_tree: "0123456789abcdef0123456789abcdef01234567"
+  accepted_at: "2026-10-01T10:00:00.000Z"
+  rollup:
+    review_summary: "public-seam verification"
 ```
 
 ### task: cancelled
 ```yaml
 task_ref: cancelled
 target: Preserve cancelled work
-proof_policy: seam-test-first
 scope: [src/cancelled.rs]
 status: cancelled
 ```

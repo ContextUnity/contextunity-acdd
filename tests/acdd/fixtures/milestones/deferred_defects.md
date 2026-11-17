@@ -2,13 +2,15 @@
 id: m-defects
 title: Defects test
 doc_type: contract
-deferred_defects:
-  - id: DEFECT-FRONTMATTER
-    source: task_blackboard
-    title: Frontmatter defect stays typed
-    path: src/engine/tasks.rs
-    disposition: subsequent_milestone
-    notes: Imported from contract metadata
+status: completed
+closure:
+  status: completed
+  closed_at: "2026-10-01T10:00:00.000Z"
+  rollup:
+    deferred_findings:
+      - "DEFECT-FRONTMATTER (src/engine/tasks.rs): Imported from contract metadata"
+      - "DEFECT-001 (src/engine/languages/python.rs): Unshadowed function resolution bug in edge case"
+      - "DEFECT-002: Minor syntax warning"
 ---
 # Defects test
 
@@ -16,21 +18,6 @@ deferred_defects:
 ```yaml
 task_ref: task-a
 target: Task A target
-proof_policy: direct-proof
 scope: [src/]
-```
-
-## Deferred and out-of-scope defects
-
-```yaml
-deferred_defects:
-  - id: DEFECT-001
-    source: review_findings
-    title: Unshadowed function resolution bug in edge case
-    path: src/engine/languages/python.rs
-    disposition: deferred
-    notes: Follow up in next milestone
-  - id: DEFECT-002
-    source: task_blackboard
-    title: Minor syntax warning
+status: completed
 ```

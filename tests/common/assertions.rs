@@ -2,14 +2,14 @@ use serde_json::Value;
 use std::process::Output;
 
 /// Serializes facts through the public borrowed projection used by responses.
-pub fn projected_facts(facts: &contextunity_acdd::core::models::Facts) -> Value {
+pub fn projected_facts(facts: &acdd_index::models::Facts) -> Value {
     serde_json::to_value(facts).expect("facts should serialize through DTOs")
 }
 
 /// Returns one node's details through the same borrowed projection used by public responses.
 pub fn projected_node_details(
-    facts: &contextunity_acdd::core::models::Facts,
-    node: &contextunity_acdd::core::models::Node,
+    facts: &acdd_index::models::Facts,
+    node: &acdd_index::models::Node,
 ) -> Value {
     let projected = projected_facts(facts);
     projected["nodes"]

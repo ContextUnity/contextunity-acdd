@@ -1,11 +1,9 @@
-use contextunity_acdd::{
-    core::{
-        models::{Facts, Node},
-        semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
-    },
-    engine::linker::value_flow::{
-        SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
-    },
+use acdd_index::{
+    models::{Facts, Node},
+    semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
+};
+use acdd_index::linker::value_flow::{
+    SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
 };
 use std::collections::BTreeMap;
 
@@ -307,7 +305,7 @@ fn inferred_factory_returns_relink_bindings_and_leave_cycles_unknown() {
     let position = |line| SourcePosition { line, column: 0 };
     #[allow(clippy::field_reassign_with_default)]
     let returning = |name: &str, line| {
-        let mut framework = contextunity_acdd::core::semantic::FrameworkScopeFacts::default();
+        let mut framework = acdd_index::semantic::FrameworkScopeFacts::default();
         framework.return_value = Some(ValueExpr::Call {
             callee: name.into(),
             site: None,

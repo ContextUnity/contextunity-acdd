@@ -12,5 +12,6 @@ gates:
           command: implement
           save: { pre: snapshot, post: snapshot }
         - id: finish
+          need: [implement]
           receipt: true
           save: snapshot

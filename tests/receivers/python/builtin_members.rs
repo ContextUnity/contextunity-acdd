@@ -24,7 +24,7 @@ fn builtin_member_provenance_matrix() {
         let source = row.source;
         let facts = ast::extract(row.path, "python", source).unwrap();
         if matches!(row.kind, Case::BuiltinTypeMembersAreFiniteAndTypeSpecific) {
-let profile = contextunity_acdd::engine::languages::by_id("python").unwrap();
+let profile = acdd_index::languages::by_id("python").unwrap();
     for (receiver, member) in [
         ("str", "strip"),
         ("list", "append"),

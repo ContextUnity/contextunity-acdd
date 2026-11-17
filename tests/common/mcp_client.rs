@@ -198,7 +198,7 @@ impl StdioClient {
                 };
                 for &byte in &chunk[..count] {
                     pending.push(byte);
-                    if pending.len() > contextunity_acdd::core::response::MAX_OUTPUT_BYTES {
+                    if pending.len() > acdd_core::response::MAX_OUTPUT_BYTES {
                         let _ = sender.send(ReadEvent::Oversized(pending.len()));
                         return;
                     }
@@ -306,7 +306,7 @@ impl StdioClient {
                 Ok(ReadEvent::Oversized(actual)) => {
                     return Err(StdioError::OversizedFrame {
                         actual,
-                        limit: contextunity_acdd::core::response::MAX_OUTPUT_BYTES,
+                        limit: acdd_core::response::MAX_OUTPUT_BYTES,
                     })
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => return Err(StdioError::Timeout),
@@ -314,7 +314,7 @@ impl StdioClient {
                     return Err(StdioError::ReaderDisconnected);
                 }
             };
-            let limit = contextunity_acdd::core::response::MAX_OUTPUT_BYTES;
+            let limit = acdd_core::response::MAX_OUTPUT_BYTES;
             if line.len() > limit {
                 return Err(StdioError::OversizedFrame {
                     actual: line.len(),
@@ -353,7 +353,7 @@ impl StdioClient {
                 Ok(ReadEvent::Oversized(actual)) => {
                     return Err(StdioError::OversizedFrame {
                         actual,
-                        limit: contextunity_acdd::core::response::MAX_OUTPUT_BYTES,
+                        limit: acdd_core::response::MAX_OUTPUT_BYTES,
                     })
                 }
                 Ok(ReadEvent::Frame(_)) => {}

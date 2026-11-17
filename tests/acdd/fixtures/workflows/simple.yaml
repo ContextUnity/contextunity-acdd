@@ -1,10 +1,10 @@
-# Canonical Simple Workflow Fixture (ADR 0021 / AC-003)
+# Canonical Simple Workflow Fixture (ADR 0022 / AC-003)
 version: 2
 inherit: none
 save: none
 commands:
   lint: cargo clippy --all-targets --all-features -- -D warnings
-  test: cargo test -p acdd-tasks --lib
+  test: cargo test -p acdd-state --lib
 gates:
   - id: lint
     command: lint

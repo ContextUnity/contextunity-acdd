@@ -1,8 +1,6 @@
-use contextunity_acdd::engine::{ast, languages};
-use contextunity_acdd::{
-    cli,
-    core::response::{Detail, QueryOptions, ResponsePolicy},
-};
+use acdd_index::{ast, languages};
+use acdd_core::response::{Detail, QueryOptions, ResponsePolicy};
+use contextunity_acdd::cli;
 
 #[cfg(feature = "lang-rust")]
 #[test]

@@ -249,7 +249,7 @@ fn configured_component_and_receiver_rules_follow_effective_rules_and_delta() {
             usize::from(active),
             "component configuration origin survives the durable cache"
         );
-        let registrations=cached.iter().flat_map(|facts| &facts.references).filter(|reference| reference.kind=="references" && reference.expression=="Card").filter(|reference| matches!(&reference.receiver_hint,Some(contextunity_acdd::core::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack=="atelier-components" && origin.rule=="options")).count();
+        let registrations=cached.iter().flat_map(|facts| &facts.references).filter(|reference| reference.kind=="references" && reference.expression=="Card").filter(|reference| matches!(&reference.receiver_hint,Some(acdd_index::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack=="atelier-components" && origin.rule=="options")).count();
         assert_eq!(
             registrations,
             if active { 2 } else { 0 },

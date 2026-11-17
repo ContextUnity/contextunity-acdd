@@ -1,4 +1,5 @@
-acdd_profile: profiles/plan.yaml
-tasks_db: .acdd/tasks.sqlite
-plans:
-  - docs/plans
+state_db: .acdd/state.sqlite
+specs:
+  plans:
+    path: docs/plans
+    profile: profiles/plan.yaml

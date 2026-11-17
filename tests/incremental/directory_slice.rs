@@ -1,9 +1,7 @@
 #![cfg(feature = "lang-python")]
 
-use contextunity_acdd::{
-    core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy},
-    db::{reader, traversal},
-};
+use acdd_core::response::{CoverageOptions, Detail, QueryOptions, ResponsePolicy};
+use acdd_index::db::{reader, traversal};
 use std::time::Instant;
 
 use crate::common::Workspace;
@@ -471,19 +469,19 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
     let delta = ws.delta(&[consumer]);
     let cold = ws.build_to(ws.path(".acdd/cold-after-edit.sqlite"));
     assert_eq!(delta["output_root"], cold["output_root"]);
-    contextunity_acdd::core::commitments::verify(&ws.open()).unwrap();
+    acdd_index::db::commitments::verify(&ws.open()).unwrap();
     let moved = "extensions/commerce/src/contextunity/commerce/ingestion/renamed.py";
     std::fs::rename(ws.path(file), ws.path(moved)).unwrap();
     let delta = ws.delta(&[file, moved]);
     let cold = ws.build_to(ws.path(".acdd/cold-after-move.sqlite"));
     assert_eq!(delta["output_root"], cold["output_root"]);
-    contextunity_acdd::core::commitments::verify(&ws.open()).unwrap();
+    acdd_index::db::commitments::verify(&ws.open()).unwrap();
     let prior_root = delta["output_root"].clone();
     let injected = rusqlite::Connection::open(ws.db()).unwrap();
     injected.execute_batch("CREATE TRIGGER reject_edge_insert BEFORE INSERT ON edges BEGIN SELECT RAISE(ABORT,'injected edge failure'); END;").unwrap();
     drop(injected);
     ws.write(consumer, "from contextunity.commerce.ingestion.renamed import publish\ndef consume(): return publish()\n");
-    let failure = contextunity_acdd::db::writer::delta(
+    let failure = contextunity_acdd::engine::pipeline::delta(
         ws.root(),
         &ws.db(),
         &[std::path::PathBuf::from(consumer)],
@@ -500,7 +498,7 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         )
         .unwrap();
     assert_eq!(prior_root, root);
-    contextunity_acdd::core::commitments::verify(&after).unwrap();
+    acdd_index::db::commitments::verify(&after).unwrap();
     drop(after);
 
     // Make JSON string ordering differ from raw endpoint ordering, after the
@@ -536,7 +534,7 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
           JOIN path_dictionary sp ON sp.path_id=s.path_id JOIN path_dictionary dp ON dp.path_id=d.path_id
           WHERE sp.path LIKE '%/commerce/ingestion/%' AND dp.path LIKE '%/commerce/ingestion/%'
           ORDER BY s.id,d.id,e.kind LIMIT 1);").unwrap();
-    contextunity_acdd::core::commitments::seal(&writer).unwrap();
+    acdd_index::db::commitments::seal(&writer).unwrap();
     drop(writer);
     let conn = ws.open();
     for detail in [Detail::Compact, Detail::Full] {

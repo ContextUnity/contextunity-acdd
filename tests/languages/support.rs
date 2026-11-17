@@ -1,5 +1,6 @@
 use crate::common::Workspace;
-use contextunity_acdd::{core::commitments, db::reader, engine::pipeline};
+use acdd_index::db::{commitments, reader};
+use contextunity_acdd::engine::pipeline;
 use rusqlite::Connection;
 use std::{
     path::PathBuf,

@@ -1,13 +1,10 @@
 use crate::common::Workspace;
 use anyhow::Result;
-use contextunity_acdd::{
-    core::{
-        models::stable_hash64,
-        response::{Detail, QueryOptions, ResponsePolicy},
-        schema::SCHEMA_DDL,
-    },
-    db::traversal,
+use acdd_core::{
+    format::stable_hash64,
+    response::{Detail, QueryOptions, ResponsePolicy},
 };
+use acdd_index::db::{traversal, SCHEMA_DDL};
 use rusqlite::{params, Connection};
 fn database(workspace: &Workspace) -> Result<Connection> {
     let conn = Connection::open(workspace.path("graph.sqlite"))?;
@@ -67,12 +64,12 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     assert_eq!(first["nodes"]["items"][1]["via"]["id"], "a");
     assert_eq!(first["nodes"]["items"][1]["via"]["kind"], "calls");
     assert!(first["nodes"]["items"][1].get("evidence").is_none());
-    let markdown = contextunity_acdd::core::format::render_for_operation(
+    let markdown = contextunity_acdd::format::render_for_operation(
         &first,
-        contextunity_acdd::core::format::OutputFormat::Markdown,
+        contextunity_acdd::format::OutputFormat::Markdown,
         "code_map_impact",
         None,
-        contextunity_acdd::core::format::OperationKind::Navigation,
+        contextunity_acdd::format::OperationKind::Navigation,
     );
     assert!(markdown.contains("## Reached nodes"), "{markdown}");
     assert!(

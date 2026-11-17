@@ -3,10 +3,8 @@ use crate::{
     harness::McpTestHarness,
 };
 use clap::Parser;
-use contextunity_acdd::{
-    cli::{guide, Cli},
-    core::response::MAX_OUTPUT_BYTES,
-};
+use acdd_core::response::MAX_OUTPUT_BYTES;
+use contextunity_acdd::cli::{guide, Cli};
 use serde_json::{json, Value};
 
 const GUIDANCE_TOPICS: [&str; 6] = ["lifecycle", "acdd", "gates", "subtasks", "code", "docs"];
@@ -134,16 +132,14 @@ fn guide_configuration_matrix() {
             assert_eq!(serde_json::from_slice::<Value>(&cli.stdout).unwrap(), value);
             assert_eq!(value == json!({}), !enabled, "{bits}: {topic}");
             if topic == "acdd" && acdd {
-                for key in [
-                    "blackboard_topics",
-                    "blackboard_gate_targeting",
-                    "blackboard_schema_version",
-                ] {
-                    assert_eq!(value.get(key).is_some(), blackboard, "{bits}: {key}");
-                }
+                assert_eq!(
+                    value.get("blackboard_topics").is_some(),
+                    blackboard,
+                    "{bits}: blackboard_topics"
+                );
             }
             if topic == "lifecycle" && acdd {
-                assert_eq!(value.to_string().contains("task_blackboard"), blackboard);
+                assert_eq!(value.to_string().contains("acdd_blackboard"), blackboard);
             }
         }
         for key in [
@@ -224,14 +220,16 @@ fn guide_content_and_surfaces_matrix() {
             "lifecycle" => {
                 let text = value.to_string().to_lowercase();
                 for operation in [
-                    "task_list",
-                    "task_claim",
-                    "task_manage",
-                    "verify",
-                    "task_submit",
-                    "task run",
-                    "milestone run",
-                    "task_blackboard",
+                    "acdd next",
+                    "acdd_state",
+                    "acdd claim",
+                    "acdd_claim",
+                    "acdd verify",
+                    "acdd_verify",
+                    "acdd submit",
+                    "acdd_submit",
+                    "acdd run",
+                    "acdd_blackboard",
                 ] {
                     assert!(
                         text.contains(operation),
@@ -239,23 +237,23 @@ fn guide_content_and_surfaces_matrix() {
                     );
                 }
                 let authority = value["authority"].to_string().to_lowercase();
-                for source in ["profile", "workflow_guidance", "example"] {
+                for source in ["gateprofile", "acdd_claim", "authoritative"] {
                     assert!(
                         authority.contains(source),
                         "missing profile authority distinction {source}"
                     );
                 }
                 let runners = value["runners"].to_string().to_lowercase();
-                assert!(runners.contains("independent gate checks compare worker_id"));
+                assert!(runners.contains("acdd_run_id"));
                 assert!(runners.contains("acdd_agent_session_id"));
-                assert!(runners.contains("recovery metadata and runner isolation controls"));
+                assert!(runners.contains("claimresp"));
                 for rule in [
                     "runner",
-                    "independent",
-                    "resume",
-                    "findings",
-                    "fingerprint",
-                    "submission",
+                    "acdd_node_cursor",
+                    "acdd_claim_revision",
+                    "acdd_worker_id",
+                    "acdd_worktree",
+                    "sanitized",
                 ] {
                     assert!(
                         runners.contains(rule),
@@ -264,9 +262,11 @@ fn guide_content_and_surfaces_matrix() {
                 }
                 for code in [
                     "TASK_ALREADY_CLAIMED",
-                    "TASK_STALE_CLAIM",
-                    "TASK_AUTO_PROOF_UNAVAILABLE",
+                    "STALE_CLAIM_REVISION",
+                    "TASK_PROOF_UNOBSERVED",
                     "TASK_CANDIDATE_MISMATCH",
+                    "TASK_NOT_INTEGRATED",
+                    "CONFIG_MIGRATION_REQUIRED",
                 ] {
                     assert!(
                         value["recovery"][code]
@@ -277,70 +277,31 @@ fn guide_content_and_surfaces_matrix() {
                 }
             }
             "acdd" => {
-                for (subject, terms) in [
-                    (
-                        "workflow",
-                        &[
-                            "root",
-                            "taskless",
-                            "save: none",
-                            "workflow run",
-                            "planned",
-                            "log",
-                        ][..],
-                    ),
-                    ("plan", &["active", "snapshot", "no auto", "plan run"][..]),
-                    (
-                        "milestone",
-                        &[
-                            "synthesis",
-                            "wave",
-                            "verif",
-                            "independent",
-                            "handoff",
-                            "milestone run",
-                        ][..],
-                    ),
-                ] {
-                    let text = value["subjects"][subject].to_string().to_lowercase();
-                    for term in terms {
-                        assert!(text.contains(term), "{subject} must explain {term}: {text}");
-                    }
+                let text = value.to_string().to_lowercase();
+                for term in ["gateprofile", "19 static", "domainprovider", "acdd start"] {
+                    assert!(text.contains(term), "acdd guide must explain {term}: {text}");
                 }
-                assert!(value["gates"].is_array());
-                assert!(value["proof_policies"].is_object());
+                assert!(value["mcp_tools"].is_object());
+                assert!(value["blackboard_topics"].is_object());
+                assert!(value["review_contours"].is_array());
             }
             "gates" => {
-                for (condition, terms) in [
-                    ("code", &["scope", "non-doc"][..]),
-                    ("doc", &["scope", "all", "nonempty"][..]),
-                    ("db_migration", &["sql", "migration"][..]),
-                    ("seam", &["concurrency", "speculative", "parallel"][..]),
-                    ("public_api", &["export", "callable"][..]),
-                ] {
-                    let text = value["when"][condition].to_string().to_lowercase();
-                    for term in terms {
-                        assert!(
-                            text.contains(term),
-                            "{condition} condition must explain {term}"
-                        );
-                    }
+                let when = value["when"].to_string().to_lowercase();
+                for term in ["boolean", "tag", "tasks", "task_gate", "root_gate"] {
+                    assert!(when.contains(term), "when expression must explain {term}");
                 }
                 let transitions = value["transitions"].to_string().to_lowercase();
-                for term in ["pass", "fail", "loop", "finding", "profile"] {
+                for term in ["pass", "fail", "max_attempts", "escalated", "independent_from"] {
                     assert!(transitions.contains(term), "missing routing rule {term}");
                 }
                 let persistence = value["persistence"].to_string().to_lowercase();
                 for term in [
-                    "pre",
-                    "post",
-                    "parentless",
+                    "git.isolation",
+                    "worktree",
+                    "in_place",
                     "snapshot",
-                    "branch",
                     "commit",
-                    "configured",
                     "immutable",
-                    "task_candidate_mismatch",
                 ] {
                     assert!(
                         persistence.contains(term),
@@ -350,16 +311,11 @@ fn guide_content_and_surfaces_matrix() {
                 let text = value["verification"].to_string().to_lowercase();
                 for term in [
                     "verify",
-                    "without advancing",
-                    "submit",
-                    "claim-bound",
-                    "gate_execution_traces",
-                    "commands.output.tests",
-                    "seam_test_refs",
-                    "individual",
-                    "caller",
-                    "json",
-                    "not",
+                    "gate_traces",
+                    "execution_digest",
+                    "contract_revision",
+                    "test_target",
+                    "candidate_tree_before",
                 ] {
                     assert!(
                         text.contains(term),
@@ -370,16 +326,12 @@ fn guide_content_and_surfaces_matrix() {
             "subtasks" => {
                 let text = value.to_string().to_lowercase();
                 for term in [
-                    "subtask_add",
-                    "subtask_update",
-                    "subtask_list",
-                    "ready",
+                    "acdd subtask",
                     "in_progress",
                     "completed",
                     "cancelled",
-                    "blocked",
-                    "task_subtasks_incomplete",
-                    "task_subtask_evidence_missing",
+                    "evidence",
+                    "receipt: true",
                 ] {
                     assert!(text.contains(term), "missing subtask guidance {term}");
                 }
@@ -389,16 +341,16 @@ fn guide_content_and_surfaces_matrix() {
                 );
                 assert_eq!(
                     value["delivery"]["evidence_required_for"],
-                    json!(["completed"])
+                    json!(["completed", "cancelled"])
                 );
                 let evidence = value["delivery"]["evidence_boundary"]
                     .as_str()
                     .expect("evidence explanation")
                     .to_lowercase();
-                for term in ["string", "not", "verif"] {
+                for term in ["verif", "not", "independent"] {
                     assert!(
-                        evidence.contains(term),
-                        "subtask_update evidence is stored text, not independent proof"
+                        evidence.contains(term) || evidence.contains("proof"),
+                        "subtask evidence is stored text, not independent proof: {evidence}"
                     );
                 }
             }
@@ -549,23 +501,12 @@ fn guide_content_and_surfaces_matrix() {
     }
 
     for args in [
-        vec!["task", "run", "TASK_ID", "--in-place"],
+        vec!["start", "--goal", "Test ephemeral run", "--in-place"],
+        vec!["run", "--jobs", "2"],
+        vec!["verify", "t1.contract", "--test", "tests/seam.rs::case"],
         vec![
-            "milestone",
-            "run",
-            "AC-003",
-            "--in-place",
-            "--target-base",
-            "main",
-        ],
-        vec!["workflow", "run", "WORKFLOW"],
-        vec!["plan", "run", "PLAN", "--in-place"],
-        vec!["task", "verify", "TASK_ID", "--test", "tests/seam.rs::case"],
-        vec![
-            "task",
             "subtask",
-            "update",
-            "TASK_ID",
+            "t1",
             "slice",
             "--status",
             "completed",

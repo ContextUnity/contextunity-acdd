@@ -1,13 +1,19 @@
 ---
+id: PLAN-PENDING-SUBTASK
 title: Pending Subtask
 doc_type: plan
 ---
 
 # Pending Subtask
 
-## 1. Guarded Step
-
-- **Target**: Require terminal subtasks
-- **Scope**: src/first.rs
-- **Status**: ready
-- **Subtasks**: [{subtask_ref: check, title: Verify action, status: ready}]
+### task: guarded-step
+```yaml
+task_ref: guarded-step
+target: Require terminal subtasks
+scope: [src/first.rs]
+status: planned
+subtasks:
+  - subtask_ref: check
+    title: Verify action
+    status: pending
+```

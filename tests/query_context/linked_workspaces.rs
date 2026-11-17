@@ -1,9 +1,7 @@
-use contextunity_acdd::engine::scanner;
+use acdd_index::scanner;
 use contextunity_acdd::mcp::server::Server;
-use contextunity_acdd::{
-    core::response::{QueryOptions, ResponsePolicy},
-    db::reader,
-};
+use acdd_core::response::{QueryOptions, ResponsePolicy};
+use acdd_index::db::reader;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 

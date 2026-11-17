@@ -1,6 +1,6 @@
 use crate::languages::harness::ExtractorHarness;
 use crate::languages::PersistedWorkspaceHarness;
-use contextunity_acdd::engine::ast;
+use acdd_index::ast;
 use std::fs;
 
 #[cfg(feature = "lang-typescript")]
@@ -65,7 +65,7 @@ mod imports;
 
 #[test]
 fn automatic_registry_has_unique_languages_and_extensions() {
-    use contextunity_acdd::engine::languages;
+    use acdd_index::languages;
     let profiles: Vec<_> = languages::profiles().collect();
     languages::validate_profiles(profiles.iter().copied()).unwrap();
     if let Some(first) = profiles.first() {

@@ -2,7 +2,7 @@ use super::*;
 
 fn large_inventory_workspace() -> Workspace {
     let ws = Workspace::with_files(&[
-        ("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n"),
+        ("acdd.yaml", "state_db: .acdd/state.sqlite\n"),
         ("main.rs", "pub fn current() {}\n"),
         ("docs/intro.md", "# Intro\n\nCurrent documentation.\n"),
     ]);
@@ -24,7 +24,7 @@ fn large_inventory_workspace() -> Workspace {
             [format!("{inventory}{}", " ".repeat(8 * 1024 * 1024))],
         )
         .unwrap();
-        contextunity_acdd::core::commitments::seal(&conn).unwrap();
+        acdd_index::db::commitments::seal(&conn).unwrap();
     }
 
     ws
@@ -67,7 +67,7 @@ fn all_mcp_tools_admit_large_inventory_snapshot_without_raising_query_limit() {
         ("search_docs", json!({"query":"documentation"})),
         ("get_doc", json!({"path_or_id":"docs/intro.md"})),
         ("acdd_guide", json!({"topic":"query"})),
-        ("session_checkpoint", json!({"action":"list"})),
+        ("acdd_state", json!({"action":"list"})),
     ];
     for (name, arguments) in calls {
         let text = response_text(&mut client, name, arguments);

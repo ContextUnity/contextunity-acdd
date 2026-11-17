@@ -4,10 +4,8 @@ use rusqlite::Connection;
 use std::path::Path;
 
 use crate::common::Workspace;
-use contextunity_acdd::{
-    core::response::{QueryOptions, ResponsePolicy},
-    db::reader,
-};
+use acdd_core::response::{QueryOptions, ResponsePolicy};
+use acdd_index::db::reader;
 
 fn doc_edges(db: &Path) -> Vec<(String, String, String)> {
     let conn = Connection::open(db).unwrap();
@@ -578,7 +576,7 @@ fn source_delta_relinks_affected_docs_with_bare_suffix_references() {
         &ResponsePolicy::default(),
         Some(100),
         0,
-        Some(contextunity_acdd::core::response::Detail::Full),
+        Some(acdd_core::response::Detail::Full),
         None,
     )
     .unwrap();

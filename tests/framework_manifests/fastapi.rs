@@ -3,7 +3,7 @@ use super::*;
 #[cfg(feature = "lang-python")]
 #[test]
 fn framework_manifest_symbol_relation_links_exact_dependency_injection_target() {
-    use contextunity_acdd::engine::languages::manifests::FrameworkManifest;
+    use acdd_index::languages::manifests::FrameworkManifest;
 
     let manifest = serde_json::json!({
         "di_calls": [{"callee": "Depends", "argument": 0}],

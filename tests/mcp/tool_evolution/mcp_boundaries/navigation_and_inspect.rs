@@ -147,7 +147,7 @@ fn ergonomic_source_budgets_preserve_defaults_and_explicit_limits_at_mcp_boundar
 
 #[test]
 fn symbol_boundaries_preserve_source_across_direct_and_mcp_callers() {
-    use contextunity_acdd::core::response::{QueryOptions, ResponsePolicy, SourceOptions};
+    use acdd_core::response::{QueryOptions, ResponsePolicy, SourceOptions};
     let cases = [
         (
             "alias.py",
@@ -208,7 +208,7 @@ fn symbol_boundaries_preserve_source_across_direct_and_mcp_callers() {
             offset: 0,
         };
         let snippet =
-            contextunity_acdd::db::symbols::snippet_paged(&conn, w.root(), id, &source, &page)
+            acdd_index::db::symbols::snippet_paged(&conn, w.root(), id, &source, &page)
                 .unwrap();
         assert_eq!(snippet["source"], expected, "{path}: {snippet}");
         let mut m = harness.expect("MCP initialize");

@@ -1,19 +1,15 @@
 use crate::common::Workspace;
-use contextunity_acdd::{
-    core::{
-        commitments,
-        models::{Facts, Node, NodeSemanticMeta},
-    },
-    db::{reader, writer},
-    engine::{pipeline, scanner},
-};
+use acdd_index::models::{Facts, Node, NodeSemanticMeta};
+use acdd_index::{db::{commitments, reader}, scanner};
+use contextunity_acdd::engine::{pipeline, pipeline as writer};
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 
 #[cfg(feature = "lang-python")]
 #[test]
 fn lean_symbol_catalog_retains_no_full_facts_in_memory() -> anyhow::Result<()> {
-    use contextunity_acdd::{core::semantic::SymbolCatalog, engine::linker};
+    use acdd_index::semantic::SymbolCatalog;
+    use acdd_index::linker;
     let stored_local_facts = |connection: &Connection, path: &str| -> anyhow::Result<Facts> {
         let blob: Vec<u8> = connection.query_row(
             "SELECT facts_blob FROM local_facts WHERE path=?1",
@@ -467,7 +463,7 @@ fn node_semantic_meta_persists_roundtrip_and_matches_delta_equivalence() -> anyh
 fn bundled_framework_manifests_are_fingerprinted_in_dependency_digest() -> anyhow::Result<()> {
     let workspace = Workspace::new();
     let adapter = scanner::load_adapter(workspace.root(), None)?;
-    let registry = contextunity_acdd::engine::languages::dependency_registry::DependencyRegistry::collect_with_scan_config(
+    let registry = acdd_index::languages::dependency_registry::DependencyRegistry::collect_with_scan_config(
         workspace.root(),
         Some(&adapter),
     );
@@ -483,5 +479,93 @@ fn bundled_framework_manifests_are_fingerprinted_in_dependency_digest() -> anyho
         !manifests_digest.is_empty(),
         "registry must expose a deterministic standard manifests digest"
     );
+    Ok(())
+}
+
+#[cfg(feature = "lang-python")]
+#[test]
+fn storage_lock_and_confined_wal_seam_matrix() -> anyhow::Result<()> {
+    // 1. `prepare_catalog_storage_with_facts` (cold) == `prepare_catalog_rows` (delta/re-populate) parity.
+    let ws = Workspace::new();
+    ws.write("acdd.yaml", "roots: [src]\n");
+    ws.write(
+        "src/service.py",
+        "class Worker:\n    def work(self, x: int) -> int:\n        return x + 1\n",
+    );
+    let cold_db = ws.path(".acdd/cold.sqlite");
+    let cold_report = pipeline::build_with_cache_dir(
+        ws.root(),
+        &cold_db,
+        None,
+        &ws.path(".acdd/extraction-cache"),
+    )?;
+    // Touch delta on the same file so writer runs `prepare_catalog_rows` (`storage_rows == None` path).
+    let delta_db = ws.path(".acdd/delta.sqlite");
+    std::fs::copy(&cold_db, &delta_db)?;
+    std::fs::copy(
+        ws.path(".acdd/cold.sqlite.verified.json"),
+        ws.path(".acdd/delta.sqlite.verified.json"),
+    )?;
+    let delta_report = pipeline::delta_with_cache_dir(
+        ws.root(),
+        &delta_db,
+        &[std::path::PathBuf::from("src/service.py")],
+        &ws.path(".acdd/extraction-cache"),
+    )?;
+    assert_eq!(cold_report["output_root"], delta_report["output_root"]);
+    let dump_rows = |db_path: &std::path::Path| -> anyhow::Result<(Vec<String>, Vec<String>)> {
+        let conn = reader::open_raw_confined_readonly(db_path)?;
+        let mut nodes_stmt =
+            conn.prepare("SELECT id || ':' || kind || ':' || qualname FROM nodes ORDER BY id")?;
+        let nodes = nodes_stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut edges_stmt =
+            conn.prepare("SELECT kind || ':' || line FROM edges ORDER BY kind, line")?;
+        let edges = edges_stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((nodes, edges))
+    };
+    assert_eq!(dump_rows(&cold_db)?, dump_rows(&delta_db)?);
+
+    // 2. `acdd_core::lock` generation lock contention and release on guard drop.
+    let lock_path = ws.path(".acdd/generation.lock");
+    let excl = acdd_core::lock::acquire_exclusive(&lock_path)?;
+    assert!(
+        acdd_core::lock::try_acquire_exclusive(&lock_path)?.is_none(),
+        "exclusive lock must contend against second exclusive lock"
+    );
+    assert!(
+        acdd_core::lock::try_acquire_shared(&lock_path)?.is_none(),
+        "exclusive lock must contend against shared lock"
+    );
+    drop(excl);
+    let shared_a = acdd_core::lock::acquire_shared(&lock_path)?;
+    let shared_b = acdd_core::lock::try_acquire_shared(&lock_path)?;
+    assert!(shared_b.is_some(), "shared locks must coexist after release");
+    drop((shared_a, shared_b));
+
+    // 3. `open_raw_confined_readonly` reads uncheckpointed WAL frames even when `-shm` is absent.
+    let wal_db = ws.path(".acdd/wal-no-shm.sqlite");
+    {
+        let rw = Connection::open(&wal_db)?;
+        rw.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+             INSERT INTO kv (k, v) VALUES ('alpha', 'from-wal');",
+        )?;
+        // Keep a single write committed in WAL; closing `rw` removes `-shm` automatically.
+    }
+    let shm_path = ws.path(".acdd/wal-no-shm.sqlite-shm");
+    if shm_path.exists() {
+        std::fs::remove_file(&shm_path)?;
+    }
+    let ro = reader::open_raw_confined_readonly(&wal_db)?;
+    let val: String = ro.query_row("SELECT v FROM kv WHERE k = 'alpha'", [], |r| r.get(0))?;
+    assert_eq!(val, "from-wal");
+    let query_only: i64 = ro.query_row("PRAGMA query_only", [], |r| r.get(0))?;
+    assert_eq!(query_only, 1);
+
     Ok(())
 }

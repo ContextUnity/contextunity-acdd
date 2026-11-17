@@ -1,5 +1,5 @@
 use super::*;
-use contextunity_acdd::core::commitments;
+use acdd_index::db::commitments;
 use rusqlite::{params, Connection};
 
 mod deltas;

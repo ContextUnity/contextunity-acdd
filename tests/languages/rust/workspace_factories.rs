@@ -77,8 +77,8 @@ const OWNER_PATH_CASES: &[(&str, &str, &str)] = &[
     ("examples/probe.rs", "examples/core.rs", "crate::core::work"),
     (
         "crates/acdd-index/src/probe.rs",
-        "crates/acdd-core/src/models.rs",
-        "acdd_core::models::work",
+        "crates/acdd-core/src/config.rs",
+        "acdd_core::config::work",
     ),
     (
         "crates/acdd-index/src/probe.rs",
@@ -86,8 +86,8 @@ const OWNER_PATH_CASES: &[(&str, &str, &str)] = &[
         "crate::ast::work",
     ),
     (
-        "crates/acdd-tasks/src/probe.rs",
-        "crates/acdd-tasks/src/store.rs",
+        "crates/acdd-state/src/probe.rs",
+        "crates/acdd-state/src/store.rs",
         "crate::store::work",
     ),
     (
@@ -467,19 +467,7 @@ fn workspace_factories_preserve_return_identity_across_aliases() {
     workspace.write("tests/acdd/mod.rs", "pub(crate) mod support;");
     workspace.write(
         "tests/acdd/support.rs",
-        include_str!("../../acdd/support.rs"),
-    );
-    workspace.write(
-        "tests/acdd/support/builder.rs",
-        include_str!("../../acdd/support/builder.rs"),
-    );
-    workspace.write(
-        "tests/acdd/support/fixtures.rs",
-        include_str!("../../acdd/support/fixtures.rs"),
-    );
-    workspace.write(
-        "tests/acdd/support/git_seed.rs",
-        include_str!("../../acdd/support/git_seed.rs"),
+        "use crate::common::Workspace;\npub(crate) const DEFAULT_SEAM: &str = \"tests/seam.rs\";\npub(crate) fn acdd_workspace(_seam: &str, _body: &str) -> Workspace { Workspace::new() }",
     );
     workspace.write(
         "tests/helpers.rs",

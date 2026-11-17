@@ -1,6 +1,6 @@
 use crate::common::Workspace;
-use contextunity_acdd::db::writer;
-use contextunity_acdd::engine::scanner;
+use contextunity_acdd::engine::pipeline as writer;
+use acdd_index::scanner;
 use rusqlite::Connection;
 use std::{
     fs, io,
@@ -213,14 +213,14 @@ limits:
         .map(|entry| entry.path.as_str())
         .collect();
     assert_eq!(paths, ["src/build_helpers.py", "src/main.py"]);
-    let core_available: fn() -> u64 = contextunity_acdd::core::sys::available_memory_bytes;
+    let core_available: fn() -> u64 = acdd_core::sys::available_memory_bytes;
     let scanner_available: fn() -> u64 = scanner::available_memory_bytes;
     assert!(
         std::ptr::fn_addr_eq(scanner_available, core_available),
         "scanner must re-export the canonical core memory helper"
     );
 
-    let core_budget: fn() -> u64 = contextunity_acdd::core::sys::memory_budget_bytes;
+    let core_budget: fn() -> u64 = acdd_core::sys::memory_budget_bytes;
     let scanner_budget: fn() -> u64 = scanner::memory_budget_bytes;
     assert!(
         std::ptr::fn_addr_eq(scanner_budget, core_budget),

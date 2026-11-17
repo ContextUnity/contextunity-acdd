@@ -20,5 +20,6 @@ gates:
           save:
             immutable: true
         - id: finish
+          need: [prepare, review]
           receipt: true
           save: snapshot

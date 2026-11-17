@@ -19,7 +19,7 @@ fn search_preview_failures_preserve_hits_and_actionable_source_errors() {
                     rusqlite::params![2, 2, "resilient_hit", "a.py"],
                 )
                 .expect("set node boundary fixture");
-            contextunity_acdd::core::commitments::seal(&connection)
+            acdd_index::db::commitments::seal(&connection)
                 .expect("seal node boundary fixture");
         }
         let mut m = McpTestHarness::new(&w).expect("MCP initialize");
@@ -266,13 +266,14 @@ fn document_search_and_section_validation_boundaries() {
 
 #[test]
 fn ast_language_inference_and_actionable_diagnostics() {
-    use contextunity_acdd::engine::languages;
+    use acdd_index::languages;
     let fixture = AnalysisFixture::indexed_files(&[
         (
             "app.py",
             "class Widget:\n    pass\ndef target(value):\n    return value\n",
         ),
         ("more.py", "def target(other):\n    return other\n"),
+        ("pkg/only.py", "def pkg_only():\n    return 7\n"),
         ("lib.rs", "fn target() {}\n"),
     ]);
     let mut m = fixture.start_mcp().expect("MCP initialize");
@@ -374,6 +375,14 @@ fn ast_language_inference_and_actionable_diagnostics() {
             .expect("MCP tool should succeed");
         assert_eq!(inferred["matches"]["total"], 1);
     }
+    let dir_inferred = m
+        .payload(
+            "ast_grep_search",
+            json!({"pattern":"def pkg_only():","path":"pkg"}),
+        )
+        .expect("single-language directory should infer AST language");
+    assert_eq!(dir_inferred["language"], "python");
+    assert_eq!(dir_inferred["matches"]["total"], 1);
     for path in [None, Some(""), Some("src"), Some("unknown.xyz")] {
         let (_, response) = m
             .call(
@@ -385,6 +394,13 @@ fn ast_language_inference_and_actionable_diagnostics() {
         let message = response["result"]["content"][0]["text"].as_str().unwrap();
         for profile in languages::profiles() {
             assert!(message.contains(profile.id()), "{message}");
+        }
+        if cfg!(feature = "lang-rust") && matches!(path, None | Some("")) {
+            assert!(
+                message.contains("Cannot infer AST language")
+                    && message.contains("python, rust"),
+                "{message}"
+            );
         }
         assert!(
             message.contains("language") && message.contains("path"),

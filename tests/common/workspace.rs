@@ -1,5 +1,5 @@
-use contextunity_acdd::core::format::file_uri_for_path;
-use contextunity_acdd::db::reader;
+use contextunity_acdd::format::file_uri_for_path;
+use acdd_index::db::reader;
 use contextunity_acdd::engine::pipeline;
 use rusqlite::Connection;
 use serde_json::Value;
@@ -67,10 +67,6 @@ fn assert_relative(relative: &Path) {
 impl Workspace {
     /// Creates a unique temporary directory that is removed when this value drops.
     pub fn new() -> Self {
-        static INIT: std::sync::Once = std::sync::Once::new();
-        INIT.call_once(|| {
-            contextunity_acdd::mcp::tasks::ensure_extractors();
-        });
         static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -243,7 +239,7 @@ impl Workspace {
                 "baseline",
             ],
         ] {
-            let output = contextunity_acdd::core::git::git_command(self.root(), &args)?;
+            let output = acdd_core::git::git_command(self.root(), &args)?;
             anyhow::ensure!(
                 output.status.success(),
                 "Git fixture command {args:?} failed: {}",
@@ -256,7 +252,7 @@ impl Workspace {
     /// Creates Git tags in the workspace.
     pub fn create_git_tags(&self, tags: &[&str]) -> anyhow::Result<()> {
         for tag in tags {
-            let output = contextunity_acdd::core::git::git_command(self.root(), &["tag", tag])?;
+            let output = acdd_core::git::git_command(self.root(), &["tag", tag])?;
             anyhow::ensure!(
                 output.status.success(),
                 "Git tag {tag} failed: {}",
@@ -296,7 +292,7 @@ impl Workspace {
 
     /// Runs a Git command inside the workspace root.
     pub fn run_git(&self, args: &[&str]) -> anyhow::Result<()> {
-        let output = contextunity_acdd::core::git::git_command(self.root(), args)?;
+        let output = acdd_core::git::git_command(self.root(), args)?;
         anyhow::ensure!(
             output.status.success(),
             "Git fixture command {args:?} failed: {}",

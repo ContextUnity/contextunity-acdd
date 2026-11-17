@@ -1,4 +1,5 @@
-acdd_profile: profiles/rejected.yaml
-tasks_db: .acdd/custom-tasks.sqlite
-plans:
-  - custom-plans
+state_db: .acdd/custom-state.sqlite
+specs:
+  plans:
+    path: custom-plans
+    profile: profiles/rejected.yaml

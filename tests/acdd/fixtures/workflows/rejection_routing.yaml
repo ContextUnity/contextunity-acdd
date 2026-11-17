@@ -1,7 +1,11 @@
-# Canonical Rejection Routing Workflow Fixture (ADR 0021 / AC-003)
+# Canonical Rejection Routing Workflow Fixture (ADR 0022 / AC-003)
 version: 2
 inherit: none
 save: none
+contours:
+  correctness:
+    description: "Verify implementation correctness"
+    criteria: ["Verify behavior and tests"]
 roles:
   builder: {}
   independent_reviewer: {}
@@ -11,5 +15,7 @@ gates:
   - id: review
     role: independent_reviewer
     proof: review
-    independent_from: build
+    contours:
+      - correctness
+    independent_from: [build]
     fail: build

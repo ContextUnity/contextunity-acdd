@@ -1,5 +1,6 @@
 use crate::common::Workspace;
-use contextunity_acdd::{db::reader, engine::pipeline};
+use acdd_index::db::reader;
+use contextunity_acdd::engine::pipeline;
 use rusqlite::Connection;
 use serde_json::Value;
 

@@ -888,7 +888,7 @@ fn overview_reports_language_breakdown_and_compiled_profiles() {
         assert!(!next["languages"]["has_more"].as_bool().unwrap());
     }
 
-    use contextunity_acdd::core::format::{self, OutputFormat};
+    use contextunity_acdd::format::{self, OutputFormat};
     let mut missing = Vec::new();
     // These are recorded resolver outcomes, not inferred labels or visible-page totals.
     let fixture = Workspace::new();

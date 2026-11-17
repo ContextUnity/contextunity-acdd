@@ -1,12 +1,15 @@
 ---
+id: PLAN-UNSAFE-SCOPE
 title: Unsafe Scope
 doc_type: plan
 ---
 
 # Unsafe Scope
 
-## 1. First Step
-
-- **Target**: Reject escaping scope
-- **Scope**: ../escape.rs
-- **Status**: ready
+### task: first-step
+```yaml
+task_ref: first-step
+target: Reject escaping scope
+scope: ["../escape.rs"]
+status: planned
+```

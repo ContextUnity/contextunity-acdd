@@ -195,7 +195,7 @@ fn stdio_transport_smoke() {
         assert!(listed.get("error").is_none(), "{listed}");
         let tools = listed["result"]["tools"].as_array().expect("{listed}");
         assert!(
-            tools.iter().any(|tool| tool["name"] == "task_blackboard"),
+            tools.iter().any(|tool| tool["name"] == "acdd_blackboard"),
             "{listed}"
         );
         assert_eq!(client.child().id(), pid);

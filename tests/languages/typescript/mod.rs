@@ -1,7 +1,7 @@
 #![cfg(feature = "lang-typescript")]
 
 use super::harness::{query_scalar, ExtractorHarness, LinkedFacts};
-use contextunity_acdd::core::models::Facts;
+use acdd_index::models::Facts;
 use std::collections::BTreeMap;
 
 fn linked(path: &str, language: &str, source: &str) -> LinkedFacts {
@@ -50,7 +50,7 @@ fn linked_files(
     files: &[(&str, &str)],
 ) -> (
     BTreeMap<String, Facts>,
-    contextunity_acdd::core::models::Graph,
+    acdd_index::models::Graph,
 ) {
     let facts = extracted_files(files, None);
     let graph = ExtractorHarness::link_graph(&facts);

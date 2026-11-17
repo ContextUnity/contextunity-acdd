@@ -1,20 +1,25 @@
 ---
+id: PLAN-CYCLE
 title: Cyclic Plan
 doc_type: plan
 ---
 
 # Cyclic Plan
 
-## 1. First Step
+### task: first-step
+```yaml
+task_ref: first-step
+target: Validate cycles
+scope: [src/first.rs]
+depends_on: [second-step]
+status: planned
+```
 
-- **Target**: Validate cycles
-- **Scope**: src/first.rs
-- **Status**: ready
-- **Depends On**: [Second Step]
-
-## 2. Second Step
-
-- **Target**: Close the cycle
-- **Scope**: src/second.rs
-- **Status**: pending
-- **Depends On**: [First Step]
+### task: second-step
+```yaml
+task_ref: second-step
+target: Close the cycle
+scope: [src/second.rs]
+depends_on: [first-step]
+status: planned
+```

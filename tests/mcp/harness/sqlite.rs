@@ -1,5 +1,5 @@
 use crate::common::Workspace;
-use contextunity_acdd::db::reader;
+use acdd_index::db::reader;
 use rusqlite::Connection;
 use serde_json::Value;
 use std::path::Path;
@@ -34,7 +34,7 @@ impl IndexFixture {
     }
 
     pub fn seal(&self) {
-        contextunity_acdd::core::commitments::seal(&self.0).unwrap();
+        acdd_index::db::commitments::seal(&self.0).unwrap();
     }
 
     pub fn tamper_function_names(&self, name: &str) -> anyhow::Result<()> {
@@ -106,13 +106,13 @@ pub fn stored_node_count(connection: &Connection) -> anyhow::Result<i64> {
 
 pub fn claim_session_fingerprint(
     workspace: &Workspace,
-    task_id: &str,
+    node_id: &str,
     revision: u64,
 ) -> anyhow::Result<String> {
-    let store = contextunity_acdd::engine::tasks::store_for_task(workspace.root(), task_id)?;
-    Ok(store.connection.query_row(
-        "SELECT session_fingerprint FROM task_claims WHERE task_id=?1 AND revision=?2",
-        rusqlite::params![task_id, revision],
+    let conn = Connection::open(workspace.path(".acdd/state.sqlite"))?;
+    Ok(conn.query_row(
+        "SELECT session_fingerprint FROM gate_claims WHERE node_id=?1 AND claim_revision=?2 ORDER BY claim_id DESC LIMIT 1",
+        rusqlite::params![node_id, revision],
         |row| row.get(0),
     )?)
 }
@@ -146,7 +146,7 @@ pub fn mark_legacy_index_semantics(database: &Path) -> anyhow::Result<()> {
         "UPDATE metadata SET value='10:compact-storage-v8:legacy' WHERE key='index_semantics_version'",
         [],
     )?;
-    contextunity_acdd::core::commitments::seal(&connection)?;
+    acdd_index::db::commitments::seal(&connection)?;
     Ok(())
 }
 

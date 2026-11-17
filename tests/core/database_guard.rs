@@ -1,6 +1,7 @@
 use crate::common::Workspace;
-use contextunity_acdd::db::tasks_store::TasksStore;
-use contextunity_acdd::db::writer::{build, validate_code_map_target};
+use acdd_core::errors::ErrorCode;
+use acdd_state::store::sqlite::SqliteStateBackend;
+use contextunity_acdd::engine::pipeline::{build, validate_code_map_target};
 
 #[test]
 fn database_publication_recovery_matrix() {
@@ -36,12 +37,19 @@ fn database_publication_recovery_matrix() {
         ws.write("src/unit_00.rs", "fn original() {}\n");
         std::fs::write(&db, &before).unwrap();
         std::fs::write(ws.path("index.sqlite.verified.json"), &receipt_bytes).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                ws.path("index.sqlite.verified.json"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
         match case {
             Input::PipelineFailures => {
-                use contextunity_acdd::{
-                    db::cache,
-                    engine::pipeline::{build_with_test_hooks, PipelineTestHooks},
-                };
+                use acdd_index::db::cache;
+                use contextunity_acdd::engine::pipeline::{build_with_test_hooks, PipelineTestHooks};
                 use std::sync::{Arc, Mutex};
 
                 let receipt = ws.path("index.sqlite.verified.json");
@@ -54,8 +62,8 @@ fn database_publication_recovery_matrix() {
                     (true, true, false),
                 ] {
                     std::fs::write(&db, &before).unwrap();
-                    let conn = contextunity_acdd::db::reader::open(&db, ws.root()).unwrap();
-                    contextunity_acdd::core::commitments::verify(&conn).unwrap();
+                    let conn = acdd_index::db::reader::open(&db, ws.root()).unwrap();
+                    acdd_index::db::commitments::verify(&conn).unwrap();
                     drop(conn);
                     let seal = old["output_root"].as_str().unwrap();
                     assert!(cache::publish_verified(&db, ws.root(), seal).unwrap());
@@ -138,8 +146,8 @@ fn database_publication_recovery_matrix() {
                         std::fs::remove_dir_all(&stage).unwrap();
                     }
                     let recovered = build(ws.root(), &db, None).unwrap();
-                    let conn = contextunity_acdd::db::reader::open(&db, ws.root()).unwrap();
-                    contextunity_acdd::core::commitments::verify(&conn).unwrap();
+                    let conn = acdd_index::db::reader::open(&db, ws.root()).unwrap();
+                    acdd_index::db::commitments::verify(&conn).unwrap();
                     drop(conn);
                     assert!(cache::matches(
                         &db,
@@ -192,13 +200,23 @@ fn database_publication_recovery_matrix() {
                 // Stale regular-file WAL/SHM sidecars left when a read-only handle outlives
                 // the writer must checkpoint and clean up cleanly during publication.
                 {
-                    let rw = rusqlite::Connection::open(&db).unwrap();
+                    let open_db = acdd_core::fs::confined_database_open_path(&db).unwrap();
+                    let rw = rusqlite::Connection::open_with_flags(
+                        &open_db,
+                        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+                            | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+                    )
+                    .unwrap();
                     let mode: String = rw
                         .query_row("PRAGMA journal_mode=WAL;", [], |row| row.get(0))
                         .unwrap();
                     assert_eq!(mode.to_ascii_lowercase(), "wal");
+                    rw.execute_batch("BEGIN IMMEDIATE; COMMIT;").unwrap();
+                    let _: i64 = rw
+                        .query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))
+                        .unwrap();
                     let ro = rusqlite::Connection::open_with_flags(
-                        &db,
+                        &open_db,
                         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
                             | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
                     )
@@ -277,12 +295,12 @@ fn database_publication_recovery_matrix() {
                 writer.execute_batch("INSERT INTO t VALUES (2);").unwrap();
                 for truncate in [false, true] {
                     let error =
-                        contextunity_acdd::db::cache::checkpoint(&writer, truncate).unwrap_err();
+                        acdd_index::db::cache::checkpoint(&writer, truncate).unwrap_err();
                     assert!(error.to_string().contains("incomplete"), "{error:#}");
                 }
                 reader.execute_batch("ROLLBACK").unwrap();
                 drop(reader);
-                contextunity_acdd::db::cache::checkpoint(&writer, true).unwrap();
+                acdd_index::db::cache::checkpoint(&writer, true).unwrap();
             }
             Input::InvalidCache => {
                 std::fs::remove_dir_all(ws.path("src")).unwrap();
@@ -306,25 +324,14 @@ fn database_publication_recovery_matrix() {
 
 #[test]
 fn database_target_guard_matrix() {
-    #[cfg(unix)]
-    {
-        if let Some(path) = std::env::var_os("ACDD_TEST_TASK_INITIALIZER") {
-            std::fs::write(std::env::var_os("ACDD_TEST_TASK_READY").unwrap(), "ready").unwrap();
-            let error = TasksStore::open(std::path::Path::new(&path))
-                .err()
-                .expect("published code index must not become a task store");
-            assert!(error.to_string().contains("TASK_DATABASE_COLLISION"));
-            return;
-        }
-    }
     let ws = Workspace::new();
     enum Input {
-        PublicationLock,
+        ConfinementAndSchemaGuards,
         Unreadable,
         CollisionTargets,
     }
     for case in [
-        Input::PublicationLock,
+        Input::ConfinementAndSchemaGuards,
         Input::Unreadable,
         Input::CollisionTargets,
     ] {
@@ -338,7 +345,7 @@ fn database_target_guard_matrix() {
             }
         }
         match case {
-            Input::PublicationLock => {
+            Input::ConfinementAndSchemaGuards => {
                 #[cfg(unix)]
                 {
                     let directory = ws.root();
@@ -346,62 +353,34 @@ fn database_target_guard_matrix() {
                     std::fs::create_dir_all(&root).unwrap();
                     std::fs::write(root.join("app.py"), "def published():\n    return 1\n")
                         .unwrap();
-                    let index = directory.join("generation.sqlite");
+                    let index = directory.join("code-map.sqlite");
                     build(&root, &index, None).unwrap();
-                    let expected = std::fs::read(&index).unwrap();
-                    for alias in [false, true] {
-                        let target = directory.join(format!("published-{alias}.sqlite"));
-                        let input = if alias {
-                            std::fs::write(&target, []).unwrap();
-                            let link = directory.join("task-alias.sqlite");
-                            std::os::unix::fs::symlink(&target, &link).unwrap();
-                            link
-                        } else {
-                            target.clone()
-                        };
-                        std::fs::write(&index, &expected).unwrap();
-                        let mut lock_path = target.as_os_str().to_owned();
-                        lock_path.push(".lock");
-                        let lock = std::fs::OpenOptions::new()
-                            .read(true)
-                            .write(true)
-                            .create(true)
-                            .truncate(false)
-                            .open(lock_path)
-                            .unwrap();
-                        lock.lock().unwrap();
-                        validate_code_map_target(&root, &target).unwrap();
-                        let ready = directory.join(format!("ready-{alias}"));
-                        let mut child =
-                            std::process::Command::new(std::env::current_exe().unwrap())
-                                .args([
-                                    "--exact",
-                                    "database_guard::database_target_guard_matrix",
-                                    "--nocapture",
-                                ])
-                                .env("ACDD_TEST_TASK_INITIALIZER", &input)
-                                .env("ACDD_TEST_TASK_READY", &ready)
-                                .stdout(std::process::Stdio::piped())
-                                .stderr(std::process::Stdio::piped())
-                                .spawn()
-                                .unwrap();
-                        let started = std::time::Instant::now();
-                        while !ready.exists()
-                            && started.elapsed() < std::time::Duration::from_secs(5)
-                        {
-                            std::thread::sleep(std::time::Duration::from_millis(5));
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(150));
-                        let blocked = child.try_wait().unwrap().is_none();
-                        // Match atomic_build's final replacement while holding its real lock.
-                        std::fs::rename(&index, &target).unwrap();
-                        drop(lock);
-                        let output = child.wait_with_output().unwrap();
-                        assert!(ready.exists(), "initializer process did not start");
-                        assert!(blocked, "task initialization bypassed the publication lock");
-                        assert!(output.status.success(), "{output:?}");
-                        assert_eq!(std::fs::read(&target).unwrap(), expected);
-                    }
+
+                    // Symlinked state DB paths fail confinement (`SQLITE_OPEN_NOFOLLOW`).
+                    let target = directory.join("real-state.sqlite");
+                    std::fs::write(&target, []).unwrap();
+                    let link = directory.join("alias-state.sqlite");
+                    std::os::unix::fs::symlink(&target, &link).unwrap();
+                    let link_err = SqliteStateBackend::open(&link).err().unwrap();
+                    assert_eq!(link_err.code, ErrorCode::ProfileSchemaInvalid);
+
+                    // Opening a published `code-map.sqlite` as a state DB fails closed (`ConfigMigrationRequired`).
+                    let schema_err = SqliteStateBackend::open(&index).err().unwrap();
+                    assert_eq!(schema_err.code, ErrorCode::ConfigMigrationRequired);
+
+                    // `confined_database_open_path` & `reader::open` reject symlinked ancestors and leaf symlinks to outside DBs.
+                    let outside = Workspace::new();
+                    outside.write_bytes("foreign.sqlite", b"foreign");
+                    let ancestor_link = directory.join("escape");
+                    let leaf_link = directory.join("leaf-escape.sqlite");
+                    std::os::unix::fs::symlink(outside.root(), &ancestor_link).unwrap();
+                    std::os::unix::fs::symlink(outside.path("foreign.sqlite"), &leaf_link).unwrap();
+                    assert!(acdd_core::fs::confined_database_open_path(&ancestor_link.join("foreign.sqlite")).is_err());
+                    assert!(acdd_core::fs::confined_database_open_path(&leaf_link).is_err());
+                    assert!(acdd_index::db::reader::open(&ancestor_link.join("foreign.sqlite"), &root).is_err());
+                    assert!(acdd_index::db::reader::open(&leaf_link, &root).is_err());
+                    std::fs::remove_file(&ancestor_link).unwrap();
+                    std::fs::remove_file(&leaf_link).unwrap();
                 }
             }
             Input::Unreadable => {
@@ -410,7 +389,7 @@ fn database_target_guard_matrix() {
                     use std::os::unix::fs::PermissionsExt;
 
                     let target = ws.root().join("custom_store.db");
-                    drop(TasksStore::open(&target).unwrap());
+                    drop(SqliteStateBackend::open(&target).unwrap());
                     let before = std::fs::read(&target).unwrap();
                     let permissions = std::fs::metadata(&target).unwrap().permissions();
                     for command in ["delta", "build", "query", "serve"] {
@@ -424,7 +403,7 @@ fn database_target_guard_matrix() {
                             break;
                         }
                         let (rejected, diagnostic) = if command == "delta" {
-                            let result = contextunity_acdd::db::writer::delta(
+                            let result = contextunity_acdd::engine::pipeline::delta(
                                 ws.root(),
                                 &target,
                                 &[ws.root().join("app.py")],
@@ -454,22 +433,26 @@ fn database_target_guard_matrix() {
             Input::CollisionTargets => {
                 enum Target {
                     TaskName,
-                    IndexName,
+                    StateName,
                     TaskSchema,
+                    StateSchema,
                     IndexSchema,
                     Configured,
+                    ConfiguredStateDb,
                     CollidingConfig,
                     InvalidIdentity,
                     Alias,
                     Locked,
                     Fifo,
                 }
-                for (input, task_opener, expected) in [
+                for (input, state_opener, expected) in [
                     (Target::TaskName, false, "TASK_DATABASE_COLLISION"),
-                    (Target::IndexName, true, "TASK_DATABASE_COLLISION"),
+                    (Target::StateName, false, "TASK_DATABASE_COLLISION"),
                     (Target::TaskSchema, false, "TASK_DATABASE_COLLISION"),
-                    (Target::IndexSchema, true, "TASK_DATABASE_COLLISION"),
+                    (Target::StateSchema, false, "TASK_DATABASE_COLLISION"),
+                    (Target::IndexSchema, true, "existing tables without _sqlite_meta"),
                     (Target::Configured, false, "TASK_DATABASE_COLLISION"),
+                    (Target::ConfiguredStateDb, false, "TASK_DATABASE_COLLISION"),
                     (Target::CollidingConfig, false, "TASK_DATABASE_COLLISION"),
                     (Target::InvalidIdentity, false, "TASK_DATABASE_COLLISION"),
                     (Target::Alias, false, "TASK_DATABASE_COLLISION"),
@@ -489,18 +472,24 @@ fn database_target_guard_matrix() {
                     let mut live_connection = None;
                     match input {
                         Target::TaskName => target = ws.path(".acdd/tasks.sqlite"),
-                        Target::IndexName => target = ws.path(".acdd/code-map.sqlite"),
-                        Target::TaskSchema | Target::IndexSchema => {
+                        Target::StateName => target = ws.path(".acdd/state.sqlite"),
+                        Target::TaskSchema | Target::StateSchema | Target::IndexSchema => {
                             let connection = rusqlite::Connection::open(&target).unwrap();
-                            connection.execute_batch(if task_opener {
-                                "CREATE TABLE nodes (id TEXT PRIMARY KEY, name TEXT); CREATE TABLE edges (src TEXT, dst TEXT);"
+                            connection.execute_batch(if state_opener {
+                                "PRAGMA journal_mode = WAL; CREATE TABLE nodes (id TEXT PRIMARY KEY, name TEXT); CREATE TABLE edges (src TEXT, dst TEXT);"
+                            } else if matches!(input, Target::StateSchema) {
+                                "CREATE TABLE runs (run_id TEXT PRIMARY KEY); CREATE TABLE gate_nodes (run_id TEXT, node_id TEXT); CREATE TABLE gate_claims (claim_id INTEGER PRIMARY KEY); CREATE TABLE gate_traces (trace_row_id INTEGER PRIMARY KEY); CREATE TABLE run_tombstones (run_id TEXT PRIMARY KEY);"
                             } else {
                                 "CREATE TABLE tasks (task_id TEXT PRIMARY KEY, milestone_ref TEXT, descriptor TEXT); CREATE TABLE task_gates (task_id TEXT, gate TEXT, revision INTEGER, state TEXT);"
                             }).unwrap();
                         }
-                        Target::Configured | Target::CollidingConfig | Target::InvalidIdentity => {
+                        Target::Configured
+                        | Target::ConfiguredStateDb
+                        | Target::CollidingConfig
+                        | Target::InvalidIdentity => {
                             let (config, path) = match input {
                                 Target::Configured => ("task_repository: repo\ntasks_db: .acdd/state.sqlite\n", ".acdd/sub/../state.sqlite"),
+                                Target::ConfiguredStateDb => ("state_db: .acdd/custom-state.sqlite\n", ".acdd/sub/../custom-state.sqlite"),
                                 Target::CollidingConfig => ("task_repository: repo\ntasks_db: .acdd/code-map.sqlite\n", ".acdd/code-map.sqlite"),
                                 _ => ("task_repository: repo\ntask_project: invalid/name\ntasks_db: .acdd/state.sqlite\n", ".acdd/state.sqlite"),
                             };
@@ -514,7 +503,7 @@ fn database_target_guard_matrix() {
                                 std::fs::create_dir_all(&real).unwrap();
                                 std::fs::write(
                                     real.join("acdd.yaml"),
-                                    "task_repository: repo\ntasks_db: .acdd/state.sqlite\n",
+                                    "state_db: .acdd/state.sqlite\n",
                                 )
                                 .unwrap();
                                 let alias = ws.path("var_repo");
@@ -557,10 +546,10 @@ fn database_target_guard_matrix() {
                     } else {
                         None
                     };
-                    if task_opener {
-                        let error = TasksStore::open(&target)
+                    if state_opener {
+                        let error = SqliteStateBackend::open(&target)
                             .err()
-                            .expect("code index must not become task store");
+                            .expect("code index must not become state store");
                         assert!(error.to_string().contains(expected), "{error:#}");
                     } else {
                         let error = validate_code_map_target(&root, &target).unwrap_err();

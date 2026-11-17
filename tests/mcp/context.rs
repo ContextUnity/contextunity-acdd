@@ -2,15 +2,9 @@ use crate::cli::run_cli;
 use crate::common::{assertions, mcp_client::invalidate_mcp_connection_cache, Workspace};
 use crate::harness::McpTestHarness;
 use crate::sqlite_fixture::TaskClaimsFixture;
-use contextunity_acdd::{
-    core::{
-        format::OutputFormat,
-        response::{ResponsePolicy, MAX_OUTPUT_BYTES},
-    },
-    db::traversal,
-    engine::scanner,
-    mcp::response,
-};
+use acdd_core::response::{ResponsePolicy, MAX_OUTPUT_BYTES};
+use acdd_index::{db::traversal, scanner};
+use contextunity_acdd::{format::OutputFormat, mcp::response};
 use serde_json::{json, Value};
 use std::{fs, time::Duration};
 

@@ -1,13 +1,8 @@
 #![cfg(feature = "lang-html")]
 
-use contextunity_acdd::{
-    core::{
-        commitments,
-        response::{Detail, QueryOptions, ResponsePolicy, SourceOptions},
-    },
-    db::{reader, symbols, writer},
-    engine::{ast, scanner},
-};
+use acdd_core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions};
+use acdd_index::{ast, db::{commitments, reader, symbols}, scanner};
+use contextunity_acdd::engine::pipeline as writer;
 use std::{collections::BTreeMap, fs};
 
 use crate::languages::PersistedWorkspaceHarness;

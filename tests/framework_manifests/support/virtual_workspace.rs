@@ -53,7 +53,8 @@ impl VirtualWorkspace {
         &self,
         registry: &DependencyRegistry,
     ) -> anyhow::Result<Connection> {
-        use contextunity_acdd::acdd_core::{config::Adapter, models::FileEntry};
+        use contextunity_acdd::acdd_core::config::Adapter;
+        use contextunity_acdd::acdd_index::models::FileEntry;
         let mut entries = Vec::new();
         let mut facts = BTreeMap::new();
         for (path, source) in &self.files {

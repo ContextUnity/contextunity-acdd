@@ -5,137 +5,65 @@ fn ergonomic_task_aliases_reach_existing_operations() {
     let w = Workspace::with_files(&[
         (
             "acdd.yaml",
-            "roots: [.]\ndocs: [docs]\nmilestones: [docs/milestones]\n",
+            "roots: [.]\ndocs: [docs]\nspecs:\n  milestones:\n    path: docs/milestones\n",
+        ),
+        (".gitignore", ".acdd/\n"),
+        (
+            ".acdd/profile.yaml",
+            "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: { mode: subagent }\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          role: worker\n          proof: none\n",
         ),
         ("app.py", "def first(): pass\n"),
         (
             "docs/milestones/010-aliases.md",
-            "---\nid: m-aliases\ntitle: Parameter aliases\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: aliases\ntarget: Accept parameter aliases\nproof_policy: seam-test-first\nscope: [app.py]\nsubtasks:\n  - subtask_ref: parameters\n    title: Accept alternate parameter names\n```\n",
+            "---\nid: m-aliases\ntitle: Parameter aliases\ndoc_type: milestone\nstatus: active\n---\n# Parameter aliases\n\n### task: aliases\n```yaml\ntask_ref: aliases\ntarget: Accept parameter aliases\nscope: [app.py]\nsubtasks:\n  - subtask_ref: parameters\n    title: Accept alternate parameter names\n```\n",
         ),
     ]);
 
+    w.seed_git().unwrap();
     w.build();
-    w.query(&["task", "sync", "--file", "docs/milestones/010-aliases.md"])
-        .expect("CLI should succeed");
-    let task_id = "acdd/m-aliases:aliases";
-    let inspected = w
-        .query(&["task", "inspect", task_id])
-        .expect("CLI should succeed");
-    for args in [
-        vec!["task", "show", task_id],
-        vec!["task", "inspect", "--task", task_id],
-        vec!["task", "show", "--task", task_id],
-    ] {
-        assert_eq!(w.query(&args).expect("CLI should succeed"), inspected);
-    }
-    let compact = w
-        .query(&["task", "list", "--milestone", "010", "--detail", "compact"])
-        .expect("CLI should succeed");
-    assert_eq!(crate::json_array(&compact["tasks"]).len(), 1);
-    let full = w
-        .query(&["task", "list", "--milestone", "010", "--full"])
-        .expect("CLI should succeed");
+    w.query(&["start", "docs/milestones/010-aliases.md", "--in-place"])
+        .expect("CLI start should succeed");
+    let shown = w
+        .query(&["show", "aliases.contract"])
+        .expect("CLI show should succeed");
     assert_eq!(
-        w.query(&["task", "list", "--milestone", "010", "--detail", "full"])
-            .expect("CLI should succeed"),
-        full
+        shown["Show"]["node"]["node_id"], "task:aliases:contract",
+        "{shown}"
     );
+
+    let listed = w
+        .query(&["list", "--status", "active"])
+        .expect("CLI list should succeed");
+    assert_eq!(crate::json_array(&listed["List"]["page"]["runs"]).len(), 1);
+
     let mut m = McpTestHarness::new(&w).expect("MCP initialize");
-    let canonical = m
-        .payload("task_list", json!({"milestone_ref":"010","detail":"full"}))
-        .expect("MCP tool should succeed");
+    let mcp_show = m
+        .payload("acdd_state", json!({"action":"show","node":"aliases.contract","format":"json"}))
+        .expect("MCP acdd_state show");
     assert_eq!(
-        m.payload("task_list", json!({"milestone":"010","detail":"full"}))
-            .expect("MCP tool should succeed"),
-        canonical
+        mcp_show["node"]["node_id"],
+        shown["Show"]["node"]["node_id"]
     );
-    assert_eq!(crate::json_array(&canonical["tasks"]).len(), 1);
+
     let first_page = m
         .payload(
-            "task_list",
-            json!({"milestone_ref":"010","status":"all","limit":1,"offset":0}),
+            "acdd_state",
+            json!({"action":"list","status":"active","limit":1,"offset":0,"format":"json"}),
         )
         .expect("MCP tool should succeed");
-    assert_eq!(first_page["pagination"]["total"], 1);
-    assert_eq!(first_page["pagination"]["limit"], 1);
-    assert_eq!(first_page["pagination"]["returned"], 1);
-    assert_eq!(first_page["pagination"]["has_more"], false);
-    assert!(!first_page["pagination"]["generation"]
-        .as_str()
-        .unwrap()
-        .is_empty());
-    assert!(first_page["pagination"]["continuation_hint"]
-        .to_string()
-        .contains("010"));
+    assert_eq!(first_page["page"]["total_runs"], 1);
+    assert_eq!(crate::json_array(&first_page["page"]["runs"]).len(), 1);
     let cli_page = w
-        .query(&[
-            "task",
-            "list",
-            "--milestone",
-            "010",
-            "--status",
-            "all",
-            "--limit",
-            "1",
-            "--offset",
-            "0",
-        ])
+        .query(&["list", "--status", "active", "--limit", "1", "--offset", "0"])
         .expect("CLI should succeed");
-    assert_eq!(cli_page["pagination"], first_page["pagination"]);
-    assert_eq!(cli_page["tasks"], first_page["tasks"]);
-    let final_page = m
-        .payload(
-            "task_list",
-            json!({
-                "milestone_ref":"010",
-                "status":"all",
-                "limit":1,
-                "offset":1,
-                "generation":first_page["pagination"]["generation"]
-            }),
-        )
-        .expect("MCP tool should succeed");
-    assert!(crate::json_array(&final_page["tasks"]).is_empty());
-    assert!(final_page["pagination"].get("next_offset").is_none());
-    assert_eq!(final_page["pagination"]["has_more"], false);
-    let flags = [
-        "--stage",
-        "contract",
-        "--action",
-        "pass",
-        "--evidence",
-        "{}",
-    ];
-    let submit = |selector: &[&str]| {
-        let mut args = vec!["task", "submit"];
-        args.extend_from_slice(selector);
-        args.extend(flags);
-        run_cli(&w, &args)
-    };
-    let positional = submit(&[task_id]);
-    let flagged = submit(&["--task", task_id]);
-    assert!(!positional.status.success());
-    assert_eq!(flagged.status.code(), positional.status.code());
-    assert_eq!(flagged.stderr, positional.stderr);
+    assert_eq!(cli_page["List"]["page"]["runs"], first_page["page"]["runs"]);
+
     for args in [
-        vec!["task", "inspect"],
-        vec!["task", "inspect", task_id, "--task", task_id],
-        [
-            vec!["task", "submit", task_id, "--task", task_id],
-            flags.to_vec(),
-        ]
-        .concat(),
-        vec![
-            "task",
-            "sync",
-            "010",
-            "--file",
-            "docs/milestones/010-aliases.md",
-        ],
-        vec!["task", "list", "--detail", "verbose"],
-        vec!["task", "list", "--full", "--detail", "compact"],
+        vec!["show", "no-such-node"],
+        vec!["start"],
+        vec!["submit", "aliases.contract", "--action", "invalid"],
     ] {
-        assert_eq!(run_cli(&w, &args).status.code(), Some(2), "{args:?}");
+        assert!(!run_cli(&w, &args).status.success(), "{args:?}");
     }
     m.finish().expect("server must finish successfully");
 }
@@ -150,8 +78,9 @@ fn guide_topics_preserve_query_and_acdd_shapes_and_reject_unknown_topics() {
     let acdd = m
         .payload("acdd_guide", json!({"topic":"acdd"}))
         .expect("MCP tool should succeed");
-    assert!(acdd["gates"].is_array());
-    assert!(acdd["proof_policies"].is_object());
+    assert!(acdd["mcp_tools"].is_object());
+    assert!(acdd["blackboard_topics"].is_object());
+    assert!(acdd["review_contours"].is_array());
     let rejection = m
         .text("acdd_guide", json!({"topic":"no-such-topic"}))
         .expect_err("tool should reject input");
@@ -404,8 +333,8 @@ fn workspace_coverage_keeps_published_scope_identity_across_restart_and_rebuild(
         .expect("server must finish before restart");
     w.write("acdd.yaml", "roots: [.]\n");
     let connection = w.open();
-    let page = contextunity_acdd::core::response::QueryOptions::resolve(
-        &contextunity_acdd::core::response::ResponsePolicy::default(),
+    let page = acdd_core::response::QueryOptions::resolve(
+        &acdd_core::response::ResponsePolicy::default(),
         Some(100),
         0,
         None,

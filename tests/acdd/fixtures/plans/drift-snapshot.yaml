@@ -12,5 +12,6 @@ gates:
           command: drift
           save: { pre: snapshot, post: snapshot }
         - id: finish
+          need: [drift]
           receipt: true
           save: snapshot

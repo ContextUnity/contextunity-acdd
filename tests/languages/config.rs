@@ -1,8 +1,5 @@
-use contextunity_acdd::{
-    core::response::{QueryOptions, ResponsePolicy, SourceOptions},
-    db::{reader, symbols},
-    engine::{ast, scanner},
-};
+use acdd_core::response::{QueryOptions, ResponsePolicy, SourceOptions};
+use acdd_index::{ast, db::{reader, symbols}, scanner};
 use rusqlite::Connection;
 use std::collections::BTreeSet;
 

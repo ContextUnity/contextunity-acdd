@@ -1,11 +1,8 @@
 #![cfg(all(feature = "lang-python", feature = "lang-rust"))]
 
 use crate::common::Workspace;
-use contextunity_acdd::{
-    core::response::{QueryOptions, ResponsePolicy},
-    db::symbols,
-    engine::ast,
-};
+use acdd_core::response::{QueryOptions, ResponsePolicy};
+use acdd_index::{ast, db::symbols};
 use serde_json::Value;
 
 const RECORD_RUST: &str = r#"

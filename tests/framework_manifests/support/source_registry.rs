@@ -37,7 +37,7 @@ impl FrameworkHarness {
         ])
         .unwrap();
         let adapter =
-            contextunity_acdd::engine::scanner::load_adapter(workspace.root(), None).unwrap();
+            acdd_index::scanner::load_adapter(workspace.root(), None).unwrap();
         let disk =
             DependencyRegistry::try_collect_with_scan_config(workspace.root(), Some(&adapter))
                 .unwrap();

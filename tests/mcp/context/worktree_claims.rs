@@ -3,10 +3,7 @@ use super::*;
 #[test]
 fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
     let workspace = Workspace::with_files(&[
-        (
-            "acdd.yaml",
-            "roots:\n  - src\ntasks_db: .acdd/tasks.sqlite\n",
-        ),
+        ("acdd.yaml", "roots:\n  - src\n"),
         ("src/main.rs", "pub fn primary_func() {}\n"),
     ]);
     std::fs::create_dir_all(workspace.path("src")).unwrap();
@@ -53,8 +50,6 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         ("escaping string", json!("\0".repeat(2_000))),
         ("non-string", json!(false)),
     ];
-    let checkpoint_path = workspace.path(".acdd/checkpoints.json");
-    let checkpoint_before = fs::read(&checkpoint_path).ok();
     let mut invalid_policy_failures = Vec::new();
     std::fs::write(
         &selected_config,
@@ -81,11 +76,6 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         if selected_index.exists() {
             invalid_policy_failures.push(format!(
                 "explicit selected root {label} created its index before rejection"
-            ));
-        }
-        if fs::read(&checkpoint_path).ok() != checkpoint_before {
-            invalid_policy_failures.push(format!(
-                "explicit selected root {label} changed checkpoint bytes before rejection"
             ));
         }
     }
@@ -189,8 +179,15 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         .expect("MCP tool should succeed");
     assert_eq!(search_primary["nodes"]["total"], 0);
 
-    // 3. Invalid worktree parameter -> returns tool error
-    for invalid in ["nonexistent_dir_12345", "", "src/main.rs"] {
+    // 3. Invalid worktree parameter -> returns tool error (empty string defaults to primary root)
+    let default_root = client
+        .payload("code_map_overview", json!({"worktree": ""}))
+        .expect("empty worktree defaults to primary");
+    assert_eq!(
+        get_workspace_root(&default_root),
+        workspace.root().canonicalize().unwrap().to_str().unwrap()
+    );
+    for invalid in ["nonexistent_dir_12345", "src/main.rs"] {
         let (_, invalid_res) = client
             .call("code_map_overview", json!({"worktree": invalid}))
             .expect("MCP transport");
@@ -231,7 +228,7 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
     .unwrap();
     workspace.write(
         "acdd.yaml",
-        "roots: [src]\ntasks_db: .acdd/tasks.sqlite\nresponse:\n  max_output_bytes: 1024\n",
+        "roots: [src]\nresponse:\n  max_output_bytes: 1024\n",
     );
     let index_before_auto_rejection = fs::read(&selected_index).unwrap();
     let tasks_db_before_auto_rejection = fs::read(&tasks_db_path).unwrap();
@@ -265,11 +262,6 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
                 "default server root {label} changed task database bytes during rejection"
             ));
         }
-        if fs::read(&checkpoint_path).ok() != checkpoint_before {
-            invalid_policy_failures.push(format!(
-                "default server root {label} changed checkpoint bytes during rejection"
-            ));
-        }
     }
     assert!(
         invalid_policy_failures.is_empty(),
@@ -277,7 +269,7 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         invalid_policy_failures.join("; ")
     );
     std::fs::write(&selected_config, "roots: [src]\n").unwrap();
-    workspace.write("acdd.yaml", "roots: [src]\ntasks_db: .acdd/tasks.sqlite\n");
+    workspace.write("acdd.yaml", "roots: [src]\n");
 
     // Active claims never change the default server root.
     let overview_auto = client
@@ -389,7 +381,7 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         workspace.root().canonicalize().unwrap().to_str().unwrap()
     );
 
-    // Changing task-store settings does not select a different code corpus.
+    // Changing state-store settings does not select a different code corpus.
     claims
         .execute(
             "UPDATE task_claims SET ended=?1 WHERE task_id=?2",
@@ -400,7 +392,7 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         TaskClaimsFixture::worktrees_only(&workspace, ".acdd/alternate-tasks.sqlite", &[&other]);
     workspace.write(
         "acdd.yaml",
-        "roots: [src]\ntasks_db: .acdd/alternate-tasks.sqlite\n",
+        "roots: [src]\nstate_db: .acdd/alternate-state.sqlite\n",
     );
     assert_eq!(
         get_workspace_root(
@@ -418,7 +410,7 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         (Some("{}\n"), &primary),
         (None, &primary),
         (
-            Some("roots: [src]\ntasks_db: .acdd/alternate-tasks.sqlite\n"),
+            Some("roots: [src]\nstate_db: .acdd/alternate-state.sqlite\n"),
             &primary,
         ),
     ] {
@@ -439,16 +431,16 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
 
     #[cfg(unix)]
     {
-        let alias = workspace.path(".acdd/alias-tasks.sqlite");
-        std::os::unix::fs::symlink("alternate-tasks.sqlite", &alias).unwrap();
+        let alias = workspace.path(".acdd/alias-state.sqlite");
+        std::os::unix::fs::symlink("alternate-state.sqlite", &alias).unwrap();
         workspace.write(
             "acdd.yaml",
-            "roots: [src]\ntasks_db: .acdd/alias-tasks.sqlite\n",
+            "roots: [src]\nstate_db: .acdd/alias-state.sqlite\n",
         );
         for (target, expected) in [
-            ("alternate-tasks.sqlite", primary.clone()),
-            ("tasks.sqlite", primary.clone()),
-            ("missing-tasks.sqlite", primary.clone()),
+            ("alternate-state.sqlite", primary.clone()),
+            ("state.sqlite", primary.clone()),
+            ("missing-state.sqlite", primary.clone()),
         ] {
             fs::remove_file(&alias).unwrap();
             std::os::unix::fs::symlink(target, &alias).unwrap();
@@ -459,12 +451,12 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
                         .expect("MCP tool should succeed")
                 ),
                 expected.to_str().unwrap(),
-                "task DB symlink target {target}"
+                "state DB symlink target {target}"
             );
         }
     }
 
-    workspace.write("acdd.yaml", "roots: [src]\ntasks_db: [invalid]\n");
+    workspace.write("acdd.yaml", "roots: [src]\nstate_db: [invalid]\n");
     let (_, malformed) = client
         .call("code_map_overview", json!({}))
         .expect("MCP transport");
@@ -473,10 +465,10 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
         malformed["result"]["content"][0]["text"]
             .as_str()
             .unwrap()
-            .contains("TASK_DATABASE_COLLISION"),
+            .contains("state_db"),
         "{malformed}"
     );
-    // An explicit target does not depend on the primary task-store configuration.
+    // An explicit target does not depend on the primary state-store configuration.
     assert_eq!(
         client
             .search(
@@ -489,7 +481,7 @@ fn mcp_worktree_selectors_preserve_claim_independent_defaults() {
     );
     workspace.write(
         "acdd.yaml",
-        "roots: [src]\ntasks_db: .acdd/alternate-tasks.sqlite\n",
+        "roots: [src]\nstate_db: .acdd/alternate-state.sqlite\n",
     );
     assert_eq!(
         get_workspace_root(

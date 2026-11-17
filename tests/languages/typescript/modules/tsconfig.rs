@@ -70,7 +70,7 @@ fn tsconfig_extends_inherits_alias_origin_and_rebuilds_on_base_change() {
     );
     assert_eq!(targets("apps/two/src/main.ts"), ["apps/two/src/helper.ts"]);
     let conn = workspace.open();
-    contextunity_acdd::core::commitments::verify(&conn).unwrap();
+    acdd_index::db::commitments::verify(&conn).unwrap();
     drop(conn);
 }
 
@@ -98,7 +98,7 @@ fn tsconfig_paths_choose_first_indexed_alternative_and_relink_on_new_file() {
     workspace.delta(&["apps/one/missing/thing.ts"]);
     assert_eq!(targets(), ["apps/one/missing/thing.ts"]);
     let conn = workspace.open();
-    contextunity_acdd::core::commitments::verify(&conn).unwrap();
+    acdd_index::db::commitments::verify(&conn).unwrap();
     drop(conn);
 }
 
@@ -287,7 +287,7 @@ function test(f: Foo, j: JsonValue, o: Outside) {}
         [],
     );
         assert_eq!(invalid_call, "unresolved");
-        contextunity_acdd::core::commitments::verify(&conn).unwrap();
+        acdd_index::db::commitments::verify(&conn).unwrap();
     }
     {
         let mut stmt = conn.prepare("SELECT line,status FROM resolution_coverage WHERE (SELECT path FROM path_dictionary WHERE path_id=resolution_coverage.path_id)='case4/app/type_use.ts' AND (SELECT expression FROM coverage_expressions WHERE expression_id=resolution_coverage.expression_id)='Color' AND line IN (4,5) ORDER BY line").unwrap();
@@ -325,7 +325,7 @@ function test(f: Foo, j: JsonValue, o: Outside) {}
         [],
     );
         assert_eq!(callable_edges, 0);
-        contextunity_acdd::core::commitments::verify(&conn).unwrap();
+        acdd_index::db::commitments::verify(&conn).unwrap();
         drop(stmt);
         drop(callable_stmt);
     }

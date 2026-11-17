@@ -507,7 +507,7 @@ fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
             )
             .expect("MCP tool should succeed");
         let legacy =
-            contextunity_acdd::engine::ast::search(source, "service.py", "python", pattern, 100)
+            acdd_index::ast::search(source, "service.py", "python", pattern, 100)
                 .unwrap();
         assert!(!legacy.is_empty());
         assert_eq!(ordinary["matches"]["items"], json!(legacy));
@@ -516,7 +516,7 @@ fn repair_variadic_matcher_budget_is_checked_inside_backtracking() {
     let late_source = (0..25_001)
         .map(|i| format!("print({i})\n"))
         .collect::<String>();
-    let legacy = contextunity_acdd::engine::ast::search(
+    let legacy = acdd_index::ast::search(
         &late_source,
         "late.py",
         "python",

@@ -1,18 +1,7 @@
-pub(crate) mod snapshot;
-pub(crate) mod support;
-
 mod blackboard;
-mod command_gate_harness;
-mod contract_synthesis;
-mod gates_ast;
-mod harness;
-mod mcp;
-mod milestones;
-mod orchestrator;
-mod persistence;
-mod runner;
-mod scope_sync;
-mod seam_reachability;
-mod subtasks;
-mod synthesis;
-mod tasks;
+mod fixtures_matrix;
+mod lifecycle_and_state;
+mod profiles_and_inheritance;
+mod runner_and_waves;
+mod support;
+mod verification_and_git;

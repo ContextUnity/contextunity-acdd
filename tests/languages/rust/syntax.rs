@@ -3,7 +3,7 @@ use acdd_index::languages::manifests::{ClassHierarchyReceiverRule, ReturnPolicy}
 use acdd_index::linker::value_flow::{
     ConfiguredReceiverAuthority, SemanticResolver, Symbol, SymbolRole, TypeTarget, ValueFlowIndex,
 };
-use contextunity_acdd::core::{
+use acdd_index::{
     models::{Facts, Node},
     semantic::{SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
 };
@@ -13,9 +13,9 @@ struct SeamValueFlowResolver;
 impl<'a> acdd_index::linker::value_flow::SemanticResolver<'a> for SeamValueFlowResolver {
     fn resolve_symbol(
         &self,
-        _scope: &'a contextunity_acdd::core::models::Node,
+        _scope: &'a acdd_index::models::Node,
         _name: &str,
-        _at: contextunity_acdd::core::semantic::SourcePosition,
+        _at: acdd_index::semantic::SourcePosition,
         _role: acdd_index::linker::value_flow::SymbolRole,
     ) -> acdd_index::linker::value_flow::Symbol<'a> {
         acdd_index::linker::value_flow::Symbol::Unknown
@@ -417,5 +417,5 @@ fn declarations_and_static_constructor_metadata_are_preserved() {
         acdd_index::languages::rust::kind("function_item"),
         Some("function")
     );
-    let _ = contextunity_acdd::engine::languages::rust::language();
+    let _ = acdd_index::languages::rust::language();
 }

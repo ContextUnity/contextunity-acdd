@@ -1,7 +1,7 @@
 #![cfg(feature = "lang-python")]
 
 use crate::common::Workspace;
-use contextunity_acdd::{core::commitments, db::reader};
+use acdd_index::db::{commitments, reader};
 
 #[test]
 fn fastmcp_tool_decorators_link_to_handlers_without_claiming_other_tool_methods() {

@@ -1,4 +1,4 @@
-use contextunity_acdd::db::reader;
+use acdd_index::db::reader;
 use rusqlite::{limits::Limit, Connection};
 
 #[test]

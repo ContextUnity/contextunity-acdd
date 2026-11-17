@@ -2,7 +2,7 @@ use super::*;
 #[cfg(all(feature = "lang-typescript", feature = "lang-html"))]
 #[test]
 fn gridviewspec_pack_bindings_follow_unique_targets() {
-    use contextunity_acdd::core::commitments;
+    use acdd_index::db::commitments;
 
     let workspace = fixture_workspace(&[]);
     let families = [
@@ -404,7 +404,7 @@ fn gridviewspec_pack_bindings_follow_unique_targets() {
 #[cfg(all(feature = "lang-typescript", feature = "lang-html"))]
 #[test]
 fn gridviewspec_runtime_provider_scope() {
-    use contextunity_acdd::core::commitments;
+    use acdd_index::db::commitments;
 
     // Observed built-in runtime registrations live in a separately indexed
     // frontend project. Their installation-specific workspace identity is local data.

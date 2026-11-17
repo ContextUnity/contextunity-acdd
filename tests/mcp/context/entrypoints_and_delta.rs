@@ -145,7 +145,7 @@ fn untested_sql_counts_only_calls_and_inheritance_cycles_terminate() {
     let (workspace, _) = McpTestHarness::with_files(UNTESTED_FILES);
     let connection = rusqlite::Connection::open(workspace.db()).unwrap();
     connection.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let page = contextunity_acdd::core::response::QueryOptions::resolve(
+    let page = acdd_core::response::QueryOptions::resolve(
         &ResponsePolicy::default(),
         Some(100),
         0,
@@ -288,7 +288,7 @@ fn route_delta_retags_unchanged_handlers_and_matches_cold_index() {
         let snapshot = routes
             .snapshot()
             .expect("open actual incremental and cold indexes");
-        contextunity_acdd::core::commitments::verify(&snapshot.incremental)
+        acdd_index::db::commitments::verify(&snapshot.incremental)
             .expect("incremental commitments must verify");
         for (name, expected) in [("first", expected_first), ("second", expected_second)] {
             let pair = snapshot.function(name).expect("read real function facts");
@@ -360,7 +360,7 @@ fn project_script_delta_retags_only_the_selected_function() {
         let cold = scripts.build_to(scripts.path(".acdd/cold.sqlite"));
         assert_eq!(delta["output_root"], cold["output_root"], "{delta}");
         let conn = scripts.open();
-        contextunity_acdd::core::commitments::verify(&conn).unwrap();
+        acdd_index::db::commitments::verify(&conn).unwrap();
         for (name, expected) in [("first", first), ("second", second)] {
             let actual: Option<String> = scripts.open().query_row(
                 "SELECT json_extract(details,'$.entrypoint') FROM nodes WHERE name=?1 AND kind='function'",

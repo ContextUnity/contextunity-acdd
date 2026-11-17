@@ -81,14 +81,14 @@ const TABLE_RELATION_CASES: &[(&str, &str, &str)] = &[
     ),
 ];
 
-use contextunity_acdd::engine::ast;
+use acdd_index::ast;
 
 #[test]
 fn sql_profile_parses_without_tree_sitter_parser() {
     assert!(ast::parser("sql", "schema.sql").is_err());
-    let mut public_facts = contextunity_acdd::core::models::Facts::default();
-    contextunity_acdd::engine::languages::parse_file(
-        &contextunity_acdd::engine::languages::sql::SQL,
+    let mut public_facts = acdd_index::models::Facts::default();
+    acdd_index::languages::parse_file(
+        &acdd_index::languages::sql::SQL,
         "public.sql",
         "CREATE TABLE public_test (id INT)",
         "public",
@@ -114,7 +114,7 @@ fn sql_statement_relation_matrix() {
         ("WITH first_cte AS (SELECT * FROM orders), second_cte(id) AS (SELECT * FROM first_cte) SELECT * FROM second_cte", vec!["orders"]),
     ].into_iter().map(|(sql, names)| (sql, names.into_iter().map(|name| (name.to_owned(), "queries_table")).collect(), true)));
     for (sql, expected, exact) in cases {
-        let actual = contextunity_acdd::engine::languages::sql::extract_embedded_sql_tables(sql);
+        let actual = acdd_index::languages::sql::extract_embedded_sql_tables(sql);
         if exact {
             assert_eq!(actual, expected, "{sql}");
         } else {
@@ -388,18 +388,18 @@ fn orm_model_provenance_matrix() {
 #[test]
 fn sql_impact_traversal_reaches_views_and_language_consumers() {
     let db = sql_baseline().open();
-    let page = contextunity_acdd::core::response::QueryOptions::resolve(
-        &contextunity_acdd::core::response::ResponsePolicy::default(),
+    let page = acdd_core::response::QueryOptions::resolve(
+        &acdd_core::response::ResponsePolicy::default(),
         Some(100),
         0,
         None,
         None,
     )
     .unwrap();
-    let impact = contextunity_acdd::db::traversal::traverse_with_options(
+    let impact = acdd_index::db::traversal::traverse_with_options(
         &db,
         "schema.sql:table:orders",
-        &contextunity_acdd::db::traversal::TraversalOptions {
+        &acdd_index::db::traversal::TraversalOptions {
             depth: 1,
             inbound: true,
             mode: None,

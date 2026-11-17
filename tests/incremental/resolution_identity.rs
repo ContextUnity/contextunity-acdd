@@ -1,7 +1,7 @@
 #![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 
 use crate::common::Workspace;
-use contextunity_acdd::{core::commitments, db::reader};
+use acdd_index::db::{commitments, reader};
 use rusqlite::Connection;
 
 fn assert_cold_equivalent(workspace: &Workspace) {

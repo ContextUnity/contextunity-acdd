@@ -1,40 +1,55 @@
+version: 2
 inherit: none
+save: snapshot
 
-policies:
-  default_review:
-    require_all_contours: false
-
-guidance:
-  contour.paths: "Verify paths"
-  contour.claims: "Verify claims"
-  contour.concurrency: "Verify concurrency"
-  contour.project_isolation: "Verify isolation"
-  contour.administration: "Verify administration"
+contours:
+  paths:
+    description: "Verify paths"
+    criteria: ["Verify scope"]
+  claims:
+    description: "Verify claims"
+    criteria: ["Verify claims"]
+  concurrency:
+    description: "Verify concurrency"
+    criteria: ["Verify concurrency"]
+  project_isolation:
+    description: "Verify isolation"
+    criteria: ["Verify isolation"]
+  administration:
+    description: "Verify administration"
+    criteria: ["Verify administration"]
 
 roles:
   architect: {}
   builder: {}
   contract_author: {}
-  doc_writer: {}
-  independent_reviewer: {}
+  independent_reviewer:
+    reuse_on_reject: false
 
 commands:
   test:
-    command: ": --seam-ref tests/acdd/tasks.rs {scope_target} && rustc --test tests/runner_fixture.rs -o .acdd/runner_fixture && if test -f .acdd/runner_fixture_green; then .acdd/runner_fixture; else ACDD_FIXTURE_RED=1 .acdd/runner_fixture --nocapture; fi"
+    command: ": {test_filter} && rustc --test tests/runner_fixture.rs -o .acdd/runner_fixture && if test -f .acdd/runner_fixture_green; then .acdd/runner_fixture; else ACDD_FIXTURE_RED=1 .acdd/runner_fixture --nocapture; fi"
+    test_filter: "--exact {test}"
     output:
       require_counts: false
-      seam_ref_pattern: '--seam-ref (\\S+)'
+      tests:
+        passed: '^test (\S+) \.\.\. ok$'
+        failed: '^test (\S+) \.\.\. FAILED$'
   rust-check-and-test:
     command: ": {scope_target} && rustc --test tests/runner_fixture.rs -o .acdd/runner_fixture && .acdd/runner_fixture"
     output:
       require_counts: true
-      counts: {passed: '(\d+) passed', failed: '(\d+) failed'}
+      counts: { passed: '(\d+) passed', failed: '(\d+) failed' }
+      tests:
+        passed: '^test (\S+) \.\.\. ok$'
+        failed: '^test (\S+) \.\.\. FAILED$'
   check_full_repo:
     command: "mkdir -p .acdd && printf '%4096s' '' | tr ' ' x && echo full-output-tail && echo check >> .acdd/verification-order && test ! -f .acdd/fail-check"
     description: "Fixture check command for milestone verification."
     timeout_seconds: 30
     output:
       require_counts: false
+
 gates:
   - tasks:
       gates:
@@ -56,47 +71,15 @@ gates:
         - id: review
           role: independent_reviewer
           proof: review
-          policy: default_review
-          contours: guidance.contours
-          independent_from: build
+          independent_from: [build]
+          contours:
+            - paths
+            - claims
+            - concurrency
+            - project_isolation
+            - administration
           fail: build
-          save:
-            immutable: true
         - id: deliver
-          role: independent_reviewer
-          proof: delivery
+          need: [contract, build, review]
           receipt: true
-          need:
-            - review
-          independent_from: build
-          fail: build
-          save:
-            immutable: true
-            post: commit
-  - id: verify
-    proof: command
-    role: builder
-    command: check_full_repo
-    max_attempts: 2
-    pass: milestone_review
-    fail: polish
-  - id: polish
-    role: architect
-    pass: verify
-  - id: milestone_review
-    role: independent_reviewer
-    proof: review
-    policy: default_review
-    contours: guidance.contours
-    independent_from: verify
-    pass: handoff
-    fail: polish
-  - id: documentation
-    role: doc_writer
-    when: doc
-    pass: handoff
-  - id: handoff
-    proof: delivery
-    receipt: true
-    absorb: true
-    save: commit
+          save: snapshot

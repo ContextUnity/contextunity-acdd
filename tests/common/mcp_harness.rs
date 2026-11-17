@@ -387,7 +387,7 @@ impl McpTestHarness {
                                     Self::await_server(&mut self.server_task, terminal, true).await?;
                                     return Err(HarnessError::Closed);
                                 }
-                                let limit = contextunity_acdd::core::response::MAX_OUTPUT_BYTES;
+                                let limit = acdd_core::response::MAX_OUTPUT_BYTES;
                                 if line.len() > limit {
                                     return Err(HarnessError::OversizedFrame {
                                         actual: line.len(),

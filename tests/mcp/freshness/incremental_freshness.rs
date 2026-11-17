@@ -184,7 +184,7 @@ fn same_server_refreshes_exact_spelling_and_alias_renames() {
         ("Foo.rs", "foo.rs", true),
         ("caf\u{e9}.rs", "cafe\u{301}.rs", false),
     ] {
-        if case_sensitive && contextunity_acdd::core::fs::is_case_insensitive_volume(ws.root()) {
+        if case_sensitive && acdd_core::fs::is_case_insensitive_volume(ws.root()) {
             continue;
         }
         ws.write(first, "pub fn upper() {}\n");
@@ -296,7 +296,7 @@ fn same_server_refreshes_exact_spelling_and_alias_renames() {
         )
         .unwrap();
     assert_eq!(after["output_root"], cold_root);
-    contextunity_acdd::core::commitments::verify(&conn).unwrap();
+    acdd_index::db::commitments::verify(&conn).unwrap();
     drop(statement);
     drop(conn);
     fs::remove_file(cold).unwrap();

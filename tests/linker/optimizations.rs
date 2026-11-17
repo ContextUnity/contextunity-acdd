@@ -1,9 +1,7 @@
 #![cfg(feature = "lang-python")]
 
-use contextunity_acdd::{
-    core::models::{Facts, Graph},
-    engine::{ast, docs, linker},
-};
+use acdd_index::models::{Facts, Graph};
+use acdd_index::{ast, docs, linker};
 use std::collections::{BTreeMap, BTreeSet};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -227,7 +225,7 @@ fn fixture() -> BTreeMap<String, Facts> {
     facts.insert(
         "docs/api.md".into(),
         Facts {
-            docs: docs::extract("docs/api.md", "# API\n`Foo.method`\n", 0.).unwrap(),
+            docs: docs::extract("docs/api.md", "# API\n`Foo.method`\n", 0., &[]).unwrap(),
             ..Facts::default()
         },
     );
@@ -286,7 +284,7 @@ fn documentary_links_require_unique_candidates_and_keep_exact_precedence() {
         .iter()
         .any(|e| matches!(e.kind.as_str(), "documents" | "references_doc")));
     facts.get_mut("docs/api.md").unwrap().docs =
-        docs::extract("docs/api.md", "# API\n`a.Foo.method`\n", 0.).unwrap();
+        docs::extract("docs/api.md", "# API\n`a.Foo.method`\n", 0., &[]).unwrap();
     let graph = linker::link(&facts);
     let targets: Vec<_> = graph
         .edges
@@ -305,7 +303,7 @@ fn documentary_links_require_unique_candidates_and_keep_exact_precedence() {
     );
     facts.remove("b.py");
     facts.get_mut("docs/api.md").unwrap().docs =
-        docs::extract("docs/api.md", "# API\n`Foo.method`\n", 0.).unwrap();
+        docs::extract("docs/api.md", "# API\n`Foo.method`\n", 0., &[]).unwrap();
     let graph = linker::link(&facts);
     let targets: Vec<_> = graph
         .edges

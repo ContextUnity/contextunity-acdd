@@ -9,6 +9,5 @@ status: active
 ```yaml
 task_ref: one
 target: Fixture
-proof_policy: direct-proof
 scope: [src/lib.rs]
 ```

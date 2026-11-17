@@ -10,7 +10,6 @@ status: planned
 ```yaml
 task_ref: draft
 target: Draft work
-proof_policy: seam-test-first
 scope: [src/]
 ```
 
@@ -18,7 +17,6 @@ scope: [src/]
 ```yaml
 task_ref: file-only
 target: File-declared completion
-proof_policy: seam-test-first
 scope: [src/]
 status: completed
 ```

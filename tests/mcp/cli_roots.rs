@@ -1,5 +1,5 @@
 use crate::common::{mcp_client::run_cli, Workspace};
-use contextunity_acdd::db::reader;
+use acdd_index::db::reader;
 use std::{
     fs,
     process::{Command, Stdio},

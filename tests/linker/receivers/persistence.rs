@@ -1,5 +1,5 @@
 use crate::common::Workspace;
-use contextunity_acdd::{core::commitments, db::reader};
+use acdd_index::db::{commitments, reader};
 
 fn assert_factory_delta(
     provider: &str,
@@ -188,7 +188,7 @@ fn rust_tuple_field_contract_changes_relink_nominal_consumers_like_cold_builds()
 #[cfg(feature = "lang-python")]
 #[test]
 fn large_independent_receiver_graphs_preserve_per_file_resolution_and_stable_order() {
-    use contextunity_acdd::engine::{ast, linker};
+    use acdd_index::{ast, linker};
     use std::collections::BTreeMap;
 
     let mut source = "class Target:\n    def work(self): pass\n".to_owned();
@@ -203,7 +203,7 @@ fn large_independent_receiver_graphs_preserve_per_file_resolution_and_stable_ord
         })
         .collect();
     assert!(files.values().map(|facts| facts.nodes.len()).sum::<usize>() >= 8192);
-    let mut expected = contextunity_acdd::core::models::Graph::default();
+    let mut expected = acdd_index::models::Graph::default();
     for (path, facts) in &files {
         let part = linker::link(&BTreeMap::from([(path.clone(), facts.clone())]));
         expected.edges.extend(part.edges);

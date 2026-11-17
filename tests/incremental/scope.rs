@@ -1,9 +1,7 @@
 #![cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-vue"))]
 
-use contextunity_acdd::{
-    core::commitments,
-    db::{reader, writer::delta},
-};
+use acdd_index::db::{commitments, reader};
+use contextunity_acdd::engine::pipeline::delta;
 use rusqlite::Connection;
 use std::fs;
 
@@ -340,7 +338,7 @@ fn delta_exact_spelling_and_alias_renames_match_cold_inventory() {
             case_sensitive: false,
         },
     ] {
-        if case.case_sensitive && contextunity_acdd::core::fs::is_case_insensitive_volume(w.root())
+        if case.case_sensitive && acdd_core::fs::is_case_insensitive_volume(w.root())
         {
             eprintln!("case coexistence unavailable on case-insensitive volume");
             continue;

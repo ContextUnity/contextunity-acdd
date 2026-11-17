@@ -45,8 +45,11 @@ fn acdd_read_symbol_alias_matches_selector_with_and_without_path() {
         "code_map_overview",
         "ast_grep_search",
         "acdd_guide",
-        "session_checkpoint",
-        "task_list",
+        "acdd_state",
+        "acdd_claim",
+        "acdd_verify",
+        "acdd_submit",
+        "acdd_blackboard",
     ] {
         assert!(
             tools.iter().any(|tool| tool["name"] == preserved),
@@ -1000,86 +1003,79 @@ fn acdd_read_docs_outline_keeps_hierarchy_and_filters_disabled_navigation() {
 
 #[test]
 fn acdd_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
-    use contextunity_acdd::engine::tasks;
     for with_command in [false, true] {
-        let w = Workspace::with_files(&[(
-            "acdd.yaml",
-            "profile: minimal\nmodules: {acdd: true, blackboard: true}\nroots: [.]\ndocs: [docs]\nmilestones: [docs/milestones]\n",
-        )]);
-        {
-            let profile = acdd_tasks::tasks::profile::load_for_workspace(w.root()).unwrap();
-            let mut profile = serde_json::to_value(profile.as_ref()).unwrap();
-            profile["inherit"] = json!("none");
-            if let Some(gates) = profile["gates"].as_array_mut() {
-                gates.retain(|g| g.get("tasks").is_some_and(|t| !t.is_null()));
-            }
-            if let Some(gate) = profile["gates"]
-                .as_array_mut()
-                .and_then(|arr| arr.iter_mut().find(|g| g["id"] == "contract"))
-            {
-                gate["command"] = json!(with_command.then_some("reader-check"));
-            } else if let Some(tasks) = profile["gates"]
-                .as_array_mut()
-                .and_then(|arr| {
-                    arr.iter_mut()
-                        .find_map(|g| g.get_mut("tasks")?.get_mut("gates"))
-                })
-                .and_then(|g| g.as_array_mut())
-            {
-                if let Some(gate) = tasks.iter_mut().find(|g| g["id"] == "contract") {
-                    gate["command"] = json!(with_command.then_some("reader-check"));
-                }
-            } else {
-                profile["gates"][0]["command"] = json!(with_command.then_some("reader-check"));
-            }
-            profile["commands"]["reader-check"] =
-                json!({"command":"true","output":{"require_counts":false}});
-            w.write(
-                "reader-profile.yaml",
-                &serde_yaml::to_string(&profile).unwrap(),
+        let gate_def = if with_command {
+            "          - id: contract\n            role: builder\n            proof: command\n            command: reader-check\n"
+        } else {
+            "          - id: contract\n            role: builder\n            proof: none\n"
+        };
+        let profile_yaml = format!(
+            "version: 2\n\
+             git:\n  isolation: in_place\n  worktrees: manual\n\
+             roles:\n  builder:\n    mode: subagent\n\
+             commands:\n  reader-check:\n    command: \"true\"\n    output:\n      require_counts: false\n\
+             gates:\n  - tasks:\n      gates:\n{gate_def}"
+        );
+        let w = Workspace::with_files(&[
+            (
+                "acdd.yaml",
+                "profile: full\nmodules: {code: true, docs: true, state: true, blackboard: true}\nroots: [.]\ndocs: [docs]\nspecs:\n  milestones:\n    path: docs/milestones\n",
+            ),
+            (".acdd/profile.yaml", &profile_yaml),
+            ("allowed.txt", "allowed\n"),
+            ("other.txt", "other\n"),
+            (
+                "docs/milestones/010-reader.md",
+                "---\nid: m-reader\ntitle: Reader\ndoc_type: milestone\nstatus: active\n---\n\n### task: read\n```yaml\ntask_ref: read\ntarget: Read scoped text\nscope: [allowed.txt]\n```\n",
+            ),
+        ]);
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+            vec!["add", "-A"],
+            vec!["commit", "-q", "-m", "init"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(&args)
+                    .current_dir(w.root())
+                    .status()
+                    .unwrap()
+                    .success(),
+                "git {args:?} failed"
             );
-            let mut config = std::fs::read_to_string(w.path("acdd.yaml")).unwrap();
-            config.push_str("acdd_profile: reader-profile.yaml\n");
-            w.write("acdd.yaml", &config);
         }
-        w.write("allowed.txt", "allowed\n");
-        w.write("other.txt", "other\n");
-        w.write("docs/milestones/010-reader.md", "---\nid: m-reader\ntitle: Reader\ndoc_type: contract\nstatus: active\n---\n```yaml\ntask_ref: read\ntarget: Read scoped text\nproof_policy: seam-test-first\nscope: [allowed.txt]\n```\n");
-        let sync = crate::cli::run_cli_json(
+        let start = crate::cli::run_cli_json(&w, &["start", "docs/milestones/010-reader.md", "--in-place"]);
+        assert!(
+            start.status.success(),
+            "start failed: {}\n{}",
+            String::from_utf8_lossy(&start.stdout),
+            String::from_utf8_lossy(&start.stderr)
+        );
+        let claim = crate::cli::run_cli_json(
             &w,
-            &["task", "sync", "--file", "docs/milestones/010-reader.md"],
+            &["claim", "read.contract", "--worker-id", "reader-contract"],
         );
         assert!(
-            sync.status.success(),
-            "{}",
-            String::from_utf8_lossy(&sync.stderr)
+            claim.status.success(),
+            "claim failed: {}\n{}",
+            String::from_utf8_lossy(&claim.stdout),
+            String::from_utf8_lossy(&claim.stderr)
         );
-        let task_id = "acdd/m-reader:read";
-        tasks::claim(
-            w.root(),
-            tasks::Claim {
-                task_id: task_id.into(),
-                stage: "contract".into(),
-                worker_id: "reader-contract".into(),
-                session_fingerprint: Some("test-session-reader-contract".into()),
-                worktree: w.root().to_string_lossy().into_owned(),
-                bundle: Some(false),
-            },
-        )
-        .unwrap();
         let mut client = McpTestHarness::new(&w).expect("MCP initialize");
         let allowed = read_tool(&mut client, json!({"path":"allowed.txt"}));
-        assert_eq!(allowed["write_scope"], "ALLOWED", "{allowed}");
+        assert_eq!(allowed["in_write_scope"], "ALLOWED", "{allowed}");
         let outside_default = read_tool(&mut client, json!({"path":"other.txt"}));
         assert!(outside_default.get("Hints").is_none(), "{outside_default}");
         let outside = read_tool(
             &mut client,
             json!({"path":"other.txt","include_hints":true}),
         );
-        assert_eq!(outside["write_scope"], "OUT_OF_SCOPE", "{outside}");
+        assert_eq!(outside["in_write_scope"], "OUT_OF_SCOPE", "{outside}");
         let hints = outside["Hints"].as_str().unwrap();
         assert!(
-            hints.contains("extend_scope") && hints.contains("task_blackboard"),
+            hints.contains("extend_scope") && hints.contains("acdd_blackboard"),
             "{outside}"
         );
         assert!(
@@ -1087,7 +1083,7 @@ fn acdd_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
             "{outside}"
         );
         assert_eq!(
-            hints.contains("task_manage(action: \"verify\""),
+            hints.contains("acdd_verify("),
             with_command,
             "{outside}"
         );

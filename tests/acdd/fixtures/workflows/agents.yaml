@@ -13,7 +13,7 @@ gates:
     max_attempts: 2
   - id: review
     role: reviewer
-    independent_from: build
+    independent_from: [build]
     proof:
       scheme:
         type: object

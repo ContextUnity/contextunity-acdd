@@ -3,7 +3,8 @@
 use crate::common::mcp_client::{in_process_server, invalidate_mcp_connection_cache};
 pub(super) use crate::common::Workspace;
 use crate::harness::McpTestHarness;
-use contextunity_acdd::{db, engine::scanner, mcp::server::Server};
+use acdd_index::{db, scanner};
+use contextunity_acdd::mcp::server::Server;
 use serde_json::{json, Value};
 use std::{fs, sync::mpsc, time::Duration};
 fn snapshot(server: &Server) -> anyhow::Result<Value> {

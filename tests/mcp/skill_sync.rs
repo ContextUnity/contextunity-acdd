@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use contextunity_acdd::engine::docs;
+use acdd_index::docs;
 use pulldown_cmark::{Event, Parser, Tag};
 
 fn read_skill_files(root: &Path) -> io::Result<BTreeMap<PathBuf, Vec<u8>>> {
@@ -111,7 +111,7 @@ fn onboarding_reference_is_reachable_with_canonical_configuration_assets() {
     let skill_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/acdd");
     let files = read_skill_files(&skill_root).expect("read companion skill assets");
     let entrypoint = std::str::from_utf8(&files[Path::new("SKILL.md")]).unwrap();
-    let entry_sections = docs::extract_with_details("SKILL.md", entrypoint, 0.0).unwrap();
+    let entry_sections = docs::extract_with_details("SKILL.md", entrypoint, 0.0, &[]).unwrap();
     let onboarding_path = Path::new("references/onboarding.md");
     let routed = entry_sections.iter().any(|(_, details)| {
         details["citations"].as_array().unwrap().iter().any(|link| {
@@ -130,7 +130,7 @@ fn onboarding_reference_is_reachable_with_canonical_configuration_assets() {
     );
 
     let onboarding = std::str::from_utf8(&files[onboarding_path]).unwrap();
-    let sections = docs::extract_with_details("references/onboarding.md", onboarding, 0.0).unwrap();
+    let sections = docs::extract_with_details("references/onboarding.md", onboarding, 0.0, &[]).unwrap();
     let references = sections
         .iter()
         .flat_map(|(_, details)| details["citations"].as_array().unwrap())
@@ -229,10 +229,7 @@ fn is_markdown_file(path: &Path) -> bool {
 
 fn is_installed_skill_markdown(path: &Path) -> bool {
     // These templates target the consuming repository's docs tree, not the installed skill tree.
-    let source_example_catalogs = [
-        Path::new("references/acdd-profile-examples"),
-        Path::new("references/accd-profile-examples"),
-    ];
+    let source_example_catalogs = [Path::new("references/acdd-profile-examples")];
     !source_example_catalogs
         .iter()
         .any(|catalog| path.starts_with(catalog))

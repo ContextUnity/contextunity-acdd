@@ -1,15 +1,13 @@
 #![cfg(feature = "lang-python")]
 
-use contextunity_acdd::{
-    core::models::Graph,
-    engine::{ast, linker},
-};
+use acdd_index::models::Graph;
+use acdd_index::{ast, linker};
 use std::collections::BTreeMap;
 
 fn linked(
     files: &[(&str, &str)],
 ) -> (
-    BTreeMap<String, contextunity_acdd::core::models::Facts>,
+    BTreeMap<String, acdd_index::models::Facts>,
     Graph,
 ) {
     let facts = files

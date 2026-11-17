@@ -1,13 +1,11 @@
 use crate::languages::harness::ExtractorHarness;
-use contextunity_acdd::{
-    core::{
-        models::Facts,
-        semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
-    },
-    engine::{
-        ast::ScopeBindings,
-        languages::{self, FileContext, ImportPath, LanguageProfile, SymbolMetadata},
-    },
+use acdd_index::{
+    models::Facts,
+    semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
+};
+use acdd_index::{
+    ast::ScopeBindings,
+    languages::{self, FileContext, ImportPath, LanguageProfile, SymbolMetadata},
 };
 use serde_json::json;
 use std::sync::Mutex;

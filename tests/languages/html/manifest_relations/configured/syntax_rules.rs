@@ -122,7 +122,7 @@ fn configured_syntax_rules_follow_effective_rules_and_delta() {
                 "durable configured origin: {rule}"
             );
         }
-        let clients=cached.iter().flat_map(|facts| &facts.references).filter(|reference| reference.kind=="calls_endpoint").filter(|reference| matches!(&reference.receiver_hint,Some(contextunity_acdd::core::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack=="atelier" && origin.rule=="client")).count();
+        let clients=cached.iter().flat_map(|facts| &facts.references).filter(|reference| reference.kind=="calls_endpoint").filter(|reference| matches!(&reference.receiver_hint,Some(acdd_index::models::ReceiverHint::ConfiguredReference { origin }) if origin.pack=="atelier" && origin.rule=="client")).count();
         assert_eq!(
             clients,
             usize::from(active),

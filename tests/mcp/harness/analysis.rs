@@ -1,6 +1,6 @@
 use crate::common::Workspace;
 use crate::harness::{HarnessResult, McpTestHarness};
-use contextunity_acdd::db::reader;
+use acdd_index::db::reader;
 use serde_json::Value;
 
 /// Owns the real workspace used by MCP analysis contract tests.

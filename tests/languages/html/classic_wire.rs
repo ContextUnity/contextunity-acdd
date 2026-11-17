@@ -1,13 +1,13 @@
 use super::*;
 use crate::languages::harness::{query_scalar, ExtractorHarness};
-use contextunity_acdd::db::reader;
+use acdd_index::db::reader;
 use std::collections::BTreeMap;
 
 const INITIAL: &str = "<script>class Alpha { work() {} }\nclass Beta { work() {} }\nconst worker = new Alpha();</script>\n<script>worker.work();</script>\n";
 const UPDATED: &str = "<script>class Alpha { work() {} }\nclass Beta { work() {} }\nconst worker = new Beta();</script>\n<script>worker.work();</script>\n";
 const SLOTS: &str = "<script>class Worker { run() {} }\nconst worker = new Worker();</script>\n";
 
-fn class_method(facts: &contextunity_acdd::core::models::Facts, class: &str) -> String {
+fn class_method(facts: &acdd_index::models::Facts, class: &str) -> String {
     let method = facts
         .nodes
         .iter()

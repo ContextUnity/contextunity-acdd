@@ -1,5 +1,5 @@
 use super::harness::{ExtractorHarness, LinkedFacts};
-use contextunity_acdd::core::models::{Coverage, Graph};
+use acdd_index::models::{Coverage, Graph};
 
 mod cargo_ecosystem;
 mod closures;

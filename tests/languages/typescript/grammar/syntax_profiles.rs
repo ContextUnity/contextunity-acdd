@@ -116,9 +116,9 @@ fn parser_slot_grammar_reuse() {
         ),
     ] {
         let profile =
-            contextunity_acdd::engine::languages::by_id(profile_id).expect("compiled profile");
-        let mut facts = contextunity_acdd::core::models::Facts::default();
-        contextunity_acdd::engine::languages::parse_file(profile, path, source, path, &mut facts)
+            acdd_index::languages::by_id(profile_id).expect("compiled profile");
+        let mut facts = acdd_index::models::Facts::default();
+        acdd_index::languages::parse_file(profile, path, source, path, &mut facts)
             .expect("parse failed");
         assert!(
             facts.errors.is_empty(),

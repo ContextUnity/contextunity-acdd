@@ -1,5 +1,5 @@
-use contextunity_acdd::core::models::Facts;
-use contextunity_acdd::engine::languages::{self, LanguageProfile, SyntaxGrammarSpec};
+use acdd_index::models::Facts;
+use acdd_index::languages::{self, LanguageProfile, SyntaxGrammarSpec};
 
 static FUNCTION_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
     declarations: &[("function_definition", "function")],

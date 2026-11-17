@@ -1,10 +1,10 @@
-use contextunity_acdd::db::reader;
+use acdd_index::db::reader;
 
 #[cfg(feature = "lang-python")]
 #[test]
 fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
-    use contextunity_acdd::core::response::{Detail, QueryOptions, ResponsePolicy};
-    use contextunity_acdd::db::symbols;
+    use acdd_core::response::{Detail, QueryOptions, ResponsePolicy};
+    use acdd_index::db::symbols;
 
     let ws = crate::common::Workspace::with_files(&[
         (
@@ -475,7 +475,7 @@ fn hybrid_search_ranks_connected_exact_symbols_before_path_order() {
     assert_eq!(tail["nodes"]["has_more"], false);
 
     // Preserve reader JSON and render the ranked search through actual MCP Markdown.
-    use contextunity_acdd::core::format::{self, OutputFormat};
+    use contextunity_acdd::format::{self, OutputFormat};
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&format::render(
             &exact,

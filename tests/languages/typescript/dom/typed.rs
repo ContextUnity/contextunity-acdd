@@ -110,5 +110,5 @@ fn persisted_typed_receiver_contract() {
             }
         }
     }
-    contextunity_acdd::core::commitments::verify(&conn).unwrap();
+    acdd_index::db::commitments::verify(&conn).unwrap();
 }

@@ -1,10 +1,8 @@
 #![cfg(feature = "lang-python")]
 
 use crate::common::Workspace;
-use contextunity_acdd::{
-    core::response::{Detail, QueryOptions, ResponsePolicy},
-    db::reader,
-};
+use acdd_core::response::{Detail, QueryOptions, ResponsePolicy};
+use acdd_index::db::reader;
 use rusqlite::{params, Connection};
 
 fn options(limit: usize) -> QueryOptions {

@@ -1,6 +1,6 @@
 use crate::common::Workspace;
 use crate::sqlite_fixture::{IndexFixture, MetadataVersion};
-use contextunity_acdd::db::writer::cache;
+use acdd_index::db::writer::cache;
 use std::{
     collections::BTreeSet,
     fs,

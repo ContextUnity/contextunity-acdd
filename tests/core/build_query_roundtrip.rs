@@ -1,8 +1,7 @@
 use crate::common::Workspace;
-use contextunity_acdd::{
-    core::response::{QueryOptions, ResponsePolicy},
-    db::{reader, writer},
-};
+use acdd_core::response::{QueryOptions, ResponsePolicy};
+use acdd_index::db::reader;
+use contextunity_acdd::engine::pipeline as writer;
 
 #[test]
 fn database_roundtrip_build_and_query() {

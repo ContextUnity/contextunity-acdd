@@ -1,7 +1,7 @@
 use super::*;
 #[test]
 fn starlette_and_fastapi_pack_relations_are_exact() {
-    use contextunity_acdd::core::commitments;
+    use acdd_index::db::commitments;
 
     let workspace = fixture_workspace(&[
         (

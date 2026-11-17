@@ -4,10 +4,8 @@
     feature = "lang-typescript"
 ))]
 
-use contextunity_acdd::{
-    core::models::{Facts, Graph},
-    engine::{ast, linker},
-};
+use acdd_index::models::{Facts, Graph};
+use acdd_index::{ast, linker};
 use std::collections::BTreeMap;
 
 #[cfg(any(feature = "lang-python", feature = "lang-typescript"))]
@@ -28,7 +26,7 @@ fn linked(files: &[(&str, &str, &str)]) -> (BTreeMap<String, Facts>, Graph) {
     (facts, graph)
 }
 
-fn call<'a>(graph: &'a Graph, expression: &str) -> &'a contextunity_acdd::core::models::Coverage {
+fn call<'a>(graph: &'a Graph, expression: &str) -> &'a acdd_index::models::Coverage {
     graph
         .coverage
         .iter()

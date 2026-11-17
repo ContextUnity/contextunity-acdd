@@ -1,6 +1,6 @@
 use super::*;
-use contextunity_acdd::core::{commitments, semantic::ValueFlowFacts};
-use contextunity_acdd::engine::languages::{self, LanguageProfile, SyntaxGrammarSpec};
+use acdd_index::semantic::ValueFlowFacts;
+use acdd_index::languages::{self, LanguageProfile, SyntaxGrammarSpec};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -323,7 +323,7 @@ fn current_commitment_domains_are_stable_across_repeated_real_builds() {
     let workspace = commitment_fixture();
     workspace.build();
     let conn = workspace.open();
-    commitments::verify(&conn).unwrap();
+    acdd_index::db::commitments::verify(&conn).unwrap();
     let actual = domain_commitments(&conn);
     let domains: BTreeSet<_> = actual
         .iter()
@@ -335,7 +335,7 @@ fn current_commitment_domains_are_stable_across_repeated_real_builds() {
     drop(conn);
     workspace.build();
     let repeated = workspace.open();
-    commitments::verify(&repeated).unwrap();
+    acdd_index::db::commitments::verify(&repeated).unwrap();
     assert_eq!(actual, domain_commitments(&repeated));
 }
 
@@ -374,7 +374,7 @@ fn rust_simple_and_associated_declarations_keep_compact_classification() {
 }
 
 struct ScopeOrderProfile(std::sync::Mutex<Vec<String>>);
-impl contextunity_acdd::engine::languages::LanguageProfile for ScopeOrderProfile {
+impl acdd_index::languages::LanguageProfile for ScopeOrderProfile {
     fn id(&self) -> &'static str {
         "scope-order"
     }
@@ -382,7 +382,7 @@ impl contextunity_acdd::engine::languages::LanguageProfile for ScopeOrderProfile
         &["py"]
     }
     fn grammar(&self, path: &str) -> tree_sitter::Language {
-        contextunity_acdd::engine::languages::require("python")
+        acdd_index::languages::require("python")
             .unwrap()
             .grammar(path)
     }
@@ -396,7 +396,7 @@ impl contextunity_acdd::engine::languages::LanguageProfile for ScopeOrderProfile
         &self,
         _owner: &str,
         _module: &str,
-    ) -> Option<contextunity_acdd::engine::languages::ImportPath> {
+    ) -> Option<acdd_index::languages::ImportPath> {
         None
     }
     fn value_flow(&self, node: tree_sitter::Node<'_>, source: &str) -> ValueFlowFacts {
@@ -414,16 +414,16 @@ impl contextunity_acdd::engine::languages::LanguageProfile for ScopeOrderProfile
         &self,
         node: tree_sitter::Node<'tree>,
         source: &'source str,
-        file: &contextunity_acdd::engine::languages::FileContext,
+        file: &acdd_index::languages::FileContext,
     ) -> Option<ast::ScopeAnalysis<'source, 'tree>> {
-        contextunity_acdd::engine::languages::require("python")
+        acdd_index::languages::require("python")
             .unwrap()
             .scope_analysis(node, source, file)
     }
     fn extract_calls(
         &self,
-        ctx: &contextunity_acdd::engine::languages::SyntaxContext<'_, '_>,
-        _facts: &mut contextunity_acdd::core::models::Facts,
+        ctx: &acdd_index::languages::SyntaxContext<'_, '_>,
+        _facts: &mut acdd_index::models::Facts,
     ) {
         if ctx.node.kind() == "call" {
             self.0.lock().unwrap().push(format!(
@@ -437,17 +437,17 @@ impl contextunity_acdd::engine::languages::LanguageProfile for ScopeOrderProfile
         path: &str,
         source: &str,
         module: &str,
-        facts: &mut contextunity_acdd::core::models::Facts,
+        facts: &mut acdd_index::models::Facts,
     ) -> anyhow::Result<()> {
-        contextunity_acdd::engine::languages::parse_file(self, path, source, module, facts)
+        acdd_index::languages::parse_file(self, path, source, module, facts)
     }
 }
 
 #[test]
 fn incremental_scope_analysis_does_not_invoke_legacy_flow_hooks() {
     let profile = ScopeOrderProfile(std::sync::Mutex::new(Vec::new()));
-    let mut facts = contextunity_acdd::core::models::Facts::default();
-    contextunity_acdd::engine::languages::parse_file(
+    let mut facts = acdd_index::models::Facts::default();
+    acdd_index::languages::parse_file(
         &profile,
         "probe.py",
         "def outer():\n    first()\n    def inner():\n        nested()\n    last()\n",
@@ -488,7 +488,7 @@ impl LanguageProfile for DeclarativeProfile {
         path: &str,
         source: &str,
         module: &str,
-        facts: &mut contextunity_acdd::core::models::Facts,
+        facts: &mut acdd_index::models::Facts,
     ) -> anyhow::Result<()> {
         languages::parse_file(self, path, source, module, facts)
     }
@@ -557,7 +557,7 @@ const SYNTAX_SOURCE: &str =
 
 #[test]
 fn declarative_syntax_categories_validate_and_emit_facts() {
-    let mut syntax_facts = contextunity_acdd::core::models::Facts::default();
+    let mut syntax_facts = acdd_index::models::Facts::default();
     languages::parse_file(
         &DeclarativeProfile(&SYNTAX),
         "syntax.py",
@@ -605,7 +605,7 @@ fn declarative_syntax_categories_validate_and_emit_facts() {
         assert!(observed, "SyntaxGrammarSpec {category}: {syntax_facts:?}");
     }
     for spec in &INVALID {
-        let mut facts = contextunity_acdd::core::models::Facts::default();
+        let mut facts = acdd_index::models::Facts::default();
         let error = languages::parse_file(
             &DeclarativeProfile(spec),
             "invalid.py",

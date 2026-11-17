@@ -32,7 +32,7 @@ impl FrameworkHarness {
                 disabled.display()
             ),
         );
-        let adapter = contextunity_acdd::engine::scanner::load_adapter(
+        let adapter = acdd_index::scanner::load_adapter(
             &workspace,
             Some(&workspace.join("custom-adapter.yaml")),
         )

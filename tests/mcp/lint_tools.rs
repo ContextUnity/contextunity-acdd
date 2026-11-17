@@ -1,11 +1,8 @@
 use crate::cli::{run_cli, run_cli_json};
 use crate::common::Workspace;
 use crate::harness::McpTestHarness;
-use contextunity_acdd::{
-    core::response::{QueryOptions, ResponsePolicy},
-    db::lint,
-    engine::languages,
-};
+use acdd_core::response::{QueryOptions, ResponsePolicy};
+use acdd_index::{db::lint, languages};
 use serde_json::{json, Value};
 use std::{collections::BTreeSet, fs};
 
@@ -178,7 +175,7 @@ fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
         ("discovery", "workspace_root"),
         ("manifest_components", "manifest_components"),
         ("documentation_hubs", "documentation_hubs"),
-        ("milestones", "active_milestones"),
+        ("milestones", "active_runs"),
     ] {
         let overview = client
             .payload("code_map_overview", json!({"aspects":[aspect]}))

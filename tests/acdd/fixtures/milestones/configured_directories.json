@@ -5,13 +5,13 @@
   "docs/milestones/archive/README.md": "archivemilestoneoverviewtoken\n",
   "docs/plans/README.md": "# Plan Index\nrootplanoverviewtoken\n",
   "docs/plans/archive/README.md": "archiveplanoverviewtoken\n",
-  "docs/plans/platform_plan.md": "---\nid: p-platform\ntitle: Platform Plan\ndoc_type: plan\npurpose: Platform\n---\n# Platform Plan\nrootplancontractisolationtoken\n",
+  "docs/plans/platform_plan.md": "---\nid: p-platform\ntitle: Platform Plan\ndoc_type: plan\nspec: Platform\n---\n# Platform Plan\nrootplancontractisolationtoken\n",
   "extensions/commerce/src/models.py": "# Commerce models\n",
   "extensions/commerce/docs/README.md": "# Commerce Readme\nDocumentation for commerce.\n",
   "extensions/commerce/docs/milestones/README.md": "# Commerce Milestones\ncommercemilestoneoverviewtoken\n",
   "extensions/commerce/docs/plans/README.md": "# Commerce Plans\ncommerceplanoverviewtoken\n",
-  "extensions/commerce/docs/plans/commerce_plan.md": "---\nid: p-commerce\ntitle: Commerce Plan\ndoc_type: plan\npurpose: Commerce\n---\n# Commerce Plan\ncommerceplancontractisolationtoken\n",
-  "acdd.yaml": "roots: [src, extensions]\ndocs: [docs]\nmilestones:\n  - docs/milestones\n  - extensions/*/docs/milestones\nplans:\n  - docs/plans\n  - extensions/*/docs/plans\ntasks_db: .acdd/tasks.sqlite\n",
-  "docs/milestones/010-platform.md": "---\nid: m-platform\ntitle: Platform Milestone\ndoc_type: contract\nstatus: active\n---\n# Platform Milestone\n\n## Outcome and purpose\nrootmilestonecontractisolationtoken\n\n### task: ptask\n```yaml\ntask_ref: ptask\ntarget: Deliver ptask\nproof_policy: direct-proof\nscope: [src/]\n```\n",
-  "extensions/commerce/docs/milestones/010-commerce.md": "---\nid: m-commerce\ntitle: Commerce Milestone\ndoc_type: contract\nstatus: active\nstarted_at: 2026-10-01T10:00:00Z\n---\n# Commerce Milestone\n\n## Outcome and purpose\ncommercemilestonecontractisolationtoken\n\n### task: ctask\n```yaml\ntask_ref: ctask\ntarget: Deliver ctask\nproof_policy: direct-proof\nscope: [extensions/commerce/]\n```\n"
+  "extensions/commerce/docs/plans/commerce_plan.md": "---\nid: p-commerce\ntitle: Commerce Plan\ndoc_type: plan\nspec: Commerce\n---\n# Commerce Plan\ncommerceplancontractisolationtoken\n",
+  "acdd.yaml": "roots: [src, extensions]\ndocs: [docs]\nstate_db: .acdd/state.sqlite\nspecs:\n  milestones:\n    path: docs/milestones\n  plans:\n    path: docs/plans\n  commerce_milestones:\n    path: extensions/commerce/docs/milestones\n  commerce_plans:\n    path: extensions/commerce/docs/plans\n",
+  "docs/milestones/010-platform.md": "---\nid: m-platform\ntitle: Platform Milestone\ndoc_type: contract\nstatus: active\n---\n# Platform Milestone\n\n## Outcome and purpose\nrootmilestonecontractisolationtoken\n\n### task: ptask\n```yaml\ntask_ref: ptask\ntarget: Deliver ptask\nscope: [src/]\n```\n",
+  "extensions/commerce/docs/milestones/010-commerce.md": "---\nid: m-commerce\ntitle: Commerce Milestone\ndoc_type: contract\nstatus: active\n---\n# Commerce Milestone\n\n## Outcome and purpose\ncommercemilestonecontractisolationtoken\n\n### task: ctask\n```yaml\ntask_ref: ctask\ntarget: Deliver ctask\nscope: [extensions/commerce/]\n```\n"
 }

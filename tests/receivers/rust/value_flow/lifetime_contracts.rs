@@ -72,7 +72,7 @@ fn rust_lifetime_only_nominals_preserve_imported_receiver_contracts() {
 #[test]
 fn rust_lifetime_nominal_factory_contracts_survive_cache_and_delta() {
     use crate::common::Workspace;
-    use contextunity_acdd::{core::commitments, db::reader};
+    use acdd_index::db::{commitments, reader};
 
     let workspace = Workspace::new();
     workspace.write(

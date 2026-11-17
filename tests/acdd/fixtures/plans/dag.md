@@ -1,28 +1,35 @@
 ---
+id: PLAN-DAG
 title: "Canonical DAG Plan"
 doc_type: plan
-purpose: "Test fixture for branching DAG in-place plan execution"
+spec: "Test fixture for branching DAG in-place plan execution"
 depends_on: []
 ---
 
 # Canonical DAG Plan
 
-## 1. Step A: Independent Core
+### task: step-a
+```yaml
+task_ref: step-a
+target: Core changes
+scope: [src/core.rs]
+status: planned
+```
 
-- **Target**: Core changes
-- **Scope**: src/core.rs
-- **Status**: ready
+### task: step-b
+```yaml
+task_ref: step-b
+target: Extension on core
+scope: [src/beta.rs]
+depends_on: [step-a]
+status: planned
+```
 
-## 2. Step B: Extension Beta
-
-- **Target**: Extension on core
-- **Scope**: src/beta.rs
-- **Depends On**: ["Step A: Independent Core"]
-- **Status**: pending
-
-## 3. Step C: Extension Gamma
-
-- **Target**: Alternative extension on core
-- **Scope**: src/gamma.rs
-- **Depends On**: ["Step A: Independent Core"]
-- **Status**: pending
+### task: step-c
+```yaml
+task_ref: step-c
+target: Alternative extension on core
+scope: [src/gamma.rs]
+depends_on: [step-a]
+status: planned
+```

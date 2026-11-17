@@ -11,7 +11,7 @@ mod manifests;
 
 #[test]
 fn helper_modules_are_not_advertised_as_language_profiles() {
-    use contextunity_acdd::engine::languages;
+    use acdd_index::languages;
 
     for (id, feature) in [
         ("support", "lang-support"),

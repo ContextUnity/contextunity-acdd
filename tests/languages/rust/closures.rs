@@ -441,7 +441,7 @@ fn tuple_and_lexical_receiver_scope() {
             }
         }
         fn run_root_crate_import() {
-            use contextunity_acdd::engine::ast;
+            use acdd_index::ast;
             let _ = ast::extract("test.rs", "rust", "fn main() {}");
         }
     "#,

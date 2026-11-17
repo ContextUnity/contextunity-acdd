@@ -1,6 +1,6 @@
 #![cfg(feature = "lang-rust")]
 
-use contextunity_acdd::engine::{ast, linker};
+use acdd_index::{ast, linker};
 use std::collections::BTreeMap;
 
 mod builtin_receivers;

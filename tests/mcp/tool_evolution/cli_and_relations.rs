@@ -245,11 +245,8 @@ fn transitive_tests_exclude_unrelated_and_support_reverse_direction() {
 
 #[test]
 fn linked_source_is_exact_and_rejects_symlinks_and_traversal() {
-    use contextunity_acdd::{
-        core::response::{CoverageOptions, QueryOptions, ResponsePolicy, SourceOptions},
-        db::symbols,
-        engine::scanner,
-    };
+    use acdd_core::response::{CoverageOptions, QueryOptions, ResponsePolicy, SourceOptions};
+    use acdd_index::{db::symbols, scanner};
     let w = Workspace::with_files(&[]);
     let linked = Workspace::with_files(&[("lib.py", "def linked_fn():\n    return 7\n")]);
     w.write(
@@ -291,10 +288,8 @@ fn linked_source_is_exact_and_rejects_symlinks_and_traversal() {
 
 #[test]
 fn queries_bound_results_and_indexes_cover_edge_predicates() {
-    use contextunity_acdd::{
-        core::response::{QueryOptions, ResponsePolicy},
-        db::symbols,
-    };
+    use acdd_core::response::{QueryOptions, ResponsePolicy};
+    use acdd_index::db::symbols;
     let w = Workspace::with_files(&[(
         "lib.py",
         "def OrderOne(): pass\ndef OrderTwo(): pass\ndef get_item(): pass\ndef getXitem(): pass\n",

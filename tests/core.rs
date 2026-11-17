@@ -1,7 +1,5 @@
 #[path = "common/mod.rs"]
 pub mod common;
-#[path = "common/workspace_contract_tests.rs"]
-mod workspace_contract_tests;
 
 #[path = "core/adapters.rs"]
 mod adapters;
@@ -42,4 +40,6 @@ mod incremental {
     mod resolution_identity;
     #[path = "../incremental/scope.rs"]
     mod scope;
+    #[path = "../incremental/single_pass_spool_and_parallel_delta.rs"]
+    mod single_pass_spool_and_parallel_delta;
 }

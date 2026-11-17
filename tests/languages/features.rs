@@ -1,5 +1,5 @@
 use crate::languages::{harness::ExtractorHarness, PersistedWorkspaceHarness};
-use contextunity_acdd::engine::{languages, scanner};
+use acdd_index::{languages, scanner};
 use std::collections::BTreeSet;
 
 struct Fixture {
@@ -191,7 +191,7 @@ fn registry_and_extraction_match_the_compiled_feature_contract() {
             assert!(error.contains("disabled"), "{error}");
             assert!(error.contains(fixture.feature), "{error}");
             assert!(error.contains("compiled languages:"), "{error}");
-            let error = contextunity_acdd::engine::ast::parser(fixture.id, fixture.path)
+            let error = acdd_index::ast::parser(fixture.id, fixture.path)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
                 .unwrap_err();
@@ -369,22 +369,22 @@ fn cross_layer_seams_endpoint_vue_alpine() {
             |row| row.get(0),
         )
         .unwrap();
-    let options = contextunity_acdd::db::traversal::TraversalOptions {
+    let options = acdd_index::db::traversal::TraversalOptions {
         depth: 4,
         inbound: true,
         mode: None,
         edge_types: None,
-        page: &contextunity_acdd::core::response::QueryOptions::resolve(
-            &contextunity_acdd::core::response::ResponsePolicy::default(),
+        page: &acdd_core::response::QueryOptions::resolve(
+            &acdd_core::response::ResponsePolicy::default(),
             Some(50),
             0,
-            Some(contextunity_acdd::core::response::Detail::Compact),
+            Some(acdd_core::response::Detail::Compact),
             None,
         )
         .unwrap(),
     };
     let impact =
-        contextunity_acdd::db::traversal::traverse_with_options(&conn, &view_node_id, &options)
+        acdd_index::db::traversal::traverse_with_options(&conn, &view_node_id, &options)
             .unwrap();
     let impacted_items = impact["nodes"]["items"].as_array().expect("impact items");
     let impacted_paths: Vec<&str> = impacted_items

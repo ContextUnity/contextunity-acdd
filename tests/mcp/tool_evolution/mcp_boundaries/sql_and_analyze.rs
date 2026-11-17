@@ -17,6 +17,7 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
         ("search_docs", "query", vec!["pattern", "path"]),
         ("ast_grep_search", "pattern", vec!["query"]),
         ("code_map_search", "pattern", vec!["query"]),
+        ("code_map_inspect", "selector", vec!["symbol", "file_path"]),
         ("code_map_analyze", "target", vec!["path", "selector"]),
     ] {
         let schema = &tools.iter().find(|tool| tool["name"] == name).unwrap()["inputSchema"];
@@ -46,6 +47,20 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
                 json!({"path":"docs/contract.md","detail":"compact"}),
                 json!({"selector":"docs/contract.md","detail":"compact"}),
             ],
+        ),
+        (
+            "code_map_inspect",
+            json!({"selector":"first","path":"src/app.py"}),
+            vec![
+                json!({"symbol":"first","file_path":"src/app.py"}),
+                json!({"symbol":"first","path":"src/app.py"}),
+                json!({"selector":"first","file_path":"src/app.py"}),
+            ],
+        ),
+        (
+            "acdd_read",
+            json!({"path":"src/app.py","start_line":1,"line_count":1}),
+            vec![json!({"file_path":"src/app.py","start_line":1,"line_count":1})],
         ),
         (
             "code_map_analyze",
@@ -111,6 +126,18 @@ fn unified_navigation_parameters_and_sql_preserve_mcp_results() {
         (
             "code_map_search",
             json!({"pattern":"first","query":"first"}),
+        ),
+        (
+            "code_map_inspect",
+            json!({"selector":"first","symbol":"other"}),
+        ),
+        (
+            "code_map_inspect",
+            json!({"selector":"first","path":"src/app.py","file_path":"other.py"}),
+        ),
+        (
+            "acdd_read",
+            json!({"path":"src/app.py","file_path":"other.py"}),
         ),
         (
             "code_map_analyze",
@@ -657,119 +684,68 @@ fn duplicates_query_preserves_whitespace_only_literal_lines_in_exact_clones() {
 
 #[test]
 fn checkpoint_crud_enforces_scope_and_uses_sqlite_instead_of_legacy_json() {
-    let (w, m) = McpTestHarness::with_files(&[("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n")]);
+    let (w, m) = McpTestHarness::with_files(&[
+        ("acdd.yaml", "state_db: .acdd/state.sqlite\nmodules: {state: true, blackboard: true}\n"),
+        (".gitignore", ".acdd/\n"),
+        (
+            ".acdd/profile.yaml",
+            "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: { mode: subagent }\ngates:\n  - tasks:\n      gates:\n        - id: verify\n          role: worker\n          proof: none\n",
+        ),
+    ]);
+    w.seed_git().unwrap();
     let mut m = m.expect("MCP initialize");
     assert!(m
-        .payload("session_checkpoint", json!({"action":"list"}))
+        .payload("acdd_state", json!({"action":"list"}))
         .expect("MCP tool should succeed")
         .is_object());
-    for (arguments, expected) in [
-        (
-            json!({"action":"save","content":{"note":"x"}}),
-            "checkpoint breadcrumb required",
-        ),
-        (
-            json!({"action":"save","name":"acdd/acdd/m-test/tasks/note/build"}),
-            "content required",
-        ),
-        (
-            json!({"action":"get","name":"acdd/acdd/m-test/tasks/missing/build"}),
-            "not found",
-        ),
-        (
-            json!({"action":"delete","name":"acdd/acdd/m-test/tasks/missing/build"}),
-            "not found",
-        ),
-        (
-            json!({"action":"save","name":"../../etc/passwd","content":{"note":"x"}}),
-            "TASK_CHECKPOINT_SCOPE",
-        ),
-        (
-            json!({"action":"save","name":"..\n/../etc/passwd","content":{"note":"x"}}),
-            "TASK_CHECKPOINT_SCOPE",
-        ),
-    ] {
-        let rejection = m
-            .text("session_checkpoint", arguments)
-            .expect_err("tool should reject input");
-        let expected: &str = expected;
-        assert!(
-            rejection
-                .tool_message()
-                .expect("expected MCP tool rejection")
-                .contains(expected),
-            "{rejection}"
-        );
-    }
-    m.payload(
-        "session_checkpoint",
-        json!({"action":"save","name":"acdd/acdd/m-test/tasks/note/build","content":{"state":1}}),
-    ).expect("MCP tool should succeed");
-    assert_eq!(
-        m.payload(
-            "session_checkpoint",
-            json!({"action":"get","name":"acdd/acdd/m-test/tasks/note/build"})
-        )
-        .expect("MCP tool should succeed")["state"],
-        1
-    );
-    assert_eq!(
-        m.payload("session_checkpoint", json!({"action":"list"}))
-            .expect("MCP tool should succeed"),
-        json!({"acdd/acdd/m-test/tasks/note/build":{"bytes":11}})
-    );
-    m.payload(
-        "session_checkpoint",
-        json!({"action":"delete","name":"acdd/acdd/m-test/tasks/note/build"}),
-    )
-    .expect("MCP tool should succeed");
-    let rejection = m
-        .text(
-            "session_checkpoint",
-            json!({"action":"get","name":"acdd/acdd/m-test/tasks/note/build"}),
-        )
-        .expect_err("tool should reject input");
-    let expected: &str = "not found";
+    let (_, removed) = m
+        .call("session_checkpoint", json!({"action":"list"}))
+        .expect("MCP transport");
     assert!(
-        rejection
-            .tool_message()
-            .expect("expected MCP tool rejection")
-            .contains(expected),
-        "{rejection}"
-    );
-    let malformed = run_cli(
-        &w,
-        &[
-            "checkpoint",
-            "save",
-            "--name",
-            "malformed",
-            "--content",
-            "{invalid",
-        ],
-    );
-    assert!(!malformed.status.success());
-    assert!(String::from_utf8_lossy(&malformed.stderr).contains("key must be a string"));
-    let rejection = m
-        .text(
-            "session_checkpoint",
-            json!({"action":"get","name":"acdd/acdd/m-test/tasks/malformed/build"}),
-        )
-        .expect_err("tool should reject input");
-    let expected: &str = "not found";
-    assert!(
-        rejection
-            .tool_message()
-            .expect("expected MCP tool rejection")
-            .contains(expected),
-        "{rejection}"
+        removed.get("error").is_some() || removed["result"]["isError"] == true,
+        "session_checkpoint must stay removed: {removed}"
     );
     w.write(".acdd/checkpoints.json", "{invalid JSON");
-    assert_eq!(
-        m.payload("session_checkpoint", json!({"action":"list"}))
-            .expect("MCP tool should succeed"),
-        json!({}),
-        "legacy JSON checkpoint files do not affect the SQLite checkpoint store"
+    assert!(
+        m.payload("acdd_state", json!({"action":"list"}))
+            .expect("MCP tool should succeed")["page"]["runs"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "legacy JSON checkpoint files must not affect state.sqlite"
     );
+    let started = m
+        .payload(
+            "acdd_state",
+            json!({"action":"start","goal":"blackboard sqlite boundary","in_place":true}),
+        )
+        .expect("start run");
+    let run_id = started["run"]["run_id"]
+        .as_str()
+        .or_else(|| started["run_id"].as_str())
+        .unwrap()
+        .to_owned();
+    let rejection = m
+        .text(
+            "acdd_blackboard",
+            json!({"action":"post","run":&run_id,"topic":"invalid_topic","payload":"x"}),
+        )
+        .expect_err("invalid topic must reject");
+    assert!(
+        rejection.tool_message().is_some(),
+        "expected tool rejection: {rejection}"
+    );
+    m.payload(
+        "acdd_blackboard",
+        json!({"action":"post","run":&run_id,"topic":"notes","author":"w3-tests","payload":"sqlite note"}),
+    )
+    .expect("blackboard post");
+    let entries = m
+        .payload(
+            "acdd_blackboard",
+            json!({"action":"read","run":&run_id,"format":"json"}),
+        )
+        .expect("blackboard read");
+    assert_eq!(entries["items"][0]["payload"], "sqlite note");
     m.finish().expect("server must finish successfully");
 }

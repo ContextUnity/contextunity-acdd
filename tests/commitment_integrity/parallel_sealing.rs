@@ -1,5 +1,5 @@
 use super::harness::*;
-use contextunity_acdd::core::models::stable_hash64;
+use acdd_core::format::stable_hash64;
 use rusqlite::params;
 use std::collections::BTreeSet;
 

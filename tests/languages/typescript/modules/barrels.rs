@@ -479,7 +479,7 @@ fn callable_globals_respect_lexical_scope_and_imported_targets() {
 
 #[test]
 fn changing_a_transitive_barrel_matches_cold_resolution() {
-    use contextunity_acdd::core::commitments;
+    use acdd_index::db::commitments;
     let root = crate::languages::PersistedWorkspaceHarness::new();
     for (path, source) in [
         ("first.ts", "export function work() {}"),

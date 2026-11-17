@@ -798,12 +798,12 @@ function shadowed(test: Function) {
                         }
                     }
                     if case == "test_long" {
-                        let markdown = contextunity_acdd::core::format::render_for_operation(
+                        let markdown = contextunity_acdd::format::render_for_operation(
                             &found,
-                            contextunity_acdd::core::format::OutputFormat::Markdown,
+                            contextunity_acdd::format::OutputFormat::Markdown,
                             "code_map_tests",
                             None,
-                            contextunity_acdd::core::format::OperationKind::Navigation,
+                            contextunity_acdd::format::OperationKind::Navigation,
                         );
                         let breadcrumb = markdown
                             .split("Verified call path:")
@@ -831,12 +831,12 @@ function shadowed(test: Function) {
                         assert!(breadcrumb.contains("test_helper"), "{breadcrumb}");
                         assert!(breadcrumb.contains("(target)"), "{breadcrumb}");
 
-                        let json = contextunity_acdd::core::format::render_for_operation(
+                        let json = contextunity_acdd::format::render_for_operation(
                             &found,
-                            contextunity_acdd::core::format::OutputFormat::Json,
+                            contextunity_acdd::format::OutputFormat::Json,
                             "code_map_tests",
                             None,
-                            contextunity_acdd::core::format::OperationKind::Navigation,
+                            contextunity_acdd::format::OperationKind::Navigation,
                         );
                         assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), found);
                     }
@@ -1113,12 +1113,12 @@ fn test_mapping_uses_lexical_fallback_when_no_test_edges_exist() {
     assert!(lexical["connection"]
         .get("verified_call_path_nodes")
         .is_none());
-    let markdown = contextunity_acdd::core::format::render_for_operation(
+    let markdown = contextunity_acdd::format::render_for_operation(
         &inbound,
-        contextunity_acdd::core::format::OutputFormat::Markdown,
+        contextunity_acdd::format::OutputFormat::Markdown,
         "code_map_tests",
         None,
-        contextunity_acdd::core::format::OperationKind::Navigation,
+        contextunity_acdd::format::OperationKind::Navigation,
     );
     assert!(
         markdown.contains("Lexical fallback is unverified")

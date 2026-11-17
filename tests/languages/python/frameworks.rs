@@ -1,8 +1,6 @@
 use super::*;
-use contextunity_acdd::{
-    core::response::{CoverageOptions, QueryOptions, ResponsePolicy},
-    db::{reader, traversal},
-};
+use acdd_core::response::{CoverageOptions, QueryOptions, ResponsePolicy};
+use acdd_index::db::{reader, traversal};
 mod django;
 mod gridviewspec;
 mod import_provenance;

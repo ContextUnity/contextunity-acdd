@@ -1,387 +1,134 @@
 use super::*;
 
-fn checkpoint_breadcrumb(subject: &str) -> String {
-    format!(
-        "acdd/checkpoint-fixture/AC-001-hierarchical-acdd-gates-and-milestone-orchestration/tasks.build/checkpoint-{subject}/build"
-    )
-}
-
-fn checkpoint_snapshot(workspace: &Workspace) -> Vec<u8> {
-    let store = contextunity_acdd::engine::tasks::store(workspace.root()).unwrap();
-    serde_json::to_vec(&store.list_checkpoints().unwrap()).unwrap()
-}
-
-fn checkpoint_payload(workspace: &Workspace, breadcrumb: &str) -> Option<Value> {
-    let store = contextunity_acdd::engine::tasks::store(workspace.root()).unwrap();
-    store
-        .get_checkpoint(breadcrumb)
-        .unwrap()
-        .map(|checkpoint| checkpoint.state_payload)
-}
-
 #[test]
-fn repair_checkpoint_page_shapes_are_opaque_and_persistence_is_unchanged() {
-    let (workspace, harness) = McpTestHarness::with_files(&[(
-        "acdd.yaml",
-        "tasks_db: .acdd/tasks.sqlite\ntask_project: checkpoint-fixture\n",
-    )]);
-    let mut client = harness.expect("MCP initialize");
-    let page = json!({"total":2,"offset":0,"limit":2,"generation":"saved-snapshot","next_offset":null,"has_more":false,"items":[{"text":"x".repeat(60_000)},{"text":"y".repeat(60_000)}]});
-    for (subject, value) in [
-        ("page", page.clone()),
-        ("nested", json!({"snapshot":{"matches":page}})),
-    ] {
-        let name = checkpoint_breadcrumb(subject);
-        client
-            .payload(
-                "session_checkpoint",
-                json!({"action":"save","name":name,"content":value}),
-            )
-            .expect("MCP tool should succeed");
-        let stored = checkpoint_snapshot(&workspace);
-        assert_eq!(checkpoint_payload(&workspace, &name), Some(value.clone()));
-        for format in [None, Some("markdown"), Some("json")] {
-            let mut arguments = json!({"action":"get","name":name});
-            if let Some(format) = format {
-                arguments["format"] = json!(format);
-            }
-            let (_, response) = client
-                .call("session_checkpoint", arguments)
-                .expect("MCP transport");
-            assert_eq!(
-                response["result"]["isError"], true,
-                "oversized {name} {format:?} get created a fabricated page"
-            );
-            assert!(response["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("checkpoint"));
-            assert_eq!(checkpoint_snapshot(&workspace), stored);
-        }
-        let listed = client
-            .payload("session_checkpoint", json!({"action":"list"}))
-            .expect("MCP tool should succeed");
-        assert_eq!(
-            listed[&name]["bytes"],
-            serde_json::to_vec(&value).unwrap().len()
-        );
-        let listed_markdown = client
-            .text(
-                "session_checkpoint",
-                json!({"action":"list","format":"markdown"}),
-            )
-            .expect("MCP tool should succeed");
-        assert!(listed_markdown.contains(&format!("**{name}**")));
-        assert!(listed_markdown.contains(&listed[&name]["bytes"].to_string()));
-        let cli_list = run_cli(&workspace, &["--format", "markdown", "checkpoint", "list"]);
-        assertions::assert_command_succeeded(&cli_list);
-        let cli_list = std::str::from_utf8(&cli_list.stdout).unwrap();
-        assert!(cli_list.contains(&format!("**{name}**")));
-        assert!(cli_list.contains(&listed[&name]["bytes"].to_string()));
-        assert_eq!(listed_markdown.trim_end(), cli_list.trim_end());
-        assert_eq!(checkpoint_snapshot(&workspace), stored);
-    }
-    let small = json!({"total":2,"offset":0,"limit":2,"generation":"saved","next_offset":null,"items":[1,2]});
-    let small_breadcrumb = checkpoint_breadcrumb("small");
-    client
-        .payload(
-            "session_checkpoint",
-            json!({"action":"save","name":small_breadcrumb,"content":small}),
-        )
-        .expect("MCP tool should succeed");
-    assert_eq!(
-        client
-            .payload(
-                "session_checkpoint",
-                json!({"action":"get","name":small_breadcrumb})
-            )
-            .expect("MCP tool should succeed"),
-        small
+fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque() {
+    let (workspace, harness) = McpTestHarness::with_files(&[
+        (
+            "acdd.yaml",
+            "profile: full\nmodules: {state: true, blackboard: true}\n",
+        ),
+        (".gitignore", ".acdd/\n"),
+        (
+            ".acdd/profile.yaml",
+            "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ngates:\n  - tasks:\n      gates:\n        - id: verify\n          role: worker\n          proof: none\n",
+        ),
+    ]);
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(workspace.root())
+            .status()
+            .unwrap()
+            .success()
     );
+    assert!(
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(workspace.root())
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(workspace.root())
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(workspace.root())
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(workspace.root())
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let mut client = harness.expect("MCP initialize");
+    let (_, removed_mcp) = client
+        .call("session_checkpoint", json!({"action":"list"}))
+        .expect("MCP transport");
+    assert!(
+        removed_mcp.get("error").is_some() || removed_mcp["result"]["isError"] == true,
+        "session_checkpoint must not be registered in 0.6.0: {removed_mcp}"
+    );
+    let removed_cli = run_cli(&workspace, &["checkpoint", "list"]);
+    assert!(
+        !removed_cli.status.success(),
+        "acdd checkpoint must not exist in 0.6.0"
+    );
+
+    let started = client
+        .payload(
+            "acdd_state",
+            json!({"action": "start", "goal": "blackboard serialization contract", "in_place": true}),
+        )
+        .expect("start run");
+    let run_id = started["run"]["run_id"]
+        .as_str()
+        .or_else(|| started["run_id"].as_str())
+        .unwrap()
+        .to_owned();
 
     let opaque = json!({
-        "generation":"checkpoint-generation-must-remain-complete",
-        "freshness":{"output_root":"user-root-must-remain-complete","refresh":"none"},
-        "metadata":{},"items":[],"count":0,"complete":false,
-        "nested":{"total":0,"offset":0,"limit":1,"generation":"user-page-token","items":[]}
-    });
-    let format_breadcrumb = checkpoint_breadcrumb("format-contract");
-    let (_, saved) = client
-        .call(
-            "session_checkpoint",
+        "generation": "opaque-generation-token",
+        "freshness": {"output_root": "user-root", "refresh": "none"},
+        "items": [],
+        "count": 0
+    })
+    .to_string();
+    let posted = client
+        .payload(
+            "acdd_blackboard",
             json!({
-                "action":"save","name":format_breadcrumb,"content":opaque,"format":"markdown"
+                "action": "post",
+                "run": &run_id,
+                "topic": "notes",
+                "author": "w3-tests",
+                "payload": &opaque,
+                "format": "json"
             }),
         )
-        .expect("MCP transport");
-    assert_ne!(saved["result"]["isError"], true, "{saved}");
-    let save_markdown = saved["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(save_markdown.contains("**action**: `\"save\"`"));
-    assert!(save_markdown.contains(&format!("**name**: `\"{format_breadcrumb}\"`")));
-    let cli_saved_content = json!({"cli":"checkpoint","generation":"user-token"});
-    let cli_saved_content_argument = serde_json::to_string(&cli_saved_content).unwrap();
-    let cli_save_breadcrumb = checkpoint_breadcrumb("cli-save-markdown");
-    let cli_saved = run_cli(
-        &workspace,
-        &[
-            "--format",
-            "markdown",
-            "checkpoint",
-            "save",
-            "--name",
-            &cli_save_breadcrumb,
-            "--content",
-            &cli_saved_content_argument,
-        ],
-    );
-    assertions::assert_command_succeeded(&cli_saved);
-    let cli_save_text = std::str::from_utf8(&cli_saved.stdout).unwrap();
-    assert!(cli_save_text.contains("**action**: `\"save\"`"));
-    assert!(cli_save_text.contains(&format!("**name**: `\"{cli_save_breadcrumb}\"`")));
-    let persisted = checkpoint_snapshot(&workspace);
-    assert_eq!(
-        checkpoint_payload(&workspace, &format_breadcrumb),
-        Some(opaque.clone())
-    );
-    assert_eq!(
-        checkpoint_payload(&workspace, &cli_save_breadcrumb),
-        Some(cli_saved_content)
-    );
+        .expect("blackboard post");
+    assert_ne!(posted["entry"]["id"], Value::Null, "{posted}");
 
-    // Invalid presentation must be rejected before a real persisted mutation.
     for invalid in ["yaml", "", "JSON"] {
-        let (_, rejected) = client.call(
-            "session_checkpoint",
-            json!({
-                "action":"save","name":format_breadcrumb,"content":{"changed":true},"format":invalid
-            }),
-        ).expect("MCP transport");
+        let (_, rejected) = client
+            .call(
+                "acdd_blackboard",
+                json!({"action": "read", "run": &run_id, "format": invalid}),
+            )
+            .expect("MCP transport");
         assert!(
             rejected.get("error").is_some() || rejected["result"]["isError"] == true,
             "invalid MCP format {invalid:?}: {rejected}"
         );
-        assert_eq!(checkpoint_snapshot(&workspace), persisted);
-        let rejected = run_cli(
-            &workspace,
-            &[
-                "--format",
-                invalid,
-                "checkpoint",
-                "save",
-                "--name",
-                &format_breadcrumb,
-                "--content",
-                "{\"changed\":true}",
-            ],
-        );
-        assert!(!rejected.status.success(), "invalid CLI format {invalid:?}");
-        assert_eq!(checkpoint_snapshot(&workspace), persisted);
+        let cli_rejected = run_cli(&workspace, &["--format", invalid, "blackboard", "read"]);
+        assert!(!cli_rejected.status.success(), "invalid CLI format {invalid:?}");
     }
 
-    let mut markdown = Vec::new();
-    for format in [None, Some("markdown"), Some("json")] {
-        let mut arguments = json!({"action":"get","name":format_breadcrumb});
-        let mut cli_args = Vec::new();
-        if let Some(format) = format {
-            arguments["format"] = json!(format);
-            cli_args.extend(["--format", format]);
-        }
-        cli_args.extend(["checkpoint", "get", "--name", &format_breadcrumb]);
-        let (_, result) = client
-            .call("session_checkpoint", arguments)
-            .expect("MCP transport");
-        assert_ne!(result["result"]["isError"], true, "{result}");
-        let mcp_text = result["result"]["content"][0]["text"].as_str().unwrap();
-        let cli = run_cli(&workspace, &cli_args);
-        assertions::assert_command_succeeded(&cli);
-        let cli_text = std::str::from_utf8(&cli.stdout).unwrap().trim_end();
-        if format == Some("json") {
-            for text in [mcp_text, cli_text] {
-                assert_eq!(serde_json::from_str::<Value>(text).unwrap(), opaque);
-            }
-        } else {
-            for (surface, text) in [("MCP", mcp_text), ("CLI", cli_text)] {
-                assert!(
-                    serde_json::from_str::<Value>(text).is_err(),
-                    "{surface} {format:?} must render Markdown, received raw JSON: {text}"
-                );
-                for preserved in [
-                    "checkpoint-generation-must-remain-complete",
-                    "user-root-must-remain-complete",
-                    "user-page-token",
-                    "false",
-                    "0",
-                    "**metadata**: `{}`",
-                    "**items**: `[]`",
-                    "**nested**",
-                    "  - **generation**: `\"user-page-token\"`",
-                    "  - **items**: `[]`",
-                ] {
-                    assert!(
-                        text.contains(preserved),
-                        "{surface} lost {preserved}: {text}"
-                    );
-                }
-            }
-            assert_eq!(mcp_text.trim_end(), cli_text);
-            markdown.push(mcp_text.to_owned());
-        }
-    }
-    assert_eq!(
-        markdown[0], markdown[1],
-        "omission and explicit Markdown differ"
-    );
-    assert_eq!(checkpoint_snapshot(&workspace), persisted);
-
-    let mut missing_renderings = Vec::new();
-    for (subject, value, rendered) in [
-        ("empty-array", json!([]), "[]"),
-        ("empty-object", json!({}), "{}"),
-    ] {
-        let name = checkpoint_breadcrumb(subject);
-        let (_, saved) = client
-            .call(
-                "session_checkpoint",
-                json!({"action":"save","name":name,"content":value}),
-            )
-            .expect("MCP transport");
-        assert_ne!(saved["result"]["isError"], true, "{saved}");
-        let persisted = checkpoint_snapshot(&workspace);
-        assert_eq!(checkpoint_payload(&workspace, &name), Some(value.clone()));
-
-        let mut markdown = Vec::new();
-        for format in [None, Some("markdown"), Some("json")] {
-            let mut arguments = json!({"action":"get","name":name});
-            let mut cli_args = Vec::new();
-            if let Some(format) = format {
-                arguments["format"] = json!(format);
-                cli_args.extend(["--format", format]);
-            }
-            cli_args.extend(["checkpoint", "get", "--name", &name]);
-            let (_, response) = client
-                .call("session_checkpoint", arguments)
-                .expect("MCP transport");
-            assert_ne!(response["result"]["isError"], true, "{response}");
-            let mcp_text = response["result"]["content"][0]["text"].as_str().unwrap();
-            let cli = run_cli(&workspace, &cli_args);
-            assertions::assert_command_succeeded(&cli);
-            let cli_text = std::str::from_utf8(&cli.stdout).unwrap().trim_end();
-            if format == Some("json") {
-                for text in [mcp_text, cli_text] {
-                    assert_eq!(serde_json::from_str::<Value>(text).unwrap(), value);
-                }
-            } else {
-                for (surface, text) in [("MCP", mcp_text), ("CLI", cli_text)] {
-                    if !text.contains(rendered) {
-                        missing_renderings.push(format!(
-                            "{surface} {format:?} omitted root checkpoint {name}: {text}"
-                        ));
-                    }
-                }
-                assert_eq!(mcp_text.trim_end(), cli_text);
-                markdown.push(mcp_text.to_owned());
-            }
-            assert_eq!(checkpoint_snapshot(&workspace), persisted);
-        }
-        assert_eq!(
-            markdown[0], markdown[1],
-            "empty {name} omission and explicit Markdown differ"
-        );
-    }
-    assert!(
-        missing_renderings.is_empty(),
-        "empty checkpoint roots were omitted: {}",
-        missing_renderings.join("; ")
-    );
-
-    for (subject, content) in [
-        ("mcp-delete-markdown", json!({"keep":false})),
-        ("cli-delete-markdown", json!({"keep":0})),
-    ] {
-        let name = checkpoint_breadcrumb(subject);
-        client
-            .payload(
-                "session_checkpoint",
-                json!({"action":"save","name":name,"content":content}),
-            )
-            .expect("MCP tool should succeed");
-    }
-    let mcp_delete_breadcrumb = checkpoint_breadcrumb("mcp-delete-markdown");
-    let (_, mcp_deleted) = client
-        .call(
-            "session_checkpoint",
-            json!({"action":"delete","name":mcp_delete_breadcrumb,"format":"markdown"}),
-        )
-        .expect("MCP transport");
-    assert_ne!(mcp_deleted["result"]["isError"], true, "{mcp_deleted}");
-    let mcp_delete_text = mcp_deleted["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap();
-    assert!(mcp_delete_text.contains("**action**: `\"delete\"`"));
-    assert!(mcp_delete_text.contains(&format!("**name**: `\"{mcp_delete_breadcrumb}\"`")));
-    assert_eq!(checkpoint_payload(&workspace, &mcp_delete_breadcrumb), None);
-
-    let cli_delete_breadcrumb = checkpoint_breadcrumb("cli-delete-markdown");
-    let cli_deleted = run_cli(
-        &workspace,
-        &[
-            "--format",
-            "markdown",
-            "checkpoint",
-            "delete",
-            "--name",
-            &cli_delete_breadcrumb,
-        ],
-    );
-    assertions::assert_command_succeeded(&cli_deleted);
-    let cli_delete_text = std::str::from_utf8(&cli_deleted.stdout).unwrap();
-    assert!(cli_delete_text.contains("**action**: `\"delete\"`"));
-    assert!(cli_delete_text.contains(&format!("**name**: `\"{cli_delete_breadcrumb}\"`")));
-    assert_eq!(checkpoint_payload(&workspace, &cli_delete_breadcrumb), None);
-    assert!(!workspace.path(".acdd/checkpoints.json").exists());
-
-    let shared_database = workspace.path(".acdd/tasks.sqlite");
-    let other_workspace = Workspace::with_files(&[(
-        "acdd.yaml",
-        &format!(
-            "tasks_db: {}\ntask_project: checkpoint-other\n",
-            shared_database.display()
-        ),
-    )]);
-    let mut other_client = McpTestHarness::new(&other_workspace).expect("MCP initialize");
-    let other_breadcrumb = "acdd/checkpoint-other/AC-001-hierarchical-acdd-gates-and-milestone-orchestration/tasks.build/checkpoint-shared/build".to_owned();
-    other_client
+    let read_json = client
         .payload(
-            "session_checkpoint",
-            json!({"action":"save","name":other_breadcrumb,"content":{"project":"other"}}),
+            "acdd_blackboard",
+            json!({"action": "read", "run": &run_id, "format": "json"}),
         )
-        .expect("MCP tool should succeed");
-    let other_list = other_client
-        .payload("session_checkpoint", json!({"action":"list"}))
-        .expect("MCP tool should succeed");
-    assert_eq!(other_list.as_object().unwrap().len(), 1);
+        .expect("blackboard read");
     assert_eq!(
-        other_list[&other_breadcrumb]["bytes"],
-        serde_json::to_vec(&json!({"project":"other"}))
-            .unwrap()
-            .len()
+        read_json["items"][0]["payload"].as_str(),
+        Some(opaque.as_str()),
+        "{read_json}"
     );
-    let primary_list = client
-        .payload("session_checkpoint", json!({"action":"list"}))
-        .expect("MCP tool should succeed");
-    assert!(primary_list.get(&other_breadcrumb).is_none());
-    assert!(primary_list.get(checkpoint_breadcrumb("shared")).is_none());
-    let (_, cross_project) = other_client
-        .call(
-            "session_checkpoint",
-            json!({"action":"get","name":checkpoint_breadcrumb("page")}),
-        )
-        .expect("MCP transport");
-    assert_eq!(cross_project["result"]["isError"], true);
     client.finish().expect("server must finish successfully");
-    other_client
-        .finish()
-        .expect("server must finish successfully");
 }
 
 #[tokio::test]
@@ -441,6 +188,32 @@ fn serialization_counts_second_escaping_and_bounds_a_single_item() {
     assert!(item_hint.contains("same tool and filters"));
     assert!(item_hint.contains("offset=1"));
     assert!(item_hint.contains("generation"));
+
+    // In-place compaction must preserve full inactive generation tokens for tail trimming across formats.
+    for format in [OutputFormat::Json, OutputFormat::Markdown] {
+        let res = response::result_with_format(
+            Ok(json!({
+                "nodes": {
+                    "total": 2,
+                    "offset": 0,
+                    "limit": 30,
+                    "has_more": false,
+                    "next_offset": null,
+                    "generation": "snapshot-full-token-123456",
+                    "items": [
+                        {"id": "a", "text": "\"\\\n".repeat(6000)},
+                        {"id": "b", "text": "\"\\\n".repeat(6000)}
+                    ]
+                }
+            })),
+            &policy,
+            format,
+        );
+        assert_ne!(res.is_error, Some(true), "{format:?}: {res:?}");
+        assert!(response::serialized_bytes(&res) <= MAX_OUTPUT_BYTES - 256);
+        let text = res.content[0].as_text().unwrap().text.as_str();
+        assert!(text.contains("snapshot-full-token-123456"), "{format:?}: {text}");
+    }
     let result = response::result_with_format(
         Ok(json!({"scalar":"\"\\Привіт".repeat(30_000)})),
         &policy,

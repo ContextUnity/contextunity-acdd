@@ -1,11 +1,8 @@
 #![cfg(feature = "lang-yaml")]
 
 use crate::common::Workspace;
-use contextunity_acdd::{
-    db::{reader, writer},
-    engine::scanner,
-    mcp::server::Server,
-};
+use acdd_index::{db::reader, scanner};
+use contextunity_acdd::{engine::pipeline as writer, mcp::server::Server};
 use serde_json::{json, Value};
 use std::{fs, path::PathBuf};
 

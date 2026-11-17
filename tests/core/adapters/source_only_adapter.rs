@@ -1,7 +1,8 @@
 #![cfg(all(feature = "lang-python", feature = "lang-typescript"))]
 
 use crate::common::{mcp_client::invalidate_mcp_connection_cache, Workspace};
-use contextunity_acdd::{db::reader, mcp::server::Server};
+use acdd_index::db::reader;
+use contextunity_acdd::mcp::server::Server;
 use serde_json::{json, Value};
 
 fn inventory(server: &Server) -> Value {

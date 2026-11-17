@@ -1,9 +1,7 @@
 use super::harness::*;
 use crate::common::Workspace;
-use contextunity_acdd::{
-    core::schema::SCHEMA_DDL,
-    db::{reader, writer},
-};
+use acdd_index::db::{reader, SCHEMA_DDL};
+use contextunity_acdd::engine::pipeline as writer;
 use rusqlite::Connection;
 
 #[test]
@@ -194,7 +192,7 @@ fn built_nodes_keep_owner_paths_and_repeatable_merkle_leaves() {
             .unwrap();
         assert_eq!(
             schema_after_rebuild,
-            contextunity_acdd::core::config::ENGINE_SCHEMA_VERSION,
+            acdd_core::config::ENGINE_SCHEMA_VERSION,
             "{}",
             schema_label(mutation)
         );
@@ -228,8 +226,9 @@ fn read_only_query_only_verification_uses_temporary_logical_fts_views() {
     )
     .unwrap();
     commitments::seal(&conn).unwrap();
-    drop(conn);
 
+    // Keep the writer connection open so `-shm` remains materialized for `SQLITE_OPEN_READ_ONLY` on macOS.
+    let writer = conn;
     let reader = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .expect("read-only fixture open succeeds");
     reader.pragma_update(None, "query_only", true).unwrap();
@@ -247,7 +246,6 @@ fn read_only_query_only_verification_uses_temporary_logical_fts_views() {
             |row| row.get(0),
         )
         .unwrap();
-    let writer = Connection::open(&path).unwrap();
     writer
         .execute_batch("BEGIN IMMEDIATE; DELETE FROM node_search WHERE rowid=1; INSERT INTO node_search(rowid,search_text) VALUES(1,'changed posting'); COMMIT;")
         .unwrap();

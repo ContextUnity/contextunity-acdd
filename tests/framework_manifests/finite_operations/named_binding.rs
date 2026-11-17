@@ -77,7 +77,7 @@ fn named_binding_preserves_canonical_targets_and_delta() {
                             continue;
                         }
                         let original = case.source(path);
-                        let public = contextunity_acdd::engine::ast::extract(
+                        let public = acdd_index::ast::extract(
                             path,
                             if path.ends_with(".vue") {
                                 "vue"
@@ -111,7 +111,7 @@ fn named_binding_preserves_canonical_targets_and_delta() {
                                 .clone();
                             module.details = json!({});
                             let namespace = module.qualname.clone();
-                            let mut legacy = contextunity_acdd::core::models::Facts::default();
+                            let mut legacy = acdd_index::models::Facts::default();
                             legacy.nodes.push(module);
                             languages::require("vue")
                                 .unwrap()
@@ -194,7 +194,7 @@ fn named_binding_preserves_canonical_targets_and_delta() {
                             path
                         };
                         let source = case.source(source_path);
-                        let facts = contextunity_acdd::engine::ast::extract(
+                        let facts = acdd_index::ast::extract(
                             path,
                             if path.ends_with(".html") {
                                 "html"

@@ -56,9 +56,9 @@ fn source_registry_scope_parity_matrix() {
                 serde_json::to_value(disk_facts[path].clone().into_public()).unwrap()
             );
         }
-        let actual: contextunity_acdd::core::models::Graph =
+        let actual: acdd_index::models::Graph =
             linker::link_compact_with_typed_registry(&source_facts, None, None, &source).into();
-        let expected: contextunity_acdd::core::models::Graph =
+        let expected: acdd_index::models::Graph =
             linker::link_compact_with_typed_registry(&disk_facts, None, None, &disk).into();
         assert_eq!(
             serde_json::to_value(&actual.edges).unwrap(),
@@ -96,8 +96,8 @@ fn source_registry_scope_parity_matrix() {
                 linker::link_compact_with_typed_registry(&actual_facts, None, None, &source);
             let expected =
                 linker::link_compact_with_typed_registry(&expected_facts, None, None, &disk);
-            let actual: contextunity_acdd::core::models::Graph = actual.into();
-            let expected: contextunity_acdd::core::models::Graph = expected.into();
+            let actual: acdd_index::models::Graph = actual.into();
+            let expected: acdd_index::models::Graph = expected.into();
             assert_eq!(
                 serde_json::to_value(&actual.edges).unwrap(),
                 serde_json::to_value(&expected.edges).unwrap(),

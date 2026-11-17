@@ -68,16 +68,36 @@ fn discovery_package_fixture() -> anyhow::Result<(Workspace, Workspace, McpTestH
         ),
         (
             "docs/milestones/010-discovery.md",
-            "---\nid: m-discovery-fixture\ntitle: Discovery active milestone\ndoc_type: contract\nstatus: active\n---\n# Discovery active milestone\n",
+            "---\nid: m-discovery-fixture\ntitle: Discovery active milestone\ndoc_type: milestone\nstatus: active\n---\n# Discovery active milestone\n",
         ),
-        (".gitignore", "gitignored/\n"),
+        (".gitignore", "gitignored/\n.acdd/\n"),
+        (
+            ".acdd/profile.yaml",
+            "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: { mode: subagent }\ngates:\n  - id: verify\n    role: worker\n    proof: none\n",
+        ),
     ]);
     packages.write(
         "acdd.yaml",
         &format!(
-            "milestones: [docs/milestones]\nignore: [configured-ignored]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [.]\n",
+            "specs:\n  milestones:\n    path: docs/milestones\nignore: [configured-ignored]\nlinked_workspaces:\n  - name: library\n    path: '{}'\n    roots: [.]\n",
             linked_packages.root().display()
         ),
+    );
+    packages.seed_git()?;
+    let start = crate::cli::run_cli_json(
+        &packages,
+        &[
+            "start",
+            "docs/milestones/010-discovery.md",
+            "--in-place",
+            "--name",
+            "m-discovery-fixture",
+        ],
+    );
+    anyhow::ensure!(
+        start.status.success(),
+        "discovery fixture start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
     );
     drop(packages.build());
     let client = McpTestHarness::new(&packages)?;
@@ -124,17 +144,17 @@ fn same_server_refreshes_non_source_manifests_outside_source_roots() {
         .payload("code_map_overview", json!({"limit":100}))
         .expect("MCP tool should succeed");
     assert_eq!(
-        overview["discovery"]["active_milestones"]["availability"],
+        overview["discovery"]["active_runs"]["availability"],
         "available"
     );
-    let milestone = overview["discovery"]["active_milestones"]["items"]
+    let run = overview["discovery"]["active_runs"]["items"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|milestone| milestone["id"] == "m-discovery-fixture")
-        .expect("canonical active milestone row");
-    assert_eq!(milestone["status"], "active");
-    assert_eq!(milestone["completion"], "0/0");
+        .find(|item| item["run_name"] == "m-discovery-fixture")
+        .expect("canonical active run row");
+    assert_eq!(run["status"], "active");
+    assert_eq!(run["spec_path"], "docs/milestones/010-discovery.md");
     let (_, response) = client
         .call(
             "code_map_overview",
@@ -156,9 +176,8 @@ fn same_server_refreshes_non_source_manifests_outside_source_roots() {
         "example.org/manifest-go-module",
         "linked-manifest-package",
         "Discovery documentation hub",
-        "Discovery active milestone",
         "m-discovery-fixture",
-        "0/0 complete",
+        "status=`active`",
     ] {
         if !package_markdown.contains(expected) {
             missing.push(format!(

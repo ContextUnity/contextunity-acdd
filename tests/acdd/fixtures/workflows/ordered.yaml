@@ -4,11 +4,11 @@ inherit: none
 save: none
 commands:
   first:
-    command: "printf 'first\n' >> workflow-order.log"
+    command: "mkdir -p .acdd && printf 'first\n' >> .acdd/workflow-order.log"
     output:
       require_counts: false
   second:
-    command: "printf 'second\n' >> workflow-order.log"
+    command: "mkdir -p .acdd && printf 'second\n' >> .acdd/workflow-order.log"
     output:
       require_counts: false
 gates:

@@ -1,5 +1,5 @@
 {
-  "acdd.yaml": "roots: [src]\ndocs: [docs]\ntasks_db: .acdd/tasks.sqlite\n",
+  "acdd.yaml": "roots: [src]\ndocs: [docs]\nstate_db: .acdd/state.sqlite\n",
   "src/lib.rs": "pub fn context() {}\n",
-  "docs/milestones/012-context.md": "---\nid: m-context\ntitle: Context retention\ndoc_type: contract\nstatus: planned\ninvariants: [durable-context]\n---\n# Context retention\n\n### task: implement\n```yaml\ntask_ref: implement\ntarget: Deliver context retention\nproof_policy: seam-test-first\nscope: [src/]\nagent_type: gpt-6-sol\ninvariants: [reviewed]\n```\n"
+  "docs/milestones/012-context.md": "---\nid: m-context\ntitle: Context retention\ndoc_type: contract\nstatus: planned\ninvariants: [durable-context]\n---\n# Context retention\n\n### task: implement\n```yaml\ntask_ref: implement\ntarget: Deliver context retention\nscope: [src/]\ninvariants: [reviewed]\n```\n"
 }

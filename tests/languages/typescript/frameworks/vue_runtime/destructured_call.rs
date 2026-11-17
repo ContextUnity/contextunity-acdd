@@ -3,7 +3,7 @@ use super::super::*;
 #[cfg(feature = "lang-vue")]
 #[test]
 fn vue_destructured_composable_call_uses_indexed_return_member() {
-    use contextunity_acdd::core::commitments;
+    use acdd_index::db::commitments;
 
     let w = crate::languages::PersistedWorkspaceHarness::new();
     w.write(

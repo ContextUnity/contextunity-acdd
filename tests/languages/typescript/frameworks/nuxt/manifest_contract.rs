@@ -1,7 +1,7 @@
 #[cfg(feature = "lang-vue")]
 #[test]
 fn persisted_nuxt_vue_pinia_contract() {
-    use contextunity_acdd::{core::commitments, db::reader};
+    use acdd_index::db::{commitments, reader};
     use rusqlite::params;
     use serde_json::Value;
 

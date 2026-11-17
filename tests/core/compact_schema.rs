@@ -1,9 +1,8 @@
 use crate::common::Workspace;
 use anyhow::Result;
-use contextunity_acdd::{
-    core::{commitments, models::stable_hash64, schema::SCHEMA_DDL},
-    db::{reader, writer},
-};
+use acdd_core::format::stable_hash64;
+use acdd_index::db::{commitments, reader, SCHEMA_DDL};
+use contextunity_acdd::engine::pipeline as writer;
 use rusqlite::{params, Connection};
 
 #[test]

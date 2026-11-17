@@ -186,19 +186,7 @@ fn batch_seven<'a>(facts: &BatchFacts<'a>, collision: &Collision, name: &str, ta
             ),
             (
                 "tests/acdd/support.rs",
-                include_str!("../../acdd/support.rs"),
-            ),
-            (
-                "tests/acdd/support/builder.rs",
-                include_str!("../../acdd/support/builder.rs"),
-            ),
-            (
-                "tests/acdd/support/fixtures.rs",
-                include_str!("../../acdd/support/fixtures.rs"),
-            ),
-            (
-                "tests/acdd/support/git_seed.rs",
-                include_str!("../../acdd/support/git_seed.rs"),
+                "use crate::common::Workspace;\npub(crate) const DEFAULT_SEAM: &str = \"tests/seam.rs\";\npub(crate) fn acdd_workspace(_seam: &str, _target: &str) -> Workspace { Workspace::new() }\npub(crate) fn fixture(_seam: &str) -> (Workspace, (), ()) { (Workspace::new(), (), ()) }",
             ),
             (
                 "tests/acdd/tuple_probe.rs",
@@ -213,14 +201,14 @@ fn batch_seven<'a>(facts: &BatchFacts<'a>, collision: &Collision, name: &str, ta
         let facts = sources
             .iter()
             .map(|(path, source)| {
-                let parsed = contextunity_acdd::engine::ast::extract(path, "rust", source)
+                let parsed = acdd_index::ast::extract(path, "rust", source)
                     .unwrap_or_else(|error| panic!("{path} (rust): {error}"));
                 ((*path).to_owned(), parsed)
             })
             .collect::<std::collections::BTreeMap<_, _>>();
         let registry_root = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
-        let registry = contextunity_acdd::engine::languages::dependency_registry::DependencyRegistry::collect(registry_root);
-        let graph = contextunity_acdd::engine::linker::link_with_registry(&facts, None, None, &registry);
+        let registry = acdd_index::languages::dependency_registry::DependencyRegistry::collect(registry_root);
+        let graph = acdd_index::linker::link_with_registry(&facts, None, None, &registry);
         LinkedCatalog { facts, graph }
     })
 }
