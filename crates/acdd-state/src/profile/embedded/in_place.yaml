@@ -1,0 +1,20 @@
+version: 2
+inherit: default
+gates_merge: patch
+
+git:
+  isolation: in_place
+  worktrees: manual
+  commit_mode: plumbing
+  integrate: manual
+
+save: snapshot
+
+gates:
+  - id: tasks.deliver
+    save:
+      post: snapshot
+
+  - id: handoff
+    save:
+      post: snapshot

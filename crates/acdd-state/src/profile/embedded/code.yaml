@@ -1,0 +1,86 @@
+version: 2
+inherit: default
+gates_merge: patch
+
+default_tools:
+  - code_map_overview
+  - code_map_search
+  - code_map_inspect
+  - code_map_impact
+  - code_map_analyze
+  - code_map_explain
+  - code_map_tests
+  - code_map_prove_removal
+  - code_map_query
+  - ast_grep_search
+  - get_doc
+  - search_docs
+  - acdd_read
+  - acdd_guide
+  - acdd_state
+  - acdd_claim
+  - acdd_verify
+  - acdd_submit
+  - acdd_blackboard
+
+gates:
+  - id: blueprint_synthesis.synthesize
+    context:
+      - docs.adrs
+      - docs.invariants
+      - code.symbols
+
+  - id: blueprint_synthesis.review
+    context:
+      - docs.adrs
+      - docs.invariants
+      - code.symbols
+
+  - id: tasks.contract
+    checks:
+      - code.seam
+    context:
+      - docs.adrs
+      - docs.invariants
+      - code.symbols
+      - code.tests
+
+  - id: tasks.contract_review
+    context:
+      - docs.adrs
+      - docs.invariants
+      - code.symbols
+      - code.tests
+
+  - id: tasks.build
+    checks:
+      - code.seam
+    context:
+      - docs.adrs
+      - docs.invariants
+      - code.symbols
+      - code.tests
+      - code.external_callers
+
+  - id: tasks.review
+    context:
+      - docs.adrs
+      - docs.invariants
+      - code.symbols
+      - code.tests
+      - code.external_callers
+
+  - id: polish
+    context:
+      - docs.adrs
+      - docs.invariants
+      - code.symbols
+      - code.tests
+
+  - id: integration_review
+    context:
+      - docs.adrs
+      - docs.invariants
+      - code.symbols
+      - code.tests
+      - code.external_callers
