@@ -1,13 +1,64 @@
 //! Typed registries shared by ACDD profiles and workspace adapters.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Typed identifier for built-in subsystems and external `DomainProvider` plugins.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubsystemId {
+    /// Code indexing and AST/graph navigation (`code` / legacy `codemap`).
+    Code,
+    /// Documentation indexing and Markdown tools (`docs`).
+    Docs,
+    /// Unified state/lifecycle engine (`state` / legacy `acdd`).
+    State,
+    /// Blackboard collaboration surface (`blackboard`; auto-disabled when `state: false`).
+    Blackboard,
+    /// Reserved slot for repository memory (`memory`, `AC-006`).
+    Memory,
+    /// Legacy checkpoint subsystem (removed in 0.6.0 Phase 3).
+    Checkpoints,
+    /// External `DomainProvider` plugin toggle (`domains.<id>`).
+    Domain(String),
+}
+
+impl SubsystemId {
+    /// Parses a subsystem identifier or legacy alias.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "code" | "codemap" => Some(Self::Code),
+            "docs" => Some(Self::Docs),
+            "state" | "acdd" => Some(Self::State),
+            "blackboard" => Some(Self::Blackboard),
+            "memory" => Some(Self::Memory),
+            "checkpoints" => Some(Self::Checkpoints),
+            other => other
+                .strip_prefix("domain:")
+                .filter(|id| !id.is_empty())
+                .map(|id| Self::Domain(id.to_owned())),
+        }
+    }
+
+    /// Returns the canonical subsystem name (or domain name for `Domain`).
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Code => "code",
+            Self::Docs => "docs",
+            Self::State => "state",
+            Self::Blackboard => "blackboard",
+            Self::Memory => "memory",
+            Self::Checkpoints => "checkpoints",
+            Self::Domain(name) => name.as_str(),
+        }
+    }
+}
 
 /// Built-in subsystem presets for the MCP tool surface.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SubsystemPreset {
-    /// Enable every registered subsystem.
+    /// Enable every active built-in subsystem.
     #[default]
     Full,
     /// Enable code navigation and documentation tools.
@@ -18,7 +69,7 @@ pub enum SubsystemPreset {
     Minimal,
 }
 
-/// Configurable enablement for the five independent ACDD MCP subsystems.
+/// Configurable enablement for the ACDD MCP subsystems and external domains.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct SubsystemRegistry {
@@ -30,6 +81,8 @@ pub struct SubsystemRegistry {
     pub disabled: BTreeSet<String>,
     /// Subsystems required by the active profile.
     pub required: BTreeSet<String>,
+    /// Enablement toggles for external `DomainProvider` plugins (`domains.<name>`).
+    pub domains: BTreeMap<String, bool>,
 }
 
 impl Default for SubsystemRegistry {
@@ -39,8 +92,22 @@ impl Default for SubsystemRegistry {
             enabled: BTreeSet::new(),
             disabled: BTreeSet::new(),
             required: BTreeSet::new(),
+            domains: BTreeMap::new(),
         }
     }
+}
+
+fn canonical_and_alias(name: &str) -> (&str, Option<&str>) {
+    match name {
+        "code" | "codemap" => ("code", Some("codemap")),
+        "state" | "acdd" => ("state", Some("acdd")),
+        other => (other, None),
+    }
+}
+
+fn set_contains_subsystem(set: &BTreeSet<String>, name: &str) -> bool {
+    let (canonical, alias) = canonical_and_alias(name);
+    set.contains(canonical) || alias.is_some_and(|a| set.contains(a))
 }
 
 impl SubsystemRegistry {
@@ -54,8 +121,10 @@ impl SubsystemRegistry {
         {
             anyhow::ensure!(is_known_subsystem(name), "unknown ACDD subsystem '{name}'");
         }
-        if let Some(name) = self.enabled.intersection(&self.disabled).next() {
-            anyhow::bail!("ACDD subsystem '{name}' cannot be both enabled and disabled");
+        for name in &self.enabled {
+            if set_contains_subsystem(&self.disabled, name) {
+                anyhow::bail!("ACDD subsystem '{name}' cannot be both enabled and disabled");
+            }
         }
         if let Some(name) = self.required.iter().find(|name| !self.is_enabled(name)) {
             anyhow::bail!(
@@ -65,34 +134,65 @@ impl SubsystemRegistry {
         Ok(())
     }
 
-    /// Return whether a subsystem is enabled by the preset and overrides.
-    pub fn is_enabled(&self, name: &str) -> bool {
-        if self.disabled.contains(name) {
+    fn is_raw_enabled(&self, name: &str) -> bool {
+        if set_contains_subsystem(&self.disabled, name) {
             return false;
         }
-        if self.enabled.contains(name) {
+        if set_contains_subsystem(&self.enabled, name) {
             return true;
+        }
+        let (canonical, _) = canonical_and_alias(name);
+        if canonical == "memory" {
+            // Reserved slot for AC-006; inactive unless explicitly enabled.
+            return false;
         }
         match self.profile {
             SubsystemPreset::Full => is_known_subsystem(name),
-            SubsystemPreset::Navigator => matches!(name, "codemap" | "docs"),
+            SubsystemPreset::Navigator => matches!(canonical, "code" | "docs"),
             SubsystemPreset::Orchestrator => {
-                matches!(name, "acdd" | "blackboard" | "checkpoints")
+                matches!(canonical, "state" | "blackboard" | "checkpoints")
             }
             SubsystemPreset::Minimal => false,
+        }
+    }
+
+    /// Return whether a subsystem (or `domain:<name>`) is enabled by the preset and overrides.
+    pub fn is_enabled(&self, name: &str) -> bool {
+        if let Some(domain) = name.strip_prefix("domain:") {
+            return self.is_domain_enabled(domain);
+        }
+        let (canonical, _) = canonical_and_alias(name);
+        if canonical == "blackboard" && !self.is_raw_enabled("state") {
+            // Invariant: blackboard physically disables whenever state is disabled.
+            return false;
+        }
+        self.is_raw_enabled(canonical)
+    }
+
+    /// Return whether an external `DomainProvider` plugin is enabled.
+    pub fn is_domain_enabled(&self, domain: &str) -> bool {
+        self.domains.get(domain).copied().unwrap_or(false)
+    }
+
+    /// Return whether a typed `SubsystemId` is enabled.
+    pub fn is_subsystem_enabled(&self, id: &SubsystemId) -> bool {
+        match id {
+            SubsystemId::Domain(name) => self.is_domain_enabled(name),
+            other => self.is_enabled(other.as_str()),
         }
     }
 
     /// Return the subsystem assigned to an MCP tool, if it is registered here.
     pub fn subsystem_for_tool(tool: &str) -> Option<&'static str> {
         match tool {
-            "acdd_read" => None,
-            "task_blackboard" => Some("blackboard"),
+            "acdd_read" | "acdd_guide" => None,
+            "task_blackboard" | "acdd_blackboard" => Some("blackboard"),
             "session_checkpoint" => Some("checkpoints"),
             "get_doc" | "search_docs" => Some("docs"),
             "task_list" | "task_claim" | "task_submit" | "task_manage" | "milestone_init"
-            | "milestone_verify" | "milestone_handoff" => Some("acdd"),
-            name if name.starts_with("code_map_") || name == "ast_grep_search" => Some("codemap"),
+            | "milestone_verify" | "milestone_handoff" | "acdd_state" | "acdd_claim"
+            | "acdd_verify" | "acdd_submit" => Some("state"),
+            name if name.starts_with("code_map_") || name == "ast_grep_search" => Some("code"),
             _ => None,
         }
     }
@@ -129,9 +229,9 @@ pub fn disabled_read_mode_error(
 ) -> Option<String> {
     use crate::model::ReadMode;
     let subsystem = match mode {
-        ReadMode::Snippet => "codemap",
+        ReadMode::Snippet => "code",
         ReadMode::Outline if markdown => "docs",
-        ReadMode::Outline => "codemap",
+        ReadMode::Outline => "code",
         _ => return None,
     };
     (!registry.is_enabled(subsystem)).then(|| {
@@ -144,6 +244,45 @@ pub fn disabled_read_mode_error(
 fn is_known_subsystem(name: &str) -> bool {
     matches!(
         name,
-        "codemap" | "acdd" | "blackboard" | "docs" | "checkpoints"
+        "code" | "codemap" | "state" | "acdd" | "blackboard" | "docs" | "checkpoints" | "memory"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subsystem_registry_aliases_memory_domains_and_blackboard_coupling() {
+        let mut reg = SubsystemRegistry::default();
+        assert!(reg.is_enabled("code"));
+        assert!(reg.is_enabled("codemap"));
+        assert!(reg.is_enabled("state"));
+        assert!(reg.is_enabled("acdd"));
+        assert!(reg.is_enabled("blackboard"));
+        assert!(!reg.is_enabled("memory"));
+        assert!(!reg.is_domain_enabled("http"));
+
+        reg.disabled.insert("state".into());
+        assert!(!reg.is_enabled("state"));
+        assert!(!reg.is_enabled("acdd"));
+        assert!(!reg.is_enabled("blackboard"));
+        assert!(disabled_tool_error("acdd_blackboard", &reg).is_some());
+        assert!(disabled_tool_error("acdd_state", &reg).is_some());
+
+        reg.enabled.insert("blackboard".into());
+        assert!(
+            !reg.is_enabled("blackboard"),
+            "blackboard stays disabled while state is disabled"
+        );
+
+        reg.disabled.clear();
+        reg.enabled.insert("memory".into());
+        reg.domains.insert("http".into(), true);
+        reg.domains.insert("sql".into(), false);
+        assert!(reg.is_enabled("memory"));
+        assert!(reg.is_domain_enabled("http"));
+        assert!(!reg.is_domain_enabled("sql"));
+        assert!(reg.is_subsystem_enabled(&SubsystemId::Domain("http".into())));
+    }
 }

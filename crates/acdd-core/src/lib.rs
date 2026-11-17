@@ -1,30 +1,28 @@
-//! Pure Rust ContextUnity ACDD domain models, interner, commitments, and configuration.
+//! Pure Rust ContextUnity ACDD core contracts, IDs, errors, path policies, configuration, and filesystem confinement.
 
-pub mod commitments;
 pub mod config;
+pub mod errors;
+pub mod failpoint;
 pub mod format;
 pub mod fs;
 pub mod git;
-pub mod interner;
+pub mod ids;
+pub mod lock;
 pub mod model;
-pub mod models;
+pub mod path_policy;
+pub mod ports;
 pub mod response;
-pub mod semantic;
+pub mod schema;
 pub mod subsystems;
 pub mod sys;
-pub mod typed_facts;
+pub mod telemetry;
 
-pub use commitments::{DomainCommitment, MerkleCommitment};
 pub use config::{Detail, ResponsePolicy, ScannerLimits, SourceContextPolicy};
 pub use format::stable_hash64;
 pub use fs::{
     contains_shell_metacharacters, is_doc_path, is_normalized_relative, is_safe_project_path,
     is_valid_qualified_symbol_identifier, is_valid_symbol_identifier, safe_relative,
 };
-pub use interner::{LinkerInterner, PathId, SymbolId};
-pub use models::NodeSemanticMeta;
-pub use models::{is_test, Coverage, Edge, Facts, FileEntry, Graph, Node, Reference};
-pub use typed_facts::{NodeSemanticEntry, SemanticStore};
 
 /// Returns the acdd-core crate version.
 pub fn version() -> &'static str {

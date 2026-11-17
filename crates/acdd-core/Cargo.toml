@@ -1,23 +1,20 @@
 [package]
 name = "acdd-core"
-version = "0.5.3"
+version = "0.6.0"
 edition = "2021"
 authors = ["Oleksii Pylypchuk <oleksii.pylypchuk@tuta.com>"]
-description = "Pure Rust ContextUnity ACDD domain models, interner, commitments, and config"
+description = "Pure Rust ContextUnity ACDD core contracts, IDs, errors, path policies, configuration, and filesystem confinement"
 license = "MIT"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1.0", features = ["preserve_order", "float_roundtrip"] }
+serde_yaml = "0.9"
 sha2 = "0.10"
 hex = "0.4"
 anyhow = "1.0"
-hashbrown = { version = "0.14", features = ["rayon", "serde"] }
-indexmap = { version = "2", features = ["serde"] }
-dirs = "5.0"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-toml = "0.8"
-serde_yaml = "0.9"
-rayon = "1.10"
-zstd = "0.13"
 schemars = "1.0"
+libc = "0.2"
+
+[features]
+failpoints = []

@@ -183,33 +183,61 @@ pub fn is_system_root_symlink(path: &Path) -> bool {
     }
 }
 
+/// Opens `relative` confined within `root` without traversing any symlink component,
+/// enforcing `O_NOFOLLOW` on Unix (`ADR-0002`).
+pub fn open_confined(
+    root: &Path,
+    relative: &Path,
+    options: &mut OpenOptions,
+) -> std::io::Result<fs::File> {
+    let target = checked_child(root, relative)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(target)
+}
+
 /// Validates that `path` and its existing ancestor directories do not traverse a
 /// non-system-root symlink, returning `path` with its parent canonicalized so
 /// `SQLITE_OPEN_NOFOLLOW` can enforce `O_NOFOLLOW` on the final file even under
 /// macOS `/var` -> `/private/var` or `/tmp` -> `/private/tmp` paths.
 pub fn confined_database_open_path(path: &Path) -> Result<PathBuf> {
+    confined_sqlite_open_path(path, false)
+}
+
+/// Variant of `confined_database_open_path` for opening or creating a SQLite database
+/// (`SQLITE_OPEN_CREATE | SQLITE_OPEN_NOFOLLOW`) when the target file may not exist yet.
+pub fn confined_database_create_path(path: &Path) -> Result<PathBuf> {
+    confined_sqlite_open_path(path, true)
+}
+
+/// Prepares a symlink-confined path for `SQLITE_OPEN_NOFOLLOW`, rejecting symlink
+/// targets and symlinked ancestor directories (`ADR-0002`).
+pub fn confined_sqlite_open_path(path: &Path, allow_missing: bool) -> Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_owned()
     } else {
         std::env::current_dir()?.join(path)
     };
-    if fs::symlink_metadata(&absolute)?.file_type().is_symlink() {
-        bail!("database must not be a symlink");
+    match fs::symlink_metadata(&absolute) {
+        Ok(meta) if meta.file_type().is_symlink() => bail!("database must not be a symlink"),
+        Ok(_) => {}
+        Err(err) if allow_missing && err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
     }
     let parent = absolute.parent().context("database path needs a parent")?;
-    let mut ancestor = PathBuf::new();
-    for part in parent.components() {
-        ancestor.push(part);
-        if !is_system_root_symlink(&ancestor)
-            && fs::symlink_metadata(&ancestor).is_ok_and(|m| m.file_type().is_symlink())
-        {
-            bail!("database parent must not traverse a symlink");
-        }
-    }
+    check_ancestors_no_symlinks_abs(&absolute)?;
     let file_name = absolute
         .file_name()
         .context("database path needs a file name")?;
-    Ok(parent.canonicalize()?.join(file_name))
+    let resolved_parent = if parent.exists() {
+        parent.canonicalize()?
+    } else {
+        resolve_path_with_existing_prefix(parent)
+    };
+    Ok(resolved_parent.join(file_name))
 }
 
 /// Performs atomic write.
@@ -220,21 +248,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
         std::env::current_dir()?.join(path)
     };
     let parent = absolute.parent().context("missing parent")?;
-    let mut current = PathBuf::new();
-    for c in parent.components() {
-        current.push(c);
-        match fs::symlink_metadata(&current) {
-            Ok(m) if m.file_type().is_symlink() && !is_system_root_symlink(&current) => bail!(
-                "output parent must not traverse symlink: {}",
-                current.display()
-            ),
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                fs::create_dir(&current)?;
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
+    ensure_confined_dir_all_abs(parent)?;
     if fs::symlink_metadata(&absolute).is_ok_and(|m| m.file_type().is_symlink()) {
         bail!("output must not be a symlink");
     }
@@ -316,6 +330,145 @@ pub fn resolve_path_with_existing_prefix(path: &Path) -> PathBuf {
     };
     let normalized = normalize_path(&absolute);
     canonicalize_with_missing_tail(&normalized).unwrap_or(normalized)
+}
+
+/// Normalize macOS `/var` -> `/private/var` (and `/tmp` -> `/private/tmp`, `/etc` -> `/private/etc`) alias prefixes.
+pub fn canonicalize_macos_var(path: &Path) -> PathBuf {
+    let resolved = resolve_path_with_existing_prefix(path);
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(raw) = resolved.to_str() {
+            for prefix in ["/var", "/tmp", "/etc"] {
+                if raw == prefix {
+                    return PathBuf::from(format!("/private{prefix}"));
+                }
+                if let Some(rest) = raw.strip_prefix(&format!("{prefix}/")) {
+                    return PathBuf::from(format!("/private{prefix}/{rest}"));
+                }
+            }
+        }
+    }
+    resolved
+}
+
+fn resolve_confined_path(root: &Path, target: &Path) -> std::io::Result<PathBuf> {
+    if target.as_os_str().is_empty() {
+        return Err(path_error("path must not be empty"));
+    }
+    if target
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(path_error("path must not contain parent traversal"));
+    }
+    let abs_root = if root.is_absolute() {
+        normalize_path(root)
+    } else {
+        normalize_path(&std::env::current_dir()?.join(root))
+    };
+    if target.is_relative() {
+        return Ok(normalize_path(&abs_root.join(target)));
+    }
+    let norm_target = normalize_path(target);
+    if norm_target.starts_with(&abs_root)
+        || canonicalize_macos_var(&norm_target).starts_with(canonicalize_macos_var(&abs_root))
+    {
+        Ok(norm_target)
+    } else {
+        Err(path_error(format!(
+            "path '{}' escapes confined root '{}'",
+            target.display(),
+            root.display()
+        )))
+    }
+}
+
+pub(crate) fn check_ancestors_no_symlinks_abs(abs_target: &Path) -> std::io::Result<()> {
+    let parent = abs_target
+        .parent()
+        .ok_or_else(|| path_error("path requires a parent directory"))?;
+    let mut ancestor = PathBuf::new();
+    for part in parent.components() {
+        ancestor.push(part);
+        match fs::symlink_metadata(&ancestor) {
+            Ok(meta) if meta.file_type().is_symlink() && !is_system_root_symlink(&ancestor) => {
+                return Err(path_error(format!(
+                    "path parent must not traverse a symlink: {}",
+                    ancestor.display()
+                )));
+            }
+            Ok(meta) if !meta.is_dir() && !is_system_root_symlink(&ancestor) => {
+                return Err(path_error(format!(
+                    "expected directory at '{}'",
+                    ancestor.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_confined_dir_all_abs(abs_dir: &Path) -> std::io::Result<()> {
+    let mut current = PathBuf::new();
+    for component in abs_dir.components() {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() && !is_system_root_symlink(&current) => {
+                return Err(path_error(format!(
+                    "directory must not traverse a symlink: {}",
+                    current.display()
+                )));
+            }
+            Ok(meta) if !meta.is_dir() && !is_system_root_symlink(&current) => {
+                return Err(path_error(format!(
+                    "expected directory at '{}'",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                if let Err(create_err) = fs::create_dir(&current) {
+                    if create_err.kind() == std::io::ErrorKind::AlreadyExists {
+                        let meta = fs::symlink_metadata(&current)?;
+                        if meta.file_type().is_symlink() && !is_system_root_symlink(&current) {
+                            return Err(path_error(format!(
+                                "directory must not traverse a symlink: {}",
+                                current.display()
+                            )));
+                        }
+                        if !meta.is_dir() {
+                            return Err(path_error(format!(
+                                "expected directory at '{}'",
+                                current.display()
+                            )));
+                        }
+                    } else {
+                        return Err(create_err);
+                    }
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+/// Verifies that `target` is confined within `root` and that none of its existing ancestor
+/// directories traverse a non-system-root symlink (`ADR-0002`).
+pub fn check_ancestors_no_symlinks(root: &Path, target: &Path) -> std::io::Result<()> {
+    let abs_target = resolve_confined_path(root, target)?;
+    check_ancestors_no_symlinks_abs(&abs_target)
+}
+
+/// Creates `dir` (and missing parent directories) confined within `root`, rejecting any
+/// non-system-root symlink or non-directory ancestor (`ADR-0002`).
+pub fn ensure_confined_dir_all(root: &Path, dir: &Path) -> std::io::Result<PathBuf> {
+    let abs_dir = resolve_confined_path(root, dir)?;
+    ensure_confined_dir_all_abs(&abs_dir)?;
+    Ok(abs_dir)
 }
 
 /// Canonicalize the deepest resolvable ancestor and retain the unresolved tail.
@@ -574,6 +727,33 @@ mod tests {
         let symlink_dir = base.join("link_dir");
         symlink(&real_dir, &symlink_dir).unwrap();
         assert!(confined_database_open_path(&symlink_dir.join("code-map.sqlite")).is_err());
+
+        check_ancestors_no_symlinks(&base, Path::new("real/missing/state.sqlite")).unwrap();
+        assert_eq!(
+            check_ancestors_no_symlinks(&base, Path::new("link_dir/state.sqlite"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            check_ancestors_no_symlinks(&base, Path::new("../outside.sqlite"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        let created_dir = ensure_confined_dir_all(&base, Path::new("real/nested/logs")).unwrap();
+        assert_eq!(created_dir, real_dir.join("nested/logs"));
+        assert!(created_dir.is_dir());
+        assert_eq!(
+            ensure_confined_dir_all(&base, Path::new("link_dir/escape"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            canonicalize_macos_var(&real_dir.join("missing.txt")),
+            real_dir.join("missing.txt")
+        );
 
         let _ = fs::remove_dir_all(&base);
     }

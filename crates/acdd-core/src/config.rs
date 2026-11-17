@@ -7,7 +7,6 @@ pub use crate::sys::memory_budget_bytes;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,6 +23,108 @@ pub const MAX_FILE_BYTES: u64 = DEFAULT_MAX_FILE_BYTES;
 pub const MAX_METADATA_BYTES: usize = 2048;
 /// Default maximum size in bytes for metadata and notes.
 pub const DEFAULT_MAX_METADATA_BYTES: usize = MAX_METADATA_BYTES;
+/// Default state database path relative to primary worktree root.
+pub const DEFAULT_STATE_DB: &str = ".acdd/state.sqlite";
+/// Default number of retained run trace logs.
+pub const DEFAULT_RETAIN_TRACES: usize = 20;
+/// Default specification ID numeric width.
+pub const DEFAULT_SPEC_DIGITS: usize = 3;
+
+fn default_spec_digits() -> usize {
+    DEFAULT_SPEC_DIGITS
+}
+
+fn default_profiles_dirs() -> Vec<String> {
+    vec![".acdd/profiles".into(), "docs/workflows".into()]
+}
+
+/// Configuration for a spec collection under `specs:` in `acdd.yaml`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SpecCollectionConfig {
+    /// Workspace-relative directory path containing spec documents.
+    pub path: String,
+    /// Optional default gate profile for specs in this collection.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Allowed spec ID prefixes (e.g. `["AC"]`, `["PLAN"]`).
+    #[serde(default)]
+    pub prefixes: Vec<String>,
+    /// Zero-padded numeric suffix width for drafted spec IDs.
+    #[serde(default = "default_spec_digits")]
+    pub digits: usize,
+}
+
+/// Returns the default `specs:` collections (`milestones` and `plans`).
+pub fn default_specs() -> BTreeMap<String, SpecCollectionConfig> {
+    BTreeMap::from([
+        (
+            "milestones".to_owned(),
+            SpecCollectionConfig {
+                path: "docs/milestones".to_owned(),
+                profile: Some("workspace".to_owned()),
+                prefixes: vec!["AC".to_owned()],
+                digits: DEFAULT_SPEC_DIGITS,
+            },
+        ),
+        (
+            "plans".to_owned(),
+            SpecCollectionConfig {
+                path: "docs/plans".to_owned(),
+                profile: Some("in_place".to_owned()),
+                prefixes: vec!["PLAN".to_owned()],
+                digits: DEFAULT_SPEC_DIGITS,
+            },
+        ),
+    ])
+}
+
+fn normalize_spec_collection_path(raw: &str) -> std::io::Result<String> {
+    let normalized = raw
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_end_matches('/')
+        .to_owned();
+    if normalized.is_empty() || !crate::fs::is_normalized_relative(Path::new(&normalized)) {
+        return Err(error(format!(
+            "spec collection path '{raw}' must be a normalized workspace-relative path"
+        )));
+    }
+    Ok(normalized)
+}
+
+fn validate_and_normalize_specs(
+    specs: &mut BTreeMap<String, SpecCollectionConfig>,
+) -> std::io::Result<()> {
+    let mut normalized_entries: Vec<(String, Vec<String>)> = Vec::with_capacity(specs.len());
+    for (name, cfg) in specs.iter_mut() {
+        if name.trim().is_empty() {
+            return Err(error("spec collection name must not be empty"));
+        }
+        if !(1..=16).contains(&cfg.digits) {
+            return Err(error(format!(
+                "specs.{name}.digits must be in 1..=16, got {}",
+                cfg.digits
+            )));
+        }
+        cfg.path = normalize_spec_collection_path(&cfg.path)?;
+        let parts: Vec<String> = cfg.path.split('/').map(str::to_owned).collect();
+        normalized_entries.push((name.clone(), parts));
+    }
+    for (i, (left_name, left_parts)) in normalized_entries.iter().enumerate() {
+        for (right_name, right_parts) in normalized_entries.iter().skip(i + 1) {
+            if left_parts.starts_with(right_parts) || right_parts.starts_with(left_parts) {
+                return Err(error(format!(
+                    "specs.{left_name}.path '{}' overlaps specs.{right_name}.path '{}' by path components",
+                    left_parts.join("/"),
+                    right_parts.join("/")
+                )));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Standard directory and file names ignored during scanning.
 pub const DEFAULT_IGNORED_NAMES: &[&str] = &[
@@ -202,10 +303,22 @@ pub struct AdapterFile {
     #[serde(default, alias = "doc_roots")]
     /// Optional documentation roots.
     pub docs: Option<Vec<String>>,
-    /// Optional milestones directories.
+    /// Optional milestones directories (legacy compatibility until Phase 3).
     pub milestones: Option<Vec<String>>,
-    /// Optional plans directories.
+    /// Optional plans directories (legacy compatibility until Phase 3).
     pub plans: Option<Vec<String>>,
+    /// Configured spec collections (`specs:`).
+    #[serde(default)]
+    pub specs: Option<BTreeMap<String, SpecCollectionConfig>>,
+    /// Directories searched for custom gate profiles.
+    #[serde(default)]
+    pub profiles_dirs: Option<Vec<String>>,
+    /// State SQLite database path relative to primary worktree root.
+    #[serde(default)]
+    pub state_db: Option<String>,
+    /// Number of retained trace files under `.acdd/run/`.
+    #[serde(default)]
+    pub retain_traces: Option<usize>,
     /// Optional excluded directory names.
     pub excluded_directory_names: Option<Vec<String>>,
     /// Optional excluded file names.
@@ -225,9 +338,16 @@ pub struct AdapterFile {
 
 #[derive(Deserialize)]
 #[serde(untagged)]
+enum SubsystemToggleValue {
+    Bool(bool),
+    Domains(BTreeMap<String, bool>),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
 enum SubsystemRegistryFile {
     Registry(SubsystemRegistry),
-    Toggles(BTreeMap<String, bool>),
+    Toggles(BTreeMap<String, SubsystemToggleValue>),
 }
 
 fn deserialize_subsystem_registry<'de, D>(
@@ -240,11 +360,23 @@ where
         SubsystemRegistryFile::Registry(registry) => Ok(registry),
         SubsystemRegistryFile::Toggles(toggles) => {
             let mut registry = SubsystemRegistry::default();
-            for (name, enabled) in toggles {
-                if enabled {
-                    registry.enabled.insert(name);
-                } else {
-                    registry.disabled.insert(name);
+            for (name, value) in toggles {
+                match (name.as_str(), value) {
+                    ("domains", SubsystemToggleValue::Domains(domains)) => {
+                        registry.domains = domains;
+                    }
+                    (_, SubsystemToggleValue::Bool(enabled)) => {
+                        if enabled {
+                            registry.enabled.insert(name);
+                        } else {
+                            registry.disabled.insert(name);
+                        }
+                    }
+                    (_, SubsystemToggleValue::Domains(_)) => {
+                        return Err(serde::de::Error::custom(format!(
+                            "modules.{name} must be a boolean toggle"
+                        )));
+                    }
                 }
             }
             Ok(registry)
@@ -317,8 +449,33 @@ pub struct Adapter {
     pub milestones: Vec<String>,
     /// Plan directories for task discovery; Markdown documents remain indexed.
     pub plans: Vec<String>,
+    /// Configured spec collections (`specs:`).
+    pub specs: BTreeMap<String, SpecCollectionConfig>,
+    /// Directories searched for custom gate profiles.
+    pub profiles_dirs: Vec<String>,
+    /// State SQLite database path.
+    pub state_db: String,
+    /// Number of retained run trace files.
+    pub retain_traces: usize,
     /// Whether debug applies.
     pub debug: bool,
+}
+
+impl Adapter {
+    /// Returns all configured spec collection directory paths (`specs.*.path`).
+    pub fn spec_paths(&self) -> Vec<String> {
+        self.specs.values().map(|s| s.path.clone()).collect()
+    }
+
+    /// Resolves the configured `state_db` path against the primary worktree root.
+    pub fn resolve_state_db_path(&self, base_root: &Path) -> PathBuf {
+        let p = Path::new(&self.state_db);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            base_root.join(p)
+        }
+    }
 }
 
 impl Default for Adapter {
@@ -338,6 +495,10 @@ impl Default for Adapter {
             aliases: BTreeMap::new(),
             milestones: vec!["docs/milestones".into()],
             plans: vec!["docs/plans".into()],
+            specs: default_specs(),
+            profiles_dirs: default_profiles_dirs(),
+            state_db: DEFAULT_STATE_DB.into(),
+            retain_traces: DEFAULT_RETAIN_TRACES,
             debug: false,
         }
     }
@@ -350,8 +511,8 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
     let default_path = default_path.exists().then_some(default_path);
     let selected = adapter_path.or(default_path.as_deref());
     let mut explicit_adapter_path = None;
-    let (raw, digest, adapter_version) = match selected {
-        None => (AdapterFile::default(), String::new(), None),
+    let (raw, mut identity, adapter_version) = match selected {
+        None => (AdapterFile::default(), None, None),
         Some(path) => {
             let metadata = fs::symlink_metadata(path)?;
             if metadata.file_type().is_symlink() {
@@ -368,22 +529,20 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
             let mut identity: serde_yaml::Value =
                 serde_yaml::from_str(&content).map_err(|e| error(e.to_string()))?;
             if let Some(mapping) = identity.as_mapping_mut() {
-                mapping.remove(serde_yaml::Value::String("response".into()));
-                mapping.remove(serde_yaml::Value::String("DEBUG".into()));
-                mapping.remove(serde_yaml::Value::String("debug".into()));
-                mapping.remove(serde_yaml::Value::String("modules".into()));
-                mapping.remove(serde_yaml::Value::String("profile".into()));
+                for excluded in [
+                    "response",
+                    "DEBUG",
+                    "debug",
+                    "modules",
+                    "profile",
+                    "state_db",
+                    "retain_traces",
+                    "profiles_dirs",
+                    "specs",
+                ] {
+                    mapping.remove(serde_yaml::Value::String(excluded.into()));
+                }
             }
-            let hash = if identity
-                .as_mapping()
-                .is_some_and(|mapping| mapping.is_empty())
-            {
-                String::new()
-            } else {
-                let identity =
-                    serde_yaml::to_string(&identity).map_err(|e| error(e.to_string()))?;
-                format!("{:x}", Sha256::digest(identity.as_bytes()))
-            };
             let parsed: AdapterFile =
                 serde_yaml::from_str(&content).map_err(|e| error(e.to_string()))?;
             let version_str = parsed.adapter_version.as_ref().map(|v| match v {
@@ -391,7 +550,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
             });
-            (parsed, hash, version_str)
+            (parsed, Some(identity), version_str)
         }
     };
     raw.response.validate().map_err(|e| error(e.to_string()))?;
@@ -403,6 +562,67 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
         modules.profile = profile;
     }
     modules.validate().map_err(|e| error(e.to_string()))?;
+    let mut specs = raw.specs.clone().unwrap_or_else(default_specs);
+    validate_and_normalize_specs(&mut specs)?;
+    let profiles_dirs = raw
+        .profiles_dirs
+        .clone()
+        .unwrap_or_else(default_profiles_dirs);
+    for dir in &profiles_dirs {
+        let trimmed = dir.trim();
+        if trimmed.is_empty() || !safe_relative(Path::new(trimmed)) {
+            return Err(error(format!(
+                "profiles_dirs entry '{dir}' must be a relative plain path"
+            )));
+        }
+    }
+    let state_db = raw
+        .state_db
+        .clone()
+        .unwrap_or_else(|| DEFAULT_STATE_DB.to_owned());
+    if state_db.trim().is_empty() {
+        return Err(error("state_db must not be empty"));
+    }
+    let retain_traces = raw.retain_traces.unwrap_or(DEFAULT_RETAIN_TRACES);
+    if retain_traces == 0 {
+        return Err(error("retain_traces must be at least 1"));
+    }
+
+    let code_enabled = modules.is_enabled("code");
+    let docs_enabled = modules.is_enabled("docs");
+    let specs_paths: BTreeMap<&str, &str> = specs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.path.as_str()))
+        .collect();
+    let default_specs_map = default_specs();
+    let default_specs_paths: BTreeMap<&str, &str> = default_specs_map
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.path.as_str()))
+        .collect();
+    let identity_is_empty = identity
+        .as_mut()
+        .is_none_or(|val| val.as_mapping().is_some_and(|m| m.is_empty()));
+    let digest = if identity_is_empty
+        && code_enabled
+        && docs_enabled
+        && specs_paths == default_specs_paths
+    {
+        String::new()
+    } else {
+        let identity_json = match identity {
+            Some(ref val) if !val.as_mapping().is_some_and(|m| m.is_empty()) => {
+                serde_json::to_value(val).map_err(|e| error(e.to_string()))?
+            }
+            _ => Value::Null,
+        };
+        let payload = json!({
+            "identity": identity_json,
+            "modules_code": code_enabled,
+            "modules_docs": docs_enabled,
+            "specs_paths": specs_paths,
+        });
+        crate::format::canonical_json_sha256(&payload)
+    };
     let roots = raw
         .roots
         .or(raw.eligible_roots)
@@ -546,6 +766,10 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
             .milestones
             .unwrap_or_else(|| vec!["docs/milestones".into()]),
         plans: raw.plans.unwrap_or_else(|| vec!["docs/plans".into()]),
+        specs,
+        profiles_dirs,
+        state_db,
+        retain_traces,
         debug: raw.debug
             || std::env::var("ACDD_DEBUG")
                 .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -724,6 +948,10 @@ pub fn policy(root: &Path, adapter: &Adapter) -> Value {
         "aliases": adapter.aliases,
         "milestones": adapter.milestones,
         "plans": adapter.plans,
+        "specs": adapter.specs,
+        "profiles_dirs": adapter.profiles_dirs,
+        "state_db": adapter.state_db,
+        "retain_traces": adapter.retain_traces,
     })
 }
 
@@ -772,6 +1000,24 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
     let milestones: Vec<String> =
         serde_json::from_value(value["milestones"].clone()).unwrap_or_default();
     let plans: Vec<String> = serde_json::from_value(value["plans"].clone()).unwrap_or_default();
+    let specs: BTreeMap<String, SpecCollectionConfig> = value
+        .get("specs")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_else(default_specs);
+    let profiles_dirs: Vec<String> = value
+        .get("profiles_dirs")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_else(default_profiles_dirs);
+    let state_db: String = value
+        .get("state_db")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| DEFAULT_STATE_DB.to_owned());
+    let retain_traces: usize = value
+        .get("retain_traces")
+        .and_then(Value::as_u64)
+        .and_then(|v| usize::try_from(v).ok())
+        .unwrap_or(DEFAULT_RETAIN_TRACES);
     Ok(Adapter {
         adapter_path,
         response: ResponsePolicy::default(),
@@ -787,6 +1033,10 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
         aliases,
         milestones,
         plans,
+        specs,
+        profiles_dirs,
+        state_db,
+        retain_traces,
         debug: false,
     })
 }
@@ -799,12 +1049,6 @@ pub fn read_policy_from_str(root: &Path, raw: &str) -> Result<Adapter> {
 
 /// Current engine schema version stored in database metadata.
 pub const ENGINE_SCHEMA_VERSION: &str = "15";
-
-/// Current index semantics version stored in database metadata.
-pub const INDEX_SEMANTICS_VERSION: &str = match option_env!("ACDD_LANGUAGE_PROFILE_DIGEST") {
-    Some(digest) => digest,
-    None => "13:signature-search-v1:default",
-};
 
 /// Separates a leading workspace bracket from a relative path, e.g. "[workspace]/foo/bar" -> ("[workspace]", "foo/bar").
 pub fn workspace_path(path: &str) -> (&str, &str) {
@@ -862,21 +1106,8 @@ mod tests {
         std::fs::write(&file_path, "pub fn test() {}").unwrap();
 
         let adapter = Adapter {
-            adapter_path: None,
-            response: ResponsePolicy::default(),
-            modules: SubsystemRegistry::default(),
-            sensitive: Vec::new(),
-            limits: ScannerLimits::default(),
             roots: vec![temp_dir.clone()],
-            ignored_names: BTreeSet::new(),
-            adapter_version: None,
-            digest: String::new(),
-            linked_workspaces: Vec::new(),
-            owners: BTreeMap::new(),
-            aliases: BTreeMap::new(),
-            milestones: Vec::new(),
-            plans: Vec::new(),
-            debug: false,
+            ..Default::default()
         };
 
         // 1. Plain relative
@@ -946,5 +1177,122 @@ mod tests {
         .unwrap();
         assert!(check_root_scope(&temp_project, false).is_ok());
         let _ = std::fs::remove_dir_all(&temp_project);
+    }
+
+    #[test]
+    fn specs_collections_and_adapter_digest_isolation_matrix() {
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("acdd_specs_digest_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _cleanup = TempDirDrop(dir.clone());
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let defaults = load_adapter(&dir, None).unwrap();
+        assert_eq!(defaults.specs["milestones"].path, "docs/milestones");
+        assert_eq!(defaults.specs["plans"].path, "docs/plans");
+        assert_eq!(defaults.profiles_dirs, [".acdd/profiles", "docs/workflows"]);
+        assert_eq!(defaults.state_db, ".acdd/state.sqlite");
+        assert_eq!(defaults.retain_traces, 20);
+        assert_eq!(defaults.digest, "");
+
+        let base_yaml = "\
+roots: [.]
+specs:
+  milestones:
+    path: docs/milestones
+    profile: workspace
+    prefixes: [AC]
+    digits: 3
+  plans:
+    path: docs/plans
+    profile: in_place
+    prefixes: [PLAN]
+    digits: 3
+modules:
+  code: true
+  docs: true
+  state: true
+";
+        std::fs::write(dir.join("acdd.yaml"), base_yaml).unwrap();
+        let base = load_adapter(&dir, None).unwrap();
+        assert!(!base.digest.is_empty());
+
+        // Non-index fields must NOT change adapter.digest.
+        let invariant_yaml = "\
+roots: [.]
+state_db: .acdd/custom-state.sqlite
+retain_traces: 99
+profiles_dirs: [custom/profiles]
+response: { page_size: 10 }
+debug: true
+specs:
+  milestones:
+    path: docs/milestones
+    profile: custom_profile
+    prefixes: [MS]
+    digits: 5
+  plans:
+    path: docs/plans
+    profile: another_profile
+    prefixes: [PL]
+    digits: 4
+modules:
+  code: true
+  docs: true
+  state: false
+  blackboard: false
+  domains:
+    http: true
+";
+        std::fs::write(dir.join("acdd.yaml"), invariant_yaml).unwrap();
+        let invariant = load_adapter(&dir, None).unwrap();
+        assert_eq!(invariant.digest, base.digest);
+        assert!(!invariant.modules.is_enabled("state"));
+        assert!(!invariant.modules.is_enabled("blackboard"));
+        assert!(invariant.modules.is_domain_enabled("http"));
+
+        // Reordered keys must produce the exact same deterministic canonical digest.
+        let reordered_yaml = "\
+modules:
+  docs: true
+  code: true
+specs:
+  plans:
+    path: docs/plans
+  milestones:
+    path: docs/milestones
+roots: [.]
+";
+        std::fs::write(dir.join("acdd.yaml"), reordered_yaml).unwrap();
+        let reordered = load_adapter(&dir, None).unwrap();
+        assert_eq!(reordered.digest, base.digest);
+
+        // Index-affecting toggles MUST change adapter.digest.
+        for changed_yaml in [
+            "roots: [.]\nmodules:\n  code: false\n  docs: true\n",
+            "roots: [.]\nmodules:\n  code: true\n  docs: false\n",
+            "roots: [.]\nspecs:\n  milestones:\n    path: docs/contracts\n  plans:\n    path: docs/plans\n",
+        ] {
+            std::fs::write(dir.join("acdd.yaml"), changed_yaml).unwrap();
+            let changed = load_adapter(&dir, None).unwrap();
+            assert_ne!(changed.digest, base.digest, "{changed_yaml}");
+        }
+
+        // Overlapping specs paths by components must fail; sibling prefix names pass.
+        std::fs::write(
+            dir.join("acdd.yaml"),
+            "specs:\n  a:\n    path: docs/specs\n  b:\n    path: docs/specs/sub\n",
+        )
+        .unwrap();
+        assert!(load_adapter(&dir, None).is_err());
+
+        std::fs::write(
+            dir.join("acdd.yaml"),
+            "specs:\n  a:\n    path: docs/specs\n  b:\n    path: docs/specs_v2\n",
+        )
+        .unwrap();
+        assert!(load_adapter(&dir, None).is_ok());
     }
 }

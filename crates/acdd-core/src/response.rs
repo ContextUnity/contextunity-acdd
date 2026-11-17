@@ -204,6 +204,11 @@ impl SourceOptions {
             offset,
         })
     }
+
+    /// Returns `true` when paging from `self.offset` has a valid anchor (`offset == 0` or `generation.is_some()`).
+    pub fn has_valid_paging_anchor(&self, generation: Option<&str>) -> bool {
+        self.offset == 0 || generation.is_some()
+    }
 }
 
 #[cfg(test)]
@@ -268,5 +273,11 @@ fn source_preview_line_budgets_are_clamped() {
     if SourceOptions::resolve_full_symbol(&policy, None, Some(usize::MAX), 1).is_ok() {
         failures.push("overflowing full-symbol source offset was accepted".to_owned());
     }
+    let at_zero = SourceOptions::resolve(&policy, Some(true), None, None, 0).unwrap();
+    assert!(at_zero.has_valid_paging_anchor(None));
+    assert!(at_zero.has_valid_paging_anchor(Some("gen-1")));
+    let at_nonzero = SourceOptions::resolve(&policy, Some(true), None, None, 10).unwrap();
+    assert!(!at_nonzero.has_valid_paging_anchor(None));
+    assert!(at_nonzero.has_valid_paging_anchor(Some("gen-1")));
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
