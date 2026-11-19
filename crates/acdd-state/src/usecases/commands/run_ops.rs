@@ -22,7 +22,7 @@ use crate::usecases::lifecycle::{
     apply_effective_isolation, build_tombstone_cleanup_manifest_from_snapshot, checkout_config,
     cleanup_tombstone, collect_external_satisfied_deps, effective_spec_collections,
     ensure_state_enabled, is_managed_run_branch, parse_profile_from_run, primary_workspace_root,
-    prune_old_run_trace_dirs, read_confined_utf8, resolve_active_run, resolve_source_checkout,
+    read_confined_utf8, resolve_active_run, resolve_source_checkout,
     sorted_dir_paths,
     to_machine_profile, validate_profile_fail_closed, with_repo_lock_and_maintenance,
 };
@@ -33,9 +33,7 @@ use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ports::CompositeDomainProvider;
 use serde_json::json;
-use std::collections::BTreeSet;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::{build_machine_spec_input, sanitize_slug};
 
