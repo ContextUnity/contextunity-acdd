@@ -4,15 +4,12 @@ use anyhow::{bail, ensure, Context, Result};
 use rusqlite::backup::Backup;
 use rusqlite::{types::ValueRef, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Map, Value};
-#[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::Read,
     ops::Deref,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -163,8 +160,6 @@ pub struct DocSearchOptions<'a> {
     pub page: &'a QueryOptions,
 }
 
-static INTEGRITY_SNAPSHOT_NONCE: AtomicU64 = AtomicU64::new(0);
-
 /// Validates SQLite database header magic and user version.
 pub fn validate_database_header(path: &Path) -> Result<()> {
     let mut header = [0; 16];
@@ -176,63 +171,15 @@ pub fn validate_database_header(path: &Path) -> Result<()> {
 }
 
 struct IntegritySnapshot {
-    directory: PathBuf,
+    _dir: crate::core::fs::ScopedTempDir,
     path: PathBuf,
 }
 
 impl IntegritySnapshot {
     fn create() -> Result<Self> {
-        let tid = format!("{:?}", std::thread::current().id())
-            .chars()
-            .filter(char::is_ascii_digit)
-            .collect::<String>();
-        for _ in 0..128 {
-            let nonce = INTEGRITY_SNAPSHOT_NONCE.fetch_add(1, Ordering::Relaxed);
-            let timestamp = crate::core::telemetry::unix_epoch_ms();
-            let directory = std::env::temp_dir().join(format!(
-                "contextunity-acdd-integrity-{}-{tid}-{timestamp}-{nonce}",
-                std::process::id()
-            ));
-            let mut builder = fs::DirBuilder::new();
-            #[cfg(unix)]
-            builder.mode(0o700);
-            match builder.create(&directory) {
-                Ok(()) => {
-                    let snapshot = Self {
-                        path: directory.join("snapshot.sqlite"),
-                        directory,
-                    };
-                    let mut options = OpenOptions::new();
-                    options.read(true).write(true).create_new(true);
-                    #[cfg(unix)]
-                    options.mode(0o600);
-                    match options.open(&snapshot.path) {
-                        Ok(file) => {
-                            drop(file);
-                            return Ok(snapshot);
-                        }
-                        Err(error) => {
-                            drop(snapshot);
-                            return Err(error.into());
-                        }
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error.into()),
-            }
-        }
-        bail!("could not create a unique integrity-check snapshot")
-    }
-}
-
-impl Drop for IntegritySnapshot {
-    fn drop(&mut self) {
-        for suffix in ["", "-journal", "-wal", "-shm"] {
-            let mut path = self.path.as_os_str().to_owned();
-            path.push(suffix);
-            let _ = fs::remove_file(PathBuf::from(path));
-        }
-        let _ = fs::remove_dir(&self.directory);
+        let dir = crate::core::fs::ScopedTempDir::create("contextunity-acdd-integrity")?;
+        let path = dir.write_private_file("snapshot.sqlite", &[])?;
+        Ok(Self { _dir: dir, path })
     }
 }
 

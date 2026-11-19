@@ -214,46 +214,20 @@ pub(crate) fn bounded_batch_size(
         .min(max_items.max(1) as u64)) as usize
 }
 
-fn path_component_matches(component: &str, pattern: &str) -> bool {
-    if pattern == "*" || pattern == "**" {
-        return true;
-    }
-    if let Some((prefix, suffix)) = pattern.split_once('*') {
-        component.starts_with(prefix)
-            && component.ends_with(suffix)
-            && component.len() >= prefix.len() + suffix.len()
-    } else {
-        component == pattern
-    }
-}
-
-/// Checks if a relative path matches a pattern that may contain '*' components.
-pub fn matches_path_pattern(rel_path: &str, pattern: &str) -> bool {
-    let rel_norm = rel_path.trim_matches('/').replace('\\', "/");
-    let pat_norm = pattern.trim_matches('/').replace('\\', "/");
-    if pat_norm.is_empty() || rel_norm.is_empty() {
+fn dir_pattern_matches(rel_path: &str, dir_pattern: &str) -> bool {
+    let dir_norm = dir_pattern.trim_matches(['/', '\\']).replace('\\', "/");
+    let rel_norm = rel_path.trim_matches(['/', '\\']).replace('\\', "/");
+    if dir_norm.is_empty() || rel_norm.is_empty() {
         return false;
     }
-    if pat_norm.contains('*') {
-        let pattern_parts: Vec<&str> = pat_norm.split('/').collect();
-        let path_parts: Vec<&str> = rel_norm.split('/').collect();
-        if path_parts.len() < pattern_parts.len() {
-            return false;
-        }
-        for (i, part) in pattern_parts.iter().enumerate() {
-            if !path_component_matches(path_parts[i], part) {
-                return false;
-            }
-        }
-        true
-    } else {
-        rel_norm == pat_norm || rel_norm.starts_with(&format!("{}/", pat_norm))
-    }
+    let descendant_glob = format!("{}/**", dir_norm.trim_end_matches("/**"));
+    crate::core::path_policy::glob_matches(&dir_norm, &rel_norm)
+        || crate::core::path_policy::glob_matches(&descendant_glob, &rel_norm)
 }
 
 /// Checks if a relative path belongs to any configured milestone or plan directories.
 pub fn is_milestone_or_plan_path(rel_str: &str, milestones: &[String], plans: &[String]) -> bool {
-    let check = |dirs: &[String]| dirs.iter().any(|d| matches_path_pattern(rel_str, d));
+    let check = |dirs: &[String]| dirs.iter().any(|d| dir_pattern_matches(rel_str, d));
     check(milestones) || check(plans)
 }
 
@@ -265,13 +239,14 @@ fn is_milestone_or_plan_readme(rel_str: &str, milestones: &[String], plans: &[St
     let Some((parent, _)) = rel_str.rsplit_once('/') else {
         return false;
     };
-    let parent = parent.trim_matches('/').replace('\\', "/");
+    let parent = parent.trim_matches(['/', '\\']).replace('\\', "/");
     let parent_depth = parent.split('/').count();
     let is_direct_overview = |dirs: &[String]| {
         dirs.iter().any(|dir| {
-            let normalized_dir = dir.trim_matches('/').replace('\\', "/");
-            normalized_dir.split('/').count() == parent_depth
-                && matches_path_pattern(&parent, &normalized_dir)
+            let normalized_dir = dir.trim_matches(['/', '\\']).replace('\\', "/");
+            !normalized_dir.is_empty()
+                && normalized_dir.split('/').count() == parent_depth
+                && crate::core::path_policy::glob_matches(&normalized_dir, &parent)
         })
     };
     is_direct_overview(milestones) || is_direct_overview(plans)
@@ -485,6 +460,11 @@ pub fn stream_for_build(
     adapter: &Adapter,
     mut visit: impl FnMut(BuildCandidate) -> std::io::Result<()>,
 ) -> std::io::Result<BuildStreamReport> {
+    let code_enabled = adapter.modules.is_enabled("code");
+    let docs_enabled = adapter.modules.is_enabled("docs");
+    if !code_enabled && !docs_enabled {
+        return Ok(BuildStreamReport { files: 0, bytes: 0 });
+    }
     let mut files = 0usize;
     let mut bytes = 0u64;
     let _dependency_manifests =
@@ -496,6 +476,9 @@ pub fn stream_for_build(
             let Some((language, is_doc)) = language(&full_path) else {
                 return Ok(());
             };
+            if (is_doc && !docs_enabled) || (!is_doc && !code_enabled) {
+                return Ok(());
+            }
             if metadata.len() > adapter.limits.max_file_bytes {
                 return Err(error(format!(
                     "file exceeds byte limit: {} ({} > max_file_bytes {})",
@@ -583,6 +566,12 @@ fn walk_candidate_paths(
     watch: Option<&std::sync::Arc<WatchedEntries>>,
     mut visit: impl FnMut(PathBuf, String) -> std::io::Result<()>,
 ) -> std::io::Result<Vec<PathBuf>> {
+    let code_enabled = adapter.modules.is_enabled("code");
+    let docs_enabled = adapter.modules.is_enabled("docs");
+    if !code_enabled && !docs_enabled {
+        return Ok(Vec::new());
+    }
+
     let mut candidate_count = 0usize;
     let mut seen_rel_paths = BTreeSet::new();
     let mut dependency_manifests = BTreeSet::new();
@@ -591,15 +580,17 @@ fn walk_candidate_paths(
         .chain(adapter.adapter_path.iter().cloned())
         .collect();
 
-    collect_documentation_paths(
-        root,
-        "",
-        (&adapter.ignored_names, watch),
-        adapter.limits.max_files,
-        &mut candidate_count,
-        &mut seen_rel_paths,
-        &mut visit,
-    )?;
+    if docs_enabled {
+        collect_documentation_paths(
+            root,
+            "",
+            (&adapter.ignored_names, watch),
+            adapter.limits.max_files,
+            &mut candidate_count,
+            &mut seen_rel_paths,
+            &mut visit,
+        )?;
+    }
 
     for source_root in &adapter.roots {
         if !source_root.exists() {
@@ -640,11 +631,12 @@ fn walk_candidate_paths(
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or_default();
-            let is_manifest =
-                super::languages::dependency_registry::is_dependency_manifest_filename(filename);
+            let is_manifest = code_enabled
+                && super::languages::dependency_registry::is_dependency_manifest_filename(filename);
             let file_language = language(&full);
-            let is_source = file_language.is_some();
             let is_doc = file_language.is_some_and(|(_, is_doc)| is_doc);
+            let is_source =
+                file_language.is_some() && ((is_doc && docs_enabled) || (!is_doc && code_enabled));
             if !is_manifest && !is_source {
                 continue;
             }
@@ -712,13 +704,14 @@ fn walk_candidate_paths(
                     .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or_default();
-                let is_manifest =
-                    super::languages::dependency_registry::is_dependency_manifest_filename(
+                let is_manifest = code_enabled
+                    && super::languages::dependency_registry::is_dependency_manifest_filename(
                         filename,
                     );
                 let file_language = language(&full);
-                let is_source = file_language.is_some();
                 let is_doc = file_language.is_some_and(|(_, is_doc)| is_doc);
+                let is_source = file_language.is_some()
+                    && ((is_doc && docs_enabled) || (!is_doc && code_enabled));
                 if !is_manifest && !is_source {
                     continue;
                 }
@@ -747,28 +740,34 @@ fn walk_candidate_paths(
                 }
             }
         }
+        if code_enabled {
+            collect_source_root_manifests(
+                &workspace.path,
+                &workspace.roots,
+                &workspace.ignored_names,
+                &mut dependency_manifests,
+            )?;
+        }
+        if docs_enabled {
+            collect_documentation_paths(
+                &workspace.path,
+                &format!("[{}]/", workspace.name),
+                (&workspace.ignored_names, watch),
+                adapter.limits.max_files,
+                &mut candidate_count,
+                &mut seen_rel_paths,
+                &mut visit,
+            )?;
+        }
+    }
+    if code_enabled {
         collect_source_root_manifests(
-            &workspace.path,
-            &workspace.roots,
-            &workspace.ignored_names,
+            root,
+            &adapter.roots,
+            &adapter.ignored_names,
             &mut dependency_manifests,
         )?;
-        collect_documentation_paths(
-            &workspace.path,
-            &format!("[{}]/", workspace.name),
-            (&workspace.ignored_names, watch),
-            adapter.limits.max_files,
-            &mut candidate_count,
-            &mut seen_rel_paths,
-            &mut visit,
-        )?;
     }
-    collect_source_root_manifests(
-        root,
-        &adapter.roots,
-        &adapter.ignored_names,
-        &mut dependency_manifests,
-    )?;
     Ok(dependency_manifests.into_iter().collect())
 }
 
@@ -1313,26 +1312,65 @@ mod tests {
     }
 
     #[test]
-    fn matches_path_pattern_supports_wildcards_and_partial_globs() {
-        assert!(matches_path_pattern(
-            "extensions/commerce/docs/milestones/010-test.md",
-            "extensions/*/docs/milestones"
+    fn is_milestone_or_plan_path_supports_wildcards_trailing_slashes_and_readmes() {
+        let milestones = vec![
+            "extensions/*/docs/milestones/".to_owned(),
+            "docs/milestones".to_owned(),
+        ];
+        let plans = vec!["services/*-api/docs/plans".to_owned()];
+
+        for (rel, expected_spec, expected_readme) in [
+            ("extensions/commerce/docs/milestones/010-test.md", true, false),
+            ("services/auth-api/docs/plans/arch.md", true, false),
+            ("docs/milestones/020.md", true, false),
+            ("docs/milestones/README.md", true, true),
+            ("extensions/commerce/docs/milestones/README.md", true, true),
+            ("docs/milestones/archive/README.md", true, false),
+            ("docs/other/020.md", false, false),
+            ("docs/milestones_extra/020.md", false, false),
+            ("extensions/commerce/src/lib.rs", false, false),
+        ] {
+            assert_eq!(
+                is_milestone_or_plan_path(rel, &milestones, &plans),
+                expected_spec,
+                "path match: {rel}"
+            );
+            assert_eq!(
+                is_milestone_or_plan_readme(rel, &milestones, &plans),
+                expected_readme,
+                "readme match: {rel}"
+            );
+        }
+    }
+
+    #[test]
+    fn scan_respects_modules_code_and_docs_flags() {
+        let root = std::env::temp_dir().join(format!(
+            "acdd_modules_scan_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
-        assert!(matches_path_pattern(
-            "services/auth-api/docs/plans/arch.md",
-            "services/*-api/docs/plans"
-        ));
-        assert!(matches_path_pattern(
-            "docs/milestones/020.md",
-            "docs/milestones"
-        ));
-        assert!(!matches_path_pattern(
-            "docs/other/020.md",
-            "docs/milestones"
-        ));
-        assert!(!matches_path_pattern(
-            "extensions/commerce/src/lib.rs",
-            "extensions/*/docs/milestones"
-        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        let _cleanup = TempDirDrop(root.clone());
+        fs::write(root.join("src/lib.rs"), "pub fn alpha() {}\n").unwrap();
+        fs::write(root.join("docs/guide.md"), "# Guide\n").unwrap();
+        let root = root.canonicalize().unwrap();
+
+        for (cfg_yaml, expect_code, expect_docs) in [
+            ("modules:\n  code: true\n  docs: false\n", true, false),
+            ("modules:\n  code: false\n  docs: true\n", false, true),
+            ("modules:\n  code: false\n  docs: false\n", false, false),
+        ] {
+            fs::write(root.join("acdd.yaml"), cfg_yaml).unwrap();
+            let adapter = load_adapter(&root, None).unwrap();
+            let report = scan_with_adapter(&root, &adapter).unwrap();
+            let has_code = report.entries.iter().any(|e| !e.is_doc);
+            let has_docs = report.entries.iter().any(|e| e.is_doc);
+            assert_eq!((has_code, has_docs), (expect_code, expect_docs), "{cfg_yaml}");
+        }
     }
 }

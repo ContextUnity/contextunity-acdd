@@ -197,29 +197,166 @@ pub fn is_registered_cargo_crate(crate_name: &str) -> bool {
 }
 
 #[cfg(feature = "lang-rust")]
+pub(in crate::linker) struct RustExplicitTarget {
+    pub(in crate::linker) namespace: String,
+    pub(in crate::linker) workspace: String,
+}
+
+#[cfg(feature = "lang-rust")]
 pub(in crate::linker) fn rust_explicit_module_target(
+    input: &super::super::resolution::ResolutionInput<'_>,
     profile: Option<&dyn LanguageProfile>,
     path: &str,
     file_module: &str,
     expression: &str,
-) -> Option<String> {
+) -> Option<RustExplicitTarget> {
     let profile = profile.filter(|profile| profile.id() == "rust")?;
+    let local_workspace = crate::languages::workspace_path(path).0;
     if let Some(mut tail) = expression.strip_prefix("super::") {
         let mut module = file_module.rsplit_once('.')?.0;
         while let Some(rest) = tail.strip_prefix("super::") {
             module = module.rsplit_once('.')?.0;
             tail = rest;
         }
-        Some(format!("{module}.{}", tail.replace("::", ".")))
+        Some(RustExplicitTarget {
+            namespace: format!("{module}.{}", tail.replace("::", ".")),
+            workspace: local_workspace.to_owned(),
+        })
     } else if let Some(tail) = expression.strip_prefix("self::") {
-        Some(format!("{file_module}.{}", tail.replace("::", ".")))
+        Some(RustExplicitTarget {
+            namespace: format!("{file_module}.{}", tail.replace("::", ".")),
+            workspace: local_workspace.to_owned(),
+        })
     } else if expression.starts_with("crate::") {
         profile
             .normalize_import(path, expression)
-            .map(|module| module.namespace)
+            .map(|module| RustExplicitTarget {
+                namespace: module.namespace,
+                workspace: local_workspace.to_owned(),
+            })
     } else {
-        None
+        let (first, tail) = expression.split_once("::")?;
+        if tail.is_empty() || first == "Self" {
+            return None;
+        }
+        if let Some((pkg_scope, own_lib)) = input
+            .dependency_registry
+            .sibling_rust_package_library_for_path(path)
+        {
+            if own_lib == first {
+                let lib_path = if pkg_scope.is_empty() {
+                    std::borrow::Cow::Borrowed("src/lib.rs")
+                } else {
+                    std::borrow::Cow::Owned(format!("{pkg_scope}/src/lib.rs"))
+                };
+                if input.profiles.contains_key(lib_path.as_ref()) {
+                    let base_namespace = if pkg_scope.is_empty() {
+                        "src".to_owned()
+                    } else {
+                        format!("{}.src", pkg_scope.replace('/', "."))
+                    };
+                    return Some(RustExplicitTarget {
+                        namespace: format!("{base_namespace}.{}", tail.replace("::", ".")),
+                        workspace: crate::languages::workspace_path(&lib_path)
+                            .0
+                            .to_owned(),
+                    });
+                }
+            }
+        }
+        let mut targets = input
+            .rust_library_modules
+            .iter()
+            .filter(|(_, (library, _))| *library == first);
+        if let Some((target_workspace, (library, _))) = targets.next() {
+            if targets.next().is_none()
+                && (input.dependency_registry.sibling_rust_library_for_path(path) == Some(*library)
+                    || input.dependency_registry.declares_for_path(
+                        crate::languages::LanguageFamily("rust"),
+                        path,
+                        first,
+                    ))
+            {
+                let base_namespace = if target_workspace.is_empty() {
+                    "src".to_owned()
+                } else {
+                    format!("{}.src", target_workspace.replace('/', "."))
+                };
+                return Some(RustExplicitTarget {
+                    namespace: format!("{base_namespace}.{}", tail.replace("::", ".")),
+                    workspace: (*target_workspace).to_owned(),
+                });
+            }
+        }
+        let root_crate = input.dependency_registry.root_rust_crate_for_path(path)?;
+        if first != root_crate {
+            return None;
+        }
+        let lib_path = if local_workspace.is_empty() {
+            std::borrow::Cow::Borrowed("src/lib.rs")
+        } else {
+            std::borrow::Cow::Owned(format!("{local_workspace}/src/lib.rs"))
+        };
+        if !input.profiles.contains_key(lib_path.as_ref()) {
+            return None;
+        }
+        let base_namespace = if local_workspace.is_empty() {
+            "src".to_owned()
+        } else {
+            format!("{local_workspace}.src")
+        };
+        Some(RustExplicitTarget {
+            namespace: format!("{base_namespace}.{}", tail.replace("::", ".")),
+            workspace: local_workspace.to_owned(),
+        })
     }
+}
+
+#[cfg(feature = "lang-rust")]
+pub(in crate::linker) fn explicit_reexport_targets<'a>(
+    input: &super::super::resolution::ResolutionInput<'a>,
+    file_module: &str,
+    target: &RustExplicitTarget,
+    lookup_key: &mut String,
+) -> Vec<&'a Node> {
+    let Some(rust_modules) = input
+        .modules_by_namespace
+        .get(&crate::languages::LanguageFamily("rust"))
+    else {
+        return Vec::new();
+    };
+    let mut split = target.namespace.len();
+    let mut out = Vec::new();
+    while let Some(dot) = target.namespace[..split].rfind('.') {
+        let module_ns = &target.namespace[..dot];
+        let rest = &target.namespace[dot + 1..];
+        if let Some(modules) = rust_modules.get(module_ns) {
+            let (head, tail) = rest.split_once('.').unwrap_or((rest, ""));
+            for module in modules
+                .iter()
+                .filter(|m| crate::languages::workspace_path(&m.path).0 == target.workspace)
+            {
+                for forwarded in input.rust_forwarding.targets(module, head, file_module) {
+                    if tail.is_empty() {
+                        out.push(*forwarded);
+                    } else {
+                        lookup_key.clear();
+                        lookup_key.push_str(&forwarded.qualname);
+                        lookup_key.push('.');
+                        lookup_key.push_str(tail);
+                        if let Some(nodes) = input.by_qual.get(lookup_key.as_str()) {
+                            out.extend_from_slice(nodes);
+                        }
+                    }
+                }
+            }
+            if !out.is_empty() {
+                break;
+            }
+        }
+        split = dot;
+    }
+    out
 }
 
 pub(in crate::linker) fn resolve_self_reference<'a>(
@@ -782,4 +919,99 @@ pub(in crate::linker) fn impl_source<'a>(
         (types.len() == 1).then(|| types[0].id.clone()),
         source_heuristic,
     )
+}
+
+#[cfg(all(test, feature = "lang-rust"))]
+mod self_crate_resolution_tests {
+    use crate::ast::extract;
+    use crate::languages::dependency_registry::DependencyRegistry;
+    use crate::linker;
+    use acdd_core::fs::ScopedTempDir;
+    use std::collections::BTreeMap;
+    use std::fs;
+
+    #[test]
+    fn rust_self_crate_resolution_excludes_library_files_and_keeps_sibling_targets() {
+        let dir = ScopedTempDir::create("contextunity-test-rust-self-crate").unwrap();
+        let root = dir.path();
+
+        for (pkg_prefix, crate_name) in [("", "my_crate"), ("crates/sub_crate/", "sub_crate")] {
+            fs::create_dir_all(root.join(format!("{pkg_prefix}src/bin"))).unwrap();
+            fs::create_dir_all(root.join(format!("{pkg_prefix}tests"))).unwrap();
+            fs::create_dir_all(root.join(format!("{pkg_prefix}examples"))).unwrap();
+            fs::create_dir_all(root.join(format!("{pkg_prefix}benches"))).unwrap();
+            fs::write(
+                root.join(format!("{pkg_prefix}Cargo.toml")),
+                format!("[package]\nname = \"{crate_name}\"\nversion = \"0.1.0\"\n"),
+            )
+            .unwrap();
+        }
+
+        let files = [
+            (
+                "src/lib.rs",
+                "pub mod sub;\npub fn target() {}\npub fn bad_self_call() { my_crate::target(); }\npub fn good_crate_call() { crate::target(); }\n",
+            ),
+            (
+                "src/sub.rs",
+                "use my_crate::target as imported_target;\npub fn bad_sub_direct() { my_crate::target(); }\npub fn bad_sub_use() { imported_target(); }\n",
+            ),
+            ("src/main.rs", "fn main_calls() { my_crate::target(); }\n"),
+            ("src/bin/cli.rs", "fn bin_calls() { my_crate::target(); }\n"),
+            ("tests/it.rs", "#[test]\nfn test_calls() { my_crate::target(); }\n"),
+            ("examples/demo.rs", "fn example_calls() { my_crate::target(); }\n"),
+            ("benches/perf.rs", "fn bench_calls() { my_crate::target(); }\n"),
+            (
+                "crates/sub_crate/src/lib.rs",
+                "pub fn target() {}\npub fn bad_subcrate_self() { sub_crate::target(); }\n",
+            ),
+            (
+                "crates/sub_crate/tests/it.rs",
+                "#[test]\nfn subcrate_test_calls() { sub_crate::target(); }\n",
+            ),
+        ];
+
+        let mut facts = BTreeMap::new();
+        for &(rel, src) in &files {
+            fs::write(root.join(rel), src).unwrap();
+            facts.insert(rel.to_owned(), extract(rel, "rust", src).unwrap());
+        }
+        let registry = DependencyRegistry::collect(Some(root));
+        let graph = linker::link_with_registry(&facts, None, Some(root), &registry);
+
+        let has_call = |src_path: &str, src_fn: &str, dst_path: &str| {
+            let src_id = &facts[src_path]
+                .nodes
+                .iter()
+                .find(|n| n.name == src_fn)
+                .unwrap()
+                .id;
+            let dst_id = &facts[dst_path]
+                .nodes
+                .iter()
+                .find(|n| n.name == "target")
+                .unwrap()
+                .id;
+            graph
+                .edges
+                .iter()
+                .any(|e| e.kind == "calls" && &e.src == src_id && &e.dst == dst_id)
+        };
+
+        for (src_path, src_fn, dst_path, expect_linked, label) in [
+            ("src/lib.rs", "bad_self_call", "src/lib.rs", false, "src/lib.rs must reject my_crate::target()"),
+            ("src/lib.rs", "good_crate_call", "src/lib.rs", true, "src/lib.rs crate::target() links"),
+            ("src/sub.rs", "bad_sub_direct", "src/lib.rs", false, "src/sub.rs must reject my_crate::target()"),
+            ("src/sub.rs", "bad_sub_use", "src/lib.rs", false, "src/sub.rs must reject use my_crate::target"),
+            ("src/main.rs", "main_calls", "src/lib.rs", true, "src/main.rs my_crate::target() links"),
+            ("src/bin/cli.rs", "bin_calls", "src/lib.rs", true, "src/bin/cli.rs my_crate::target() links"),
+            ("tests/it.rs", "test_calls", "src/lib.rs", true, "tests/it.rs my_crate::target() links"),
+            ("examples/demo.rs", "example_calls", "src/lib.rs", true, "examples/demo.rs my_crate::target() links"),
+            ("benches/perf.rs", "bench_calls", "src/lib.rs", true, "benches/perf.rs my_crate::target() links"),
+            ("crates/sub_crate/src/lib.rs", "bad_subcrate_self", "crates/sub_crate/src/lib.rs", false, "subcrate src/lib.rs must reject sub_crate::target()"),
+            ("crates/sub_crate/tests/it.rs", "subcrate_test_calls", "crates/sub_crate/src/lib.rs", true, "subcrate tests/it.rs sub_crate::target() links"),
+        ] {
+            assert_eq!(has_call(src_path, src_fn, dst_path), expect_linked, "{label}");
+        }
+    }
 }

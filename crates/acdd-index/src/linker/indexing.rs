@@ -13,6 +13,7 @@ pub(super) struct NamespaceIndexes<'a> {
     pub(super) profiles: HashMap<&'a str, &'static dyn LanguageProfile>,
     pub(super) normalized_imports: HashMap<(&'a str, &'a str), Option<ImportPath>>,
     pub(super) modules_by_namespace: ModulesByNamespace<'a>,
+    pub(super) rust_library_modules: HashMap<&'a str, (&'a str, &'a Node)>,
     #[cfg(feature = "lang-rust")]
     pub(super) rust_forwarding: languages::rust::linker::RustForwarding<'a>,
 }
@@ -135,6 +136,34 @@ impl<'a> NamespaceIndexes<'a> {
                                 }
                             }
                             let (first, tail) = module.split_once("::").unwrap_or((module, ""));
+                            if let Some((pkg_scope, own_lib)) =
+                                dependency_registry.sibling_rust_package_library_for_path(path)
+                            {
+                                if own_lib == first {
+                                    let lib_path = if pkg_scope.is_empty() {
+                                        std::borrow::Cow::Borrowed("src/lib.rs")
+                                    } else {
+                                        std::borrow::Cow::Owned(format!("{pkg_scope}/src/lib.rs"))
+                                    };
+                                    if profiles.contains_key(lib_path.as_ref()) {
+                                        let base_namespace = if pkg_scope.is_empty() {
+                                            "src".to_owned()
+                                        } else {
+                                            format!("{}.src", pkg_scope.replace('/', "."))
+                                        };
+                                        let namespace = if tail.is_empty() || tail == "*" {
+                                            base_namespace
+                                        } else {
+                                            format!("{base_namespace}.{}", tail.replace("::", "."))
+                                        };
+                                        return Some(ImportPath {
+                                            namespace,
+                                            relative: true,
+                                            symbol_path: true,
+                                        });
+                                    }
+                                }
+                            }
                             let mut targets = rust_library_modules
                                 .iter()
                                 .filter(|(_, (library, _))| *library == first);
@@ -142,7 +171,8 @@ impl<'a> NamespaceIndexes<'a> {
                                 if targets.next().is_some() {
                                     return None;
                                 }
-                                if dependency_registry.rust_library_for_path(path) != Some(*library)
+                                if dependency_registry.sibling_rust_library_for_path(path)
+                                    != Some(*library)
                                     && !dependency_registry.declares_for_path(
                                         LanguageFamily("rust"),
                                         path,
@@ -166,6 +196,18 @@ impl<'a> NamespaceIndexes<'a> {
                                     relative: true,
                                     symbol_path: true,
                                 });
+                            }
+                            if dependency_registry
+                                .rust_package_for_path(path)
+                                .is_some_and(|(_, own_lib)| own_lib == first)
+                                && !dependency_registry.is_rust_sibling_target_path(path)
+                                && !dependency_registry.declares_for_path(
+                                    LanguageFamily("rust"),
+                                    path,
+                                    first,
+                                )
+                            {
+                                return None;
                             }
                         }
                         profile.and_then(|profile| {
@@ -252,6 +294,7 @@ impl<'a> NamespaceIndexes<'a> {
             profiles,
             normalized_imports,
             modules_by_namespace,
+            rust_library_modules,
             #[cfg(feature = "lang-rust")]
             rust_forwarding,
         }

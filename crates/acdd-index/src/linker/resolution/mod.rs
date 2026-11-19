@@ -172,6 +172,7 @@ pub(super) struct ResolutionInput<'a> {
     pub(super) profiles: &'a HashMap<&'a str, &'static dyn LanguageProfile>,
     pub(super) normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
     pub(super) modules_by_namespace: &'a ModulesByNamespace<'a>,
+    pub(super) rust_library_modules: &'a HashMap<&'a str, (&'a str, &'a Node)>,
     #[cfg(feature = "lang-rust")]
     pub(super) rust_forwarding: &'a languages::rust::linker::RustForwarding<'a>,
     pub(super) package_exports: &'a HashMap<&'static str, PackageExports<'a>>,

@@ -71,6 +71,7 @@ pub struct DependencyRegistry {
     workspaces: HashSet<String>,
     named_provider_scopes: HashMap<super::manifests::projections::NamedProviderScope, String>,
     rust_libraries: HashMap<String, String>,
+    rust_package_libraries: HashMap<String, String>,
     framework_manifests: HashMap<(String, String), FrameworkManifest>,
     standard_framework_manifests: HashMap<String, FrameworkManifest>,
     language_contexts: HashMap<LanguageContextKey, Arc<super::LanguageContext>>,
@@ -610,12 +611,203 @@ impl DependencyRegistry {
 
     #[cfg(feature = "lang-rust")]
     pub(crate) fn root_rust_crate_for_path(&self, path: &str) -> Option<&str> {
+        if !self.is_rust_sibling_target_path(path) {
+            return None;
+        }
         let workspace = super::workspace_path(path).0;
         let name = self.rust_root_crates.get(workspace)?;
         if self.nearest_manifest_scope_for_path(LanguageFamily("rust"), path)? != workspace {
             return None;
         }
         Some(name)
+    }
+
+    /// Returns candidate workspace-relative entrypoint paths discovered from manifests.
+    pub fn workspace_entrypoint_candidates(&self) -> Vec<String> {
+        let mut out = BTreeSet::new();
+        let join_scope = |scope: &str, rel: &str| {
+            let rel = rel.trim_start_matches("./");
+            if scope.is_empty() {
+                rel.to_owned()
+            } else {
+                format!("{scope}/{rel}")
+            }
+        };
+
+        for entry in &self.manifest_entrypoints {
+            if entry.scope.starts_with('[') {
+                continue;
+            }
+            if entry.python {
+                let mod_path = entry
+                    .target
+                    .split(':')
+                    .next()
+                    .unwrap_or(&entry.target)
+                    .trim()
+                    .replace('.', "/");
+                if !mod_path.is_empty() {
+                    out.insert(join_scope(&entry.scope, &format!("{mod_path}.py")));
+                    out.insert(join_scope(&entry.scope, &format!("{mod_path}/__init__.py")));
+                }
+            } else if !entry.target.trim().is_empty() {
+                let target = entry.target.trim().trim_start_matches("./");
+                out.insert(join_scope(&entry.scope, target));
+                for ext in ["ts", "tsx", "js", "jsx", "mjs", "cjs"] {
+                    out.insert(join_scope(&entry.scope, &format!("{target}.{ext}")));
+                    out.insert(join_scope(&entry.scope, &format!("{target}/index.{ext}")));
+                }
+            }
+        }
+
+        if let Some(scopes) = self.scoped_packages.get(&LanguageFamily("rust")) {
+            for scope in scopes.keys().filter(|s| !s.starts_with('[')) {
+                out.insert(join_scope(scope, "src/lib.rs"));
+                out.insert(join_scope(scope, "src/main.rs"));
+            }
+        }
+        if let Some(scopes) = self.scoped_packages.get(&LanguageFamily("javascript")) {
+            for scope in scopes.keys().filter(|s| !s.starts_with('[')) {
+                for ext in ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"] {
+                    out.insert(join_scope(scope, &format!("index.{ext}")));
+                    out.insert(join_scope(scope, &format!("src/index.{ext}")));
+                }
+            }
+        }
+        if let Some(scopes) = self.scoped_packages.get(&LanguageFamily("python")) {
+            for scope in scopes.keys().filter(|s| !s.starts_with('[')) {
+                out.insert(join_scope(scope, "__init__.py"));
+                out.insert(join_scope(scope, "src/__init__.py"));
+                if let Some(names) = self.own_packages.get(scope) {
+                    for name in names {
+                        let pkg = name.replace('-', "_");
+                        out.insert(join_scope(scope, &format!("{pkg}/__init__.py")));
+                        out.insert(join_scope(scope, &format!("src/{pkg}/__init__.py")));
+                    }
+                }
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    /// Resolves bounded worktree-relative file candidates referenced by an import expression.
+    pub fn import_file_candidates(
+        &self,
+        root: Option<&Path>,
+        owner_path: &str,
+        module: &str,
+    ) -> Vec<String> {
+        let Some(profile) = super::for_path(Path::new(owner_path)) else {
+            return Vec::new();
+        };
+        let mut out = BTreeSet::new();
+        let owner_dir = Path::new(owner_path)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
+
+        let push_namespace = |ns: &str, out: &mut BTreeSet<String>| {
+            let mut cur = ns;
+            loop {
+                if !cur.is_empty() {
+                    let slash = cur.replace('.', "/");
+                    for ext in profile.extensions() {
+                        out.insert(format!("{slash}.{ext}"));
+                        if *ext == "rs" {
+                            out.insert(format!("{slash}/mod.rs"));
+                            out.insert(format!("{slash}/lib.rs"));
+                            out.insert(format!("{slash}/main.rs"));
+                            out.insert(format!("{slash}/src/lib.rs"));
+                            out.insert(format!("{slash}/src/main.rs"));
+                        } else if *ext == "py" {
+                            out.insert(format!("{slash}/__init__.py"));
+                        } else if matches!(profile.family().0, "javascript") {
+                            out.insert(format!("{slash}/index.{ext}"));
+                        }
+                    }
+                }
+                match cur.rsplit_once('.') {
+                    Some((parent, _)) => cur = parent,
+                    None => break,
+                }
+            }
+        };
+
+        if matches!(profile.family().0, "javascript") {
+            if module.starts_with("./") || module.starts_with("../") {
+                let joined = crate::core::fs::normalize_path(&owner_dir.join(module));
+                let rel = joined.to_string_lossy().replace('\\', "/");
+                if !rel.starts_with("..") && !rel.starts_with('/') && !rel.is_empty() {
+                    out.insert(rel.clone());
+                    for ext in profile.extensions() {
+                        out.insert(format!("{rel}.{ext}"));
+                        out.insert(format!("{rel}/index.{ext}"));
+                    }
+                }
+            } else {
+                if profile.id() == "typescript" {
+                    for cand in self.typescript_paths.candidate_paths(owner_path, module) {
+                        out.insert(cand.clone());
+                        for ext in profile.extensions() {
+                            out.insert(format!("{cand}.{ext}"));
+                            out.insert(format!("{cand}/index.{ext}"));
+                        }
+                    }
+                }
+                if let Some(pkg) = self.javascript_packages.normalize_import(owner_path, module) {
+                    push_namespace(&pkg.namespace, &mut out);
+                }
+            }
+        }
+
+        #[cfg(feature = "lang-rust")]
+        if profile.id() == "rust" {
+            if let Some(root_crate) = self.root_rust_crate_for_path(owner_path) {
+                if let Some(norm) = super::rust::RUST.normalize_root_crate_import(root_crate, module) {
+                    push_namespace(&norm.namespace, &mut out);
+                }
+            }
+            let (first, tail) = module.split_once("::").unwrap_or((module, ""));
+            if let Some((pkg_scope, own_lib)) =
+                self.sibling_rust_package_library_for_path(owner_path)
+            {
+                if own_lib == first {
+                    let base = if pkg_scope.is_empty() {
+                        "src".to_owned()
+                    } else {
+                        format!("{}.src", pkg_scope.replace('/', "."))
+                    };
+                    let ns = if tail.is_empty() || tail == "*" {
+                        base
+                    } else {
+                        format!("{base}.{}", tail.replace("::", "."))
+                    };
+                    push_namespace(&ns, &mut out);
+                }
+            }
+            for (target_workspace, lib_name) in &self.rust_libraries {
+                if lib_name == first
+                    && (self.sibling_rust_library_for_path(owner_path) == Some(lib_name.as_str())
+                        || self.declares_for_path(LanguageFamily("rust"), owner_path, first))
+                {
+                    let base = if target_workspace.is_empty() {
+                        "src".to_owned()
+                    } else {
+                        format!("{}.src", target_workspace.replace('/', "."))
+                    };
+                    let ns = if tail.is_empty() || tail == "*" {
+                        base
+                    } else {
+                        format!("{base}.{}", tail.replace("::", "."))
+                    };
+                    push_namespace(&ns, &mut out);
+                }
+            }
+        }
+
+        if let Some(norm) = profile.normalize_import_with_root(root, owner_path, module) {
+            push_namespace(&norm.namespace, &mut out);
+        }
+        out.into_iter().collect()
     }
 
     /// Collects workspace dependencies and framework rules.
@@ -922,6 +1114,61 @@ impl DependencyRegistry {
         self.rust_libraries.get(workspace).map(String::as_str)
     }
 
+    /// Returns the Cargo package scope directory and normalized crate name for `path`.
+    pub fn rust_package_for_path(&self, path: &str) -> Option<(&str, &str)> {
+        let scope = self.nearest_manifest_scope_for_path(LanguageFamily("rust"), path)?;
+        let name = self
+            .rust_package_libraries
+            .get(scope)
+            .or_else(|| self.rust_libraries.get(scope))
+            .or_else(|| self.rust_root_crates.get(scope))
+            .map(String::as_str)?;
+        Some((scope, name))
+    }
+
+    /// Returns whether `path` is a sibling non-library Cargo target (`tests/`, `examples/`,
+    /// `benches/`, `src/main.rs`, `src/bin/`) that implicitly imports its own package's library crate.
+    pub fn is_rust_sibling_target_path(&self, path: &str) -> bool {
+        let Some(scope) = self.nearest_manifest_scope_for_path(LanguageFamily("rust"), path)
+        else {
+            return false;
+        };
+        let rel = if scope.is_empty() {
+            path
+        } else if let Some(rest) = path
+            .strip_prefix(scope)
+            .and_then(|rest| rest.strip_prefix('/'))
+        {
+            rest
+        } else {
+            super::workspace_path(path).1
+        };
+        rel == "src/main.rs"
+            || rel.starts_with("src/bin/")
+            || rel.starts_with("tests/")
+            || rel.starts_with("examples/")
+            || rel.starts_with("benches/")
+    }
+
+    /// Returns `(pkg_scope, lib_name)` ONLY when `path` is a sibling Cargo target
+    /// (`tests/`, `examples/`, `benches/`, `src/main.rs`, `src/bin/`).
+    pub(crate) fn sibling_rust_package_library_for_path(&self, path: &str) -> Option<(&str, &str)> {
+        if !self.is_rust_sibling_target_path(path) {
+            return None;
+        }
+        let scope = self.nearest_manifest_scope_for_path(LanguageFamily("rust"), path)?;
+        let lib = self.rust_package_libraries.get(scope).map(String::as_str)?;
+        Some((scope, lib))
+    }
+
+    /// Returns the root package library name ONLY when `path` is a sibling Cargo target.
+    pub(crate) fn sibling_rust_library_for_path(&self, path: &str) -> Option<&str> {
+        if !self.is_rust_sibling_target_path(path) {
+            return None;
+        }
+        self.rust_library_for_path(path)
+    }
+
     pub(crate) fn declares_for_path(
         &self,
         family: LanguageFamily,
@@ -1149,7 +1396,7 @@ fn record_dependency_manifest(
         });
     }
     #[cfg(feature = "lang-rust")]
-    if filename == "Cargo.toml" && scope == prefix.trim_end_matches('/') {
+    if filename == "Cargo.toml" {
         let mut package_name = None;
         let mut library_name = None;
         let mut library_path = None;
@@ -1205,9 +1452,13 @@ fn record_dependency_manifest(
             && conventional_library_path
         {
             if let Some(name) = library_name.or(package_name) {
+                let norm_name = name.replace('-', "_");
                 registry
-                    .rust_libraries
-                    .insert(scope.clone(), name.replace('-', "_"));
+                    .rust_package_libraries
+                    .insert(scope.clone(), norm_name.clone());
+                if scope == prefix.trim_end_matches('/') {
+                    registry.rust_libraries.insert(scope.clone(), norm_name);
+                }
             }
         }
     }

@@ -705,7 +705,9 @@ fn prepare_search_pattern(
     )))
 }
 
-/// Extracts target symbol name from a search pattern if uniquely resolved.
+/// Extracts target symbol name from a search pattern if the pattern's root AST node
+/// is strictly an indexed top-level declaration kind (never assignments, variable
+/// bindings, calls, or expressions).
 pub fn pattern_symbol_name(pattern: &str, language: &str) -> Result<Option<String>> {
     let profile = languages::require(language)?;
     let mut parser = profile.create_parser("__acdd_pattern__")?;
@@ -739,6 +741,13 @@ pub fn pattern_symbol_name(pattern: &str, language: &str) -> Result<Option<Strin
     let Some(node) = prepared.node(profile) else {
         return Ok(None);
     };
+    if !profile
+        .ast_search_capabilities()
+        .declaration_kinds
+        .contains(&node.kind())
+    {
+        return Ok(None);
+    }
     if profile.symbol_with_source(node, &prepared.source).is_none() {
         return Ok(None);
     }
@@ -1187,4 +1196,40 @@ fn search_range(
 ) -> Result<SearchPage> {
     let mut matcher = PreparedAstMatcher::new(language, pattern)?;
     matcher.search_with_budget(source, path, offset, limit, budget)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pattern_symbol_name;
+
+    #[test]
+    fn pattern_symbol_name_restricts_prefilter_to_indexed_declarations() {
+        let mut cases: Vec<(&str, &str, Option<&str>)> = Vec::new();
+        #[cfg(feature = "lang-rust")]
+        {
+            cases.push(("rust", "fn target_fn() {}", Some("target_fn")));
+            cases.push(("rust", "struct TargetType { field: i32 }", Some("TargetType")));
+            cases.push(("rust", "let x = $EXPR", None));
+            cases.push(("rust", "x = $EXPR", None));
+            cases.push(("rust", "x($ARGS)", None));
+        }
+        #[cfg(feature = "lang-python")]
+        {
+            cases.push(("python", "def target_fn():", Some("target_fn")));
+            cases.push(("python", "class TargetClass:", Some("TargetClass")));
+            cases.push(("python", "x = $EXPR", None));
+            cases.push(("python", "x += $EXPR", None));
+            cases.push(("python", "x($ARGS)", None));
+        }
+        #[cfg(feature = "lang-typescript")]
+        {
+            cases.push(("typescript", "function targetFn() {}", Some("targetFn")));
+            cases.push(("typescript", "const x = $EXPR", None));
+            cases.push(("typescript", "x = $EXPR", None));
+        }
+        for (lang, pattern, expected) in cases {
+            let got = pattern_symbol_name(pattern, lang).unwrap();
+            assert_eq!(got.as_deref(), expected, "lang={lang} pattern={pattern}");
+        }
+    }
 }

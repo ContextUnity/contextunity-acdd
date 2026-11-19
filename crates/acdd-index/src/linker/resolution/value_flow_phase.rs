@@ -712,23 +712,20 @@ where
                 Cow::Borrowed(r.expression.as_str())
             };
             #[cfg(feature = "lang-rust")]
-            let rust_explicit_address = profile.is_some_and(|profile| {
+            let rust_keyword_explicit = profile.is_some_and(|profile| {
                 profile.id() == "rust"
                     && ["super::", "crate::", "self::"]
                         .iter()
                         .any(|prefix| r.expression.starts_with(prefix))
             });
-            #[cfg(not(feature = "lang-rust"))]
-            let rust_explicit_address = false;
             #[cfg(feature = "lang-rust")]
             let rust_module_target = super::super::rust::resolution::rust_explicit_module_target(
+                input,
                 profile,
                 path,
                 file_module,
                 &r.expression,
             );
-            #[cfg(not(feature = "lang-rust"))]
-            let rust_module_target: Option<String> = None;
             let (first, tail) = expression.split_once('.').unwrap_or((&expression, ""));
             let owner = interner.lookup_node(by_id, r.source.as_str());
             if !r.dynamic && matches!(r.kind.as_str(), "calls" | "references") {
@@ -1522,10 +1519,55 @@ where
                     }
                 }
             }
-            if rust_explicit_address {
+            #[cfg(feature = "lang-rust")]
+            let mut rust_explicit_address = rust_keyword_explicit;
+            #[cfg(not(feature = "lang-rust"))]
+            let rust_explicit_address = false;
+            #[cfg(feature = "lang-rust")]
+            if rust_keyword_explicit {
                 candidates.clear();
-                if let Some(target) = rust_module_target.as_deref() {
-                    candidates.extend_from_slice(lookup(target));
+                if let Some(target) = rust_module_target.as_ref() {
+                    candidates.extend_from_slice(lookup(target.namespace.as_str()));
+                    if candidates.is_empty() {
+                        candidates.extend(
+                            super::super::rust::resolution::explicit_reexport_targets(
+                                input,
+                                file_module,
+                                target,
+                                lookup_key,
+                            ),
+                        );
+                    }
+                }
+            } else if !shadowed
+                && imported.is_none()
+                && typed_receiver.is_none()
+                && receiver_member.is_none()
+                && !lexical_head_declared
+                && candidates.is_empty()
+            {
+                if let Some(target) = rust_module_target.as_ref() {
+                    candidates.extend(
+                        lookup(target.namespace.as_str())
+                            .iter()
+                            .copied()
+                            .filter(|n| {
+                                input
+                                    .rust_forwarding
+                                    .module_path_visible(&n.qualname, file_module)
+                            }),
+                    );
+                    if candidates.is_empty() {
+                        candidates.extend(
+                            super::super::rust::resolution::explicit_reexport_targets(
+                                input,
+                                file_module,
+                                target,
+                                lookup_key,
+                            ),
+                        );
+                    }
+                    rust_explicit_address = !candidates.is_empty();
                 }
             }
             if imported.is_none()
@@ -1543,9 +1585,6 @@ where
                         || (!shadowed
                             && r.kind == "references"
                             && n.qualname == expression.as_ref())
-                        || rust_module_target
-                            .as_deref()
-                            .is_some_and(|target| n.qualname == target)
                         || rust_explicit_address
                 });
             }

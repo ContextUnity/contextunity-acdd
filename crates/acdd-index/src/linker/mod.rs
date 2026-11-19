@@ -1093,6 +1093,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             profiles,
             normalized_imports,
             modules_by_namespace,
+            rust_library_modules: &namespace_indexes.rust_library_modules,
             #[cfg(feature = "lang-rust")]
             rust_forwarding: &namespace_indexes.rust_forwarding,
             package_exports: &package_exports,

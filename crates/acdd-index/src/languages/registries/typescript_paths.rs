@@ -49,16 +49,12 @@ impl TypeScriptPathsRegistry {
         }
     }
 
-    pub(crate) fn resolve_import(
-        &self,
-        owner: &str,
-        module: &str,
-        indexed_modules: &HashSet<&str>,
-    ) -> Option<ImportPath> {
+    pub(crate) fn candidate_paths(&self, owner: &str, module: &str) -> Vec<String> {
         let workspace = workspace_path(owner).0;
         let mut directory = owner
             .rsplit_once('/')
             .map_or("", |(directory, _)| directory);
+        let mut out = Vec::new();
         loop {
             if let Some(paths) = self.paths.get(directory) {
                 for (pattern, targets) in &paths.mappings {
@@ -70,10 +66,7 @@ impl TypeScriptPathsRegistry {
                                 &target,
                                 usize::from(!workspace.is_empty()),
                             ) {
-                                let stem = module_stem(&path).trim_end_matches("/index");
-                                if indexed_modules.contains(stem) {
-                                    return Some(ImportPath::absolute(javascript_namespace(&path)));
-                                }
+                                out.push(path);
                             }
                         }
                     }
@@ -84,6 +77,21 @@ impl TypeScriptPathsRegistry {
                 break;
             }
             directory = directory.rsplit_once('/').map_or("", |(parent, _)| parent);
+        }
+        out
+    }
+
+    pub(crate) fn resolve_import(
+        &self,
+        owner: &str,
+        module: &str,
+        indexed_modules: &HashSet<&str>,
+    ) -> Option<ImportPath> {
+        for path in self.candidate_paths(owner, module) {
+            let stem = module_stem(&path).trim_end_matches("/index");
+            if indexed_modules.contains(stem) {
+                return Some(ImportPath::absolute(javascript_namespace(&path)));
+            }
         }
         None
     }
