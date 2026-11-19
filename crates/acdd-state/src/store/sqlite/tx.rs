@@ -574,14 +574,14 @@ impl StateTx for SqliteTx<'_> {
             .execute(
                 "INSERT INTO runs (
                     run_id, run_name, collection, workspace, profile_id, profile_json,
-                    spec_path, spec_digest, is_ephemeral, isolation, target_base,
+                    spec_path, spec_id, spec_digest, is_ephemeral, isolation, target_base,
                     target_base_commit, branch, worktree, trace_id, status,
                     cancellation_reason, root_cycle_count, generation, created_at, completed_at
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6,
-                    ?7, ?8, ?9, ?10, ?11,
-                    ?12, ?13, ?14, ?15, ?16,
-                    ?17, ?18, ?19, ?20, ?21
+                    ?7, ?8, ?9, ?10, ?11, ?12,
+                    ?13, ?14, ?15, ?16, ?17,
+                    ?18, ?19, ?20, ?21, ?22
                 )",
                 params![
                     run.run_id.as_str(),
@@ -591,6 +591,7 @@ impl StateTx for SqliteTx<'_> {
                     run.profile_id,
                     run.profile_json,
                     run.spec_path,
+                    run.spec_id,
                     run.spec_digest,
                     i64::from(run.is_ephemeral),
                     run.isolation.as_str(),
@@ -715,6 +716,7 @@ impl StateTx for SqliteTx<'_> {
         bump_write_seq(self.conn)?;
         Ok(())
     }
+
 
     fn admit_claim(
         &mut self,
@@ -1088,6 +1090,7 @@ impl StateTx for SqliteTx<'_> {
         Ok(())
     }
 
+
     fn apply_transition_plan(
         &mut self,
         run_id: &RunId,
@@ -1341,6 +1344,44 @@ impl StateTx for SqliteTx<'_> {
             }
         }
 
+        if !plan.seq_order_updates.is_empty() {
+            for (node_id, seq_order) in &plan.seq_order_updates {
+                let changed = self
+                    .conn
+                    .execute(
+                        "UPDATE gate_nodes SET seq_order = ?1 WHERE run_id = ?2 AND node_id = ?3",
+                        params![i64::from(*seq_order), run_id.as_str(), node_id],
+                    )
+                    .map_err(|err| map_write_err(err, "apply_sync_plan update seq_order"))?;
+                if changed != 1 {
+                    return Err(StateError::new(
+                        ErrorCode::BackendConflict,
+                        format!("apply_sync_plan seq_order target '{run_id}/{node_id}' missing"),
+                    ));
+                }
+            }
+        }
+
+        for dep in &plan.removed_dependencies {
+            self.conn
+                .execute(
+                    "DELETE FROM task_dependencies
+                     WHERE run_id = ?1
+                       AND task_ref = ?2
+                       AND depends_on_workspace = ?3
+                       AND depends_on_run_id = ?4
+                       AND depends_on_ref = ?5",
+                    params![
+                        dep.run_id.as_str(),
+                        dep.task_ref.as_str(),
+                        dep.depends_on_workspace,
+                        dep.depends_on_run_id.as_str(),
+                        dep.depends_on_ref.as_str(),
+                    ],
+                )
+                .map_err(|err| map_write_err(err, "apply_sync_plan delete task_dependencies"))?;
+        }
+
         for dep in &plan.added_dependencies {
             self.conn
                 .execute(
@@ -1362,6 +1403,28 @@ impl StateTx for SqliteTx<'_> {
         }
 
         self.significant_dirty = true;
+        bump_write_seq(self.conn)?;
+        Ok(())
+    }
+
+    fn update_run_spec_id(
+        &mut self,
+        run_id: &RunId,
+        spec_id: Option<&str>,
+    ) -> Result<(), StateError> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE runs SET spec_id = ?1 WHERE run_id = ?2",
+                params![spec_id, run_id.as_str()],
+            )
+            .map_err(|err| map_write_err(err, "update runs.spec_id"))?;
+        if changed != 1 {
+            return Err(StateError::new(
+                ErrorCode::BackendConflict,
+                format!("update_run_spec_id run '{run_id}' missing"),
+            ));
+        }
         bump_write_seq(self.conn)?;
         Ok(())
     }
@@ -1497,6 +1560,7 @@ impl StateTx for SqliteTx<'_> {
         bump_write_seq(self.conn)?;
         Ok(())
     }
+
 
     fn mark_tombstone_cleaned(&mut self, run_id: &RunId) -> Result<(), StateError> {
         let changed = self

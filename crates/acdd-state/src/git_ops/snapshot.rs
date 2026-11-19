@@ -1,22 +1,18 @@
-//! Temporary `GIT_INDEX_FILE` snapshots, GC keep refs, candidate tree hashing, diffing, and rollback.
+//! Temporary `GIT_INDEX_FILE` scoped trees, candidate hashing, diffing, and rollback.
 
-use super::{
-    ensure_non_empty_git_identity, run_git_checked, run_git_raw, run_git_stdout, ScopedTempDir,
-};
+use super::{run_git_checked, run_git_raw, run_git_stdout, ScopedTempDir};
 use crate::types::IsolationMode;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::{atomic_write, checked_child, ensure_confined_dir_all, open_confined};
-use acdd_core::ids::{CommitOid, RunId, TreeOid};
+use acdd_core::ids::{CommitOid, TreeOid};
 use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_SNAPSHOT_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8192;
-static KEEP_REF_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Isolated temporary Git index file (`GIT_INDEX_FILE`) leaving `.git/index` untouched.
 #[derive(Debug)]
@@ -43,8 +39,8 @@ impl TemporaryGitIndex {
     }
 
     pub(super) fn create_temp(worktree: &Path) -> Result<(Self, ScopedTempDir), StateError> {
-        let dir = ScopedTempDir::create("acdd-idx")?;
-        let index_path = dir.0.join("index");
+        let dir = super::create_scoped_temp_dir("acdd-idx")?;
+        let index_path = dir.path().join("index");
         Ok((Self::new(worktree.to_path_buf(), index_path), dir))
     }
 
@@ -140,87 +136,7 @@ impl TemporaryGitIndex {
     }
 }
 
-/// Short-lived GC keep-ref guard preventing `git gc` from pruning unreferenced snapshot objects.
-#[derive(Debug)]
-pub struct GitGcProtection {
-    /// Worktree/repository path owning the keep ref.
-    pub worktree: PathBuf,
-    /// Temporary ref under `refs/acdd/keep/<run_id>/...`.
-    pub keep_ref: String,
-}
-
-impl GitGcProtection {
-    /// Protect `commit_oid` under `refs/acdd/keep/<run_id>/...` until this guard is dropped.
-    pub fn acquire(
-        worktree: impl Into<PathBuf>,
-        run_id: &RunId,
-        commit_oid: &CommitOid,
-    ) -> Result<Self, StateError> {
-        let wt = worktree.into();
-        let seq = KEEP_REF_SEQ.fetch_add(1, Ordering::Relaxed);
-        let keep_ref = format!(
-            "refs/acdd/keep/{}/{}-{}",
-            run_id.as_str(),
-            std::process::id(),
-            seq
-        );
-        run_git_checked(
-            &wt,
-            &["update-ref", &keep_ref, commit_oid.as_str()],
-            None,
-            None,
-            ErrorCode::ExternalGitDrift,
-        )?;
-        Ok(Self {
-            worktree: wt,
-            keep_ref,
-        })
-    }
-}
-
-impl Drop for GitGcProtection {
-    fn drop(&mut self) {
-        let _ = run_git_raw(
-            &self.worktree,
-            &["update-ref", "-d", &self.keep_ref],
-            None,
-            &[],
-            None,
-        );
-    }
-}
-
-/// Parameters for capturing a parentless snapshot under `refs/acdd/snapshots/<run_id>/...`.
-#[derive(Debug, Clone)]
-pub struct CaptureSnapshotReq {
-    /// Target worktree directory.
-    pub worktree: PathBuf,
-    /// Owning run identifier.
-    pub run_id: RunId,
-    /// Node slug or `"manual"` namespace segment.
-    pub namespace: String,
-    /// Snapshot label or `"rev-<N>"`.
-    pub label: String,
-    /// Optional scope restriction (`None` captures full `is_candidate_included` tree).
-    pub scope: Option<Vec<String>>,
-    /// Workspace path policy controlling `is_candidate_included`.
-    pub path_policy: WorkspacePathPolicy,
-    /// Human-readable commit message for the parentless snapshot commit.
-    pub message: String,
-}
-
-/// Result of capturing a Git snapshot ref.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CaptureSnapshotResp {
-    /// Full Git reference written (`refs/acdd/snapshots/...`).
-    pub snapshot_ref: String,
-    /// Parentless commit OID pointed to by `snapshot_ref`.
-    pub commit_oid: CommitOid,
-    /// Tree OID captured by the snapshot.
-    pub tree_oid: TreeOid,
-}
-
-/// Parameters for restoring files from a snapshot ref or commit/tree OID without moving `HEAD`.
+/// Parameters for restoring files from a commit or tree OID without moving `HEAD`.
 #[derive(Debug, Clone)]
 pub struct RollbackReq {
     /// Target worktree directory.
@@ -454,71 +370,7 @@ pub fn current_scope_tree(
     temp_index.write_tree()
 }
 
-/// Capture an orphan snapshot commit and atomically update `refs/acdd/snapshots/<run_id>/...`.
-pub fn capture_snapshot(req: &CaptureSnapshotReq) -> Result<CaptureSnapshotResp, StateError> {
-    if req.namespace.trim().is_empty()
-        || req.label.trim().is_empty()
-        || req.namespace.contains("..")
-        || req.label.contains("..")
-    {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!(
-                "invalid snapshot namespace '{}' or label '{}'",
-                req.namespace, req.label
-            ),
-        ));
-    }
-    let snapshot_ref = format!(
-        "refs/acdd/snapshots/{}/{}/{}",
-        req.run_id.as_str(),
-        req.namespace,
-        req.label
-    );
-    run_git_checked(
-        &req.worktree,
-        &["check-ref-format", &snapshot_ref],
-        None,
-        None,
-        ErrorCode::ProfileSchemaInvalid,
-    )?;
-
-    let tree_oid = current_scope_tree(&req.worktree, req.scope.as_deref(), &req.path_policy)?;
-    let identity_env = ensure_non_empty_git_identity(&req.worktree);
-    let commit_out = run_git_raw(
-        &req.worktree,
-        &["commit-tree", tree_oid.as_str(), "-F", "-"],
-        None,
-        &identity_env,
-        Some(req.message.as_bytes()),
-    )?;
-    if !commit_out.status.success() {
-        return Err(StateError::new(
-            ErrorCode::ExternalGitDrift,
-            format!(
-                "git commit-tree failed for snapshot: {}",
-                String::from_utf8_lossy(&commit_out.stderr).trim()
-            ),
-        ));
-    }
-    let commit_oid = CommitOid::new(String::from_utf8_lossy(&commit_out.stdout).trim())?;
-    let _gc = GitGcProtection::acquire(&req.worktree, &req.run_id, &commit_oid)?;
-    run_git_checked(
-        &req.worktree,
-        &["update-ref", &snapshot_ref, commit_oid.as_str()],
-        None,
-        None,
-        ErrorCode::ExternalGitDrift,
-    )?;
-
-    Ok(CaptureSnapshotResp {
-        snapshot_ref,
-        commit_oid,
-        tree_oid,
-    })
-}
-
-/// Confined-restore working tree paths from a snapshot without mutating `HEAD`.
+/// Confined-restore working tree paths from a commit or tree OID without mutating `HEAD`.
 pub fn restore_rollback(req: &RollbackReq) -> Result<RollbackResp, StateError> {
     let target_trimmed = req.target_ref_or_oid.trim();
     if target_trimmed.is_empty() || target_trimmed.starts_with('-') {
@@ -879,12 +731,12 @@ pub fn diff_scope_changed_paths(
     Ok(changed.into_iter().collect())
 }
 
-/// Read the Git blob OID of `rel_path` at `tree_or_commit` (or `None` if absent).
-pub fn blob_oid_at(
+/// Read `(mode, object_id)` of `rel_path` at `tree_or_commit` (or `None` if absent).
+pub fn tree_entry_at(
     worktree: &Path,
     tree_or_commit: &str,
     rel_path: &str,
-) -> Result<Option<String>, StateError> {
+) -> Result<Option<(String, String)>, StateError> {
     let trimmed = tree_or_commit.trim();
     if trimmed.is_empty() || trimmed.starts_with('-') {
         return Err(StateError::new(
@@ -921,9 +773,73 @@ pub fn blob_oid_at(
         let path_raw = String::from_utf8_lossy(&record[tab + 1..]);
         if normalize_rel_path(&path_raw).as_deref() == Some(norm.as_str()) {
             let mut parts = header.split_whitespace();
-            let (_mode, _kind, oid) = (parts.next(), parts.next(), parts.next());
-            return Ok(oid.map(str::to_owned));
+            let (mode, _kind, oid) = (parts.next(), parts.next(), parts.next());
+            if let (Some(mode), Some(oid)) = (mode, oid) {
+                return Ok(Some((mode.to_owned(), oid.to_owned())));
+            }
         }
     }
     Ok(None)
+}
+
+/// Read the Git blob OID of `rel_path` at `tree_or_commit` (or `None` if absent).
+pub fn blob_oid_at(
+    worktree: &Path,
+    tree_or_commit: &str,
+    rel_path: &str,
+) -> Result<Option<String>, StateError> {
+    Ok(tree_entry_at(worktree, tree_or_commit, rel_path)?.map(|(_, oid)| oid))
+}
+
+/// List normalized relative file paths directly inside `dir_rel` at `tree_or_commit`.
+pub fn list_git_tree_files(
+    worktree: &Path,
+    tree_or_commit: &str,
+    dir_rel: &str,
+) -> Result<Vec<String>, StateError> {
+    let trimmed = tree_or_commit.trim();
+    if trimmed.is_empty() || trimmed.starts_with('-') {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("invalid tree/commit reference '{tree_or_commit}'"),
+        ));
+    }
+    let Some(norm_dir) = normalize_rel_path(dir_rel) else {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("invalid repository-relative directory '{dir_rel}'"),
+        ));
+    };
+    let tree_spec = format!("{trimmed}^{{tree}}");
+    run_git_stdout(
+        worktree,
+        &["rev-parse", "--verify", &tree_spec],
+        None,
+        ErrorCode::ExternalGitDrift,
+    )?;
+    let dir_prefix = format!("{norm_dir}/");
+    let out = run_git_checked(
+        worktree,
+        &["ls-tree", "-z", "--full-tree", trimmed, "--", &dir_prefix],
+        None,
+        None,
+        ErrorCode::ExternalGitDrift,
+    )?;
+    let mut files = Vec::new();
+    for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        let Some(tab) = record.iter().position(|b| *b == b'\t') else {
+            continue;
+        };
+        let header = String::from_utf8_lossy(&record[..tab]);
+        let kind = header.split_whitespace().nth(1);
+        if kind != Some("blob") {
+            continue;
+        }
+        let path_raw = String::from_utf8_lossy(&record[tab + 1..]);
+        if let Some(norm) = normalize_rel_path(&path_raw) {
+            files.push(norm);
+        }
+    }
+    files.sort();
+    Ok(files)
 }

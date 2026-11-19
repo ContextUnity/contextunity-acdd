@@ -378,35 +378,7 @@ pub struct BlackboardPostResp {
     pub entry: BlackboardRecord,
 }
 
-/// Request payload for taking an explicit manual snapshot (`acdd snapshot`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SnapshotReq {
-    /// Optional run ID or name selector.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<String>,
-    /// Optional human-readable snapshot label (defaults to UTC timestamp).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    /// Explicit worktree path override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<PathBuf>,
-}
-
-/// Response payload returned by `StateCommand::Snapshot`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SnapshotResp {
-    /// Run identifier.
-    pub run_id: RunId,
-    /// Written Git snapshot reference (`refs/acdd/snapshots/<run_id>/manual/<label>`).
-    pub snapshot_ref: String,
-    /// Snapshot commit OID.
-    pub commit_oid: CommitOid,
-    /// Snapshot tree OID.
-    pub tree_oid: TreeOid,
-}
-
-/// Request payload for restoring working-tree files from a snapshot ref or OID (`acdd rollback`).
+/// Request payload for restoring working-tree files from a commit or tree OID (`acdd rollback`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RollbackReq {
@@ -736,9 +708,7 @@ pub enum StateCommand {
     Subtask(SubtaskReq),
     /// Post a message to the run blackboard.
     BlackboardPost(BlackboardPostReq),
-    /// Capture an explicit manual Git snapshot under `refs/acdd/snapshots/<run_id>/manual/`.
-    Snapshot(SnapshotReq),
-    /// Confined-restore files from a snapshot ref or commit/tree OID.
+    /// Confined-restore files from a commit/tree OID.
     Rollback(RollbackReq),
     /// Integrate completed task branches into the run worktree.
     Integrate(IntegrateReq),
@@ -764,7 +734,6 @@ impl StateCommandOutput {
             Self::Sync(resp) => serde_json::to_value(resp),
             Self::Subtask(resp) => serde_json::to_value(resp),
             Self::BlackboardPost(resp) => serde_json::to_value(resp),
-            Self::Snapshot(resp) => serde_json::to_value(resp),
             Self::Rollback(resp) => serde_json::to_value(resp),
             Self::Integrate(resp) => serde_json::to_value(resp),
             Self::Clear(resp) => serde_json::to_value(resp),
@@ -797,8 +766,6 @@ pub enum StateCommandOutput {
     Subtask(SubtaskResp),
     /// Output of `BlackboardPost`.
     BlackboardPost(BlackboardPostResp),
-    /// Output of `Snapshot`.
-    Snapshot(SnapshotResp),
     /// Output of `Rollback`.
     Rollback(RollbackResp),
     /// Output of `Integrate`.
@@ -811,7 +778,72 @@ pub enum StateCommandOutput {
     CallPluginTool(CallPluginToolResp),
 }
 
-/// All 6 read-only state queries executed directly over `dyn StateReader` by [`super::StateQueryEngine`].
+/// Read-only request payload for `StateQuery::Validate`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValidateReq {
+    /// Optional workspace-relative document path; `None` validates the whole workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Optional explicit config path override (`--config`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_config: Option<PathBuf>,
+    /// Optional explicit profile override (`--profile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_profile: Option<String>,
+}
+
+/// Single diagnostic entry emitted by `StateQuery::Validate`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValidateDiagnostic {
+    /// Outcome status (`"pass"` or `"fail"`).
+    pub status: String,
+    /// Stable diagnostic code string.
+    pub code: String,
+    /// Workspace-relative file path.
+    pub path: String,
+    /// One-based line number (0 when unknown).
+    pub line: usize,
+    /// One-based column number (0 when unknown).
+    pub column: usize,
+    /// Human-readable diagnostic message.
+    pub message: String,
+}
+
+/// Summary counters returned by `StateQuery::Validate`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValidateSummary {
+    /// Passed diagnostic checks count.
+    pub passed: usize,
+    /// Failed diagnostic checks count.
+    pub failed: usize,
+    /// Warnings count.
+    pub warnings: usize,
+    /// Validated documents count.
+    pub documents_validated: usize,
+}
+
+/// Typed response payload returned by `StateQuery::Validate`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValidateResp {
+    /// Overall validation pass (`failed == 0`).
+    pub valid: bool,
+    /// Validation scope description (`"workspace"` or `"document:<path>"`).
+    pub scope: String,
+    /// Aggregate summary counts.
+    pub summary: ValidateSummary,
+    /// Diagnostic list ordered deterministically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<ValidateDiagnostic>,
+    /// Structured advisory warnings (JSON objects).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<Value>,
+}
+
+/// All read-only state queries executed directly over `dyn StateReader` by [`super::StateQueryEngine`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StateQuery {
     /// Inspect status of an active run.
@@ -826,6 +858,8 @@ pub enum StateQuery {
     BlackboardRead(BlackboardReadReq),
     /// Aggregate observability snapshot (and optional Prometheus text).
     Observability(ObservabilityReq),
+    /// Validate workspace specs, config, profiles, and dependencies.
+    Validate(ValidateReq),
 }
 
 /// Typed output returned by [`super::StateQueryEngine::query`].
@@ -843,6 +877,8 @@ pub enum StateQueryOutput {
     BlackboardRead(BlackboardReadResp),
     /// Output of `Observability`.
     Observability(ObservabilityResp),
+    /// Output of `Validate`.
+    Validate(ValidateResp),
 }
 
 impl StateQueryOutput {
@@ -855,6 +891,7 @@ impl StateQueryOutput {
             Self::Next(resp) => serde_json::to_value(resp),
             Self::BlackboardRead(resp) => serde_json::to_value(resp),
             Self::Observability(resp) => serde_json::to_value(resp),
+            Self::Validate(resp) => serde_json::to_value(resp),
         }
     }
 }

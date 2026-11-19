@@ -2,10 +2,10 @@
 
 use crate::spec::ClosureSummary;
 use crate::types::{
-    canonical_json_string, ClaimOutcome, CompletedRunDigest, NodeKind, NodeStatus,
-    RunGraphSnapshot, RunTombstoneRecord,
+    ClaimOutcome, CompletedRunDigest, NodeKind, NodeStatus, RunGraphSnapshot, RunTombstoneRecord,
 };
 use acdd_core::errors::StateError;
+use acdd_core::format::canonical_json_string;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -146,8 +146,8 @@ pub fn build_completed_run_digest(
         "generation": graph.run.generation,
     });
 
-    let summary_json = canonical_json_string(&summary_val)?;
-    let metrics_json = canonical_json_string(&metrics_val)?;
+    let summary_json = canonical_json_string(&summary_val);
+    let metrics_json = canonical_json_string(&metrics_val);
 
     Ok((digest, summary_json, metrics_json))
 }

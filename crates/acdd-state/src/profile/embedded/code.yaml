@@ -2,6 +2,10 @@ version: 2
 inherit: default
 gates_merge: patch
 
+tags:
+  - default
+  - docs
+
 default_tools:
   - code_map_overview
   - code_map_search
@@ -23,30 +27,46 @@ default_tools:
   - acdd_submit
   - acdd_blackboard
 
+roles:
+  architect:
+    guidance: "Lead architectural synthesis, ground decisions in repository invariants and extension seams, record the decision on acdd_blackboard, and define per-task slices before task execution. Prioritize ACDD MCP tools (code_map_search, code_map_inspect, code_map_impact, code_map_query, acdd_read, ast_grep_search) over raw grep/full reads."
+  contract_author:
+    guidance: "Author the executable contract and runtime-red proof inside the admitted scope without touching protected paths. Prioritize ACDD MCP tools (code_map_search, code_map_inspect, code_map_impact, code_map_query, acdd_read, ast_grep_search) over raw grep/full reads."
+  builder:
+    guidance: "Implement the accepted contract inside the admitted write scope and verify all gate checks. Prioritize ACDD MCP tools (code_map_search, code_map_inspect, code_map_impact, code_map_query, acdd_read, ast_grep_search) over raw grep/full reads."
+  independent_reviewer:
+    guidance: "Conduct an independent architectural and verification review across the declared contours; reject defects with structured findings. Prioritize ACDD MCP tools (code_map_search, code_map_inspect, code_map_impact, code_map_query, acdd_read, ast_grep_search) over raw grep/full reads."
+
 gates:
   - id: blueprint_synthesis.synthesize
     context:
+      - docs.instructions
       - docs.adrs
       - docs.invariants
       - code.symbols
 
   - id: blueprint_synthesis.review
     context:
+      - docs.instructions
       - docs.adrs
       - docs.invariants
       - code.symbols
 
   - id: tasks.contract
+    when: "!docs"
     checks:
       - code.seam
     context:
+      - docs.instructions
       - docs.adrs
       - docs.invariants
       - code.symbols
       - code.tests
 
   - id: tasks.contract_review
+    when: "!docs"
     context:
+      - docs.instructions
       - docs.adrs
       - docs.invariants
       - code.symbols
@@ -56,6 +76,7 @@ gates:
     checks:
       - code.seam
     context:
+      - docs.instructions
       - docs.adrs
       - docs.invariants
       - code.symbols
@@ -64,14 +85,23 @@ gates:
 
   - id: tasks.review
     context:
+      - docs.instructions
       - docs.adrs
       - docs.invariants
       - code.symbols
       - code.tests
       - code.external_callers
 
+  - id: tasks.rearchitect
+    context:
+      - docs.instructions
+      - docs.adrs
+      - docs.invariants
+      - code.symbols
+
   - id: polish
     context:
+      - docs.instructions
       - docs.adrs
       - docs.invariants
       - code.symbols
@@ -79,6 +109,7 @@ gates:
 
   - id: integration_review
     context:
+      - docs.instructions
       - docs.adrs
       - docs.invariants
       - code.symbols

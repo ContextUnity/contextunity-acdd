@@ -125,6 +125,13 @@ pub trait StateTx {
         new_profile: Option<(&str, &str)>,
     ) -> Result<(), StateError>;
 
+    /// Persist `runs.spec_id` for `run_id` inside the active transaction.
+    fn update_run_spec_id(
+        &mut self,
+        run_id: &RunId,
+        spec_id: Option<&str>,
+    ) -> Result<(), StateError>;
+
     /// Insert a new blackboard entry and return the stored record with assigned `id`.
     fn insert_blackboard(&mut self, item: &BlackboardRecord) -> Result<BlackboardRecord, StateError>;
 

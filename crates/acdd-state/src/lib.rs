@@ -24,3 +24,5 @@ pub mod store;
 pub mod types;
 /// Application use cases (`StateEngine`, `StateQueryEngine`, `StateCommand`, `StateQuery`, DTOs).
 pub mod usecases;
+/// Single canonical workspace, specification, profile, and dependency validator.
+pub mod validate;

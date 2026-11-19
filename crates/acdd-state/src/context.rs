@@ -8,10 +8,11 @@ use crate::types::{BlackboardRecord, GateNodeRecord, RejectionFindings, RunRecor
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::{estimate_json_bytes, utf8_tail};
 use acdd_core::ids::{GateId, NodeCursor, RunId, TreeOid, WorkerId};
+use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_core::ports::{CompositeDomainProvider, DomainContextReq};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use serde_json::{json, Map, Value};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 /// Maximum blackboard messages included in Tier 5 (`ADR-0006`).
@@ -40,6 +41,8 @@ pub struct ClaimContextRequest {
     pub worktree: PathBuf,
     /// Candidate tree OID at claim admission.
     pub candidate_tree: TreeOid,
+    /// Workspace path policy enforced when context lenses inspect files.
+    pub path_policy: WorkspacePathPolicy,
     /// Unresolved rejection findings from the prior failed/rejected attempt, if any.
     pub unresolved_findings: Option<RejectionFindings>,
     /// Tail of the latest failed trace log, if any.
@@ -50,6 +53,8 @@ pub struct ClaimContextRequest {
     pub dependency_receipts: Vec<Receipt>,
     /// Relevant blackboard messages (capped to 15 x 500 chars per `ADR-0006`).
     pub blackboard_items: Vec<BlackboardRecord>,
+    /// True when prior `architectural_drift` findings require discarding cached builder context.
+    pub context_reset_required: bool,
     /// Total byte ceiling from `ResponsePolicy.max_output_bytes`.
     pub response_max_bytes: usize,
 }
@@ -73,6 +78,9 @@ pub struct ClaimResp {
     pub candidate_tree: TreeOid,
     /// Suggested inspection command (`acdd show <node_cursor> --run <run_id>`).
     pub inspect_cmd: String,
+    /// True when prior `architectural_drift` findings require discarding cached builder context.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub context_reset_required: bool,
     /// Tier 1: Mandatory contract/task specification excerpt.
     pub contract: Value,
     /// Tier 1: Mandatory resolved guidance entries (never truncated; fails with `GuidanceBudgetExceeded`).
@@ -90,8 +98,8 @@ pub struct ClaimResp {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blackboard: Vec<Value>,
     /// Tier 6: Dynamic `DomainProvider` context lenses in YAML declaration order.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub context_lenses: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub context_lenses: Map<String, Value>,
     /// Lower-priority sections omitted due to `response_max_bytes`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub omitted_sections: Vec<String>,
@@ -99,11 +107,26 @@ pub struct ClaimResp {
     pub total_bytes: usize,
 }
 
-/// Assemble `ClaimResp` under the strict 6-tier budget reservation order (`GuidanceBudgetExceeded` on Tier 1 overflow).
-pub fn build_claim_context(
+/// Canonical git baseline reference (`claim_tree` for `in_place`, `baseline_commit` for `worktree`).
+pub(crate) fn baseline_ref_for_node(node: &crate::types::GateNodeRecord) -> Option<String> {
+    match node.isolation {
+        crate::types::IsolationMode::InPlace => node
+            .claim_tree
+            .as_ref()
+            .map(|t| t.to_string())
+            .or_else(|| node.baseline_commit.as_ref().map(|c| c.to_string())),
+        crate::types::IsolationMode::Worktree => node
+            .baseline_commit
+            .as_ref()
+            .map(|c| c.to_string())
+            .or_else(|| node.claim_tree.as_ref().map(|t| t.to_string())),
+    }
+}
+
+/// Validate Tier 1 mandatory budget (`contract` + `guidance` + mandatory envelope) and build initial `ClaimResp`.
+pub(crate) fn preflight_mandatory_budget(
     req: &ClaimContextRequest,
-    provider: &CompositeDomainProvider,
-) -> Result<ClaimResp, StateError> {
+) -> Result<(ClaimResp, NodeCursor, usize), StateError> {
     let node_cursor = NodeCursor::from_node_id(&req.node.node_id)?;
     let inspect_cmd = format!("acdd show {} --run {}", node_cursor, req.run.run_id);
 
@@ -133,7 +156,7 @@ pub fn build_claim_context(
         req.response_max_bytes,
     )?;
 
-    let mut resp = ClaimResp {
+    let resp = ClaimResp {
         run_id: req.run.run_id.clone(),
         node_cursor: node_cursor.clone(),
         claim_revision: req.claim_revision,
@@ -142,18 +165,19 @@ pub fn build_claim_context(
         worktree: req.worktree.to_string_lossy().into_owned(),
         candidate_tree: req.candidate_tree.clone(),
         inspect_cmd,
+        context_reset_required: req.context_reset_required,
         contract,
         guidance,
         unresolved_findings: None,
         pre_task_slice: None,
         dependency_receipts: Vec::new(),
         blackboard: Vec::new(),
-        context_lenses: BTreeMap::new(),
+        context_lenses: Map::new(),
         omitted_sections: Vec::new(),
-        total_bytes: 0,
+        total_bytes: req.response_max_bytes,
     };
 
-    let mut running_bytes = estimate_json_bytes(&resp);
+    let running_bytes = estimate_json_bytes(&resp);
     if running_bytes > req.response_max_bytes {
         return Err(StateError::new(
             ErrorCode::GuidanceBudgetExceeded,
@@ -163,6 +187,16 @@ pub fn build_claim_context(
             ),
         ));
     }
+
+    Ok((resp, node_cursor, running_bytes))
+}
+
+/// Assemble `ClaimResp` under the strict 6-tier budget reservation order (`GuidanceBudgetExceeded` on Tier 1 overflow).
+pub fn build_claim_context(
+    req: &ClaimContextRequest,
+    provider: &CompositeDomainProvider,
+) -> Result<ClaimResp, StateError> {
+    let (mut resp, node_cursor, mut running_bytes) = preflight_mandatory_budget(req)?;
 
     // Tier 2: Unresolved findings + tail of failed trace log.
     apply_tier2_findings(&mut resp, &mut running_bytes, req);
@@ -175,7 +209,12 @@ pub fn build_claim_context(
             resp.pre_task_slice = Some(slice.clone());
             running_bytes += slice_delta;
         } else {
-            add_omitted_section(&mut resp, &mut running_bytes, "pre_task_slice".to_owned());
+            add_omitted_section(
+                &mut resp,
+                &mut running_bytes,
+                "pre_task_slice".to_owned(),
+                req.response_max_bytes,
+            );
         }
     }
 
@@ -278,11 +317,19 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
     Value::Object(obj)
 }
 
-fn add_omitted_section(resp: &mut ClaimResp, running_bytes: &mut usize, section: String) {
+fn add_omitted_section(
+    resp: &mut ClaimResp,
+    running_bytes: &mut usize,
+    section: String,
+    max_bytes: usize,
+) {
     // `,"omitted_sections":[]` = 22 bytes on first element, `,` = 1 byte thereafter.
     let overhead = if resp.omitted_sections.is_empty() { 22 } else { 1 };
-    *running_bytes += overhead + estimate_json_bytes(&section);
-    resp.omitted_sections.push(section);
+    let delta = overhead + estimate_json_bytes(&section);
+    if *running_bytes + delta <= max_bytes {
+        *running_bytes += delta;
+        resp.omitted_sections.push(section);
+    }
 }
 
 fn apply_tier2_findings(
@@ -322,7 +369,12 @@ fn apply_tier2_findings(
         }
     }
 
-    add_omitted_section(resp, running_bytes, "unresolved_findings".to_owned());
+    add_omitted_section(
+        resp,
+        running_bytes,
+        "unresolved_findings".to_owned(),
+        req.response_max_bytes,
+    );
 }
 
 fn apply_tier4_receipts(
@@ -353,7 +405,12 @@ fn apply_tier4_receipts(
         }
     }
     if omitted {
-        add_omitted_section(resp, running_bytes, "dependency_receipts".to_owned());
+        add_omitted_section(
+            resp,
+            running_bytes,
+            "dependency_receipts".to_owned(),
+            req.response_max_bytes,
+        );
     }
     Ok(())
 }
@@ -394,7 +451,12 @@ fn apply_tier5_blackboard(
         }
     }
     if omitted {
-        add_omitted_section(resp, running_bytes, "blackboard".to_owned());
+        add_omitted_section(
+            resp,
+            running_bytes,
+            "blackboard".to_owned(),
+            req.response_max_bytes,
+        );
     }
 }
 
@@ -452,7 +514,12 @@ fn apply_tier6_context_lenses(
     for qualified_lens in &req.gate.context {
         let remaining = req.response_max_bytes.saturating_sub(*running_bytes);
         if remaining == 0 {
-            add_omitted_section(resp, running_bytes, format!("context:{qualified_lens}"));
+            add_omitted_section(
+                resp,
+                running_bytes,
+                format!("context:{qualified_lens}"),
+                req.response_max_bytes,
+            );
             continue;
         }
 
@@ -465,6 +532,8 @@ fn apply_tier6_context_lenses(
             admitted_scope: admitted_scope.clone(),
             target: target.clone(),
             max_bytes: remaining,
+            path_policy: req.path_policy.clone(),
+            baseline_ref: baseline_ref_for_node(&req.node),
         };
 
         let val = provider.provide_context(qualified_lens, &ctx_req).map_err(|err| {
@@ -486,13 +555,18 @@ fn apply_tier6_context_lenses(
                 resp.context_lenses.insert(qualified_lens.clone(), val);
                 *running_bytes = next_bytes;
             } else {
-                resp.context_lenses.remove(qualified_lens);
+                resp.context_lenses.shift_remove(qualified_lens);
                 let removed_delta = old_val_bytes
                     + estimate_json_bytes(qualified_lens)
                     + 1
                     + if resp.context_lenses.is_empty() { 20 } else { 1 };
                 *running_bytes -= removed_delta;
-                add_omitted_section(resp, running_bytes, format!("context:{qualified_lens}"));
+                add_omitted_section(
+                    resp,
+                    running_bytes,
+                    format!("context:{qualified_lens}"),
+                    req.response_max_bytes,
+                );
             }
         } else {
             // `,"context_lenses":{}` = 20 bytes on first entry, `,` = 1 byte thereafter; plus `<key>:<val>`.
@@ -502,7 +576,12 @@ fn apply_tier6_context_lenses(
                 resp.context_lenses.insert(qualified_lens.clone(), val);
                 *running_bytes += entry_delta;
             } else {
-                add_omitted_section(resp, running_bytes, format!("context:{qualified_lens}"));
+                add_omitted_section(
+                    resp,
+                    running_bytes,
+                    format!("context:{qualified_lens}"),
+                    req.response_max_bytes,
+                );
             }
         }
     }
@@ -589,9 +668,7 @@ fn render_default_markdown(claim: &ClaimResp) -> String {
          - Worker: `{}`\n\
          - Worktree: `{}`\n\
          - Candidate Tree: `{}`\n\
-         - Inspect: `{}`\n\n\
-         ## Contract\n\n```json\n{}\n```\n\n\
-         ## Guidance\n\n{}\n",
+         - Inspect: `{}`\n",
         claim.node_cursor,
         claim.run_id,
         claim.claim_revision,
@@ -600,9 +677,20 @@ fn render_default_markdown(claim: &ClaimResp) -> String {
         claim.worktree,
         claim.candidate_tree,
         claim.inspect_cmd,
+    );
+    if claim.context_reset_required {
+        out.push_str(
+            "\n> [!WARNING]\n\
+             > **CONTEXT RESET REQUIRED**: A prior `architectural_drift` rejection triggered `rearchitect`. \
+             Discard cached builder assumptions, read the latest `rearchitect` decision on `acdd_blackboard`, and implement cleanly from scratch.\n",
+        );
+    }
+    out.push_str(&format!(
+        "\n## Contract\n\n```json\n{}\n```\n\n\
+         ## Guidance\n\n{}\n",
         serde_json::to_string_pretty(&claim.contract).unwrap_or_else(|_| "{}".to_owned()),
         render_guidance_lines(&claim.guidance),
-    );
+    ));
 
     if let Some(findings) = &claim.unresolved_findings {
         out.push_str("\n## Unresolved Findings\n\n```json\n");
@@ -654,6 +742,7 @@ mod tests {
         DomainActionReq, DomainActionResult, DomainCapabilities, DomainCheckOutcome,
         DomainCheckReq, DomainProvider,
     };
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     struct LensMockProvider {
@@ -729,6 +818,7 @@ mod tests {
             profile_id: "code".to_owned(),
             profile_json: "{}".to_owned(),
             spec_path: Some("docs/milestones/AC-001.md".to_owned()),
+            spec_id: None,
             spec_digest: "a".repeat(64),
             is_ephemeral: false,
             isolation: IsolationMode::Worktree,
@@ -822,11 +912,13 @@ mod tests {
             worker_id,
             worktree: PathBuf::from("/tmp/ws"),
             candidate_tree: tree,
+            path_policy: WorkspacePathPolicy::default(),
             unresolved_findings: None,
             failed_trace_log_tail: None,
             pre_task_slice: None,
             dependency_receipts: Vec::new(),
             blackboard_items: Vec::new(),
+            context_reset_required: false,
             response_max_bytes: 32_768,
         }
     }
@@ -848,6 +940,7 @@ mod tests {
         // caps blackboard at 15 x 500 chars, and preserves YAML lens declaration order.
         let mut tiered_req = base_request();
         tiered_req.unresolved_findings = Some(RejectionFindings {
+            kind: crate::types::RejectionKind::Defect,
             summary: "Fix defect".to_owned(),
             blackboard_message_id: Some(7),
             items: vec![FindingItem {
@@ -889,6 +982,7 @@ mod tests {
             .collect();
 
         let mut lenses = BTreeMap::new();
+        lenses.insert("zebra".to_owned(), json!({ "items": ["fn_z"] }));
         lenses.insert("symbols".to_owned(), json!({ "items": ["fn_a", "fn_b"] }));
         lenses.insert("tests".to_owned(), json!({ "blob": "t".repeat(1500) }));
         let code_provider = Arc::new(LensMockProvider {
@@ -897,15 +991,21 @@ mod tests {
         });
         let provider = CompositeDomainProvider::new(vec![code_provider]).unwrap();
 
+        tiered_req.gate.context = vec![
+            "code.zebra".to_owned(),
+            "code.symbols".to_owned(),
+            "code.tests".to_owned(),
+        ];
+
         let full = build_claim_context(&tiered_req, &provider).unwrap();
         assert_eq!(full.blackboard.len(), 15);
         for item in &full.blackboard {
             assert!(item["payload"].as_str().unwrap().chars().count() <= 500);
         }
-        assert!(full.context_lenses.contains_key("code.symbols"));
-        assert!(full.context_lenses.contains_key("code.tests"));
+        let lens_keys: Vec<&str> = full.context_lenses.keys().map(String::as_str).collect();
+        assert_eq!(lens_keys, vec!["code.zebra", "code.symbols", "code.tests"]);
 
-        // Tight budget: fits Tier 1..5 and `code.symbols`, must omit `code.tests` (2nd in YAML order).
+        // Tight budget: fits Tier 1..5, `code.zebra`, `code.symbols`, omits `code.tests` without overflow.
         tiered_req.response_max_bytes = full.total_bytes - 500;
         let trimmed = build_claim_context(&tiered_req, &provider).unwrap();
         assert!(trimmed.total_bytes <= tiered_req.response_max_bytes);
@@ -916,6 +1016,27 @@ mod tests {
         assert!(trimmed.context_lenses.contains_key("code.symbols"));
         assert!(!trimmed.context_lenses.contains_key("code.tests"));
         assert!(trimmed.omitted_sections.contains(&"context:code.tests".to_owned()));
+
+        // Razor-tight budget where `omitted_sections` itself cannot fit: total_bytes MUST still not overflow!
+        let mut tiny_req = base_request();
+        tiny_req.pre_task_slice = Some(json!({ "big": "x".repeat(400) }));
+        tiny_req.gate.context.clear();
+        let bare = build_claim_context(
+            &ClaimContextRequest {
+                pre_task_slice: None,
+                ..tiny_req.clone()
+            },
+            &empty_provider,
+        )
+        .unwrap();
+        tiny_req.response_max_bytes = bare.total_bytes + 5;
+        let bounded = build_claim_context(&tiny_req, &empty_provider).unwrap();
+        assert!(
+            bounded.total_bytes <= tiny_req.response_max_bytes,
+            "omitted_sections must never overflow response_max_bytes: {} > {}",
+            bounded.total_bytes,
+            tiny_req.response_max_bytes
+        );
 
         // Disabled/missing provider lens fails closed with DomainCapabilityUnavailable.
         let err_missing = build_claim_context(&tiered_req, &empty_provider).unwrap_err();
@@ -933,5 +1054,15 @@ mod tests {
         );
         assert!(md_custom.contains("Run=run-1 Node=t1.build Rev=1"));
         assert!(md_custom.contains("\"gate_id\": \"build\""));
+
+        // `context_reset_required: true` emits reset warning in markdown and keeps exact total_bytes.
+        let mut reset_req = base_request();
+        reset_req.gate.context.clear();
+        reset_req.context_reset_required = true;
+        let reset_resp = build_claim_context(&reset_req, &empty_provider).unwrap();
+        assert!(reset_resp.context_reset_required);
+        assert_eq!(reset_resp.total_bytes, serde_json::to_vec(&reset_resp).unwrap().len());
+        let reset_md = render_claim_prompt_markdown(&reset_resp, None);
+        assert!(reset_md.contains("CONTEXT RESET REQUIRED"));
     }
 }

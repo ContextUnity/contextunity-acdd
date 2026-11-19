@@ -7,6 +7,7 @@ pub mod waves;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use command::render_invocation_command;
 pub use command::{
     execute_gate_commands, sanitize_command_process, CommandExecOutcome, CommandExecReq,
 };
@@ -362,7 +363,6 @@ fn run_isolated_process_unix(
             }
         }
 
-        #[cfg(target_os = "macos")]
         fn has_exited_no_reap(&self) -> io::Result<bool> {
             loop {
                 // SAFETY: zeroed siginfo_t is valid storage for waitid(WNOWAIT).
@@ -390,19 +390,7 @@ fn run_isolated_process_unix(
             if self.reaped.is_some() {
                 return Ok(true);
             }
-            #[cfg(target_os = "macos")]
-            {
-                self.has_exited_no_reap()
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                if let Some(status) = self.child.try_wait()? {
-                    self.reaped = Some(status);
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
+            self.has_exited_no_reap()
         }
 
         fn is_harmless_kill_err(&self, err: &io::Error) -> bool {
@@ -419,12 +407,12 @@ fn run_isolated_process_unix(
         }
 
         fn terminate_group_and_reap(&mut self, force_kill: bool) -> io::Result<ExitStatus> {
-            if let Some(status) = self.reaped {
-                self.cleaned_up = true;
-                return Ok(status);
-            }
             if self.cleaned_up {
-                return self.child.wait();
+                return if let Some(status) = self.reaped {
+                    Ok(status)
+                } else {
+                    self.child.wait()
+                };
             }
             let pid = self.child.id() as i32;
             if force_kill || !self.poll_exited().unwrap_or(false) {
@@ -442,7 +430,7 @@ fn run_isolated_process_unix(
                     }
                     return Err(err);
                 }
-                if !self.poll_exited().unwrap_or(false) {
+                if self.reaped.is_none() && !self.poll_exited().unwrap_or(false) {
                     if let Err(err) = self.child.kill() {
                         if !self.is_harmless_kill_err(&err) {
                             return Err(err);

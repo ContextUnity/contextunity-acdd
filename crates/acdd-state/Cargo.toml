@@ -1,6 +1,6 @@
 [package]
 name = "acdd-state"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 authors = ["Oleksii Pylypchuk <oleksii.pylypchuk@tuta.com>"]
 description = "Domain-agnostic profile, workflow graph, and SQLite state engine for ACDD"

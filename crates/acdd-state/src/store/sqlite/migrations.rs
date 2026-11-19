@@ -21,10 +21,16 @@ struct MigrationStep {
     apply: fn(&Connection) -> Result<(), StateError>,
 }
 
-const MIGRATIONS: &[MigrationStep] = &[MigrationStep {
-    target_version: 1,
-    apply: apply_v1,
-}];
+const MIGRATIONS: &[MigrationStep] = &[
+    MigrationStep {
+        target_version: 1,
+        apply: apply_v1,
+    },
+    MigrationStep {
+        target_version: 2,
+        apply: apply_v2,
+    },
+];
 
 fn apply_v1(conn: &Connection) -> Result<(), StateError> {
     conn.execute_batch(SCHEMA_V1_SQL).map_err(|err| {
@@ -47,8 +53,86 @@ fn apply_v1(conn: &Connection) -> Result<(), StateError> {
     Ok(())
 }
 
+fn apply_v2(conn: &Connection) -> Result<(), StateError> {
+    let mut stmt = conn.prepare("PRAGMA table_info(runs)").map_err(|err| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("failed to inspect runs columns before v2 migration: {err}"),
+        )
+    })?;
+    let mut has_spec_id = false;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("failed to read runs columns during v2 migration: {err}"),
+            )
+        })?;
+    for col in rows {
+        let name = col.map_err(|err| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("failed to decode runs column name during v2 migration: {err}"),
+            )
+        })?;
+        if name == "spec_id" {
+            has_spec_id = true;
+            break;
+        }
+    }
+    if !has_spec_id {
+        conn.execute("ALTER TABLE runs ADD COLUMN spec_id TEXT", [])
+            .map_err(|err| {
+                StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("failed to apply v2 migration (runs.spec_id): {err}"),
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// Validate SQLite `PRAGMA user_version` against `CURRENT_SCHEMA_VERSION` without mutating the DB.
+pub(crate) fn validate_user_version(conn: &Connection) -> Result<(), StateError> {
+    let raw: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|err| {
+            StateError::new(
+                ErrorCode::BackendConflict,
+                format!("failed to read SQLite PRAGMA user_version: {err}"),
+            )
+        })?;
+    let uv = u32::try_from(raw).map_err(|_| {
+        StateError::new(
+            ErrorCode::BackendConflict,
+            format!("invalid negative SQLite PRAGMA user_version: {raw}"),
+        )
+    })?;
+    if uv > CURRENT_SCHEMA_VERSION {
+        return Err(StateError::new(
+            ErrorCode::BackendConflict,
+            format!(
+                "state database user_version {uv} is newer than supported version {CURRENT_SCHEMA_VERSION}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Ensure the SQLite database has been migrated to `CURRENT_SCHEMA_VERSION`.
 pub fn ensure_schema(conn: &mut Connection) -> Result<(), StateError> {
+    validate_user_version(conn)?;
+    let pre_version = read_schema_version_in_conn(conn)?;
+    if pre_version > CURRENT_SCHEMA_VERSION {
+        return Err(StateError::new(
+            ErrorCode::BackendConflict,
+            format!(
+                "state database schema_version {pre_version} is newer than supported version {CURRENT_SCHEMA_VERSION}"
+            ),
+        ));
+    }
+
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|err| {
@@ -165,6 +249,48 @@ pub fn read_meta(conn: &Connection) -> Result<SqliteMeta, StateError> {
             last_backup_seq,
         })
     })
+}
+
+/// Validate `_sqlite_meta.schema_version` on a read-only connection, returning the observed
+/// version (`1..=CURRENT_SCHEMA_VERSION`) or failing closed on uninitialized / newer schemas.
+pub(crate) fn validate_read_schema_version(conn: &Connection) -> Result<u32, StateError> {
+    validate_user_version(conn)?;
+    let version = read_schema_version_in_conn(conn)?;
+    if version == 0 {
+        let foreign_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != '_sqlite_meta'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|err| {
+                StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("failed to inspect sqlite_schema during read-only open: {err}"),
+                )
+            })?;
+        if foreign_tables > 0 {
+            return Err(StateError::new(
+                ErrorCode::ConfigMigrationRequired,
+                "state database contains existing tables without _sqlite_meta; migrate or recreate state.sqlite",
+            )
+            .with_hint("Follow docs/runbooks/migration-0.6.md if upgrading from 0.5.x"));
+        }
+        return Err(StateError::new(
+            ErrorCode::ConfigMigrationRequired,
+            "state database is uninitialized (missing _sqlite_meta)",
+        ));
+    }
+    if version > CURRENT_SCHEMA_VERSION {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!(
+                "state database schema_version {version} is newer than supported version {CURRENT_SCHEMA_VERSION}"
+            ),
+        ));
+    }
+    Ok(version)
 }
 
 fn read_schema_version_in_conn(conn: &Connection) -> Result<u32, StateError> {

@@ -11,15 +11,14 @@ use crate::runner::{
 };
 use crate::store::traits::StateBackend;
 use crate::types::{
-    GateNodeRecord, IntegrateStrategy, IsolationMode, NodeKind, NodeStatus, RunGraphSnapshot,
-    RunStatus, SubmitAction, ValidatedObservations,
+    ClaimOutcome, GateNodeRecord, IntegrateStrategy, IsolationMode, NodeKind, NodeStatus,
+    RunGraphSnapshot, RunStatus, SubmitAction, TerminalStatus, ValidatedObservations,
 };
-use crate::usecases::commands::{handle_claim_dyn, handle_integrate_dyn};
+use crate::usecases::commands::{handle_claim_dyn, handle_integrate_dyn, is_context_reset_required};
 use crate::usecases::dto::{ClaimReq, IntegrateReq, RunReq, RunResp, SubmitReq, VerifyReq};
 use crate::usecases::lifecycle::{
     collect_external_satisfied_deps, collect_integration_inputs, ensure_state_enabled,
-    now_utc_iso, parse_profile_from_run, primary_workspace_root, resolve_active_run,
-    resolve_node_worktree,
+    parse_profile_from_run, primary_workspace_root, resolve_active_run,
 };
 use crate::usecases::queries::find_profile_gate_def_ref;
 use crate::usecases::submit::handle_submit_dyn;
@@ -263,9 +262,9 @@ pub(crate) fn handle_run_dyn(
 }
 
 #[derive(Debug, Default)]
-struct StepOutcome {
-    gates_completed: u32,
-    halted_reason: Option<String>,
+pub(crate) struct StepOutcome {
+    pub(crate) gates_completed: u32,
+    pub(crate) halted_reason: Option<String>,
 }
 
 fn build_schedule_observations(
@@ -293,7 +292,7 @@ fn build_schedule_observations(
     Ok(ValidatedObservations {
         external_satisfied_deps,
         unintegrated_tasks,
-        now_utc: now_utc_iso(),
+        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()
     })
 }
@@ -376,7 +375,7 @@ fn find_next_task_gate<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_gate_node(
+pub(crate) fn execute_gate_node(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
     provider: &CompositeDomainProvider,
@@ -441,7 +440,7 @@ fn execute_gate_node(
         let prompt_markdown =
             render_claim_prompt_markdown(&claim_resp, role_def.prompt_template.as_deref());
         let primary = primary_workspace_root(config);
-        let worktree = resolve_node_worktree(config, &snapshot.run, node, None);
+        let worktree = std::path::PathBuf::from(&claim_resp.worktree);
         let (state_db_path, _) = config.resolved_state_db_path();
         let trace_id = snapshot
             .run
@@ -457,10 +456,12 @@ fn execute_gate_node(
                 container_id.to_owned(),
                 role_name.clone(),
             );
-            let guard = session_cache.lock().map_err(|_| {
+            let mut guard = session_cache.lock().map_err(|_| {
                 StateError::new(ErrorCode::BackendConflict, "session cache lock poisoned")
             })?;
-            if let Some(existing) = guard.get(&key) {
+            if claim_resp.context_reset_required || is_context_reset_required(snapshot, node, gate_def) {
+                guard.remove(&key);
+            } else if let Some(existing) = guard.get(&key) {
                 local_cache.insert(key.clone(), existing.clone());
             }
             Some(key)
@@ -494,20 +495,14 @@ fn execute_gate_node(
             guard.insert(key, outcome.agent_session_id.clone());
         }
 
-        let after_graph = backend.load_run_graph(&snapshot.run.run_id)?;
-        let claim_outcome_after = after_graph.as_ref().and_then(|g| {
-            g.claims
-                .iter()
-                .filter(|c| c.node_id == node_id && c.claim_revision == claim_resp.claim_revision)
-                .map(|c| c.outcome)
-                .next_back()
-        });
-        verify_runner_submitted(&outcome, claim_outcome_after)?;
+        let completed_now = check_post_runner_completion(
+            backend,
+            &snapshot.run.run_id,
+            node_id,
+            claim_resp.claim_revision,
+            &outcome,
+        )?;
 
-        let completed_now = after_graph
-            .as_ref()
-            .and_then(|g| g.nodes.iter().find(|n| n.node_id == node_id))
-            .is_some_and(|n| n.status == NodeStatus::Completed);
         return Ok(StepOutcome {
             gates_completed: u32::from(completed_now),
             halted_reason: None,
@@ -587,4 +582,37 @@ fn execute_gate_node(
         gates_completed: u32::from(submit_resp.new_node_status == NodeStatus::Completed),
         halted_reason: None,
     })
+}
+
+pub(crate) fn check_post_runner_completion(
+    backend: &dyn StateBackend,
+    run_id: &RunId,
+    node_id: &str,
+    claim_revision: u32,
+    outcome: &crate::runner::RoleSpawnOutcome,
+) -> Result<bool, StateError> {
+    let after_graph = backend.load_run_graph(run_id)?;
+    let (claim_outcome_after, completed_now) = if let Some(ref g) = after_graph {
+        let outcome_after = g
+            .claims
+            .iter()
+            .filter(|c| c.node_id == node_id && c.claim_revision == claim_revision)
+            .map(|c| c.outcome)
+            .next_back();
+        let done = g
+            .nodes
+            .iter()
+            .find(|n| n.node_id == node_id)
+            .is_some_and(|n| n.status == NodeStatus::Completed);
+        (outcome_after, done)
+    } else if backend
+        .load_tombstone(run_id)?
+        .is_some_and(|t| t.terminal_status == TerminalStatus::Completed)
+    {
+        (Some(ClaimOutcome::Passed), true)
+    } else {
+        (None, false)
+    };
+    verify_runner_submitted(outcome, claim_outcome_after)?;
+    Ok(completed_now)
 }

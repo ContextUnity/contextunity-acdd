@@ -15,6 +15,38 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::str::FromStr;
 
+struct ReadTxGuard<'a> {
+    conn: &'a Connection,
+    active: bool,
+}
+
+impl Drop for ReadTxGuard<'_> {
+    fn drop(&mut self) {
+        if self.active && !self.conn.is_autocommit() {
+            let _ = self.conn.execute_batch("ROLLBACK;");
+        }
+    }
+}
+
+fn with_read_tx<T>(
+    conn: &Connection,
+    context: &str,
+    f: impl FnOnce() -> Result<T, StateError>,
+) -> Result<T, StateError> {
+    let started = if conn.is_autocommit() {
+        conn.execute_batch("BEGIN DEFERRED;")
+            .map_err(|err| map_sql_err(err, context))?;
+        true
+    } else {
+        false
+    };
+    let _guard = ReadTxGuard {
+        conn,
+        active: started,
+    };
+    f()
+}
+
 fn map_sql_err(err: rusqlite::Error, context: &str) -> StateError {
     if let rusqlite::Error::SqliteFailure(sqlite_err, _) = &err {
         if matches!(
@@ -115,20 +147,21 @@ fn decode_run_row(row: &Row<'_>) -> rusqlite::Result<Result<RunRecord, StateErro
     let profile_id: String = row.get(4)?;
     let profile_json: String = row.get(5)?;
     let spec_path: Option<String> = row.get(6)?;
-    let spec_digest: String = row.get(7)?;
-    let is_ephemeral_raw: i64 = row.get(8)?;
-    let isolation_raw: String = row.get(9)?;
-    let target_base: Option<String> = row.get(10)?;
-    let target_base_commit_raw: Option<String> = row.get(11)?;
-    let branch: Option<String> = row.get(12)?;
-    let worktree: Option<String> = row.get(13)?;
-    let trace_id: String = row.get(14)?;
-    let status_raw: String = row.get(15)?;
-    let cancellation_reason: Option<String> = row.get(16)?;
-    let root_cycle_count_raw: i64 = row.get(17)?;
-    let generation_raw: i64 = row.get(18)?;
-    let created_at: String = row.get(19)?;
-    let completed_at: Option<String> = row.get(20)?;
+    let spec_id: Option<String> = row.get(7)?;
+    let spec_digest: String = row.get(8)?;
+    let is_ephemeral_raw: i64 = row.get(9)?;
+    let isolation_raw: String = row.get(10)?;
+    let target_base: Option<String> = row.get(11)?;
+    let target_base_commit_raw: Option<String> = row.get(12)?;
+    let branch: Option<String> = row.get(13)?;
+    let worktree: Option<String> = row.get(14)?;
+    let trace_id: String = row.get(15)?;
+    let status_raw: String = row.get(16)?;
+    let cancellation_reason: Option<String> = row.get(17)?;
+    let root_cycle_count_raw: i64 = row.get(18)?;
+    let generation_raw: i64 = row.get(19)?;
+    let created_at: String = row.get(20)?;
+    let completed_at: Option<String> = row.get(21)?;
 
     Ok((|| {
         Ok(RunRecord {
@@ -139,6 +172,7 @@ fn decode_run_row(row: &Row<'_>) -> rusqlite::Result<Result<RunRecord, StateErro
             profile_id,
             profile_json,
             spec_path,
+            spec_id,
             spec_digest,
             is_ephemeral: to_bool_flag(is_ephemeral_raw, "runs.is_ephemeral")?,
             isolation: parse_enum(&isolation_raw, "runs.isolation")?,
@@ -519,10 +553,41 @@ fn collect_rows<T>(
     Ok(items)
 }
 
-const RUN_COLS: &str = "run_id, run_name, collection, workspace, profile_id, profile_json, \
-    spec_path, spec_digest, is_ephemeral, isolation, target_base, target_base_commit, \
+const RUN_COLS_V1: &str = "run_id, run_name, collection, workspace, profile_id, profile_json, \
+    spec_path, NULL AS spec_id, spec_digest, is_ephemeral, isolation, target_base, target_base_commit, \
     branch, worktree, trace_id, status, cancellation_reason, root_cycle_count, generation, \
     created_at, completed_at";
+
+const RUN_COLS_V2: &str = "run_id, run_name, collection, workspace, profile_id, profile_json, \
+    spec_path, spec_id, spec_digest, is_ephemeral, isolation, target_base, target_base_commit, \
+    branch, worktree, trace_id, status, cancellation_reason, root_cycle_count, generation, \
+    created_at, completed_at";
+
+const RUN_COLS_JOIN_V1: &str = "r.run_id, r.run_name, r.collection, r.workspace, r.profile_id, \
+    r.profile_json, r.spec_path, NULL AS spec_id, r.spec_digest, r.is_ephemeral, r.isolation, \
+    r.target_base, r.target_base_commit, r.branch, r.worktree, r.trace_id, r.status, \
+    r.cancellation_reason, r.root_cycle_count, r.generation, r.created_at, r.completed_at";
+
+const RUN_COLS_JOIN_V2: &str = "r.run_id, r.run_name, r.collection, r.workspace, r.profile_id, \
+    r.profile_json, r.spec_path, r.spec_id, r.spec_digest, r.is_ephemeral, r.isolation, \
+    r.target_base, r.target_base_commit, r.branch, r.worktree, r.trace_id, r.status, \
+    r.cancellation_reason, r.root_cycle_count, r.generation, r.created_at, r.completed_at";
+
+fn run_cols(schema_version: u32) -> &'static str {
+    if schema_version < super::schema::CURRENT_SCHEMA_VERSION {
+        RUN_COLS_V1
+    } else {
+        RUN_COLS_V2
+    }
+}
+
+fn run_cols_join(schema_version: u32) -> &'static str {
+    if schema_version < super::schema::CURRENT_SCHEMA_VERSION {
+        RUN_COLS_JOIN_V1
+    } else {
+        RUN_COLS_JOIN_V2
+    }
+}
 
 const NODE_COLS: &str = "run_id, node_id, parent_id, kind, task_ref, gate_id, seq_order, \
     status, node_version, isolation, attempt, cycle_count, max_attempts, claim_revision, \
@@ -539,7 +604,26 @@ pub(crate) fn load_run_graph(
     conn: &Connection,
     run_id: &RunId,
 ) -> Result<Option<RunGraphSnapshot>, StateError> {
-    let run_sql = format!("SELECT {RUN_COLS} FROM runs WHERE run_id = ?1");
+    load_run_graph_with_version(conn, run_id, super::schema::CURRENT_SCHEMA_VERSION)
+}
+
+pub(crate) fn load_run_graph_with_version(
+    conn: &Connection,
+    run_id: &RunId,
+    schema_version: u32,
+) -> Result<Option<RunGraphSnapshot>, StateError> {
+    with_read_tx(conn, "begin load_run_graph", || {
+        load_run_graph_inner(conn, run_id, schema_version)
+    })
+}
+
+fn load_run_graph_inner(
+    conn: &Connection,
+    run_id: &RunId,
+    schema_version: u32,
+) -> Result<Option<RunGraphSnapshot>, StateError> {
+    let run_cols_sql = run_cols(schema_version);
+    let run_sql = format!("SELECT {run_cols_sql} FROM runs WHERE run_id = ?1");
     let run_opt = conn
         .query_row(&run_sql, params![run_id.as_str()], decode_run_row)
         .optional()
@@ -654,6 +738,24 @@ pub(crate) fn load_run_graph(
 }
 
 pub(crate) fn list_runs(conn: &Connection, req: &ListRunsReq) -> Result<ListRunsPage, StateError> {
+    list_runs_with_version(conn, req, super::schema::CURRENT_SCHEMA_VERSION)
+}
+
+pub(crate) fn list_runs_with_version(
+    conn: &Connection,
+    req: &ListRunsReq,
+    schema_version: u32,
+) -> Result<ListRunsPage, StateError> {
+    with_read_tx(conn, "begin list_runs", || {
+        list_runs_inner(conn, req, schema_version)
+    })
+}
+
+fn list_runs_inner(
+    conn: &Connection,
+    req: &ListRunsReq,
+    schema_version: u32,
+) -> Result<ListRunsPage, StateError> {
     let limit = req.limit.clamp(1, 100);
     let offset = req.offset;
 
@@ -707,8 +809,9 @@ pub(crate) fn list_runs(conn: &Connection, req: &ListRunsReq) -> Result<ListRuns
         i64::try_from(offset).unwrap_or(i64::MAX),
     ));
 
+    let run_cols_sql = run_cols(schema_version);
     let page_sql = format!(
-        "SELECT {RUN_COLS} FROM runs{where_sql} ORDER BY created_at DESC, run_id ASC LIMIT ? OFFSET ?"
+        "SELECT {run_cols_sql} FROM runs{where_sql} ORDER BY created_at DESC, run_id ASC LIMIT ? OFFSET ?"
     );
     let mut stmt = conn
         .prepare(&page_sql)
@@ -776,9 +879,32 @@ pub(crate) fn resolve_active_run_by_worktree(
     conn: &Connection,
     worktree: &str,
 ) -> Result<Option<RunRecord>, StateError> {
+    resolve_active_run_by_worktree_with_version(
+        conn,
+        worktree,
+        super::schema::CURRENT_SCHEMA_VERSION,
+    )
+}
+
+pub(crate) fn resolve_active_run_by_worktree_with_version(
+    conn: &Connection,
+    worktree: &str,
+    schema_version: u32,
+) -> Result<Option<RunRecord>, StateError> {
+    with_read_tx(conn, "begin resolve_active_run_by_worktree", || {
+        resolve_active_run_by_worktree_inner(conn, worktree, schema_version)
+    })
+}
+
+fn resolve_active_run_by_worktree_inner(
+    conn: &Connection,
+    worktree: &str,
+    schema_version: u32,
+) -> Result<Option<RunRecord>, StateError> {
+    let run_cols_sql = run_cols(schema_version);
     // 1. Direct exact match on runs.worktree (enforced unique for active runs by uq_runs_active_worktree).
     let exact_run_sql = format!(
-        "SELECT {RUN_COLS} FROM runs WHERE status = 'active' AND worktree = ?1"
+        "SELECT {run_cols_sql} FROM runs WHERE status = 'active' AND worktree = ?1"
     );
     if let Some(run) = conn
         .query_row(&exact_run_sql, params![worktree], decode_run_row)
@@ -790,15 +916,15 @@ pub(crate) fn resolve_active_run_by_worktree(
     }
 
     // 2. Exact match on an active run's task/node worktree.
-    let node_sql = "SELECT DISTINCT r.run_id, r.run_name, r.collection, r.workspace, r.profile_id, r.profile_json,
-                r.spec_path, r.spec_digest, r.is_ephemeral, r.isolation, r.target_base, r.target_base_commit,
-                r.branch, r.worktree, r.trace_id, r.status, r.cancellation_reason, r.root_cycle_count,
-                r.generation, r.created_at, r.completed_at
+    let run_cols_join_sql = run_cols_join(schema_version);
+    let node_sql = format!(
+        "SELECT DISTINCT {run_cols_join_sql}
          FROM runs r
          JOIN gate_nodes gn ON gn.run_id = r.run_id
-         WHERE r.status = 'active' AND gn.worktree = ?1";
+         WHERE r.status = 'active' AND gn.worktree = ?1"
+    );
     let mut node_stmt = conn
-        .prepare(node_sql)
+        .prepare(&node_sql)
         .map_err(|err| map_sql_err(err, "prepare resolve_active_run_by_worktree(nodes)"))?;
     let node_matches = collect_rows(
         &mut node_stmt,
@@ -818,7 +944,7 @@ pub(crate) fn resolve_active_run_by_worktree(
 
     // 3. Filesystem-equivalent path fallback (e.g. macOS /var -> /private/var or uncanonicalized alias).
     let target_path = Path::new(worktree);
-    let all_active_sql = format!("SELECT {RUN_COLS} FROM runs WHERE status = 'active'");
+    let all_active_sql = format!("SELECT {run_cols_sql} FROM runs WHERE status = 'active'");
     let mut active_stmt = conn
         .prepare(&all_active_sql)
         .map_err(|err| map_sql_err(err, "prepare resolve_active_run_by_worktree(all_active)"))?;
@@ -963,6 +1089,16 @@ pub(crate) fn list_blackboard(
     run_id: &RunId,
     req: &BlackboardListReq,
 ) -> Result<BlackboardPage, StateError> {
+    with_read_tx(conn, "begin list_blackboard", || {
+        list_blackboard_inner(conn, run_id, req)
+    })
+}
+
+fn list_blackboard_inner(
+    conn: &Connection,
+    run_id: &RunId,
+    req: &BlackboardListReq,
+) -> Result<BlackboardPage, StateError> {
     let limit = req.limit.clamp(1, 100);
     let offset = req.offset;
 
@@ -1091,6 +1227,16 @@ pub(crate) fn max_spec_number(
     collection: &str,
     prefix: &str,
 ) -> Result<Option<u32>, StateError> {
+    with_read_tx(conn, "begin max_spec_number", || {
+        max_spec_number_inner(conn, collection, prefix)
+    })
+}
+
+fn max_spec_number_inner(
+    conn: &Connection,
+    collection: &str,
+    prefix: &str,
+) -> Result<Option<u32>, StateError> {
     let mut best: Option<u32> = None;
 
     let mut runs_stmt = conn
@@ -1137,6 +1283,12 @@ pub(crate) fn max_spec_number(
 }
 
 pub(crate) fn observability_snapshot(conn: &Connection) -> Result<ObservabilitySnapshot, StateError> {
+    with_read_tx(conn, "begin observability_snapshot", || {
+        observability_snapshot_inner(conn)
+    })
+}
+
+fn observability_snapshot_inner(conn: &Connection) -> Result<ObservabilitySnapshot, StateError> {
     let active_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM runs WHERE status = 'active'", [], |row| {
             row.get(0)

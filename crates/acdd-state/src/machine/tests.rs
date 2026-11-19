@@ -1,10 +1,13 @@
 use super::*;
+use crate::machine::graph::is_post_task_root_node;
+use crate::machine::schedule::task_dependencies_satisfied;
 use crate::machine::verify::ExecutionDigestInput;
 use crate::types::{
     ArtifactKind, BlackboardRecord, BlackboardStatus, BlackboardTopic, CheckResultRecord,
-    ClaimOutcome, FindingItem, FindingSeverity, GateClaimRecord, GateTraceRecord, IsolationMode,
-    NodeKind, NodeStatus, RejectionFindings, ReviewContourResult, ReviewEvidence, RunGraphSnapshot,
-    SaveAction, SubmitAction, SubtaskStatus, TraceStatus, TransitionPlan, ValidatedObservations,
+    ClaimOutcome, FindingItem, FindingSeverity, GateClaimRecord, GateNodeRecord, GateTraceRecord,
+    InvariantsState, IsolationMode, NodeKind, NodeStatus, RejectionFindings, RejectionKind,
+    ReviewContourResult, ReviewEvidence, RunGraphSnapshot, SaveAction, SubmitAction, SubtaskStatus,
+    TaskDependencyRecord, TraceStatus, TransitionPlan, ValidatedObservations,
 };
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{
@@ -218,7 +221,46 @@ fn apply_plan_in_memory(snap: &mut RunGraphSnapshot, plan: &TransitionPlan) {
         }
     }
     snap.artifacts.extend(plan.new_artifacts.clone());
-    snap.subtasks.extend(plan.new_subtasks.clone());
+    for sub in &plan.new_subtasks {
+        if let Some(existing) = snap
+            .subtasks
+            .iter_mut()
+            .find(|s| s.node_id == sub.node_id && s.subtask_ref == sub.subtask_ref)
+        {
+            *existing = sub.clone();
+        } else {
+            snap.subtasks.push(sub.clone());
+        }
+    }
+}
+
+fn apply_sync_plan_in_memory(snap: &mut RunGraphSnapshot, plan: &SyncPlan) {
+    apply_plan_in_memory(snap, &plan.transition);
+    snap.run.spec_digest = plan.spec_digest.clone();
+    snap.nodes.extend(plan.added_nodes.clone());
+    for (nid, seq) in &plan.seq_order_updates {
+        if let Some(n) = snap.nodes.iter_mut().find(|n| &n.node_id == nid) {
+            n.seq_order = *seq;
+        }
+    }
+    snap.dependencies.retain(|d| {
+        !plan.removed_dependencies.iter().any(|r| {
+            r.task_ref == d.task_ref
+                && r.depends_on_workspace == d.depends_on_workspace
+                && r.depends_on_run_id == d.depends_on_run_id
+                && r.depends_on_ref == d.depends_on_ref
+        })
+    });
+    for dep in &plan.added_dependencies {
+        if !snap.dependencies.iter().any(|d| {
+            d.task_ref == dep.task_ref
+                && d.depends_on_workspace == dep.depends_on_workspace
+                && d.depends_on_run_id == dep.depends_on_run_id
+                && d.depends_on_ref == dep.depends_on_ref
+        }) {
+            snap.dependencies.push(dep.clone());
+        }
+    }
 }
 
 fn canonical_profile(isolation: IsolationMode) -> MachineProfileInput {
@@ -266,7 +308,7 @@ fn canonical_profile(isolation: IsolationMode) -> MachineProfileInput {
         }),
         pass: Some("contract_review".to_owned()),
         save: MachineSavePolicy {
-            post: SaveAction::Snapshot,
+            post: SaveAction::None,
             ..Default::default()
         },
         ..MachineGateDef::minimal(g("contract"))
@@ -292,7 +334,7 @@ fn canonical_profile(isolation: IsolationMode) -> MachineProfileInput {
         require_counts: true,
         pass: Some("review".to_owned()),
         save: MachineSavePolicy {
-            post: SaveAction::Snapshot,
+            post: SaveAction::None,
             ..Default::default()
         },
         ..MachineGateDef::minimal(g("build"))
@@ -323,7 +365,7 @@ fn canonical_profile(isolation: IsolationMode) -> MachineProfileInput {
         save: MachineSavePolicy {
             immutable: true,
             post: if isolation == IsolationMode::InPlace {
-                SaveAction::Snapshot
+                SaveAction::None
             } else {
                 SaveAction::Commit
             },
@@ -383,7 +425,7 @@ fn canonical_profile(isolation: IsolationMode) -> MachineProfileInput {
             archive: true,
             prune: true,
             post: if isolation == IsolationMode::InPlace {
-                SaveAction::Snapshot
+                SaveAction::None
             } else {
                 SaveAction::Commit
             },
@@ -489,43 +531,13 @@ fn build_sample_graph(isolation: IsolationMode, with_pre_task: bool) -> (Machine
 }
 
 #[test]
-fn when_expression_parser_and_tag_filter_matrix() {
-    let allowed = BTreeSet::from(["code".to_owned(), "docs".to_owned(), "slow".to_owned()]);
-    let cases: &[(&str, &[&str], Result<bool, ErrorCode>)] = &[
-        ("code", &["code"], Ok(true)),
-        ("code", &["docs"], Ok(false)),
-        ("!docs", &["code"], Ok(true)),
-        ("!docs", &["docs"], Ok(false)),
-        ("code & !slow", &["code"], Ok(true)),
-        ("code + !slow", &["code", "slow"], Ok(false)),
-        ("(code | docs) & !slow", &["docs"], Ok(true)),
-        ("default", &["default"], Ok(true)),
-        ("unknown_tag", &["code"], Err(ErrorCode::ProfileSchemaInvalid)),
-        ("code &", &["code"], Err(ErrorCode::ProfileSchemaInvalid)),
-        ("", &["code"], Err(ErrorCode::ProfileSchemaInvalid)),
-    ];
-
-    for (expr, tags, expected) in cases {
-        let tag_vec: Vec<String> = tags.iter().map(|s| (*s).to_owned()).collect();
-        let actual = matches_when(Some(expr), &tag_vec, &allowed).map_err(|e| e.code);
-        assert_eq!(actual, *expected, "when expr '{expr}' on {tags:?}");
-    }
-
-    // Also verify effective_task_tags defaults empty to ["default"] and rejects unknown tags.
+fn graph_construction_node_ids_and_when_filtering() {
+    let allowed = BTreeSet::from(["code".to_owned(), "docs".to_owned()]);
+    assert_eq!(effective_task_tags(&[], &allowed).unwrap(), vec!["default".to_owned()]);
     assert_eq!(
-        effective_task_tags(&[], &allowed).unwrap(),
-        vec!["default".to_owned()]
-    );
-    assert_eq!(
-        effective_task_tags(&["nope".to_owned()], &allowed)
-            .unwrap_err()
-            .code,
+        effective_task_tags(&["nope".to_owned()], &allowed).unwrap_err().code,
         ErrorCode::ProfileSchemaInvalid
     );
-}
-
-#[test]
-fn graph_construction_node_ids_and_when_filtering() {
     let (mut profile, _) = build_sample_graph(IsolationMode::Worktree, true);
     // Add `when: "code"` to `contract` gate so `T3` (`docs`) skips `contract`.
     if let MachineGraphItem::TasksBlock(ref mut block) = profile.gates[1] {
@@ -1475,8 +1487,47 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
     .unwrap();
     apply_claim_in_memory(&mut snap, &c_cr_ok);
 
-    // 2. `immutable: true` drift fails with TASK_CANDIDATE_MISMATCH.
+    // 2. When both `immutable: true` and `need:` drift simultaneously, `evaluate_submit` emits
+    // `MarkStaleAndReject` BEFORE failing on `immutable` so drifted `need:` predecessors don't stay Completed.
     let obs_b = obs_with_tree(t_b.clone());
+    let both_drift = evaluate_submit(
+        &snap,
+        &profile,
+        &obs_b,
+        &SubmitInput {
+            node_cursor: NodeCursor::task(t("T1"), vec![g("contract_review")]),
+            action: SubmitAction::Pass,
+            worker_id: w("rev-1"),
+            claim_revision: Some(2),
+            expected_execution_digest: None,
+            review_evidence: Some(rev_ev.clone()),
+            rejection_findings: None,
+            custom_evidence: None,
+            verified_invariants: Vec::new(),
+            snapshot_ref: None,
+            snapshot_commit: None,
+            summary: None,
+        },
+    )
+    .unwrap();
+    match both_drift {
+        SubmitEvaluation::MarkStaleAndReject {
+            stale_node_ids,
+            error,
+            ..
+        } => {
+            assert_eq!(stale_node_ids, vec!["task:T1:contract".to_owned()]);
+            assert_eq!(error.code, ErrorCode::TaskCandidateMismatch);
+        }
+        other => panic!("expected MarkStaleAndReject when both need: and immutable drift, got {other:?}"),
+    }
+
+    // When `need:` matches `t_b` while `claim_tree` is still `t_a`, `immutable: true` still rejects directly.
+    snap.nodes
+        .iter_mut()
+        .find(|n| n.node_id == "task:T1:contract")
+        .unwrap()
+        .accepted_tree = Some(t_b.clone());
     assert_eq!(
         evaluate_submit_plan(
             &snap,
@@ -1501,6 +1552,11 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
         .code,
         ErrorCode::TaskCandidateMismatch
     );
+    snap.nodes
+        .iter_mut()
+        .find(|n| n.node_id == "task:T1:contract")
+        .unwrap()
+        .accepted_tree = Some(t_a.clone());
 
     // 3. `need:` drift when claim_tree == current_tree == t_b while predecessor `contract` had `accepted_tree == t_a`:
     // produces `MarkStaleAndReject { stale_node_ids: ["task:T1:contract"], ... }`.
@@ -1685,6 +1741,7 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
                 expected_execution_digest: None,
                 review_evidence: None,
                 rejection_findings: Some(RejectionFindings {
+                    kind: RejectionKind::Defect,
                     summary: "needs fix".to_owned(),
                     blackboard_message_id: Some(7),
                     items: vec![FindingItem {
@@ -1890,6 +1947,313 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
     assert_eq!(bb_patches.len(), 2);
     assert_eq!(bb_patches[0].status, BlackboardStatus::Resolved);
     assert_eq!(bb_patches[1].status, BlackboardStatus::CarriedOver);
+
+    // Verify `architectural_drift -> rearchitect -> build` resets stale `build`/`review` and
+    // unused `rearchitect` becomes `Cancelled` when `deliver` completes the task.
+    let mut drift_profile = canonical_profile(IsolationMode::Worktree);
+    drift_profile.gates.remove(0);
+    if let MachineGraphItem::TasksBlock(ref mut tb) = drift_profile.gates[0] {
+        tb.gates[3].fail_drift = Some("rearchitect".to_owned());
+        tb.gates.push(MachineGateDef {
+            role: Some("architect".to_owned()),
+            pass: Some("build".to_owned()),
+            max_attempts: 3,
+            ..MachineGateDef::minimal(g("rearchitect"))
+        });
+    }
+    let drift_run = RunId::new("run-drift").unwrap();
+    let drift_input = BuildGraphInput {
+        run_id: drift_run.clone(),
+        run_name: RunName::new("AC-102").unwrap(),
+        collection: Some("milestones".to_owned()),
+        workspace: "/repo".to_owned(),
+        spec_path: Some("docs/milestones/AC-102.md".to_owned()),
+        is_ephemeral: false,
+        target_base: Some("main".to_owned()),
+        target_base_commit: Some(commit('1')),
+        branch: Some("milestone/AC-102".to_owned()),
+        worktree: Some("/repo/.worktrees/AC-102".to_owned()),
+        trace_id: "0123456789abcdef0123456789abcdef".to_owned(),
+        created_at: "2026-11-17T09:00:00.000Z".to_owned(),
+        spec: MachineSpecInput {
+            tasks: vec![
+                make_task("T1", &["code"], &["crates/a/**"], &[], &drift_run),
+                make_task("T2", &["code"], &["crates/b/**"], &[], &drift_run),
+            ],
+            spec_digest: "drift-sha".to_owned(),
+        },
+    };
+    let mut d_snap = build_initial_run_graph(&drift_profile, &drift_input).unwrap();
+    // Simulate completed build & active review on T1, then reject with ArchitecturalDrift.
+    {
+        let build_n = d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:build").unwrap();
+        build_n.status = NodeStatus::Completed;
+        build_n.accepted_tree = Some(t_a.clone());
+        build_n.accepted_definition_digest = Some("def:build".to_owned());
+        build_n.worker_id = Some(w("b1"));
+        d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:contract").unwrap().status = NodeStatus::Completed;
+        d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:contract_review").unwrap().status = NodeStatus::Completed;
+        d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:review").unwrap().status = NodeStatus::Ready;
+    }
+    let c_dr = admit_claim(
+        &d_snap,
+        &drift_profile,
+        &obs_a,
+        &ClaimInput {
+            node_cursor: NodeCursor::task(t("T1"), vec![g("review")]),
+            worker_id: w("rev-drift"),
+            session_fingerprint: None,
+            worktree: "/repo/.worktrees/T1".to_owned(),
+            branch: Some("task/T1".to_owned()),
+            baseline_commit: Some(commit('1')),
+            claim_tree: t_a.clone(),
+            span_id: "1000000000000200".to_owned(),
+            force: false,
+            steal_remote: false,
+            previous_local_pid_alive: None,
+        },
+    )
+    .unwrap();
+    apply_claim_in_memory(&mut d_snap, &c_dr);
+    let rej_drift = evaluate_submit_plan(
+        &d_snap,
+        &drift_profile,
+        &obs_a,
+        &SubmitInput {
+            node_cursor: NodeCursor::task(t("T1"), vec![g("review")]),
+            action: SubmitAction::Reject,
+            worker_id: w("rev-drift"),
+            claim_revision: Some(1),
+            expected_execution_digest: None,
+            review_evidence: None,
+            rejection_findings: Some(RejectionFindings {
+                kind: RejectionKind::ArchitecturalDrift,
+                summary: "shadow resolver introduced".to_owned(),
+                blackboard_message_id: None,
+                items: vec![FindingItem {
+                    severity: FindingSeverity::High,
+                    path: Some("crates/a/src/lib.rs".to_owned()),
+                    message: "bypassed canonical owner".to_owned(),
+                    remediation: "rearchitect around canonical owner".to_owned(),
+                }],
+            }),
+            custom_evidence: None,
+            verified_invariants: Vec::new(),
+            snapshot_ref: None,
+            snapshot_commit: None,
+            summary: None,
+        },
+    )
+    .unwrap();
+    apply_plan_in_memory(&mut d_snap, &rej_drift);
+
+    let findings_art = d_snap
+        .artifacts
+        .iter()
+        .find(|a| a.node_id == "task:T1:review" && a.kind == ArtifactKind::Findings)
+        .unwrap();
+    let f_json: serde_json::Value = serde_json::from_str(&findings_art.payload_json).unwrap();
+    assert_eq!(f_json["kind"], "architectural_drift");
+    assert_eq!(f_json["reset_worker_context"], true);
+    assert_eq!(f_json["reset_gate_id"], "build");
+    assert_eq!(
+        d_snap.nodes.iter().find(|n| n.node_id == "task:T1:rearchitect").unwrap().status,
+        NodeStatus::Ready
+    );
+    let reset_build = d_snap.nodes.iter().find(|n| n.node_id == "task:T1:build").unwrap();
+    assert_eq!(reset_build.status, NodeStatus::Pending);
+    assert_eq!(reset_build.accepted_tree, None);
+    assert_eq!(reset_build.accepted_definition_digest, None);
+    assert_eq!(reset_build.worker_id, None);
+    assert_eq!(reset_build.session_fingerprint, None);
+    assert_eq!(reset_build.active_span_id, None);
+    assert_eq!(
+        d_snap.nodes.iter().find(|n| n.node_id == "task:T1:review").unwrap().status,
+        NodeStatus::Pending
+    );
+
+    // Passing `rearchitect` advances `pass: build` to Ready.
+    let c_arch = admit_claim(
+        &d_snap,
+        &drift_profile,
+        &obs_a,
+        &ClaimInput {
+            node_cursor: NodeCursor::task(t("T1"), vec![g("rearchitect")]),
+            worker_id: w("arch-1"),
+            session_fingerprint: None,
+            worktree: "/repo/.worktrees/T1".to_owned(),
+            branch: Some("task/T1".to_owned()),
+            baseline_commit: Some(commit('1')),
+            claim_tree: t_a.clone(),
+            span_id: "1000000000000201".to_owned(),
+            force: false,
+            steal_remote: false,
+            previous_local_pid_alive: None,
+        },
+    )
+    .unwrap();
+    apply_claim_in_memory(&mut d_snap, &c_arch);
+    let pass_arch = evaluate_submit_plan(
+        &d_snap,
+        &drift_profile,
+        &obs_a,
+        &SubmitInput {
+            node_cursor: NodeCursor::task(t("T1"), vec![g("rearchitect")]),
+            action: SubmitAction::Pass,
+            worker_id: w("arch-1"),
+            claim_revision: Some(1),
+            expected_execution_digest: None,
+            review_evidence: None,
+            rejection_findings: None,
+            custom_evidence: None,
+            verified_invariants: Vec::new(),
+            snapshot_ref: None,
+            snapshot_commit: None,
+            summary: Some("rearchitected".to_owned()),
+        },
+    )
+    .unwrap();
+    apply_plan_in_memory(&mut d_snap, &pass_arch);
+    assert_eq!(
+        d_snap.nodes.iter().find(|n| n.node_id == "task:T1:build").unwrap().status,
+        NodeStatus::Ready
+    );
+
+    // Happy-path deliver on T2 cancels unused Pending `rearchitect`.
+    {
+        for gid in ["contract", "contract_review", "build", "review"] {
+            let n = d_snap
+                .nodes
+                .iter_mut()
+                .find(|n| n.node_id == format!("task:T2:{gid}"))
+                .unwrap();
+            n.status = NodeStatus::Completed;
+            n.accepted_tree = Some(t_a.clone());
+            if gid == "build" {
+                n.worker_id = Some(w("b2"));
+            }
+        }
+        d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T2:deliver").unwrap().status =
+            NodeStatus::Ready;
+    }
+    let c_d2 = admit_claim(
+        &d_snap,
+        &drift_profile,
+        &obs_a,
+        &ClaimInput {
+            node_cursor: NodeCursor::task(t("T2"), vec![g("deliver")]),
+            worker_id: w("rev-t2"),
+            session_fingerprint: None,
+            worktree: "/repo/.worktrees/T2".to_owned(),
+            branch: Some("task/T2".to_owned()),
+            baseline_commit: Some(commit('1')),
+            claim_tree: t_a.clone(),
+            span_id: "1000000000000202".to_owned(),
+            force: false,
+            steal_remote: false,
+            previous_local_pid_alive: None,
+        },
+    )
+    .unwrap();
+    apply_claim_in_memory(&mut d_snap, &c_d2);
+    let pass_d2 = evaluate_submit_plan(
+        &d_snap,
+        &drift_profile,
+        &obs_a,
+        &SubmitInput {
+            node_cursor: NodeCursor::task(t("T2"), vec![g("deliver")]),
+            action: SubmitAction::Pass,
+            worker_id: w("rev-t2"),
+            claim_revision: Some(1),
+            expected_execution_digest: None,
+            review_evidence: None,
+            rejection_findings: None,
+            custom_evidence: None,
+            verified_invariants: Vec::new(),
+            snapshot_ref: None,
+            snapshot_commit: Some(commit('8')),
+            summary: Some("delivered".to_owned()),
+        },
+    )
+    .unwrap();
+    apply_plan_in_memory(&mut d_snap, &pass_d2);
+    assert_eq!(
+        d_snap.nodes.iter().find(|n| n.node_id == "task:T2:rearchitect").unwrap().status,
+        NodeStatus::Cancelled
+    );
+
+    // ArchitecturalDrift when `fail_drift` sibling (`rearchitect`) was excluded by `when:` falls back to `fail` (`build`).
+    d_snap.nodes.retain(|n| n.node_id != "task:T1:rearchitect");
+    d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:build").unwrap().status =
+        NodeStatus::Completed;
+    d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:build").unwrap().accepted_tree =
+        Some(t_a.clone());
+    d_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:review").unwrap().status =
+        NodeStatus::Ready;
+    let c_rev_fallback = admit_claim(
+        &d_snap,
+        &drift_profile,
+        &obs_a,
+        &ClaimInput {
+            node_cursor: NodeCursor::task(t("T1"), vec![g("review")]),
+            worker_id: w("rev-drift-fb"),
+            session_fingerprint: None,
+            worktree: "/repo/.worktrees/T1".to_owned(),
+            branch: Some("task/T1".to_owned()),
+            baseline_commit: Some(commit('1')),
+            claim_tree: t_a,
+            span_id: "1000000000000203".to_owned(),
+            force: false,
+            steal_remote: false,
+            previous_local_pid_alive: None,
+        },
+    )
+    .unwrap();
+    apply_claim_in_memory(&mut d_snap, &c_rev_fallback);
+    let rej_fallback = evaluate_submit_plan(
+        &d_snap,
+        &drift_profile,
+        &obs_a,
+        &SubmitInput {
+            node_cursor: NodeCursor::task(t("T1"), vec![g("review")]),
+            action: SubmitAction::Reject,
+            worker_id: w("rev-drift-fb"),
+            claim_revision: Some(2),
+            expected_execution_digest: None,
+            review_evidence: None,
+            rejection_findings: Some(RejectionFindings {
+                kind: RejectionKind::ArchitecturalDrift,
+                summary: "drift without rearchitect sibling".to_owned(),
+                blackboard_message_id: None,
+                items: vec![FindingItem {
+                    severity: FindingSeverity::High,
+                    path: Some("crates/a/src/lib.rs".to_owned()),
+                    message: "bypassed owner".to_owned(),
+                    remediation: "reset and rebuild".to_owned(),
+                }],
+            }),
+            custom_evidence: None,
+            verified_invariants: Vec::new(),
+            snapshot_ref: None,
+            snapshot_commit: None,
+            summary: None,
+        },
+    )
+    .unwrap();
+    apply_plan_in_memory(&mut d_snap, &rej_fallback);
+    assert_eq!(
+        d_snap.nodes.iter().find(|n| n.node_id == "task:T1:build").unwrap().status,
+        NodeStatus::Ready
+    );
+    let fb_art = d_snap
+        .artifacts
+        .iter()
+        .filter(|a| a.node_id == "task:T1:review" && a.kind == ArtifactKind::Findings)
+        .max_by_key(|a| a.claim_revision)
+        .unwrap();
+    let fb_stored = crate::machine::submit::parse_findings_artifact(&fb_art.payload_json).unwrap();
+    assert!(fb_stored.reset_worker_context);
+    assert_eq!(fb_stored.reset_gate_id.as_deref(), Some("build"));
 }
 
 #[test]
@@ -2118,20 +2482,442 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
     assert_eq!(snap.run.root_cycle_count, 0);
 
     spec_with_t4.tasks[2].scope = vec!["docs/should-not-overwrite-completed/**".to_owned()];
+
+    // Preserve runtime subtask status/evidence on T1, remove T2->T1 dependency to promote T2 Ready,
+    // and test `sync --rebind-profile` instantiating new TaskGate `lint` + RootGate `audit`.
+    snap.subtasks
+        .iter_mut()
+        .find(|s| s.node_id == "task:T1")
+        .unwrap()
+        .status = SubtaskStatus::InProgress;
+    snap.subtasks
+        .iter_mut()
+        .find(|s| s.node_id == "task:T1")
+        .unwrap()
+        .evidence = Some("runtime wip".to_owned());
+    spec_with_t4.tasks[0].subtasks[0].status = SubtaskStatus::Pending;
+    spec_with_t4.tasks[0].subtasks[0].evidence = None;
+    spec_with_t4.tasks[1].depends_on.clear(); // Remove T2 -> T1 edge (#17).
+
+    let mut rebound_profile = profile.clone();
+    if let MachineGraphItem::TasksBlock(ref mut blk) = rebound_profile.gates[1] {
+        let lint_gate = MachineGateDef::minimal(g("lint"));
+        blk.gates.insert(1, lint_gate);
+    }
+    let audit_gate = MachineGateDef::minimal(g("audit"));
+    rebound_profile
+        .gates
+        .insert(3, MachineGraphItem::Gate(Box::new(audit_gate)));
+
     let sync_ok = plan_sync(
         &snap,
         &profile,
         &obs,
         &SyncInput {
             spec: spec_with_t4,
-            new_profile: Some(profile.clone()),
+            new_profile: Some(rebound_profile.clone()),
             rebind_profile: true,
         },
     )
     .unwrap();
     assert!(sync_ok.added_nodes.iter().any(|n| n.node_id == "task:T4"));
+    assert!(sync_ok.added_nodes.iter().any(|n| n.node_id == "task:T1:lint"));
+    assert!(sync_ok.added_nodes.iter().any(|n| n.node_id == "task:T2:lint"));
+    assert!(sync_ok.added_nodes.iter().any(|n| n.node_id == "task:T4:lint"));
+    assert!(!sync_ok.added_nodes.iter().any(|n| n.node_id == "task:T3:lint"));
+    assert!(sync_ok.added_nodes.iter().any(|n| n.node_id == "root:audit"));
+    assert_eq!(sync_ok.removed_dependencies.len(), 1);
+    assert_eq!(sync_ok.removed_dependencies[0].task_ref, t("T2"));
     // Completed T3 must NOT appear in `node_patches`!
     assert!(!sync_ok.transition.node_patches.iter().any(|p| p.node_id == "task:T3"));
+
+    apply_sync_plan_in_memory(&mut snap, &sync_ok);
+    // Runtime subtask status/evidence survived sync.
+    let t1_sub = snap.subtasks.iter().find(|s| s.node_id == "task:T1").unwrap();
+    assert_eq!(t1_sub.status, SubtaskStatus::InProgress);
+    assert_eq!(t1_sub.evidence.as_deref(), Some("runtime wip"));
+    // Re-complete pre-task barrier and place Pending T2 behind T2->T1 to verify dependency removal promotion.
+    for nid in [
+        "root:blueprint_synthesis.synthesize",
+        "root:blueprint_synthesis.review",
+        "root:blueprint_synthesis",
+    ] {
+        snap.nodes.iter_mut().find(|n| n.node_id == nid).unwrap().status = NodeStatus::Completed;
+    }
+    for nid in ["task:T2", "task:T2:contract"] {
+        snap.nodes.iter_mut().find(|n| n.node_id == nid).unwrap().status = NodeStatus::Pending;
+    }
+    snap.dependencies.push(TaskDependencyRecord {
+        run_id: snap.run.run_id.clone(),
+        task_ref: t("T2"),
+        depends_on_workspace: "/repo".to_owned(),
+        depends_on_run_id: snap.run.run_id.clone(),
+        depends_on_ref: t("T1"),
+        satisfied: false,
+    });
+    let mut spec_remove_dep = MachineSpecInput {
+        tasks: vec![
+            make_task("T1", &["code"], &["crates/a/**"], &[], &snap.run.run_id),
+            make_task("T2", &["code"], &["crates/b/**"], &[], &snap.run.run_id),
+            make_task("T3", &["docs"], &["docs/guide/**"], &[], &snap.run.run_id),
+            make_task("T4", &["docs"], &["docs/extra/**"], &[], &snap.run.run_id),
+        ],
+        spec_digest: "spec-v3".to_owned(),
+    };
+    spec_remove_dep.tasks[0].subtasks[0].status = SubtaskStatus::Pending;
+    spec_remove_dep.tasks[0].subtasks[0].evidence = None;
+    let sync_promote = plan_sync(
+        &snap,
+        &rebound_profile,
+        &obs,
+        &SyncInput {
+            spec: spec_remove_dep,
+            new_profile: None,
+            rebind_profile: false,
+        },
+    )
+    .unwrap();
+    apply_sync_plan_in_memory(&mut snap, &sync_promote);
+    assert!(snap.dependencies.is_empty());
+    assert_eq!(
+        snap.nodes.iter().find(|n| n.node_id == "task:T2").unwrap().status,
+        NodeStatus::Ready
+    );
+    assert_eq!(
+        snap.nodes.iter().find(|n| n.node_id == "task:T2:contract").unwrap().status,
+        NodeStatus::Ready
+    );
+    assert!(is_post_task_root_node(
+        &snap,
+        snap.nodes.iter().find(|n| n.node_id == "root:verify").unwrap()
+    ));
+    assert!(is_post_task_root_node(
+        &snap,
+        snap.nodes.iter().find(|n| n.node_id == "root:audit").unwrap()
+    ));
+
+    // 5. #19: Transitive A -> B -> C cascade reopen clears B -> C satisfaction and schedule blocks C until B completes.
+    let (_, mut chain_snap) = build_sample_graph(IsolationMode::Worktree, false);
+    let t4 = t("T4");
+    chain_snap.nodes.push(GateNodeRecord {
+        run_id: chain_snap.run.run_id.clone(),
+        node_id: "task:T4".to_owned(),
+        parent_id: Some("tasks#0".to_owned()),
+        kind: NodeKind::Task,
+        task_ref: Some(t4.clone()),
+        gate_id: "__task__".to_owned(),
+        seq_order: 50,
+        status: NodeStatus::Completed,
+        node_version: 1,
+        isolation: IsolationMode::Worktree,
+        attempt: 0,
+        cycle_count: 0,
+        max_attempts: 3,
+        claim_revision: 0,
+        contract_revision: 1,
+        worker_id: None,
+        session_fingerprint: None,
+        branch: None,
+        worktree: None,
+        baseline_commit: None,
+        claim_tree: None,
+        accepted_tree: None,
+        accepted_definition_digest: None,
+        tags: vec!["code".to_owned()],
+        invariants: InvariantsState::default(),
+        scope: vec!["crates/c/**".to_owned()],
+        extended_scope: Vec::new(),
+        active_span_id: None,
+    });
+    chain_snap.nodes.push(GateNodeRecord {
+        run_id: chain_snap.run.run_id.clone(),
+        node_id: "task:T4:contract".to_owned(),
+        parent_id: Some("task:T4".to_owned()),
+        kind: NodeKind::TaskGate,
+        task_ref: Some(t4.clone()),
+        gate_id: "contract".to_owned(),
+        seq_order: 51,
+        status: NodeStatus::Completed,
+        node_version: 1,
+        isolation: IsolationMode::Worktree,
+        attempt: 0,
+        cycle_count: 0,
+        max_attempts: 3,
+        claim_revision: 0,
+        contract_revision: 1,
+        worker_id: None,
+        session_fingerprint: None,
+        branch: None,
+        worktree: None,
+        baseline_commit: None,
+        claim_tree: None,
+        accepted_tree: None,
+        accepted_definition_digest: None,
+        tags: vec!["code".to_owned()],
+        invariants: InvariantsState::default(),
+        scope: vec!["crates/c/**".to_owned()],
+        extended_scope: Vec::new(),
+        active_span_id: None,
+    });
+    for tid in ["task:T1", "task:T2", "task:T3"] {
+        chain_snap.nodes.iter_mut().find(|n| n.node_id == tid).unwrap().status = NodeStatus::Completed;
+    }
+    chain_snap.dependencies[0].satisfied = true; // T2 -> T1
+    chain_snap.dependencies.push(TaskDependencyRecord {
+        run_id: chain_snap.run.run_id.clone(),
+        task_ref: t4.clone(),
+        depends_on_workspace: "/repo".to_owned(),
+        depends_on_run_id: chain_snap.run.run_id.clone(),
+        depends_on_ref: t("T2"),
+        satisfied: true,
+    });
+    let chain_cascade = plan_reopen(
+        &chain_snap,
+        &obs,
+        &ReopenInput {
+            node_cursor: NodeCursor::task(t("T1"), vec![]),
+            cascade: true,
+            reason: Some("reopen root".to_owned()),
+        },
+    )
+    .unwrap();
+    apply_plan_in_memory(&mut chain_snap, &chain_cascade);
+    assert!(chain_snap.dependencies.iter().all(|d| !d.satisfied));
+
+    // Reopening T4 while T2 is Stale must NOT make T4 claimable or scheduled as ready.
+    let reopen_t4 = plan_reopen(
+        &chain_snap,
+        &obs,
+        &ReopenInput {
+            node_cursor: NodeCursor::task(t4.clone(), vec![]),
+            cascade: false,
+            reason: None,
+        },
+    )
+    .unwrap();
+    apply_plan_in_memory(&mut chain_snap, &reopen_t4);
+    assert!(!task_dependencies_satisfied(&chain_snap, &t4, &obs));
+    assert!(!compute_schedule(&chain_snap, &obs).unwrap().ready_tasks.contains(&t4));
+    // Even if dep.satisfied were corrupted true while T2 is Stale, schedule still refuses T4.
+    chain_snap.dependencies[1].satisfied = true;
+    assert!(!task_dependencies_satisfied(&chain_snap, &t4, &obs));
+    assert_eq!(
+        admit_claim(
+            &chain_snap,
+            &profile,
+            &obs,
+            &ClaimInput {
+                node_cursor: NodeCursor::task(t4, vec![g("contract")]),
+                worker_id: w("w4"),
+                session_fingerprint: None,
+                worktree: "/repo/.worktrees/T4".to_owned(),
+                branch: None,
+                baseline_commit: None,
+                claim_tree: tree('a'),
+                span_id: "cccccccccccccccc".to_owned(),
+                force: false,
+                steal_remote: false,
+                previous_local_pid_alive: None,
+            },
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::GateVerificationFailed
+    );
+
+    // 6. #9: `rebind_profile` inserting a new gate ahead of an unclaimed `Ready` sibling gate
+    // demotes that unclaimed sibling back to `Pending` and activates the newly inserted gate first.
+    let (p9_base_profile, mut p9_snap) = build_sample_graph(IsolationMode::Worktree, false);
+    if let Some(c) = p9_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:contract") {
+        c.status = NodeStatus::Completed;
+    }
+    if let Some(b) = p9_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:build") {
+        b.status = NodeStatus::Ready;
+        b.claim_revision = 0;
+    }
+    let mut p9_rebound = p9_base_profile.clone();
+    for item in &mut p9_rebound.gates {
+        if let MachineGraphItem::TasksBlock(ref mut blk) = item {
+            blk.gates.insert(1, MachineGateDef::minimal(g("check")));
+            break;
+        }
+    }
+    let p9_spec = MachineSpecInput {
+        tasks: vec![make_task("T1", &[], &["crates/a/**"], &[], &p9_snap.run.run_id)],
+        spec_digest: "p9".to_owned(),
+    };
+    p9_snap.nodes.retain(|n| {
+        n.task_ref.as_ref().is_none_or(|tr| *tr == t("T1"))
+    });
+    let p9_sync = plan_sync(
+        &p9_snap,
+        &p9_base_profile,
+        &obs,
+        &SyncInput {
+            spec: p9_spec,
+            new_profile: Some(p9_rebound),
+            rebind_profile: true,
+        },
+    )
+    .unwrap();
+    apply_sync_plan_in_memory(&mut p9_snap, &p9_sync);
+    assert_eq!(
+        p9_snap.nodes.iter().find(|n| n.node_id == "task:T1:check").unwrap().status,
+        NodeStatus::Ready,
+        "newly inserted earlier gate must become Ready"
+    );
+    assert_eq!(
+        p9_snap.nodes.iter().find(|n| n.node_id == "task:T1:build").unwrap().status,
+        NodeStatus::Pending,
+        "unclaimed later Ready sibling gate must demote to Pending"
+    );
+
+    // #5: Root gate demotion when `rebind_profile` inserts an earlier root sibling gate ahead of unclaimed `Ready` sibling.
+    let (r_base, mut r_snap) = build_sample_graph(IsolationMode::Worktree, true);
+    let mut r_rebound = r_base.clone();
+    if let Some(MachineGraphItem::Gate(ref mut bp)) = r_rebound.gates.first_mut() {
+        bp.children.insert(0, MachineGateDef::minimal(g("early")));
+    }
+    let mut r_spec = MachineSpecInput {
+        tasks: vec![make_task("T1", &[], &["crates/a/**"], &[], &r_snap.run.run_id)],
+        spec_digest: "r5".to_owned(),
+    };
+    r_spec.tasks[0].depends_on.clear();
+    r_snap.nodes.retain(|n| n.task_ref.as_ref().is_none_or(|tr| *tr == t("T1")));
+    let r_sync = plan_sync(
+        &r_snap,
+        &r_base,
+        &obs,
+        &SyncInput {
+            spec: r_spec,
+            new_profile: Some(r_rebound),
+            rebind_profile: true,
+        },
+    )
+    .unwrap();
+    apply_sync_plan_in_memory(&mut r_snap, &r_sync);
+    assert_eq!(
+        r_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "root:blueprint_synthesis.early")
+            .unwrap()
+            .status,
+        NodeStatus::Ready,
+        "newly inserted earlier root child gate must become Ready"
+    );
+    assert_eq!(
+        r_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "root:blueprint_synthesis.synthesize")
+            .unwrap()
+            .status,
+        NodeStatus::Pending,
+        "unclaimed later Ready root sibling gate must demote to Pending"
+    );
+
+    // Prepending a top-level root gate before unclaimed `blueprint_synthesis` container must
+    // demote BOTH the container and its unclaimed `Ready` child gate, making the prepended root gate Ready.
+    let (rc_base, mut rc_snap) = build_sample_graph(IsolationMode::Worktree, true);
+    let mut rc_rebound = rc_base.clone();
+    rc_rebound
+        .gates
+        .insert(0, MachineGraphItem::Gate(Box::new(MachineGateDef::minimal(g("pre_root")))));
+    let mut rc_spec = MachineSpecInput {
+        tasks: vec![make_task("T1", &[], &["crates/a/**"], &[], &rc_snap.run.run_id)],
+        spec_digest: "rc5".to_owned(),
+    };
+    rc_spec.tasks[0].depends_on.clear();
+    rc_snap.nodes.retain(|n| n.task_ref.as_ref().is_none_or(|tr| *tr == t("T1")));
+    let rc_sync = plan_sync(
+        &rc_snap,
+        &rc_base,
+        &obs,
+        &SyncInput {
+            spec: rc_spec.clone(),
+            new_profile: Some(rc_rebound),
+            rebind_profile: true,
+        },
+    )
+    .unwrap();
+    apply_sync_plan_in_memory(&mut rc_snap, &rc_sync);
+    assert_eq!(
+        rc_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "root:pre_root")
+            .unwrap()
+            .status,
+        NodeStatus::Ready,
+        "prepended top-level root gate must become Ready"
+    );
+    assert_eq!(
+        rc_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "root:blueprint_synthesis")
+            .unwrap()
+            .status,
+        NodeStatus::Pending,
+        "unclaimed root container following prepended root gate must demote to Pending"
+    );
+    assert_eq!(
+        rc_snap
+            .nodes
+            .iter()
+            .find(|n| n.node_id == "root:blueprint_synthesis.synthesize")
+            .unwrap()
+            .status,
+        NodeStatus::Pending,
+        "unclaimed descendant of demoted root container must also demote to Pending"
+    );
+
+    // Rebinding Container <-> RootGate fails closed (`ProfileSchemaInvalid`), and adding child gates
+    // under a Completed/Cancelled ancestor never inserts orphaned children.
+    let mut kind_flip = rc_base.clone();
+    kind_flip.gates[0] = MachineGraphItem::Gate(Box::new(MachineGateDef::minimal(g("blueprint_synthesis"))));
+    let flip_err = plan_sync(
+        &rc_snap,
+        &rc_base,
+        &obs,
+        &SyncInput {
+            spec: rc_spec.clone(),
+            new_profile: Some(kind_flip),
+            rebind_profile: true,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(flip_err.code, ErrorCode::ProfileSchemaInvalid);
+    assert!(flip_err.message.contains("across node kind change"));
+
+    for nid in [
+        "root:blueprint_synthesis",
+        "root:blueprint_synthesis.synthesize",
+        "root:blueprint_synthesis.review",
+    ] {
+        rc_snap.nodes.iter_mut().find(|n| n.node_id == nid).unwrap().status =
+            NodeStatus::Completed;
+    }
+    let mut add_under_done = rc_base.clone();
+    if let MachineGraphItem::Gate(ref mut gate_box) = add_under_done.gates[0] {
+        gate_box.children.push(MachineGateDef::minimal(g("late_extra")));
+    }
+    let done_sync = plan_sync(
+        &rc_snap,
+        &rc_base,
+        &obs,
+        &SyncInput {
+            spec: rc_spec,
+            new_profile: Some(add_under_done),
+            rebind_profile: true,
+        },
+    )
+    .unwrap();
+    assert!(!done_sync
+        .added_nodes
+        .iter()
+        .any(|n| n.node_id == "root:blueprint_synthesis.late_extra"));
 }
 
 #[test]

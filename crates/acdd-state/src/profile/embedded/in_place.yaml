@@ -1,5 +1,5 @@
 version: 2
-inherit: default
+inherit: workspace
 gates_merge: patch
 
 git:
@@ -8,13 +8,13 @@ git:
   commit_mode: plumbing
   integrate: manual
 
-save: snapshot
+save: none
 
 gates:
   - id: tasks.deliver
     save:
-      post: snapshot
+      post: none
 
   - id: handoff
     save:
-      post: snapshot
+      post: none

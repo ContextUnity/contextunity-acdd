@@ -243,6 +243,13 @@ pub fn plan_reopen(
 
                     watch_ids.insert(dep_task.node_id.as_str());
                     if has_active_or_done {
+                        if dep_task.status == NodeStatus::Completed {
+                            dependency_patches.push(DependencySatisfiedPatch {
+                                depends_on_ref: dep_ref.clone(),
+                                dependent_task_ref: None,
+                                satisfied: false,
+                            });
+                        }
                         close_active_claim(&dep_task.node_id, &mut claim_patches);
                         let mut dp =
                             NodeStatusPatch::status_only(&dep_task.node_id, NodeStatus::Stale);

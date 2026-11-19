@@ -12,190 +12,7 @@ use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, TaskRef};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Parsed boolean `when:` tag expression supporting `tag`, `!`, `&`, `+`, `|`, and `(...)`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WhenExpr {
-    /// Positive tag predicate.
-    Tag(String),
-    /// Logical negation (`!expr`).
-    Not(Box<WhenExpr>),
-    /// Logical conjunction (`expr & expr` or `expr + expr`).
-    And(Box<WhenExpr>, Box<WhenExpr>),
-    /// Logical disjunction (`expr | expr`).
-    Or(Box<WhenExpr>, Box<WhenExpr>),
-}
-
-impl WhenExpr {
-    /// Parse and validate a `when:` expression against the profile's declared tag vocabulary.
-    pub fn parse(raw: &str, allowed_tags: &BTreeSet<String>) -> Result<Self, StateError> {
-        let tokens = tokenize_when(raw)?;
-        let mut pos = 0usize;
-        let expr = parse_or(&tokens, &mut pos, allowed_tags)?;
-        if pos != tokens.len() {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("unexpected trailing token in when expression '{raw}'"),
-            ));
-        }
-        Ok(expr)
-    }
-
-    /// Evaluate this `when:` expression against an effective set of task tags.
-    pub fn eval(&self, task_tags: &BTreeSet<String>) -> bool {
-        match self {
-            Self::Tag(tag) => task_tags.contains(tag),
-            Self::Not(inner) => !inner.eval(task_tags),
-            Self::And(lhs, rhs) => lhs.eval(task_tags) && rhs.eval(task_tags),
-            Self::Or(lhs, rhs) => lhs.eval(task_tags) || rhs.eval(task_tags),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum WhenToken {
-    Ident(String),
-    Not,
-    And,
-    Or,
-    LParen,
-    RParen,
-}
-
-fn tokenize_when(raw: &str) -> Result<Vec<WhenToken>, StateError> {
-    let mut tokens = Vec::new();
-    let chars: Vec<char> = raw.chars().collect();
-    let mut idx = 0usize;
-    while idx < chars.len() {
-        let ch = chars[idx];
-        if ch.is_whitespace() {
-            idx += 1;
-            continue;
-        }
-        match ch {
-            '!' => {
-                tokens.push(WhenToken::Not);
-                idx += 1;
-            }
-            '&' | '+' => {
-                tokens.push(WhenToken::And);
-                idx += 1;
-            }
-            '|' => {
-                tokens.push(WhenToken::Or);
-                idx += 1;
-            }
-            '(' => {
-                tokens.push(WhenToken::LParen);
-                idx += 1;
-            }
-            ')' => {
-                tokens.push(WhenToken::RParen);
-                idx += 1;
-            }
-            c if c.is_ascii_alphanumeric() || c == '_' || c == '-' => {
-                let start = idx;
-                while idx < chars.len()
-                    && (chars[idx].is_ascii_alphanumeric()
-                        || chars[idx] == '_'
-                        || chars[idx] == '-')
-                {
-                    idx += 1;
-                }
-                let ident: String = chars[start..idx].iter().collect();
-                tokens.push(WhenToken::Ident(ident));
-            }
-            other => {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("invalid character '{other}' in when expression '{raw}'"),
-                ));
-            }
-        }
-    }
-    if tokens.is_empty() {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            "when expression must not be empty",
-        ));
-    }
-    Ok(tokens)
-}
-
-fn parse_or(
-    tokens: &[WhenToken],
-    pos: &mut usize,
-    allowed_tags: &BTreeSet<String>,
-) -> Result<WhenExpr, StateError> {
-    let mut expr = parse_and(tokens, pos, allowed_tags)?;
-    while matches!(tokens.get(*pos), Some(WhenToken::Or)) {
-        *pos += 1;
-        let rhs = parse_and(tokens, pos, allowed_tags)?;
-        expr = WhenExpr::Or(Box::new(expr), Box::new(rhs));
-    }
-    Ok(expr)
-}
-
-fn parse_and(
-    tokens: &[WhenToken],
-    pos: &mut usize,
-    allowed_tags: &BTreeSet<String>,
-) -> Result<WhenExpr, StateError> {
-    let mut expr = parse_unary(tokens, pos, allowed_tags)?;
-    while matches!(tokens.get(*pos), Some(WhenToken::And)) {
-        *pos += 1;
-        let rhs = parse_unary(tokens, pos, allowed_tags)?;
-        expr = WhenExpr::And(Box::new(expr), Box::new(rhs));
-    }
-    Ok(expr)
-}
-
-fn parse_unary(
-    tokens: &[WhenToken],
-    pos: &mut usize,
-    allowed_tags: &BTreeSet<String>,
-) -> Result<WhenExpr, StateError> {
-    if matches!(tokens.get(*pos), Some(WhenToken::Not)) {
-        *pos += 1;
-        let inner = parse_unary(tokens, pos, allowed_tags)?;
-        return Ok(WhenExpr::Not(Box::new(inner)));
-    }
-    parse_primary(tokens, pos, allowed_tags)
-}
-
-fn parse_primary(
-    tokens: &[WhenToken],
-    pos: &mut usize,
-    allowed_tags: &BTreeSet<String>,
-) -> Result<WhenExpr, StateError> {
-    match tokens.get(*pos) {
-        Some(WhenToken::Ident(tag)) => {
-            if tag != "default" && !allowed_tags.contains(tag) {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("unknown tag '{tag}' in when expression"),
-                ));
-            }
-            *pos += 1;
-            Ok(WhenExpr::Tag(tag.clone()))
-        }
-        Some(WhenToken::LParen) => {
-            *pos += 1;
-            let inner = parse_or(tokens, pos, allowed_tags)?;
-            if !matches!(tokens.get(*pos), Some(WhenToken::RParen)) {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    "unclosed '(' in when expression",
-                ));
-            }
-            *pos += 1;
-            Ok(inner)
-        }
-        _ => Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            "expected tag identifier or '(' in when expression",
-        )),
-    }
-}
+pub use crate::profile::when::WhenExpr;
 
 /// Normalize a task's tags (`["default"]` when empty) and validate every tag against `profile.tags`.
 pub fn effective_task_tags(
@@ -230,9 +47,9 @@ pub fn matches_when(
     let Some(expr_raw) = when else {
         return Ok(true);
     };
-    let expr = WhenExpr::parse(expr_raw, allowed_tags)?;
-    let tag_set: BTreeSet<String> = task_tags.iter().cloned().collect();
-    Ok(expr.eval(&tag_set))
+    let expr = WhenExpr::parse(expr_raw)?;
+    expr.validate_tags(allowed_tags, "when")?;
+    Ok(expr.eval(task_tags))
 }
 
 /// Construct the initial `RunGraphSnapshot` from a profile, specification tasks, and run metadata.
@@ -380,6 +197,7 @@ pub fn build_initial_run_graph(
         profile_id: profile.profile_id.clone(),
         profile_json: profile.profile_json.clone(),
         spec_path: input.spec_path.clone(),
+        spec_id: None,
         spec_digest: input.spec.spec_digest.clone(),
         is_ephemeral: input.is_ephemeral,
         isolation: profile.git.isolation,
@@ -405,6 +223,102 @@ pub fn build_initial_run_graph(
         traces: Vec::new(),
         artifacts: Vec::new(),
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn make_root_gate_node(
+    run_id: acdd_core::ids::RunId,
+    node_id: String,
+    parent_id: Option<String>,
+    kind: NodeKind,
+    gate_id: String,
+    seq_order: u32,
+    status: NodeStatus,
+    isolation: crate::types::IsolationMode,
+    max_attempts: u32,
+    branch: Option<String>,
+    worktree: Option<String>,
+    baseline_commit: Option<acdd_core::ids::CommitOid>,
+    scope: Vec<String>,
+) -> GateNodeRecord {
+    GateNodeRecord {
+        run_id,
+        node_id,
+        parent_id,
+        kind,
+        task_ref: None,
+        gate_id,
+        seq_order,
+        status,
+        node_version: 1,
+        isolation,
+        attempt: 0,
+        cycle_count: 0,
+        max_attempts: max_attempts.max(1),
+        claim_revision: 0,
+        contract_revision: 1,
+        worker_id: None,
+        session_fingerprint: None,
+        branch,
+        worktree,
+        baseline_commit,
+        claim_tree: None,
+        accepted_tree: None,
+        accepted_definition_digest: None,
+        tags: vec!["default".to_owned()],
+        invariants: InvariantsState::default(),
+        scope,
+        extended_scope: Vec::new(),
+        active_span_id: None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn make_task_gate_node(
+    run_id: acdd_core::ids::RunId,
+    node_id: String,
+    parent_id: String,
+    task_ref: TaskRef,
+    gate_id: String,
+    seq_order: u32,
+    status: NodeStatus,
+    isolation: crate::types::IsolationMode,
+    max_attempts: u32,
+    tags: Vec<String>,
+    invariants: InvariantsState,
+    scope: Vec<String>,
+    extended_scope: Vec<crate::types::ExtendedScopeEntry>,
+) -> GateNodeRecord {
+    GateNodeRecord {
+        run_id,
+        node_id,
+        parent_id: Some(parent_id),
+        kind: NodeKind::TaskGate,
+        task_ref: Some(task_ref),
+        gate_id,
+        seq_order,
+        status,
+        node_version: 1,
+        isolation,
+        attempt: 0,
+        cycle_count: 0,
+        max_attempts: max_attempts.max(1),
+        claim_revision: 0,
+        contract_revision: 1,
+        worker_id: None,
+        session_fingerprint: None,
+        branch: None,
+        worktree: None,
+        baseline_commit: None,
+        claim_tree: None,
+        accepted_tree: None,
+        accepted_definition_digest: None,
+        tags,
+        invariants,
+        scope,
+        extended_scope,
+        active_span_id: None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -444,36 +358,21 @@ fn append_root_gate_nodes(
         NodeStatus::Pending
     };
 
-    nodes.push(GateNodeRecord {
-        run_id: input.run_id.clone(),
-        node_id: node_id.clone(),
-        parent_id: parent_id.map(str::to_owned),
+    nodes.push(make_root_gate_node(
+        input.run_id.clone(),
+        node_id.clone(),
+        parent_id.map(str::to_owned),
         kind,
-        task_ref: None,
-        gate_id: gate.id.as_str().to_owned(),
-        seq_order: seq,
+        gate.id.as_str().to_owned(),
+        seq,
         status,
-        node_version: 1,
-        isolation: profile.git.isolation,
-        attempt: 0,
-        cycle_count: 0,
-        max_attempts: gate.max_attempts.max(1),
-        claim_revision: 0,
-        contract_revision: 1,
-        worker_id: None,
-        session_fingerprint: None,
-        branch: input.branch.clone(),
-        worktree: input.worktree.clone(),
-        baseline_commit: input.target_base_commit.clone(),
-        claim_tree: None,
-        accepted_tree: None,
-        accepted_definition_digest: None,
-        tags: vec!["default".to_owned()],
-        invariants: InvariantsState::default(),
-        scope: gate.scope.clone(),
-        extended_scope: Vec::new(),
-        active_span_id: None,
-    });
+        profile.git.isolation,
+        gate.max_attempts,
+        input.branch.clone(),
+        input.worktree.clone(),
+        input.target_base_commit.clone(),
+        gate.scope.clone(),
+    ));
 
     for (child_idx, child) in gate.children.iter().enumerate() {
         append_root_gate_nodes(
@@ -577,39 +476,24 @@ pub(crate) fn append_task_nodes(
             NodeStatus::Pending
         };
 
-        nodes.push(GateNodeRecord {
-            run_id: input.run_id.clone(),
-            node_id: gate_node_id,
-            parent_id: Some(task_node_id.clone()),
-            kind: NodeKind::TaskGate,
-            task_ref: Some(task.task_ref.clone()),
-            gate_id: gate.id.as_str().to_owned(),
-            seq_order: gate_seq,
-            status: gate_status,
-            node_version: 1,
-            isolation: profile.git.isolation,
-            attempt: 0,
-            cycle_count: 0,
-            max_attempts: gate.max_attempts.max(1),
-            claim_revision: 0,
-            contract_revision: 1,
-            worker_id: None,
-            session_fingerprint: None,
-            branch: None,
-            worktree: None,
-            baseline_commit: None,
-            claim_tree: None,
-            accepted_tree: None,
-            accepted_definition_digest: None,
-            tags: tags.clone(),
-            invariants: InvariantsState {
+        nodes.push(make_task_gate_node(
+            input.run_id.clone(),
+            gate_node_id,
+            task_node_id.clone(),
+            task.task_ref.clone(),
+            gate.id.as_str().to_owned(),
+            gate_seq,
+            gate_status,
+            profile.git.isolation,
+            gate.max_attempts,
+            tags.clone(),
+            InvariantsState {
                 applicable: task.invariants.clone(),
                 verified: Vec::new(),
             },
-            scope: task.scope.clone(),
-            extended_scope: task.extended_scope.clone(),
-            active_span_id: None,
-        });
+            task.scope.clone(),
+            task.extended_scope.clone(),
+        ));
     }
 
     for (sub_idx, sub) in task.subtasks.iter().enumerate() {

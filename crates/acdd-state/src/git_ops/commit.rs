@@ -1,9 +1,8 @@
 //! Scoped Git commits (`plumbing | cli | manual`), commit notes, and crash-safe archive commits.
 
 use super::snapshot::{
-    blob_oid_at, capture_snapshot, collect_literal_scope_paths, guard_candidate_path,
-    list_stage_entries, list_untracked_entries, remove_confined_file, CaptureSnapshotReq,
-    TemporaryGitIndex,
+    blob_oid_at, collect_literal_scope_paths, current_scope_tree, guard_candidate_path,
+    list_stage_entries, list_untracked_entries, remove_confined_file, TemporaryGitIndex,
 };
 use super::{
     commit_has_exact_trailer, ensure_non_empty_git_identity, run_git_checked, run_git_raw,
@@ -21,7 +20,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::path::Path;
 
-/// Parameters for creating a scoped commit (or manual snapshot) with `Acdd-Claim` trailer.
+/// Parameters for creating a scoped commit (or manual scope verification) with `Acdd-Claim` trailer.
 #[derive(Debug, Clone)]
 pub struct ScopedCommitReq {
     /// Worktree where the commit executes.
@@ -44,18 +43,16 @@ pub struct ScopedCommitReq {
     pub message: String,
     /// Explicitly permit committing on `main` / `master`.
     pub allow_main: bool,
-    /// Optional snapshot ref namespace for `CommitMode::Manual`.
-    pub manual_snapshot_namespace: Option<String>,
 }
 
 /// Result of creating or idempotently recovering a scoped commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedCommitResp {
-    /// New or recovered commit OID (`None` in `CommitMode::Manual`).
+    /// New, recovered, or current HEAD commit OID (`CommitMode::Manual` returns current HEAD if any).
     pub committed_oid: Option<CommitOid>,
-    /// Tree OID of the committed or snapshotted state.
+    /// Tree OID of the committed or verified scoped state.
     pub committed_tree: TreeOid,
-    /// Snapshot ref created in `CommitMode::Manual`, if any.
+    /// Always `None` (orphan snapshot refs were removed in v0.6.1).
     pub snapshot_ref: Option<String>,
     /// `true` if a pre-existing `Acdd-Claim` commit was recovered idempotently after a crash.
     pub recovered_idempotently: bool,
@@ -170,39 +167,46 @@ pub fn is_protected_main_branch(branch: Option<&str>) -> bool {
 
 /// Create or idempotently recover a scoped commit under `plumbing | cli | manual`.
 pub fn create_scoped_commit(req: &ScopedCommitReq) -> Result<ScopedCommitResp, StateError> {
+    create_scoped_commit_with_expected(req, None)
+}
+
+/// Create or idempotently recover a scoped commit while verifying the staged scoped subset matches `expected_scoped_tree`.
+pub fn create_scoped_commit_with_expected(
+    req: &ScopedCommitReq,
+    expected_scoped_tree: Option<&TreeOid>,
+) -> Result<ScopedCommitResp, StateError> {
+    if req.commit_mode == CommitMode::Manual {
+        let scope = if req.admitted_scope.is_empty() {
+            None
+        } else {
+            Some(req.admitted_scope.as_slice())
+        };
+        let committed_tree = current_scope_tree(&req.worktree, scope, &req.path_policy)?;
+        if let Some(expected) = expected_scoped_tree {
+            if &committed_tree != expected {
+                return Err(StateError::new(
+                    ErrorCode::TaskCandidateMismatch,
+                    format!(
+                        "working tree changed before manual scope verification (expected scoped tree {}, got {})",
+                        expected, committed_tree
+                    ),
+                ));
+            }
+        }
+        return Ok(ScopedCommitResp {
+            committed_oid: current_head_commit(&req.worktree).ok(),
+            committed_tree,
+            snapshot_ref: None,
+            recovered_idempotently: false,
+        });
+    }
+
     let claim_trailer = format!(
         "Acdd-Claim: {}/{}/{}",
         req.run_id.as_str(),
         req.node_id,
         req.claim_revision
     );
-
-    if req.commit_mode == CommitMode::Manual {
-        let namespace = req
-            .manual_snapshot_namespace
-            .clone()
-            .unwrap_or_else(|| sanitize_ref_segment(&req.node_id));
-        let scope = if req.admitted_scope.is_empty() {
-            None
-        } else {
-            Some(req.admitted_scope.clone())
-        };
-        let snap = capture_snapshot(&CaptureSnapshotReq {
-            worktree: req.worktree.clone(),
-            run_id: req.run_id.clone(),
-            namespace,
-            label: format!("rev-{}", req.claim_revision),
-            scope,
-            path_policy: req.path_policy.clone(),
-            message: format_message_with_trailer(&req.message, &claim_trailer),
-        })?;
-        return Ok(ScopedCommitResp {
-            committed_oid: None,
-            committed_tree: snap.tree_oid,
-            snapshot_ref: Some(snap.snapshot_ref),
-            recovered_idempotently: false,
-        });
-    }
 
     ensure_branch_writable(&req.worktree, req.allow_main)?;
 
@@ -222,8 +226,7 @@ pub fn create_scoped_commit(req: &ScopedCommitReq) -> Result<ScopedCommitResp, S
             continue;
         };
         if is_dir_entry && req.worktree.join(&norm).join(".git").exists() {
-            let admitted = (req.path_policy.is_candidate_included(&norm)
-                || req.path_policy.is_engine_managed(&norm))
+            let admitted = req.path_policy.is_candidate_included(&norm)
                 && req.path_policy.is_scope_admitted(&norm, &req.admitted_scope);
             if admitted {
                 return Err(StateError::new(
@@ -242,9 +245,9 @@ pub fn create_scoped_commit(req: &ScopedCommitReq) -> Result<ScopedCommitResp, S
     let mut to_stage = Vec::new();
     let mut to_remove = Vec::new();
     for (norm, index_mode) in candidates {
-        let allowed_kind = req.path_policy.is_candidate_included(&norm)
-            || req.path_policy.is_engine_managed(&norm);
-        if !allowed_kind || !req.path_policy.is_scope_admitted(&norm, &req.admitted_scope) {
+        if !req.path_policy.is_candidate_included(&norm)
+            || !req.path_policy.is_scope_admitted(&norm, &req.admitted_scope)
+        {
             continue;
         }
         guard_candidate_path(&req.worktree, &norm, index_mode.as_deref())?;
@@ -271,6 +274,54 @@ pub fn create_scoped_commit(req: &ScopedCommitReq) -> Result<ScopedCommitResp, S
     temp_index.remove_paths(&to_remove)?;
     temp_index.stage_paths(&to_stage)?;
     let expected_tree = temp_index.write_tree()?;
+
+    if let Some(expected_scoped) = expected_scoped_tree {
+        let staged_entries = list_stage_entries(&req.worktree, Some(&temp_index.index_path))?;
+        let mut index_info = String::new();
+        for (path, (mode, oid)) in staged_entries {
+            if !req.path_policy.is_candidate_included(&path)
+                || !req.path_policy.is_scope_admitted(&path, &req.admitted_scope)
+            {
+                continue;
+            }
+            index_info.push_str(&mode);
+            index_info.push_str(" blob ");
+            index_info.push_str(&oid);
+            index_info.push('\t');
+            index_info.push_str(&path);
+            index_info.push('\0');
+        }
+        let (scoped_idx, _scoped_dir) = TemporaryGitIndex::create_temp(&req.worktree)?;
+        scoped_idx.read_tree("--empty")?;
+        if !index_info.is_empty() {
+            let out = run_git_raw(
+                &req.worktree,
+                &["update-index", "-z", "--index-info"],
+                Some(&scoped_idx.index_path),
+                &[],
+                Some(index_info.as_bytes()),
+            )?;
+            if !out.status.success() {
+                return Err(StateError::new(
+                    ErrorCode::ExternalGitDrift,
+                    format!(
+                        "failed verifying staged scoped tree via update-index: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ),
+                ));
+            }
+        }
+        let staged_scoped_tree = scoped_idx.write_tree()?;
+        if &staged_scoped_tree != expected_scoped {
+            return Err(StateError::new(
+                ErrorCode::TaskCandidateMismatch,
+                format!(
+                    "working tree changed before scoped commit (expected scoped tree {}, got {})",
+                    expected_scoped, staged_scoped_tree
+                ),
+            ));
+        }
+    }
 
     let actual_head = current_head_commit(&req.worktree)?;
     if actual_head != req.base_head {
@@ -448,7 +499,6 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
             if file.read_to_end(&mut bytes).is_ok()
                 && sha256_hex(&bytes) == req.rendered_archive_digest
             {
-                remove_confined_file(&req.worktree, &norm_spec)?;
                 return Ok(ArchiveCommitResp {
                     archive_path: norm_archive,
                     archive_digest: req.rendered_archive_digest.clone(),
@@ -521,7 +571,6 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
         });
     }
 
-    remove_confined_file(&req.worktree, &norm_spec)?;
     Ok(ArchiveCommitResp {
         archive_path: norm_archive,
         archive_digest: req.rendered_archive_digest.clone(),
@@ -748,24 +797,10 @@ fn format_message_with_trailer(message: &str, trailer: &str) -> String {
     }
 }
 
-fn sanitize_ref_segment(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for ch in raw.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
-            out.push(ch);
-        } else {
-            out.push('-');
-        }
+pub(crate) fn cap_note_body(body: &str, max_bytes: usize, format: GitCommitNoteFormat) -> String {
+    if max_bytes == 0 {
+        return String::new();
     }
-    let trimmed = out.trim_matches(['.', '-']);
-    if trimmed.is_empty() {
-        "node".to_owned()
-    } else {
-        trimmed.to_owned()
-    }
-}
-
-fn cap_note_body(body: &str, max_bytes: usize, format: GitCommitNoteFormat) -> String {
     if body.len() <= max_bytes {
         return body.to_owned();
     }
@@ -789,6 +824,15 @@ fn cap_note_body(body: &str, max_bytes: usize, format: GitCommitNoteFormat) -> S
                 preview_budget = preview_budget.saturating_sub(8);
             }
         }
+        let minimal = r#"{"truncated":true}"#;
+        if max_bytes >= minimal.len() {
+            return minimal.to_owned();
+        }
+        return if max_bytes >= 2 {
+            "{}".to_owned()
+        } else {
+            String::new()
+        };
     }
     if max_bytes <= 3 {
         let end = utf8_floor_boundary(body, max_bytes);

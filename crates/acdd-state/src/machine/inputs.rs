@@ -8,6 +8,7 @@ use crate::types::{
 use acdd_core::errors::StateError;
 use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, SubtaskRef, TaskRef, TreeOid, WorkerId};
 use acdd_core::schema::SchemaDef;
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,12 +37,22 @@ impl Default for MachineGitPolicy {
     }
 }
 
+fn deserialize_compat_machine_save_action<'de, D>(deserializer: D) -> Result<SaveAction, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    if raw == "snapshot" {
+        Ok(SaveAction::None)
+    } else {
+        raw.parse::<SaveAction>().map_err(de::Error::custom)
+    }
+}
+
 /// Pure `save:` policy projection for a single gate.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MachineSavePolicy {
-    /// Persistence action taken before or at claim (`none` or `snapshot`).
-    pub pre: SaveAction,
-    /// Persistence action taken on gate acceptance (`none`, `snapshot`, or `commit`).
+    /// Persistence action taken on gate acceptance (`none` or `commit`).
     pub post: SaveAction,
     /// Whether the working tree must remain identical to `claim_tree` at submission.
     pub immutable: bool,
@@ -53,10 +64,49 @@ pub struct MachineSavePolicy {
     pub git_commit_note: Option<String>,
 }
 
+impl<'de> Deserialize<'de> for MachineSavePolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(default, deny_unknown_fields)]
+        struct CompatRepr {
+            pre: Option<de::IgnoredAny>,
+            #[serde(deserialize_with = "deserialize_compat_machine_save_action")]
+            post: SaveAction,
+            immutable: bool,
+            archive: bool,
+            prune: bool,
+            git_commit_note: Option<String>,
+        }
+        impl Default for CompatRepr {
+            fn default() -> Self {
+                Self {
+                    pre: None,
+                    post: SaveAction::None,
+                    immutable: false,
+                    archive: false,
+                    prune: false,
+                    git_commit_note: None,
+                }
+            }
+        }
+        let repr = CompatRepr::deserialize(deserializer)?;
+        let _ = repr.pre;
+        Ok(Self {
+            post: repr.post,
+            immutable: repr.immutable,
+            archive: repr.archive,
+            prune: repr.prune,
+            git_commit_note: repr.git_commit_note,
+        })
+    }
+}
+
 impl Default for MachineSavePolicy {
     fn default() -> Self {
         Self {
-            pre: SaveAction::None,
             post: SaveAction::None,
             immutable: false,
             archive: false,
@@ -130,6 +180,8 @@ pub struct MachineGateDef {
     pub pass: Option<String>,
     /// Optional target gate ID on `reject` / mechanical failure.
     pub fail: Option<String>,
+    /// Optional target gate ID on `architectural_drift` rejection.
+    pub fail_drift: Option<String>,
     /// Maximum attempts or cycles allowed before transitioning to `Escalated` (`>= 1`).
     pub max_attempts: u32,
     /// Whether passing this gate closes its owning task/run container with a receipt.
@@ -168,6 +220,7 @@ impl MachineGateDef {
             need: Vec::new(),
             pass: None,
             fail: None,
+            fail_drift: None,
             max_attempts: 3,
             receipt: false,
             require_test_target: false,
@@ -529,6 +582,12 @@ pub struct SyncPlan {
     pub added_nodes: Vec<GateNodeRecord>,
     /// Brand-new `task_dependencies` rows introduced by sync.
     pub added_dependencies: Vec<TaskDependencyRecord>,
+    /// Existing `task_dependencies` rows removed from the spec during sync.
+    #[serde(default)]
+    pub removed_dependencies: Vec<TaskDependencyRecord>,
+    /// Updated `seq_order` values for existing nodes reordered by new gates or tasks.
+    #[serde(default)]
+    pub seq_order_updates: Vec<(String, u32)>,
     /// New `spec_digest` when updated.
     pub spec_digest: String,
 }

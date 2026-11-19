@@ -1,11 +1,13 @@
-//! Fail-closed `GateProfile` validation, command pattern selection, `{test_filter}` substitution, and guidance budgeting.
+//! Fail-closed `GateProfile` validation, command pattern selection, and guidance budgeting.
 
 use super::schema::{
     CommandDef, CommandOutputSpec, CompileErrorsSpec, DetailedCommandDef, GateDef, GateGuidanceRef,
     ProofDef, ProofKind, ResolvedGateProfile, ResourceLimits, TestFilterConfig,
 };
+use super::shell_template::{
+    has_unescaped_chain_operator, validate_shell_template_placeholders,
+};
 use super::when::WhenExpr;
-use crate::types::SaveAction;
 use acdd_core::subsystems::SubsystemRegistry;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{GateId, GateSelector};
@@ -94,6 +96,7 @@ pub fn validate_profile(
     }
 
     validate_limits(&profile.limits)?;
+    validate_protected_paths(profile)?;
     validate_git_commit_notes(profile)?;
     validate_proof_catalog(profile)?;
     validate_roles(profile)?;
@@ -151,6 +154,18 @@ fn validate_limits(limits: &ResourceLimits) -> Result<(), StateError> {
             ErrorCode::ProfileSchemaInvalid,
             "all ResourceLimits byte and timeout bounds must be > 0",
         ));
+    }
+    Ok(())
+}
+
+fn validate_protected_paths(profile: &ResolvedGateProfile) -> Result<(), StateError> {
+    for pat in &profile.protected_paths {
+        if !acdd_core::path_policy::is_valid_scope_glob(pat) {
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("protected_paths contains invalid or non-normalized scope glob '{pat}'"),
+            ));
+        }
     }
     Ok(())
 }
@@ -218,7 +233,22 @@ fn validate_roles(profile: &ResolvedGateProfile) -> Result<(), StateError> {
     Ok(())
 }
 
+fn validate_scope_args_map(
+    scope_args: &BTreeMap<String, String>,
+    ctx: &str,
+) -> Result<(), StateError> {
+    for (pat, arg) in scope_args {
+        validate_shell_template_placeholders(
+            arg,
+            &["{file_stem}", "{path}"],
+            &format!("{ctx}[{pat}]"),
+        )?;
+    }
+    Ok(())
+}
+
 fn validate_commands(profile: &ResolvedGateProfile) -> Result<(), StateError> {
+    validate_scope_args_map(&profile.scope_args_by_pattern, "scope_args_by_pattern")?;
     for (name, cmd) in &profile.commands {
         if name.trim().is_empty() {
             return Err(StateError::new(
@@ -267,6 +297,10 @@ fn validate_commands(profile: &ResolvedGateProfile) -> Result<(), StateError> {
                         entry.test_filter.as_ref(),
                         &path,
                     )?;
+                    validate_scope_args_map(
+                        &entry.scope_args_by_pattern,
+                        &format!("{path}.scope_args_by_pattern"),
+                    )?;
                     if let Some(output) = &entry.output {
                         validate_command_output_spec(output, &format!("{path}.output"))?;
                     }
@@ -285,6 +319,10 @@ fn validate_detailed_command(d: &DetailedCommandDef, ctx: &str) -> Result<(), St
         ));
     }
     validate_command_string(&d.command, d.test_filter.as_ref(), ctx)?;
+    validate_scope_args_map(
+        &d.scope_args_by_pattern,
+        &format!("{ctx}.scope_args_by_pattern"),
+    )?;
     if let Some(output) = &d.output {
         validate_command_output_spec(output, &format!("{ctx}.output"))?;
     }
@@ -302,6 +340,7 @@ fn validate_command_string(
             format!("{ctx}.command cannot be empty"),
         ));
     }
+    validate_shell_template_placeholders(command, &["{scope_target}", "{test_filter}"], ctx)?;
     let placeholder_count = command.matches("{test_filter}").count();
     if placeholder_count > 1 {
         return Err(StateError::new(
@@ -317,6 +356,7 @@ fn validate_command_string(
                 format!("{ctx}.test_filter template must contain '{{test}}' exactly once"),
             ));
         }
+        validate_shell_template_placeholders(tpl, &["{test}"], &format!("{ctx}.test_filter"))?;
     }
     Ok(())
 }
@@ -571,12 +611,6 @@ fn validate_single_gate(
             format!("{ctx}: terminal root_gate with archive/prune must not declare 'pass:'"),
         ));
     }
-    if gate.save.pre == Some(SaveAction::Commit) {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("{ctx}: 'save.pre' only allows 'none' or 'snapshot'"),
-        ));
-    }
     if let Some(note_key) = &gate.save.git_commit_note {
         if !profile.git_commit_notes.contains_key(note_key) {
             return Err(StateError::new(
@@ -600,25 +634,27 @@ fn validate_single_gate(
             ));
         }
     }
-    if let Some(fail_target) = &gate.fail {
-        if fail_target.as_str() == gate.id {
+    for (label, target_opt) in [("fail", &gate.fail), ("fail_drift", &gate.fail_drift)] {
+        if let Some(fail_target) = target_opt {
+            if fail_target.as_str() == gate.id {
+                return Err(StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("{ctx}: '{label}:' cannot point to itself"),
+                ));
+            }
+            if !sibling_ids.contains(fail_target.as_str()) {
+                return Err(StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("{ctx}: '{label}:' references unknown sibling gate '{fail_target}'"),
+                ));
+            }
+        }
+        if gate.pass.is_some() && gate.pass.as_ref() == target_opt.as_ref() {
             return Err(StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
-                format!("{ctx}: 'fail:' cannot point to itself"),
+                format!("{ctx}: 'pass:' and '{label}:' cannot target the same gate"),
             ));
         }
-        if !sibling_ids.contains(fail_target.as_str()) {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("{ctx}: 'fail:' references unknown sibling gate '{fail_target}'"),
-            ));
-        }
-    }
-    if gate.pass.is_some() && gate.pass == gate.fail {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("{ctx}: 'pass:' and 'fail:' cannot target the same gate"),
-        ));
     }
 
     if gate.receipt && gate.need.is_empty() {
@@ -802,11 +838,15 @@ fn validate_gate_proof(
                     format!("{ctx}: 'proof: contract' requires 'expected_failure'"),
                 ));
             };
-            if ef.exit_codes.is_empty() {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("{ctx}: 'expected_failure.exit_codes' cannot be empty"),
-                ));
+            for &code in &ef.exit_codes {
+                if code <= 0 || code == 126 || code == 127 {
+                    return Err(StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        format!(
+                            "{ctx}: 'expected_failure.exit_codes' contains invalid exit code {code} (must not be <= 0, 126, or 127)"
+                        ),
+                    ));
+                }
             }
             if let Some(cmd) = profile.commands.get(cmd_name) {
                 validate_contract_command_filter_support(cmd, ctx)?;
@@ -1017,141 +1057,6 @@ fn ensure_domain_enabled(
     Ok(())
 }
 
-/// POSIX single-quote escape (`'` -> `'\''`) wrapped in single quotes.
-pub fn posix_single_quote(raw: &str) -> String {
-    format!("'{}'", raw.replace('\'', "'\\''"))
-}
-
-/// Detect unescaped shell chain operators (`&&`, `||`, `;`, `|`) outside quotes.
-pub fn has_unescaped_chain_operator(cmd: &str) -> bool {
-    let bytes = cmd.as_bytes();
-    let mut i = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut escaped = false;
-
-    while i < bytes.len() {
-        let b = bytes[i];
-        if escaped {
-            escaped = false;
-            i += 1;
-            continue;
-        }
-        if in_single {
-            if b == b'\'' {
-                in_single = false;
-            }
-            i += 1;
-            continue;
-        }
-        if b == b'\\' {
-            escaped = true;
-            i += 1;
-            continue;
-        }
-        if in_double {
-            if b == b'"' {
-                in_double = false;
-            }
-            i += 1;
-            continue;
-        }
-        match b {
-            b'\'' => in_single = true,
-            b'"' => in_double = true,
-            b';' | b'|' => return true,
-            b'&' if bytes.get(i + 1) == Some(&b'&') => return true,
-            _ => {}
-        }
-        i += 1;
-    }
-    false
-}
-
-/// Render a command template with optional `--test <test_target>` substitution.
-pub fn render_command_with_test_filter(
-    command_template: &str,
-    test_filter: Option<&TestFilterConfig>,
-    test_target: Option<&str>,
-) -> Result<String, StateError> {
-    let placeholder_count = command_template.matches("{test_filter}").count();
-    if placeholder_count > 1 {
-        return Err(StateError::new(
-            ErrorCode::CommandTestFilterUnsupported,
-            format!(
-                "command template contains {placeholder_count} '{{test_filter}}' placeholders; at most 1 is allowed"
-            ),
-        ));
-    }
-    if let Some(TestFilterConfig::Template(tpl)) = test_filter {
-        if tpl.trim().is_empty() || tpl.matches("{test}").count() != 1 {
-            return Err(StateError::new(
-                ErrorCode::CommandTestFilterUnsupported,
-                "test_filter template must contain '{test}' exactly once",
-            ));
-        }
-    }
-
-    match test_target {
-        None => {
-            if placeholder_count == 1 {
-                let replaced = command_template.replace("{test_filter}", "");
-                Ok(collapse_placeholder_spaces(&replaced))
-            } else {
-                Ok(command_template.to_owned())
-            }
-        }
-        Some(target) => {
-            if target.trim().is_empty() {
-                return Err(StateError::new(
-                    ErrorCode::CommandTestFilterUnsupported,
-                    "--test target cannot be empty",
-                ));
-            }
-            if matches!(test_filter, Some(TestFilterConfig::Enabled(false))) {
-                return Err(StateError::new(
-                    ErrorCode::CommandTestFilterUnsupported,
-                    "this command disables '--test' filtering (test_filter: false)",
-                ));
-            }
-            let quoted = posix_single_quote(target);
-            let rendered_filter = match test_filter {
-                None | Some(TestFilterConfig::Enabled(true)) => quoted,
-                Some(TestFilterConfig::Template(tpl)) => tpl.replace("{test}", &quoted),
-                Some(TestFilterConfig::Enabled(false)) => unreachable!(),
-            };
-            if placeholder_count == 1 {
-                Ok(command_template.replace("{test_filter}", &rendered_filter))
-            } else if has_unescaped_chain_operator(command_template) {
-                Err(StateError::new(
-                    ErrorCode::CommandTestFilterPlaceholderRequired,
-                    format!(
-                        "chained command '{command_template}' requires '{{test_filter}}' when '--test' is passed"
-                    ),
-                ))
-            } else {
-                Ok(format!("{} {rendered_filter}", command_template.trim_end()))
-            }
-        }
-    }
-}
-
-fn collapse_placeholder_spaces(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut prev_space = false;
-    for ch in s.chars() {
-        if ch == ' ' {
-            if !prev_space {
-                out.push(' ');
-            }
-            prev_space = true;
-        } else {
-            prev_space = false;
-            out.push(ch);
-        }
-    }
-    out.trim().to_owned()
-}
 
 /// Resolve a `CommandDef` into deduplicated invocations for `scope_paths`.
 ///
@@ -1201,7 +1106,7 @@ pub fn resolve_command_for_scope(
             for path in &sorted_scope {
                 let mut best: Option<((usize, usize, usize, usize), usize)> = None;
                 for (idx, entry) in entries.iter().enumerate() {
-                    if glob_pattern_matches(&entry.pattern, path) {
+                    if acdd_core::path_policy::glob_matches(&entry.pattern, path) {
                         let spec = glob_specificity(&entry.pattern);
                         let better = match best {
                             None => true,
@@ -1267,65 +1172,6 @@ pub fn glob_specificity(pattern: &str) -> (usize, usize, usize, usize) {
         usize::MAX - globstar_segs,
         literal_chars,
     )
-}
-
-/// Match a workspace-relative path against a glob pattern (`**`, `*`, `?`, `{a,b}`, or directory prefix).
-pub fn glob_pattern_matches(pattern: &str, path: &str) -> bool {
-    let norm_pat = pattern.trim().replace('\\', "/");
-    let norm_pat = norm_pat.strip_prefix("./").unwrap_or(&norm_pat);
-    let norm_path = path.trim().replace('\\', "/");
-    let norm_path = norm_path.strip_prefix("./").unwrap_or(&norm_path);
-
-    if let Some(open) = norm_pat.find('{') {
-        if let Some(close) = norm_pat[open + 1..].find('}') {
-            let close = open + 1 + close;
-            let prefix = &norm_pat[..open];
-            let suffix = &norm_pat[close + 1..];
-            return norm_pat[open + 1..close]
-                .split(',')
-                .any(|choice| glob_pattern_matches(&format!("{prefix}{choice}{suffix}"), norm_path));
-        }
-    }
-    if !norm_pat.contains('*') && !norm_pat.contains('?') {
-        let trimmed = norm_pat.trim_end_matches('/');
-        if norm_path == trimmed {
-            return true;
-        }
-        return norm_path.len() > trimmed.len()
-            && norm_path.starts_with(trimmed)
-            && norm_path.as_bytes()[trimmed.len()] == b'/';
-    }
-    glob_match_bytes(norm_pat.as_bytes(), norm_path.as_bytes())
-}
-
-fn glob_match_bytes(pattern: &[u8], path: &[u8]) -> bool {
-    if pattern.is_empty() {
-        return path.is_empty();
-    }
-    match pattern[0] {
-        b'*' if pattern.get(1) == Some(&b'*') => {
-            let rest = &pattern[2..];
-            if rest.first() == Some(&b'/') && glob_match_bytes(&rest[1..], path) {
-                return true;
-            }
-            (0..=path.len()).any(|idx| glob_match_bytes(rest, &path[idx..]))
-        }
-        b'*' => {
-            let mut idx = 0usize;
-            while idx <= path.len() {
-                if glob_match_bytes(&pattern[1..], &path[idx..]) {
-                    return true;
-                }
-                if idx < path.len() && path[idx] == b'/' {
-                    break;
-                }
-                idx += 1;
-            }
-            false
-        }
-        b'?' => !path.is_empty() && path[0] != b'/' && glob_match_bytes(&pattern[1..], &path[1..]),
-        byte => path.first() == Some(&byte) && glob_match_bytes(&pattern[1..], &path[1..]),
-    }
 }
 
 /// Resolve all `guidance` items on a `GateDef` against `profile.guidance`, enforcing the mandatory budget cap.

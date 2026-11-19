@@ -9,11 +9,12 @@ use crate::machine::inputs::{
     VerifyInput,
 };
 use crate::types::{
-    canonical_json_sha256, ClaimOutcome, ClaimOutcomePatch, GateNodeRecord, NodeStatus,
-    NodeStatusPatch, RunGraphSnapshot, RunStatus, TraceFinishInput, TraceStartInput, TraceStatus,
-    TransitionPlan, ValidatedObservations,
+    ClaimOutcome, ClaimOutcomePatch, GateNodeRecord, NodeStatus, NodeStatusPatch,
+    RunGraphSnapshot, RunStatus, TraceFinishInput, TraceStartInput, TraceStatus, TransitionPlan,
+    ValidatedObservations,
 };
 use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::format::canonical_json_sha256;
 use acdd_core::path_policy::WorkspacePathPolicy;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -57,7 +58,7 @@ pub fn compute_execution_digest(input: &ExecutionDigestInput) -> Result<String, 
         "index_generation": input.index_generation,
         "live_files_digest": input.live_files_digest,
     });
-    canonical_json_sha256(&payload)
+    Ok(canonical_json_sha256(&payload))
 }
 
 /// Evaluate a verification observation purely against the claimed node's gate contract.
@@ -248,6 +249,20 @@ fn classify_verify_outcome(
     admitted_scope: &[String],
     input: &VerifyInput,
 ) -> (TraceStatus, Result<(), StateError>) {
+    let exec = &input.exec_obs;
+    if let Some(ActionExecutionOutcome::UncertainCrash) = exec.action_outcome {
+        return (
+            TraceStatus::Aborted,
+            Err(StateError::new(
+                ErrorCode::MutatingActionUncertainOutcome,
+                format!(
+                    "mutating domain action crashed mid-execution on '{}' without recoverable lookup result",
+                    node.node_id
+                ),
+            )),
+        );
+    }
+
     let is_unscoped_root =
         node.kind == crate::types::NodeKind::RootGate && admitted_scope.is_empty();
     let scope_violations =
@@ -266,7 +281,6 @@ fn classify_verify_outcome(
         );
     }
 
-    let exec = &input.exec_obs;
     if exec.aborted {
         return (
             TraceStatus::Aborted,
@@ -298,18 +312,6 @@ fn classify_verify_outcome(
         );
     }
 
-    if let Some(ActionExecutionOutcome::UncertainCrash) = exec.action_outcome {
-        return (
-            TraceStatus::Aborted,
-            Err(StateError::new(
-                ErrorCode::MutatingActionUncertainOutcome,
-                format!(
-                    "mutating domain action crashed mid-execution on '{}' without recoverable lookup result",
-                    node.node_id
-                ),
-            )),
-        );
-    }
     if let Some(ActionExecutionOutcome::Failed(ref msg)) = exec.action_outcome {
         return (
             TraceStatus::Failed,
@@ -350,18 +352,29 @@ fn classify_verify_outcome(
                 );
             };
 
-            let exit_ok = exec
-                .exit_code
-                .is_some_and(|code| expected.exit_codes.contains(&code));
+            let exit_ok = exec.exit_code.is_some_and(|code| {
+                if expected.exit_codes.is_empty() {
+                    (1..=125).contains(&code)
+                } else {
+                    expected.exit_codes.contains(&code)
+                }
+            });
             if !exit_ok {
                 return (
                     TraceStatus::Failed,
                     Err(StateError::new(
                         ErrorCode::GateVerificationFailed,
-                        format!(
-                            "contract test '{target}' exited with {:?}, expected one of {:?}",
-                            exec.exit_code, expected.exit_codes
-                        ),
+                        if expected.exit_codes.is_empty() {
+                            format!(
+                                "contract test '{target}' exited with {:?}, expected runtime exit code in 1..=125",
+                                exec.exit_code
+                            )
+                        } else {
+                            format!(
+                                "contract test '{target}' exited with {:?}, expected one of {:?}",
+                                exec.exit_code, expected.exit_codes
+                            )
+                        },
                     )),
                 );
             }
@@ -394,43 +407,35 @@ fn classify_verify_outcome(
                 );
             }
 
+            if gate.call.is_some()
+                && !matches!(exec.action_outcome, Some(ActionExecutionOutcome::Succeeded))
+            {
+                return (
+                    TraceStatus::Failed,
+                    Err(StateError::new(
+                        ErrorCode::GateVerificationFailed,
+                        format!("gate '{}' requires successful call execution", node.node_id),
+                    )),
+                );
+            }
+
             if let Err(err) = verify_required_checks(gate, &exec.check_results) {
                 return (TraceStatus::CheckFailed, Err(err));
             }
 
             (TraceStatus::ExpectedFailure, Ok(()))
         }
-        MachineProofKind::Command => {
-            if let Err(err) = verify_command_success(snapshot, profile, node, gate, input) {
-                return (TraceStatus::Failed, Err(err));
-            }
-            if let Err(err) = verify_required_checks(gate, &exec.check_results) {
-                return (TraceStatus::CheckFailed, Err(err));
-            }
-            (TraceStatus::Passed, Ok(()))
-        }
-        MachineProofKind::Call => {
-            if !matches!(exec.action_outcome, Some(ActionExecutionOutcome::Succeeded)) {
-                return (
-                    TraceStatus::Failed,
-                    Err(StateError::new(
-                        ErrorCode::GateVerificationFailed,
-                        format!("proof: call on '{}' requires successful action execution", node.node_id),
-                    )),
-                );
-            }
-            if let Err(err) = verify_required_checks(gate, &exec.check_results) {
-                return (TraceStatus::CheckFailed, Err(err));
-            }
-            (TraceStatus::Passed, Ok(()))
-        }
-        MachineProofKind::None | MachineProofKind::Review | MachineProofKind::CustomSchema(_) => {
-            if gate.command.is_some() {
+        MachineProofKind::Command
+        | MachineProofKind::Call
+        | MachineProofKind::None
+        | MachineProofKind::Review
+        | MachineProofKind::CustomSchema(_) => {
+            if matches!(gate.proof, MachineProofKind::Command) || gate.command.is_some() {
                 if let Err(err) = verify_command_success(snapshot, profile, node, gate, input) {
                     return (TraceStatus::Failed, Err(err));
                 }
             }
-            if gate.call.is_some()
+            if (matches!(gate.proof, MachineProofKind::Call) || gate.call.is_some())
                 && !matches!(exec.action_outcome, Some(ActionExecutionOutcome::Succeeded))
             {
                 return (
@@ -546,6 +551,7 @@ fn verify_required_checks(
     gate: &MachineGateDef,
     observed: &[crate::types::CheckResultRecord],
 ) -> Result<(), StateError> {
+    let mut used = vec![false; observed.len()];
     for req in &gate.checks {
         let Some((domain, check)) = req.qualified_name.split_once('.') else {
             return Err(StateError::new(
@@ -553,15 +559,18 @@ fn verify_required_checks(
                 format!("invalid check identifier '{}'", req.qualified_name),
             ));
         };
-        let Some(rec) = observed
+        let Some(pos) = observed
             .iter()
-            .find(|r| r.domain == domain && r.check == check)
+            .enumerate()
+            .position(|(idx, r)| !used[idx] && r.domain == domain && r.check == check)
         else {
             return Err(StateError::new(
                 ErrorCode::GateVerificationFailed,
                 format!("required domain check '{}' was not executed", req.qualified_name),
             ));
         };
+        used[pos] = true;
+        let rec = &observed[pos];
         if !rec.passed {
             return Err(StateError::new(
                 ErrorCode::GateVerificationFailed,
@@ -687,4 +696,314 @@ fn build_mechanical_failure_transition(
         new_subtasks: Vec::new(),
         significant_transition: true,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::evaluate_verify;
+    use crate::machine::inputs::{
+        ActionExecutionOutcome, MachineExpectedFailure, MachineGateDef, MachineGitPolicy,
+        MachineGraphItem, MachineProfileInput, MachineProofKind, MachineTasksBlockDef,
+        VerifyExecutionObservation, VerifyInput,
+    };
+    use crate::types::{
+        ClaimOutcome, GateClaimRecord, GateNodeRecord, InvariantsState, IsolationMode, NodeKind,
+        NodeStatus, RunGraphSnapshot, RunRecord, RunStatus, SaveAction, TraceStatus,
+        ValidatedObservations,
+    };
+    use acdd_core::ids::{GateId, NodeCursor, RunId, RunName, TaskRef, TreeOid, WorkerId};
+    use serde_json::json;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn contract_expected_failure_empty_and_explicit_exit_code_matrix() {
+        let run_id = RunId::new("run-verify-contract").expect("run_id");
+        let t1 = TaskRef::new("T1").expect("task_ref");
+        let contract_gate = GateId::new("contract").expect("gate_id");
+        let node_id = "task:T1:contract";
+        let tree_oid = TreeOid::new("0".repeat(40)).expect("tree");
+
+        let snapshot = RunGraphSnapshot {
+            run: RunRecord {
+                run_id: run_id.clone(),
+                run_name: RunName::new("run-verify-contract").expect("run_name"),
+                collection: None,
+                workspace: "/tmp/ws".to_owned(),
+                profile_id: "code".to_owned(),
+                profile_json: "{}".to_owned(),
+                spec_path: None,
+                spec_id: None,
+                spec_digest: "d".to_owned(),
+                is_ephemeral: false,
+                isolation: IsolationMode::InPlace,
+                target_base: None,
+                target_base_commit: None,
+                branch: None,
+                worktree: None,
+                trace_id: "t".to_owned(),
+                status: RunStatus::Active,
+                cancellation_reason: None,
+                root_cycle_count: 0,
+                generation: 1,
+                created_at: "2026-01-01T00:00:00Z".to_owned(),
+                completed_at: None,
+            },
+            nodes: vec![
+                GateNodeRecord {
+                    run_id: run_id.clone(),
+                    node_id: "task:T1".to_owned(),
+                    parent_id: None,
+                    kind: NodeKind::Task,
+                    task_ref: Some(t1.clone()),
+                    gate_id: "T1".to_owned(),
+                    seq_order: 1,
+                    status: NodeStatus::InProgress,
+                    node_version: 1,
+                    isolation: IsolationMode::InPlace,
+                    attempt: 1,
+                    cycle_count: 0,
+                    max_attempts: 3,
+                    claim_revision: 1,
+                    contract_revision: 1,
+                    worker_id: None,
+                    session_fingerprint: None,
+                    branch: None,
+                    worktree: None,
+                    baseline_commit: None,
+                    claim_tree: Some(tree_oid.clone()),
+                    accepted_tree: None,
+                    accepted_definition_digest: None,
+                    tags: vec![],
+                    invariants: InvariantsState::default(),
+                    scope: vec!["src/**".to_owned()],
+                    extended_scope: vec![],
+                    active_span_id: None,
+                },
+                GateNodeRecord {
+                    run_id: run_id.clone(),
+                    node_id: node_id.to_owned(),
+                    parent_id: Some("task:T1".to_owned()),
+                    kind: NodeKind::TaskGate,
+                    task_ref: Some(t1.clone()),
+                    gate_id: "contract".to_owned(),
+                    seq_order: 2,
+                    status: NodeStatus::InProgress,
+                    node_version: 1,
+                    isolation: IsolationMode::InPlace,
+                    attempt: 1,
+                    cycle_count: 0,
+                    max_attempts: 3,
+                    claim_revision: 1,
+                    contract_revision: 1,
+                    worker_id: Some(WorkerId::new("w1").expect("worker_id")),
+                    session_fingerprint: None,
+                    branch: None,
+                    worktree: None,
+                    baseline_commit: None,
+                    claim_tree: Some(tree_oid.clone()),
+                    accepted_tree: None,
+                    accepted_definition_digest: None,
+                    tags: vec![],
+                    invariants: InvariantsState::default(),
+                    scope: vec![],
+                    extended_scope: vec![],
+                    active_span_id: None,
+                },
+            ],
+            dependencies: vec![],
+            claims: vec![GateClaimRecord {
+                claim_id: Some(1),
+                run_id,
+                node_id: node_id.to_owned(),
+                claim_revision: 1,
+                worker_id: WorkerId::new("w1").expect("worker_id"),
+                session_fingerprint: None,
+                worktree: "/tmp/ws".to_owned(),
+                span_id: "0123456789abcdef".to_owned(),
+                claim_tree: tree_oid.clone(),
+                claimed_at: "2026-01-01T00:00:00Z".to_owned(),
+                ended_at: None,
+                outcome: ClaimOutcome::Active,
+            }],
+            traces: vec![],
+            artifacts: vec![],
+            subtasks: vec![],
+        };
+
+        let cases = [
+            // (configured exit_codes, observed exit_code, compile_errors, timed_out, should_pass)
+            (vec![], Some(1), 0, false, true),
+            (vec![], Some(101), 0, false, true),
+            (vec![], Some(125), 0, false, true),
+            (vec![], Some(0), 0, false, false),
+            (vec![], Some(126), 0, false, false),
+            (vec![], Some(127), 0, false, false),
+            (vec![], Some(137), 0, false, false),
+            (vec![], Some(101), 1, false, false),
+            (vec![], Some(101), 0, true, false),
+            (vec![101], Some(101), 0, false, true),
+            (vec![101], Some(1), 0, false, false),
+        ];
+
+        let obs = ValidatedObservations {
+            current_tree: Some(tree_oid.clone()),
+            container_tree: Some(tree_oid.clone()),
+            now_utc: "2026-01-01T00:00:05Z".to_owned(),
+            ..ValidatedObservations::default()
+        };
+
+        for (configured_codes, exit_code, compile_error_count, timed_out, should_pass) in cases {
+            let mut gate = MachineGateDef::minimal(contract_gate.clone());
+            gate.proof = MachineProofKind::Contract;
+            gate.expected_failure = Some(MachineExpectedFailure {
+                exit_codes: configured_codes.clone(),
+                stderr_contains: None,
+            });
+            let profile = MachineProfileInput {
+                profile_id: "code".to_owned(),
+                profile_json: "{}".to_owned(),
+                git: MachineGitPolicy::default(),
+                default_save: SaveAction::Commit,
+                protected_paths: Vec::new(),
+                tags: BTreeSet::from(["default".to_owned()]),
+                proof_schemas: BTreeMap::new(),
+                gates: vec![MachineGraphItem::TasksBlock(MachineTasksBlockDef {
+                    when: None,
+                    gates: vec![gate],
+                })],
+            };
+            let input = VerifyInput {
+                node_cursor: NodeCursor::task(t1.clone(), vec![contract_gate.clone()]),
+                worker_id: Some(WorkerId::new("w1").expect("worker_id")),
+                claim_revision: Some(1),
+                test_target: Some("test_mod::test_fn".to_owned()),
+                command_id: None,
+                command_line: None,
+                resolved_commands: vec![],
+                output_spec: json!({}),
+                action_id: None,
+                index_generation: None,
+                live_files_digest: None,
+                log_relpath: ".acdd/run/log.txt".to_owned(),
+                started_at: "2026-01-01T00:00:00Z".to_owned(),
+                exec_obs: VerifyExecutionObservation {
+                    timed_out,
+                    aborted: false,
+                    exit_code,
+                    stderr_tail: String::new(),
+                    compile_error_count,
+                    tests_passed: 0,
+                    tests_failed: 0,
+                    tests_ignored: 0,
+                    passed_tests: Vec::new(),
+                    failed_tests: vec!["test_mod::test_fn".to_owned()],
+                    ignored_tests: Vec::new(),
+                    check_results: Vec::new(),
+                    action_outcome: None,
+                    candidate_tree_before: tree_oid.clone(),
+                    candidate_tree_after: Some(tree_oid.clone()),
+                },
+            };
+            let eval = evaluate_verify(&snapshot, &profile, &obs, &input)
+                .expect("evaluate_verify returns structured VerifyEvaluation");
+            if should_pass {
+                assert!(
+                    eval.outcome.is_ok(),
+                    "expected pass for codes={configured_codes:?} exit={exit_code:?}: {:?}",
+                    eval.outcome
+                );
+                assert_eq!(eval.trace_finish.status, TraceStatus::ExpectedFailure);
+            } else {
+                assert!(
+                    eval.outcome.is_err(),
+                    "expected fail for codes={configured_codes:?} exit={exit_code:?} compile={compile_error_count} timed_out={timed_out}"
+                );
+            }
+        }
+
+        // Proof::Call with `command` enforces command exit/counts, and duplicate checks match 1:1.
+        use crate::machine::inputs::MachineCheckDef;
+        use crate::types::CheckResultRecord;
+
+        let chk = |passed: bool| CheckResultRecord {
+            domain: "code".to_owned(),
+            check: "seam".to_owned(),
+            passed,
+            summary: if passed { "ok".to_owned() } else { "fail".to_owned() },
+            diagnostics: Vec::new(),
+            execution_digest_salt: None,
+        };
+        let call_cases = [
+            // (has_command, exit_code, action_outcome, checks_count, observed_checks, exp_pass, exp_trace)
+            (true, Some(1), Some(ActionExecutionOutcome::Succeeded), 0, vec![], false, TraceStatus::Failed),
+            (true, Some(0), Some(ActionExecutionOutcome::Succeeded), 0, vec![], true, TraceStatus::Passed),
+            (false, None, Some(ActionExecutionOutcome::Succeeded), 2, vec![chk(true), chk(false)], false, TraceStatus::CheckFailed),
+            (false, None, Some(ActionExecutionOutcome::Succeeded), 2, vec![chk(true)], false, TraceStatus::CheckFailed),
+            (false, None, Some(ActionExecutionOutcome::Succeeded), 2, vec![chk(true), chk(true)], true, TraceStatus::Passed),
+        ];
+
+        for (idx, (has_cmd, exit_code, action_outcome, checks_count, check_results, exp_pass, exp_trace)) in
+            call_cases.into_iter().enumerate()
+        {
+            let mut gate = MachineGateDef::minimal(contract_gate.clone());
+            gate.proof = MachineProofKind::Call;
+            gate.call = Some("http.deploy".to_owned());
+            gate.command = has_cmd.then(|| "build_check".to_owned());
+            gate.checks = (0..checks_count)
+                .map(|i| MachineCheckDef {
+                    qualified_name: "code.seam".to_owned(),
+                    params: json!({ "idx": i }),
+                })
+                .collect();
+            let profile = MachineProfileInput {
+                profile_id: "code".to_owned(),
+                profile_json: "{}".to_owned(),
+                git: MachineGitPolicy::default(),
+                default_save: SaveAction::Commit,
+                protected_paths: Vec::new(),
+                tags: BTreeSet::from(["default".to_owned()]),
+                proof_schemas: BTreeMap::new(),
+                gates: vec![MachineGraphItem::TasksBlock(MachineTasksBlockDef {
+                    when: None,
+                    gates: vec![gate],
+                })],
+            };
+            let input = VerifyInput {
+                node_cursor: NodeCursor::task(t1.clone(), vec![contract_gate.clone()]),
+                worker_id: Some(WorkerId::new("w1").expect("worker_id")),
+                claim_revision: Some(1),
+                test_target: None,
+                command_id: has_cmd.then(|| "build_check".to_owned()),
+                command_line: has_cmd.then(|| "cargo test".to_owned()),
+                resolved_commands: Vec::new(),
+                output_spec: json!({}),
+                action_id: Some("http.deploy".to_owned()),
+                index_generation: None,
+                live_files_digest: None,
+                log_relpath: ".acdd/run/log.txt".to_owned(),
+                started_at: "2026-01-01T00:00:00Z".to_owned(),
+                exec_obs: VerifyExecutionObservation {
+                    timed_out: false,
+                    aborted: false,
+                    exit_code,
+                    stderr_tail: String::new(),
+                    compile_error_count: 0,
+                    tests_passed: 1,
+                    tests_failed: 0,
+                    tests_ignored: 0,
+                    passed_tests: Vec::new(),
+                    failed_tests: Vec::new(),
+                    ignored_tests: Vec::new(),
+                    check_results,
+                    action_outcome,
+                    candidate_tree_before: tree_oid.clone(),
+                    candidate_tree_after: Some(tree_oid.clone()),
+                },
+            };
+            let eval = evaluate_verify(&snapshot, &profile, &obs, &input)
+                .expect("evaluate_verify returns structured VerifyEvaluation");
+            assert_eq!(eval.outcome.is_ok(), exp_pass, "call_case[{idx}]: {:?}", eval.outcome);
+            assert_eq!(eval.trace_finish.status, exp_trace, "call_case[{idx}]");
+        }
+    }
 }

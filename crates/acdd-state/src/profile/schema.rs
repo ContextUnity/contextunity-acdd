@@ -1,9 +1,7 @@
 //! Version-2 `GateProfile` schema definitions, patch types, and strict `deny_unknown_fields` deserialization.
 
-use crate::types::{
-    canonical_json_sha256, CommitMode, IntegrateStrategy, IsolationMode, SaveAction,
-    WorktreeLifecycle,
-};
+use crate::types::{CommitMode, IntegrateStrategy, IsolationMode, SaveAction, WorktreeLifecycle};
+use acdd_core::format::{canonical_json_sha256, canonical_json_string};
 use acdd_core::subsystems::{SubsystemPreset, SubsystemRegistry};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{GateId, GateSelector};
@@ -859,14 +857,23 @@ pub struct ExpectedFailurePatch {
     pub stderr_contains: PatchField<String>,
 }
 
+/// Deserialize `SaveAction`, mapping legacy `"snapshot"` from persisted `runs.profile_json` to `None`.
+fn deserialize_compat_save_action<'de, D>(deserializer: D) -> Result<SaveAction, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = String::deserialize(deserializer)?;
+    if raw == "snapshot" {
+        Ok(SaveAction::None)
+    } else {
+        raw.parse::<SaveAction>().map_err(de::Error::custom)
+    }
+}
+
 /// Persistence, immutability, archive, prune, and Git commit note policy on a `GateDef`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Debug, Clone, Eq, Default, Serialize)]
 pub struct SavePolicy {
-    /// Pre-execution save action (`none` or `snapshot` only).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pre: Option<SaveAction>,
-    /// Post-acceptance save action (`none`, `snapshot`, or `commit`).
+    /// Post-acceptance save action (`none` or `commit`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub post: Option<SaveAction>,
     /// Require working tree at submit to match claim tree.
@@ -878,13 +885,68 @@ pub struct SavePolicy {
     /// Key referencing `profile.git_commit_notes` attached when `post == commit`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_commit_note: Option<String>,
+    /// True when deserialized from pre-v0.6.1 `runs.profile_json` (`save.pre` or `save.post: "snapshot"`).
+    #[serde(skip)]
+    pub(crate) had_legacy_save_compat: bool,
+    /// Preserved v0.6.0 `save.pre` string value for legacy verification digest checks.
+    #[serde(skip)]
+    legacy_pre: Option<String>,
+    /// True when pre-v0.6.1 `runs.profile_json` carried `save.post: "snapshot"`.
+    #[serde(skip)]
+    legacy_post_snapshot: bool,
 }
 
-/// Field-wise patch representation for `GateDef.save` (supports scalar shorthand `save: snapshot`).
+impl PartialEq for SavePolicy {
+    fn eq(&self, other: &Self) -> bool {
+        self.post == other.post
+            && self.immutable == other.immutable
+            && self.archive == other.archive
+            && self.prune == other.prune
+            && self.git_commit_note == other.git_commit_note
+    }
+}
+
+impl<'de> Deserialize<'de> for SavePolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(default, deny_unknown_fields)]
+        struct CompatRepr {
+            /// Legacy pre-execution save field from v0.6.0 `runs.profile_json`.
+            pre: Option<String>,
+            post: Option<String>,
+            immutable: bool,
+            archive: bool,
+            prune: bool,
+            git_commit_note: Option<String>,
+        }
+
+        let repr = CompatRepr::deserialize(deserializer)?;
+        let legacy_post_snapshot = repr.post.as_deref() == Some("snapshot");
+        let post = match repr.post.as_deref() {
+            None => None,
+            Some("snapshot") => Some(SaveAction::None),
+            Some(other) => Some(other.parse::<SaveAction>().map_err(de::Error::custom)?),
+        };
+        let had_legacy_save_compat = repr.pre.is_some() || legacy_post_snapshot;
+        Ok(Self {
+            post,
+            immutable: repr.immutable,
+            archive: repr.archive,
+            prune: repr.prune,
+            git_commit_note: repr.git_commit_note,
+            had_legacy_save_compat,
+            legacy_pre: repr.pre,
+            legacy_post_snapshot,
+        })
+    }
+}
+
+/// Field-wise patch representation for `GateDef.save` (supports scalar shorthand `save: commit`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SavePolicyPatch {
-    /// Override or clear `pre`.
-    pub pre: PatchField<SaveAction>,
     /// Override or clear `post`.
     pub post: PatchField<SaveAction>,
     /// Override `immutable`.
@@ -905,7 +967,6 @@ impl<'de> Deserialize<'de> for SavePolicyPatch {
         #[derive(Deserialize)]
         #[serde(default, deny_unknown_fields)]
         struct MapRepr {
-            pre: PatchField<SaveAction>,
             post: PatchField<SaveAction>,
             immutable: PatchField<bool>,
             archive: PatchField<bool>,
@@ -916,7 +977,6 @@ impl<'de> Deserialize<'de> for SavePolicyPatch {
         impl Default for MapRepr {
             fn default() -> Self {
                 Self {
-                    pre: PatchField::Unset,
                     post: PatchField::Unset,
                     immutable: PatchField::Unset,
                     archive: PatchField::Unset,
@@ -939,7 +999,6 @@ impl<'de> Deserialize<'de> for SavePolicyPatch {
                 ..Default::default()
             }),
             Helper::Map(m) => Ok(Self {
-                pre: m.pre,
                 post: m.post,
                 immutable: m.immutable,
                 archive: m.archive,
@@ -1200,6 +1259,9 @@ pub struct GateDef {
     /// Target sibling gate activated on reject/failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fail: Option<GateId>,
+    /// Target sibling gate activated on `architectural_drift` rejection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fail_drift: Option<GateId>,
 }
 
 impl PartialEq for GateDef {
@@ -1228,6 +1290,7 @@ impl PartialEq for GateDef {
             && self.need == other.need
             && self.pass == other.pass
             && self.fail == other.fail
+            && self.fail_drift == other.fail_drift
     }
 }
 
@@ -1259,6 +1322,7 @@ impl Default for GateDef {
             need: Vec::new(),
             pass: None,
             fail: None,
+            fail_drift: None,
         }
     }
 }
@@ -1272,7 +1336,30 @@ impl GateDef {
                 format!("failed to serialize GateDef for digest: {err}"),
             )
         })?;
-        canonical_json_sha256(&value)
+        Ok(canonical_json_sha256(&value))
+    }
+
+    /// Compute the pre-`v0.6.1` RFC-8785 SHA-256 digest when loaded from a legacy `runs.profile_json`
+    /// that carried `save.pre` or `save.post: "snapshot"`.
+    pub(crate) fn legacy_v060_definition_digest(&self) -> Result<String, StateError> {
+        let mut value = serde_json::to_value(self).map_err(|err| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("failed to serialize GateDef for legacy digest: {err}"),
+            )
+        })?;
+        if let Some(save_obj) = value.get_mut("save").and_then(serde_json::Value::as_object_mut) {
+            if let Some(ref pre) = self.save.legacy_pre {
+                save_obj.insert("pre".to_owned(), serde_json::Value::String(pre.clone()));
+            }
+            if self.save.legacy_post_snapshot {
+                save_obj.insert(
+                    "post".to_owned(),
+                    serde_json::Value::String("snapshot".to_owned()),
+                );
+            }
+        }
+        Ok(canonical_json_sha256(&value))
     }
 
     /// Returns `true` if this entry represents a `- tasks:` block.
@@ -1371,6 +1458,9 @@ pub struct RawGateDef {
     /// Fail transition target.
     #[serde(skip_serializing)]
     pub fail: PatchField<GateId>,
+    /// Architectural-drift fail transition target.
+    #[serde(skip_serializing)]
+    pub fail_drift: PatchField<GateId>,
 }
 
 /// Raw `- tasks:` block in YAML.
@@ -1443,7 +1533,7 @@ pub struct ParsedProfileFile {
     /// Field-wise Git policy overrides.
     #[serde(default)]
     pub git: Option<GitPolicyPatch>,
-    /// Top-level default save action for terminal root gate (`none | snapshot | commit`).
+    /// Top-level default save action for terminal root gate (`none | commit`).
     #[serde(default)]
     pub save: PatchField<SaveAction>,
     /// Allowed task tags (`"default"` is always implicitly permitted).
@@ -1500,7 +1590,8 @@ pub struct ResolvedGateProfile {
     pub profile_id: String,
     /// Resolved Git isolation/worktree/commit/integration policy.
     pub git: GitPolicy,
-    /// Default terminal root-gate persistence action.
+    /// Default terminal root-gate persistence action (accepts legacy `"snapshot"` in persisted `profile_json`).
+    #[serde(deserialize_with = "deserialize_compat_save_action")]
     pub save: SaveAction,
     /// Admitted tags (`"default"` is always included).
     pub tags: BTreeSet<String>,
@@ -1566,7 +1657,7 @@ impl ResolvedGateProfile {
                 format!("failed to serialize ResolvedGateProfile: {err}"),
             )
         })?;
-        crate::types::canonical_json_string(&value)
+        Ok(canonical_json_string(&value))
     }
 }
 

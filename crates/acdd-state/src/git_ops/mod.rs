@@ -18,9 +18,8 @@ pub use integrate::{
     IntegrateTaskResp, TaskIntegrationCheckInput,
 };
 pub use snapshot::{
-    blob_oid_at, capture_snapshot, current_scope_tree, diff_scope_changed_paths, restore_rollback,
-    CaptureSnapshotReq, CaptureSnapshotResp, GitGcProtection, RollbackReq, RollbackResp,
-    TemporaryGitIndex,
+    blob_oid_at, current_scope_tree, diff_scope_changed_paths, list_git_tree_files,
+    restore_rollback, tree_entry_at, RollbackReq, RollbackResp, TemporaryGitIndex,
 };
 pub use worktree::{
     canonicalize_macos_var, cleanup_run_refs, create_run_worktree, create_task_worktree,
@@ -28,42 +27,18 @@ pub use worktree::{
     RepoWorktreeLayout,
 };
 
+pub(super) use acdd_core::fs::ScopedTempDir;
 use acdd_core::errors::{ErrorCode, StateError};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Output;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-static TEMP_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
-
-pub(super) struct ScopedTempDir(pub(super) PathBuf);
-
-impl ScopedTempDir {
-    pub(super) fn create(prefix: &str) -> Result<Self, StateError> {
-        let base = std::env::temp_dir();
-        loop {
-            let seq = TEMP_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-            let candidate = base.join(format!("{prefix}-{}-{seq}", std::process::id()));
-            match std::fs::create_dir(&candidate) {
-                Ok(()) => return Ok(Self(candidate)),
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(err) => {
-                    return Err(StateError::new(
-                        ErrorCode::ExternalGitDrift,
-                        format!(
-                            "failed creating temporary directory '{}': {err}",
-                            candidate.display()
-                        ),
-                    ));
-                }
-            }
-        }
-    }
-}
-
-impl Drop for ScopedTempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
+pub(super) fn create_scoped_temp_dir(prefix: &str) -> Result<ScopedTempDir, StateError> {
+    ScopedTempDir::create(prefix).map_err(|err| {
+        StateError::new(
+            ErrorCode::ExternalGitDrift,
+            format!("failed creating temporary directory '{prefix}': {err}"),
+        )
+    })
 }
 
 pub(super) fn run_git_raw(

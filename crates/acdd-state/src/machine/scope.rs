@@ -9,7 +9,7 @@ use crate::types::{
     TransitionPlan,
 };
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
+use acdd_core::path_policy::{is_valid_scope_glob, normalize_rel_path, WorkspacePathPolicy};
 
 /// Plan a pure `extend_scope` update for a task container and its child gates.
 pub fn plan_extend_scope(
@@ -98,6 +98,12 @@ pub fn plan_extend_scope(
 
     let mut normalized_paths = Vec::with_capacity(input.paths.len());
     for raw_path in &input.paths {
+        if !is_valid_scope_glob(raw_path) {
+            return Err(StateError::new(
+                ErrorCode::OutOfScopeChanges,
+                format!("extend_scope rejected invalid scope path or glob '{raw_path}'"),
+            ));
+        }
         let norm = normalize_rel_path(raw_path).ok_or_else(|| {
             StateError::new(
                 ErrorCode::OutOfScopeChanges,

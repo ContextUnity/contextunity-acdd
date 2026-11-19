@@ -1,7 +1,7 @@
 //! Branch integration strategies (`manual | rebase-ff | ff-only | no-ff | squash`) and completeness checks.
 
 use super::commit::{current_branch_name, current_head_commit, is_protected_main_branch};
-use super::snapshot::blob_oid_at;
+use super::snapshot::tree_entry_at;
 use super::{
     commit_has_exact_trailer, ensure_non_empty_git_identity, git_dir_path, run_git_checked,
     run_git_raw, run_git_stdout, ScopedTempDir,
@@ -89,8 +89,14 @@ pub fn abort_in_progress_git_ops(worktree: &Path) -> Result<bool, StateError> {
     }
 
     if git_dir.join("SQUASH_MSG").exists() {
-        let unmerged = collect_conflicting_paths(worktree);
-        if !unmerged.is_empty() {
+        let unmerged = run_git_checked(
+            worktree,
+            &["ls-files", "-u"],
+            None,
+            None,
+            ErrorCode::ExternalGitDrift,
+        )?;
+        if !unmerged.stdout.iter().all(u8::is_ascii_whitespace) {
             run_git_checked(
                 worktree,
                 &["reset", "--merge"],
@@ -98,9 +104,9 @@ pub fn abort_in_progress_git_ops(worktree: &Path) -> Result<bool, StateError> {
                 None,
                 ErrorCode::ExternalGitDrift,
             )?;
+            let _ = fs::remove_file(git_dir.join("SQUASH_MSG"));
+            aborted = true;
         }
-        let _ = fs::remove_file(git_dir.join("SQUASH_MSG"));
-        aborted = true;
     }
 
     Ok(aborted)
@@ -311,6 +317,19 @@ pub fn integrate_task_branch(req: &IntegrateTaskReq) -> Result<IntegrateTaskResp
             })
         }
         IntegrateStrategy::Squash => {
+            let staged_check = run_git_raw(
+                &req.target_worktree,
+                &["diff", "--cached", "--quiet"],
+                None,
+                &[],
+                None,
+            )?;
+            if !staged_check.status.success() {
+                return Err(StateError::new(
+                    ErrorCode::ExternalGitDrift,
+                    "target worktree has staged local changes; commit or unstage before squash integration",
+                ));
+            }
             let squash_out = run_git_raw(
                 &req.target_worktree,
                 &["merge", "--squash", &req.source_branch],
@@ -321,15 +340,27 @@ pub fn integrate_task_branch(req: &IntegrateTaskReq) -> Result<IntegrateTaskResp
             if !squash_out.status.success() {
                 let conflicts = collect_conflicting_paths(&req.target_worktree);
                 super::failpoint_hit("git_integrate_before_abort");
-                let _ = run_git_raw(
-                    &req.target_worktree,
-                    &["reset", "--hard", target_head_before.as_str()],
-                    None,
-                    &[],
-                    None,
-                );
                 if let Ok(gd) = git_dir_path(&req.target_worktree) {
-                    let _ = fs::remove_file(gd.join("SQUASH_MSG"));
+                    let squash_msg = gd.join("SQUASH_MSG");
+                    if squash_msg.exists() || !conflicts.is_empty() {
+                        let _ = run_git_raw(
+                            &req.target_worktree,
+                            &["reset", "--merge"],
+                            None,
+                            &[],
+                            None,
+                        );
+                        let _ = fs::remove_file(squash_msg);
+                    }
+                }
+                if conflicts.is_empty() {
+                    return Err(StateError::new(
+                        ErrorCode::ExternalGitDrift,
+                        format!(
+                            "squash integration failed: {}",
+                            String::from_utf8_lossy(&squash_out.stderr).trim()
+                        ),
+                    ));
                 }
                 return Err(integration_conflict_error(
                     "squash",
@@ -354,11 +385,14 @@ pub fn integrate_task_branch(req: &IntegrateTaskReq) -> Result<IntegrateTaskResp
             if !commit_out.status.success() {
                 let _ = run_git_raw(
                     &req.target_worktree,
-                    &["reset", "--hard", target_head_before.as_str()],
+                    &["reset", "--merge"],
                     None,
                     &[],
                     None,
                 );
+                if let Ok(gd) = git_dir_path(&req.target_worktree) {
+                    let _ = fs::remove_file(gd.join("SQUASH_MSG"));
+                }
                 return Err(StateError::new(
                     ErrorCode::ExternalGitDrift,
                     format!(
@@ -432,24 +466,34 @@ pub fn verify_tasks_integrated(
 
         let mut task_ok = true;
         for path in &changed_paths {
-            let head_blob = blob_oid_at(run_worktree, "HEAD", path)?;
-            let accepted_blob = blob_oid_at(run_worktree, task.accepted_tree.as_str(), path)?;
+            let head_entry = tree_entry_at(run_worktree, "HEAD", path)?;
+            let accepted_entry = tree_entry_at(run_worktree, task.accepted_tree.as_str(), path)?;
 
-            // Rule (b): exact blob match (or both absent) in run_worktree HEAD.
-            if head_blob == accepted_blob {
+            // Rule (b): exact `(mode, blob_oid)` tree entry match (or both absent) in run_worktree HEAD.
+            if head_entry == accepted_entry {
                 continue;
             }
 
-            // Rule (c): transitive downstream completed task owning `path` overwrote it.
+            // Rule (c): transitive downstream completed task owning `path` modified its `(mode, blob_oid)`
+            // and its accepted entry matches run_worktree HEAD.
             let mut covered_by_downstream = false;
             for downstream_ref in &task.downstream_tasks {
                 let Some(downstream) = tasks_by_ref.get(downstream_ref) else {
                     continue;
                 };
-                if policy.is_scope_admitted(path, &downstream.admitted_scope)
-                    && blob_oid_at(run_worktree, downstream.accepted_tree.as_str(), path)?
-                        == head_blob
+                if downstream.admitted_scope.is_empty()
+                    || !policy.is_scope_admitted(path, &downstream.admitted_scope)
                 {
+                    continue;
+                }
+                let downstream_initial = tree_entry_at(
+                    run_worktree,
+                    downstream.initial_claim_tree.as_str(),
+                    path,
+                )?;
+                let downstream_accepted =
+                    tree_entry_at(run_worktree, downstream.accepted_tree.as_str(), path)?;
+                if downstream_initial != downstream_accepted && downstream_accepted == head_entry {
                     covered_by_downstream = true;
                     break;
                 }
@@ -460,8 +504,8 @@ pub fn verify_tasks_integrated(
 
             // Rule (a): Acdd-Integrated trailer in HEAD history without later revert of `path` to initial_claim_tree.
             if let Some(ref int_oid) = integrated_commit {
-                let initial_blob =
-                    blob_oid_at(run_worktree, task.initial_claim_tree.as_str(), path)?;
+                let initial_entry =
+                    tree_entry_at(run_worktree, task.initial_claim_tree.as_str(), path)?;
                 let range = format!("{int_oid}..HEAD");
                 let later_commits = run_git_stdout(
                     run_worktree,
@@ -470,8 +514,8 @@ pub fn verify_tasks_integrated(
                     ErrorCode::ExternalGitDrift,
                 )?;
                 let reverted_to_initial = !later_commits.trim().is_empty()
-                    && head_blob == initial_blob
-                    && initial_blob != accepted_blob;
+                    && head_entry == initial_entry
+                    && initial_entry != accepted_entry;
                 if !reverted_to_initial {
                     continue;
                 }
@@ -595,8 +639,8 @@ struct TempRebaseWorktree {
 
 impl TempRebaseWorktree {
     fn create(primary_worktree: &Path, branch: &str) -> Result<Self, StateError> {
-        let temp_dir = ScopedTempDir::create("acdd-rebase")?;
-        let worktree_dir = temp_dir.0.join("wt");
+        let temp_dir = super::create_scoped_temp_dir("acdd-rebase")?;
+        let worktree_dir = temp_dir.path().join("wt");
         let wt_str = worktree_dir.to_string_lossy().into_owned();
         run_git_checked(
             primary_worktree,

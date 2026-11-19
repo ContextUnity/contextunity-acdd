@@ -350,14 +350,15 @@ pub fn remove_worktree_and_branch(
     Ok(())
 }
 
-/// Delete all `refs/acdd/snapshots/<run_id>/*` and `refs/acdd/keep/<run_id>/*` across primary and linked workspaces.
+/// Delete `refs/acdd/{runs,snapshots,keep}/<run_id>/*` across primary and linked workspaces.
 pub fn cleanup_run_refs(
     workspaces: &[PathBuf],
     run_id: &RunId,
 ) -> Result<Vec<String>, StateError> {
     let mut seen_common_dirs = BTreeSet::new();
     let mut deleted = Vec::new();
-    let snap_prefix = format!("refs/acdd/snapshots/{}/", run_id.as_str());
+    let run_prefix = format!("refs/acdd/runs/{}/", run_id.as_str());
+    let snapshots_prefix = format!("refs/acdd/snapshots/{}/", run_id.as_str());
     let keep_prefix = format!("refs/acdd/keep/{}/", run_id.as_str());
 
     for ws in workspaces {
@@ -370,7 +371,8 @@ pub fn cleanup_run_refs(
             &[
                 "for-each-ref",
                 "--format=%(refname)",
-                &snap_prefix,
+                &run_prefix,
+                &snapshots_prefix,
                 &keep_prefix,
             ],
             None,

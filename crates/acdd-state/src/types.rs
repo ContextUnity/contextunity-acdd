@@ -3,12 +3,9 @@
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{CommitOid, RunId, RunName, SubtaskRef, TaskRef, TreeOid, WorkerId};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
-
-pub use acdd_core::format::sha256_hex;
 
 macro_rules! define_string_enum {
     ($(#[$meta:meta])* $name:ident, { $($(#[$vmeta:meta])* $variant:ident => $wire:literal),+ $(,)? }) => {
@@ -255,7 +252,7 @@ define_string_enum!(
         Plumbing => "plumbing",
         /// Standard `git commit` with `GIT_INDEX_FILE`, enforcing `HEAD^{tree}` integrity post-hook.
         Cli => "cli",
-        /// Engine takes snapshots only; operator/agent creates commits manually.
+        /// Engine validates scoped working tree; operator/agent creates commits manually.
         Manual => "manual",
     }
 );
@@ -278,13 +275,11 @@ define_string_enum!(
 );
 
 define_string_enum!(
-    /// Persistence action configured in `save.pre` / `save.post`.
+    /// Persistence action configured in `save` / `save.post`.
     SaveAction,
     {
-        /// No Git snapshot or commit is created.
+        /// No Git commit is created.
         None => "none",
-        /// Create an orphan ref snapshot under `refs/acdd/snapshots/...`.
-        Snapshot => "snapshot",
         /// Create a scoped Git commit on the node's branch.
         Commit => "commit",
     }
@@ -349,10 +344,24 @@ pub struct FindingItem {
     pub remediation: String,
 }
 
+/// Classification of a gate rejection finding.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RejectionKind {
+    /// Localized implementation or verification defect fixed by returning to the target gate.
+    #[default]
+    Defect,
+    /// Structural/architectural mismatch requiring re-architecture and a fresh builder context.
+    ArchitecturalDrift,
+}
+
 /// Structured findings payload required for `submit --action reject`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RejectionFindings {
+    /// Classification of the rejection (`defect` by default, or `architectural_drift`).
+    #[serde(default)]
+    pub kind: RejectionKind,
     /// Concise summary of why the gate was rejected.
     pub summary: String,
     /// Optional blackboard message ID referencing the posted discussion/findings thread.
@@ -424,6 +433,9 @@ pub struct RunRecord {
     pub profile_json: String,
     /// Relative path to source spec file (`None` when `is_ephemeral == true`).
     pub spec_path: Option<String>,
+    /// Source spec ID (e.g. `AC-005`) preserved without truncation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_id: Option<String>,
     /// SHA-256 digest of the source spec content.
     pub spec_digest: String,
     /// Whether this run was created ephemerally via `--goal`.
@@ -1165,14 +1177,4 @@ pub struct CompletedRunDigest {
     pub closed_commit: Option<CommitOid>,
     /// UTC ISO-8601 closure timestamp.
     pub closed_at: String,
-}
-
-/// Pure canonical JSON serializer (sorted object keys, compact formatting) compatible with RFC-8785 digests.
-pub fn canonical_json_string(value: &Value) -> Result<String, StateError> {
-    Ok(acdd_core::format::canonical_json_string(value))
-}
-
-/// Compute lowercase hex SHA-256 over the canonical JSON serialization of `value`.
-pub fn canonical_json_sha256(value: &Value) -> Result<String, StateError> {
-    Ok(acdd_core::format::canonical_json_sha256(value))
 }

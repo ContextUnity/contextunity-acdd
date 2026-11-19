@@ -1,6 +1,8 @@
 //! Application use cases (`StateEngine`, `StateQueryEngine`, `StateCommand`, `StateQuery`, DTOs).
 
+mod archive_notes;
 pub mod commands;
+pub mod deps;
 pub mod dto;
 pub mod lifecycle;
 pub mod queries;
@@ -161,7 +163,21 @@ impl StateEngine {
         } else {
             None
         };
-        let backend = SqliteStateBackend::open_with_options(config.sqlite_options(backup_dir))?;
+        let collection_paths: Vec<String> = config
+            .spec_collections
+            .values()
+            .map(|c| c.path.clone())
+            .collect();
+        let backend = SqliteStateBackend::open_with_reconciler(
+            config.sqlite_options(backup_dir),
+            |runs| {
+                lifecycle::reconcile_restored_runs_with_archives(
+                    runs,
+                    Some(&config.workspace_root),
+                    &collection_paths,
+                )
+            },
+        )?;
         Ok(Self {
             config,
             backend: Arc::new(backend),
@@ -211,7 +227,10 @@ fn execute_on_dyn(
     provider: &CompositeDomainProvider,
     cmd: StateCommand,
 ) -> Result<StateCommandOutput, StateError> {
-    lifecycle::ensure_state_enabled(config)?;
+    match &cmd {
+        StateCommand::CallPluginTool(req) if req.run.is_none() && req.node.is_none() => {}
+        _ => lifecycle::ensure_state_enabled(config)?,
+    }
     match cmd {
         StateCommand::Start(req) => Ok(StateCommandOutput::Start(Box::new(
             commands::handle_start_dyn(config, backend, provider, req)?,
@@ -242,9 +261,6 @@ fn execute_on_dyn(
         )?)),
         StateCommand::BlackboardPost(req) => Ok(StateCommandOutput::BlackboardPost(
             commands::handle_blackboard_post_dyn(config, backend, req)?,
-        )),
-        StateCommand::Snapshot(req) => Ok(StateCommandOutput::Snapshot(
-            commands::handle_snapshot_dyn(config, backend, req)?,
         )),
         StateCommand::Rollback(req) => Ok(StateCommandOutput::Rollback(
             commands::handle_rollback_dyn(config, backend, req)?,

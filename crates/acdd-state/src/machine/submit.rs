@@ -15,13 +15,34 @@ use crate::machine::verify::detect_scope_violations;
 use crate::types::{
     ArtifactKind, BlackboardStatus, BlackboardStatusPatch, BlackboardTopic, ClaimOutcome,
     ClaimOutcomePatch, DependencySatisfiedPatch, GateArtifactRecord, GateNodeRecord, IsolationMode,
-    NodeKind, NodeStatus, NodeStatusPatch, PredecessorTreeExpectation, RunGraphSnapshot, RunStatus,
-    SubmitAction, SubtaskStatus, TraceStatus, TransitionPlan, ValidatedObservations,
+    NodeKind, NodeStatus, NodeStatusPatch, PredecessorTreeExpectation, RejectionFindings,
+    RejectionKind, RunGraphSnapshot, RunStatus, SubmitAction, SubtaskStatus, TraceStatus,
+    TransitionPlan, ValidatedObservations,
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{GateSelector, NodeCursor, TaskRef, WorkerId};
+use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Internal storage view of a persisted [`ArtifactKind::Findings`] JSON payload.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct StoredFindingsArtifact {
+    #[serde(flatten)]
+    pub(crate) findings: RejectionFindings,
+    #[serde(default)]
+    pub(crate) reset_worker_context: bool,
+    #[serde(default)]
+    pub(crate) reset_gate_id: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub(crate) trace_row_id: Option<i64>,
+}
+
+/// Deserialize a persisted [`ArtifactKind::Findings`] JSON payload.
+pub(crate) fn parse_findings_artifact(payload_json: &str) -> Option<StoredFindingsArtifact> {
+    serde_json::from_str::<StoredFindingsArtifact>(payload_json).ok()
+}
 
 /// Evaluate a `submit` (`pass` or `reject`) purely against `snapshot`, `profile`, and `obs`.
 pub fn evaluate_submit(
@@ -297,7 +318,13 @@ fn evaluate_reject(
         .max_by_key(|t| t.trace_row_id.unwrap_or(0))
         .and_then(|t| t.trace_row_id);
 
+    let reset_worker_context = findings.kind == RejectionKind::ArchitecturalDrift;
+    let reset_gate_id =
+        reset_worker_context.then(|| gate.fail.as_deref().unwrap_or(node.gate_id.as_str()));
     let findings_payload = json!({
+        "kind": findings.kind,
+        "reset_worker_context": reset_worker_context,
+        "reset_gate_id": reset_gate_id,
         "summary": findings.summary,
         "blackboard_message_id": findings.blackboard_message_id,
         "items": findings.items,
@@ -320,9 +347,23 @@ fn evaluate_reject(
         created_at: obs.now_utc.clone(),
     };
 
+    let target_fail_id = if findings.kind == RejectionKind::ArchitecturalDrift {
+        gate.fail_drift
+            .as_ref()
+            .filter(|id| {
+                snapshot
+                    .nodes
+                    .iter()
+                    .any(|n| n.parent_id == node.parent_id && n.gate_id == **id)
+            })
+            .or(gate.fail.as_ref())
+    } else {
+        gate.fail.as_ref()
+    };
+
     let new_attempt = node.attempt + 1;
     let is_top_level_root = node.parent_id.is_none();
-    let (new_root_cycle_count, new_cycle_count, cycle_exceeded) = if gate.fail.is_some() {
+    let (new_root_cycle_count, new_cycle_count, cycle_exceeded) = if target_fail_id.is_some() {
         if is_top_level_root {
             let next_rc = snapshot.run.root_cycle_count + 1;
             (Some(next_rc), None, next_rc >= gate.max_attempts)
@@ -347,7 +388,7 @@ fn evaluate_reject(
         patch.session_fingerprint = Some(None);
         patch.active_span_id = Some(None);
         node_patches.push(patch);
-    } else if let Some(ref fail_id) = gate.fail {
+    } else if let Some(fail_id) = target_fail_id {
         let target = snapshot
             .nodes
             .iter()
@@ -371,16 +412,56 @@ fn evaluate_reject(
         target_patch.active_span_id = Some(None);
         node_patches.push(target_patch);
 
-        for mid in &snapshot.nodes {
-            if mid.parent_id == node.parent_id
-                && mid.seq_order > target.seq_order
-                && mid.seq_order < node.seq_order
-            {
-                watch_ids.push(mid.node_id.as_str());
-                let mut mid_patch = NodeStatusPatch::status_only(&mid.node_id, NodeStatus::Pending);
-                mid_patch.accepted_tree = Some(None);
-                mid_patch.accepted_definition_digest = Some(None);
-                node_patches.push(mid_patch);
+        if target.seq_order <= node.seq_order {
+            for mid in &snapshot.nodes {
+                if mid.parent_id == node.parent_id
+                    && mid.seq_order > target.seq_order
+                    && mid.seq_order < node.seq_order
+                {
+                    watch_ids.push(mid.node_id.as_str());
+                    let mut mid_patch =
+                        NodeStatusPatch::status_only(&mid.node_id, NodeStatus::Pending);
+                    mid_patch.accepted_tree = Some(None);
+                    mid_patch.accepted_definition_digest = Some(None);
+                    mid_patch.worker_id = Some(None);
+                    mid_patch.session_fingerprint = Some(None);
+                    mid_patch.active_span_id = Some(None);
+                    node_patches.push(mid_patch);
+                }
+            }
+        } else if let Some(ref fallback_fail_id) = gate.fail {
+            // `fail_drift` targets placed after `node` (e.g. `rearchitect`): also reset
+            // `gate.fail` (`build`) and intermediate gates (`< node.seq_order`) to `Pending`.
+            let fb_node = snapshot
+                .nodes
+                .iter()
+                .find(|n| n.parent_id == node.parent_id && n.gate_id == *fallback_fail_id)
+                .ok_or_else(|| {
+                    StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        format!(
+                            "fail target '{fallback_fail_id}' not found in container of '{}'",
+                            node.node_id
+                        ),
+                    )
+                })?;
+            for prev in &snapshot.nodes {
+                if prev.parent_id == node.parent_id
+                    && prev.seq_order >= fb_node.seq_order
+                    && prev.seq_order < node.seq_order
+                    && prev.node_id != target.node_id
+                    && prev.node_id != node.node_id
+                {
+                    watch_ids.push(prev.node_id.as_str());
+                    let mut prev_patch =
+                        NodeStatusPatch::status_only(&prev.node_id, NodeStatus::Pending);
+                    prev_patch.accepted_tree = Some(None);
+                    prev_patch.accepted_definition_digest = Some(None);
+                    prev_patch.worker_id = Some(None);
+                    prev_patch.session_fingerprint = Some(None);
+                    prev_patch.active_span_id = Some(None);
+                    node_patches.push(prev_patch);
+                }
             }
         }
 
@@ -388,6 +469,8 @@ fn evaluate_reject(
             let mut cur_patch = NodeStatusPatch::status_only(&node.node_id, NodeStatus::Pending);
             cur_patch.attempt = Some(new_attempt);
             cur_patch.cycle_count = new_cycle_count;
+            cur_patch.accepted_tree = Some(None);
+            cur_patch.accepted_definition_digest = Some(None);
             cur_patch.worker_id = Some(None);
             cur_patch.session_fingerprint = Some(None);
             cur_patch.active_span_id = Some(None);
@@ -462,18 +545,8 @@ fn evaluate_pass(
         ));
     }
 
-    // 2. `save.immutable: true` check (`current_tree == claim_tree`).
-    if gate.save.immutable && node.claim_tree.as_ref() != Some(current_tree) {
-        return Err(StateError::new(
-            ErrorCode::TaskCandidateMismatch,
-            format!(
-                "immutable gate '{}' detected working-tree drift from claim_tree ({:?} != {})",
-                node.node_id, node.claim_tree, current_tree
-            ),
-        ));
-    }
-
-    // 3. `need:` predecessor accepted_tree check (marks drifted predecessors stale).
+    // 2. `need:` predecessor accepted_tree check (marks drifted predecessors stale BEFORE
+    // returning any immutable-gate mismatch so drifted `need:` predecessors do not stay Completed).
     let mut required_predecessor_trees = Vec::new();
     let mut stale_node_ids = Vec::new();
     let mut stale_watch_ids = Vec::new();
@@ -515,6 +588,17 @@ fn evaluate_pass(
             stale_node_ids,
             preconditions,
         });
+    }
+
+    // 3. `save.immutable: true` check (`current_tree == claim_tree`).
+    if gate.save.immutable && node.claim_tree.as_ref() != Some(current_tree) {
+        return Err(StateError::new(
+            ErrorCode::TaskCandidateMismatch,
+            format!(
+                "immutable gate '{}' detected working-tree drift from claim_tree ({:?} != {})",
+                node.node_id, node.claim_tree, current_tree
+            ),
+        ));
     }
 
     // 4. Trace freshness + `current_tree` check.
@@ -759,6 +843,21 @@ fn evaluate_pass(
                 }
                 task_patch.invariants = Some(inv.clone());
                 node_patches.push(task_patch);
+
+                // Cancel unused fallback gates (such as `rearchitect`) still `Pending` in this task container.
+                for sibling in &snapshot.nodes {
+                    if sibling.kind == NodeKind::TaskGate
+                        && sibling.parent_id.as_deref() == Some(parent_task.node_id.as_str())
+                        && sibling.node_id != node.node_id
+                        && sibling.status == NodeStatus::Pending
+                    {
+                        watch_ids.push(sibling.node_id.as_str());
+                        node_patches.push(NodeStatusPatch::status_only(
+                            &sibling.node_id,
+                            NodeStatus::Cancelled,
+                        ));
+                    }
+                }
 
                 dependency_patches.push(DependencySatisfiedPatch {
                     depends_on_ref: task_ref.clone(),
@@ -1140,18 +1239,12 @@ fn unblock_newly_ready_tasks<'a>(
             .iter()
             .filter(|d| &d.task_ref == tref)
             .all(|dep| {
-                if dep.satisfied {
-                    return true;
-                }
-                if dep.depends_on_run_id == snapshot.run.run_id {
-                    task_statuses.get(&dep.depends_on_ref).copied() == Some(NodeStatus::Completed)
-                } else {
-                    obs.external_satisfied_deps.iter().any(|(ws, rid, ref_id)| {
-                        ws == &dep.depends_on_workspace
-                            && rid == &dep.depends_on_run_id
-                            && ref_id == &dep.depends_on_ref
-                    })
-                }
+                crate::machine::schedule::is_dep_satisfied_against_statuses(
+                    &snapshot.run.run_id,
+                    dep,
+                    |ref_id| task_statuses.get(ref_id).copied() == Some(NodeStatus::Completed),
+                    obs,
+                )
             });
         if all_deps_ok {
             watch_ids.push(task_node.node_id.as_str());
@@ -1215,18 +1308,12 @@ fn activate_tasks_after_pre_barrier<'a>(
             .iter()
             .filter(|d| &d.task_ref == tref)
             .all(|dep| {
-                if dep.satisfied {
-                    return true;
-                }
-                if dep.depends_on_run_id == snapshot.run.run_id {
-                    task_statuses.get(&dep.depends_on_ref).copied() == Some(NodeStatus::Completed)
-                } else {
-                    obs.external_satisfied_deps.iter().any(|(ws, rid, ref_id)| {
-                        ws == &dep.depends_on_workspace
-                            && rid == &dep.depends_on_run_id
-                            && ref_id == &dep.depends_on_ref
-                    })
-                }
+                crate::machine::schedule::is_dep_satisfied_against_statuses(
+                    &snapshot.run.run_id,
+                    dep,
+                    |ref_id| task_statuses.get(ref_id).copied() == Some(NodeStatus::Completed),
+                    obs,
+                )
             });
         if deps_ok {
             watch_ids.push(task_node.node_id.as_str());

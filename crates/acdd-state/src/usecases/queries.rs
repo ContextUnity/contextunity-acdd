@@ -17,9 +17,10 @@ use crate::usecases::dto::{
     ObservabilityResp, ShowReq, ShowResp, StateQuery, StateQueryOutput, StatusReq, StatusResp,
 };
 use crate::usecases::lifecycle::{
-    collect_external_satisfied_deps, compute_unintegrated_tasks, ensure_blackboard_enabled,
-    ensure_state_enabled, now_utc_iso, parse_cursor_for_snapshot, parse_profile_from_run,
-    primary_workspace_root, read_confined_utf8, resolve_node_worktree, resolve_run_optional,
+    build_path_policy, collect_external_satisfied_deps, compute_unintegrated_tasks,
+    ensure_blackboard_enabled, ensure_state_enabled, parse_cursor_for_snapshot,
+    parse_profile_from_run, primary_workspace_root, read_confined_utf8, resolve_node_worktree,
+    resolve_run_optional,
 };
 use crate::usecases::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
@@ -33,6 +34,27 @@ pub fn execute_query(
     provider: &CompositeDomainProvider,
     query: StateQuery,
 ) -> Result<StateQueryOutput, StateError> {
+    // Dispatch `Validate` before `ensure_state_enabled` so config/spec validation works with `modules.state: false`.
+    if let StateQuery::Validate(req) = query {
+        let root = primary_workspace_root(config);
+        let resp = match req.path {
+            Some(ref rel) => crate::validate::validate_document(
+                &root,
+                std::path::Path::new(rel),
+                req.explicit_config.as_deref(),
+                req.explicit_profile.as_deref(),
+                provider,
+            )?,
+            None => crate::validate::validate_workspace(
+                &root,
+                req.explicit_config.as_deref(),
+                req.explicit_profile.as_deref(),
+                provider,
+            )?,
+        };
+        return Ok(StateQueryOutput::Validate(resp));
+    }
+
     ensure_state_enabled(config)?;
 
     match query {
@@ -53,6 +75,7 @@ pub fn execute_query(
         StateQuery::Observability(req) => Ok(StateQueryOutput::Observability(
             handle_observability(reader, req)?,
         )),
+        StateQuery::Validate(_) => unreachable!("handled prior to modules.state gate"),
     }
 }
 
@@ -90,7 +113,7 @@ fn handle_status(
     let obs = ValidatedObservations {
         external_satisfied_deps: ext_deps,
         unintegrated_tasks,
-        now_utc: now_utc_iso(),
+        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()
     };
 
@@ -240,6 +263,9 @@ fn build_show_context_preview(
         .as_ref()
         .and_then(|tr| extract_pre_task_slice(graph, tr.as_str()));
 
+    let context_reset_required =
+        crate::usecases::commands::is_context_reset_required(graph, node, &gate_def);
+    let path_policy = build_path_policy(config, reader, &[])?;
     let ctx_req = ClaimContextRequest {
         run: graph.run.clone(),
         node: node.clone(),
@@ -250,11 +276,13 @@ fn build_show_context_preview(
         worker_id,
         worktree,
         candidate_tree,
+        path_policy,
         unresolved_findings: None,
         failed_trace_log_tail: None,
         pre_task_slice,
         dependency_receipts,
         blackboard_items: bb_page.items,
+        context_reset_required,
         response_max_bytes: config.response_policy.max_output_bytes,
     };
 
@@ -299,7 +327,7 @@ fn handle_next(
     let obs = ValidatedObservations {
         external_satisfied_deps: ext_deps,
         unintegrated_tasks,
-        now_utc: now_utc_iso(),
+        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()
     };
     let schedule = compute_schedule(&graph, &obs)?;
@@ -524,7 +552,7 @@ pub(crate) fn collect_dependency_receipts(
     receipts
 }
 
-/// Extract `tasks[<task_ref>]` slice from accepted pre-task root proof/receipt artifacts.
+/// Extract `tasks[<task_ref>]` slice from the latest accepted pre-task root proof/receipt artifact.
 pub(crate) fn extract_pre_task_slice(
     graph: &RunGraphSnapshot,
     task_ref: &str,
@@ -536,27 +564,186 @@ pub(crate) fn extract_pre_task_slice(
         .map(|n| n.seq_order)
         .min()?;
 
-    let pre_node_ids: std::collections::BTreeSet<&str> = graph
+    let completed_pre_nodes: std::collections::BTreeMap<&str, u32> = graph
         .nodes
         .iter()
         .filter(|n| {
             n.seq_order < min_tasks_seq
+                && n.status == NodeStatus::Completed
                 && matches!(n.kind, NodeKind::RootGate | NodeKind::Container)
                 && !n.node_id.starts_with("tasks#")
         })
-        .map(|n| n.node_id.as_str())
+        .map(|n| (n.node_id.as_str(), n.claim_revision))
         .collect();
 
+    let mut best: Option<(u32, &str, serde_json::Value)> = None;
     for art in &graph.artifacts {
-        if pre_node_ids.contains(art.node_id.as_str())
-            && matches!(art.kind, ArtifactKind::Proof | ArtifactKind::Receipt)
-        {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&art.payload_json) {
-                if let Some(slice) = val.get("tasks").and_then(|t| t.get(task_ref)) {
-                    return Some(slice.clone());
+        let Some(&node_claim_rev) = completed_pre_nodes.get(art.node_id.as_str()) else {
+            continue;
+        };
+        if !matches!(art.kind, ArtifactKind::Proof | ArtifactKind::Receipt) {
+            continue;
+        }
+        // Reject stale claim revisions whenever the node has a newer accepted claim_revision.
+        if node_claim_rev > 0 && art.claim_revision < node_claim_rev {
+            continue;
+        }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&art.payload_json) {
+            if let Some(slice) = val.get("tasks").and_then(|t| t.get(task_ref)) {
+                let replace = match best {
+                    None => true,
+                    Some((prev_rev, prev_at, _)) => {
+                        (art.claim_revision, art.created_at.as_str()) > (prev_rev, prev_at)
+                    }
+                };
+                if replace {
+                    best = Some((art.claim_revision, art.created_at.as_str(), slice.clone()));
                 }
             }
         }
     }
-    None
+    best.map(|(_, _, slice)| slice)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_pre_task_slice;
+    use crate::types::{
+        ArtifactKind, GateArtifactRecord, GateNodeRecord, InvariantsState, IsolationMode, NodeKind,
+        NodeStatus, RunGraphSnapshot, RunRecord, RunStatus,
+    };
+    use acdd_core::ids::{RunId, RunName, TaskRef};
+
+    fn test_snapshot_for_slice(
+        synth_status: NodeStatus,
+        synth_rev: u32,
+        artifacts: Vec<GateArtifactRecord>,
+    ) -> RunGraphSnapshot {
+        let run_id = RunId::new("run-slice").expect("run_id");
+        RunGraphSnapshot {
+            run: RunRecord {
+                run_id: run_id.clone(),
+                run_name: RunName::new("run-slice").expect("run_name"),
+                collection: None,
+                workspace: "/tmp/ws".to_owned(),
+                profile_id: "code".to_owned(),
+                profile_json: "{}".to_owned(),
+                spec_path: None,
+                spec_id: None,
+                spec_digest: "d".to_owned(),
+                is_ephemeral: false,
+                isolation: IsolationMode::InPlace,
+                target_base: None,
+                target_base_commit: None,
+                branch: None,
+                worktree: None,
+                trace_id: "t".to_owned(),
+                status: RunStatus::Active,
+                cancellation_reason: None,
+                root_cycle_count: 0,
+                generation: 1,
+                created_at: "2026-01-01T00:00:00Z".to_owned(),
+                completed_at: None,
+            },
+            nodes: vec![
+                GateNodeRecord {
+                    run_id: run_id.clone(),
+                    node_id: "blueprint_synthesis.synthesize".to_owned(),
+                    parent_id: None,
+                    kind: NodeKind::RootGate,
+                    task_ref: None,
+                    gate_id: "synthesize".to_owned(),
+                    seq_order: 1,
+                    status: synth_status,
+                    node_version: 1,
+                    isolation: IsolationMode::InPlace,
+                    attempt: 1,
+                    cycle_count: 0,
+                    max_attempts: 3,
+                    claim_revision: synth_rev,
+                    contract_revision: 1,
+                    worker_id: None,
+                    session_fingerprint: None,
+                    branch: None,
+                    worktree: None,
+                    baseline_commit: None,
+                    claim_tree: None,
+                    accepted_tree: None,
+                    accepted_definition_digest: None,
+                    tags: vec![],
+                    invariants: InvariantsState::default(),
+                    scope: vec![],
+                    extended_scope: vec![],
+                    active_span_id: None,
+                },
+                GateNodeRecord {
+                    run_id,
+                    node_id: "tasks#1".to_owned(),
+                    parent_id: None,
+                    kind: NodeKind::Container,
+                    task_ref: Some(TaskRef::new("T1").expect("task_ref")),
+                    gate_id: "tasks".to_owned(),
+                    seq_order: 2,
+                    status: NodeStatus::Pending,
+                    node_version: 1,
+                    isolation: IsolationMode::InPlace,
+                    attempt: 0,
+                    cycle_count: 0,
+                    max_attempts: 3,
+                    claim_revision: 0,
+                    contract_revision: 1,
+                    worker_id: None,
+                    session_fingerprint: None,
+                    branch: None,
+                    worktree: None,
+                    baseline_commit: None,
+                    claim_tree: None,
+                    accepted_tree: None,
+                    accepted_definition_digest: None,
+                    tags: vec![],
+                    invariants: InvariantsState::default(),
+                    scope: vec![],
+                    extended_scope: vec![],
+                    active_span_id: None,
+                },
+            ],
+            dependencies: vec![],
+            claims: vec![],
+            traces: vec![],
+            artifacts,
+            subtasks: vec![],
+        }
+    }
+
+    #[test]
+    fn extract_pre_task_slice_selects_latest_accepted_revision() {
+        let run_id = RunId::new("run-slice").expect("run_id");
+        let rev1 = GateArtifactRecord {
+            run_id: run_id.clone(),
+            node_id: "blueprint_synthesis.synthesize".to_owned(),
+            claim_revision: 1,
+            kind: ArtifactKind::Proof,
+            payload_json: r#"{"tasks":{"T1":{"ver":"stale-rev-1"}}}"#.to_owned(),
+            snapshot_ref: None,
+            snapshot_commit: None,
+            created_at: "2026-01-01T00:01:00Z".to_owned(),
+        };
+        let rev2 = GateArtifactRecord {
+            run_id,
+            node_id: "blueprint_synthesis.synthesize".to_owned(),
+            claim_revision: 2,
+            kind: ArtifactKind::Proof,
+            payload_json: r#"{"tasks":{"T1":{"ver":"accepted-rev-2"}}}"#.to_owned(),
+            snapshot_ref: None,
+            snapshot_commit: None,
+            created_at: "2026-01-01T00:02:00Z".to_owned(),
+        };
+
+        let rejected_snap = test_snapshot_for_slice(NodeStatus::Stale, 1, vec![rev1.clone()]);
+        assert_eq!(extract_pre_task_slice(&rejected_snap, "T1"), None);
+
+        let completed_snap = test_snapshot_for_slice(NodeStatus::Completed, 2, vec![rev1, rev2]);
+        let selected = extract_pre_task_slice(&completed_snap, "T1").expect("slice present");
+        assert_eq!(selected["ver"], "accepted-rev-2");
+    }
 }

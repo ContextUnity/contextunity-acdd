@@ -107,6 +107,16 @@ proofs:
                 type: array
                 items:
                   type: string
+              canonical_owners:
+                type: array
+                items:
+                  type: string
+              mechanism_rules:
+                type: array
+                items:
+                  type: string
+              max_net_loc:
+                type: integer
               verification_seam:
                 type: string
               incoming_seams:
@@ -176,23 +186,27 @@ guidance:
   milestone.synthesis:
     description: "MANDATORY GROUNDED ARCHITECTURAL BLUEPRINT SYNTHESIS"
     criteria:
-      - "Inspect relevant repository artifacts, invariants, and extension seams before decomposing tasks."
-      - "Assign each task to its minimal layer, define exported interfaces, negative boundaries, and cross-task seams."
+      - "Audit existing canonical owners (INV-SINGLE-OWNER), shared abstractions, and extension seams across the repository before decomposing tasks."
+      - "Assign each task to its minimal layer, define exported interfaces, negative boundaries, and cross-task seams, and forbid parallel registries, pipelines, or shadow schedulers in task blueprints."
+      - "Populate canonical_owners, mechanism_rules, and a realistic max_net_loc net production LOC budget for every task slice in proof.tasks."
       - "Record the architectural decision via acdd_blackboard and reference its identifier in the blueprint proof."
   milestone.blueprint_review:
     description: "INDEPENDENT REVIEW OF THE ARCHITECTURAL BLUEPRINT"
     criteria:
-      - "Verify cited invariants, boundaries, and cross-task seam consistency."
-      - "Confirm every task has complete slice definitions and a recorded blackboard decision identifier."
+      - "Verify cited invariants, canonical-owner reuse (INV-SINGLE-OWNER), layer boundaries, and cross-task seam consistency."
+      - "Confirm every task slice populates canonical_owners, concrete mechanism_rules, and a realistic max_net_loc budget, forbids shadow subsystems, and references a recorded blackboard decision identifier."
   milestone.polish:
     description: "Resolve integration failures or reviewer findings within the admitted polish scope."
     criteria:
       - "Keep edits confined to admitted polish paths and preserve verified task contracts."
+      - "REUSE & COMPLEXITY ESCALATION: Search and reuse existing canonical owners before writing any helper or pipeline; never introduce a new subsystem, shadow resolver, narrow string heuristic, or disproportionate bugfix complexity growth without recording justification in acdd_blackboard (topic: decisions or blockers) and escalating when exceeding task authority."
+      - "REBUTTAL OVER BLIND REWRITE: If a reviewer finding contradicts an ADR, accepted contract, or existing contract test, do not weaken the contract or add speculative abstractions—record an evidence-backed rebuttal via acdd_blackboard (topic: decisions) citing exact file:line proof and resubmit."
   milestone.review:
     description: "RUN INTEGRATION REVIEW & BOUNDED VERIFICATION"
     criteria:
       - "Review the integrated diff against target base for cohesion, scope compliance, and zero regressions."
-      - "Evaluate declared contours with engineering judgment and verify all required traces are fresh."
+      - "Evaluate declared contours with engineering judgment—enforcing single-owner reuse, strict layer purity, zero narrow string heuristics where structural data exists, and clean table-driven test discipline under contours.architecture—and verify all required traces are fresh."
+      - "BURDEN OF PROOF: Reject only on a concrete contract/invariant violation or reproducible defect (evaluating any file:line rebuttal in acdd_blackboard decisions objectively); record speculative hardening, style preferences, or out-of-scope ideas via acdd_blackboard (topic: deferred) and pass."
   milestone.handoff:
     description: "Terminal run delivery, capturing closure summary, receipts, and archiving completed spec."
     criteria:
@@ -205,15 +219,26 @@ guidance:
   task.contract_review:
     description: "INDEPENDENT CONTRACT AUDIT"
     criteria:
-      - "Verify the contract reaches live production paths, includes negative boundaries, and fails cleanly at runtime."
+      - "Verify the contract reaches live production paths, respects single-owner reuse and layer boundaries (contours.architecture), includes negative boundaries, and fails cleanly at runtime."
   task.code:
     description: "MINIMAL DURABLE IMPLEMENTATION"
     criteria:
-      - "Implement the accepted contract with minimal complexity inside the admitted scope and verify passing tests."
+      - "Follow the blueprint's canonical_owners, mechanism_rules, and max_net_loc budget inside the admitted scope and verify passing tests; reuse canonical owners instead of inflating LOC, or record a `BUDGET_OVERRIDE: <reason>` decision in acdd_blackboard (topic: decisions) / escalate."
+      - "If context_reset_required is set after rearchitect, read the latest rearchitect decision from acdd_blackboard (topic: decisions) and implement cleanly from scratch without repeating rejected approaches."
+      - "REUSE & COMPLEXITY ESCALATION: Search and reuse existing canonical owners before writing any helper or pipeline; never introduce a new subsystem, shadow resolver, narrow string heuristic, or disproportionate bugfix complexity growth without recording justification in acdd_blackboard (topic: decisions or blockers) and escalating when exceeding task authority."
+      - "REBUTTAL OVER BLIND REWRITE: If a reviewer finding contradicts an ADR, accepted contract, or existing contract test, do not weaken the contract or add speculative abstractions—record an evidence-backed rebuttal via acdd_blackboard (topic: decisions) citing exact file:line proof and resubmit."
   task.review:
     description: "INDEPENDENT IMPLEMENTATION REVIEW"
     criteria:
-      - "Verify contract satisfaction, scope boundaries, concurrency safety, and root-cause remediation without test bloat."
+      - "Critically evaluate contract satisfaction, scope boundaries, concurrency safety, and root-cause remediation without test bloat."
+      - "Enforce single-owner reuse, strict layer purity, zero narrow string heuristics where structural data exists, and clean table-driven test discipline under contours.architecture."
+      - "Use rejection kind: defect (fail: build) for localized implementation defects, or kind: architectural_drift (fail_drift: rearchitect) when structural violations require re-architecture and resetting builder context."
+      - "BURDEN OF PROOF: Reject only on a concrete contract/invariant violation or reproducible defect (evaluating any file:line rebuttal in acdd_blackboard decisions objectively); record speculative hardening, style preferences, or out-of-scope ideas via acdd_blackboard (topic: deferred) and pass."
+  task.rearchitect:
+    description: "ARCHITECTURAL RECOVERY AFTER ARCHITECTURAL DRIFT"
+    criteria:
+      - "Diagnose the structural cause behind the reviewer's architectural_drift finding against cited invariants, ADRs, and canonical owners."
+      - "Record an updated architectural decision on acdd_blackboard (topic: decisions) specifying the minimal durable seam/mechanism correction before routing a fresh builder context to build."
   hitl.pro: "HITL level PRO: allow internal helpers and non-breaking implementation changes; escalate public APIs, CLI/MCP surfaces, storage schemas, and cross-milestone contracts."
 
 contours:
@@ -227,6 +252,11 @@ contours:
     criteria:
       - "Trace each invariant and acceptance criterion to live production code and fresh verification traces."
       - "Verify malformed or missing inputs fail closed with exact diagnostics."
+  architecture:
+    description: "Verify single-owner reuse, layer boundaries, minimal mechanism design, and absence of shadow subsystems or narrow heuristics."
+    criteria:
+      - "Confirm existing canonical owners and shared abstractions are reused instead of introducing duplicate helpers, parallel pipelines, or shadow resolvers."
+      - "Verify strict layer boundaries, absence of narrow string/filename heuristics where structural data exists, and complexity proportional to the accepted contract."
   concurrency:
     description: "Verify concurrent operations preserve revision fencing, claim ownership, and rollback integrity."
     criteria:
@@ -263,6 +293,7 @@ gates:
         proof: review
         contours:
           - claims
+          - architecture
           - project_isolation
           - administration
         independent_from:
@@ -280,13 +311,10 @@ gates:
           role: contract_author
           command: test
           proof: contract
-          expected_failure:
-            exit_codes: [1, 101, 134]
+          expected_failure: {}
           guidance:
             - task.contract
             - hitl.pro
-          save:
-            post: snapshot
           pass: contract_review
 
         - id: contract_review
@@ -295,6 +323,7 @@ gates:
           contours:
             - paths
             - claims
+            - architecture
           independent_from:
             - contract
           need:
@@ -314,8 +343,6 @@ gates:
           guidance:
             - task.code
             - hitl.pro
-          save:
-            post: snapshot
           pass: review
 
         - id: review
@@ -324,6 +351,7 @@ gates:
           contours:
             - paths
             - claims
+            - architecture
             - concurrency
             - project_isolation
             - administration
@@ -338,6 +366,7 @@ gates:
             immutable: true
           pass: deliver
           fail: build
+          fail_drift: rearchitect
 
         - id: deliver
           role: independent_reviewer
@@ -355,6 +384,14 @@ gates:
             git_commit_note: default
           fail: build
 
+        - id: rearchitect
+          role: architect
+          guidance:
+            - task.rearchitect
+            - hitl.pro
+          pass: build
+          max_attempts: 3
+
   - id: verify
     command: verify_all
     proof: command
@@ -367,7 +404,6 @@ gates:
     scope:
       - ".acdd/profile.yaml"
       - ".acdd/profiles/**"
-      - ".acdd/frameworks/**"
       - "docs/**"
       - "skills/**"
       - "AGENTS.md"
@@ -388,6 +424,7 @@ gates:
     contours:
       - paths
       - claims
+      - architecture
       - concurrency
       - project_isolation
       - administration

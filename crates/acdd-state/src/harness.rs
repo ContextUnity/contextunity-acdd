@@ -84,13 +84,24 @@ impl RunHarness {
         })?;
 
         let db_path = workspace_root.join(".acdd/state.sqlite");
-        let backend = SqliteStateBackend::open_with_options(SqliteBackendOptions {
-            db_path,
-            backup_dir: Some(backup_dir.clone()),
-            workspace_root: Some(workspace_root.clone()),
-            spec_collection_paths,
-            is_custom_db: false,
-        })?;
+        let reconciler_ws = workspace_root.clone();
+        let reconciler_cols = spec_collection_paths.clone();
+        let backend = SqliteStateBackend::open_with_reconciler(
+            SqliteBackendOptions {
+                db_path,
+                backup_dir: Some(backup_dir.clone()),
+                workspace_root: Some(workspace_root.clone()),
+                spec_collection_paths,
+                is_custom_db: false,
+            },
+            |runs| {
+                crate::usecases::lifecycle::reconcile_restored_runs_with_archives(
+                    runs,
+                    Some(&reconciler_ws),
+                    &reconciler_cols,
+                )
+            },
+        )?;
 
         Ok(Self {
             inner: HarnessBackend::Disk {
@@ -106,7 +117,14 @@ impl RunHarness {
     pub fn on_disk_with_options(options: SqliteBackendOptions) -> Result<Self, StateError> {
         let backup_dir = options.backup_dir.clone();
         let workspace_root = options.workspace_root.clone();
-        let backend = SqliteStateBackend::open_with_options(options)?;
+        let reconciler_cols = options.spec_collection_paths.clone();
+        let backend = SqliteStateBackend::open_with_reconciler(options, |runs| {
+            crate::usecases::lifecycle::reconcile_restored_runs_with_archives(
+                runs,
+                workspace_root.as_deref(),
+                &reconciler_cols,
+            )
+        })?;
         Ok(Self {
             inner: HarnessBackend::Disk {
                 backend: Box::new(backend),
@@ -188,6 +206,7 @@ impl RunHarness {
             profile_id: "code".to_owned(),
             profile_json: r#"{"version":2}"#.to_owned(),
             spec_path: Some(format!("docs/milestones/{run_name}.md")),
+            spec_id: None,
             spec_digest: "deadbeef".repeat(8),
             is_ephemeral: false,
             isolation: IsolationMode::Worktree,
@@ -414,7 +433,7 @@ mod tests {
     };
     use acdd_core::ids::{SubtaskRef, WorkerId};
     use std::fs;
-    use std::process::Command;
+    use acdd_core::git::git_command;
 
     fn oid_tree(ch: char) -> TreeOid {
         TreeOid::new(ch.to_string().repeat(40)).unwrap()
@@ -447,7 +466,7 @@ mod tests {
         }
         assert!(tables.contains(&"_sqlite_meta".to_owned()));
         assert!(!tables.contains(&"op_intents".to_owned()));
-        assert_eq!(mem.read_meta().unwrap().schema_version, 1);
+        assert_eq!(mem.read_meta().unwrap().schema_version, 2);
 
         let graph = RunHarness::build_sample_graph(
             "run-ddl-1",
@@ -464,15 +483,15 @@ mod tests {
         let negative_sql_cases: &[(&str, &str)] = &[
             (
                 "invalid_is_ephemeral",
-                "INSERT INTO runs VALUES ('r2','n2',NULL,'/repo','code','{}',NULL,'d',2,'worktree',NULL,NULL,NULL,NULL,'t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL);",
+                "INSERT INTO runs VALUES ('r2','n2',NULL,'/repo','code','{}',NULL,'d',2,'worktree',NULL,NULL,NULL,NULL,'t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL,NULL);",
             ),
             (
                 "invalid_profile_json",
-                "INSERT INTO runs VALUES ('r2','n2',NULL,'/repo','code','{bad',NULL,'d',0,'worktree',NULL,NULL,NULL,NULL,'t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL);",
+                "INSERT INTO runs VALUES ('r2','n2',NULL,'/repo','code','{bad',NULL,'d',0,'worktree',NULL,NULL,NULL,NULL,'t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL,NULL);",
             ),
             (
                 "uq_runs_active_worktree_collision",
-                "INSERT INTO runs VALUES ('r2','n2',NULL,'/repo','code','{}',NULL,'d',0,'worktree',NULL,NULL,NULL,'/repo/.worktrees/AC-001','t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL);",
+                "INSERT INTO runs VALUES ('r2','n2',NULL,'/repo','code','{}',NULL,'d',0,'worktree',NULL,NULL,NULL,'/repo/.worktrees/AC-001','t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL,NULL);",
             ),
             (
                 "gate_nodes_task_must_have_dunder_task_gate_id",
@@ -521,7 +540,7 @@ mod tests {
 
         // Completed run can share worktree path, and partial unique indexes allow historical rows.
         mem.execute_raw_sql(
-            "INSERT INTO runs VALUES ('r-done','n-done',NULL,'/repo','code','{}',NULL,'d',0,'worktree',NULL,NULL,NULL,'/repo/.worktrees/AC-001','t','completed',NULL,0,1,'2026-01-01T00:00:00Z','2026-01-01T00:05:00Z');",
+            "INSERT INTO runs VALUES ('r-done','n-done',NULL,'/repo','code','{}',NULL,'d',0,'worktree',NULL,NULL,NULL,'/repo/.worktrees/AC-001','t','completed',NULL,0,1,'2026-01-01T00:00:00Z','2026-01-01T00:05:00Z',NULL);",
         )
         .unwrap();
 
@@ -559,7 +578,7 @@ mod tests {
 
         // Domain newtypes are validated on read: tampered row fails closed.
         mem.execute_raw_sql(
-            "INSERT INTO runs VALUES ('bad id with spaces','n-bad',NULL,'/repo','code','{}',NULL,'d',0,'worktree',NULL,NULL,NULL,NULL,'t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL);",
+            "INSERT INTO runs VALUES ('bad id with spaces','n-bad',NULL,'/repo','code','{}',NULL,'d',0,'worktree',NULL,NULL,NULL,NULL,'t','active',NULL,0,1,'2026-01-01T00:00:00Z',NULL,NULL);",
         )
         .unwrap();
         assert!(mem
@@ -1109,24 +1128,12 @@ mod tests {
             // 3. Git-backed workspace with backup + archive restore reconciliation
             let ws = root.join("repo");
             fs::create_dir_all(ws.join("docs/milestones/archive")).unwrap();
-            assert!(Command::new("git")
-                .current_dir(&ws)
-                .args(["init"])
-                .output()
+            assert!(git_command(&ws, &["init"]).unwrap().status.success());
+            assert!(git_command(&ws, &["config", "user.email", "test@example.com"])
                 .unwrap()
                 .status
                 .success());
-            assert!(Command::new("git")
-                .current_dir(&ws)
-                .args(["config", "user.email", "test@example.com"])
-                .output()
-                .unwrap()
-                .status
-                .success());
-            assert!(Command::new("git")
-                .current_dir(&ws)
-                .args(["config", "user.name", "Test"])
-                .output()
+            assert!(git_command(&ws, &["config", "user.name", "Test"])
                 .unwrap()
                 .status
                 .success());
@@ -1136,17 +1143,11 @@ mod tests {
                 "---\nid: AC-010\ntitle: Done Run\nstatus: completed\n---\n",
             )
             .unwrap();
-            assert!(Command::new("git")
-                .current_dir(&ws)
-                .args(["add", archived_spec])
-                .output()
+            assert!(git_command(&ws, &["add", archived_spec])
                 .unwrap()
                 .status
                 .success());
-            assert!(Command::new("git")
-                .current_dir(&ws)
-                .args(["commit", "-m", "commit archived spec"])
-                .output()
+            assert!(git_command(&ws, &["commit", "-m", "commit archived spec"])
                 .unwrap()
                 .status
                 .success());
@@ -1247,7 +1248,14 @@ mod tests {
             let _ = fs::remove_file(ws.join(".acdd/state.sqlite-wal"));
             let _ = fs::remove_file(ws.join(".acdd/state.sqlite-shm"));
 
-            let restored = SqliteStateBackend::open_with_options(opts).unwrap();
+            let restored = SqliteStateBackend::open_with_reconciler(opts, |runs| {
+                crate::usecases::lifecycle::reconcile_restored_runs_with_archives(
+                    runs,
+                    Some(&ws),
+                    &["docs/milestones".to_owned()],
+                )
+            })
+            .unwrap();
             let done_id = RunId::new("run-010").unwrap();
             let live_id = RunId::new("run-011").unwrap();
             assert!(restored.load_run_graph(&done_id).unwrap().is_none());

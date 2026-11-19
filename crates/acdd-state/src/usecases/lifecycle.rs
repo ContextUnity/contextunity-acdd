@@ -1,6 +1,7 @@
 //! Shared lifecycle infrastructure: lock ordering, path policies, profile/spec resolution,
 //! cross-workspace dependency queries, PID liveness checks, and tombstone cleanup recovery.
 
+use acdd_core::git::read_git_blob_utf8;
 use crate::git_ops::worktree::{
     canonicalize_macos_var, cleanup_run_refs, remove_worktree_and_branch, resolve_repo_layout,
     RepoWorktreeLayout,
@@ -8,27 +9,28 @@ use crate::git_ops::worktree::{
 use crate::machine::{
     compute_schedule, container_scope, MachineCheckDef, MachineExpectedFailure, MachineGateDef,
     MachineGitPolicy, MachineGraphItem, MachineProfileInput, MachineProofKind, MachineSavePolicy,
-    MachineTaskDep, MachineTasksBlockDef,
+    MachineTasksBlockDef,
 };
 use crate::profile::{
     validate_profile, CommandDef, GateDef, ProfileValidationOptions, ProofDef, ProofKind,
     ResolvedGateProfile,
 };
 use crate::spec::{parse_spec, SpecDocument, SpecStatus};
-use crate::store::sqlite::SqliteStateReader;
+use crate::store::sqlite::backup::RestoredActiveRun;
 use crate::store::traits::{exec_tx_with, StateBackend, StateReader};
 use crate::types::{
-    canonical_json_sha256, GateNodeRecord, ListRunsReq, NodeKind, NodeStatus, RunGraphSnapshot,
-    RunRecord, RunStatus, RunTombstoneRecord, SaveAction, TaskDependencyRecord, TerminalStatus,
-    ValidatedObservations,
+    ArchiveCleanupEntry, GateNodeRecord, ListRunsReq, NodeKind, NodeStatus,
+    RunGraphSnapshot, RunRecord, RunStatus, RunTombstoneRecord, SaveAction, TerminalStatus,
+    ValidatedObservations, WorktreeLifecycle,
 };
 use crate::usecases::StateEngineConfig;
 use acdd_core::config::SpecCollectionConfig;
-use acdd_core::fs::{canonical_root, checked_child, open_confined};
+use acdd_core::fs::{checked_child, open_confined};
+use acdd_core::git::{git_common_dir, git_stdout};
 use acdd_core::lock::{acquire_exclusive, FileLockGuard};
 use acdd_core::subsystems::SubsystemRegistry;
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::ids::{GateId, NodeCursor, RunId, TaskRef};
+use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, RunName, TaskRef};
 use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_core::ports::CompositeDomainProvider;
 use acdd_core::schema::SchemaDef;
@@ -41,11 +43,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static TRACE_EVENT_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-/// Return current UTC timestamp formatted as strict ISO-8601 `YYYY-MM-DDTHH:MM:SS.sssZ`.
-pub fn now_utc_iso() -> String {
-    acdd_core::telemetry::now_utc_iso_ms()
-}
 
 /// Read and lexicographically sort directory entries (returns empty `Vec` on unreadable/missing dir).
 pub(crate) fn sorted_dir_paths(dir: &Path) -> Vec<PathBuf> {
@@ -232,7 +229,49 @@ pub fn match_spec_collection(
         .map(|(name, _)| name.clone())
 }
 
-/// Build [`WorkspacePathPolicy`] incorporating `spec_path` of all active runs plus `extra_managed`.
+/// Derive the archive relative path for an active run's `spec_relpath`.
+pub(crate) fn compute_archive_relpath(
+    config: &StateEngineConfig,
+    run_collection: Option<&str>,
+    spec_relpath: &str,
+) -> Result<String, StateError> {
+    let collections = effective_spec_collections(config);
+    let col_key = run_collection
+        .map(str::to_owned)
+        .or_else(|| match_spec_collection(&collections, spec_relpath));
+
+    let file_name = Path::new(spec_relpath)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("spec_path '{spec_relpath}' has no file name"),
+            )
+        })?;
+
+    if let Some(key) = col_key {
+        if let Some(cfg) = collections.get(&key) {
+            return Ok(format!(
+                "{}/archive/{file_name}",
+                cfg.path.trim_end_matches('/')
+            ));
+        }
+    }
+    let parent = Path::new(spec_relpath)
+        .parent()
+        .and_then(|p| p.to_str())
+        .unwrap_or("")
+        .trim_end_matches('/');
+    if parent.is_empty() {
+        Ok(format!("archive/{file_name}"))
+    } else {
+        Ok(format!("{parent}/archive/{file_name}"))
+    }
+}
+
+/// Build [`WorkspacePathPolicy`] incorporating `spec_path` and derived `archive_path` of all
+/// active runs plus `extra_managed`.
 pub fn build_path_policy(
     config: &StateEngineConfig,
     reader: &dyn StateReader,
@@ -252,6 +291,11 @@ pub fn build_path_policy(
         for run in &page.runs {
             if let Some(ref sp) = run.spec_path {
                 managed.push(sp.clone());
+                if let Ok(archive_rel) =
+                    compute_archive_relpath(config, run.collection.as_deref(), sp)
+                {
+                    managed.push(archive_rel);
+                }
             }
         }
         offset += page.runs.len();
@@ -346,9 +390,18 @@ pub fn resolve_run_optional(
     }
 
     let active = list_all_runs(reader, Some(RunStatus::Active))?;
+    let is_primary = canon_wt == primary_workspace_root(config);
     match active.len() {
         0 => Ok(None),
-        1 => Ok(Some(active.into_iter().next().expect("checked len == 1"))),
+        1 if is_primary => Ok(Some(active.into_iter().next().expect("checked len == 1"))),
+        1 => Err(StateError::new(
+            ErrorCode::RunSelectorAmbiguous,
+            format!(
+                "active run exists, but worktree '{}' is not bound to it",
+                target_wt.display()
+            ),
+        )
+        .with_hint("specify --run <run_id|run_name> or --worktree <path>")),
         _ => Err(StateError::new(
             ErrorCode::RunSelectorAmbiguous,
             format!(
@@ -488,9 +541,10 @@ fn convert_gate_def(
             MachineProofKind::CustomSchema(name.clone())
         }
         ProofDef::Scheme { scheme } => {
-            let dig = canonical_json_sha256(&serde_json::to_value(scheme.as_ref()).map_err(|e| {
-                StateError::new(ErrorCode::ProfileSchemaInvalid, e.to_string())
-            })?)?;
+            let dig = acdd_core::format::canonical_json_sha256(
+                &serde_json::to_value(scheme.as_ref())
+                    .map_err(|e| StateError::new(ErrorCode::ProfileSchemaInvalid, e.to_string()))?,
+            );
             let synthetic = format!("__inline_{}", &dig[..12]);
             proof_schemas.insert(synthetic.clone(), *scheme.clone());
             MachineProofKind::CustomSchema(synthetic)
@@ -543,12 +597,12 @@ fn convert_gate_def(
         need: gate.need.clone(),
         pass: gate.pass.as_ref().map(|g| g.as_str().to_owned()),
         fail: gate.fail.as_ref().map(|g| g.as_str().to_owned()),
+        fail_drift: gate.fail_drift.as_ref().map(|g| g.as_str().to_owned()),
         max_attempts: gate.max_attempts.max(1),
         receipt: gate.receipt,
         require_test_target: matches!(gate.proof, ProofDef::Kind(ProofKind::Contract)),
         require_counts,
         save: MachineSavePolicy {
-            pre: gate.save.pre.unwrap_or(SaveAction::None),
             post: effective_post,
             immutable: gate.save.immutable,
             archive: gate.save.archive,
@@ -671,341 +725,17 @@ pub fn read_confined_utf8(root: &Path, relpath: &str) -> Result<String, StateErr
     Ok(buf)
 }
 
-/// Parse a `TaskSpec.depends_on` entry (`<task_ref>`, `<run_id>:<task_ref>`, or `<ws_alias>/<run_id>:<task_ref>`).
-pub fn parse_task_dependency(
-    raw: &str,
-    current_workspace: &str,
-    current_run_id: &RunId,
-    linked_workspaces: &BTreeMap<String, PathBuf>,
-    spec_repos: &BTreeMap<String, PathBuf>,
-) -> Result<MachineTaskDep, StateError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            "depends_on entry cannot be empty",
-        ));
-    }
-    if let Some((left, task_part)) = trimmed.split_once(':') {
-        let tref = TaskRef::new(task_part)?;
-        if let Some((ws_alias, run_part)) = left.split_once('/') {
-            let ws_path = linked_workspaces
-                .get(ws_alias)
-                .or_else(|| spec_repos.get(ws_alias))
-                .ok_or_else(|| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "external dependency '{trimmed}' references unknown linked workspace '{ws_alias}'"
-                        ),
-                    )
-                })?;
-            let canon_ws = canonical_root(ws_path).map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!(
-                        "linked workspace '{ws_alias}' path '{}' is invalid or confined-check failed: {err}",
-                        ws_path.display()
-                    ),
-                )
-            })?;
-            let rid = resolve_external_run_id(&canon_ws, run_part)?;
-            Ok(MachineTaskDep {
-                depends_on_workspace: canon_ws.to_string_lossy().into_owned(),
-                depends_on_run_id: rid,
-                depends_on_ref: tref,
-            })
-        } else {
-            let rid = resolve_external_run_id(Path::new(current_workspace), left)?;
-            Ok(MachineTaskDep {
-                depends_on_workspace: current_workspace.to_owned(),
-                depends_on_run_id: rid,
-                depends_on_ref: tref,
-            })
-        }
-    } else {
-        Ok(MachineTaskDep {
-            depends_on_workspace: current_workspace.to_owned(),
-            depends_on_run_id: current_run_id.clone(),
-            depends_on_ref: TaskRef::new(trimmed)?,
-        })
-    }
-}
-
-fn resolve_external_run_id(ws_root: &Path, run_sel: &str) -> Result<RunId, StateError> {
-    let reader = SqliteStateReader::new(ws_root.join(".acdd/state.sqlite"));
-    if let Ok(runs) = list_all_runs(&reader, None) {
-        if let Some(found) = runs
-            .into_iter()
-            .find(|r| r.run_id.as_str() == run_sel || r.run_name.as_str() == run_sel)
-        {
-            return Ok(found.run_id);
-        }
-    }
-    if let Ok(tombs) = list_all_tombstones(&reader) {
-        if let Some(found) = tombs.into_iter().find(|t| {
-            t.run_id.as_str() == run_sel
-                || t.run_name.as_str() == run_sel
-                || t.spec_id.as_deref() == Some(run_sel)
-        }) {
-            return Ok(found.run_id);
-        }
-    }
-    RunId::new(run_sel).map_err(StateError::from)
-}
-
-/// Evaluate external cross-run/cross-workspace dependencies via strictly read-only [`SqliteStateReader`].
-///
-/// Cleared runs (`terminal_status == 'cleared'`) NEVER satisfy dependencies.
-pub fn collect_external_satisfied_deps(
-    config: &StateEngineConfig,
-    current_run_id: &RunId,
-    deps: &[TaskDependencyRecord],
-) -> Result<Vec<(String, RunId, TaskRef)>, StateError> {
-    let primary = primary_workspace_root(config);
-    let primary_str = primary.to_string_lossy().into_owned();
-    let mut satisfied = Vec::new();
-    let mut readers: BTreeMap<String, SqliteStateReader> = BTreeMap::new();
-
-    for dep in deps {
-        if dep.satisfied {
-            satisfied.push((
-                dep.depends_on_workspace.clone(),
-                dep.depends_on_run_id.clone(),
-                dep.depends_on_ref.clone(),
-            ));
-            continue;
-        }
-        if dep.depends_on_run_id == *current_run_id && dep.depends_on_workspace == primary_str {
-            continue;
-        }
-        let ws_path = PathBuf::from(&dep.depends_on_workspace);
-        let reader = readers.entry(dep.depends_on_workspace.clone()).or_insert_with(|| {
-            SqliteStateReader::new(ws_path.join(".acdd/state.sqlite"))
-        });
-
-        if is_external_task_satisfied(
-            reader,
-            &ws_path,
-            config,
-            &dep.depends_on_run_id,
-            &dep.depends_on_ref,
-        )? {
-            satisfied.push((
-                dep.depends_on_workspace.clone(),
-                dep.depends_on_run_id.clone(),
-                dep.depends_on_ref.clone(),
-            ));
-        }
-    }
-
-    Ok(satisfied)
-}
-
-fn is_external_task_satisfied(
-    reader: &dyn StateReader,
-    ws_path: &Path,
-    config: &StateEngineConfig,
-    target_run_id: &RunId,
-    target_task_ref: &TaskRef,
-) -> Result<bool, StateError> {
-    if let Some(tomb) = reader.load_tombstone(target_run_id)? {
-        if tomb.terminal_status != TerminalStatus::Completed {
-            // `cleared` tombstones NEVER satisfy dependencies.
-            return Ok(false);
-        }
-        if let Some(ref arch_rel) = tomb.archive_path {
-            if let Ok(raw) = read_confined_utf8(ws_path, arch_rel) {
-                if let Ok(doc) = parse_spec(&raw) {
-                    if let Some(task) = doc.tasks.iter().find(|t| t.task_ref == *target_task_ref) {
-                        return Ok(task.status == SpecStatus::Completed);
-                    }
-                }
-            }
-        }
-        return Ok(true);
-    }
-
-    if let Some(node) = reader.load_node(target_run_id, &format!("task:{target_task_ref}"))? {
-        return Ok(node.status == NodeStatus::Completed);
-    }
-
-    // Fallback: check committed `<collection>/archive/*.md` in `ws_path`.
-    let collections = effective_spec_collections(config);
-    for col in collections.values() {
-        let archive_dir = match checked_child(ws_path, &Path::new(&col.path).join("archive")) {
-            Ok(d) if d.is_dir() => d,
-            _ => continue,
-        };
-        for path in sorted_dir_paths(&archive_dir) {
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let Ok(rel) = path.strip_prefix(ws_path) else {
-                continue;
-            };
-            let Ok(raw) = read_confined_utf8(ws_path, &rel.to_string_lossy()) else {
-                continue;
-            };
-            let Ok(doc) = parse_spec(&raw) else {
-                continue;
-            };
-            if doc.id == target_run_id.as_str()
-                && doc.status == SpecStatus::Completed
-                && doc
-                    .closure
-                    .as_ref()
-                    .is_some_and(|c| c.status == SpecStatus::Completed)
-            {
-                if let Some(task) = doc.tasks.iter().find(|t| t.task_ref == *target_task_ref) {
-                    return Ok(task.status == SpecStatus::Completed);
-                }
-            }
-        }
-    }
-
-    Ok(false)
-}
-
-/// Verify run-level `SpecDocument.depends_on` entries are satisfied by completed tombstones or committed archives.
-pub fn verify_run_level_depends_on(
-    config: &StateEngineConfig,
-    local_reader: &dyn StateReader,
-    doc: &SpecDocument,
-) -> Result<(), StateError> {
-    if doc.depends_on.is_empty() {
-        return Ok(());
-    }
-    let primary = primary_workspace_root(config);
-    let mut spec_repos = BTreeMap::new();
-    for r in &doc.repositories {
-        spec_repos.insert(r.name.clone(), PathBuf::from(&r.path));
-    }
-
-    for dep_raw in &doc.depends_on {
-        let trimmed = dep_raw.trim();
-        let (ws_path, run_sel, reader_owned): (PathBuf, &str, Option<SqliteStateReader>) =
-            if let Some((ws_alias, rest)) = trimmed.split_once('/') {
-                let target_path = config
-                    .linked_workspaces
-                    .get(ws_alias)
-                    .or_else(|| spec_repos.get(ws_alias))
-                    .ok_or_else(|| {
-                        StateError::new(
-                            ErrorCode::ProfileSchemaInvalid,
-                            format!("spec depends_on '{trimmed}' references unknown workspace '{ws_alias}'"),
-                        )
-                    })?;
-                let canon = canonical_root(target_path).map_err(|err| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!("linked workspace '{ws_alias}' invalid: {err}"),
-                    )
-                })?;
-                let r = SqliteStateReader::new(canon.join(".acdd/state.sqlite"));
-                (canon, rest, Some(r))
-            } else {
-                (primary.clone(), trimmed, None)
-            };
-
-        let reader: &dyn StateReader = match reader_owned {
-            Some(ref r) => r,
-            None => local_reader,
-        };
-
-        let (run_sel, task_sel) = match run_sel.split_once(':') {
-            Some((r, t)) => (r, Some(t)),
-            None => (run_sel, None),
-        };
-
-        let tombs = list_all_tombstones(reader)?;
-        let matching_tombs: Vec<&RunTombstoneRecord> = tombs
-            .iter()
-            .filter(|t| {
-                t.run_id.as_str() == run_sel
-                    || t.run_name.as_str() == run_sel
-                    || t.spec_id.as_deref() == Some(run_sel)
-            })
-            .collect();
-        if !matching_tombs.is_empty() {
-            if let Some(completed) = matching_tombs
-                .iter()
-                .find(|t| t.terminal_status == TerminalStatus::Completed)
-            {
-                if let (Some(t_ref), Some(ref arch_rel)) = (task_sel, &completed.archive_path) {
-                    if let Ok(raw) = read_confined_utf8(&ws_path, arch_rel) {
-                        if let Ok(parsed) = parse_spec(&raw) {
-                            if let Some(task) =
-                                parsed.tasks.iter().find(|t| t.task_ref.as_str() == t_ref)
-                            {
-                                if task.status != SpecStatus::Completed {
-                                    return Err(StateError::new(
-                                        ErrorCode::GateVerificationFailed,
-                                        format!("spec dependency '{trimmed}' task '{t_ref}' is not completed"),
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                }
-                continue;
-            }
-            return Err(StateError::new(
-                ErrorCode::GateVerificationFailed,
-                format!(
-                    "spec dependency '{trimmed}' was cleared (terminal_status='cleared') and cannot satisfy depends_on"
-                ),
-            ));
-        }
-
-        // Fallback: committed archive file matching `doc.id == run_sel`.
-        let mut archived_ok = false;
-        for col in effective_spec_collections(config).values() {
-            let Ok(arch_dir) = checked_child(&ws_path, &Path::new(&col.path).join("archive")) else {
-                continue;
-            };
-            for p in sorted_dir_paths(&arch_dir) {
-                if p.extension().and_then(|e| e.to_str()) != Some("md") {
-                    continue;
-                }
-                if let Ok(rel) = p.strip_prefix(&ws_path) {
-                    if let Ok(raw) = read_confined_utf8(&ws_path, &rel.to_string_lossy()) {
-                        if let Ok(parsed) = parse_spec(&raw) {
-                            if parsed.id == run_sel
-                                && parsed.status == SpecStatus::Completed
-                                && parsed
-                                    .closure
-                                    .as_ref()
-                                    .is_some_and(|c| c.status == SpecStatus::Completed)
-                            {
-                                archived_ok = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if archived_ok {
-                break;
-            }
-        }
-
-        if !archived_ok {
-            return Err(StateError::new(
-                ErrorCode::GateVerificationFailed,
-                format!("spec dependency '{trimmed}' is not completed"),
-            ));
-        }
-    }
-
-    Ok(())
-}
+pub use crate::usecases::deps::{
+    collect_external_satisfied_deps, parse_task_dependency, verify_run_level_depends_on,
+};
 
 /// Build the current process session fingerprint `host_id:pid:start_time`.
 pub fn current_session_fingerprint() -> String {
     let host = current_host_id();
     let pid = std::process::id();
-    let start_time = read_process_start_time(pid).unwrap_or_else(|| "0".to_owned());
+    let start_time = acdd_core::sys::read_process_start_time(pid)
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "0".to_owned());
     format!("{host}:{pid}:{start_time}")
 }
 
@@ -1027,23 +757,6 @@ fn current_host_id() -> String {
     std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_owned())
 }
 
-fn read_process_start_time(pid: u32) -> Option<String> {
-    #[cfg(target_os = "linux")]
-    {
-        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let rparen = stat.rfind(')')?;
-        let after = stat.get(rparen + 2..)?;
-        // Field 22 overall is index 19 after `)` (field 3 is state at index 0).
-        let fields: Vec<&str> = after.split_whitespace().collect();
-        fields.get(19).map(|s| (*s).to_owned())
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = pid;
-        None
-    }
-}
-
 /// Probe whether the previous local claim PID in `host_id:pid:start_time` is alive (`Some(false)` = dead).
 ///
 /// Returns `None` when the fingerprint belongs to a different host or cannot be parsed.
@@ -1063,7 +776,9 @@ pub fn is_local_pid_alive(session_fingerprint: Option<&str>) -> Option<bool> {
         if !Path::new(&format!("/proc/{pid}")).exists() {
             return Some(false);
         }
-        if let Some(current_start) = read_process_start_time(pid) {
+        if let Some(current_start) =
+            acdd_core::sys::read_process_start_time(pid).map(|v| v.to_string())
+        {
             if recorded_start != "0" && current_start != recorded_start {
                 return Some(false);
             }
@@ -1073,7 +788,15 @@ pub fn is_local_pid_alive(session_fingerprint: Option<&str>) -> Option<bool> {
     }
     #[cfg(all(unix, not(target_os = "linux")))]
     {
-        let _ = recorded_start;
+        if recorded_start != "0" {
+            if let Some(current_start) =
+                acdd_core::sys::read_process_start_time(pid).map(|v| v.to_string())
+            {
+                if current_start != recorded_start {
+                    return Some(false);
+                }
+            }
+        }
         let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
         if rc == 0 {
             return Some(true);
@@ -1090,6 +813,161 @@ pub fn is_local_pid_alive(session_fingerprint: Option<&str>) -> Option<bool> {
         let _ = (pid, recorded_start);
         None
     }
+}
+
+/// Input fields for building a canonical `run_tombstones.cleanup_manifest`.
+pub(crate) struct CleanupManifestInput<'a> {
+    pub spec_path: Option<&'a str>,
+    pub run_worktree: Option<&'a str>,
+    pub run_branch: Option<&'a str>,
+    pub task_worktrees_and_branches: &'a [(Option<&'a str>, Option<&'a str>)],
+}
+
+/// Return `true` only when `branch` is an ACDD-managed `run/<run_name>` branch for a `worktrees: managed` run.
+pub(crate) fn is_managed_run_branch(run: &RunRecord, branch: &str) -> bool {
+    parse_profile_from_run(run).is_ok_and(|p| p.git.worktrees == WorktreeLifecycle::Managed)
+        && branch == format!("run/{}", run.run_name)
+}
+
+fn is_managed_worktree_entry(
+    primary: &Path,
+    wt: &str,
+    run_name: Option<&str>,
+    is_run_worktree: bool,
+) -> bool {
+    let canon_primary = canonicalize_macos_var(primary);
+    let canon_wt = canonicalize_macos_var(Path::new(wt));
+    if canon_wt == canon_primary {
+        return false;
+    }
+    let managed_root = canonicalize_macos_var(&primary.join(".worktrees"));
+    if canon_wt.parent() != Some(managed_root.as_path()) {
+        return false;
+    }
+    let Some(name) = canon_wt.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    match (run_name, is_run_worktree) {
+        (Some(rn), true) => name == rn,
+        (Some(rn), false) => name.starts_with(&format!("{rn}-")),
+        (None, _) => !name.is_empty(),
+    }
+}
+
+fn is_managed_task_branch_entry(
+    br: &str,
+    run_branch: Option<&str>,
+    run_name: Option<&str>,
+) -> bool {
+    if run_branch == Some(br) {
+        return false;
+    }
+    match run_name {
+        Some(rn) => br.starts_with(&format!("task/{rn}-")),
+        None => br.starts_with("task/"),
+    }
+}
+
+/// Build the canonical `run_tombstones.cleanup_manifest` (`INV-SINGLE-OWNER`).
+///
+/// Includes `spec_file` (when present under `primary`), managed task worktrees/branches, any
+/// managed run worktree distinct from `primary`, and `snapshot_ref`s. Never includes `run.branch`
+/// or manual `--worktree` checkouts/branches.
+pub(crate) fn build_tombstone_cleanup_manifest(
+    input: &CleanupManifestInput<'_>,
+    primary: &Path,
+) -> Vec<ArchiveCleanupEntry> {
+    build_tombstone_cleanup_manifest_with_policy(input, primary, true, None)
+}
+
+fn build_tombstone_cleanup_manifest_with_policy(
+    input: &CleanupManifestInput<'_>,
+    primary: &Path,
+    worktrees_managed: bool,
+    run_name: Option<&str>,
+) -> Vec<ArchiveCleanupEntry> {
+    let mut entries = Vec::new();
+
+    if let Some(sp) = input.spec_path {
+        if checked_child(primary, Path::new(sp)).is_ok_and(|p| p.exists()) {
+            entries.push(ArchiveCleanupEntry {
+                kind: "spec_file".to_owned(),
+                path_or_ref: sp.to_owned(),
+                workspace: None,
+            });
+        }
+    }
+
+    let mut seen_wt = BTreeSet::new();
+    let mut seen_br = BTreeSet::new();
+
+    if worktrees_managed {
+        for &(wt_opt, br_opt) in input.task_worktrees_and_branches {
+            if let Some(wt) = wt_opt {
+                if is_managed_worktree_entry(primary, wt, run_name, false)
+                    && seen_wt.insert(wt.to_owned())
+                {
+                    entries.push(ArchiveCleanupEntry {
+                        kind: "worktree".to_owned(),
+                        path_or_ref: wt.to_owned(),
+                        workspace: None,
+                    });
+                }
+            }
+            if let Some(br) = br_opt {
+                if is_managed_task_branch_entry(br, input.run_branch, run_name)
+                    && seen_br.insert(br.to_owned())
+                {
+                    entries.push(ArchiveCleanupEntry {
+                        kind: "branch".to_owned(),
+                        path_or_ref: br.to_owned(),
+                        workspace: None,
+                    });
+                }
+            }
+        }
+
+        if let Some(run_wt) = input.run_worktree {
+            if is_managed_worktree_entry(primary, run_wt, run_name, true)
+                && seen_wt.insert(run_wt.to_owned())
+            {
+                entries.push(ArchiveCleanupEntry {
+                    kind: "worktree".to_owned(),
+                    path_or_ref: run_wt.to_owned(),
+                    workspace: None,
+                });
+            }
+        }
+    }
+
+    entries
+}
+
+/// Adapter building the canonical cleanup manifest from a [`RunGraphSnapshot`].
+pub(crate) fn build_tombstone_cleanup_manifest_from_snapshot(
+    _config: &StateEngineConfig,
+    snapshot: &RunGraphSnapshot,
+    primary: &Path,
+) -> Vec<ArchiveCleanupEntry> {
+    let worktrees_managed = parse_profile_from_run(&snapshot.run)
+        .is_ok_and(|p| p.git.worktrees == WorktreeLifecycle::Managed);
+    let task_wt_br: Vec<(Option<&str>, Option<&str>)> = snapshot
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Task)
+        .map(|n| (n.worktree.as_deref(), n.branch.as_deref()))
+        .collect();
+    build_tombstone_cleanup_manifest_with_policy(
+        &CleanupManifestInput {
+            spec_path: snapshot.run.spec_path.as_deref(),
+            run_worktree: snapshot.run.worktree.as_deref(),
+            run_branch: snapshot.run.branch.as_deref(),
+            task_worktrees_and_branches: &task_wt_br,
+        },
+        primary,
+        worktrees_managed,
+        Some(snapshot.run.run_name.as_str()),
+    )
 }
 
 /// Resume and finalize any `run_tombstones` rows with `cleanup_pending == true`.
@@ -1114,6 +992,7 @@ pub(crate) fn resume_pending_tombstone_cleanups_dyn(
         if !tomb.cleanup_pending {
             continue;
         }
+        let mut all_ok = true;
         let mut workspaces = BTreeSet::new();
         workspaces.insert(primary.clone());
         for ws in config.linked_workspaces.values() {
@@ -1121,44 +1000,76 @@ pub(crate) fn resume_pending_tombstone_cleanups_dyn(
         }
         for entry in &tomb.cleanup_manifest {
             if let Some(ref ws) = entry.workspace {
-                workspaces.insert(canonicalize_macos_var(Path::new(ws)));
+                let ws_path = Path::new(ws);
+                if entry.kind == "snapshot_ref"
+                    || (!matches!(entry.kind.as_str(), "spec_file" | "worktree")
+                        && ws_path.exists())
+                {
+                    workspaces.insert(canonicalize_macos_var(ws_path));
+                }
             }
             match entry.kind.as_str() {
                 "spec_file" => {
-                    if let Ok(target) = checked_child(&primary, Path::new(&entry.path_or_ref)) {
-                        if target.exists() {
-                            let _ = fs::remove_file(&target);
-                            cleaned.push(entry.path_or_ref.clone());
+                    let target_ws = entry
+                        .workspace
+                        .as_deref()
+                        .map(Path::new)
+                        .unwrap_or(primary.as_path());
+                    match checked_child(target_ws, Path::new(&entry.path_or_ref)) {
+                        Ok(target) => {
+                            if target.exists() {
+                                if fs::remove_file(&target).is_ok() {
+                                    cleaned.push(entry.path_or_ref.clone());
+                                } else {
+                                    all_ok = false;
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            all_ok = false;
                         }
                     }
                 }
                 "worktree" => {
-                    let _ = remove_worktree_and_branch(
+                    if remove_worktree_and_branch(
                         &primary,
                         Some(Path::new(&entry.path_or_ref)),
                         None,
                         true,
-                    );
-                    cleaned.push(entry.path_or_ref.clone());
+                    )
+                    .is_ok()
+                    {
+                        cleaned.push(entry.path_or_ref.clone());
+                    } else {
+                        all_ok = false;
+                    }
                 }
                 "branch" => {
-                    let _ = remove_worktree_and_branch(
+                    if remove_worktree_and_branch(
                         &primary,
                         None,
                         Some(&entry.path_or_ref),
                         true,
-                    );
-                    cleaned.push(entry.path_or_ref.clone());
+                    )
+                    .is_ok()
+                    {
+                        cleaned.push(entry.path_or_ref.clone());
+                    } else {
+                        all_ok = false;
+                    }
                 }
                 _ => {}
             }
         }
         let ws_vec: Vec<PathBuf> = workspaces.into_iter().collect();
-        if let Ok(refs) = cleanup_run_refs(&ws_vec, &tomb.run_id) {
-            cleaned.extend(refs);
+        match cleanup_run_refs(&ws_vec, &tomb.run_id) {
+            Ok(refs) => cleaned.extend(refs),
+            Err(_) => all_ok = false,
         }
         let _ = prune_old_run_trace_dirs(&primary, backend, config.retain_traces);
-        exec_tx_with(backend, |tx| tx.mark_tombstone_cleaned(&tomb.run_id))?;
+        if all_ok {
+            exec_tx_with(backend, |tx| tx.mark_tombstone_cleaned(&tomb.run_id))?;
+        }
     }
 
     Ok(cleaned)
@@ -1308,7 +1219,7 @@ pub fn generate_run_id(prefix: &str) -> Result<RunId, StateError> {
 /// Build the `ValidatedObservations` structure for pure state machine evaluation.
 pub fn empty_observations() -> ValidatedObservations {
     ValidatedObservations {
-        now_utc: now_utc_iso(),
+        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()
     }
 }
@@ -1370,4 +1281,396 @@ fn is_transitively_dependent(
         }
     }
     false
+}
+
+fn candidate_archive_relpaths(spec_path: &str, spec_collection_paths: &[String]) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let normalized = spec_path.trim().replace('\\', "/");
+    let norm_spec = normalized.strip_prefix("./").unwrap_or(&normalized);
+    let path = Path::new(norm_spec);
+    let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+        return candidates;
+    };
+
+    let parent = path
+        .parent()
+        .and_then(|p| p.to_str())
+        .unwrap_or("")
+        .trim_end_matches('/');
+
+    let mut matched_col: Option<String> = None;
+    let mut matched_len = 0usize;
+    for col_path in spec_collection_paths {
+        let trimmed = col_path.trim().replace('\\', "/");
+        let trimmed = trimmed
+            .strip_prefix("./")
+            .unwrap_or(&trimmed)
+            .trim_end_matches('/');
+        if !trimmed.is_empty() && path.starts_with(Path::new(trimmed)) && trimmed.len() > matched_len
+        {
+            matched_len = trimmed.len();
+            matched_col = Some(trimmed.to_owned());
+        }
+    }
+
+    if !parent.is_empty() && parent != "." && parent != "archive" && !parent.ends_with("/archive") {
+        candidates.push(format!("{parent}/archive/{file_name}"));
+        if let Some(col) = matched_col {
+            if col != parent {
+                let col_rel = format!("{col}/archive/{file_name}");
+                if !candidates.contains(&col_rel) {
+                    candidates.push(col_rel);
+                }
+            }
+        }
+        return candidates;
+    }
+
+    // Absent or non-standard parent fallback (e.g., bare filename or already under archive/).
+    for col_path in spec_collection_paths {
+        let trimmed = col_path.trim().replace('\\', "/");
+        let trimmed = trimmed
+            .strip_prefix("./")
+            .unwrap_or(&trimmed)
+            .trim_end_matches('/');
+        if !trimmed.is_empty() {
+            let rel = format!("{trimmed}/archive/{file_name}");
+            if !candidates.contains(&rel) {
+                candidates.push(rel);
+            }
+        }
+    }
+    let root_rel = format!("archive/{file_name}");
+    if !candidates.contains(&root_rel) {
+        candidates.push(root_rel);
+    }
+    candidates
+}
+
+fn git_refs_to_probe(row: &RestoredActiveRun) -> Vec<String> {
+    let mut refs = vec!["HEAD".to_owned()];
+    if let Some(ref br) = row.branch {
+        let trimmed = br.trim();
+        if !trimmed.is_empty() && trimmed != "HEAD" {
+            let full_ref = if trimmed.starts_with("refs/") {
+                trimmed.to_owned()
+            } else {
+                format!("refs/heads/{trimmed}")
+            };
+            if !refs.contains(&full_ref) {
+                refs.push(full_ref);
+            }
+        }
+    }
+    refs
+}
+
+fn archive_matches_run(doc: &SpecDocument, row: &RestoredActiveRun) -> bool {
+    if doc.status != SpecStatus::Completed {
+        return false;
+    }
+    if let Some(ref expected_spec_id) = row.spec_id {
+        if &doc.id != expected_spec_id {
+            return false;
+        }
+    }
+    if let Some(ref closure) = doc.closure {
+        if closure.status != SpecStatus::Completed {
+            return false;
+        }
+        if closure
+            .task_receipts
+            .values()
+            .any(|r| r.run_id.as_str() != row.run_id)
+        {
+            return false;
+        }
+    }
+    !doc.tasks
+        .iter()
+        .filter_map(|t| t.receipt.as_ref())
+        .any(|r| r.run_id.as_str() != row.run_id)
+}
+
+fn find_committed_matching_archive(
+    ws_root: &Path,
+    is_git_repo: bool,
+    row: &RestoredActiveRun,
+    candidates: &[String],
+) -> Option<(String, Option<String>, SpecDocument)> {
+    let refs = git_refs_to_probe(row);
+    for archive_rel in candidates {
+        let Ok(child_path) = checked_child(ws_root, Path::new(archive_rel)) else {
+            continue;
+        };
+        if is_git_repo {
+            for git_ref in &refs {
+                let Ok(Some(content)) = read_git_blob_utf8(ws_root, git_ref, archive_rel) else {
+                    continue;
+                };
+                let Ok(doc) = parse_spec(&content) else {
+                    continue;
+                };
+                if archive_matches_run(&doc, row) {
+                    return Some((archive_rel.clone(), Some(git_ref.clone()), doc));
+                }
+            }
+        } else if child_path.is_file() {
+            let Ok(content) = fs::read_to_string(&child_path) else {
+                continue;
+            };
+            let Ok(doc) = parse_spec(&content) else {
+                continue;
+            };
+            if archive_matches_run(&doc, row) {
+                return Some((archive_rel.clone(), None, doc));
+            }
+        }
+    }
+    None
+}
+
+/// Reconcile restored active non-ephemeral runs against committed `<collection>/archive/*.md`,
+/// producing terminal `completed` tombstones for runs whose archive already landed.
+pub(crate) fn reconcile_restored_runs_with_archives(
+    active_runs: &[RestoredActiveRun],
+    workspace_root: Option<&Path>,
+    spec_collection_paths: &[String],
+) -> Result<Vec<RunTombstoneRecord>, StateError> {
+    let mut tombstones = Vec::new();
+    for row in active_runs {
+        if row.is_ephemeral {
+            continue;
+        }
+        let Some(ref spec_path) = row.spec_path else {
+            continue;
+        };
+        let ws_root = workspace_root.unwrap_or_else(|| Path::new(&row.workspace));
+        let is_git_repo = ws_root.join(".git").exists() || git_common_dir(ws_root).is_ok();
+        let candidates = candidate_archive_relpaths(spec_path, spec_collection_paths);
+        let Some((archive_rel, matched_ref, doc)) =
+            find_committed_matching_archive(ws_root, is_git_repo, row, &candidates)
+        else {
+            continue;
+        };
+
+        let spec_id = Some(doc.id).or_else(|| row.spec_id.clone());
+        let title = if doc.title.trim().is_empty() {
+            row.run_name.clone()
+        } else {
+            doc.title
+        };
+
+        let closed_commit = if let Some(ref git_ref) = matched_ref {
+            git_stdout(
+                ws_root,
+                &["log", "-n", "1", "--format=%H", git_ref, "--", &archive_rel],
+                "GIT_LOG_FAILED",
+            )
+            .ok()
+            .and_then(|oid| CommitOid::new(oid).ok())
+        } else {
+            None
+        };
+
+        let task_refs: Vec<(Option<&str>, Option<&str>)> = row
+            .task_worktrees_and_branches
+            .iter()
+            .map(|(wt, br)| (wt.as_deref(), br.as_deref()))
+            .collect();
+        let cleanup_manifest = build_tombstone_cleanup_manifest(
+            &CleanupManifestInput {
+                spec_path: Some(spec_path.as_str()),
+                run_worktree: row.worktree.as_deref(),
+                run_branch: row.branch.as_deref(),
+                task_worktrees_and_branches: &task_refs,
+            },
+            ws_root,
+        );
+        let cleanup_pending = !cleanup_manifest.is_empty();
+
+        let run_id = RunId::new(row.run_id.clone())?;
+        let run_name = RunName::new(row.run_name.clone())?;
+        let generation = u64::try_from(row.generation).map_err(|_| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("negative generation on restored run '{}'", row.run_id),
+            )
+        })?;
+        let target_base_commit = row
+            .target_base_commit
+            .clone()
+            .map(CommitOid::new)
+            .transpose()?;
+
+        tombstones.push(RunTombstoneRecord {
+            run_id,
+            run_name,
+            collection: row.collection.clone(),
+            workspace: row.workspace.clone(),
+            spec_id,
+            title,
+            profile_id: row.profile_id.clone(),
+            is_ephemeral: false,
+            generation,
+            terminal_status: TerminalStatus::Completed,
+            target_base: row.target_base.clone(),
+            target_base_commit,
+            archive_path: Some(archive_rel),
+            closed_commit,
+            cleanup_pending,
+            cleanup_manifest,
+            summary_json: r#"{"reconciled_from_archive":true}"#.to_owned(),
+            metrics_json: "{}".to_owned(),
+            closed_at: acdd_core::telemetry::now_utc_iso_ms(),
+        });
+    }
+    Ok(tombstones)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::RunHarness;
+    use acdd_core::config::default_specs;
+    use acdd_core::response::ResponsePolicy;
+    use tempfile::TempDir;
+
+    #[test]
+    fn build_path_policy_and_cleanup_manifest_invariants() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        let harness = RunHarness::in_memory().expect("in-memory harness");
+        let mut graph = RunHarness::build_sample_graph(
+            "run-life-1",
+            "AC-001",
+            root.to_str().unwrap(),
+            None,
+            &["t1"],
+        )
+        .expect("build sample graph");
+        graph.run.collection = Some("milestones".to_owned());
+        graph.run.spec_path = Some("docs/milestones/AC-001.md".to_owned());
+        graph.run.branch = Some("feature/user-owned".to_owned());
+        for node in &mut graph.nodes {
+            if node.kind == NodeKind::Task {
+                node.branch = Some("task/AC-001-t1".to_owned());
+                node.worktree = Some(root.join(".worktrees/AC-001-t1").to_string_lossy().into_owned());
+            }
+        }
+        harness
+            .exec_tx(|tx| tx.insert_run_graph(&graph))
+            .expect("insert graph");
+
+        let cfg = StateEngineConfig {
+            workspace_root: root.to_path_buf(),
+            worktree: root.to_path_buf(),
+            state_db_override: None,
+            code_db_path: None,
+            spec_collections: default_specs(),
+            profiles_dirs: Vec::new(),
+            linked_workspaces: BTreeMap::new(),
+            modules: SubsystemRegistry::default(),
+            response_policy: ResponsePolicy::default(),
+            retain_traces: 10,
+        };
+
+        // 1. build_path_policy marks BOTH active spec_path and derived archive_path as engine-managed.
+        let policy = build_path_policy(&cfg, &harness, &[]).expect("build_path_policy");
+        assert!(!policy.is_candidate_included("docs/milestones/AC-001.md"));
+        assert!(!policy.is_candidate_included("docs/milestones/archive/AC-001.md"));
+        assert!(policy.is_candidate_included("src/lib.rs"));
+
+        // 2. Manual worktrees profile never populates worktrees/branches into cleanup_manifest.
+        fs::create_dir_all(root.join("docs/milestones")).expect("mkdir");
+        fs::write(root.join("docs/milestones/AC-001.md"), "# spec\n").expect("write spec");
+        let manual_manifest = build_tombstone_cleanup_manifest_from_snapshot(&cfg, &graph, root);
+        assert!(manual_manifest.iter().any(|e| e.kind == "spec_file" && e.path_or_ref == "docs/milestones/AC-001.md"));
+        assert!(!manual_manifest.iter().any(|e| matches!(e.kind.as_str(), "worktree" | "branch")));
+
+        // 3. Managed worktrees profile includes ONLY ACDD-managed `.worktrees/<run>-...` and `task/<run>-...`.
+        let mut managed_graph = graph.clone();
+        managed_graph.run.profile_json = r#"{"version":2,"git":{"worktrees":"managed"}}"#.to_owned();
+        managed_graph.run.worktree = Some(root.join(".worktrees/AC-001").to_string_lossy().into_owned());
+        managed_graph.nodes.push(GateNodeRecord {
+            worktree: Some(root.join("../manual-wt").to_string_lossy().into_owned()),
+            branch: Some("feature/manual-branch".to_owned()),
+            ..managed_graph
+                .nodes
+                .iter()
+                .find(|n| n.kind == NodeKind::Task)
+                .unwrap()
+                .clone()
+        });
+        let manifest = build_tombstone_cleanup_manifest_from_snapshot(&cfg, &managed_graph, root);
+        assert!(manifest.iter().any(|e| e.kind == "spec_file" && e.path_or_ref == "docs/milestones/AC-001.md"));
+        assert!(manifest.iter().any(|e| e.kind == "branch" && e.path_or_ref == "task/AC-001-t1"));
+        assert!(manifest.iter().any(|e| e.kind == "worktree" && e.path_or_ref.ends_with(".worktrees/AC-001-t1")));
+        assert!(manifest.iter().any(|e| e.kind == "worktree" && e.path_or_ref.ends_with(".worktrees/AC-001")));
+        assert!(!manifest.iter().any(|e| e.path_or_ref.contains("manual-wt") || e.path_or_ref == "feature/manual-branch"));
+        assert!(
+            !manifest.iter().any(|e| e.kind == "snapshot_ref"),
+            "cleanup_manifest must not emit dead snapshot_ref entries: {manifest:?}"
+        );
+        assert!(
+            !manifest.iter().any(|e| e.path_or_ref == "feature/user-owned"),
+            "cleanup_manifest must never include user/run branch: {manifest:?}"
+        );
+        assert!(
+            !manifest.iter().any(|e| e.kind == "run_ref"),
+            "cleanup_manifest must not emit dead run_ref entries: {manifest:?}"
+        );
+
+        // 4. resume_pending_tombstone_cleanups retains `cleanup_pending == true` when an entry fails to clean.
+        let mut fail_tomb = RunTombstoneRecord {
+            run_id: RunId::new("run-life-1").expect("rid"),
+            run_name: acdd_core::ids::RunName::new("AC-001").expect("rname"),
+            collection: Some("milestones".to_owned()),
+            workspace: root.to_string_lossy().into_owned(),
+            spec_id: Some("AC-001".to_owned()),
+            title: "AC-001".to_owned(),
+            profile_id: "code".to_owned(),
+            is_ephemeral: false,
+            generation: 1,
+            terminal_status: crate::types::TerminalStatus::Cleared,
+            target_base: None,
+            target_base_commit: None,
+            archive_path: None,
+            closed_commit: None,
+            cleanup_pending: true,
+            cleanup_manifest: vec![ArchiveCleanupEntry {
+                kind: "worktree".to_owned(),
+                path_or_ref: root.to_string_lossy().into_owned(),
+                workspace: None,
+            }],
+            summary_json: "{}".to_owned(),
+            metrics_json: "{}".to_owned(),
+            closed_at: "2026-11-17T10:00:00.000Z".to_owned(),
+        };
+        harness
+            .exec_tx(|tx| {
+                tx.archive_and_prune_run(
+                    &crate::types::StoragePreconditions {
+                        expected_run_generation: 1,
+                        expected_node_versions: Vec::new(),
+                        expected_claim_revision: None,
+                        expected_contract_revision: None,
+                        expected_worker_id: None,
+                        required_predecessor_trees: Vec::new(),
+                    },
+                    &fail_tomb,
+                )
+            })
+            .expect("archive fail tomb");
+        let _ = resume_pending_tombstone_cleanups(&cfg, &harness, None).expect("resume");
+        fail_tomb = list_all_tombstones(&harness)
+            .expect("list tombs")
+            .into_iter()
+            .find(|t| t.run_id.as_str() == "run-life-1")
+            .expect("tomb exists");
+        assert!(
+            fail_tomb.cleanup_pending,
+            "failed worktree cleanup must leave cleanup_pending=true for retry"
+        );
+    }
 }

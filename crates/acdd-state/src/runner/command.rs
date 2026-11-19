@@ -1,9 +1,8 @@
 //! Bounded gate command execution, process-group isolation, env sanitization, and output parsing.
 
 use crate::profile::{
-    glob_pattern_matches, glob_specificity, has_unescaped_chain_operator,
-    render_command_with_test_filter, resolve_command_for_scope, CommandDef, CommandOutputSpec,
-    CompileErrorsSpec, ResourceLimits,
+    render_command_with_scope_target, render_command_with_test_filter, resolve_command_for_scope,
+    CommandDef, CommandOutputSpec, CompileErrorsSpec, ResolvedCommandInvocation, ResourceLimits,
 };
 use crate::runner::{
     node_slug, open_run_log_file, run_isolated_process, utf8_tail, BoundedLogWriter, StreamKind,
@@ -11,7 +10,7 @@ use crate::runner::{
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, RunId};
 use regex::Regex;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -120,6 +119,29 @@ pub fn sanitize_command_process(cmd: &mut Command) {
     }
 }
 
+fn invocation_match_paths<'a>(
+    inv: &'a ResolvedCommandInvocation,
+    admitted_scope: &'a [String],
+) -> &'a [String] {
+    if inv.matched_paths.is_empty() {
+        admitted_scope
+    } else {
+        &inv.matched_paths
+    }
+}
+
+/// Render one resolved command invocation by expanding `{scope_target}` before `{test_filter}`.
+pub(crate) fn render_invocation_command(
+    inv: &ResolvedCommandInvocation,
+    admitted_scope: &[String],
+    test_target: Option<&str>,
+) -> Result<String, StateError> {
+    let match_paths = invocation_match_paths(inv, admitted_scope);
+    let cmd_with_scope =
+        render_command_with_scope_target(&inv.command, &inv.scope_args_by_pattern, match_paths)?;
+    render_command_with_test_filter(&cmd_with_scope, inv.test_filter.as_ref(), test_target)
+}
+
 /// Execute gate command(s) in an isolated process group with bounded line/log capture.
 pub fn execute_gate_commands(req: &CommandExecReq) -> Result<CommandExecOutcome, StateError> {
     execute_gate_commands_inner(req, None)
@@ -165,17 +187,8 @@ pub(super) fn execute_gate_commands_inner(
     let mut agg = OutputAccumulator::new(&req.worktree, req.limits.max_capture_bytes);
 
     for inv in &invocations {
-        let match_paths = if inv.matched_paths.is_empty() {
-            &req.scope
-        } else {
-            &inv.matched_paths
-        };
-        let cmd_with_scope = expand_scope_target(&inv.command, &inv.scope_args_by_pattern, match_paths);
-        let rendered_cmd = render_command_with_test_filter(
-            &cmd_with_scope,
-            inv.test_filter.as_ref(),
-            req.test_target.as_deref(),
-        )?;
+        let rendered_cmd =
+            render_invocation_command(inv, &req.scope, req.test_target.as_deref())?;
         rendered_commands.push(rendered_cmd.clone());
 
         let parsers = CompiledOutputParsers::compile(inv.output.as_ref())?;
@@ -192,7 +205,7 @@ pub(super) fn execute_gate_commands_inner(
         cmd.current_dir(&req.worktree);
         sanitize_command_process(&mut cmd);
 
-        let mut current_target = match_paths
+        let mut current_target = invocation_match_paths(inv, &req.scope)
             .first()
             .filter(|_| inv.output.as_ref().and_then(|o| o.tests.as_ref()).and_then(|t| t.target.as_ref()).is_some())
             .cloned();
@@ -258,67 +271,6 @@ fn shell_command(command: &str) -> Command {
         let mut cmd = Command::new("cmd");
         cmd.arg("/C").arg(command);
         cmd
-    }
-}
-
-fn expand_scope_target(
-    command: &str,
-    scope_args_by_pattern: &BTreeMap<String, String>,
-    paths: &[String],
-) -> String {
-    let mut selected_args: Vec<String> = Vec::new();
-    let mut seen = BTreeSet::new();
-
-    type Specificity = (usize, usize, usize, usize);
-    if !scope_args_by_pattern.is_empty() {
-        for path in paths {
-            let mut best: Option<(Specificity, &String)> = None;
-            for (pattern, arg) in scope_args_by_pattern {
-                if pattern == path || glob_pattern_matches(pattern, path) {
-                    let spec = glob_specificity(pattern);
-                    let better = match best {
-                        None => true,
-                        Some((best_spec, _)) => spec > best_spec,
-                    };
-                    if better {
-                        best = Some((spec, arg));
-                    }
-                }
-            }
-            if let Some((_, arg)) = best {
-                let trimmed = arg.trim();
-                if !trimmed.is_empty() && seen.insert(trimmed.to_owned()) {
-                    selected_args.push(trimmed.to_owned());
-                }
-            }
-        }
-    }
-
-    if selected_args.is_empty() {
-        if command.contains("{scope_target}") {
-            command
-                .replace("{scope_target} ", "")
-                .replace(" {scope_target}", "")
-                .replace("{scope_target}", "")
-                .trim()
-                .to_owned()
-        } else {
-            command.to_owned()
-        }
-    } else {
-        let joined = selected_args.join(" ");
-        if command.contains("{scope_target}") {
-            command.replace("{scope_target}", &joined)
-        } else if !has_unescaped_chain_operator(command) {
-            if let Some(pos) = command.find("{test_filter}") {
-                let (before, after) = command.split_at(pos);
-                format!("{}{} {after}", before, joined)
-            } else {
-                format!("{} {joined}", command.trim_end())
-            }
-        } else {
-            command.to_owned()
-        }
     }
 }
 

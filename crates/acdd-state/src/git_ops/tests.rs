@@ -1,7 +1,10 @@
 use super::*;
+use crate::git_ops::commit::create_scoped_commit_with_expected;
 use crate::profile::{GitCommitNoteFormat, GitCommitNotePolicy, GitCommitNoteSection};
 use crate::types::{CommitMode, IntegrateStrategy, IsolationMode};
 use acdd_core::errors::ErrorCode;
+use acdd_core::format::sha256_hex;
+use acdd_core::git::git_command;
 use acdd_core::ids::{CommitOid, RunId, TaskRef};
 use acdd_core::path_policy::WorkspacePathPolicy;
 use std::fs::{self, OpenOptions};
@@ -10,14 +13,7 @@ use std::process::Command;
 use tempfile::TempDir;
 
 fn git_ok(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
-        .expect("spawn git");
+    let out = git_command(dir, args).expect("spawn git");
     assert!(
         out.status.success(),
         "git {:?} in '{}' failed:\nstdout: {}\nstderr: {}",
@@ -40,10 +36,6 @@ fn init_test_repo(dir: &Path) -> CommitOid {
     git_ok(dir, &["add", "README.md", "src/lib.rs"]);
     git_ok(dir, &["commit", "-m", "initial commit"]);
     current_head_commit(dir).expect("initial head")
-}
-
-fn sha256_hex(s: &str) -> String {
-    acdd_core::format::sha256_hex(s.as_bytes())
 }
 
 #[cfg(unix)]
@@ -121,7 +113,7 @@ fn worktree_layout_macos_var_symlink_and_snapshot_guards_matrix() {
     assert_eq!(linked_layout.state_bak_path, primary_layout.state_bak_path);
     assert_eq!(linked_layout.target_worktree, created_wt.worktree);
 
-    // 2. Snapshot + GC protection + Rollback + InPlace vs Worktree diff.
+    // 2. Scoped tree + Rollback + InPlace vs Worktree diff.
     let policy = WorkspacePathPolicy::new(
         ["docs/milestones/AC-001.md".to_owned()],
         ".acdd/state.sqlite",
@@ -130,25 +122,22 @@ fn worktree_layout_macos_var_symlink_and_snapshot_guards_matrix() {
     fs::create_dir_all(created_wt.worktree.join(".acdd")).expect(".acdd");
     fs::write(created_wt.worktree.join(".acdd/state.sqlite"), "db-bytes").expect("db");
 
-    let snap_t1 = capture_snapshot(&CaptureSnapshotReq {
-        worktree: created_wt.worktree.clone(),
-        run_id: run_id.clone(),
-        namespace: "task-t1".to_owned(),
-        label: "rev-1".to_owned(),
-        scope: Some(vec!["src/**".to_owned()]),
-        path_policy: policy.clone(),
-        message: "snapshot rev 1".to_owned(),
-    })
-    .expect("capture snapshot");
-    assert_eq!(
-        snap_t1.snapshot_ref,
-        "refs/acdd/snapshots/run-wt-01/task-t1/rev-1"
-    );
-    // Survives aggressive GC.
-    git_ok(&created_wt.worktree, &["gc", "--prune=now"]);
-    assert!(blob_oid_at(&created_wt.worktree, &snap_t1.snapshot_ref, "src/lib.rs")
+    let full_base_tree = current_scope_tree(&created_wt.worktree, None, &policy).expect("full base tree");
+    let base_scope_tree = current_scope_tree(
+        &created_wt.worktree,
+        Some(&["src/**".to_owned()]),
+        &policy,
+    )
+    .expect("base scope tree");
+    assert!(
+        blob_oid_at(
+            &created_wt.worktree,
+            created_wt.head_commit.as_str(),
+            "src/lib.rs"
+        )
         .expect("blob check")
-        .is_some());
+        .is_some()
+    );
 
     // Mutate src/lib.rs, create untracked src/extra.rs, then rollback confined to src/**.
     fs::write(created_wt.worktree.join("src/lib.rs"), "pub fn mutated() {}\n").expect("mutate");
@@ -157,12 +146,17 @@ fn worktree_layout_macos_var_symlink_and_snapshot_guards_matrix() {
 
     let rb = restore_rollback(&RollbackReq {
         worktree: created_wt.worktree.clone(),
-        target_ref_or_oid: snap_t1.snapshot_ref.clone(),
+        target_ref_or_oid: created_wt.head_commit.as_str().to_owned(),
         admitted_scope: Some(vec!["src/**".to_owned()]),
         path_policy: policy.clone(),
     })
     .expect("rollback");
-    assert_eq!(rb.target_tree, snap_t1.tree_oid);
+    assert_eq!(rb.target_tree, full_base_tree);
+    assert_eq!(
+        current_scope_tree(&created_wt.worktree, Some(&["src/**".to_owned()]), &policy)
+            .expect("restored scope tree"),
+        base_scope_tree
+    );
     assert_eq!(
         rb.restored_paths,
         vec!["src/extra.rs".to_owned(), "src/lib.rs".to_owned()]
@@ -245,27 +239,60 @@ fn worktree_layout_macos_var_symlink_and_snapshot_guards_matrix() {
         }
     }
 
-    // 4. Cleanup snapshot refs across primary + separate linked repo & remove worktree/branch.
+    // 4. Cleanup run refs across primary + separate linked repo (including legacy v0.6.0 snapshot/keep refs) & remove worktree/branch.
     let linked_repo = tmp.path().join("linked-repo");
-    let _linked_head = init_test_repo(&linked_repo);
-    capture_snapshot(&CaptureSnapshotReq {
-        worktree: linked_repo.clone(),
-        run_id: run_id.clone(),
-        namespace: "manual".to_owned(),
-        label: "checkpoint-1".to_owned(),
-        scope: None,
-        path_policy: WorkspacePathPolicy::default(),
-        message: "linked manual snap".to_owned(),
-    })
-    .expect("linked snap");
+    let linked_head = init_test_repo(&linked_repo);
+    git_ok(
+        &created_wt.worktree,
+        &[
+            "update-ref",
+            "refs/acdd/runs/run-wt-01/state",
+            created_wt.head_commit.as_str(),
+        ],
+    );
+    git_ok(
+        &created_wt.worktree,
+        &[
+            "update-ref",
+            "refs/acdd/snapshots/run-wt-01/task-t1/pre",
+            created_wt.head_commit.as_str(),
+        ],
+    );
+    git_ok(
+        &created_wt.worktree,
+        &[
+            "update-ref",
+            "refs/acdd/keep/run-wt-01/k1",
+            created_wt.head_commit.as_str(),
+        ],
+    );
+    git_ok(
+        &created_wt.worktree,
+        &[
+            "update-ref",
+            "refs/acdd/snapshots/run-wt-02/state",
+            created_wt.head_commit.as_str(),
+        ],
+    );
+    git_ok(
+        &linked_repo,
+        &[
+            "update-ref",
+            "refs/acdd/runs/run-wt-01/state",
+            linked_head.as_str(),
+        ],
+    );
 
     let cleaned = cleanup_run_refs(
         &[created_wt.worktree.clone(), linked_repo.clone()],
         &run_id,
     )
     .expect("cleanup refs");
-    assert_eq!(cleaned.len(), 2);
-    assert!(git_ok(&private_repo, &["for-each-ref", "refs/acdd/"]).is_empty());
+    assert_eq!(cleaned.len(), 4);
+    assert_eq!(
+        git_ok(&private_repo, &["for-each-ref", "--format=%(refname)", "refs/acdd/"]).trim(),
+        "refs/acdd/snapshots/run-wt-02/state"
+    );
     assert!(git_ok(&linked_repo, &["for-each-ref", "refs/acdd/"]).is_empty());
 
     remove_worktree_and_branch(
@@ -306,7 +333,6 @@ fn scoped_commit_plumbing_cli_manual_notes_and_archive_matrix() {
         path_policy: policy.clone(),
         message: "deliver t1".to_owned(),
         allow_main: false,
-        manual_snapshot_namespace: None,
     })
     .expect_err("main protected");
     assert_eq!(protected_err.code, ErrorCode::MainBranchProtected);
@@ -336,7 +362,6 @@ fn scoped_commit_plumbing_cli_manual_notes_and_archive_matrix() {
         path_policy: policy.clone(),
         message: "deliver t1 plumbing".to_owned(),
         allow_main: false,
-        manual_snapshot_namespace: None,
     })
     .expect("plumbing commit");
     let plumbing_oid = plumbing_resp.committed_oid.clone().expect("oid");
@@ -425,7 +450,6 @@ fn scoped_commit_plumbing_cli_manual_notes_and_archive_matrix() {
             path_policy: policy.clone(),
             message: "cli mutated".to_owned(),
             allow_main: false,
-            manual_snapshot_namespace: None,
         })
         .expect_err("hook mutated tree");
         assert_eq!(mutated_err.code, ErrorCode::GitHookMutatedTree);
@@ -449,7 +473,7 @@ fn scoped_commit_plumbing_cli_manual_notes_and_archive_matrix() {
             spec_relpath: "docs/milestones/AC-002.md".to_owned(),
             archive_relpath: "docs/milestones/archive/AC-002.md".to_owned(),
             rendered_archive_markdown: archive_md.to_owned(),
-            rendered_archive_digest: sha256_hex(archive_md),
+            rendered_archive_digest: sha256_hex(archive_md.as_bytes()),
             should_commit: true,
             commit_mode: CommitMode::Cli,
             allow_main: false,
@@ -474,7 +498,6 @@ fn scoped_commit_plumbing_cli_manual_notes_and_archive_matrix() {
             path_policy: policy.clone(),
             message: "cli clean".to_owned(),
             allow_main: false,
-            manual_snapshot_namespace: None,
         })
         .expect("cli clean commit");
         let cli_oid = cli_resp.committed_oid.expect("cli oid");
@@ -489,7 +512,7 @@ fn scoped_commit_plumbing_cli_manual_notes_and_archive_matrix() {
             spec_relpath: "docs/milestones/AC-002.md".to_owned(),
             archive_relpath: "docs/milestones/archive/AC-002.md".to_owned(),
             rendered_archive_markdown: archive_md.to_owned(),
-            rendered_archive_digest: sha256_hex(archive_md),
+            rendered_archive_digest: sha256_hex(archive_md.as_bytes()),
             should_commit: true,
             commit_mode: CommitMode::Cli,
             allow_main: false,
@@ -501,29 +524,101 @@ fn scoped_commit_plumbing_cli_manual_notes_and_archive_matrix() {
         assert!(repo.join("docs/milestones/archive/AC-002.md").is_file());
     }
 
-    // 5. CommitMode::Manual creates snapshot without moving HEAD.
+    // 5. CommitMode::Manual validates scoped tree without moving HEAD or creating snapshot refs.
     let head_before_manual = current_head_commit(&repo).expect("head");
     fs::write(repo.join("src/manual.rs"), "pub fn manual() {}\n").expect("manual");
-    let manual_resp = create_scoped_commit(&ScopedCommitReq {
-        worktree: repo.clone(),
-        run_id,
-        node_id: "task:t1:deliver".to_owned(),
-        claim_revision: 3,
-        base_head: head_before_manual.clone(),
-        commit_mode: CommitMode::Manual,
-        admitted_scope: vec!["src/**".to_owned()],
-        path_policy: policy,
-        message: "manual snap".to_owned(),
-        allow_main: false,
-        manual_snapshot_namespace: None,
-    })
-    .expect("manual commit");
-    assert!(manual_resp.committed_oid.is_none());
-    assert!(manual_resp.snapshot_ref.is_some());
+    let expected_manual_tree =
+        current_scope_tree(&repo, Some(&["src/**".to_owned()]), &policy).expect("scoped tree");
+    let manual_resp = create_scoped_commit_with_expected(
+        &ScopedCommitReq {
+            worktree: repo.clone(),
+            run_id: run_id.clone(),
+            node_id: "task:t1:deliver".to_owned(),
+            claim_revision: 3,
+            base_head: head_before_manual.clone(),
+            commit_mode: CommitMode::Manual,
+            admitted_scope: vec!["src/**".to_owned()],
+            path_policy: policy.clone(),
+            message: "manual scope check".to_owned(),
+            allow_main: false,
+        },
+        Some(&expected_manual_tree),
+    )
+    .expect("manual scope verify");
+    assert_eq!(manual_resp.committed_oid.as_ref(), Some(&head_before_manual));
+    assert_eq!(manual_resp.committed_tree, expected_manual_tree);
+    assert!(manual_resp.snapshot_ref.is_none());
     assert_eq!(
         current_head_commit(&repo).expect("head after manual"),
         head_before_manual
     );
+
+    // 6. Broad `**` scope never stages engine-managed spec/archive paths, and concurrent drift fails closed with TaskCandidateMismatch.
+    fs::create_dir_all(repo.join("docs/milestones")).expect("mkdir");
+    fs::write(repo.join("docs/milestones/AC-002.md"), "---\nid: AC-002\ntitle: S\nstatus: active\n---\n").expect("spec");
+    fs::write(repo.join("src/broad.rs"), "pub fn broad() {}\n").expect("broad");
+    let broad_tree = current_scope_tree(&repo, None, &policy).expect("broad tree");
+    let broad_commit = create_scoped_commit_with_expected(
+        &ScopedCommitReq {
+            worktree: repo.clone(),
+            run_id: run_id.clone(),
+            node_id: "task:t1:broad".to_owned(),
+            claim_revision: 4,
+            base_head: head_before_manual.clone(),
+            commit_mode: CommitMode::Plumbing,
+            admitted_scope: vec!["**".to_owned()],
+            path_policy: policy.clone(),
+            message: "broad commit".to_owned(),
+            allow_main: false,
+        },
+        Some(&broad_tree),
+    )
+    .expect("broad commit");
+    let broad_oid = broad_commit.committed_oid.expect("broad oid");
+    assert!(
+        blob_oid_at(&repo, broad_oid.as_str(), "docs/milestones/AC-002.md")
+            .expect("blob check")
+            .is_none(),
+        "broad `**` scope must never stage engine-managed spec path"
+    );
+
+    fs::write(repo.join("src/broad.rs"), "pub fn concurrently_edited() {}\n").expect("concurrent edit");
+    let commit_mismatch = create_scoped_commit_with_expected(
+        &ScopedCommitReq {
+            worktree: repo.clone(),
+            run_id: run_id.clone(),
+            node_id: "task:t1:drift".to_owned(),
+            claim_revision: 5,
+            base_head: broad_oid.clone(),
+            commit_mode: CommitMode::Plumbing,
+            admitted_scope: vec!["src/**".to_owned()],
+            path_policy: policy.clone(),
+            message: "stale commit".to_owned(),
+            allow_main: false,
+        },
+        Some(&broad_tree),
+    )
+    .unwrap_err();
+    assert_eq!(commit_mismatch.code, ErrorCode::TaskCandidateMismatch);
+    assert_eq!(current_head_commit(&repo).expect("head unchanged"), broad_oid);
+
+    let manual_mismatch = create_scoped_commit_with_expected(
+        &ScopedCommitReq {
+            worktree: repo.clone(),
+            run_id,
+            node_id: "task:t1:drift-manual".to_owned(),
+            claim_revision: 5,
+            base_head: broad_oid,
+            commit_mode: CommitMode::Manual,
+            admitted_scope: vec!["src/**".to_owned()],
+            path_policy: policy,
+            message: "stale manual".to_owned(),
+            allow_main: false,
+        },
+        Some(&broad_tree),
+    )
+    .unwrap_err();
+    assert_eq!(manual_mismatch.code, ErrorCode::TaskCandidateMismatch);
 }
 
 #[test]
@@ -586,7 +681,6 @@ fn integrate_strategies_conflict_abort_and_completeness_matrix() {
             path_policy: policy.clone(),
             message: format!("task {idx}"),
             allow_main: false,
-            manual_snapshot_namespace: None,
         })
         .expect("commit task");
 
@@ -817,16 +911,16 @@ fn integrate_strategies_conflict_abort_and_completeness_matrix() {
         &created_run.worktree,
         &[
             TaskIntegrationCheckInput {
-                task_ref: task_a_ref,
-                initial_claim_tree: init_a,
-                accepted_tree: acc_a,
+                task_ref: task_a_ref.clone(),
+                initial_claim_tree: init_a.clone(),
+                accepted_tree: acc_a.clone(),
                 admitted_scope: vec!["src/**".to_owned()],
                 downstream_tasks: vec![task_b_ref.clone()],
             },
             TaskIntegrationCheckInput {
-                task_ref: task_b_ref,
-                initial_claim_tree: init_b,
-                accepted_tree: acc_b,
+                task_ref: task_b_ref.clone(),
+                initial_claim_tree: init_b.clone(),
+                accepted_tree: acc_b.clone(),
                 admitted_scope: vec!["src/**".to_owned()],
                 downstream_tasks: vec![],
             },
@@ -834,6 +928,236 @@ fn integrate_strategies_conflict_abort_and_completeness_matrix() {
     )
     .expect("check downstream");
     assert_eq!(missing_with_downstream, Vec::<TaskRef>::new());
+
+    // Hardened Rule (c): downstream task with empty admitted_scope OR unmodified tree must NOT satisfy an unintegrated upstream task.
+    let unintegrated_ref = TaskRef::new("t-unintegrated").expect("t-unint");
+    for (label, ds_init, ds_acc, ds_scope) in [
+        ("empty_scope", init_b.clone(), acc_b.clone(), Vec::new()),
+        (
+            "unmodified_downstream",
+            acc_b.clone(),
+            acc_b.clone(),
+            vec!["src/**".to_owned()],
+        ),
+    ] {
+        let missing_rule_c = verify_tasks_integrated(
+            &run_id,
+            &created_run.worktree,
+            &[
+                TaskIntegrationCheckInput {
+                    task_ref: unintegrated_ref.clone(),
+                    initial_claim_tree: init_a.clone(),
+                    accepted_tree: acc_a.clone(),
+                    admitted_scope: vec!["src/**".to_owned()],
+                    downstream_tasks: vec![task_b_ref.clone()],
+                },
+                TaskIntegrationCheckInput {
+                    task_ref: task_b_ref.clone(),
+                    initial_claim_tree: ds_init,
+                    accepted_tree: ds_acc,
+                    admitted_scope: ds_scope,
+                    downstream_tasks: vec![],
+                },
+            ],
+        )
+        .expect("check hardened rule c");
+        assert_eq!(missing_rule_c, vec![unintegrated_ref.clone()], "{label}");
+    }
+
+    // Rule (a): manual post-integration overwrite (not reverting to initial_claim_tree) passes via Acdd-Integrated trailer.
+    fs::write(created_run.worktree.join("src/lib.rs"), "pub fn drifted() -> i32 { 99 }\n")
+        .expect("drift");
+    git_ok(&created_run.worktree, &["add", "src/lib.rs"]);
+    git_ok(&created_run.worktree, &["commit", "-m", "manual drift after integrate"]);
+    let missing_after_drift = verify_tasks_integrated(
+        &run_id,
+        &created_run.worktree,
+        &[TaskIntegrationCheckInput {
+            task_ref: task_a_ref.clone(),
+            initial_claim_tree: init_a.clone(),
+            accepted_tree: acc_a.clone(),
+            admitted_scope: vec!["src/**".to_owned()],
+            downstream_tasks: vec![],
+        }],
+    )
+    .expect("check after drift");
+    assert_eq!(missing_after_drift, Vec::<TaskRef>::new());
+
+    // Rule (a) revert guard: reverting `src/lib.rs` back to initial_claim_tree triggers TASK_NOT_INTEGRATED.
+    git_ok(&created_run.worktree, &["checkout", "main", "--", "src/lib.rs"]);
+    git_ok(&created_run.worktree, &["commit", "-m", "revert src/lib.rs to initial"]);
+    let missing_after_second_revert = verify_tasks_integrated(
+        &run_id,
+        &created_run.worktree,
+        &[TaskIntegrationCheckInput {
+            task_ref: task_a_ref.clone(),
+            initial_claim_tree: init_a,
+            accepted_tree: acc_a,
+            admitted_scope: vec!["src/**".to_owned()],
+            downstream_tasks: vec![],
+        }],
+    )
+    .expect("check after revert to initial");
+    assert_eq!(missing_after_second_revert, vec![task_a_ref]);
+
+    // 4. File-mode-only `(mode, oid)` checks for Rules (b) and (c): 100644 -> 100755 without blob change.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp_mode = TempDir::new().expect("tempdir mode");
+        let primary_mode = tmp_mode.path().join("primary");
+        let _ = init_test_repo(&primary_mode);
+        let created_run_mode = create_run_worktree(&CreateWorktreeReq {
+            primary_worktree: primary_mode.clone(),
+            worktree_path: tmp_mode.path().join("run-wt"),
+            branch_name: "milestone/mode-check".to_owned(),
+            base_ref: "main".to_owned(),
+            copy_uncommitted_paths: vec![],
+        })
+        .expect("run wt mode");
+
+        let created_t1 = create_task_worktree(&CreateWorktreeReq {
+            primary_worktree: primary_mode.clone(),
+            worktree_path: tmp_mode.path().join("task-m1"),
+            branch_name: "task/m1".to_owned(),
+            base_ref: "milestone/mode-check".to_owned(),
+            copy_uncommitted_paths: vec![],
+        })
+        .expect("wt m1");
+        let init_m1 = current_scope_tree(&created_t1.worktree, None, &policy).expect("init m1");
+        let lib_path = created_t1.worktree.join("src/lib.rs");
+        let mut perms = fs::metadata(&lib_path).expect("meta").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&lib_path, perms).expect("chmod 755");
+        let acc_m1 = current_scope_tree(&created_t1.worktree, None, &policy).expect("acc m1");
+        let m1_ref = TaskRef::new("t-m1").expect("t-m1");
+        let m2_ref = TaskRef::new("t-m2").expect("t-m2");
+
+        // Before integrating t-m1, mode-only change must NOT pass Rule (b) via identical blob OID.
+        let unlanded_mode = verify_tasks_integrated(
+            &run_id,
+            &created_run_mode.worktree,
+            &[TaskIntegrationCheckInput {
+                task_ref: m1_ref.clone(),
+                initial_claim_tree: init_m1.clone(),
+                accepted_tree: acc_m1.clone(),
+                admitted_scope: vec!["src/**".to_owned()],
+                downstream_tasks: vec![],
+            }],
+        )
+        .expect("verify unlanded mode");
+        assert_eq!(unlanded_mode, vec![m1_ref.clone()]);
+
+        // Downstream task t-m2 applies a mode-only change (`100644 -> 100755`) and integrates -> Rule (c) covers t-m1!
+        let created_t2 = create_task_worktree(&CreateWorktreeReq {
+            primary_worktree: primary_mode,
+            worktree_path: tmp_mode.path().join("task-m2"),
+            branch_name: "task/m2".to_owned(),
+            base_ref: "milestone/mode-check".to_owned(),
+            copy_uncommitted_paths: vec![],
+        })
+        .expect("wt m2");
+        let init_m2 = current_scope_tree(&created_t2.worktree, None, &policy).expect("init m2");
+        let lib_path2 = created_t2.worktree.join("src/lib.rs");
+        let mut perms2 = fs::metadata(&lib_path2).expect("meta2").permissions();
+        perms2.set_mode(0o755);
+        fs::set_permissions(&lib_path2, perms2).expect("chmod 755 2");
+        let acc_m2 = current_scope_tree(&created_t2.worktree, None, &policy).expect("acc m2");
+        git_ok(&created_t2.worktree, &["add", "src/lib.rs"]);
+        git_ok(&created_t2.worktree, &["commit", "-m", "chmod +x in downstream"]);
+        integrate_task_branch(&IntegrateTaskReq {
+            target_worktree: created_run_mode.worktree.clone(),
+            source_worktree: Some(created_t2.worktree),
+            source_branch: "task/m2".to_owned(),
+            run_id: run_id.clone(),
+            task_ref: m2_ref.clone(),
+            accepted_tree: acc_m2.clone(),
+            strategy: IntegrateStrategy::RebaseFf,
+            allow_main: false,
+        })
+        .expect("integrate m2");
+
+        let covered_mode = verify_tasks_integrated(
+            &run_id,
+            &created_run_mode.worktree,
+            &[
+                TaskIntegrationCheckInput {
+                    task_ref: m1_ref,
+                    initial_claim_tree: init_m1,
+                    accepted_tree: acc_m1,
+                    admitted_scope: vec!["src/**".to_owned()],
+                    downstream_tasks: vec![m2_ref.clone()],
+                },
+                TaskIntegrationCheckInput {
+                    task_ref: m2_ref,
+                    initial_claim_tree: init_m2,
+                    accepted_tree: acc_m2,
+                    admitted_scope: vec!["src/**".to_owned()],
+                    downstream_tasks: vec![],
+                },
+            ],
+        )
+        .expect("verify covered mode");
+        assert_eq!(covered_mode, Vec::<TaskRef>::new());
+    }
+
+    // 5. Squash integration failure on dirty tracked local edits must NEVER wipe them via `git reset --hard`.
+    let tmp_dirty = TempDir::new().expect("tempdir dirty");
+    let primary_dirty = tmp_dirty.path().join("primary");
+    let _ = init_test_repo(&primary_dirty);
+    let created_run_dirty = create_run_worktree(&CreateWorktreeReq {
+        primary_worktree: primary_dirty.clone(),
+        worktree_path: tmp_dirty.path().join("run-dirty"),
+        branch_name: "milestone/dirty-squash".to_owned(),
+        base_ref: "main".to_owned(),
+        copy_uncommitted_paths: vec![],
+    })
+    .expect("run wt dirty");
+    let created_task_dirty = create_task_worktree(&CreateWorktreeReq {
+        primary_worktree: primary_dirty,
+        worktree_path: tmp_dirty.path().join("task-dirty"),
+        branch_name: "task/dirty".to_owned(),
+        base_ref: "milestone/dirty-squash".to_owned(),
+        copy_uncommitted_paths: vec![],
+    })
+    .expect("task wt dirty");
+    fs::write(created_task_dirty.worktree.join("src/lib.rs"), "pub fn task_edit() {}\n").expect("t");
+    let dirty_acc = current_scope_tree(&created_task_dirty.worktree, None, &policy).expect("acc");
+    git_ok(&created_task_dirty.worktree, &["add", "src/lib.rs"]);
+    git_ok(&created_task_dirty.worktree, &["commit", "-m", "task dirty"]);
+
+    fs::write(created_run_dirty.worktree.join("src/lib.rs"), "pub fn local_dirty_edit() {}\n")
+        .expect("local dirty");
+    let dirty_err = integrate_task_branch(&IntegrateTaskReq {
+        target_worktree: created_run_dirty.worktree.clone(),
+        source_worktree: Some(created_task_dirty.worktree),
+        source_branch: "task/dirty".to_owned(),
+        run_id,
+        task_ref: TaskRef::new("t-dirty").expect("t-dirty"),
+        accepted_tree: dirty_acc,
+        strategy: IntegrateStrategy::Squash,
+        allow_main: false,
+    })
+    .unwrap_err();
+    assert_eq!(dirty_err.code, ErrorCode::ExternalGitDrift);
+    assert_eq!(
+        fs::read_to_string(created_run_dirty.worktree.join("src/lib.rs")).expect("read preserved"),
+        "pub fn local_dirty_edit() {}\n",
+        "squash failure must preserve pre-existing tracked local edits"
+    );
+
+    // #6: A cleanly staged manual `git merge --squash` (`SQUASH_MSG` with zero unmerged paths)
+    // must NOT be wiped by `abort_in_progress_git_ops`.
+    let manual_squash_tmp = TempDir::new().expect("manual squash tempdir");
+    let mrepo = manual_squash_tmp.path();
+    let _ = init_test_repo(mrepo);
+    fs::write(mrepo.join("src/lib.rs"), "pub fn staged_squash() {}\n").unwrap();
+    git_ok(mrepo, &["add", "src/lib.rs"]);
+    let m_git_dir = mrepo.join(git_ok(mrepo, &["rev-parse", "--git-dir"]).trim());
+    fs::write(m_git_dir.join("SQUASH_MSG"), "manual user squash commit\n").unwrap();
+    assert!(!abort_in_progress_git_ops(mrepo).expect("abort check"));
+    assert!(m_git_dir.join("SQUASH_MSG").is_file());
+    assert!(git_ok(mrepo, &["diff", "--cached", "--name-only"]).contains("src/lib.rs"));
 }
 
 fn run_failpoint_child(case: &str, repo: &Path) {
@@ -865,7 +1189,6 @@ fn run_failpoint_child(case: &str, repo: &Path) {
                 path_policy: policy,
                 message: "failpoint commit".to_owned(),
                 allow_main: false,
-                manual_snapshot_namespace: None,
             });
         }
         "integrate_no_ff_conflict" | "integrate_rebase_conflict" => {
@@ -903,7 +1226,7 @@ fn run_failpoint_child(case: &str, repo: &Path) {
                 spec_relpath: "docs/milestones/AC-FP.md".to_owned(),
                 archive_relpath: "docs/milestones/archive/AC-FP.md".to_owned(),
                 rendered_archive_markdown: archive_md.to_owned(),
-                rendered_archive_digest: sha256_hex(archive_md),
+                rendered_archive_digest: sha256_hex(archive_md.as_bytes()),
                 should_commit,
                 commit_mode: CommitMode::Plumbing,
                 allow_main: false,
@@ -983,7 +1306,6 @@ fn failpoint_crash_recovery_matrix() {
             path_policy: policy.clone(),
             message: "failpoint commit".to_owned(),
             allow_main: false,
-            manual_snapshot_namespace: None,
         })
         .expect("idempotent commit recovery");
         assert!(retry.recovered_idempotently, "{case}");
@@ -1005,7 +1327,6 @@ fn failpoint_crash_recovery_matrix() {
             path_policy: policy.clone(),
             message: "failpoint commit".to_owned(),
             allow_main: false,
-            manual_snapshot_namespace: None,
         })
         .expect_err("external drift expected");
         assert_eq!(drift_err.code, ErrorCode::ExternalGitDrift);
@@ -1127,7 +1448,7 @@ fn failpoint_crash_recovery_matrix() {
             spec_relpath: "docs/milestones/AC-FP.md".to_owned(),
             archive_relpath: "docs/milestones/archive/AC-FP.md".to_owned(),
             rendered_archive_markdown: archive_md.to_owned(),
-            rendered_archive_digest: sha256_hex(archive_md),
+            rendered_archive_digest: sha256_hex(archive_md.as_bytes()),
             should_commit,
             commit_mode: CommitMode::Plumbing,
             allow_main: false,
@@ -1136,7 +1457,7 @@ fn failpoint_crash_recovery_matrix() {
         .expect("archive idempotent retry");
         assert!(retry.recovered_idempotently, "{case}");
         assert_eq!(retry.committed_oid, expected_oid);
-        assert!(!repo.join("docs/milestones/AC-FP.md").exists());
+        assert_eq!(repo.join("docs/milestones/AC-FP.md").exists(), !should_commit, "{case}");
         assert!(repo.join("docs/milestones/archive/AC-FP.md").is_file());
     }
 }

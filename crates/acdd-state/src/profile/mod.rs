@@ -2,10 +2,14 @@
 
 pub mod inherit;
 pub mod schema;
+pub mod shell_template;
 pub mod validate;
 pub mod when;
 
-pub use inherit::{embedded_profile, resolve_profile_from_str, resolve_profile_ref};
+pub use inherit::{
+    embedded_profile, resolve_profile_from_str, resolve_profile_from_str_with_dirs,
+    resolve_profile_ref, resolve_profile_ref_with_dirs,
+};
 pub use schema::{
     parse_profile, CheckRef, CommandCountsSpec, CommandDef, CommandOutputSpec,
     CompileErrorsFilter, CompileErrorsSpec, ContourDef, DetailedCommandDef, ExpectedFailurePatch,
@@ -17,9 +21,13 @@ pub use schema::{
     ResourceLimitsPatch, RoleDef, RoleExecutionMode, RolePatch, SavePolicy, SavePolicyPatch,
     StructuredGuidance, SubsystemRegistryPatch, TasksBlock, TestFilterConfig, DEFAULT_MAX_ATTEMPTS,
 };
+pub use shell_template::{
+    active_shell_placeholder_positions, ends_inside_shell_comment, has_unescaped_chain_operator,
+    posix_single_quote, render_command_with_scope_target, render_command_with_test_filter,
+    validate_shell_template_placeholders,
+};
 pub use validate::{
-    check_guidance_budget, glob_pattern_matches, glob_specificity, has_unescaped_chain_operator,
-    posix_single_quote, render_command_with_test_filter, resolve_and_budget_guidance,
+    check_guidance_budget, glob_specificity, resolve_and_budget_guidance,
     resolve_command_for_scope, validate_profile, ProfileValidationOptions,
     ResolvedCommandInvocation,
 };
@@ -79,7 +87,11 @@ mod tests {
                         name: "links".to_owned(),
                         input_schema: SchemaDef::object(),
                     }],
-                    context_lenses: BTreeSet::from(["adrs".to_owned(), "invariants".to_owned()]),
+                    context_lenses: BTreeSet::from([
+                        "instructions".to_owned(),
+                        "adrs".to_owned(),
+                        "invariants".to_owned(),
+                    ]),
                     tools: vec![],
                 },
             };
@@ -215,6 +227,16 @@ mod tests {
         assert!(!default_p.roles["independent_reviewer"].reuse_on_reject);
         assert!(default_p.roles["builder"].reuse_on_reject);
         assert_eq!(default_p.default_tools.len(), 7);
+        let default_tasks = default_p.gates.iter().find_map(|g| g.tasks.as_ref()).unwrap();
+        let d_contract = default_tasks.gates.iter().find(|g| g.id == "contract").unwrap();
+        let d_build = default_tasks.gates.iter().find(|g| g.id == "build").unwrap();
+        let d_review = default_tasks.gates.iter().find(|g| g.id == "review").unwrap();
+        let d_rearch = default_tasks.gates.iter().find(|g| g.id == "rearchitect").unwrap();
+        assert_eq!(d_contract.save.post, None);
+        assert_eq!(d_build.save.post, None);
+        assert_eq!(d_review.fail_drift.as_ref().map(|g| g.as_str()), Some("rearchitect"));
+        assert_eq!(d_rearch.pass.as_ref().map(|g| g.as_str()), Some("build"));
+        assert_eq!(d_rearch.max_attempts, 3);
 
         let code_p = resolve_profile_ref("code", None, None).unwrap();
         assert_eq!(code_p.default_tools.len(), 19);
@@ -231,13 +253,20 @@ mod tests {
         assert_eq!(contract_gate.checks.len(), 1);
         assert_eq!(contract_gate.checks[0].check, "code.seam");
         assert_eq!(contract_gate.tools.len(), 19);
+        let code_build = code_tasks.gates.iter().find(|g| g.id == "build").unwrap();
+        assert_eq!(code_build.context.first().map(String::as_str), Some("docs.instructions"));
+        let code_rearch = code_tasks.gates.iter().find(|g| g.id == "rearchitect").unwrap();
+        assert_eq!(
+            code_rearch.context,
+            vec!["docs.instructions", "docs.adrs", "docs.invariants", "code.symbols"]
+        );
 
         let in_place_p = resolve_profile_ref("in_place", None, None).unwrap();
         assert_eq!(in_place_p.git.isolation, IsolationMode::InPlace);
         assert_eq!(in_place_p.git.worktrees, WorktreeLifecycle::Manual);
         assert_eq!(in_place_p.git.commit_mode, CommitMode::Plumbing);
         assert_eq!(in_place_p.git.integrate, IntegrateStrategy::Manual);
-        assert_eq!(in_place_p.save, SaveAction::Snapshot);
+        assert_eq!(in_place_p.save, SaveAction::None);
 
         let ip_tasks = in_place_p
             .gates
@@ -245,7 +274,7 @@ mod tests {
             .find_map(|g| g.tasks.as_ref())
             .unwrap();
         let deliver_gate = ip_tasks.gates.iter().find(|g| g.id == "deliver").unwrap();
-        assert_eq!(deliver_gate.save.post, Some(SaveAction::Snapshot));
+        assert_eq!(deliver_gate.save.post, Some(SaveAction::None));
         assert!(deliver_gate.save.immutable);
         assert_eq!(deliver_gate.save.git_commit_note.as_deref(), Some("default"));
 
@@ -254,7 +283,7 @@ mod tests {
             .iter()
             .find(|g| g.id == "handoff")
             .unwrap();
-        assert_eq!(handoff_gate.save.post, Some(SaveAction::Snapshot));
+        assert_eq!(handoff_gate.save.post, Some(SaveAction::None));
         assert!(handoff_gate.save.immutable);
         assert!(handoff_gate.save.archive);
         assert!(handoff_gate.save.prune);
@@ -406,6 +435,36 @@ mod tests {
                 "version: 2\ncommands:\n  t: cargo clippy && cargo test\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          command: t\n          proof: contract\n          expected_failure:\n            exit_codes: [101]\n",
                 ErrorCode::CommandTestFilterPlaceholderRequired,
             ),
+            (
+                "legacy_save_snapshot",
+                "version: 2\nsave: snapshot\ngates:\n  - id: a\n",
+                ErrorCode::ProfileSchemaInvalid,
+            ),
+            (
+                "legacy_gate_save_post_snapshot",
+                "version: 2\ngates:\n  - id: a\n    save:\n      post: snapshot\n",
+                ErrorCode::ProfileSchemaInvalid,
+            ),
+            (
+                "legacy_gate_save_shorthand_snapshot",
+                "version: 2\ngates:\n  - id: a\n    save: snapshot\n",
+                ErrorCode::ProfileSchemaInvalid,
+            ),
+            (
+                "legacy_gate_save_pre",
+                "version: 2\ngates:\n  - id: a\n    save:\n      pre: none\n",
+                ErrorCode::ProfileSchemaInvalid,
+            ),
+            (
+                "fail_drift_unknown",
+                "version: 2\ngates:\n  - id: a\n    fail_drift: missing\n",
+                ErrorCode::ProfileSchemaInvalid,
+            ),
+            (
+                "fail_drift_equals_pass",
+                "version: 2\ngates:\n  - id: a\n    pass: b\n    fail_drift: b\n  - id: b\n",
+                ErrorCode::ProfileSchemaInvalid,
+            ),
         ];
 
         let opts = ProfileValidationOptions {
@@ -420,6 +479,32 @@ mod tests {
                 .expect_err("expected validation failure");
             assert_eq!(err.code, expected_code, "case '{label}': {err}");
         }
+
+        // Backward compatibility: stored v0.6.0 `runs.profile_json` may carry `"snapshot"` or `save.pre`.
+        let legacy_profile_json = r#"{
+            "version": 2,
+            "profile_id": "in_place",
+            "save": "snapshot",
+            "gates": [
+                {
+                    "id": "build",
+                    "save": { "pre": "snapshot", "post": "snapshot", "immutable": false }
+                },
+                {
+                    "id": "handoff",
+                    "receipt": true,
+                    "need": ["build"],
+                    "save": { "pre": "none", "post": "commit", "immutable": true, "archive": true, "prune": true }
+                }
+            ]
+        }"#;
+        let parsed_legacy: ResolvedGateProfile =
+            serde_json::from_str(legacy_profile_json).expect("legacy profile_json must deserialize");
+        assert_eq!(parsed_legacy.save, SaveAction::None);
+        assert_eq!(parsed_legacy.gates[0].save.post, Some(SaveAction::None));
+        assert!(!parsed_legacy.gates[0].save.immutable);
+        assert_eq!(parsed_legacy.gates[1].save.post, Some(SaveAction::Commit));
+        assert!(parsed_legacy.gates[1].save.immutable);
     }
 
     #[test]
@@ -473,7 +558,7 @@ gates:
           role: builder
           command: build_check
           proof: command
-          save: { pre: snapshot, post: commit, immutable: true, git_commit_note: default }
+          save: { post: commit, immutable: true, git_commit_note: default }
   - id: verify
     command: verify_all
     proof: command
@@ -559,7 +644,7 @@ gates:
       - inline: "Custom inline review guidance"
   - id: "tasks.build"
     save:
-      post: snapshot
+      post: none
   - tasks:
       when: "code+!docs"
       gates:
@@ -597,9 +682,8 @@ gates:
         assert!(!tasks_block.gates[0]
             .tools
             .contains(&"acdd_blackboard".to_owned()));
-        // Field-wise save patch kept immutable & git_commit_note & pre:
-        assert_eq!(tasks_block.gates[2].save.post, Some(SaveAction::Snapshot));
-        assert_eq!(tasks_block.gates[2].save.pre, Some(SaveAction::Snapshot));
+        // Field-wise save patch kept immutable & git_commit_note while updating post to none:
+        assert_eq!(tasks_block.gates[2].save.post, Some(SaveAction::None));
         assert!(tasks_block.gates[2].save.immutable);
         assert_eq!(
             tasks_block.gates[2].save.git_commit_note.as_deref(),
@@ -682,11 +766,14 @@ gates:
 
         let eval_cases: &[(&str, &[&str], bool, &str)] = &[
             ("code", &["code"], true, "code"),
+            ("code", &["docs"], false, "code"),
             ("code", &["default"], false, "code"),
+            ("default", &["default"], true, "default"),
             ("!docs", &["code"], true, "!docs"),
             ("!docs", &["docs"], false, "!docs"),
             ("code + !docs", &["code"], true, "code & !docs"),
             ("code & !docs", &["code", "docs"], false, "code & !docs"),
+            ("code + !docs", &["code", "docs"], false, "code & !docs"),
             (
                 "(code | docs) & !db_migration",
                 &["docs"],
@@ -836,7 +923,64 @@ gates:
                 Some("my_test"),
                 Err(ErrorCode::CommandTestFilterUnsupported),
             ),
+            (
+                "cargo test '{test_filter}'",
+                None,
+                Some("my_test"),
+                Err(ErrorCode::ProfileSchemaInvalid),
+            ),
+            (
+                "cargo test \"{scope_target}\" {test_filter}",
+                None,
+                Some("my_test"),
+                Err(ErrorCode::ProfileSchemaInvalid),
+            ),
+            (
+                "cargo test \\{test_filter}",
+                None,
+                Some("my_test"),
+                Err(ErrorCode::ProfileSchemaInvalid),
+            ),
+            (
+                "cargo test 'unclosed {test_filter}",
+                None,
+                Some("my_test"),
+                Err(ErrorCode::ProfileSchemaInvalid),
+            ),
+            (
+                "cargo test {test_filter}",
+                Some(TestFilterConfig::Template("--filter '{test}'".to_owned())),
+                Some("my_test"),
+                Err(ErrorCode::ProfileSchemaInvalid),
+            ),
+            (
+                "true # don't change",
+                None,
+                None,
+                Ok("true # don't change"),
+            ),
+            (
+                "cargo test # don't append",
+                None,
+                Some("my_test"),
+                Err(ErrorCode::CommandTestFilterPlaceholderRequired),
+            ),
+            (
+                "cargo test # trailing newline comment\n",
+                None,
+                Some("my_test"),
+                Err(ErrorCode::CommandTestFilterPlaceholderRequired),
+            ),
+            (
+                "cargo test {test_filter} # safe comment with '",
+                Some(TestFilterConfig::Template("--filter {test}".to_owned())),
+                Some("my_test"),
+                Ok("cargo test --filter 'my_test' # safe comment with '"),
+            ),
         ];
+
+        assert!(!has_unescaped_chain_operator("true # a && b; |"));
+        assert!(has_unescaped_chain_operator("true; # comment"));
 
         for (tpl, cfg, target, expected) in filter_cases {
             let res = render_command_with_test_filter(tpl, cfg.as_ref(), *target);
@@ -955,5 +1099,265 @@ gates:
                 Err(code) => assert_eq!(res.unwrap_err().code, code),
             }
         }
+    }
+
+    #[test]
+    fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
+        let providers = MockDomainProvider::code_and_docs();
+
+        // 1. expected_failure: {} valid; invalid exit_codes (0, -1, 126, 127) rejected.
+        let empty_ef = "version: 2\ncommands:\n  t: cargo test\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          command: t\n          proof: contract\n          expected_failure: {}\n";
+        let resolved_ef = resolve_profile_from_str(empty_ef, "ef", None, None, None).unwrap();
+        validate_profile(
+            &resolved_ef,
+            &ProfileValidationOptions {
+                domain_providers: Some(&providers),
+                acdd_modules: None,
+                require_bound_commands: true,
+            },
+        )
+        .unwrap();
+
+        for bad_code in [0, -1, 126, 127] {
+            let bad_yaml = format!(
+                "version: 2\ncommands:\n  t: cargo test\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          command: t\n          proof: contract\n          expected_failure:\n            exit_codes: [{bad_code}]\n"
+            );
+            let p = resolve_profile_from_str(&bad_yaml, "bad-ef", None, None, None).unwrap();
+            let err = validate_profile(&p, &ProfileValidationOptions::default()).unwrap_err();
+            assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid);
+        }
+
+        // 2. code profile with docs: false strips get_doc, search_docs, docs.* context/checks and validates.
+        let docs_disabled = SubsystemRegistry {
+            disabled: BTreeSet::from(["docs".to_owned()]),
+            ..SubsystemRegistry::default()
+        };
+        let code_no_docs = resolve_profile_ref("code", None, Some(&docs_disabled)).unwrap();
+        assert!(!code_no_docs.default_tools.iter().any(|t| t == "get_doc" || t == "search_docs"));
+        assert!(code_no_docs.tags.contains("docs"));
+        validate_profile(
+            &code_no_docs,
+            &ProfileValidationOptions {
+                domain_providers: Some(&providers),
+                acdd_modules: Some(&docs_disabled),
+                require_bound_commands: false,
+            },
+        )
+        .unwrap();
+
+        // 3. in_place inherits workspace (.acdd/profile.yaml if present else default), failing closed on cycles.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let ip_no_ws = resolve_profile_ref("in_place", Some(root), Some(&SubsystemRegistry::default())).unwrap();
+        assert_eq!(ip_no_ws.git.isolation, IsolationMode::InPlace);
+        assert_eq!(ip_no_ws.default_tools.len(), 7);
+
+        fs::create_dir_all(root.join(".acdd")).unwrap();
+        fs::write(
+            root.join(".acdd/profile.yaml"),
+            "version: 2\ninherit: default\ncommands:\n  test: \"pytest {test_filter}\"\n  build_check: \"pytest\"\n  verify_all: \"pytest\"\n",
+        )
+        .unwrap();
+        let ip_with_ws = resolve_profile_ref("in_place", Some(root), None).unwrap();
+        assert!(matches!(ip_with_ws.commands.get("test"), Some(CommandDef::Script(s)) if s == "pytest {test_filter}"));
+
+        fs::write(root.join(".acdd/profile.yaml"), "version: 2\ninherit: in_place\n").unwrap();
+        let cyc_err = resolve_profile_ref("in_place", Some(root), None).unwrap_err();
+        assert_eq!(cyc_err.code, ErrorCode::ProfileSchemaInvalid);
+
+        // 4. profiles_dirs custom lookup in resolve_profile_ref + nested inherit + cycle + broken config propagation.
+        fs::write(
+            root.join("acdd.yaml"),
+            "profiles_dirs:\n  - custom/profiles\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("custom/profiles")).unwrap();
+        fs::write(
+            root.join("custom/profiles/team.yaml"),
+            "version: 2\ninherit: default\ncommands:\n  test: \"go test ./...\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("custom/profiles/nested.yaml"),
+            "version: 2\ninherit: team\n",
+        )
+        .unwrap();
+        let custom_p = resolve_profile_ref("team", Some(root), None).unwrap();
+        assert!(matches!(custom_p.commands.get("test"), Some(CommandDef::Script(s)) if s == "go test ./..."));
+        let nested_p = resolve_profile_ref("nested", Some(root), None).unwrap();
+        assert!(matches!(nested_p.commands.get("test"), Some(CommandDef::Script(s)) if s == "go test ./..."));
+
+        fs::write(
+            root.join("custom/profiles/cyc-a.yaml"),
+            "version: 2\ninherit: cyc-b\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("custom/profiles/cyc-b.yaml"),
+            "version: 2\ninherit: cyc-a\n",
+        )
+        .unwrap();
+        let nested_cyc_err = resolve_profile_ref("cyc-a", Some(root), None).unwrap_err();
+        assert_eq!(nested_cyc_err.code, ErrorCode::ProfileSchemaInvalid);
+
+        // Broken acdd.yaml propagates error instead of silently falling back when resolving profiles_dirs.
+        let broken_dir = tempfile::tempdir().unwrap();
+        fs::write(broken_dir.path().join("acdd.yaml"), "bogus_unknown: true\n").unwrap();
+        let broken_cfg_err = resolve_profile_ref("team", Some(broken_dir.path()), None).unwrap_err();
+        assert_eq!(broken_cfg_err.code, ErrorCode::ProfileSchemaInvalid);
+
+        // 4b. protected_paths malformed glob rejection + inherited when-tags preservation on tags: override.
+        for bad_prot in ["src/{a", "../escape", "{a,b}/{c,d}/{e,f}/{g,h}/{i,j}/{k,l}/{m,n}.rs"] {
+            let p_bad_prot = resolve_profile_from_str(
+                &format!("version: 2\nprotected_paths: [\"{bad_prot}\"]\n"),
+                "bad-prot",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let err = validate_profile(&p_bad_prot, &ProfileValidationOptions::default()).unwrap_err();
+            assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{bad_prot}");
+        }
+
+        let child_override_tags = resolve_profile_from_str(
+            "version: 2\ninherit: code\ntags: [frontend]\n",
+            "child-tags",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(child_override_tags.tags.contains("docs"));
+        assert!(child_override_tags.tags.contains("frontend"));
+        validate_profile(
+            &child_override_tags,
+            &ProfileValidationOptions {
+                domain_providers: Some(&providers),
+                acdd_modules: None,
+                require_bound_commands: false,
+            },
+        )
+        .unwrap();
+
+        let child_typo_tag = resolve_profile_from_str(
+            "version: 2\ninherit: code\ngates_merge: patch\ntags: [frontend]\ngates:\n  - id: tasks.build\n    when: typo_tag\n",
+            "child-typo",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let typo_err = validate_profile(
+            &child_typo_tag,
+            &ProfileValidationOptions {
+                domain_providers: Some(&providers),
+                acdd_modules: None,
+                require_bound_commands: false,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(typo_err.code, ErrorCode::ProfileSchemaInvalid);
+
+        // Undeclared parent `when:` tag typo must NOT be promoted into child `tags:` when child overrides `tags:`.
+        fs::write(
+            root.join("custom/profiles/parent-typo.yaml"),
+            "version: 2\ninherit: default\ngates_merge: patch\ntags: [default]\ngates:\n  - id: tasks.build\n    when: parent_undeclared_typo\n",
+        )
+        .unwrap();
+        let child_of_typo = resolve_profile_from_str(
+            "version: 2\ninherit: parent-typo\ntags: [frontend]\n",
+            "child-of-typo",
+            None,
+            Some(root),
+            None,
+        )
+        .unwrap();
+        assert!(!child_of_typo.tags.contains("parent_undeclared_typo"));
+        let parent_typo_err = validate_profile(
+            &child_of_typo,
+            &ProfileValidationOptions {
+                domain_providers: Some(&providers),
+                acdd_modules: None,
+                require_bound_commands: false,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(parent_typo_err.code, ErrorCode::ProfileSchemaInvalid);
+
+        // 5. inherit.rs patch bugs: tools: null, tools + tools_add, use_template + inline overrides, scope_args_by_pattern.
+        let patch_yaml = r#"version: 2
+inherit: default
+gates_merge: patch
+scope_args_by_pattern:
+  "crates/a/**": "-p crate-a"
+  "crates/b/**": "-p crate-b"
+commands:
+  test: "cargo test {scope_target} {test_filter}"
+  build_check:
+    command: "cargo check {scope_target}"
+    scope_args_by_pattern:
+      "crates/a/**": "--package override-a"
+  plain_cmd: "echo ok"
+gate_templates:
+  pair:
+    command: build_check
+    guidance: [task.code]
+    max_attempts: 4
+    gates:
+      - id: s1
+        role: builder
+        proof: command
+        pass: s2
+      - id: s2
+        role: independent_reviewer
+        proof: review
+        contours: [paths]
+        independent_from: [s1]
+gates:
+  - id: tasks.contract
+    tools: null
+  - id: tasks.build
+    tools: [acdd_read]
+    tools_add: [acdd_verify]
+  - id: pair_container
+    before: verify
+    use: pair
+    max_attempts: 2
+    gates:
+      - id: s1
+        max_attempts: 5
+"#;
+        let patched = resolve_profile_from_str(patch_yaml, "patched", None, None, None).unwrap();
+        let tb = patched.gates.iter().find_map(|g| g.tasks.as_ref()).unwrap();
+        let contract_g = tb.gates.iter().find(|g| g.id == "contract").unwrap();
+        assert!(contract_g.tools.is_empty(), "tools: null must clear to []");
+        let build_g = tb.gates.iter().find(|g| g.id == "build").unwrap();
+        assert_eq!(build_g.tools, vec!["acdd_read".to_owned(), "acdd_verify".to_owned()]);
+
+        let pair_g = patched.gates.iter().find(|g| g.id == "pair_container").unwrap();
+        assert_eq!(pair_g.max_attempts, 2);
+        assert_eq!(pair_g.gates.len(), 2);
+        assert_eq!(pair_g.gates[0].id, "s1");
+        assert_eq!(pair_g.gates[0].max_attempts, 5);
+        assert_eq!(pair_g.gates[0].command.as_deref(), Some("build_check"));
+        assert_eq!(pair_g.gates[1].id, "s2");
+
+        // Top-level scope_args_by_pattern propagation: Script with {scope_target} promoted; per-command takes precedence.
+        match patched.commands.get("test").unwrap() {
+            CommandDef::Detailed(d) => {
+                assert_eq!(d.scope_args_by_pattern.get("crates/a/**").map(String::as_str), Some("-p crate-a"));
+                assert_eq!(d.scope_args_by_pattern.get("crates/b/**").map(String::as_str), Some("-p crate-b"));
+            }
+            other => panic!("expected Detailed promotion for Script with {{scope_target}}, got {other:?}"),
+        }
+        match patched.commands.get("build_check").unwrap() {
+            CommandDef::Detailed(d) => {
+                assert_eq!(d.scope_args_by_pattern.get("crates/a/**").map(String::as_str), Some("--package override-a"));
+                assert_eq!(d.scope_args_by_pattern.get("crates/b/**").map(String::as_str), Some("-p crate-b"));
+            }
+            other => panic!("expected Detailed, got {other:?}"),
+        }
+        assert!(matches!(patched.commands.get("plain_cmd"), Some(CommandDef::Script(s)) if s == "echo ok"));
     }
 }

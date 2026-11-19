@@ -310,6 +310,23 @@ fn command_and_spawner_timeout_kills_process_group_without_sleep() {
         verify_runner_submitted(&spawn_out, Some(ClaimOutcome::Passed)).unwrap_err().code,
         ErrorCode::RunnerNoSubmission
     );
+
+    // Exited group leader whose background descendant keeps stdout/stderr open must still trigger
+    // process-group SIGKILL on timeout across Linux & macOS (waitid WNOWAIT, zero early try_wait reap).
+    let descendant_req = CommandExecReq {
+        command_id: "orphan-descendant".to_owned(),
+        command: CommandDef::Script("(sleep 30) & exit 0".to_owned()),
+        ..cmd_req
+    };
+    let start_ts = std::time::Instant::now();
+    let desc_out =
+        execute_gate_commands_inner(&descendant_req, Some(Duration::from_millis(80))).unwrap();
+    assert!(desc_out.timed_out);
+    assert_eq!(desc_out.exit_code, None);
+    assert!(
+        start_ts.elapsed() < Duration::from_secs(2),
+        "timed-out process-group cleanup hung on lingering descendant"
+    );
 }
 
 #[test]
@@ -535,4 +552,145 @@ fn wave_scheduler_respects_dag_scope_and_forces_in_place_n_equals_1() {
     assert_eq!(halt_rep.waves_executed, 2);
     assert_eq!(halt_rep.gates_completed, 1);
     assert!(halt_rep.halted_reason.is_some());
+}
+
+#[test]
+fn scope_args_pattern_expands_file_stem_and_path_skipping_globs() {
+    let mut map = BTreeMap::new();
+    map.insert("tests/*.rs".to_owned(), "--test {file_stem}".to_owned());
+    map.insert("src/**/*.rs".to_owned(), "--file {path}".to_owned());
+
+    let cases = [
+        (
+            vec!["tests/integration_a.rs", "tests/*.rs"],
+            "cargo test {scope_target} {test_filter}",
+            "cargo test --test 'integration_a' {test_filter}",
+        ),
+        (
+            vec!["tests/*.rs"],
+            "cargo test {scope_target}",
+            "cargo test",
+        ),
+        (
+            vec!["src/lib.rs", "tests/api.rs"],
+            "tool {scope_target}",
+            "tool --file 'src/lib.rs' --test 'api'",
+        ),
+        (
+            vec!["tests/my file $(touch pwned).rs"],
+            "cargo test {scope_target}",
+            "cargo test --test 'my file $(touch pwned)'",
+        ),
+        (
+            vec!["src/dir with spaces/a'b$(touch pwned2);echo inj.rs"],
+            "tool {scope_target}",
+            "tool --file 'src/dir with spaces/a'\\''b$(touch pwned2);echo inj.rs'",
+        ),
+        // #9: Empty args remove only `{scope_target}` + one adjacent space (preserving `a  b`),
+        // and non-empty args expand EVERY active `{scope_target}` placeholder.
+        (
+            vec!["tests/*.rs"],
+            "echo {scope_target} a  b",
+            "echo a  b",
+        ),
+        (
+            vec!["tests/*.rs"],
+            "a  b {scope_target}",
+            "a  b",
+        ),
+        (
+            vec!["src/lib.rs"],
+            "a {scope_target} && b {scope_target}",
+            "a --file 'src/lib.rs' && b --file 'src/lib.rs'",
+        ),
+        (
+            vec!["tests/*.rs"],
+            "left {scope_target}right",
+            "left right",
+        ),
+        (
+            vec!["tests/*.rs"],
+            "left{scope_target} right",
+            "left right",
+        ),
+        (
+            vec!["tests/*.rs"],
+            "x{scope_target} {scope_target}y",
+            "x y",
+        ),
+    ];
+
+    for (raw_paths, tpl, expected) in cases {
+        let paths: Vec<String> = raw_paths.into_iter().map(str::to_owned).collect();
+        let resolved = crate::profile::render_command_with_scope_target(tpl, &map, &paths)
+            .expect("valid template should expand");
+        assert_eq!(resolved, expected);
+    }
+
+    // Reject quoted/escaped placeholders or unbalanced quotes in command and scope_args_by_pattern templates.
+    for (bad_cmd, bad_arg) in [
+        ("echo '{scope_target}'", "--file {path}"),
+        ("echo \"{scope_target}\"", "--file {path}"),
+        ("echo \\{scope_target}", "--file {path}"),
+        ("echo 'unclosed {scope_target}", "--file {path}"),
+        ("echo {scope_target}", "--test '{file_stem}'"),
+        ("echo {scope_target}", "\"--file {path}\""),
+        ("echo {scope_target}", "--file \\{path}"),
+        ("echo {scope_target}", "--file 'unclosed {path}"),
+        ("echo # trailing comment omits placeholder", "--file {path}"),
+        ("echo # trailing newline comment\n", "--file {path}"),
+    ] {
+        let bad_map = BTreeMap::from([("src/*.rs".to_owned(), bad_arg.to_owned())]);
+        let err = crate::profile::render_command_with_scope_target(
+            bad_cmd,
+            &bad_map,
+            &["src/lib.rs".to_owned()],
+        )
+        .expect_err("must reject unsafe shell template");
+        assert_eq!(
+            err.code,
+            ErrorCode::ProfileSchemaInvalid,
+            "cmd={bad_cmd} arg={bad_arg}"
+        );
+    }
+
+    // Verify shell execution keeps spaces intact and does NOT execute embedded `$()` or `;`.
+    let dir = TempDir::new().unwrap();
+    let worktree = dir.path().to_path_buf();
+    let exec_req = CommandExecReq {
+        run_id: test_run_id(),
+        node_cursor: test_cursor(),
+        claim_revision: 5,
+        worktree: worktree.clone(),
+        primary_worktree: worktree.clone(),
+        command_id: "scope-quote".to_owned(),
+        command: CommandDef::Detailed(Box::new(DetailedCommandDef {
+            command: "printf 'ARG:%s\\n' {scope_target}".to_owned(),
+            description: None,
+            timeout_seconds: None,
+            test_filter: None,
+            scope_args_by_pattern: map,
+            output: None,
+        })),
+        scope: vec![
+            "tests/my file $(touch pwned).rs".to_owned(),
+            "src/dir with spaces/a'b$(touch pwned2);echo inj.rs".to_owned(),
+        ],
+        test_target: None,
+        limits: ResourceLimits::default(),
+        trace_parent: None,
+    };
+    let out = execute_gate_commands(&exec_req).expect("quoted scope command runs");
+    assert_eq!(out.exit_code, Some(0));
+    assert!(!worktree.join("pwned").exists(), "$(touch pwned) must not execute");
+    assert!(!worktree.join("pwned2").exists(), "$(touch pwned2) must not execute");
+    let log_text = fs::read_to_string(
+        worktree
+            .join(".acdd/run")
+            .join(exec_req.run_id.as_str())
+            .join(&out.log_relpath),
+    )
+    .unwrap();
+    assert!(log_text.contains("ARG:my file $(touch pwned)\n"));
+    assert!(log_text.contains("ARG:src/dir with spaces/a'b$(touch pwned2);echo inj.rs\n"));
 }

@@ -7,7 +7,7 @@ use crate::types::{
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::TaskRef;
-use acdd_core::path_policy::normalize_rel_path;
+pub use acdd_core::path_policy::{patterns_overlap, scopes_overlap};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,115 +26,6 @@ pub struct ScheduleReport {
     pub ready_tasks: Vec<TaskRef>,
     /// Topological execution waves for remaining unfinished tasks.
     pub waves: Vec<Vec<TaskRef>>,
-}
-
-/// Return `true` if two scope pattern lists can match at least one common normalized path.
-pub fn scopes_overlap(a: &[String], b: &[String]) -> bool {
-    for pat_a in a {
-        for pat_b in b {
-            if patterns_overlap(pat_a, pat_b) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Return `true` if two normalized scope patterns (literal directories or globs) can match a common path.
-pub fn patterns_overlap(raw_a: &str, raw_b: &str) -> bool {
-    let Some(norm_a) = normalize_rel_path(raw_a) else {
-        return false;
-    };
-    let Some(norm_b) = normalize_rel_path(raw_b) else {
-        return false;
-    };
-    let segs_a = expand_pattern_segments(&norm_a);
-    let segs_b = expand_pattern_segments(&norm_b);
-
-    let mut memo = BTreeMap::new();
-    match_pattern_intersection(&segs_a, &segs_b, 0, 0, &mut memo)
-}
-
-fn expand_pattern_segments(norm: &str) -> Vec<String> {
-    let mut segs: Vec<String> = norm.split('/').map(str::to_owned).collect();
-    let has_wildcard = segs
-        .iter()
-        .any(|s| s == "**" || s.contains('*') || s.contains('?'));
-    if !has_wildcard {
-        // Per `WorkspacePathPolicy::is_scope_admitted`, a literal directory matches itself and descendants.
-        segs.push("**".to_owned());
-    }
-    segs
-}
-
-fn match_pattern_intersection(
-    a: &[String],
-    b: &[String],
-    ia: usize,
-    ib: usize,
-    memo: &mut BTreeMap<(usize, usize), bool>,
-) -> bool {
-    if let Some(&cached) = memo.get(&(ia, ib)) {
-        return cached;
-    }
-    let res = match (a.get(ia).map(String::as_str), b.get(ib).map(String::as_str)) {
-        (None, None) => true,
-        (Some("**"), Some("**")) => {
-            match_pattern_intersection(a, b, ia + 1, ib, memo)
-                || match_pattern_intersection(a, b, ia, ib + 1, memo)
-        }
-        (Some("**"), _) => {
-            match_pattern_intersection(a, b, ia + 1, ib, memo)
-                || (ib < b.len() && match_pattern_intersection(a, b, ia, ib + 1, memo))
-        }
-        (_, Some("**")) => {
-            match_pattern_intersection(a, b, ia, ib + 1, memo)
-                || (ia < a.len() && match_pattern_intersection(a, b, ia + 1, ib, memo))
-        }
-        (Some(sa), Some(sb)) => {
-            segment_globs_intersect(sa, sb) && match_pattern_intersection(a, b, ia + 1, ib + 1, memo)
-        }
-        _ => false,
-    };
-    memo.insert((ia, ib), res);
-    res
-}
-
-fn segment_globs_intersect(a: &str, b: &str) -> bool {
-    let ca: Vec<char> = a.chars().collect();
-    let cb: Vec<char> = b.chars().collect();
-    let mut memo = BTreeMap::new();
-    segment_chars_intersect(&ca, &cb, 0, 0, &mut memo)
-}
-
-fn segment_chars_intersect(
-    a: &[char],
-    b: &[char],
-    ia: usize,
-    ib: usize,
-    memo: &mut BTreeMap<(usize, usize), bool>,
-) -> bool {
-    if let Some(&cached) = memo.get(&(ia, ib)) {
-        return cached;
-    }
-    let res = match (a.get(ia).copied(), b.get(ib).copied()) {
-        (None, None) => true,
-        (Some('*'), _) => {
-            segment_chars_intersect(a, b, ia + 1, ib, memo)
-                || (ib < b.len() && segment_chars_intersect(a, b, ia, ib + 1, memo))
-        }
-        (_, Some('*')) => {
-            segment_chars_intersect(a, b, ia, ib + 1, memo)
-                || (ia < a.len() && segment_chars_intersect(a, b, ia + 1, ib, memo))
-        }
-        (Some('?'), Some(_)) | (Some(_), Some('?')) => {
-            segment_chars_intersect(a, b, ia + 1, ib + 1, memo)
-        }
-        (Some(ca), Some(cb)) => ca == cb && segment_chars_intersect(a, b, ia + 1, ib + 1, memo),
-        _ => false,
-    };
-    memo.insert((ia, ib), res);
-    res
 }
 
 /// Return `true` if a task has already been claimed (`claim_revision >= 1` on task or any child gate)
@@ -163,6 +54,28 @@ pub fn has_any_in_progress_node(snapshot: &RunGraphSnapshot) -> bool {
         })
 }
 
+/// Return `true` if `dep` is satisfied given live in-run completion status and external observations.
+///
+/// For intra-run dependencies, the live in-run task status is authoritative so stale `dep.satisfied`
+/// rows never make a downstream task claimable while its producer is non-`Completed`.
+pub(crate) fn is_dep_satisfied_against_statuses(
+    run_id: &acdd_core::ids::RunId,
+    dep: &crate::types::TaskDependencyRecord,
+    is_intra_run_completed: impl FnOnce(&TaskRef) -> bool,
+    obs: &ValidatedObservations,
+) -> bool {
+    if &dep.depends_on_run_id == run_id {
+        is_intra_run_completed(&dep.depends_on_ref)
+    } else {
+        dep.satisfied
+            || obs.external_satisfied_deps.iter().any(|(ws, rid, tref)| {
+                ws == &dep.depends_on_workspace
+                    && rid == &dep.depends_on_run_id
+                    && tref == &dep.depends_on_ref
+            })
+    }
+}
+
 /// Return `true` if all dependencies for `task_ref` are satisfied.
 pub fn task_dependencies_satisfied(
     snapshot: &RunGraphSnapshot,
@@ -176,31 +89,18 @@ pub fn task_dependencies_satisfied(
         .filter_map(|n| n.task_ref.as_ref().map(|r| (r, n.status)))
         .collect();
 
-    for dep in snapshot
+    snapshot
         .dependencies
         .iter()
         .filter(|d| &d.task_ref == task_ref)
-    {
-        if dep.satisfied {
-            continue;
-        }
-        if dep.depends_on_run_id == snapshot.run.run_id {
-            match task_status_map.get(&dep.depends_on_ref).copied() {
-                Some(NodeStatus::Completed) => continue,
-                _ => return false,
-            }
-        } else {
-            let ext_ok = obs.external_satisfied_deps.iter().any(|(ws, rid, tref)| {
-                ws == &dep.depends_on_workspace
-                    && rid == &dep.depends_on_run_id
-                    && tref == &dep.depends_on_ref
-            });
-            if !ext_ok {
-                return false;
-            }
-        }
-    }
-    true
+        .all(|dep| {
+            is_dep_satisfied_against_statuses(
+                &snapshot.run.run_id,
+                dep,
+                |ref_id| task_status_map.get(ref_id).copied() == Some(NodeStatus::Completed),
+                obs,
+            )
+        })
 }
 
 /// Return `true` if all pre-task root gates/containers are `Completed` or `Cancelled`.
@@ -365,18 +265,12 @@ fn compute_task_waves(
                 .iter()
                 .filter(|d| &d.task_ref == tref)
                 .all(|dep| {
-                    if dep.satisfied {
-                        return true;
-                    }
-                    if dep.depends_on_run_id == snapshot.run.run_id {
-                        completed.contains(&dep.depends_on_ref)
-                    } else {
-                        obs.external_satisfied_deps.iter().any(|(ws, rid, ref_id)| {
-                            ws == &dep.depends_on_workspace
-                                && rid == &dep.depends_on_run_id
-                                && ref_id == &dep.depends_on_ref
-                        })
-                    }
+                    is_dep_satisfied_against_statuses(
+                        &snapshot.run.run_id,
+                        dep,
+                        |ref_id| completed.contains(ref_id),
+                        obs,
+                    )
                 });
             if deps_ok {
                 eligible.push(tref.clone());

@@ -1,14 +1,13 @@
 //! Mutating and plugin command handlers (`Start`, `Draft`, `Claim`, `ExtendScope`, `Reopen`,
-//! `Sync`, `Subtask`, `BlackboardPost`, `Snapshot`, `Rollback`, `Integrate`, `Clear`, `CallPluginTool`).
+//! `Sync`, `Subtask`, `BlackboardPost`, `Rollback`, `Integrate`, `Clear`, `CallPluginTool`).
 
-use crate::context::{build_claim_context, ClaimContextRequest};
+use crate::context::{build_claim_context, preflight_mandatory_budget, ClaimContextRequest};
 use crate::git_ops::commit::{current_branch_name, current_head_commit, is_protected_main_branch};
 use crate::git_ops::integrate::{
     abort_in_progress_git_ops, integrate_task_branch, verify_tasks_integrated, IntegrateTaskReq,
 };
 use crate::git_ops::snapshot::{
-    capture_snapshot, current_scope_tree, restore_rollback, CaptureSnapshotReq,
-    RollbackReq as GitRollbackReq,
+    current_scope_tree, restore_rollback, RollbackReq as GitRollbackReq,
 };
 use crate::git_ops::worktree::{
     canonicalize_macos_var, cleanup_run_refs, create_run_worktree, create_task_worktree,
@@ -22,7 +21,7 @@ use crate::machine::{
     TransitionOutcome,
 };
 use crate::observability::build_completed_run_digest;
-use crate::profile::{resolve_profile_ref, ResolvedGateProfile};
+use crate::profile::{resolve_profile_ref_with_dirs, GateDef, ResolvedGateProfile};
 use crate::spec::{
     extract_spec_number, format_next_spec_id, materialize_ephemeral_goal_spec, parse_spec,
     SpecDocument, SpecStatus,
@@ -30,32 +29,33 @@ use crate::spec::{
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
     ArchiveCleanupEntry, ArtifactKind, BlackboardListReq, BlackboardRecord, BlackboardStatus,
-    BlackboardTopic, GateNodeRecord, IntegrateStrategy, IsolationMode, NodeKind, NodeStatus,
-    NodeStatusPatch, NodeVersionExpectation, RejectionFindings, RunGraphSnapshot,
-    RunTombstoneRecord, SaveAction, StoragePreconditions, SubtaskRecord, SubtaskStatus,
-    TerminalStatus, TraceStatus, TransitionPlan, ValidatedObservations, WorktreeLifecycle,
+    BlackboardTopic, ClaimOutcome, GateNodeRecord, IntegrateStrategy, IsolationMode, NodeKind,
+    NodeStatus, NodeStatusPatch, NodeVersionExpectation, RejectionFindings, RunGraphSnapshot,
+    RunTombstoneRecord, StoragePreconditions, SubtaskRecord, SubtaskStatus, TerminalStatus,
+    TraceStatus, TransitionPlan, ValidatedObservations, WorktreeLifecycle,
 };
 use crate::usecases::dto::{
     BlackboardPostReq, BlackboardPostResp, CallPluginToolReq, CallPluginToolResp, ClaimReq,
     ClearReq, ClearResp, DraftReq, DraftResp, ExtendScopeReq, ExtendScopeResp, IntegrateReq,
-    IntegrateResp, ReopenReq, ReopenResp, RollbackReq, RollbackResp, SnapshotReq, SnapshotResp,
-    StartReq, StartResp, SubtaskReq, SubtaskResp, SyncReq, SyncResp,
+    IntegrateResp, ReopenReq, ReopenResp, RollbackReq, RollbackResp, StartReq, StartResp,
+    SubtaskReq, SubtaskResp, SyncReq, SyncResp,
 };
 use crate::usecases::lifecycle::{
     append_trace_event, auto_select_ready_cursor, build_path_policy,
-    collect_external_satisfied_deps, collect_integration_inputs, compute_unintegrated_tasks,
-    current_session_fingerprint, effective_spec_collections, ensure_blackboard_enabled,
-    ensure_state_enabled, generate_run_id, is_local_pid_alive, match_spec_collection, now_utc_iso,
-    parse_cursor_for_snapshot, parse_profile_from_run, parse_task_dependency,
-    primary_workspace_root, prune_old_run_trace_dirs, read_confined_utf8, resolve_active_run,
-    resolve_node_worktree, resume_pending_tombstone_cleanups_dyn, sorted_dir_paths,
-    to_machine_profile, validate_profile_fail_closed, verify_run_level_depends_on,
-    with_repo_lock_and_maintenance, with_repo_lock_and_maintenance_unchecked,
+    build_tombstone_cleanup_manifest_from_snapshot, collect_external_satisfied_deps,
+    collect_integration_inputs, compute_unintegrated_tasks, current_session_fingerprint,
+    effective_spec_collections, ensure_blackboard_enabled, ensure_state_enabled, generate_run_id,
+    is_local_pid_alive, is_managed_run_branch, match_spec_collection,
+    parse_cursor_for_snapshot,
+    parse_profile_from_run, parse_task_dependency, primary_workspace_root,
+    prune_old_run_trace_dirs, read_confined_utf8, resolve_active_run, resolve_node_worktree,
+    resume_pending_tombstone_cleanups_dyn, sorted_dir_paths, to_machine_profile,
+    validate_profile_fail_closed, verify_run_level_depends_on, with_repo_lock_and_maintenance,
+    with_repo_lock_and_maintenance_unchecked,
 };
 use crate::usecases::queries::{
     collect_dependency_receipts, extract_pre_task_slice, find_profile_gate_def, read_spec_readonly,
 };
-use crate::usecases::submit::build_cleanup_manifest;
 use crate::usecases::StateEngineConfig;
 use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::telemetry::{SpanId, TraceId};
@@ -108,7 +108,7 @@ fn start_holding_repo_lock(
     let _ = resume_pending_tombstone_cleanups_dyn(config, backend, layout)?;
 
     let collections = effective_spec_collections(config);
-    let created_at = now_utc_iso();
+    let created_at = acdd_core::telemetry::now_utc_iso_ms();
     let trace_id = TraceId::new().to_string();
 
     let (
@@ -118,7 +118,7 @@ fn start_holding_repo_lock(
         spec_path_rel,
         is_ephemeral,
         spec_doc,
-        resolved_profile,
+        mut resolved_profile,
         materialized_spec_path,
     ) = if let Some(ref raw_spec_path) = req.spec_path {
         let norm_rel = normalize_spec_relpath(raw_spec_path)?;
@@ -147,7 +147,12 @@ fn start_holding_repo_lock(
             .or(col_profile)
             .unwrap_or("workspace");
 
-        let resolved = resolve_profile_ref(profile_ref, Some(primary), Some(&config.modules))?;
+        let resolved = resolve_profile_ref_with_dirs(
+            profile_ref,
+            Some(primary),
+            Some(&config.modules),
+            Some(&config.profiles_dirs),
+        )?;
         validate_profile_fail_closed(config, &resolved, provider, true)?;
 
         let rid = generate_run_id(&doc.id)?;
@@ -169,7 +174,12 @@ fn start_holding_repo_lock(
     } else {
         let goal_text = req.goal.as_deref().unwrap_or("");
         let profile_ref = req.profile.as_deref().unwrap_or("workspace");
-        let resolved = resolve_profile_ref(profile_ref, Some(primary), Some(&config.modules))?;
+        let resolved = resolve_profile_ref_with_dirs(
+            profile_ref,
+            Some(primary),
+            Some(&config.modules),
+            Some(&config.profiles_dirs),
+        )?;
         validate_profile_fail_closed(config, &resolved, provider, true)?;
 
         let rid = generate_run_id("goal")?;
@@ -206,6 +216,31 @@ fn start_holding_repo_lock(
         )
     };
 
+    crate::validate::validate_spec_for_run(
+        config,
+        backend,
+        provider,
+        &spec_doc,
+        &resolved_profile,
+    )?;
+
+    let effective_isolation = if req.in_place {
+        IsolationMode::InPlace
+    } else if req.worktree || req.worktree_path.is_some() {
+        IsolationMode::Worktree
+    } else {
+        resolved_profile.git.isolation
+    };
+    let effective_worktrees = if req.in_place {
+        WorktreeLifecycle::Manual
+    } else if req.worktree || req.worktree_path.is_some() {
+        WorktreeLifecycle::Managed
+    } else {
+        resolved_profile.git.worktrees
+    };
+    resolved_profile.git.isolation = effective_isolation;
+    resolved_profile.git.worktrees = effective_worktrees;
+
     // Persist resolved profile snapshot into `.acdd/run/<run_id>/profile.resolved.yaml`.
     let resolved_yaml = serde_yaml::to_string(&resolved_profile).map_err(|err| {
         StateError::new(
@@ -226,21 +261,6 @@ fn start_holding_repo_lock(
             ),
         )
     })?;
-
-    let effective_isolation = if req.in_place {
-        IsolationMode::InPlace
-    } else if req.worktree || req.worktree_path.is_some() {
-        IsolationMode::Worktree
-    } else {
-        resolved_profile.git.isolation
-    };
-    let effective_worktrees = if req.in_place {
-        WorktreeLifecycle::Manual
-    } else if req.worktree || req.worktree_path.is_some() {
-        WorktreeLifecycle::Managed
-    } else {
-        resolved_profile.git.worktrees
-    };
 
     let target_base = match req.target_base {
         Some(ref b) => Some(b.clone()),
@@ -265,9 +285,7 @@ fn start_holding_repo_lock(
         spec_path_rel.as_deref(),
     )?;
 
-    let mut machine_profile = to_machine_profile(&resolved_profile)?;
-    machine_profile.git.isolation = effective_isolation;
-    machine_profile.git.worktrees = effective_worktrees;
+    let machine_profile = to_machine_profile(&resolved_profile)?;
 
     let mut spec_repos = BTreeMap::new();
     for r in &spec_doc.repositories {
@@ -300,6 +318,7 @@ fn start_holding_repo_lock(
             spec: machine_spec,
         },
     )?;
+    graph.run.spec_id = Some(spec_doc.id.clone());
 
     // Check external dependencies at start so already-completed external tasks unlock wave-0 tasks immediately.
     let ext_satisfied =
@@ -310,7 +329,7 @@ fn start_holding_repo_lock(
 
     let obs = ValidatedObservations {
         external_satisfied_deps: ext_satisfied,
-        now_utc: now_utc_iso(),
+        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()
     };
     let schedule = compute_schedule(&graph, &obs)?;
@@ -369,12 +388,14 @@ fn resolve_start_worktree(
     spec_path_rel: Option<&str>,
 ) -> Result<(Option<String>, Option<String>), StateError> {
     if isolation == IsolationMode::InPlace {
-        let branch = if has_git {
-            current_branch_name(primary)?
+        let target_wt =
+            canonicalize_macos_var(req.worktree_path.as_deref().unwrap_or(&config.worktree));
+        let branch = if has_git && target_wt.exists() {
+            current_branch_name(&target_wt)?
         } else {
             None
         };
-        return Ok((Some(primary.to_string_lossy().into_owned()), branch));
+        return Ok((Some(target_wt.to_string_lossy().into_owned()), branch));
     }
 
     if let Some(ref explicit) = req.worktree_path {
@@ -384,6 +405,15 @@ fn resolve_start_worktree(
         } else {
             None
         };
+        if worktrees == WorktreeLifecycle::Managed {
+            ensure_no_managed_worktree_collision(
+                primary,
+                run_name.as_str(),
+                &canon,
+                branch.as_deref(),
+                None,
+            )?;
+        }
         return Ok((Some(canon.to_string_lossy().into_owned()), branch));
     }
 
@@ -629,7 +659,7 @@ fn claim_holding_repo_lock(
     let ext_deps =
         collect_external_satisfied_deps(config, &snapshot.run.run_id, &snapshot.dependencies)?;
     let unintegrated_tasks = compute_unintegrated_tasks(config, &snapshot)?;
-    let now_utc = now_utc_iso();
+    let now_utc = acdd_core::telemetry::now_utc_iso_ms();
 
     let sched_obs = ValidatedObservations {
         external_satisfied_deps: ext_deps.clone(),
@@ -716,22 +746,32 @@ fn claim_holding_repo_lock(
     let (active_claim_rev, effective_tree, effective_node) = match *decision {
         ClaimDecision::Idempotent(existing) => (existing.claim_revision, existing.claim_tree, node.clone()),
         ClaimDecision::Admit { claim, transition } => {
-            if gate_def.save.pre == Some(SaveAction::Snapshot) {
-                let admitted = container_scope(&snapshot, node);
-                let _ = capture_snapshot(&CaptureSnapshotReq {
-                    worktree: target_worktree.clone(),
-                    run_id: snapshot.run.run_id.clone(),
-                    namespace: format!("pre-{}", node.gate_id),
-                    label: format!("rev-{}", claim.claim_revision),
-                    scope: if admitted.is_empty() {
-                        None
-                    } else {
-                        Some(admitted)
-                    },
-                    path_policy: policy,
-                    message: format!("acdd pre-claim snapshot {} rev-{}", cursor, claim.claim_revision),
-                })?;
-            }
+            let spec_for_preflight = read_spec_readonly(config, &snapshot.run);
+            let mut candidate_node = node.clone();
+            candidate_node.status = NodeStatus::InProgress;
+            candidate_node.claim_revision = claim.claim_revision;
+            candidate_node.worker_id = Some(claim.worker_id.clone());
+            candidate_node.claim_tree = Some(claim.claim_tree.clone());
+            let preflight_req = ClaimContextRequest {
+                run: snapshot.run.clone(),
+                node: candidate_node,
+                gate: gate_def.clone(),
+                profile: resolved_profile.clone(),
+                spec: spec_for_preflight,
+                claim_revision: claim.claim_revision,
+                worker_id: req.worker_id.clone(),
+                worktree: target_worktree.clone(),
+                candidate_tree: claim.claim_tree.clone(),
+                path_policy: policy.clone(),
+                unresolved_findings: None,
+                failed_trace_log_tail: None,
+                pre_task_slice: None,
+                dependency_receipts: Vec::new(),
+                blackboard_items: Vec::new(),
+                context_reset_required: is_context_reset_required(&snapshot, node, &gate_def),
+                response_max_bytes: config.response_policy.max_output_bytes,
+            };
+            let _ = preflight_mandatory_budget(&preflight_req)?;
 
             let parent_patches: Vec<NodeStatusPatch> = transition
                 .node_patches
@@ -815,6 +855,7 @@ fn claim_holding_repo_lock(
         Vec::new()
     };
 
+    let context_reset_required = is_context_reset_required(&latest_snap, &effective_node, &gate_def);
     let ctx_req = ClaimContextRequest {
         run: latest_snap.run.clone(),
         node: effective_node,
@@ -825,11 +866,13 @@ fn claim_holding_repo_lock(
         worker_id: req.worker_id,
         worktree: target_worktree,
         candidate_tree: effective_tree,
+        path_policy: policy,
         unresolved_findings,
         failed_trace_log_tail,
         pre_task_slice,
         dependency_receipts,
         blackboard_items,
+        context_reset_required,
         response_max_bytes: config.response_policy.max_output_bytes,
     };
 
@@ -853,6 +896,37 @@ fn claim_holding_repo_lock(
     Ok(claim_resp)
 }
 
+fn ensure_no_managed_worktree_collision(
+    primary: &Path,
+    run_name: &str,
+    candidate_wt: &Path,
+    candidate_branch: Option<&str>,
+    existing_wt: Option<&str>,
+) -> Result<(), StateError> {
+    let matches_existing =
+        existing_wt.is_some_and(|existing| canonicalize_macos_var(Path::new(existing)) == candidate_wt);
+    let managed_wt_root = canonicalize_macos_var(&primary.join(".worktrees"));
+    let collides_managed_path = candidate_wt.parent() == Some(managed_wt_root.as_path())
+        && candidate_wt
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|name| name == run_name || name.starts_with(&format!("{run_name}-")));
+    let collides_managed_branch = candidate_branch.is_some_and(|b| {
+        b == format!("run/{run_name}") || b.starts_with(&format!("task/{run_name}-"))
+    });
+    if !matches_existing && (collides_managed_path || collides_managed_branch) {
+        return Err(StateError::new(
+            ErrorCode::ExternalGitDrift,
+            format!(
+                "explicit worktree '{}' collides with ACDD managed worktree/branch naming for run '{}' while worktrees: managed is active",
+                candidate_wt.display(),
+                run_name
+            ),
+        ));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resolve_or_create_claim_worktree(
     config: &StateEngineConfig,
@@ -870,6 +944,27 @@ fn resolve_or_create_claim_worktree(
         } else {
             node.branch.clone()
         };
+        if profile.git.worktrees == WorktreeLifecycle::Managed {
+            let parent_wt = node.parent_id.as_deref().and_then(|pid| {
+                snapshot
+                    .nodes
+                    .iter()
+                    .find(|n| n.node_id == pid)
+                    .and_then(|p| p.worktree.as_deref())
+            });
+            let existing = node
+                .worktree
+                .as_deref()
+                .or(parent_wt)
+                .or(snapshot.run.worktree.as_deref());
+            ensure_no_managed_worktree_collision(
+                primary,
+                snapshot.run.run_name.as_str(),
+                &canon,
+                branch.as_deref(),
+                existing,
+            )?;
+        }
         return Ok((canon, branch));
     }
 
@@ -926,6 +1021,66 @@ fn resolve_or_create_claim_worktree(
     Ok((wt, branch))
 }
 
+pub(crate) fn is_context_reset_required(
+    snapshot: &RunGraphSnapshot,
+    node: &GateNodeRecord,
+    gate: &GateDef,
+) -> bool {
+    let container_node_ids: BTreeSet<&str> = snapshot
+        .nodes
+        .iter()
+        .filter(|n| {
+            n.parent_id == node.parent_id
+                && matches!(n.kind, NodeKind::RootGate | NodeKind::TaskGate)
+        })
+        .map(|n| n.node_id.as_str())
+        .collect();
+    let last_passed_at = snapshot
+        .claims
+        .iter()
+        .filter(|c| c.node_id == node.node_id && c.outcome == ClaimOutcome::Passed)
+        .filter_map(|c| c.ended_at.as_deref())
+        .max();
+    let latest_findings = snapshot
+        .artifacts
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| {
+            a.kind == ArtifactKind::Findings && container_node_ids.contains(a.node_id.as_str())
+        })
+        .max_by(|(idx_a, a), (idx_b, b)| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.claim_revision.cmp(&b.claim_revision))
+                .then_with(|| idx_a.cmp(idx_b))
+        })
+        .map(|(_, a)| a);
+    let Some(art) = latest_findings else {
+        return false;
+    };
+    if let Some(passed_ts) = last_passed_at {
+        if art.created_at.as_str() < passed_ts {
+            return false;
+        }
+        if art.created_at.as_str() == passed_ts
+            && node.status == NodeStatus::Completed
+            && node.accepted_tree.is_some()
+        {
+            return false;
+        }
+    }
+    let Some(stored) = crate::machine::submit::parse_findings_artifact(&art.payload_json) else {
+        return false;
+    };
+    if !stored.reset_worker_context {
+        return false;
+    }
+    match stored.reset_gate_id.as_deref() {
+        Some(target_gate_id) => target_gate_id == node.gate_id.as_str(),
+        None => node.parent_id.is_some() && gate.role.as_deref() == Some("builder"),
+    }
+}
+
 fn find_latest_rejection_findings(
     snapshot: &RunGraphSnapshot,
     node_id: &str,
@@ -935,7 +1090,8 @@ fn find_latest_rejection_findings(
         .iter()
         .filter(|a| a.node_id == node_id && a.kind == ArtifactKind::Findings)
         .max_by_key(|a| a.claim_revision)
-        .and_then(|a| serde_json::from_str::<RejectionFindings>(&a.payload_json).ok())
+        .and_then(|a| crate::machine::submit::parse_findings_artifact(&a.payload_json))
+        .map(|stored| stored.findings)
 }
 
 fn read_latest_failed_trace_tail(
@@ -992,7 +1148,7 @@ pub(crate) fn handle_extend_scope_dyn(
         let machine_profile = to_machine_profile(&profile)?;
         let cursor = parse_cursor_for_snapshot(&snapshot, &req.node)?;
         let obs = ValidatedObservations {
-            now_utc: now_utc_iso(),
+            now_utc: acdd_core::telemetry::now_utc_iso_ms(),
             ..ValidatedObservations::default()
         };
 
@@ -1068,7 +1224,7 @@ pub(crate) fn handle_reopen_dyn(
         let machine_profile = to_machine_profile(&profile)?;
         let cursor = parse_cursor_for_snapshot(&snapshot, &req.node)?;
         let obs = ValidatedObservations {
-            now_utc: now_utc_iso(),
+            now_utc: acdd_core::telemetry::now_utc_iso_ms(),
             ..ValidatedObservations::default()
         };
 
@@ -1151,20 +1307,24 @@ pub(crate) fn handle_sync_dyn(
         let raw_spec = read_confined_utf8(primary, &spec_rel)?;
         let doc = parse_spec(&raw_spec)?;
 
-        let (new_machine_profile, new_profile_pair_owned) = if req.rebind_profile {
-            let refreshed = resolve_profile_ref(
+        let (new_machine_profile, new_profile_pair_owned, rebound_resolved) = if req.rebind_profile {
+            let refreshed = resolve_profile_ref_with_dirs(
                 &snapshot.run.profile_id,
                 Some(primary),
                 Some(&config.modules),
+                Some(&config.profiles_dirs),
             )?;
             validate_profile_fail_closed(config, &refreshed, provider, true)?;
             let m = to_machine_profile(&refreshed)?;
             let pid = m.profile_id.clone();
             let pjson = m.profile_json.clone();
-            (Some(m), Some((pid, pjson)))
+            (Some(m), Some((pid, pjson)), Some(refreshed))
         } else {
-            (None, None)
+            (None, None, None)
         };
+
+        let effective_profile = rebound_resolved.as_ref().unwrap_or(&current_resolved);
+        crate::validate::validate_spec_for_run(config, backend, provider, &doc, effective_profile)?;
 
         let mut spec_repos = BTreeMap::new();
         for r in &doc.repositories {
@@ -1182,7 +1342,7 @@ pub(crate) fn handle_sync_dyn(
             collect_external_satisfied_deps(config, &snapshot.run.run_id, &snapshot.dependencies)?;
         let obs = ValidatedObservations {
             external_satisfied_deps: ext_deps,
-            now_utc: now_utc_iso(),
+            now_utc: acdd_core::telemetry::now_utc_iso_ms(),
             ..ValidatedObservations::default()
         };
 
@@ -1203,12 +1363,14 @@ pub(crate) fn handle_sync_dyn(
         let added_nodes = sync_plan.added_nodes.len();
         let updated_nodes = sync_plan.transition.node_patches.len();
         let spec_digest = sync_plan.spec_digest.clone();
+        let doc_id = doc.id.clone();
 
         exec_tx_with(backend, |tx| {
             let pair = new_profile_pair_owned
                 .as_ref()
                 .map(|(id, json)| (id.as_str(), json.as_str()));
-            tx.apply_sync_plan(&snapshot.run.run_id, &sync_plan, pair)
+            tx.apply_sync_plan(&snapshot.run.run_id, &sync_plan, pair)?;
+            tx.update_run_spec_id(&snapshot.run.run_id, Some(doc_id.as_str()))
         })?;
 
         Ok(SyncResp {
@@ -1290,7 +1452,7 @@ pub(crate) fn handle_subtask_dyn(
             title,
             status: req.status,
             evidence: req.evidence,
-            updated_at: now_utc_iso(),
+            updated_at: acdd_core::telemetry::now_utc_iso_ms(),
         };
 
         exec_tx_with(backend, |tx| tx.upsert_subtask(&record))?;
@@ -1354,7 +1516,7 @@ pub(crate) fn handle_blackboard_post_dyn(
             topic: req.topic,
             status: BlackboardStatus::Open,
             payload: req.payload,
-            created_at: now_utc_iso(),
+            created_at: acdd_core::telemetry::now_utc_iso_ms(),
         };
 
         let stored = exec_tx_with(backend, |tx| tx.insert_blackboard(&item))?;
@@ -1362,70 +1524,7 @@ pub(crate) fn handle_blackboard_post_dyn(
     })
 }
 
-/// Capture an explicit manual Git snapshot under `refs/acdd/snapshots/<run_id>/manual/<label>`.
-pub fn handle_snapshot<B: StateBackend>(
-    config: &StateEngineConfig,
-    backend: &B,
-    req: SnapshotReq,
-) -> Result<SnapshotResp, StateError> {
-    handle_snapshot_dyn(config, backend, req)
-}
-
-pub(crate) fn handle_snapshot_dyn(
-    config: &StateEngineConfig,
-    backend: &dyn StateBackend,
-    req: SnapshotReq,
-) -> Result<SnapshotResp, StateError> {
-    ensure_state_enabled(config)?;
-    let primary = primary_workspace_root(config);
-    let layout = crate::usecases::lifecycle::resolve_repo_layout_optional(&primary)?;
-    let lock_guard = crate::usecases::lifecycle::acquire_repo_lock(layout.as_ref())?;
-
-    let result = (|| -> Result<SnapshotResp, StateError> {
-        let run = resolve_active_run(
-            config,
-            backend,
-            req.run.as_deref(),
-            req.worktree.as_deref(),
-        )?;
-        let target_wt = req
-            .worktree
-            .as_deref()
-            .or_else(|| run.worktree.as_deref().map(Path::new))
-            .unwrap_or(&config.worktree);
-        let canon_wt = canonicalize_macos_var(target_wt);
-        let policy = build_path_policy(config, backend, &[])?;
-        let label = req
-            .label
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string());
-
-        let snap = capture_snapshot(&CaptureSnapshotReq {
-            worktree: canon_wt,
-            run_id: run.run_id.clone(),
-            namespace: "manual".to_owned(),
-            label: label.clone(),
-            scope: None,
-            path_policy: policy,
-            message: format!("acdd manual snapshot {label}"),
-        })?;
-
-        Ok(SnapshotResp {
-            run_id: run.run_id,
-            snapshot_ref: snap.snapshot_ref,
-            commit_oid: snap.commit_oid,
-            tree_oid: snap.tree_oid,
-        })
-    })();
-
-    drop(lock_guard);
-    result
-}
-
-/// Confined-restore files from a snapshot ref or OID and mark drifted completed nodes stale.
+/// Confined-restore files from a commit or tree OID and mark drifted completed nodes stale.
 pub fn handle_rollback<B: StateBackend>(
     config: &StateEngineConfig,
     backend: &B,
@@ -1472,7 +1571,59 @@ pub(crate) fn handle_rollback_dyn(
                 .as_deref()
                 .or_else(|| snapshot.run.worktree.as_deref().map(Path::new))
                 .unwrap_or(&config.worktree);
-            (None, canonicalize_macos_var(wt))
+            let target_wt = canonicalize_macos_var(wt);
+
+            let mut active_scopes: Vec<(std::collections::BTreeSet<String>, Vec<String>)> =
+                Vec::new();
+            let mut saw_unscoped = false;
+            for n in &snapshot.nodes {
+                if !matches!(n.kind, NodeKind::RootGate | NodeKind::TaskGate)
+                    || n.status != NodeStatus::InProgress
+                {
+                    continue;
+                }
+                let node_wt = if let Some(ref nwt) = n.worktree {
+                    canonicalize_macos_var(Path::new(nwt))
+                } else if n.kind == NodeKind::TaskGate {
+                    let parent_wt = n.parent_id.as_ref().and_then(|pid| {
+                        snapshot
+                            .nodes
+                            .iter()
+                            .find(|p| &p.node_id == pid)
+                            .and_then(|p| p.worktree.as_deref())
+                    });
+                    parent_wt
+                        .map(|p| canonicalize_macos_var(Path::new(p)))
+                        .unwrap_or_else(|| resolve_node_worktree(config, &snapshot.run, n, None))
+                } else {
+                    resolve_node_worktree(config, &snapshot.run, n, None)
+                };
+                if node_wt != target_wt {
+                    continue;
+                }
+                let scope = container_scope(&snapshot, n);
+                if scope.is_empty() {
+                    saw_unscoped = true;
+                } else {
+                    let key: std::collections::BTreeSet<String> = scope.iter().cloned().collect();
+                    if !active_scopes.iter().any(|(k, _)| k == &key) {
+                        active_scopes.push((key, scope));
+                    }
+                }
+            }
+
+            if active_scopes.len() > 1 || (active_scopes.len() == 1 && saw_unscoped) {
+                return Err(StateError::new(
+                    ErrorCode::RunSelectorAmbiguous,
+                    format!(
+                        "multiple distinct active claim scopes share worktree '{}'; specify --node <cursor>",
+                        target_wt.display()
+                    ),
+                )
+                .with_hint("pass --node <node_cursor> to scope rollback cleanly"));
+            }
+            let bound_scope = active_scopes.into_iter().next().map(|(_, s)| s);
+            (bound_scope, target_wt)
         };
 
         let policy = build_path_policy(config, backend, &[])?;
@@ -1508,7 +1659,7 @@ pub(crate) fn handle_rollback_dyn(
                 expected_worker_id: None,
                 required_predecessor_trees: Vec::new(),
             };
-            let now_utc = now_utc_iso();
+            let now_utc = acdd_core::telemetry::now_utc_iso_ms();
             exec_tx_with(backend, |tx| {
                 tx.mark_nodes_stale(&snapshot.run.run_id, &preconditions, &staled_nodes, &now_utc)
             })?;
@@ -1701,12 +1852,13 @@ pub(crate) fn handle_clear_dyn(
 
         // Never delete the user's non-ephemeral spec file on `clear`; only clean worktrees, branches (including `run.branch`), refs, and ephemeral spec.
         let mut cleanup_manifest: Vec<ArchiveCleanupEntry> =
-            build_cleanup_manifest(config, &snapshot, primary)
+            build_tombstone_cleanup_manifest_from_snapshot(config, &snapshot, primary)
                 .into_iter()
                 .filter(|e| e.kind != "spec_file")
                 .collect();
         if let Some(ref run_br) = snapshot.run.branch {
-            if snapshot.run.target_base.as_ref() != Some(run_br)
+            if is_managed_run_branch(&snapshot.run, run_br)
+                && snapshot.run.target_base.as_ref() != Some(run_br)
                 && !cleanup_manifest
                     .iter()
                     .any(|e| e.kind == "branch" && e.path_or_ref == *run_br)
@@ -1727,7 +1879,7 @@ pub(crate) fn handle_clear_dyn(
         }
 
         let spec_doc = read_spec_readonly(config, &snapshot.run);
-        let closed_at = now_utc_iso();
+        let closed_at = acdd_core::telemetry::now_utc_iso_ms();
         let tombstone_seed = RunTombstoneRecord {
             run_id: snapshot.run.run_id.clone(),
             run_name: snapshot.run.run_name.clone(),
@@ -1849,7 +2001,9 @@ pub(crate) fn handle_call_plugin_tool_dyn(
     provider: &CompositeDomainProvider,
     req: CallPluginToolReq,
 ) -> Result<CallPluginToolResp, StateError> {
-    ensure_state_enabled(config)?;
+    if req.run.is_some() || req.node.is_some() {
+        ensure_state_enabled(config)?;
+    }
     let primary = primary_workspace_root(config);
 
     let (run_id, node_cursor, worktree) = if req.run.is_some() || req.node.is_some() {

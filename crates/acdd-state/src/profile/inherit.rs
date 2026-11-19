@@ -1,14 +1,14 @@
 //! Profile inheritance (`inherit`), `gates_merge: replace | patch` resolution, SHA-256 pin verification, and template expansion.
 
 use super::schema::{
-    parse_profile, GateDef, GateTemplate, GatesMergeMode, GitPolicy, GitPolicyPatch,
-    ParsedProfileFile, PatchField, ProofDef, RawGateDef, RawGateItem, ResolvedGateProfile,
-    ResourceLimits, RoleDef, RolePatch, SavePolicy, SavePolicyPatch, SubsystemRegistryPatch,
-    TasksBlock, DEFAULT_MAX_ATTEMPTS,
+    parse_profile, CommandDef, DetailedCommandDef, GateDef, GateTemplate, GatesMergeMode,
+    GitPolicy, GitPolicyPatch, ParsedProfileFile, PatchField, ProofDef, RawGateDef, RawGateItem,
+    ResolvedGateProfile, ResourceLimits, RoleDef, RolePatch, SavePolicy, SavePolicyPatch,
+    SubsystemRegistryPatch, TasksBlock, DEFAULT_MAX_ATTEMPTS,
 };
-use super::when::normalize_optional_when;
+use super::when::{normalize_optional_when, WhenExpr};
 use crate::types::SaveAction;
-use acdd_core::fs::{is_normalized_relative, open_confined};
+use acdd_core::fs::{checked_child, is_normalized_relative, open_confined};
 use acdd_core::subsystems::SubsystemRegistry;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{is_valid_short_hex_prefix, GateId};
@@ -42,8 +42,10 @@ struct WorkingProfile {
 struct WorkingGate {
     gate: GateDef,
     has_explicit_tools: bool,
+    has_explicit_max_attempts: bool,
     pending_tools_add: Vec<String>,
     pending_tools_remove: Vec<String>,
+    pending_template_gates_patch: Vec<RawGateItem>,
     children: Vec<WorkingGate>,
     tasks_children: Option<WorkingTasksBlock>,
 }
@@ -98,28 +100,41 @@ pub fn resolve_profile_from_str(
     workspace_root: Option<&Path>,
     acdd_modules: Option<&SubsystemRegistry>,
 ) -> Result<ResolvedGateProfile, StateError> {
-    let mut stack = Vec::new();
-    if let Some(rel) = source_rel_path {
-        stack.push(format!("path:{rel}"));
-    } else {
-        stack.push(format!("inline:{profile_id}"));
-    }
-    let mut working = resolve_recursive(
+    resolve_profile_from_str_with_dirs(
         yaml,
         profile_id,
         source_rel_path,
         workspace_root,
         acdd_modules,
+        None,
+    )
+}
+
+/// Resolve a profile YAML string using an explicit `profiles_dirs` search list for `inherit:`.
+pub fn resolve_profile_from_str_with_dirs(
+    yaml: &str,
+    profile_id: &str,
+    source_rel_path: Option<&str>,
+    workspace_root: Option<&Path>,
+    acdd_modules: Option<&SubsystemRegistry>,
+    profiles_dirs: Option<&[String]>,
+) -> Result<ResolvedGateProfile, StateError> {
+    let mut stack = Vec::new();
+    if let Some(rel) = source_rel_path {
+        stack.push(path_cycle_identity(workspace_root, rel)?);
+    } else {
+        stack.push(format!("inline:{profile_id}"));
+    }
+    let working = resolve_recursive(
+        yaml,
+        profile_id,
+        source_rel_path,
+        workspace_root,
+        acdd_modules,
+        profiles_dirs,
         &mut stack,
     )?;
-    expand_templates_in_working(&mut working)?;
-    let default_tools = working.resolved.default_tools.clone();
-    working.resolved.gates = working
-        .gates
-        .into_iter()
-        .map(|g| g.finalize(&default_tools))
-        .collect();
-    Ok(working.resolved)
+    finalize_working_profile(working)
 }
 
 /// Load and resolve a built-in (`default | code | in_place`) or workspace-relative profile path.
@@ -128,12 +143,35 @@ pub fn resolve_profile_ref(
     workspace_root: Option<&Path>,
     acdd_modules: Option<&SubsystemRegistry>,
 ) -> Result<ResolvedGateProfile, StateError> {
+    resolve_profile_ref_with_dirs(profile_ref, workspace_root, acdd_modules, None)
+}
+
+/// Load and resolve a built-in or workspace profile reference using an explicit `profiles_dirs` list.
+pub fn resolve_profile_ref_with_dirs(
+    profile_ref: &str,
+    workspace_root: Option<&Path>,
+    acdd_modules: Option<&SubsystemRegistry>,
+    profiles_dirs: Option<&[String]>,
+) -> Result<ResolvedGateProfile, StateError> {
     if let Some(yaml) = embedded_profile(profile_ref) {
-        return resolve_builtin(profile_ref, yaml, workspace_root, acdd_modules);
+        return resolve_builtin(
+            profile_ref,
+            yaml,
+            workspace_root,
+            acdd_modules,
+            profiles_dirs,
+        );
     }
     if profile_ref == "workspace" {
         let yaml = "version: 2\ninherit: workspace\n";
-        return resolve_profile_from_str(yaml, "workspace", None, workspace_root, acdd_modules);
+        return resolve_profile_from_str_with_dirs(
+            yaml,
+            "workspace",
+            None,
+            workspace_root,
+            acdd_modules,
+            profiles_dirs,
+        );
     }
     let root = workspace_root.ok_or_else(|| {
         StateError::new(
@@ -141,7 +179,8 @@ pub fn resolve_profile_ref(
             format!("cannot resolve profile path '{profile_ref}' without workspace root"),
         )
     })?;
-    let (rel_path, expected_pin) = parse_path_and_pin(profile_ref)?;
+    let (raw_path, expected_pin) = parse_path_and_pin(profile_ref)?;
+    let rel_path = resolve_profile_path_in_workspace(root, &raw_path, profiles_dirs)?;
     let bytes = read_confined_profile_bytes(root, &rel_path)?;
     if let Some(pin) = expected_pin {
         verify_sha256_prefix(&bytes, &pin, &rel_path)?;
@@ -152,7 +191,14 @@ pub fn resolve_profile_ref(
             format!("profile '{rel_path}' is not valid UTF-8: {err}"),
         )
     })?;
-    resolve_profile_from_str(yaml, &rel_path, Some(&rel_path), Some(root), acdd_modules)
+    resolve_profile_from_str_with_dirs(
+        yaml,
+        &rel_path,
+        Some(&rel_path),
+        Some(root),
+        acdd_modules,
+        profiles_dirs,
+    )
 }
 
 fn resolve_builtin(
@@ -160,10 +206,24 @@ fn resolve_builtin(
     yaml: &str,
     workspace_root: Option<&Path>,
     acdd_modules: Option<&SubsystemRegistry>,
+    profiles_dirs: Option<&[String]>,
 ) -> Result<ResolvedGateProfile, StateError> {
     let mut stack = vec![format!("builtin:{name}")];
-    let mut working = resolve_recursive(yaml, name, None, workspace_root, acdd_modules, &mut stack)?;
+    let working = resolve_recursive(
+        yaml,
+        name,
+        None,
+        workspace_root,
+        acdd_modules,
+        profiles_dirs,
+        &mut stack,
+    )?;
+    finalize_working_profile(working)
+}
+
+fn finalize_working_profile(mut working: WorkingProfile) -> Result<ResolvedGateProfile, StateError> {
     expand_templates_in_working(&mut working)?;
+    propagate_scope_args_to_commands(&mut working.resolved);
     let default_tools = working.resolved.default_tools.clone();
     working.resolved.gates = working
         .gates
@@ -173,12 +233,144 @@ fn resolve_builtin(
     Ok(working.resolved)
 }
 
+fn propagate_scope_args_to_commands(resolved: &mut ResolvedGateProfile) {
+    if resolved.scope_args_by_pattern.is_empty() {
+        return;
+    }
+    for cmd in resolved.commands.values_mut() {
+        match cmd {
+            CommandDef::Unbound { .. } => {}
+            CommandDef::Script(script) => {
+                if script.contains("{scope_target}") {
+                    *cmd = CommandDef::Detailed(Box::new(DetailedCommandDef {
+                        command: script.clone(),
+                        description: None,
+                        timeout_seconds: None,
+                        test_filter: None,
+                        scope_args_by_pattern: resolved.scope_args_by_pattern.clone(),
+                        output: None,
+                    }));
+                }
+            }
+            CommandDef::Detailed(d) => {
+                for (pat, arg) in &resolved.scope_args_by_pattern {
+                    d.scope_args_by_pattern
+                        .entry(pat.clone())
+                        .or_insert_with(|| arg.clone());
+                }
+            }
+            CommandDef::Pattern(entries) => {
+                for entry in entries {
+                    for (pat, arg) in &resolved.scope_args_by_pattern {
+                        entry
+                            .scope_args_by_pattern
+                            .entry(pat.clone())
+                            .or_insert_with(|| arg.clone());
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn path_cycle_identity(workspace_root: Option<&Path>, rel_path: &str) -> Result<String, StateError> {
+    let norm_rel = rel_path.trim().replace('\\', "/");
+    let norm_rel = norm_rel.strip_prefix("./").unwrap_or(&norm_rel);
+    let Some(root) = workspace_root else {
+        return Ok(format!("path:{norm_rel}"));
+    };
+    let checked = checked_child(root, Path::new(norm_rel)).map_err(|err| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("profile path '{norm_rel}' failed confinement check: {err}"),
+        )
+    })?;
+    let resolved = match checked.canonicalize() {
+        Ok(canon) => canon,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            canon_root.join(norm_rel)
+        }
+        Err(err) => {
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("failed to canonicalize profile path '{norm_rel}': {err}"),
+            ));
+        }
+    };
+    Ok(format!("path:{}", resolved.display()))
+}
+
+fn effective_profiles_dirs(
+    root: &Path,
+    explicit_dirs: Option<&[String]>,
+) -> Result<Vec<String>, StateError> {
+    if let Some(dirs) = explicit_dirs {
+        return Ok(dirs.to_vec());
+    }
+    acdd_core::config::load_adapter(root, None)
+        .map(|a| a.profiles_dirs)
+        .map_err(|err| {
+            if let Some(se) = err.get_ref().and_then(|e| e.downcast_ref::<StateError>()) {
+                se.clone()
+            } else {
+                StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("failed to load acdd.yaml while resolving profiles_dirs: {err}"),
+                )
+            }
+        })
+}
+
+fn resolve_profile_path_in_workspace(
+    root: &Path,
+    raw_rel: &str,
+    explicit_dirs: Option<&[String]>,
+) -> Result<String, StateError> {
+    if std::fs::symlink_metadata(root.join(raw_rel)).is_ok_and(|m| !m.is_dir()) {
+        return Ok(raw_rel.to_owned());
+    }
+    let profiles_dirs = effective_profiles_dirs(root, explicit_dirs)?;
+    for dir in &profiles_dirs {
+        let dir_clean = dir.trim().trim_end_matches('/');
+        if dir_clean.is_empty() {
+            continue;
+        }
+        let mut candidates = Vec::new();
+        if raw_rel.ends_with(".yaml") || raw_rel.ends_with(".yml") {
+            candidates.push(format!("{dir_clean}/{raw_rel}"));
+        } else {
+            candidates.push(format!("{dir_clean}/{raw_rel}.yaml"));
+            candidates.push(format!("{dir_clean}/{raw_rel}.yml"));
+            candidates.push(format!("{dir_clean}/{raw_rel}"));
+        }
+        for cand in candidates {
+            if !is_normalized_relative(Path::new(&cand)) {
+                continue;
+            }
+            if std::fs::symlink_metadata(root.join(&cand)).is_ok() {
+                let checked = checked_child(root, Path::new(&cand)).map_err(|err| {
+                    StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        format!("profile path '{cand}' failed confinement check: {err}"),
+                    )
+                })?;
+                if checked.is_file() {
+                    return Ok(cand);
+                }
+            }
+        }
+    }
+    Ok(raw_rel.to_owned())
+}
+
 fn resolve_recursive(
     yaml: &str,
     profile_id: &str,
     source_rel_path: Option<&str>,
     workspace_root: Option<&Path>,
     acdd_modules: Option<&SubsystemRegistry>,
+    profiles_dirs: Option<&[String]>,
     stack: &mut Vec<String>,
 ) -> Result<WorkingProfile, StateError> {
     let parsed = parse_profile(yaml)?;
@@ -219,6 +411,7 @@ fn resolve_recursive(
                 None,
                 workspace_root,
                 acdd_modules,
+                profiles_dirs,
                 stack,
             )?;
             stack.pop();
@@ -232,11 +425,10 @@ fn resolve_recursive(
                 ));
             }
             let has_workspace_file = workspace_root
-                .map(|root| root.join(".acdd/profile.yaml").exists())
-                .unwrap_or(false);
+                .is_some_and(|root| std::fs::symlink_metadata(root.join(".acdd/profile.yaml")).is_ok());
             if has_workspace_file {
                 let root = workspace_root.expect("checked above");
-                let identity = "path:.acdd/profile.yaml".to_owned();
+                let identity = path_cycle_identity(Some(root), ".acdd/profile.yaml")?;
                 if stack.contains(&identity) {
                     return Err(StateError::new(
                         ErrorCode::ProfileSchemaInvalid,
@@ -257,16 +449,13 @@ fn resolve_recursive(
                     Some(".acdd/profile.yaml"),
                     Some(root),
                     acdd_modules,
+                    profiles_dirs,
                     stack,
                 )?;
                 stack.pop();
                 res
             } else {
-                let fallback = if acdd_modules.is_some_and(|m| m.is_enabled("code")) {
-                    "code"
-                } else {
-                    "default"
-                };
+                let fallback = "default";
                 let identity = format!("builtin:{fallback}");
                 if stack.contains(&identity) {
                     return Err(StateError::new(
@@ -282,6 +471,7 @@ fn resolve_recursive(
                     None,
                     workspace_root,
                     acdd_modules,
+                    profiles_dirs,
                     stack,
                 )?;
                 stack.pop();
@@ -289,20 +479,21 @@ fn resolve_recursive(
             }
         }
         Some(raw_ref) => {
-            let (rel_path, expected_pin) = parse_path_and_pin(raw_ref)?;
-            let identity = format!("path:{rel_path}");
+            let (raw_path, expected_pin) = parse_path_and_pin(raw_ref)?;
+            let root = workspace_root.ok_or_else(|| {
+                StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("cannot inherit profile path '{raw_path}' without workspace root"),
+                )
+            })?;
+            let rel_path = resolve_profile_path_in_workspace(root, &raw_path, profiles_dirs)?;
+            let identity = path_cycle_identity(Some(root), &rel_path)?;
             if stack.contains(&identity) {
                 return Err(StateError::new(
                     ErrorCode::ProfileSchemaInvalid,
                     format!("cyclic profile inheritance detected at '{rel_path}'"),
                 ));
             }
-            let root = workspace_root.ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("cannot inherit profile path '{rel_path}' without workspace root"),
-                )
-            })?;
             let bytes = read_confined_profile_bytes(root, &rel_path)?;
             if let Some(pin) = expected_pin {
                 verify_sha256_prefix(&bytes, &pin, &rel_path)?;
@@ -320,6 +511,7 @@ fn resolve_recursive(
                 Some(&rel_path),
                 Some(root),
                 acdd_modules,
+                profiles_dirs,
                 stack,
             )?;
             stack.pop();
@@ -328,8 +520,139 @@ fn resolve_recursive(
     };
 
     base.resolved.profile_id = profile_id.to_owned();
+    let parent_declared_tags = base.resolved.tags.clone();
+    let parent_when_tags = collect_when_tags(&base.gates);
+    let explicit_tags_override = !matches!(parsed.tags, PatchField::Unset);
     apply_parsed_layer(&mut base, parsed)?;
+    if explicit_tags_override {
+        let surviving_when_tags = collect_when_tags(&base.gates);
+        for tag in parent_when_tags
+            .intersection(&surviving_when_tags)
+            .filter(|t| parent_declared_tags.contains(*t))
+        {
+            base.resolved.tags.insert(tag.clone());
+        }
+    }
+    if source_rel_path.is_none() && embedded_profile(profile_id).is_some() {
+        let disabled_domains = collect_disabled_domains(profile_id, acdd_modules);
+        strip_disabled_domain_capabilities(&mut base, &disabled_domains);
+    }
     Ok(base)
+}
+
+fn collect_when_tags(gates: &[WorkingGate]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for gate in gates {
+        if let Some(ref w) = gate.gate.when {
+            if let Ok(expr) = WhenExpr::parse(w) {
+                out.extend(expr.referenced_tags());
+            }
+        }
+        out.extend(collect_when_tags(&gate.children));
+        if let Some(ref tb) = gate.tasks_children {
+            if let Some(ref w) = tb.when {
+                if let Ok(expr) = WhenExpr::parse(w) {
+                    out.extend(expr.referenced_tags());
+                }
+            }
+            out.extend(collect_when_tags(&tb.gates));
+        }
+    }
+    out
+}
+
+fn collect_disabled_domains(
+    profile_id: &str,
+    acdd_modules: Option<&SubsystemRegistry>,
+) -> BTreeSet<String> {
+    let mut disabled = BTreeSet::new();
+    let Some(mods) = acdd_modules else {
+        return disabled;
+    };
+    for builtin_domain in ["code", "docs"] {
+        if builtin_domain != profile_id && !mods.is_enabled(builtin_domain) {
+            disabled.insert(builtin_domain.to_owned());
+        }
+    }
+    for (domain, &enabled) in &mods.domains {
+        if !enabled && domain != profile_id {
+            disabled.insert(domain.clone());
+        }
+    }
+    disabled
+}
+
+fn tool_belongs_to_domain(tool: &str, domain: &str) -> bool {
+    if SubsystemRegistry::subsystem_for_tool(tool) == Some(domain) {
+        return true;
+    }
+    if !acdd_core::ports::is_builtin_mcp_tool(tool) {
+        if let Some((prefix, _)) = tool.split_once('_') {
+            return prefix == domain;
+        }
+    }
+    false
+}
+
+fn has_domain_prefix(qualified: &str, domain: &str) -> bool {
+    qualified
+        .split_once('.')
+        .is_some_and(|(prefix, _)| prefix == domain)
+}
+
+fn strip_disabled_domain_capabilities(
+    working: &mut WorkingProfile,
+    disabled_domains: &BTreeSet<String>,
+) {
+    if disabled_domains.is_empty() {
+        return;
+    }
+    working.resolved.default_tools.retain(|tool| {
+        !disabled_domains
+            .iter()
+            .any(|d| tool_belongs_to_domain(tool, d))
+    });
+    strip_disabled_domains_from_gates(&mut working.gates, disabled_domains);
+}
+
+fn strip_disabled_domains_from_gates(
+    gates: &mut [WorkingGate],
+    disabled_domains: &BTreeSet<String>,
+) {
+    for gate in gates {
+        gate.gate.tools.retain(|tool| {
+            !disabled_domains
+                .iter()
+                .any(|d| tool_belongs_to_domain(tool, d))
+        });
+        gate.pending_tools_add.retain(|tool| {
+            !disabled_domains
+                .iter()
+                .any(|d| tool_belongs_to_domain(tool, d))
+        });
+        gate.gate.context.retain(|ctx| {
+            !disabled_domains
+                .iter()
+                .any(|d| has_domain_prefix(ctx, d))
+        });
+        gate.gate.checks.retain(|chk| {
+            !disabled_domains
+                .iter()
+                .any(|d| has_domain_prefix(&chk.check, d))
+        });
+        if gate
+            .gate
+            .call
+            .as_deref()
+            .is_some_and(|c| disabled_domains.iter().any(|d| has_domain_prefix(c, d)))
+        {
+            gate.gate.call = None;
+        }
+        strip_disabled_domains_from_gates(&mut gate.children, disabled_domains);
+        if let Some(tb) = &mut gate.tasks_children {
+            strip_disabled_domains_from_gates(&mut tb.gates, disabled_domains);
+        }
+    }
 }
 
 fn parse_path_and_pin(raw: &str) -> Result<(String, Option<String>), StateError> {
@@ -721,9 +1044,12 @@ fn raw_to_working_gate(raw: RawGateDef) -> Result<WorkingGate, StateError> {
         GateId::new(&id)?;
         gate.id = id;
     }
-    let has_explicit_tools = matches!(raw.tools, PatchField::Set(_));
+    let has_explicit_tools = !matches!(raw.tools, PatchField::Unset);
+    let has_explicit_max_attempts = matches!(raw.max_attempts, PatchField::Set(_));
+    let has_template = matches!(raw.use_template, PatchField::Set(_));
     let mut pending_tools_add = Vec::new();
     let mut pending_tools_remove = Vec::new();
+    let mut pending_template_gates_patch = Vec::new();
 
     if let PatchField::Set(v) = raw.role {
         gate.role = Some(v);
@@ -744,7 +1070,14 @@ fn raw_to_working_gate(raw: RawGateDef) -> Result<WorkingGate, StateError> {
         gate.context = v;
     }
     let children = match raw.gates {
-        PatchField::Set(items) => build_gates_replace(items)?,
+        PatchField::Set(items) => {
+            if has_template {
+                pending_template_gates_patch = items;
+                Vec::new()
+            } else {
+                build_gates_replace(items)?
+            }
+        }
         PatchField::Unset | PatchField::Clear => Vec::new(),
     };
     let tasks_children = match raw.tasks {
@@ -807,6 +1140,9 @@ fn raw_to_working_gate(raw: RawGateDef) -> Result<WorkingGate, StateError> {
     if let PatchField::Set(v) = raw.fail {
         gate.fail = Some(v);
     }
+    if let PatchField::Set(v) = raw.fail_drift {
+        gate.fail_drift = Some(v);
+    }
 
     if gate.id.is_empty() && tasks_children.is_none() {
         return Err(StateError::new(
@@ -818,8 +1154,10 @@ fn raw_to_working_gate(raw: RawGateDef) -> Result<WorkingGate, StateError> {
     Ok(WorkingGate {
         gate,
         has_explicit_tools,
+        has_explicit_max_attempts,
         pending_tools_add,
         pending_tools_remove,
+        pending_template_gates_patch,
         children,
         tasks_children,
     })
@@ -1120,13 +1458,25 @@ fn patch_existing_working_gate(
         PatchField::Clear => g.context.clear(),
         PatchField::Set(v) => g.context = v,
     }
-    match raw.gates {
-        PatchField::Unset => {}
-        PatchField::Clear => target.children.clear(),
-        PatchField::Set(items) => apply_gates_patch(&mut target.children, items)?,
-    }
     raw.use_template
         .apply_to_option(&mut g.use_template, Clone::clone);
+    if g.use_template.is_none() {
+        target.pending_template_gates_patch.clear();
+    }
+    match raw.gates {
+        PatchField::Unset => {}
+        PatchField::Clear => {
+            target.children.clear();
+            target.pending_template_gates_patch.clear();
+        }
+        PatchField::Set(items) => {
+            if g.use_template.is_some() && target.children.is_empty() {
+                target.pending_template_gates_patch.extend(items);
+            } else {
+                apply_gates_patch(&mut target.children, items)?;
+            }
+        }
+    }
     raw.when.apply_to_option(&mut g.when, Clone::clone);
 
     match raw.proof {
@@ -1137,12 +1487,16 @@ fn patch_existing_working_gate(
     match raw.tools {
         PatchField::Unset => {}
         PatchField::Clear => {
-            target.has_explicit_tools = false;
+            target.has_explicit_tools = true;
             g.tools.clear();
+            target.pending_tools_add.clear();
+            target.pending_tools_remove.clear();
         }
         PatchField::Set(v) => {
             target.has_explicit_tools = true;
             g.tools = v;
+            target.pending_tools_add.clear();
+            target.pending_tools_remove.clear();
         }
     }
     for add in raw.tools_add {
@@ -1185,8 +1539,14 @@ fn patch_existing_working_gate(
     }
     match raw.max_attempts {
         PatchField::Unset => {}
-        PatchField::Clear => g.max_attempts = DEFAULT_MAX_ATTEMPTS,
-        PatchField::Set(v) => g.max_attempts = v,
+        PatchField::Clear => {
+            g.max_attempts = DEFAULT_MAX_ATTEMPTS;
+            target.has_explicit_max_attempts = false;
+        }
+        PatchField::Set(v) => {
+            g.max_attempts = v;
+            target.has_explicit_max_attempts = true;
+        }
     }
     match raw.receipt {
         PatchField::Unset => {}
@@ -1205,12 +1565,13 @@ fn patch_existing_working_gate(
     }
     raw.pass.apply_to_option(&mut g.pass, Clone::clone);
     raw.fail.apply_to_option(&mut g.fail, Clone::clone);
+    raw.fail_drift
+        .apply_to_option(&mut g.fail_drift, Clone::clone);
 
     Ok(())
 }
 
 fn merge_save_policy(target: &mut SavePolicy, patch: SavePolicyPatch) {
-    patch.pre.apply_to_option(&mut target.pre, |a| *a);
     patch.post.apply_to_option(&mut target.post, |a| *a);
     match patch.immutable {
         PatchField::Unset => {}
@@ -1289,12 +1650,20 @@ fn expand_gate_list(
                     child.gate.guidance = tpl.guidance.clone();
                 }
                 if let Some(max_att) = tpl.max_attempts {
-                    if child.gate.max_attempts == DEFAULT_MAX_ATTEMPTS {
+                    if !child.has_explicit_max_attempts {
                         child.gate.max_attempts = max_att;
                     }
                 }
             }
             expand_gate_list(&mut tpl_children, templates, stack)?;
+            let inline_patch = std::mem::take(&mut gate.pending_template_gates_patch);
+            if !inline_patch.is_empty() {
+                if tpl_children.is_empty() {
+                    tpl_children = build_gates_replace(inline_patch)?;
+                } else {
+                    apply_gates_patch(&mut tpl_children, inline_patch)?;
+                }
+            }
             if gate.children.is_empty() {
                 gate.children = tpl_children;
             }
@@ -1305,7 +1674,7 @@ fn expand_gate_list(
                 gate.gate.guidance = tpl.guidance.clone();
             }
             if let Some(max_att) = tpl.max_attempts {
-                if gate.gate.max_attempts == DEFAULT_MAX_ATTEMPTS {
+                if !gate.has_explicit_max_attempts {
                     gate.gate.max_attempts = max_att;
                 }
             }
