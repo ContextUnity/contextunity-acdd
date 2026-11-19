@@ -4,6 +4,7 @@ pub use crate::fs::{checked_child, safe_relative};
 pub use crate::response::{Detail, ResponsePolicy, SourceContextPolicy};
 pub use crate::subsystems::{SubsystemPreset, SubsystemRegistry};
 pub use crate::sys::memory_budget_bytes;
+use crate::errors::{ErrorCode, StateError};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -25,6 +26,8 @@ pub const MAX_METADATA_BYTES: usize = 2048;
 pub const DEFAULT_MAX_METADATA_BYTES: usize = MAX_METADATA_BYTES;
 /// Default state database path relative to primary worktree root.
 pub const DEFAULT_STATE_DB: &str = ".acdd/state.sqlite";
+/// Default code-map database path relative to workspace root.
+pub const DEFAULT_CODE_DB: &str = ".acdd/code-map.sqlite";
 /// Default number of retained run trace logs.
 pub const DEFAULT_RETAIN_TRACES: usize = 20;
 /// Default specification ID numeric width.
@@ -173,6 +176,7 @@ fn default_max_metadata_bytes() -> usize {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 /// Represents scanner limits data.
 pub struct ScannerLimits {
     #[serde(default = "default_max_files")]
@@ -221,6 +225,13 @@ impl Default for ScannerLimits {
 
 fn error(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
+}
+
+fn schema_error(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        StateError::new(ErrorCode::ProfileSchemaInvalid, message.into()),
+    )
 }
 
 /// Resolves the transient working-memory budget from YAML, environment, or available memory.
@@ -274,6 +285,7 @@ pub fn bytes_from_mebibytes(mebibytes: u64) -> std::io::Result<u64> {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 /// Represents adapter file YAML representation.
 pub struct AdapterFile {
     /// Workspace-relative glob patterns blocked by the reader.
@@ -303,10 +315,6 @@ pub struct AdapterFile {
     #[serde(default, alias = "doc_roots")]
     /// Optional documentation roots.
     pub docs: Option<Vec<String>>,
-    /// Optional milestones directories (legacy compatibility until Phase 3).
-    pub milestones: Option<Vec<String>>,
-    /// Optional plans directories (legacy compatibility until Phase 3).
-    pub plans: Option<Vec<String>>,
     /// Configured spec collections (`specs:`).
     #[serde(default)]
     pub specs: Option<BTreeMap<String, SpecCollectionConfig>>,
@@ -385,6 +393,7 @@ where
 }
 
 #[derive(Debug, Clone, Deserialize, Default, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 /// Configures linked workspace operations.
 pub struct LinkedWorkspaceConfig {
     /// The name value.
@@ -504,8 +513,179 @@ impl Default for Adapter {
     }
 }
 
-/// Loads and normalizes workspace adapter configuration.
+/// Strict adapter validation report returning the loaded adapter plus any linked-workspace issues.
+#[derive(Debug, Clone)]
+pub struct StrictAdapterReport {
+    /// Normalized workspace adapter configuration.
+    pub adapter: Adapter,
+    /// Validation errors collected for `linked_workspaces` entries.
+    pub linked_workspace_errors: Vec<String>,
+}
+
+const LEGACY_05_KEYS: &[&str] = &[
+    "milestones",
+    "plans",
+    "tasks_db",
+    "workflows_dir",
+    "milestone_prefix",
+    "plan_prefix",
+    "task_repository",
+    "task_project",
+    "acdd_profile",
+];
+
+/// Resolves the configured `state_db` path against the primary workspace root.
+pub fn resolve_state_db_path(root: &Path, adapter: &Adapter) -> PathBuf {
+    adapter.resolve_state_db_path(root)
+}
+
+/// Resolves the code-map database path against `root`, defaulting to `.acdd/code-map.sqlite`.
+pub fn resolve_code_db_path(root: &Path, custom_db: Option<&Path>) -> PathBuf {
+    match custom_db {
+        Some(p) if !p.as_os_str().is_empty() && !p.to_str().is_some_and(|s| s.trim().is_empty()) => {
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(p)
+            }
+        }
+        _ => root.join(DEFAULT_CODE_DB),
+    }
+}
+
+/// Loads and normalizes workspace adapter configuration (logging linked-workspace warnings to stderr).
 pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<Adapter> {
+    let report = load_adapter_inner(root, adapter_path)?;
+    for msg in &report.linked_workspace_errors {
+        eprintln!("[acdd] {msg}; skipping");
+    }
+    Ok(report.adapter)
+}
+
+/// Loads and normalizes workspace adapter configuration, returning all linked-workspace validation errors.
+pub fn load_adapter_report(
+    root: &Path,
+    adapter_path: Option<&Path>,
+) -> std::io::Result<StrictAdapterReport> {
+    load_adapter_inner(root, adapter_path)
+}
+
+/// Loads and normalizes workspace adapter configuration, failing closed on any linked-workspace error.
+pub fn load_adapter_strict(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<Adapter> {
+    let report = load_adapter_report(root, adapter_path)?;
+    if !report.linked_workspace_errors.is_empty() {
+        return Err(schema_error(report.linked_workspace_errors.join("; ")));
+    }
+    Ok(report.adapter)
+}
+
+fn validate_linked_workspace_target(
+    canonical_root: &Path,
+    lw_name: &str,
+    raw_path_str: &str,
+) -> std::result::Result<PathBuf, String> {
+    if raw_path_str.trim().is_empty() {
+        return Err(format!("linked workspace '{lw_name}' has an empty path"));
+    }
+    let raw_path = Path::new(raw_path_str);
+    let mut abs_target = if raw_path.is_absolute() {
+        crate::fs::normalize_path(raw_path)
+    } else {
+        crate::fs::normalize_path(&canonical_root.join(raw_path))
+    };
+
+    if raw_path.is_relative() && safe_relative(raw_path) {
+        let mut cursor = canonical_root.to_path_buf();
+        for comp in raw_path.components() {
+            let name = match comp {
+                std::path::Component::CurDir => continue,
+                std::path::Component::Normal(n) => n,
+                _ => {
+                    return Err(format!(
+                        "linked workspace '{lw_name}' path '{raw_path_str}' is invalid"
+                    ));
+                }
+            };
+            cursor.push(name);
+            match fs::symlink_metadata(&cursor) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(format!(
+                        "linked workspace '{lw_name}' path '{raw_path_str}' traverses or targets a symlink"
+                    ));
+                }
+                Ok(_) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(format!(
+                        "linked workspace '{lw_name}' path '{raw_path_str}' does not exist"
+                    ));
+                }
+                Err(err) => {
+                    return Err(format!(
+                        "linked workspace '{lw_name}' path '{raw_path_str}' could not be inspected: {err}"
+                    ));
+                }
+            }
+        }
+        abs_target = cursor;
+    } else {
+        if !abs_target.is_absolute() {
+            if let Ok(cwd) = std::env::current_dir() {
+                abs_target = crate::fs::normalize_path(&cwd.join(abs_target));
+            }
+        }
+        if let Err(err) = crate::fs::check_ancestors_no_symlinks_abs(&abs_target) {
+            return Err(format!(
+                "linked workspace '{lw_name}' path '{raw_path_str}' traverses a symlink: {err}"
+            ));
+        }
+    }
+
+    let target_meta = if raw_path.is_absolute() {
+        fs::metadata(&abs_target)
+    } else {
+        fs::symlink_metadata(&abs_target)
+    };
+    match target_meta {
+        Ok(meta) => {
+            if raw_path.is_relative() && meta.file_type().is_symlink() {
+                return Err(format!(
+                    "linked workspace '{lw_name}' path '{raw_path_str}' must not be a symlink"
+                ));
+            }
+            if !meta.is_dir() {
+                return Err(format!(
+                    "linked workspace '{lw_name}' path '{raw_path_str}' is not a directory"
+                ));
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "linked workspace '{lw_name}' path '{raw_path_str}' does not exist"
+            ));
+        }
+        Err(err) => {
+            return Err(format!(
+                "linked workspace '{lw_name}' path '{raw_path_str}' could not be inspected: {err}"
+            ));
+        }
+    }
+
+    let canonical_ws = abs_target.canonicalize().map_err(|err| {
+        format!("failed to canonicalize linked workspace '{lw_name}' path '{raw_path_str}': {err}")
+    })?;
+    if raw_path.is_relative() && safe_relative(raw_path) && !canonical_ws.starts_with(canonical_root)
+    {
+        return Err(format!(
+            "linked workspace '{lw_name}' path '{raw_path_str}' escapes workspace root via symlink"
+        ));
+    }
+    Ok(canonical_ws)
+}
+
+fn load_adapter_inner(
+    root: &Path,
+    adapter_path: Option<&Path>,
+) -> std::io::Result<StrictAdapterReport> {
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let default_path = canonical_root.join("acdd.yaml");
     let default_path = default_path.exists().then_some(default_path);
@@ -526,8 +706,30 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
                 explicit_adapter_path = Some(canonical.clone());
             }
             let content = fs::read_to_string(&canonical)?;
-            let mut identity: serde_yaml::Value =
-                serde_yaml::from_str(&content).map_err(|e| error(e.to_string()))?;
+            let mut identity: serde_yaml::Value = serde_yaml::from_str(&content)
+                .map_err(|e| schema_error(format!("invalid acdd.yaml: {e}")))?;
+            if let Some(mapping) = identity.as_mapping() {
+                let found_legacy: Vec<&str> = LEGACY_05_KEYS
+                    .iter()
+                    .copied()
+                    .filter(|key| mapping.contains_key(serde_yaml::Value::String((*key).to_owned())))
+                    .collect();
+                if !found_legacy.is_empty() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        StateError::new(
+                            ErrorCode::ConfigMigrationRequired,
+                            format!(
+                                "legacy 0.5.x acdd.yaml keys require migration: {}",
+                                found_legacy.join(", ")
+                            ),
+                        )
+                        .with_hint(
+                            "Follow docs/runbooks/migration-0.6.md to update 0.5.x configuration keys",
+                        ),
+                    ));
+                }
+            }
             if let Some(mapping) = identity.as_mapping_mut() {
                 for excluded in [
                     "response",
@@ -543,8 +745,8 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
                     mapping.remove(serde_yaml::Value::String(excluded.into()));
                 }
             }
-            let parsed: AdapterFile =
-                serde_yaml::from_str(&content).map_err(|e| error(e.to_string()))?;
+            let parsed: AdapterFile = serde_yaml::from_str(&content)
+                .map_err(|e| schema_error(format!("invalid acdd.yaml schema: {e}")))?;
             let version_str = parsed.adapter_version.as_ref().map(|v| match v {
                 serde_json::Value::Number(n) => n.to_string(),
                 serde_json::Value::String(s) => s.clone(),
@@ -553,15 +755,19 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
             (parsed, Some(identity), version_str)
         }
     };
-    raw.response.validate().map_err(|e| error(e.to_string()))?;
+    raw.response
+        .validate()
+        .map_err(|e| schema_error(e.to_string()))?;
     if let Some(limits) = &raw.limits {
-        limits.validate().map_err(|e| error(e.to_string()))?;
+        limits.validate().map_err(|e| schema_error(e.to_string()))?;
     }
     let mut modules = raw.modules.clone();
     if let Some(profile) = raw.profile {
         modules.profile = profile;
     }
-    modules.validate().map_err(|e| error(e.to_string()))?;
+    modules
+        .validate()
+        .map_err(|e| schema_error(e.to_string()))?;
     let mut specs = raw.specs.clone().unwrap_or_else(default_specs);
     validate_and_normalize_specs(&mut specs)?;
     let profiles_dirs = raw
@@ -571,7 +777,7 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
     for dir in &profiles_dirs {
         let trimmed = dir.trim();
         if trimmed.is_empty() || !safe_relative(Path::new(trimmed)) {
-            return Err(error(format!(
+            return Err(schema_error(format!(
                 "profiles_dirs entry '{dir}' must be a relative plain path"
             )));
         }
@@ -581,11 +787,11 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
         .clone()
         .unwrap_or_else(|| DEFAULT_STATE_DB.to_owned());
     if state_db.trim().is_empty() {
-        return Err(error("state_db must not be empty"));
+        return Err(schema_error("state_db must not be empty"));
     }
     let retain_traces = raw.retain_traces.unwrap_or(DEFAULT_RETAIN_TRACES);
     if retain_traces == 0 {
-        return Err(error("retain_traces must be at least 1"));
+        return Err(schema_error("retain_traces must be at least 1"));
     }
 
     let code_enabled = modules.is_enabled("code");
@@ -663,32 +869,33 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
     roots.sort();
     roots.dedup();
     let mut linked_workspaces = Vec::new();
+    let mut linked_workspace_errors = Vec::new();
+    let mut seen_lw_names = BTreeSet::new();
     let configs = raw.linked_workspaces.or(raw.workspaces).unwrap_or_default();
     for lw_cfg in configs {
+        let trimmed_name = lw_cfg.name.trim();
+        if trimmed_name.is_empty() {
+            linked_workspace_errors.push("linked_workspaces entry has an empty name".to_owned());
+            continue;
+        }
+        if !seen_lw_names.insert(trimmed_name.to_owned()) {
+            linked_workspace_errors.push(format!(
+                "duplicate linked_workspaces name '{trimmed_name}'"
+            ));
+            continue;
+        }
         if !lw_cfg.enabled.unwrap_or(true) {
             continue;
         }
-        let target_path = if Path::new(&lw_cfg.path).is_absolute() {
-            PathBuf::from(&lw_cfg.path)
-        } else {
-            root.join(&lw_cfg.path)
-        };
 
-        if !target_path.exists() || !target_path.is_dir() {
-            eprintln!(
-                "[acdd] linked workspace '{}' is unavailable at {:?}; skipping",
-                lw_cfg.name, target_path
-            );
-            continue;
-        }
-
-        let canonical_ws = match target_path.canonicalize() {
+        let canonical_ws = match validate_linked_workspace_target(
+            &canonical_root,
+            trimmed_name,
+            &lw_cfg.path,
+        ) {
             Ok(p) => p,
-            Err(e) => {
-                eprintln!(
-                    "[acdd] failed to canonicalize linked workspace '{}': {}; skipping",
-                    lw_cfg.name, e
-                );
+            Err(msg) => {
+                linked_workspace_errors.push(msg);
                 continue;
             }
         };
@@ -735,45 +942,56 @@ pub fn load_adapter(root: &Path, adapter_path: Option<&Path>) -> std::io::Result
         }
 
         linked_workspaces.push(LinkedWorkspace {
-            name: lw_cfg.name,
+            name: trimmed_name.to_owned(),
             path: canonical_ws,
             roots: ws_roots,
             ignored_names: ignored,
         });
     }
 
-    Ok(Adapter {
-        sensitive: raw.sensitive,
-        adapter_path: explicit_adapter_path,
-        response: raw.response,
-        modules,
-        limits: raw.limits.unwrap_or_default(),
-        roots,
-        ignored_names: raw
-            .ignore
-            .unwrap_or_default()
-            .into_iter()
-            .chain(raw.excluded_directory_names.unwrap_or_default())
-            .chain(raw.excluded_file_names.unwrap_or_default())
-            .chain(DEFAULT_IGNORED_NAMES.iter().copied().map(str::to_owned))
-            .collect(),
-        adapter_version,
-        digest,
-        linked_workspaces,
-        owners: raw.owners.unwrap_or_default(),
-        aliases: raw.aliases.unwrap_or_default(),
-        milestones: raw
-            .milestones
-            .unwrap_or_else(|| vec!["docs/milestones".into()]),
-        plans: raw.plans.unwrap_or_else(|| vec!["docs/plans".into()]),
-        specs,
-        profiles_dirs,
-        state_db,
-        retain_traces,
-        debug: raw.debug
-            || std::env::var("ACDD_DEBUG")
-                .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            || std::env::var("DEBUG").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
+    let milestones = specs
+        .get("milestones")
+        .map(|cfg| vec![cfg.path.clone()])
+        .unwrap_or_else(|| vec!["docs/milestones".into()]);
+    let plans = specs
+        .get("plans")
+        .map(|cfg| vec![cfg.path.clone()])
+        .unwrap_or_else(|| vec!["docs/plans".into()]);
+
+    Ok(StrictAdapterReport {
+        adapter: Adapter {
+            sensitive: raw.sensitive,
+            adapter_path: explicit_adapter_path,
+            response: raw.response,
+            modules,
+            limits: raw.limits.unwrap_or_default(),
+            roots,
+            ignored_names: raw
+                .ignore
+                .unwrap_or_default()
+                .into_iter()
+                .chain(raw.excluded_directory_names.unwrap_or_default())
+                .chain(raw.excluded_file_names.unwrap_or_default())
+                .chain(DEFAULT_IGNORED_NAMES.iter().copied().map(str::to_owned))
+                .collect(),
+            adapter_version,
+            digest,
+            linked_workspaces,
+            owners: raw.owners.unwrap_or_default(),
+            aliases: raw.aliases.unwrap_or_default(),
+            milestones,
+            plans,
+            specs,
+            profiles_dirs,
+            state_db,
+            retain_traces,
+            debug: raw.debug
+                || std::env::var("ACDD_DEBUG")
+                    .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                || std::env::var("DEBUG")
+                    .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
+        },
+        linked_workspace_errors,
     })
 }
 
@@ -1293,6 +1511,159 @@ roots: [.]
             "specs:\n  a:\n    path: docs/specs\n  b:\n    path: docs/specs_v2\n",
         )
         .unwrap();
-        assert!(load_adapter(&dir, None).is_ok());
+        let derived = load_adapter(&dir, None).unwrap();
+        assert_eq!(derived.milestones, vec!["docs/milestones"]);
+        assert_eq!(derived.plans, vec!["docs/plans"]);
+
+        std::fs::write(
+            dir.join("acdd.yaml"),
+            "specs:\n  milestones:\n    path: custom/ms\n  plans:\n    path: custom/pl\n",
+        )
+        .unwrap();
+        let derived_custom = load_adapter(&dir, None).unwrap();
+        assert_eq!(derived_custom.milestones, vec!["custom/ms"]);
+        assert_eq!(derived_custom.plans, vec!["custom/pl"]);
+    }
+
+    #[test]
+    fn strict_adapter_rejects_unknown_fields_legacy_05_keys_and_invalid_linked_workspaces() {
+        let dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("acdd_strict_cfg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _cleanup = TempDirDrop(dir.clone());
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 1. deny_unknown_fields on AdapterFile, LinkedWorkspaceConfig, ScannerLimits -> ProfileSchemaInvalid.
+        for bad_yaml in [
+            "unknown_top_level: true\n",
+            "limits:\n  unknown_limit: 5\n",
+            "linked_workspaces:\n  - name: dep\n    path: .\n    unknown_lw: 1\n",
+            "not: [valid: yaml\n",
+        ] {
+            std::fs::write(dir.join("acdd.yaml"), bad_yaml).unwrap();
+            let err: anyhow::Error = load_adapter(&dir, None).unwrap_err().into();
+            let state_err = StateError::from_anyhow(&err).expect("StateError expected");
+            assert_eq!(
+                state_err.code,
+                ErrorCode::ProfileSchemaInvalid,
+                "{bad_yaml}: {state_err}"
+            );
+        }
+
+        // 2. Legacy 0.5 keys -> ConfigMigrationRequired via StateError::from_anyhow.
+        for legacy_key in [
+            "milestones",
+            "plans",
+            "tasks_db",
+            "workflows_dir",
+            "milestone_prefix",
+            "plan_prefix",
+            "task_repository",
+            "task_project",
+            "acdd_profile",
+        ] {
+            let yaml = if matches!(legacy_key, "milestones" | "plans") {
+                format!("{legacy_key}: [docs/{legacy_key}]\n")
+            } else {
+                format!("{legacy_key}: legacy_val\n")
+            };
+            std::fs::write(dir.join("acdd.yaml"), &yaml).unwrap();
+            let err: anyhow::Error = load_adapter(&dir, None).unwrap_err().into();
+            let state_err = StateError::from_anyhow(&err).expect("StateError expected");
+            assert_eq!(
+                state_err.code,
+                ErrorCode::ConfigMigrationRequired,
+                "{legacy_key}: {state_err}"
+            );
+            assert!(
+                state_err
+                    .hint
+                    .as_deref()
+                    .is_some_and(|h| h.contains("migration-0.6.md")),
+                "{legacy_key}: {:?}",
+                state_err.hint
+            );
+        }
+
+        // 3. load_adapter_report / load_adapter_strict linked_workspaces validation.
+        let valid_ws = dir.join("valid_ws");
+        let file_not_dir = dir.join("not_a_dir.txt");
+        let outside_dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("acdd_strict_outside_{}", std::process::id()));
+        let _outside_cleanup = TempDirDrop(outside_dir.clone());
+        std::fs::create_dir_all(&valid_ws).unwrap();
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::fs::write(&file_not_dir, "plain file").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_dir, dir.join("symlink_ws")).unwrap();
+
+        let lw_yaml = "\
+linked_workspaces:
+  - name: \"\"
+    path: valid_ws
+  - name: dup
+    path: valid_ws
+  - name: dup
+    path: valid_ws
+  - name: missing
+    path: does_not_exist
+  - name: file_target
+    path: not_a_dir.txt
+  - name: disabled_missing
+    path: does_not_exist
+    enabled: false
+";
+        let full_lw_yaml = if cfg!(unix) {
+            format!("{lw_yaml}  - name: escaped\n    path: symlink_ws\n")
+        } else {
+            lw_yaml.to_owned()
+        };
+        std::fs::write(dir.join("acdd.yaml"), &full_lw_yaml).unwrap();
+
+        // Backwards-compatible load_adapter succeeds with valid entries while skipping invalid ones.
+        let non_strict = load_adapter(&dir, None).unwrap();
+        assert_eq!(non_strict.linked_workspaces.len(), 1);
+        assert_eq!(non_strict.linked_workspaces[0].name, "dup");
+
+        // load_adapter_report surfaces every linked-workspace error; load_adapter_strict fails closed.
+        let report = load_adapter_report(&dir, None).unwrap();
+        let expected_err_count = if cfg!(unix) { 5 } else { 4 };
+        assert_eq!(
+            report.linked_workspace_errors.len(),
+            expected_err_count,
+            "{:?}",
+            report.linked_workspace_errors
+        );
+        let strict_err: anyhow::Error = load_adapter_strict(&dir, None).unwrap_err().into();
+        let state_err = StateError::from_anyhow(&strict_err).expect("StateError expected");
+        assert_eq!(state_err.code, ErrorCode::ProfileSchemaInvalid);
+
+        // 4. resolve_state_db_path / resolve_code_db_path helpers.
+        let mut adapter = Adapter::default();
+        assert_eq!(
+            resolve_state_db_path(&dir, &adapter),
+            dir.join(".acdd/state.sqlite")
+        );
+        adapter.state_db = "custom/state.sqlite".to_owned();
+        assert_eq!(
+            resolve_state_db_path(&dir, &adapter),
+            dir.join("custom/state.sqlite")
+        );
+        assert_eq!(
+            resolve_code_db_path(&dir, None),
+            dir.join(".acdd/code-map.sqlite")
+        );
+        assert_eq!(
+            resolve_code_db_path(&dir, Some(Path::new(""))),
+            dir.join(".acdd/code-map.sqlite")
+        );
+        assert_eq!(
+            resolve_code_db_path(&dir, Some(Path::new("custom/code.sqlite"))),
+            dir.join("custom/code.sqlite")
+        );
     }
 }

@@ -184,5 +184,92 @@ pub fn memory_budget_bytes() -> u64 {
     memory_budget_from_available(available_memory_bytes())
 }
 
+/// Read the OS process start-time token for `pid` to distinguish reused PIDs across sessions.
+///
+/// - On Linux, parses field 22 (`starttime` in clock ticks) after the final `')'` of `/proc/{pid}/stat`.
+/// - On macOS, invokes `ps -p <pid> -o lstart=` with `LC_ALL=C` and `TZ=UTC` and returns a stable 64-bit hash of the trimmed timestamp.
+/// - On other targets, returns `None`.
+pub fn read_process_start_time(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        parse_linux_proc_stat_start_time(&stat)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = macos_ps_command(pid).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let trimmed = stdout.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(crate::format::stable_hash64(trimmed) as u64)
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_ps_command(pid: u32) -> std::process::Command {
+    let mut cmd = std::process::Command::new("ps");
+    cmd.env("LC_ALL", "C")
+        .env("TZ", "UTC")
+        .args(["-p", &pid.to_string(), "-o", "lstart="]);
+    cmd
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_linux_proc_stat_start_time(stat: &str) -> Option<u64> {
+    let rparen = stat.rfind(')')?;
+    let after = stat.get(rparen + 1..)?;
+    // Field 22 overall (`starttime`) is index 19 after `)` (field 3 `state` is index 0).
+    after.split_whitespace().nth(19)?.parse::<u64>().ok()
+}
+
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_start_time_parser_and_self_probe() {
+        let cases = [
+            (
+                "weird_comm_with_parens_and_spaces",
+                "1234 (my (weird) proc) S 1 1234 1234 0 -1 4194304 100 0 0 0 1 2 0 0 20 0 1 0 987654321 1024 10",
+                Some(987_654_321),
+            ),
+            ("malformed_no_rparen", "malformed", None),
+            ("missing_field_22", "1234 (proc) S 1 2 3", None),
+            ("non_numeric_starttime", "1234 (proc) S 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 abc 0 0", None),
+        ];
+        for (label, sample, expected) in cases {
+            assert_eq!(parse_linux_proc_stat_start_time(sample), expected, "{label}");
+        }
+
+        let ps_cmd = macos_ps_command(42);
+        let envs: Vec<(String, Option<String>)> = ps_cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|val| val.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert!(envs.contains(&("LC_ALL".to_owned(), Some("C".to_owned()))), "{envs:?}");
+        assert!(envs.contains(&("TZ".to_owned(), Some("UTC".to_owned()))), "{envs:?}");
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let start = read_process_start_time(std::process::id());
+            assert!(start.is_some());
+        }
+    }
+}

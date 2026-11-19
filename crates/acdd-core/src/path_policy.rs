@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+const MAX_BRACE_EXPANSIONS: usize = 64;
 
 /// Normalized pure workspace path policy implementing the four non-conflated predicates from `ADR-0002`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,25 +27,48 @@ impl Default for WorkspacePathPolicy {
 }
 
 impl WorkspacePathPolicy {
+    /// Construct a `WorkspacePathPolicy` from workspace configuration paths.
+    ///
+    /// Converts relative `state_db_rel` and `code_db_rel` cleanly, falling back to
+    /// `.acdd/state.sqlite` / `.acdd/code-map.sqlite` only when blank (or non-relative).
+    /// `engine_managed_paths` must contain both active `Run` `spec_path` and `archive_path` entries.
+    pub fn from_workspace_config(
+        state_db_rel: &str,
+        code_db_rel: &str,
+        engine_managed_paths: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let managed = engine_managed_paths
+            .into_iter()
+            .filter_map(|p| normalize_rel_path(&p))
+            .collect();
+        let state_db = if state_db_rel.trim().is_empty() {
+            ".acdd/state.sqlite".to_owned()
+        } else {
+            normalize_rel_path(state_db_rel).unwrap_or_else(|| ".acdd/state.sqlite".to_owned())
+        };
+        let code_db = if code_db_rel.trim().is_empty() {
+            ".acdd/code-map.sqlite".to_owned()
+        } else {
+            normalize_rel_path(code_db_rel).unwrap_or_else(|| ".acdd/code-map.sqlite".to_owned())
+        };
+        Self {
+            engine_managed_paths: managed,
+            state_db_path: state_db,
+            code_db_path: code_db,
+        }
+    }
+
     /// Construct a `WorkspacePathPolicy`, normalizing all supplied relative paths.
     pub fn new(
         engine_managed_paths: impl IntoIterator<Item = String>,
         state_db_path: impl AsRef<str>,
         code_db_path: impl AsRef<str>,
     ) -> Self {
-        let managed = engine_managed_paths
-            .into_iter()
-            .filter_map(|p| normalize_rel_path(&p))
-            .collect();
-        let state_db = normalize_rel_path(state_db_path.as_ref())
-            .unwrap_or_else(|| ".acdd/state.sqlite".to_owned());
-        let code_db = normalize_rel_path(code_db_path.as_ref())
-            .unwrap_or_else(|| ".acdd/code-map.sqlite".to_owned());
-        Self {
-            engine_managed_paths: managed,
-            state_db_path: state_db,
-            code_db_path: code_db,
-        }
+        Self::from_workspace_config(
+            state_db_path.as_ref(),
+            code_db_path.as_ref(),
+            engine_managed_paths,
+        )
     }
 
     /// Predicate 1: Return `true` if `rel_path` matches any active `Run`'s `spec_path` or `archive_path`.
@@ -109,6 +134,9 @@ impl WorkspacePathPolicy {
         if !self.is_candidate_included(&norm) {
             return false;
         }
+        if protected_paths.iter().any(|p| !is_valid_scope_glob(p)) {
+            return false;
+        }
         if self.is_scope_admitted(&norm, protected_paths) {
             return false;
         }
@@ -120,19 +148,26 @@ impl WorkspacePathPolicy {
 ///
 /// Rejects empty paths, NUL bytes, absolute paths, Windows drive prefixes, and `..` parent traversal.
 pub fn normalize_rel_path(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() || trimmed.contains('\0') {
+    normalize_rel_path_exact(raw.trim())
+}
+
+/// Normalize a workspace-relative path without trimming leading/trailing whitespace on components.
+///
+/// Preserves literal spaces in filenames (e.g. `"src/ leading.rs"`) while rejecting empty paths,
+/// NUL bytes, absolute paths, Windows drive prefixes, and `..` parent traversal.
+pub(crate) fn normalize_rel_path_exact(raw: &str) -> Option<String> {
+    if raw.is_empty() || raw.contains('\0') {
         return None;
     }
-    if trimmed.starts_with('/') || trimmed.starts_with('\\') {
+    if raw.starts_with('/') || raw.starts_with('\\') {
         return None;
     }
-    let bytes = trimmed.as_bytes();
+    let bytes = raw.as_bytes();
     if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
         return None;
     }
 
-    let replaced = trimmed.replace('\\', "/");
+    let replaced = raw.replace('\\', "/");
     let mut segments = Vec::new();
     for seg in replaced.split('/') {
         match seg {
@@ -170,18 +205,272 @@ fn is_acdd_tracked_whitelist(norm_path: &str) -> bool {
         || norm_path.starts_with(".acdd/frameworks/")
 }
 
-fn pattern_matches_segments(raw_pattern: &str, path_segs: &[&str]) -> bool {
-    let Some(norm_pat) = normalize_rel_path(raw_pattern) else {
+/// Validate a workspace-relative scope path or brace-glob pattern.
+///
+/// Enforces non-empty input, balanced non-empty `{...}` brace groups with at most
+/// 64 expanded variants (`MAX_BRACE_EXPANSIONS`), and clean relative path normalization
+/// (rejecting `..`, leading `/`/`\`, Windows drive prefixes, and NUL bytes) on every variant.
+pub fn is_valid_scope_glob(pattern: &str) -> bool {
+    let trimmed = pattern.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if !trimmed.contains('{') && !trimmed.contains('}') {
+        return normalize_rel_path(trimmed).is_some();
+    }
+    let variants = expand_glob_braces(trimmed);
+    !variants.is_empty() && variants.iter().all(|v| normalize_rel_path(v).is_some())
+}
+
+/// Expand `{a,b}` brace groups (including nested and sequential groups) iteratively.
+///
+/// Caps total expanded variants at 64 (`MAX_BRACE_EXPANSIONS`) and fails closed
+/// (returning an empty `Vec`) on unbalanced braces, empty `{}` groups, or cap overflow.
+pub fn expand_glob_braces(raw: &str) -> Vec<String> {
+    if !raw.contains('{') && !raw.contains('}') {
+        return vec![raw.to_owned()];
+    }
+    if !has_balanced_nonempty_braces(raw) {
+        return Vec::new();
+    }
+
+    let mut queue = VecDeque::new();
+    queue.push_back(raw.to_owned());
+    let mut out = Vec::new();
+
+    while let Some(current) = queue.pop_front() {
+        let Some((open_idx, close_idx, parts)) = find_expandable_brace_group(&current) else {
+            out.push(current);
+            continue;
+        };
+        if out.len() + queue.len() + parts.len() > MAX_BRACE_EXPANSIONS {
+            return Vec::new();
+        }
+        let prefix = &current[..open_idx];
+        let suffix = &current[close_idx + 1..];
+        for part in parts {
+            queue.push_back(format!("{prefix}{part}{suffix}"));
+        }
+    }
+
+    out
+}
+
+fn has_balanced_nonempty_braces(raw: &str) -> bool {
+    let mut depth = 0usize;
+    let mut prev = None;
+    for ch in raw.chars() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                if depth == 0 || prev == Some('{') {
+                    return false;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+        prev = Some(ch);
+    }
+    depth == 0
+}
+
+fn find_expandable_brace_group(s: &str) -> Option<(usize, usize, Vec<&str>)> {
+    let bytes = s.as_bytes();
+    let mut search_start = 0usize;
+
+    while let Some(rel_open) = s[search_start..].find('{') {
+        let open_idx = search_start + rel_open;
+        let mut depth = 0usize;
+        let mut close_idx = None;
+        let mut split_points = Vec::new();
+
+        for (offset, ch) in s[open_idx..].char_indices() {
+            let idx = open_idx + offset;
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close_idx = Some(idx);
+                        break;
+                    }
+                }
+                ',' if depth == 1 => split_points.push(idx),
+                _ => {}
+            }
+        }
+
+        let close_idx = close_idx?;
+        if !split_points.is_empty() {
+            let mut parts = Vec::with_capacity(split_points.len() + 1);
+            let mut start = open_idx + 1;
+            for comma_idx in split_points {
+                parts.push(&s[start..comma_idx]);
+                start = comma_idx + 1;
+            }
+            parts.push(&s[start..close_idx]);
+            return Some((open_idx, close_idx, parts));
+        }
+
+        if open_idx + 1 >= bytes.len() {
+            break;
+        }
+        search_start = open_idx + 1;
+    }
+
+    None
+}
+
+/// Return `true` if `path` matches `pattern` using normalized segments, `{a,b}` braces, and `**`/`*`/`?` wildcards.
+pub fn glob_matches(pattern: &str, path: &str) -> bool {
+    let Some(norm_path) = normalize_rel_path(path) else {
         return false;
     };
-    let pat_segs: Vec<&str> = norm_pat.split('/').collect();
-    let has_wildcard = pat_segs
-        .iter()
-        .any(|seg| *seg == "**" || seg.contains('*') || seg.contains('?'));
-    if !has_wildcard {
-        return path_segs.len() >= pat_segs.len() && path_segs[..pat_segs.len()] == pat_segs[..];
+    let path_segs: Vec<&str> = norm_path.split('/').collect();
+    pattern_matches_segments(pattern, &path_segs)
+}
+
+/// Return `true` if two scope pattern lists can match at least one common normalized path.
+pub fn scopes_overlap(a: &[String], b: &[String]) -> bool {
+    for pat_a in a {
+        for pat_b in b {
+            if patterns_overlap(pat_a, pat_b) {
+                return true;
+            }
+        }
     }
-    match_segments(&pat_segs, path_segs)
+    false
+}
+
+/// Return `true` if two normalized scope patterns (literal directories or globs, including `{a,b}` braces) can match a common path.
+pub fn patterns_overlap(raw_a: &str, raw_b: &str) -> bool {
+    let expanded_b: Vec<Vec<String>> = expand_glob_braces(raw_b)
+        .into_iter()
+        .filter_map(|variant| normalize_rel_path(&variant))
+        .map(|norm| expand_pattern_segments(&norm))
+        .collect();
+    if expanded_b.is_empty() {
+        return false;
+    }
+
+    for var_a in expand_glob_braces(raw_a) {
+        let Some(norm_a) = normalize_rel_path(&var_a) else {
+            continue;
+        };
+        let segs_a = expand_pattern_segments(&norm_a);
+        for segs_b in &expanded_b {
+            let mut memo = BTreeMap::new();
+            if match_pattern_intersection(&segs_a, segs_b, 0, 0, &mut memo) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn expand_pattern_segments(norm: &str) -> Vec<String> {
+    let mut segs: Vec<String> = norm.split('/').map(str::to_owned).collect();
+    let has_wildcard = segs
+        .iter()
+        .any(|s| s == "**" || s.contains('*') || s.contains('?'));
+    if !has_wildcard {
+        // Per `WorkspacePathPolicy::is_scope_admitted`, a literal directory matches itself and descendants.
+        segs.push("**".to_owned());
+    }
+    segs
+}
+
+fn match_pattern_intersection(
+    a: &[String],
+    b: &[String],
+    ia: usize,
+    ib: usize,
+    memo: &mut BTreeMap<(usize, usize), bool>,
+) -> bool {
+    if let Some(&cached) = memo.get(&(ia, ib)) {
+        return cached;
+    }
+    let res = match (a.get(ia).map(String::as_str), b.get(ib).map(String::as_str)) {
+        (None, None) => true,
+        (Some("**"), Some("**")) => {
+            match_pattern_intersection(a, b, ia + 1, ib, memo)
+                || match_pattern_intersection(a, b, ia, ib + 1, memo)
+        }
+        (Some("**"), _) => {
+            match_pattern_intersection(a, b, ia + 1, ib, memo)
+                || (ib < b.len() && match_pattern_intersection(a, b, ia, ib + 1, memo))
+        }
+        (_, Some("**")) => {
+            match_pattern_intersection(a, b, ia, ib + 1, memo)
+                || (ia < a.len() && match_pattern_intersection(a, b, ia + 1, ib, memo))
+        }
+        (Some(sa), Some(sb)) => {
+            segment_globs_intersect(sa, sb)
+                && match_pattern_intersection(a, b, ia + 1, ib + 1, memo)
+        }
+        _ => false,
+    };
+    memo.insert((ia, ib), res);
+    res
+}
+
+fn segment_globs_intersect(a: &str, b: &str) -> bool {
+    let ca: Vec<char> = a.chars().collect();
+    let cb: Vec<char> = b.chars().collect();
+    let mut memo = BTreeMap::new();
+    segment_chars_intersect(&ca, &cb, 0, 0, &mut memo)
+}
+
+fn segment_chars_intersect(
+    a: &[char],
+    b: &[char],
+    ia: usize,
+    ib: usize,
+    memo: &mut BTreeMap<(usize, usize), bool>,
+) -> bool {
+    if let Some(&cached) = memo.get(&(ia, ib)) {
+        return cached;
+    }
+    let res = match (a.get(ia).copied(), b.get(ib).copied()) {
+        (None, None) => true,
+        (Some('*'), _) => {
+            segment_chars_intersect(a, b, ia + 1, ib, memo)
+                || (ib < b.len() && segment_chars_intersect(a, b, ia, ib + 1, memo))
+        }
+        (_, Some('*')) => {
+            segment_chars_intersect(a, b, ia, ib + 1, memo)
+                || (ia < a.len() && segment_chars_intersect(a, b, ia + 1, ib, memo))
+        }
+        (Some('?'), Some(_)) | (Some(_), Some('?')) => {
+            segment_chars_intersect(a, b, ia + 1, ib + 1, memo)
+        }
+        (Some(ca), Some(cb)) => ca == cb && segment_chars_intersect(a, b, ia + 1, ib + 1, memo),
+        _ => false,
+    };
+    memo.insert((ia, ib), res);
+    res
+}
+
+fn pattern_matches_segments(raw_pattern: &str, path_segs: &[&str]) -> bool {
+    for variant in expand_glob_braces(raw_pattern) {
+        let Some(norm_pat) = normalize_rel_path(&variant) else {
+            continue;
+        };
+        let pat_segs: Vec<&str> = norm_pat.split('/').collect();
+        let has_wildcard = pat_segs
+            .iter()
+            .any(|seg| *seg == "**" || seg.contains('*') || seg.contains('?'));
+        let matched = if !has_wildcard {
+            path_segs.len() >= pat_segs.len() && path_segs[..pat_segs.len()] == pat_segs[..]
+        } else {
+            match_segments(&pat_segs, path_segs)
+        };
+        if matched {
+            return true;
+        }
+    }
+    false
 }
 
 fn match_segments(pat: &[&str], path: &[&str]) -> bool {
@@ -327,6 +616,147 @@ mod tests {
                 expect_writable,
                 "is_agent_writable({path:?}, {scope:?})"
             );
+        }
+    }
+
+    #[test]
+    fn glob_brace_expansion_matching_and_overlap_matrix() {
+        // 1. Brace expansion cases (including nested, sequential, unbalanced, empty, and >64 cap).
+        let huge = "{a,b}/{c,d}/{e,f}/{g,h}/{i,j}/{k,l}/{m,n}.rs"; // 128 > 64 cap
+        let expand_cases: &[(&str, &[&str])] = &[
+            ("src/{a,b}.rs", &["src/a.rs", "src/b.rs"]),
+            (
+                "crates/{a,{b,c}}/*.rs",
+                &["crates/a/*.rs", "crates/b/*.rs", "crates/c/*.rs"],
+            ),
+            (
+                "src/{a,b}/{c,d}.rs",
+                &["src/a/c.rs", "src/a/d.rs", "src/b/c.rs", "src/b/d.rs"],
+            ),
+            ("src/{,sub/}lib.rs", &["src/lib.rs", "src/sub/lib.rs"]),
+            ("src/{}.rs", &[]),
+            ("src/{a,b.rs", &[]),
+            ("src/a,b}.rs", &[]),
+            (huge, &[]),
+        ];
+        for &(raw, expected) in expand_cases {
+            let actual: Vec<String> = expand_glob_braces(raw)
+                .into_iter()
+                .map(|s| normalize_rel_path(&s).unwrap_or(s))
+                .collect();
+            let exp: Vec<String> = expected.iter().map(|s| (*s).to_owned()).collect();
+            assert_eq!(actual, exp, "expand_glob_braces({raw:?})");
+        }
+
+        // 1b. Canonical scope glob validation & fail-closed protected_paths.
+        let valid_cases: &[(&str, bool)] = &[
+            ("src/**", true),
+            ("src/{a,b}.rs", true),
+            ("src/{,sub/}lib.rs", true),
+            ("", false),
+            ("   ", false),
+            (".", false),
+            ("./", false),
+            ("../escape/**", false),
+            ("/etc/passwd", false),
+            ("C:/repo/src", false),
+            ("src/foo\0bar.rs", false),
+            ("src/{a", false),
+            ("src/a}", false),
+            ("src/{}.rs", false),
+            ("src/{a,../b}.rs", false),
+            (huge, false),
+        ];
+        for &(pat, expected) in valid_cases {
+            assert_eq!(
+                is_valid_scope_glob(pat),
+                expected,
+                "is_valid_scope_glob({pat:?})"
+            );
+        }
+        let policy = WorkspacePathPolicy::default();
+        assert!(!policy.is_agent_writable(
+            "src/lib.rs",
+            &["src/**".to_owned()],
+            &["src/{a".to_owned()],
+        ));
+        assert!(!policy.is_agent_writable(
+            "src/lib.rs",
+            &["src/**".to_owned()],
+            &[huge.to_owned()],
+        ));
+
+        // 2. glob_matches & is_scope_admitted with braces.
+        let match_cases: &[(&str, &str, bool)] = &[
+            ("crates/{acdd-core,acdd-state}/**", "crates/acdd-core/src/lib.rs", true),
+            ("crates/{acdd-core,acdd-state}/**", "crates/acdd-state/src/lib.rs", true),
+            ("crates/{acdd-core,acdd-state}/**", "crates/acdd-index/src/lib.rs", false),
+            ("src/{a,{b,c}}/*.{rs,md}", "src/c/mod.md", true),
+            ("src/{a,{b,c}}/*.{rs,md}", "src/c/mod.py", false),
+            ("src/{a,b", "src/a", false),
+        ];
+        for &(pat, path, expected) in match_cases {
+            assert_eq!(glob_matches(pat, path), expected, "glob_matches({pat:?}, {path:?})");
+            assert_eq!(
+                policy.is_scope_admitted(path, &[pat.to_owned()]),
+                expected,
+                "is_scope_admitted({path:?}, {pat:?})"
+            );
+        }
+
+        // 3. patterns_overlap & scopes_overlap with braces and segment wildcards.
+        let overlap_cases: &[(&str, &str, bool)] = &[
+            ("crates/{a,b}/**", "crates/b/src/lib.rs", true),
+            ("crates/{a,b}/**", "crates/c/**", false),
+            ("crates/a/*.{rs,toml}", "crates/a/foo.rs", true),
+            ("crates/a/*.{rs,toml}", "crates/a/*.md", false),
+            ("crates/a", "crates/{a,b}/src/lib.rs", true),
+            ("crates/a", "crates/ab/**", false),
+            ("**", "Cargo.toml", true),
+        ];
+        for &(a, b, expected) in overlap_cases {
+            assert_eq!(patterns_overlap(a, b), expected, "patterns_overlap({a:?}, {b:?})");
+            assert_eq!(
+                scopes_overlap(&[a.to_owned()], &[b.to_owned()]),
+                expected,
+                "scopes_overlap({a:?}, {b:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn from_workspace_config_normalizes_and_defaults_blank_db_paths() {
+        let cases: &[(&str, &str, &[&str], &str, &str)] = &[
+            (
+                "./custom/state.sqlite",
+                "custom/code-map.sqlite",
+                &["docs/milestones/AC-001.md", "docs/milestones/archive/AC-001.md"],
+                "custom/state.sqlite",
+                "custom/code-map.sqlite",
+            ),
+            (
+                "   ",
+                "",
+                &["docs/plans/PLAN-001.md"],
+                ".acdd/state.sqlite",
+                ".acdd/code-map.sqlite",
+            ),
+        ];
+        for &(state_rel, code_rel, managed, expect_state, expect_code) in cases {
+            let policy = WorkspacePathPolicy::from_workspace_config(
+                state_rel,
+                code_rel,
+                managed.iter().map(|s| (*s).to_owned()),
+            );
+            assert_eq!(policy.state_db_path, expect_state);
+            assert_eq!(policy.code_db_path, expect_code);
+            for path in managed {
+                assert!(policy.is_engine_managed(path), "{path}");
+                assert!(!policy.is_candidate_included(path), "{path}");
+            }
+            assert!(!policy.is_candidate_included(expect_state));
+            assert!(!policy.is_candidate_included(&format!("{expect_state}-wal")));
+            assert!(!policy.is_candidate_included(expect_code));
         }
     }
 }

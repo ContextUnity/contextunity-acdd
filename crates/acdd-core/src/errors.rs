@@ -28,12 +28,6 @@ pub enum ErrorCode {
     FeatureDisabled,
     /// A role-assigned gate requires a configured runner command during automated `acdd run`.
     WorkflowRunnerRequired,
-    /// Migration encountered a non-standard multi-target `loop:` block without `--prefer-fail`.
-    MigrationAmbiguousLoop,
-    /// Migration encountered a legacy `*_proof` wrapper requiring manual schema conversion.
-    MigrationManualSchemaWrapper,
-    /// Migration detected an external pinned `inherit` digest mismatch.
-    MigrationExternalPinMismatch,
 
     // --- Exit 3: State / Gate / Scope Violation ---
     /// The node already holds an active claim owned by another worker/session.
@@ -82,7 +76,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Complete ordered list of all canonical error codes.
-    pub const ALL: [ErrorCode; 33] = [
+    pub const ALL: [ErrorCode; 30] = [
         Self::ConfigMigrationRequired,
         Self::ProfileSchemaInvalid,
         Self::CommandUnbound,
@@ -93,9 +87,6 @@ impl ErrorCode {
         Self::RunSelectorAmbiguous,
         Self::FeatureDisabled,
         Self::WorkflowRunnerRequired,
-        Self::MigrationAmbiguousLoop,
-        Self::MigrationManualSchemaWrapper,
-        Self::MigrationExternalPinMismatch,
         Self::TaskAlreadyClaimed,
         Self::StaleClaimRevision,
         Self::TaskReviewNotIndependent,
@@ -131,9 +122,6 @@ impl ErrorCode {
             Self::RunSelectorAmbiguous => "RUN_SELECTOR_AMBIGUOUS",
             Self::FeatureDisabled => "FEATURE_DISABLED",
             Self::WorkflowRunnerRequired => "WORKFLOW_RUNNER_REQUIRED",
-            Self::MigrationAmbiguousLoop => "MIGRATION_AMBIGUOUS_LOOP",
-            Self::MigrationManualSchemaWrapper => "MIGRATION_MANUAL_SCHEMA_WRAPPER",
-            Self::MigrationExternalPinMismatch => "MIGRATION_EXTERNAL_PIN_MISMATCH",
             Self::TaskAlreadyClaimed => "TASK_ALREADY_CLAIMED",
             Self::StaleClaimRevision => "STALE_CLAIM_REVISION",
             Self::TaskReviewNotIndependent => "TASK_REVIEW_NOT_INDEPENDENT",
@@ -169,10 +157,7 @@ impl ErrorCode {
             | Self::GuidanceBudgetExceeded
             | Self::RunSelectorAmbiguous
             | Self::FeatureDisabled
-            | Self::WorkflowRunnerRequired
-            | Self::MigrationAmbiguousLoop
-            | Self::MigrationManualSchemaWrapper
-            | Self::MigrationExternalPinMismatch => 2,
+            | Self::WorkflowRunnerRequired => 2,
             Self::TaskAlreadyClaimed
             | Self::StaleClaimRevision
             | Self::TaskReviewNotIndependent
@@ -254,10 +239,16 @@ impl StateError {
         self.code.exit_code()
     }
 
-    /// Extract a `&StateError` from an `anyhow::Error` chain if present.
+    /// Extract a `&StateError` from an `anyhow::Error` chain (including `std::io::Error` payloads) if present.
     pub fn from_anyhow(err: &anyhow::Error) -> Option<&Self> {
-        err.chain()
-            .find_map(|cause| cause.downcast_ref::<StateError>())
+        err.chain().find_map(|cause| {
+            cause.downcast_ref::<StateError>().or_else(|| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .and_then(|io_err| io_err.get_ref())
+                    .and_then(|inner| inner.downcast_ref::<StateError>())
+            })
+        })
     }
 }
 
@@ -312,21 +303,6 @@ mod tests {
             (
                 ErrorCode::WorkflowRunnerRequired,
                 "WORKFLOW_RUNNER_REQUIRED",
-                2,
-            ),
-            (
-                ErrorCode::MigrationAmbiguousLoop,
-                "MIGRATION_AMBIGUOUS_LOOP",
-                2,
-            ),
-            (
-                ErrorCode::MigrationManualSchemaWrapper,
-                "MIGRATION_MANUAL_SCHEMA_WRAPPER",
-                2,
-            ),
-            (
-                ErrorCode::MigrationExternalPinMismatch,
-                "MIGRATION_EXTERNAL_PIN_MISMATCH",
                 2,
             ),
             (ErrorCode::TaskAlreadyClaimed, "TASK_ALREADY_CLAIMED", 3),
@@ -411,5 +387,9 @@ mod tests {
 
         let wrapped = anyhow::Error::new(err.clone()).context("while validating gate");
         assert_eq!(StateError::from_anyhow(&wrapped), Some(&err));
+
+        let io_wrapped: anyhow::Error =
+            std::io::Error::new(std::io::ErrorKind::InvalidData, err.clone()).into();
+        assert_eq!(StateError::from_anyhow(&io_wrapped), Some(&err));
     }
 }

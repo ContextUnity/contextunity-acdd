@@ -1,5 +1,6 @@
 use crate::errors::{ErrorCode, StateError};
 use crate::ids::{GateId, NodeCursor, RunId, WorkerId};
+use crate::path_policy::WorkspacePathPolicy;
 use crate::schema::SchemaDef;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -156,6 +157,12 @@ pub struct DomainCheckReq {
     pub changed_paths: Vec<String>,
     /// Optional test target supplied via `--test` or prior `contract` proof.
     pub test_target: Option<String>,
+    /// Workspace path policy for candidate/scope/engine-managed filtering.
+    #[serde(default)]
+    pub path_policy: WorkspacePathPolicy,
+    /// Optional commit or tree OID representing claim-time baseline (`HEAD` when absent).
+    #[serde(default)]
+    pub baseline_ref: Option<String>,
 }
 
 /// Fail-closed check verdict (`Passed | Failed`, never `NotApplicable`).
@@ -179,6 +186,25 @@ pub enum DomainCheckOutcome {
     },
 }
 
+/// Typed live freshness observation returned by [`DomainProvider::observe_freshness`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum FreshnessObservation {
+    /// Live observation/check passed; optional index generation and digest salt are folded into `execution_digest`.
+    Passed {
+        /// Optional live-index generation identifier.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index_generation: Option<String>,
+        /// Optional live-index or file-digest salt matching `DomainCheckOutcome::Passed::execution_digest_salt`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_digest_salt: Option<String>,
+    },
+    /// Live check failed (`DomainCheckOutcome::Failed`), preventing stale trace reuse.
+    Failed {
+        /// Failure summary from `DomainCheckOutcome::Failed`.
+        summary: String,
+    },
+}
+
 /// Request context passed to `DomainProvider::provide_context`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -199,6 +225,12 @@ pub struct DomainContextReq {
     pub target: Option<String>,
     /// Remaining response byte budget available for this lens.
     pub max_bytes: usize,
+    /// Workspace path policy for candidate/scope/engine-managed filtering.
+    #[serde(default)]
+    pub path_policy: WorkspacePathPolicy,
+    /// Optional commit or tree OID representing claim-time baseline (`HEAD` when absent).
+    #[serde(default)]
+    pub baseline_ref: Option<String>,
 }
 
 /// Request context passed to `DomainProvider::call_tool`.
@@ -248,6 +280,31 @@ pub trait DomainProvider: Send + Sync {
         params: &Value,
         req: &DomainCheckReq,
     ) -> Result<DomainCheckOutcome>;
+
+    /// Observe freshness/digest inputs for a `checks: [<domain>.<check>]` verifier.
+    ///
+    /// By default, delegates to [`DomainProvider::run_check`] and distinguishes a passing
+    /// check ([`FreshnessObservation::Passed`]) from a failing check ([`FreshnessObservation::Failed`])
+    /// so `acdd submit` never confuses a failed check with an unsalted pass.
+    fn observe_freshness(
+        &self,
+        check: &str,
+        params: &Value,
+        req: &DomainCheckReq,
+    ) -> Result<FreshnessObservation> {
+        match self.run_check(check, params, req)? {
+            DomainCheckOutcome::Passed {
+                execution_digest_salt,
+                ..
+            } => Ok(FreshnessObservation::Passed {
+                index_generation: None,
+                execution_digest_salt,
+            }),
+            DomainCheckOutcome::Failed { summary, .. } => {
+                Ok(FreshnessObservation::Failed { summary })
+            }
+        }
+    }
 
     /// Materialize a `context: [<domain>.<lens>]` section for `ClaimResp` / `ShowResp`.
     fn provide_context(&self, lens: &str, req: &DomainContextReq) -> Result<Value>;
@@ -613,6 +670,19 @@ impl CompositeDomainProvider {
         entry.provider.run_check(check_name, params, req)
     }
 
+    /// Validate and observe freshness inputs for `checks: [<domain>.<check>]` on the owning enabled provider.
+    pub fn observe_freshness(
+        &self,
+        qualified: &str,
+        params: &Value,
+        req: &DomainCheckReq,
+    ) -> Result<FreshnessObservation> {
+        self.validate_check_ref(qualified, params)?;
+        let (domain, check_name) = split_qualified(qualified, "check")?;
+        let entry = self.active_provider(domain)?;
+        entry.provider.observe_freshness(check_name, params, req)
+    }
+
     /// Validate and fetch `context: [<domain>.<lens>]` from the owning enabled provider.
     pub fn provide_context(&self, qualified: &str, req: &DomainContextReq) -> Result<Value> {
         self.validate_context_lens(qualified)?;
@@ -796,12 +866,23 @@ mod tests {
         fn run_check(
             &self,
             check: &str,
-            _params: &Value,
+            params: &Value,
             _req: &DomainCheckReq,
         ) -> Result<DomainCheckOutcome> {
+            if params.get("fail") == Some(&json!(true)) {
+                return Ok(DomainCheckOutcome::Failed {
+                    summary: format!("{}.{check} failed", self.domain),
+                    diagnostics: vec!["forced failure".to_owned()],
+                });
+            }
+            let salt = if params.get("unsalted") == Some(&json!(true)) {
+                None
+            } else {
+                Some("gen-42".to_owned())
+            };
             Ok(DomainCheckOutcome::Passed {
                 summary: format!("{}.{check} ok", self.domain),
-                execution_digest_salt: Some("gen-42".to_owned()),
+                execution_digest_salt: salt,
             })
         }
 
@@ -941,6 +1022,8 @@ mod tests {
             admitted_scope: vec!["src/**".to_owned()],
             changed_paths: vec![],
             test_target: None,
+            path_policy: WorkspacePathPolicy::default(),
+            baseline_ref: None,
         };
         let ctx_req = DomainContextReq {
             run_id: RunId::new("r1").unwrap(),
@@ -951,6 +1034,8 @@ mod tests {
             admitted_scope: vec!["src/**".to_owned()],
             target: None,
             max_bytes: 4096,
+            path_policy: WorkspacePathPolicy::default(),
+            baseline_ref: None,
         };
         let tool_req = DomainToolReq {
             workspace_root: PathBuf::from("/repo"),
@@ -980,6 +1065,32 @@ mod tests {
             composite.run_check("http.health", &json!({}), &check_req).unwrap(),
             DomainCheckOutcome::Passed { .. }
         ));
+        assert_eq!(
+            composite
+                .observe_freshness("http.health", &json!({}), &check_req)
+                .unwrap(),
+            FreshnessObservation::Passed {
+                index_generation: None,
+                execution_digest_salt: Some("gen-42".to_owned()),
+            }
+        );
+        assert_eq!(
+            composite
+                .observe_freshness("http.health", &json!({"unsalted": true}), &check_req)
+                .unwrap(),
+            FreshnessObservation::Passed {
+                index_generation: None,
+                execution_digest_salt: None,
+            }
+        );
+        assert_eq!(
+            composite
+                .observe_freshness("http.health", &json!({"fail": true}), &check_req)
+                .unwrap(),
+            FreshnessObservation::Failed {
+                summary: "http.health failed".to_owned(),
+            }
+        );
         assert_eq!(
             composite.provide_context("http.endpoints", &ctx_req).unwrap(),
             json!({"lens": "http.endpoints"})

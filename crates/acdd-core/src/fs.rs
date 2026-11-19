@@ -621,6 +621,76 @@ pub fn same_filesystem_path(left: &Path, right: &Path) -> bool {
     false
 }
 
+/// RAII temporary directory created under `std::env::temp_dir()` with mode `0o700` on Unix.
+pub struct ScopedTempDir {
+    path: PathBuf,
+}
+
+impl ScopedTempDir {
+    /// Creates a unique private temporary directory prefixed with `prefix`.
+    pub fn create(prefix: &str) -> std::io::Result<Self> {
+        if prefix.is_empty()
+            || prefix.contains('/')
+            || prefix.contains('\\')
+            || prefix.contains("..")
+        {
+            return Err(path_error("invalid temporary directory prefix"));
+        }
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::temp_dir());
+        for _ in 0..128 {
+            let seq = NONCE.fetch_add(1, Ordering::Relaxed);
+            let candidate = base.join(format!("{prefix}-{}-{seq}", std::process::id()));
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            match builder.create(&candidate) {
+                Ok(()) => return Ok(Self { path: candidate }),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err),
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "failed to allocate unique scoped temporary directory",
+        ))
+    }
+
+    /// Returns the path of this temporary directory.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Creates a new regular file inside this directory with `0o600` permissions on Unix.
+    pub fn write_private_file(&self, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+        let rel = Path::new(name);
+        if !is_normalized_relative(rel) || rel.components().count() != 1 {
+            return Err(path_error("temporary filename must be a single path component"));
+        }
+        let file_path = self.path.join(rel);
+        let mut opts = OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&file_path)?;
+        file.write_all(bytes)?;
+        Ok(file_path)
+    }
+}
+
+impl Drop for ScopedTempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
