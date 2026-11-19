@@ -570,8 +570,9 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
     if !req.node.invariants.applicable.is_empty() || !req.node.invariants.verified.is_empty() {
         obj.insert("invariants".to_owned(), json!(req.node.invariants));
     }
-    if !req.gate.tools.is_empty() && req.gate.tools != req.profile.default_tools {
-        obj.insert("tools".to_owned(), json!(req.gate.tools));
+    let tools = req.profile.effective_tools(&req.gate);
+    if !tools.is_empty() && tools != req.profile.default_tools.as_slice() {
+        obj.insert("tools".to_owned(), json!(tools));
     }
     if let Some(cmd) = &req.gate.command {
         obj.insert("command".to_owned(), json!(cmd));

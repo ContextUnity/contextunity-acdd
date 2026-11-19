@@ -79,6 +79,9 @@ pub fn execute_query(
         StateQuery::Context(req) => Ok(StateQueryOutput::Context(Box::new(handle_context(
             config, reader, provider, req,
         )?))),
+        StateQuery::Roadmap(req) => Ok(StateQueryOutput::Roadmap(Box::new(
+            crate::usecases::roadmap::handle_roadmap(config, reader, req)?,
+        ))),
         StateQuery::Validate(_) => unreachable!("handled prior to modules.state gate"),
     }
 }
@@ -112,10 +115,11 @@ fn handle_status(
         });
     };
 
-    let ext_deps = collect_external_satisfied_deps(config, &run.run_id, &graph.dependencies)?;
+    let ext_deps = collect_external_satisfied_deps(config, &graph)?;
     let unintegrated_tasks = compute_unintegrated_tasks(config, &graph)?;
     let obs = ValidatedObservations {
         external_satisfied_deps: ext_deps,
+        external_deps_authoritative: true,
         unintegrated_tasks,
         now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()
@@ -293,10 +297,11 @@ fn handle_next(
         });
     };
 
-    let ext_deps = collect_external_satisfied_deps(config, &run.run_id, &graph.dependencies)?;
+    let ext_deps = collect_external_satisfied_deps(config, &graph)?;
     let unintegrated_tasks = compute_unintegrated_tasks(config, &graph)?;
     let obs = ValidatedObservations {
         external_satisfied_deps: ext_deps,
+        external_deps_authoritative: true,
         unintegrated_tasks,
         now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()

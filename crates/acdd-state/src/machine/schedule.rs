@@ -67,7 +67,7 @@ pub(crate) fn is_dep_satisfied_against_statuses(
     if &dep.depends_on_run_id == run_id {
         is_intra_run_completed(&dep.depends_on_ref)
     } else {
-        dep.satisfied
+        (dep.satisfied && !obs.external_deps_authoritative)
             || obs.external_satisfied_deps.iter().any(|(ws, rid, tref)| {
                 ws == &dep.depends_on_workspace
                     && rid == &dep.depends_on_run_id
@@ -185,35 +185,20 @@ pub fn compute_schedule(
         .filter(|n| n.kind == NodeKind::Task)
         .collect();
 
-    let claimed_unfinished_scopes: Vec<(TaskRef, Vec<String>)> = task_nodes
-        .iter()
-        .filter(|n| is_task_claimed_unfinished(snapshot, n))
-        .filter_map(|n| n.task_ref.clone().map(|tr| (tr, container_scope(snapshot, n))))
-        .collect();
+    let claimed_scopes = claimed_unfinished_scopes(snapshot);
 
     let mut ready_tasks = Vec::new();
-    if pre_task_satisfied && !any_active_in_place {
-        for task_node in &task_nodes {
-            if !matches!(task_node.status, NodeStatus::Ready | NodeStatus::Pending) {
-                continue;
-            }
-            let Some(ref task_ref) = task_node.task_ref else {
-                continue;
-            };
-            if !task_dependencies_satisfied(snapshot, task_ref, obs) {
-                continue;
-            }
-            let my_scope = container_scope(snapshot, task_node);
-            let conflicts_claimed = claimed_unfinished_scopes.iter().any(|(other_ref, other_scope)| {
-                other_ref != task_ref && scopes_overlap(&my_scope, other_scope)
-            });
-            if !conflicts_claimed {
-                ready_tasks.push(task_ref.clone());
-            }
+    for task_node in &task_nodes {
+        let Some(ref task_ref) = task_node.task_ref else {
+            continue;
+        };
+        let deps_satisfied = task_dependencies_satisfied(snapshot, task_ref, obs);
+        if is_task_schedule_eligible(snapshot, task_node, &claimed_scopes, deps_satisfied) {
+            ready_tasks.push(task_ref.clone());
         }
     }
 
-    let waves = compute_task_waves(snapshot, &task_nodes, obs, &claimed_unfinished_scopes)?;
+    let waves = compute_task_waves(snapshot, &task_nodes, obs, &claimed_scopes)?;
 
     Ok(ScheduleReport {
         pre_task_satisfied,
@@ -223,6 +208,44 @@ pub fn compute_schedule(
         ready_tasks,
         waves,
     })
+}
+
+/// Returns `(task_ref, effective_scope)` for every task that is currently claimed and unfinished.
+pub(crate) fn claimed_unfinished_scopes(snapshot: &RunGraphSnapshot) -> Vec<(TaskRef, Vec<String>)> {
+    snapshot
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Task && is_task_claimed_unfinished(snapshot, n))
+        .filter_map(|n| n.task_ref.clone().map(|tr| (tr, container_scope(snapshot, n))))
+        .collect()
+}
+
+/// Canonical schedule-eligibility check for a task node in an active run graph.
+pub(crate) fn is_task_schedule_eligible(
+    snapshot: &RunGraphSnapshot,
+    task_node: &GateNodeRecord,
+    claimed_unfinished: &[(TaskRef, Vec<String>)],
+    deps_satisfied: bool,
+) -> bool {
+    if !pre_task_barrier_satisfied(snapshot) {
+        return false;
+    }
+    if snapshot.run.isolation == IsolationMode::InPlace && has_any_in_progress_node(snapshot) {
+        return false;
+    }
+    if !matches!(task_node.status, NodeStatus::Ready | NodeStatus::Pending) {
+        return false;
+    }
+    let Some(ref task_ref) = task_node.task_ref else {
+        return false;
+    };
+    if !deps_satisfied {
+        return false;
+    }
+    let my_scope = container_scope(snapshot, task_node);
+    !claimed_unfinished
+        .iter()
+        .any(|(other_ref, other_scope)| other_ref != task_ref && scopes_overlap(&my_scope, other_scope))
 }
 
 fn compute_task_waves(

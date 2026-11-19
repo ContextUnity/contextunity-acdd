@@ -323,11 +323,13 @@ struct ValidatedScopeArg<'a> {
 
 /// Render `command` by resolving `scope_args_by_pattern` against `paths` and substituting every
 /// active `{scope_target}` placeholder using boundary-safe replacement.
+///
+/// Multiple unique matched targets produce independent rendered commands in deterministic order.
 pub fn render_command_with_scope_target(
     command: &str,
     scope_args_by_pattern: &BTreeMap<String, String>,
     paths: &[String],
-) -> Result<String, StateError> {
+) -> Result<Vec<String>, StateError> {
     let cmd_scan = scan_shell_template(command, &["{scope_target}", "{test_filter}"]);
     check_scan_safety(&cmd_scan, "command template")?;
 
@@ -416,26 +418,25 @@ pub fn render_command_with_scope_target(
         .map(|&(_, pos)| pos)
         .collect();
     if selected_args.is_empty() {
-        return Ok(substitute_active_placeholder(
+        return Ok(vec![substitute_active_placeholder(
             command,
             "{scope_target}",
             &scope_positions,
             "",
-        ));
+        )]);
     }
 
-    let joined = selected_args.join(" ");
     if !scope_positions.is_empty() {
-        return Ok(substitute_active_placeholder(
-            command,
-            "{scope_target}",
-            &scope_positions,
-            &joined,
-        ));
+        return Ok(selected_args
+            .into_iter()
+            .map(|arg| {
+                substitute_active_placeholder(command, "{scope_target}", &scope_positions, &arg)
+            })
+            .collect());
     }
 
     if cmd_scan.has_chain_op {
-        return Ok(command.to_owned());
+        return Ok(vec![command.to_owned()]);
     }
 
     let tf_positions: Vec<usize> = cmd_scan
@@ -446,7 +447,10 @@ pub fn render_command_with_scope_target(
         .collect();
     if tf_positions.len() == 1 {
         let (before, after) = command.split_at(tf_positions[0]);
-        Ok(format!("{before}{joined} {after}"))
+        Ok(selected_args
+            .into_iter()
+            .map(|arg| format!("{before}{arg} {after}"))
+            .collect())
     } else if ends_inside_shell_comment(command) {
         Err(StateError::new(
             ErrorCode::ProfileSchemaInvalid,
@@ -455,6 +459,10 @@ pub fn render_command_with_scope_target(
             ),
         ))
     } else {
-        Ok(format!("{} {joined}", command.trim_end()))
+        let base = command.trim_end();
+        Ok(selected_args
+            .into_iter()
+            .map(|arg| format!("{base} {arg}"))
+            .collect())
     }
 }

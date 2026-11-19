@@ -1136,6 +1136,11 @@ mod tests {
 
         // 6. Valid spec with lowercase plan prefix warning + cross-spec planned dependency passes.
         fs::write(
+            root.join("acdd.yaml"),
+            "modules:\n  code: true\n  docs: true\n  state: true\nspecs:\n  milestones:\n    path: docs/milestones\n    prefixes: [AC]\n    digits: 3\n  plans:\n    path: docs/plans\n    prefixes: [PLAN]\n    digits: 3\n",
+        )
+        .unwrap();
+        fs::write(
             root.join("docs/milestones/AC-010-base.md"),
             "---\nid: AC-010-base\ntitle: Base\nstatus: planned\n---\n### task: t1\n```yaml\ntarget: x\nscope: [\"src/{a,b}.rs\"]\n```\n",
         )

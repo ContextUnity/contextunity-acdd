@@ -255,7 +255,8 @@ mod tests {
         assert_eq!(code_review.fail_drift.as_ref().map(|g| g.as_str()), Some("rearchitect"));
         assert_eq!(code_build.checks.len(), 1);
         assert_eq!(code_build.checks[0].check, "code.seam");
-        assert_eq!(code_build.tools.len(), 19);
+        assert!(code_build.tools.is_none(), "inherited tools must stay deduplicated as None");
+        assert_eq!(code_p.effective_tools(code_build).len(), 19);
         assert_eq!(code_build.context.first().map(String::as_str), Some("docs.instructions"));
         let code_rearch = code_tasks.gates.iter().find(|g| g.id == "rearchitect").unwrap();
         assert_eq!(code_rearch.pass.as_ref().map(|g| g.as_str()), Some("build"));
@@ -736,11 +737,11 @@ gates_patch:
         let tasks_block = patched.gates.iter().find_map(|g| g.tasks.as_ref()).unwrap();
         assert_eq!(tasks_block.gates.len(), 4);
         assert_eq!(tasks_block.gates[1].id, "build_audit");
-        assert!(tasks_block.gates[0]
-            .tools
+        assert!(patched
+            .effective_tools(&tasks_block.gates[0])
             .contains(&"code_map_search".to_owned()));
-        assert!(!tasks_block.gates[0]
-            .tools
+        assert!(!patched
+            .effective_tools(&tasks_block.gates[0])
             .contains(&"acdd_blackboard".to_owned()));
         // Field-wise save patch kept immutable while updating post to none:
         assert_eq!(tasks_block.gates[0].save.post, Some(SaveAction::None));
@@ -1436,9 +1437,13 @@ gates_patch:
                 .unwrap();
         let tb = patched.gates.iter().find_map(|g| g.tasks.as_ref()).unwrap();
         let review_g = tb.gates.iter().find(|g| g.id == "review").unwrap();
-        assert!(review_g.tools.is_empty(), "tools: null must clear to []");
+        assert_eq!(review_g.tools.as_deref(), Some(&[][..]), "tools: null must clear to Some([])");
+        assert!(patched.effective_tools(review_g).is_empty());
         let build_g = tb.gates.iter().find(|g| g.id == "build").unwrap();
-        assert_eq!(build_g.tools, vec!["acdd_read".to_owned(), "acdd_verify".to_owned()]);
+        assert_eq!(
+            patched.effective_tools(build_g),
+            &["acdd_read".to_owned(), "acdd_verify".to_owned()]
+        );
 
         let pair_g = patched.gates.iter().find(|g| g.id == "pair_container").unwrap();
         assert_eq!(pair_g.max_attempts, 2);
@@ -1448,18 +1453,26 @@ gates_patch:
         assert_eq!(pair_g.gates[0].command.as_deref(), Some("build_check"));
         assert_eq!(pair_g.gates[1].id, "s2");
 
-        // Top-level scope_args_by_pattern propagation: Script with {scope_target} promoted; per-command takes precedence.
-        match patched.commands.get("test").unwrap() {
-            CommandDef::Detailed(d) => {
-                assert_eq!(d.scope_args_by_pattern.get("crates/a/**").map(String::as_str), Some("-p crate-a"));
-                assert_eq!(d.scope_args_by_pattern.get("crates/b/**").map(String::as_str), Some("-p crate-b"));
-            }
-            other => panic!("expected Detailed promotion for Script with {{scope_target}}, got {other:?}"),
-        }
+        // Top-level scope_args_by_pattern stays deduplicated on profile; per-command overrides stay sparse.
+        assert_eq!(
+            patched.scope_args_by_pattern.get("crates/a/**").map(String::as_str),
+            Some("-p crate-a")
+        );
+        assert_eq!(
+            patched.scope_args_by_pattern.get("crates/b/**").map(String::as_str),
+            Some("-p crate-b")
+        );
+        assert!(matches!(
+            patched.commands.get("test"),
+            Some(CommandDef::Script(s)) if s == "cargo test {scope_target} {test_filter}"
+        ));
         match patched.commands.get("build_check").unwrap() {
             CommandDef::Detailed(d) => {
-                assert_eq!(d.scope_args_by_pattern.get("crates/a/**").map(String::as_str), Some("--package override-a"));
-                assert_eq!(d.scope_args_by_pattern.get("crates/b/**").map(String::as_str), Some("-p crate-b"));
+                assert_eq!(
+                    d.scope_args_by_pattern.get("crates/a/**").map(String::as_str),
+                    Some("--package override-a")
+                );
+                assert!(!d.scope_args_by_pattern.contains_key("crates/b/**"));
             }
             other => panic!("expected Detailed, got {other:?}"),
         }

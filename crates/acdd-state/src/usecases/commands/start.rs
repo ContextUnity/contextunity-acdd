@@ -294,16 +294,8 @@ fn start_holding_repo_lock(
 
     let machine_profile = to_machine_profile(&resolved_profile)?;
 
-    let spec_repos = crate::usecases::deps::resolve_spec_repositories(spec_source, &spec_doc);
     let primary_str = primary.to_string_lossy().into_owned();
-    let machine_spec = build_machine_spec_input(
-        &spec_doc,
-        &primary_str,
-        &run_id,
-        &checkout.linked_workspaces,
-        &spec_repos,
-        &checkout.resolved_state_db_path().0,
-    )?;
+    let machine_spec = build_machine_spec_input(&spec_doc, &primary_str, &run_id, &checkout)?;
 
     let mut graph = build_initial_run_graph(
         &machine_profile,
@@ -326,11 +318,11 @@ fn start_holding_repo_lock(
     graph.run.spec_id = Some(spec_doc.id.clone());
 
     // Check external dependencies at start so already-completed external tasks unlock wave-0 tasks immediately.
-    let ext_satisfied =
-        collect_external_satisfied_deps(&checkout, &run_id, &graph.dependencies)?;
+    let ext_satisfied = collect_external_satisfied_deps(&checkout, &graph)?;
     apply_initial_external_dep_satisfaction(&mut graph, &ext_satisfied);
     let obs = ValidatedObservations {
         external_satisfied_deps: ext_satisfied,
+        external_deps_authoritative: true,
         now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()
     };
@@ -378,8 +370,7 @@ fn start_holding_repo_lock(
                 }
                 let dest_doc = parse_spec(&read_confined_utf8(&created.worktree, graph.run.spec_path.as_deref().unwrap_or_default())?)?;
                 crate::validate::validate_spec_for_run(&destination, backend, provider, &dest_doc, &dest_profile)?;
-                let dest_repos = crate::usecases::deps::resolve_spec_repositories(&created.worktree, &dest_doc);
-                let dest_spec = build_machine_spec_input(&dest_doc, &primary_str, &run_id, &destination.linked_workspaces, &dest_repos, &destination.resolved_state_db_path().0)?;
+                let dest_spec = build_machine_spec_input(&dest_doc, &primary_str, &run_id, &destination)?;
                 if dest_spec != machine_spec {
                     return Err(StateError::new(ErrorCode::ProfileSchemaInvalid, "managed checkout dependency bindings differ from source"));
                 }
@@ -387,8 +378,9 @@ fn start_holding_repo_lock(
                 for dep in &mut observed_deps {
                     dep.satisfied = false;
                 }
-                let dest_satisfied =
-                    collect_external_satisfied_deps(&destination, &run_id, &observed_deps)?;
+                let mut dest_graph = graph.clone();
+                dest_graph.dependencies = observed_deps;
+                let dest_satisfied = collect_external_satisfied_deps(&destination, &dest_graph)?;
                 if dest_satisfied != obs.external_satisfied_deps {
                     return Err(StateError::new(
                         ErrorCode::ProfileSchemaInvalid,
@@ -431,7 +423,6 @@ fn start_holding_repo_lock(
             ),
         )
     })?;
-
 
     let _ = append_trace_event(
         layout,

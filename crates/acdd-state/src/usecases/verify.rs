@@ -342,6 +342,7 @@ pub(crate) fn handle_verify_with_failure_return(
                 command_id: cmd_id.clone(),
                 command: cmd_def,
                 scope: admitted_scope.clone(),
+                profile_scope_args: resolved_profile.scope_args_by_pattern.clone(),
                 test_target: req.test_target.clone(),
                 limits: resolved_profile.limits.clone(),
             })?)
@@ -592,7 +593,12 @@ pub(crate) fn resolve_commands(
     let invocations = resolve_command_for_scope(cmd_def, admitted_scope)?;
     let mut rendered = Vec::with_capacity(invocations.len());
     for inv in invocations {
-        rendered.push(render_invocation_command(&inv, admitted_scope, test_target)?);
+        rendered.extend(render_invocation_command(
+            &inv,
+            admitted_scope,
+            &profile.scope_args_by_pattern,
+            test_target,
+        )?);
     }
     Ok(rendered)
 }

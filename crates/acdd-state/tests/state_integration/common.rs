@@ -199,6 +199,7 @@ pub fn init_git_repo(dir: &Path, branch: &str) -> CommitOid {
     git_ok(dir, &["init", "-b", branch]);
     git_ok(dir, &["config", "user.email", "test@contextunity.local"]);
     git_ok(dir, &["config", "user.name", "ACDD Test"]);
+    git_ok(dir, &["config", "commit.gpgsign", "false"]);
     fs::create_dir_all(dir.join("src")).unwrap();
     fs::write(dir.join("README.md"), "# Test Repo\n").unwrap();
     fs::write(dir.join("src/lib.rs"), "pub fn base() -> i32 { 1 }\n").unwrap();

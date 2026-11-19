@@ -35,6 +35,7 @@ fn command_and_spawner_timeout_kills_process_group_without_sleep() {
         command_id: "hang".to_owned(),
         command: CommandDef::Script("while :; do :; done".to_owned()),
         scope: vec!["src/**".to_owned()],
+        profile_scope_args: BTreeMap::new(),
         test_target: None,
         limits: ResourceLimits::default(),
     };

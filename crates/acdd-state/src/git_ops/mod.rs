@@ -18,8 +18,7 @@ pub use integrate::{
     IntegrateTaskResp, TaskIntegrationCheckInput,
 };
 pub use snapshot::{
-    blob_oid_at, current_scope_tree, diff_scope_changed_paths, list_git_tree_files,
-    tree_entry_at, TemporaryGitIndex,
+    blob_oid_at, current_scope_tree, diff_scope_changed_paths, tree_entry_at, TemporaryGitIndex,
 };
 pub use worktree::{
     canonicalize_macos_var, cleanup_run_refs, create_run_worktree, create_task_worktree,

@@ -49,6 +49,7 @@ fn command_escaping_and_line_bounds_matrix() {
             command_id: "test".to_owned(),
             command: escape_cmd.clone(),
             scope: vec!["src/**".to_owned()],
+            profile_scope_args: BTreeMap::new(),
             test_target: Some(target.to_owned()),
             limits: ResourceLimits::default(),
         };
@@ -81,6 +82,7 @@ fn command_escaping_and_line_bounds_matrix() {
         command_id: "chained".to_owned(),
         command: CommandDef::Script("echo a && echo b".to_owned()),
         scope: vec!["src/**".to_owned()],
+        profile_scope_args: BTreeMap::new(),
         test_target: Some("t::x".to_owned()),
         limits: ResourceLimits::default(),
     };
@@ -109,6 +111,7 @@ fn command_escaping_and_line_bounds_matrix() {
             scope_args_by_pattern: BTreeMap::new(),
         })),
         scope: vec!["src/**".to_owned()],
+        profile_scope_args: BTreeMap::new(),
         test_target: None,
         limits: ResourceLimits {
             max_line_bytes: 64,
@@ -168,6 +171,7 @@ fn command_escaping_and_line_bounds_matrix() {
         command_id: "pat".to_owned(),
         command: pat_cmd,
         scope: vec!["crates/acdd-state/src/runner/**".to_owned()],
+        profile_scope_args: BTreeMap::new(),
         test_target: None,
         limits: ResourceLimits::default(),
     };
@@ -352,71 +356,72 @@ fn scope_args_pattern_expands_file_stem_and_path_skipping_globs() {
     map.insert("tests/*.rs".to_owned(), "--test {file_stem}".to_owned());
     map.insert("src/**/*.rs".to_owned(), "--file {path}".to_owned());
 
-    let cases = [
+    let cases: &[(&[&str], &str, &[&str])] = &[
         (
-            vec!["tests/integration_a.rs", "tests/*.rs"],
+            &["tests/integration_a.rs", "tests/*.rs"],
             "cargo test {scope_target} {test_filter}",
-            "cargo test --test 'integration_a' {test_filter}",
+            &["cargo test --test 'integration_a' {test_filter}"],
         ),
         (
-            vec!["tests/*.rs"],
+            &["tests/*.rs"],
             "cargo test {scope_target}",
-            "cargo test",
+            &["cargo test"],
         ),
         (
-            vec!["src/lib.rs", "tests/api.rs"],
+            &["src/lib.rs", "tests/api.rs"],
             "tool {scope_target}",
-            "tool --file 'src/lib.rs' --test 'api'",
+            &["tool --file 'src/lib.rs'", "tool --test 'api'"],
         ),
         (
-            vec!["tests/my file $(touch pwned).rs"],
+            &["tests/my file $(touch pwned).rs"],
             "cargo test {scope_target}",
-            "cargo test --test 'my file $(touch pwned)'",
+            &["cargo test --test 'my file $(touch pwned)'"],
         ),
         (
-            vec!["src/dir with spaces/a'b$(touch pwned2);echo inj.rs"],
+            &["src/dir with spaces/a'b$(touch pwned2);echo inj.rs"],
             "tool {scope_target}",
-            "tool --file 'src/dir with spaces/a'\\''b$(touch pwned2);echo inj.rs'",
+            &["tool --file 'src/dir with spaces/a'\\''b$(touch pwned2);echo inj.rs'"],
         ),
         // #9: Empty args remove only `{scope_target}` + one adjacent space (preserving `a  b`),
         // and non-empty args expand EVERY active `{scope_target}` placeholder.
         (
-            vec!["tests/*.rs"],
+            &["tests/*.rs"],
             "echo {scope_target} a  b",
-            "echo a  b",
+            &["echo a  b"],
         ),
         (
-            vec!["tests/*.rs"],
+            &["tests/*.rs"],
             "a  b {scope_target}",
-            "a  b",
+            &["a  b"],
         ),
         (
-            vec!["src/lib.rs"],
+            &["src/lib.rs"],
             "a {scope_target} && b {scope_target}",
-            "a --file 'src/lib.rs' && b --file 'src/lib.rs'",
+            &["a --file 'src/lib.rs' && b --file 'src/lib.rs'"],
         ),
         (
-            vec!["tests/*.rs"],
+            &["tests/*.rs"],
             "left {scope_target}right",
-            "left right",
+            &["left right"],
         ),
         (
-            vec!["tests/*.rs"],
+            &["tests/*.rs"],
             "left{scope_target} right",
-            "left right",
+            &["left right"],
         ),
         (
-            vec!["tests/*.rs"],
+            &["tests/*.rs"],
             "x{scope_target} {scope_target}y",
-            "x y",
+            &["x y"],
         ),
     ];
 
-    for (raw_paths, tpl, expected) in cases {
-        let paths: Vec<String> = raw_paths.into_iter().map(str::to_owned).collect();
+    for &(raw_paths, tpl, expected) in cases {
+        let paths: Vec<String> = raw_paths.iter().copied().map(str::to_owned).collect();
         let resolved = acdd_state::profile::render_command_with_scope_target(tpl, &map, &paths)
             .expect("valid template should expand");
-        assert_eq!(resolved, expected);
+        let expected_vec: Vec<String> = expected.iter().copied().map(str::to_owned).collect();
+        assert_eq!(resolved, expected_vec);
     }
 
     // Reject quoted/escaped placeholders or unbalanced quotes in command and scope_args_by_pattern templates.
@@ -467,6 +472,7 @@ fn scope_args_pattern_expands_file_stem_and_path_skipping_globs() {
             "tests/my file $(touch pwned).rs".to_owned(),
             "src/dir with spaces/a'b$(touch pwned2);echo inj.rs".to_owned(),
         ],
+        profile_scope_args: BTreeMap::new(),
         test_target: None,
         limits: ResourceLimits::default(),
     };

@@ -927,6 +927,9 @@ pub struct ValidatedObservations {
     pub unintegrated_tasks: Vec<TaskRef>,
     /// External cross-workspace dependencies confirmed completed (`(workspace, run_id, task_ref)`).
     pub external_satisfied_deps: Vec<(String, RunId, TaskRef)>,
+    /// Whether external dependency observations replace persisted satisfaction flags.
+    #[serde(default)]
+    pub external_deps_authoritative: bool,
     /// Optional workspace path policy resolved by the shell (incorporating custom `state_db`/`code_db` overrides).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_policy: Option<acdd_core::path_policy::WorkspacePathPolicy>,

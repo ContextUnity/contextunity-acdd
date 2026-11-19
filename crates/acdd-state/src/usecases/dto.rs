@@ -792,6 +792,179 @@ pub struct ValidateResp {
     pub warnings: Vec<Value>,
 }
 
+/// Read-only request payload for `StateQuery::Roadmap`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RoadmapReq {
+    /// Optional spec ID filter / drill-down selector (including archived specs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec_id: Option<String>,
+    /// Optional spec collection display filter applied after building the full cross-collection DAG.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
+    /// Show only Wave 0 ready specs.
+    #[serde(default)]
+    pub ready_only: bool,
+    /// Show only in-progress specs (active runs).
+    #[serde(default)]
+    pub active_only: bool,
+    /// Include intra-spec task drill-down for every returned spec.
+    #[serde(default)]
+    pub include_tasks: bool,
+    /// Include archived specs in `archived` output (archived specs always count in `archived_count` and dependency resolution).
+    #[serde(default)]
+    pub archived: bool,
+    /// Restrict spec discovery strictly to the current workspace/worktree (`--current`).
+    #[serde(default)]
+    pub current_only: bool,
+}
+
+/// Worktree copy summary when a spec diverges across Git worktrees.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RoadmapWorktreeCopy {
+    /// Worktree label/path (e.g. `"main"` or `".worktrees/feat-x"`).
+    pub worktree: String,
+    /// Lifecycle status in that worktree (`"archived"`, `"active"`, `"planned"`, `"cancelled"`).
+    pub status: String,
+    /// Whether this copy was selected as canonical.
+    pub canonical: bool,
+}
+
+/// Resolved dependency status entry in [`RoadmapSpecEntry`] or [`RoadmapTaskEntry`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RoadmapDepEntry {
+    /// Raw `depends_on` string as written in the spec.
+    pub raw: String,
+    /// Resolved status (`satisfied`, `archived`, `active`, `planned`, `cancelled`, `cleared`, `missing`).
+    pub status: String,
+    /// Whether the dependency is currently satisfied.
+    pub satisfied: bool,
+}
+
+/// Active gate cursor and worker entry on an in-progress run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RoadmapActiveGateEntry {
+    /// Node cursor string (e.g. `T-02.build`).
+    pub cursor: String,
+    /// Gate node status (e.g. `active`).
+    pub status: String,
+    /// Claiming worker ID if claimed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+}
+
+/// Task-level drill-down entry inside [`RoadmapSpecEntry`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RoadmapTaskEntry {
+    /// Task reference (`T-01`, etc.).
+    pub task_ref: String,
+    /// Task target summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// Live or planned task status (`planned`, `ready`, `in_progress`, `completed`, `cancelled`).
+    pub status: String,
+    /// Intra-spec topological wave (`0..M`).
+    pub wave: usize,
+    /// Task dependencies with resolved satisfaction status.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<RoadmapDepEntry>,
+    /// Reverse dependencies (`<task_ref>` or `<spec_id>:<task_ref>`) blocked by this task.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<String>,
+    /// Effective write scope globs for this task.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope: Vec<String>,
+    /// Other tasks in the same intra-spec wave whose scopes overlap.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_overlaps: Vec<String>,
+    /// Active gate cursors on this task (when part of an active run).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_gates: Vec<RoadmapActiveGateEntry>,
+}
+
+/// Spec entry in `RoadmapResp` (`in_progress`, `waves`, or `archived`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RoadmapSpecEntry {
+    /// Specification document ID.
+    pub spec_id: String,
+    /// Specification title.
+    pub title: String,
+    /// Spec collection name (`plans`, `milestones`, `specs`, etc.).
+    pub collection: String,
+    /// Workspace-relative spec file path.
+    pub path: String,
+    /// Document type (`contract`, `plan`, etc.).
+    pub doc_type: String,
+    /// Effective spec status (`planned`, `ready`, `in_progress`, `completed`, `cancelled`, `archived`).
+    pub status: String,
+    /// Active run ID if this spec has an active run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Active run worktree path if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
+    /// Source worktree label when discovered only in a secondary worktree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_worktree: Option<String>,
+    /// Divergent worktree copies when the same `spec_id` differs across Git worktrees.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub divergence: Vec<RoadmapWorktreeCopy>,
+    /// Number of completed tasks (from active run or spec document).
+    pub completed_tasks: usize,
+    /// Total number of tasks in this spec.
+    pub total_tasks: usize,
+    /// Active gate cursors on the run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_gates: Vec<RoadmapActiveGateEntry>,
+    /// Transitive count of downstream specs unblocked by this spec.
+    pub unblocks_specs: usize,
+    /// Transitive count of downstream tasks unblocked by this spec.
+    pub unblocks_tasks: usize,
+    /// True when no other spec in the same wave/active tier overlaps this spec's write scope.
+    pub parallel_safe: bool,
+    /// Spec IDs in the same wave/active tier whose write scopes overlap this spec.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_overlaps: Vec<String>,
+    /// Spec-level dependencies with resolved satisfaction status.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<RoadmapDepEntry>,
+    /// Reverse dependencies (`<spec_id>` or `<spec_id>:<task_ref>`) blocked by this spec.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<String>,
+    /// Task drill-down entries (populated when `spec_id` is requested or `include_tasks` is true).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<RoadmapTaskEntry>,
+}
+
+/// Topological wave of planned specs ordered by critical-path priority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RoadmapWave {
+    /// Zero-based wave index (`0` = ready now).
+    pub wave: usize,
+    /// Specs in this wave sorted descending by `(unblocks_specs, unblocks_tasks)` then `spec_id`.
+    pub specs: Vec<RoadmapSpecEntry>,
+}
+
+/// Read-only response returned by `StateQuery::Roadmap`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RoadmapResp {
+    /// Specs with an active `Run`.
+    pub in_progress: Vec<RoadmapSpecEntry>,
+    /// Planned specs grouped into topological waves (`Wave 0` = ready).
+    pub waves: Vec<RoadmapWave>,
+    /// Archived specs (populated when `include_archived == true` or `spec_id` targets an archived spec).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archived: Vec<RoadmapSpecEntry>,
+    /// Total count of archived specs discovered across collections.
+    pub archived_count: usize,
+    /// Spec dependency cycles detected during topological layering, if any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cycles: Vec<Vec<String>>,
+    /// Cross-worktree divergence warnings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
 /// All read-only state queries executed directly over `dyn StateReader` by [`super::StateQueryEngine`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum StateQuery {
@@ -811,6 +984,8 @@ pub enum StateQuery {
     Validate(ValidateReq),
     /// Assemble a budgeted `ClaimResp` without mutating claim state.
     Context(ContextReq),
+    /// Compute cross-collection roadmap, dependency waves, priority, overlaps, and task drill-down.
+    Roadmap(RoadmapReq),
 }
 
 /// Typed output returned by [`super::StateQueryEngine::query`].
@@ -832,6 +1007,8 @@ pub enum StateQueryOutput {
     Validate(ValidateResp),
     /// Output of `Context` (`ClaimResp` assembled read-only).
     Context(Box<crate::context::ClaimResp>),
+    /// Output of `Roadmap`.
+    Roadmap(Box<RoadmapResp>),
 }
 
 impl StateQueryOutput {
@@ -846,6 +1023,7 @@ impl StateQueryOutput {
             Self::Observability(resp) => serde_json::to_value(resp),
             Self::Validate(resp) => serde_json::to_value(resp),
             Self::Context(resp) => serde_json::to_value(resp),
+            Self::Roadmap(resp) => serde_json::to_value(resp),
         }
     }
 }

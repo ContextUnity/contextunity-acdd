@@ -66,12 +66,13 @@ fn claim_holding_repo_lock(
     let resolved_profile = parse_profile_from_run(&snapshot.run)?;
     let machine_profile = to_machine_profile(&resolved_profile)?;
     let ext_deps =
-        collect_external_satisfied_deps(config, &snapshot.run.run_id, &snapshot.dependencies)?;
+        collect_external_satisfied_deps(config, &snapshot)?;
     let unintegrated_tasks = compute_unintegrated_tasks(config, &snapshot)?;
     let now_utc = acdd_core::telemetry::now_utc_iso_ms();
 
     let sched_obs = ValidatedObservations {
         external_satisfied_deps: ext_deps.clone(),
+        external_deps_authoritative: true,
         unintegrated_tasks,
         now_utc: now_utc.clone(),
         ..ValidatedObservations::default()

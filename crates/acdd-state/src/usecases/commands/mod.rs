@@ -18,11 +18,11 @@ pub(crate) use task_ops::{
 use crate::git_ops::worktree::canonicalize_macos_var;
 use crate::machine::{MachineSpecInput, MachineSubtaskInput, MachineTaskSpec};
 use crate::spec::SpecDocument;
-use crate::usecases::deps::{parse_task_dependency, parse_task_dependency_with_db};
+use crate::usecases::deps::{parse_task_dependency_with_db, resolve_spec_repositories};
+use crate::usecases::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{RunId, RunName};
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub(super) fn ensure_no_managed_worktree_collision(
     primary: &Path,
@@ -59,10 +59,10 @@ pub(super) fn build_machine_spec_input(
     doc: &SpecDocument,
     primary_workspace: &str,
     run_id: &RunId,
-    linked_workspaces: &BTreeMap<String, PathBuf>,
-    spec_repos: &BTreeMap<String, PathBuf>,
-    local_db: &Path,
+    config: &StateEngineConfig,
 ) -> Result<MachineSpecInput, StateError> {
+    let spec_repos = resolve_spec_repositories(&config.worktree, doc);
+    let state_db = config.resolved_state_db_path().0;
     let local_task_refs: std::collections::BTreeSet<&str> =
         doc.tasks.iter().map(|t| t.task_ref.as_str()).collect();
     let mut tasks = Vec::with_capacity(doc.tasks.len());
@@ -73,10 +73,10 @@ pub(super) fn build_machine_spec_input(
                 raw_dep,
                 primary_workspace,
                 run_id,
-                linked_workspaces,
-                spec_repos,
+                &config.linked_workspaces,
+                &spec_repos,
                 &local_task_refs,
-                Some((Path::new(primary_workspace), local_db)),
+                Some((Path::new(primary_workspace), &state_db)),
             )?);
         }
         let subtasks = t

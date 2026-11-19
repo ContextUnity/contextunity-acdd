@@ -262,7 +262,7 @@ fn build_schedule_observations(
     snapshot: &RunGraphSnapshot,
 ) -> Result<ValidatedObservations, StateError> {
     let external_satisfied_deps =
-        collect_external_satisfied_deps(config, &snapshot.run.run_id, &snapshot.dependencies)?;
+        collect_external_satisfied_deps(config, snapshot)?;
     let unintegrated_tasks = if snapshot.run.isolation == IsolationMode::Worktree
         && all_non_cancelled_tasks_completed(snapshot)
     {
@@ -281,6 +281,7 @@ fn build_schedule_observations(
 
     Ok(ValidatedObservations {
         external_satisfied_deps,
+        external_deps_authoritative: true,
         unintegrated_tasks,
         now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()

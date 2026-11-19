@@ -870,8 +870,9 @@ pub struct GateDef {
     pub when: Option<String>,
     /// Declared proof contract (`none` when omitted).
     pub proof: ProofDef,
-    /// Resolved tool allowlist (inherited from `default_tools` if omitted, then modified by `tools_add`/`tools_remove`).
-    pub tools: Vec<String>,
+    /// Optional per-gate tool allowlist override (`None` inherits `profile.default_tools`; `Some([])` clears).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<String>>,
     /// Tools referenced in `tools_remove` patches, retained strictly for fail-closed validation.
     #[serde(skip)]
     pub(crate) tools_removed_for_validation: Vec<String>,
@@ -951,7 +952,7 @@ impl Default for GateDef {
             use_template: None,
             when: None,
             proof: ProofDef::default(),
-            tools: Vec::new(),
+            tools: None,
             tools_removed_for_validation: Vec::new(),
             guidance: Vec::new(),
             contours: Vec::new(),
@@ -1252,6 +1253,11 @@ impl Default for ResolvedGateProfile {
 }
 
 impl ResolvedGateProfile {
+    /// Return the effective tool allowlist for `gate`, falling back to `self.default_tools` when `gate.tools` is `None`.
+    pub fn effective_tools<'a>(&'a self, gate: &'a GateDef) -> &'a [String] {
+        gate.tools.as_deref().unwrap_or(&self.default_tools)
+    }
+
     /// Serialize this resolved profile into canonical JSON for storage in `runs.profile_json`.
     pub fn to_canonical_json(&self) -> Result<String, StateError> {
         let value = serde_json::to_value(self).map_err(|err| {

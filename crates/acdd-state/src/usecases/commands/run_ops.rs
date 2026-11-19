@@ -229,20 +229,13 @@ pub(crate) fn handle_sync_dyn(
         let effective_profile = rebound_resolved.as_ref().unwrap_or(&current_resolved);
         crate::validate::validate_spec_for_run(&checkout, backend, provider, &doc, effective_profile)?;
 
-        let spec_repos = crate::usecases::deps::resolve_spec_repositories(&checkout.worktree, &doc);
         let primary_str = primary.to_string_lossy().into_owned();
-        let machine_spec = build_machine_spec_input(
-            &doc,
-            &primary_str,
-            &snapshot.run.run_id,
-            &checkout.linked_workspaces,
-            &spec_repos,
-            &checkout.resolved_state_db_path().0,
-        )?;
-        let ext_deps =
-            collect_external_satisfied_deps(&checkout, &snapshot.run.run_id, &snapshot.dependencies)?;
+        let machine_spec =
+            build_machine_spec_input(&doc, &primary_str, &snapshot.run.run_id, &checkout)?;
+        let ext_deps = collect_external_satisfied_deps(&checkout, &snapshot)?;
         let obs = ValidatedObservations {
             external_satisfied_deps: ext_deps,
+            external_deps_authoritative: true,
             now_utc: acdd_core::telemetry::now_utc_iso_ms(),
             ..ValidatedObservations::default()
         };

@@ -10,9 +10,9 @@ use acdd_state::types::{
     SubtaskStatus, TerminalStatus, TraceFinishInput, TraceStartInput, TraceStatus, TransitionPlan,
 };
 use acdd_state::usecases::dto::{
-    BlackboardPostReq, BlackboardReadReq, CallPluginToolReq, ClaimReq, ClearReq, DraftReq,
-    ContextReq, ExtendScopeReq, ListReq, NextReq, ObservabilityReq, ReopenReq, ShowReq, StartReq, StatusReq,
-    SubtaskReq, SyncReq,
+    BlackboardPostReq, BlackboardReadReq, CallPluginToolReq, ClaimReq, ClearReq, ContextReq,
+    DraftReq, ExtendScopeReq, ListReq, NextReq, ObservabilityReq, ReopenReq, ShowReq, StartReq,
+    StatusReq, SubtaskReq, SyncReq,
 };
 use acdd_state::usecases::{
     execute_on, queries, StateCommand, StateCommandOutput, StateEngine, StateQuery,
@@ -1768,8 +1768,13 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
         "---\nid: AC-005\ntitle: Next\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\ndepends_on: [my-slug]\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
     )
     .unwrap();
-    let report = acdd_state::validate::validate_workspace(root, None, Some("base"), &provider).unwrap();
-    assert!(report.valid, "expected valid workspace, got: {:?}", report.diagnostics);
+    let report =
+        acdd_state::validate::validate_workspace(root, None, Some("base"), &provider).unwrap();
+    assert!(
+        report.valid,
+        "expected valid workspace, got: {:?}",
+        report.diagnostics
+    );
 
     // Cross-spec cycle via task-to-whole-spec dep must be rejected.
     fs::write(
@@ -1777,7 +1782,8 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
         "---\nid: my-slug\ntitle: My Plan\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\ndepends_on: [AC-005]\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
     )
     .unwrap();
-    let cycle_report = acdd_state::validate::validate_workspace(root, None, Some("base"), &provider).unwrap();
+    let cycle_report =
+        acdd_state::validate::validate_workspace(root, None, Some("base"), &provider).unwrap();
     assert!(!cycle_report.valid, "expected cross-spec cycle failure");
 
     // Restore acyclic my-slug and start AC-005: T1 must be blocked until my-slug completes.
@@ -1880,8 +1886,13 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
     .unwrap();
     git_ok(git_root, &["add", "-A"]);
     git_ok(git_root, &["commit", "-m", "commit glob archive"]);
-    let git_report = acdd_state::validate::validate_workspace(git_root, None, Some("base"), &provider).unwrap();
-    assert!(git_report.valid, "expected valid glob archive dep, got: {:?}", git_report.diagnostics);
+    let git_report =
+        acdd_state::validate::validate_workspace(git_root, None, Some("base"), &provider).unwrap();
+    assert!(
+        git_report.valid,
+        "expected valid glob archive dep, got: {:?}",
+        git_report.diagnostics
+    );
 
     // Linked-workspace cross-spec cycle (`AC-011 -> other/B-001 -> back/AC-011`) must be rejected.
     fs::create_dir_all(linked_root.join("docs/milestones")).unwrap();
@@ -1903,8 +1914,12 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
         "---\nid: AC-011\ntitle: Nested\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\ndepends_on: [other/B-001]\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
     )
     .unwrap();
-    let lw_cycle_report = acdd_state::validate::validate_workspace(git_root, None, Some("base"), &provider).unwrap();
-    assert!(!lw_cycle_report.valid, "expected linked-workspace cross-spec cycle failure");
+    let lw_cycle_report =
+        acdd_state::validate::validate_workspace(git_root, None, Some("base"), &provider).unwrap();
+    assert!(
+        !lw_cycle_report.valid,
+        "expected linked-workspace cross-spec cycle failure"
+    );
 
     // 5. `extensions/**/docs/milestones` archives `extensions/pkg/docs/milestones/team/target.md` -> `extensions/pkg/docs/milestones/archive/target.md`
     //    and satisfies `resolve_dep_target` across both Git and non-Git workspaces.
@@ -1917,7 +1932,9 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
         "roots: [.]\nmodules:\n  code: false\n  docs: false\nspecs:\n  milestones:\n    paths:\n      - docs/milestones\n      - extensions/**/docs/milestones\n    prefixes: [AC]\n    digits: 3\n",
     )
     .unwrap();
-    let deep_cols = acdd_core::config::load_adapter(nongit_root, None).unwrap().specs;
+    let deep_cols = acdd_core::config::load_adapter(nongit_root, None)
+        .unwrap()
+        .specs;
     assert_eq!(
         deep_cols["milestones"]
             .matched_concrete_root("extensions/pkg/docs/milestones/team/target.md")
@@ -1934,8 +1951,14 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
         "---\nid: AC-021\ntitle: Consumer\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\ndepends_on: [AC-020]\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
     )
     .unwrap();
-    let nongit_report = acdd_state::validate::validate_workspace(nongit_root, None, Some("base"), &provider).unwrap();
-    assert!(nongit_report.valid, "expected valid non-git deep glob archive dep, got: {:?}", nongit_report.diagnostics);
+    let nongit_report =
+        acdd_state::validate::validate_workspace(nongit_root, None, Some("base"), &provider)
+            .unwrap();
+    assert!(
+        nongit_report.valid,
+        "expected valid non-git deep glob archive dep, got: {:?}",
+        nongit_report.diagnostics
+    );
 
     // Reject `extensions/pkg/docs/milestones/team/archive/` in both non-Git and Git modes under `extensions/**/docs/milestones`.
     fs::create_dir_all(nongit_root.join("extensions/pkg/docs/milestones/team/archive")).unwrap();
@@ -1949,19 +1972,37 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
         "---\nid: AC-021\ntitle: Consumer\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\ndepends_on: [AC-022]\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
     )
     .unwrap();
-    let nongit_sub_report = acdd_state::validate::validate_workspace(nongit_root, None, Some("base"), &provider).unwrap();
-    assert!(!nongit_sub_report.valid, "non-git mode must reject team/archive/ under extensions/**/docs/milestones");
+    let nongit_sub_report =
+        acdd_state::validate::validate_workspace(nongit_root, None, Some("base"), &provider)
+            .unwrap();
+    assert!(
+        !nongit_sub_report.valid,
+        "non-git mode must reject team/archive/ under extensions/**/docs/milestones"
+    );
 
     let _ = init_git_repo(nongit_root, "main");
     git_ok(nongit_root, &["add", "-A"]);
     git_ok(nongit_root, &["commit", "-m", "deep glob archive parity"]);
-    let git_sub_report = acdd_state::validate::validate_workspace(nongit_root, None, Some("base"), &provider).unwrap();
-    assert!(!git_sub_report.valid, "git mode must also reject team/archive/ under extensions/**/docs/milestones");
+    let git_sub_report =
+        acdd_state::validate::validate_workspace(nongit_root, None, Some("base"), &provider)
+            .unwrap();
+    assert!(
+        !git_sub_report.valid,
+        "git mode must also reject team/archive/ under extensions/**/docs/milestones"
+    );
 
     // 6. Parity matrix: `docs/milestones/**` rejects `team/archive/` and literal `docs/milestones` rejects `archive/team/` in both non-Git and Git modes.
     for (pat, bad_archive_rel, target_id) in [
-        ("docs/milestones/**", "docs/milestones/team/archive/AC-030.md", "AC-030"),
-        ("docs/milestones", "docs/milestones/archive/team/AC-031.md", "AC-031"),
+        (
+            "docs/milestones/**",
+            "docs/milestones/team/archive/AC-030.md",
+            "AC-030",
+        ),
+        (
+            "docs/milestones",
+            "docs/milestones/archive/team/AC-031.md",
+            "AC-031",
+        ),
     ] {
         let p_tmp = make_temp_dir("archive-parity");
         let p_root = p_tmp.path();

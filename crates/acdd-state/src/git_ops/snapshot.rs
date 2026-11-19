@@ -531,11 +531,19 @@ pub fn blob_oid_at(
 }
 
 /// List normalized relative file paths directly inside `dir_rel` at `tree_or_commit`.
-pub fn list_git_tree_files(
-    worktree: &Path,
-    tree_or_commit: &str,
-    dir_rel: &str,
-) -> Result<Vec<String>, StateError> {
+/// Git tree entry returned by [`list_git_tree_entries`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitTreeEntry {
+    /// Git file mode (`"100644"`, `"100755"`, `"120000"`, etc.).
+    pub mode: String,
+    /// Git blob object ID from `ls-tree`.
+    pub oid: String,
+    /// Exact raw repository-relative path bytes from `git ls-tree -z` (without `\` -> `/` rewriting).
+    pub raw_path: Vec<u8>,
+}
+
+/// Resolve `tree_or_commit` to its immutable Git tree object ID.
+pub fn resolve_git_tree_oid(worktree: &Path, tree_or_commit: &str) -> Result<String, StateError> {
     let trimmed = tree_or_commit.trim();
     if trimmed.is_empty() || trimmed.starts_with('-') {
         return Err(StateError::new(
@@ -543,17 +551,44 @@ pub fn list_git_tree_files(
             format!("invalid tree/commit reference '{tree_or_commit}'"),
         ));
     }
-    let trimmed_dir = dir_rel.trim();
-    let dir_prefix = if trimmed_dir.is_empty() || trimmed_dir == "." {
+    let tree_spec = format!("{trimmed}^{{tree}}");
+    let oid = run_git_stdout(
+        worktree,
+        &["rev-parse", "--verify", &tree_spec],
+        None,
+        ErrorCode::ExternalGitDrift,
+    )?;
+    Ok(oid.trim().to_owned())
+}
+
+/// List blob entries (`mode`, `path`) under `dir_rel` in `tree_or_commit`.
+pub fn list_git_tree_entries(
+    worktree: &Path,
+    tree_or_commit: &str,
+    dir_rel: &str,
+) -> Result<Vec<GitTreeEntry>, StateError> {
+    let trimmed = tree_or_commit.trim();
+    if trimmed.is_empty() || trimmed.starts_with('-') {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("invalid tree/commit reference '{tree_or_commit}'"),
+        ));
+    }
+    let dir_prefix = if dir_rel.is_empty() || dir_rel == "." {
         None
     } else {
-        let Some(norm_dir) = normalize_rel_path(trimmed_dir) else {
+        let stripped = dir_rel.strip_prefix("./").unwrap_or(dir_rel).trim_end_matches('/');
+        if stripped.is_empty()
+            || stripped
+                .split('/')
+                .any(|s| s.is_empty() || s == "." || s == ".." || s.contains('\\'))
+        {
             return Err(StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
                 format!("invalid repository-relative directory '{dir_rel}'"),
             ));
-        };
-        Some(format!("{norm_dir}/"))
+        }
+        Some(format!("{stripped}/"))
     };
     let tree_spec = format!("{trimmed}^{{tree}}");
     run_git_stdout(
@@ -578,21 +613,29 @@ pub fn list_git_tree_files(
             ErrorCode::ExternalGitDrift,
         )?,
     };
-    let mut files = Vec::new();
+    let mut entries = Vec::new();
     for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
         let Some(tab) = record.iter().position(|b| *b == b'\t') else {
             continue;
         };
         let header = String::from_utf8_lossy(&record[..tab]);
-        let kind = header.split_whitespace().nth(1);
+        let mut parts = header.split_whitespace();
+        let Some(mode) = parts.next() else {
+            continue;
+        };
+        let kind = parts.next();
         if kind != Some("blob") {
             continue;
         }
-        let path_raw = String::from_utf8_lossy(&record[tab + 1..]);
-        if let Some(norm) = normalize_rel_path(&path_raw) {
-            files.push(norm);
-        }
+        let Some(oid) = parts.next() else {
+            continue;
+        };
+        entries.push(GitTreeEntry {
+            mode: mode.to_owned(),
+            oid: oid.to_owned(),
+            raw_path: record[tab + 1..].to_vec(),
+        });
     }
-    files.sort();
-    Ok(files)
+    entries.sort_by(|a, b| a.raw_path.cmp(&b.raw_path));
+    Ok(entries)
 }

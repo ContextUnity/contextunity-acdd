@@ -10,6 +10,8 @@ use crate::runner::{
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, RunId};
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
@@ -34,6 +36,8 @@ pub struct CommandExecReq {
     pub command: CommandDef,
     /// Admitted scope globs/paths used for pattern matching and `{scope_target}`.
     pub scope: Vec<String>,
+    /// Profile-level path-pattern `{scope_target}` argument fallbacks.
+    pub profile_scope_args: BTreeMap<String, String>,
     /// Optional `--test` target supplied by caller.
     pub test_target: Option<String>,
     /// Resource and timeout limits from `profile.limits`.
@@ -105,16 +109,32 @@ fn invocation_match_paths<'a>(
     }
 }
 
-/// Render one resolved command invocation by expanding `{scope_target}` before `{test_filter}`.
+/// Render one resolved command invocation into one or more independent shell commands by
+/// expanding `{scope_target}` per unique matched target before `{test_filter}`.
 pub(crate) fn render_invocation_command(
     inv: &ResolvedCommandInvocation,
     admitted_scope: &[String],
+    profile_scope_args: &BTreeMap<String, String>,
     test_target: Option<&str>,
-) -> Result<String, StateError> {
+) -> Result<Vec<String>, StateError> {
     let match_paths = invocation_match_paths(inv, admitted_scope);
-    let cmd_with_scope =
-        render_command_with_scope_target(&inv.command, &inv.scope_args_by_pattern, match_paths)?;
-    render_command_with_test_filter(&cmd_with_scope, inv.test_filter.as_ref(), test_target)
+    let effective_scope_args: Cow<'_, BTreeMap<String, String>> = if profile_scope_args.is_empty() {
+        Cow::Borrowed(&inv.scope_args_by_pattern)
+    } else if inv.scope_args_by_pattern.is_empty() {
+        Cow::Borrowed(profile_scope_args)
+    } else {
+        let mut merged = profile_scope_args.clone();
+        for (k, v) in &inv.scope_args_by_pattern {
+            merged.insert(k.clone(), v.clone());
+        }
+        Cow::Owned(merged)
+    };
+    let cmds_with_scope =
+        render_command_with_scope_target(&inv.command, &effective_scope_args, match_paths)?;
+    cmds_with_scope
+        .into_iter()
+        .map(|cmd| render_command_with_test_filter(&cmd, inv.test_filter.as_ref(), test_target))
+        .collect()
 }
 
 /// Execute gate command(s) in an isolated process group with bounded line/log capture.
@@ -164,10 +184,12 @@ pub(super) fn execute_gate_commands_inner(
     let mut stderr_retained = String::new();
 
     for inv in &invocations {
-        let rendered_cmd =
-            render_invocation_command(inv, &req.scope, req.test_target.as_deref())?;
-        rendered_commands.push(rendered_cmd.clone());
-
+        let rendered_cmds = render_invocation_command(
+            inv,
+            &req.scope,
+            &req.profile_scope_args,
+            req.test_target.as_deref(),
+        )?;
         let timeout = timeout_override.unwrap_or_else(|| {
             let secs = inv
                 .timeout_seconds
@@ -177,35 +199,43 @@ pub(super) fn execute_gate_commands_inner(
             Duration::from_secs(secs)
         });
 
-        let mut cmd = shell_command(&rendered_cmd);
-        cmd.current_dir(&req.worktree);
-        sanitize_command_process(&mut cmd);
+        for rendered_cmd in rendered_cmds {
+            rendered_commands.push(rendered_cmd.clone());
 
-        let outcome = run_isolated_process(
-            &mut cmd,
-            None,
-            timeout,
-            req.limits.max_line_bytes,
-            &mut |stream, line| {
-                log_writer.write_line(line).map_err(|err| {
-                    StateError::new(
-                        ErrorCode::GateVerificationFailed,
-                        format!("failed writing command log: {err}"),
-                    )
-                })?;
-                observe_bounded_output(
-                    stream,
-                    line,
-                    max_capture_bytes,
-                    &mut captured_bytes,
-                    &mut stderr_retained,
-                );
-                Ok(())
-            },
-        )?;
+            let mut cmd = shell_command(&rendered_cmd);
+            cmd.current_dir(&req.worktree);
+            sanitize_command_process(&mut cmd);
 
-        last_exit_code = outcome.exit_code;
-        timed_out = outcome.timed_out;
+            let outcome = run_isolated_process(
+                &mut cmd,
+                None,
+                timeout,
+                req.limits.max_line_bytes,
+                &mut |stream, line| {
+                    log_writer.write_line(line).map_err(|err| {
+                        StateError::new(
+                            ErrorCode::GateVerificationFailed,
+                            format!("failed writing command log: {err}"),
+                        )
+                    })?;
+                    observe_bounded_output(
+                        stream,
+                        line,
+                        max_capture_bytes,
+                        &mut captured_bytes,
+                        &mut stderr_retained,
+                    );
+                    Ok(())
+                },
+            )?;
+
+            last_exit_code = outcome.exit_code;
+            timed_out = outcome.timed_out;
+
+            if timed_out || last_exit_code != Some(0) {
+                break;
+            }
+        }
 
         if timed_out || last_exit_code != Some(0) {
             break;

@@ -136,15 +136,95 @@ pub fn git_status(worktree: &Path, args: &[&str]) -> Result<std::process::ExitSt
     Ok(git_command(worktree, args)?.status)
 }
 
-/// Resolves the repository common `.git` directory via `git rev-parse --path-format=absolute --git-common-dir`.
-pub fn git_common_dir(worktree: &Path) -> Result<PathBuf> {
-    let resolved = git_stdout(
-        worktree,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        "TASK_GIT_DIR_INVALID",
-    )?;
-    let path = PathBuf::from(&resolved);
+fn bytes_to_path_exact(raw: &[u8]) -> Result<PathBuf> {
+    if raw.is_empty() {
+        bail!("TASK_GIT_DIR_INVALID: empty Git path response");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        Ok(PathBuf::from(std::ffi::OsStr::from_bytes(raw)))
+    }
+    #[cfg(not(unix))]
+    {
+        let s = std::str::from_utf8(raw)
+            .context("TASK_GIT_DIR_INVALID: non-UTF-8 Git path response")?;
+        Ok(PathBuf::from(s))
+    }
+}
+
+fn git_rev_parse_path_exact(worktree: &Path, flag: &str) -> Result<PathBuf> {
+    let output = git_command(worktree, &["rev-parse", "--path-format=absolute", flag])?;
+    if !output.status.success() {
+        bail!(
+            "TASK_GIT_DIR_INVALID: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    #[cfg(windows)]
+    let bytes = output
+        .stdout
+        .strip_suffix(b"\r\n")
+        .or_else(|| output.stdout.strip_suffix(b"\n"))
+        .unwrap_or(&output.stdout);
+    #[cfg(not(windows))]
+    let bytes = output
+        .stdout
+        .strip_suffix(b"\n")
+        .unwrap_or(&output.stdout);
+    let path = bytes_to_path_exact(bytes)?;
     Ok(path.canonicalize().unwrap_or(path))
+}
+
+/// Resolves the repository common `.git` directory via `git rev-parse --path-format=absolute --git-common-dir`
+/// without trimming whitespace from path segments.
+pub fn git_common_dir(worktree: &Path) -> Result<PathBuf> {
+    git_rev_parse_path_exact(worktree, "--git-common-dir")
+}
+
+/// Resolves the exact repository top-level directory via `git rev-parse --path-format=absolute --show-toplevel`
+/// without trimming whitespace from path segments.
+pub fn git_toplevel_exact(worktree: &Path) -> Result<PathBuf> {
+    git_rev_parse_path_exact(worktree, "--show-toplevel")
+}
+
+/// Lists all existing canonical worktree roots owned by the repository at `root`,
+/// preserving exact trailing whitespace and rejecting stale or foreign directories.
+pub fn list_owned_worktrees(root: &Path) -> Result<Vec<PathBuf>> {
+    let expected_common = git_common_dir(root)?;
+    let output = git_command(root, &["worktree", "list", "--porcelain", "-z"])?;
+    if !output.status.success() {
+        bail!(
+            "ACDD_GIT_ERROR: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for rec in output.stdout.split(|b| *b == 0) {
+        let Some(raw_bytes) = rec.strip_prefix(b"worktree ") else {
+            continue;
+        };
+        let Ok(p) = bytes_to_path_exact(raw_bytes) else {
+            continue;
+        };
+        if !p.is_dir() {
+            continue;
+        }
+        let Ok(canon_p) = p.canonicalize() else {
+            continue;
+        };
+        if git_toplevel_exact(&canon_p).ok().as_ref() != Some(&canon_p) {
+            continue;
+        }
+        if git_common_dir(&canon_p).ok().as_ref() != Some(&expected_common) {
+            continue;
+        }
+        if seen.insert(canon_p.clone()) {
+            out.push(canon_p);
+        }
+    }
+    Ok(out)
 }
 
 /// Resolves the primary worktree root for a repository or linked worktree.
@@ -155,22 +235,18 @@ pub fn primary_worktree_root(root: &Path) -> Option<PathBuf> {
     if !root.join(".git").exists() {
         return None;
     }
-    if let Ok(output) = git_command(root, &["worktree", "list", "--porcelain"]) {
-        if output.status.success() {
-            if let Ok(text) = std::str::from_utf8(&output.stdout) {
-                if let Some(first) = text.lines().find_map(|line| line.strip_prefix("worktree ")) {
-                    let path = PathBuf::from(first.trim());
-                    return Some(path.canonicalize().unwrap_or(path));
-                }
+    if let Ok(common_dir) = git_common_dir(root) {
+        if common_dir.file_name() == Some(std::ffi::OsStr::new(".git")) {
+            if let Some(parent) = common_dir.parent().filter(|p| p.is_dir()) {
+                return Some(parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf()));
             }
         }
+        return list_owned_worktrees(root)
+            .ok()
+            .and_then(|v| v.into_iter().next())
+            .or(Some(common_dir));
     }
-    let common_dir = git_common_dir(root).ok()?;
-    if common_dir.file_name() == Some(std::ffi::OsStr::new(".git")) {
-        common_dir.parent().map(Path::to_path_buf)
-    } else {
-        Some(common_dir)
-    }
+    None
 }
 
 fn validate_git_rev(rev: &str) -> Result<&str> {
@@ -191,17 +267,29 @@ pub fn read_git_blob_utf8(worktree: &Path, rev: &str, rel_path: &str) -> Result<
     let norm_rel = crate::path_policy::normalize_rel_path(rel_path)
         .with_context(|| format!("invalid relative git path '{rel_path}'"))?;
     let spec = format!("{rev}:./{norm_rel}");
-    let kind_out = run_git_raw(worktree, &["cat-file", "-t", &spec], None, &[], None)?;
+    read_git_blob_utf8_spec(worktree, &spec)
+}
+
+/// Reads a Git blob by exact object ID (`oid`) as UTF-8 text without path-normalization aliasing.
+pub fn read_git_blob_utf8_by_oid(worktree: &Path, oid: &str) -> Result<Option<String>> {
+    if oid.is_empty() || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("invalid git blob oid '{oid}'");
+    }
+    read_git_blob_utf8_spec(worktree, oid)
+}
+
+fn read_git_blob_utf8_spec(worktree: &Path, spec: &str) -> Result<Option<String>> {
+    let kind_out = run_git_raw(worktree, &["cat-file", "-t", spec], None, &[], None)?;
     if !kind_out.status.success() {
         return Ok(None);
     }
     if String::from_utf8_lossy(&kind_out.stdout).trim() != "blob" {
         return Ok(None);
     }
-    let show_out = run_git_raw(worktree, &["show", &spec], None, &[], None)?;
+    let show_out = run_git_raw(worktree, &["cat-file", "blob", spec], None, &[], None)?;
     if !show_out.status.success() {
         let stderr = String::from_utf8_lossy(&show_out.stderr).trim().to_owned();
-        bail!("git show '{spec}' failed in '{}': {stderr}", worktree.display());
+        bail!("git cat-file blob '{spec}' failed in '{}': {stderr}", worktree.display());
     }
     let text = String::from_utf8(show_out.stdout)
         .with_context(|| format!("git blob '{spec}' is not valid UTF-8"))?;

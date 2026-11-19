@@ -648,7 +648,7 @@ fn validate_single_gate(
         }
     }
 
-    for tool in &gate.tools {
+    for tool in profile.effective_tools(gate) {
         validate_tool_name(tool, &profile.modules, opts.acdd_modules, providers, &ctx)?;
     }
     for tool in &gate.tools_removed_for_validation {

@@ -276,7 +276,7 @@ pub(crate) fn submit_holding_repo_lock(
             Vec::new()
         };
         let external_satisfied_deps =
-            collect_external_satisfied_deps(config, &snapshot.run.run_id, &snapshot.dependencies)?;
+            collect_external_satisfied_deps(config, &snapshot)?;
         let container_tree = if admitted_scope.is_empty() {
             None
         } else {
@@ -293,6 +293,7 @@ pub(crate) fn submit_holding_repo_lock(
             out_of_scope_paths: Vec::new(),
             unintegrated_tasks,
             external_satisfied_deps,
+            external_deps_authoritative: true,
             path_policy: Some(policy.clone()),
             now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         };

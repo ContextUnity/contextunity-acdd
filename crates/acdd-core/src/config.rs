@@ -137,24 +137,28 @@ impl SpecCollectionConfig {
     /// Return `true` if `rel_posix` is a direct `.md` child of `<concrete_root>/archive/`
     /// owned by this collection.
     pub fn is_direct_archive_file(&self, rel_posix: &str) -> bool {
-        let trimmed = rel_posix.trim().replace('\\', "/");
-        let norm = trimmed.strip_prefix("./").unwrap_or(&trimmed);
-        if !norm.ends_with(".md") {
+        let norm = rel_posix.strip_prefix("./").unwrap_or(rel_posix);
+        if norm.contains('\\') || !norm.ends_with(".md") {
             return false;
         }
-        let Some(archive_dir) = Path::new(norm)
-            .parent()
-            .filter(|p| p.file_name().and_then(|n| n.to_str()) == Some("archive"))
-        else {
+        let Some((archive_dir, file_name)) = norm.rsplit_once('/') else {
             return false;
         };
-        let Some(root_rel) = archive_dir
-            .parent()
-            .and_then(|p| p.to_str())
-            .filter(|s| !s.is_empty())
-        else {
+        if file_name.is_empty()
+            || file_name == "."
+            || file_name == ".."
+            || archive_dir
+                .split('/')
+                .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+        {
+            return false;
+        }
+        let Some((root_rel, archive_leaf)) = archive_dir.rsplit_once('/') else {
             return false;
         };
+        if archive_leaf != "archive" || root_rel.is_empty() {
+            return false;
+        }
         self.matched_concrete_root(norm).as_deref() == Some(root_rel)
     }
 
@@ -208,52 +212,38 @@ fn expand_spec_dir_segments(
     }
 
     let (first, rest) = (segs[0], &segs[1..]);
-    if first == "**" {
-        expand_spec_dir_segments(root, current_rel, rest, out)?;
-        let base = if current_rel.as_os_str().is_empty() {
-            root.to_path_buf()
-        } else {
-            checked_child(root, current_rel)?
-        };
-        if let Ok(entries) = fs::read_dir(&base) {
-            for entry in entries.flatten() {
-                if entry.file_name() == "archive" {
-                    continue;
-                }
-                if let Ok(ft) = entry.file_type() {
-                    if !ft.is_symlink() && ft.is_dir() {
-                        expand_spec_dir_segments(
-                            root,
-                            &current_rel.join(entry.file_name()),
-                            segs,
-                            out,
-                        )?;
-                    }
-                }
-            }
+    if first == "**" || first.contains('*') || first.contains('?') {
+        if first == "**" {
+            expand_spec_dir_segments(root, current_rel, rest, out)?;
         }
-    } else if first.contains('*') || first.contains('?') {
         let base = if current_rel.as_os_str().is_empty() {
             root.to_path_buf()
         } else {
             checked_child(root, current_rel)?
         };
-        if let Ok(entries) = fs::read_dir(&base) {
-            for entry in entries.flatten() {
-                if entry.file_name() == "archive" {
-                    continue;
-                }
-                let Ok(ft) = entry.file_type() else {
-                    continue;
-                };
-                if ft.is_symlink() || !ft.is_dir() {
-                    continue;
-                }
+        let entries = match fs::read_dir(&base) {
+            Ok(rd) => rd,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err),
+        };
+        let next_segs = if first == "**" { segs } else { rest };
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_name() == "archive" {
+                continue;
+            }
+            let ft = entry.file_type()?;
+            if ft.is_symlink() || !ft.is_dir() {
+                continue;
+            }
+            if first == "**" {
+                expand_spec_dir_segments(root, &current_rel.join(entry.file_name()), next_segs, out)?;
+            } else {
                 let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                     continue;
                 };
                 if crate::path_policy::glob_matches(first, &name) {
-                    expand_spec_dir_segments(root, &current_rel.join(name), rest, out)?;
+                    expand_spec_dir_segments(root, &current_rel.join(name), next_segs, out)?;
                 }
             }
         }

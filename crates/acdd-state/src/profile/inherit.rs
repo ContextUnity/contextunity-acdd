@@ -1,7 +1,7 @@
 //! Profile inheritance (`inherit`), `gates` (replace) vs `gates_patch` (patch) resolution, SHA-256 pin verification, and template expansion.
 
 use super::schema::{
-    parse_profile, CommandDef, DetailedCommandDef, GateDef, GateTemplate, GitPolicy,
+    parse_profile, GateDef, GateTemplate, GitPolicy,
     GitPolicyPatch, ParsedProfileFile, PatchField, ProofDef, RawGateDef, RawGateItem,
     ResolvedGateProfile, ResourceLimits, RoleDef, RolePatch, SavePolicy, SavePolicyPatch,
     SubsystemRegistryPatch, TasksBlock, DEFAULT_MAX_ATTEMPTS,
@@ -58,23 +58,34 @@ struct WorkingTasksBlock {
 
 impl WorkingGate {
     fn finalize(mut self, default_tools: &[String]) -> GateDef {
-        let mut effective_tools = if self.has_explicit_tools {
-            self.gate.tools
-        } else {
-            default_tools.to_vec()
-        };
-        for tool in self.pending_tools_add {
-            if !effective_tools.contains(&tool) {
-                effective_tools.push(tool);
+        if self.has_explicit_tools
+            || !self.pending_tools_add.is_empty()
+            || !self.pending_tools_remove.is_empty()
+        {
+            let mut effective_tools = if self.has_explicit_tools {
+                self.gate.tools.take().unwrap_or_default()
+            } else {
+                default_tools.to_vec()
+            };
+            for tool in self.pending_tools_add {
+                if !effective_tools.contains(&tool) {
+                    effective_tools.push(tool);
+                }
             }
+            if !self.pending_tools_remove.is_empty() {
+                effective_tools.retain(|t| !self.pending_tools_remove.contains(t));
+                self.gate
+                    .tools_removed_for_validation
+                    .extend(self.pending_tools_remove);
+            }
+            self.gate.tools = if !self.has_explicit_tools && effective_tools == default_tools {
+                None
+            } else {
+                Some(effective_tools)
+            };
+        } else {
+            self.gate.tools = None;
         }
-        if !self.pending_tools_remove.is_empty() {
-            effective_tools.retain(|t| !self.pending_tools_remove.contains(t));
-            self.gate
-                .tools_removed_for_validation
-                .extend(self.pending_tools_remove);
-        }
-        self.gate.tools = effective_tools;
         self.gate.gates = self
             .children
             .into_iter()
@@ -234,7 +245,6 @@ fn finalize_working_profile(
 ) -> Result<ResolvedGateProfile, StateError> {
     expand_templates_in_working(&mut working)?;
     strip_disabled_domain_capabilities(&mut working, disabled_domains);
-    propagate_scope_args_to_commands(&mut working.resolved);
     let default_tools = working.resolved.default_tools.clone();
     working.resolved.gates = working
         .gates
@@ -242,45 +252,6 @@ fn finalize_working_profile(
         .map(|g| g.finalize(&default_tools))
         .collect();
     Ok(working.resolved)
-}
-
-fn propagate_scope_args_to_commands(resolved: &mut ResolvedGateProfile) {
-    if resolved.scope_args_by_pattern.is_empty() {
-        return;
-    }
-    for cmd in resolved.commands.values_mut() {
-        match cmd {
-            CommandDef::Unbound { .. } => {}
-            CommandDef::Script(script) => {
-                if script.contains("{scope_target}") {
-                    *cmd = CommandDef::Detailed(Box::new(DetailedCommandDef {
-                        command: script.clone(),
-                        description: None,
-                        timeout_seconds: None,
-                        test_filter: None,
-                        scope_args_by_pattern: resolved.scope_args_by_pattern.clone(),
-                    }));
-                }
-            }
-            CommandDef::Detailed(d) => {
-                for (pat, arg) in &resolved.scope_args_by_pattern {
-                    d.scope_args_by_pattern
-                        .entry(pat.clone())
-                        .or_insert_with(|| arg.clone());
-                }
-            }
-            CommandDef::Pattern(entries) => {
-                for entry in entries {
-                    for (pat, arg) in &resolved.scope_args_by_pattern {
-                        entry
-                            .scope_args_by_pattern
-                            .entry(pat.clone())
-                            .or_insert_with(|| arg.clone());
-                    }
-                }
-            }
-        }
-    }
 }
 
 fn path_cycle_identity(workspace_root: Option<&Path>, rel_path: &str) -> Result<String, StateError> {
@@ -592,11 +563,13 @@ fn strip_disabled_domains_from_gates(
     disabled_domains: &BTreeSet<String>,
 ) {
     for gate in gates {
-        gate.gate.tools.retain(|tool| {
-            !disabled_domains
-                .iter()
-                .any(|d| tool_belongs_to_domain(tool, d))
-        });
+        if let Some(tools) = &mut gate.gate.tools {
+            tools.retain(|tool| {
+                !disabled_domains
+                    .iter()
+                    .any(|d| tool_belongs_to_domain(tool, d))
+            });
+        }
         gate.pending_tools_add.retain(|tool| {
             !disabled_domains
                 .iter()
@@ -1031,7 +1004,7 @@ fn raw_to_working_gate(raw: RawGateDef) -> Result<WorkingGate, StateError> {
         gate.proof = v;
     }
     if let PatchField::Set(v) = raw.tools {
-        gate.tools = v;
+        gate.tools = Some(v);
     }
     pending_tools_add.extend(raw.tools_add);
     pending_tools_remove.extend(raw.tools_remove);
@@ -1413,13 +1386,13 @@ fn patch_existing_working_gate(
         PatchField::Unset => {}
         PatchField::Clear => {
             target.has_explicit_tools = true;
-            g.tools.clear();
+            g.tools = Some(Vec::new());
             target.pending_tools_add.clear();
             target.pending_tools_remove.clear();
         }
         PatchField::Set(v) => {
             target.has_explicit_tools = true;
-            g.tools = v;
+            g.tools = Some(v);
             target.pending_tools_add.clear();
             target.pending_tools_remove.clear();
         }

@@ -40,6 +40,7 @@ pub(super) fn obs_with_tree(t_oid: TreeOid) -> ValidatedObservations {
         out_of_scope_paths: Vec::new(),
         unintegrated_tasks: Vec::new(),
         external_satisfied_deps: Vec::new(),
+        external_deps_authoritative: false,
         path_policy: None,
         now_utc: "2026-11-17T10:00:00.000Z".to_owned(),
     }

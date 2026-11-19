@@ -6,6 +6,7 @@ pub mod deps;
 pub mod dto;
 pub mod lifecycle;
 pub mod queries;
+pub mod roadmap;
 pub mod run;
 pub mod submit;
 #[cfg(test)]

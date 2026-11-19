@@ -1,21 +1,25 @@
 //! Single canonical external, cross-spec, and archive dependency resolver (`INV-SINGLE-OWNER`).
 
-use crate::git_ops::list_git_tree_files;
-use acdd_core::git::read_git_blob_utf8;
+use crate::git_ops::snapshot::{list_git_tree_entries, resolve_git_tree_oid};
 use crate::machine::MachineTaskDep;
 use crate::spec::{parse_spec, SpecDocument, SpecStatus};
 use crate::store::sqlite::SqliteStateReader;
 use crate::store::traits::StateReader;
-use crate::types::{NodeStatus, RunTombstoneRecord, TaskDependencyRecord, TerminalStatus};
+use crate::types::{NodeStatus, RunGraphSnapshot, RunRecord, RunTombstoneRecord, TerminalStatus};
 use crate::usecases::lifecycle::{
     effective_spec_collections, list_all_runs, list_all_tombstones, primary_workspace_root,
-    read_confined_utf8, sorted_dir_paths,
+    read_confined_utf8,
 };
 use crate::usecases::StateEngineConfig;
-use acdd_core::config::{load_adapter, resolve_state_db_path, Adapter, SpecCollectionConfig};
+use acdd_core::config::{
+    load_adapter, resolve_effective_state_db_path, resolve_state_db_path, Adapter,
+    SpecCollectionConfig,
+};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::{canonical_root, checked_child};
+use acdd_core::git::{list_owned_worktrees, read_git_blob_utf8, read_git_blob_utf8_by_oid};
 use acdd_core::ids::{CommitOid, RunId, TaskRef};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,6 +39,63 @@ impl DepValidationIssue {
             code,
             message: message.into(),
         }
+    }
+}
+
+/// Parsed syntactic form of a `depends_on` entry (`INV-SINGLE-OWNER`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParsedDepSyntax {
+    LocalTask(String),
+    LocalSpec {
+        spec_id: String,
+        task_ref: Option<String>,
+    },
+    LinkedSpec {
+        ws_alias: String,
+        spec_id: String,
+        task_ref: Option<String>,
+    },
+}
+
+/// Parse raw `depends_on` syntax into [`ParsedDepSyntax`].
+pub(crate) fn parse_dep_syntax(
+    raw: &str,
+    local_task_refs: &BTreeSet<&str>,
+) -> Result<ParsedDepSyntax, StateError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            "depends_on entry cannot be empty",
+        ));
+    }
+    if let Some((left, task_part)) = trimmed.split_once(':') {
+        let tref = TaskRef::new(task_part)?;
+        if let Some((ws_alias, run_part)) = left.split_once('/') {
+            Ok(ParsedDepSyntax::LinkedSpec {
+                ws_alias: ws_alias.to_owned(),
+                spec_id: run_part.to_owned(),
+                task_ref: Some(tref.as_str().to_owned()),
+            })
+        } else {
+            Ok(ParsedDepSyntax::LocalSpec {
+                spec_id: left.to_owned(),
+                task_ref: Some(tref.as_str().to_owned()),
+            })
+        }
+    } else if let Some((ws_alias, spec_part)) = trimmed.split_once('/') {
+        Ok(ParsedDepSyntax::LinkedSpec {
+            ws_alias: ws_alias.to_owned(),
+            spec_id: spec_part.to_owned(),
+            task_ref: None,
+        })
+    } else if local_task_refs.contains(trimmed) {
+        Ok(ParsedDepSyntax::LocalTask(trimmed.to_owned()))
+    } else {
+        Ok(ParsedDepSyntax::LocalSpec {
+            spec_id: trimmed.to_owned(),
+            task_ref: None,
+        })
     }
 }
 
@@ -67,68 +128,56 @@ pub(crate) fn parse_task_dependency_with_db(
     local_task_refs: &BTreeSet<&str>,
     local_db: Option<(&Path, &Path)>,
 ) -> Result<MachineTaskDep, StateError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            "depends_on entry cannot be empty",
-        ));
-    }
-    if let Some((left, task_part)) = trimmed.split_once(':') {
-        let tref = TaskRef::new(task_part)?;
-        if let Some((ws_alias, run_part)) = left.split_once('/') {
+    match parse_dep_syntax(raw, local_task_refs)? {
+        ParsedDepSyntax::LocalTask(t_ref) => Ok(MachineTaskDep {
+            depends_on_workspace: current_workspace.to_owned(),
+            depends_on_run_id: current_run_id.clone(),
+            depends_on_ref: TaskRef::new(&t_ref)?,
+        }),
+        ParsedDepSyntax::LocalSpec { spec_id, task_ref } => {
+            let rid = resolve_external_run_id(Path::new(current_workspace), &spec_id, local_db, false)?;
+            let tref = match task_ref {
+                Some(t) => TaskRef::new(&t)?,
+                None => TaskRef::whole_spec(),
+            };
+            Ok(MachineTaskDep {
+                depends_on_workspace: ".".to_owned(),
+                depends_on_run_id: rid,
+                depends_on_ref: tref,
+            })
+        }
+        ParsedDepSyntax::LinkedSpec {
+            ws_alias,
+            spec_id,
+            task_ref,
+        } => {
             let canon_ws = resolve_linked_workspace_root(
-                ws_alias,
-                trimmed,
+                &ws_alias,
+                raw.trim(),
                 linked_workspaces,
                 spec_repos,
             )?;
-            let db = local_db.filter(|(primary, _)| same_repository(primary, &canon_ws)).map(|(_, db)| db);
-            let rid = resolve_external_run_id(&canon_ws, run_part, db)?;
+            let primary = local_db.map(|(root, _)| root.to_path_buf()).or_else(|| {
+                acdd_core::git::primary_worktree_root(Path::new(current_workspace))
+            });
+            let scoped = primary.is_some_and(|root| {
+                acdd_core::git::primary_worktree_root(&canon_ws).as_ref() == Some(&root)
+            });
+            let rid = resolve_external_run_id(&canon_ws, &spec_id, local_db, scoped)?;
+            let tref = match task_ref {
+                Some(t) => TaskRef::new(&t)?,
+                None => TaskRef::whole_spec(),
+            };
             Ok(MachineTaskDep {
                 depends_on_workspace: canon_ws.to_string_lossy().into_owned(),
                 depends_on_run_id: rid,
                 depends_on_ref: tref,
             })
-        } else {
-            let rid = resolve_external_run_id(Path::new(current_workspace), left, local_db.map(|(_, db)| db))?;
-            Ok(MachineTaskDep {
-                depends_on_workspace: current_workspace.to_owned(),
-                depends_on_run_id: rid,
-                depends_on_ref: tref,
-            })
         }
-    } else if let Some((ws_alias, spec_part)) = trimmed.split_once('/') {
-        let canon_ws = resolve_linked_workspace_root(
-            ws_alias,
-            trimmed,
-            linked_workspaces,
-            spec_repos,
-        )?;
-        let db = local_db.filter(|(primary, _)| same_repository(primary, &canon_ws)).map(|(_, db)| db);
-        let rid = resolve_external_run_id(&canon_ws, spec_part, db)?;
-        Ok(MachineTaskDep {
-            depends_on_workspace: canon_ws.to_string_lossy().into_owned(),
-            depends_on_run_id: rid,
-            depends_on_ref: TaskRef::whole_spec(),
-        })
-    } else if local_task_refs.contains(trimmed) {
-        Ok(MachineTaskDep {
-            depends_on_workspace: current_workspace.to_owned(),
-            depends_on_run_id: current_run_id.clone(),
-            depends_on_ref: TaskRef::new(trimmed)?,
-        })
-    } else {
-        let rid = resolve_external_run_id(Path::new(current_workspace), trimmed, local_db.map(|(_, db)| db))?;
-        Ok(MachineTaskDep {
-            depends_on_workspace: current_workspace.to_owned(),
-            depends_on_run_id: rid,
-            depends_on_ref: TaskRef::whole_spec(),
-        })
     }
 }
 
-fn resolve_linked_workspace_root(
+pub(crate) fn resolve_linked_workspace_root(
     ws_alias: &str,
     raw_dep: &str,
     linked_workspaces: &BTreeMap<String, PathBuf>,
@@ -187,24 +236,78 @@ pub(crate) fn same_repository(left: &Path, right: &Path) -> bool {
         .is_some_and(|(a, b)| a == b)
 }
 
-fn resolve_ws_context(
+pub(crate) fn resolve_ws_context_canon(
+    ws_path: &Path,
+    local_db: Option<(&Path, &Path)>,
+) -> Result<(PathBuf, BTreeMap<String, SpecCollectionConfig>), StateError> {
+    resolve_ws_context_canon_with_primary(ws_path, local_db, None)
+}
+
+fn resolve_ws_context_canon_with_primary(
+    ws_path: &Path,
+    local_db: Option<(&Path, &Path)>,
+    known_primary: Option<&Path>,
+) -> Result<(PathBuf, BTreeMap<String, SpecCollectionConfig>), StateError> {
+    let repo_primary = known_primary.map_or_else(
+        || acdd_core::git::primary_worktree_root(ws_path).unwrap_or_else(|| ws_path.to_path_buf()),
+        Path::to_path_buf,
+    );
+    let adapter = load_ws_adapter(ws_path)?;
+    let db_path = match local_db {
+        Some((local_root, db)) if repo_primary == local_root => db.to_path_buf(),
+        _ => resolve_effective_state_db_path(&repo_primary, None, &adapter),
+    };
+    Ok((db_path, adapter.specs))
+}
+
+pub(crate) fn effective_active_run_config<'a>(
+    config: &'a StateEngineConfig,
+    run: &RunRecord,
+    primary: &Path,
+    owned: Option<&[PathBuf]>,
+) -> Result<Cow<'a, StateEngineConfig>, StateError> {
+    let checkout = run
+        .worktree
+        .as_deref()
+        .and_then(|path| canonical_root(Path::new(path)).ok())
+        .filter(|path| canonical_root(&config.worktree).ok().as_ref() != Some(path))
+        .filter(|path| match owned {
+            Some(list) => list.contains(path),
+            None => list_owned_worktrees(primary).is_ok_and(|list| list.contains(path)),
+        });
+    let Some(checkout) = checkout else {
+        return Ok(Cow::Borrowed(config));
+    };
+    let adapter = load_ws_adapter(&checkout)?;
+    let mut effective = config.clone();
+    effective.state_db_override = Some(config.resolved_state_db_path().0);
+    effective.worktree = checkout;
+    effective.spec_collections = adapter.specs;
+    effective.linked_workspaces = adapter
+        .linked_workspaces
+        .into_iter()
+        .map(|linked| (linked.name, linked.path))
+        .collect();
+    Ok(Cow::Owned(effective))
+}
+
+fn resolve_observation_context(
     ws_path: &Path,
     primary_root: &Path,
     config: &StateEngineConfig,
-) -> Result<(PathBuf, BTreeMap<String, SpecCollectionConfig>), StateError> {
-    if ws_path == primary_root {
-        return Ok((
-            config.resolved_state_db_path().0,
-            effective_spec_collections(config),
-        ));
+    owned: Option<&[PathBuf]>,
+) -> Result<(PathBuf, PathBuf, BTreeMap<String, SpecCollectionConfig>), StateError> {
+    let checkout = canonical_root(&config.worktree).unwrap_or_else(|_| config.worktree.clone());
+    let db_path = config.resolved_state_db_path().0;
+    if ws_path == checkout {
+        return Ok((checkout, db_path, effective_spec_collections(config)));
     }
-    let adapter = load_ws_adapter(ws_path)?;
-    let db_path = if same_repository(primary_root, ws_path) {
-        config.resolved_state_db_path().0
-    } else {
-        resolve_state_db_path(ws_path, &adapter)
-    };
-    Ok((db_path, adapter.specs))
+    let known_primary = owned
+        .filter(|list| list.iter().any(|p| p == ws_path))
+        .map(|_| primary_root);
+    let (db_path, collections) =
+        resolve_ws_context_canon_with_primary(ws_path, Some((primary_root, &db_path)), known_primary)?;
+    Ok((ws_path.to_path_buf(), db_path, collections))
 }
 
 fn find_latest_matching_tombstone<'a>(
@@ -241,21 +344,46 @@ fn tombstone_superseded_by_cleared(
         .is_some_and(|latest| latest.terminal_status == TerminalStatus::Cleared)
 }
 
-fn resolve_external_run_id(ws_root: &Path, run_sel: &str, local_db: Option<&Path>) -> Result<RunId, StateError> {
-    let db_path = if let Some(db) = local_db {
+pub(crate) fn run_in_checkout(run: &RunRecord, checkout: &Path) -> bool {
+    run.worktree
+        .as_deref()
+        .and_then(|path| canonical_root(Path::new(path)).ok())
+        .is_some_and(|path| path == checkout)
+}
+
+pub(crate) fn run_matches_selector(run: &RunRecord, selector: &str) -> bool {
+    run.run_id.as_str() == selector
+        || run.run_name.as_str() == selector
+        || run.spec_id.as_deref() == Some(selector)
+}
+
+/// Persisted run id, or that run's spec id when the run lies outside an explicit checkout.
+pub(crate) fn checkout_scoped_target_selector<'a>(
+    persisted: Option<&'a RunRecord>,
+    persisted_id: &'a str,
+    checkout: Option<&Path>,
+) -> &'a str {
+    persisted
+        .filter(|run| checkout.is_some_and(|checkout| !run_in_checkout(run, checkout)))
+        .and_then(|run| run.spec_id.as_deref())
+        .unwrap_or(persisted_id)
+}
+
+fn resolve_external_run_id(
+    ws_root: &Path,
+    run_sel: &str,
+    local_db: Option<(&Path, &Path)>,
+    scoped: bool,
+) -> Result<RunId, StateError> {
+    let db_path = if let Some((_, db)) = local_db.filter(|(root, _)| *root == ws_root) {
         db.to_path_buf()
-    } else if fs::symlink_metadata(ws_root.join("acdd.yaml")).is_ok() {
-        let adapter = load_ws_adapter(ws_root)?;
-        resolve_state_db_path(ws_root, &adapter)
     } else {
-        ws_root.join(".acdd/state.sqlite")
+        resolve_ws_context_canon(ws_root, local_db)?.0
     };
     let reader = SqliteStateReader::new(db_path);
     let runs = list_all_runs(&reader, None)?;
     if let Some(found) = runs.into_iter().find(|r| {
-        r.run_id.as_str() == run_sel
-            || r.run_name.as_str() == run_sel
-            || r.spec_id.as_deref() == Some(run_sel)
+        (!scoped || run_in_checkout(r, ws_root)) && run_matches_selector(r, run_sel)
     }) {
         return Ok(found.run_id);
     }
@@ -345,17 +473,33 @@ fn verify_archived_task_completed(
 /// Cleared runs (`terminal_status == 'cleared'`) NEVER satisfy dependencies.
 pub fn collect_external_satisfied_deps(
     config: &StateEngineConfig,
-    current_run_id: &RunId,
-    deps: &[TaskDependencyRecord],
+    graph: &RunGraphSnapshot,
+) -> Result<Vec<(String, RunId, TaskRef)>, StateError> {
+    collect_external_satisfied_deps_with_owned(config, graph, None)
+}
+
+pub(crate) fn collect_external_satisfied_deps_with_owned(
+    config: &StateEngineConfig,
+    graph: &RunGraphSnapshot,
+    owned: Option<&[PathBuf]>,
 ) -> Result<Vec<(String, RunId, TaskRef)>, StateError> {
     let primary = primary_workspace_root(config);
-    let primary_str = primary.to_string_lossy().into_owned();
+    let owned_buf;
+    let owned = match owned {
+        Some(cached) => cached,
+        None => {
+            owned_buf = list_owned_worktrees(&primary).unwrap_or_default();
+            &owned_buf
+        }
+    };
+    let config = effective_active_run_config(config, &graph.run, &primary, Some(owned))?;
     let mut satisfied = Vec::new();
-    let mut contexts: BTreeMap<String, (SqliteStateReader, BTreeMap<String, SpecCollectionConfig>)> =
-        BTreeMap::new();
+    let mut contexts = BTreeMap::new();
 
-    for dep in deps {
-        if dep.satisfied {
+    for dep in &graph.dependencies {
+        let requested = Path::new(&dep.depends_on_workspace);
+        let scoped = requested != Path::new(".") && owned.iter().any(|checkout| checkout == requested);
+        if dep.satisfied && !scoped {
             satisfied.push((
                 dep.depends_on_workspace.clone(),
                 dep.depends_on_run_id.clone(),
@@ -363,33 +507,31 @@ pub fn collect_external_satisfied_deps(
             ));
             continue;
         }
-        if dep.depends_on_run_id == *current_run_id && dep.depends_on_workspace == primary_str {
+        if dep.depends_on_run_id == graph.run.run_id {
             continue;
         }
-        let ws_path = if dep.depends_on_workspace == primary_str {
-            config.worktree.clone()
-        } else {
-            PathBuf::from(&dep.depends_on_workspace)
-        };
         if !contexts.contains_key(&dep.depends_on_workspace) {
-            let (db_path, collections) = if dep.depends_on_workspace == primary_str {
-                (config.resolved_state_db_path().0, effective_spec_collections(config))
+            let ws_path = if dep.depends_on_workspace == "." {
+                config.worktree.as_path()
             } else {
-                resolve_ws_context(&ws_path, &primary, config)?
+                Path::new(&dep.depends_on_workspace)
             };
+            let (checkout, db_path, collections) =
+                resolve_observation_context(ws_path, &primary, &config, Some(owned))?;
             contexts.insert(
                 dep.depends_on_workspace.clone(),
-                (SqliteStateReader::new(db_path), collections),
+                (checkout, SqliteStateReader::new(db_path), collections),
             );
         }
-        let (reader, collections) = &contexts[&dep.depends_on_workspace];
+        let (checkout, reader, collections) = &contexts[&dep.depends_on_workspace];
 
         if is_external_task_satisfied(
             reader,
-            &ws_path,
+            checkout,
             collections,
             &dep.depends_on_run_id,
             &dep.depends_on_ref,
+            scoped.then_some(checkout.as_path()),
         )? {
             satisfied.push((
                 dep.depends_on_workspace.clone(),
@@ -402,13 +544,16 @@ pub fn collect_external_satisfied_deps(
     Ok(satisfied)
 }
 
-enum DepTargetResolution {
+#[allow(dead_code)]
+pub(crate) enum DepTargetResolution {
     ActiveSpec {
         cancelled: bool,
         task_exists: bool,
     },
     ActiveRun {
         run_id: RunId,
+        spec_id: Option<String>,
+        worktree: Option<String>,
         task_exists: bool,
         task_completed: bool,
     },
@@ -462,8 +607,308 @@ fn literal_git_prefix(pat: &str) -> String {
     prefix_parts.join("/")
 }
 
+fn probe_disk_archive_dirs(
+    ws_path: &Path,
+    col: &SpecCollectionConfig,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<(String, PathBuf)>, StateError> {
+    let resolved_dirs = col.resolve_dirs(ws_path).map_err(|err| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("spec collection failed confinement check: {err}"),
+        )
+    })?;
+    let mut out = Vec::new();
+    for dir in resolved_dirs {
+        let Ok(rel_dir) = dir.strip_prefix(ws_path) else {
+            continue;
+        };
+        let arch_rel_join = rel_dir.join("archive");
+        match fs::symlink_metadata(ws_path.join(&arch_rel_join)) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                warnings.push(format!(
+                    "{}: unable to stat archive directory: {err}",
+                    arch_rel_join.display()
+                ));
+                continue;
+            }
+            Ok(_) => {}
+        }
+        let arch_dir = checked_child(ws_path, &arch_rel_join).map_err(|err| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!(
+                    "archive directory '{}' failed confinement check: {err}",
+                    arch_rel_join.display()
+                ),
+            )
+        })?;
+        if !arch_dir.is_dir() {
+            continue;
+        }
+        let read_dir = match fs::read_dir(&arch_dir) {
+            Ok(rd) => rd,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                warnings.push(format!(
+                    "{}: unable to read archive directory: {err}",
+                    arch_rel_join.display()
+                ));
+                continue;
+            }
+        };
+        let mut entries = Vec::new();
+        for item in read_dir {
+            let entry = item.map_err(|err| {
+                StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!(
+                        "{}: unable to read archive entry: {err}",
+                        arch_rel_join.display()
+                    ),
+                )
+            })?;
+            entries.push(entry);
+        }
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let p = entry.path();
+            let ft = entry.file_type().map_err(|err| {
+                StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("archive entry '{}' file_type failed: {err}", p.display()),
+                )
+            })?;
+            if ft.is_symlink() {
+                return Err(StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("archive entry '{}' must not be a symlink", p.display()),
+                ));
+            }
+            let Ok(rel_native) = p.strip_prefix(ws_path) else {
+                continue;
+            };
+            let checked = checked_child(ws_path, rel_native).map_err(|err| {
+                StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!(
+                        "archive entry '{}' failed confinement check: {err}",
+                        rel_native.display()
+                    ),
+                )
+            })?;
+            let Some(rel_utf8) = rel_native.to_str() else {
+                return Err(StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("archive entry '{}' is not valid UTF-8", rel_native.display()),
+                ));
+            };
+            let rel_posix = rel_utf8.replace('\\', "/");
+            if !col.is_direct_archive_file(&rel_posix) {
+                continue;
+            }
+            out.push((rel_posix, checked));
+        }
+    }
+    Ok(out)
+}
+
+fn is_admitted_git_collection_root(
+    col: &SpecCollectionConfig,
+    root_bytes: &[u8],
+) -> Result<bool, StateError> {
+    if root_bytes.is_empty()
+        || root_bytes
+            .split(|&b| b == b'/')
+            .any(|seg| seg.is_empty() || seg == b"." || seg == b".." || seg.contains(&b'\\'))
+    {
+        return Ok(false);
+    }
+    match std::str::from_utf8(root_bytes) {
+        Ok(root_str) => Ok(col.is_direct_archive_file(&format!("{root_str}/archive/_probe.md"))),
+        Err(_) => {
+            let lossy_root = String::from_utf8_lossy(root_bytes);
+            if col.is_direct_archive_file(&format!("{lossy_root}/archive/_probe.md")) {
+                Err(StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!(
+                        "committed Git archive directory '{lossy_root}/archive' is not valid UTF-8"
+                    ),
+                ))
+            } else {
+                Ok(false)
+            }
+        }
+    }
+}
+
+fn visit_archived_specs<T>(
+    ws_path: &Path,
+    collections: &BTreeMap<String, SpecCollectionConfig>,
+    disk_only: bool,
+    warnings: &mut Vec<String>,
+    mut visitor: impl FnMut(&str, String, &str) -> Option<T>,
+) -> Result<Option<T>, StateError> {
+    let in_git = !disk_only && is_git_repo(ws_path);
+    let tree_oid = if in_git {
+        Some(resolve_git_tree_oid(ws_path, "HEAD")?)
+    } else {
+        None
+    };
+    let mut seen_paths = BTreeSet::new();
+    for (col_name, col) in collections {
+        let disk_entries = probe_disk_archive_dirs(ws_path, col, warnings)?;
+        if let Some(ref tree_oid) = tree_oid {
+            for pat in col.patterns() {
+                let is_literal = !pat.contains('*')
+                    && !pat.contains('?')
+                    && !pat.contains('{')
+                    && !pat.contains('[');
+                let tree_prefix = if is_literal {
+                    pat.to_owned()
+                } else {
+                    literal_git_prefix(pat)
+                };
+                for entry in list_git_tree_entries(ws_path, tree_oid, &tree_prefix)? {
+                    let Some(slash_pos) = entry.raw_path.iter().rposition(|&b| b == b'/') else {
+                        continue;
+                    };
+                    let (parent_bytes, file_bytes) =
+                        (&entry.raw_path[..slash_pos], &entry.raw_path[slash_pos + 1..]);
+                    if file_bytes == b"archive" {
+                        if is_admitted_git_collection_root(col, parent_bytes)?
+                            && entry.mode == "120000"
+                        {
+                            let raw_lossy = String::from_utf8_lossy(&entry.raw_path);
+                            return Err(StateError::new(
+                                ErrorCode::ProfileSchemaInvalid,
+                                format!(
+                                    "archive directory '{raw_lossy}' in Git tree must not be a symlink"
+                                ),
+                            ));
+                        }
+                        continue;
+                    }
+                    if !parent_bytes.ends_with(b"/archive") {
+                        continue;
+                    }
+                    let root_bytes = &parent_bytes[..parent_bytes.len() - b"/archive".len()];
+                    if !is_admitted_git_collection_root(col, root_bytes)? {
+                        continue;
+                    }
+                    let Ok(file_str) = std::str::from_utf8(file_bytes) else {
+                        if file_bytes.ends_with(b".md") || entry.mode == "120000" {
+                            return Err(StateError::new(
+                                ErrorCode::ProfileSchemaInvalid,
+                                format!(
+                                    "committed Git archive entry '{}' is not valid UTF-8",
+                                    String::from_utf8_lossy(&entry.raw_path)
+                                ),
+                            ));
+                        }
+                        continue;
+                    };
+                    let raw_str = std::str::from_utf8(&entry.raw_path).map_err(|_| {
+                        StateError::new(
+                            ErrorCode::ProfileSchemaInvalid,
+                            format!(
+                                "committed Git archive entry '{}' is not valid UTF-8",
+                                String::from_utf8_lossy(&entry.raw_path)
+                            ),
+                        )
+                    })?;
+                    if entry.mode == "120000"
+                        && (file_str.trim_end().ends_with(".md")
+                            || (file_str.contains('\\') && file_str.ends_with(".md")))
+                    {
+                        return Err(StateError::new(
+                            ErrorCode::ProfileSchemaInvalid,
+                            format!(
+                                "archive entry '{raw_str}' in Git tree must not be a symlink"
+                            ),
+                        ));
+                    }
+                    if file_str.contains('\\') && file_str.ends_with(".md") {
+                        return Err(StateError::new(
+                            ErrorCode::ProfileSchemaInvalid,
+                            format!(
+                                "archive entry '{raw_str}' in Git tree has invalid or unsupported path characters"
+                            ),
+                        ));
+                    }
+                    if !col.is_direct_archive_file(raw_str) {
+                        continue;
+                    }
+                    if !seen_paths.insert(raw_str.to_owned()) {
+                        continue;
+                    }
+                    let raw = match read_git_blob_utf8_by_oid(ws_path, &entry.oid) {
+                        Ok(Some(s)) => s,
+                        Ok(None) => {
+                            warnings.push(format!(
+                                "enumerated committed archive '{raw_str}' blob '{}' disappeared from HEAD",
+                                entry.oid
+                            ));
+                            continue;
+                        }
+                        Err(err) => {
+                            warnings.push(format!("{raw_str}: failed reading git blob: {err}"));
+                            continue;
+                        }
+                    };
+                    if let Some(res) = visitor(col_name, raw_str.to_owned(), &raw) {
+                        return Ok(Some(res));
+                    }
+                }
+            }
+            continue;
+        }
+
+        for (rel_posix, _) in disk_entries {
+            if !seen_paths.insert(rel_posix.clone()) {
+                continue;
+            }
+            let raw = read_confined_utf8(ws_path, &rel_posix)?;
+            if let Some(res) = visitor(col_name, rel_posix, &raw) {
+                return Ok(Some(res));
+            }
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) type CollectedArchiveScan = (Vec<(String, String, SpecDocument)>, Vec<String>);
+
+/// Collect all archived spec documents across `collections` (from committed `HEAD` in Git, or disk when `disk_only` / non-Git),
+/// returning `(parsed_specs, parse_warnings)`.
+pub(crate) fn collect_archived_specs(
+    ws_path: &Path,
+    collections: &BTreeMap<String, SpecCollectionConfig>,
+    disk_only: bool,
+) -> Result<CollectedArchiveScan, StateError> {
+    let mut out = Vec::new();
+    let mut warnings = Vec::new();
+    let mut io_warnings = Vec::new();
+    visit_archived_specs(
+        ws_path,
+        collections,
+        disk_only,
+        &mut io_warnings,
+        |col_name, rel_posix, raw| {
+            match parse_spec(raw) {
+                Ok(doc) => out.push((col_name.to_owned(), rel_posix, doc)),
+                Err(err) => warnings.push(format!("{rel_posix}: {err}")),
+            }
+            None::<()>
+        },
+    )?;
+    warnings.extend(io_warnings);
+    Ok((out, warnings))
+}
+
 #[allow(clippy::too_many_arguments)]
-fn resolve_dep_target(
+pub(crate) fn resolve_dep_target(
     ws_path: &Path,
     collections: &BTreeMap<String, SpecCollectionConfig>,
     reader_opt: Option<&dyn StateReader>,
@@ -471,7 +916,31 @@ fn resolve_dep_target(
     run_sel: &str,
     task_sel: Option<&str>,
     dep_label: &str,
+    run_checkout: Option<&Path>,
 ) -> Result<DepTargetResolution, StateError> {
+    if let Some(reader) = reader_opt {
+        let runs = list_all_runs(reader, None)?;
+        if let Some(run) = runs.into_iter().find(|r| {
+            run_checkout.is_none_or(|checkout| run_in_checkout(r, checkout))
+                && run_matches_selector(r, run_sel)
+        }) {
+            let (task_exists, task_completed) = match task_sel {
+                Some(t_ref) => match reader.load_node(&run.run_id, &format!("task:{t_ref}"))? {
+                    Some(node) => (true, node.status == NodeStatus::Completed),
+                    None => (false, false),
+                },
+                None => (true, false),
+            };
+            return Ok(DepTargetResolution::ActiveRun {
+                run_id: run.run_id,
+                spec_id: run.spec_id,
+                worktree: run.worktree,
+                task_exists,
+                task_completed,
+            });
+        }
+    }
+
     if let Some(specs) = active_specs {
         if let Some(target_doc) = specs.iter().find(|s| s.id == run_sel) {
             let cancelled = target_doc.status == SpecStatus::Cancelled;
@@ -486,26 +955,6 @@ fn resolve_dep_target(
     }
 
     if let Some(reader) = reader_opt {
-        let runs = list_all_runs(reader, None)?;
-        if let Some(run) = runs.into_iter().find(|r| {
-            r.run_id.as_str() == run_sel
-                || r.run_name.as_str() == run_sel
-                || r.spec_id.as_deref() == Some(run_sel)
-        }) {
-            let (task_exists, task_completed) = match task_sel {
-                Some(t_ref) => match reader.load_node(&run.run_id, &format!("task:{t_ref}"))? {
-                    Some(node) => (true, node.status == NodeStatus::Completed),
-                    None => (false, false),
-                },
-                None => (true, false),
-            };
-            return Ok(DepTargetResolution::ActiveRun {
-                run_id: run.run_id,
-                task_exists,
-                task_completed,
-            });
-        }
-
         let tombs = list_all_tombstones(reader)?;
         if let Some(latest) = find_latest_matching_tombstone(&tombs, run_sel) {
             let cleared = latest.terminal_status != TerminalStatus::Completed
@@ -541,88 +990,24 @@ fn resolve_dep_target(
         }
     }
 
-    let in_git = is_git_repo(ws_path);
-    for col in collections.values() {
-        if in_git {
-            for pat in col.patterns() {
-                let is_literal = !pat.contains('*')
-                    && !pat.contains('?')
-                    && !pat.contains('{')
-                    && !pat.contains('[');
-                let tree_prefix = if is_literal {
-                    let arch_rel = format!("{pat}/archive");
-                    if fs::symlink_metadata(ws_path.join(&arch_rel)).is_ok() {
-                        let _ = checked_child(ws_path, Path::new(&arch_rel)).map_err(|err| {
-                            StateError::new(
-                                ErrorCode::ProfileSchemaInvalid,
-                                format!(
-                                    "archive directory '{pat}' failed confinement check: {err}"
-                                ),
-                            )
-                        })?;
-                    }
-                    arch_rel
-                } else {
-                    literal_git_prefix(pat)
-                };
-                for rel_posix in list_git_tree_files(ws_path, "HEAD", &tree_prefix)? {
-                    if !col.is_direct_archive_file(&rel_posix) {
-                        continue;
-                    }
-                    let Some(raw) = read_git_blob_utf8(ws_path, "HEAD", &rel_posix).ok().flatten()
-                    else {
-                        continue;
-                    };
-                    if let Some(res) =
-                        match_archived_spec_content(&raw, rel_posix, run_sel, task_sel)
-                    {
-                        return Ok(res);
-                    }
-                }
-            }
-            continue;
-        }
-
-        let resolved_dirs = col.resolve_dirs(ws_path).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("spec collection failed confinement check: {err}"),
-            )
-        })?;
-        for dir in resolved_dirs {
-            let Ok(rel_dir) = dir.strip_prefix(ws_path) else {
-                continue;
-            };
-            let arch_rel_join = rel_dir.join("archive");
-            let arch_dir = match checked_child(ws_path, &arch_rel_join) {
-                Ok(d) if d.is_dir() => d,
-                Ok(_) => continue,
-                Err(err) => {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "archive directory '{}' failed confinement check: {err}",
-                            arch_rel_join.display()
-                        ),
-                    ));
-                }
-            };
-            for p in sorted_dir_paths(&arch_dir) {
-                let Ok(rel) = p.strip_prefix(ws_path) else {
-                    continue;
-                };
-                let rel_posix = rel.to_string_lossy().replace('\\', "/");
-                if !col.is_direct_archive_file(&rel_posix) {
-                    continue;
-                }
-                let Ok(raw) = read_confined_utf8(ws_path, &rel_posix) else {
-                    continue;
-                };
-                if let Some(res) = match_archived_spec_content(&raw, rel_posix, run_sel, task_sel) {
-                    return Ok(res);
-                }
-            }
-        }
+    let mut scratch_warnings = Vec::new();
+    if let Some(found) = visit_archived_specs(
+        ws_path,
+        collections,
+        false,
+        &mut scratch_warnings,
+        |_, rel_posix, raw| match_archived_spec_content(raw, rel_posix, run_sel, task_sel),
+    )? {
+        return Ok(found);
+    }
+    if !scratch_warnings.is_empty() {
+        let joined = scratch_warnings.join("; ");
+        let code = if joined.contains("HEAD") {
+            ErrorCode::ExternalGitDrift
+        } else {
+            ErrorCode::ProfileSchemaInvalid
+        };
+        return Err(StateError::new(code, joined));
     }
 
     Ok(DepTargetResolution::NotFound)
@@ -634,20 +1019,30 @@ fn is_external_task_satisfied(
     collections: &BTreeMap<String, SpecCollectionConfig>,
     target_run_id: &RunId,
     target_task_ref: &TaskRef,
+    run_checkout: Option<&Path>,
 ) -> Result<bool, StateError> {
     let task_sel = if target_task_ref.is_whole_spec() {
         None
     } else {
         Some(target_task_ref.as_str())
     };
+    let runs = if run_checkout.is_some() {
+        list_all_runs(reader, None)?
+    } else {
+        Vec::new()
+    };
+    let persisted = runs.iter().find(|run| &run.run_id == target_run_id);
+    let target =
+        checkout_scoped_target_selector(persisted, target_run_id.as_str(), run_checkout);
     match resolve_dep_target(
         ws_path,
         collections,
         Some(reader),
         None,
-        target_run_id.as_str(),
+        target,
         task_sel,
         target_run_id.as_str(),
+        run_checkout,
     )? {
         DepTargetResolution::ActiveSpec { .. } | DepTargetResolution::NotFound => Ok(false),
         DepTargetResolution::ActiveRun { task_completed, .. } => Ok(task_completed),
@@ -705,12 +1100,18 @@ pub fn verify_run_level_depends_on(
                 };
                 (canon, collections, rest, None)
             } else {
-                let (db_path, collections) = resolve_ws_context(&canon, &primary, config)?;
-                (canon, collections, rest, Some(SqliteStateReader::new(db_path)))
+                let (checkout, db_path, collections) =
+                    resolve_observation_context(&canon, &primary, config, None)?;
+                (
+                    checkout,
+                    collections,
+                    rest,
+                    Some(SqliteStateReader::new(db_path)),
+                )
             }
         } else {
             (
-                source.clone(),
+                config.worktree.clone(),
                 effective_spec_collections(config),
                 trimmed,
                 None,
@@ -738,6 +1139,9 @@ pub fn verify_run_level_depends_on(
             run_sel,
             task_sel,
             trimmed,
+            (trimmed.contains('/')
+                && acdd_core::git::primary_worktree_root(&ws_path).as_deref() == Some(&primary))
+                .then_some(ws_path.as_path()),
         )? {
             DepTargetResolution::Tombstone {
                 cleared: false,
@@ -979,13 +1383,28 @@ pub(crate) fn resolve_spec_repositories(
     primary_root: &Path,
     spec_doc: &SpecDocument,
 ) -> BTreeMap<String, PathBuf> {
+    let base = acdd_core::git::primary_worktree_root(primary_root)
+        .filter(|primary| {
+            primary != primary_root && {
+                let rels: Vec<&Path> = spec_doc
+                    .repositories
+                    .iter()
+                    .map(|r| Path::new(&r.path))
+                    .filter(|p| p.is_relative())
+                    .collect();
+                !rels.is_empty()
+                    && rels.iter().all(|p| primary.join(p).exists())
+                    && !rels.iter().all(|p| primary_root.join(p).exists())
+            }
+        })
+        .unwrap_or_else(|| primary_root.to_path_buf());
     let mut map = BTreeMap::new();
     for r in &spec_doc.repositories {
         let p = Path::new(&r.path);
         map.insert(
             r.name.clone(),
             if p.is_relative() {
-                primary_root.join(p)
+                base.join(p)
             } else {
                 p.to_path_buf()
             },
@@ -1227,43 +1646,25 @@ fn validate_external_dep_ref(
     trimmed: &str,
     require_task: bool,
 ) -> Result<(), StateError> {
-    let primary_canon = canonical_root(primary_root).ok();
-    let (ws_path, is_primary, ws_collections, ws_db_path, run_and_task) =
-        if let Some((ws_alias, rest)) = trimmed.split_once('/') {
-            let canon =
-                resolve_linked_workspace_root(ws_alias, trimmed, linked_workspaces, spec_repos)?;
-            if primary_canon.as_deref().is_some_and(|root| same_repository(root, &canon)) {
-                let db_path = match state_db_override {
-                    Some(p) if p.is_absolute() => p.to_path_buf(),
-                    Some(rel) => primary_root.join(rel),
-                    None => resolve_state_db_path(primary_root, primary_adapter),
-                };
-                (
-                    canon.clone(),
-                    true,
-                    if canon == primary_root { primary_adapter.specs.clone() } else { load_ws_adapter(&canon)?.specs },
-                    db_path,
-                    rest,
-                )
-            } else {
-                let ws_adapter = load_ws_adapter(&canon)?;
-                let db_path = resolve_state_db_path(&canon, &ws_adapter);
-                (canon, false, ws_adapter.specs, db_path, rest)
-            }
-        } else {
-            let db_path = match state_db_override {
-                Some(p) if p.is_absolute() => p.to_path_buf(),
-                Some(rel) => primary_root.join(rel),
-                None => resolve_state_db_path(primary_root, primary_adapter),
-            };
-            (
-                primary_root.to_path_buf(),
-                true,
-                primary_adapter.specs.clone(),
-                db_path,
-                trimmed,
-            )
-        };
+    let local_checkout =
+        canonical_root(primary_root).unwrap_or_else(|_| primary_root.to_path_buf());
+    let local_primary = acdd_core::git::primary_worktree_root(&local_checkout)
+        .unwrap_or_else(|| local_checkout.clone());
+    let local_db =
+        resolve_effective_state_db_path(&local_primary, state_db_override, primary_adapter);
+    let (ws_path, run_and_task) = match trimmed.split_once('/') {
+        Some((alias, rest)) => (
+            resolve_linked_workspace_root(alias, trimmed, linked_workspaces, spec_repos)?,
+            rest,
+        ),
+        None => (local_checkout.clone(), trimmed),
+    };
+    let is_primary = ws_path == local_checkout;
+    let (ws_db_path, ws_collections) = if is_primary {
+        (local_db.clone(), primary_adapter.specs.clone())
+    } else {
+        resolve_ws_context_canon(&ws_path, Some((&local_primary, &local_db)))?
+    };
 
     let (run_sel, task_sel) = match run_and_task.split_once(':') {
         Some((r, t)) => {
@@ -1306,27 +1707,22 @@ fn validate_external_dep_ref(
         &active_storage
     };
 
-    let owned_reader = if is_primary && local_reader.is_some() {
-        None
-    } else if ws_db_path.is_file() {
-        Some(SqliteStateReader::new(&ws_db_path))
-    } else {
-        None
-    };
-    let reader_opt: Option<&dyn StateReader> = if is_primary && local_reader.is_some() {
-        local_reader
-    } else {
-        owned_reader.as_ref().map(|r| r as &dyn StateReader)
-    };
+    let owned_reader = SqliteStateReader::new(&ws_db_path);
+    let reader = local_reader
+        .filter(|_| ws_db_path == local_db)
+        .unwrap_or(&owned_reader);
 
     match resolve_dep_target(
         &ws_path,
         &ws_collections,
-        reader_opt,
+        Some(reader),
         Some(active_list),
         run_sel,
         task_sel,
         trimmed,
+        (trimmed.contains('/')
+            && acdd_core::git::primary_worktree_root(&ws_path).as_deref() == Some(&local_primary))
+            .then_some(ws_path.as_path()),
     )? {
         DepTargetResolution::ActiveSpec {
             cancelled,

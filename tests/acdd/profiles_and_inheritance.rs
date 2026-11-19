@@ -103,8 +103,9 @@ gates_patch:
         .iter()
         .find(|g| g.id == "build")
         .expect("build gate present");
-    assert!(build_gate.tools.contains(&"http_ping".to_owned()));
-    assert!(!build_gate.tools.contains(&"ast_grep_search".to_owned()));
+    let build_tools = resolved_child.effective_tools(build_gate);
+    assert!(build_tools.contains(&"http_ping".to_owned()));
+    assert!(!build_tools.contains(&"ast_grep_search".to_owned()));
 
     // Bad SHA pin and cyclic inherit fail closed with ProfileSchemaInvalid.
     let bad_pin_yaml = "version: 2\ninherit: \".acdd/profiles/parent.yaml:deadbeefcafe\"\n";
