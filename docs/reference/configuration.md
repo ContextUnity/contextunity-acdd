@@ -233,8 +233,9 @@ Each gate declares a stable `id` (`[A-Za-z0-9_-]`), optional `role`, `command`,
 `review` (requiring `role` and `contours`); named catalog schemas (`proofs:`)
 and inline `{ scheme: ... }` JSON Schemas bind typed `--evidence` payloads.
 Delivery/handoff gates use `receipt: true` with `save.post: commit` (and
-`archive: true` / `prune: true` for run finalization). See [ACDD Profiles Reference](profiles.md)
-for complete schema documentation.
+`archive: true` / `prune: true` for run finalization). Leaf task gates may declare
+`save.post: snapshot` for auto-checkpointed scoped trees (see [task snapshots](tasks.md#task-snapshots)).
+See [ACDD Profiles Reference](profiles.md) for complete schema documentation.
 
 ### Profile pinning and tampering protection
 

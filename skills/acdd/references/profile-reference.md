@@ -1,3 +1,5 @@
+[mode overridden: auto -> full, reason=instruction file requires complete content]
+
 # ACDD `GateProfile` Reference (`version: 2`)
 
 Every `GateProfile` YAML document uses strict `deny_unknown_fields` validation
@@ -83,7 +85,7 @@ Inside `gates_patch`:
 - `proof`: `none` (default) | `command` | `call` | `review` (requires `role` + non-empty `contours`) | `<catalog_id>` | `{ scheme: <JSON Schema> }`.
 - `tools` / `tools_add` / `tools_remove`: replace or adjust `default_tools` (validated fail-closed against static + registered `DomainProvider` plugin tools).
 - `guidance`, `contours`, `scope` (`[<glob>, ...]` explicit gate scope e.g. `polish`).
-- `save`: `{ post?: none | commit, immutable?: bool, archive?: bool, prune?: bool, report?: ".acdd/reports/..." }` (scalar `none | commit` shorthand supported; `save.report` writes `.md` or `.json` strictly under `.acdd/reports/` using `{run_id}`, `{run_name}`, `{gate_id}`, `{spec_id}`).
+- `save`: `{ post?: none | commit | snapshot, immutable?: bool, archive?: bool, prune?: bool, report?: ".acdd/reports/..." }` (scalar `none | commit | snapshot` shorthand supported on gates; profile-root `save:` accepts only `none | commit`. `save.post: snapshot` is valid only on leaf task gates, writes `refs/acdd/snapshots/<run_id>/<task_ref>/r<claim_revision>` without moving `HEAD`, and refs auto-clear on deliver, run `clear`, or `handoff`. `save.report` writes `.md` or `.json` strictly under `.acdd/reports/` using `{run_id}`, `{run_name}`, `{gate_id}`, `{spec_id}`).
 - `max_attempts` (default `3`), `receipt: true` (closes container & materializes `ArtifactKind::Proof`), `independent_from: [<cursor>]`, `need: [<cursor>]` (enforces predecessor accepted tree match), `pass`, `fail` (`defect` routing), `fail_drift` (`architectural_drift` routing triggering builder context reset).
 - Passing a container predecessor gate with `proof` propagates structured outputs into downstream `ClaimResp.pre_task_slice` (`tasks[<task_ref>]` and `predecessor_proofs`).
 

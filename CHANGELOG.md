@@ -9,6 +9,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Added
 
 - **`acdd roadmap` CLI and MCP parity**: Read-only `acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]` delegates to `StateQuery::Roadmap` via `execute_state_query`, renders compact Markdown through `src/format/roadmap.rs`, and exposes `acdd_state(action: "roadmap")` with matching JSON output.
+- **Task Git checkpoints (`save.post: snapshot`)**:
+  - `acdd snapshot save|restore|clear` and `acdd_state(action: "snapshot")` manage confined per-task refs under `refs/acdd/snapshots/<run_id>/<task_ref>/r<rev>` without moving `HEAD`.
+  - Embedded `code` `build` gates auto-save checkpoints on pass; deliver, run `clear`, and `handoff` delete matching refs.
 
 ## [0.6.2] - 2026-11-18
 

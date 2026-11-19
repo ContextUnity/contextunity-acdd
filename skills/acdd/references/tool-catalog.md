@@ -1,3 +1,7 @@
+[mode overridden: auto -> full, reason=instruction file requires complete content]
+
+[mode overridden: auto -> full, reason=instruction file requires complete content]
+
 # ACDD MCP and CLI tool catalog
 
 Use the active server registry and schemas as the final authority. This catalog is a compact navigation aid; repository-specific behavior and current schemas belong in that repository's reference docs.
@@ -6,10 +10,10 @@ Use the active server registry and schemas as the final authority. This catalog 
 
 The server exports **19 built-in static MCP tools** (`10 code + 2 docs + 2 core + 5 state`) plus any optional `<domain>_<name>` plugin tools exported by external `DomainProvider` crates:
 
-- `acdd_state(action, ...)` dispatches lifecycle commands (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `clear`, `run`) and read-only queries (`status`, `list`, `show`, `next`, `observability`). CLI parity: flat top-level commands (`acdd start`, `acdd draft`, `acdd status`, `acdd list`, `acdd show`, `acdd next`, `acdd extend-scope`, `acdd reopen`, `acdd sync`, `acdd subtask`, `acdd clear`, `acdd run`, `acdd tool <domain>_<name>`, `acdd validate`).
+- `acdd_state(action, ...)` dispatches lifecycle commands (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `clear`, `run`) and read-only queries (`status`, `list`, `show`, `next`, `observability`). CLI parity: flat top-level commands (`acdd start`, `acdd draft`, `acdd status`, `acdd list`, `acdd show`, `acdd next`, `acdd extend-scope`, `acdd reopen`, `acdd sync`, `acdd subtask`, `acdd snapshot`, `acdd clear`, `acdd run`, `acdd tool <domain>_<name>`, `acdd validate`).
 - `acdd_claim(node?, worktree?, worker_id?, force?, steal_remote?)` claims the active gate and returns its 6-tier budgeted context (`contract + guidance`, `unresolved_findings`, `pre_task_slice`, `dependency_receipts`, `blackboard`, `context` lenses, plus `context_reset_required` after `rearchitect`).
 - `acdd_verify(node?, test?, worktree?)` observes claim-bound command/check/call verification without advancing state (`execution_digest` + `candidate_tree_before`/`after`).
-- `acdd_submit(node?, action, evidence?, findings?, worktree?, allow_main?)` submits `pass` or `reject` (supporting `rejection_findings.kind`: `defect | architectural_drift`) against a fresh trace (or auto-verifies when `--test` is not required) and executes `save.post` (`none | commit`), `archive`, and `prune`.
+- `acdd_submit(node?, action, evidence?, findings?, worktree?, allow_main?)` submits `pass` or `reject` (supporting `rejection_findings.kind`: `defect | architectural_drift`) against a fresh trace (or auto-verifies when `--test` is not required) and executes `save.post` (`none | commit | snapshot`), `archive`, and `prune`.
 - `acdd_blackboard(action, run?, node?, recipient_node?, subtask_ref?, gate?, author?, topic?, status?, payload?, limit?, offset?, generation?, worktree?)` posts (`action="post"`) or reads (`action="read"`) `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred` messages.
 - `ListReq` (`acdd list`) and `BlackboardReq` (`acdd blackboard read`) paginate with `limit` (`1..=100`, default `50`), `offset`, and `generation` (`runs.generation` fence).
 - Results default to Markdown (`ADR-0006`); request MCP `format: "json"` or CLI `--format json` when parsing structured fields.

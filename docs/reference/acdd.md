@@ -158,7 +158,9 @@ groups that only repeat an already-reported whole-symbol **`exact`** or
   from the scoped candidate tree (`TreeOid`); `save.immutable: true` rejects
   candidate drift at submit (`TASK_CANDIDATE_MISMATCH`); `save.post: commit`
   creates a scoped Git plumbing commit (`Acdd-Claim`) without
-  polluting untracked engine paths excluded by `WorkspacePathPolicy`.
+  polluting untracked engine paths excluded by `WorkspacePathPolicy`; `save.post: snapshot`
+  on leaf task gates writes confined checkpoint refs under `refs/acdd/snapshots/...`
+  (see [task snapshots](tasks.md#task-snapshots)).
 
 ---
 
@@ -209,7 +211,7 @@ Phase 1: Pre-Task Root Container (`blueprint_synthesis`)
           │
           ▼  (fans out per-task blueprint slices; unlocks `- tasks:` wave)
 Phase 2: Per-Task DAG Container (`- tasks:`, executed in topological waves)
-  └─ build (role: builder, command: build_check, proof: command)
+  └─ build (role: builder, command: build_check, proof: command, save.post: snapshot)
         └─► review (role: independent_reviewer, proof: review, 6 contours, immutable, fail -> build, fail_drift -> rearchitect)
               └─► deliver (role: independent_reviewer, need [build, review], receipt: true, save.post: commit)
         (rearchitect: role: architect, pass -> build with builder context reset)

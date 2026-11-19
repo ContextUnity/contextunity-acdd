@@ -145,7 +145,10 @@ gates_patch: []                # Patch inherited gates by id/cursor/after/before
 - **`save:`**: Controls working-tree commits, report materialization, and SQLite
   persistence per gate (also settable at profile root as default or shorthand
   scalar `save: none` / `commit`):
-  - `post`: `none` or `commit` (creates an atomic Git plumbing commit with `Acdd-Claim` on submit).
+  - `post`: `none`, `commit` (creates an atomic Git plumbing commit with `Acdd-Claim` on submit),
+    or `snapshot` (writes `refs/acdd/snapshots/<run_id>/<task_ref>/r<claim_revision>` without
+    moving `HEAD`; profile validation allows `snapshot` only on leaf task gates; checkpoint refs
+    auto-clear on deliver, run `clear`, or `handoff`).
   - `immutable`: Require working tree at `submit` to match the claim tree (`TASK_CANDIDATE_MISMATCH` on drift).
   - `archive` / `prune`: Allowed on `root_gate` only (typically `handoff`); archives
     the completed spec or prunes terminal SQLite rows into `run_tombstones`.
