@@ -1,18 +1,18 @@
-use super::super::interner::LinkerInterner;
+use crate::interner::LinkerInterner;
 #[cfg(feature = "lang-typescript")]
-use super::super::interner::SymbolId;
+use crate::interner::SymbolId;
 use super::super::semantic_context::Context;
 use super::super::traits::{LanguageLinker, PackageExports};
 #[cfg(feature = "lang-typescript")]
-use crate::core::models::compact_graph::Graph;
-use crate::core::models::{Facts, Node, Reference};
+use crate::models::compact_graph::Graph;
+use crate::models::{Facts, Node, Reference};
 #[cfg(feature = "lang-typescript")]
-use crate::core::semantic::ObjectOwnershipFact;
-use crate::engine::languages::LanguageProfile;
+use crate::semantic::ObjectOwnershipFact;
+use crate::languages::LanguageProfile;
 #[cfg(feature = "lang-typescript")]
-use crate::engine::linker::resolution::ResolutionInput;
+use crate::linker::resolution::ResolutionInput;
 #[cfg(feature = "lang-typescript")]
-use crate::engine::linker::value_flow;
+use crate::linker::value_flow;
 use hashbrown::HashMap;
 #[cfg(feature = "lang-typescript")]
 use hashbrown::HashSet;

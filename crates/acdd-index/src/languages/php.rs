@@ -64,15 +64,7 @@ impl LanguageProfile for Php {
             &["assignment_expression"],
         )
     }
-    fn extract_file(
-        &self,
-        path: &str,
-        source: &str,
-        module: &str,
-        facts: &mut Facts,
-    ) -> Result<()> {
-        parse_file(self, path, source, module, facts)
-    }
+    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if matches!(
             ctx.node.kind(),

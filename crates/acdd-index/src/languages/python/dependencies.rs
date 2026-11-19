@@ -1,4 +1,4 @@
-use crate::engine::languages::toml_manifest::{toml_string, visit_toml_pairs};
+use crate::languages::toml_manifest::{toml_string, visit_toml_pairs};
 use tree_sitter::Node;
 
 pub(crate) fn package(requirement: &str) -> Option<String> {

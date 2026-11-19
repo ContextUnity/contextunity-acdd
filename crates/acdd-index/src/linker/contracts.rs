@@ -1,8 +1,8 @@
 use super::value_flow::{valid_scope_facts, SemanticLimits};
-use crate::core::models::{Facts, Node};
-use crate::core::semantic::{SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts};
-use crate::core::typed_facts::{FlowState, FlowStore, TypedFacts};
-use crate::engine::languages;
+use crate::models::{Facts, Node};
+use crate::semantic::{SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts};
+use crate::typed_facts::{FlowState, FlowStore, TypedFacts};
+use crate::languages;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -120,7 +120,7 @@ impl<'a> Contracts<'a> {
     pub fn details(
         &self,
         node: &'a Node,
-        semantic: Option<&crate::core::typed_facts::SemanticState>,
+        semantic: Option<&crate::typed_facts::SemanticState>,
     ) -> Value {
         let mut details = node.details.clone();
         if let Some(metadata) = node.native_semantic.as_deref() {
@@ -248,7 +248,7 @@ impl<'a> Contracts<'a> {
                 } if node.kind == "module" && node.language == "vue" => {
                     let mut stripped = facts.clone();
                     stripped.facts.retain(|f| {
-                        !matches!(f, crate::core::semantic::FrameworkFact::ComponentMacro(_))
+                        !matches!(f, crate::semantic::FrameworkFact::ComponentMacro(_))
                     });
                     if stripped.is_empty() {
                         None
@@ -634,10 +634,8 @@ fn opaque_bindings(flow: &ValueFlowFacts) -> Vec<Value> {
 #[cfg(test)]
 mod resolution_digest_tests {
     use super::Contracts;
-    use crate::core::{
-        models::{Facts, Node},
-        typed_facts::TypedFacts,
-    };
+    use crate::models::{Facts, Node};
+    use crate::typed_facts::TypedFacts;
     use serde_json::json;
 
     fn module(line: usize, details: serde_json::Value) -> Node {

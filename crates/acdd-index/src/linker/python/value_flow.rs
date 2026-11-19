@@ -2,10 +2,9 @@ use super::super::value_flow::{
     node_position, resolve_type, symbol_type, ReadTrace, SemanticLimits, SemanticResolver, Symbol,
     SymbolRole, TypeTarget, ValueFlowIndex,
 };
-use crate::core::{
-    models::Node,
-    semantic::{SourcePosition, TypeExpr},
-};
+use crate::ast::strip_outer_parentheses;
+use crate::models::Node;
+use crate::semantic::{SourcePosition, TypeExpr};
 
 pub(in crate::linker) fn literal_type<'a>(
     owner: &Node,
@@ -14,7 +13,7 @@ pub(in crate::linker) fn literal_type<'a>(
     if owner.language != "python" {
         return None;
     }
-    crate::core::semantic::python_literal_type(expression)
+    crate::semantic::python_literal_type(expression)
         .map(|name| TypeTarget::Builtin(name.to_owned()))
 }
 
@@ -212,31 +211,4 @@ fn split_pipe_types(annotation: &str) -> Option<Vec<&str>> {
     }
     parts.push(last);
     Some(parts)
-}
-
-fn strip_outer_parentheses(value: &str) -> &str {
-    let trimmed = value.trim();
-    if trimmed.starts_with('(') && trimmed.ends_with(')') {
-        let mut depth = 0_usize;
-        let mut closed_at_end = false;
-        for (index, character) in trimmed.char_indices() {
-            match character {
-                '(' => depth += 1,
-                ')' => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 && index == trimmed.len() - 1 {
-                        closed_at_end = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-        if closed_at_end {
-            trimmed[1..trimmed.len() - 1].trim()
-        } else {
-            trimmed
-        }
-    } else {
-        trimmed
-    }
 }

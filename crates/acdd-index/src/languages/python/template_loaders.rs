@@ -1,6 +1,6 @@
-use crate::core::models::{Facts, Node as IndexedNode};
-use crate::engine::ast::{field, text};
-use crate::engine::languages::{LanguageProfile, SyntaxContext};
+use crate::models::{Facts, Node as IndexedNode};
+use crate::ast::{field, text};
+use crate::languages::{LanguageProfile, SyntaxContext};
 use std::collections::HashMap;
 use std::path::{Component, Path};
 use tree_sitter::Node;
@@ -600,9 +600,9 @@ pub(super) fn extract(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
 fn extract_configured(
     ctx: &SyntaxContext<'_, '_>,
     facts: &mut Facts,
-    syntax_rule: &crate::engine::languages::manifests::syntax::SyntaxRule,
+    syntax_rule: &crate::languages::manifests::syntax::SyntaxRule,
 ) {
-    let crate::engine::languages::manifests::syntax::SyntaxOperation::TemplateLoader {
+    let crate::languages::manifests::syntax::SyntaxOperation::TemplateLoader {
         module: provider_module,
         environment,
         loader: loader_export,
@@ -738,6 +738,6 @@ fn extract_configured(
         is_test: false,
         language: "python".into(),
         generated: false,
-        details: serde_json::json!({"provider":provider_module,"pack":pack,"rule":rule,"import_modules":[provider_module,"pathlib"],"value_flow":crate::core::semantic::ValueFlowFacts { framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts { facts: vec![crate::core::semantic::FrameworkFact::RuleOrigin(crate::core::semantic::ExtractionRuleOrigin { pack: pack.clone(), rule: rule.clone() })], ..Default::default() })), ..Default::default() }}),
+        details: serde_json::json!({"provider":provider_module,"pack":pack,"rule":rule,"import_modules":[provider_module,"pathlib"],"value_flow":crate::semantic::ValueFlowFacts { framework: Some(Box::new(crate::semantic::FrameworkScopeFacts { facts: vec![crate::semantic::FrameworkFact::RuleOrigin(crate::semantic::ExtractionRuleOrigin { pack: pack.clone(), rule: rule.clone() })], ..Default::default() })), ..Default::default() }}),
     });
 }

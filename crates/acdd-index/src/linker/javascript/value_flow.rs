@@ -1,5 +1,6 @@
 use super::super::value_flow::{Binding, ReadTrace, SemanticResolver, TypeTarget, ValueFlowIndex};
-use crate::core::{models::Node, semantic::SourcePosition};
+use crate::models::Node;
+use crate::semantic::SourcePosition;
 
 pub(in crate::linker) fn construct<'a>(owner: &Node, callee: &str) -> Option<TypeTarget<'a>> {
     if matches!(owner.language.as_str(), "javascript" | "typescript" | "vue") && callee == "[]" {

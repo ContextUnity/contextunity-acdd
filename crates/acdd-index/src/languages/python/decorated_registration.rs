@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::models::{Edge, Facts, Node};
+use crate::models::{Edge, Facts, Node};
 use serde_json::json;
 
 fn literal_name<'a>(node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
@@ -343,7 +343,7 @@ fn registrations_with_rules(
                 id: id.clone(), kind: registration_kind.into(), name: name.clone(),
                 qualname: format!("{}.tool.{name}", module.qualname), path: function.path.clone(),
                 line, end_line: line, is_test: function.is_test, language: "python".into(), generated: false,
-                details: json!({"framework":provider,"pack":rule.pack,"rule":rule.id,"receiver":receiver,"advertised_name":advertised_name,"name_status":name_status,"handler":function.id,"value_flow":crate::core::semantic::ValueFlowFacts { framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts { facts: vec![crate::core::semantic::FrameworkFact::RuleOrigin(crate::core::semantic::ExtractionRuleOrigin { pack: rule.pack.clone(), rule: rule.id.clone() })], ..Default::default() })), ..Default::default() }}),
+                details: json!({"framework":provider,"pack":rule.pack,"rule":rule.id,"receiver":receiver,"advertised_name":advertised_name,"name_status":name_status,"handler":function.id,"value_flow":crate::semantic::ValueFlowFacts { framework: Some(Box::new(crate::semantic::FrameworkScopeFacts { facts: vec![crate::semantic::FrameworkFact::RuleOrigin(crate::semantic::ExtractionRuleOrigin { pack: rule.pack.clone(), rule: rule.id.clone() })], ..Default::default() })), ..Default::default() }}),
             });
             facts.edges.push(Edge {
                 src: module.id.clone(),

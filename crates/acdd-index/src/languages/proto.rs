@@ -27,7 +27,11 @@ fn parse_proto_package(source: &str) -> Option<&str> {
         if trimmed.starts_with("//") || trimmed.is_empty() {
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("package") {
+        if let Some(rest) = trimmed
+            .strip_prefix("package")
+            .filter(|rest| rest.starts_with(char::is_whitespace))
+        {
+            let rest = rest.split_once("//").map_or(rest, |(before, _)| before);
             let pkg = rest.trim().trim_end_matches(';').trim();
             if !pkg.is_empty() {
                 return Some(pkg);
@@ -97,15 +101,7 @@ impl LanguageProfile for Proto {
         let dir_b = path_b.rsplit_once('/').map_or("", |(d, _)| d);
         dir_a == dir_b
     }
-    fn extract_file(
-        &self,
-        path: &str,
-        source: &str,
-        module: &str,
-        facts: &mut Facts,
-    ) -> Result<()> {
-        parse_file(self, path, source, module, facts)
-    }
+    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source) = (ctx.node, ctx.source);
         let mut add = |expression, alias, module| ctx.import(facts, expression, alias, module);
@@ -130,9 +126,18 @@ impl LanguageProfile for Proto {
     }
 
     fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath> {
+        let stripped = module.trim_end_matches(".proto");
+        let relative = stripped.starts_with("./")
+            || stripped.starts_with("../")
+            || !stripped.contains('/');
+        let namespace = if relative {
+            relative_namespace(owner, stripped)?
+        } else {
+            stripped.trim_start_matches('/').replace('/', ".")
+        };
         Some(ImportPath {
-            namespace: relative_namespace(owner, module.trim_end_matches(".proto"))?,
-            relative: true,
+            namespace,
+            relative,
             symbol_path: false,
         })
     }

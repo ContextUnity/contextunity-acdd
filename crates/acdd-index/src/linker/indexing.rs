@@ -1,4 +1,4 @@
-use super::interner::{LinkerInterner, SymbolId};
+use crate::interner::{LinkerInterner, SymbolId};
 use crate::{
     languages::{
         self, dependency_registry::DependencyRegistry, ImportPath, LanguageFamily, LanguageProfile,

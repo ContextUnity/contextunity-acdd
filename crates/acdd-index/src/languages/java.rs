@@ -51,11 +51,7 @@ impl LanguageProfile for Java {
             .unwrap_or_else(|| self.module_name(path))
     }
     fn normalize_import(&self, _owner: &str, module: &str) -> Option<ImportPath> {
-        Some(ImportPath {
-            namespace: module.to_owned(),
-            relative: false,
-            symbol_path: true,
-        })
+        syntax::symbol_import_path(module)
     }
     fn class_scope(&self) -> bool {
         true
@@ -79,15 +75,7 @@ impl LanguageProfile for Java {
     fn value_binding_applies(&self, reference: &Reference) -> bool {
         reference.kind != "calls" || reference.expression.contains('.')
     }
-    fn extract_file(
-        &self,
-        path: &str,
-        source: &str,
-        module: &str,
-        facts: &mut Facts,
-    ) -> Result<()> {
-        parse_file(self, path, source, module, facts)
-    }
+    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if ctx.node.kind() == "import_declaration" {
             if let Some(module) =

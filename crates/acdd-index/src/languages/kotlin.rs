@@ -61,17 +61,20 @@ impl LanguageProfile for Kotlin {
         source
             .lines()
             .map(str::trim)
-            .find_map(|line| line.strip_prefix("package ").map(str::trim))
-            .filter(|package| !package.is_empty())
+            .find_map(|line| {
+                let rest = line
+                    .strip_prefix("package")
+                    .filter(|rest| rest.starts_with(char::is_whitespace))?;
+                let rest = rest.split_once("//").map_or(rest, |(before, _)| before);
+                let rest = rest.split_once("/*").map_or(rest, |(before, _)| before);
+                let pkg = rest.trim().trim_end_matches(';').trim();
+                (!pkg.is_empty()).then_some(pkg)
+            })
             .map(str::to_owned)
             .unwrap_or_else(|| self.module_name(path))
     }
     fn normalize_import(&self, _owner: &str, module: &str) -> Option<ImportPath> {
-        Some(ImportPath {
-            namespace: module.to_owned(),
-            relative: false,
-            symbol_path: true,
-        })
+        syntax::symbol_import_path(module)
     }
     fn class_scope(&self) -> bool {
         true
@@ -88,15 +91,7 @@ impl LanguageProfile for Kotlin {
             &["variable_declaration"],
         )
     }
-    fn extract_file(
-        &self,
-        path: &str,
-        source: &str,
-        module: &str,
-        facts: &mut Facts,
-    ) -> Result<()> {
-        parse_file(self, path, source, module, facts)
-    }
+    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if ctx.node.kind() == "import_header" {
             if let Some(module) = syntax::named(ctx.node, ctx.source, &["identifier"]) {
@@ -143,7 +138,7 @@ impl LanguageProfile for Kotlin {
                     };
                     node = child;
                 }
-                crate::engine::ast::relations::reference(
+                crate::ast::relations::reference(
                     facts,
                     ctx.owner,
                     text(node, ctx.source),

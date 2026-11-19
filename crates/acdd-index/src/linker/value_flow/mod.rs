@@ -1,4 +1,4 @@
-use super::interner::{LinkerInterner, SymbolId};
+use crate::interner::{LinkerInterner, SymbolId};
 use crate::{
     models::{Facts, Node, ReceiverHint, Reference},
     semantic::{SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts},
@@ -1021,22 +1021,6 @@ impl<'a> ValueFlowIndex<'a> {
             }
         }
         resolver.resolve_symbol(owner, expression, at, SymbolRole::Callable)
-    }
-
-    /// Performs value type.
-    pub fn value_type(
-        &self,
-        owner: &'a Node,
-        expression: &str,
-        at: SourcePosition,
-        resolver: &impl SemanticResolver<'a>,
-    ) -> Option<&TypeTarget<'a>> {
-        if expression.len() > self.limits.name_bytes
-            || expression.matches('.').count() > self.limits.alias_depth
-        {
-            return Some(&self.unknown);
-        }
-        self.value_expression(owner, expression, at, resolver, None)
     }
 
     fn value_expression(

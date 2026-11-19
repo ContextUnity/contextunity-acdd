@@ -1,7 +1,7 @@
-use crate::core::models::Node;
-use crate::core::semantic::ExtractionRuleOrigin;
-use crate::engine::languages::dependency_registry::DependencyRegistry;
-use crate::engine::languages::manifests::syntax::SyntaxOperation;
+use crate::models::Node;
+use crate::semantic::ExtractionRuleOrigin;
+use crate::languages::dependency_registry::DependencyRegistry;
+use crate::languages::manifests::syntax::SyntaxOperation;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 

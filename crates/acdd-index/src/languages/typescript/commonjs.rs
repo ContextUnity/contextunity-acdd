@@ -1,6 +1,6 @@
 use super::{nearest_binding_scope, Syntax, SyntaxContext};
-use crate::core::semantic::SourcePosition;
-use crate::engine::ast::text;
+use crate::semantic::SourcePosition;
+use crate::ast::text;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;

@@ -1,11 +1,11 @@
-use crate::core::models::{compact_graph::Graph, Facts, Node, ReceiverHint, Reference};
-use crate::core::semantic::SourcePosition;
-use crate::engine::languages::{self, dependency_registry::DependencyRegistry};
-use crate::engine::linker::{
+use crate::models::{compact_graph::Graph, Facts, Node, ReceiverHint, Reference};
+use crate::semantic::SourcePosition;
+use crate::languages::{self, dependency_registry::DependencyRegistry};
+use crate::interner::{LinkerInterner, SymbolId};
+use crate::linker::{
     framework_relations::{
         project_scope, DeclarativeRulePrimitive, OccurrenceTable, PreparedSemanticFacts,
     },
-    interner::{LinkerInterner, SymbolId},
     semantic_context,
     value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget},
 };
@@ -171,7 +171,7 @@ struct SymbolRelationRules<'a> {
     semantic: &'a [languages::semantic::EffectiveSemanticRule],
     di_calls: &'a [languages::manifests::DiCallRule],
     di_rule_origins:
-        &'a std::collections::HashMap<usize, crate::core::semantic::ExtractionRuleOrigin>,
+        &'a std::collections::HashMap<usize, crate::semantic::ExtractionRuleOrigin>,
 }
 
 fn import_scope_distance(caller: &Node, importer: &Node) -> Option<usize> {
@@ -244,7 +244,7 @@ fn declared_import_alias(
     module: &str,
     export: &str,
 ) -> bool {
-    let req = super::super::interner::package_mask(module);
+    let req = crate::interner::package_mask(module);
     if (file_mask & req) != req {
         return false;
     }
@@ -273,7 +273,7 @@ fn exact_import_for_call<'a>(
     semantic_context: &semantic_context::Context<'a>,
     interner: &LinkerInterner<'_>,
 ) -> ImportResolution {
-    let req = super::super::interner::package_mask(call.module);
+    let req = crate::interner::package_mask(call.module);
     if (file_mask & req) != req {
         return ImportResolution::Missing;
     }
@@ -419,7 +419,7 @@ pub(in crate::linker) fn compose_symbol_relations<'a>(
     }
     let mut occurrences = OccurrenceTable::default();
     let scope = project_scope(path, languages::LanguageFamily("python"), dependencies);
-    let file_mask = super::super::interner::file_import_mask(facts);
+    let file_mask = crate::interner::file_import_mask(facts);
 
     if has_injects {
         let context = dependencies.language_context_for_path(path);

@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::semantic::ValueFlowFacts;
+use crate::semantic::ValueFlowFacts;
 use serde_json::json;
 
 #[test]
@@ -76,10 +76,10 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
 
     let fields_first = FlowState::Valid {
         facts: Box::new(ValueFlowFacts {
-            fields: vec![crate::core::semantic::FieldFact {
+            fields: vec![crate::semantic::FieldFact {
                 name: "field".into(),
-                position: crate::core::semantic::SourcePosition { line: 1, column: 1 },
-                value: crate::core::semantic::ValueExpr::Unknown,
+                position: crate::semantic::SourcePosition { line: 1, column: 1 },
+                value: crate::semantic::ValueExpr::Unknown,
                 conditional: false,
             }],
             ..ValueFlowFacts::default()
@@ -103,7 +103,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     );
     let invalid_flow = FlowState::Invalid(original.clone());
     assert_eq!(serde_json::to_value(invalid_flow.view()).unwrap(), original);
-    let original_semantic = crate::core::typed_facts::SemanticState::Valid {
+    let original_semantic = crate::typed_facts::SemanticState::Valid {
         facts: Vec::new(),
         original: Some(original.clone()),
     };
@@ -111,7 +111,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         serde_json::to_value(original_semantic.view()).unwrap(),
         original
     );
-    let invalid_semantic = crate::core::typed_facts::SemanticState::Invalid {
+    let invalid_semantic = crate::typed_facts::SemanticState::Invalid {
         original: original.clone(),
         error: "invalid original metadata".into(),
     };
@@ -139,7 +139,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         let mut public_node = node.clone();
         public_node.details = serde_json::from_str(details).unwrap();
         let public = TypedFacts {
-            facts: crate::core::models::Facts {
+            facts: crate::models::Facts {
                 nodes: vec![public_node],
                 ..Default::default()
             },
@@ -178,7 +178,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     }
     facts.facts.nodes.push(node);
     let flow = ValueFlowFacts {
-        framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
+        framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
             fact_limit_exceeded: true,
             ..Default::default()
         })),
@@ -201,7 +201,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         Some(FlowState::Invalid(value)) if value["fact_limit_exceeded"] == true
     ));
 
-    use crate::core::semantic::{
+    use crate::semantic::{
         ExtractionRuleOrigin, FrameworkFact, NamedBindingFact, NamedBindingRole, NamedTargetKind,
         SourcePosition, StaticString, SymbolOperand,
     };
@@ -223,7 +223,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     facts.flows.insert(
         node_id.clone(),
         ValueFlowFacts {
-            framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
+            framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
                 facts: vec![FrameworkFact::NamedBinding(definition.clone()); 130],
                 ..Default::default()
             })),
@@ -250,20 +250,20 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     );
 
     let valid_flow = ValueFlowFacts {
-        bindings: vec![crate::core::semantic::BindingFact {
+        bindings: vec![crate::semantic::BindingFact {
             name: "client".into(),
-            position: crate::core::semantic::SourcePosition { line: 2, column: 3 },
-            value: crate::core::semantic::ValueExpr::Construct {
+            position: crate::semantic::SourcePosition { line: 2, column: 3 },
+            value: crate::semantic::ValueExpr::Construct {
                 callee: "Client".into(),
             },
             conditional: false,
         }],
-        return_type: Some(crate::core::semantic::TypeExpr::Named {
+        return_type: Some(crate::semantic::TypeExpr::Named {
             name: "Client".into(),
         }),
-        framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
+        framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
             facts: vec![FrameworkFact::RuleOrigin(
-                crate::core::semantic::ExtractionRuleOrigin {
+                crate::semantic::ExtractionRuleOrigin {
                     pack: "codec".into(),
                     rule: "flow".into(),
                 },
@@ -274,7 +274,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     };
     let mut flow_node = facts.nodes[0].clone();
     flow_node.details["value_flow"] = serde_json::to_value(valid_flow).unwrap();
-    let flow_input = TypedFacts::from_public(crate::core::models::Facts {
+    let flow_input = TypedFacts::from_public(crate::models::Facts {
         nodes: vec![flow_node],
         ..Default::default()
     });
@@ -293,8 +293,8 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         Some(FlowState::Valid { original: None, .. })
     ));
     assert_eq!(serde_json::to_value(flow_reopened).unwrap(), expected_flow);
-    let local_flow_blob = crate::core::typed_facts::encode_facts(&flow_input).unwrap();
-    let local_flow_reopened = crate::core::typed_facts::decode_facts(&local_flow_blob).unwrap();
+    let local_flow_blob = crate::typed_facts::encode_facts(&flow_input).unwrap();
+    let local_flow_reopened = crate::typed_facts::decode_facts(&local_flow_blob).unwrap();
     assert!(matches!(
         local_flow_reopened
             .flows
@@ -305,39 +305,41 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         serde_json::to_value(local_flow_reopened).unwrap(),
         expected_flow
     );
-    let blob = crate::core::typed_facts::encode_facts(&facts).unwrap();
+    let blob = crate::typed_facts::encode_facts(&facts).unwrap();
     assert!(blob.starts_with(b"ACDD-LOCAL-FACTS\0\x03"));
-    assert!(crate::core::typed_facts::decode_facts(b"ACDD-LOCAL-FACTS\0\x01").is_err());
-    assert!(crate::core::typed_facts::decode_facts(b"ACDD-LOCAL-FACTS\0\x02").is_err());
-    let reopened = crate::core::typed_facts::decode_facts(&blob).unwrap();
+    assert!(crate::typed_facts::decode_facts(b"ACDD-LOCAL-FACTS\0\x01").is_err());
+    assert!(crate::typed_facts::decode_facts(b"ACDD-LOCAL-FACTS\0\x02").is_err());
+    let reopened = crate::typed_facts::decode_facts(&blob).unwrap();
     assert_eq!(
         reopened.flows.named_uncertainties(&node_id),
         facts.flows.named_uncertainties(&node_id)
     );
-    assert!(serde_json::to_value(reopened.nodes[0].navigation_details())
-        .unwrap()
-        .get("named_definition_uncertainties")
-        .is_none());
+    assert!(serde_json::to_value(
+        reopened.nodes[0].navigation_details_with_documentation(&serde_json::Value::Null)
+    )
+    .unwrap()
+    .get("named_definition_uncertainties")
+    .is_none());
 
-    let semantic = crate::core::semantic::SemanticFact {
+    let semantic = crate::semantic::SemanticFact {
         pack: "codec".into(),
         rule: "file".into(),
-        identity: crate::core::semantic::SemanticIdentity {
+        identity: crate::semantic::SemanticIdentity {
             scope: ".".into(),
             namespace: "templates".into(),
-            target: crate::core::semantic::SemanticTarget::ProjectPathSuffix {
+            target: crate::semantic::SemanticTarget::ProjectPathSuffix {
                 prefix: "templates/".into(),
                 language: "html".into(),
             },
             path: "main.html".into(),
         },
-        occurrence: crate::core::semantic::SemanticOccurrence {
+        occurrence: crate::semantic::SemanticOccurrence {
             owner_id: node_id.clone(),
             line: 1,
             column: 0,
         },
         expression: "main.html".into(),
-        role: crate::core::semantic::SemanticFactRole::FileProvider {
+        role: crate::semantic::SemanticFactRole::FileProvider {
             target: node_id.clone(),
         },
     };
@@ -346,12 +348,12 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         .semantic
         .push(&mut facts.facts.nodes, semantic.clone()));
     facts.facts.semantic.mark_complete();
-    let public: crate::core::models::Facts =
+    let public: crate::models::Facts =
         serde_json::from_value(serde_json::to_value(&facts).unwrap()).unwrap();
     let semantic_input = TypedFacts::from_public(public);
     assert!(matches!(
         semantic_input.facts.semantic.state(0),
-        Some(crate::core::typed_facts::SemanticState::Valid {
+        Some(crate::typed_facts::SemanticState::Valid {
             original: Some(_),
             ..
         })
@@ -366,17 +368,17 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     assert_eq!(serde_json::to_value(&cached).unwrap(), native_public);
     assert!(matches!(
         cached.facts.semantic.state(0),
-        Some(crate::core::typed_facts::SemanticState::Valid {
+        Some(crate::typed_facts::SemanticState::Valid {
             facts, original: None
         })
             if facts.as_slice() == std::slice::from_ref(&semantic)
     ));
-    let packed = crate::core::typed_facts::encode_facts(&semantic_input).unwrap();
-    let native_reopened = crate::core::typed_facts::decode_facts(&packed).unwrap();
+    let packed = crate::typed_facts::encode_facts(&semantic_input).unwrap();
+    let native_reopened = crate::typed_facts::decode_facts(&packed).unwrap();
     assert!(native_reopened.facts.semantic.is_complete());
     assert!(matches!(
         native_reopened.facts.semantic.state(0),
-        Some(crate::core::typed_facts::SemanticState::Valid { original: None, .. })
+        Some(crate::typed_facts::SemanticState::Valid { original: None, .. })
     ));
     assert_eq!(
         serde_json::to_value(&native_reopened).unwrap(),
@@ -389,11 +391,11 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     ];
     bad_markers.push(serde_json::Value::Array((0..129).map(|i|json!({"domain":format!("domain_{i}"),"key":{"kind":"unknown"},"origin":{"pack":"codec","rule":"definitions"}})).collect()));
     for bad in bad_markers {
-        let mut public: crate::core::models::Facts =
+        let mut public: crate::models::Facts =
             serde_json::from_value(serde_json::to_value(&decoded).unwrap()).unwrap();
         public.nodes[0].details["named_definition_uncertainties"] = bad;
         assert!(
-            crate::core::typed_facts::FlowStore::read_named_uncertainties(&public.nodes[0])
+            crate::typed_facts::FlowStore::read_named_uncertainties(&public.nodes[0])
                 .is_err()
         );
         let invalid = TypedFacts::from_public(public);
@@ -403,7 +405,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
             .named_uncertainty_faults()
             .any(|owner| owner == node_id));
         assert!(encode_entry(&key, &invalid).is_err());
-        assert!(crate::core::typed_facts::encode_facts(&invalid).is_err());
+        assert!(crate::typed_facts::encode_facts(&invalid).is_err());
         assert!(
             matches!(invalid.flows.state(&invalid.nodes[0]),Some(FlowState::Invalid(raw)) if raw==&original)
         );
@@ -423,7 +425,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     facts.flows.insert(
         node_id.clone(),
         ValueFlowFacts {
-            framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
+            framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
                 facts: different_keys
                     .into_iter()
                     .map(FrameworkFact::NamedBinding)
@@ -459,7 +461,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         facts.flows.insert(
             node_id.clone(),
             ValueFlowFacts {
-                framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
+                framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
                     facts: different_groups,
                     ..Default::default()
                 })),
@@ -476,8 +478,8 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         };
         let cache_reopened =
             decode_entry(&encode_entry(&key, &facts).unwrap(), &key, 1024 * 1024).unwrap();
-        let full_reopened = crate::core::typed_facts::decode_facts(
-            &crate::core::typed_facts::encode_facts(&facts).unwrap(),
+        let full_reopened = crate::typed_facts::decode_facts(
+            &crate::typed_facts::encode_facts(&facts).unwrap(),
         )
         .unwrap();
         for reopened in [&cache_reopened, &full_reopened] {
@@ -487,16 +489,16 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
             assert!(
                 matches!(reopened.flows.state(&reopened.nodes[0]), Some(FlowState::Invalid(raw)) if raw == &exhausted_raw)
             );
-            let public: crate::core::models::Facts =
+            let public: crate::models::Facts =
                 serde_json::from_value(serde_json::to_value(reopened).unwrap()).unwrap();
             assert!(
-                crate::core::typed_facts::FlowStore::read_named_uncertainties(&public.nodes[0])
+                crate::typed_facts::FlowStore::read_named_uncertainties(&public.nodes[0])
                     .is_err(),
                 "infallible configured named authority remains unavailable"
             );
         }
     }
-    let mut malformed: crate::core::models::Facts =
+    let mut malformed: crate::models::Facts =
         serde_json::from_value(serde_json::to_value(&native_reopened).unwrap()).unwrap();
     let raw = json!([{"future_semantic_field":true}]);
     malformed.nodes[0].details["semantic_facts"] = raw.clone();
@@ -504,7 +506,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
     let malformed =
         decode_entry(&encode_entry(&key, &malformed).unwrap(), &key, 1024 * 1024).unwrap();
     assert!(
-        matches!(malformed.facts.semantic.state(0),Some(crate::core::typed_facts::SemanticState::Invalid{original,..}) if original==&raw)
+        matches!(malformed.facts.semantic.state(0),Some(crate::typed_facts::SemanticState::Invalid{original,..}) if original==&raw)
     );
     assert_eq!(
         serde_json::to_value(&malformed).unwrap()["nodes"][0]["details"]["semantic_facts"],
@@ -522,8 +524,8 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
 
 #[test]
 fn test_classic_global_cache_roundtrip() {
-    use crate::core::semantic::{BindingFact, SourcePosition, ValueExpr};
-    use crate::core::typed_facts::encode_facts;
+    use crate::semantic::{BindingFact, SourcePosition, ValueExpr};
+    use crate::typed_facts::encode_facts;
 
     let mut facts = TypedFacts::default();
     let node = Node {
@@ -617,7 +619,7 @@ fn test_catalog_reference_and_prepared_storage_decoding() {
     encode_references(&facts.references, &mut raw);
     let encoded = zstd::stream::encode_all(raw.as_slice(), 1).unwrap();
     assert!(
-        std::panic::catch_unwind(|| crate::core::semantic::decode_catalog_references(
+        std::panic::catch_unwind(|| crate::semantic::decode_catalog_references(
             &encoded[..encoded.len() - 1],
             &[]
         ))
@@ -634,7 +636,7 @@ fn test_catalog_reference_and_prepared_storage_decoding() {
         .concat(),
     ] {
         assert_eq!(
-            serde_json::to_value(crate::core::semantic::decode_catalog_references(
+            serde_json::to_value(crate::semantic::decode_catalog_references(
                 &encoded,
                 &[]
             ))

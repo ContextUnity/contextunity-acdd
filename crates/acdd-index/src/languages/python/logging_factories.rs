@@ -1,4 +1,4 @@
-use crate::engine::ast::{field, text};
+use crate::ast::{field, text};
 use tree_sitter::Node as Syntax;
 
 /// Sparse eligibility for finite logging factory contracts. Nested same-named

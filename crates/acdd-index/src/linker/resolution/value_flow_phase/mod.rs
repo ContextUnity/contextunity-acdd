@@ -4,7 +4,7 @@ mod members;
 mod relation_edges;
 
 fn has_node_binding(
-    interner: &super::super::interner::LinkerInterner<'_>,
+    interner: &crate::interner::LinkerInterner<'_>,
     bindings: &super::super::NodeBindingIndex,
     owner: &str,
     name: &str,
@@ -336,17 +336,7 @@ where
                 let Some(raw_annotation) = annotation else {
                     continue;
                 };
-                let annotation = receiver_type_name(raw_annotation);
-                #[cfg(feature = "lang-rust")]
-                let annotation = annotation.or_else(|| {
-                    rust::semantic_context::qualified_annotation_type(
-                        profile,
-                        raw_annotation,
-                        path,
-                        dependency_registry,
-                    )
-                });
-                let Some(annotation) = annotation else {
+                let Some(annotation) = receiver_type_name(raw_annotation) else {
                     continue;
                 };
                 let raw_head = receiver_head(raw_annotation);
@@ -380,19 +370,22 @@ where
                     .qualname
                     .rsplit_once('.')
                     .map_or("", |(parent, _)| parent);
+                let is_rust = profile.is_some_and(|profile| profile.id() == "rust");
                 let mut annotation_shadowed = false;
                 while !scope.is_empty() {
-                    if by_qual.get(scope).is_some_and(|scope_nodes| {
-                        scope_nodes.iter().any(|scope_node| {
-                            scope_node.path == *path
-                                && has_node_binding(
-                                    interner,
-                                    node_rebindings,
-                                    scope_node.id.as_str(),
-                                    head,
-                                )
+                    if !is_rust
+                        && by_qual.get(scope).is_some_and(|scope_nodes| {
+                            scope_nodes.iter().any(|scope_node| {
+                                scope_node.path == *path
+                                    && has_node_binding(
+                                        interner,
+                                        node_rebindings,
+                                        scope_node.id.as_str(),
+                                        head,
+                                    )
+                            })
                         })
-                    }) {
+                    {
                         annotation_shadowed = true;
                         break;
                     }
@@ -419,7 +412,10 @@ where
                     if !type_candidates.is_empty() {
                         break;
                     }
-                    if profile.is_some_and(|profile| profile.id() == "rust")
+                    if is_rust
+                        && !aliases
+                            .get(scope)
+                            .is_some_and(|entries| entries.contains_key(head))
                         && lookup(qualified(lookup_key, scope, head))
                             .iter()
                             .any(|candidate| {
@@ -433,19 +429,21 @@ where
                         annotation_shadowed = true;
                         break;
                     }
-                    if by_qual.get(scope).is_some_and(|scope_nodes| {
-                        scope_nodes
-                            .iter()
-                            .filter(|scope_node| scope_node.path == *path)
-                            .any(|scope_node| {
-                                has_node_binding(
-                                    interner,
-                                    node_bindings,
-                                    scope_node.id.as_str(),
-                                    head,
-                                )
-                            })
-                    }) {
+                    if !is_rust
+                        && by_qual.get(scope).is_some_and(|scope_nodes| {
+                            scope_nodes
+                                .iter()
+                                .filter(|scope_node| scope_node.path == *path)
+                                .any(|scope_node| {
+                                    has_node_binding(
+                                        interner,
+                                        node_bindings,
+                                        scope_node.id.as_str(),
+                                        head,
+                                    )
+                                })
+                        })
+                    {
                         annotation_shadowed = true;
                         break;
                     }
@@ -498,7 +496,7 @@ where
                             ReceiverType::Unknown
                         } else if imported_type.is_some_and(|targets| targets.is_empty()) {
                             external_for(head, Some(node), true)
-                                .filter(|(_, import_line)| {
+                                .filter(|(module, import_line)| {
                                     *import_line <= node.line
                                         && !python::resolution::is_dynamic_typing_annotation(
                                             head,
@@ -507,6 +505,13 @@ where
                                             aliases,
                                             &dynamic_type_aliases,
                                         )
+                                        && !(is_rust
+                                            && rust_has_non_lifetime_generics(raw_annotation)
+                                            && !matches!(
+                                                module.split("::").next(),
+                                                Some("std" | "core" | "alloc")
+                                            )
+                                            && !profile.is_some_and(|p| p.builtin_generic(head)))
                                 })
                                 .map(|(module, line)| {
                                     ReceiverType::External(module.as_str(), *line)
@@ -1181,6 +1186,9 @@ where
                         None
                     };
                     let inferred = implicit_receiver.as_ref().or_else(|| {
+                        if !profile.is_none_or(|p| p.value_binding_applies(r)) {
+                            return None;
+                        }
                         let receiver = value_flow.lookup(owner, first, at)?;
                         let incomplete_reference = matches!(
                             receiver,
@@ -1445,12 +1453,51 @@ where
                                 ));
                                 continue;
                             }
+                            #[cfg(feature = "lang-rust")]
+                            if n.language == "rust"
+                                && matches!(n.kind.as_str(), "struct" | "enum" | "trait")
+                                && !tail.contains('.')
+                            {
+                                if let Some(owner) = owner {
+                                    let targets = member_lookup.rust(n, tail, true, owner);
+                                    if !targets.is_empty() {
+                                        candidates.extend_from_slice(targets);
+                                        continue;
+                                    }
+                                }
+                            }
+                            let before_len = candidates.len();
                             candidates.extend(
                                 lookup(qualified(lookup_key, &n.qualname, tail))
                                     .iter()
                                     .copied()
                                     .filter(|target| target.path == n.path),
                             );
+                            #[cfg(feature = "lang-rust")]
+                            if candidates.len() == before_len
+                                && n.language == "rust"
+                                && n.kind == "module"
+                            {
+                                if let Some((ty_name, member_name)) = tail.split_once('.') {
+                                    if !member_name.contains('.') {
+                                        if let Some(owner) = owner {
+                                            candidates.extend_from_slice(
+                                                lookup_rust_associated_member(
+                                                    lookup(qualified(
+                                                        lookup_key,
+                                                        &n.qualname,
+                                                        ty_name,
+                                                    )),
+                                                    n.path.as_str(),
+                                                    member_name,
+                                                    owner,
+                                                    member_lookup,
+                                                ),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
                         if candidates.is_empty() {
                             if let [module] = imported.as_slice() {
@@ -1516,6 +1563,21 @@ where
                             file_module,
                             &expression,
                         )));
+                        #[cfg(feature = "lang-rust")]
+                        if candidates.is_empty()
+                            && profile.is_some_and(|p| p.id() == "rust")
+                            && !tail.contains('.')
+                        {
+                            if let Some(owner) = owner {
+                                candidates.extend_from_slice(lookup_rust_associated_member(
+                                    lookup(qualified(lookup_key, file_module, first)),
+                                    path,
+                                    tail,
+                                    owner,
+                                    member_lookup,
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -1656,6 +1718,19 @@ where
             candidates.sort_by(|a, b| a.id.cmp(&b.id));
             candidates.dedup_by_key(|n| &n.id);
             crate::linker::traits::filter_stubs_and_overloads(&mut candidates);
+            #[cfg(feature = "lang-rust")]
+            if candidates.len() > 1
+                && profile.is_some_and(|profile| profile.id() == "rust")
+                && matches!(r.kind.as_str(), "calls" | "handles")
+                && candidates
+                    .iter()
+                    .any(|n| semantic_context.is_rust_inherent_member(n))
+                && candidates
+                    .iter()
+                    .any(|n| !semantic_context.is_rust_inherent_member(n))
+            {
+                candidates.retain(|n| semantic_context.is_rust_inherent_member(n));
+            }
             #[cfg(feature = "lang-rust")]
             super::super::rust::resolution::macro_analysis_gap(
                 profile,
@@ -1916,4 +1991,49 @@ where
             }
         }
     }
+}
+
+#[cfg(feature = "lang-rust")]
+fn lookup_rust_associated_member<'lookup, 'a>(
+    candidates: &[&'a Node],
+    expected_path: &str,
+    member_name: &str,
+    owner: &Node,
+    member_lookup: &'lookup semantic_context::LanguageMemberLookup<'_, 'a>,
+) -> &'lookup [&'a Node] {
+    let mut matching = candidates.iter().copied().filter(|target| {
+        target.path == expected_path && matches!(target.kind.as_str(), "struct" | "enum" | "trait")
+    });
+    let Some(ty_node) = matching.next() else {
+        return &[];
+    };
+    if matching.next().is_some() {
+        return &[];
+    }
+    member_lookup.rust(ty_node, member_name, true, owner)
+}
+
+fn rust_has_non_lifetime_generics(annotation: &str) -> bool {
+    let mut name = annotation.trim().trim_matches(['\'', '"']);
+    while let Some(rest) = name.strip_prefix('&') {
+        name = rest.trim_start();
+        if name.starts_with('\'') {
+            let Some((_, after)) = name.split_once(char::is_whitespace) else {
+                return false;
+            };
+            name = after.trim_start();
+        }
+        name = name.strip_prefix("mut ").unwrap_or(name).trim_start();
+    }
+    let Some((_, rest)) = name.split_once('<') else {
+        return false;
+    };
+    let Some(inner) = rest.strip_suffix('>') else {
+        return false;
+    };
+    inner
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .any(|part| !part.starts_with('\''))
 }

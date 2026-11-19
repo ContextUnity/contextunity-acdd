@@ -1,21 +1,21 @@
 use super::super::resolution::ResolutionInput;
 use super::super::*;
-use crate::core::semantic::{TemplateContextFact, ValueExpr, ValueFlowFacts};
-use crate::core::typed_facts::FlowState;
+use crate::semantic::{TemplateContextFact, ValueExpr, ValueFlowFacts};
+use crate::typed_facts::FlowState;
 use std::collections::BTreeSet;
 
 pub(in crate::linker) struct TemplateRootRegistry<'a> {
-    by_root: HashMap<&'a str, Vec<(&'a Node, &'a crate::core::semantic::ExtractionRuleOrigin)>>,
+    by_root: HashMap<&'a str, Vec<(&'a Node, &'a crate::semantic::ExtractionRuleOrigin)>>,
 }
 
 impl<'a> TemplateRootRegistry<'a> {
     pub(in crate::linker) fn build(
         all: &'a dyn crate::FactsLookup,
         dependencies: &languages::dependency_registry::DependencyRegistry,
-        flows: Option<&'a HashMap<super::super::interner::SymbolId, &'a FlowState>>,
-        interner: &super::super::interner::LinkerInterner<'a>,
+        flows: Option<&'a HashMap<crate::interner::SymbolId, &'a FlowState>>,
+        interner: &crate::interner::LinkerInterner<'a>,
     ) -> Self {
-        let mut by_root: HashMap<&str, Vec<(&Node, &crate::core::semantic::ExtractionRuleOrigin)>> =
+        let mut by_root: HashMap<&str, Vec<(&Node, &crate::semantic::ExtractionRuleOrigin)>> =
             HashMap::new();
         for (path, source) in all.iter_facts() {
             let mut roots = source
@@ -248,7 +248,7 @@ pub(in crate::linker) fn required_full_facts(
 }
 
 struct Library<'a> {
-    origin: crate::core::semantic::ExtractionRuleOrigin,
+    origin: crate::semantic::ExtractionRuleOrigin,
     module: &'a Node,
     symbols: HashMap<String, HashMap<&'a str, Vec<&'a Node>>>,
 }
@@ -259,7 +259,7 @@ pub(in crate::linker) enum Match<'a> {
     Unique {
         module: &'a Node,
         symbol: &'a Node,
-        origin: Option<crate::core::semantic::ExtractionRuleOrigin>,
+        origin: Option<crate::semantic::ExtractionRuleOrigin>,
     },
 }
 
@@ -301,8 +301,8 @@ pub(in crate::linker) fn registry_symbol<'a>(
 
 fn node_value_flow<'a>(
     node: &'a Node,
-    symbol_id: Option<super::super::interner::SymbolId>,
-    flows: Option<&HashMap<super::super::interner::SymbolId, &'a FlowState>>,
+    symbol_id: Option<crate::interner::SymbolId>,
+    flows: Option<&HashMap<crate::interner::SymbolId, &'a FlowState>>,
 ) -> Option<std::borrow::Cow<'a, ValueFlowFacts>> {
     if let Some(FlowState::Valid { facts, .. }) =
         symbol_id.and_then(|id| flows.and_then(|flows| flows.get(&id).copied()))
@@ -321,8 +321,8 @@ pub(in crate::linker) struct Registry<'a> {
 impl<'a> Registry<'a> {
     pub(in crate::linker) fn build(
         all: &'a dyn crate::FactsLookup,
-        flows: Option<&HashMap<super::super::interner::SymbolId, &FlowState>>,
-        interner: &super::super::interner::LinkerInterner<'_>,
+        flows: Option<&HashMap<crate::interner::SymbolId, &FlowState>>,
+        interner: &crate::interner::LinkerInterner<'_>,
         dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Self {
         let mut by_scope: HashMap<String, HashMap<&'a str, Vec<Library<'a>>>> = HashMap::new();
@@ -416,7 +416,7 @@ impl<'a> Registry<'a> {
                     .push(Library {
                         module,
                         symbols,
-                        origin: crate::core::semantic::ExtractionRuleOrigin {
+                        origin: crate::semantic::ExtractionRuleOrigin {
                             pack: rule.pack.clone(),
                             rule: rule.id.clone(),
                         },
@@ -672,7 +672,7 @@ pub(in crate::linker) struct RenderContextRegistry<'a> {
 impl<'a> RenderContextRegistry<'a> {
     pub(in crate::linker) fn build(
         all: &'a dyn crate::FactsLookup,
-        flows: Option<&HashMap<super::super::interner::SymbolId, &FlowState>>,
+        flows: Option<&HashMap<crate::interner::SymbolId, &FlowState>>,
         semantic_context: &semantic_context::Context<'a>,
         dependencies: &languages::dependency_registry::DependencyRegistry,
     ) -> Self {
@@ -977,7 +977,7 @@ pub(in crate::linker) fn builtin_evidence(
 pub(in crate::linker) fn builtin_in_scope(
     expression: &str,
     reference: &Reference,
-    profile: Option<&dyn crate::engine::languages::LanguageProfile>,
+    profile: Option<&dyn crate::languages::LanguageProfile>,
     template_loads: &[&Reference],
     template_rules: &[&languages::manifests::syntax::SyntaxRule],
 ) -> Option<bool> {

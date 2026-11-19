@@ -1,7 +1,7 @@
 use super::ingest::PreparedCoverage;
 use super::{CompactGraph, FileEntry, TypedFacts};
 use crate::{
-    commitments::{ALGORITHM, DOMAINS},
+    commitments::DOMAINS,
     db::commitments::{
         encode_blob, encode_int as encode_integer, encode_real, encode_text, encode_text_bytes,
         key as leaf_key, new_leaf_hasher,
@@ -17,7 +17,7 @@ use std::time::Instant;
 type OwnerHashers<'a> = HashMap<&'a str, Sha256>;
 type Leaves = BTreeMap<String, String>;
 type NodePathMap<'a> = HashMap<&'a str, (&'a str, i64)>;
-type NodeLookupMaps<'a> = (NodePathMap<'a>, HashMap<i64, &'a str>);
+type NodeLookupMaps<'a> = (NodePathMap<'a>, HashMap<i64, &'a str>, HashMap<&'a str, &'a str>);
 
 pub(super) struct NodeDomain<'a> {
     hashers: OwnerHashers<'a>,
@@ -105,6 +105,7 @@ struct GraphProjection<'a> {
     projected_nodes: &'a [ProjectedNode<'a>],
     node_by_id: &'a NodePathMap<'a>,
     file_by_hash: &'a HashMap<i64, &'a str>,
+    entry_languages: &'a HashMap<&'a str, &'a str>,
 }
 
 struct OwnerLanguageLeafRow<'a> {
@@ -181,7 +182,8 @@ pub(super) fn logical_domain_leaves(
         project_file_domains(entries, facts, &mut domains, include_restored_file_domains)?;
     timings.file_domains_ms = started.elapsed().as_secs_f64() * 1000.;
     let started = Instant::now();
-    let (node_by_id, file_by_hash) = node_lookup_maps(entries, facts, &projected_nodes)?;
+    let (node_by_id, file_by_hash, entry_languages) =
+        node_lookup_maps(entries, facts, &projected_nodes)?;
     timings.node_domain_ms = started.elapsed().as_secs_f64() * 1000.;
     let started = Instant::now();
     project_graph_domains(
@@ -192,6 +194,7 @@ pub(super) fn logical_domain_leaves(
             projected_nodes: &projected_nodes,
             node_by_id: &node_by_id,
             file_by_hash: &file_by_hash,
+            entry_languages: &entry_languages,
         },
         &mut domains,
         timings,
@@ -328,15 +331,19 @@ fn node_lookup_maps<'a>(
         })
         .collect();
     let mut file_by_hash = HashMap::with_capacity(entries.len());
+    let mut entry_languages = HashMap::with_capacity(entries.len());
     for file in entries {
         file_by_hash.insert(stable_hash64(&file.path), file.path.as_str());
+        if !file.language.is_empty() {
+            entry_languages.insert(file.path.as_str(), file.language.as_str());
+        }
         ensure!(
             facts.contains_key(&file.path),
             "missing facts for indexed path {}",
             file.path
         );
     }
-    Ok((node_by_id, file_by_hash))
+    Ok((node_by_id, file_by_hash, entry_languages))
 }
 
 fn project_graph_domains<'a>(
@@ -352,6 +359,7 @@ fn project_graph_domains<'a>(
         projected_nodes,
         node_by_id,
         file_by_hash,
+        entry_languages,
     } = projection;
     let mut ordinals = HashMap::<&str, i64>::new();
     let mut unique_edge_indexes = HashMap::<(i64, &str, i64), usize>::new();
@@ -486,7 +494,7 @@ fn project_graph_domains<'a>(
     }
     timings.graph_shared_owners_ms = shared_started.elapsed().as_secs_f64() * 1000.;
     let coverage_started = Instant::now();
-    let (coverage_domains, unresolved) = project_coverage_domains(coverage)?;
+    let (coverage_domains, unresolved) = project_coverage_domains(coverage, entry_languages)?;
     domains.insert("resolution_coverage", coverage_domains.0);
     domains.insert("coverage_owner_language", coverage_domains.1);
     domains.insert("coverage_language_counts", coverage_domains.2);
@@ -658,6 +666,7 @@ fn register_shared_key<'a>(keys: &mut HashMap<i64, &'a str>, key: &'a str) -> Re
 type CoverageDomains = (Leaves, Leaves, Leaves);
 fn project_coverage_domains<'a>(
     prepared: &PreparedCoverage<'a>,
+    entry_languages: &HashMap<&'a str, &'a str>,
 ) -> Result<(CoverageDomains, Vec<Dependency<'a>>)> {
     let mut coverage_hashers = OwnerHashers::new();
     let mut owner_language_rows = BTreeMap::<String, Vec<OwnerLanguageLeafRow<'_>>>::new();
@@ -690,8 +699,8 @@ fn project_coverage_domains<'a>(
                 });
         }
 
-        let language = prepared.language(coverage, None);
-        if let Some(language) = language.filter(|language| !language.is_empty()) {
+        let language = prepared.language(coverage, entry_languages.get(owner).copied());
+        if let Some(language) = language {
             let count = language_counts
                 .entry(owner.to_owned())
                 .or_default()
@@ -777,19 +786,17 @@ fn project_dependency_domain<'a>(
                 continue;
             };
             for context in flow.template_contexts() {
-                let Some(target) =
-                    acdd_core::config::local_template_target(provider_path, &context.target)
-                else {
+                let Some(target) = context.target_path.as_deref() else {
                     continue;
                 };
                 if acdd_core::config::workspace_path(provider_path).0
-                    != acdd_core::config::workspace_path(&target).0
+                    != acdd_core::config::workspace_path(target).0
                 {
                     continue;
                 }
                 dependencies.push(Dependency {
                     owner: provider_path,
-                    target_hash: Some(stable_hash64(&target)),
+                    target_hash: Some(stable_hash64(target)),
                     kind: "renders",
                     symbol: &context.target,
                     resolution: "resolved",

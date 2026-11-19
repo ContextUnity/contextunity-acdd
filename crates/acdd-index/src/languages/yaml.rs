@@ -36,12 +36,7 @@ impl LanguageProfile for Yaml {
         None
     }
     fn bindings(&self, _node: Syntax<'_>, _source: &str) -> ast::ScopeBindings {
-        ast::ScopeBindings {
-            all: Vec::new(),
-            rebindings: Vec::new(),
-        }
+        support::empty_bindings()
     }
-    fn extract_file(&self, path: &str, source: &str, module: &str, facts: &mut Facts) -> Result<()> {
-        parse_file(self, path, source, module, facts)
-    }
+    support::delegate_extract_file!();
 }

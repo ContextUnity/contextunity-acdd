@@ -319,19 +319,34 @@ impl CoverageDictionaryCache {
 }
 
 #[cfg(test)]
-pub struct CoverageExpressionCache<'conn> {
+pub struct CoverageDictionaryTestCache<'conn> {
     pub(super) cache: hashbrown::HashMap<String, i64>,
     stmt_insert: rusqlite::Statement<'conn>,
     stmt_select: rusqlite::Statement<'conn>,
 }
 
 #[cfg(test)]
-impl<'conn> CoverageExpressionCache<'conn> {
-    pub fn new(conn: &'conn Connection) -> Result<Self> {
-        let stmt_insert =
-            conn.prepare("INSERT OR IGNORE INTO coverage_expressions(expression) VALUES(?1)")?;
-        let stmt_select =
-            conn.prepare("SELECT expression_id FROM coverage_expressions WHERE expression=?1")?;
+impl<'conn> CoverageDictionaryTestCache<'conn> {
+    pub fn expressions(conn: &'conn Connection) -> Result<Self> {
+        Self::new(conn, "coverage_expressions", "expression", "expression_id")
+    }
+
+    pub fn evidence(conn: &'conn Connection) -> Result<Self> {
+        Self::new(conn, "coverage_evidence", "evidence", "evidence_id")
+    }
+
+    fn new(
+        conn: &'conn Connection,
+        table: &str,
+        value_column: &str,
+        id_column: &str,
+    ) -> Result<Self> {
+        let stmt_insert = conn.prepare(&format!(
+            "INSERT OR IGNORE INTO {table}({value_column}) VALUES(?1)"
+        ))?;
+        let stmt_select = conn.prepare(&format!(
+            "SELECT {id_column} FROM {table} WHERE {value_column}=?1"
+        ))?;
         Ok(Self {
             cache: hashbrown::HashMap::new(),
             stmt_insert,
@@ -339,45 +354,13 @@ impl<'conn> CoverageExpressionCache<'conn> {
         })
     }
 
-    pub fn get_or_insert(&mut self, expression: &str) -> Result<i64> {
-        if let Some(&id) = self.cache.get(expression) {
+    pub fn get_or_insert(&mut self, value: &str) -> Result<i64> {
+        if let Some(&id) = self.cache.get(value) {
             return Ok(id);
         }
-        self.stmt_insert.execute([expression])?;
-        let id: i64 = self.stmt_select.query_row([expression], |row| row.get(0))?;
-        self.cache.insert(expression.to_owned(), id);
-        Ok(id)
-    }
-}
-
-#[cfg(test)]
-pub struct CoverageEvidenceCache<'conn> {
-    pub(super) cache: hashbrown::HashMap<String, i64>,
-    stmt_insert: rusqlite::Statement<'conn>,
-    stmt_select: rusqlite::Statement<'conn>,
-}
-
-#[cfg(test)]
-impl<'conn> CoverageEvidenceCache<'conn> {
-    pub fn new(conn: &'conn Connection) -> Result<Self> {
-        let stmt_insert =
-            conn.prepare("INSERT OR IGNORE INTO coverage_evidence(evidence) VALUES(?1)")?;
-        let stmt_select =
-            conn.prepare("SELECT evidence_id FROM coverage_evidence WHERE evidence=?1")?;
-        Ok(Self {
-            cache: hashbrown::HashMap::new(),
-            stmt_insert,
-            stmt_select,
-        })
-    }
-
-    pub fn get_or_insert(&mut self, evidence: &str) -> Result<i64> {
-        if let Some(&id) = self.cache.get(evidence) {
-            return Ok(id);
-        }
-        self.stmt_insert.execute([evidence])?;
-        let id: i64 = self.stmt_select.query_row([evidence], |row| row.get(0))?;
-        self.cache.insert(evidence.to_owned(), id);
+        self.stmt_insert.execute([value])?;
+        let id: i64 = self.stmt_select.query_row([value], |row| row.get(0))?;
+        self.cache.insert(value.to_owned(), id);
         Ok(id)
     }
 }

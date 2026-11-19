@@ -1,6 +1,7 @@
 use super::super::value_flow::{Symbol, SymbolRole, TypeTarget};
-use crate::core::{models::Node, semantic::TypeExpr};
-use crate::engine::languages::LanguageProfile;
+use crate::models::Node;
+use crate::semantic::TypeExpr;
+use crate::languages::LanguageProfile;
 
 pub(in crate::linker) fn is_builtin_promise_type(
     owner: &Node,
@@ -60,7 +61,7 @@ pub(in crate::linker) fn prototype_visible_at(
 }
 
 #[cfg(feature = "lang-typescript")]
-pub(in crate::linker) use crate::engine::languages::typescript::typed_dom_receiver;
+pub(in crate::linker) use crate::languages::typescript::typed_dom_receiver;
 
 #[cfg(not(feature = "lang-typescript"))]
 pub(in crate::linker) fn typed_dom_receiver(_name: &str) -> Option<&'static str> {
@@ -68,7 +69,7 @@ pub(in crate::linker) fn typed_dom_receiver(_name: &str) -> Option<&'static str>
 }
 
 #[cfg(feature = "lang-typescript")]
-pub(in crate::linker) use crate::engine::languages::typescript::typed_dom_property;
+pub(in crate::linker) use crate::languages::typescript::typed_dom_property;
 
 #[cfg(not(feature = "lang-typescript"))]
 pub(in crate::linker) fn typed_dom_property(

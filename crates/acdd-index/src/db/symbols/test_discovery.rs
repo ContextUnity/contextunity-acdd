@@ -1,6 +1,6 @@
 use super::{paging, reader};
-use crate::core::models::stable_hash64;
-use crate::core::response::QueryOptions;
+use crate::models::stable_hash64;
+use acdd_core::response::QueryOptions;
 use crate::db::traversal;
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
@@ -374,7 +374,7 @@ pub fn tests_paged_with_path(
         options,
         &generation,
         path,
-        options.detail == crate::core::response::Detail::Compact,
+        options.detail == acdd_core::response::Detail::Compact,
     )?;
     let mut discovery_method = "graph";
     if inbound && nodes["total"].as_u64() == Some(0) {

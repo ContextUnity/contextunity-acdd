@@ -23,7 +23,7 @@ fn operand<'a>(
     at: crate::semantic::SourcePosition,
     role: SymbolRole,
     context: &semantic_context::Context<'a>,
-    nodes: &HashMap<super::interner::SymbolId, &'a Node>,
+    nodes: &HashMap<crate::interner::SymbolId, &'a Node>,
 ) -> Result<Option<&'a Node>, ()> {
     let target = match value {
         SymbolOperand::Node { id } => Ok(context
@@ -79,7 +79,7 @@ pub(super) fn compose<'a>(
     owner: &'a Node,
     flow: &ValueFlowFacts,
     context: &semantic_context::Context<'a>,
-    nodes: &HashMap<super::interner::SymbolId, &'a Node>,
+    nodes: &HashMap<crate::interner::SymbolId, &'a Node>,
     dependencies: &DependencyRegistry,
 ) {
     if flow.fact_limit_exceeded {

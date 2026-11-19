@@ -1,16 +1,13 @@
 //! Prepared, borrowed literal-key joins for configured language facts.
-use super::interner::{LinkerInterner, PathId, SymbolId};
-use crate::core::{
-    models::{Facts, Node},
-    semantic::{
+use crate::interner::{LinkerInterner, PathId, SymbolId};
+use crate::models::Node;
+use crate::semantic::{
         ExtractionRuleOrigin, NamedBindingFact, NamedBindingRole, NamedDefinitionUncertainty,
         NamedTargetKind, StaticString, SymbolOperand,
-    },
-    typed_facts::FlowState,
-};
-use crate::engine::languages::{self, dependency_registry::DependencyRegistry};
+    };
+use crate::typed_facts::FlowState;
+use crate::languages::{self, dependency_registry::DependencyRegistry};
 use hashbrown::{HashMap, HashSet};
-use std::collections::BTreeMap;
 
 pub(super) fn project<'a>(path: &'a str, dependencies: &'a DependencyRegistry) -> &'a str {
     [
@@ -97,27 +94,15 @@ pub(super) struct NamedBindings<'a> {
     reference_scopes: HashMap<(PathId, SymbolId, SymbolId), Vec<PathId>>,
     pub registries: HashMap<(PathId, SymbolId), Vec<RegistryDefinition<'a>>>,
     pub factories: HashMap<(SymbolId, SymbolId), FactoryDefinition<'a>>,
-    pub positions: HashMap<(PathId, crate::core::semantic::SourcePosition), Vec<&'a Node>>,
+    pub positions: HashMap<(PathId, crate::semantic::SourcePosition), Vec<&'a Node>>,
 }
 
 pub(super) struct FactoryDefinition<'a> {
-    pub facts: Vec<&'a crate::core::semantic::FactoryResultFact>,
+    pub facts: Vec<&'a crate::semantic::FactoryResultFact>,
     pub value: super::value_flow::TypeTarget<'a>,
 }
 
 impl<'a> NamedBindings<'a> {
-    pub fn build<F: AsRef<Facts>>(
-        all: &'a BTreeMap<String, F>,
-        interner: &LinkerInterner<'a>,
-        flows: Option<&'a HashMap<SymbolId, &'a FlowState>>,
-        uncertainties: Option<&'a HashMap<SymbolId, &'a [NamedDefinitionUncertainty]>>,
-        faults: Option<&HashSet<SymbolId>>,
-        dependencies: &'a DependencyRegistry,
-        nodes: &HashMap<SymbolId, &'a Node>,
-    ) -> Self {
-        Self::build_lookup(all, interner, flows, uncertainties, faults, dependencies, nodes)
-    }
-
     pub(crate) fn build_lookup(
         all: &'a dyn crate::FactsLookup,
         interner: &LinkerInterner<'a>,
@@ -394,7 +379,7 @@ impl<'a> NamedBindings<'a> {
                         .positions
                         .entry((
                             path,
-                            crate::core::semantic::SourcePosition {
+                            crate::semantic::SourcePosition {
                                 line: owner.line,
                                 column: owner.details["column"].as_u64().unwrap_or(0) as usize,
                             },

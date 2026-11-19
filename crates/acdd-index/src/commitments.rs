@@ -1,6 +1,5 @@
 //! Merkle commitment calculations and domain state verification.
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -26,28 +25,7 @@ pub const DOMAINS: &[&str] = &[
 
 /// Returns a lowercase SHA-256 digest of the supplied bytes.
 pub fn hash(bytes: &[u8]) -> String {
-    crate::core::format::sha256_hex(bytes)
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Commitment for a single logical table domain.
-pub struct DomainCommitment {
-    /// Domain table name.
-    pub table: String,
-    /// Aggregated hexadecimal SHA-256 digest of the domain.
-    pub digest: String,
-    /// Detailed owner entries (if retained).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub entries: Option<BTreeMap<String, String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Merkle commitment root digest and domain proofs.
-pub struct MerkleCommitment {
-    /// Merkle root digest over all domains.
-    pub root_digest: String,
-    /// Domain commitments composing the tree.
-    pub domains: Vec<DomainCommitment>,
+    acdd_core::format::sha256_hex(bytes)
 }
 
 /// Aggregates leaf hashes into a domain-level digest using SHA-256.

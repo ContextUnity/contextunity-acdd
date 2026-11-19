@@ -636,23 +636,16 @@ impl<'a> Context<'a> {
     fn resolve_symbol_raw(
         &self,
         owner: &'a Node,
-        name: &str,
+        raw_name: &str,
         at: SourcePosition,
         role: SymbolRole,
     ) -> Symbol<'a> {
-        if let Some(symbol) = self.named_member(owner, name, at) {
+        if let Some(symbol) = self.named_member(owner, raw_name, at) {
             return symbol;
         }
-        let Some(name) = super::super::receiver_type_name(name) else {
+        let Some(name) = super::super::receiver_type_name(raw_name) else {
             return Symbol::Unknown;
         };
-        if name.is_empty()
-            || !name
-                .chars()
-                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '$' | ':'))
-        {
-            return Symbol::Unknown;
-        }
         if owner.language == "rust" {
             let lookup = LanguageMemberLookup::new(self);
             if let Some(symbol) = super::super::rust::semantic_context::receiver_symbol(
@@ -934,12 +927,20 @@ impl<'a> Context<'a> {
             if local.clone().next().is_some() {
                 return self.classify(local, role);
             }
-            if scope_nodes.is_some_and(|nodes| {
-                nodes
-                    .iter()
-                    .filter(|node| node.path == owner.path)
-                    .any(|node| node.binding_names().any(|name| name == head))
-            }) {
+            let value_shadows_role = !(owner.language == "rust"
+                && (matches!(role, SymbolRole::Type)
+                    || raw_name
+                        .split_once('.')
+                        .map_or(raw_name, |(before_dot, _)| before_dot)
+                        .contains("::")));
+            if value_shadows_role
+                && scope_nodes.is_some_and(|nodes| {
+                    nodes
+                        .iter()
+                        .filter(|node| node.path == owner.path)
+                        .any(|node| node.binding_names().any(|name| name == head))
+                })
+            {
                 return Symbol::Unknown;
             }
             let Some((parent, _)) = scope.rsplit_once('.') else {

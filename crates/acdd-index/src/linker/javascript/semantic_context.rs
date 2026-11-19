@@ -1,5 +1,5 @@
-use crate::core::models::Node;
-use crate::core::semantic::SourcePosition;
+use crate::models::Node;
+use crate::semantic::SourcePosition;
 
 use super::super::{semantic_context::Context, value_flow::TypeTarget};
 
@@ -9,7 +9,7 @@ pub(in crate::linker) fn external_factory_result<'a>(
     callee: &str,
     at: SourcePosition,
 ) -> Option<TypeTarget<'a>> {
-    let profile = crate::engine::languages::by_id(&owner.language)?;
+    let profile = crate::languages::by_id(&owner.language)?;
     (callee == "await fetch"
         && profile.builtin("fetch")
         && profile.builtin_member("Web.Response", "json")

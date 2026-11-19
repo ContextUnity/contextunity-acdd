@@ -1,12 +1,12 @@
 use super::*;
-use crate::core::semantic::SourcePosition;
-use crate::engine::languages;
-use crate::engine::linker::interner::LinkerInterner;
-use crate::engine::linker::traits::{
+use crate::semantic::SourcePosition;
+use crate::languages;
+use crate::interner::LinkerInterner;
+use crate::linker::traits::{
     ImportContext, ImportResolution, LanguageLinker, ModulesByNamespace, PackageExports,
     insert_package_export, package_export, resolve_default_import,
 };
-use crate::engine::linker::value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget};
+use crate::linker::value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget};
 use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeSet;
 use std::hash::BuildHasher;
@@ -470,7 +470,7 @@ impl LanguageLinker for TypeScriptLinker {
     fn package_exports<'a>(
         &self,
         interner: &mut LinkerInterner<'a>,
-        _node_rebindings: &crate::engine::linker::NodeBindingIndex,
+        _node_rebindings: &crate::linker::NodeBindingIndex,
         all: &'a BTreeMap<String, Facts>,
         modules: &ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
@@ -481,7 +481,7 @@ impl LanguageLinker for TypeScriptLinker {
     fn package_exports_borrowed<'a>(
         &self,
         interner: &mut LinkerInterner<'a>,
-        _node_rebindings: &crate::engine::linker::NodeBindingIndex,
+        _node_rebindings: &crate::linker::NodeBindingIndex,
         all: &BTreeMap<&'a str, &'a Facts>,
         modules: &ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
@@ -698,7 +698,7 @@ fn package_exports<'a>(
 }
 
 pub(crate) fn required_configuration_facts(
-    facts: &BTreeMap<String, crate::core::typed_facts::TypedFacts>,
+    facts: &BTreeMap<String, crate::typed_facts::TypedFacts>,
     catalog: &[(&str, &str)],
     dependencies: &languages::dependency_registry::DependencyRegistry,
 ) -> BTreeSet<String> {

@@ -431,7 +431,9 @@ pub(in crate::linker) fn declared_adapter_result<'a>(
             ),
             err: None,
         })
-    } else if matches!(member, "get" | "as_str" | "as_array") {
+    } else if matches!(member, "get" | "as_str" | "as_array")
+        && receiver_matches(receiver, &["serde_json::Value", "serde_yaml::Value"])
+    {
         Some(TypeTarget::RustWrapper {
             wrapper: RustWrapperKind::Option,
             ok: Box::new(reference(&target, false)),

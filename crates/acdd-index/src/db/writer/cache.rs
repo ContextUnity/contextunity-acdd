@@ -1,13 +1,11 @@
 #[cfg(test)]
-use crate::core::models::Node;
+use crate::models::Node;
 #[cfg(test)]
-use crate::core::models::Reference;
+use crate::models::Reference;
 #[cfg(test)]
-use crate::core::typed_facts::FlowState;
-use crate::core::{
-    format::{sha256_bytes, sha256_serde_json_hex},
-    typed_facts::TypedFacts,
-};
+use crate::typed_facts::FlowState;
+use acdd_core::format::{sha256_bytes, sha256_serde_json_hex};
+use crate::typed_facts::TypedFacts;
 use anyhow::Context;
 use serde::Serialize;
 use std::{
@@ -45,16 +43,6 @@ crate::struct_codecs! {
 
 const RAW_PREPARED_STORAGE_MAGIC: &[u8] = b"ACDD-RAW-STORAGE\0\x01";
 
-#[allow(dead_code)]
-pub(super) fn encode_prepared_catalog_storage_payload(
-    prepared: &PreparedCatalogStorage,
-) -> anyhow::Result<Vec<u8>> {
-    use crate::core::typed_facts::binary::BinaryEncode;
-    encode_prepared_catalog_storage_with_borrowed_nodes(|raw| {
-        prepared.encode(raw);
-    })
-}
-
 pub(super) fn encode_raw_prepared_catalog_storage_with_borrowed_nodes<F: FnOnce(&mut Vec<u8>)>(
     encode_body: F,
 ) -> Vec<u8> {
@@ -64,33 +52,10 @@ pub(super) fn encode_raw_prepared_catalog_storage_with_borrowed_nodes<F: FnOnce(
     raw
 }
 
-pub(super) fn encode_prepared_catalog_storage_with_borrowed_nodes<F: FnOnce(&mut Vec<u8>)>(
-    encode_body: F,
-) -> anyhow::Result<Vec<u8>> {
-    thread_local! {
-        static COMPRESSOR: RefCell<(Option<zstd::bulk::Compressor<'static>>, Vec<u8>)> = const {
-            RefCell::new((None, Vec::new()))
-        };
-    }
-    Ok(COMPRESSOR.with(|slot| -> std::io::Result<Vec<u8>> {
-        let mut scratch = slot.borrow_mut();
-        let (compressor, raw) = &mut *scratch;
-        if compressor.is_none() {
-            *compressor = Some(zstd::bulk::Compressor::new(-3)?);
-        }
-        raw.clear();
-        encode_body(raw);
-        compressor
-            .as_mut()
-            .expect("compressor initialized")
-            .compress(raw)
-    })?)
-}
-
 pub(super) fn decode_prepared_catalog_storage_payload(
     bytes: &[u8],
 ) -> anyhow::Result<PreparedCatalogStorage> {
-    use crate::core::typed_facts::binary::BinaryDecode;
+    use crate::typed_facts::binary::BinaryDecode;
     use std::io::Read;
 
     if let Some(raw) = bytes.strip_prefix(RAW_PREPARED_STORAGE_MAGIC) {
@@ -162,7 +127,7 @@ pub fn effective_ruleset_hash(adapter_digest: &str, dependency_digest: &str) -> 
     input.extend_from_slice(adapter_digest.as_bytes());
     input.extend_from_slice(&(dependency_digest.len() as u64).to_le_bytes());
     input.extend_from_slice(dependency_digest.as_bytes());
-    crate::core::format::sha256_hex(&input)
+    acdd_core::format::sha256_hex(&input)
 }
 
 /// File-backed persistent extraction cache.
@@ -288,7 +253,7 @@ fn open_regular_file(path: &std::path::Path) -> std::io::Result<File> {
     }
     options.open(path)
 }
-use crate::core::typed_facts::binary::{BinaryDecode, BinaryEncode};
+use crate::typed_facts::binary::{BinaryDecode, BinaryEncode};
 
 #[cfg(test)]
 fn encode_entry(key: &str, facts: &TypedFacts) -> anyhow::Result<Vec<u8>> {

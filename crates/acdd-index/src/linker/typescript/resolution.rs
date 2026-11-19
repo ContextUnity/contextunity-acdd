@@ -1,13 +1,13 @@
-use super::super::interner::{LinkerInterner, SymbolId};
+use crate::interner::{LinkerInterner, SymbolId};
 use super::super::resolution::ResolutionInput;
 use super::super::semantic_context::{Context, LanguageMemberLookup, Member};
 use super::super::value_flow::{self, Symbol, SymbolRole, TypeTarget};
-use crate::core::models::compact_graph::Graph;
-use crate::core::models::{Facts, Node, Reference};
-use crate::core::semantic::ObjectOwnershipFact;
-use crate::core::typed_facts::FlowState;
-use crate::engine::languages::manifests::syntax::{SyntaxOperation, SyntaxRule};
-use crate::engine::languages::LanguageProfile;
+use crate::models::compact_graph::Graph;
+use crate::models::{Facts, Node, Reference};
+use crate::semantic::ObjectOwnershipFact;
+use crate::typed_facts::FlowState;
+use crate::languages::manifests::syntax::{SyntaxOperation, SyntaxRule};
+use crate::languages::LanguageProfile;
 use hashbrown::{HashMap, HashSet};
 
 pub(in crate::linker) fn builtin_property_chain(

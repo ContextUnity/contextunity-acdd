@@ -1,22 +1,20 @@
-use crate::{
-    core::semantic::{
+use crate::semantic::{
         AnnotationReferenceFact, BindingFact, BranchJoinFact, CollectionElementFact, FieldFact,
         GuardImportFact, SourcePosition, TypeExpr, TypeOnlyImportFact, ValueExpr, ValueFlowFacts,
-    },
-    engine::ast::{field, text},
-};
+    };
+use crate::ast::{field, strip_outer_parentheses, text};
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
 pub(crate) struct AliasWrites {
     writes: HashMap<String, (usize, bool)>,
-    active: crate::engine::ast::visitor::BitStack,
+    active: crate::ast::visitor::BitStack,
 }
 impl AliasWrites {
     pub(crate) fn new() -> Self {
         Self {
             writes: Default::default(),
-            active: crate::engine::ast::visitor::BitStack::new(),
+            active: crate::ast::visitor::BitStack::new(),
         }
     }
     fn targets(
@@ -111,7 +109,7 @@ impl AliasWrites {
 }
 
 fn position(node: Node<'_>) -> SourcePosition {
-    crate::engine::languages::source_end(node)
+    crate::languages::source_end(node)
 }
 
 fn annotation_reference_positions(node: Node<'_>, source: &str, facts: &mut ValueFlowFacts) {
@@ -233,7 +231,7 @@ fn type_only_imports(module: Node<'_>, source: &str) -> Vec<TypeOnlyImportFact> 
                     });
                     output.push(TypeOnlyImportFact {
                         alias: alias.to_owned(),
-                        position: crate::engine::languages::source_start(node),
+                        position: crate::languages::source_start(node),
                         guard_import: guard.cloned(),
                     });
                 }
@@ -310,7 +308,7 @@ fn type_only_imports(module: Node<'_>, source: &str) -> Vec<TypeOnlyImportFact> 
                             alias.to_owned(),
                             GuardImportFact {
                                 alias: alias.to_owned(),
-                                position: crate::engine::languages::source_start(statement),
+                                position: crate::languages::source_start(statement),
                             },
                         );
                     }
@@ -328,7 +326,7 @@ fn type_only_imports(module: Node<'_>, source: &str) -> Vec<TypeOnlyImportFact> 
                             guard,
                             GuardImportFact {
                                 alias: alias.to_owned(),
-                                position: crate::engine::languages::source_start(statement),
+                                position: crate::languages::source_start(statement),
                             },
                         );
                     }
@@ -404,33 +402,6 @@ fn static_name(node: Node<'_>) -> bool {
                 .is_some_and(|member| member.kind() == "identifier"))
 }
 
-fn strip_outer_parentheses(s: &str) -> &str {
-    let trimmed = s.trim();
-    if trimmed.starts_with('(') && trimmed.ends_with(')') {
-        let mut depth = 0_usize;
-        let mut closed_at_end = false;
-        for (i, c) in trimmed.char_indices() {
-            match c {
-                '(' => depth += 1,
-                ')' => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 && i == trimmed.len() - 1 {
-                        closed_at_end = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-        if closed_at_end {
-            trimmed[1..trimmed.len() - 1].trim()
-        } else {
-            trimmed
-        }
-    } else {
-        trimmed
-    }
-}
-
 fn split_python_pipe_types(annotation: &str) -> Option<Vec<&str>> {
     let mut depth = 0_usize;
     let mut start = 0_usize;
@@ -463,7 +434,7 @@ fn split_python_pipe_types(annotation: &str) -> Option<Vec<&str>> {
 
 fn annotation(node: Node<'_>, source: &str) -> TypeExpr {
     fn parse(node: Node<'_>, source: &str, depth: usize, remaining: &mut usize) -> TypeExpr {
-        if depth >= crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH || *remaining == 0 {
+        if depth >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH || *remaining == 0 {
             return TypeExpr::Unknown;
         }
         *remaining -= 1;
@@ -614,7 +585,7 @@ fn literal_value(node: Node<'_>) -> Option<ValueExpr> {
     } else {
         node.kind()
     };
-    crate::core::semantic::python_literal_constructor(kind).map(|callee| ValueExpr::Construct {
+    crate::semantic::python_literal_constructor(kind).map(|callee| ValueExpr::Construct {
         callee: callee.to_owned(),
     })
 }
@@ -624,7 +595,7 @@ pub(super) fn call_value(node: Node<'_>, source: &str) -> ValueExpr {
 }
 
 fn call_value_depth(node: Node<'_>, source: &str, depth: usize) -> ValueExpr {
-    if depth >= crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+    if depth >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
         return ValueExpr::Unknown;
     }
     let Some(callee) = node.child_by_field_name("function") else {
@@ -657,8 +628,8 @@ fn call_value_depth(node: Node<'_>, source: &str, depth: usize) -> ValueExpr {
     }
     ValueExpr::Call {
         callee: text(member, source).to_owned(),
-        site: Some(crate::core::semantic::CallSiteEvidence {
-            position: crate::engine::languages::source_start(node),
+        site: Some(crate::semantic::CallSiteEvidence {
+            position: crate::languages::source_start(node),
             receiver: Some(Box::new(receiver)),
             arguments: Vec::new(),
         }),
@@ -1259,7 +1230,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                 })
                 .unwrap_or(TypeExpr::Unknown);
             let facts = ValueFlowFacts {
-                framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
+                framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
                     alias_type: Some(alias_type),
                     ..Default::default()
                 })),
@@ -1352,7 +1323,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                                     collector.facts.push_collection_element(
                                         CollectionElementFact {
                                             name: name.to_owned(),
-                                            position: crate::engine::languages::source_start(node),
+                                            position: crate::languages::source_start(node),
                                             element_type: args[0].clone(),
                                         },
                                     );
@@ -1380,9 +1351,9 @@ impl<'a, 'tree> Collector<'a, 'tree> {
     }
     pub(crate) fn module_exports(
         &self,
-        bindings: &crate::engine::ast::ScopeBindings,
+        bindings: &crate::ast::ScopeBindings,
     ) -> Option<(
-        Vec<crate::core::semantic::ExportBinding>,
+        Vec<crate::semantic::ExportBinding>,
         Vec<super::LazyExport>,
     )> {
         self.module_export_facts
@@ -1467,16 +1438,21 @@ impl<'a, 'tree> Collector<'a, 'tree> {
     }
 }
 
+impl<'tree> crate::ast::visitor::SyntaxCollector<'tree> for Collector<'_, 'tree> {
+    type Output = ValueFlowFacts;
+    fn enter(&mut self, node: Node<'tree>) {
+        Collector::enter(self, node);
+    }
+    fn exit(&mut self, node: Node<'tree>) {
+        Collector::exit(self, node);
+    }
+    fn finish(self) -> ValueFlowFacts {
+        Collector::finish(self)
+    }
+}
+
 pub(super) fn extract(node: Node<'_>, source: &str) -> ValueFlowFacts {
-    let mut collector = Collector::new(node, source, false);
-    crate::engine::ast::visitor::walk(node, &mut |node, entering| {
-        if entering {
-            collector.enter(node);
-        } else {
-            collector.exit(node);
-        }
-    });
-    collector.finish()
+    crate::ast::visitor::collect(node, Collector::new(node, source, false))
 }
 
 #[cfg(test)]
@@ -1524,7 +1500,7 @@ mod tests {
         let type_only_imports: Vec<_> = facts.type_only_imports().collect();
         assert_eq!(type_only_imports.len(), 1);
         assert_eq!(type_only_imports[0].alias, "GraphEntry");
-        let ast_facts = crate::engine::ast::extract("persistence.py", "python", source).unwrap();
+        let ast_facts = crate::ast::extract("persistence.py", "python", source).unwrap();
         let ast_facts = serde_json::to_value(&ast_facts).unwrap();
         let module = ast_facts["nodes"]
             .as_array()

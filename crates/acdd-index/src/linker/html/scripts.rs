@@ -3,8 +3,8 @@ use super::super::*;
 pub(in crate::linker) fn reference_profile<'a>(
     profile: Option<&'a dyn languages::LanguageProfile>,
     reference: &Reference,
-    by_id: &HashMap<super::super::interner::SymbolId, &Node>,
-    interner: &super::super::interner::LinkerInterner<'_>,
+    by_id: &HashMap<crate::interner::SymbolId, &Node>,
+    interner: &crate::interner::LinkerInterner<'_>,
 ) -> Option<&'a dyn languages::LanguageProfile> {
     if profile.is_some_and(|profile| profile.id() == "html")
         && interner

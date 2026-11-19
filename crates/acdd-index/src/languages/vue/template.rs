@@ -4,9 +4,9 @@
 //! Source offsets are retained rather than recovering identifiers from tokens.
 
 use super::*;
-use crate::core::models::{is_test, Diagnostic, Edge};
-use crate::core::semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts};
-use crate::engine::languages::template::TemplateMasker;
+use crate::models::{is_test, Diagnostic, Edge};
+use crate::semantic::{BindingFact, SourcePosition, TypeExpr, ValueExpr, ValueFlowFacts};
+use crate::languages::template::TemplateMasker;
 
 struct Document<'a, 'p> {
     path: &'a str,
@@ -17,9 +17,9 @@ struct Document<'a, 'p> {
     scope_bindings: std::collections::HashMap<String, (String, Vec<String>)>,
     components: std::collections::HashMap<String, String>,
     component_origins:
-        std::collections::HashMap<String, crate::core::semantic::ExtractionRuleOrigin>,
+        std::collections::HashMap<String, crate::semantic::ExtractionRuleOrigin>,
     typed_iterables: &'a BTreeMap<String, TypeExpr>,
-    flows: Option<&'a mut crate::core::typed_facts::FlowStore>,
+    flows: Option<&'a mut crate::typed_facts::FlowStore>,
     facts: &'a mut Facts,
     parser: &'p mut Parser,
 }
@@ -46,11 +46,11 @@ pub(super) fn extract(
     module: &str,
     setup: TemplateBindings<'_>,
     facts: &mut Facts,
-    flows: Option<&mut crate::core::typed_facts::FlowStore>,
+    flows: Option<&mut crate::typed_facts::FlowStore>,
 ) -> Result<()> {
     let masked = TemplateMasker::mask(source, |_| {}, None);
     let tree =
-        crate::engine::languages::with_warm_parser("html", tree_sitter_html::language(), |html| {
+        crate::languages::with_warm_parser("html", tree_sitter_html::language(), |html| {
             html.parse(masked.as_ref(), None)
         })?
         .context("Vue template parse cancelled")?;
@@ -93,7 +93,7 @@ pub(super) fn extract(
         )
         .collect();
     let scopes = std::collections::HashMap::from([(owner.clone(), module.to_owned())]);
-    crate::engine::languages::with_warm_parser(
+    crate::languages::with_warm_parser(
         "javascript",
         tree_sitter_javascript::language(),
         |javascript| {

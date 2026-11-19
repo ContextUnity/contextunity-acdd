@@ -1,6 +1,6 @@
 use super::*;
-use crate::core::models::ReceiverHint;
-use crate::core::semantic::{SourcePosition, TypeExpr, ValueFlowFacts, VueSlotFact};
+use crate::models::ReceiverHint;
+use crate::semantic::{SourcePosition, TypeExpr, ValueFlowFacts, VueSlotFact};
 mod setup_facts;
 mod template;
 use setup_facts::{collect_setup_facts, SetupFactOutputs};
@@ -103,7 +103,7 @@ fn extract_file_impl(
     source: &str,
     module: &str,
     facts: &mut Facts,
-    mut flows: Option<&mut crate::core::typed_facts::FlowStore>,
+    mut flows: Option<&mut crate::typed_facts::FlowStore>,
     rules: &Arc<LanguageContext>,
 ) -> Result<()> {
     extract_file_routes(path, module, facts, rules);
@@ -232,7 +232,7 @@ fn extract_file_impl(
         if typed_slots_invalid
             || !macro_calls
                 .iter()
-                .any(|fact| fact.role == crate::core::semantic::ComponentMacroRole::Slots)
+                .any(|fact| fact.role == crate::semantic::ComponentMacroRole::Slots)
         {
             typed_slots.clear();
         }
@@ -248,9 +248,9 @@ fn extract_file_impl(
                     if let (Some(binding), Some(annotation)) = (&fact.binding, &fact.annotation) {
                         for value in &mut flow.bindings {
                             if value.name == *binding
-                                && matches!(&value.value, crate::core::semantic::ValueExpr::Call { callee, .. } if *callee == fact.callee)
+                                && matches!(&value.value, crate::semantic::ValueExpr::Call { callee, .. } if *callee == fact.callee)
                             {
-                                value.value = crate::core::semantic::ValueExpr::Annotated {
+                                value.value = crate::semantic::ValueExpr::Annotated {
                                     type_expr: annotation.clone(),
                                 };
                             }
@@ -261,7 +261,7 @@ fn extract_file_impl(
             if let Some(store) = flows.as_deref_mut() {
                 if !matches!(
                     store.state(module_node),
-                    Some(crate::core::typed_facts::FlowState::Invalid(_))
+                    Some(crate::typed_facts::FlowState::Invalid(_))
                 ) {
                     let mut flow = store.take(&module_node.id).unwrap_or_default();
                     enrich(&mut flow);
@@ -363,7 +363,7 @@ fn extract_file_impl(
                 continue;
             }
             let mut origins = macro_calls.iter().filter(|fact| {
-                fact.role == crate::core::semantic::ComponentMacroRole::Props
+                fact.role == crate::semantic::ComponentMacroRole::Props
                     && fact.binding.as_ref() == Some(binding)
             });
             let Some(origin) = origins.next().map(|fact| &fact.origin) else {
@@ -494,7 +494,7 @@ fn extract_file_routes(path: &str, module: &str, facts: &mut Facts, rules: &Lang
         }
         let route_path = format!("/{}", segments.join("/"));
         let id = format!("route:{path}:1:0:{method}:{route_path}");
-        let origin = crate::core::semantic::ExtractionRuleOrigin {
+        let origin = crate::semantic::ExtractionRuleOrigin {
             pack: rule.pack.clone(),
             rule: rule.id.clone(),
         };
@@ -507,10 +507,10 @@ fn extract_file_routes(path: &str, module: &str, facts: &mut Facts, rules: &Lang
     native_semantic: None,
             id: id.clone(), kind: "route".into(), name: name.clone(),
             qualname: format!("{module}.{name}"), path: path.into(), line: 1, end_line: 1,
-            is_test: crate::core::models::is_test(path), language: "vue".into(), generated: false,
-            details: serde_json::json!({"method":method,"route_path":route_path,"handler":null,"handlers":[],"route_name":null,"include_module":null,"include_namespace":null,"value_flow":ValueFlowFacts { framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts { facts: vec![crate::core::semantic::FrameworkFact::RuleOrigin(origin)], ..Default::default() })), ..Default::default() }}),
+            is_test: crate::models::is_test(path), language: "vue".into(), generated: false,
+            details: serde_json::json!({"method":method,"route_path":route_path,"handler":null,"handlers":[],"route_name":null,"include_module":null,"include_namespace":null,"value_flow":ValueFlowFacts { framework: Some(Box::new(crate::semantic::FrameworkScopeFacts { facts: vec![crate::semantic::FrameworkFact::RuleOrigin(origin)], ..Default::default() })), ..Default::default() }}),
         });
-        facts.edges.push(crate::core::models::Edge {
+        facts.edges.push(crate::models::Edge {
             src: format!("module:{path}"),
             dst: id,
             kind: "contains".into(),
@@ -627,7 +627,7 @@ pub(crate) fn extract_typed(
     path: &str,
     source: &str,
     module: &str,
-    typed: &mut crate::core::typed_facts::TypedFacts,
+    typed: &mut crate::typed_facts::TypedFacts,
     rules: &Arc<LanguageContext>,
 ) -> Result<()> {
     extract_file_impl(

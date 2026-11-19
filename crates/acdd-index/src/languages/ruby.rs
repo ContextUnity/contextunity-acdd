@@ -69,15 +69,7 @@ impl LanguageProfile for Ruby {
         }
         bindings
     }
-    fn extract_file(
-        &self,
-        path: &str,
-        source: &str,
-        module: &str,
-        facts: &mut Facts,
-    ) -> Result<()> {
-        parse_file(self, path, source, module, facts)
-    }
+    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if ctx.node.kind() == "call" && ctx.node.child_by_field_name("receiver").is_none() {
             let method = field(ctx.node, ctx.source, "method");

@@ -6,7 +6,7 @@ fn main() {
     if std::env::var_os("CARGO_FEATURE_LANG_PROTO").is_none() {
         return;
     }
-    let proto_src = std::path::Path::new("../../vendor/tree-sitter-proto/src");
+    let proto_src = std::path::Path::new("vendor/tree-sitter-proto/src");
     let mut c_config = cc::Build::new();
     c_config.include(proto_src).std("c11").warnings(false);
     c_config
@@ -15,7 +15,7 @@ fn main() {
         .flag_if_supported("-Wno-trigraphs");
     c_config.file(proto_src.join("parser.c"));
     c_config.compile("tree-sitter-proto");
-    println!("cargo:rerun-if-changed=../../vendor/tree-sitter-proto/src/parser.c");
+    println!("cargo:rerun-if-changed=vendor/tree-sitter-proto/src/parser.c");
 }
 
 fn generate_profiles() {
@@ -30,14 +30,15 @@ fn generate_profiles() {
         let (name, path) = if file_type.is_file()
             && entry_path.extension().and_then(|p| p.to_str()) == Some("rs")
         {
-            (
-                entry_path
-                    .file_stem()
-                    .and_then(|p| p.to_str())
-                    .expect("UTF-8 profile filename")
-                    .to_owned(),
-                entry_path,
-            )
+            let name = entry_path
+                .file_stem()
+                .and_then(|p| p.to_str())
+                .expect("UTF-8 profile filename")
+                .to_owned();
+            if name == "mod" || !manifest_declares_feature(&manifest, &format!("lang-{name}")) {
+                continue;
+            }
+            (name, entry_path)
         } else if file_type.is_dir() {
             let name = entry_path
                 .file_name()

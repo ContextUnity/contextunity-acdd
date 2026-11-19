@@ -159,6 +159,29 @@ pub(crate) fn walk<'tree>(root: Syntax<'tree>, visitor: &mut impl FnMut(Syntax<'
     walk_in_order(root, false, visitor);
 }
 
+#[cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-typescript"))]
+pub(crate) trait SyntaxCollector<'tree> {
+    type Output;
+    fn enter(&mut self, node: Syntax<'tree>);
+    fn exit(&mut self, node: Syntax<'tree>);
+    fn finish(self) -> Self::Output;
+}
+
+#[cfg(any(feature = "lang-python", feature = "lang-rust", feature = "lang-typescript"))]
+pub(crate) fn collect<'tree, C: SyntaxCollector<'tree>>(
+    root: Syntax<'tree>,
+    mut collector: C,
+) -> C::Output {
+    walk(root, &mut |node, entering| {
+        if entering {
+            collector.enter(node);
+        } else {
+            collector.exit(node);
+        }
+    });
+    collector.finish()
+}
+
 #[cfg(feature = "lang-vue")]
 pub(crate) fn walk_reversed<'tree>(
     root: Syntax<'tree>,
@@ -1991,15 +2014,7 @@ mod legacy_hook_tests {
                 },
             )
         }
-        fn extract_file(
-            &self,
-            path: &str,
-            source: &str,
-            module: &str,
-            facts: &mut Facts,
-        ) -> anyhow::Result<()> {
-            languages::parse_file(self, path, source, module, facts)
-        }
+        crate::languages::support::delegate_extract_file!();
     }
 
     struct Incremental(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
@@ -2060,15 +2075,7 @@ mod legacy_hook_tests {
                 ));
             }
         }
-        fn extract_file(
-            &self,
-            path: &str,
-            source: &str,
-            module: &str,
-            facts: &mut Facts,
-        ) -> anyhow::Result<()> {
-            languages::parse_file(self, path, source, module, facts)
-        }
+        crate::languages::support::delegate_extract_file!();
     }
 
     #[test]

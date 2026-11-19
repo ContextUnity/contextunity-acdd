@@ -1,13 +1,13 @@
 pub use self::routes::*;
-use crate::core::models::*;
-use crate::core::models::{
+use crate::models::*;
+use crate::models::{
     compact_graph::{Coverage, Edge, Graph},
     Graph as PublicGraph,
 };
 #[cfg(feature = "lang-html")]
-use crate::engine::languages::ImportPath;
-use crate::engine::languages::{self, module_name, LanguageFamily};
-use crate::engine::linker::traits::{
+use crate::languages::ImportPath;
+use crate::languages::{self, module_name, LanguageFamily};
+use crate::linker::traits::{
     ImportContext, ImportResolution, LanguageLinker, GENERIC_LINKER,
 };
 use hashbrown::{HashMap, HashSet};
@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::interner;
 /// Per-node symbol IDs collected for declaration and rebinding lookups.
 pub type NodeBindingIndex = HashMap<interner::SymbolId, Vec<interner::SymbolId>>;
 
@@ -27,7 +28,6 @@ mod html;
 #[cfg(feature = "lang-html")]
 use html::templates as html_templates;
 mod indexing;
-pub mod interner;
 mod javascript;
 mod named_bindings;
 mod projections;
@@ -81,7 +81,7 @@ pub fn required_full_facts(
 
 /// Resolves full typed facts required for linker resolution.
 pub fn required_full_typed_facts(
-    facts: &BTreeMap<String, crate::core::typed_facts::TypedFacts>,
+    facts: &BTreeMap<String, crate::typed_facts::TypedFacts>,
     affected: &std::collections::BTreeSet<String>,
     catalog: &[(&str, &str)],
     dependencies: &languages::dependency_registry::DependencyRegistry,
@@ -101,7 +101,7 @@ pub fn required_full_typed_facts(
                     reference.kind == "calls_endpoint"
                         && matches!(
                             reference.receiver_hint,
-                            Some(crate::core::models::ReceiverHint::ConfiguredReference { .. })
+                            Some(crate::models::ReceiverHint::ConfiguredReference { .. })
                         )
                 })
             })
@@ -115,7 +115,7 @@ pub fn required_full_typed_facts(
             .iter()
             .filter(|reference| reference.kind == "calls_endpoint")
         {
-            let Some(crate::core::models::ReceiverHint::ConfiguredReference { origin }) =
+            let Some(crate::models::ReceiverHint::ConfiguredReference { origin }) =
                 &reference.receiver_hint
             else {
                 continue;
@@ -163,7 +163,7 @@ pub fn required_full_typed_facts(
                 projection_owners.insert(path.clone());
             }
             for request in flow.endpoint_requests() {
-                use crate::core::semantic::StaticString;
+                use crate::semantic::StaticString;
                 if let (
                     StaticString::Literal { value: url },
                     StaticString::Literal { value: method },
@@ -302,7 +302,7 @@ pub fn configured_callable_provider_paths<'a>(
 /// Seeds shared-name invalidation from exports and configured factory results.
 /// Resolves configured result names from typed facts.
 pub fn configured_result_names(
-    facts: &crate::core::typed_facts::TypedFacts,
+    facts: &crate::typed_facts::TypedFacts,
     dependencies: &languages::dependency_registry::DependencyRegistry,
 ) -> std::collections::BTreeSet<String> {
     let mut names = std::collections::BTreeSet::new();
@@ -358,14 +358,14 @@ pub fn link(all: &BTreeMap<String, Facts>) -> PublicGraph {
 }
 
 /// Resolves the lean catalog with the same semantic rules as extracted facts.
-pub fn link_catalog(catalog: &crate::core::semantic::SymbolCatalog) -> PublicGraph {
+pub fn link_catalog(catalog: &crate::semantic::SymbolCatalog) -> PublicGraph {
     let dependencies = languages::dependency_registry::DependencyRegistry::collect(None);
     link_compact_catalog_with_registry(catalog, None, &dependencies).into()
 }
 
 /// Links compact catalog symbols using dependency registry.
 pub fn link_compact_catalog_with_registry(
-    catalog: &crate::core::semantic::SymbolCatalog,
+    catalog: &crate::semantic::SymbolCatalog,
     root: Option<&Path>,
     dependencies: &languages::dependency_registry::DependencyRegistry,
 ) -> Graph {
@@ -463,7 +463,7 @@ pub fn link_compact_with_registry(
     let mut retained = HashMap::new();
     let mut faults = HashSet::new();
     for node in all.values().flat_map(|file| &file.nodes) {
-        match crate::core::typed_facts::FlowStore::read_named_uncertainties(node) {
+        match crate::typed_facts::FlowStore::read_named_uncertainties(node) {
             Ok(markers) if !markers.is_empty() => {
                 retained.insert(
                     interner
@@ -534,7 +534,7 @@ pub fn link_compact_with_registry(
 
 /// Links compact graph using typed facts and dependency registry.
 pub fn link_compact_with_typed_registry(
-    all: &BTreeMap<String, crate::core::typed_facts::TypedFacts>,
+    all: &BTreeMap<String, crate::typed_facts::TypedFacts>,
     owners: Option<&std::collections::BTreeSet<String>>,
     root: Option<&Path>,
     dependency_registry: &languages::dependency_registry::DependencyRegistry,
@@ -589,11 +589,11 @@ pub fn link_compact_with_typed_registry(
 }
 
 struct ResolutionInput<'maps, 'facts, 'uncertainties> {
-    flows: Option<&'maps HashMap<interner::SymbolId, &'facts crate::core::typed_facts::FlowState>>,
+    flows: Option<&'maps HashMap<interner::SymbolId, &'facts crate::typed_facts::FlowState>>,
     uncertainties: Option<
         &'maps HashMap<
             interner::SymbolId,
-            &'uncertainties [crate::core::semantic::NamedDefinitionUncertainty],
+            &'uncertainties [crate::semantic::NamedDefinitionUncertainty],
         >,
     >,
     faults: Option<&'maps HashSet<interner::SymbolId>>,
@@ -601,15 +601,15 @@ struct ResolutionInput<'maps, 'facts, 'uncertainties> {
 
 fn intern_call_site_symbols<'a>(
     interner: &mut interner::LinkerInterner<'a>,
-    expression: &'a crate::core::semantic::ValueExpr,
+    expression: &'a crate::semantic::ValueExpr,
 ) {
-    use crate::core::semantic::ValueExpr;
+    use crate::semantic::ValueExpr;
     match expression {
         ValueExpr::Call { callee, site } => {
             interner.intern_symbol(callee);
             if let Some(site) = site {
                 for argument in &site.arguments {
-                    if let crate::core::semantic::StaticArgument::String { value } = argument {
+                    if let crate::semantic::StaticArgument::String { value } = argument {
                         interner.intern_symbol(value);
                     }
                 }
@@ -822,7 +822,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
         let mut flow_entries: Vec<_> = flows.iter().map(|(&id, &state)| (id, state)).collect();
         flow_entries.sort_unstable_by_key(|(id, _)| *id);
         for (_, state) in flow_entries {
-            if let crate::core::typed_facts::FlowState::Valid { facts, .. } = state {
+            if let crate::typed_facts::FlowState::Valid { facts, .. } = state {
                 for binding in &facts.bindings {
                     interner.intern_symbol(&binding.name);
                     intern_call_site_symbols(interner, &binding.value);
@@ -844,7 +844,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
                     interner.intern_symbol(&binding.domain);
                     interner.intern_symbol(&binding.origin.pack);
                     interner.intern_symbol(&binding.origin.rule);
-                    if let crate::core::semantic::StaticString::Literal { value } = &binding.key {
+                    if let crate::semantic::StaticString::Literal { value } = &binding.key {
                         interner.intern_symbol(value);
                     }
                 }
@@ -869,7 +869,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
                 interner.intern_owned_symbol_str(&marker.domain);
                 interner.intern_owned_symbol_str(&marker.origin.pack);
                 interner.intern_owned_symbol_str(&marker.origin.rule);
-                if let crate::core::semantic::StaticString::Literal { value } = &marker.key {
+                if let crate::semantic::StaticString::Literal { value } = &marker.key {
                     interner.intern_owned_symbol_str(value);
                 }
             }
@@ -944,7 +944,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
                 );
             }
             if n.kind == "module" && n.language == "python" {
-                if let Some(crate::core::typed_facts::FlowState::Valid { facts, .. }) =
+                if let Some(crate::typed_facts::FlowState::Valid { facts, .. }) =
                     flows.and_then(|states| states.get(&node_id))
                 {
                     let rebindings = node_rebindings.entry(node_id).or_default();
@@ -1368,6 +1368,34 @@ fn emit_inferred(
     }
 }
 
+fn strip_trailing_generics(name: &str) -> &str {
+    let Some((base, generic)) = name.split_once('<') else {
+        return name;
+    };
+    if !name.ends_with('>') {
+        return name;
+    }
+    let mut depth = 1usize;
+    let closes_at_end = generic.char_indices().all(|(index, character)| {
+        match character {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 && index + character.len_utf8() != generic.len() {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        depth > 0 || index + character.len_utf8() == generic.len()
+    }) && depth == 0;
+    if closes_at_end {
+        base.trim_end()
+    } else {
+        name
+    }
+}
+
 fn receiver_type_name(annotation: &str) -> Option<Cow<'_, str>> {
     let mut name = annotation.trim().trim_matches(['\'', '"']);
     while let Some(rest) = name.strip_prefix('&') {
@@ -1377,6 +1405,7 @@ fn receiver_type_name(annotation: &str) -> Option<Cow<'_, str>> {
         }
         name = name.strip_prefix("mut ").unwrap_or(name).trim_start();
     }
+    name = strip_trailing_generics(name);
     if let Some((base, _)) = name.split_once('[') {
         name = base.trim_end();
     }
@@ -1430,8 +1459,8 @@ mod route_extraction_contract {
 mod local_field_reference_contract {
     use super::link;
 
-    fn linked_graph(source: &str) -> crate::core::models::Graph {
-        let facts = crate::engine::ast::extract("service.py", "python", source).unwrap();
+    fn linked_graph(source: &str) -> crate::models::Graph {
+        let facts = crate::ast::extract("service.py", "python", source).unwrap();
         let all = std::collections::BTreeMap::from([("service.py".to_owned(), facts)]);
         link(&all)
     }

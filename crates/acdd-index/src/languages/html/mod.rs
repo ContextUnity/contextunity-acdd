@@ -116,7 +116,7 @@ impl LanguageProfile for Html {
         {
             if let Some(reference) = facts.references.last_mut() {
                 reference.receiver_hint =
-                    Some(crate::core::models::ReceiverHint::HtmlClassicScriptSource);
+                    Some(crate::models::ReceiverHint::HtmlClassicScriptSource);
             }
         }
     }
@@ -229,7 +229,7 @@ pub(super) fn source_node(path: &str, language: &'static str, fields: NodeFields
         path: path.into(),
         line: fields.line,
         end_line: fields.end_line,
-        is_test: crate::core::models::is_test(path),
+        is_test: crate::models::is_test(path),
         language: language.into(),
         generated: false,
         details: fields.details,
@@ -283,8 +283,8 @@ fn emit_named_route_reference(
     expression_prefix: &str,
 ) {
     facts.references.push(Reference {
-        receiver_hint: Some(crate::core::models::ReceiverHint::NamedRoute {
-            origin: crate::core::semantic::ExtractionRuleOrigin {
+        receiver_hint: Some(crate::models::ReceiverHint::NamedRoute {
+            origin: crate::semantic::ExtractionRuleOrigin {
                 pack: rule.pack.clone(),
                 rule: rule.id.clone(),
             },
@@ -422,7 +422,7 @@ fn emit_template_binding(
             details: json!({"template_binding": kind}),
         },
     ));
-    facts.edges.push(crate::core::models::Edge {
+    facts.edges.push(crate::models::Edge {
         src: format!("module:{path}"),
         dst: id,
         kind: "contains".into(),
@@ -691,14 +691,14 @@ fn preprocess_template<'a>(
                 emit_template_filters(content, path, tag.line, facts);
             }
             if let Some((rule, _)) = dialect {
-                let origin = crate::core::semantic::ExtractionRuleOrigin {
+                let origin = crate::semantic::ExtractionRuleOrigin {
                     pack: rule.pack.clone(),
                     rule: rule.id.clone(),
                 };
                 for reference in &mut facts.references[first_reference..] {
                     if reference.receiver_hint.is_none() {
                         reference.receiver_hint =
-                            Some(crate::core::models::ReceiverHint::ConfiguredReference {
+                            Some(crate::models::ReceiverHint::ConfiguredReference {
                                 origin: origin.clone(),
                             });
                     }
@@ -707,9 +707,9 @@ fn preprocess_template<'a>(
                     .pending_flow_nodes
                     .extend(first_node..facts.nodes.len());
                 for node in &mut facts.nodes[first_node..] {
-                    node.details["value_flow"] = json!(crate::core::semantic::ValueFlowFacts {
-                        framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
-                            facts: vec![crate::core::semantic::FrameworkFact::RuleOrigin(
+                    node.details["value_flow"] = json!(crate::semantic::ValueFlowFacts {
+                        framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
+                            facts: vec![crate::semantic::FrameworkFact::RuleOrigin(
                                 origin.clone()
                             )],
                             ..Default::default()
@@ -873,7 +873,7 @@ fn extract_file_impl(
     source: &str,
     module: &str,
     facts: &mut Facts,
-    mut flows: Option<&mut crate::core::typed_facts::FlowStore>,
+    mut flows: Option<&mut crate::typed_facts::FlowStore>,
     rules: &Arc<LanguageContext>,
 ) -> Result<()> {
     let has_template_tags = source.contains("{%")
@@ -1102,7 +1102,7 @@ pub(crate) fn extract_typed_with_context(
     path: &str,
     source: &str,
     module: &str,
-    typed: &mut crate::core::typed_facts::TypedFacts,
+    typed: &mut crate::typed_facts::TypedFacts,
     rules: &Arc<LanguageContext>,
 ) -> Result<()> {
     extract_file_impl(
@@ -1121,7 +1121,7 @@ pub(crate) fn extract_typed_with_context(
 #[cfg(test)]
 #[test]
 fn django_url_tag_emits_named_route_reference() {
-    let mut facts = crate::core::models::Facts::default();
+    let mut facts = crate::models::Facts::default();
     extract_file_impl(
         "templates/products.html",
         "{% url 'product-list' %}",

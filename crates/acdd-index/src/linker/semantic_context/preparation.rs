@@ -71,7 +71,7 @@ impl<'a> Context<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::linker) fn build(
         all: &'a dyn crate::FactsLookup,
-        interner: &'a super::super::interner::LinkerInterner<'a>,
+        interner: &'a crate::interner::LinkerInterner<'a>,
         modules: &'a ModulesByNamespace<'a>,
         by_module: &'a HashMap<&'a str, Vec<&'a Node>>,
         by_qual: &'a HashMap<&'a str, Vec<&'a Node>>,

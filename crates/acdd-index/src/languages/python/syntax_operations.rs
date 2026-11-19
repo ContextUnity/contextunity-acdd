@@ -1,8 +1,8 @@
-use crate::core::models::Facts;
-use crate::core::semantic::{SourcePosition, TemplateContextFact};
-use crate::engine::ast::{field, text};
-use crate::engine::languages::manifests::syntax::{SyntaxOperation, SyntaxRule};
-use crate::engine::languages::LanguageContext;
+use crate::models::Facts;
+use crate::semantic::{SourcePosition, TemplateContextFact};
+use crate::ast::{field, text};
+use crate::languages::manifests::syntax::{SyntaxOperation, SyntaxRule};
+use crate::languages::LanguageContext;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -264,7 +264,7 @@ pub(super) fn has_class_registration_import() -> bool {
 
 pub(super) fn extract_class_method_registrations(
     facts: &mut Facts,
-    lexical: &crate::engine::ast::routes::RouteContext,
+    lexical: &crate::ast::routes::RouteContext,
 ) {
     PREPARED_SYNTAX_CONTEXT.with(|context| {
         let context = context.borrow();
@@ -296,13 +296,13 @@ pub(super) fn extract_class_method_registrations(
         let additions: Vec<_> = registrations.into_iter().map(|(rule, class, method)| {
             let SyntaxOperation::ClassMethodRegistration { provider, .. } = &rule.operation else { unreachable!() };
             let id = format!("cli_command_registration:{}:{}:{}:{}:{}", method.path, class.line, class.name, rule.pack, rule.id);
-            let node = crate::core::models::Node {
+            let node = crate::models::Node {
                 native_semantic: None, id: id.clone(), kind: "cli_command_registration".into(), name: class.name.clone(),
                 qualname: format!("{}.command.{}", module_qualname, class.name), path: method.path.clone(), line: class.line,
                 end_line: class.line, is_test: method.is_test, language: "python".into(), generated: false,
-                details: serde_json::json!({"framework":provider,"pack":rule.pack,"rule":rule.id,"handler":method.id,"value_flow":crate::core::semantic::ValueFlowFacts { framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts { facts: vec![crate::core::semantic::FrameworkFact::RuleOrigin(crate::core::semantic::ExtractionRuleOrigin { pack: rule.pack.clone(), rule: rule.id.clone() })], ..Default::default() })), ..Default::default() }}),
+                details: serde_json::json!({"framework":provider,"pack":rule.pack,"rule":rule.id,"handler":method.id,"value_flow":crate::semantic::ValueFlowFacts { framework: Some(Box::new(crate::semantic::FrameworkScopeFacts { facts: vec![crate::semantic::FrameworkFact::RuleOrigin(crate::semantic::ExtractionRuleOrigin { pack: rule.pack.clone(), rule: rule.id.clone() })], ..Default::default() })), ..Default::default() }}),
             };
-            let edge = |src: String, dst: String, kind: &str| crate::core::models::Edge { src, dst, kind: kind.into(), path: method.path.clone(), line: class.line, evidence: "configured class method registration".into(), confidence: "exact".into() };
+            let edge = |src: String, dst: String, kind: &str| crate::models::Edge { src, dst, kind: kind.into(), path: method.path.clone(), line: class.line, evidence: "configured class method registration".into(), confidence: "exact".into() };
             let edges = [edge(module_id.clone(), id.clone(), "contains"), edge(id, method.id.clone(), "handles")];
             (node, edges)
         }).collect();
@@ -697,7 +697,7 @@ fn extract_prepared(
     let arguments = node.child_by_field_name("arguments")?;
     let candidates = prepared.render_candidates.get(alias)?;
     let root = std::cell::OnceCell::new();
-    crate::engine::languages::manifests::semantic::project_context_key(
+    crate::languages::manifests::semantic::project_context_key(
         &prepared.language_context.syntax_rules,
         candidates,
         arguments.named_child_count(),
@@ -1143,7 +1143,7 @@ pub(super) fn extract_default_table(
     ctx: &super::super::SyntaxContext<'_, '_>,
     facts: &mut Facts,
     context: &super::super::LanguageContext,
-    lexical: &crate::engine::ast::routes::RouteContext,
+    lexical: &crate::ast::routes::RouteContext,
 ) {
     let Some(bases) = ctx.node.child_by_field_name("superclasses") else {
         return;
@@ -1217,7 +1217,7 @@ pub(super) fn extract_default_table(
             None => None,
         };
         if let Some(name) = name {
-            facts.references.push(crate::core::models::Reference {
+            facts.references.push(crate::models::Reference {
                 source: ctx.owner.into(),
                 expression: name,
                 kind: "defines_table".into(),
@@ -1247,7 +1247,7 @@ pub(super) fn extract_default_table(
             .and_then(|path| path.file_name())
             .and_then(|name| name.to_str())
         {
-            facts.references.push(crate::core::models::Reference {
+            facts.references.push(crate::models::Reference {
                 source: ctx.owner.into(),
                 expression: format!("{}_{}", app.to_lowercase(), node_name.to_lowercase()),
                 kind: "defines_table".into(),
@@ -1268,7 +1268,7 @@ fn resolve_model_base(
     root: usize,
     path: &str,
     index: &mut ModelIndex,
-    lexical: &crate::engine::ast::routes::RouteContext,
+    lexical: &crate::ast::routes::RouteContext,
     visiting: &mut HashSet<String>,
 ) -> Vec<String> {
     if visiting.len() >= 16 {
@@ -1429,7 +1429,7 @@ fn reverse_call_candidate_rejects_unrelated_identifier_calls() {
     parser.set_language(&super::language()).unwrap();
     let tree = parser.parse(source, None).unwrap();
     let root = tree.root_node();
-    prepare_file(root, source, &crate::engine::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py"));
+    prepare_file(root, source, &crate::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py"));
     let mut cursor = root.walk();
     let calls = root
         .named_children(&mut cursor)
@@ -1439,7 +1439,7 @@ fn reverse_call_candidate_rejects_unrelated_identifier_calls() {
     assert_eq!(calls.len(), 5);
     assert_eq!(reverse_call_candidate(calls[0], source, "reverse"), None);
     assert_eq!(reverse_call_candidate(calls[1], source, "reverse"), None);
-    let mut facts = crate::core::models::Facts::default();
+    let mut facts = crate::models::Facts::default();
     extract_reverse_route(calls[0], source, "consumer", 0, &mut facts);
     extract_reverse_route(calls[1], source, "consumer", 0, &mut facts);
     assert!(facts.references.is_empty());
@@ -1463,9 +1463,9 @@ fn imported_reverse_alias_remains_a_candidate() {
     parser.set_language(&super::language()).unwrap();
     let tree = parser.parse(source, None).unwrap();
     let root = tree.root_node();
-    prepare_file(root, source, &crate::engine::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py"));
+    prepare_file(root, source, &crate::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py"));
     let call = root.named_child(1).unwrap().named_child(0).unwrap();
-    let mut facts = crate::core::models::Facts::default();
+    let mut facts = crate::models::Facts::default();
 
     extract_reverse_route(call, source, "consumer", 0, &mut facts);
 
@@ -1482,7 +1482,7 @@ fn receiver_registration_conflicts_are_prepared_once_per_module_scope() {
     parser.set_language(&super::language()).unwrap();
     let tree = parser.parse(source, None).unwrap();
     let root = tree.root_node();
-    prepare_file(root, source, &crate::engine::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py"));
+    prepare_file(root, source, &crate::languages::dependency_registry::DependencyRegistry::bundled_framework_rules().language_context_for_path("test.py"));
     let binding_counts = super::template_loaders::binding_counts(root, source);
     for name in ["DefaultRouter", "router", "First", "Nested", "missing"] {
         assert_eq!(

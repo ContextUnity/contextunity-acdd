@@ -19,16 +19,14 @@ use std::{
     time::Instant,
 };
 
-#[path = "batch.rs"]
 mod batch;
 /// Database extraction cache facilities.
 pub mod cache;
-#[path = "delta.rs"]
-pub mod delta_persist;
-#[path = "dictionary.rs"]
+pub mod delta;
+#[doc(hidden)]
+pub use delta as delta_persist;
 mod dictionary;
 pub(crate) mod entrypoints;
-#[path = "ingest.rs"]
 mod ingest;
 mod seal;
 
@@ -243,29 +241,6 @@ pub(crate) fn sqlite_cache_size_kib(memory_budget: u64) -> usize {
     raw.clamp(4_096, 32_768) as usize
 }
 
-#[cfg(test)]
-pub(crate) fn populate(
-    conn: &mut Connection,
-    root: &Path,
-    adapter: &Adapter,
-    entries: &[FileEntry],
-    facts: &BTreeMap<String, TypedFacts>,
-    graph: &CompactGraph,
-    build_inputs: BuildInputs<'_>,
-) -> Result<Value> {
-    populate_owned(
-        conn,
-        root,
-        adapter,
-        entries,
-        facts.clone(),
-        graph,
-        build_inputs,
-        &mut BTreeMap::new(),
-        None,
-    )
-}
-
 /// Populates index database taking ownership of extracted facts and staged payloads.
 #[allow(clippy::too_many_arguments)]
 pub fn populate_owned(
@@ -349,7 +324,7 @@ pub fn populate_owned(
             ("inventory_snapshot", serde_json::to_string(entries)?),
             (
                 "corpus_hash",
-                crate::core::format::sha256_serde_json_hex(entries)?,
+                acdd_core::format::sha256_serde_json_hex(entries)?,
             ),
         ] {
             cached(
@@ -603,7 +578,6 @@ pub fn populate_owned(
             libc::malloc_trim(0);
         }
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        crate::db::cache::checkpoint(conn, true)?;
         let index_and_seal = Instant::now();
         let index_sql = format!("CREATE INDEX{indexes}");
         let index_candidate = |conn: &mut Connection| -> Result<f64> {
@@ -630,7 +604,7 @@ pub fn populate_owned(
         conn.execute_batch(&format!("PRAGMA cache_size=-{cache_kb};"))?;
         let index_and_seal_ms = index_and_seal.elapsed().as_secs_f64() * 1000.;
         let persist_ms = writing.elapsed().as_secs_f64() * 1000.;
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        conn.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=NORMAL;")?;
         let mut report = json!({"files":entries.len(),"nodes":node_id,"node_row_count":node_row_count,"node_row_insert_ms":node_row_insert_ms,"edges":graph.edges.len(),"doc_sections":docs_count,"output_root":seal,"schema_version":config::ENGINE_SCHEMA_VERSION,"link_ms":0.0,"persist_ms":persist_ms,"rows_ms":rows_ms,"bulk_paths_ms":bulk_paths_ms,"persist_files_ms":persist_files_ms,"fts_insert_ms":fts_insert_ms,"doc_fts_insert_ms":doc_fts_insert_ms,"persist_graph_ms":persist_graph_ms,"indexes_ms":indexes_ms,"seal_ms":seal_ms,"seal_projection_ms":seal_projection_ms,"seal_fts_ms":seal_fts_ms,"seal_file_domains_ms":projection_timings.file_domains_ms,"seal_node_domain_ms":projection_timings.node_domain_ms,"seal_graph_edges_ms":projection_timings.graph_edges_ms,"seal_graph_occurrences_ms":projection_timings.graph_occurrences_ms,"seal_graph_unique_edges_ms":projection_timings.graph_unique_edges_ms,"seal_graph_shared_owners_ms":projection_timings.graph_shared_owners_ms,"seal_graph_coverage_ms":projection_timings.graph_coverage_ms,"seal_graph_dependencies_ms":projection_timings.graph_dependencies_ms,"seal_graph_domains_ms":projection_timings.graph_domains_ms,"seal_snapshot_ms":seal_snapshot_ms,"seal_snapshot_logical_domains_ms":snapshot_timings.logical_domains_ms,"seal_snapshot_install_ms":snapshot_timings.install_ms,"encode_facts_ms":encode_facts_ms,"sqlite_ingestion":{"mode":"deferred-index-batched","secondary_indexes_deferred":true,"batch_rows":local_facts_batch_rows}});
         report["graph_phases_ms"] = json!({"occurrences_and_dependencies":graph_timings.occurrences,"unique_edges":graph_timings.edges,"coverage_dictionaries":graph_timings.dictionaries,"coverage_and_unresolved":graph_timings.coverage});
         report["index_and_seal_ms"] = json!(index_and_seal_ms);
@@ -716,10 +690,6 @@ fn retain_graph_storage_facts(facts: &mut TypedFacts) {
 fn cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> rusqlite::Result<usize> {
     conn.prepare_cached(sql)?.execute(params)
 }
-
-#[cfg(test)]
-#[path = "writer/multi_value_batch_tests.rs"]
-mod multi_value_batch_tests;
 
 #[cfg(test)]
 mod tests {

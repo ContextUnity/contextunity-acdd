@@ -278,7 +278,7 @@ impl DependencyRegistry {
             for (index, rule) in manifest.route_decorators.iter().enumerate() {
                 context.route_rule_origins.insert(
                     (true, context.route_decorators.len() + index),
-                    crate::core::semantic::ExtractionRuleOrigin {
+                    crate::semantic::ExtractionRuleOrigin {
                         pack: manifest.name.clone(),
                         rule: serde_json::to_string(&rule.identity())
                             .expect("typed route identity"),
@@ -288,7 +288,7 @@ impl DependencyRegistry {
             for (index, rule) in manifest.route_calls.iter().enumerate() {
                 context.route_rule_origins.insert(
                     (false, context.route_calls.len() + index),
-                    crate::core::semantic::ExtractionRuleOrigin {
+                    crate::semantic::ExtractionRuleOrigin {
                         pack: manifest.name.clone(),
                         rule: serde_json::to_string(&rule.identity())
                             .expect("typed route identity"),
@@ -313,7 +313,7 @@ impl DependencyRegistry {
             for (index, rule) in manifest.di_calls.iter().enumerate() {
                 context.di_rule_origins.insert(
                     context.di_calls.len() + index,
-                    crate::core::semantic::ExtractionRuleOrigin {
+                    crate::semantic::ExtractionRuleOrigin {
                         pack: manifest.name.clone(),
                         rule: serde_json::to_string(&rule.identity()).expect("typed DI identity"),
                     },
@@ -439,6 +439,17 @@ impl DependencyRegistry {
             let call = ["call", "call_expression"]
                 .into_iter()
                 .any(|name| named_kind(&grammar, name).is_some());
+            let has_type_decl = [
+                "class_definition",
+                "class_declaration",
+                "struct_item",
+                "enum_item",
+                "trait_item",
+                "interface_declaration",
+                "type_spec",
+            ]
+            .into_iter()
+            .any(|name| named_kind(&grammar, name).is_some());
             let routes = profile.route_extraction_enabled();
             for ((scope, framework), effective) in &self.framework_manifests {
                 if scope != workspace {
@@ -448,10 +459,7 @@ impl DependencyRegistry {
                     continue;
                 };
                 for (domain, eligible) in [
-                    (
-                        RuleDomain::ClassHierarchyReceivers,
-                        language == "python" && named_kind(&grammar, "class_definition").is_some(),
-                    ),
+                    (RuleDomain::ClassHierarchyReceivers, has_type_decl),
                     (RuleDomain::DiCalls, call),
                     (RuleDomain::RouteCalls, routes && call),
                     (
@@ -460,11 +468,10 @@ impl DependencyRegistry {
                     ),
                     (
                         RuleDomain::SemanticRules,
-                        named_kind(&grammar, "call").is_some()
-                            && bundled
-                                .semantic_rules
-                                .iter()
-                                .any(|rule| rule.language() == language),
+                        call && bundled
+                            .semantic_rules
+                            .iter()
+                            .any(|rule| rule.language() == language),
                     ),
                 ] {
                     if !eligible {
@@ -734,7 +741,7 @@ impl DependencyRegistry {
 
         if matches!(profile.family().0, "javascript") {
             if module.starts_with("./") || module.starts_with("../") {
-                let joined = crate::core::fs::normalize_path(&owner_dir.join(module));
+                let joined = acdd_core::fs::normalize_path(&owner_dir.join(module));
                 let rel = joined.to_string_lossy().replace('\\', "/");
                 if !rel.starts_with("..") && !rel.starts_with('/') && !rel.is_empty() {
                     out.insert(rel.clone());
@@ -815,14 +822,14 @@ impl DependencyRegistry {
         let Some(root) = root else {
             return Self::bundled_framework_rules();
         };
-        let adapter = crate::engine::scanner::load_adapter(root, None).ok();
+        let adapter = crate::scanner::load_adapter(root, None).ok();
         Self::collect_with_scan_config(root, adapter.as_ref())
     }
 
     /// Collects workspace dependencies and framework rules with scan configuration.
     pub fn collect_with_scan_config(
         root: &Path,
-        adapter: Option<&crate::engine::scanner::Adapter>,
+        adapter: Option<&crate::scanner::Adapter>,
     ) -> Self {
         Self::try_collect_with_scan_config(root, adapter).unwrap_or_default()
     }
@@ -835,10 +842,10 @@ impl DependencyRegistry {
     /// file cannot be read or does not satisfy the typed framework-manifest schema.
     pub fn try_collect_with_scan_config(
         root: &Path,
-        adapter: Option<&crate::engine::scanner::Adapter>,
+        adapter: Option<&crate::scanner::Adapter>,
     ) -> Result<Self> {
         if let Some(adapter) = adapter {
-            let manifests = crate::engine::scanner::dependency_manifests_for_build(root, adapter)?;
+            let manifests = crate::scanner::dependency_manifests_for_build(root, adapter)?;
             Self::try_collect(root, Some(adapter), Some(&manifests))
         } else {
             Self::try_collect(root, None, None)
@@ -848,7 +855,7 @@ impl DependencyRegistry {
     /// Collects dependency metadata from scanner-discovered manifests and direct workspace roots.
     pub fn try_collect_with_paths(
         root: &Path,
-        adapter: Option<&crate::engine::scanner::Adapter>,
+        adapter: Option<&crate::scanner::Adapter>,
         discovered_manifests: &[PathBuf],
     ) -> Result<Self> {
         Self::try_collect(root, adapter, Some(discovered_manifests))
@@ -856,7 +863,7 @@ impl DependencyRegistry {
 
     fn try_collect(
         root: &Path,
-        adapter: Option<&crate::engine::scanner::Adapter>,
+        adapter: Option<&crate::scanner::Adapter>,
         discovered_manifests: Option<&[PathBuf]>,
     ) -> Result<Self> {
         let mut registry = Self::default();
@@ -1069,8 +1076,8 @@ impl DependencyRegistry {
     /// Existing scoped policy relation used by both linking and selective hydration.
     pub fn named_scope_admits(&self, consumer: &str, provider: &str, domain: &str) -> bool {
         use super::manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
-        let provider_scope = crate::engine::linker::named_binding_scope(provider, self);
-        if crate::engine::linker::named_binding_scope(consumer, self) == provider_scope {
+        let provider_scope = crate::linker::named_binding_scope(provider, self);
+        if crate::linker::named_binding_scope(consumer, self) == provider_scope {
             return true;
         }
         self.language_context_for_path(consumer).syntax_rules.iter().any(|rule| {
@@ -1637,7 +1644,7 @@ fn scanner_manifest_paths(
             let relative = candidate
                 .strip_prefix(root)
                 .context("workspace manifest escaped its root")?;
-            paths.insert(crate::engine::scanner::checked_child(root, relative)?);
+            paths.insert(crate::scanner::checked_child(root, relative)?);
         }
     }
     for discovered_path in discovered {
@@ -1650,7 +1657,7 @@ fn scanner_manifest_paths(
         if ignored_names.contains(filename) || !is_manifest(filename) {
             continue;
         }
-        let path = crate::engine::scanner::checked_child(root, relative)?;
+        let path = crate::scanner::checked_child(root, relative)?;
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.is_file() && !metadata.file_type().is_symlink() {
             paths.insert(path);
@@ -2217,7 +2224,7 @@ mod tests {
             "outside_source_roots>=1\n",
         )
         .unwrap();
-        let adapter = crate::engine::scanner::load_adapter(&first_root, None).unwrap();
+        let adapter = crate::scanner::load_adapter(&first_root, None).unwrap();
         let cold =
             DependencyRegistry::try_collect_with_paths(&first_root, Some(&adapter), &[]).unwrap();
         let admission =
@@ -2242,20 +2249,77 @@ mod tests {
     fn project_framework_packs_merge_replace_and_activate() {
         use super::super::manifests::{syntax::SyntaxOperation, FrameworkManifest};
 
+        const INLINE_RULES_TOML: &str = r#"
+enabled = true
+[[class_hierarchy_receivers]]
+bases = ["django.custom.Base"]
+provider = "django.custom.Base"
+members = ["deliver"]
+returns = { deliver = { kind = "self" } }
+[[route_decorators]]
+callee = "portal.expose"
+method = "POST"
+path_argument = 0
+receiver_names = []
+allow_relative_path = false
+[[route_calls]]
+callee = "register_endpoint"
+method = "GET"
+path_argument = 0
+handler_argument = 1
+receiver_names = []
+allow_relative_path = false
+[[di_calls]]
+callee = "InjectService"
+argument = 0
+[[semantic_rules]]
+id = "portal-render"
+namespace = "templates"
+scope = "project"
+activation = []
+operation = { kind = "call_to_file", language = "python", callee = { kind = "imported", module = "portal.responses", export = "render_file" }, argument = 1, target = { kind = "project_path_suffix", prefix = "templates/", language = "html" }, relation = "renders_template" }
+"#;
+        const INLINE_RULES_YAML: &str = r#"
+enabled: true
+class_hierarchy_receivers:
+  - bases: [django.custom.Base]
+    provider: django.custom.Base
+    members: [deliver]
+    returns: {deliver: {kind: self}}
+route_decorators:
+  - callee: portal.expose
+    method: POST
+    path_argument: 0
+    receiver_names: []
+    allow_relative_path: false
+route_calls:
+  - callee: register_endpoint
+    method: GET
+    path_argument: 0
+    handler_argument: 1
+    receiver_names: []
+    allow_relative_path: false
+di_calls:
+  - callee: InjectService
+    argument: 0
+semantic_rules:
+  - id: portal-render
+    namespace: templates
+    scope: project
+    activation: []
+    operation:
+      kind: call_to_file
+      language: python
+      callee: {kind: imported, module: portal.responses, export: render_file}
+      argument: 1
+      target: {kind: project_path_suffix, prefix: templates/, language: html}
+      relation: renders_template
+"#;
+
         let mut documented_examples = Vec::new();
         for (extension, source) in [
-            (
-                "toml",
-                include_str!(
-                    "../../../../skills/acdd/references/frameworks/declarative-rules.toml.example"
-                ),
-            ),
-            (
-                "yaml",
-                include_str!(
-                    "../../../../skills/acdd/references/frameworks/declarative-rules.yaml.example"
-                ),
-            ),
+            ("toml", INLINE_RULES_TOML),
+            ("yaml", INLINE_RULES_YAML),
         ] {
             let parsed = FrameworkManifest::parse("django".to_owned(), extension, source)
                 .unwrap_or_else(|error| {
@@ -2275,9 +2339,9 @@ mod tests {
         let gridviewspec = FrameworkManifest::parse(
             "gridviewspec".to_owned(),
             "toml",
-            include_str!("../../../../skills/acdd/references/frameworks/gridviewspec.toml.example"),
+            include_str!("manifests/gridviewspec.toml"),
         )
-        .unwrap_or_else(|error| panic!("invalid documented GridViewSpec example: {error:#}"));
+        .unwrap_or_else(|error| panic!("invalid bundled GridViewSpec manifest: {error:#}"));
         assert_eq!(gridviewspec.class_hierarchy_receivers.len(), 28);
 
         struct TestRoot(PathBuf);
@@ -2324,7 +2388,7 @@ mod tests {
                 )
                 .expect("package/project pack remains available");
             let _ = manifest;
-            let extracted = crate::engine::ast::extract_typed_with_registry(
+            let extracted = crate::ast::extract_typed_with_registry(
                 "views.py",
                 "python",
                 "from django.shortcuts import render as show_page\n\ndef page(request):\n    return show_page(request, 'catalog/card.html')\n\ndef shadowed(request, show_page):\n    return show_page(request, 'catalog/card.html')\n\ndef starred(request, args):\n    return show_page(*args, 'catalog/card.html')\n\ndef comprehension(request, callbacks):\n    return [show_page(request, 'catalog/card.html') for show_page in callbacks]\n",
@@ -2344,15 +2408,15 @@ mod tests {
                 .semantic
                 .entries()
                 .flat_map(|(_, entry)| match &entry.state {
-                    crate::core::typed_facts::SemanticState::Valid { facts, .. } => facts.iter(),
-                    crate::core::typed_facts::SemanticState::Invalid { .. } => {
+                    crate::typed_facts::SemanticState::Valid { facts, .. } => facts.iter(),
+                    crate::typed_facts::SemanticState::Invalid { .. } => {
                         panic!("{phase}: canonical native semantic facts must remain valid")
                     }
                 })
                 .filter(|fact| {
                     matches!(
                         fact.role,
-                        crate::core::semantic::SemanticFactRole::CallToFile { .. }
+                        crate::semantic::SemanticFactRole::CallToFile { .. }
                     )
                 })
                 .collect();

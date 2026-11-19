@@ -1,5 +1,5 @@
 use super::{direct_module_assignment, lazy_exports, Syntax};
-use crate::engine::ast::{field, text, ScopeBindings};
+use crate::ast::{field, text, ScopeBindings};
 use std::collections::{HashMap, HashSet};
 
 fn mark_write(node: Syntax<'_>, source: &str, writes: &mut HashSet<String>) {
@@ -176,7 +176,7 @@ impl<'tree> Collector<'tree> {
         &self,
         source: &str,
         bindings: &ScopeBindings,
-    ) -> Vec<crate::core::semantic::ExportBinding> {
+    ) -> Vec<crate::semantic::ExportBinding> {
         let mut imports = HashMap::new();
         let mut import_positions = HashMap::new();
         let mut assignments = HashMap::<String, usize>::new();
@@ -268,7 +268,7 @@ impl<'tree> Collector<'tree> {
                             .is_some_and(|position| *position < assignment_position)
                     })
                     .filter(|_| !rebound.contains(receiver.as_str()));
-                crate::core::semantic::ExportBinding {
+                crate::semantic::ExportBinding {
                     name,
                     local: provider.map(|_| member),
                     module: provider.map(|(module, _)| module.clone()),
@@ -295,7 +295,7 @@ impl<'tree> Collector<'tree> {
                         && !self.conditional_imports.contains(&target)
                         && !self.conditional_writes.contains(&name)
                         && !self.conditional_writes.contains(&target))
-                    .then_some(crate::core::semantic::ExportBinding {
+                    .then_some(crate::semantic::ExportBinding {
                         name,
                         local: Some(target),
                         module: None,
@@ -312,7 +312,7 @@ impl<'tree> Collector<'tree> {
         source: &str,
         bindings: &ScopeBindings,
     ) -> (
-        Vec<crate::core::semantic::ExportBinding>,
+        Vec<crate::semantic::ExportBinding>,
         Vec<super::LazyExport>,
     ) {
         (

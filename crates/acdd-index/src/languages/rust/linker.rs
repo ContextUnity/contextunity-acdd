@@ -1,5 +1,5 @@
 use crate::languages::{self, ImportPath, LanguageFamily, LanguageProfile};
-use crate::linker::interner::{LinkerInterner, SymbolId};
+use crate::interner::{LinkerInterner, SymbolId};
 use crate::linker::traits::{
     insert_package_export, package_export, resolve_default_import, ImportContext, ImportResolution,
     LanguageLinker, ModulesByNamespace, PackageExports,
@@ -1065,6 +1065,13 @@ impl hashbrown::Equivalent<(&str, &str, bool, &str)> for TraitLookup<'_> {
         self.0 == key.0 && self.1 == key.1 && self.2 == key.2 && self.3 == key.3
     }
 }
+#[derive(Hash)]
+struct DynamicLookup<'a>(&'a str, &'a str);
+impl hashbrown::Equivalent<(&str, &str)> for DynamicLookup<'_> {
+    fn equivalent(&self, key: &(&str, &str)) -> bool {
+        self.0 == key.0 && self.1 == key.1
+    }
+}
 
 type TraitImplMap<'a> = HashMap<(&'a str, &'a str, bool), Vec<(&'a Node, &'a Node)>>;
 
@@ -1075,7 +1082,6 @@ pub(crate) struct RustMembers<'a> {
     receivers_by_method: HashMap<&'a str, &'a Node>,
     dynamic_declarations: HashMap<(&'a str, &'a str), &'a Node>,
     dynamic_implementors: HashMap<(&'a str, &'a str), Vec<&'a Node>>,
-    cargo_pack_enabled: bool,
 }
 
 fn namespace(path: &str, module: &str, name: &str) -> String {
@@ -1215,7 +1221,6 @@ impl<'a> RustMembers<'a> {
             by_qual.entry(&node.qualname).or_default().push(node);
             by_id.insert(node.id.as_str(), node);
         }
-        let cargo_pack_enabled = interner.lookup_symbol("rust-cargo").is_some();
         let mut index = Self {
             deref_targets: HashMap::new(),
             inherent: HashMap::new(),
@@ -1223,7 +1228,6 @@ impl<'a> RustMembers<'a> {
             receivers_by_method: HashMap::new(),
             dynamic_declarations: HashMap::new(),
             dynamic_implementors: HashMap::new(),
-            cargo_pack_enabled,
         };
         let mut traits: TraitImplMap<'a> = HashMap::new();
         let mut visible_traits: HashMap<&'a str, HashSet<&'a str>> = HashMap::new();
@@ -1479,18 +1483,12 @@ impl<'a> RustMembers<'a> {
                 else {
                     continue;
                 };
-                let trait_node = match owner.details["impl_trait"].as_str() {
-                    Some(name) => {
-                        let Some(trait_node) = resolve_type(facts, owner, name, &by_qual)
-                            .filter(|node| node.kind == "trait")
-                        else {
-                            continue;
-                        };
-                        Some(trait_node)
-                    }
-                    None => None,
-                };
-                impl_receivers.insert(owner.id.as_str(), (receiver, trait_node));
+                let impl_trait = owner.details["impl_trait"].as_str();
+                let has_impl_trait = impl_trait.is_some();
+                let trait_node = impl_trait.and_then(|name| {
+                    resolve_type(facts, owner, name, &by_qual).filter(|node| node.kind == "trait")
+                });
+                impl_receivers.insert(owner.id.as_str(), (receiver, has_impl_trait, trait_node));
             }
             let mut implemented = HashMap::<&str, HashSet<(&str, bool)>>::new();
             for edge in facts.edges.iter().filter(|edge| edge.kind == "contains") {
@@ -1502,9 +1500,12 @@ impl<'a> RustMembers<'a> {
                 if owner.kind != "impl" || method.kind != "method" {
                     continue;
                 }
-                let Some((receiver, trait_node)) = impl_receivers.get(owner.id.as_str()) else {
+                let Some((receiver, has_impl_trait, trait_node)) =
+                    impl_receivers.get(owner.id.as_str())
+                else {
                     continue;
                 };
+                index.receivers_by_method.insert(&method.id, receiver);
                 if method.details["unproven_bounds"] == true {
                     if index.deref_targets.contains_key(receiver.id.as_str()) {
                         let associated = method.details["is_static"] == true;
@@ -1515,7 +1516,7 @@ impl<'a> RustMembers<'a> {
                                 *trait_node,
                                 associated,
                             ));
-                        } else {
+                        } else if !*has_impl_trait {
                             index
                                 .inherent
                                 .entry((receiver.id.as_str(), method.name.as_str(), associated))
@@ -1524,7 +1525,9 @@ impl<'a> RustMembers<'a> {
                     }
                     continue;
                 }
-                index.receivers_by_method.insert(&method.id, receiver);
+                if *has_impl_trait && trait_node.is_none() {
+                    continue;
+                }
                 let associated = method.details["is_static"] == true;
                 implemented
                     .entry(owner.id.as_str())
@@ -1537,7 +1540,7 @@ impl<'a> RustMembers<'a> {
                     index.inherent.entry(key).or_default().push(method);
                 }
             }
-            for (owner_id, (receiver, trait_node)) in impl_receivers {
+            for (owner_id, (receiver, _, trait_node)) in impl_receivers {
                 let Some(trait_node) = trait_node else {
                     continue;
                 };
@@ -1562,6 +1565,7 @@ impl<'a> RustMembers<'a> {
         for methods in index.inherent.values_mut() {
             methods.sort_by_key(|method| &method.id);
             methods.dedup_by_key(|method| method.id.as_str());
+            crate::linker::traits::disambiguate_rust_cfg_siblings(methods);
         }
         for methods in traits.values_mut() {
             methods.sort_by_key(|(method, _)| &method.id);
@@ -1603,6 +1607,7 @@ impl<'a> RustMembers<'a> {
         for methods in index.trait_members.values_mut() {
             methods.sort_by_key(|method| &method.id);
             methods.dedup_by_key(|method| method.id.as_str());
+            crate::linker::traits::disambiguate_rust_cfg_siblings(methods);
         }
         for ((_, member, associated), methods) in &traits {
             if *associated {
@@ -1640,6 +1645,12 @@ impl<'a> RustMembers<'a> {
         associated: bool,
         caller: &Node,
     ) -> &[&'a Node] {
+        if receiver.kind == "trait" && !associated {
+            return self
+                .dynamic_declarations
+                .get(&DynamicLookup(receiver.id.as_str(), member))
+                .map_or(&[], std::slice::from_ref);
+        }
         let mut receiver_id = receiver.id.as_str();
         for _ in 0..RUST_ALIAS_DEPTH {
             if let Some(methods) = self

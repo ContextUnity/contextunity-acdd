@@ -36,7 +36,7 @@ struct CompiledRuleIR {
 #[derive(Clone, Debug)]
 pub(crate) struct CompiledRouteRule<T> {
     rule: T,
-    pub(crate) origin: Option<crate::core::semantic::ExtractionRuleOrigin>,
+    pub(crate) origin: Option<crate::semantic::ExtractionRuleOrigin>,
 }
 impl<T> std::ops::Deref for CompiledRouteRule<T> {
     type Target = T;

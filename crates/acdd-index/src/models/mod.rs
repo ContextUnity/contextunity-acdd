@@ -182,18 +182,6 @@ impl Node {
 }
 
 impl Node {
-    #[allow(dead_code)]
-    pub fn navigation_details(&self) -> NavigationDetails<'_> {
-        NavigationDetails {
-            node: self,
-            documentation: None,
-            return_type: None,
-            entrypoint: None,
-            persisted: false,
-            clear_entrypoint: false,
-        }
-    }
-
     pub fn navigation_details_with_documentation<'a>(
         &'a self,
         documentation: &'a Value,

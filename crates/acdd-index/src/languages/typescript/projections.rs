@@ -1,6 +1,6 @@
 use super::*;
-use crate::core::semantic::{SourcePosition, StaticString, ValueExpr, ValueFlowFacts};
-use crate::core::typed_facts::FlowStore;
+use crate::semantic::{SourcePosition, StaticString, ValueExpr, ValueFlowFacts};
+use crate::typed_facts::FlowStore;
 use manifests::projections::{Api, Slot};
 
 use manifests::semantic::{
@@ -18,7 +18,7 @@ struct ProjectionCandidate {
 
 thread_local! {
     static PROJECTIONS: std::cell::RefCell<Vec<ProjectionCandidate>> = const { std::cell::RefCell::new(Vec::new()) };
-    static SETUP_SUMMARIES: std::cell::RefCell<HashMap<usize, Vec<crate::core::semantic::ObjectMember>>> = std::cell::RefCell::new(HashMap::new());
+    static SETUP_SUMMARIES: std::cell::RefCell<HashMap<usize, Vec<crate::semantic::ObjectMember>>> = std::cell::RefCell::new(HashMap::new());
 }
 
 /// Transfer only the completed direct callback summary, before its enclosing call exits.
@@ -28,7 +28,7 @@ pub(super) fn complete_setup(
     source: &str,
     definitions: &hashbrown::HashMap<&str, Syntax<'_>>,
 ) {
-    use crate::core::semantic::{ObjectMember, ObjectMemberTarget};
+    use crate::semantic::{ObjectMember, ObjectMemberTarget};
     if function
         .parent()
         .is_none_or(|parent| parent.kind() != "arguments")
@@ -206,8 +206,8 @@ fn factory_members<'tree>(
     arguments: &std::cell::OnceCell<Option<Vec<Syntax<'tree>>>>,
 ) -> Option<(
     String,
-    Vec<crate::core::semantic::ObjectMember>,
-    Vec<crate::core::semantic::ObjectMember>,
+    Vec<crate::semantic::ObjectMember>,
+    Vec<crate::semantic::ObjectMember>,
 )> {
     let declaration = call.parent().filter(|n| {
         n.kind() == "variable_declarator" && n.child_by_field_name("value") == Some(call)
@@ -507,7 +507,7 @@ pub(super) fn finalize_projections(
     if pending.is_empty() {
         return;
     }
-    let file_import_mask = crate::engine::linker::interner::file_import_mask(facts);
+    let file_import_mask = crate::interner::file_import_mask(facts);
     let mut fallback = FlowStore::default();
     if flows.is_none() {
         for node in &mut facts.nodes {
@@ -522,7 +522,7 @@ pub(super) fn finalize_projections(
         };
         if matches!(
             store.state(owner),
-            Some(crate::core::typed_facts::FlowState::Invalid(_))
+            Some(crate::typed_facts::FlowState::Invalid(_))
         ) {
             continue;
         }
@@ -598,8 +598,8 @@ pub(super) fn finalize_projections(
             extra.facts.retain(|fact| {
                 matches!(
                     fact,
-                    crate::core::semantic::FrameworkFact::FactoryResult(_)
-                        | crate::core::semantic::FrameworkFact::NamedBinding(_)
+                    crate::semantic::FrameworkFact::FactoryResult(_)
+                        | crate::semantic::FrameworkFact::NamedBinding(_)
                 )
             });
             if !extra.facts.is_empty() {
@@ -849,7 +849,7 @@ pub(super) fn factory_ownership(
     object: Syntax<'_>,
     source: &str,
     rules: &[manifests::syntax::SyntaxRule],
-) -> Option<crate::core::semantic::ObjectOwnershipFact> {
+) -> Option<crate::semantic::ObjectOwnershipFact> {
     configured_factory_object(object, source, rules)?;
     let callee = factory_call_callee(object, source)?;
     rules
@@ -1003,7 +1003,7 @@ fn configuration_callable_imports(
     source: &str,
     config_callee: &str,
     descriptor: &manifests::syntax::CallableImports,
-) -> Option<crate::core::semantic::CallableImportConfiguration> {
+) -> Option<crate::semantic::CallableImportConfiguration> {
     fn property<'tree>(
         object: Syntax<'tree>,
         source: &str,
@@ -1099,7 +1099,7 @@ fn configuration_callable_imports(
             flag(options, source, &descriptor.scan_key)?,
         ),
     };
-    Some(crate::core::semantic::CallableImportConfiguration { enabled, scan })
+    Some(crate::semantic::CallableImportConfiguration { enabled, scan })
 }
 
 pub(super) fn extract_configuration(

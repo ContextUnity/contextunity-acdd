@@ -135,9 +135,11 @@ impl<'a> PreparedCoverage<'a> {
         fallback: Option<&'b str>,
     ) -> Option<&'b str> {
         if let Some(language) = self.owner_language(row) {
-            return Some(language);
+            return (!language.is_empty()).then_some(language);
         }
-        let base = self.file_language(row.path.as_ref()).or(fallback);
+        let base = self
+            .file_language(row.path.as_ref())
+            .or_else(|| fallback.filter(|lang| !lang.is_empty()));
         if let Some(islands) = self.html_islands.get(row.path.as_ref()) {
             if islands
                 .iter()
@@ -1383,10 +1385,9 @@ pub(super) fn persist_graph_prepared(
                 BorrowedSqlValue::Text(language),
             ])?;
         }
-        let item_language = coverage
-            .language(c, owned_languages.get(&owner_id).map(String::as_str))
-            .unwrap_or("");
-        if !item_language.is_empty() {
+        if let Some(item_language) =
+            coverage.language(c, owned_languages.get(&owner_id).map(String::as_str))
+        {
             if let Some((_, _, count)) =
                 owner_language_counts
                     .iter_mut()

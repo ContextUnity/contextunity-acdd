@@ -421,6 +421,9 @@ static RUST_STD_MEMBERS: std::sync::OnceLock<
     std::collections::HashMap<String, std::collections::HashSet<String>>,
 > = std::sync::OnceLock::new();
 
+static RUST_CARGO_TYPES: std::sync::OnceLock<std::collections::HashSet<String>> =
+    std::sync::OnceLock::new();
+
 #[derive(Debug, Clone, serde::Deserialize)]
 struct DeclarativeMacroEntry {
     name: String,
@@ -471,6 +474,36 @@ pub fn is_registered_rust_type(name: &str) -> bool {
         || rust_std_members().contains_key(&colon_name)
         || rust_std_members().contains_key(&dot_name)
         || rust_std_members().contains_key(short)
+        || rust_cargo_types().contains(name)
+        || rust_cargo_types().contains(&colon_name)
+        || rust_cargo_types().contains(&dot_name)
+}
+
+fn rust_cargo_types() -> &'static std::collections::HashSet<String> {
+    RUST_CARGO_TYPES.get_or_init(|| {
+        let cargo_manifest = super::manifests::FrameworkManifest::parse(
+            "rust-cargo".to_owned(),
+            "toml",
+            include_str!("../manifests/rust-cargo.toml"),
+        )
+        .expect("rust-cargo.toml must be valid");
+        let mut types = std::collections::HashSet::new();
+        for rule in cargo_manifest.class_hierarchy_receivers {
+            for base in rule.bases {
+                if rule.provider == "rayon" && matches!(base.as_str(), "Vec" | "Slice") {
+                    continue;
+                }
+                if matches!(base.as_str(), "serde_json" | "serde_yaml") {
+                    continue;
+                }
+                if base.contains("::") {
+                    types.insert(base.replace("::", "."));
+                    types.insert(base);
+                }
+            }
+        }
+        types
+    })
 }
 
 fn rust_std_members(
@@ -486,29 +519,6 @@ fn rust_std_members(
             std::collections::HashMap::new();
         for rule in manifest.class_hierarchy_receivers {
             for base in rule.bases {
-                let short = base.rsplit("::").next().unwrap_or(&base);
-                for name in [base.as_str(), short, &base.replace("::", ".")] {
-                    members
-                        .entry(name.to_owned())
-                        .or_default()
-                        .extend(rule.members.iter().cloned());
-                }
-            }
-        }
-        let cargo_manifest = super::manifests::FrameworkManifest::parse(
-            "rust-cargo".to_owned(),
-            "toml",
-            include_str!("../manifests/rust-cargo.toml"),
-        )
-        .expect("rust-cargo.toml must be valid");
-        for rule in cargo_manifest.class_hierarchy_receivers {
-            for base in rule.bases {
-                if rule.provider == "rayon" && matches!(base.as_str(), "Vec" | "Slice") {
-                    continue;
-                }
-                if matches!(base.as_str(), "serde_json" | "serde_yaml") {
-                    continue;
-                }
                 let short = base.rsplit("::").next().unwrap_or(&base);
                 for name in [base.as_str(), short, &base.replace("::", ".")] {
                     members
@@ -607,14 +617,35 @@ impl LanguageProfile for Rust {
     fn module_name(&self, path: &str) -> String {
         module_stem(path).trim_end_matches("/mod").replace('/', ".")
     }
-    fn extract_file(
-        &self,
-        path: &str,
-        source: &str,
-        module: &str,
-        facts: &mut Facts,
-    ) -> Result<()> {
-        parse_file(self, path, source, module, facts)
+    support::delegate_extract_file!();
+    fn symbol_name<'a>(&self, node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
+        if node.kind() == "impl_item" {
+            if let Some(ty) = node.child_by_field_name("type") {
+                let mut nominal = ty;
+                while nominal.kind() == "generic_type" {
+                    let Some(base) = nominal.child_by_field_name("type") else {
+                        break;
+                    };
+                    nominal = base;
+                }
+                let raw = text(nominal, source).trim();
+                let clean = raw.split_once('<').map_or(raw, |(base, _)| base.trim_end());
+                if !clean.is_empty() {
+                    return Some(clean);
+                }
+            }
+        }
+        ast::symbol_name(node, source)
+    }
+    fn value_binding_applies(&self, reference: &Reference) -> bool {
+        if reference.kind == "implements" {
+            return false;
+        }
+        let head = reference
+            .expression
+            .split_once('.')
+            .map_or(reference.expression.as_str(), |(before_dot, _)| before_dot);
+        !head.contains("::")
     }
     fn prepare_with_context(
         &self,
@@ -1221,9 +1252,13 @@ impl LanguageProfile for Rust {
         let mut param_types = BTreeMap::new();
         let mut decorators = Vec::new();
         let mut previous = node.prev_named_sibling();
-        while let Some(attribute) = previous.filter(|sibling| sibling.kind() == "attribute_item") {
-            decorators.push(text(attribute, source).chars().take(512).collect());
-            previous = attribute.prev_named_sibling();
+        while let Some(sibling) = previous {
+            if sibling.kind() == "attribute_item" {
+                decorators.push(text(sibling, source).chars().take(512).collect());
+            } else if !sibling.kind().contains("comment") {
+                break;
+            }
+            previous = sibling.prev_named_sibling();
         }
         decorators.reverse();
         if matches!(node.kind(), "function_item" | "function_signature_item") {
@@ -1328,18 +1363,22 @@ impl LanguageProfile for Rust {
     }
     fn test_attribute(&self, node: Syntax<'_>, source: &str) -> bool {
         let mut previous = node.prev_named_sibling();
-        while let Some(attr) = previous.filter(|n| n.kind() == "attribute_item") {
-            let raw = text(attr, source);
-            if raw.contains("test") {
-                let value = raw.replace(' ', "");
-                if value == "#[test]"
-                    || value.starts_with("#[tokio::test")
-                    || value.starts_with("#[async_std::test")
-                {
-                    return true;
+        while let Some(sibling) = previous {
+            if sibling.kind() == "attribute_item" {
+                let raw = text(sibling, source);
+                if raw.contains("test") {
+                    let value = raw.replace(' ', "");
+                    if value == "#[test]"
+                        || value.starts_with("#[tokio::test")
+                        || value.starts_with("#[async_std::test")
+                    {
+                        return true;
+                    }
                 }
+            } else if !sibling.kind().contains("comment") {
+                break;
             }
-            previous = attr.prev_named_sibling();
+            previous = sibling.prev_named_sibling();
         }
         false
     }

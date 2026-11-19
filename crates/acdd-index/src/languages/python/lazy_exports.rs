@@ -1,22 +1,8 @@
-use crate::engine::{
-    ast::{field, text},
-    languages::LazyExport,
-};
+use super::template_loaders::literal;
+use crate::ast::{field, text};
+use crate::languages::LazyExport;
 use std::collections::HashMap;
 use tree_sitter::Node;
-
-fn literal<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
-    if node.kind() != "string" {
-        return None;
-    }
-    let value = text(node, source);
-    let quote = value.chars().next()?;
-    if !matches!(quote, '\'' | '"') || value.contains('\\') {
-        return None;
-    }
-    let value = value.strip_prefix(quote)?.strip_suffix(quote)?;
-    (!value.contains(quote)).then_some(value)
-}
 
 fn literal_set<'a>(mut node: Node<'_>, source: &'a str) -> Option<Vec<&'a str>> {
     if node.kind() == "call" {
@@ -368,7 +354,7 @@ pub(super) fn extract<'tree>(
         return Vec::new();
     };
     let parameter = text(parameter, source);
-    if crate::engine::ast::scope_bindings(getter, source)
+    if crate::ast::scope_bindings(getter, source)
         .rebindings
         .iter()
         .any(|name| name == parameter)

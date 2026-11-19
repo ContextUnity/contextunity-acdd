@@ -1,6 +1,6 @@
 //! Dependency-free SQL declaration and table-reference extraction.
 use super::*;
-use crate::core::models::Edge;
+use crate::models::Edge;
 
 /// SQL scanner profile.
 pub struct Sql;
@@ -601,7 +601,7 @@ pub(super) fn extract_literal(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
                         path: path.clone(),
                         line: ctx.line(),
                         end_line: ctx.line(),
-                        is_test: crate::core::models::is_test(&path),
+                        is_test: crate::models::is_test(&path),
                         language: "sql".into(),
                         generated: true,
                         details: serde_json::Value::Null,
@@ -690,7 +690,7 @@ fn reference(facts: &mut Facts, owner: &str, name: String, kind: &str, line: usi
 }
 
 fn extract_schema(path: &str, source: &str, facts: &mut Facts) {
-    let is_test = crate::core::models::is_test(path);
+    let is_test = crate::models::is_test(path);
     let module_owner = format!("module:{path}");
     let tokens = tokens(source);
     for statement in tokens.split(|t| t.text == ";").filter(|s| !s.is_empty()) {

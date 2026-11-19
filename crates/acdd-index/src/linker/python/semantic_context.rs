@@ -1,12 +1,12 @@
 use super::super::semantic_context::{Context, Imported};
 use super::super::value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget};
-use crate::core::models::{Facts, Node, Reference};
-use crate::core::semantic::{SourcePosition, TypeExpr};
-use crate::engine::languages::{
+use crate::models::{Facts, Node, Reference};
+use crate::semantic::{SourcePosition, TypeExpr};
+use crate::languages::{
     dependency_registry::DependencyRegistry, LanguageFamily, LanguageProfile,
 };
-use crate::engine::linker::interner::LinkerInterner;
-use crate::engine::linker::traits::ModulesByNamespace;
+use crate::interner::LinkerInterner;
+use crate::linker::traits::ModulesByNamespace;
 
 pub(in crate::linker) fn receiver_access(owner: &Node, head: &str) -> Option<(bool, bool)> {
     (owner.language == "python"
@@ -92,7 +92,7 @@ pub(in crate::linker) fn external_member(
     };
 
     Some(
-        if crate::engine::languages::by_id("python")
+        if crate::languages::by_id("python")
             .is_some_and(|profile| profile.builtin_member(module, member))
         {
             ExternalMemberOutcome::Supported(origin)
@@ -153,7 +153,7 @@ pub(in crate::linker) fn external_import_type<'a>(
     let nullable = typing_nullable_generic(module, reference, member);
     if matches!(module, "typing" | "typing_extensions" | "collections.abc")
         && (nullable.is_some()
-            || crate::engine::languages::by_id("python").is_some_and(|profile| {
+            || crate::languages::by_id("python").is_some_and(|profile| {
                 profile.builtin_generic(head) || profile.builtin_member(head, "get")
             }))
     {
@@ -216,7 +216,7 @@ pub(in crate::linker) fn has_proven_type_checking(
     dependencies: &DependencyRegistry,
     family: LanguageFamily,
     interner: &LinkerInterner<'_>,
-    node_rebindings: &crate::engine::linker::NodeBindingIndex,
+    node_rebindings: &crate::linker::NodeBindingIndex,
 ) -> bool {
     let rebound = facts
         .nodes
@@ -235,14 +235,14 @@ pub(in crate::linker) fn has_proven_type_checking(
         return false;
     }
 
-    let (workspace, _) = crate::engine::languages::workspace_path(path);
+    let (workspace, _) = crate::languages::workspace_path(path);
     let is_shadowed = |module_name: &str| {
         modules_by_namespace
             .get(&family)
             .and_then(|namespaces| namespaces.get(module_name))
             .is_some_and(|modules| {
                 modules.iter().any(|module| {
-                    crate::engine::languages::workspace_path(&module.path).0 == workspace
+                    crate::languages::workspace_path(&module.path).0 == workspace
                 })
             })
     };
@@ -275,7 +275,7 @@ pub(in crate::linker) fn type_only_import_is_unproven(
     modules_by_namespace: &ModulesByNamespace<'_>,
     dependencies: &DependencyRegistry,
     interner: &LinkerInterner<'_>,
-    node_rebindings: &crate::engine::linker::NodeBindingIndex,
+    node_rebindings: &crate::linker::NodeBindingIndex,
 ) -> bool {
     profile.id() == "python"
         && !has_proven_type_checking(

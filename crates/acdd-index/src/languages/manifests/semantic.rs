@@ -41,7 +41,7 @@ pub enum SemanticCallee {
     Imported { module: String, export: String },
 }
 
-pub(crate) use crate::core::semantic::{SemanticRelation, SemanticTarget};
+pub(crate) use crate::semantic::{SemanticRelation, SemanticTarget};
 
 /// Semantic operation variants for framework rules.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -437,7 +437,7 @@ impl SemanticRule {
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::languages::manifests::semantic::{normal_relative_path, SemanticRule};
+    use crate::languages::manifests::semantic::{normal_relative_path, SemanticRule};
 
     #[test]
     fn typed_symbol_operation_is_decoded_and_validated() {
@@ -554,12 +554,12 @@ mod tests {
     }
 }
 
-use crate::core::semantic::{
+use crate::semantic::{
     AttachmentRelation, EndpointRequestFact, ExtractionRuleOrigin, FactoryResultFact,
     NamedBindingFact, NamedBindingRole, NamedTargetKind, ObjectMember, SourcePosition,
     StaticString, SymbolAttachmentFact, SymbolOperand, TemplateContextFact, ValueFlowFacts,
 };
-use crate::engine::languages::{semantic::EffectiveSemanticRule, SyntaxContext};
+use crate::languages::{semantic::EffectiveSemanticRule, SyntaxContext};
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_semantic_rule<'rules, 'tree>(
     effective: &'rules EffectiveSemanticRule,
@@ -703,7 +703,7 @@ pub(crate) fn bind_receiver_type(
     rule: &super::syntax::SyntaxRule,
     position: SourcePosition,
     payload: ProjectionPayload,
-    facts: &crate::core::models::Facts,
+    facts: &crate::models::Facts,
     flow: &mut ValueFlowFacts,
 ) {
     use super::syntax::SyntaxOperation;
@@ -738,7 +738,7 @@ fn emit_named_binding(
     binding: &super::projections::NamedBindingForm,
     key: StaticString,
     target: Option<(SourcePosition, Option<String>)>,
-    facts: &crate::core::models::Facts,
+    facts: &crate::models::Facts,
 ) -> NamedBindingFact {
     let role =
         if let super::projections::NamedBindingForm::CallDefinition { target_kind, .. } = binding {
@@ -875,7 +875,7 @@ pub(crate) fn prepare_syntax_rule(
 pub(crate) fn execute_reference_rule<'rules>(
     rule: &'rules super::syntax::SyntaxRule,
     position: SourcePosition,
-    facts: &crate::core::models::Facts,
+    facts: &crate::models::Facts,
     api: impl Fn(&'rules Api) -> bool,
     key: impl Fn(&Slot) -> Result<Option<StaticString>, ()>,
 ) -> Option<NamedBindingFact> {
@@ -980,9 +980,9 @@ pub(crate) fn execute_class_attribute_rule(
     expression: &str,
     literal: impl FnOnce() -> Option<String>,
     symbol: impl FnOnce() -> Option<String>,
-    facts: &mut crate::core::models::Facts,
+    facts: &mut crate::models::Facts,
 ) {
-    use crate::core::semantic::SemanticFactRole;
+    use crate::semantic::SemanticFactRole;
     if let SemanticOperation::ClassAttributeToTable {
         language: selected,
         attribute: expected,
@@ -1016,7 +1016,7 @@ pub(crate) fn execute_class_attribute_rule(
         } else {
             owner.to_owned()
         };
-        facts.references.push(crate::core::models::Reference {
+        facts.references.push(crate::models::Reference {
             source: target_owner,
             expression: value,
             kind: "defines_table".into(),
@@ -1060,7 +1060,7 @@ pub(crate) fn execute_class_attribute_rule(
         ),
         _ => return,
     };
-    crate::engine::languages::semantic::push(
+    crate::languages::semantic::push(
         facts,
         effective.fact(
             owner,
@@ -1112,7 +1112,7 @@ pub(crate) fn execute_named_route_rule(
     owner: &str,
     position: SourcePosition,
     prove: impl FnOnce(&str, &str, usize) -> Option<String>,
-    facts: &mut crate::core::models::Facts,
+    facts: &mut crate::models::Facts,
 ) {
     let super::syntax::SyntaxOperation::NamedRouteCall {
         module,
@@ -1131,7 +1131,7 @@ pub(crate) fn execute_named_route_rule(
     }) else {
         return;
     };
-    facts.references.push(crate::core::models::Reference {
+    facts.references.push(crate::models::Reference {
         source: owner.to_owned(),
         dynamic: false,
         expression: format!("{expression_prefix}{name}"),
@@ -1140,7 +1140,7 @@ pub(crate) fn execute_named_route_rule(
         column: position.column,
         alias: None,
         module: None,
-        receiver_hint: Some(crate::core::models::ReceiverHint::NamedRoute {
+        receiver_hint: Some(crate::models::ReceiverHint::NamedRoute {
             origin: ExtractionRuleOrigin::new(&rule.pack, &rule.id),
             key: name,
         }),
@@ -1155,8 +1155,8 @@ pub(crate) fn execute_configuration_rule(
     callable: impl FnOnce(
         &str,
         &super::syntax::CallableImports,
-    ) -> Option<crate::core::semantic::CallableImportConfiguration>,
-) -> Option<crate::core::semantic::ComponentConfigurationFact> {
+    ) -> Option<crate::semantic::CallableImportConfiguration>,
+) -> Option<crate::semantic::ComponentConfigurationFact> {
     let super::syntax::SyntaxOperation::ComponentEnvironment {
         config_file,
         config_callee,
@@ -1172,7 +1172,7 @@ pub(crate) fn execute_configuration_rule(
     if path.rsplit('/').next() != Some(config_file.as_str()) {
         return None;
     }
-    Some(crate::core::semantic::ComponentConfigurationFact {
+    Some(crate::semantic::ComponentConfigurationFact {
         origin: ExtractionRuleOrigin::new(&rule.pack, &rule.id),
         enabled: enabled(config_callee, enabled_key)?,
         modules: modules
@@ -1199,10 +1199,10 @@ pub(crate) fn object_factory_guard(rule: &super::syntax::SyntaxRule, binding: &s
 pub(crate) fn execute_object_factory_rule(
     rule: &super::syntax::SyntaxRule,
     callee: &str,
-) -> Option<crate::core::semantic::ObjectOwnershipFact> {
+) -> Option<crate::semantic::ObjectOwnershipFact> {
     object_factory_matches(rule, callee).then(|| {
         let binding = callee.split('.').next().unwrap_or("");
-        crate::core::semantic::ObjectOwnershipFact {
+        crate::semantic::ObjectOwnershipFact {
             origin: ExtractionRuleOrigin::new(&rule.pack, &rule.id),
             guard: object_factory_guard(rule, binding).then(|| binding.to_owned()),
         }
@@ -1243,9 +1243,9 @@ pub(crate) fn projection_object_matches(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_call_rules<'source>(
-    ctx: &crate::engine::languages::SyntaxContext<'source, '_>,
-    facts: &mut crate::core::models::Facts,
-    rules: &crate::engine::languages::LanguageContext,
+    ctx: &crate::languages::SyntaxContext<'source, '_>,
+    facts: &mut crate::models::Facts,
+    rules: &crate::languages::LanguageContext,
     indices: &[usize],
     language: &str,
     alias: &str,
@@ -1316,16 +1316,16 @@ pub(crate) fn execute_call_rules<'source>(
         if !imported(module, export) {
             continue;
         }
-        crate::engine::languages::semantic::push(
+        crate::languages::semantic::push(
             facts,
             effective.fact(
                 ctx.owner,
                 position.row + ctx.offset + 1,
                 position.column,
                 literal.to_owned(),
-                crate::engine::languages::text(ctx.node, ctx.source).to_owned(),
+                crate::languages::text(ctx.node, ctx.source).to_owned(),
                 target,
-                crate::engine::languages::semantic::SemanticFactRole::CallToFile {
+                crate::languages::semantic::SemanticFactRole::CallToFile {
                     import_owner,
                     alias: alias.to_owned(),
                     module: module.clone(),
@@ -1367,7 +1367,7 @@ pub(crate) struct PreparedRules {
 }
 
 pub(crate) fn prepare_projection_rules(
-    rules: &crate::engine::languages::LanguageContext,
+    rules: &crate::languages::LanguageContext,
 ) -> std::collections::HashMap<String, PreparedRules> {
     use super::{projections::NamedBindingForm, syntax::SyntaxOperation};
     let mut compiled = std::collections::HashMap::<String, PreparedRules>::new();
@@ -1533,9 +1533,9 @@ where
     indices.into_iter().map(move |index| (index, &rules[index]))
 }
 
-use crate::core::models::{Facts, Node, ReceiverHint};
-use crate::core::semantic::ValueExpr;
-use crate::core::typed_facts::FlowStore;
+use crate::models::{Facts, Node, ReceiverHint};
+use crate::semantic::ValueExpr;
+use crate::typed_facts::FlowStore;
 
 fn has_name(node: &Node, field: &str, name: &str) -> bool {
     match field {
@@ -1611,7 +1611,7 @@ fn visible_local_import_owners_for_call(
         .collect()
 }
 
-fn import_binds(reference: &crate::core::models::Reference, scope: &Node, name: &str) -> bool {
+fn import_binds(reference: &crate::models::Reference, scope: &Node, name: &str) -> bool {
     reference.source == scope.id
         && reference.kind == "imports"
         && reference.alias.as_deref().unwrap_or(&reference.expression) == name
@@ -1632,8 +1632,8 @@ pub(crate) fn unique_initializer<'a>(
     flow: &'a ValueFlowFacts,
     name: &str,
 ) -> Option<(
-    &'a crate::core::semantic::BindingFact,
-    &'a crate::core::semantic::BindingFact,
+    &'a crate::semantic::BindingFact,
+    &'a crate::semantic::BindingFact,
 )> {
     let writes: Vec<_> = flow
         .bindings
@@ -1713,7 +1713,7 @@ pub(crate) fn api_proven(
             }
         }
         Api::Imported { module, export } => {
-            let required_mask = crate::engine::linker::interner::package_mask(module);
+            let required_mask = crate::interner::package_mask(module);
             if file_import_mask & required_mask != required_mask {
                 return false;
             }

@@ -1,4 +1,4 @@
-use crate::core::models::DocSection;
+use crate::models::DocSection;
 use anyhow::Result;
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use serde::Deserialize;
@@ -20,31 +20,61 @@ struct ActiveLink {
     claim_start: usize,
 }
 
+fn split_frontmatter(source: &str) -> (Option<&str>, &str, usize) {
+    let Some(rest) = source
+        .strip_prefix("---\n")
+        .or_else(|| source.strip_prefix("---\r\n"))
+    else {
+        return (None, source, 0);
+    };
+    let mut offset = 0;
+    for line in rest.split_inclusive('\n') {
+        if line.trim_end_matches(['\r', '\n']) == "---" {
+            let yaml = &rest[..offset];
+            let body = &rest[offset + line.len()..];
+            let body_offset = source.len() - body.len();
+            return (Some(yaml), body, body_offset);
+        }
+        offset += line.len();
+    }
+    (None, source, 0)
+}
+
+fn heading_level_depth(level: pulldown_cmark::HeadingLevel) -> usize {
+    match level {
+        pulldown_cmark::HeadingLevel::H1 => 1,
+        pulldown_cmark::HeadingLevel::H2 => 2,
+        pulldown_cmark::HeadingLevel::H3 => 3,
+        pulldown_cmark::HeadingLevel::H4 => 4,
+        pulldown_cmark::HeadingLevel::H5 => 5,
+        pulldown_cmark::HeadingLevel::H6 => 6,
+    }
+}
+
 /// Render only parsed Markdown headings, preserving their hierarchy.
-pub fn render_outline(path: &str, source: &str, spec_paths: &[String]) -> Result<String> {
-    let sections = extract_with_details(path, source, 0.0, spec_paths)?;
-    Ok(sections
-        .iter()
-        .filter_map(|(section, _)| {
-            let mut lines = section.content.lines();
-            let first = lines.next()?.trim_start();
-            let hashes = first.chars().take_while(|c| *c == '#').count();
-            let level = if (1..=6).contains(&hashes) {
-                hashes
-            } else {
-                let underline = lines.next()?.trim();
-                if !underline.is_empty() && underline.chars().all(|c| c == '=') {
-                    1
-                } else if !underline.is_empty() && underline.chars().all(|c| c == '-') {
-                    2
-                } else {
-                    return None;
+pub fn render_outline(_path: &str, source: &str, _spec_paths: &[String]) -> Result<String> {
+    let (_, body, _) = split_frontmatter(source);
+    let mut lines = Vec::new();
+    let mut current: Option<(usize, String)> = None;
+    for event in Parser::new(body) {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                current = Some((heading_level_depth(level), String::new()));
+            }
+            Event::Text(t) | Event::Code(t) if current.is_some() => {
+                if let Some((_, title)) = &mut current {
+                    title.push_str(&t);
                 }
-            };
-            Some(format!("{} {}", "#".repeat(level), section.section_title))
-        })
-        .collect::<Vec<_>>()
-        .join("\n"))
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some((level, title)) = current.take() {
+                    lines.push(format!("{} {}", "#".repeat(level), title));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(lines.join("\n"))
 }
 
 /// Source-derived metadata retained on the generic document node.
@@ -54,24 +84,13 @@ pub fn extract_with_details(
     mtime: f64,
     spec_paths: &[String],
 ) -> Result<Vec<(DocSection, Value)>> {
-    let (meta, body, body_offset) = if let Some(rest) = source
-        .strip_prefix("---\n")
-        .or_else(|| source.strip_prefix("---\r\n"))
-    {
-        if let Some(end) = rest.find("\n---") {
-            let meta = serde_yaml::from_str::<Frontmatter>(&rest[..end]).unwrap_or_default();
-            let after = &rest[end + 4..];
-            let body = after
-                .strip_prefix('\n')
-                .or_else(|| after.strip_prefix("\r\n"))
-                .unwrap_or(after);
-            let offset = source.len() - body.len();
-            (meta, body, offset)
-        } else {
-            (Frontmatter::default(), source, 0)
-        }
-    } else {
-        (Frontmatter::default(), source, 0)
+    let (frontmatter_yaml, body, body_offset) = split_frontmatter(source);
+    let (meta, frontmatter_error) = match frontmatter_yaml {
+        Some(yaml) => match serde_yaml::from_str::<Frontmatter>(yaml) {
+            Ok(meta) => (meta, None),
+            Err(err) => (Frontmatter::default(), Some(err.to_string())),
+        },
+        None => (Frontmatter::default(), None),
     };
 
     let mut headings = Vec::new();
@@ -206,23 +225,6 @@ pub fn extract_with_details(
         symbols.sort();
         symbols.dedup();
 
-        let doc_id = format!("doc:{path}:{index}");
-        let doc = DocSection {
-            doc_id: doc_id.clone(),
-            path: path.into(),
-            section_title: title.clone(),
-            doc_type: meta
-                .doc_type
-                .clone()
-                .unwrap_or_else(|| default_doc_type(path, spec_paths).into()),
-            content: content.into(),
-            is_invariant: !invariants.is_empty()
-                || content.lines().any(|line| invariant_id(line).is_some()),
-            invariants: invariants.clone(),
-            referenced_symbols: symbols,
-            mtime,
-            size: content.len() as u64,
-        };
         let declared_invariants = content
             .lines()
             .enumerate()
@@ -233,18 +235,36 @@ pub fn extract_with_details(
                     .then(|| json!({"id":id,"rule":rule,"line":section_line + offset}))
             })
             .collect::<Vec<_>>();
-        output.push((
-            doc,
-            json!({
-                "line":section_line,
-                "end_line":section_end_line,
-                "status":meta.status,
-                "citations":citations,
-                "symbol_claims":symbol_claims,
-                "declared_invariants":declared_invariants,
-                "is_invariant":!invariants.is_empty(),
-            }),
-        ));
+        let is_invariant = !invariants.is_empty() || !declared_invariants.is_empty();
+        let doc_id = format!("doc:{path}:{index}");
+        let doc = DocSection {
+            doc_id: doc_id.clone(),
+            path: path.into(),
+            section_title: title.clone(),
+            doc_type: meta
+                .doc_type
+                .clone()
+                .unwrap_or_else(|| default_doc_type(path, spec_paths).into()),
+            content: content.into(),
+            is_invariant,
+            invariants: invariants.clone(),
+            referenced_symbols: symbols,
+            mtime,
+            size: content.len() as u64,
+        };
+        let mut details = json!({
+            "line":section_line,
+            "end_line":section_end_line,
+            "status":meta.status,
+            "citations":citations,
+            "symbol_claims":symbol_claims,
+            "declared_invariants":declared_invariants,
+            "is_invariant":doc.is_invariant,
+        });
+        if let Some(ref error) = frontmatter_error {
+            details["frontmatter_error"] = json!(error);
+        }
+        output.push((doc, details));
     }
     Ok(output)
 }
@@ -299,7 +319,10 @@ pub fn default_doc_type(path: &str, spec_paths: &[String]) -> &'static str {
             && rel_parts[..spec_parts.len()] == spec_parts[..]
         {
             let tail = &rel_parts[spec_parts.len()..];
-            if !tail.iter().any(|segment| segment.contains("archive")) {
+            if !tail
+                .iter()
+                .any(|segment| segment.eq_ignore_ascii_case("archive"))
+            {
                 return "contract";
             }
         }
@@ -405,7 +428,8 @@ mod tests {
             ("[linked]/docs/plans/PLAN-002.md", "contract"),
             ("docs/rfcs/RFC-003.md", "contract"),
             ("docs/milestones/archive/AC-001.md", "guide"),
-            ("docs/milestones/AC-001-archive.md", "guide"),
+            ("docs/milestones/Archive/AC-001.md", "guide"),
+            ("docs/milestones/AC-001-archive.md", "contract"),
             ("docs/milestones/README.md", "guide"),
             ("docs/plans/AGENTS.md", "guide"),
             ("docs/architecture/README.md", "guide"),
@@ -414,5 +438,26 @@ mod tests {
         for (path, expected) in cases {
             assert_eq!(default_doc_type(path, &specs), expected, "{path}");
         }
+
+        // Lightweight outline strips frontmatter and handles both ATX and Setext headings.
+        let md = "---\ntitle: Spec\n----\n---\nTop\n===\n\n## Child `fn_a`\n\nSub\n---\n";
+        assert_eq!(
+            render_outline("docs/milestones/AC-001.md", md, &specs).unwrap(),
+            "# Top\n## Child fn_a\n## Sub"
+        );
+
+        // Malformed frontmatter surfaces frontmatter_error and declared INV- aligns is_invariant.
+        let bad_fm = "---\ntitle: [unterminated\n---\n# Rules\n- INV-ONLY-DECLARED: must align.\n";
+        let extracted = extract_with_details("docs/rules.md", bad_fm, 0.0, &specs).unwrap();
+        assert_eq!(extracted.len(), 1);
+        let (doc, details) = &extracted[0];
+        assert!(doc.is_invariant);
+        assert_eq!(details["is_invariant"], json!(true));
+        assert!(
+            details["frontmatter_error"]
+                .as_str()
+                .is_some_and(|e| !e.is_empty()),
+            "malformed frontmatter must record frontmatter_error: {details}"
+        );
     }
 }

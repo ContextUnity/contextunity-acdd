@@ -1,5 +1,5 @@
 use super::{paging, reader, SearchOptions};
-use crate::core::response::QueryOptions;
+use acdd_core::response::QueryOptions;
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -371,7 +371,7 @@ pub fn search_with_options(
     };
     if let Some(items) = nodes["items"].as_array_mut() {
         for item in items {
-            if options.detail == crate::core::response::Detail::Compact
+            if options.detail == acdd_core::response::Detail::Compact
                 && item["match_reason"] == "name_pattern"
             {
                 item.as_object_mut()
@@ -389,7 +389,7 @@ pub fn search_with_options(
                     Some(3) => "name_fragment",
                     _ => "indexed_text",
                 };
-                if options.detail == crate::core::response::Detail::Full
+                if options.detail == acdd_core::response::Detail::Full
                     || !matches!(rank.as_u64(), Some(0..=1 | 3))
                 {
                     item["match_reason"] = json!(reason);

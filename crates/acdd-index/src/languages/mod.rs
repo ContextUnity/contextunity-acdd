@@ -1,12 +1,3 @@
-#[cfg(any(
-    feature = "lang-c",
-    feature = "lang-cpp",
-    feature = "lang-csharp",
-    feature = "lang-java",
-    feature = "lang-kotlin",
-    feature = "lang-php",
-    feature = "lang-ruby"
-))]
 pub(crate) mod support;
 /// Supported language profile registry for multi-language extraction.
 #[derive(Debug, Clone, Default)]
@@ -40,9 +31,9 @@ impl LanguageRegistry {
         self.enabled_languages.is_empty()
     }
 }
-use crate::core::models::{Facts, Node, Reference};
-use crate::engine::ast::{self, field, text};
-use crate::engine::linker::traits::{LanguageLinker, GENERIC_LINKER};
+use crate::models::{Facts, Node, Reference};
+use crate::ast::{self, field, text};
+use crate::linker::traits::{LanguageLinker, GENERIC_LINKER};
 use anyhow::{Context, Result};
 use std::{
     cell::RefCell,
@@ -171,17 +162,17 @@ pub fn with_warm_parser<R>(
     Ok(result)
 }
 
-pub(crate) fn source_start(node: Syntax<'_>) -> crate::core::semantic::SourcePosition {
+pub(crate) fn source_start(node: Syntax<'_>) -> crate::semantic::SourcePosition {
     let position = node.start_position();
-    crate::core::semantic::SourcePosition {
+    crate::semantic::SourcePosition {
         line: position.row + 1,
         column: position.column,
     }
 }
 
-pub(crate) fn source_end(node: Syntax<'_>) -> crate::core::semantic::SourcePosition {
+pub(crate) fn source_end(node: Syntax<'_>) -> crate::semantic::SourcePosition {
     let position = node.end_position();
-    crate::core::semantic::SourcePosition {
+    crate::semantic::SourcePosition {
         line: position.row + 1,
         column: position.column,
     }
@@ -219,7 +210,7 @@ pub struct FileContext {
     /// Bindings prepared for this exact syntax root; consumed by the shared visitor.
     pub root_bindings: Option<(usize, ast::ScopeBindings)>,
     /// Export bindings discovered during extraction.
-    pub exports: Vec<crate::core::semantic::ExportBinding>,
+    pub exports: Vec<crate::semantic::ExportBinding>,
     /// Deferred export bindings resolved during linking.
     pub lazy_exports: Vec<LazyExport>,
     /// Names exported as defaults.
@@ -264,10 +255,10 @@ pub struct LanguageContext {
     /// Registration call route rules.
     pub route_calls: Vec<manifests::RouteCallRule>,
     pub(crate) route_rule_origins:
-        HashMap<(bool, usize), crate::core::semantic::ExtractionRuleOrigin>,
+        HashMap<(bool, usize), crate::semantic::ExtractionRuleOrigin>,
     /// Dependency-injection call rules.
     pub di_calls: Vec<manifests::DiCallRule>,
-    pub(crate) di_rule_origins: HashMap<usize, crate::core::semantic::ExtractionRuleOrigin>,
+    pub(crate) di_rule_origins: HashMap<usize, crate::semantic::ExtractionRuleOrigin>,
     /// Semantic extraction rules.
     pub semantic_rules: Vec<semantic::EffectiveSemanticRule>,
     /// Syntax operation rules.
@@ -463,9 +454,9 @@ impl LanguageContext {
         name: &str,
     ) -> Option<(
         &manifests::syntax::SyntaxRule,
-        crate::core::semantic::ComponentMacroRole,
+        crate::semantic::ComponentMacroRole,
     )> {
-        use crate::core::semantic::ComponentMacroRole;
+        use crate::semantic::ComponentMacroRole;
         let mut matches = self.syntax_rules.iter().filter_map(|rule| {
             let manifests::syntax::SyntaxOperation::ComponentMacros {
                 props,
@@ -711,7 +702,7 @@ pub struct LazyExport {
 /// Compact semantic metadata projected into an indexed symbol.
 pub struct SymbolMetadata {
     /// Optional return type value.
-    pub return_type: Option<crate::core::semantic::TypeExpr>,
+    pub return_type: Option<crate::semantic::TypeExpr>,
     /// The param types value.
     pub param_types: BTreeMap<String, String>,
     /// Optional receiver name value.
@@ -723,7 +714,7 @@ pub struct SymbolMetadata {
     /// Optional receiver value.
     pub receiver: Option<String>,
     /// Optional manifest provenance for rule-caused object ownership.
-    pub object_ownership: Option<crate::core::semantic::ObjectOwnershipFact>,
+    pub object_ownership: Option<crate::semantic::ObjectOwnershipFact>,
     /// Optional receiver type value.
     pub receiver_type: Option<String>,
     /// Whether method applies.
@@ -980,7 +971,7 @@ pub trait LanguageProfile: Send + Sync {
         _root: Syntax<'_>,
         _source: &str,
         _bindings: &ast::ScopeBindings,
-    ) -> Option<Vec<crate::core::semantic::ExportBinding>> {
+    ) -> Option<Vec<crate::semantic::ExportBinding>> {
         None
     }
     /// Projects bounded semantic metadata for an indexed declaration.
@@ -1019,7 +1010,7 @@ pub trait LanguageProfile: Send + Sync {
         _root: Syntax<'_>,
         _source: &str,
         _facts: &mut Facts,
-        _exports: &[crate::core::semantic::ExportBinding],
+        _exports: &[crate::semantic::ExportBinding],
     ) {
     }
     /// Analyzes one declaration, allowing profiles to share local intermediate facts.
@@ -1029,7 +1020,7 @@ pub trait LanguageProfile: Send + Sync {
         source: &str,
         name: &str,
         file: &FileContext,
-    ) -> (SymbolMetadata, crate::core::semantic::ValueFlowFacts) {
+    ) -> (SymbolMetadata, crate::semantic::ValueFlowFacts) {
         (
             self.metadata(node, source, name, file),
             self.value_flow_with_context(node, source, file),
@@ -1052,8 +1043,8 @@ pub trait LanguageProfile: Send + Sync {
         &self,
         _node: Syntax<'_>,
         _source: &str,
-    ) -> crate::core::semantic::ValueFlowFacts {
-        crate::core::semantic::ValueFlowFacts::default()
+    ) -> crate::semantic::ValueFlowFacts {
+        crate::semantic::ValueFlowFacts::default()
     }
     /// Extracts local value-flow facts using information prepared for the file.
     fn value_flow_with_context(
@@ -1061,7 +1052,7 @@ pub trait LanguageProfile: Send + Sync {
         node: Syntax<'_>,
         source: &str,
         _file: &FileContext,
-    ) -> crate::core::semantic::ValueFlowFacts {
+    ) -> crate::semantic::ValueFlowFacts {
         self.value_flow(node, source)
     }
     /// Reports whether a reference can use local value-flow bindings.
@@ -1121,10 +1112,14 @@ pub trait LanguageProfile: Send + Sync {
         ctx: &SyntaxContext<'_, '_>,
         facts: &mut Facts,
         symbols: &HashMap<usize, String>,
-        _rules: &LanguageContext,
-        _routes: &crate::engine::ast::routes::RouteContext,
+        rules: &LanguageContext,
+        routes: &crate::ast::routes::RouteContext,
     ) {
-        self.extract_routes(ctx, facts, symbols);
+        if self.typed_scope_projections() {
+            self.extract_routes_with_rule_ir(ctx, facts, symbols, rules, &rules.rule_ir, routes);
+        } else {
+            self.extract_routes(ctx, facts, symbols);
+        }
     }
     /// Appends routes using a grammar-bound manifest dispatch table.
     #[doc(hidden)]
@@ -1134,10 +1129,24 @@ pub trait LanguageProfile: Send + Sync {
         facts: &mut Facts,
         symbols: &HashMap<usize, String>,
         rules: &LanguageContext,
-        _rule_ir: &manifests::RuleIRHandle,
-        routes: &crate::engine::ast::routes::RouteContext,
+        rule_ir: &manifests::RuleIRHandle,
+        routes: &crate::ast::routes::RouteContext,
     ) {
-        self.extract_routes_with_context(ctx, facts, symbols, rules, routes);
+        if self.typed_scope_projections() {
+            let mut projections = HashMap::new();
+            self.extract_routes_with_typed_projections(
+                ctx,
+                facts,
+                symbols,
+                rules,
+                rule_ir,
+                routes,
+                &mut projections,
+            );
+            publish_scope_projections(facts, projections);
+        } else {
+            self.extract_routes_with_context(ctx, facts, symbols, rules, routes);
+        }
     }
     #[doc(hidden)]
     fn typed_scope_projections(&self) -> bool {
@@ -1152,8 +1161,8 @@ pub trait LanguageProfile: Send + Sync {
         symbols: &HashMap<usize, String>,
         rules: &LanguageContext,
         rule_ir: &manifests::RuleIRHandle,
-        routes: &crate::engine::ast::routes::RouteContext,
-        _projections: &mut HashMap<String, crate::core::semantic::ValueFlowFacts>,
+        routes: &crate::ast::routes::RouteContext,
+        _projections: &mut HashMap<String, crate::semantic::ValueFlowFacts>,
     ) {
         self.extract_routes_with_rule_ir(ctx, facts, symbols, rules, rule_ir, routes);
     }
@@ -1184,10 +1193,9 @@ pub trait LanguageProfile: Send + Sync {
 include!(concat!(env!("OUT_DIR"), "/language_profiles.rs"));
 pub mod sql;
 
-#[cfg(any(feature = "lang-python", feature = "lang-typescript"))]
 pub(crate) fn publish_scope_projections(
     facts: &mut Facts,
-    mut projections: HashMap<String, crate::core::semantic::ValueFlowFacts>,
+    mut projections: HashMap<String, crate::semantic::ValueFlowFacts>,
 ) {
     if projections.is_empty() {
         return;
@@ -1298,11 +1306,11 @@ pub fn profiles() -> impl Iterator<Item = &'static dyn LanguageProfile> + Clone 
 }
 
 pub(crate) fn profile_available(id: &str) -> bool {
-    id == "sql"
-        || (matches!(id, "typescript" | "javascript" | "vue") && cfg!(feature = "lang-typescript"))
+    let provider = if id == "javascript" { "typescript" } else { id };
+    provider == "sql"
         || AVAILABLE_LANGUAGE_FEATURES
             .iter()
-            .any(|feature| feature.strip_prefix("lang-") == Some(id))
+            .any(|feature| feature.strip_prefix("lang-") == Some(provider))
 }
 
 /// Performs by id.
@@ -1353,9 +1361,12 @@ pub fn for_path(path: &Path) -> Option<&'static dyn LanguageProfile> {
 }
 /// Performs module stem.
 pub fn module_stem(path: &str) -> &str {
-    path.rsplit_once('.').map_or(path, |(p, _)| p)
+    let file_start = path.rfind('/').map_or(0, |index| index + 1);
+    path[file_start..]
+        .rsplit_once('.')
+        .map_or(path, |(stem, _)| &path[..file_start + stem.len()])
 }
-pub use crate::core::config::workspace_path;
+pub use acdd_core::config::workspace_path;
 /// Performs relative namespace.
 pub fn relative_namespace(owner: &str, module: &str) -> Option<String> {
     let (_, owner) = workspace_path(owner);
@@ -1431,7 +1442,7 @@ pub(crate) fn parse_file_typed(
     path: &str,
     source: &str,
     module: &str,
-    typed: &mut crate::core::typed_facts::TypedFacts,
+    typed: &mut crate::typed_facts::TypedFacts,
     language_context: &Arc<LanguageContext>,
 ) -> Result<()> {
     let tree = parse_tree(profile, path, source)?;

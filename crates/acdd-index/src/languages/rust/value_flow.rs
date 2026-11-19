@@ -1494,16 +1494,21 @@ impl<'source, 'tree> Collector<'source, 'tree> {
     }
 }
 
+impl<'tree> crate::ast::visitor::SyntaxCollector<'tree> for Collector<'_, 'tree> {
+    type Output = ValueFlowFacts;
+    fn enter(&mut self, node: Node<'tree>) {
+        Collector::enter(self, node);
+    }
+    fn exit(&mut self, node: Node<'tree>) {
+        Collector::exit(self, node);
+    }
+    fn finish(self) -> ValueFlowFacts {
+        Collector::finish(self)
+    }
+}
+
 pub(super) fn extract(node: Node<'_>, source: &str) -> ValueFlowFacts {
-    let mut collector = Collector::new(node, source);
-    crate::ast::visitor::walk(node, &mut |node, entering| {
-        if entering {
-            collector.enter(node);
-        } else {
-            collector.exit(node);
-        }
-    });
-    collector.finish()
+    crate::ast::visitor::collect(node, Collector::new(node, source))
 }
 
 pub(super) fn is_async(node: Node<'_>, source: &str) -> bool {

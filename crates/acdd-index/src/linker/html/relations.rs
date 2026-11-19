@@ -1,7 +1,7 @@
 use super::super::*;
 use super::templates::{ExpressionRegistry, Match, RenderContextRegistry};
-use crate::core::semantic::ValueFlowFacts;
-use crate::core::typed_facts::FlowState;
+use crate::semantic::ValueFlowFacts;
+use crate::typed_facts::FlowState;
 
 fn is_html_file(facts: &Facts) -> bool {
     facts
@@ -120,8 +120,8 @@ fn match_request_route<'a>(
 pub(in crate::linker) fn emit_request_routes(
     path: &str,
     facts: &Facts,
-    flows: Option<&HashMap<super::super::interner::SymbolId, &FlowState>>,
-    interner: &super::super::interner::LinkerInterner<'_>,
+    flows: Option<&HashMap<crate::interner::SymbolId, &FlowState>>,
+    interner: &crate::interner::LinkerInterner<'_>,
     routes: &super::super::routes::RouteIndex<'_>,
     dependencies: &languages::dependency_registry::DependencyRegistry,
     graph: &mut Graph,

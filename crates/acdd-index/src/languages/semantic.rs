@@ -19,7 +19,7 @@ pub struct EffectiveSemanticRule {
     pub active: bool,
 }
 
-pub(crate) use crate::core::semantic::{
+pub(crate) use crate::semantic::{
     SemanticFact, SemanticFactRole, SemanticIdentity, SemanticOccurrence,
 };
 
@@ -139,6 +139,6 @@ pub fn decode(node: &super::Node) -> anyhow::Result<Vec<SemanticFact>> {
 pub fn dependency_key(identity: &SemanticIdentity) -> String {
     format!(
         "semantic:{}",
-        crate::core::format::sha256_serde_json_hex(identity).expect("identity serializes")
+        acdd_core::format::sha256_serde_json_hex(identity).expect("identity serializes")
     )
 }

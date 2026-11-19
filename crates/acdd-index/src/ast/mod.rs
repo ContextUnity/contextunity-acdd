@@ -1,15 +1,3 @@
-/// Represents an AST syntax token during extraction.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AstToken {
-    /// Token syntax kind.
-    pub kind: String,
-    /// Token text literal.
-    pub text: String,
-    /// 1-based start row.
-    pub row: usize,
-    /// 0-based start column.
-    pub column: usize,
-}
 pub mod visitor;
 pub use visitor::ScopeAnalysis;
 pub mod relations;
@@ -49,6 +37,32 @@ pub fn text<'a>(node: Syntax<'_>, source: &'a str) -> &'a str {
 /// Extracts child field text by field name.
 pub fn field<'a>(node: Syntax<'_>, source: &'a str, name: &str) -> Option<&'a str> {
     node.child_by_field_name(name).map(|n| text(n, source))
+}
+pub(crate) fn strip_outer_parentheses(value: &str) -> &str {
+    let trimmed = value.trim();
+    if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        let mut depth = 0_usize;
+        let mut closed_at_end = false;
+        for (index, character) in trimmed.char_indices() {
+            match character {
+                '(' => depth += 1,
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 && index == trimmed.len() - 1 {
+                        closed_at_end = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if closed_at_end {
+            trimmed[1..trimmed.len() - 1].trim()
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    }
 }
 fn qualified(module: &str, scopes: &[String], name: &str) -> String {
     std::iter::once(module)

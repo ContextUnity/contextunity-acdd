@@ -1,8 +1,8 @@
-use super::interner::{LinkerInterner, PathId, SymbolId};
+use crate::interner::{LinkerInterner, PathId, SymbolId};
 use super::*;
-use crate::core::typed_facts::FlowState;
-use crate::engine::languages::{self, LanguageProfile};
-use crate::engine::linker::semantic_context;
+use crate::typed_facts::FlowState;
+use crate::languages::{self, LanguageProfile};
+use crate::linker::semantic_context;
 use std::collections::BTreeSet;
 
 pub(super) struct PreparedSemanticFacts<'a> {
@@ -94,17 +94,17 @@ pub(super) struct CompositionInput<'a, 'lookup> {
 }
 
 fn extend_semantic_state<'a>(
-    state: &'a crate::core::typed_facts::SemanticState,
+    state: &'a crate::typed_facts::SemanticState,
     line: usize,
     qualname: &str,
     facts: &mut Vec<std::borrow::Cow<'a, languages::semantic::SemanticFact>>,
     errors: &mut Vec<(usize, String, String)>,
 ) {
     match state {
-        crate::core::typed_facts::SemanticState::Valid { facts: values, .. } => {
+        crate::typed_facts::SemanticState::Valid { facts: values, .. } => {
             facts.extend(values.iter().map(std::borrow::Cow::Borrowed));
         }
-        crate::core::typed_facts::SemanticState::Invalid { error, .. } => {
+        crate::typed_facts::SemanticState::Invalid { error, .. } => {
             errors.push((line, qualname.to_owned(), error.clone()));
         }
     }
@@ -317,7 +317,7 @@ pub(super) fn compose<'a>(
                     reference.kind == "calls_endpoint"
                         && matches!(
                             &reference.receiver_hint,
-                            Some(crate::core::models::ReceiverHint::ConfiguredReference { .. })
+                            Some(crate::models::ReceiverHint::ConfiguredReference { .. })
                         )
                 })
             })
@@ -487,7 +487,7 @@ pub(super) fn compose<'a>(
                     })
                 });
                 let origin = match &reference.receiver_hint {
-                    Some(crate::core::models::ReceiverHint::ConfiguredReference { origin }) => {
+                    Some(crate::models::ReceiverHint::ConfiguredReference { origin }) => {
                         let origin_is_configured = rules.syntax_rules.iter().any(|rule| {
                             rule.pack == origin.pack
                                 && rule.id == origin.rule
@@ -551,7 +551,7 @@ pub(super) fn compose<'a>(
                 .iter()
                 .filter(|reference| reference.kind == "references_route")
             {
-                let Some(crate::core::models::ReceiverHint::NamedRoute { origin, key: name }) =
+                let Some(crate::models::ReceiverHint::NamedRoute { origin, key: name }) =
                     &reference.receiver_hint
                 else {
                     continue;

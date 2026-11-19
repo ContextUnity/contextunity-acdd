@@ -876,15 +876,7 @@ impl LanguageProfile for TypeScript {
             .trim_end_matches("/index")
             .replace('/', ".")
     }
-    fn extract_file(
-        &self,
-        path: &str,
-        source: &str,
-        module: &str,
-        facts: &mut Facts,
-    ) -> Result<()> {
-        parse_file(self, path, source, module, facts)
-    }
+    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source) = (ctx.node, ctx.source);
         if node.kind() == "import_statement" {
@@ -1961,37 +1953,6 @@ impl LanguageProfile for TypeScript {
         if let Some(reference) = facts.references.get_mut(before) {
             reference.column = ctx.node.start_position().column;
         }
-    }
-    fn extract_routes_with_context(
-        &self,
-        ctx: &SyntaxContext<'_, '_>,
-        facts: &mut Facts,
-        symbols: &HashMap<usize, String>,
-        rules: &super::LanguageContext,
-        route_context: &crate::ast::routes::RouteContext,
-    ) {
-        self.extract_routes_with_rule_ir(ctx, facts, symbols, rules, &rules.rule_ir, route_context);
-    }
-    fn extract_routes_with_rule_ir(
-        &self,
-        ctx: &SyntaxContext<'_, '_>,
-        facts: &mut Facts,
-        symbols: &HashMap<usize, String>,
-        rules: &super::LanguageContext,
-        rule_ir: &super::manifests::RuleIRHandle,
-        route_context: &crate::ast::routes::RouteContext,
-    ) {
-        let mut projections = HashMap::new();
-        self.extract_routes_with_typed_projections(
-            ctx,
-            facts,
-            symbols,
-            rules,
-            rule_ir,
-            route_context,
-            &mut projections,
-        );
-        super::publish_scope_projections(facts, projections);
     }
     fn typed_scope_projections(&self) -> bool {
         true

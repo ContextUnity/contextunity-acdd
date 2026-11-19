@@ -152,7 +152,7 @@ pub(super) fn project(conn: &Connection) -> Result<BTreeSet<String>> {
                     [&owner],
                     |row| row.get(0),
                 )?;
-                let facts = crate::core::typed_facts::decode_facts(&blob)?;
+                let facts = crate::typed_facts::decode_facts(&blob)?;
                 let ranks: hashbrown::HashMap<String, i64> = facts
                     .facts
                     .nodes

@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::semantic::{
+use crate::semantic::{
     BindingFact, ExportBinding, FieldFact, ObjectMember, SourcePosition, TypeExpr, ValueExpr,
     ValueFlowFacts,
 };
@@ -10,11 +10,11 @@ pub(super) fn computed_member_hint(
     source: &str,
     offset: usize,
     property_read: bool,
-) -> Option<crate::core::models::ReceiverHint> {
+) -> Option<crate::models::ReceiverHint> {
     let mut receiver = node;
-    let mut members = [""; crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH];
+    let mut members = [""; crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH];
     let mut count = 0;
-    for _ in 0..crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+    for _ in 0..crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
         if receiver.kind() == "parenthesized_expression" {
             receiver = receiver.named_child(0)?;
             continue;
@@ -58,25 +58,25 @@ pub(super) fn computed_member_hint(
         "call_expression" => {
             let value = call_value(receiver, source, offset);
             matches!(value, ValueExpr::Call { .. })
-                .then_some(crate::core::models::ReceiverHint::TypedCallResult { value, member })
+                .then_some(crate::models::ReceiverHint::TypedCallResult { value, member })
         }
         "new_expression" => receiver.child_by_field_name("constructor").map(|callee| {
-            crate::core::models::ReceiverHint::ConstructorResult {
+            crate::models::ReceiverHint::ConstructorResult {
                 callee: text(callee, source).to_owned(),
                 member,
             }
         }),
-        "string" => Some(crate::core::models::ReceiverHint::StringLiteral { member }),
+        "string" => Some(crate::models::ReceiverHint::StringLiteral { member }),
         _ => None,
     }
 }
 
 fn position(node: Syntax<'_>) -> SourcePosition {
-    crate::engine::languages::source_start(node)
+    crate::languages::source_start(node)
 }
 
 fn completed(node: Syntax<'_>) -> SourcePosition {
-    crate::engine::languages::source_end(node)
+    crate::languages::source_end(node)
 }
 
 pub(crate) fn named_type(node: Syntax<'_>, source: &str) -> TypeExpr {
@@ -84,7 +84,7 @@ pub(crate) fn named_type(node: Syntax<'_>, source: &str) -> TypeExpr {
 }
 
 fn type_expr(node: Syntax<'_>, source: &str, depth: usize) -> TypeExpr {
-    if depth >= crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+    if depth >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
         return TypeExpr::Unknown;
     }
     if node.kind() == "type_annotation" {
@@ -425,7 +425,7 @@ fn value(node: Syntax<'_>, source: &str) -> ValueExpr {
 }
 
 fn member_value(node: Syntax<'_>, source: &str, depth: usize) -> ValueExpr {
-    if depth >= crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+    if depth >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
         return ValueExpr::Unknown;
     }
     let (Some(receiver), Some(member)) = (
@@ -466,8 +466,8 @@ pub(super) fn call_value(node: Syntax<'_>, source: &str, offset: usize) -> Value
 }
 
 fn call_value_at(node: Syntax<'_>, source: &str, offset: usize, depth: usize) -> ValueExpr {
-    use crate::core::semantic::{CallSiteEvidence, StaticArgument};
-    if depth >= crate::engine::languages::MAX_VALUE_FLOW_TYPE_DEPTH
+    use crate::semantic::{CallSiteEvidence, StaticArgument};
+    if depth >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH
         || node.kind() != "call_expression"
     {
         return ValueExpr::Unknown;
@@ -622,7 +622,7 @@ impl<'source, 'tree> Collector<'source, 'tree> {
     pub(crate) fn new(root: Syntax<'tree>, source: &'source str) -> Self {
         if root.kind() == "object" {
             let result = ValueFlowFacts {
-                framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
+                framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
                     return_value: Some(object_value(root, source, None)),
                     return_position: Some(position(root)),
                     ..Default::default()
@@ -641,7 +641,7 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 .filter(|value| value.kind() == "array")
             {
                 let result = ValueFlowFacts {
-                    framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
+                    framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
                         return_value: Some(value(field_value, source)),
                         return_position: Some(completed(field_value)),
                         ..Default::default()
@@ -802,7 +802,7 @@ impl<'source, 'tree> Collector<'source, 'tree> {
         {
             if let Some(identifier) = node.named_child(0).filter(|n| n.kind() == "identifier") {
                 self.result.push_annotation_reference(
-                    crate::core::semantic::AnnotationReferenceFact {
+                    crate::semantic::AnnotationReferenceFact {
                         expression: text(identifier, source).to_owned(),
                         position: position(identifier),
                         value_query: true,
@@ -1185,27 +1185,32 @@ impl<'tree> ReturnSummary<'tree> {
 pub(super) fn extract(root: Syntax<'_>, source: &str) -> ValueFlowFacts {
     extract_with_return(root, source, || jsdoc(root, source).1)
 }
+impl<'tree> crate::ast::visitor::SyntaxCollector<'tree> for Collector<'_, 'tree> {
+    type Output = ValueFlowFacts;
+    fn enter(&mut self, node: Syntax<'tree>) {
+        Collector::enter(self, node);
+    }
+    fn exit(&mut self, node: Syntax<'tree>) {
+        Collector::exit(self, node);
+    }
+    fn finish(self) -> ValueFlowFacts {
+        Collector::finish(self)
+    }
+}
+
 pub(super) fn extract_with_return(
     root: Syntax<'_>,
     source: &str,
     _documented_return: impl FnOnce() -> Option<TypeExpr>,
 ) -> ValueFlowFacts {
-    let mut collector = Collector::new(root, source);
-    crate::engine::ast::visitor::walk(root, &mut |node, entering| {
-        if entering {
-            collector.enter(node);
-        } else {
-            collector.exit(node);
-        }
-    });
-    collector.finish()
+    crate::ast::visitor::collect(root, Collector::new(root, source))
 }
 
 // Occurrence-local lexical proof used by framework handlers, never a scope-exit collector.
 pub(super) fn final_return(root: Syntax<'_>) -> Option<Syntax<'_>> {
     let mut summary = ReturnSummary::new(root);
     let mut active = Vec::new();
-    crate::engine::ast::visitor::walk(root, &mut |node, entering| {
+    crate::ast::visitor::walk(root, &mut |node, entering| {
         if entering {
             let included =
                 node == root || (active.last().copied().unwrap_or(false) && !nested_scope(node));
@@ -1237,7 +1242,7 @@ fn binding(
 pub(super) fn exports(
     root: Syntax<'_>,
     source: &str,
-    bindings: &crate::engine::ast::ScopeBindings,
+    bindings: &crate::ast::ScopeBindings,
 ) -> Vec<ExportBinding> {
     let mut result = Vec::new();
     let commonjs_shadowed = bindings

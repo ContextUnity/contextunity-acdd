@@ -3,14 +3,12 @@ mod flow_store;
 mod presentation;
 mod semantic_store;
 
-#[allow(unused_imports)]
 pub use flow_store::{encoded_scope_fact_count, scope_fact_count, FlowState, FlowStore};
 pub use presentation::{NodeView, NodesView, ParameterTypesView, PublicNodesView};
 pub use semantic_store::{NodeSemanticEntry, SemanticStore};
 pub use semantic_store::{SemanticEntry, SemanticState};
 
 use super::models::{Facts, Node};
-use binary::{BinaryDecode, BinaryEncode};
 use rayon::prelude::*;
 use serde_json::Value;
 

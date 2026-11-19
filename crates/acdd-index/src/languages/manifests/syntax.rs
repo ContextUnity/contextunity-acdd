@@ -524,12 +524,12 @@ impl SyntaxRule {
     pub(crate) fn key(&self) -> String {
         serde_json::to_string(&(&self.pack, &self.id)).expect("rule identity strings serialize")
     }
-    pub(crate) fn activation_family(&self) -> Option<crate::engine::languages::LanguageFamily> {
+    pub(crate) fn activation_family(&self) -> Option<crate::languages::LanguageFamily> {
         match self.package_family.as_deref() {
-            Some(family) => crate::engine::languages::profiles()
+            Some(family) => crate::languages::profiles()
                 .map(|profile| profile.family())
                 .find(|known| known.0 == family),
-            None => crate::engine::languages::by_id(&self.language).map(|profile| profile.family()),
+            None => crate::languages::by_id(&self.language).map(|profile| profile.family()),
         }
     }
     pub(super) fn validate(&self) -> Result<()> {
@@ -577,7 +577,7 @@ impl SyntaxRule {
             "syntax rule id must be nonempty"
         );
         ensure!(
-            crate::engine::languages::profile_available(&self.language),
+            crate::languages::profile_available(&self.language),
             "unsupported syntax language"
         );
         for Activation::Package { name } in &self.activation {

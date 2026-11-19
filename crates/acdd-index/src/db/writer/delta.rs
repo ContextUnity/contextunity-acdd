@@ -13,11 +13,9 @@ use super::{
     dictionary::PathDictionaryCache,
     ingest::{persist_files, persist_graph, CachedNodePath},
 };
-use crate::core::{
-    commitments,
-    models::{compact_graph::Graph as CompactGraph, stable_hash64, FileEntry},
-    typed_facts::TypedFacts,
-};
+use crate::db::commitments;
+use crate::models::{compact_graph::Graph as CompactGraph, stable_hash64, FileEntry};
+use crate::typed_facts::TypedFacts;
 
 fn cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> rusqlite::Result<usize> {
     conn.prepare_cached(sql)?.execute(params)
@@ -141,7 +139,7 @@ pub fn persist_delta(
             crate::db::cache::describe_diff(&admitted_identity, &current_identity)
         );
     }
-    let open_path = crate::core::fs::confined_database_open_path(db)?;
+    let open_path = acdd_core::fs::confined_database_open_path(db)?;
     let mut conn = Connection::open_with_flags(
         &open_path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -149,8 +147,17 @@ pub fn persist_delta(
     conn.set_prepared_statement_cache_capacity(128);
     conn.busy_timeout(std::time::Duration::from_secs(2))?;
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-64000; PRAGMA mmap_size=268435456;",
+        "PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-64000; PRAGMA mmap_size=268435456;",
     )?;
+    let precheck: String = conn.query_row(
+        "SELECT value FROM metadata WHERE key='output_root'",
+        [],
+        |r| r.get(0),
+    )?;
+    if precheck != expected {
+        bail!("generation changed during delta admission");
+    }
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let current: String = tx.query_row(
         "SELECT value FROM metadata WHERE key='output_root'",
@@ -256,7 +263,7 @@ pub fn persist_delta(
         graph,
         facts,
         Some(affected),
-        None,
+        Some(entries),
         &mut node_paths,
         false,
     );
@@ -317,7 +324,7 @@ pub fn persist_delta(
     cached(
         &tx,
         "INSERT OR REPLACE INTO metadata VALUES('corpus_hash',?1)",
-        [crate::core::format::sha256_serde_json_hex(entries)?],
+        [acdd_core::format::sha256_serde_json_hex(entries)?],
     )?;
     cached(
         &tx,
@@ -344,6 +351,15 @@ pub fn persist_delta(
     tx.commit()?;
     crate::db::cache::checkpoint(&conn, true)
         .map_err(|err| anyhow::anyhow!("delta committed but checkpoint failed: {err:#}"))?;
+    let mode: String = conn
+        .query_row("PRAGMA journal_mode=DELETE;", [], |r| r.get(0))
+        .map_err(|err| {
+            anyhow::anyhow!("delta committed but DELETE journal_mode transition failed: {err:#}")
+        })?;
+    anyhow::ensure!(
+        mode.eq_ignore_ascii_case("delete"),
+        "delta committed but journal_mode remained '{mode}'"
+    );
     let commit_ms = committing.elapsed().as_secs_f64() * 1000.;
     drop(conn);
     let verification_cache = match crate::db::cache::publish_verified(db, root, &seal) {

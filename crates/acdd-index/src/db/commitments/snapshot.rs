@@ -1,5 +1,3 @@
-#[cfg(test)]
-use super::seal;
 use super::{
     aggregate, batch_insert_commitments, ensure_fts_vocab, fts_digest, root, ALGORITHM, DOMAINS,
     FTS,
@@ -14,12 +12,6 @@ use std::time::Instant;
 pub(crate) struct SnapshotTimings {
     pub(crate) logical_domains_ms: f64,
     pub(crate) install_ms: f64,
-}
-
-/// Retained as the SQL-backed test oracle for the in-memory snapshot path.
-#[cfg(test)]
-pub(crate) fn seal_snapshot(conn: &Connection) -> Result<String> {
-    seal(conn)
 }
 
 /// Computes the FTS commitment digests independently from the logical table leaves.

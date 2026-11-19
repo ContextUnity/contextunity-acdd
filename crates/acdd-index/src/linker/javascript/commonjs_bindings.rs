@@ -1,10 +1,7 @@
-use crate::core::{
-    models::{Facts, Node},
-    semantic::SourcePosition,
-};
+use crate::models::Node;
+use crate::semantic::SourcePosition;
 use hashbrown::HashMap;
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]
 struct Binding {

@@ -3,13 +3,14 @@
 use std::{
     collections::{btree_map::Entry, BTreeMap},
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-use crate::core::response::QueryOptions;
+use acdd_core::response::QueryOptions;
 
 use super::{dependency_manifests_for_build, Adapter};
 
@@ -81,24 +82,46 @@ pub fn manifest_components(
             Ok(location) => location,
             Err(_) => return Ok(unavailable(page, generation, "manifest_path_unavailable")),
         };
-        let checked_path = match super::checked_child(&location.base, &location.relative_path) {
-            Ok(path) => path,
-            Err(_) => return Ok(unavailable(page, generation, "manifest_path_unavailable")),
+        let mut opts = fs::OpenOptions::new();
+        opts.read(true);
+        let file = match acdd_core::fs::open_confined(
+            &location.base,
+            &location.relative_path,
+            &mut opts,
+        ) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::InvalidInput => {
+                return Ok(unavailable(page, generation, "manifest_path_unavailable"));
+            }
+            Err(_) => return Ok(unavailable(page, generation, "manifest_read_unavailable")),
         };
-        let metadata = match fs::symlink_metadata(&checked_path) {
-            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => metadata,
+        let metadata = match file.metadata() {
+            Ok(metadata) if metadata.is_file() => metadata,
             _ => return Ok(unavailable(page, generation, "manifest_read_unavailable")),
         };
         if metadata.len() > adapter.limits.max_file_bytes {
             return Ok(unavailable(page, generation, "manifest_file_size_limit"));
         }
-        parsed_bytes = match parsed_bytes.checked_add(metadata.len()) {
+        let remaining_budget = adapter.limits.max_total_bytes.saturating_sub(parsed_bytes);
+        if metadata.len() > remaining_budget {
+            return Ok(unavailable(page, generation, "manifest_total_bytes_limit"));
+        }
+        let read_limit = adapter.limits.max_file_bytes.min(remaining_budget);
+        let mut bytes = Vec::with_capacity((metadata.len() as usize).min(64 * 1024));
+        if file
+            .take(read_limit.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .is_err()
+        {
+            return Ok(unavailable(page, generation, "manifest_read_unavailable"));
+        }
+        let actual_bytes = bytes.len() as u64;
+        if actual_bytes > adapter.limits.max_file_bytes {
+            return Ok(unavailable(page, generation, "manifest_file_size_limit"));
+        }
+        parsed_bytes = match parsed_bytes.checked_add(actual_bytes) {
             Some(total) if total <= adapter.limits.max_total_bytes => total,
             _ => return Ok(unavailable(page, generation, "manifest_total_bytes_limit")),
-        };
-        let bytes = match fs::read(&checked_path) {
-            Ok(bytes) => bytes,
-            Err(_) => return Ok(unavailable(page, generation, "manifest_read_unavailable")),
         };
         let content = match String::from_utf8(bytes) {
             Ok(content) => content,

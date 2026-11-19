@@ -10,6 +10,8 @@ Read the [root instructions](../../AGENTS.md), [source architecture](../../src/A
 ## Production Rust Invariants
 
 - **Single-Owner Primitives (`INV-SINGLE-OWNER`)**: Reuse `acdd_core::{lock, fs, format, git, sys, telemetry, config, errors, path_policy}`. Do not duplicate `libc::flock`, `Sha256` + `hex::encode`, `JsonSizeCounter`, symlink/mkdir loops, `acdd.yaml` parsing, or glob engines.
+- **Confined & Digest-Verified Disk Reads**: Read workspace source files through `super::symbols::verified_source` (in `db/`) or confined `acdd_core::fs` helpers; ban raw `std::fs::read_to_string` on workspace paths.
+- **Zero Dead-Code Suppression, Shims, or Duplicates**: Ban crate/module-wide `#![allow(dead_code, unused_imports)]` and legacy `core`/`engine` module shims; run `code_map_query(operation="duplicates", path="crates/acdd-index")` and `code_map_query(operation="dead_tails", path="crates/acdd-index")` before delivery.
 - **Reuse-First & Zero Heuristics**: Search `acdd_core` and `acdd_index` with `code_map_search` / `ast_grep_search` before adding helpers; ban narrow language string/path heuristics where tree-sitter AST, typed `RuleIR` manifests, or linker graph data exists, and ban raw `Command::new("git")` (`acdd_core::git` only).
 - **Complexity Escalation**: Escalate via `acdd_blackboard` (`topic: decisions` / `--action escalate`) before introducing a new subsystem, parallel extraction/linker pipeline, or defect fix exceeding `~80-100` net production LOC.
 - **Intern & pool early**: Pool repeated tags, paths, and identifiers with `CompactTag`, `Arc<str>`, `Cow<'_, str>`, and `ACDD-STRTAB\x01` string tables (`typed_facts/binary.rs`).

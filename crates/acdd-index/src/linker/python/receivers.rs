@@ -1,6 +1,5 @@
-use crate::core::models::{Facts, Node, Reference};
+use crate::models::{Node, Reference};
 use hashbrown::{HashMap, HashSet};
-use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
 pub(crate) enum Base<'a> {
@@ -30,7 +29,7 @@ pub(crate) enum Member<'a> {
         Option<&'a str>,
         Option<(
             &'a str,
-            &'a crate::engine::languages::manifests::ClassHierarchyReceiverRule,
+            &'a crate::languages::manifests::ClassHierarchyReceiverRule,
         )>,
     ),
     Ambiguous,
@@ -58,7 +57,7 @@ impl<'a> PythonReceivers<'a> {
         ) -> Option<(
             &'a str,
             &'a str,
-            &'a crate::engine::languages::manifests::ClassHierarchyReceiverRule,
+            &'a crate::languages::manifests::ClassHierarchyReceiverRule,
         )>,
     ) -> Self {
         let classes: HashMap<&str, &Node> = all
@@ -265,7 +264,7 @@ impl<'a> PythonReceivers<'a> {
         ) -> Option<(
             &'a str,
             &'a str,
-            &'a crate::engine::languages::manifests::ClassHierarchyReceiverRule,
+            &'a crate::languages::manifests::ClassHierarchyReceiverRule,
         )>,
     ) -> Self {
         let own = std::mem::take(&mut self.members);
@@ -349,8 +348,8 @@ impl<'a> PythonReceivers<'a> {
         member: &str,
     ) -> Option<(
         &'a str,
-        &'a crate::engine::languages::manifests::ClassHierarchyReceiverRule,
-        &'a crate::engine::languages::manifests::ReturnPolicy,
+        &'a crate::languages::manifests::ClassHierarchyReceiverRule,
+        &'a crate::languages::manifests::ReturnPolicy,
     )> {
         let Member::External(_, _, _, Some((pack, rule))) = self.lookup(class, member, false)
         else {

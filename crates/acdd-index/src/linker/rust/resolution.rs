@@ -1,4 +1,5 @@
 use super::super::semantic_context::LanguageMemberLookup;
+use super::super::value_flow::SemanticResolver;
 use crate::languages::LanguageProfile;
 use crate::models::{compact_graph::Graph, Node, ReceiverHint, Reference};
 use hashbrown::HashMap;
@@ -773,10 +774,10 @@ pub(in crate::linker) fn trait_object_call<'a>(
     let flow_trait_object = value_flow
         .lookup(owner, receiver, reference.position())
         .and_then(super::value_flow::trait_object);
-    let is_trait_object = owner
+    let param_dyn_trait = owner
         .parameter_type(receiver)
-        .is_some_and(|ty| ty.split_whitespace().any(|part| part == "dyn"))
-        || flow_trait_object.is_some();
+        .and_then(extract_dyn_trait_name);
+    let is_trait_object = param_dyn_trait.is_some() || flow_trait_object.is_some();
     if !is_trait_object {
         return false;
     }
@@ -791,7 +792,21 @@ pub(in crate::linker) fn trait_object_call<'a>(
             receiver
         ),
     );
-    if let Some((declaration, implementors)) = flow_trait_object
+    let trait_node = flow_trait_object.or_else(|| {
+        let trait_name = param_dyn_trait?;
+        match semantic_context.resolve_symbol(
+            owner,
+            trait_name,
+            reference.position(),
+            crate::linker::value_flow::SymbolRole::Type,
+        ) {
+            crate::linker::value_flow::Symbol::Type(
+                crate::linker::value_flow::TypeTarget::Local(node),
+            ) if node.kind == "trait" => Some(node),
+            _ => None,
+        }
+    });
+    if let Some((declaration, implementors)) = trait_node
         .and_then(|trait_node| semantic_context.dynamic_dispatch(trait_node, member))
     {
         graph.reference_edge(path, reference, declaration.id.clone(), "calls", "inferred");
@@ -804,9 +819,69 @@ pub(in crate::linker) fn trait_object_call<'a>(
                 "possible",
             );
         }
-        return true;
     }
-    false
+    true
+}
+
+fn extract_dyn_trait_name(ty: &str) -> Option<&str> {
+    let mut s = ty.trim();
+    loop {
+        if let Some(rest) = s.strip_prefix('&') {
+            s = rest.trim_start();
+            if s.starts_with('\'') {
+                s = s.split_once(char::is_whitespace)?.1.trim_start();
+            }
+            s = s.strip_prefix("mut ").unwrap_or(s).trim_start();
+            continue;
+        }
+        if let Some(inner) = s.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+            s = inner.trim();
+            continue;
+        }
+        let mut unwrapped = None;
+        for wrapper in ["Box", "Arc", "Rc", "Pin"] {
+            if let Some(rest) = s.strip_prefix(wrapper).map(str::trim_start) {
+                if let Some(inner) = rest.strip_prefix('<').and_then(|r| r.strip_suffix('>')) {
+                    unwrapped = Some(inner.trim());
+                    break;
+                }
+            }
+        }
+        if let Some(inner) = unwrapped {
+            s = inner;
+            continue;
+        }
+        break;
+    }
+    let rest = s
+        .strip_prefix("dyn")
+        .filter(|rest| rest.starts_with(char::is_whitespace))?
+        .trim_start();
+    let mut depth = 0usize;
+    let mut end_idx = rest.len();
+    for (idx, ch) in rest.char_indices() {
+        match ch {
+            '<' | '(' => depth += 1,
+            '>' | ')' => {
+                if depth == 0 {
+                    end_idx = idx;
+                    break;
+                }
+                depth -= 1;
+            }
+            '+' if depth == 0 => {
+                end_idx = idx;
+                break;
+            }
+            _ if ch.is_whitespace() && depth == 0 => {
+                end_idx = idx;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let candidate = rest[..end_idx].trim();
+    (!candidate.is_empty()).then_some(candidate)
 }
 
 pub(in crate::linker) fn macro_analysis_gap(

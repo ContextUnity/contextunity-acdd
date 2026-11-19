@@ -1,5 +1,5 @@
 use super::{is_code_path, paging, rows, SelectorError};
-use crate::core::response::Detail;
+use acdd_core::response::Detail;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde_json::Value;

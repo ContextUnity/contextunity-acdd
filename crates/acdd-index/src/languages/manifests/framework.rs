@@ -313,21 +313,22 @@ impl ClassHierarchyReceiverRule {
     }
 }
 
+fn route_identity(callee: &str, method: &str) -> RuleIdentity {
+    RuleIdentity::Route {
+        callee: callee.to_owned(),
+        method: method.to_owned(),
+    }
+}
+
 impl RouteDecoratorRule {
     pub(crate) fn identity(&self) -> RuleIdentity {
-        RuleIdentity::Route {
-            callee: self.callee.clone(),
-            method: self.method.clone(),
-        }
+        route_identity(&self.callee, &self.method)
     }
 }
 
 impl RouteCallRule {
     pub(crate) fn identity(&self) -> RuleIdentity {
-        RuleIdentity::Route {
-            callee: self.callee.clone(),
-            method: self.method.clone(),
-        }
+        route_identity(&self.callee, &self.method)
     }
 }
 

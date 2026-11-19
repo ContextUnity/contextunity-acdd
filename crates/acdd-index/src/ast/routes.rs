@@ -766,7 +766,7 @@ pub(crate) fn declaration_candidate(
         .any(|decorator| {
             let Some(call) = decorator
                 .named_child(0)
-                .filter(|call| call.kind() == "call")
+                .filter(|call| matches!(call.kind(), "call" | "call_expression"))
             else {
                 return false;
             };

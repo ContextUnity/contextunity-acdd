@@ -6,7 +6,7 @@ use crate::{
         dependency_registry::DependencyRegistry, manifests::FrameworkManifest, ImportPath,
         LanguageFamily, LanguageProfile,
     },
-    linker::interner::{LinkerInterner, PathId, SymbolId},
+    interner::{LinkerInterner, PathId, SymbolId},
 };
 use crate::models::{Facts, Node, Reference};
 use hashbrown::HashMap;
@@ -93,7 +93,8 @@ pub(crate) fn import_provider_modules<'a, 'n>(
     (providers, selected_namespace)
 }
 
-/// Drop stub and overload candidates only when a concrete implementation is available.
+/// Drop stub and overload candidates only when a concrete implementation is available,
+/// and disambiguate mutually exclusive Rust `#[cfg(...)]` sibling definitions.
 pub(crate) fn filter_stubs_and_overloads(candidates: &mut Vec<&Node>) {
     if candidates.len() <= 1 {
         return;
@@ -104,6 +105,209 @@ pub(crate) fn filter_stubs_and_overloads(candidates: &mut Vec<&Node>) {
     if has_concrete && has_stub_or_overload {
         candidates.retain(|node| !is_stub_or_overload(node));
     }
+    disambiguate_rust_cfg_siblings(candidates);
+}
+
+/// Disambiguate Rust candidate sets whose definitions are pairwise mutually exclusive
+/// under `#[cfg(...)]` attributes. Non-exclusive siblings remain ambiguous (fail-closed).
+pub(crate) fn disambiguate_rust_cfg_siblings(candidates: &mut Vec<&Node>) {
+    if candidates.len() <= 1
+        || !candidates.iter().all(|node| node.language == "rust")
+    {
+        return;
+    }
+    let parsed: Vec<Option<CfgExpr>> = candidates.iter().map(|node| node_cfg_expr(node)).collect();
+    if parsed.iter().any(Option::is_none) {
+        return;
+    }
+    let exprs: Vec<&CfgExpr> = parsed.iter().filter_map(Option::as_ref).collect();
+    for i in 0..exprs.len() {
+        for j in (i + 1)..exprs.len() {
+            if !cfg_mutually_exclusive(exprs[i], exprs[j]) {
+                return;
+            }
+        }
+    }
+    // All candidates are pairwise mutually exclusive under #[cfg(...)].
+    // Prefer a positive (non-`not(...)`) branch deterministically by node id.
+    let best_idx = (0..candidates.len())
+        .min_by(|&a, &b| {
+            let a_neg = matches!(exprs[a], CfgExpr::Not(_));
+            let b_neg = matches!(exprs[b], CfgExpr::Not(_));
+            a_neg
+                .cmp(&b_neg)
+                .then_with(|| candidates[a].id.cmp(&candidates[b].id))
+        })
+        .unwrap_or(0);
+    let chosen = candidates[best_idx];
+    candidates.clear();
+    candidates.push(chosen);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CfgExpr {
+    Atom(String),
+    KeyValue(String, String),
+    Not(Box<CfgExpr>),
+    All(Vec<CfgExpr>),
+    Any(Vec<CfgExpr>),
+}
+
+fn node_cfg_expr(node: &Node) -> Option<CfgExpr> {
+    let decorators = node.details.get("decorators")?.as_array()?;
+    let mut clauses = Vec::new();
+    for raw in decorators.iter().filter_map(|value| value.as_str()) {
+        if let Some(expr) = parse_cfg_attribute(raw) {
+            clauses.push(expr);
+        }
+    }
+    match clauses.len() {
+        0 => None,
+        1 => clauses.pop(),
+        _ => Some(CfgExpr::All(clauses)),
+    }
+}
+
+fn parse_cfg_attribute(raw: &str) -> Option<CfgExpr> {
+    let trimmed = raw.trim();
+    let inner = trimmed.strip_prefix("#[")?.strip_suffix(']')?.trim();
+    let body = inner.strip_prefix("cfg")?.trim();
+    let body = body.strip_prefix('(')?.strip_suffix(')')?.trim();
+    parse_cfg_expr(body)
+}
+
+fn parse_cfg_expr(input: &str) -> Option<CfgExpr> {
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(rest) = s.strip_prefix("not").map(str::trim_start) {
+        if let Some(inner) = rest.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+            return Some(CfgExpr::Not(Box::new(parse_cfg_expr(inner)?)));
+        }
+    }
+    for (prefix, is_all) in [("all", true), ("any", false)] {
+        if let Some(rest) = s.strip_prefix(prefix).map(str::trim_start) {
+            if let Some(inner) = rest.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+                let items = split_cfg_args(inner)
+                    .into_iter()
+                    .map(parse_cfg_expr)
+                    .collect::<Option<Vec<_>>>()?;
+                if items.is_empty() {
+                    return None;
+                }
+                return Some(if is_all {
+                    CfgExpr::All(items)
+                } else {
+                    CfgExpr::Any(items)
+                });
+            }
+        }
+    }
+    if let Some((key, value)) = s.split_once('=') {
+        let key = key.trim();
+        let value = value.trim().trim_matches('"');
+        if !key.is_empty() && !value.is_empty() {
+            return Some(CfgExpr::KeyValue(key.to_owned(), value.to_owned()));
+        }
+        return None;
+    }
+    if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Some(match s {
+            "unix" => CfgExpr::KeyValue("target_family".to_owned(), "unix".to_owned()),
+            "windows" => CfgExpr::KeyValue("target_family".to_owned(), "windows".to_owned()),
+            _ => CfgExpr::Atom(s.to_owned()),
+        });
+    }
+    None
+}
+
+fn split_cfg_args(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut in_quotes = false;
+    let mut start = 0usize;
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            '(' if !in_quotes => depth += 1,
+            ')' if !in_quotes => depth = depth.saturating_sub(1),
+            ',' if !in_quotes && depth == 0 => {
+                let item = input[start..idx].trim();
+                if !item.is_empty() {
+                    parts.push(item);
+                }
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = input[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail);
+    }
+    parts
+}
+
+fn cfg_mutually_exclusive(a: &CfgExpr, b: &CfgExpr) -> bool {
+    match (a, b) {
+        (CfgExpr::All(xs), other) | (other, CfgExpr::All(xs)) => {
+            xs.iter().any(|x| cfg_mutually_exclusive(x, other))
+        }
+        (CfgExpr::Any(xs), other) | (other, CfgExpr::Any(xs)) => {
+            !xs.is_empty() && xs.iter().all(|x| cfg_mutually_exclusive(x, other))
+        }
+        (CfgExpr::Not(inner), other) | (other, CfgExpr::Not(inner)) => cfg_implies(other, inner),
+        (CfgExpr::KeyValue(k1, v1), CfgExpr::KeyValue(k2, v2)) => {
+            if k1 == k2 && v1 != v2 {
+                return matches!(
+                    k1.as_str(),
+                    "target_os"
+                        | "target_arch"
+                        | "target_endian"
+                        | "target_env"
+                        | "target_pointer_width"
+                        | "target_vendor"
+                        | "target_abi"
+                        | "target_family"
+                );
+            }
+            // target_os implies target_family for unix/windows
+            os_family_conflict(k1, v1, k2, v2) || os_family_conflict(k2, v2, k1, v1)
+        }
+        _ => false,
+    }
+}
+
+fn cfg_implies(premise: &CfgExpr, conclusion: &CfgExpr) -> bool {
+    if premise == conclusion {
+        return true;
+    }
+    match conclusion {
+        CfgExpr::Any(xs) => xs.iter().any(|x| cfg_implies(premise, x)),
+        CfgExpr::All(xs) => !xs.is_empty() && xs.iter().all(|x| cfg_implies(premise, x)),
+        _ => false,
+    }
+}
+
+fn os_family_conflict(k_os: &str, v_os: &str, k_fam: &str, v_fam: &str) -> bool {
+    if k_os != "target_os" || k_fam != "target_family" {
+        return false;
+    }
+    let os_is_unix = matches!(
+        v_os,
+        "linux"
+            | "macos"
+            | "freebsd"
+            | "netbsd"
+            | "openbsd"
+            | "dragonfly"
+            | "ios"
+            | "android"
+            | "solaris"
+            | "illumos"
+    );
+    (os_is_unix && v_fam == "windows") || (v_os == "windows" && v_fam == "unix")
 }
 
 fn is_stub_or_overload(node: &Node) -> bool {

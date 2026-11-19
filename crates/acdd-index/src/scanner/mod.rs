@@ -1,14 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-pub use crate::core::fs::{canonical_root, checked_child, safe_relative};
+pub use acdd_core::fs::{canonical_root, checked_child, safe_relative};
 #[cfg(all(test, target_os = "linux"))]
-use crate::core::sys::available_memory_from_sources;
+use acdd_core::sys::available_memory_from_sources;
 #[cfg(test)]
-use crate::core::sys::memory_budget_from_available;
-pub use crate::core::sys::{available_memory_bytes, memory_budget_bytes};
+use acdd_core::sys::memory_budget_from_available;
+pub use acdd_core::sys::{available_memory_bytes, memory_budget_bytes};
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 
@@ -18,13 +19,11 @@ fn error(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message.into())
 }
 
-#[path = "adapter.rs"]
-mod adapter;
 pub mod discovery;
-pub use crate::core::config::*;
-pub use crate::core::config::ENGINE_SCHEMA_VERSION;
+pub use acdd_core::config::*;
+pub use acdd_core::config::ENGINE_SCHEMA_VERSION;
 pub use crate::INDEX_SEMANTICS_VERSION;
-pub use crate::core::models::FileEntry;
+pub use crate::models::FileEntry;
 
 #[derive(Debug, Clone, Serialize)]
 /// Represents scan report data.
@@ -101,7 +100,7 @@ pub struct BuildReport {
     pub engine_schema_version: &'static str,
 }
 
-pub use crate::core::config::resolve_file_path;
+pub use acdd_core::config::resolve_file_path;
 
 /// Classify a batch of keys using one bounded cache of directory entries.
 pub fn exact_paths_exist<'a>(
@@ -198,7 +197,7 @@ fn ensure_bounds(files: usize, bytes: u64, limits: &ScannerLimits) -> std::io::R
     Ok(())
 }
 
-pub use crate::core::config::check_root_scope;
+pub use acdd_core::config::check_root_scope;
 
 pub(crate) fn bounded_batch_size(
     memory_budget: u64,
@@ -221,8 +220,8 @@ fn dir_pattern_matches(rel_path: &str, dir_pattern: &str) -> bool {
         return false;
     }
     let descendant_glob = format!("{}/**", dir_norm.trim_end_matches("/**"));
-    crate::core::path_policy::glob_matches(&dir_norm, &rel_norm)
-        || crate::core::path_policy::glob_matches(&descendant_glob, &rel_norm)
+    acdd_core::path_policy::glob_matches(&dir_norm, &rel_norm)
+        || acdd_core::path_policy::glob_matches(&descendant_glob, &rel_norm)
 }
 
 /// Checks if a relative path belongs to any configured milestone or plan directories.
@@ -231,25 +230,12 @@ pub fn is_milestone_or_plan_path(rel_str: &str, milestones: &[String], plans: &[
     check(milestones) || check(plans)
 }
 
-/// Checks whether a path is the overview README directly inside a configured milestone or plan directory.
-fn is_milestone_or_plan_readme(rel_str: &str, milestones: &[String], plans: &[String]) -> bool {
-    if rel_str.rsplit('/').next() != Some("README.md") {
-        return false;
-    }
-    let Some((parent, _)) = rel_str.rsplit_once('/') else {
-        return false;
-    };
-    let parent = parent.trim_matches(['/', '\\']).replace('\\', "/");
-    let parent_depth = parent.split('/').count();
-    let is_direct_overview = |dirs: &[String]| {
-        dirs.iter().any(|dir| {
-            let normalized_dir = dir.trim_matches(['/', '\\']).replace('\\', "/");
-            !normalized_dir.is_empty()
-                && normalized_dir.split('/').count() == parent_depth
-                && crate::core::path_policy::glob_matches(&normalized_dir, &parent)
-        })
-    };
-    is_direct_overview(milestones) || is_direct_overview(plans)
+fn is_spec_collection_path(rel_str: &str, adapter: &Adapter) -> bool {
+    is_milestone_or_plan_path(rel_str, &adapter.milestones, &adapter.plans)
+        || adapter
+            .specs
+            .values()
+            .any(|spec| dir_pattern_matches(rel_str, &spec.path))
 }
 
 /// Performs language.
@@ -265,7 +251,15 @@ pub fn language(path: &Path) -> Option<(&'static str, bool)> {
 
 /// Performs digest.
 pub fn digest(bytes: &[u8]) -> String {
-    crate::core::format::sha256_hex(bytes)
+    acdd_core::format::sha256_hex(bytes)
+}
+
+fn is_symlink_open_error(err: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    if err.raw_os_error() == Some(libc::ELOOP) {
+        return true;
+    }
+    err.kind() == std::io::ErrorKind::InvalidInput && err.to_string().contains("symlink")
 }
 
 /// Performs entry with rel.
@@ -274,8 +268,18 @@ pub fn entry_with_rel(
     relative: String,
     max_file_bytes: u64,
 ) -> std::io::Result<Option<FileEntry>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    let (Some(parent), Some(file_name)) = (path.parent(), path.file_name()) else {
+        return Ok(None);
+    };
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true);
+    let file = match acdd_core::fs::open_confined(parent, Path::new(file_name), &mut opts) {
+        Ok(file) => file,
+        Err(err) if is_symlink_open_error(&err) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
         return Ok(None);
     }
     let Some((language, is_doc)) = language(path) else {
@@ -289,16 +293,23 @@ pub fn entry_with_rel(
             max_file_bytes
         )));
     }
-    let bytes = fs::read(path)?;
-    let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-    let mtime_ns = modified
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let mut bytes = Vec::with_capacity((metadata.len() as usize).min(64 * 1024));
+    file.take(max_file_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    let actual_bytes = bytes.len() as u64;
+    if actual_bytes > max_file_bytes {
+        return Err(error(format!(
+            "file exceeds byte limit: {} ({} > max_file_bytes {})",
+            path.display(),
+            actual_bytes,
+            max_file_bytes
+        )));
+    }
+    let mtime_ns = metadata_mtime_ns(&metadata);
     Ok(Some(FileEntry {
         path: relative,
         digest: digest(&bytes),
-        bytes: metadata.len(),
+        bytes: actual_bytes,
         mtime_ns,
         identity: metadata_identity(&metadata),
         language: language.to_owned(),
@@ -644,10 +655,7 @@ fn walk_candidate_paths(
                 continue;
             };
             let relative = relative.to_string_lossy().replace('\\', "/");
-            if is_milestone_or_plan_path(&relative, &adapter.milestones, &adapter.plans)
-                && !is_milestone_or_plan_readme(&relative, &adapter.milestones, &adapter.plans)
-                && !is_doc
-            {
+            if !is_doc && is_spec_collection_path(&relative, adapter) {
                 continue;
             }
             if is_manifest {
@@ -719,10 +727,7 @@ fn walk_candidate_paths(
                     continue;
                 };
                 let relative = relative.to_string_lossy().replace('\\', "/");
-                if is_milestone_or_plan_path(&relative, &adapter.milestones, &adapter.plans)
-                    && !is_milestone_or_plan_readme(&relative, &adapter.milestones, &adapter.plans)
-                    && !is_doc
-                {
+                if !is_doc && is_spec_collection_path(&relative, adapter) {
                     continue;
                 }
                 if is_manifest {
@@ -782,7 +787,7 @@ fn collect_documentation_paths(
 ) -> std::io::Result<()> {
     let (ignored_names, watch) = policy;
     let agents = workspace_root.join("AGENTS.md");
-    if agents.is_file() && !agents.is_symlink() {
+    if !ignored_names.contains("AGENTS.md") && agents.is_file() && !agents.is_symlink() {
         visit_candidate(
             candidate_count,
             seen_rel_paths,
@@ -794,7 +799,7 @@ fn collect_documentation_paths(
     }
 
     let docs_root = workspace_root.join("docs");
-    if !docs_root.is_dir() {
+    if ignored_names.contains("docs") || !docs_root.is_dir() || docs_root.is_symlink() {
         return Ok(());
     }
     let mut builder = WalkBuilder::new(&docs_root);
@@ -934,29 +939,12 @@ pub fn scan(root: &Path, adapter_path: Option<&Path>) -> std::io::Result<ScanRep
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct TempDirDrop(PathBuf);
-
-    impl Drop for TempDirDrop {
-        fn drop(&mut self) {
-            if let Err(err) = fs::remove_dir_all(&self.0) {
-                eprintln!("remove test directory {}: {err}", self.0.display());
-            }
-        }
-    }
+    use acdd_core::fs::ScopedTempDir;
 
     #[test]
     fn exact_path_requires_reported_component_spelling() {
-        let root = std::env::temp_dir().join(format!(
-            "acdd_exact_spelling_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let _cleanup = TempDirDrop(root.clone());
+        let _cleanup = ScopedTempDir::create("acdd_exact_spelling").unwrap();
+        let root = _cleanup.path();
         fs::create_dir_all(root.join("Parent")).unwrap();
         fs::write(root.join("Parent/Foo.rs"), "").unwrap();
         let root = root.canonicalize().unwrap();
@@ -981,16 +969,8 @@ mod tests {
 
     #[test]
     fn watched_inventory_entries() {
-        let root = std::env::temp_dir().join(format!(
-            "acdd_watch_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let _cleanup = TempDirDrop(root.clone());
+        let _cleanup = ScopedTempDir::create("acdd_watch").unwrap();
+        let root = _cleanup.path();
         fs::write(root.join("notes.txt"), "excluded").unwrap();
         fs::write(root.join("acdd.yaml"), "ignore: [ignored.rs]\n").unwrap();
         fs::write(root.join("ignored.rs"), "pub fn ignored() {}\n").unwrap();
@@ -1041,16 +1021,8 @@ mod tests {
 
     #[test]
     fn build_scan_excludes_ignored_manifests_from_source_root_ancestors() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "acdd_ignored_ancestor_manifests_{}_{}",
-            std::process::id(),
-            nonce
-        ));
-        let _cleanup = TempDirDrop(root.clone());
+        let _cleanup = ScopedTempDir::create("acdd_ignored_ancestor_manifests").unwrap();
+        let root = _cleanup.path();
         let source = root.join("packages/pkg/src");
         fs::create_dir_all(&source).unwrap();
         fs::write(
@@ -1083,7 +1055,6 @@ mod tests {
                 .all(|path| path.file_name().is_none_or(|name| name != "package.json")),
             "ignored basenames must be excluded at every source-root ancestor: {manifests:?}"
         );
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1132,22 +1103,12 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    struct CgroupFixture(PathBuf);
+    struct CgroupFixture(ScopedTempDir);
 
     #[cfg(target_os = "linux")]
     impl CgroupFixture {
         fn new() -> Self {
-            let nonce = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "acdd_cgroup_memory_{}_{}",
-                std::process::id(),
-                nonce
-            ));
-            fs::create_dir_all(&path).unwrap();
-            Self(path)
+            Self(ScopedTempDir::create("acdd_cgroup_memory").unwrap())
         }
 
         fn write(&self, path: &str, content: &str) {
@@ -1157,14 +1118,7 @@ mod tests {
         }
 
         fn root(&self) -> PathBuf {
-            self.0.join("cgroup")
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    impl Drop for CgroupFixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            self.0.path().join("cgroup")
         }
     }
 
@@ -1292,8 +1246,8 @@ mod tests {
                 fixture.write(path, content);
             }
             if case.membership == Some("0::/../host\n") {
-                fs::write(fixture.0.join("memory.max"), "max\n").unwrap();
-                let escaped = fixture.0.join("host");
+                fs::write(fixture.0.path().join("memory.max"), "max\n").unwrap();
+                let escaped = fixture.0.path().join("host");
                 fs::create_dir_all(&escaped).unwrap();
                 fs::write(escaped.join("memory.max"), "100\n").unwrap();
                 fs::write(escaped.join("memory.current"), "90\n").unwrap();
@@ -1312,50 +1266,51 @@ mod tests {
     }
 
     #[test]
-    fn is_milestone_or_plan_path_supports_wildcards_trailing_slashes_and_readmes() {
+    fn is_milestone_or_plan_path_supports_wildcards_trailing_slashes_and_custom_specs() {
         let milestones = vec![
             "extensions/*/docs/milestones/".to_owned(),
             "docs/milestones".to_owned(),
         ];
         let plans = vec!["services/*-api/docs/plans".to_owned()];
 
-        for (rel, expected_spec, expected_readme) in [
-            ("extensions/commerce/docs/milestones/010-test.md", true, false),
-            ("services/auth-api/docs/plans/arch.md", true, false),
-            ("docs/milestones/020.md", true, false),
-            ("docs/milestones/README.md", true, true),
-            ("extensions/commerce/docs/milestones/README.md", true, true),
-            ("docs/milestones/archive/README.md", true, false),
-            ("docs/other/020.md", false, false),
-            ("docs/milestones_extra/020.md", false, false),
-            ("extensions/commerce/src/lib.rs", false, false),
+        for (rel, expected_spec) in [
+            ("extensions/commerce/docs/milestones/010-test.md", true),
+            ("services/auth-api/docs/plans/arch.md", true),
+            ("docs/milestones/020.md", true),
+            ("docs/milestones/README.md", true),
+            ("extensions/commerce/docs/milestones/README.md", true),
+            ("docs/milestones/archive/README.md", true),
+            ("docs/other/020.md", false),
+            ("docs/milestones_extra/020.md", false),
+            ("extensions/commerce/src/lib.rs", false),
         ] {
             assert_eq!(
                 is_milestone_or_plan_path(rel, &milestones, &plans),
                 expected_spec,
                 "path match: {rel}"
             );
-            assert_eq!(
-                is_milestone_or_plan_readme(rel, &milestones, &plans),
-                expected_readme,
-                "readme match: {rel}"
-            );
         }
+
+        let mut adapter = Adapter::default();
+        adapter.specs.insert(
+            "rfcs".to_owned(),
+            SpecCollectionConfig {
+                path: "docs/rfcs".to_owned(),
+                profile: None,
+                prefixes: vec!["RFC".to_owned()],
+                digits: 3,
+            },
+        );
+        assert!(is_spec_collection_path("docs/rfcs/helper.py", &adapter));
+        assert!(!is_spec_collection_path("docs/rfcs_extra/helper.py", &adapter));
     }
 
     #[test]
     fn scan_respects_modules_code_and_docs_flags() {
-        let root = std::env::temp_dir().join(format!(
-            "acdd_modules_scan_{}_{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let _cleanup = ScopedTempDir::create("acdd_modules_scan").unwrap();
+        let root = _cleanup.path();
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(root.join("docs")).unwrap();
-        let _cleanup = TempDirDrop(root.clone());
         fs::write(root.join("src/lib.rs"), "pub fn alpha() {}\n").unwrap();
         fs::write(root.join("docs/guide.md"), "# Guide\n").unwrap();
         let root = root.canonicalize().unwrap();

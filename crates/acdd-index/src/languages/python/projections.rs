@@ -1,7 +1,7 @@
 //! Finite Python projections from existing syntax events and completed lexical proof.
 use super::*;
-use crate::core::semantic::{NamedBindingFact, SourcePosition, StaticString, SymbolOperand};
-use crate::engine::ast::routes::RouteContext;
+use crate::semantic::{NamedBindingFact, SourcePosition, StaticString, SymbolOperand};
+use crate::ast::routes::RouteContext;
 use manifests::projections::{Api, NamedBindingForm, Slot};
 use manifests::semantic::PreparedRules;
 use manifests::syntax::SyntaxOperation;
@@ -92,7 +92,7 @@ pub(super) fn observe_import(ctx: &SyntaxContext<'_, '_>) {
                 } else {
                     field(ctx.node, ctx.source, "module_name").unwrap_or("")
                 };
-                imports.import_mask |= crate::engine::linker::interner::package_mask(module);
+                imports.import_mask |= crate::interner::package_mask(module);
                 // Every accepted import proof must come from one of these events.
                 // Membership only rejects unrelated head/module/export tuples; scope,
                 // order, uniqueness and provider identity remain the full proof.
@@ -309,7 +309,7 @@ struct Proof<'a, 'rules> {
 
 impl<'rules> Proof<'_, 'rules> {
     fn imported(&self, call: Syntax<'_>, module: &'rules str, export: &'rules str) -> bool {
-        let required_mask = crate::engine::linker::interner::package_mask(module);
+        let required_mask = crate::interner::package_mask(module);
         if required_mask != 0
             && !DIRECT_IMPORTS
                 .with(|imports| imports.borrow().import_mask & required_mask == required_mask)
@@ -361,7 +361,7 @@ impl<'rules> Proof<'_, 'rules> {
                         && reference.line <= before
                         && !matches!(
                             reference.receiver_hint,
-                            Some(crate::core::models::ReceiverHint::TypeOnlyImport)
+                            Some(crate::models::ReceiverHint::TypeOnlyImport)
                         )
                 })
                 .peekable();
@@ -758,7 +758,7 @@ pub(super) fn extract_with_frontier(
     lexical: &RouteContext,
     symbols: &HashMap<usize, String>,
     reference_frontier: usize,
-    projections: &mut HashMap<String, crate::core::semantic::ValueFlowFacts>,
+    projections: &mut HashMap<String, crate::semantic::ValueFlowFacts>,
 ) {
     let Some(prepared) = rules.prepared_projections("python") else {
         return;

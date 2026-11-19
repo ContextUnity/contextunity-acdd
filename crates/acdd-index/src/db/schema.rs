@@ -3,9 +3,6 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-/// Current code map schema version for SQLite storage.
-pub const CODE_MAP_SCHEMA_VERSION: &str = "15";
-
 /// Canonical SQLite schema for a ACDD index generation.
 pub const SCHEMA_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS metadata (

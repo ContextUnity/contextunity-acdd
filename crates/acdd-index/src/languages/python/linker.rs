@@ -1,7 +1,7 @@
-use crate::core::models::{Facts, Node};
-use crate::engine::languages::{self, LanguageFamily};
-use crate::engine::linker::interner::LinkerInterner;
-use crate::engine::linker::traits::{
+use crate::models::{Facts, Node};
+use crate::languages::{self, LanguageFamily};
+use crate::interner::LinkerInterner;
+use crate::linker::traits::{
     ImportContext, ImportResolution, LanguageLinker, PackageExports, insert_package_export,
     package_export, resolve_default_import,
 };
@@ -155,12 +155,12 @@ impl LanguageLinker for PythonLinker {
     fn package_exports<'a>(
         &self,
         interner: &mut LinkerInterner<'a>,
-        node_rebindings: &crate::engine::linker::NodeBindingIndex,
+        node_rebindings: &crate::linker::NodeBindingIndex,
         all: &'a BTreeMap<String, Facts>,
-        modules_by_namespace: &crate::engine::linker::traits::ModulesByNamespace<'a>,
+        modules_by_namespace: &crate::linker::traits::ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
         root: Option<&Path>,
-    ) -> crate::engine::linker::traits::PackageExports<'a> {
+    ) -> crate::linker::traits::PackageExports<'a> {
         package_exports(
             interner,
             node_rebindings,
@@ -174,12 +174,12 @@ impl LanguageLinker for PythonLinker {
     fn package_exports_borrowed<'a>(
         &self,
         interner: &mut LinkerInterner<'a>,
-        node_rebindings: &crate::engine::linker::NodeBindingIndex,
+        node_rebindings: &crate::linker::NodeBindingIndex,
         all: &BTreeMap<&'a str, &'a Facts>,
-        modules_by_namespace: &crate::engine::linker::traits::ModulesByNamespace<'a>,
+        modules_by_namespace: &crate::linker::traits::ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
         root: Option<&Path>,
-    ) -> crate::engine::linker::traits::PackageExports<'a> {
+    ) -> crate::linker::traits::PackageExports<'a> {
         package_exports(
             interner,
             node_rebindings,
@@ -233,7 +233,7 @@ impl LanguageLinker for PythonLinker {
         member: &str,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
         by_qual: &HashMap<&'a str, Vec<&'a Node>>,
-        exports: &crate::engine::linker::traits::PackageExports<'a>,
+        exports: &crate::linker::traits::PackageExports<'a>,
         lookup_key: &mut String,
     ) -> Vec<&'a Node> {
         if Path::new(&module.path)
@@ -412,7 +412,7 @@ fn node_rebound(
     module: &Node,
     name: &str,
     interner: &LinkerInterner<'_>,
-    node_rebindings: &crate::engine::linker::NodeBindingIndex,
+    node_rebindings: &crate::linker::NodeBindingIndex,
 ) -> bool {
     module.rebinding_names().any(|candidate| candidate == name)
         || interner
@@ -522,7 +522,7 @@ fn register_export<'a>(
         .filter(|node| node.kind != "component" && node.qualname == qualified)
         .collect();
     let _ = prefer_live_declaration(&mut candidates);
-    crate::engine::linker::traits::filter_stubs_and_overloads(&mut candidates);
+    crate::linker::traits::filter_stubs_and_overloads(&mut candidates);
     if candidates.len() == 1
         && candidates[0].kind == "variable"
         && provider.details["exports"].as_array().is_some_and(|items| {
@@ -543,7 +543,7 @@ fn register_export<'a>(
 
 pub(super) fn package_exports<'a>(
     interner: &mut LinkerInterner<'a>,
-    node_rebindings: &crate::engine::linker::NodeBindingIndex,
+    node_rebindings: &crate::linker::NodeBindingIndex,
     all: impl IntoIterator<Item = &'a Facts>,
     modules_by_namespace: &HashMap<LanguageFamily, HashMap<String, Vec<&'a Node>>>,
     by_module: &HashMap<&str, Vec<&'a Node>>,

@@ -1,6 +1,6 @@
 use super::*;
-use crate::core::models::{Diagnostic, Edge};
-use crate::engine::languages::template::TemplateMasker;
+use crate::models::{Diagnostic, Edge};
+use crate::languages::template::TemplateMasker;
 
 pub(super) struct ScriptExtraction<'a> {
     pub(super) profile: &'a dyn LanguageProfile,
@@ -10,7 +10,7 @@ pub(super) struct ScriptExtraction<'a> {
     pub(super) module: &'a str,
     pub(super) global_scope: &'a mut Option<usize>,
     pub(super) facts: &'a mut Facts,
-    pub(super) flows: Option<&'a mut crate::core::typed_facts::FlowStore>,
+    pub(super) flows: Option<&'a mut crate::typed_facts::FlowStore>,
     pub(super) rules: &'a Arc<LanguageContext>,
 }
 
@@ -61,7 +61,7 @@ pub(super) fn extract_island(
     };
     let destination = &mut *context.facts;
     let mut island = Facts::default();
-    let mut island_flows = crate::core::typed_facts::FlowStore::default();
+    let mut island_flows = crate::typed_facts::FlowStore::default();
     let facts = &mut island;
     facts.nodes.push(super::source_node(
         context.path,
@@ -118,7 +118,7 @@ pub(super) fn extract_island(
                 scope.binding_names().map(str::to_owned).collect();
             bindings.insert("event".into());
             let rebindings = scope.rebinding_names().map(str::to_owned).collect();
-            crate::core::typed_facts::NodeSemanticEntry::set_bindings(
+            crate::typed_facts::NodeSemanticEntry::set_bindings(
                 scope,
                 bindings.into_iter().collect(),
                 rebindings,
@@ -185,11 +185,11 @@ pub(super) fn extract_island(
                 .merge_from(*incoming);
         }
         merge_global_details(&mut target.details, fragment.details);
-        crate::core::typed_facts::NodeSemanticEntry::ingest(target);
+        crate::typed_facts::NodeSemanticEntry::ingest(target);
         if let Some(flows) = context.flows.as_deref_mut() {
             flows.merge_classic(&target.id, &mut island_flows);
         } else {
-            let mut public_flows = crate::core::typed_facts::FlowStore::default();
+            let mut public_flows = crate::typed_facts::FlowStore::default();
             public_flows.ingest(target);
             public_flows.merge_classic(&target.id, &mut island_flows);
             if let Some(state) = public_flows.state(target) {
@@ -357,7 +357,7 @@ pub(super) fn extract_handlers(context: &mut ScriptExtraction<'_>, tag: Syntax<'
             .map(|kind| {
                 (
                     kind,
-                    crate::core::semantic::ExtractionRuleOrigin {
+                    crate::semantic::ExtractionRuleOrigin {
                         pack: rule.pack.clone(),
                         rule: rule.id.clone(),
                     },
@@ -428,12 +428,12 @@ pub(super) fn extract_handlers(context: &mut ScriptExtraction<'_>, tag: Syntax<'
         if origin.is_some() || named_rule_index.is_some() {
             let owner = format!("html-js:{}:{start}:{kind}", context.path);
             if let Some(node) = context.facts.nodes.get_mut(node_index) {
-                let enrich = |flow: &mut crate::core::semantic::ValueFlowFacts| {
+                let enrich = |flow: &mut crate::semantic::ValueFlowFacts| {
                     if let Some(origin) = &origin {
                         flow.push_rule_origin(origin.clone());
                     }
                     for (_, rule, domain, _, key) in named_attribute_bindings(context.rules, name) {
-                        use crate::core::semantic::{
+                        use crate::semantic::{
                             ExtractionRuleOrigin, NamedBindingFact, NamedBindingRole,
                             NamedTargetKind, SourcePosition, StaticString, SymbolOperand,
                         };
@@ -473,7 +473,7 @@ pub(super) fn extract_handlers(context: &mut ScriptExtraction<'_>, tag: Syntax<'
                         enrich(flow);
                     } else {
                         node.details["value_flow"] = Value::Null;
-                        let mut flow = crate::core::semantic::ValueFlowFacts::default();
+                        let mut flow = crate::semantic::ValueFlowFacts::default();
                         enrich(&mut flow);
                         flows.insert(owner.clone(), flow);
                     }
@@ -483,7 +483,7 @@ pub(super) fn extract_handlers(context: &mut ScriptExtraction<'_>, tag: Syntax<'
                         .get("value_flow")
                         .filter(|value| !value.is_null())
                         .map(|value| {
-                            serde_json::from_value::<crate::core::semantic::ValueFlowFacts>(
+                            serde_json::from_value::<crate::semantic::ValueFlowFacts>(
                                 value.clone(),
                             )
                             .expect("parser-owned script flow")
@@ -679,7 +679,7 @@ pub(super) fn finish(facts: &mut Facts) {
     }
 }
 
-pub(super) fn finish_typed(facts: &mut Facts, flows: &mut crate::core::typed_facts::FlowStore) {
+pub(super) fn finish_typed(facts: &mut Facts, flows: &mut crate::typed_facts::FlowStore) {
     finish(facts);
     for node in facts
         .nodes

@@ -1,16 +1,15 @@
 use super::{paging, reader, symbols};
-use crate::core::{
-    commitments, config, git,
-    models::stable_hash64,
-    response::{CoverageOptions, QueryOptions, MAX_PAGE_SIZE},
-};
+use crate::db::commitments;
+use acdd_core::config;
+use acdd_core::git;
+use crate::models::stable_hash64;
+use acdd_core::response::{CoverageOptions, QueryOptions, MAX_PAGE_SIZE};
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
-    fs,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     path::{Component, Path},
 };
 // Stored decorates edges point from decorator to target; dependency walks reverse them.
@@ -445,16 +444,15 @@ fn range_has_indexed_symbol(
     Ok(found != 0)
 }
 
-fn worktree_postimage(root: &Path, path: &str) -> Result<Vec<u8>> {
-    let adapter = config::load_adapter(root, None)?;
-    let resolved = config::resolve_file_path(root, &adapter, path)?;
-    let metadata = fs::metadata(&resolved)?;
-    anyhow::ensure!(metadata.is_file(), "change postimage is not a regular file");
-    anyhow::ensure!(
-        metadata.len() <= config::MAX_FILE_BYTES,
-        "change postimage exceeds the indexed file byte budget"
-    );
-    Ok(fs::read(resolved)?)
+fn worktree_postimage(root: &Path, adapter: &config::Adapter, path: &str) -> Result<Vec<u8>> {
+    super::symbols::read_confined_source_bytes(
+        root,
+        adapter,
+        path,
+        config::MAX_FILE_BYTES,
+        "change postimage unavailable",
+        "change postimage exceeds the indexed file byte budget",
+    )
 }
 
 fn collect_change_snapshot(
@@ -510,6 +508,7 @@ fn collect_change_snapshot(
     let mut ranges = Vec::new();
     let mut unmapped = Vec::new();
     let mut total_diff_bytes = status_bytes.len();
+    let mut worktree_adapter: Option<Option<config::Adapter>> = None;
     for (status, path, old_path) in changes {
         if !path_is_within(&path, path_scope) {
             continue;
@@ -553,7 +552,10 @@ fn collect_change_snapshot(
             let output = git::git_command(root, &["show", &object])?;
             output.status.success().then_some(output.stdout)
         } else {
-            worktree_postimage(root, &path).ok()
+            let adapter = worktree_adapter.get_or_insert_with(|| config::load_adapter(root, None).ok());
+            adapter
+                .as_ref()
+                .and_then(|adapter| worktree_postimage(root, adapter, &path).ok())
         };
         append_fingerprint(&mut fingerprint, status.as_bytes());
         append_fingerprint(&mut fingerprint, path.as_bytes());
@@ -796,7 +798,7 @@ fn changed_nodes_page(
     } else {
         format!(" OR (e.{to} IN (SELECT CAST(value AS INTEGER) FROM json_each(?1)) AND e.{from}=n.node_hash AND e.kind IN({reverse}))")
     };
-    let evidence = if options.detail == crate::core::response::Detail::Full {
+    let evidence = if options.detail == acdd_core::response::Detail::Full {
         ", 'evidence',(SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)"
     } else {
         ""
@@ -1164,7 +1166,7 @@ pub(crate) fn traverse_with_path_options(
         } else {
             format!(" OR (e.{to}=?1 AND e.{from}=n.node_hash AND e.kind IN({reverse}))")
         };
-        let evidence = if options.detail == crate::core::response::Detail::Full {
+        let evidence = if options.detail == acdd_core::response::Detail::Full {
             ", 'evidence',(SELECT evidence FROM coverage_evidence WHERE evidence_id=e.evidence_id)"
         } else {
             ""
@@ -1464,7 +1466,7 @@ fn directory_boundary(
     let inbound = boundary_modules(conn, &incoming, true, lower, upper, options)?;
     let outbound = boundary_modules(conn, &outgoing, false, lower, upper, options)?;
     // Match the original bytewise ordering of the insertion-ordered JSON object.
-    let evidence = if options.detail == crate::core::response::Detail::Full {
+    let evidence = if options.detail == acdd_core::response::Detail::Full {
         ",'evidence',evidence"
     } else {
         ""
@@ -1521,7 +1523,7 @@ pub fn removal_paged_with_path(
         conn,
         selector,
         path,
-        crate::core::response::Detail::Compact,
+        acdd_core::response::Detail::Compact,
     )?;
     let file_count = paging::count(
         conn,
@@ -1709,18 +1711,9 @@ fn normalize_symbol_body_lines(lines: &[String]) -> (Option<String>, Option<Vec<
     (Some(hash_hex), Some(normalized))
 }
 
-pub fn duplicates_paged(
-    conn: &Connection,
-    target: Option<&str>,
-    path: Option<&str>,
-    level: Option<&str>,
-    min_lines: Option<usize>,
-    options: &QueryOptions,
-) -> Result<Value> {
-    let generation = paging::generation(conn, options)?;
-
+fn normalize_scope(target: Option<&str>, path: Option<&str>, label: &str) -> Result<String> {
     if let (Some(target), Some(path)) = (target, path) {
-        anyhow::ensure!(target == path, "target conflicts with path");
+        anyhow::ensure!(target == path, "{label} conflicts with path");
     }
     let raw = target.or(path).unwrap_or("").trim();
     let raw = raw
@@ -1734,8 +1727,22 @@ pub fn duplicates_paged(
             && !scope
                 .split('/')
                 .any(|s| s == ".." || s == "." || (s.is_empty() && !scope.is_empty())),
-        "target must be workspace-relative"
+        "{label} must be workspace-relative"
     );
+    Ok(scope.to_owned())
+}
+
+pub fn duplicates_paged(
+    conn: &Connection,
+    target: Option<&str>,
+    path: Option<&str>,
+    level: Option<&str>,
+    min_lines: Option<usize>,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let generation = paging::generation(conn, options)?;
+    let scope_owned = normalize_scope(target, path, "target")?;
+    let scope = scope_owned.as_str();
 
     let level_str = level.unwrap_or("symbol").trim().to_ascii_lowercase();
     anyhow::ensure!(
@@ -1864,6 +1871,7 @@ pub fn duplicates_paged(
 
     let mut file_cache: std::collections::HashMap<String, Option<Vec<String>>> =
         std::collections::HashMap::new();
+    let mut source_loader = super::symbols::VerifiedSourceCache::new();
     let mut stale_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     let mut rows = stmt.query(rusqlite::params![min_lines, scope, lower, upper])?;
@@ -1880,7 +1888,7 @@ pub fn duplicates_paged(
 
         if let Some(root) = &workspace_root {
             let lines = file_cache.entry(path.clone()).or_insert_with(|| {
-                match super::symbols::verified_source(conn, root, &path) {
+                match source_loader.read(conn, root, &path) {
                     Ok(content) => Some(content.lines().map(|s| s.to_string()).collect()),
                     Err(_) => {
                         stale_files.insert(path.clone());
@@ -2202,28 +2210,1040 @@ fn untested_paged(
     path: Option<&str>,
     options: &QueryOptions,
 ) -> Result<Value> {
-    if let (Some(selector), Some(path)) = (selector, path) {
-        anyhow::ensure!(selector == path, "untested selector conflicts with path");
-    }
-    let raw = selector.or(path).unwrap_or("").trim();
-    let raw = raw
-        .strip_prefix("file://")
-        .or_else(|| raw.strip_prefix("file:"))
-        .unwrap_or(raw);
-    let raw = raw.strip_prefix("./").unwrap_or(raw).trim_end_matches('/');
-    let scope = if raw == "." { "" } else { raw };
-    anyhow::ensure!(
-        !scope.starts_with('/')
-            && !scope
-                .split('/')
-                .any(|s| s == ".." || s == "." || (s.is_empty() && !scope.is_empty())),
-        "scope must be workspace-relative"
-    );
-    let (lower, upper) = reader::path_bounds(scope);
+    let scope = normalize_scope(selector, path, "untested selector")?;
+    let (lower, upper) = reader::path_bounds(&scope);
     let nodes = paging::query(conn, &format!("SELECT {},json_extract(n.details,'$.signature') AS signature FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind IN('function','method') AND n.is_test=0 AND (?1='' OR p.path=?1 OR (p.path>=?2 AND p.path<?3)) AND NOT EXISTS (SELECT 1 FROM edges e JOIN nodes caller ON caller.node_hash=e.src_hash WHERE e.dst_hash=n.node_hash AND e.kind='calls' AND caller.is_test=1) ORDER BY p.path,n.line,n.id", paging::nodes_with_path("n", options.detail, "p.path")), &[&scope, &lower, &upper], options)?;
     Ok(
         json!({"nodes":nodes,"meaning":"no direct indexed test caller; not a runtime coverage proof"}),
     )
+}
+
+struct DeadTailsNode {
+    hash: i64,
+    id: String,
+    kind: String,
+    name: String,
+    qualname: String,
+    path: String,
+    line: i64,
+    end_line: i64,
+    is_test_ctx: bool,
+    generated: bool,
+    has_entrypoint: bool,
+    has_impl_trait: bool,
+    has_trait_default: bool,
+    has_tool_decorator: bool,
+}
+
+struct DeadTailsGraph {
+    nodes: HashMap<i64, DeadTailsNode>,
+    fwd: HashMap<i64, Vec<i64>>,
+    candidates: HashSet<i64>,
+    roots: HashSet<i64>,
+    node_names: HashSet<String>,
+    module_names: HashSet<String>,
+}
+
+fn is_test_context_path(path: &str) -> bool {
+    path.starts_with("tests/")
+        || path.contains("/tests/")
+        || path.ends_with("/tests.rs")
+        || path == "tests.rs"
+        || path.starts_with("benchmarks/")
+}
+
+fn is_under_cfg_test_module(qualname: &str, cfg_test_mods: &HashSet<String>) -> bool {
+    if cfg_test_mods.is_empty() {
+        return false;
+    }
+    if cfg_test_mods.contains(qualname) {
+        return true;
+    }
+    for (idx, ch) in qualname.char_indices() {
+        if ch == '.' && cfg_test_mods.contains(&qualname[..idx]) {
+            return true;
+        }
+    }
+    false
+}
+
+fn parse_node_detail_flags(details_raw: &str) -> (bool, bool, bool, bool, bool) {
+    if !details_raw.starts_with('{')
+        || !(details_raw.contains("\"entrypoint\"")
+            || details_raw.contains("\"impl_trait\"")
+            || details_raw.contains("\"trait_default\"")
+            || details_raw.contains("\"decorators\""))
+    {
+        return (false, false, false, false, false);
+    }
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(details_raw) else {
+        return (false, false, false, false, false);
+    };
+    let has_entrypoint = map.get("entrypoint").is_some_and(|v| !v.is_null());
+    let has_impl_trait = map.get("impl_trait").is_some_and(|v| !v.is_null());
+    let has_trait_default = map.get("trait_default").is_some_and(|v| !v.is_null());
+    let mut has_cfg_test = false;
+    let mut has_tool = false;
+    if let Some(decs) = map.get("decorators").and_then(Value::as_array) {
+        for dec in decs.iter().filter_map(Value::as_str) {
+            if dec.contains("cfg(test)") {
+                has_cfg_test = true;
+            }
+            if dec.starts_with("#[tool") || dec.starts_with("#[rmcp::tool") {
+                has_tool = true;
+            }
+        }
+    }
+    (
+        has_entrypoint,
+        has_impl_trait,
+        has_trait_default,
+        has_cfg_test,
+        has_tool,
+    )
+}
+
+fn load_dead_tails_graph(conn: &Connection) -> Result<DeadTailsGraph> {
+    let mut nodes: HashMap<i64, DeadTailsNode> = HashMap::new();
+    let mut cfg_test_mods: HashSet<String> = HashSet::new();
+    let mut node_names: HashSet<String> = HashSet::new();
+    let mut module_names: HashSet<String> = HashSet::new();
+
+    {
+        let mut stmt = conn.prepare(
+            "SELECT n.node_hash, n.id, n.kind, n.name, n.qualname, p.path, n.line, n.end_line,
+                    (n.is_test != 0 OR COALESCE(f.is_test, 0) != 0), n.generated != 0, n.details
+             FROM nodes n
+             JOIN path_dictionary p ON p.path_id = n.path_id
+             LEFT JOIN files f ON f.path = p.path",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let hash: i64 = row.get(0)?;
+            let id: String = row.get(1)?;
+            let kind: String = row.get(2)?;
+            let name: String = row.get(3)?;
+            let qualname: String = row.get(4)?;
+            let path: String = row.get(5)?;
+            let line: i64 = row.get(6)?;
+            let end_line: i64 = row.get(7)?;
+            let base_test: bool = row.get(8)?;
+            let generated: bool = row.get(9)?;
+            let details_raw: String = row.get(10)?;
+
+            let (has_entrypoint, has_impl_trait, has_trait_default, has_cfg_test, has_tool) =
+                parse_node_detail_flags(&details_raw);
+
+            if kind == "module_declaration" && has_cfg_test {
+                cfg_test_mods.insert(qualname.clone());
+            }
+            if !matches!(
+                kind.as_str(),
+                "document" | "invariant" | "field" | "variable" | "table" | "component"
+            ) {
+                node_names.insert(name.clone());
+            }
+            if matches!(
+                kind.as_str(),
+                "module" | "module_declaration" | "namespace"
+            ) {
+                if let Some(tail) = qualname.rsplit('.').next() {
+                    if !tail.is_empty() {
+                        module_names.insert(tail.to_owned());
+                    }
+                }
+            }
+
+            let is_test_ctx = base_test
+                || has_cfg_test
+                || is_test_context_path(&path)
+                || qualname.contains(".tests.")
+                || qualname.ends_with(".tests");
+
+            nodes.insert(
+                hash,
+                DeadTailsNode {
+                    hash,
+                    id,
+                    kind,
+                    name,
+                    qualname,
+                    path,
+                    line,
+                    end_line,
+                    is_test_ctx,
+                    generated,
+                    has_entrypoint,
+                    has_impl_trait,
+                    has_trait_default,
+                    has_tool_decorator: has_tool,
+                },
+            );
+        }
+    }
+
+    if !cfg_test_mods.is_empty() {
+        for node in nodes.values_mut() {
+            if !node.is_test_ctx && is_under_cfg_test_module(&node.qualname, &cfg_test_mods) {
+                node.is_test_ctx = true;
+            }
+        }
+    }
+
+    let mut fwd_set: HashMap<i64, HashSet<i64>> = HashMap::new();
+    let mut contains_children: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut trait_members: HashSet<i64> = HashSet::new();
+    let mut implements_connected: HashSet<i64> = HashSet::new();
+    let mut non_test_ref_targets: HashSet<i64> = HashSet::new();
+    let mut non_callable_prod_targets: HashSet<i64> = HashSet::new();
+    let mut test_targeted: HashSet<i64> = HashSet::new();
+
+    {
+        let mut stmt = conn.prepare(
+            "SELECT src_hash, kind, dst_hash
+             FROM edges
+             WHERE kind IN ('calls', 'references', 'possible_calls', 'implements', 'contains')",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let src: i64 = row.get(0)?;
+            let kind: String = row.get(1)?;
+            let dst: i64 = row.get(2)?;
+            match kind.as_str() {
+                "contains" => {
+                    if let Some(parent) = nodes.get(&src) {
+                        if parent.kind == "trait"
+                            || (parent.kind == "impl" && parent.has_impl_trait)
+                        {
+                            trait_members.insert(dst);
+                        }
+                    }
+                    if src != dst && nodes.contains_key(&src) && nodes.contains_key(&dst) {
+                        contains_children.entry(src).or_default().push(dst);
+                    }
+                }
+                "implements" => {
+                    implements_connected.insert(src);
+                    implements_connected.insert(dst);
+                }
+                "calls" | "references" | "possible_calls" if src != dst => {
+                    let Some(src_node) = nodes.get(&src) else {
+                        continue;
+                    };
+                    if !nodes.contains_key(&dst) {
+                        continue;
+                    }
+                    if src_node.is_test_ctx {
+                        test_targeted.insert(dst);
+                    }
+                    if kind == "references" && !src_node.is_test_ctx {
+                        non_test_ref_targets.insert(dst);
+                    }
+                    if !src_node.is_test_ctx
+                        && (!matches!(src_node.kind.as_str(), "function" | "method")
+                            || src_node.generated)
+                    {
+                        non_callable_prod_targets.insert(dst);
+                    }
+                    fwd_set.entry(src).or_default().insert(dst);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut candidates = HashSet::new();
+    let mut roots = HashSet::new();
+    for node in nodes.values() {
+        if !matches!(node.kind.as_str(), "function" | "method")
+            || node.generated
+            || node.is_test_ctx
+        {
+            continue;
+        }
+        candidates.insert(node.hash);
+        let is_main =
+            node.name == "main" && (node.path == "main.rs" || node.path.ends_with("/main.rs"));
+        if node.has_entrypoint
+            || is_main
+            || node.has_tool_decorator
+            || implements_connected.contains(&node.hash)
+            || trait_members.contains(&node.hash)
+            || node.has_trait_default
+            || non_test_ref_targets.contains(&node.hash)
+            || non_callable_prod_targets.contains(&node.hash)
+        {
+            roots.insert(node.hash);
+        }
+    }
+
+    propagate_nested_contains(&nodes, &contains_children, &candidates, &mut fwd_set);
+    wire_same_file_callbacks(
+        conn,
+        &nodes,
+        &candidates,
+        &test_targeted,
+        &mut fwd_set,
+        &mut roots,
+    )?;
+
+    let fwd = fwd_set
+        .into_iter()
+        .map(|(k, v)| (k, v.into_iter().collect()))
+        .collect();
+
+    Ok(DeadTailsGraph {
+        nodes,
+        fwd,
+        candidates,
+        roots,
+        node_names,
+        module_names,
+    })
+}
+
+fn propagate_nested_contains(
+    nodes: &HashMap<i64, DeadTailsNode>,
+    contains_children: &HashMap<i64, Vec<i64>>,
+    candidates: &HashSet<i64>,
+    fwd_set: &mut HashMap<i64, HashSet<i64>>,
+) {
+    for &outer in candidates {
+        let Some(children) = contains_children.get(&outer) else {
+            continue;
+        };
+        let mut seen = HashSet::new();
+        let mut queue: VecDeque<i64> = children.iter().copied().collect();
+        while let Some(child_hash) = queue.pop_front() {
+            if !seen.insert(child_hash) {
+                continue;
+            }
+            if candidates.contains(&child_hash) {
+                fwd_set.entry(outer).or_default().insert(child_hash);
+                continue;
+            }
+            let Some(child) = nodes.get(&child_hash) else {
+                continue;
+            };
+            if !child.is_test_ctx
+                && matches!(child.kind.as_str(), "struct" | "impl" | "enum")
+            {
+                if let Some(nested) = contains_children.get(&child_hash) {
+                    queue.extend(nested.iter().copied());
+                }
+            }
+        }
+    }
+}
+
+fn strip_comments_and_strings_preserving_lines(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = bytes.to_vec();
+    let mut i = 0;
+    let mut block_depth = 0usize;
+
+    while i < len {
+        if block_depth > 0 {
+            if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                out[i] = b' ';
+                out[i + 1] = b' ';
+                block_depth += 1;
+                i += 2;
+                continue;
+            }
+            if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                out[i] = b' ';
+                out[i + 1] = b' ';
+                block_depth -= 1;
+                i += 2;
+                continue;
+            }
+            if bytes[i] != b'\n' {
+                out[i] = b' ';
+            }
+            i += 1;
+            continue;
+        }
+
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            out[i] = b' ';
+            out[i + 1] = b' ';
+            i += 2;
+            while i < len && bytes[i] != b'\n' {
+                out[i] = b' ';
+                i += 1;
+            }
+            continue;
+        }
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            out[i] = b' ';
+            out[i + 1] = b' ';
+            block_depth = 1;
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'r'
+            && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
+        {
+            let mut j = i + 1;
+            while j < len && bytes[j] == b'#' {
+                j += 1;
+            }
+            if j < len && bytes[j] == b'"' {
+                let hashes = j - (i + 1);
+                for b in &mut out[i..=j] {
+                    *b = b' ';
+                }
+                i = j + 1;
+                while i < len {
+                    if bytes[i] == b'"'
+                        && i + hashes < len
+                        && bytes[i + 1..=i + hashes].iter().all(|&b| b == b'#')
+                    {
+                        for b in &mut out[i..=i + hashes] {
+                            *b = b' ';
+                        }
+                        i += hashes + 1;
+                        break;
+                    }
+                    if bytes[i] != b'\n' {
+                        out[i] = b' ';
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        if bytes[i] == b'"' {
+            out[i] = b' ';
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    if bytes[i] != b'\n' {
+                        out[i] = b' ';
+                    }
+                    if bytes[i + 1] != b'\n' {
+                        out[i + 1] = b' ';
+                    }
+                    i += 2;
+                    continue;
+                }
+                let close = bytes[i] == b'"';
+                if bytes[i] != b'\n' {
+                    out[i] = b' ';
+                }
+                i += 1;
+                if close {
+                    break;
+                }
+            }
+            continue;
+        }
+        if bytes[i] == b'\'' {
+            if i + 2 < len && bytes[i + 1] != b'\\' && bytes[i + 1] != b'\n' && bytes[i + 2] == b'\'' {
+                out[i] = b' ';
+                out[i + 1] = b' ';
+                out[i + 2] = b' ';
+                i += 3;
+                continue;
+            }
+            if i + 1 < len && bytes[i + 1] == b'\\' {
+                out[i] = b' ';
+                i += 1;
+                while i < len && bytes[i] != b'\n' {
+                    let close = bytes[i] == b'\'';
+                    out[i] = b' ';
+                    i += 1;
+                    if close {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn scan_bare_callback_tokens<F>(
+    text: &str,
+    match_token: &mut F,
+) where
+    F: FnMut(&str, bool),
+{
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        let b = bytes[i];
+        if !(b.is_ascii_alphabetic() || b == b'_') {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+        let ident = &text[start..i];
+        let prev_non_ws = bytes[..start]
+            .iter()
+            .rposition(|c| !c.is_ascii_whitespace())
+            .map(|idx| (idx, bytes[idx]));
+        let next_non_ws = bytes[i..]
+            .iter()
+            .position(|c| !c.is_ascii_whitespace())
+            .map(|rel| bytes[i + rel]);
+
+        let preceded_by_dot = matches!(prev_non_ws, Some((_, b'.')));
+        let preceded_by_decl_kw = if let Some((idx, _)) = prev_non_ws {
+            let word_end = idx + 1;
+            let mut word_start = word_end;
+            while word_start > 0
+                && (bytes[word_start - 1].is_ascii_alphanumeric()
+                    || bytes[word_start - 1] == b'_')
+            {
+                word_start -= 1;
+            }
+            matches!(
+                &text[word_start..word_end],
+                "fn" | "mod"
+                    | "struct"
+                    | "enum"
+                    | "trait"
+                    | "type"
+                    | "let"
+                    | "mut"
+                    | "const"
+                    | "static"
+                    | "for"
+            )
+        } else {
+            false
+        };
+        let preceded_by_scope = matches!(
+            prev_non_ws,
+            Some((idx, b':')) if idx > 0 && bytes[idx - 1] == b':'
+        );
+        let followed_by_call_or_colon = matches!(next_non_ws, Some(b'(' | b':'));
+
+        if !preceded_by_dot && !preceded_by_decl_kw && !followed_by_call_or_colon {
+            match_token(ident, preceded_by_scope);
+        }
+    }
+}
+
+fn starts_top_level_const_or_static(trimmed: &str) -> bool {
+    let mut rest = trimmed;
+    if let Some(after_pub) = rest.strip_prefix("pub") {
+        let after_pub = after_pub.trim_start();
+        if let Some(after_vis) = after_pub.strip_prefix('(') {
+            let Some(close) = after_vis.find(')') else {
+                return false;
+            };
+            rest = after_vis[close + 1..].trim_start();
+        } else if after_pub.len() < rest.len() - 3 || rest == "pub" {
+            rest = after_pub;
+        } else {
+            return false;
+        }
+    }
+    let after_kw = if let Some(s) = rest.strip_prefix("const") {
+        s
+    } else if let Some(s) = rest.strip_prefix("static") {
+        s
+    } else {
+        return false;
+    };
+    if !after_kw.starts_with(char::is_whitespace) {
+        return false;
+    }
+    let after_kw = after_kw.trim_start();
+    !after_kw.starts_with("fn")
+        || after_kw["fn".len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn wire_same_file_callbacks(
+    conn: &Connection,
+    nodes: &HashMap<i64, DeadTailsNode>,
+    candidates: &HashSet<i64>,
+    test_targeted: &HashSet<i64>,
+    fwd_set: &mut HashMap<i64, HashSet<i64>>,
+    roots: &mut HashSet<i64>,
+) -> Result<()> {
+    let mut path_candidates: HashMap<&str, Vec<&DeadTailsNode>> = HashMap::new();
+    let mut path_all_prod_fns: HashMap<&str, Vec<&DeadTailsNode>> = HashMap::new();
+    let mut path_test_nodes: HashMap<&str, Vec<&DeadTailsNode>> = HashMap::new();
+    let mut paths_needing_scan: HashSet<&str> = HashSet::new();
+
+    for node in nodes.values() {
+        if node.is_test_ctx {
+            path_test_nodes.entry(node.path.as_str()).or_default().push(node);
+            continue;
+        }
+        if candidates.contains(&node.hash) {
+            path_candidates
+                .entry(node.path.as_str())
+                .or_default()
+                .push(node);
+            path_all_prod_fns
+                .entry(node.path.as_str())
+                .or_default()
+                .push(node);
+            if !roots.contains(&node.hash) {
+                paths_needing_scan.insert(node.path.as_str());
+            }
+        }
+    }
+
+    if paths_needing_scan.is_empty() {
+        return Ok(());
+    }
+
+    let workspace_root: Option<std::path::PathBuf> = conn
+        .query_row(
+            "SELECT value FROM metadata WHERE key = 'workspace_root'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(std::path::PathBuf::from);
+
+    let mut scanned_on_disk: HashSet<&str> = HashSet::new();
+    if let Some(root) = workspace_root.as_deref() {
+        let mut source_loader = super::symbols::VerifiedSourceCache::new();
+        for &path in &paths_needing_scan {
+            if !path.ends_with(".rs") {
+                continue;
+            }
+            let Ok(raw) = source_loader.read(conn, root, path) else {
+                continue;
+            };
+            scanned_on_disk.insert(path);
+            let Some(cands) = path_candidates.get(path) else {
+                continue;
+            };
+            let mut by_name: HashMap<&str, Vec<&DeadTailsNode>> = HashMap::new();
+            for &cand in cands {
+                by_name.entry(cand.name.as_str()).or_default().push(cand);
+            }
+            let prod_fns = path_all_prod_fns.get(path).map(Vec::as_slice).unwrap_or(&[]);
+            let test_nodes = path_test_nodes.get(path).map(Vec::as_slice).unwrap_or(&[]);
+
+            let masked = strip_comments_and_strings_preserving_lines(&raw);
+            let mut in_top_level_const = false;
+            let mut const_delim_depth: usize = 0;
+
+            for (idx, line_text) in masked.lines().enumerate() {
+                let line_num = (idx + 1) as i64;
+                if test_nodes
+                    .iter()
+                    .any(|t| line_num >= t.line && line_num <= t.end_line)
+                {
+                    in_top_level_const = false;
+                    const_delim_depth = 0;
+                    continue;
+                }
+                let trimmed = line_text.trim_start();
+                if trimmed.starts_with("#[")
+                    || trimmed.starts_with("#![")
+                    || trimmed.starts_with("use ")
+                    || trimmed.starts_with("pub use ")
+                    || (trimmed.starts_with("pub(") && trimmed.contains(" use "))
+                {
+                    continue;
+                }
+                let enclosing = prod_fns
+                    .iter()
+                    .copied()
+                    .filter(|f| line_num >= f.line && line_num <= f.end_line)
+                    .min_by_key(|f| (f.end_line - f.line, f.line, f.hash));
+
+                if enclosing.is_none() && !in_top_level_const && starts_top_level_const_or_static(trimmed) {
+                    in_top_level_const = true;
+                    const_delim_depth = 0;
+                }
+
+                let scan_top_level_const = enclosing.is_none() && in_top_level_const;
+                if enclosing.is_some() || scan_top_level_const {
+                    scan_bare_callback_tokens(line_text, &mut |ident, has_scope| {
+                        let Some(matches) = by_name.get(ident) else {
+                            return;
+                        };
+                        for &target in matches {
+                            if !has_scope && target.kind != "function" {
+                                continue;
+                            }
+                            if line_num >= target.line && line_num <= target.end_line {
+                                continue;
+                            }
+                            if let Some(caller) = enclosing {
+                                if caller.hash != target.hash {
+                                    fwd_set.entry(caller.hash).or_default().insert(target.hash);
+                                }
+                            } else {
+                                roots.insert(target.hash);
+                            }
+                        }
+                    });
+                }
+
+                if in_top_level_const {
+                    let mut terminated = false;
+                    for b in line_text.bytes() {
+                        match b {
+                            b'(' | b'[' | b'{' => const_delim_depth += 1,
+                            b')' | b']' | b'}' => const_delim_depth = const_delim_depth.saturating_sub(1),
+                            b';' if const_delim_depth == 0 => terminated = true,
+                            _ => {}
+                        }
+                    }
+                    if terminated || enclosing.is_some() {
+                        in_top_level_const = false;
+                        const_delim_depth = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    if scanned_on_disk.len() < paths_needing_scan.len() {
+        let mut stmt = conn.prepare(
+            "SELECT p.path, d.symbol
+             FROM dependencies d
+             JOIN path_dictionary p ON p.path_id = d.owner_id
+             WHERE d.symbol != ''",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let path: String = row.get(0)?;
+            if !paths_needing_scan.contains(path.as_str())
+                || scanned_on_disk.contains(path.as_str())
+            {
+                continue;
+            }
+            let symbol: String = row.get(1)?;
+            if !symbol.contains('(') && !symbol.contains('{') {
+                continue;
+            }
+            let Some(cands) = path_candidates.get(path.as_str()) else {
+                continue;
+            };
+            let mut by_name: HashMap<&str, Vec<&DeadTailsNode>> = HashMap::new();
+            for &cand in cands {
+                by_name.entry(cand.name.as_str()).or_default().push(cand);
+            }
+            scan_bare_callback_tokens(&symbol, &mut |ident, has_scope| {
+                let Some(matches) = by_name.get(ident) else {
+                    return;
+                };
+                for &target in matches {
+                    if !has_scope && target.kind != "function" {
+                        continue;
+                    }
+                    if !test_targeted.contains(&target.hash) {
+                        roots.insert(target.hash);
+                    }
+                }
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn compute_prod_live(graph: &DeadTailsGraph) -> HashSet<i64> {
+    let mut live: HashSet<i64> = graph.roots.iter().copied().collect();
+    let mut queue: VecDeque<i64> = graph.roots.iter().copied().collect();
+
+    while let Some(u) = queue.pop_front() {
+        if let Some(callees) = graph.fwd.get(&u) {
+            for &v in callees {
+                if graph.candidates.contains(&v) && live.insert(v) {
+                    queue.push_back(v);
+                }
+            }
+        }
+    }
+
+    live
+}
+
+fn collect_test_reachability(
+    graph: &DeadTailsGraph,
+    dead: &HashSet<i64>,
+) -> HashMap<i64, Vec<i64>> {
+    let mut callers_of: HashMap<i64, Vec<i64>> = HashMap::new();
+    for (&seed, node) in &graph.nodes {
+        if !node.is_test_ctx {
+            continue;
+        }
+        let Some(targets) = graph.fwd.get(&seed) else {
+            continue;
+        };
+        let mut seen: HashSet<i64> = HashSet::new();
+        let mut queue = VecDeque::new();
+        for &target in targets {
+            if dead.contains(&target) && seen.insert(target) {
+                queue.push_back(target);
+            }
+        }
+        while let Some(u) = queue.pop_front() {
+            callers_of.entry(u).or_default().push(seed);
+            if let Some(nexts) = graph.fwd.get(&u) {
+                for &v in nexts {
+                    if dead.contains(&v) && seen.insert(v) {
+                        queue.push_back(v);
+                    }
+                }
+            }
+        }
+    }
+    callers_of
+}
+
+fn is_dangling_internal_symbol(
+    symbol: &str,
+    node_names: &HashSet<String>,
+    module_names: &HashSet<String>,
+) -> bool {
+    let Some(rest) = symbol
+        .strip_prefix("crate::")
+        .or_else(|| symbol.strip_prefix("super::"))
+        .or_else(|| symbol.strip_prefix("self::"))
+    else {
+        return false;
+    };
+    if rest.is_empty()
+        || symbol.contains('(')
+        || symbol.contains('.')
+        || symbol.contains('\n')
+        || symbol.contains('\r')
+        || symbol.contains(' ')
+    {
+        return false;
+    }
+    let segs: Vec<&str> = rest.split("::").collect();
+    let (Some(&first), Some(&last)) = (segs.first(), segs.last()) else {
+        return false;
+    };
+    let is_lower_ident = |s: &str| {
+        !s.is_empty()
+            && s.as_bytes()[0].is_ascii_lowercase()
+            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    };
+    if !is_lower_ident(first) || !is_lower_ident(last) {
+        return false;
+    }
+    if segs
+        .iter()
+        .any(|s| s.as_bytes().first().is_some_and(u8::is_ascii_uppercase))
+    {
+        return false;
+    }
+    !node_names.contains(last) && !module_names.contains(last)
+}
+
+fn collect_dangling_calls(
+    conn: &Connection,
+    scope: &str,
+    lower: &str,
+    upper: &str,
+    graph: &DeadTailsGraph,
+) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT p.path, d.symbol, d.kind, d.resolution
+         FROM dependencies d
+         JOIN path_dictionary p ON p.path_id = d.owner_id
+         WHERE d.resolution = 'unresolved'
+           AND (?1 = '' OR p.path = ?1 OR (p.path >= ?2 AND p.path < ?3))
+           AND (d.symbol GLOB 'crate::*' OR d.symbol GLOB 'super::*' OR d.symbol GLOB 'self::*')
+           AND d.symbol NOT GLOB '*(*'
+           AND d.symbol NOT GLOB '*.*'",
+    )?;
+    let mut seen = BTreeSet::new();
+    let mut rows = stmt.query(rusqlite::params![scope, lower, upper])?;
+    while let Some(row) = rows.next()? {
+        let path: String = row.get(0)?;
+        let symbol: String = row.get(1)?;
+        let kind: String = row.get(2)?;
+        let resolution: String = row.get(3)?;
+        if is_dangling_internal_symbol(&symbol, &graph.node_names, &graph.module_names) {
+            seen.insert((path, symbol, kind, resolution));
+        }
+    }
+    Ok(seen
+        .into_iter()
+        .map(|(path, symbol, kind, resolution)| {
+            json!({
+                "path": path,
+                "symbol": symbol,
+                "kind": kind,
+                "resolution": resolution,
+            })
+        })
+        .collect())
+}
+
+fn page_slice(items: Vec<Value>, options: &QueryOptions, generation: &str) -> Value {
+    let total = items.len();
+    let paged: Vec<Value> = items
+        .into_iter()
+        .skip(options.offset)
+        .take(options.limit)
+        .collect();
+    paging::value(paged, total, options, generation)
+}
+
+/// Identifies dead tails, phantom-tested production callables, and unresolved internal calls.
+pub fn dead_tails_paged(
+    conn: &Connection,
+    target: Option<&str>,
+    path: Option<&str>,
+    options: &QueryOptions,
+) -> Result<Value> {
+    let generation = paging::generation(conn, options)?;
+    let scope = normalize_scope(target, path, "target")?;
+    let (lower, upper) = reader::path_bounds(&scope);
+
+    let graph = load_dead_tails_graph(conn)?;
+    let prod_live = compute_prod_live(&graph);
+    let dead: HashSet<i64> = graph
+        .candidates
+        .iter()
+        .copied()
+        .filter(|nh| !prod_live.contains(nh))
+        .collect();
+    let test_callers = collect_test_reachability(&graph, &dead);
+
+    let in_scope = |p: &str| -> bool {
+        scope.is_empty() || p == scope || (p >= lower.as_str() && p < upper.as_str())
+    };
+
+    let mut phantom_nodes: Vec<(&DeadTailsNode, i64)> = Vec::new();
+    let mut dead_tail_nodes: Vec<(&DeadTailsNode, i64)> = Vec::new();
+
+    for &nh in &dead {
+        let Some(node) = graph.nodes.get(&nh) else {
+            continue;
+        };
+        if !in_scope(&node.path) {
+            continue;
+        }
+        let lines = (node.end_line - node.line + 1).max(1);
+        if test_callers.contains_key(&nh) {
+            phantom_nodes.push((node, lines));
+        } else {
+            dead_tail_nodes.push((node, lines));
+        }
+    }
+
+    let sort_nodes = |a: &(&DeadTailsNode, i64), b: &(&DeadTailsNode, i64)| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.path.cmp(&b.0.path))
+            .then_with(|| a.0.line.cmp(&b.0.line))
+            .then_with(|| a.0.id.cmp(&b.0.id))
+    };
+    phantom_nodes.sort_by(sort_nodes);
+    dead_tail_nodes.sort_by(sort_nodes);
+
+    let phantom_items: Vec<Value> = phantom_nodes
+        .into_iter()
+        .map(|(node, lines)| {
+            let mut caller_nodes: Vec<&DeadTailsNode> = test_callers
+                .get(&node.hash)
+                .map(|hashes| {
+                    hashes
+                        .iter()
+                        .filter_map(|h| graph.nodes.get(h))
+                        .collect()
+                })
+                .unwrap_or_default();
+            caller_nodes.sort_by(|a, b| {
+                a.path
+                    .cmp(&b.path)
+                    .then_with(|| a.line.cmp(&b.line))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            let test_caller_count = caller_nodes.len();
+            let callers_preview: Vec<Value> = caller_nodes
+                .into_iter()
+                .take(5)
+                .map(|c| {
+                    json!({
+                        "id": c.id,
+                        "name": c.name,
+                        "qualname": c.qualname,
+                        "path": c.path,
+                        "line": c.line,
+                    })
+                })
+                .collect();
+            json!({
+                "id": node.id,
+                "name": node.name,
+                "qualname": node.qualname,
+                "kind": node.kind,
+                "path": node.path,
+                "line": node.line,
+                "end_line": node.end_line,
+                "lines": lines,
+                "test_caller_count": test_caller_count,
+                "test_callers": callers_preview,
+            })
+        })
+        .collect();
+
+    let dead_tail_items: Vec<Value> = dead_tail_nodes
+        .into_iter()
+        .map(|(node, lines)| {
+            let dead_callees_count = graph
+                .fwd
+                .get(&node.hash)
+                .map_or(0, |callees| callees.iter().filter(|c| dead.contains(*c)).count());
+            json!({
+                "id": node.id,
+                "name": node.name,
+                "qualname": node.qualname,
+                "kind": node.kind,
+                "path": node.path,
+                "line": node.line,
+                "end_line": node.end_line,
+                "lines": lines,
+                "dead_callees_count": dead_callees_count,
+            })
+        })
+        .collect();
+
+    let dangling_items = collect_dangling_calls(conn, &scope, &lower, &upper, &graph)?;
+
+    let phantom_count = phantom_items.len();
+    let dead_tails_count = dead_tail_items.len();
+    let dangling_calls_count = dangling_items.len();
+
+    let phantom_page = page_slice(phantom_items, options, &generation);
+    let dead_tails_page = page_slice(dead_tail_items, options, &generation);
+    let dangling_page = page_slice(dangling_items, options, &generation);
+
+    Ok(json!({
+        "operation": "dead_tails",
+        "scope": if scope.is_empty() { None } else { Some(scope) },
+        "generation": generation,
+        "summary": {
+            "phantom_tested_count": phantom_count,
+            "dead_tails_count": dead_tails_count,
+            "dangling_calls_count": dangling_calls_count,
+        },
+        "phantom_tested": phantom_page,
+        "dead_tails": dead_tails_page,
+        "dangling_calls": dangling_page,
+    }))
 }
 
 fn implementations_paged(
@@ -2347,8 +3367,9 @@ pub fn query_with_path_options(
                 options,
             )
         }
+        "dead_tails" => dead_tails_paged(conn, selector, path, options),
         _ => {
-            bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,sql,untested,implementations,duplicates")
+            bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,sql,untested,implementations,duplicates,dead_tails")
         }
     }
 }

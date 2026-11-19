@@ -4,8 +4,8 @@ impl<'a> ValueFlowIndex<'a> {
     pub(super) fn build_initialized(
         all: &'a dyn crate::FactsLookup,
         nodes: Vec<&'a Node>,
-        interner: &super::super::interner::LinkerInterner<'a>,
-        by_id: &HashMap<super::super::interner::SymbolId, &'a Node>,
+        interner: &crate::interner::LinkerInterner<'a>,
+        by_id: &HashMap<crate::interner::SymbolId, &'a Node>,
         resolver: &impl SemanticResolver<'a>,
         limits: SemanticLimits,
         initialize: impl FnOnce(&[&'a Node], &NamedNodes<'a>) -> Vec<InitializedScope<'a>>,
@@ -126,7 +126,7 @@ impl<'a> ValueFlowIndex<'a> {
             if owner.kind != "module"
                 || !facts
                     .component_macros()
-                    .any(|fact| fact.role == crate::core::semantic::ComponentMacroRole::Slots)
+                    .any(|fact| fact.role == crate::semantic::ComponentMacroRole::Slots)
             {
                 continue;
             }

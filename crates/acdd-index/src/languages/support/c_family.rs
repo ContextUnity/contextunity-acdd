@@ -52,14 +52,14 @@ pub(in crate::languages) fn include(ctx: &SyntaxContext<'_, '_>, facts: &mut Fac
     }
 }
 pub(in crate::languages) fn include_path(
-    profile: &dyn LanguageProfile,
+    _profile: &dyn LanguageProfile,
     owner: &str,
     module: &str,
 ) -> Option<ImportPath> {
     let path = module.strip_prefix('"')?.strip_suffix('"')?;
-    let normalized = relative_namespace(owner, path)?;
+    let stripped = module_stem(path);
     Some(ImportPath {
-        namespace: profile.module_name(&normalized),
+        namespace: relative_namespace(owner, stripped)?,
         relative: true,
         symbol_path: false,
     })

@@ -70,15 +70,7 @@ impl LanguageProfile for Cpp {
         bindings.rebindings.dedup();
         bindings
     }
-    fn extract_file(
-        &self,
-        path: &str,
-        source: &str,
-        module: &str,
-        facts: &mut Facts,
-    ) -> Result<()> {
-        parse_file(self, path, source, module, facts)
-    }
+    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         c_family::include(ctx, facts);
     }

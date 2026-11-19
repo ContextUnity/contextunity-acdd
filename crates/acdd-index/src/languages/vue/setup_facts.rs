@@ -1,10 +1,10 @@
 use super::*;
-use crate::core::semantic::{ComponentMacroFact, ComponentMacroRole, ExtractionRuleOrigin};
+use crate::semantic::{ComponentMacroFact, ComponentMacroRole, ExtractionRuleOrigin};
 
 pub(super) struct RegisteredComponent {
     pub alias: String,
     pub wrapper: Option<String>,
-    pub origin: crate::core::semantic::ExtractionRuleOrigin,
+    pub origin: crate::semantic::ExtractionRuleOrigin,
 }
 
 pub(super) struct SetupFactOutputs<'a> {
@@ -601,7 +601,7 @@ fn collect_configured_component(
                 RegisteredComponent {
                     alias: text(value, source).to_owned(),
                     wrapper: wrapped.then(|| rule.key()),
-                    origin: crate::core::semantic::ExtractionRuleOrigin {
+                    origin: crate::semantic::ExtractionRuleOrigin {
                         pack: rule.pack.clone(),
                         rule: rule.id.clone(),
                     },

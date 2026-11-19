@@ -1,14 +1,14 @@
 use super::*;
 
 type ComponentRuleKey = (
-    super::super::interner::SymbolId,
-    super::super::interner::SymbolId,
-    super::super::interner::SymbolId,
+    crate::interner::SymbolId,
+    crate::interner::SymbolId,
+    crate::interner::SymbolId,
 );
-type ResultScopeKey = (ComponentRuleKey, super::super::interner::SymbolId);
+type ResultScopeKey = (ComponentRuleKey, crate::interner::SymbolId);
 
 fn component_rule_key(
-    interner: &super::super::interner::LinkerInterner<'_>,
+    interner: &crate::interner::LinkerInterner<'_>,
     config: &Node,
     rule: &languages::manifests::syntax::SyntaxRule,
 ) -> ComponentRuleKey {

@@ -678,15 +678,7 @@ impl LanguageProfile for Python {
             .trim_end_matches("/__init__")
             .replace('/', ".")
     }
-    fn extract_file(
-        &self,
-        path: &str,
-        source: &str,
-        module: &str,
-        facts: &mut Facts,
-    ) -> Result<()> {
-        parse_file(self, path, source, module, facts)
-    }
+    support::delegate_extract_file!();
     fn prepare(&self, root: Syntax<'_>, source: &str) -> FileContext {
         projections::clear();
         let mut type_checking_aliases = HashMap::new();
@@ -1250,37 +1242,6 @@ impl LanguageProfile for Python {
         } else {
             decorated_registration::module_assignment(ctx, facts);
         }
-    }
-    fn extract_routes_with_context(
-        &self,
-        ctx: &SyntaxContext<'_, '_>,
-        facts: &mut Facts,
-        symbols: &HashMap<usize, String>,
-        rules: &super::LanguageContext,
-        route_context: &crate::ast::routes::RouteContext,
-    ) {
-        self.extract_routes_with_rule_ir(ctx, facts, symbols, rules, &rules.rule_ir, route_context);
-    }
-    fn extract_routes_with_rule_ir(
-        &self,
-        ctx: &SyntaxContext<'_, '_>,
-        facts: &mut Facts,
-        symbols: &HashMap<usize, String>,
-        rules: &super::LanguageContext,
-        rule_ir: &super::manifests::RuleIRHandle,
-        route_context: &crate::ast::routes::RouteContext,
-    ) {
-        let mut projections = HashMap::new();
-        self.extract_routes_with_typed_projections(
-            ctx,
-            facts,
-            symbols,
-            rules,
-            rule_ir,
-            route_context,
-            &mut projections,
-        );
-        super::publish_scope_projections(facts, projections);
     }
     fn typed_scope_projections(&self) -> bool {
         true

@@ -1,5 +1,5 @@
-use super::reader::{rows_with_mode, QueryBudget, RowMode};
-use crate::core::response::{Detail, QueryOptions, MAX_PAGE_SIZE};
+use super::reader::{rows, rows_with_mode, QueryBudget, RowMode};
+use acdd_core::response::{Detail, QueryOptions, MAX_PAGE_SIZE};
 use anyhow::{ensure, Result};
 use rusqlite::{Connection, ToSql};
 use serde_json::{json, Value};
@@ -179,4 +179,84 @@ fn columns(alias: &str, detail: Detail, names: &[&str]) -> String {
             .collect::<Vec<_>>()
             .join(",")
     }
+}
+
+pub(crate) fn annotate_edge_direction(page: &mut Value, direction: &str) {
+    if let Some(items) = page["items"].as_array_mut() {
+        for item in items {
+            if let Some(edge) = item.as_object_mut() {
+                edge.insert("direction".into(), json!(direction));
+            }
+        }
+    }
+}
+
+pub(crate) fn populate_edge_relations(
+    conn: &Connection,
+    result: &mut Value,
+    node_hash: i64,
+    direction: Option<&str>,
+    options: &QueryOptions,
+) -> Result<()> {
+    let dir = match direction.unwrap_or("both") {
+        "inbound" => "incoming",
+        "outbound" => "outgoing",
+        direction => direction,
+    };
+    ensure!(
+        matches!(dir, "both" | "incoming" | "outgoing"),
+        "direction must be both, incoming (inbound), or outgoing (outbound)"
+    );
+    for (key, filter_col, order_col, dir_label) in [
+        ("incoming", "dst_hash", "src_hash", "inbound"),
+        ("outgoing", "src_hash", "dst_hash", "outbound"),
+    ] {
+        if dir == "both" || dir == key {
+            let mut page = query(
+                conn,
+                &format!(
+                    "SELECT {} FROM edges e WHERE e.{filter_col}=?1 ORDER BY e.kind,e.{order_col},e.path_id,e.line",
+                    edges("e", options.detail)
+                ),
+                &[&node_hash],
+                options,
+            )?;
+            annotate_edge_direction(&mut page, dir_label);
+            result[key] = page;
+        } else {
+            let total = count(
+                conn,
+                &format!("SELECT count(*) FROM edges WHERE {filter_col}=?1"),
+                &[&node_hash],
+            )?;
+            result[key] = json!({
+                "total": total,
+                "omitted": true,
+                "hint": format!("Pass direction='{key}' to page {key} edges.")
+            });
+        }
+    }
+    for (key, id_alias, join_col, filter_col) in [
+        ("implementors", "src_public_id", "src_hash", "dst_hash"),
+        ("implements", "dst_public_id", "dst_hash", "src_hash"),
+    ] {
+        let items = rows(
+            conn,
+            &format!(
+                "SELECT n.id AS {id_alias},e.kind,p.path,e.line,v.evidence,n.name,n.kind AS node_kind \
+                 FROM edges e JOIN nodes n ON n.node_hash=e.{join_col} \
+                 JOIN path_dictionary p ON p.path_id=e.path_id \
+                 JOIN coverage_evidence v ON v.evidence_id=e.evidence_id \
+                 WHERE e.{filter_col}=?1 AND e.kind IN('implements','overrides','extends') \
+                 ORDER BY p.path,e.line"
+            ),
+            &[&node_hash],
+            50,
+        )?;
+        if !items.is_empty() {
+            result[key] = json!(items);
+        }
+    }
+    result["direction"] = json!(dir);
+    Ok(())
 }

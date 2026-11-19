@@ -6,15 +6,9 @@ use crate::languages::{dependency_registry::DependencyRegistry, LanguageProfile}
 #[cfg(feature = "lang-rust")]
 use crate::linker::traits::ModulesByNamespace;
 use crate::linker::value_flow::{Symbol, TypeTarget};
-#[cfg(feature = "lang-rust")]
-use crate::models::Facts;
 use crate::models::Node;
 #[cfg(feature = "lang-rust")]
 use hashbrown::HashMap;
-#[cfg(feature = "lang-rust")]
-use std::borrow::Cow;
-#[cfg(feature = "lang-rust")]
-use std::collections::BTreeMap;
 
 use super::super::semantic_context::LanguageMemberLookup;
 #[cfg(feature = "lang-rust")]
@@ -97,53 +91,6 @@ pub(in crate::linker) fn receiver_symbol<'a>(
 }
 
 #[cfg(feature = "lang-rust")]
-pub(in crate::linker) fn qualified_generic_base(annotation: &str) -> Option<&str> {
-    let mut name = annotation.trim();
-    while let Some(rest) = name.strip_prefix('&') {
-        name = rest.trim_start();
-        if name.starts_with('\'') {
-            name = name.split_once(char::is_whitespace)?.1.trim_start();
-        }
-        name = name.strip_prefix("mut ").unwrap_or(name).trim_start();
-    }
-    let (base, generic) = name.split_once('<')?;
-    if !base.contains("::") || !name.ends_with('>') {
-        return None;
-    }
-    let mut depth = 1usize;
-    let outer_generic_ends_type = generic.char_indices().all(|(index, character)| {
-        match character {
-            '<' => depth += 1,
-            '>' => {
-                depth -= 1;
-                if depth == 0 && index + character.len_utf8() != generic.len() {
-                    return false;
-                }
-            }
-            _ => {}
-        }
-        depth > 0 || index + character.len_utf8() == generic.len()
-    }) && depth == 0;
-    outer_generic_ends_type.then_some(base.trim_end())
-}
-
-#[cfg(feature = "lang-rust")]
-pub(in crate::linker) fn qualified_annotation_type<'a>(
-    profile: Option<&dyn LanguageProfile>,
-    annotation: &'a str,
-    path: &str,
-    dependencies: &DependencyRegistry,
-) -> Option<Cow<'a, str>> {
-    let profile = profile.filter(|profile| profile.id() == "rust")?;
-    let base = qualified_generic_base(annotation)?;
-    let head = base.split_once("::")?.0;
-    dependencies
-        .declares_for_path(profile.family(), path, head)
-        .then(|| super::super::receiver_type_name(base))
-        .flatten()
-}
-
-#[cfg(feature = "lang-rust")]
 pub(in crate::linker) fn qualified_external_annotation<'a>(
     profile: Option<&dyn LanguageProfile>,
     annotation: &'a str,
@@ -181,7 +128,7 @@ pub(in crate::linker) fn external_annotation_type<'a>(
 pub(in crate::linker) fn import_globs<'a>(
     context: &mut Context<'a>,
     all: &'a dyn crate::FactsLookup,
-    by_id: &'a HashMap<super::super::interner::SymbolId, &'a Node>,
+    by_id: &'a HashMap<crate::interner::SymbolId, &'a Node>,
     normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
     modules: &'a ModulesByNamespace<'a>,
     rust_forwarding: &'a languages::rust::linker::RustForwarding<'a>,

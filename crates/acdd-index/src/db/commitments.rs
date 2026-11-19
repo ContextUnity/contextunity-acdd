@@ -9,8 +9,7 @@ mod domain_leaves;
 mod snapshot;
 
 pub use crate::commitments::{
-    aggregate_domain_digest, compute_merkle_root, hash, DomainCommitment, MerkleCommitment,
-    ALGORITHM, DOMAINS,
+    aggregate_domain_digest, compute_merkle_root, hash, ALGORITHM, DOMAINS,
 };
 pub(crate) use snapshot::{fts_commitment_digests, seal_snapshot_from_projection, SnapshotTimings};
 const FTS: &[(&str, &str)] = &[

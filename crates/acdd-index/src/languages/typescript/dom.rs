@@ -83,7 +83,7 @@ pub(super) fn remember_dom_global(
     let Some(global) = dom_global_name(name.trim()) else {
         return;
     };
-    if !names[..*count].contains(&Some(global)) {
+    if *count < names.len() && !names[..*count].contains(&Some(global)) {
         names[*count] = Some(global);
         *count += 1;
     }
@@ -1079,7 +1079,7 @@ pub(super) fn configured_callback_parameter<'a>(
     first_callback_parameter(callback).map(|parameter| text(parameter, source))
 }
 
-pub(in crate::engine::languages) fn first_callback_parameter<'tree>(
+pub(in crate::languages) fn first_callback_parameter<'tree>(
     callback: Syntax<'tree>,
 ) -> Option<Syntax<'tree>> {
     let parameter = callback

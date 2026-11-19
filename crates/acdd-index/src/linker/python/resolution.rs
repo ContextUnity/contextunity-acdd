@@ -1,11 +1,11 @@
-use super::super::interner::{LinkerInterner, SymbolId};
+use crate::interner::{LinkerInterner, SymbolId};
 use super::super::receivers;
 use super::super::semantic_context::LanguageMemberLookup;
 use super::super::typescript::resolution::{
     has_indexed_name, has_indexed_symbol, has_indexed_symbol_id,
 };
-use crate::core::models::{Node, ReceiverHint, Reference};
-use crate::engine::languages::LanguageProfile;
+use crate::models::{Node, ReceiverHint, Reference};
+use crate::languages::LanguageProfile;
 use hashbrown::{HashMap, HashSet};
 
 pub(in crate::linker) fn nullable_parameter_wrapper<F>(
@@ -226,7 +226,7 @@ pub(in crate::linker) struct PythonResolutionView<'ctx, 'a, 'keys> {
     pub(in crate::linker) file_module: &'ctx str,
     pub(in crate::linker) aliases: &'ctx HashMap<&'keys str, HashMap<&'a str, Vec<&'a Node>>>,
     pub(in crate::linker) alias_import_positions:
-        &'ctx HashMap<(&'keys str, &'keys str), crate::core::semantic::SourcePosition>,
+        &'ctx HashMap<(&'keys str, &'keys str), crate::semantic::SourcePosition>,
     pub(in crate::linker) member_lookup: &'ctx LanguageMemberLookup<'a, 'a>,
 }
 
@@ -342,7 +342,7 @@ where
         Some(
             ReceiverHint::CallResult { callee, member }
             | ReceiverHint::TypedCallResult {
-                value: crate::core::semantic::ValueExpr::Call { callee, site: None },
+                value: crate::semantic::ValueExpr::Call { callee, site: None },
                 member,
             },
         ) => {

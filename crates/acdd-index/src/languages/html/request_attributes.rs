@@ -28,7 +28,7 @@ pub(super) fn extract_request_attributes(
     else {
         return;
     };
-    let origin = crate::core::semantic::ExtractionRuleOrigin {
+    let origin = crate::semantic::ExtractionRuleOrigin {
         pack: rule.pack.clone(),
         rule: rule.id.clone(),
     };
@@ -90,9 +90,9 @@ pub(super) fn extract_request_attributes(
     let mut context = Map::new();
     context.insert(
         "value_flow".into(),
-        json!(crate::core::semantic::ValueFlowFacts {
-            framework: Some(Box::new(crate::core::semantic::FrameworkScopeFacts {
-                facts: vec![crate::core::semantic::FrameworkFact::RuleOrigin(origin)],
+        json!(crate::semantic::ValueFlowFacts {
+            framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
+                facts: vec![crate::semantic::FrameworkFact::RuleOrigin(origin)],
                 ..Default::default()
             })),
             ..Default::default()
@@ -146,7 +146,7 @@ pub(super) fn extract_request_attributes(
                 details: Value::Object(details),
             },
         ));
-        facts.edges.push(crate::core::models::Edge {
+        facts.edges.push(crate::models::Edge {
             src: format!("module:{path}"),
             dst: id,
             kind: "contains".into(),
@@ -173,7 +173,7 @@ pub(super) fn extract_request_attributes(
                 details: Value::Object(context),
             },
         ));
-        facts.edges.push(crate::core::models::Edge {
+        facts.edges.push(crate::models::Edge {
             src: format!("module:{path}"),
             dst: id,
             kind: "contains".into(),

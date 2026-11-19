@@ -1,19 +1,18 @@
 use super::{paging, reader};
-use crate::core::{
-    commitments, config,
-    models::stable_hash64,
-    response::{
+use crate::db::commitments;
+use acdd_core::config;
+use crate::models::stable_hash64;
+use acdd_core::response::{
         CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions, MAX_PAGE_SIZE,
-    },
-};
+    };
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    fs::File,
     io::Read,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 #[path = "symbols/search.rs"]
@@ -88,6 +87,7 @@ pub fn search_results_with_navigation(
     }
 
     let mut source_cache: HashMap<String, Option<String>> = HashMap::new();
+    let mut source_loader = VerifiedSourceCache::new();
 
     let ids = items
         .iter()
@@ -180,7 +180,7 @@ pub fn search_results_with_navigation(
             ) {
                 let cached = source_cache
                     .entry(path.clone())
-                    .or_insert_with(|| verified_source(conn, root, &path).ok());
+                    .or_insert_with(|| source_loader.read(conn, root, &path).ok());
                 if let Some(text) = cached.as_deref() {
                     if let Some(matched) = resolve_indexed_text_match(
                         text,
@@ -232,7 +232,7 @@ pub fn search_results_with_navigation(
             .context("search result has no path")?;
         let Some(text) = source_cache
             .entry(path.to_owned())
-            .or_insert_with(|| verified_source(conn, root, path).ok())
+            .or_insert_with(|| source_loader.read(conn, root, path).ok())
             .clone()
         else {
             continue;
@@ -269,6 +269,28 @@ struct IndexedTextMatch {
     preview: Option<(String, usize, usize)>,
 }
 
+thread_local! {
+    static LINE_FTS: RefCell<Option<Connection>> = const { RefCell::new(None) };
+}
+
+fn with_line_fts<T>(f: impl FnOnce(&mut Connection) -> Option<T>) -> Option<T> {
+    LINE_FTS.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        if guard.is_none() {
+            let conn = Connection::open_in_memory().ok()?;
+            conn.execute_batch(
+                "CREATE VIRTUAL TABLE _line USING fts5(body, tokenize='unicode61 separators ''._-/''');",
+            )
+            .ok()?;
+            *guard = Some(conn);
+        }
+        let conn = guard.as_mut()?;
+        let result = f(conn);
+        let _ = conn.execute("DELETE FROM _line", []);
+        result
+    })
+}
+
 fn resolve_indexed_text_match(
     text: &str,
     start_line: usize,
@@ -295,37 +317,43 @@ fn resolve_indexed_text_match(
         return None;
     }
 
-    // Delegate line matching to SQLite's FTS5 `unicode61 separators '._-/'` engine so diacritics,
-    // Unicode case folding, and separator boundaries match `node_search` identically.
-    let fts_matched = |query: &str| -> Option<usize> {
-        let fts = Connection::open_in_memory().ok()?;
-        fts.execute_batch("CREATE VIRTUAL TABLE _line USING fts5(body, tokenize='unicode61 separators ''._-/''');")
-            .ok()?;
-        let mut insert = fts
-            .prepare("INSERT INTO _line(rowid, body) VALUES (?1, ?2)")
-            .ok()?;
-        for ln in lo..=hi {
-            let _ = insert.execute(rusqlite::params![ln as i64, lines[ln - 1]]);
-        }
-        drop(insert);
-        fts.query_row(
-            "SELECT rowid FROM _line WHERE _line MATCH ?1 ORDER BY rowid LIMIT 1",
-            [query],
-            |row| row.get::<_, usize>(0),
-        )
-        .ok()
-    };
-
     let quoted: Vec<String> = tokens
         .iter()
         .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
         .collect();
     let and_query = quoted.join(" AND ");
     let or_query = quoted.join(" OR ");
-    let matched_line = fts_matched(&and_query).or_else(|| {
-        (is_natural_query && tokens.len() > 1)
-            .then(|| fts_matched(&or_query))
-            .flatten()
+
+    // Delegate line matching to a reusable thread-local SQLite FTS5 handle with identical
+    // `unicode61 separators '._-/'` tokenization so diacritics, Unicode case folding, and
+    // separator boundaries match `node_search` identically without per-hit DDL.
+    let matched_line = with_line_fts(|fts| {
+        fts.execute("DELETE FROM _line", []).ok()?;
+        let tx = fts.transaction().ok()?;
+        {
+            let mut insert = tx
+                .prepare_cached("INSERT INTO _line(rowid, body) VALUES (?1, ?2)")
+                .ok()?;
+            for ln in lo..=hi {
+                let _ = insert.execute(rusqlite::params![ln as i64, lines[ln - 1]]);
+            }
+        }
+        tx.commit().ok()?;
+        let mut query_stmt = fts
+            .prepare_cached("SELECT rowid FROM _line WHERE _line MATCH ?1 ORDER BY rowid LIMIT 1")
+            .ok()?;
+        let matched = query_stmt
+            .query_row([and_query.as_str()], |row| row.get::<_, usize>(0))
+            .ok();
+        matched.or_else(|| {
+            (is_natural_query && tokens.len() > 1)
+                .then(|| {
+                    query_stmt
+                        .query_row([or_query.as_str()], |row| row.get::<_, usize>(0))
+                        .ok()
+                })
+                .flatten()
+        })
     })?;
 
     let raw_line = lines[matched_line - 1].trim();
@@ -495,50 +523,125 @@ fn strip_string_literal_delimiters(literal: &str) -> Option<&str> {
     })
 }
 
-pub(crate) fn verified_source(conn: &Connection, root: &Path, path: &str) -> Result<String> {
-    let digest: String = conn.query_row("SELECT digest FROM files WHERE path=?1", [path], |r| {
-        r.get(0)
-    })?;
-    let linked_json: Option<String> = conn
-        .query_row(
-            "SELECT value FROM metadata WHERE key='adapter_linked_workspaces'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let linked: Value = linked_json
-        .map(|json| serde_json::from_str(&json))
-        .transpose()?
-        .unwrap_or_else(|| json!([]));
-    let linked_root = linked.as_array().and_then(|workspaces| {
-        workspaces.iter().find_map(|workspace| {
-            let name = workspace.get("name")?.as_str()?;
-            let prefix = format!("[{name}]/");
-            let relative = path.strip_prefix(&prefix)?;
-            let root = workspace.get("path")?.as_str()?;
-            Some((std::path::PathBuf::from(root), relative))
-        })
-    });
-    let (source_root, source_path) = match linked_root {
-        Some((linked_root, relative)) => (linked_root, relative.to_owned()),
-        None => (root.to_path_buf(), path.to_owned()),
-    };
-    let adapter = config::load_adapter(&source_root, None)?;
-    let resolved = config::resolve_file_path(&source_root, &adapter, &source_path)?;
-    let file = File::open(resolved).context("source file unavailable; rebuild index")?;
-    if !file.metadata()?.is_file() {
+pub(crate) fn read_confined_source_bytes(
+    root: &Path,
+    adapter: &config::Adapter,
+    path: &str,
+    max_bytes: u64,
+    unavailable_context: &'static str,
+    limit_message: &'static str,
+) -> Result<Vec<u8>> {
+    let resolved = config::resolve_file_path(root, adapter, path)?;
+    let parent = resolved
+        .parent()
+        .context("source file path requires a parent directory")?;
+    let name = resolved
+        .file_name()
+        .context("source file path requires a file name")?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    let file = acdd_core::fs::open_confined(parent, Path::new(name), &mut opts)
+        .context(unavailable_context)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
         bail!("source must be a regular file");
     }
-    let mut bytes = Vec::new();
-    file.take(config::MAX_FILE_BYTES + 1)
+    if metadata.len() > max_bytes {
+        bail!("{limit_message}");
+    }
+    let mut bytes = Vec::with_capacity((metadata.len() as usize).min(64 * 1024));
+    file.take(max_bytes.saturating_add(1))
         .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > config::MAX_FILE_BYTES {
-        bail!("source exceeds file byte limit");
+    if bytes.len() as u64 > max_bytes {
+        bail!("{limit_message}");
     }
-    if commitments::hash(&bytes) != digest {
-        bail!("source changed since indexing; update or rebuild index");
+    Ok(bytes)
+}
+
+pub(crate) struct VerifiedSourceCache {
+    linked_loaded: bool,
+    linked: Vec<(String, PathBuf)>,
+    adapters: HashMap<PathBuf, config::Adapter>,
+}
+
+impl VerifiedSourceCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            linked_loaded: false,
+            linked: Vec::new(),
+            adapters: HashMap::new(),
+        }
     }
-    String::from_utf8(bytes).context("source is not UTF-8")
+
+    fn linked_workspaces(&mut self, conn: &Connection) -> Result<&[(String, PathBuf)]> {
+        if !self.linked_loaded {
+            let linked_json: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM metadata WHERE key='adapter_linked_workspaces'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let linked: Value = linked_json
+                .map(|json| serde_json::from_str(&json))
+                .transpose()?
+                .unwrap_or_else(|| json!([]));
+            if let Some(workspaces) = linked.as_array() {
+                for workspace in workspaces {
+                    if let (Some(name), Some(path)) = (
+                        workspace.get("name").and_then(Value::as_str),
+                        workspace.get("path").and_then(Value::as_str),
+                    ) {
+                        self.linked.push((format!("[{name}]/"), PathBuf::from(path)));
+                    }
+                }
+            }
+            self.linked_loaded = true;
+        }
+        Ok(&self.linked)
+    }
+
+    pub(crate) fn read(&mut self, conn: &Connection, root: &Path, path: &str) -> Result<String> {
+        let digest: String =
+            conn.query_row("SELECT digest FROM files WHERE path=?1", [path], |r| {
+                r.get(0)
+            })?;
+        let linked_root = self
+            .linked_workspaces(conn)?
+            .iter()
+            .find_map(|(prefix, linked_path)| {
+                let relative = path.strip_prefix(prefix.as_str())?;
+                Some((linked_path.clone(), relative.to_owned()))
+            });
+        let (source_root, source_path) = match linked_root {
+            Some(pair) => pair,
+            None => (root.to_path_buf(), path.to_owned()),
+        };
+        if !self.adapters.contains_key(&source_root) {
+            let adapter = config::load_adapter(&source_root, None)?;
+            self.adapters.insert(source_root.clone(), adapter);
+        }
+        let adapter = self
+            .adapters
+            .get(&source_root)
+            .context("cached adapter missing")?;
+        let bytes = read_confined_source_bytes(
+            &source_root,
+            adapter,
+            &source_path,
+            config::MAX_FILE_BYTES,
+            "source file unavailable; rebuild index",
+            "source exceeds file byte limit",
+        )?;
+        if commitments::hash(&bytes) != digest {
+            bail!("source changed since indexing; update or rebuild index");
+        }
+        String::from_utf8(bytes).context("source is not UTF-8")
+    }
+}
+
+pub(crate) fn verified_source(conn: &Connection, root: &Path, path: &str) -> Result<String> {
+    VerifiedSourceCache::new().read(conn, root, path)
 }
 
 /// Inspect one indexed symbol with bounded documentation, coverage, and source.
@@ -898,96 +1001,15 @@ fn explain_without_coverage(
         .context("invalid node id")?
         .to_owned();
     let node_hash = stable_hash64(&id);
-    let direction = match direction.unwrap_or("both") {
-        "inbound" => "incoming",
-        "outbound" => "outgoing",
-        direction => direction,
-    };
-    match direction {
-        "both" | "incoming" => {
-            let mut incoming = paging::query(
-                conn,
-                &format!(
-                    "SELECT {} FROM edges e WHERE e.dst_hash=?1 ORDER BY e.kind,e.src_hash,e.path_id,e.line",
-                    paging::edges("e", options.detail)
-                ),
-                &[&node_hash],
-                options,
-            )?;
-            annotate_edge_direction(&mut incoming, "inbound");
-            result["incoming"] = incoming;
-        }
-        "outgoing" => {
-            let total = paging::count(
-                conn,
-                "SELECT count(*) FROM edges WHERE dst_hash=?1",
-                &[&node_hash],
-            )?;
-            result["incoming"] = json!({"total":total,"omitted":true,"hint":"Pass direction='incoming' to page incoming edges."});
-        }
-        _ => bail!("direction must be both, incoming (inbound), or outgoing (outbound)"),
-    }
-    match direction {
-        "both" | "outgoing" => {
-            let mut outgoing = paging::query(
-                conn,
-                &format!(
-                    "SELECT {} FROM edges e WHERE e.src_hash=?1 ORDER BY e.kind,e.dst_hash,e.path_id,e.line",
-                    paging::edges("e", options.detail)
-                ),
-                &[&node_hash],
-                options,
-            )?;
-            annotate_edge_direction(&mut outgoing, "outbound");
-            result["outgoing"] = outgoing;
-        }
-        "incoming" => {
-            let total = paging::count(
-                conn,
-                "SELECT count(*) FROM edges WHERE src_hash=?1",
-                &[&node_hash],
-            )?;
-            result["outgoing"] = json!({"total":total,"omitted":true,"hint":"Pass direction='outgoing' to page outgoing edges."});
-        }
-        _ => {}
-    }
-    let implementors = reader::rows(
-        conn,
-        "SELECT n.id AS src_public_id,e.kind,p.path,e.line,v.evidence,n.name,n.kind AS node_kind FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=e.path_id JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE e.dst_hash=?1 AND e.kind IN('implements','overrides','extends') ORDER BY p.path,e.line",
-        &[&node_hash],
-        50,
-    )?;
-    if !implementors.is_empty() {
-        result["implementors"] = json!(implementors);
-    }
-    let implements = reader::rows(
-        conn,
-        "SELECT n.id AS dst_public_id,e.kind,p.path,e.line,v.evidence,n.name,n.kind AS node_kind FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=e.path_id JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE e.src_hash=?1 AND e.kind IN('implements','overrides','extends') ORDER BY p.path,e.line",
-        &[&node_hash],
-        50,
-    )?;
-    if !implements.is_empty() {
-        result["implements"] = json!(implements);
-    }
-    result["direction"] = json!(direction);
+    paging::populate_edge_relations(conn, &mut result, node_hash, direction, options)?;
     Ok(result)
-}
-
-fn annotate_edge_direction(page: &mut Value, direction: &str) {
-    if let Some(items) = page["items"].as_array_mut() {
-        for item in items {
-            if let Some(edge) = item.as_object_mut() {
-                edge.insert("direction".into(), json!(direction));
-            }
-        }
-    }
 }
 
 fn summarize_symbol(
     conn: &Connection,
     mut result: Value,
     include_coverage: bool,
-    detail: crate::core::response::Detail,
+    detail: acdd_core::response::Detail,
 ) -> Result<Value> {
     if !include_coverage {
         result
@@ -1347,7 +1369,7 @@ fn symbol_range(node: &Value, text: &str) -> Result<Option<std::ops::Range<usize
     }
     let path = node["path"].as_str().context("invalid node path")?;
     let language = node["language"].as_str().context("invalid language")?;
-    let profile = crate::engine::languages::require(language)?;
+    let profile = crate::languages::require(language)?;
     let start = node["line"].as_u64().context("invalid start line")? as usize;
     let name = node["name"].as_str().context("invalid node name")?;
     let mut parser = profile.create_parser(path)?;
@@ -1405,7 +1427,7 @@ mod tests {
     #[test]
     fn test_symbol_boundary_recovery_and_preview_resilience() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(crate::core::schema::SCHEMA_DDL).unwrap();
+        conn.execute_batch(crate::db::schema::SCHEMA_DDL).unwrap();
         let options = SourceOptions {
             enabled: true,
             leading_lines: 0,
@@ -1495,5 +1517,15 @@ mod tests {
             capped.preview.is_none(),
             "oversized line must drop preview rather than exceed budget"
         );
+
+        // Reuse of thread-local FTS5 handle must clear prior document lines cleanly and honor natural OR fallback.
+        let second = "fn unrelated() {}\n// only blue here\n";
+        assert!(
+            resolve_indexed_text_match(second, 1, 2, "needle", 4096).is_none(),
+            "thread-local FTS5 table must not retain rows from prior calls"
+        );
+        let or_fallback = resolve_indexed_text_match(second, 1, 2, "red blue", 4096)
+            .expect("natural query should fall back to OR without repopulating");
+        assert_eq!(or_fallback.line, 2);
     }
 }

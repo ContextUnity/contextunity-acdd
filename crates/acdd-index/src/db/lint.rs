@@ -1,5 +1,5 @@
 use super::{paging, reader};
-use crate::core::response::{Detail, QueryOptions};
+use acdd_core::response::{Detail, QueryOptions};
 use anyhow::{ensure, Result};
 use rusqlite::{Connection, ToSql};
 use serde_json::{json, Value};
@@ -14,7 +14,7 @@ pub fn syntax_paged(conn: &Connection, target: &str, options: &QueryOptions) -> 
         "lint target must be an indexed workspace-relative path or empty for the workspace"
     );
     let (prefix, end) = reader::path_bounds(path);
-    let profiles: Vec<_> = crate::engine::languages::profiles()
+    let profiles: Vec<_> = crate::languages::profiles()
         .map(|profile| profile.id())
         .collect();
     let profiles_json = serde_json::to_string(&profiles)?;
@@ -40,7 +40,7 @@ pub fn syntax_paged(conn: &Connection, target: &str, options: &QueryOptions) -> 
     for language in &mut languages {
         language["diagnostic_scope"] = json!(match language["language"].as_str() {
             Some("vue") => "embedded JavaScript/TypeScript scripts; template and style syntax are not checked",
-            Some("html") if crate::engine::languages::by_id("javascript").is_some() => "HTML grammar and executable inline JavaScript; styles and template expressions are not checked",
+            Some("html") if crate::languages::by_id("javascript").is_some() => "HTML grammar and executable inline JavaScript; styles and template expressions are not checked",
             Some("html") => "HTML grammar only; inline JavaScript requires the JavaScript profile",
             _ => "stored Tree-sitter syntax diagnostics",
         });

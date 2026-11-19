@@ -270,7 +270,7 @@ pub fn matches_with_reason(
         }
     }
     let r: Receipt = serde_json::from_slice(&fs::read(&receipt_path)?)?;
-    if r.version != 1 || r.schema != "2" || r.algorithm != crate::core::commitments::ALGORITHM {
+    if r.version != 1 || r.schema != "2" || r.algorithm != crate::db::commitments::ALGORITHM {
         bail!(
             "receipt header mismatch (version={}, schema={}, algorithm={})",
             r.version,
@@ -332,13 +332,13 @@ pub fn publish_verified_identity(
     let receipt = Receipt {
         version: 1,
         schema: "2".into(),
-        algorithm: crate::core::commitments::ALGORITHM.into(),
+        algorithm: crate::db::commitments::ALGORITHM.into(),
         root: root.canonicalize()?,
         database: path.canonicalize()?,
         output_root: seal.into(),
         identity: before.clone(),
     };
-    crate::core::fs::atomic_write(
+    acdd_core::fs::atomic_write(
         &suffix(path, ".verified.json"),
         &serde_json::to_vec(&receipt)?,
         false,

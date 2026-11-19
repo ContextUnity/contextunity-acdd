@@ -798,20 +798,6 @@ impl PreparedAstMatcher {
         Ok(variant.required_anchors.clone())
     }
 
-    /// Returns `true` if `source` can possibly match the prepared pattern for `path`.
-    pub fn source_may_match(&mut self, path: &str, source: &str) -> Result<bool> {
-        let language_id = self.profile.id();
-        let mut budget = SearchBudget::unbounded();
-        let Some(variant) = self.prepare_variant(path, &mut budget)? else {
-            return Ok(true);
-        };
-        Ok(source_satisfies_anchors(
-            language_id,
-            &variant.required_anchors,
-            source,
-        ))
-    }
-
     /// Searches one source file using the cached `PreparedPattern` and reused `Parser`.
     pub fn search_page(
         &mut self,

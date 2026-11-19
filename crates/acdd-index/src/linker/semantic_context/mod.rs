@@ -4,7 +4,7 @@
 //! workspace namespaces as ordinary graph linking. No disk or SQL is consulted
 //! while reducing values or resolving calls.
 
-use super::interner::{PathId, SymbolId};
+use crate::interner::{PathId, SymbolId};
 use super::traits::{import_provider_modules, ImportContext, ModulesByNamespace, PackageExports};
 use super::value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget};
 use crate::languages::{self, ImportPath};
@@ -13,7 +13,6 @@ use crate::{
     semantic::SourcePosition,
 };
 use hashbrown::{HashMap, HashSet};
-use std::collections::BTreeMap;
 
 mod components;
 mod factories;
@@ -123,7 +122,7 @@ enum FactoryDeclarations<'a> {
 }
 
 pub(super) struct Context<'a> {
-    interner: &'a super::interner::LinkerInterner<'a>,
+    interner: &'a crate::interner::LinkerInterner<'a>,
     dependencies: &'a languages::dependency_registry::DependencyRegistry,
     named: super::named_bindings::NamedBindings<'a>,
     flows: Option<&'a HashMap<SymbolId, &'a crate::typed_facts::FlowState>>,

@@ -1,12 +1,11 @@
 use super::paging;
-use crate::core::response::{Detail, QueryOptions, MAX_PAGE_SIZE};
+use acdd_core::response::{Detail, QueryOptions, MAX_PAGE_SIZE};
 use anyhow::{bail, ensure, Context, Result};
 use rusqlite::backup::Backup;
 use rusqlite::{types::ValueRef, Connection, OpenFlags, OptionalExtension};
 use serde_json::{json, Map, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File},
     io::Read,
     ops::Deref,
     path::{Path, PathBuf},
@@ -20,7 +19,30 @@ pub(crate) use selectors::{select_detail, select_detail_with_path};
 const MAX_SQLITE_VALUE_BYTES: i32 = 8 * 1024 * 1024;
 const MAX_QUERY_RESULT_BYTES: usize = MAX_SQLITE_VALUE_BYTES as usize;
 const QUERY_RESULT_TOO_LARGE: &str = "query result exceeds the 8 MiB row budget; narrow the selector or path, request detail='compact' with a smaller limit, or select fewer and smaller SQL columns. Continue paged requests with the returned offset and generation";
-const VALID_OVERVIEW_ASPECTS: [&str; 14] = [
+/// Database-owned aspects materialized directly by [`overview_with_options`].
+pub const DATABASE_OVERVIEW_ASPECTS: [&str; 10] = [
+    "counts",
+    "components",
+    "languages",
+    "coverage_by_workspace",
+    "cycles",
+    "entrypoints",
+    "entrypoints_with_tests",
+    "topology",
+    "compiled_profiles",
+    "metadata",
+];
+
+/// Host discovery aspects accepted by [`overview_with_options`] and composed by the discovery adapter.
+pub const DISCOVERY_OVERVIEW_ASPECTS: [&str; 5] = [
+    "discovery",
+    "manifest_components",
+    "documentation_hubs",
+    "runs",
+    "milestones",
+];
+
+const VALID_OVERVIEW_ASPECTS: [&str; 15] = [
     "counts",
     "components",
     "languages",
@@ -34,6 +56,7 @@ const VALID_OVERVIEW_ASPECTS: [&str; 14] = [
     "discovery",
     "manifest_components",
     "documentation_hubs",
+    "runs",
     "milestones",
 ];
 
@@ -160,10 +183,22 @@ pub struct DocSearchOptions<'a> {
     pub page: &'a QueryOptions,
 }
 
-/// Validates SQLite database header magic and user version.
+/// Validates SQLite database header magic using a confined `O_NOFOLLOW` open.
 pub fn validate_database_header(path: &Path) -> Result<()> {
+    let confined = acdd_core::fs::confined_database_open_path(path)?;
+    let parent = confined.parent().context("database path needs a parent")?;
+    let name = confined
+        .file_name()
+        .context("database path needs a file name")?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    let mut file = acdd_core::fs::open_confined(parent, Path::new(name), &mut opts)?;
+    ensure!(
+        file.metadata()?.is_file(),
+        "database path must be a regular file"
+    );
     let mut header = [0; 16];
-    File::open(path)?.read_exact(&mut header)?;
+    file.read_exact(&mut header)?;
     if &header != b"SQLite format 3\0" {
         bail!("database has an invalid SQLite header");
     }
@@ -171,13 +206,13 @@ pub fn validate_database_header(path: &Path) -> Result<()> {
 }
 
 struct IntegritySnapshot {
-    _dir: crate::core::fs::ScopedTempDir,
+    _dir: acdd_core::fs::ScopedTempDir,
     path: PathBuf,
 }
 
 impl IntegritySnapshot {
     fn create() -> Result<Self> {
-        let dir = crate::core::fs::ScopedTempDir::create("contextunity-acdd-integrity")?;
+        let dir = acdd_core::fs::ScopedTempDir::create("contextunity-acdd-integrity")?;
         let path = dir.write_private_file("snapshot.sqlite", &[])?;
         Ok(Self { _dir: dir, path })
     }
@@ -193,7 +228,7 @@ pub fn validate_database_integrity(conn: &Connection) -> Result<()> {
         bail!("database integrity check failed: {source_integrity}");
     }
     let snapshot = IntegritySnapshot::create()?;
-    let snapshot_open_path = crate::core::fs::confined_database_open_path(&snapshot.path)?;
+    let snapshot_open_path = acdd_core::fs::confined_database_open_path(&snapshot.path)?;
     let mut copy = Connection::open_with_flags(
         &snapshot_open_path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -224,15 +259,46 @@ impl Deref for LockedConnection {
     }
 }
 
+fn wal_is_absent_or_empty(db_path: &Path) -> bool {
+    let mut wal_name = db_path.as_os_str().to_owned();
+    wal_name.push("-wal");
+    match std::fs::symlink_metadata(PathBuf::from(wal_name)) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+        Ok(meta) => meta.is_file() && !meta.file_type().is_symlink() && meta.len() == 0,
+        Err(_) => false,
+    }
+}
+
+fn sqlite_immutable_uri(path: &Path) -> Option<String> {
+    let raw = path.to_str()?;
+    let mut encoded = String::with_capacity(raw.len() + 24);
+    encoded.push_str("file:");
+    for ch in raw.chars() {
+        match ch {
+            '%' => encoded.push_str("%25"),
+            '?' => encoded.push_str("%3f"),
+            '#' => encoded.push_str("%23"),
+            _ => encoded.push(ch),
+        }
+    }
+    encoded.push_str("?immutable=1");
+    Some(encoded)
+}
+
 /// Opens an existing SQLite database in confined read-only mode.
 ///
 /// Opens with `READ_ONLY | NOFOLLOW` first so SQLite reports a true read-only
 /// handle (`sqlite3_db_readonly == 1`) when `-shm` is present or journal mode
-/// is `DELETE`, and falls back to `READ_WRITE | NOFOLLOW` with
-/// `PRAGMA query_only = ON` when a WAL-header database without `-shm` fails
-/// with `SQLITE_CANTOPEN (14)`.
+/// is `DELETE`. When a WAL-header snapshot without `-shm` fails with
+/// `SQLITE_CANTOPEN (14)`:
+/// - If no non-empty `-wal` sidecar exists, retries read-only with `?immutable=1`
+///   (`READ_ONLY | URI | NOFOLLOW`), working in read-only directories without
+///   mutating files or creating `-shm`.
+/// - If a non-empty `-wal` sidecar exists, falls back to `READ_WRITE | NOFOLLOW`
+///   with `PRAGMA query_only = ON` so uncheckpointed WAL frames are recovered
+///   rather than silently skipped.
 pub fn open_raw_confined_readonly(db_path: &Path) -> Result<Connection> {
-    let confined = crate::core::fs::confined_database_open_path(db_path)?;
+    let confined = acdd_core::fs::confined_database_open_path(db_path)?;
     let configure = |conn: &Connection| -> rusqlite::Result<()> {
         conn.execute_batch(
             "PRAGMA query_only = ON; PRAGMA trusted_schema = OFF; PRAGMA busy_timeout = 5000;",
@@ -250,13 +316,30 @@ pub fn open_raw_confined_readonly(db_path: &Path) -> Result<Connection> {
     match ro_attempt {
         Ok(conn) => Ok(conn),
         Err(rusqlite::Error::SqliteFailure(err, _))
-            if err.code == rusqlite::ErrorCode::CannotOpen =>
+            if matches!(
+                err.code,
+                rusqlite::ErrorCode::CannotOpen | rusqlite::ErrorCode::ReadOnly
+            ) =>
         {
+            if wal_is_absent_or_empty(&confined) {
+                if let Some(uri) = sqlite_immutable_uri(&confined) {
+                    let conn = Connection::open_with_flags(
+                        &uri,
+                        OpenFlags::SQLITE_OPEN_READ_ONLY
+                            | OpenFlags::SQLITE_OPEN_URI
+                            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+                    )?;
+                    configure(&conn)?;
+                    conn.query_row("PRAGMA schema_version", [], |_| Ok(()))?;
+                    return Ok(conn);
+                }
+            }
             let conn = Connection::open_with_flags(
                 &confined,
                 OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
             )?;
             configure(&conn)?;
+            conn.query_row("PRAGMA schema_version", [], |_| Ok(()))?;
             Ok(conn)
         }
         Err(err) => Err(err.into()),
@@ -290,7 +373,7 @@ pub fn open_with_diagnostics(
     root: &Path,
     diagnostic: &mut dyn FnMut(String),
 ) -> Result<Connection> {
-    let open_path = crate::core::fs::confined_database_open_path(path)?;
+    let open_path = acdd_core::fs::confined_database_open_path(path)?;
     let before = super::cache::identity(&open_path)?;
     validate_database_header(&open_path)?;
     let conn = open_raw_confined_readonly(&open_path)?;
@@ -317,7 +400,7 @@ pub fn open_with_diagnostics(
         [],
         |r| r.get(0),
     )?;
-    if version != crate::core::config::ENGINE_SCHEMA_VERSION || engine != "contextunity-acdd-rust" {
+    if version != acdd_core::config::ENGINE_SCHEMA_VERSION || engine != "contextunity-acdd-rust" {
         validate_database_integrity(&conn)?;
         return Err(IndexRebuildRequired("incompatible database schema or engine").into());
     }
@@ -338,7 +421,7 @@ pub fn open_with_diagnostics(
         [],
         |r| r.get(0),
     )?;
-    if algorithm != crate::core::commitments::ALGORITHM {
+    if algorithm != crate::db::commitments::ALGORITHM {
         validate_database_integrity(&conn)?;
         return Err(
             IndexRebuildRequired("incompatible commitment algorithm; rebuild index").into(),
@@ -360,7 +443,7 @@ pub fn open_with_diagnostics(
         }
     };
     if receipt_missing {
-        crate::core::commitments::verify(&conn)?;
+        crate::db::commitments::verify(&conn)?;
     }
     let current = super::cache::identity(path)?;
     if current != before {
@@ -396,12 +479,12 @@ pub fn open_with_diagnostics(
 ///
 /// Returns an error when the payload is corrupt or uses an unsupported encoding.
 #[doc(hidden)]
-pub fn decode_local_facts(blob: &[u8]) -> Result<crate::core::models::Facts> {
-    Ok(crate::core::typed_facts::decode_facts(blob)?.into_public())
+pub fn decode_local_facts(blob: &[u8]) -> Result<crate::models::Facts> {
+    Ok(crate::typed_facts::decode_facts(blob)?.into_public())
 }
 
 /// Reads the indexed files inventory snapshot from the database.
-pub fn inventory_snapshot(conn: &Connection) -> Result<Vec<crate::core::models::FileEntry>> {
+pub fn inventory_snapshot(conn: &Connection) -> Result<Vec<crate::models::FileEntry>> {
     // Sealed inventory metadata can exceed the public SQL cell limit; restore it before tool queries.
     let previous_limit = conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH, i32::MAX);
     let inventory = conn.query_row(
@@ -651,7 +734,7 @@ pub(super) fn rows_with_mode(
                 ValueRef::Blob(bytes) => bytes.len().saturating_mul(2).saturating_add(2),
             };
             let minimum_key_bytes =
-                crate::core::format::estimate_json_bytes(name).saturating_add(1);
+                acdd_core::format::estimate_json_bytes(name).saturating_add(1);
             minimum_row_bytes = minimum_row_bytes
                 .saturating_add(usize::from(property_count > 0))
                 .saturating_add(minimum_key_bytes)
@@ -686,7 +769,7 @@ pub(super) fn rows_with_mode(
         let available_row_bytes = MAX_QUERY_RESULT_BYTES
             .saturating_sub(total_bytes)
             .saturating_sub(row_separator_bytes);
-        let mut row_size = crate::core::format::JsonByteCounter(0);
+        let mut row_size = acdd_core::format::JsonByteCounter(0);
         serde_json::to_writer(&mut row_size, &value)?;
         if row_size.0 > available_row_bytes {
             bail!(QUERY_RESULT_TOO_LARGE);
@@ -811,7 +894,7 @@ pub fn overview_with_options(conn: &Connection, request: &OverviewOptions<'_>) -
     }
 
     if has_aspect("compiled_profiles") {
-        let compiled_profiles: std::collections::BTreeSet<_> = crate::engine::languages::profiles()
+        let compiled_profiles: std::collections::BTreeSet<_> = crate::languages::profiles()
             .map(|p| p.id())
             .collect();
         result.insert(
@@ -1165,7 +1248,7 @@ pub fn inspect_paged_with_path(
     let node = select_detail_with_path(conn, selector, path, options.detail)?;
     let id = node["id"].as_str().context("invalid node id")?;
     let mut documents = if show_doc {
-        paging::query(conn, &format!("SELECT {} FROM doc_sections d JOIN nodes dn ON dn.id=d.doc_id JOIN edges e ON e.dst_hash=dn.node_hash WHERE e.src_hash=?1 AND e.kind='references_doc' ORDER BY d.is_invariant DESC,d.path,d.doc_id", paging::docs("d", options.detail)), &[&crate::core::models::stable_hash64(id)], options)?
+        paging::query(conn, &format!("SELECT {} FROM doc_sections d JOIN nodes dn ON dn.id=d.doc_id JOIN edges e ON e.dst_hash=dn.node_hash WHERE e.src_hash=?1 AND e.kind='references_doc' ORDER BY d.is_invariant DESC,d.path,d.doc_id", paging::docs("d", options.detail)), &[&crate::models::stable_hash64(id)], options)?
     } else {
         paging::value(Vec::new(), 0, options, &generation)
     };
@@ -1210,79 +1293,14 @@ pub fn explain_with_path_options(
         .as_str()
         .context("invalid node id")?
         .to_owned();
-    let node_hash = crate::core::models::stable_hash64(&id);
-    let dir = match direction.unwrap_or("both") {
-        "inbound" => "incoming",
-        "outbound" => "outgoing",
-        direction => direction,
-    };
-    match dir {
-        "both" | "incoming" => {
-            let mut incoming = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.dst_hash=?1 ORDER BY e.kind,e.src_hash,e.path_id,e.line", paging::edges("e", options.detail)), &[&node_hash], options)?;
-            annotate_edge_direction(&mut incoming, "inbound");
-            result["incoming"] = incoming;
-        }
-        "outgoing" => {
-            let total = paging::count(
-                conn,
-                "SELECT count(*) FROM edges WHERE dst_hash=?1",
-                &[&node_hash],
-            )?;
-            result["incoming"] = json!({"total": total, "omitted": true, "hint": "Pass direction='incoming' to page incoming edges."});
-        }
-        _ => bail!("direction must be both, incoming (inbound), or outgoing (outbound)"),
-    }
-    match dir {
-        "both" | "outgoing" => {
-            let mut outgoing = paging::query(conn, &format!("SELECT {} FROM edges e WHERE e.src_hash=?1 ORDER BY e.kind,e.dst_hash,e.path_id,e.line", paging::edges("e", options.detail)), &[&node_hash], options)?;
-            annotate_edge_direction(&mut outgoing, "outbound");
-            result["outgoing"] = outgoing;
-        }
-        "incoming" => {
-            let total = paging::count(
-                conn,
-                "SELECT count(*) FROM edges WHERE src_hash=?1",
-                &[&node_hash],
-            )?;
-            result["outgoing"] = json!({"total": total, "omitted": true, "hint": "Pass direction='outgoing' to page outgoing edges."});
-        }
-        _ => {}
-    }
-    let implementors = rows(
-        conn,
-        "SELECT n.id AS src_public_id,e.kind,p.path,e.line,v.evidence,n.name,n.kind AS node_kind FROM edges e JOIN nodes n ON n.node_hash=e.src_hash JOIN path_dictionary p ON p.path_id=e.path_id JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE e.dst_hash=?1 AND e.kind IN('implements','overrides','extends') ORDER BY p.path,e.line",
-        &[&node_hash],
-        50,
-    )?;
-    if !implementors.is_empty() {
-        result["implementors"] = json!(implementors);
-    }
-    let implements = rows(
-        conn,
-        "SELECT n.id AS dst_public_id,e.kind,p.path,e.line,v.evidence,n.name,n.kind AS node_kind FROM edges e JOIN nodes n ON n.node_hash=e.dst_hash JOIN path_dictionary p ON p.path_id=e.path_id JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE e.src_hash=?1 AND e.kind IN('implements','overrides','extends') ORDER BY p.path,e.line",
-        &[&node_hash],
-        50,
-    )?;
-    if !implements.is_empty() {
-        result["implements"] = json!(implements);
-    }
-    result["direction"] = json!(dir);
+    let node_hash = crate::models::stable_hash64(&id);
+    paging::populate_edge_relations(conn, &mut result, node_hash, direction, options)?;
     if let Some(gen) = result.as_object_mut().and_then(|m| m.remove("generation")) {
         if let Some(m) = result.as_object_mut() {
             m.insert("generation".into(), gen);
         }
     }
     Ok(result)
-}
-
-fn annotate_edge_direction(page: &mut Value, direction: &str) {
-    if let Some(items) = page["items"].as_array_mut() {
-        for item in items {
-            if let Some(edge) = item.as_object_mut() {
-                edge.insert("direction".into(), json!(direction));
-            }
-        }
-    }
 }
 
 /// Resolves component prefix.
@@ -1700,12 +1718,12 @@ pub fn get_doc_paged(
     let hashes = selected_sections
         .iter()
         .filter_map(|item| item["doc_id"].as_str())
-        .map(crate::core::models::stable_hash64)
+        .map(crate::models::stable_hash64)
         .collect::<Vec<_>>();
     let source_workspace = selected_sections
         .first()
         .and_then(|item| item["path"].as_str())
-        .map(|path| crate::core::config::workspace_path(path).0.to_owned())
+        .map(|path| acdd_core::config::workspace_path(path).0.to_owned())
         .unwrap_or_default();
     let encoded_hashes = serde_json::to_string(&hashes)?;
     let cites_doc = paging::query(
@@ -1743,7 +1761,7 @@ pub fn get_doc_paged(
 pub fn governing_invariants(conn: &Connection, node_id: &str) -> Result<Value> {
     const DIRECT_LIMIT: usize = 5;
     const TRANSITIVE_LIMIT: usize = 5;
-    let node_hash = crate::core::models::stable_hash64(node_id);
+    let node_hash = crate::models::stable_hash64(node_id);
     let direct_total = paging::count(
         conn,
         "SELECT count(*) FROM edges e WHERE e.kind='governs' AND e.dst_hash=?1",
@@ -1792,8 +1810,6 @@ pub fn governing_invariants(conn: &Connection, node_id: &str) -> Result<Value> {
 }
 
 /// Returns bounded governing rules for every indexed symbol in a task scope.
-#[allow(dead_code)]
-/// Returns governing documentation invariants for a given scope path.
 pub fn governing_invariants_for_scope(conn: &Connection, scope: &[String]) -> Result<Value> {
     const DIRECT_LIMIT: usize = 5;
     const TRANSITIVE_LIMIT: usize = 5;
@@ -2153,6 +2169,7 @@ fn document_diagnostics(
         [],
         |row| row.get(0),
     )?;
+    let mut source_loader = super::symbols::VerifiedSourceCache::new();
     for document in &document_rows {
         let Some(claims) = document["details"]["symbol_claims"].as_array() else {
             continue;
@@ -2211,11 +2228,7 @@ fn document_diagnostics(
                 continue;
             }
             let target = &matching[0];
-            let source = match super::symbols::verified_source(
-                conn,
-                Path::new(&workspace_root),
-                target_path,
-            ) {
+            let source = match source_loader.read(conn, Path::new(&workspace_root), target_path) {
                 Ok(source) => source,
                 Err(_) => continue,
             };
@@ -2318,7 +2331,7 @@ fn annotate_diagnostic_page(page: &mut Value, source: &str) {
 }
 
 fn bounded_diagnostic_snippet(line: &str) -> String {
-    let end = crate::core::format::utf8_floor_boundary(line, 512);
+    let end = acdd_core::format::utf8_floor_boundary(line, 512);
     line[..end].to_owned()
 }
 

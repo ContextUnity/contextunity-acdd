@@ -19,7 +19,11 @@ fn parse_package_name(source: &str) -> Option<&str> {
         if trimmed.starts_with("//") || trimmed.is_empty() {
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("package") {
+        if let Some(rest) = trimmed
+            .strip_prefix("package")
+            .filter(|rest| rest.starts_with(char::is_whitespace))
+        {
+            let rest = rest.split_once("//").map_or(rest, |(before, _)| before);
             let pkg = rest.split_whitespace().next()?.trim_matches(';');
             if !pkg.is_empty() {
                 return Some(pkg);
@@ -120,7 +124,7 @@ impl LanguageProfile for Go {
             ("", None) => module_stem(path).to_string(),
             (dir, Some(pkg)) => {
                 let dir_mod = dir.replace('/', ".");
-                if dir.ends_with(pkg) {
+                if dir.rsplit('/').next() == Some(pkg) {
                     dir_mod
                 } else {
                     format!("{dir_mod}.{pkg}")
@@ -142,15 +146,7 @@ impl LanguageProfile for Go {
         let dir_b = path_b.rsplit_once('/').map_or("", |(d, _)| d);
         dir_a == dir_b
     }
-    fn extract_file(
-        &self,
-        path: &str,
-        source: &str,
-        module: &str,
-        facts: &mut Facts,
-    ) -> Result<()> {
-        parse_file(self, path, source, module, facts)
-    }
+    support::delegate_extract_file!();
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         let (node, source) = (ctx.node, ctx.source);
         let mut add = |expression, alias, module| ctx.import(facts, expression, alias, module);

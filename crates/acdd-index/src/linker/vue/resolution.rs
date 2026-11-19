@@ -1,8 +1,8 @@
 use super::super::resolution::ResolutionInput;
 use super::super::semantic_context::Member;
-use crate::core::models::{compact_graph::Graph, Facts, Node, ReceiverHint, Reference};
-use crate::core::semantic::ComponentMacroRole;
-use crate::engine::languages::LanguageContext;
+use crate::models::{compact_graph::Graph, Node, ReceiverHint, Reference};
+use crate::semantic::ComponentMacroRole;
+use crate::languages::LanguageContext;
 
 pub(in crate::linker) fn component_macro_callable_origin(
     reference: &Reference,
@@ -122,7 +122,7 @@ where
                                 let result = input
                                     .semantic_context
                                     .lookup_component_template_field(receiver, tail);
-                                if matches!(result, Member::Local(_)) {
+                                if matches!(result, Member::Local(_) | Member::Ambiguous) {
                                     return Some(result);
                                 }
                             }

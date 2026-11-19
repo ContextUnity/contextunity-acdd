@@ -1,7 +1,5 @@
-use crate::{
-    core::models::ReceiverHint,
-    engine::ast::{bounded_expression, text},
-};
+use crate::models::ReceiverHint;
+use crate::ast::{bounded_expression, text};
 use tree_sitter::Node;
 
 fn static_callee(node: Node<'_>) -> bool {
@@ -49,7 +47,7 @@ pub(super) fn receiver_hint(call: Node<'_>, source: &str) -> Option<ReceiverHint
             let callee = receiver.child_by_field_name("function")?;
             if !(callee.kind() == "identifier" && text(callee, source) == "super") {
                 let value = super::value_flow::call_value(receiver, source);
-                if matches!(value, crate::core::semantic::ValueExpr::Call { .. }) {
+                if matches!(value, crate::semantic::ValueExpr::Call { .. }) {
                     return Some(ReceiverHint::TypedCallResult {
                         value,
                         member: text(member, source).to_owned(),
