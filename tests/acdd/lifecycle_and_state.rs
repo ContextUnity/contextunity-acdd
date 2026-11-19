@@ -1,4 +1,4 @@
-use super::support::{base_engine_config, init_git_repo_on_branch, TestProvider};
+use super::support::{base_engine_config, git_cmd, init_git_repo_on_branch, TestProvider};
 use crate::common::Workspace;
 use acdd_core::errors::ErrorCode;
 use acdd_core::ids::WorkerId;
@@ -181,6 +181,82 @@ fn cli_start_and_sync_share_state_from_linked_checkout() {
             assert!(!root.join(format!(".acdd/{name}.sqlite")).exists());
         }
     }
+}
+
+#[test]
+fn cli_snapshot_round_trip() {
+    use clap::Parser;
+    use contextunity_acdd::cli::Cli;
+    let ws = Workspace::new();
+    init_git_repo_on_branch(ws.root(), "dev");
+    ws.write("acdd.yaml", "profile: full\nmodules: {state: true}\n");
+    ws.write(".acdd/profile.yaml", "version: 2\ngit: {isolation: in_place, worktrees: manual}\nroles: {worker: {mode: subagent}}\ngates:\n  - tasks:\n      gates:\n        - {id: build, role: worker, proof: none}\n");
+    ws.write("docs/milestones/010-snapshot.md", "---\nid: m-snapshot\ntitle: Snapshot\ndoc_type: milestone\nstatus: active\n---\n# Snapshot\n\n### task: snap-task\n```yaml\ntask_ref: snap-task\ntarget: Snapshot\nscope: [src/lib.rs]\n```\n");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let r1 = "pub fn base() -> i32 { 1 }\n";
+    let r2 = "pub fn base() -> i32 { 2 }\n";
+    let refs = || git_cmd(ws.root(), &["for-each-ref", "refs/acdd/snapshots"]);
+    let run = |args: &[&str]| -> Result<String, String> {
+        let root = ws.root().to_str().unwrap();
+        let cli = Cli::try_parse_from(["acdd", "--root", root].into_iter().chain(args.iter().copied())).unwrap();
+        let mut output = Vec::new();
+        runtime.block_on(cli.run_with_writer(&mut output)).map_err(|err| err.to_string())?;
+        Ok(String::from_utf8(output).unwrap())
+    };
+    run(&[
+        "start",
+        "docs/milestones/010-snapshot.md",
+        "--in-place",
+        "--name",
+        "snapshot-run",
+    ])
+    .expect("start");
+    ws.write("src/lib.rs", r1);
+    // One direct dispatch stays in this test so code.seam can reach the CLI owner.
+    let root = ws.root().to_str().unwrap();
+    let saved = Cli::try_parse_from([
+        "acdd", "--root", root, "snapshot", "save", "snap-task", "--rev", "1", "--run", "snapshot-run",
+    ]).unwrap();
+    let mut saved_out = Vec::new();
+    runtime.block_on(Cli::run_with_writer(saved, &mut saved_out)).expect("save r1");
+    let saved_r1 = String::from_utf8(saved_out).unwrap();
+    assert!(saved_r1.contains("/snap-task/r1"), "{saved_r1}");
+    ws.write("src/lib.rs", r2);
+    let saved_r2 = run(&["snapshot", "save", "snap-task", "--rev", "2", "--run", "snapshot-run"]).expect("save r2");
+    assert!(saved_r2.contains("/snap-task/r2"), "{saved_r2}");
+    assert!(refs().contains("/snap-task/r1") && refs().contains("/snap-task/r2"), "{}", refs());
+    ws.write("src/lib.rs", "dirty\n");
+    let restored = run(&["snapshot", "restore", "snap-task", "--rev", "1", "--run", "snapshot-run"]).expect("restore r1");
+    assert!(restored.contains("/snap-task/r1") && !restored.contains("/snap-task/r2"), "{restored}");
+    assert_eq!(fs::read_to_string(ws.path("src/lib.rs")).unwrap(), r1);
+    let cleared = run(&["snapshot", "clear", "snap-task", "--run", "snapshot-run"]).expect("clear");
+    assert!(cleared.contains("/snap-task/r1") && cleared.contains("/snap-task/r2"), "{cleared}");
+    assert_eq!(fs::read_to_string(ws.path("src/lib.rs")).unwrap(), r1, "clear must not restore");
+    assert!(!refs().contains("refs/acdd/snapshots/"), "{}", refs());
+    assert!(
+        run(&["snapshot", "restore", "snap-task", "--rev", "1", "--run", "snapshot-run"]).is_err(),
+        "cleared r1 must be unrestorable"
+    );
+    assert_eq!(
+        fs::read_to_string(ws.path("src/lib.rs")).unwrap(),
+        r1,
+        "failed restore after task clear must preserve the worktree"
+    );
+    ws.write("src/lib.rs", r2);
+    run(&["snapshot", "save", "snap-task", "--rev", "1", "--run", "snapshot-run"]).expect("save before --all");
+    ws.write("src/lib.rs", "dirty-all\n");
+    let cleared_all = run(&["snapshot", "clear", "--all", "--run", "snapshot-run"]).expect("clear --all");
+    assert!(cleared_all.contains("/snap-task/r1"), "{cleared_all}");
+    assert!(!refs().contains("refs/acdd/snapshots/"), "{}", refs());
+    assert!(
+        run(&["snapshot", "restore", "snap-task", "--rev", "1", "--run", "snapshot-run"]).is_err(),
+        "run-wide clear must make r1 unrestorable"
+    );
+    assert_eq!(
+        fs::read_to_string(ws.path("src/lib.rs")).unwrap(),
+        "dirty-all\n",
+        "failed restore after run-wide clear must preserve the worktree"
+    );
 }
 
 #[test]

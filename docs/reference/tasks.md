@@ -74,6 +74,7 @@ MCP tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`,
 | Claim | `acdd_claim` | `acdd claim [<node>]` | Atomically claim a ready/active node and return `ClaimResp` |
 | Verify | `acdd_verify` | `acdd verify <node>` | Execute `command:`, `call:`, `checks:`, and scope barrier without advancing |
 | Submit | `acdd_submit` | `acdd submit <node> --action pass\|reject` | Advance on `pass` or rewind along `fail:` with `RejectionFindings` |
+| Snapshot | `acdd_state(action: "snapshot", snapshot_action: "save \| restore \| clear")` | `acdd snapshot save\|restore\|clear` | Save, restore, or clear per-task Git checkpoints |
 | Blackboard | `acdd_blackboard(action: "read \| post")` | `acdd blackboard --action read\|post` | Scoped coordination messages (`draft`, `notes`, `findings`, `blockers`, `decisions`, `deferred`) |
 
 All 19 built-in MCP tools (plus `<domain>_<name>` plugin tools) accept an
@@ -112,8 +113,8 @@ Every gate transition is mediated by `claim -> (verify) -> submit` inside
     no fresh trace exists, validating `review_evidence` against `contours:`, or
     validating `custom_evidence` against `proofs.<name>` / inline `{ scheme }`),
     checks that all task `subtasks` are `completed` or `cancelled` with
-    non-empty evidence when `receipt: true`, executes `save.post` (`none` or
-    `commit`), materializes any declared `save.report` (returning `report_path` in `SubmitResp`), writes `gate_artifacts`, and transitions along `pass:`.
+    non-empty evidence when `receipt: true`, executes `save.post` (`none`,
+    `commit`, or `snapshot`), materializes any declared `save.report` (returning `report_path` in `SubmitResp`), writes `gate_artifacts`, and transitions along `pass:`.
   - On `--action reject`: requires structured `RejectionFindings` (`findings` +
     `summary` + optional `kind`: `defect | architectural_drift`), routes to `fail:`
     on `defect` or `fail_drift:` on `architectural_drift`, increments `attempt` /
@@ -151,6 +152,12 @@ Every gate transition is mediated by `claim -> (verify) -> submit` inside
    (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`)
    given proportional per-lens budgets and skipping empty `items: []` lenses cleanly
    without mutating `omitted_sections` (`omitted_sections` records only actual budget omissions).
+
+---
+
+## Task snapshots
+
+Use `acdd snapshot save|restore|clear [<task_ref>] [--all] [--rev N] [--run RUN]` or `acdd_state(action: "snapshot", snapshot_action: "save|restore|clear", task_ref: ..., all: ..., rev: ..., run: ...)` to manage checkpoints. Save captures admitted task files; restore applies a selected revision within the task scope. Clear accepts a task or `--all`. Profiles declare `save.post: snapshot` only on leaf task gates. Checkpoint refs are cleaned on delivery, run clear, or handoff.
 
 ---
 

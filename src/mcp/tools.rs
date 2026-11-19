@@ -23,7 +23,7 @@ use acdd_state::usecases::{
     ContextReq, NextReq, ObservabilityReq, ReopenReq, RoadmapReq, RunReq, ShowReq, StartReq,
     StateCommand,
     StateCommandOutput, StateQuery, StateQueryOutput, StatusReq, SubmitReq, SubtaskReq, SyncReq,
-    VerifyReq,
+    SnapshotReq, VerifyReq,
 };
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -241,6 +241,13 @@ fn build_state_command_from_input(
 ) -> std::result::Result<StateCommand, StateError> {
     let run = p.run;
     match p.action {
+        McpStateAction::Snapshot => Ok(StateCommand::Snapshot(SnapshotReq {
+            run,
+            action: require_present(p.snapshot_action, "snapshot_action", "snapshot")?,
+            task_ref: p.task_ref,
+            all: p.all.unwrap_or(false),
+            revision: p.rev,
+        })),
         McpStateAction::Start => {
             let create_wt = p
                 .create_worktree
@@ -566,7 +573,7 @@ impl Server {
 #[tool_router]
 impl Server {
     #[tool(
-        description = "Execute a canonical state lifecycle command (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `clear`, `run`) or read-only state query (`status`, `list`, `show`, `next`, `context`, `observability`, `roadmap`). Read-only actions operate over `SQLITE_OPEN_READ_ONLY` with zero database creation."
+        description = "Execute a canonical state lifecycle command (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `clear`, `run`) or read-only state query (`status`, `list`, `show`, `next`, `context`, `observability`, `roadmap`). Read-only actions operate over `SQLITE_OPEN_READ_ONLY` with zero database creation."
     )]
     async fn acdd_state(&self, Parameters(p): Parameters<StateInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();

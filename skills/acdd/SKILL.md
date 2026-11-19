@@ -5,6 +5,8 @@ description: Load for repository onboarding to ACDD, code discovery, symbol look
 
 # ContextUnity ACDD
 
+Use `acdd snapshot save|restore|clear [<task_ref>] [--all] [--rev N] [--run RUN]` or `acdd_state(action: "snapshot", snapshot_action: "save|restore|clear", task_ref: ..., all: ..., rev: ..., run: ...)` for task checkpoints. See [task snapshots](../../docs/reference/tasks.md#task-snapshots).
+
 Use ACDD's indexed code graph, AST search, documentation graph, and task tools.
 Prefer registered MCP tools; use the CLI (`acdd ...`) for offline operations it
 owns, and fall back to local search only when ACDD is unavailable. Active tool

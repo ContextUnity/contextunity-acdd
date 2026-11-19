@@ -8,51 +8,22 @@ fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque
             "profile: full\nmodules: {state: true, blackboard: true}\n",
         ),
         (".gitignore", ".acdd/\n"),
+        ("src/lib.rs", "original\n"),
+        ("docs/milestones/010-snapshot.md", "---\nid: m-snapshot\ntitle: Snapshot\ndoc_type: milestone\nstatus: active\n---\n# Snapshot\n\n### task: snap-task\n```yaml\ntask_ref: snap-task\ntarget: Snapshot\nscope: [src/lib.rs]\n```\n"),
         (
             ".acdd/profile.yaml",
             "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ngates:\n  - tasks:\n      gates:\n        - id: verify\n          role: worker\n          proof: none\n",
         ),
     ]);
-    assert!(
-        std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(workspace.root())
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(workspace.root())
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        std::process::Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(workspace.root())
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        std::process::Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(workspace.root())
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        std::process::Command::new("git")
-            .args(["commit", "-q", "-m", "init"])
-            .current_dir(workspace.root())
-            .status()
-            .unwrap()
-            .success()
-    );
+    let git = |args: &[&str]| {
+        acdd_core::git::run_git_stdout(workspace.root(), args, None, &[], None)
+            .unwrap_or_else(|err| panic!("git {args:?} failed: {err}"))
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
 
     let mut client = harness.expect("MCP initialize");
     let (_, removed_mcp) = client
@@ -71,7 +42,7 @@ fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque
     let started = client
         .payload(
             "acdd_state",
-            json!({"action": "start", "goal": "blackboard serialization contract", "in_place": true}),
+            json!({"action": "start", "spec_path": "docs/milestones/010-snapshot.md", "in_place": true}),
         )
         .expect("start run");
     let run_id = started["run"]["run_id"]
@@ -79,6 +50,91 @@ fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque
         .or_else(|| started["run_id"].as_str())
         .unwrap()
         .to_owned();
+
+    let r1 = "original\n";
+    let r2 = "revision-two\n";
+    let snapshot_refs = || {
+        acdd_core::git::run_git_stdout(
+            workspace.root(),
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/acdd/snapshots",
+            ],
+            None,
+            &[],
+            None,
+        )
+        .expect("list snapshot refs")
+    };
+    for (rev, body) in [(1, r1), (2, r2)] {
+        workspace.write("src/lib.rs", body);
+        let result = client.payload("acdd_state", json!({
+            "action": "snapshot", "snapshot_action": "save", "task_ref": "snap-task", "rev": rev, "run": &run_id, "format": "json"
+        })).expect("snapshot save");
+        assert!(result.to_string().contains(&format!("/snap-task/r{rev}")), "save r{rev}: {result}");
+    }
+    let refs_before_missing = snapshot_refs();
+    assert!(
+        refs_before_missing.contains("/snap-task/r1") && refs_before_missing.contains("/snap-task/r2"),
+        "{refs_before_missing}"
+    );
+    let missing = client.payload("acdd_state", json!({
+        "action": "snapshot", "task_ref": "snap-task", "run": &run_id
+    })).expect_err("snapshot_action is required");
+    let missing_text = missing.to_string();
+    assert!(
+        missing_text.contains("ACDD_PROFILE_SCHEMA_INVALID")
+            && missing_text.contains("'snapshot_action' is required for action 'snapshot'"),
+        "{missing_text}"
+    );
+    assert_eq!(
+        snapshot_refs(),
+        refs_before_missing,
+        "omitted snapshot_action must not retarget or add checkpoint refs"
+    );
+    workspace.write("src/lib.rs", "changed\n");
+    let restored = client.payload("acdd_state", json!({
+        "action": "snapshot", "snapshot_action": "restore", "task_ref": "snap-task", "rev": 1, "run": &run_id, "format": "json"
+    })).expect("restore r1");
+    assert!(restored.to_string().contains("/snap-task/r1") && !restored.to_string().contains("/snap-task/r2"), "{restored}");
+    assert_eq!(std::fs::read_to_string(workspace.path("src/lib.rs")).unwrap(), r1);
+    let cleared = client.payload("acdd_state", json!({
+        "action": "snapshot", "snapshot_action": "clear", "task_ref": "snap-task", "run": &run_id, "format": "json"
+    })).expect("clear task");
+    assert!(cleared.to_string().contains("/snap-task/r1"), "{cleared}");
+    assert!(!snapshot_refs().contains("refs/acdd/snapshots/"), "{}", snapshot_refs());
+    let unrestorable = client.payload("acdd_state", json!({
+        "action": "snapshot", "snapshot_action": "restore", "task_ref": "snap-task", "rev": 1, "run": &run_id
+    })).expect_err("cleared revision");
+    assert!(unrestorable.to_string().contains("r1") || unrestorable.to_string().contains("refs/acdd/snapshots"), "{unrestorable}");
+    assert_eq!(
+        std::fs::read_to_string(workspace.path("src/lib.rs")).unwrap(),
+        r1,
+        "failed restore after task clear must preserve the worktree"
+    );
+    workspace.write("src/lib.rs", r2);
+    client.payload("acdd_state", json!({
+        "action": "snapshot", "snapshot_action": "save", "task_ref": "snap-task", "rev": 1, "run": &run_id
+    })).expect("save before all");
+    workspace.write("src/lib.rs", "dirty-all\n");
+    let cleared_all = client.payload("acdd_state", json!({
+        "action": "snapshot", "snapshot_action": "clear", "all": true, "run": &run_id, "format": "json"
+    })).expect("clear all");
+    assert!(cleared_all.to_string().contains("/snap-task/r1"), "{cleared_all}");
+    assert!(!snapshot_refs().contains("refs/acdd/snapshots/"), "{}", snapshot_refs());
+    let unrestorable_all = client.payload("acdd_state", json!({
+        "action": "snapshot", "snapshot_action": "restore", "task_ref": "snap-task", "rev": 1, "run": &run_id
+    })).expect_err("cleared revision after run-wide clear");
+    assert!(
+        unrestorable_all.to_string().contains("r1") || unrestorable_all.to_string().contains("refs/acdd/snapshots"),
+        "{unrestorable_all}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.path("src/lib.rs")).unwrap(),
+        "dirty-all\n",
+        "failed restore after run-wide clear must preserve the worktree"
+    );
 
     let opaque = json!({
         "generation": "opaque-generation-token",

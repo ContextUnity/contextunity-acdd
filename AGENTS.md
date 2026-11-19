@@ -10,6 +10,8 @@
 
 ## Routes
 
+- Task checkpoints: Use `acdd snapshot save|restore|clear` or `acdd_state(action: "snapshot")`; see [task snapshots](docs/reference/tasks.md#task-snapshots).
+
 - Runtime behavior and setup: [README.md](README.md) and [docs](docs/).
 - Architecture and modularity: [src/AGENTS.md](src/AGENTS.md), [architecture](docs/architecture/README.md), and [decisions](docs/adr/README.md).
 - Interfaces: [configuration and tools](docs/reference/README.md), [task operations](docs/reference/tasks.md), [ACDD navigation](docs/reference/acdd.md), and [CLI commands](docs/reference/cli.md).

@@ -316,8 +316,10 @@ fn guide_content_and_surfaces_matrix() {
                     );
                 }
                 assert!(
-                    !persistence.contains("snapshot") && !persistence.contains("save.pre"),
-                    "removed snapshot references must stay absent from persistence guide: {persistence}"
+                    persistence.contains("snapshot")
+                        && persistence.contains("leaf task gates")
+                        && !persistence.contains("save.pre"),
+                    "persistence guide must document leaf-task snapshot save and omit save.pre: {persistence}"
                 );
                 let text = value["verification"].to_string().to_lowercase();
                 for term in [

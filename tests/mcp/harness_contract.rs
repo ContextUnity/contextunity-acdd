@@ -409,18 +409,8 @@ fn mcp_session_context_is_absent_from_schemas_and_rejected_in_json() {
         if name == "acdd_state" {
             let state_schema = schema.to_string();
             assert!(
-                !state_schema.contains("\"snapshot\"") && !state_schema.contains("\"label\""),
-                "acdd_state schema must exclude removed snapshot action/label: {schema}"
-            );
-            let (_, snap_resp) = client
-                .call(
-                    "acdd_state",
-                    json!({"action":"snapshot","worktree":workspace.root()}),
-                )
-                .expect("MCP transport");
-            assert!(
-                snap_resp["error"].is_object() || snap_resp["result"]["isError"] == true,
-                "snapshot action must fail closed: {snap_resp}"
+                state_schema.contains("\"snapshot\"") && !state_schema.contains("\"label\""),
+                "acdd_state schema must expose snapshots without legacy labels: {schema}"
             );
         }
         if name == "acdd_submit" {

@@ -611,7 +611,7 @@ use acdd_state::usecases::{
     ClearReq, ContextReq, DraftReq, ExtendScopeReq, ListReq, NextReq, ReopenReq, RoadmapReq,
     RunReq, ShowReq, StartReq,
     StateCommand, StateCommandOutput, StateQuery, StatusReq, SubmitReq, SubtaskReq, SyncReq,
-    VerifyReq,
+    SnapshotAction, SnapshotReq, VerifyReq,
 };
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
@@ -674,6 +674,23 @@ impl From<CliOutputFormat> for OutputFormat {
 #[derive(Subcommand, Debug)]
 /// Flat `0.6.0` CLI subcommand surface.
 pub enum Command {
+    /// Save, restore, or clear task checkpoints.
+    Snapshot {
+        /// Operation: save, restore, or clear.
+        #[arg(value_parser = ["save", "restore", "clear"])]
+        action: String,
+        /// Task reference.
+        task_ref: Option<String>,
+        /// Clear all task checkpoints.
+        #[arg(long)]
+        all: bool,
+        /// Checkpoint revision.
+        #[arg(long)]
+        rev: Option<u32>,
+        /// Run ID or name.
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Initialize `acdd.yaml`, `.acdd/profile.yaml`, and canonical `.gitignore` rules.
     Init {
         /// Overwrite existing `acdd.yaml` and `.acdd/profile.yaml`.
@@ -1350,6 +1367,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         | Command::Sync { .. }
         | Command::Subtask { .. }
         | Command::Clear { .. }
+        | Command::Snapshot { .. }
         | Command::Run { .. }
         | Command::Tool { .. } => (OperationKind::Task, "acdd_state", None),
         Command::Claim { .. } => (OperationKind::Task, "acdd_claim", None),
@@ -2186,6 +2204,16 @@ impl Cli {
                         )));
                     }
                 },
+                Command::Snapshot { action, task_ref, all, rev, run } => {
+                    let action = serde_json::from_value::<SnapshotAction>(json!(action))?;
+                    state_ctx.command(StateCommand::Snapshot(SnapshotReq {
+                        run,
+                        action,
+                        task_ref: task_ref.as_deref().map(TaskRef::new).transpose()?,
+                        all,
+                        revision: rev,
+                    }))?
+                }
                 Command::Clear {
                     run_id,
                     run,

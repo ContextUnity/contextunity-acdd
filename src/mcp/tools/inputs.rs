@@ -636,6 +636,8 @@ impl WorktreeInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum McpStateAction {
+    /// Save, restore, or clear task checkpoints.
+    Snapshot,
     /// Read-only status of the active run (`StateQuery::Status`).
     Status,
     /// Read-only paginated list of runs and tombstones (`StateQuery::List`).
@@ -683,12 +685,18 @@ impl McpStateAction {
     }
 }
 
-/// Canonical `acdd_state` MCP tool input covering 8 `StateCommand` actions and 7 read-only `StateQuery` actions.
+/// Canonical `acdd_state` MCP tool input covering 9 `StateCommand` actions and 7 read-only `StateQuery` actions.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StateInput {
-    /// State action (`status`, `list`, `show`, `next`, `context`, `observability`, `roadmap`, `start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `clear`, `run`).
+    /// State action (`status`, `list`, `show`, `next`, `context`, `observability`, `roadmap`, `start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `clear`, `run`).
     pub action: McpStateAction,
+    /// Snapshot operation: save, restore, or clear.
+    pub snapshot_action: Option<acdd_state::usecases::SnapshotAction>,
+    /// Clear all run checkpoints.
+    pub all: Option<bool>,
+    /// Snapshot revision.
+    pub rev: Option<u32>,
     /// Optional run ID or run name selector.
     pub run: Option<String>,
     /// Target node cursor (`<gate>`, `<task_ref>`, `<task_ref>.<gate>`).
@@ -729,7 +737,7 @@ pub struct StateInput {
     pub cascade: Option<bool>,
     /// Rebind non-completed gates against the latest resolved profile (`sync`).
     pub rebind_profile: Option<bool>,
-    /// Target task reference (`subtask`).
+    /// Target task reference (`subtask`, `snapshot`).
     pub task_ref: Option<TaskRef>,
     /// Target subtask reference (`subtask`).
     pub subtask_ref: Option<SubtaskRef>,

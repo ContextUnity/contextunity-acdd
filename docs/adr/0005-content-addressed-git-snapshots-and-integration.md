@@ -13,13 +13,13 @@ Accepted.
 
 ## Context
 
-Coupling gate verification to branch commit history (`-p HEAD` or `git merge-base --is-ancestor`) breaks when sibling worktrees modify unrelated files, when `rebase-ff` or `squash` integration rewrites commit SHAs, or when intermediate build gates run before review. Meanwhile, interrupted Git mutations must recover deterministically without a fragile SQLite intent journal or hidden snapshot refs.
+Coupling gate verification to branch commit history (`-p HEAD` or `git merge-base --is-ancestor`) breaks when sibling worktrees modify unrelated files, when `rebase-ff` or `squash` integration rewrites commit SHAs, or when intermediate build gates run before review. Interrupted Git mutations must recover deterministically without a SQLite intent journal.
 
 ## Decision
 
 ### 1. Scoped Candidate `TreeOid` Verification and Explicit Commit Persistence
 
-- **Deterministic scoped `TreeOid` (no snapshot refs)**: Candidate state is verified directly against deterministic Git tree OIDs (`WorkspacePathPolicy::is_candidate_included`) without touching the working branch index, creating `HEAD` commits prematurely, or storing hidden `refs/acdd/snapshots/*` refs. Explicit `acdd snapshot`, `save: snapshot`, and `save.pre` do not exist; `save` / `save.post` support `none | commit` only.
+- **Deterministic scoped `TreeOid`**: Candidate state is verified directly against deterministic Git tree OIDs (`WorkspacePathPolicy::is_candidate_included`) without touching the working branch index or creating `HEAD` commits prematurely. Per-task `refs/acdd/snapshots/<run_id>/<task_ref>/r<rev>` checkpoints are the only snapshot refs; `save.post: snapshot` triggers them declaratively and terminal cleanup removes them. Their commits have no `-p HEAD` ancestry coupling. `save.pre` does not exist.
 - **Content equivalence via `TreeOid`**: Gate proofs, trace freshness (`candidate_tree_before == candidate_tree_after`), `save.immutable: true`, `need:` predecessor bindings, and `TASK_NOT_INTEGRATED` completeness checks compare exact scoped Git tree OIDs (`TreeOid`) rather than branch commit ancestry. Rebase, squash, cherry-pick, and fast-forward merges preserve accepted proofs whenever scoped tree content matches.
 
 ### 2. Declarative `git:` Policy, Atomic Plumbing Commits, and `rebase-ff` Wave Landing
