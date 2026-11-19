@@ -5,13 +5,20 @@ on:
     branches: [main]
   push:
     branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish_nightly:
+        description: 'Publish rolling nightly release when no tag points at HEAD'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -53,3 +60,227 @@ jobs:
         run: |
           cargo run -- docs check
           cargo run -- validate
+
+  decide:
+    name: decide release
+    needs: [test]
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    outputs:
+      mode: ${{ steps.decide.outputs.mode }}
+      tag: ${{ steps.decide.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      EVENT_NAME: ${{ github.event_name }}
+      REF: ${{ github.ref }}
+      PUBLISH_NIGHTLY: ${{ inputs.publish_nightly }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Decide release mode and tag
+        id: decide
+        run: |
+          set -euo pipefail
+          emit() {
+            echo "mode=$1" >> "$GITHUB_OUTPUT"
+            echo "tag=$2" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          highest_stable=$(
+            gh api "repos/$GH_REPO/git/matching-refs/tags/v" --jq '.[].ref | sub("^refs/tags/"; "")' 2>/dev/null \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V \
+              | tail -n 1 || true
+          )
+
+          selected_tag=""
+          if [[ "$REF" == refs/tags/v* ]]; then
+            selected_tag="${REF#refs/tags/}"
+          else
+            main_sha=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')
+            if [ "$main_sha" != "$GITHUB_SHA" ]; then
+              echo "Skipping superseded main build for $GITHUB_SHA (main is at $main_sha)"
+              emit skip ""
+            fi
+            selected_tag=$(
+              git tag --points-at "$GITHUB_SHA" 'v*' \
+                | sort -V \
+                | tail -n 1 || true
+            )
+          fi
+
+          if [ -n "$selected_tag" ]; then
+            if [[ "$selected_tag" != *-* ]] && [ -n "$highest_stable" ] && [ "$highest_stable" != "$selected_tag" ]; then
+              echo "Skipping superseded tag $selected_tag (newer stable tag $highest_stable already exists)"
+              emit skip ""
+            fi
+            asset_count=$(gh release view "$selected_tag" --json assets --jq '.assets | length' 2>/dev/null || echo 0)
+            if [ "$asset_count" -ge 5 ]; then
+              echo "Release $selected_tag already published with $asset_count assets; skipping duplicate build."
+              emit skip ""
+            fi
+            echo "Selected tag release: $selected_tag"
+            emit tag "$selected_tag"
+          fi
+
+          if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$PUBLISH_NIGHTLY" != true ]; then
+            echo "Nightly publication disabled via workflow_dispatch input."
+            emit skip ""
+          fi
+
+          nightly_sha=$(gh api "repos/$GH_REPO/git/ref/tags/nightly" --jq '.object.sha' 2>/dev/null || true)
+          if [ "$nightly_sha" = "$GITHUB_SHA" ]; then
+            echo "Skipping nightly build: nightly tag already matches commit $GITHUB_SHA"
+            emit skip ""
+          fi
+
+          echo "Selected rolling nightly release for $GITHUB_SHA"
+          emit nightly nightly
+
+  build-release:
+    name: build (${{ matrix.target }})
+    needs: [test, decide]
+    if: needs.decide.outputs.mode != 'skip'
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add "$TARGET"
+      - name: Build stripped release
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Package executable and companion skills
+        id: package
+        run: |
+          set -euo pipefail
+          staging=$(mktemp -d)
+          trap 'rm -rf "$staging"' EXIT
+          cp "target/$TARGET/release/acdd" "$staging/"
+          cp -R skills "$staging/skills"
+          test -f "$staging/skills/install.sh"
+          mkdir -p dist
+          archive="contextunity-acdd-$TARGET.tar.gz"
+          tar -czf "dist/$archive" -C "$staging" acdd skills
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" > SHA256SUMS
+          else
+            shasum -a 256 "$archive" > SHA256SUMS
+          fi
+      - name: Upload target package
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish (${{ needs.decide.outputs.tag }})
+    needs: [decide, build-release]
+    if: needs.decide.outputs.mode != 'skip'
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_MODE: ${{ needs.decide.outputs.mode }}
+      RELEASE_TAG: ${{ needs.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download target packages separately
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: artifacts
+      - name: Assemble and verify release assets
+        run: |
+          set -euo pipefail
+          mkdir dist
+          for package in artifacts/release-*; do
+            cp "$package"/*.tar.gz dist/
+            cat "$package/SHA256SUMS" >> dist/SHA256SUMS
+          done
+          test "$(find dist -name '*.tar.gz' | wc -l)" -eq 4
+          test "$(wc -l < dist/SHA256SUMS)" -eq 4
+          cd dist
+          sort -o SHA256SUMS SHA256SUMS
+          sha256sum --check --strict SHA256SUMS
+      - name: Publish tag or rolling nightly
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_MODE" = tag ]; then
+            tag="$RELEASE_TAG"
+            version="${tag#v}"
+            notes_file=$(mktemp)
+            trap 'rm -f "$notes_file"' EXIT
+            python3 - "$version" "$notes_file" <<'PY'
+          import pathlib, re, sys
+          version, out_path = sys.argv[1], sys.argv[2]
+          changelog = pathlib.Path("CHANGELOG.md")
+          if changelog.is_file():
+              text = changelog.read_text(encoding="utf-8")
+              pattern = re.compile(rf"(?ms)^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)")
+              match = pattern.search(text)
+              if match and match.group(1).strip():
+                  pathlib.Path(out_path).write_text(match.group(1).strip() + "\n", encoding="utf-8")
+          PY
+            latest_flag="--latest=true"
+            prerelease_flag=""
+            if [[ "$tag" == *-* ]]; then
+              latest_flag="--latest=false"
+              prerelease_flag="--prerelease"
+            fi
+            if ! gh release view "$tag" >/dev/null 2>&1; then
+              if [ -s "$notes_file" ]; then
+                gh release create "$tag" --verify-tag --title "$tag" --notes-file "$notes_file" $latest_flag $prerelease_flag
+              else
+                gh release create "$tag" --verify-tag --title "$tag" --generate-notes $latest_flag $prerelease_flag
+              fi
+            fi
+          else
+            tag=nightly
+            current=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')
+            if [ "$current" != "$GITHUB_SHA" ]; then
+              echo "Skipping superseded nightly build $GITHUB_SHA"
+              exit 0
+            fi
+            if ! gh release view nightly >/dev/null 2>&1; then
+              gh release create nightly --target "$GITHUB_SHA" --title Nightly \
+                --notes "Rolling build from main at $GITHUB_SHA" --prerelease --latest=false
+            else
+              if gh api "repos/$GH_REPO/git/ref/tags/nightly" >/dev/null 2>&1; then
+                gh api --method PATCH "repos/$GH_REPO/git/refs/tags/nightly" \
+                  -f sha="$GITHUB_SHA" -F force=true
+              else
+                gh api --method POST "repos/$GH_REPO/git/refs" \
+                  -f ref="refs/tags/nightly" -f sha="$GITHUB_SHA"
+              fi
+              gh release edit nightly --target "$GITHUB_SHA" --title Nightly \
+                --notes "Rolling build from main at $GITHUB_SHA" --prerelease --latest=false
+            fi
+          fi
+          gh release upload "$tag" dist/*.tar.gz dist/SHA256SUMS --clobber
