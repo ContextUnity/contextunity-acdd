@@ -135,7 +135,7 @@ When migrating multi-package repositories (such as ContextUnity monorepos with `
 
 ## Reuse Map & Estimated Net Production Footprint (~590–620 LOC)
 
-All core primitives already exist under `INV-SINGLE-OWNER` ([ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md)):
+All core primitives already exist under `INV-SINGLE-OWNER` ([ADR 0003](../../adr/0003-unified-profile-graph-and-state-machine.md)):
 
 | Component | Reused Canonical Owners | Est. Net Prod LOC |
 |---|---|---:|

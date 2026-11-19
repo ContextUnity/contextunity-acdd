@@ -36,3 +36,13 @@ scope_args_by_pattern:
   "tests/mcp_context/**/*.rs": "--test mcp"
   "tests/query_context/**/*.rs": "--test query_context"
   "tests/receivers/**/*.rs": "--test linker"
+
+guidance:
+  repo.tests: "Follow `tests/AGENTS.md` and `docs/architecture/test-harness.md`: keep `RunHarness::in_memory()` / unit scenarios `< 5 ms`, focused integration tests `< 1 s`, `tests/acdd < 15 s`, set `commit.gpgsign=false` in fixture Git setups, and verify zero `/tmp/contextunity-test-*` leaks (`BEFORE == AFTER`)."
+
+gates_patch:
+  - id: tasks.build
+    guidance: [task.code, core.execution, code.principles, code.tools, repo.tests, hitl.pro]
+  - id: tasks.review
+    guidance: [task.review, core.review, code.principles, code.tools, repo.tests, hitl.pro]
+
