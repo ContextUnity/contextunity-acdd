@@ -145,6 +145,23 @@ pub fn open_confined(
     options.open(target)
 }
 
+/// Atomically stage and publish a new file confined within `root` without overwriting
+/// any existing target (`AlreadyExists` if the target already exists).
+pub fn write_new_confined(root: &Path, relative: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let target = checked_child(root, relative)?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| path_error("missing parent"))?;
+    ensure_confined_dir_all_abs(parent).map_err(std::io::Error::other)?;
+    let temporary = parent.join(format!(
+        ".acdd-new-{}-{}",
+        std::process::id(),
+        NONCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    commit_atomic_temp(&target, &temporary, bytes, Some(false), true, false)
+        .map_err(|err| err.downcast::<std::io::Error>().unwrap_or_else(std::io::Error::other))
+}
+
 /// Validates that `path` and its existing ancestor directories do not traverse a
 /// non-system-root symlink, returning `path` with its parent canonicalized so
 /// `SQLITE_OPEN_NOFOLLOW` can enforce `O_NOFOLLOW` on the final file even under
@@ -239,7 +256,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
         std::process::id(),
         NONCE.fetch_add(1, Ordering::Relaxed)
     ));
-    commit_atomic_temp(&absolute, &temporary, bytes, Some(executable), true)
+    commit_atomic_temp(&absolute, &temporary, bytes, Some(executable), true, true)
 }
 
 /// Atomically replace a file with the supplied contents.
@@ -261,7 +278,7 @@ pub fn atomic_replace(path: &Path, contents: &[u8]) -> Result<()> {
         std::process::id(),
         NONCE.fetch_add(1, Ordering::Relaxed)
     ));
-    commit_atomic_temp(&absolute, &temporary, contents, None, true)
+    commit_atomic_temp(&absolute, &temporary, contents, None, true, true)
 }
 
 fn commit_atomic_temp(
@@ -270,6 +287,7 @@ fn commit_atomic_temp(
     bytes: &[u8],
     executable: Option<bool>,
     sync_parent: bool,
+    replace_existing: bool,
 ) -> Result<()> {
     let result = (|| {
         #[cfg(unix)]
@@ -302,8 +320,7 @@ fn commit_atomic_temp(
         }
         file.sync_all()?;
         ensure_target_not_symlink(path)?;
-        fs::rename(temporary, path)?;
-        if sync_parent {
+        let parent_file = if sync_parent {
             let parent = path.parent().context("missing parent")?;
             let mut parent_opts = OpenOptions::new();
             parent_opts.read(true);
@@ -312,7 +329,26 @@ fn commit_atomic_temp(
                 use std::os::unix::fs::OpenOptionsExt;
                 parent_opts.custom_flags(libc::O_NOFOLLOW);
             }
-            parent_opts.open(parent)?.sync_all()?;
+            Some(parent_opts.open(parent)?)
+        } else {
+            None
+        };
+        if replace_existing {
+            fs::rename(temporary, path)?;
+            if let Some(pf) = parent_file {
+                pf.sync_all()?;
+            }
+        } else {
+            fs::hard_link(temporary, path)?;
+            if let Some(pf) = parent_file {
+                if let Err(err) = pf.sync_all() {
+                    if same_file_identity(path, temporary) {
+                        let _ = fs::remove_file(path);
+                    }
+                    return Err(err.into());
+                }
+            }
+            let _ = fs::remove_file(temporary);
         }
         Ok(())
     })();
@@ -320,6 +356,22 @@ fn commit_atomic_temp(
         let _ = fs::remove_file(temporary);
     }
     result
+}
+
+fn same_file_identity(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (fs::symlink_metadata(a), fs::symlink_metadata(b)) {
+            (Ok(ma), Ok(mb)) => ma.dev() == mb.dev() && ma.ino() == mb.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        false
+    }
 }
 
 /// Resolve a path by canonicalizing its deepest existing ancestor and appending

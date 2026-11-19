@@ -235,7 +235,7 @@ fn is_spec_collection_path(rel_str: &str, adapter: &Adapter) -> bool {
         || adapter
             .specs
             .values()
-            .any(|spec| dir_pattern_matches(rel_str, &spec.path))
+            .any(|spec| spec.matches_rel_path(rel_str))
 }
 
 /// Performs language.
@@ -1295,7 +1295,8 @@ mod tests {
         adapter.specs.insert(
             "rfcs".to_owned(),
             SpecCollectionConfig {
-                path: "docs/rfcs".to_owned(),
+                path: Some("docs/rfcs".to_owned()),
+                paths: Vec::new(),
                 profile: None,
                 prefixes: vec!["RFC".to_owned()],
                 digits: 3,

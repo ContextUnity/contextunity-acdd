@@ -278,6 +278,21 @@ fn compute_task_waves(
         }
 
         if eligible.is_empty() {
+            let blocked_on_external = remaining.keys().any(|tref| {
+                snapshot.dependencies.iter().any(|dep| {
+                    &dep.task_ref == tref
+                        && dep.depends_on_run_id != snapshot.run.run_id
+                        && !is_dep_satisfied_against_statuses(
+                            &snapshot.run.run_id,
+                            dep,
+                            |ref_id| completed.contains(ref_id),
+                            obs,
+                        )
+                })
+            });
+            if blocked_on_external {
+                break;
+            }
             return Err(StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
                 "remaining tasks have unsatisfied or cyclic dependencies",

@@ -543,11 +543,17 @@ pub fn list_git_tree_files(
             format!("invalid tree/commit reference '{tree_or_commit}'"),
         ));
     }
-    let Some(norm_dir) = normalize_rel_path(dir_rel) else {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("invalid repository-relative directory '{dir_rel}'"),
-        ));
+    let trimmed_dir = dir_rel.trim();
+    let dir_prefix = if trimmed_dir.is_empty() || trimmed_dir == "." {
+        None
+    } else {
+        let Some(norm_dir) = normalize_rel_path(trimmed_dir) else {
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("invalid repository-relative directory '{dir_rel}'"),
+            ));
+        };
+        Some(format!("{norm_dir}/"))
     };
     let tree_spec = format!("{trimmed}^{{tree}}");
     run_git_stdout(
@@ -556,14 +562,22 @@ pub fn list_git_tree_files(
         None,
         ErrorCode::ExternalGitDrift,
     )?;
-    let dir_prefix = format!("{norm_dir}/");
-    let out = run_git_checked(
-        worktree,
-        &["ls-tree", "-z", "--full-tree", trimmed, "--", &dir_prefix],
-        None,
-        None,
-        ErrorCode::ExternalGitDrift,
-    )?;
+    let out = match dir_prefix {
+        Some(ref prefix) => run_git_checked(
+            worktree,
+            &["ls-tree", "-r", "-z", "--full-tree", trimmed, "--", prefix],
+            None,
+            None,
+            ErrorCode::ExternalGitDrift,
+        )?,
+        None => run_git_checked(
+            worktree,
+            &["ls-tree", "-r", "-z", "--full-tree", trimmed],
+            None,
+            None,
+            ErrorCode::ExternalGitDrift,
+        )?,
+    };
     let mut files = Vec::new();
     for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
         let Some(tab) = record.iter().position(|b| *b == b'\t') else {

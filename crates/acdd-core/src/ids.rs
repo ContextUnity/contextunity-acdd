@@ -154,6 +154,21 @@ define_ident_newtype!(
     TaskRef,
     "task_ref"
 );
+
+impl TaskRef {
+    /// Internal sentinel representing a whole-spec external dependency (`<spec_id>` or `<ws>/<spec_id>`).
+    pub const WHOLE_SPEC: &'static str = "*";
+
+    /// Construct the whole-spec dependency sentinel `TaskRef`.
+    pub fn whole_spec() -> Self {
+        Self(Self::WHOLE_SPEC.to_owned())
+    }
+
+    /// Return `true` if this `TaskRef` represents a whole-spec dependency rather than a specific task.
+    pub fn is_whole_spec(&self) -> bool {
+        self.0 == Self::WHOLE_SPEC
+    }
+}
 define_ident_newtype!(
     /// Validated reference identifier for a subtask inside a task.
     SubtaskRef,

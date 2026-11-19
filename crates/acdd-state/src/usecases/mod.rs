@@ -71,7 +71,7 @@ impl StateEngineConfig {
         let spec_collection_paths = self
             .spec_collections
             .values()
-            .map(|c| c.path.clone())
+            .flat_map(|c| c.patterns().into_iter().map(str::to_owned))
             .collect();
         SqliteBackendOptions {
             db_path,
@@ -139,7 +139,7 @@ impl StateEngine {
         let collection_paths: Vec<String> = config
             .spec_collections
             .values()
-            .map(|c| c.path.clone())
+            .flat_map(|c| c.patterns().into_iter().map(str::to_owned))
             .collect();
         let backend = SqliteStateBackend::open_with_reconciler(
             config.sqlite_options(backup_dir),

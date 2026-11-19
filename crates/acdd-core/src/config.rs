@@ -45,17 +45,222 @@ fn default_profiles_dirs() -> Vec<String> {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SpecCollectionConfig {
-    /// Workspace-relative directory path containing spec documents.
-    pub path: String,
+    /// Legacy single workspace-relative directory path containing spec documents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Multi-entry workspace-relative paths or glob patterns (e.g. `extensions/*/docs/milestones`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
     /// Optional explicit gate profile for specs in this collection (else workspace default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
-    /// Allowed spec ID prefixes (e.g. `["AC"]`, `["PLAN"]`).
+    /// Allowed spec ID prefixes (e.g. `["AC"]`).
     #[serde(default)]
     pub prefixes: Vec<String>,
     /// Zero-padded numeric suffix width for drafted spec IDs.
     #[serde(default = "default_spec_digits")]
     pub digits: usize,
+}
+
+impl SpecCollectionConfig {
+    /// Return all configured normalized patterns (`path` followed by `paths`, deduplicated in order).
+    pub fn patterns(&self) -> Vec<&str> {
+        let mut out = Vec::new();
+        if let Some(ref p) = self.path {
+            if !p.is_empty() {
+                out.push(p.as_str());
+            }
+        }
+        for p in &self.paths {
+            if !p.is_empty() && !out.contains(&p.as_str()) {
+                out.push(p.as_str());
+            }
+        }
+        out
+    }
+
+    /// Return the first literal non-glob pattern suitable as a target directory for `acdd draft`.
+    pub fn default_draft_dir(&self) -> Option<&str> {
+        self.patterns().into_iter().find(|pat| {
+            !pat.contains('*') && !pat.contains('?') && !pat.contains('{') && !pat.contains('[')
+        })
+    }
+
+    /// Return `true` if `rel` (a workspace-relative file or directory path) falls under any pattern.
+    pub fn matches_rel_path(&self, rel: &str) -> bool {
+        let trimmed = rel.trim().replace('\\', "/");
+        let norm = trimmed.strip_prefix("./").unwrap_or(&trimmed).trim_end_matches('/');
+        if norm.is_empty() {
+            return false;
+        }
+        self.patterns().into_iter().any(|pat| {
+            crate::path_policy::glob_matches(pat, norm)
+                || crate::path_policy::glob_matches(&format!("{pat}/**"), norm)
+        })
+    }
+
+    /// Resolve the owning concrete collection root directory for a matched workspace-relative spec path.
+    ///
+    /// For example, `docs/milestones/team/target.md` under `docs/milestones` (or `docs/milestones/**`)
+    /// resolves to `docs/milestones`, and `extensions/pkg/docs/milestones/team/target.md` under
+    /// `extensions/*/docs/milestones` resolves to `extensions/pkg/docs/milestones`.
+    pub fn matched_concrete_root(&self, rel: &str) -> Option<String> {
+        let trimmed = rel.trim().replace('\\', "/");
+        let norm = trimmed.strip_prefix("./").unwrap_or(&trimmed).trim_end_matches('/');
+        if norm.is_empty() {
+            return None;
+        }
+        let rel_segs: Vec<&str> = norm.split('/').collect();
+        let max_dir_segs = rel_segs.len().saturating_sub(1).max(1);
+        let mut best: Option<String> = None;
+        for pat in self.patterns() {
+            for variant in crate::path_policy::expand_glob_braces(pat) {
+                let mut dir_segs: Vec<&str> = variant.split('/').collect();
+                while dir_segs.last() == Some(&"**") && dir_segs.len() > 1 {
+                    dir_segs.pop();
+                }
+                let dir_pattern = dir_segs.join("/");
+                if let Some(k) = (1..=max_dir_segs).find(|&k| {
+                    !rel_segs[..k].contains(&"archive")
+                        && crate::path_policy::glob_matches(&dir_pattern, &rel_segs[..k].join("/"))
+                }) {
+                    let root = rel_segs[..k].join("/");
+                    if best.as_ref().is_none_or(|cur| root.len() > cur.len()) {
+                        best = Some(root);
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    /// Return `true` if `rel_posix` is a direct `.md` child of `<concrete_root>/archive/`
+    /// owned by this collection.
+    pub fn is_direct_archive_file(&self, rel_posix: &str) -> bool {
+        let trimmed = rel_posix.trim().replace('\\', "/");
+        let norm = trimmed.strip_prefix("./").unwrap_or(&trimmed);
+        if !norm.ends_with(".md") {
+            return false;
+        }
+        let Some(archive_dir) = Path::new(norm)
+            .parent()
+            .filter(|p| p.file_name().and_then(|n| n.to_str()) == Some("archive"))
+        else {
+            return false;
+        };
+        let Some(root_rel) = archive_dir
+            .parent()
+            .and_then(|p| p.to_str())
+            .filter(|s| !s.is_empty())
+        else {
+            return false;
+        };
+        self.matched_concrete_root(norm).as_deref() == Some(root_rel)
+    }
+
+    /// Expand all configured patterns into deterministic, sorted existing directories confined to `root`.
+    ///
+    /// Non-existent literal directories are omitted gracefully; symlinks along literal paths
+    /// or escaping `root` fail closed, and wildcard (`*` / `**`) expansion never follows symlinks.
+    pub fn resolve_dirs(&self, root: &Path) -> std::io::Result<Vec<PathBuf>> {
+        let mut dirs = BTreeSet::new();
+        for pat in self.patterns() {
+            for variant in crate::path_policy::expand_glob_braces(pat) {
+                let norm = normalize_spec_collection_path(&variant)?;
+                let segs: Vec<&str> = norm.split('/').collect();
+                expand_spec_dir_segments(root, Path::new(""), &segs, &mut dirs)?;
+            }
+        }
+        Ok(dirs.into_iter().collect())
+    }
+}
+
+fn expand_spec_dir_segments(
+    root: &Path,
+    current_rel: &Path,
+    segs: &[&str],
+    out: &mut BTreeSet<PathBuf>,
+) -> std::io::Result<()> {
+    if segs.is_empty() {
+        if current_rel.as_os_str().is_empty()
+            || current_rel
+                .components()
+                .any(|c| c.as_os_str() == "archive")
+        {
+            return Ok(());
+        }
+        let candidate = checked_child(root, current_rel)?;
+        match fs::symlink_metadata(&candidate) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(error(format!(
+                    "spec collection '{}' must not be a symlink",
+                    current_rel.to_string_lossy()
+                )));
+            }
+            Ok(meta) if meta.is_dir() => {
+                out.insert(candidate);
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+        return Ok(());
+    }
+
+    let (first, rest) = (segs[0], &segs[1..]);
+    if first == "**" {
+        expand_spec_dir_segments(root, current_rel, rest, out)?;
+        let base = if current_rel.as_os_str().is_empty() {
+            root.to_path_buf()
+        } else {
+            checked_child(root, current_rel)?
+        };
+        if let Ok(entries) = fs::read_dir(&base) {
+            for entry in entries.flatten() {
+                if entry.file_name() == "archive" {
+                    continue;
+                }
+                if let Ok(ft) = entry.file_type() {
+                    if !ft.is_symlink() && ft.is_dir() {
+                        expand_spec_dir_segments(
+                            root,
+                            &current_rel.join(entry.file_name()),
+                            segs,
+                            out,
+                        )?;
+                    }
+                }
+            }
+        }
+    } else if first.contains('*') || first.contains('?') {
+        let base = if current_rel.as_os_str().is_empty() {
+            root.to_path_buf()
+        } else {
+            checked_child(root, current_rel)?
+        };
+        if let Ok(entries) = fs::read_dir(&base) {
+            for entry in entries.flatten() {
+                if entry.file_name() == "archive" {
+                    continue;
+                }
+                let Ok(ft) = entry.file_type() else {
+                    continue;
+                };
+                if ft.is_symlink() || !ft.is_dir() {
+                    continue;
+                }
+                let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                if crate::path_policy::glob_matches(first, &name) {
+                    expand_spec_dir_segments(root, &current_rel.join(name), rest, out)?;
+                }
+            }
+        }
+    } else {
+        expand_spec_dir_segments(root, &current_rel.join(first), rest, out)?;
+    }
+    Ok(())
 }
 
 /// Returns the default `specs:` collections (`milestones` and `plans`).
@@ -64,7 +269,8 @@ pub fn default_specs() -> BTreeMap<String, SpecCollectionConfig> {
         (
             "milestones".to_owned(),
             SpecCollectionConfig {
-                path: "docs/milestones".to_owned(),
+                path: Some("docs/milestones".to_owned()),
+                paths: Vec::new(),
                 profile: None,
                 prefixes: vec!["AC".to_owned()],
                 digits: DEFAULT_SPEC_DIGITS,
@@ -73,9 +279,10 @@ pub fn default_specs() -> BTreeMap<String, SpecCollectionConfig> {
         (
             "plans".to_owned(),
             SpecCollectionConfig {
-                path: "docs/plans".to_owned(),
+                path: Some("docs/plans".to_owned()),
+                paths: Vec::new(),
                 profile: None,
-                prefixes: vec!["PLAN".to_owned()],
+                prefixes: Vec::new(),
                 digits: DEFAULT_SPEC_DIGITS,
             },
         ),
@@ -89,9 +296,9 @@ fn normalize_spec_collection_path(raw: &str) -> std::io::Result<String> {
         .trim_start_matches("./")
         .trim_end_matches('/')
         .to_owned();
-    if normalized.is_empty() || !crate::fs::is_normalized_relative(Path::new(&normalized)) {
+    if normalized.is_empty() || !crate::path_policy::is_valid_scope_glob(&normalized) {
         return Err(error(format!(
-            "spec collection path '{raw}' must be a normalized workspace-relative path"
+            "spec collection path '{raw}' must be a normalized workspace-relative path or glob"
         )));
     }
     Ok(normalized)
@@ -111,18 +318,30 @@ fn validate_and_normalize_specs(
                 cfg.digits
             )));
         }
-        cfg.path = normalize_spec_collection_path(&cfg.path)?;
-        let parts: Vec<String> = cfg.path.split('/').map(str::to_owned).collect();
-        normalized_entries.push((name.clone(), parts));
+        if let Some(ref mut p) = cfg.path {
+            *p = normalize_spec_collection_path(p)?;
+        }
+        for p in &mut cfg.paths {
+            *p = normalize_spec_collection_path(p)?;
+        }
+        let pats: Vec<String> = cfg.patterns().into_iter().map(str::to_owned).collect();
+        if pats.is_empty() {
+            return Err(error(format!(
+                "specs.{name} must configure 'path' or non-empty 'paths'"
+            )));
+        }
+        normalized_entries.push((name.clone(), pats));
     }
-    for (i, (left_name, left_parts)) in normalized_entries.iter().enumerate() {
-        for (right_name, right_parts) in normalized_entries.iter().skip(i + 1) {
-            if left_parts.starts_with(right_parts) || right_parts.starts_with(left_parts) {
-                return Err(error(format!(
-                    "specs.{left_name}.path '{}' overlaps specs.{right_name}.path '{}' by path components",
-                    left_parts.join("/"),
-                    right_parts.join("/")
-                )));
+    for (i, (left_name, left_pats)) in normalized_entries.iter().enumerate() {
+        for (right_name, right_pats) in normalized_entries.iter().skip(i + 1) {
+            for pat_a in left_pats {
+                for pat_b in right_pats {
+                    if crate::path_policy::patterns_overlap(pat_a, pat_b) {
+                        return Err(error(format!(
+                            "specs.{left_name} pattern '{pat_a}' overlaps specs.{right_name} pattern '{pat_b}'"
+                        )));
+                    }
+                }
             }
         }
     }
@@ -470,9 +689,12 @@ pub struct Adapter {
 }
 
 impl Adapter {
-    /// Returns all configured spec collection directory paths (`specs.*.path`).
+    /// Returns all configured spec collection directory patterns (`specs.*.path` / `specs.*.paths`).
     pub fn spec_paths(&self) -> Vec<String> {
-        self.specs.values().map(|s| s.path.clone()).collect()
+        self.specs
+            .values()
+            .flat_map(|s| s.patterns().into_iter().map(str::to_owned))
+            .collect()
     }
 
     /// Resolves the configured `state_db` path against the primary worktree root.
@@ -811,14 +1033,14 @@ fn load_adapter_inner(
 
     let code_enabled = modules.is_enabled("code");
     let docs_enabled = modules.is_enabled("docs");
-    let specs_paths: BTreeMap<&str, &str> = specs
+    let specs_paths: BTreeMap<&str, Vec<&str>> = specs
         .iter()
-        .map(|(k, v)| (k.as_str(), v.path.as_str()))
+        .map(|(k, v)| (k.as_str(), v.patterns()))
         .collect();
     let default_specs_map = default_specs();
-    let default_specs_paths: BTreeMap<&str, &str> = default_specs_map
+    let default_specs_paths: BTreeMap<&str, Vec<&str>> = default_specs_map
         .iter()
-        .map(|(k, v)| (k.as_str(), v.path.as_str()))
+        .map(|(k, v)| (k.as_str(), v.patterns()))
         .collect();
     let identity_is_empty = identity
         .as_ref()
@@ -968,11 +1190,11 @@ fn load_adapter_inner(
 
     let milestones = specs
         .get("milestones")
-        .map(|cfg| vec![cfg.path.clone()])
+        .map(|cfg| cfg.patterns().into_iter().map(str::to_owned).collect())
         .unwrap_or_else(|| vec!["docs/milestones".into()]);
     let plans = specs
         .get("plans")
-        .map(|cfg| vec![cfg.path.clone()])
+        .map(|cfg| cfg.patterns().into_iter().map(str::to_owned).collect())
         .unwrap_or_else(|| vec!["docs/plans".into()]);
 
     Ok(StrictAdapterReport {
@@ -1408,10 +1630,11 @@ mod tests {
                 .len(),
             "DEFAULT_IGNORED_NAMES must not contain duplicates"
         );
-        assert_eq!(defaults.specs["milestones"].path, "docs/milestones");
+        assert_eq!(defaults.specs["milestones"].path.as_deref(), Some("docs/milestones"));
         assert_eq!(defaults.specs["milestones"].profile, None);
-        assert_eq!(defaults.specs["plans"].path, "docs/plans");
+        assert_eq!(defaults.specs["plans"].path.as_deref(), Some("docs/plans"));
         assert_eq!(defaults.specs["plans"].profile, None);
+        assert!(defaults.specs["plans"].prefixes.is_empty());
         assert_eq!(defaults.profiles_dirs, [".acdd/profiles", "docs/workflows"]);
         assert_eq!(defaults.state_db, ".acdd/state.sqlite");
         assert_eq!(defaults.retain_traces, 20);
@@ -1715,6 +1938,133 @@ linked_workspaces:
             assert!(
                 read_policy_from_value(&dir, &tampered).is_err(),
                 "persisted symlink external adapter_path must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn spec_collection_multi_paths_globs_and_confinement() {
+        let dir = crate::fs::ScopedTempDir::create("acdd_spec_multi_paths").unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("docs/milestones")).unwrap();
+        std::fs::create_dir_all(root.join("extensions/beta/docs/milestones")).unwrap();
+        std::fs::create_dir_all(root.join("extensions/alpha/docs/milestones")).unwrap();
+        std::fs::create_dir_all(root.join("docs/plans")).unwrap();
+
+        std::fs::write(
+            root.join("acdd.yaml"),
+            "roots: [.]\nspecs:\n  milestones:\n    paths:\n      - docs/milestones\n      - extensions/*/docs/milestones\n    prefixes: [AC]\n    digits: 3\n  plans:\n    path: docs/plans\n    prefixes: []\n    digits: 3\n",
+        )
+        .unwrap();
+
+        let adapter = load_adapter(root, None).unwrap();
+        let ms = &adapter.specs["milestones"];
+        assert_eq!(
+            ms.patterns(),
+            vec!["docs/milestones", "extensions/*/docs/milestones"]
+        );
+        assert_eq!(ms.default_draft_dir(), Some("docs/milestones"));
+        assert!(ms.matches_rel_path("docs/milestones/AC-001.md"));
+        assert!(ms.matches_rel_path("extensions/alpha/docs/milestones/AC-002.md"));
+        assert!(!ms.matches_rel_path("docs/plans/my-plan.md"));
+        assert!(adapter.specs["plans"].prefixes.is_empty());
+
+        let dirs = ms.resolve_dirs(root).unwrap();
+        assert_eq!(
+            dirs,
+            vec![
+                root.join("docs/milestones"),
+                root.join("extensions/alpha/docs/milestones"),
+                root.join("extensions/beta/docs/milestones"),
+            ]
+        );
+
+        let missing_col = SpecCollectionConfig {
+            path: Some("docs/nonexistent".to_owned()),
+            paths: Vec::new(),
+            profile: None,
+            prefixes: Vec::new(),
+            digits: 3,
+        };
+        assert!(missing_col.resolve_dirs(root).unwrap().is_empty());
+
+        // Recursive `**` glob excludes `archive/` directories and `matched_concrete_root` resolves owning collection root.
+        std::fs::create_dir_all(root.join("docs/milestones/archive")).unwrap();
+        std::fs::create_dir_all(root.join("docs/milestones/team")).unwrap();
+        let rec_col = SpecCollectionConfig {
+            path: Some("docs/milestones/**".to_owned()),
+            paths: Vec::new(),
+            profile: None,
+            prefixes: vec!["AC".to_owned()],
+            digits: 3,
+        };
+        let rec_dirs = rec_col.resolve_dirs(root).unwrap();
+        assert!(!rec_dirs.contains(&root.join("docs/milestones/archive")));
+        assert!(rec_dirs.contains(&root.join("docs/milestones/team")));
+        assert_eq!(
+            ms.matched_concrete_root("docs/milestones/team/target.md").as_deref(),
+            Some("docs/milestones")
+        );
+        assert_eq!(
+            ms.matched_concrete_root("extensions/alpha/docs/milestones/team/target.md")
+                .as_deref(),
+            Some("extensions/alpha/docs/milestones")
+        );
+        assert_eq!(
+            rec_col.matched_concrete_root("docs/milestones/team/target.md").as_deref(),
+            Some("docs/milestones")
+        );
+        let deep_col = SpecCollectionConfig {
+            path: Some("extensions/**/docs/milestones/**".to_owned()),
+            paths: Vec::new(),
+            profile: None,
+            prefixes: vec!["AC".to_owned()],
+            digits: 3,
+        };
+        assert_eq!(
+            deep_col
+                .matched_concrete_root("extensions/pkg/docs/milestones/team/target.md")
+                .as_deref(),
+            Some("extensions/pkg/docs/milestones")
+        );
+
+        // Invalid pattern matrix must fail closed.
+        for bad_yaml in [
+            "roots: [.]\nspecs:\n  milestones:\n    paths: []\n",
+            "roots: [.]\nspecs:\n  milestones:\n    path: ../outside\n",
+            "roots: [.]\nspecs:\n  milestones:\n    path: /abs/path\n",
+            "roots: [.]\nspecs:\n  milestones:\n    paths: [docs/{unclosed]\n",
+            "roots: [.]\nspecs:\n  a:\n    path: docs/specs\n  b:\n    path: docs/specs/sub\n",
+        ] {
+            std::fs::write(root.join("acdd.yaml"), bad_yaml).unwrap();
+            assert!(
+                load_adapter(root, None).is_err(),
+                "expected error for:\n{bad_yaml}"
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            let outside = crate::fs::ScopedTempDir::create("acdd_spec_outside").unwrap();
+            std::fs::create_dir_all(outside.path().join("docs/milestones")).unwrap();
+            std::os::unix::fs::symlink(outside.path(), root.join("extensions/evil")).unwrap();
+            let dirs_after_symlink = ms.resolve_dirs(root).unwrap();
+            assert_eq!(dirs_after_symlink.len(), 3);
+
+            use std::os::unix::fs::PermissionsExt;
+            let wx_dir = root.join("wx-only");
+            std::fs::create_dir_all(&wx_dir).unwrap();
+            std::fs::set_permissions(&wx_dir, std::fs::Permissions::from_mode(0o300)).unwrap();
+            let res = crate::fs::write_new_confined(
+                root,
+                Path::new("wx-only/review-probe.md"),
+                b"probe",
+            );
+            std::fs::set_permissions(&wx_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(res.is_err(), "0o300 dir must fail before publishing target");
+            assert!(
+                !wx_dir.join("review-probe.md").exists(),
+                "failed write_new_confined must not leave stranded target"
             );
         }
     }

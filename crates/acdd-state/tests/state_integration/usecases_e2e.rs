@@ -603,7 +603,8 @@ gates:
     audit_cfg.spec_collections.insert(
         "plans".to_owned(),
         acdd_core::config::SpecCollectionConfig {
-            path: "docs/plans".to_owned(),
+            path: Some("docs/plans".to_owned()),
+            paths: Vec::new(),
             profile: None,
             prefixes: vec!["PLAN".to_owned()],
             digits: 3,

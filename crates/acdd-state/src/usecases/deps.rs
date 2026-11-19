@@ -16,7 +16,6 @@ use acdd_core::config::{load_adapter, resolve_state_db_path, Adapter, SpecCollec
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::{canonical_root, checked_child};
 use acdd_core::ids::{CommitOid, RunId, TaskRef};
-use acdd_core::path_policy::normalize_rel_path;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,15 +38,24 @@ impl DepValidationIssue {
     }
 }
 
-/// Parse a `TaskSpec.depends_on` entry (`<task_ref>`, `<run_id>:<task_ref>`, or `<ws_alias>/<run_id>:<task_ref>`).
+/// Parse a `TaskSpec.depends_on` entry (`<task_ref>`, `<spec_id>`, `<ws>/<spec_id>`, `<spec_id>:<task_ref>`, or `<ws>/<spec_id>:<task_ref>`).
 pub fn parse_task_dependency(
     raw: &str,
     current_workspace: &str,
     current_run_id: &RunId,
     linked_workspaces: &BTreeMap<String, PathBuf>,
     spec_repos: &BTreeMap<String, PathBuf>,
+    local_task_refs: &BTreeSet<&str>,
 ) -> Result<MachineTaskDep, StateError> {
-    parse_task_dependency_with_db(raw, current_workspace, current_run_id, linked_workspaces, spec_repos, None)
+    parse_task_dependency_with_db(
+        raw,
+        current_workspace,
+        current_run_id,
+        linked_workspaces,
+        spec_repos,
+        local_task_refs,
+        None,
+    )
 }
 
 pub(crate) fn parse_task_dependency_with_db(
@@ -56,6 +64,7 @@ pub(crate) fn parse_task_dependency_with_db(
     current_run_id: &RunId,
     linked_workspaces: &BTreeMap<String, PathBuf>,
     spec_repos: &BTreeMap<String, PathBuf>,
+    local_task_refs: &BTreeSet<&str>,
     local_db: Option<(&Path, &Path)>,
 ) -> Result<MachineTaskDep, StateError> {
     let trimmed = raw.trim();
@@ -89,11 +98,32 @@ pub(crate) fn parse_task_dependency_with_db(
                 depends_on_ref: tref,
             })
         }
-    } else {
+    } else if let Some((ws_alias, spec_part)) = trimmed.split_once('/') {
+        let canon_ws = resolve_linked_workspace_root(
+            ws_alias,
+            trimmed,
+            linked_workspaces,
+            spec_repos,
+        )?;
+        let db = local_db.filter(|(primary, _)| same_repository(primary, &canon_ws)).map(|(_, db)| db);
+        let rid = resolve_external_run_id(&canon_ws, spec_part, db)?;
+        Ok(MachineTaskDep {
+            depends_on_workspace: canon_ws.to_string_lossy().into_owned(),
+            depends_on_run_id: rid,
+            depends_on_ref: TaskRef::whole_spec(),
+        })
+    } else if local_task_refs.contains(trimmed) {
         Ok(MachineTaskDep {
             depends_on_workspace: current_workspace.to_owned(),
             depends_on_run_id: current_run_id.clone(),
             depends_on_ref: TaskRef::new(trimmed)?,
+        })
+    } else {
+        let rid = resolve_external_run_id(Path::new(current_workspace), trimmed, local_db.map(|(_, db)| db))?;
+        Ok(MachineTaskDep {
+            depends_on_workspace: current_workspace.to_owned(),
+            depends_on_run_id: rid,
+            depends_on_ref: TaskRef::whole_spec(),
         })
     }
 }
@@ -395,6 +425,43 @@ enum DepTargetResolution {
     NotFound,
 }
 
+fn match_archived_spec_content(
+    raw: &str,
+    rel_posix: String,
+    run_sel: &str,
+    task_sel: Option<&str>,
+) -> Option<DepTargetResolution> {
+    let parsed = parse_spec(raw).ok()?;
+    if parsed.id != run_sel {
+        return None;
+    }
+    let completed_doc = is_completed_archive_doc(&parsed);
+    let (task_exists, task_completed) = match task_sel {
+        Some(t_ref) => match parsed.tasks.iter().find(|t| t.task_ref.as_str() == t_ref) {
+            Some(t) => (true, t.status == SpecStatus::Completed),
+            None => (false, false),
+        },
+        None => (true, true),
+    };
+    Some(DepTargetResolution::ArchivedSpec {
+        rel_path: rel_posix,
+        completed_doc,
+        task_exists,
+        task_completed,
+    })
+}
+
+fn literal_git_prefix(pat: &str) -> String {
+    let mut prefix_parts = Vec::new();
+    for seg in pat.split('/') {
+        if seg.contains('*') || seg.contains('?') || seg.contains('{') || seg.contains('[') {
+            break;
+        }
+        prefix_parts.push(seg);
+    }
+    prefix_parts.join("/")
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resolve_dep_target(
     ws_path: &Path,
@@ -476,101 +543,84 @@ fn resolve_dep_target(
 
     let in_git = is_git_repo(ws_path);
     for col in collections.values() {
-        let arch_rel_join = Path::new(&col.path).join("archive");
-        let arch_rel_dir = normalize_rel_path(&arch_rel_join.to_string_lossy()).ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("archive directory '{}' is not a normalized relative path", col.path),
-            )
-        })?;
         if in_git {
-            if fs::symlink_metadata(ws_path.join(&arch_rel_dir)).is_ok() {
-                let _ = checked_child(ws_path, Path::new(&arch_rel_dir)).map_err(|err| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "archive directory '{}' failed confinement check: {err}",
-                            col.path
-                        ),
-                    )
-                })?;
-            }
-            for rel_posix in list_git_tree_files(ws_path, "HEAD", &arch_rel_dir)? {
-                if !rel_posix.ends_with(".md") {
-                    continue;
-                }
-                let Some(raw) = read_git_blob_utf8(ws_path, "HEAD", &rel_posix).ok().flatten()
-                else {
-                    continue;
+            for pat in col.patterns() {
+                let is_literal = !pat.contains('*')
+                    && !pat.contains('?')
+                    && !pat.contains('{')
+                    && !pat.contains('[');
+                let tree_prefix = if is_literal {
+                    let arch_rel = format!("{pat}/archive");
+                    if fs::symlink_metadata(ws_path.join(&arch_rel)).is_ok() {
+                        let _ = checked_child(ws_path, Path::new(&arch_rel)).map_err(|err| {
+                            StateError::new(
+                                ErrorCode::ProfileSchemaInvalid,
+                                format!(
+                                    "archive directory '{pat}' failed confinement check: {err}"
+                                ),
+                            )
+                        })?;
+                    }
+                    arch_rel
+                } else {
+                    literal_git_prefix(pat)
                 };
-                let Ok(parsed) = parse_spec(&raw) else {
-                    continue;
-                };
-                if parsed.id == run_sel {
-                    let completed_doc = is_completed_archive_doc(&parsed);
-                    let (task_exists, task_completed) = match task_sel {
-                        Some(t_ref) => {
-                            match parsed.tasks.iter().find(|t| t.task_ref.as_str() == t_ref) {
-                                Some(t) => (true, t.status == SpecStatus::Completed),
-                                None => (false, false),
-                            }
-                        }
-                        None => (true, true),
+                for rel_posix in list_git_tree_files(ws_path, "HEAD", &tree_prefix)? {
+                    if !col.is_direct_archive_file(&rel_posix) {
+                        continue;
+                    }
+                    let Some(raw) = read_git_blob_utf8(ws_path, "HEAD", &rel_posix).ok().flatten()
+                    else {
+                        continue;
                     };
-                    return Ok(DepTargetResolution::ArchivedSpec {
-                        rel_path: rel_posix,
-                        completed_doc,
-                        task_exists,
-                        task_completed,
-                    });
+                    if let Some(res) =
+                        match_archived_spec_content(&raw, rel_posix, run_sel, task_sel)
+                    {
+                        return Ok(res);
+                    }
                 }
             }
             continue;
         }
 
-        let arch_dir = match checked_child(ws_path, &arch_rel_join) {
-            Ok(d) if d.is_dir() => d,
-            Ok(_) => continue,
-            Err(err) => {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!(
-                        "archive directory '{}' failed confinement check: {err}",
-                        col.path
-                    ),
-                ));
-            }
-        };
-        for p in sorted_dir_paths(&arch_dir) {
-            if p.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let Ok(rel) = p.strip_prefix(ws_path) else {
+        let resolved_dirs = col.resolve_dirs(ws_path).map_err(|err| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("spec collection failed confinement check: {err}"),
+            )
+        })?;
+        for dir in resolved_dirs {
+            let Ok(rel_dir) = dir.strip_prefix(ws_path) else {
                 continue;
             };
-            let rel_posix = rel.to_string_lossy().replace('\\', "/");
-            let Ok(raw) = read_confined_utf8(ws_path, &rel_posix) else {
-                continue;
+            let arch_rel_join = rel_dir.join("archive");
+            let arch_dir = match checked_child(ws_path, &arch_rel_join) {
+                Ok(d) if d.is_dir() => d,
+                Ok(_) => continue,
+                Err(err) => {
+                    return Err(StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        format!(
+                            "archive directory '{}' failed confinement check: {err}",
+                            arch_rel_join.display()
+                        ),
+                    ));
+                }
             };
-            let Ok(parsed) = parse_spec(&raw) else {
-                continue;
-            };
-            if parsed.id == run_sel {
-                let completed_doc = is_completed_archive_doc(&parsed);
-                let (task_exists, task_completed) = match task_sel {
-                    Some(t_ref) => match parsed.tasks.iter().find(|t| t.task_ref.as_str() == t_ref)
-                    {
-                        Some(t) => (true, t.status == SpecStatus::Completed),
-                        None => (false, false),
-                    },
-                    None => (true, true),
+            for p in sorted_dir_paths(&arch_dir) {
+                let Ok(rel) = p.strip_prefix(ws_path) else {
+                    continue;
                 };
-                return Ok(DepTargetResolution::ArchivedSpec {
-                    rel_path: rel_posix,
-                    completed_doc,
-                    task_exists,
-                    task_completed,
-                });
+                let rel_posix = rel.to_string_lossy().replace('\\', "/");
+                if !col.is_direct_archive_file(&rel_posix) {
+                    continue;
+                }
+                let Ok(raw) = read_confined_utf8(ws_path, &rel_posix) else {
+                    continue;
+                };
+                if let Some(res) = match_archived_spec_content(&raw, rel_posix, run_sel, task_sel) {
+                    return Ok(res);
+                }
             }
         }
     }
@@ -585,13 +635,18 @@ fn is_external_task_satisfied(
     target_run_id: &RunId,
     target_task_ref: &TaskRef,
 ) -> Result<bool, StateError> {
+    let task_sel = if target_task_ref.is_whole_spec() {
+        None
+    } else {
+        Some(target_task_ref.as_str())
+    };
     match resolve_dep_target(
         ws_path,
         collections,
         Some(reader),
         None,
         target_run_id.as_str(),
-        Some(target_task_ref.as_str()),
+        task_sel,
         target_run_id.as_str(),
     )? {
         DepTargetResolution::ActiveSpec { .. } | DepTargetResolution::NotFound => Ok(false),
@@ -781,16 +836,7 @@ pub fn validate_spec_dependencies(
                 continue;
             }
             if trimmed.contains(':') || trimmed.contains('/') {
-                if !trimmed.contains(':') {
-                    issues.push(DepValidationIssue::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "task '{}' external dependency '{trimmed}' must include ':<task_ref>'",
-                            t.task_ref
-                        ),
-                    ));
-                    continue;
-                }
+                let require_task = trimmed.contains(':');
                 if let Err(err) = validate_external_dep_ref(
                     root,
                     adapter,
@@ -801,7 +847,7 @@ pub fn validate_spec_dependencies(
                     active_specs,
                     &doc.id,
                     trimmed,
-                    true,
+                    require_task,
                 ) {
                     issues.push(DepValidationIssue::new(err.code, err.to_string()));
                 }
@@ -822,13 +868,26 @@ pub fn validate_spec_dependencies(
                 continue;
             }
             if !task_refs.contains(trimmed) {
-                issues.push(DepValidationIssue::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!(
-                        "task '{}' depends on unknown local task '{trimmed}'",
-                        t.task_ref
-                    ),
-                ));
+                if let Err(err) = validate_external_dep_ref(
+                    root,
+                    adapter,
+                    local_reader,
+                    state_db_override,
+                    &linked_workspaces,
+                    &spec_repos,
+                    active_specs,
+                    &doc.id,
+                    trimmed,
+                    false,
+                ) {
+                    issues.push(DepValidationIssue::new(
+                        err.code,
+                        format!(
+                            "task '{}' depends on unknown local task or external spec '{trimmed}': {err}",
+                            t.task_ref
+                        ),
+                    ));
+                }
                 continue;
             }
             adj.entry(trimmed).or_default().push(t.task_ref.as_str());
@@ -899,17 +958,10 @@ pub fn validate_spec_dependencies(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum DepGraphNode<'a> {
-    Spec(&'a str),
-    Task(&'a str, &'a str),
-}
-
-impl<'a> DepGraphNode<'a> {
-    fn spec_id(&self) -> &'a str {
-        match self {
-            Self::Spec(s) | Self::Task(s, _) => s,
-        }
-    }
+struct DepGraphNode {
+    ws_root: PathBuf,
+    spec_id: String,
+    task_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -918,7 +970,15 @@ enum DfsColor {
     Visited,
 }
 
-pub(crate) fn resolve_spec_repositories(primary_root: &Path, spec_doc: &SpecDocument) -> BTreeMap<String, PathBuf> {
+struct WsGraphEntry {
+    linked_workspaces: BTreeMap<String, PathBuf>,
+    specs: BTreeMap<String, SpecDocument>,
+}
+
+pub(crate) fn resolve_spec_repositories(
+    primary_root: &Path,
+    spec_doc: &SpecDocument,
+) -> BTreeMap<String, PathBuf> {
     let mut map = BTreeMap::new();
     for r in &spec_doc.repositories {
         let p = Path::new(&r.path);
@@ -934,28 +994,26 @@ pub(crate) fn resolve_spec_repositories(primary_root: &Path, spec_doc: &SpecDocu
     map
 }
 
-fn parse_dep_node<'a>(
-    primary_canon: Option<&Path>,
-    linked_workspaces: &BTreeMap<String, PathBuf>,
+fn parse_dep_node(
+    current_ws: &Path,
+    ws_linked: &BTreeMap<String, PathBuf>,
     spec_repos: &BTreeMap<String, PathBuf>,
-    default_spec_id: &'a str,
-    raw: &'a str,
+    default_spec: &SpecDocument,
+    raw: &str,
     allow_bare_task: bool,
-) -> Option<DepGraphNode<'a>> {
+) -> Option<DepGraphNode> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
-    let (target_str, allow_bare) = if let Some((ws_alias, rest)) = trimmed.split_once('/') {
-        let primary = primary_canon?;
-        let canon =
-            resolve_linked_workspace_root(ws_alias, trimmed, linked_workspaces, spec_repos).ok()?;
-        if canon.as_path() != primary {
-            return None;
-        }
-        (rest.trim(), false)
+    let (target_ws, target_str, allow_bare) = if let Some((ws_alias, rest)) = trimmed.split_once('/')
+    {
+        let resolved =
+            resolve_linked_workspace_root(ws_alias, trimmed, ws_linked, spec_repos).ok()?;
+        let canon = canonical_root(&resolved).unwrap_or(resolved);
+        (canon, rest.trim(), false)
     } else {
-        (trimmed, allow_bare_task)
+        (current_ws.to_path_buf(), trimmed, allow_bare_task)
     };
     if target_str.is_empty() {
         return None;
@@ -966,12 +1024,56 @@ fn parse_dep_node<'a>(
         if s.is_empty() || t.is_empty() {
             return None;
         }
-        Some(DepGraphNode::Task(s, t))
-    } else if allow_bare {
-        Some(DepGraphNode::Task(default_spec_id, target_str))
+        Some(DepGraphNode {
+            ws_root: target_ws,
+            spec_id: s.to_owned(),
+            task_ref: Some(t.to_owned()),
+        })
+    } else if allow_bare
+        && default_spec
+            .tasks
+            .iter()
+            .any(|t| t.task_ref.as_str() == target_str)
+    {
+        Some(DepGraphNode {
+            ws_root: target_ws,
+            spec_id: default_spec.id.clone(),
+            task_ref: Some(target_str.to_owned()),
+        })
     } else {
-        Some(DepGraphNode::Spec(target_str))
+        Some(DepGraphNode {
+            ws_root: target_ws,
+            spec_id: target_str.to_owned(),
+            task_ref: None,
+        })
     }
+}
+
+fn ensure_ws_graph_entry<'a>(
+    ws_cache: &'a mut BTreeMap<PathBuf, WsGraphEntry>,
+    ws_root: &Path,
+) -> Option<&'a WsGraphEntry> {
+    if !ws_cache.contains_key(ws_root) {
+        let adapter = load_ws_adapter(ws_root).ok()?;
+        let linked = adapter
+            .linked_workspaces
+            .into_iter()
+            .map(|lw| (lw.name, lw.path))
+            .collect();
+        let scan = collect_workspace_specs(ws_root, &adapter.specs);
+        let mut specs = BTreeMap::new();
+        for s in scan.specs {
+            specs.insert(s.doc.id.clone(), s.doc);
+        }
+        ws_cache.insert(
+            ws_root.to_path_buf(),
+            WsGraphEntry {
+                linked_workspaces: linked,
+                specs,
+            },
+        );
+    }
+    ws_cache.get(ws_root)
 }
 
 fn has_cross_spec_cycle(
@@ -980,32 +1082,40 @@ fn has_cross_spec_cycle(
     doc: &SpecDocument,
     active_specs: &[SpecDocument],
 ) -> bool {
-    let primary_canon = canonical_root(primary_root).ok();
-    let mut by_id: BTreeMap<&str, &SpecDocument> = BTreeMap::new();
+    let primary_key = canonical_root(primary_root).unwrap_or_else(|_| primary_root.to_path_buf());
+    let mut primary_specs = BTreeMap::new();
     for s in active_specs {
-        by_id.insert(s.id.as_str(), s);
+        primary_specs.insert(s.id.clone(), s.clone());
     }
-    by_id.insert(doc.id.as_str(), doc);
+    primary_specs.insert(doc.id.clone(), doc.clone());
 
-    let mut color: BTreeMap<DepGraphNode<'_>, DfsColor> = BTreeMap::new();
-    let mut stack: Vec<DepGraphNode<'_>> = Vec::new();
+    let mut ws_cache: BTreeMap<PathBuf, WsGraphEntry> = BTreeMap::new();
+    ws_cache.insert(
+        primary_key.clone(),
+        WsGraphEntry {
+            linked_workspaces: linked_workspaces.clone(),
+            specs: primary_specs,
+        },
+    );
 
-    #[allow(clippy::too_many_arguments)]
-    fn dfs<'a>(
-        node: DepGraphNode<'a>,
-        primary_root: &Path,
-        primary_canon: Option<&Path>,
-        linked_workspaces: &BTreeMap<String, PathBuf>,
-        by_id: &BTreeMap<&'a str, &'a SpecDocument>,
-        color: &mut BTreeMap<DepGraphNode<'a>, DfsColor>,
-        stack: &mut Vec<DepGraphNode<'a>>,
+    let mut color: BTreeMap<DepGraphNode, DfsColor> = BTreeMap::new();
+    let mut stack: Vec<DepGraphNode> = Vec::new();
+
+    fn dfs(
+        node: DepGraphNode,
+        ws_cache: &mut BTreeMap<PathBuf, WsGraphEntry>,
+        color: &mut BTreeMap<DepGraphNode, DfsColor>,
+        stack: &mut Vec<DepGraphNode>,
     ) -> bool {
         if let Some(&c) = color.get(&node) {
             if c == DfsColor::Visiting {
                 if let Some(pos) = stack.iter().position(|n| n == &node) {
                     let cycle_slice = &stack[pos..];
-                    let first_spec = cycle_slice[0].spec_id();
-                    if cycle_slice.iter().any(|n| n.spec_id() != first_spec) {
+                    let first = &cycle_slice[0];
+                    if cycle_slice
+                        .iter()
+                        .any(|n| (&n.ws_root, &n.spec_id) != (&first.ws_root, &first.spec_id))
+                    {
                         return true;
                     }
                 }
@@ -1015,31 +1125,34 @@ fn has_cross_spec_cycle(
         color.insert(node.clone(), DfsColor::Visiting);
         stack.push(node.clone());
 
-        if let Some(spec_doc) = by_id.get(node.spec_id()) {
-            let repos = resolve_spec_repositories(primary_root, spec_doc);
-            let mut neighbors: Vec<DepGraphNode<'a>> = Vec::new();
+        let loaded = ensure_ws_graph_entry(ws_cache, &node.ws_root).and_then(|entry| {
+            entry
+                .specs
+                .get(&node.spec_id)
+                .cloned()
+                .map(|spec_doc| (entry.linked_workspaces.clone(), spec_doc))
+        });
+        if let Some((ws_linked, spec_doc)) = loaded {
+            let repos = resolve_spec_repositories(&node.ws_root, &spec_doc);
+            let mut neighbors: Vec<DepGraphNode> = Vec::new();
             for raw in &spec_doc.depends_on {
-                if let Some(target) = parse_dep_node(
-                    primary_canon,
-                    linked_workspaces,
-                    &repos,
-                    spec_doc.id.as_str(),
-                    raw,
-                    false,
-                ) {
+                if let Some(target) =
+                    parse_dep_node(&node.ws_root, &ws_linked, &repos, &spec_doc, raw, false)
+                {
                     neighbors.push(target);
                 }
             }
-            match node {
-                DepGraphNode::Spec(_) => {
+            match &node.task_ref {
+                None => {
                     for t in &spec_doc.tasks {
-                        neighbors.push(DepGraphNode::Task(
-                            spec_doc.id.as_str(),
-                            t.task_ref.as_str(),
-                        ));
+                        neighbors.push(DepGraphNode {
+                            ws_root: node.ws_root.clone(),
+                            spec_id: spec_doc.id.clone(),
+                            task_ref: Some(t.task_ref.as_str().to_owned()),
+                        });
                     }
                 }
-                DepGraphNode::Task(_, task_ref) => {
+                Some(task_ref) => {
                     if let Some(task) = spec_doc
                         .tasks
                         .iter()
@@ -1047,10 +1160,10 @@ fn has_cross_spec_cycle(
                     {
                         for raw in &task.depends_on {
                             if let Some(target) = parse_dep_node(
-                                primary_canon,
-                                linked_workspaces,
+                                &node.ws_root,
+                                &ws_linked,
                                 &repos,
-                                spec_doc.id.as_str(),
+                                &spec_doc,
                                 raw,
                                 true,
                             ) {
@@ -1061,15 +1174,7 @@ fn has_cross_spec_cycle(
                 }
             }
             for next in neighbors {
-                if dfs(
-                    next,
-                    primary_root,
-                    primary_canon,
-                    linked_workspaces,
-                    by_id,
-                    color,
-                    stack,
-                ) {
+                if dfs(next, ws_cache, color, stack) {
                     return true;
                 }
             }
@@ -1081,11 +1186,12 @@ fn has_cross_spec_cycle(
     }
 
     if dfs(
-        DepGraphNode::Spec(doc.id.as_str()),
-        primary_root,
-        primary_canon.as_deref(),
-        linked_workspaces,
-        &by_id,
+        DepGraphNode {
+            ws_root: primary_key.clone(),
+            spec_id: doc.id.clone(),
+            task_ref: None,
+        },
+        &mut ws_cache,
         &mut color,
         &mut stack,
     ) {
@@ -1093,11 +1199,12 @@ fn has_cross_spec_cycle(
     }
     for t in &doc.tasks {
         if dfs(
-            DepGraphNode::Task(doc.id.as_str(), t.task_ref.as_str()),
-            primary_root,
-            primary_canon.as_deref(),
-            linked_workspaces,
-            &by_id,
+            DepGraphNode {
+                ws_root: primary_key.clone(),
+                spec_id: doc.id.clone(),
+                task_ref: Some(t.task_ref.as_str().to_owned()),
+            },
+            &mut ws_cache,
             &mut color,
             &mut stack,
         ) {
@@ -1455,43 +1562,21 @@ pub(crate) fn collect_workspace_specs(
     let mut found = BTreeMap::new();
     let mut errors = Vec::new();
     for col in collections.values() {
-        let dir = match checked_child(root, Path::new(&col.path)) {
+        let dirs = match col.resolve_dirs(root) {
             Ok(d) => d,
             Err(err) => {
+                let label = col.patterns().join(", ");
                 errors.push(WorkspaceSpecScanError {
                     code: ErrorCode::ProfileSchemaInvalid,
                     diag_code: ErrorCode::ProfileSchemaInvalid.as_str(),
-                    path: col.path.clone(),
-                    message: format!(
-                        "spec collection '{}' failed confinement check: {err}",
-                        col.path
-                    ),
+                    path: label.clone(),
+                    message: format!("spec collection '{label}' failed confinement check: {err}"),
                 });
                 continue;
             }
         };
-        match fs::symlink_metadata(&dir) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                errors.push(WorkspaceSpecScanError {
-                    code: ErrorCode::ProfileSchemaInvalid,
-                    diag_code: ErrorCode::ProfileSchemaInvalid.as_str(),
-                    path: col.path.clone(),
-                    message: format!("spec collection '{}' must not be a symlink", col.path),
-                });
-            }
-            Ok(meta) if meta.is_dir() => {
-                walk(root, &dir, col, &mut found, &mut errors);
-            }
-            Ok(_) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => {
-                errors.push(WorkspaceSpecScanError {
-                    code: ErrorCode::ProfileSchemaInvalid,
-                    diag_code: "VALIDATION_IO",
-                    path: col.path.clone(),
-                    message: format!("unable to inspect spec collection '{}': {err}", col.path),
-                });
-            }
+        for dir in dirs {
+            walk(root, &dir, col, &mut found, &mut errors);
         }
     }
     WorkspaceSpecScan {

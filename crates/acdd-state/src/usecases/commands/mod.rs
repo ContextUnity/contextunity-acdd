@@ -63,18 +63,21 @@ pub(super) fn build_machine_spec_input(
     spec_repos: &BTreeMap<String, PathBuf>,
     local_db: &Path,
 ) -> Result<MachineSpecInput, StateError> {
+    let local_task_refs: std::collections::BTreeSet<&str> =
+        doc.tasks.iter().map(|t| t.task_ref.as_str()).collect();
     let mut tasks = Vec::with_capacity(doc.tasks.len());
     for t in &doc.tasks {
         let mut deps = Vec::with_capacity(t.depends_on.len());
         for raw_dep in &t.depends_on {
-            deps.push(if raw_dep.contains(':') {
-                parse_task_dependency_with_db(
-                    raw_dep, primary_workspace, run_id, linked_workspaces, spec_repos,
-                    Some((Path::new(primary_workspace), local_db)),
-                )?
-            } else {
-                parse_task_dependency(raw_dep, primary_workspace, run_id, linked_workspaces, spec_repos)?
-            });
+            deps.push(parse_task_dependency_with_db(
+                raw_dep,
+                primary_workspace,
+                run_id,
+                linked_workspaces,
+                spec_repos,
+                &local_task_refs,
+                Some((Path::new(primary_workspace), local_db)),
+            )?);
         }
         let subtasks = t
             .subtasks

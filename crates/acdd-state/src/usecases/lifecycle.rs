@@ -201,7 +201,7 @@ pub fn effective_spec_collections(
     }
 }
 
-/// Match a workspace-relative spec path to its owning collection key by longest path prefix.
+/// Match a workspace-relative spec path to its owning collection key by longest matching pattern.
 pub fn match_spec_collection(
     collections: &BTreeMap<String, SpecCollectionConfig>,
     spec_relpath: &str,
@@ -210,14 +210,14 @@ pub fn match_spec_collection(
     let norm = norm.strip_prefix("./").unwrap_or(&norm);
     collections
         .iter()
-        .filter(|(_, cfg)| {
-            let dir = cfg.path.trim_end_matches('/');
-            norm == dir
-                || (norm.len() > dir.len()
-                    && norm.starts_with(dir)
-                    && norm.as_bytes()[dir.len()] == b'/')
+        .filter(|(_, cfg)| cfg.matches_rel_path(norm))
+        .max_by_key(|(_, cfg)| {
+            cfg.patterns()
+                .into_iter()
+                .map(str::len)
+                .max()
+                .unwrap_or(0)
         })
-        .max_by_key(|(_, cfg)| cfg.path.len())
         .map(|(name, _)| name.clone())
 }
 
@@ -244,10 +244,12 @@ pub(crate) fn compute_archive_relpath(
 
     if let Some(key) = col_key {
         if let Some(cfg) = collections.get(&key) {
-            return Ok(format!(
-                "{}/archive/{file_name}",
-                cfg.path.trim_end_matches('/')
-            ));
+            if let Some(root_dir) = cfg.matched_concrete_root(spec_relpath) {
+                return Ok(format!("{root_dir}/archive/{file_name}"));
+            }
+            if let Some(dir) = cfg.default_draft_dir() {
+                return Ok(format!("{dir}/archive/{file_name}"));
+            }
         }
     }
     let parent = Path::new(spec_relpath)

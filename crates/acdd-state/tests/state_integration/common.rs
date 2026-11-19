@@ -212,7 +212,8 @@ pub fn default_collections() -> BTreeMap<String, SpecCollectionConfig> {
     BTreeMap::from([(
         "milestones".to_owned(),
         SpecCollectionConfig {
-            path: "docs/milestones".to_owned(),
+            path: Some("docs/milestones".to_owned()),
+            paths: Vec::new(),
             profile: None,
             prefixes: vec!["AC".to_owned(), "M".to_owned()],
             digits: 3,

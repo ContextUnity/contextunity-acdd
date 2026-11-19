@@ -288,11 +288,15 @@ fn decode_dependency_row(row: &Row<'_>) -> rusqlite::Result<Result<TaskDependenc
                 RunId::new,
                 "task_dependencies.depends_on_run_id",
             )?,
-            depends_on_ref: parse_id(
-                depends_on_ref_raw,
-                TaskRef::new,
-                "task_dependencies.depends_on_ref",
-            )?,
+            depends_on_ref: if depends_on_ref_raw == TaskRef::WHOLE_SPEC {
+                TaskRef::whole_spec()
+            } else {
+                parse_id(
+                    depends_on_ref_raw,
+                    TaskRef::new,
+                    "task_dependencies.depends_on_ref",
+                )?
+            },
             satisfied: to_bool_flag(satisfied_raw, "task_dependencies.satisfied")?,
         })
     })())

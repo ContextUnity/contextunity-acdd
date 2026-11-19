@@ -1683,3 +1683,320 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
         other => panic!("unexpected Clear output: {other:?}"),
     }
 }
+
+#[test]
+fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
+    let tmp = make_temp_dir("multi-path-whole-spec");
+    let root = tmp.path();
+    fs::create_dir_all(root.join("docs/milestones")).unwrap();
+    fs::create_dir_all(root.join("extensions/ext-a/docs/milestones")).unwrap();
+    fs::create_dir_all(root.join("docs/plans")).unwrap();
+    fs::write(
+        root.join("acdd.yaml"),
+        "roots: [.]\nmodules:\n  code: false\n  docs: false\nspecs:\n  milestones:\n    paths:\n      - docs/milestones\n      - extensions/*/docs/milestones\n    prefixes: [AC]\n    digits: 3\n  plans:\n    path: docs/plans\n    prefixes: []\n    digits: 3\n",
+    )
+    .unwrap();
+
+    let mut cfg = base_config(root);
+    cfg.spec_collections = acdd_core::config::load_adapter(root, None).unwrap().specs;
+    let (_, provider) = build_provider_with_mock(&cfg.modules);
+    let engine = StateEngine::open(cfg.clone(), provider.clone()).unwrap();
+
+    // 1. Prefixless draft creates docs/plans/my-slug.md with id: my-slug and rejects collision.
+    let draft_plan = match execute_on(
+        &cfg,
+        engine.backend(),
+        &provider,
+        StateCommand::Draft(DraftReq {
+            collection: "plans".to_owned(),
+            slug: "my-slug".to_owned(),
+            title: Some("My Plan".to_owned()),
+            prefix: None,
+            profile: None,
+        }),
+    )
+    .unwrap()
+    {
+        StateCommandOutput::Draft(d) => d,
+        other => panic!("unexpected Draft output: {other:?}"),
+    };
+    assert_eq!(draft_plan.spec_id, "my-slug");
+    assert_eq!(draft_plan.spec_path, "docs/plans/my-slug.md");
+    assert!(execute_on(
+        &cfg,
+        engine.backend(),
+        &provider,
+        StateCommand::Draft(DraftReq {
+            collection: "plans".to_owned(),
+            slug: "my-slug".to_owned(),
+            title: None,
+            prefix: None,
+            profile: None,
+        }),
+    )
+    .is_err());
+
+    // 2. Multi-path draft scans extensions/*/docs/milestones for max_num.
+    fs::write(
+        root.join("extensions/ext-a/docs/milestones/AC-004-ext.md"),
+        "---\nid: AC-004\ntitle: Ext\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
+    )
+    .unwrap();
+    let draft_ms = match execute_on(
+        &cfg,
+        engine.backend(),
+        &provider,
+        StateCommand::Draft(DraftReq {
+            collection: "milestones".to_owned(),
+            slug: "next".to_owned(),
+            title: None,
+            prefix: None,
+            profile: None,
+        }),
+    )
+    .unwrap()
+    {
+        StateCommandOutput::Draft(d) => d,
+        other => panic!("unexpected Draft output: {other:?}"),
+    };
+    assert_eq!(draft_ms.spec_id, "AC-005");
+    assert_eq!(draft_ms.spec_path, "docs/milestones/AC-005-next.md");
+
+    // 3. Task-to-whole-spec dependency validation, cycle detection, and runtime satisfaction.
+    fs::write(
+        root.join("docs/milestones/AC-005-next.md"),
+        "---\nid: AC-005\ntitle: Next\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\ndepends_on: [my-slug]\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
+    )
+    .unwrap();
+    let report = acdd_state::validate::validate_workspace(root, None, Some("base"), &provider).unwrap();
+    assert!(report.valid, "expected valid workspace, got: {:?}", report.diagnostics);
+
+    // Cross-spec cycle via task-to-whole-spec dep must be rejected.
+    fs::write(
+        root.join("docs/plans/my-slug.md"),
+        "---\nid: my-slug\ntitle: My Plan\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\ndepends_on: [AC-005]\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
+    )
+    .unwrap();
+    let cycle_report = acdd_state::validate::validate_workspace(root, None, Some("base"), &provider).unwrap();
+    assert!(!cycle_report.valid, "expected cross-spec cycle failure");
+
+    // Restore acyclic my-slug and start AC-005: T1 must be blocked until my-slug completes.
+    fs::write(
+        root.join("docs/plans/my-slug.md"),
+        "---\nid: my-slug\ntitle: My Plan\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
+    )
+    .unwrap();
+    let p = write_profile(
+        root,
+        "p.yaml",
+        "version: 2\ninherit: base\nroles:\n  builder:\n    mode: subagent\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          proof: none\n",
+    );
+    let ac5_run = match execute_on(
+        &cfg,
+        engine.backend(),
+        &provider,
+        StateCommand::Start(StartReq {
+            spec_path: Some("docs/milestones/AC-005-next.md".to_owned()),
+            run_name: Some(RunName::new("ac5").unwrap()),
+            profile: Some(p),
+            in_place: true,
+            ..Default::default()
+        }),
+    )
+    .unwrap()
+    {
+        StateCommandOutput::Start(s) => s.run.run_id,
+        other => panic!("unexpected Start output: {other:?}"),
+    };
+    let next_before = match engine
+        .query(StateQuery::Next(NextReq {
+            run: Some(ac5_run.as_str().to_owned()),
+            limit: None,
+        }))
+        .unwrap()
+    {
+        StateQueryOutput::Next(n) => n.ready_cursors,
+        other => panic!("unexpected Next output: {other:?}"),
+    };
+    assert!(!next_before.contains(&"T1.build".to_owned()));
+
+    // Complete my-slug via tombstone, then AC-005 T1 becomes ready.
+    let mut plan_graph = build_rich_graph(root, "run-my-slug", IsolationMode::InPlace);
+    plan_graph.run.worktree = None;
+    let plan_tomb = sample_tombstone(
+        "run-my-slug",
+        "my-slug",
+        Some("my-slug"),
+        TerminalStatus::Completed,
+        None,
+    );
+    engine
+        .backend()
+        .exec_tx(|tx| {
+            tx.insert_run_graph(&plan_graph)?;
+            tx.archive_and_prune_run(&empty_preconditions(1), &plan_tomb)
+        })
+        .unwrap();
+    let next_after = match engine
+        .query(StateQuery::Next(NextReq {
+            run: Some(ac5_run.as_str().to_owned()),
+            limit: None,
+        }))
+        .unwrap()
+    {
+        StateQueryOutput::Next(n) => n.ready_cursors,
+        other => panic!("unexpected Next output: {other:?}"),
+    };
+    assert!(
+        next_after.iter().any(|c| c == "T1" || c == "T1.build"),
+        "got {next_after:?}"
+    );
+
+    // 4. Committed archive under glob collection (`extensions/*/docs/milestones`) in a git repo + linked-workspace cycle.
+    let git_tmp = make_temp_dir("glob-git-archive");
+    let git_root = git_tmp.path();
+    let _ = init_git_repo(git_root, "main");
+    let linked_tmp = make_temp_dir("linked-cycle");
+    let linked_root = linked_tmp.path();
+    fs::create_dir_all(git_root.join("extensions/pkg/docs/milestones/archive")).unwrap();
+    fs::create_dir_all(git_root.join("docs/milestones/team")).unwrap();
+    fs::write(
+        git_root.join("acdd.yaml"),
+        format!(
+            "roots: [.]\nmodules:\n  code: false\n  docs: false\nspecs:\n  milestones:\n    paths:\n      - docs/milestones\n      - extensions/*/docs/milestones\n    prefixes: [AC]\n    digits: 3\nlinked_workspaces:\n  - name: other\n    path: {}\n",
+            linked_root.display()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        git_root.join("extensions/pkg/docs/milestones/archive/AC-010-done.md"),
+        "---\nid: AC-010\ntitle: Done\nstatus: completed\n---\n### task: T1\n```yaml\ntask_ref: T1\nscope: [src/**]\nstatus: completed\nacceptance_criteria: [ok]\n```\n",
+    )
+    .unwrap();
+    fs::write(
+        git_root.join("docs/milestones/team/AC-011-nested.md"),
+        "---\nid: AC-011\ntitle: Nested\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\ndepends_on: [AC-010]\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
+    )
+    .unwrap();
+    git_ok(git_root, &["add", "-A"]);
+    git_ok(git_root, &["commit", "-m", "commit glob archive"]);
+    let git_report = acdd_state::validate::validate_workspace(git_root, None, Some("base"), &provider).unwrap();
+    assert!(git_report.valid, "expected valid glob archive dep, got: {:?}", git_report.diagnostics);
+
+    // Linked-workspace cross-spec cycle (`AC-011 -> other/B-001 -> back/AC-011`) must be rejected.
+    fs::create_dir_all(linked_root.join("docs/milestones")).unwrap();
+    fs::write(
+        linked_root.join("acdd.yaml"),
+        format!(
+            "roots: [.]\nmodules:\n  code: false\n  docs: false\nspecs:\n  milestones:\n    path: docs/milestones\n    prefixes: [B]\n    digits: 3\nlinked_workspaces:\n  - name: back\n    path: {}\n",
+            git_root.display()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        linked_root.join("docs/milestones/B-001-mid.md"),
+        "---\nid: B-001\ntitle: Mid\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\ndepends_on: [back/AC-011]\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
+    )
+    .unwrap();
+    fs::write(
+        git_root.join("docs/milestones/team/AC-011-nested.md"),
+        "---\nid: AC-011\ntitle: Nested\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\ndepends_on: [other/B-001]\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
+    )
+    .unwrap();
+    let lw_cycle_report = acdd_state::validate::validate_workspace(git_root, None, Some("base"), &provider).unwrap();
+    assert!(!lw_cycle_report.valid, "expected linked-workspace cross-spec cycle failure");
+
+    // 5. `extensions/**/docs/milestones` archives `extensions/pkg/docs/milestones/team/target.md` -> `extensions/pkg/docs/milestones/archive/target.md`
+    //    and satisfies `resolve_dep_target` across both Git and non-Git workspaces.
+    let nongit_tmp = make_temp_dir("deep-glob-nongit");
+    let nongit_root = nongit_tmp.path();
+    fs::create_dir_all(nongit_root.join("extensions/pkg/docs/milestones/archive")).unwrap();
+    fs::create_dir_all(nongit_root.join("docs/milestones")).unwrap();
+    fs::write(
+        nongit_root.join("acdd.yaml"),
+        "roots: [.]\nmodules:\n  code: false\n  docs: false\nspecs:\n  milestones:\n    paths:\n      - docs/milestones\n      - extensions/**/docs/milestones\n    prefixes: [AC]\n    digits: 3\n",
+    )
+    .unwrap();
+    let deep_cols = acdd_core::config::load_adapter(nongit_root, None).unwrap().specs;
+    assert_eq!(
+        deep_cols["milestones"]
+            .matched_concrete_root("extensions/pkg/docs/milestones/team/target.md")
+            .as_deref(),
+        Some("extensions/pkg/docs/milestones")
+    );
+    fs::write(
+        nongit_root.join("extensions/pkg/docs/milestones/archive/target.md"),
+        "---\nid: AC-020\ntitle: Deep Archived\nstatus: completed\n---\n### task: T1\n```yaml\ntask_ref: T1\nscope: [src/**]\nstatus: completed\nacceptance_criteria: [ok]\n```\n",
+    )
+    .unwrap();
+    fs::write(
+        nongit_root.join("docs/milestones/AC-021-consumer.md"),
+        "---\nid: AC-021\ntitle: Consumer\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\ndepends_on: [AC-020]\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
+    )
+    .unwrap();
+    let nongit_report = acdd_state::validate::validate_workspace(nongit_root, None, Some("base"), &provider).unwrap();
+    assert!(nongit_report.valid, "expected valid non-git deep glob archive dep, got: {:?}", nongit_report.diagnostics);
+
+    // Reject `extensions/pkg/docs/milestones/team/archive/` in both non-Git and Git modes under `extensions/**/docs/milestones`.
+    fs::create_dir_all(nongit_root.join("extensions/pkg/docs/milestones/team/archive")).unwrap();
+    fs::write(
+        nongit_root.join("extensions/pkg/docs/milestones/team/archive/AC-022-sub.md"),
+        "---\nid: AC-022\ntitle: Sub\nstatus: completed\n---\n### task: T1\n```yaml\ntask_ref: T1\nscope: [src/**]\nstatus: completed\nacceptance_criteria: [ok]\n```\n",
+    )
+    .unwrap();
+    fs::write(
+        nongit_root.join("docs/milestones/AC-021-consumer.md"),
+        "---\nid: AC-021\ntitle: Consumer\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\ndepends_on: [AC-022]\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n",
+    )
+    .unwrap();
+    let nongit_sub_report = acdd_state::validate::validate_workspace(nongit_root, None, Some("base"), &provider).unwrap();
+    assert!(!nongit_sub_report.valid, "non-git mode must reject team/archive/ under extensions/**/docs/milestones");
+
+    let _ = init_git_repo(nongit_root, "main");
+    git_ok(nongit_root, &["add", "-A"]);
+    git_ok(nongit_root, &["commit", "-m", "deep glob archive parity"]);
+    let git_sub_report = acdd_state::validate::validate_workspace(nongit_root, None, Some("base"), &provider).unwrap();
+    assert!(!git_sub_report.valid, "git mode must also reject team/archive/ under extensions/**/docs/milestones");
+
+    // 6. Parity matrix: `docs/milestones/**` rejects `team/archive/` and literal `docs/milestones` rejects `archive/team/` in both non-Git and Git modes.
+    for (pat, bad_archive_rel, target_id) in [
+        ("docs/milestones/**", "docs/milestones/team/archive/AC-030.md", "AC-030"),
+        ("docs/milestones", "docs/milestones/archive/team/AC-031.md", "AC-031"),
+    ] {
+        let p_tmp = make_temp_dir("archive-parity");
+        let p_root = p_tmp.path();
+        fs::create_dir_all(p_root.join("docs/milestones")).unwrap();
+        let bad_abs = p_root.join(bad_archive_rel);
+        fs::create_dir_all(bad_abs.parent().unwrap()).unwrap();
+        fs::write(
+            &bad_abs,
+            format!("---\nid: {target_id}\ntitle: Bad\nstatus: completed\n---\n### task: T1\n```yaml\ntask_ref: T1\nscope: [src/**]\nstatus: completed\nacceptance_criteria: [ok]\n```\n"),
+        )
+        .unwrap();
+        fs::write(
+            p_root.join("acdd.yaml"),
+            format!("roots: [.]\nmodules:\n  code: false\n  docs: false\nspecs:\n  milestones:\n    path: {pat}\n    prefixes: [AC]\n    digits: 3\n"),
+        )
+        .unwrap();
+        fs::write(
+            p_root.join("docs/milestones/AC-032-consumer.md"),
+            format!("---\nid: AC-032\ntitle: Consumer\nstatus: planned\n---\n### task: T1\n```yaml\ntask_ref: T1\ndepends_on: [{target_id}]\nscope: [src/**]\nacceptance_criteria: [ok]\n```\n"),
+        )
+        .unwrap();
+        assert!(
+            !acdd_state::validate::validate_workspace(p_root, None, Some("base"), &provider)
+                .unwrap()
+                .valid,
+            "non-git mode must reject {bad_archive_rel} under {pat}"
+        );
+        let _ = init_git_repo(p_root, "main");
+        git_ok(p_root, &["add", "-A"]);
+        git_ok(p_root, &["commit", "-m", "parity"]);
+        assert!(
+            !acdd_state::validate::validate_workspace(p_root, None, Some("base"), &provider)
+                .unwrap()
+                .valid,
+            "git mode must reject {bad_archive_rel} under {pat}"
+        );
+    }
+}

@@ -56,56 +56,80 @@ pub(crate) fn handle_draft_dyn(
     })?;
 
     let slug = sanitize_slug(&req.slug)?;
-    let prefix = match req.prefix {
-        Some(ref p) => {
-            if !col.prefixes.is_empty() && !col.prefixes.contains(p) {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!(
-                        "prefix '{p}' is not allowed for collection '{}' (allowed: {:?})",
-                        req.collection, col.prefixes
-                    ),
-                ));
-            }
-            p.clone()
-        }
-        None => col
-            .prefixes
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "SPEC".to_owned()),
-    };
-
+    let draft_dir = col.default_draft_dir().ok_or_else(|| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!(
+                "spec collection '{}' has no literal non-glob directory for drafting",
+                req.collection
+            ),
+        )
+    })?;
     let primary = primary_workspace_root(config);
-    let mut max_num = backend.max_spec_number(&req.collection, &prefix)?;
 
-    // Scan `<collection.path>/*.md` and `<collection.path>/archive/*.md`.
-    for dir_rel in [col.path.clone(), format!("{}/archive", col.path)] {
-        let Ok(dir_abs) = checked_child(&primary, Path::new(&dir_rel)) else {
-            continue;
-        };
-        for p in sorted_dir_paths(&dir_abs) {
-            if p.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                if let Some(num) = extract_spec_number(stem, &prefix) {
-                    max_num = Some(max_num.map_or(num, |cur| cur.max(num)));
+    let (spec_id, spec_rel) = if col.prefixes.is_empty() && req.prefix.is_none() {
+        (slug.clone(), format!("{draft_dir}/{slug}.md"))
+    } else {
+        let prefix = match req.prefix {
+            Some(ref p) => {
+                if !col.prefixes.is_empty() && !col.prefixes.contains(p) {
+                    return Err(StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        format!(
+                            "prefix '{p}' is not allowed for collection '{}' (allowed: {:?})",
+                            req.collection, col.prefixes
+                        ),
+                    ));
                 }
+                p.clone()
             }
-            if let Ok(rel) = p.strip_prefix(&primary) {
-                if let Ok(raw) = read_confined_utf8(&primary, &rel.to_string_lossy()) {
-                    if let Ok(doc) = parse_spec(&raw) {
-                        if let Some(num) = extract_spec_number(&doc.id, &prefix) {
+            None => col
+                .prefixes
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "SPEC".to_owned()),
+        };
+
+        let mut max_num = backend.max_spec_number(&req.collection, &prefix)?;
+        let resolved_dirs = col.resolve_dirs(&primary).map_err(|err| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("failed to resolve directories for '{}': {err}", req.collection),
+            )
+        })?;
+        for dir_abs in resolved_dirs {
+            for scan_dir in [dir_abs.clone(), dir_abs.join("archive")] {
+                if std::fs::symlink_metadata(&scan_dir)
+                    .is_ok_and(|m| m.file_type().is_symlink())
+                {
+                    continue;
+                }
+                for p in sorted_dir_paths(&scan_dir) {
+                    if p.extension().and_then(|e| e.to_str()) != Some("md") {
+                        continue;
+                    }
+                    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                        if let Some(num) = extract_spec_number(stem, &prefix) {
                             max_num = Some(max_num.map_or(num, |cur| cur.max(num)));
+                        }
+                    }
+                    if let Ok(rel) = p.strip_prefix(&primary) {
+                        if let Ok(raw) = read_confined_utf8(&primary, &rel.to_string_lossy()) {
+                            if let Ok(doc) = parse_spec(&raw) {
+                                if let Some(num) = extract_spec_number(&doc.id, &prefix) {
+                                    max_num = Some(max_num.map_or(num, |cur| cur.max(num)));
+                                }
+                            }
                         }
                     }
                 }
             }
         }
-    }
+        let spec_id = format_next_spec_id(&prefix, col.digits, max_num);
+        let spec_rel = format!("{draft_dir}/{spec_id}-{slug}.md");
+        (spec_id, spec_rel)
+    };
 
-    let spec_id = format_next_spec_id(&prefix, col.digits, max_num);
     let title = req
         .title
         .as_deref()
@@ -126,25 +150,21 @@ pub(crate) fn handle_draft_dyn(
     );
     let _ = parse_spec(&rendered)?;
 
-    let spec_rel = format!("{}/{spec_id}-{slug}.md", col.path.trim_end_matches('/'));
-    let spec_abs = checked_child(&primary, Path::new(&spec_rel)).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("invalid draft path '{spec_rel}': {err}"),
-        )
-    })?;
-    if spec_abs.exists() {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("draft target '{spec_rel}' already exists"),
-        ));
+    match acdd_core::fs::write_new_confined(&primary, Path::new(&spec_rel), rendered.as_bytes()) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("draft target '{spec_rel}' already exists"),
+            ));
+        }
+        Err(err) => {
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("failed to write drafted spec '{spec_rel}': {err}"),
+            ));
+        }
     }
-    atomic_write(&spec_abs, rendered.as_bytes(), false).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("failed to write drafted spec '{spec_rel}': {err}"),
-        )
-    })?;
 
     Ok(DraftResp {
         spec_id,
