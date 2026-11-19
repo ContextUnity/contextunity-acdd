@@ -13,7 +13,7 @@ This catalog provides domain-tailored `version: 2` ACDD profiles, lifecycle pres
 | **[`repo-polish.workflow.yaml`](repo-polish.workflow.yaml)** | `Workflow` · `inherit: none` · `save: none` | Portable stateless polish workflow with explicit roles and commands. |
 | **[`docs-refactor-and-reconcile.workflow.yaml`](docs-refactor-and-reconcile.workflow.yaml)** | `Workflow` · `inherit: none` · `save: none` | Refactors and synchronizes docs, `AGENTS.md`, skills, and examples (`audit_drift` $\to$ `reconcile_docs` $\to$ `review_docs`) with link/schema guards and zero code edits. |
 | **[`memory-dream.workflow.yaml`](memory-dream.workflow.yaml)** | `Workflow` · `inherit: none` · `save: none` | Batch repository memory synthesis ("dream") curating `docs/memories/*.md` from archived specs and `run_tombstones`. |
-| **[`in-place-refactor.plan.yaml`](in-place-refactor.plan.yaml)** | `Plan` · `git.isolation: in_place` · `save: snapshot` | Unified in-place plan execution (`build` $\to$ `review` $\to$ `deliver`) without `blueprint_synthesis`, red `contract`, or `handoff`. |
+| **[`in-place-refactor.plan.yaml`](in-place-refactor.plan.yaml)** | `Plan` · `git.isolation: in_place` · `save: none` | Unified in-place plan execution (`build` $\to$ `review` $\to$ `deliver`) without `blueprint_synthesis`, red `contract`, or `handoff`. |
 | **[`subsystem-feature.milestone.yaml`](subsystem-feature.milestone.yaml)** | `Milestone` · `inherit: code` · `save: commit` | Full subsystem delivery (`blueprint_synthesis` $\to$ `tasks:` with `code.seam` checks $\to$ `verify`/`polish`/`integration_review`/`handoff`). |
 
 > [!NOTE]

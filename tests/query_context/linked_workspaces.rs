@@ -59,8 +59,7 @@ fn test_multi_workspace_indexing_and_resilience() {
 
     // 4. Configure acdd.yaml in traverse linking commerce and gridviewspec
     let adapter_content = format!(
-        r#"format: acdd-code-map-policy/v1
-adapter_version: 1
+        r#"adapter_version: 1
 roots:
   - src
 docs:

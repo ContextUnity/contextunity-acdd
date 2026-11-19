@@ -147,7 +147,7 @@ gates:
         proof: command
         fail: write_docs
         save:
-          post: snapshot
+          post: none
     pass: review
 
   # ---------------------------------------------------------------------------

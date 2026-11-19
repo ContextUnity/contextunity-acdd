@@ -138,12 +138,12 @@ and total-status fields. CLI limits 101..10000 retain the aggregate `matches`
 array, `limit`, and `truncated` result. That larger CLI-only range is outside
 shared page parity.
 
-## Unified state lifecycle (`0.6.0` flat commands)
+## Unified state lifecycle (`0.6.1` flat commands)
 
-`0.6.0` replaces nested `task` / `plan` / `workflow` / `milestone` / `checkpoint`
+`0.6` replaces nested `task` / `plan` / `workflow` / `milestone` / `checkpoint`
 commands with one flat `Run` / `GateProfile` lifecycle CLI backed by
 `crates/acdd-state` and `src/state_bridge/`. See [state, tasks & lifecycle](tasks.md)
-for schemas, state machines, locks, snapshots, and error codes.
+for schemas, state machines, locks, candidate verification, and error codes.
 
 ### Workspace initialization and specification drafting
 
@@ -178,7 +178,7 @@ acdd submit <node> --action pass|reject [--run RUN] [--worker ID] [--claim-revis
 
 - `claim`: Claims `<node>` (or auto-selects the next ready cursor when `<node>` is omitted) under optimistic concurrency (`claim_revision` + `node_version`), returning the 6-tier budgeted `ClaimResp` (`contract`, `guidance`, `diff`, `context`, `blackboard`, `traces`). Pass `--force` to take over an active claim (`--steal-remote` required across different host session fingerprints).
 - `verify`: Executes the node's `command:`, `call:`, `checks:` (`DomainProvider`), and write-scope perimeter barrier without advancing state. `--test` passes the targeted test filter to `{test_filter}` and `code.seam` (required on `proof: contract`).
-- `submit`: Submits `--action pass` or `--action reject` for `claim_revision`. On `command`/`contract` gates, omitting cached proof automatically triggers verification. Review gates require `--evidence` (JSON or `@path`); `reject` requires structured `--findings` (JSON or `@path`). Passing `receipt: true` with `save.post: commit` creates the scoped delivery commit (refusing `main`/`master` unless `--allow-main`).
+- `submit`: Submits `--action pass` or `--action reject` for `claim_revision`. On `command`/`contract` gates, omitting cached proof automatically triggers verification. Review gates require `--evidence` (JSON or `@path`); `reject` requires structured `--findings` (JSON or `@path`, with optional `kind`: `defect | architectural_drift`). Passing `receipt: true` with `save.post: commit` creates the scoped delivery commit (refusing `main`/`master` unless `--allow-main`).
 
 ### Scope, reopening, sync, subtasks, and blackboard
 
@@ -196,17 +196,15 @@ acdd blackboard [--action read|post] [--run RUN] [--node CURSOR] [--recipient-no
 - `subtask`: Transitions subtask state; terminal `completed` or `cancelled` requires non-empty `--evidence`.
 - `blackboard`: Reads or posts scoped collaboration messages (`open | acknowledged | resolved | carried_over`) across topics `draft | notes | findings | blockers | decisions | deferred`.
 
-### Snapshots, rollback, integration, and cleanup
+### Rollback, integration, and cleanup
 
 ```sh
-acdd snapshot [<label>] [--run RUN] [--worktree PATH]
 acdd rollback <target> [--run RUN] [--node CURSOR] [--worktree PATH]
 acdd integrate [<task_ref>] [--run RUN] [--strategy manual|rebase-ff|ff-only|no-ff|squash] [--allow-main]
 acdd clear [<run_id>] [--run RUN] [--reason TEXT] [--force]
 ```
 
-- `snapshot`: Captures an explicit Git tree snapshot under `refs/acdd/snapshots/<run_id>/manual/<label>`.
-- `rollback`: Confined-restores working-tree files from `<target>` (snapshot ref, commit OID, or tree OID), restricted to `--node`'s `admitted_scope` when specified.
+- `rollback`: Confined-restores working-tree files from `<target>` (commit ref, commit OID, or tree OID), restricted to `--node`'s `admitted_scope` when specified.
 - `integrate`: Integrates one completed task branch (or all unintegrated completed tasks) into the run branch using the selected strategy (refusing `main`/`master` unless `--allow-main`).
 - `clear`: Cancels/clears a run into `run_tombstones(terminal_status = 'cleared')` and cleans managed worktrees (`--force` overrides dirty worktree checks).
 
@@ -249,4 +247,4 @@ acdd tool <domain>_<name> [--args JSON] [--run RUN] [--node CURSOR] [--worktree 
 acdd validate [<PATH>]
 ```
 
-- `validate [<PATH>]`: Validates `acdd.yaml`, `.acdd/profile.yaml`, `DomainProvider` capabilities, and spec files fail-closed. When `<PATH>` is omitted, validates the full workspace configuration, active profile, and configured `specs:` collections. For manual upgrading from `0.5.x`, see the [0.6.0 migration guide](../runbooks/migration-0.6.md).
+- `validate [<PATH>]`: Routes through the single canonical validator (`acdd_state::validate` + `acdd_state::usecases::deps`) to validate `acdd.yaml` (`load_adapter_report`, rejecting legacy `0.5.x` keys with `CONFIG_MIGRATION_REQUIRED`), active `.acdd/profile.yaml` (requiring bound commands when `modules.state` is enabled), `DomainProvider` capabilities, and spec files fail-closed (collection prefixes, zero-padded digits, unarchived terminal specs, task DAG cycles, cross-spec/cross-workspace `depends_on`, scope globs, and protected paths). When `<PATH>` is omitted, validates the full workspace configuration, active profile, and configured `specs:` collections. For manual upgrading from `0.5.x`, see the [0.6.0 migration guide](../runbooks/migration-0.6.md).

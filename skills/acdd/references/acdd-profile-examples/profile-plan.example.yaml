@@ -4,7 +4,7 @@
 # ADR 0003 Unified Profile Engine: Plan executes in-place steps without pre-task
 # synthesis (`blueprint_synthesis`) or post-task closure (`verify`/`polish`/`handoff`).
 # It consists strictly of the `tasks:` container with `git.isolation: in_place`
-# and `save: snapshot`.
+# and `save: none`.
 # =============================================================================
 
 version: 2
@@ -16,7 +16,7 @@ git:
   commit_mode: plumbing
   integrate: manual
 
-save: snapshot
+save: none
 
 roles:
   builder:
@@ -40,6 +40,11 @@ contours:
     description: "Verify accepted claims with fresh command traces."
     criteria:
       - "Confirm clippy and tests pass cleanly."
+  architecture:
+    description: "Verify single-owner reuse, layer boundaries, minimal mechanism design, and absence of shadow subsystems or narrow heuristics."
+    criteria:
+      - "Confirm existing canonical owners and shared abstractions are reused without duplicate helpers or parallel pipelines."
+      - "Verify strict layer boundaries, zero narrow string heuristics where structural data exists, and proportional complexity."
 
 scope_args_by_pattern:
   "src/**/*.rs": "--lib"
@@ -76,8 +81,7 @@ gates:
           command: rust-check-and-test
           proof: command
           save:
-            pre: snapshot
-            post: snapshot
+            post: none
           pass: review
 
         - id: review
@@ -86,6 +90,7 @@ gates:
           contours:
             - paths
             - claims
+            - architecture
           independent_from:
             - build
           need:
@@ -106,4 +111,4 @@ gates:
           fail: build
           save:
             immutable: true
-            post: snapshot
+            post: none

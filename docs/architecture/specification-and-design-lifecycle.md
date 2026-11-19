@@ -41,7 +41,7 @@ Every initiative maps to the lightest ACDD `GateProfile` (`git.isolation` and `s
 flowchart LR
   Spec["Specify / Clarify<br/>(Goal, Non-goals, AC-*)"] --> Triage{"Scope & Risk<br/>(S / M / L)"}
   Triage -->|"S: Ephemeral / standalone check"| WF["Ephemeral or Root-Only Run<br/>(--goal / workflow, save: none)"]
-  Triage -->|"M: Multi-step in-place refactor/feature"| PL["In-Place Plan Run<br/>(profile: in_place, save: snapshot)"]
+  Triage -->|"M: Multi-step in-place refactor/feature"| PL["In-Place Plan Run<br/>(profile: in_place, save: none)"]
   Triage -->|"L: Architectural / multi-agent subsystem"| MS["Worktree Milestone Run<br/>(blueprint_synthesis + worktrees + commit/archive)"]
   WF --> Verify["Live Verification<br/>(Commands + Independent Review)"]
   PL --> Verify
@@ -50,8 +50,8 @@ flowchart LR
   Verify --> C34["Live C3/C4 Graph & Traceability<br/>(acdd-index + governs/cites_doc)"]
 ```
 
-- **Small (`S`) -> Ephemeral / Root-Only Run**: Single-purpose runs (`acdd start --goal ...` or root-gate workflow profiles) using `inherit: none` or `inherit: workspace` and `save: none` or `snapshot`.
-- **Medium (`M`) -> In-Place Plan Run (`profile: in_place`)**: Coherent multi-step changes on the active working tree (`docs/plans/*.md`) with clear `AC-*` targets, ordered tasks and subtasks, `save: snapshot` (zero auto-commits), and independent review.
+- **Small (`S`) -> Ephemeral / Root-Only Run**: Single-purpose runs (`acdd start --goal ...` or root-gate workflow profiles) using `inherit: none` or `inherit: workspace` and `save: none`.
+- **Medium (`M`) -> In-Place Plan Run (`profile: in_place`)**: Coherent multi-step changes on the active working tree (`docs/plans/*.md`) with clear `AC-*` targets, ordered tasks and subtasks, `save: none` (zero auto-commits), and independent review.
 - **Large (`L`) -> Worktree Milestone Run (`profile: workspace` / `code`)**: Architectural or concurrent multi-task changes (`docs/milestones/*.md`) requiring pre-task `blueprint_synthesis` (`synthesize` -> `review`, mapping `AC-*` criteria, `C2` boundary impact, `ADR` requirements, and `SAD` updates into per-task slices), isolated Git worktrees, runtime-red `contract` tests with `code.seam` reachability, and bound `handoff` archival.
 
 ## Governance invariants

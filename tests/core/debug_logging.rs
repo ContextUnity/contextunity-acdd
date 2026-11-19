@@ -21,7 +21,6 @@ fn debug_flag_parsing_and_digest_determinism() {
     ws.write(
         "acdd.yaml",
         r#"
-version: 1
 roots:
   - "."
 "#,
@@ -33,7 +32,6 @@ roots:
     ws.write(
         "acdd.yaml",
         r#"
-version: 1
 DEBUG: true
 roots:
   - "."
@@ -46,7 +44,6 @@ roots:
     ws.write(
         "acdd.yaml",
         r#"
-version: 1
 debug: true
 roots:
   - "."
@@ -133,10 +130,10 @@ fn debug_log_obstructions_report_errors_without_breaking_requests() {
                     continue;
                 }
                 let ws = Workspace::new();
-                ws.write("acdd.yaml", "version: 1\ndebug: true\nroots:\n  - '.'\n");
+                ws.write("acdd.yaml", "debug: true\nroots:\n  - '.'\n");
                 ws.write(
                     "secret-request-content",
-                    "version: 1\ndebug: true\nroots:\n  - '.'\n",
+                    "debug: true\nroots:\n  - '.'\n",
                 );
                 let directory = ws.path(".acdd");
                 let destination = if obstruction == "directory" {

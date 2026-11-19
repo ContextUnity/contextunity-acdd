@@ -98,7 +98,7 @@ Claim and context layouts (`ClaimResp`) show lifecycle state, the admitted
 applicable invariants, scope, dependencies, subtasks, and available domain
 context lenses (`docs.*`, `code.*`). Identical contract data already shown in
 lifecycle state is not repeated. Show/status layouts retain available gate
-traces, claim revisions, findings, candidate snapshots, and durable receipts.
+traces, claim revisions, findings, candidate trees, and durable receipts.
 
 Inspection Markdown links resolvable scope coordinates against the selected
 workspace root. Missing or unsafe paths remain plain text, and JSON scope arrays

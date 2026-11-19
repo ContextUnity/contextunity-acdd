@@ -2,9 +2,10 @@
 
 use acdd_core::{
     config::{
-        self, checked_child, load_adapter, resolve_file_path, resolve_memory_budget_bytes, Adapter,
-        ENGINE_SCHEMA_VERSION,
+        self, checked_child, load_adapter, resolve_code_db_path, resolve_file_path,
+        resolve_memory_budget_bytes, resolve_state_db_path, Adapter, ENGINE_SCHEMA_VERSION,
     },
+    errors::{ErrorCode, StateError},
     fs::canonical_root,
 };
 use acdd_index::{
@@ -1177,14 +1178,14 @@ pub fn validate_code_map_target(root: &Path, output: &Path) -> Result<()> {
         None
     };
     let state_db_path = match state_adapter {
-        Some(Ok(adapter)) => adapter.resolve_state_db_path(&base),
+        Some(Ok(adapter)) => resolve_state_db_path(&base, &adapter),
         Some(Err(error)) => {
             bail!(
                 "TASK_DATABASE_COLLISION: Cannot validate configured state_db because acdd.yaml is invalid ({error}). Refusing code map output '{}'.",
                 output.display()
             );
         }
-        None => base.join(config::DEFAULT_STATE_DB),
+        None => resolve_state_db_path(&base, &Adapter::default()),
     };
     if acdd_core::fs::same_filesystem_path(&output_abs, &state_db_path)
         || (base != root
@@ -1645,13 +1646,30 @@ fn build_inner_with_cache(
     extraction_cache: Arc<ExtractionCache>,
     test_hooks: Option<Arc<PipelineTestHooks>>,
 ) -> Result<Value> {
+    let resolved_output = if output.as_os_str().is_empty() {
+        resolve_code_db_path(root, None)
+    } else {
+        output.to_path_buf()
+    };
+    let output = resolved_output.as_path();
     ensure_no_publication_sidecars(output, true)?;
     validate_code_map_target(root, output)?;
     let started = Instant::now();
     let root = canonical_root(root)?;
     let adapter = load_adapter(&root, adapter_path)?;
+    if !adapter.modules.is_enabled("code") && !adapter.modules.is_enabled("docs") {
+        return Err(StateError::new(
+            ErrorCode::FeatureDisabled,
+            "FEATURE_DISABLED: both 'code' and 'docs' modules are disabled",
+        )
+        .into());
+    }
     config::check_root_scope(&root, adapter.limits.allow_broad_root)?;
-    let dependency_manifests = scanner::dependency_manifests_for_build(&root, &adapter)?;
+    let dependency_manifests = if adapter.modules.is_enabled("code") {
+        scanner::dependency_manifests_for_build(&root, &adapter)?
+    } else {
+        Vec::new()
+    };
     let dependencies =
         DependencyRegistry::try_collect_with_paths(&root, Some(&adapter), &dependency_manifests)?;
     let budget = resolve_memory_budget_bytes(&adapter.limits)?;
@@ -2557,6 +2575,16 @@ fn delta_inner(
     let selected_adapter = selected_adapter
         .map(|path| load_adapter(&root, Some(path)))
         .transpose()?;
+    if selected_adapter
+        .as_ref()
+        .is_some_and(|adapter| !adapter.modules.is_enabled("code") && !adapter.modules.is_enabled("docs"))
+    {
+        return Err(StateError::new(
+            ErrorCode::FeatureDisabled,
+            "FEATURE_DISABLED: both 'code' and 'docs' modules are disabled",
+        )
+        .into());
+    }
     let generation_lock = cache::exclusive_lock(db)?;
     let _idle_readers_guard = cache::release_idle_readers(db)?;
     let (schema_compatible, previous_adapter_path) = {
@@ -2607,15 +2635,23 @@ fn delta_inner(
         Some(adapter) => adapter,
         None => load_adapter(&root, adapter.adapter_path.as_deref())?,
     };
+    if !current_adapter.modules.is_enabled("code") && !current_adapter.modules.is_enabled("docs") {
+        return Err(StateError::new(
+            ErrorCode::FeatureDisabled,
+            "FEATURE_DISABLED: both 'code' and 'docs' modules are disabled",
+        )
+        .into());
+    }
     config::check_root_scope(&root, current_adapter.limits.allow_broad_root)?;
     for path in modified {
         checked_child(&root, path).with_context(|| format!("inspect {}", path.display()))?;
     }
-    let manifests_changed = modified.iter().any(|path| {
-        path.file_name().and_then(|name| name.to_str()).is_some_and(
-            languages::dependency_registry::is_dependency_manifest_filename,
-        )
-    });
+    let manifests_changed = current_adapter.modules.is_enabled("code")
+        && modified.iter().any(|path| {
+            path.file_name().and_then(|name| name.to_str()).is_some_and(
+                languages::dependency_registry::is_dependency_manifest_filename,
+            )
+        });
     if current_adapter.digest != adapter.digest
         || current_adapter.adapter_path != adapter.adapter_path
         || current_adapter.linked_workspaces != adapter.linked_workspaces

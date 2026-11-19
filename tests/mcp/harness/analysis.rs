@@ -140,7 +140,7 @@ pub fn persisted_state(workspace: &Workspace) -> anyhow::Result<Value> {
 
 fn analysis_workspace() -> Workspace {
     let workspace = Workspace::new();
-    workspace.write("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n");
+    workspace.write("acdd.yaml", "state_db: .acdd/state.sqlite\n");
     workspace.write("cycle.py", "def a(): b()\ndef b(): a()\n");
     workspace.write("other.py", "def idle(): pass\n");
     workspace

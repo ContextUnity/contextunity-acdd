@@ -14,11 +14,12 @@ Rules for placing, creating, refactoring, and maintaining tests in
 - **Table-driven contract matrices**: Consolidate homogeneous variations of the
   same capability, boundary rule, error diagnostic, alias/spelling case, or hook
   mode into one table-driven `#[test]` (`for case in cases`). Ban cloning
-  heavy `#[test]` functions or calling `Workspace::new()`, `.build()`,
-  `InstallerHarness::new`, `McpTestHarness::new`, or subprocess spawns inside
-  per-row loop bodies unless each case genuinely tests a distinct cold-build
-  initial directory layout; build shared immutable base state once outside the
-  loop and copy/mutate only the case-specific delta.
+  heavy `#[test]` functions, pasting imperative multi-repo/git setup chains
+  sequentially inside one `#[test]` (fake table-driven mega-tests), or calling
+  `Workspace::new()`, `.build()`, `InstallerHarness::new`, `McpTestHarness::new`,
+  or subprocess spawns inside per-row loop bodies unless each case genuinely
+  tests a distinct cold-build initial directory layout; build shared immutable
+  base state once outside the loop and copy/mutate only the case-specific delta.
 - **Domain decomposition**: Author a separate `#[test]` in the owning domain
   module only for genuinely distinct domain contracts or orthogonal multi-step
   workflows — never by appending unrelated scenarios into an existing workflow
@@ -47,14 +48,8 @@ Rules for placing, creating, refactoring, and maintaining tests in
   hacks. Build shared base state once; mutate one field per row.
 - **No inline milestone heredocs**: Use fixtures / `MilestoneFixtureBuilder`,
   not raw multi-line milestone strings in tests.
-- **In-process engine**: Prefer `StateEngine` / `RunHarness` (`acdd-state`). Reserve
-  `std::process::Command` for dedicated CLI smoke tests.
-- **Harness discipline**: Shared setup lives in `tests/common` or a domain
-  harness. A harness function needs ≥2 callers. The `#[test]` keeps the mutation
-  and every assertion. Never dump static non-domain functions onto `<Domain>Harness`,
-  never alias harness types (`use McpTestHarness as Client`), and never inline
-  single-caller helpers as 100-line IIFE blocks returning one-off `*Observation`
-  structs. See [test harness architecture](../docs/architecture/test-harness.md).
+- **In-process engine & zero raw Git commands**: Prefer `StateEngine` / `RunHarness` (`acdd-state`). Reserve `std::process::Command` for dedicated CLI smoke tests, and ban raw `std::process::Command::new("git")` in domain tests outside `acdd_core::git` or shared harness plumbing (`tests/acdd/support.rs`).
+- **Harness discipline & reuse-first**: Search `tests/common` and the owning domain harness via `code_map_search` / `ast_grep_search` before authoring new helpers. Shared setup lives in `tests/common` or a domain harness. A harness function needs ≥2 callers. The `#[test]` keeps the mutation and every assertion. Never dump static non-domain functions onto `<Domain>Harness`, never alias harness types (`use McpTestHarness as Client`), and never inline single-caller helpers as 100-line IIFE blocks returning one-off `*Observation` structs. See [test harness architecture](../docs/architecture/test-harness.md).
 - **Bounded loop & cache discipline**: Do not run full-DB dumps (`persisted_state`)
   or $O(N^2)$ cold index rebuilds inside per-row loops when lightweight checks or
   batched deltas prove the same invariant. Partition read-only matrix rows before

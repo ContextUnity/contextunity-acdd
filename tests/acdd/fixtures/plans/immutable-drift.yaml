@@ -1,6 +1,6 @@
 version: 2
 inherit: none
-save: snapshot
+save: none
 commands:
   prepare:
     command: "printf 'candidate\n' > src/first.rs"
@@ -14,7 +14,7 @@ gates:
         - id: prepare
           command: prepare
           save:
-            post: snapshot
+            post: none
         - id: review
           command: mutate
           save:
@@ -22,4 +22,4 @@ gates:
         - id: finish
           need: [prepare, review]
           receipt: true
-          save: snapshot
+          save: none

@@ -115,11 +115,13 @@ pub fn state_engine_config(
         .iter()
         .map(|lw| (lw.name.clone(), lw.path.clone()))
         .collect();
+    let code_db_path = (config.modules.is_enabled("code") || config.modules.is_enabled("docs"))
+        .then(|| acdd_core::config::resolve_code_db_path(&primary, None));
     StateEngineConfig {
         workspace_root: primary,
         worktree: worktree.to_path_buf(),
         state_db_override,
-        code_db_path: None,
+        code_db_path,
         spec_collections: config.specs.clone(),
         profiles_dirs: config.profiles_dirs.clone(),
         linked_workspaces,
@@ -208,13 +210,26 @@ pub(super) fn combine_file_hashes(file_hashes: &BTreeMap<String, String>) -> Str
 }
 
 pub(super) fn budget_items(kind: &str, items: Vec<Value>, max_bytes: usize) -> Value {
+    budget_items_with_fields(kind, items, max_bytes, serde_json::Map::new())
+}
+
+pub(super) fn budget_items_with_fields(
+    kind: &str,
+    items: Vec<Value>,
+    max_bytes: usize,
+    extra_fields: serde_json::Map<String, Value>,
+) -> Value {
     let total = items.len();
-    let base_bytes = estimate_json_bytes(&json!({
-        "kind": kind,
-        "items": [],
-        "total": total,
-        "truncated": false,
-    }));
+    let mut envelope = serde_json::Map::new();
+    envelope.insert("kind".to_owned(), json!(kind));
+    for (k, v) in extra_fields {
+        envelope.insert(k, v);
+    }
+    envelope.insert("items".to_owned(), json!([]));
+    envelope.insert("total".to_owned(), json!(total));
+    envelope.insert("truncated".to_owned(), json!(false));
+
+    let base_bytes = estimate_json_bytes(&Value::Object(envelope.clone()));
     let mut used_bytes = base_bytes;
     let mut kept = Vec::new();
     for item in items {
@@ -229,12 +244,9 @@ pub(super) fn budget_items(kind: &str, items: Vec<Value>, max_bytes: usize) -> V
         kept.push(item);
     }
     let truncated = kept.len() < total;
-    json!({
-        "kind": kind,
-        "items": kept,
-        "total": total,
-        "truncated": truncated,
-    })
+    envelope.insert("items".to_owned(), Value::Array(kept));
+    envelope.insert("truncated".to_owned(), json!(truncated));
+    Value::Object(envelope)
 }
 
 /// Resolve the active W3C span context (`trace_id`, `span_id`) for `worktree` in read-only mode.

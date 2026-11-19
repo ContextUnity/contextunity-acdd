@@ -6,6 +6,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-18
+
+This maintenance and architectural hardening release enforces single-owner boundaries (`INV-SINGLE-OWNER`) across validation, glob matching, `WhenExpr` parsing, configuration loading, and process inspection, eliminates tautological verification paths, hardens SQLite read-only and schema `v2` handling, and unifies CI and release automation.
+
+### Changed
+
+- **Single-Owner Governance & Engine Unification (`INV-SINGLE-OWNER`)**:
+  - Unified workspace, profile, spec, and cross-spec/cross-workspace dependency validation in `crates/acdd-state` (`validate` + `usecases::deps`), replacing the duplicate validator in `src/cli/validate.rs` with a thin adapter (`< 150` lines).
+  - Consolidated brace-aware `{a,b}` glob expansion, path admission, and pattern/scope overlap matching into `acdd_core::path_policy` (`expand_glob_braces`, `glob_matches`, `patterns_overlap`, `scopes_overlap`, `WorkspacePathPolicy::from_workspace_config`), removing duplicate engines from `acdd-state/profile` and `acdd-state/machine/schedule`.
+  - Consolidated `WhenExpr` parsing/evaluation in `acdd_state::profile::when` (reused by `machine/graph.rs`) and cross-platform `read_process_start_time` in `acdd_core::sys`.
+  - Enforced strict `acdd.yaml` parsing (`#[serde(deny_unknown_fields)]`), explicit legacy `0.5.x` key rejection (`CONFIG_MIGRATION_REQUIRED`), linked-workspace path/name checks (`load_adapter_strict` / `load_adapter_report`), and pruned 3 dead `Migration*` variants from `ErrorCode` (`33 -> 30`).
+- **Domain-Pure Embedded Profiles & Profile Inheritance**:
+  - Removed hardcoded Rust/Unix exit codes (`101`, `134`) and `.acdd/frameworks` assumptions from embedded `default.yaml` (`expected_failure: {}` accepts runtime failures `1..=125` with `0` compile errors).
+  - Updated embedded `in_place.yaml` to `inherit: workspace`, added `tags: [default, docs]` to `code.yaml` (skipping `code.seam` on `docs` tasks and stripping `docs.*` tools/lenses/checks when `modules.docs: false`; child profiles overriding `tags:` while inheriting `code` must retain `docs` or update inherited `when:` tags), and fixed `inherit.rs` `tools: null`, `tools` + `tools_add`, `use_template` overrides, `profiles_dirs`, and top-level `scope_args_by_pattern` propagation.
+- **Unified CI & Release Pipeline**:
+  - Consolidated CI testing and multi-platform release packaging/publishing into [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+- **Workspace Version `0.6.1`**:
+  - Bumped all workspace crates (`contextunity-acdd`, `acdd-core`, `acdd-index`, `acdd-state`) and installation documentation to `0.6.1`.
+
+### Fixed
+
+- **Live `submit` Freshness, `code.seam`, `docs.links`, and Runner Expansion**:
+  - Added `DomainProvider::observe_freshness` and `path_policy` propagation on `DomainCheckReq`/`DomainContextReq` so `acdd submit` verifies live freshness digests rather than trusting cached trace metadata, alongside container-scoped tree hashing and `{file_stem}` / `{path}` expansion in `runner/command.rs`.
+  - Fixed `code.seam` to filter deleted files, support pure-deletion/test/type-only modules, honor `WorkspacePathPolicy`, and remove the 5-symbol truncation cap; fixed `docs.links` to pass when `admitted_scope` contains zero Markdown files.
+  - Enforced physical `modules.code` / `modules.docs` disablement: index builds omit disabled sources (producing an empty index when `code: false` and `docs: false`), while `query` / `ast` / `docs` CLI commands and disabled MCP tools/read modes fail closed with `FEATURE_DISABLED`; fixed `extract_pre_task_slice` to pick the latest accepted blueprint revision, preserved `context:` lens YAML order without budget overflow, and prevented `sync_archive_to_primary` from committing directly on `main`.
+- **`PF-002` `ast_grep_search` Local-Variable Recall**:
+  - Restricted `nodes.name` SQL prefiltering in `ast_grep_search` / `acdd ast grep` strictly to top-level indexed declaration AST kinds so local bindings and assignments (`x = $EXPR`) keep 100% recall.
+- **SQLite `READ_ONLY`-First, Schema `v2` (`runs.spec_id`), and Integration/Test Fixtures**:
+  - Updated `StateReader` to open `SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_NOFOLLOW` first (with WAL `-shm` recovery without unintended writes), bumped state schema to `v2` adding `runs.spec_id`, hardened `git_ops/integrate.rs` blob-OID verification and crash-recovery cleanup manifests, added `INV-SINGLE-OWNER` architectural fences in `tests/commitment_integrity/state_boundaries.rs`, and updated stale `tasks_db` fixtures in `tests/mcp/**` to `state_db`.
+
 ## [0.6.0] - 2026-11-17
 
 This release replaces the legacy task engine with a unified, domain-agnostic profile, workflow graph, and SQLite state engine (`crates/acdd-core` + `crates/acdd-state`), introduces pluggable `DomainProvider` extensions, flattens the CLI and MCP surface around `.acdd/state.sqlite`, consolidates ADRs to `0001..0012`, promotes `ROADMAP.md`, and documents manual `0.5 -> 0.6` upgrading in [migration-0.6.md](docs/runbooks/migration-0.6.md).
@@ -80,7 +110,7 @@ This release introduces reviewed pre-task `blueprint_synthesis` planning, recurs
 - **Conditional Seam & Post-Task Closure Pipeline**: Added the language-neutral `seam` container (`when: seam`: `seam.integrate` -> `seam.review`) inside `- tasks:` and aligned post-task milestone closure on `verify` -> `polish` <-> `milestone_review` -> `handoff`.
 - **Standalone Artifact Authoring Workflows**: Added taskless root-gate workflows (`author-milestone.workflow.yaml`, `author-plan.workflow.yaml`, `author-workflow.workflow.yaml`) under `docs/workflows/` (with portable copies in `skills/contextunity-forge/references/acdd-profile-examples/`).
 - **ACDD Architecture & Walkthrough Documentation**: Added full documentation in [ACDD reference](docs/reference/acdd.md) and symlinked [canonical profile template](docs/reference/acdd_profile.yaml.example) to the Forge skill reference.
-- **Release Notes Automation**: Added `CHANGELOG.md` and automated release-notes extraction in [`.github/workflows/release.yml`](.github/workflows/release.yml) for `v*` tag releases.
+- **Release Notes Automation**: Added `CHANGELOG.md` and automated release-notes extraction in `.github/workflows/release.yml` for `v*` tag releases.
 
 ### Changed
 
@@ -186,7 +216,8 @@ Initial public release of the pure-Rust `contextunity-forge-mcp` MCP server and 
 
 - **Initial Native Rust Forge Engine**: Released the standalone `contextunity-forge-mcp` MCP server and CLI featuring Tree-sitter AST indexing (`.forge/code-map.sqlite`), single-shot digest-verified symbol reads (`forge_read`), `ast_grep_search`, living documentation indexing, deterministic Merkle commitments, and SQLite task/milestone lifecycle management.
 
-[Unreleased]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/ContextUnity/contextunity-forge-mcp/compare/v0.5.1-alpha.2...v0.5.2

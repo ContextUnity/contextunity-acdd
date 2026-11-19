@@ -35,11 +35,11 @@ Every domain implements [`DomainProvider`](../../crates/acdd-core/src/ports.rs) 
    - `checks: Vec<CheckCapability>` (`{ name, input_schema }`)
    - `context_lenses: BTreeSet<String>` (unqualified lens names exposed as `<domain>.<lens>`)
    - `tools: Vec<DomainToolDef>` (`{ name, description, input_schema, read_only }`, exposed globally as `<domain>_<name>`)
-3. **`run_check(&self, check: &str, params: &Value, req: &DomainCheckReq) -> Result<DomainCheckOutcome>`**:
-   - Inspect live files under `req.worktree` confined to `req.admitted_scope` and `req.changed_paths` (and optional `req.test_target`).
-   - Return strictly `DomainCheckOutcome::Passed { summary, execution_digest_salt }` or `DomainCheckOutcome::Failed { summary, diagnostics }`. There is no `NotApplicable` fallback. Fold live file or index digests into `execution_digest_salt` when check freshness must bind to external inputs.
+3. **`run_check(&self, check: &str, params: &Value, req: &DomainCheckReq) -> Result<DomainCheckOutcome>`** (plus **`observe_freshness`**):
+   - Inspect live files under `req.worktree` confined to `req.admitted_scope`, `req.changed_paths`, and `req.path_policy` (`WorkspacePathPolicy`, plus optional `req.test_target`).
+   - Return strictly `DomainCheckOutcome::Passed { summary, execution_digest_salt }` or `DomainCheckOutcome::Failed { summary, diagnostics }`. There is no `NotApplicable` fallback. Implement `observe_freshness` with the exact same live digest/salt derivation so `acdd submit` verifies live freshness against the recorded trace digest.
 4. **`provide_context(&self, lens: &str, req: &DomainContextReq) -> Result<Value>`**:
-   - Materialize a JSON payload bounded by `req.max_bytes` for Tier 6 `ClaimResp.context_lenses` injection (using `req.worktree`, `req.admitted_scope`, and optional `req.target`).
+   - Materialize a JSON payload bounded by `req.max_bytes` for Tier 6 `ClaimResp.context_lenses` injection (using `req.worktree`, `req.admitted_scope`, `req.path_policy`, and optional `req.target`).
 5. **`execute_action(&self, action: &str, params: &Value, idempotency_key: &str, req: &DomainActionReq) -> Result<DomainActionResult>`** (plus optional **`lookup_action_result`**):
    - Execute `call: <domain>.<action>` in-process and return `{ summary, output }`. Mutating actions with `supports_result_lookup: true` override `lookup_action_result` to recover uncertain outcomes after a crash.
 6. **`call_tool(&self, tool: &str, args: &Value, req: &DomainToolReq) -> Result<DomainToolOutput>`**:
@@ -196,4 +196,4 @@ gates:
    ```
    When `modules.domains.schema: false` (or omitted when disabled), any profile gate referencing `schema.*` or `schema_diff` fails closed with `DOMAIN_CAPABILITY_UNAVAILABLE`.
 3. **Fail-closed verification (`acdd validate`)**:
-   Run `acdd validate` ([`src/cli/validate.rs`](../../src/cli/validate.rs)). Validation constructs `CompositeDomainProvider` via `build_domain_providers`, parses `.acdd/profile.yaml`, and checks every `call:`, `checks:`, `context:`, and `tools` / `tools_add` entry against enabled domain capabilities and `SchemaDef` schemas before any run can start.
+   Run `acdd validate` ([`src/cli/validate.rs`](../../src/cli/validate.rs) delegating to [`crates/acdd-state/src/validate.rs`](../../crates/acdd-state/src/validate.rs) per `INV-SINGLE-OWNER`). Validation constructs `CompositeDomainProvider` via `build_domain_providers`, parses `.acdd/profile.yaml`, and checks every `call:`, `checks:`, `context:`, and `tools` / `tools_add` entry against enabled domain capabilities and `SchemaDef` schemas before any run can start.

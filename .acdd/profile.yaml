@@ -4,8 +4,8 @@ gates_merge: patch
 tags: [default, docs]
 
 commands:
-  rust-check-and-test:
-    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter}"
+  rust-check-and-test: &build_check_cmd
+    command: "cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter} && cargo test --test commitment_integrity"
     test_filter: "{test}"
     output: &test_output
       counts:
@@ -14,14 +14,16 @@ commands:
       require_counts: true
       noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
       compile_errors:
-        include: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+        include: ['^error(\[E\d+\])?:']
         exclude: ['^error: test failed']
       tests:
         target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
         passed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ok\b'
         failed: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+FAILED\b'
         ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
-    description: "Run strict Rust checks followed by the repository's scoped test suite."
+    description: "Run strict Rust checks, the scoped test suite, and commitment_integrity boundary fences."
+
+  build_check: *build_check_cmd
 
   test:
     command: "cargo test {scope_target} {test_filter}"
@@ -33,7 +35,7 @@ commands:
       require_counts: false
       noise: ['^\s*(Compiling|Downloading|Finished|Checking)\b', '^✔']
       compile_errors:
-        include: ['^error(\[E\d+\])?:', 'panicked at', '^FAIL ']
+        include: ['^error(\[E\d+\])?:']
         exclude: ['^error: test failed']
       tests:
         target: '(?m)(?:^\s*Running\s+(?:unittests\s+)?|"kind":\s*\[[^\]]*"test"[^\]]*\].*?"src_path":\s*"|--test\s+)([^\s"\\)]+)'
@@ -42,11 +44,13 @@ commands:
         ignored: '(?m)^test\s+([A-Za-z0-9_:]+)\s+\.\.\.\s+ignored\b'
     description: "Run scoped Rust contract tests for runtime-red proof."
 
-  check_full_repo:
+  check_full_repo: &verify_all_cmd
     command: "cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --lib"
     output: *test_output
     description: "Run the milestone handoff verification commands from TESTS.md."
     timeout_seconds: 1800
+
+  verify_all: *verify_all_cmd
 
 scope_args_by_pattern:
   "src/main.rs": "--bin acdd"
@@ -77,6 +81,13 @@ guidance:
       - "HARNESS SHARING & ZERO /tmp LEAKS: Construct shared Workspace::new(), McpTestHarness::new(), and RunHarness instances ONCE outside table loops, partitioning clean read-only baseline rows before mutating rows to avoid redundant restores. Preserve root/directory permissions on restore and repair read-only entries in Workspace::drop instead of swallowing errors. Never store Workspace or TempDir inside static OnceLock/LazyLock; share read-only indexed corpora via OnceLock<PersistedSnapshot> (tests/common/sqlite.rs) and require zero leaked /tmp/contextunity-test-* directories (BEFORE == AFTER)."
       - "SPEED, DETERMINISM & REVIEW BUDGET: Ban arbitrary thread::sleep and inflated fixed timeouts where deterministic readiness markers or signals synchronize child processes cleanly. Keep contract proofs compiling cleanly and failing at runtime (exit 101) without weakens or #[ignore], maintain zero net new #[test] functions during review remediation, and verify strict Clippy (`cargo clippy <scope_target> --all-features -- -D warnings`) plus scoped `cargo test <scope_target>` before passing build/review."
 
+  task.repo_architecture:
+    description: "ContextUnity-ACDD canonical ownership, reuse-first lookup, complexity budget, and layer purity (src/AGENTS.md)"
+    criteria:
+      - "REUSE-FIRST CANONICAL LOOKUP & ACDD MCP PRIORITY: Search existing canonical owners across `acdd_core`, `acdd_index`, `acdd_state`, and `src/` with ACDD MCP tools (`code_map_search`, `code_map_inspect`, `code_map_impact`, `code_map_query`, `acdd_read`, `ast_grep_search`) before falling back to shell `grep`/`rg`, blind full-file reads, or authoring helpers, Git/FS wrappers, glob matchers, shell templates, or graph passes; extend or reuse the canonical owner (`INV-SINGLE-OWNER`)."
+      - "COMPLEXITY-BUDGET ESCALATION: Escalate to the coordinator via `acdd_blackboard` (`topic: decisions` / `--action escalate`) before introducing any new subsystem/parallel pipeline or exceeding proportional defect-fix growth (`> ~80-100` net production LOC)."
+      - "LAYER PURITY & ZERO HEURISTICS: Strictly ban narrow language string/path heuristics where indexed AST/linker graphs exist, and strictly ban raw `Command::new(\"git\")` outside `acdd_core::git`."
+
 gates:
   - tasks:
       gates:
@@ -85,17 +96,25 @@ gates:
           guidance:
             - task.contract
             - task.repo_testing
+            - task.repo_architecture
             - hitl.pro
         - id: build
           command: rust-check-and-test
           guidance:
             - task.code
             - task.repo_testing
+            - task.repo_architecture
             - hitl.pro
         - id: review
           guidance:
             - task.review
             - task.repo_testing
+            - task.repo_architecture
+            - hitl.pro
+        - id: rearchitect
+          guidance:
+            - task.rearchitect
+            - task.repo_architecture
             - hitl.pro
 
   - id: verify
@@ -106,4 +125,5 @@ gates:
     guidance:
       - milestone.polish
       - task.repo_testing
+      - task.repo_architecture
       - hitl.pro

@@ -33,17 +33,24 @@ ACDD resolves the active profile reference (`--profile`, `ACDD_PROFILE`, spec
 
 1. **Built-in embedded names**:
    - `default` ([`default.yaml`](../../crates/acdd-state/src/profile/embedded/default.yaml)):
-     worktree-isolated lifecycle (`blueprint_synthesis` -> `tasks:` -> `verify`
-     -> `polish` -> `integration_review` -> `handoff`) with `save: commit` and
-     `git.isolation: worktree`.
+     domain-pure worktree-isolated lifecycle (`blueprint_synthesis` -> `tasks:` -> `verify`
+     -> `polish` -> `integration_review` -> `handoff`) with `save: commit`,
+     `git.isolation: worktree`, `expected_failure: {}`, six canonical review
+     contours (`paths`, `claims`, `architecture`, `concurrency`, `project_isolation`,
+     `administration`), anti-drift guidance (`REUSE & COMPLEXITY ESCALATION`,
+     `REBUTTAL OVER BLIND REWRITE`, `BURDEN OF PROOF`), and zero language-specific
+     exit codes or `.acdd/frameworks` assumptions.
    - `code` ([`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml)):
-     inherits `default` (`gates_merge: patch`), binds `default_tools` to all 19
-     built-in MCP tools, and attaches `code.*` and `docs.*` `DomainProvider`
-     `checks:` (`code.seam`) and `context:` lenses.
+     inherits `default` (`gates_merge: patch`), adds `tags: [default, docs]` so
+     `docs`-tagged tasks skip `code.seam`, binds `default_tools` to all 19
+     built-in MCP tools, attaches `code.*` and `docs.*` `DomainProvider`
+     `checks:` (`code.seam`) and `context:` lenses, and automatically strips
+     `get_doc`, `search_docs`, and `docs.*` hooks when `modules.docs: false`.
    - `in_place` ([`in_place.yaml`](../../crates/acdd-state/src/profile/embedded/in_place.yaml)):
-     inherits `default` (`gates_merge: patch`), sets `git.isolation: in_place`
-     and `save: snapshot` (and `save.post: snapshot` on `tasks.deliver` and
-     `handoff`) for zero-worktree, zero-auto-commit feature runs.
+     inherits `workspace` (resolving `.acdd/profile.yaml` when present else
+     `default`, `gates_merge: patch`), sets `git.isolation: in_place` and
+     `save: none` (and `save.post: none` on `tasks.deliver` and `handoff`) for
+     zero-worktree, zero-auto-commit feature runs.
 2. **`"workspace"` selector**: Resolves `.acdd/profile.yaml` when present in the
    workspace root; otherwise falls back to embedded `default`.
 3. **Explicit repository paths & `profiles_dirs`**: Any relative path confined to
@@ -70,7 +77,7 @@ git:
   worktrees: manual            # manual | managed
   commit_mode: plumbing        # plumbing | cli | manual
   integrate: manual            # manual | rebase-ff | ff-only | no-ff | squash
-save: commit                   # Default post save action or { pre?, post?, immutable?, archive?, prune? }
+save: commit                   # Default post save action (none | commit) or { post?, immutable?, archive?, prune? }
 tags: [default, docs_only, seam]
 protected_paths: []
 default_tools: [acdd_read, acdd_guide, acdd_state, acdd_claim, acdd_verify, acdd_submit, acdd_blackboard]
@@ -96,7 +103,11 @@ gates: []                      # Ordered RawGateItem list (root gates and `- tas
   - `roles`, `commands`, `proofs`, `guidance`, `contours`, `gate_templates`,
     `git_commit_notes`, `limits`, and `modules` merge field-wise / by key
     (supporting `PatchField` null-clearing on nullable fields).
-  - `tags` and `protected_paths` extend or patch inherited sets.
+  - `tags` and `protected_paths` extend or patch inherited sets. When inheriting
+    `code` (whose `tasks.contract` and `tasks.contract_review` gates use
+    `when: "!docs"`), any child profile that overrides `tags:` must retain or
+    include `docs` (or override the inherited `when:` expressions) so all
+    referenced tags remain declared.
   - **`gates_merge: replace`** (default when omitted): If the child declares
     `gates:`, it replaces the parent's `gates:` list completely.
   - **`gates_merge: patch`**: Patches individual inherited gates without
@@ -121,11 +132,10 @@ gates: []                      # Ordered RawGateItem list (root gates and `- tas
     integrity), or `manual`.
   - `integrate`: `manual`, `rebase-ff`, `ff-only`, `no-ff`, or `squash`
     (controls `acdd integrate`).
-- **`save:`**: Controls working-tree and SQLite persistence per gate (also settable
-  at profile root as default or shorthand scalar `save: snapshot`):
-  - `pre`: `none` or `snapshot` (captures candidate tree at claim).
-  - `post`: `none`, `snapshot`, or `commit` (persists git snapshot or creates a commit on submit).
-  - `immutable`: Require working tree at `submit` to match the claim snapshot (`TASK_CANDIDATE_MISMATCH` on drift).
+- **`save:`**: Controls working-tree commits and SQLite persistence per gate (also settable
+  at profile root as default or shorthand scalar `save: none` / `commit`):
+  - `post`: `none` or `commit` (records candidate tree or creates a scoped commit on submit).
+  - `immutable`: Require working tree at `submit` to match the claim tree (`TASK_CANDIDATE_MISMATCH` on drift).
   - `archive` / `prune`: Allowed on `root_gate` only (typically `handoff`); archives
     the completed spec or prunes terminal SQLite rows into `run_tombstones`.
   - `git_commit_note`: Key in `profile.git_commit_notes` attached as a Git note when `post: commit`.
@@ -140,8 +150,11 @@ Each entry in `commands:` is one of:
 - **Simple string**: Shell command string.
 - **`Script` / `Detailed`**: `{ command, description?, timeout_seconds?, test_filter?, output?, compile_errors? }`.
 - **`Pattern` (`by_pattern`)**: `{ by_pattern: { "<glob>": ... }, description?, ... }`
-  mapping changed/admitted scope globs to language commands (most specific glob
-  wins; `compile_errors` can filter `include`/`exclude` regexes).
+  mapping changed/admitted scope globs to language commands via the canonical
+  brace-aware glob matcher in `acdd_core::path_policy` (most specific glob wins;
+  `compile_errors` can filter `include`/`exclude` regexes). Top-level
+  `scope_args_by_pattern` propagates as fallback arguments into resolved commands
+  (with `{file_stem}` and `{path}` expanded against concrete admitted paths).
 
 **`test_filter` & `--test`**:
 - `test_filter: false` (default on unbound/generic commands if omitted) rejects
@@ -161,31 +174,33 @@ test names from command output. `limits.diagnostic_inline_bytes` defaults to
 
 ## Gates, Conditional `when:`, `pass:` / `fail:` Routing, and `DomainProvider`
 
-### Gate Fields & Routing (`pass`, `fail`, `need`, `independent_from`)
+### Gate Fields & Routing (`pass`, `fail`, `fail_drift`, `need`, `independent_from`)
 - `pass`: Explicit sibling gate ID on success (defaults to next sibling gate if omitted).
-- `fail`: Target sibling gate ID on reject/failure (replaces removed `0.5.x` `loop:` blocks).
+- `fail`: Target sibling gate ID on `defect` reject/failure (replaces removed `0.5.x` `loop:` blocks).
+- `fail_drift`: Optional target sibling gate ID (e.g. `rearchitect`) on `architectural_drift` rejections, clearing cached builder context and rotating runner `ACDD_AGENT_SESSION_ID`.
 - `when`: Boolean tag expression (`tag`, `!tag`, `a & b`, `a + b`, `a | b`, `( ... )`)
+  parsed and evaluated solely by `acdd_state::profile::when::WhenExpr`,
   allowed on `- tasks:` blocks and `task_gate` nodes (forbidden on `root_gate`).
   All referenced tags must appear in profile `tags:` (or `"default"`).
 - `max_attempts`: Failure/rejection budget before escalation (default `3`, `>= 1`).
 - `independent_from`: Requires a `worker_id` distinct from the accepted worker of named predecessor gates (`TASK_REVIEW_NOT_INDEPENDENT`).
-- `need`: Predecessor gate selectors whose accepted candidate snapshots must match at submit.
+- `need`: Predecessor gate selectors whose accepted candidate `TreeOid` must match at submit.
 - `receipt: true`: Marks a terminal gate that records a durable receipt and closes its container.
 
 ### Proofs (`proof:`)
 Built-in `ProofKind` values are:
 - `none`: Default when omitted.
-- `contract`: Runtime-red proof requiring `command`, `expected_failure` (`exit_codes` / `stderr_contains`), and `test_filter`.
+- `contract`: Runtime-red proof requiring `command`, `expected_failure` (`exit_codes` / `stderr_contains`), and `test_filter`. An empty `exit_codes: []` (as in `default.yaml`) accepts any runtime failure in `1..=125` with `0` `compile_errors`; non-empty `exit_codes` rejects `0`, negative values, `126`, and `127`.
 - `command`: Passing command verification (`exit_code == 0`, `tests_failed == 0`).
 - `call`: Domain provider action (`call: <domain>.<action>` with optional `with:`).
-- `review`: Independent review proof requiring `role` and non-empty `contours`.
+- `review`: Independent review proof requiring `role` and non-empty `contours` (for example `paths`, `claims`, `architecture`, `concurrency`, `project_isolation`, `administration`).
 - Named catalog proof (`proof: blueprint` referencing `proofs.blueprint`) or inline JSON Schema (`proof: { scheme: ... }`).
 
 ### `DomainProvider` Extensions (`call`, `checks`, `context`, `tools_add`, `tools_remove`)
 Domain-agnostic `acdd-state` delegates domain behavior via `DomainProvider` (`crates/acdd-core/src/ports.rs`; see the [domain extensions guide](../architecture/domain-extensions.md)):
 - **`call: <domain>.<action>`** (`with: { ... }`): Executes a registered domain action (with `lookup_action_result` recovery for mutating actions).
 - **`checks: [<domain>.<check>]`** (or `{ check, with? }`): Automated domain verifiers executed during `acdd verify` / `acdd submit` (e.g., `code.seam`, `code.signature_scope`, `docs.links`).
-- **`context: [<domain>.<lens>]`**: Domain context lenses assembled into `ClaimResp` tiers (`docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`).
+- **`context: [<domain>.<lens>]`**: Domain context lenses assembled into `ClaimResp` tiers (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`).
 - **`tools` / `tools_add` / `tools_remove`**: Per-gate MCP tool allowlists layered over `default_tools` (including built-in tools and `<domain>_<name>` plugin tools).
 
 ---

@@ -168,7 +168,7 @@ gates:
         proof: command
         fail: author_manifests
         save:
-          post: snapshot
+          post: none
     pass: review
 
   # Gate 3: Governance & Invariant Review (Independent Agent)

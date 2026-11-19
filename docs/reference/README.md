@@ -6,12 +6,12 @@ doc_type: guide
 # Reference
 
 - [Configuration](configuration.md): `acdd.yaml`, `specs:`, `state_db`, `modules:`, and `adapter.digest` isolation.
-- [CLI](cli.md): flat `0.6.0` CLI commands and global options.
+- [CLI](cli.md): flat `0.6.1` CLI commands and global options.
 - [MCP tools](mcp-tools.md): 19 built-in tools, `<domain>_<name>` plugin tools, selectors, and pagination.
 - [Markdown and JSON presentation](mcp-markdown-contracts.md): format selection, domain layouts, evidence preservation, and continuations.
 - [ACDD](acdd.md): unified `Run` / `GateProfile` lifecycle, `ClaimResp`, and embedded profile walkthrough.
 - [ACDD profiles](profiles.md): v2 `GateProfile` schema, `git:`/`save:` policies, `DomainProvider` hooks, and pins.
-- [State, tasks & lifecycle](tasks.md): `crates/acdd-state` + `crates/acdd-core`, SQLite schema, locks, snapshots, and error codes.
+- [State, tasks & lifecycle](tasks.md): `crates/acdd-state` + `crates/acdd-core`, SQLite schema, locks, candidate verification, and error codes.
 - [MCP setup](mcp-setup.md): client installation and workspace selection.
 - [Languages](languages.md): compiled profiles and extraction coverage.
 - [Framework manifests](framework-manifests.md): bundled rules, project manifest files, validation, and language-extension boundaries.

@@ -1,6 +1,6 @@
 version: 2
 inherit: none
-save: snapshot
+save: none
 proofs:
   command:
     schema:
@@ -20,4 +20,4 @@ gates:
           proof: command
         - id: finish
           receipt: true
-          save: snapshot
+          save: none

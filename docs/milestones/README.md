@@ -101,5 +101,6 @@ subtasks:
 
 ### 3. Review & Verification Governance
 
-- **Gate progression**: The resolved `GateProfile` (`version: 2`) defines root gates, `- tasks:` gates, `pass:`/`fail:` edges, `need:` snapshot checks, and `DomainProvider` capabilities (`call:`, `checks:`, `context:`).
-- **Review and escalation**: Independent reviewers (`independent_from`) evaluate every configured contour (`paths`, `claims`, `concurrency`, `project_isolation`, `administration`) using typed `ReviewEvidence` (`--evidence`) or reject with structured `RejectionFindings` (`--findings`).
+- **Gate progression**: The resolved `GateProfile` (`version: 2`) defines root gates, `- tasks:` gates, `pass:`/`fail:`/`fail_drift:` edges, `need:` candidate tree parity checks, and `DomainProvider` capabilities (`call:`, `checks:`, `context:`).
+- **Reuse-first & complexity escalation**: During synthesis, build, and polish, audit canonical owners (`INV-SINGLE-OWNER`), reuse existing shared abstractions, and record justification or escalate via `acdd_blackboard` (`topic: decisions` or `blockers`) before introducing any new subsystem, shadow resolver, narrow string heuristic, or disproportionate defect-fix complexity growth.
+- **Review and escalation**: Independent reviewers (`independent_from`) evaluate every configured contour (`paths`, `claims`, `architecture`, `concurrency`, `project_isolation`, `administration`) using typed `ReviewEvidence` (`--evidence`) or reject with structured `RejectionFindings` (`--findings`). Builders refute ADR- or contract-contradicting findings via `acdd_blackboard` (`topic: decisions`) citing `file:line` proof (`REBUTTAL OVER BLIND REWRITE`), while reviewers reject only on concrete contract/invariant violations or reproducible defects (`BURDEN OF PROOF`).

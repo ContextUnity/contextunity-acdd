@@ -19,10 +19,10 @@ fn steps(job: &Value) -> &[Value] {
 
 #[test]
 fn release_package_step_produces_installable_archive_and_checksum() {
-    let release = workflow("release.yml").or_else(|_| workflow("ci.yml"));
+    let release = workflow("ci.yml");
     assert!(
         release.is_ok(),
-        "assertion failed: release workflow is required: {release:?}"
+        "assertion failed: ci workflow is required: {release:?}"
     );
     let release = release.unwrap();
     let package = release["jobs"]

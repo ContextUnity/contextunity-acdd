@@ -2,10 +2,10 @@
 # TEST WORKFLOW: Plan Model In-Place Execution & Archive E2E Verification
 # Purpose: Autonomous verification of in-place plan execution (tasks container without root milestone gates).
 # Invariants:
-#   1. git.isolation: in_place + save: snapshot (captures in-flight state in refs/acdd/snapshots/, NO auto-commits)
+#   1. git.isolation: in_place + save: none (verifies scoped TreeOid state without auto-commits)
 #   2. In-place execution on current branch without worktree spawning.
 #   3. Zero root milestone gates (no blueprint_synthesis pre-task container, no handoff closure).
-#   4. Completion updates state and snapshot artifacts cleanly without touching protected main.
+#   4. Completion updates state and durable receipts cleanly without touching protected main.
 # =============================================================================
 
 version: 2
@@ -17,7 +17,7 @@ git:
   commit_mode: plumbing
   integrate: manual
 
-save: snapshot
+save: none
 
 roles:
   builder:
@@ -65,8 +65,7 @@ gates:
           command: rust-check-and-test
           proof: command
           save:
-            pre: snapshot
-            post: snapshot
+            post: none
           pass: review
 
         - id: review
@@ -95,4 +94,4 @@ gates:
           fail: build
           save:
             immutable: true
-            post: snapshot
+            post: none

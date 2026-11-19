@@ -1,6 +1,6 @@
 version: 2
 inherit: none
-save: snapshot
+save: none
 
 contours:
   paths:
@@ -60,14 +60,15 @@ gates:
           expected_failure:
             exit_codes: [1, 101, 134]
             stderr_contains: "assertion failed"
-          save: snapshot
+          save: none
+          pass: build
         - id: build
           role: builder
           proof: command
           command: rust-check-and-test
           save:
-            pre: snapshot
-            post: snapshot
+            post: none
+          pass: review
         - id: review
           role: independent_reviewer
           proof: review
@@ -82,4 +83,4 @@ gates:
         - id: deliver
           need: [contract, build, review]
           receipt: true
-          save: snapshot
+          save: none

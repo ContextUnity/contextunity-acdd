@@ -2,7 +2,7 @@
 # ACDD PLAN PROFILE: Strict Tests Debloat & Contract Consolidation
 #
 # ADR 0003 Unified Profile Engine (Plan in-place execution: `git.isolation: in_place`,
-# `save: snapshot`, `tasks:` container only).
+# `save: none`, `tasks:` container only).
 #
 # Enforces hard non-negotiable debloat gates:
 #   1. Zero tampering with non-test production source files (`src/`, `crates/*/src/` non-test)
@@ -21,7 +21,7 @@ git:
   commit_mode: plumbing
   integrate: manual
 
-save: snapshot
+save: none
 
 scope_args_by_pattern:
   "tests/acdd/**/*.rs": "--test acdd"
@@ -154,11 +154,11 @@ guidance:
     Target >=30% test-count reduction without any loss of observable production contract coverage.
 
   debloat.consolidate: >
-    Execute MERGE and REMOVE in the same edit pass. Keep heavy Workspace/McpTestHarness builds outside table loops. Move pure DAG/state checks to in-memory RunHarness.
+    Execute MERGE and REMOVE in the same edit pass. Keep heavy Workspace/McpTestHarness builds outside table loops, replace fake table-driven mega-tests (imperative multi-repo/git setup chains pasted sequentially inside one #[test]) with true data-row matrices, and move pure DAG/state checks to in-memory RunHarness.
     Never touch non-test production code. Every diff MUST end with strictly fewer #[test] functions and fewer or equal heavy harnesses than HEAD.
 
   debloat.audit: >
-    Verify 1-to-1 invariant mapping (deleted/merged test -> retained matrix row or stronger seam) ensuring zero weakened assertions, zero dropped negative/error boundaries, zero static OnceLock<Workspace/TempDir>, and strictly negative #[test] delta.
+    Verify 1-to-1 invariant mapping (deleted/merged test -> retained matrix row or stronger seam) ensuring zero weakened assertions, zero dropped negative/error boundaries, zero fake table-driven sequential setup mega-tests, zero static OnceLock<Workspace/TempDir>, and strictly negative #[test] delta.
 
 gates:
   - tasks:
@@ -181,7 +181,7 @@ gates:
                   type: array
                   items: { type: string }
           save:
-            post: snapshot
+            post: none
           pass: freeze_baseline
 
         - id: freeze_baseline
@@ -193,8 +193,7 @@ gates:
           role: builder
           guidance: [debloat.consolidate]
           save:
-            pre: snapshot
-            post: snapshot
+            post: none
           pass: enforce_budget
 
         - id: enforce_budget
@@ -209,7 +208,7 @@ gates:
           pass: audit
           fail: consolidate
           save:
-            post: snapshot
+            post: none
 
         - id: audit
           role: independent_reviewer
@@ -231,4 +230,4 @@ gates:
           fail: consolidate
           save:
             immutable: true
-            post: snapshot
+            post: none

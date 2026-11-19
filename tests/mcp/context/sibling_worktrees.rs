@@ -9,7 +9,7 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
         ),
         (
             ".acdd/profile.yaml",
-            "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          role: worker\n          proof: none\n          pass: build\n        - id: build\n          role: worker\n          proof: none\n          pass: review\n        - id: review\n          role: worker\n          proof: none\n          independent_from: [build]\n          need: [build]\n          pass: deliver\n        - id: deliver\n          role: worker\n          receipt: true\n          need: [build, review]\n          save:\n            post: snapshot\n",
+            "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          role: worker\n          proof: none\n          pass: build\n        - id: build\n          role: worker\n          proof: none\n          pass: review\n        - id: review\n          role: worker\n          proof: none\n          independent_from: [build]\n          need: [build]\n          pass: deliver\n        - id: deliver\n          role: worker\n          receipt: true\n          need: [build, review]\n          save:\n            post: none\n",
         ),
         ("src/lib.rs", "pub fn primary_only() {}\n"),
     ]);

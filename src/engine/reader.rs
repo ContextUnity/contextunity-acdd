@@ -274,11 +274,17 @@ fn active_node_context(root: &Path, adapter: &Adapter) -> Result<Option<ActiveNo
     };
     let node_cursor = acdd_core::ids::NodeCursor::from_node_id(&node.node_id)?.to_string();
     let admitted_scope = acdd_state::machine::container_scope(&graph, &node);
-    let has_command = serde_json::from_str::<acdd_state::profile::ResolvedGateProfile>(&run.profile_json)
-        .ok()
+    let profile =
+        serde_json::from_str::<acdd_state::profile::ResolvedGateProfile>(&run.profile_json).ok();
+    let protected_paths = profile
+        .as_ref()
+        .map(|p| p.protected_paths.clone())
+        .unwrap_or_default();
+    let has_command = profile
+        .as_ref()
         .and_then(|profile| {
             let cursor = acdd_core::ids::NodeCursor::from_node_id(&node.node_id).ok()?;
-            let gate_def = find_gate_in_profile(&profile, &cursor)?;
+            let gate_def = find_gate_in_profile(profile, &cursor)?;
             Some(
                 gate_def
                     .command
@@ -288,11 +294,37 @@ fn active_node_context(root: &Path, adapter: &Adapter) -> Result<Option<ActiveNo
         })
         .unwrap_or(false);
 
+    let default_state_db = primary.join(".acdd/state.sqlite");
+    let state_db_override = (state_db != default_state_db).then(|| state_db.clone());
+    let code_db_path = (adapter.modules.is_enabled("code") || adapter.modules.is_enabled("docs"))
+        .then(|| acdd_core::config::resolve_code_db_path(&primary, None));
+    let engine_cfg = acdd_state::usecases::StateEngineConfig {
+        workspace_root: primary,
+        worktree: root.to_path_buf(),
+        state_db_override,
+        code_db_path,
+        spec_collections: adapter.specs.clone(),
+        profiles_dirs: adapter.profiles_dirs.clone(),
+        linked_workspaces: adapter
+            .linked_workspaces
+            .iter()
+            .map(|lw| (lw.name.clone(), lw.path.clone()))
+            .collect(),
+        modules: adapter.modules.clone(),
+        response_policy: adapter.response.clone(),
+        retain_traces: adapter.retain_traces,
+    };
+    let reader = acdd_state::store::sqlite::SqliteStateReader::new(state_db);
+    let path_policy = acdd_state::usecases::lifecycle::build_path_policy(&engine_cfg, &reader, &[])
+        .unwrap_or_default();
+
     Ok(Some(ActiveNodeContext {
         run_id: run.run_id,
         node_cursor,
         node,
         admitted_scope,
+        protected_paths,
+        path_policy,
         has_command,
     }))
 }
@@ -337,6 +369,10 @@ pub struct ActiveNodeContext {
     pub node: acdd_state::types::GateNodeRecord,
     /// Effective admitted write scope for the node's container.
     pub admitted_scope: Vec<String>,
+    /// Declarative protected path globs from the resolved gate profile.
+    pub protected_paths: Vec<String>,
+    /// Canonical workspace path policy incorporating engine-managed specs and DB paths.
+    pub path_policy: acdd_core::path_policy::WorkspacePathPolicy,
     /// Whether the active gate configures a registered command.
     pub has_command: bool,
 }
@@ -701,14 +737,17 @@ fn acdd_read_single(
         }
     }
     if let Some(ctx) = &node_ctx {
-        let allowed = if ctx.admitted_scope.is_empty()
+        let root_unscoped = [String::from("**")];
+        let scope = if ctx.admitted_scope.is_empty()
             && ctx.node.kind == acdd_state::types::NodeKind::RootGate
         {
-            true
+            &root_unscoped[..]
         } else {
-            acdd_core::path_policy::WorkspacePathPolicy::default()
-                .is_scope_admitted(&path, &ctx.admitted_scope)
+            &ctx.admitted_scope[..]
         };
+        let allowed = ctx
+            .path_policy
+            .is_agent_writable(&path, scope, &ctx.protected_paths);
         value["in_write_scope"] = json!(if allowed { "ALLOWED" } else { "OUT_OF_SCOPE" });
     }
     let footer_hint = if mode == ReadMode::Lines {
@@ -1239,52 +1278,30 @@ pub fn compute_file_delta(
         .context("delta filename is not UTF-8")?;
     let node_baseline = if baseline.is_none() {
         node_ctx.and_then(|ctx| {
-            ctx.node
-                .baseline_commit
-                .as_ref()
-                .map(|c| c.as_str().to_owned())
-                .or_else(|| ctx.node.claim_tree.as_ref().map(|t| t.as_str().to_owned()))
+            if ctx.node.isolation == acdd_state::types::IsolationMode::InPlace {
+                ctx.node
+                    .claim_tree
+                    .as_ref()
+                    .map(|t| t.as_str().to_owned())
+                    .or_else(|| ctx.node.baseline_commit.as_ref().map(|c| c.as_str().to_owned()))
+            } else {
+                ctx.node
+                    .baseline_commit
+                    .as_ref()
+                    .map(|c| c.as_str().to_owned())
+                    .or_else(|| ctx.node.claim_tree.as_ref().map(|t| t.as_str().to_owned()))
+            }
         })
     } else {
         None
     };
     let revision = baseline.or(node_baseline.as_deref()).unwrap_or("HEAD");
+    let diff = acdd_core::git::diff_worktree_file_against_rev(git_directory, revision, path, 3)?;
     ensure!(
-        !revision.starts_with('-') && !revision.is_empty(),
-        "invalid delta baseline"
-    );
-    let resolved = acdd_core::git::git_command(git_directory, &["rev-parse", "--verify", revision])?;
-    ensure!(
-        resolved.status.success(),
-        "delta baseline is not a valid git revision or tree"
-    );
-    let oid = String::from_utf8(resolved.stdout)?;
-    let kind_out = acdd_core::git::git_command(git_directory, &["cat-file", "-t", oid.trim()])?;
-    let obj_type = String::from_utf8_lossy(&kind_out.stdout);
-    ensure!(
-        kind_out.status.success() && matches!(obj_type.trim(), "commit" | "tree"),
-        "delta baseline must resolve to a commit or tree"
-    );
-    let output = acdd_core::git::git_command(
-        git_directory,
-        &[
-            "--no-pager",
-            "--literal-pathspecs",
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--unified=3",
-            oid.trim(),
-            "--",
-            path,
-        ],
-    )?;
-    ensure!(output.status.success(), "git delta failed");
-    ensure!(
-        output.stdout.len() <= 5 * 1024 * 1024,
+        diff.len() <= 5 * 1024 * 1024,
         "delta exceeds reader byte limit"
     );
-    Ok(String::from_utf8(output.stdout)?)
+    Ok(diff)
 }
 
 fn graph_signals(
@@ -1525,15 +1542,18 @@ mod tests {
         fs::create_dir_all(root.join(".acdd")).unwrap();
         fs::write(
             root.join(".acdd/profile.yaml"),
-            "version: 2\nroles:\n  builder:\n    mode: subagent\ncommands:\n  build_check: \"cargo check --lib\"\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          command: build_check\n",
+            "version: 2\nprotected_paths:\n  - Cargo.toml\nroles:\n  builder:\n    mode: subagent\ncommands:\n  build_check: \"cargo check --lib\"\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n          command: build_check\n",
         )
         .unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"p\"\nversion = \"0.1.0\"\n").unwrap();
         fs::write(root.join("src/scoped.rs"), "pub fn a() -> i32 { 1 }\n").unwrap();
         fs::write(root.join("src/other.rs"), "pub fn b() -> i32 { 2 }\n").unwrap();
         run_git(&["add", "."]);
         run_git(&["commit", "-m", "init"]);
         let base_commit = run_git(&["rev-parse", "HEAD"]);
-        let base_tree = run_git(&["rev-parse", "HEAD^{tree}"]);
+        // Pre-claim in-place edit and pre-claim untracked file captured in `claim_tree`.
+        fs::write(root.join("src/scoped.rs"), "pub fn a() -> i32 { 10 }\n").unwrap();
+        fs::write(root.join("src/pre_claim_untracked.rs"), "pub fn pre_claim() {}\n").unwrap();
 
         let adapter = Adapter::default();
         let engine = StateEngine::open(
@@ -1569,9 +1589,9 @@ mod tests {
             StateCommandOutput::Start(resp) => resp.run.run_id.to_string(),
             other => panic!("unexpected start output: {other:?}"),
         };
-        engine
+        let claim_resp = engine
             .execute(StateCommand::Claim(ClaimReq {
-                run: Some(run_id),
+                run: Some(run_id.clone()),
                 node: None,
                 worker_id: WorkerId::new("w1").unwrap(),
                 session_fingerprint: None,
@@ -1580,8 +1600,17 @@ mod tests {
                 worktree: Some(root.clone()),
             }))
             .unwrap();
+        let claim_tree = match claim_resp {
+            StateCommandOutput::Claim(c) => c.candidate_tree.to_string(),
+            other => panic!("unexpected claim output: {other:?}"),
+        };
+        assert_ne!(claim_tree, run_git(&["rev-parse", "HEAD^{tree}"]));
 
+        // Post-claim edit + untracked file.
         fs::write(root.join("src/scoped.rs"), "pub fn a() -> i32 { 42 }\n").unwrap();
+        fs::write(root.join("src/untracked.rs"), "pub fn newly_added() {}\n").unwrap();
+        fs::write(root.join("src/ leading.rs"), "pub fn spaced() {}\n").unwrap();
+        fs::write(root.join("src/leading.rs"), "pub fn plain_name() {}\n").unwrap();
 
         let page = QueryOptions::resolve(&adapter.response, None, 0, None, None).unwrap();
         let source = SourceOptions::resolve(&adapter.response, None, None, None, 0).unwrap();
@@ -1594,13 +1623,140 @@ mod tests {
         let allowed = acdd_read_tool(&root, &adapter, &req_allowed, &page, &source, None).unwrap();
         assert_eq!(allowed["in_write_scope"], "ALLOWED");
         assert_eq!(allowed["baseline_commit"], base_commit);
-        assert_eq!(allowed["claim_tree"], base_tree);
-        assert!(allowed["content"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("+pub fn a() -> i32 { 42 }"));
+        assert_eq!(allowed["claim_tree"], claim_tree);
+        let delta_text = allowed["content"].as_str().unwrap_or_default();
+        assert!(delta_text.contains("-pub fn a() -> i32 { 10 }"), "{delta_text}");
+        assert!(delta_text.contains("+pub fn a() -> i32 { 42 }"), "{delta_text}");
         let hints = allowed["Hints"].as_str().unwrap_or_default();
         assert!(hints.contains("acdd_blackboard"), "{hints}");
+
+        let untracked_delta = acdd_read_tool(
+            &root,
+            &adapter,
+            &ReadRequest {
+                path: Some("src/untracked.rs".into()),
+                mode: ReadMode::Delta,
+                ..Default::default()
+            },
+            &page,
+            &source,
+            None,
+        )
+        .unwrap();
+        let untracked_diff = untracked_delta["content"].as_str().unwrap_or_default();
+        assert!(untracked_diff.contains("--- /dev/null"), "{untracked_diff}");
+        assert!(untracked_diff.contains("+pub fn newly_added() {}"), "{untracked_diff}");
+        for (rel, expected_fn, forbidden_fn) in [
+            ("src/ leading.rs", "pub fn spaced()", "plain_name()"),
+            ("src/leading.rs", "pub fn plain_name()", "spaced()"),
+        ] {
+            let delta = acdd_read_tool(
+                &root,
+                &adapter,
+                &ReadRequest {
+                    path: Some(rel.to_owned()),
+                    mode: ReadMode::Delta,
+                    ..Default::default()
+                },
+                &page,
+                &source,
+                None,
+            )
+            .unwrap();
+            let diff = delta["content"].as_str().unwrap_or_default();
+            assert!(diff.contains(expected_fn), "{rel}: {diff}");
+            assert!(!diff.contains(forbidden_fn), "{rel}: {diff}");
+        }
+
+        // #12: Untracked file already identical in `claim_tree` must yield empty delta, NOT full `/dev/null` add.
+        let pre_claim_untracked_delta = acdd_read_tool(
+            &root,
+            &adapter,
+            &ReadRequest {
+                path: Some("src/pre_claim_untracked.rs".into()),
+                mode: ReadMode::Delta,
+                ..Default::default()
+            },
+            &page,
+            &source,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            pre_claim_untracked_delta["content"].as_str(),
+            Some(""),
+            "untracked file present in claim_tree must return empty delta: {pre_claim_untracked_delta}"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let pre_abs = root.join("src/pre_claim_untracked.rs");
+            let mut perms = fs::metadata(&pre_abs).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&pre_abs, perms).unwrap();
+            let mode_delta = acdd_read_tool(
+                &root,
+                &adapter,
+                &ReadRequest {
+                    path: Some("src/pre_claim_untracked.rs".into()),
+                    mode: ReadMode::Delta,
+                    ..Default::default()
+                },
+                &page,
+                &source,
+                None,
+            )
+            .unwrap();
+            let mode_diff = mode_delta["content"].as_str().unwrap_or_default();
+            assert_eq!(mode_diff.matches("old mode 100644").count(), 1, "{mode_diff}");
+            assert_eq!(mode_diff.matches("new mode 100755").count(), 1, "{mode_diff}");
+
+            fs::write(&pre_abs, "pub fn pre_claim_untracked_v2() {}\n").unwrap();
+            let mut perms2 = fs::metadata(&pre_abs).unwrap().permissions();
+            perms2.set_mode(0o755);
+            fs::set_permissions(&pre_abs, perms2).unwrap();
+            let mode_content_delta = acdd_read_tool(
+                &root,
+                &adapter,
+                &ReadRequest {
+                    path: Some("src/pre_claim_untracked.rs".into()),
+                    mode: ReadMode::Delta,
+                    ..Default::default()
+                },
+                &page,
+                &source,
+                None,
+            )
+            .unwrap();
+            let mode_content_diff = mode_content_delta["content"].as_str().unwrap_or_default();
+            assert_eq!(
+                mode_content_diff.matches("old mode 100644").count(),
+                1,
+                "{mode_content_diff}"
+            );
+            assert_eq!(
+                mode_content_diff.matches("new mode 100755").count(),
+                1,
+                "{mode_content_diff}"
+            );
+            assert!(mode_content_diff.contains("+pub fn pre_claim_untracked_v2()"), "{mode_content_diff}");
+        }
+
+        let protected_read = acdd_read_tool(
+            &root,
+            &adapter,
+            &ReadRequest {
+                path: Some("Cargo.toml".into()),
+                mode: ReadMode::Lines,
+                ..Default::default()
+            },
+            &page,
+            &source,
+            None,
+        )
+        .unwrap();
+        assert_eq!(protected_read["in_write_scope"], "OUT_OF_SCOPE", "{protected_read}");
 
         let req_outside = ReadRequest {
             path: Some("src/other.rs".into()),
@@ -1613,5 +1769,75 @@ mod tests {
         let outside_hints = outside["Hints"].as_str().unwrap_or_default();
         assert!(outside_hints.contains("acdd_state"), "{outside_hints}");
         assert!(outside_hints.contains("acdd_blackboard"), "{outside_hints}");
+
+        // Unscoped RootGate must also report OUT_OF_SCOPE for protected_paths (`Cargo.toml`).
+        engine
+            .execute(StateCommand::Clear(acdd_state::usecases::ClearReq {
+                run: Some(run_id),
+                reason: Some("reset for unscoped root gate check".into()),
+                force: true,
+            }))
+            .unwrap();
+        fs::write(
+            root.join(".acdd/profile.yaml"),
+            "version: 2\nprotected_paths:\n  - Cargo.toml\nroles:\n  architect:\n    mode: subagent\n  builder:\n    mode: subagent\ngates:\n  - id: verify\n    role: architect\n  - tasks:\n      gates:\n        - id: build\n          role: builder\n",
+        )
+        .unwrap();
+        let root_start = engine
+            .execute(StateCommand::Start(StartReq {
+                spec_path: None,
+                goal: Some("unscoped root check".into()),
+                run_name: None,
+                profile: None,
+                scope: vec![],
+                target_base: None,
+                worktree: false,
+                in_place: true,
+                worktree_path: None,
+            }))
+            .unwrap();
+        let root_run_id = match root_start {
+            StateCommandOutput::Start(resp) => resp.run.run_id.to_string(),
+            other => panic!("unexpected root start: {other:?}"),
+        };
+        engine
+            .execute(StateCommand::Claim(ClaimReq {
+                run: Some(root_run_id),
+                node: Some("verify".into()),
+                worker_id: WorkerId::new("w1").unwrap(),
+                session_fingerprint: None,
+                force: false,
+                steal_remote: false,
+                worktree: Some(root.clone()),
+            }))
+            .unwrap();
+        let root_protected = acdd_read_tool(
+            &root,
+            &adapter,
+            &ReadRequest {
+                path: Some("Cargo.toml".into()),
+                mode: ReadMode::Lines,
+                ..Default::default()
+            },
+            &page,
+            &source,
+            None,
+        )
+        .unwrap();
+        assert_eq!(root_protected["in_write_scope"], "OUT_OF_SCOPE", "{root_protected}");
+        let root_allowed = acdd_read_tool(
+            &root,
+            &adapter,
+            &ReadRequest {
+                path: Some("src/other.rs".into()),
+                mode: ReadMode::Lines,
+                ..Default::default()
+            },
+            &page,
+            &source,
+            None,
+        )
+        .unwrap();
+        assert_eq!(root_allowed["in_write_scope"], "ALLOWED", "{root_allowed}");
     }
 }

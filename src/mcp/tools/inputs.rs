@@ -674,9 +674,7 @@ pub enum McpStateAction {
     Sync,
     /// Update a subtask's status and mandatory terminal evidence (`StateCommand::Subtask`).
     Subtask,
-    /// Capture an explicit manual Git snapshot (`StateCommand::Snapshot`).
-    Snapshot,
-    /// Confined-restore working-tree files from a snapshot ref or OID (`StateCommand::Rollback`).
+    /// Confined-restore working-tree files from a commit ref, commit OID, or tree OID (`StateCommand::Rollback`).
     Rollback,
     /// Integrate completed task branches into the run worktree (`StateCommand::Integrate`).
     Integrate,
@@ -695,11 +693,11 @@ impl McpStateAction {
     }
 }
 
-/// Canonical `acdd_state` MCP tool input covering 11 `StateCommand` actions and 5 read-only `StateQuery` actions.
+/// Canonical `acdd_state` MCP tool input covering 10 `StateCommand` actions and 5 read-only `StateQuery` actions.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StateInput {
-    /// State action (`status`, `list`, `show`, `next`, `observability`, `start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `rollback`, `integrate`, `clear`, `run`).
+    /// State action (`status`, `list`, `show`, `next`, `observability`, `start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `rollback`, `integrate`, `clear`, `run`).
     pub action: McpStateAction,
     /// Optional run ID or run name selector.
     pub run: Option<String>,
@@ -751,9 +749,7 @@ pub struct StateInput {
     pub subtask_status: Option<String>,
     /// Required non-empty evidence when `subtask` status is `completed` or `cancelled`.
     pub evidence: Option<String>,
-    /// Optional manual snapshot label (`snapshot`).
-    pub label: Option<String>,
-    /// Snapshot ref, commit OID, or tree OID to restore (`rollback`).
+    /// Commit ref, commit OID, or tree OID to restore (`rollback`).
     pub target: Option<String>,
     /// Integration strategy override (`integrate`: `manual | rebase-ff | ff-only | no-ff | squash`).
     pub strategy: Option<String>,
@@ -885,10 +881,33 @@ pub struct McpFindingItem {
     pub remediation: String,
 }
 
+/// Classification of a gate rejection (`defect` or `architectural_drift`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpRejectionKind {
+    /// Localized implementation or verification defect routed via `fail:`.
+    #[default]
+    Defect,
+    /// Structural/architectural mismatch routed via `fail_drift:` with builder context reset.
+    ArchitecturalDrift,
+}
+
+impl From<McpRejectionKind> for acdd_state::types::RejectionKind {
+    fn from(value: McpRejectionKind) -> Self {
+        match value {
+            McpRejectionKind::Defect => Self::Defect,
+            McpRejectionKind::ArchitecturalDrift => Self::ArchitecturalDrift,
+        }
+    }
+}
+
 /// Structured findings payload required for `acdd_submit(action: "reject")`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpRejectionFindings {
+    /// Optional rejection classification (`defect` by default, or `architectural_drift`).
+    #[serde(default)]
+    pub kind: Option<McpRejectionKind>,
     /// Concise summary of why the gate was rejected.
     pub summary: String,
     /// Optional blackboard message ID referencing the posted findings thread.
@@ -900,6 +919,7 @@ pub struct McpRejectionFindings {
 impl From<McpRejectionFindings> for acdd_state::types::RejectionFindings {
     fn from(value: McpRejectionFindings) -> Self {
         Self {
+            kind: value.kind.map(Into::into).unwrap_or_default(),
             summary: value.summary,
             blackboard_message_id: value.blackboard_message_id,
             items: value
@@ -981,7 +1001,7 @@ pub struct SubmitInput {
     pub test_target: Option<String>,
     /// Typed review evidence for `proof: review`.
     pub review_evidence: Option<McpReviewEvidence>,
-    /// Structured rejection findings required for `action: "reject"`.
+    /// Structured rejection findings required for `action: "reject"` (supports optional `kind`: `defect | architectural_drift`).
     pub rejection_findings: Option<McpRejectionFindings>,
     /// Custom schema JSON evidence (`proof: blueprint` or custom `proofs:` schema).
     #[schemars(schema_with = "any_json_schema")]

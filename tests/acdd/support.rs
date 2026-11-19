@@ -100,7 +100,11 @@ impl TestProvider {
                     name: "links".to_owned(),
                     input_schema: SchemaDef::object(),
                 }],
-                context_lenses: BTreeSet::from(["adrs".to_owned(), "invariants".to_owned()]),
+                context_lenses: BTreeSet::from([
+                    "adrs".to_owned(),
+                    "invariants".to_owned(),
+                    "instructions".to_owned(),
+                ]),
                 tools: vec![],
             },
         };

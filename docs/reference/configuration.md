@@ -51,16 +51,21 @@ workspace. `specs:` declares named specification collections (`milestones` and
 `plans` by default), each configuring `path`, optional default `profile`, allowed
 `prefixes`, and numeric ID zero-padding `digits` (`1..=16`, default `3`).
 `specs.<name>.path` entries must be normalized relative paths that do not overlap
-by path components. Legacy top-level `milestones:` and `plans:` lists remain
-accepted alongside `specs:` only for migration/compatibility and are superseded
-by `specs:`. Markdown and MDX in admitted documentation locations, including
-milestone and plan documents, remain searchable and available for graph
-navigation. Non-document files in those directories stay outside the source
-index. `ignore` matches file or directory basenames. The scanner admits
-compiled source extensions and Markdown/MDX within these roots; scan roots do
-not define import or package roots. Unavailable linked workspaces are skipped. A
-linked entry with `enabled: false` is excluded; omission of `enabled` means
-true.
+by path components. `AdapterFile`, `LinkedWorkspaceConfig`, and `ScannerLimits`
+enforce `#[serde(deny_unknown_fields)]`, and `acdd_core::config::load_adapter`
+rejects legacy `0.5.x` top-level keys (`milestones`, `plans`, `tasks_db`,
+`workflows_dir`, `milestone_prefix`, `plan_prefix`, `task_repository`,
+`task_project`, `acdd_profile`) fail-closed with `CONFIG_MIGRATION_REQUIRED`
+(see [migration-0.6.md](../runbooks/migration-0.6.md)). Markdown and MDX in
+admitted documentation locations, including milestone and plan documents, remain
+searchable and available for graph navigation. Non-document files in those
+directories stay outside the source index. `ignore` matches file or directory
+basenames. The scanner admits compiled source extensions and Markdown/MDX within
+these roots; scan roots do not define import or package roots. For
+`linked_workspaces`, `load_adapter_strict` / `load_adapter_report` (used by
+`acdd validate`) fail closed on empty or duplicate `name` values and missing,
+non-directory, or symlink-escaped `path` targets; an entry with `enabled: false`
+is excluded, and omission of `enabled` means true.
 
 ### Configuration digest isolation (`adapter.digest`)
 
@@ -138,7 +143,7 @@ root in non-Git workspaces. CLI `--state-db` / `ACDD_STATE_DB` overrides
 `state_db`. `retain_traces` controls how many run trace directories under
 `<primary_worktree>/.acdd/run/<run_id>/traces.jsonl` are retained across cleanup
 (default `20`, must be `>= 1`). See [state, tasks & lifecycle](tasks.md) for
-storage tables, advisory locks under `<git_common_dir>/acdd/`, snapshots, and
+storage tables, advisory locks under `<git_common_dir>/acdd/`, candidate verification, and
 recovery. Code indexing works without state storage configuration.
 
 `modules:` configures MCP subsystem and `DomainProvider` plugin availability:
@@ -156,10 +161,14 @@ modules:
 ```
 
 Or using preset form (`profile: full | navigator | orchestrator | minimal` with
-optional `enabled`, `disabled`, `required`, and `domains` maps). Disabling
-`state` automatically disables `blackboard`; core tools `acdd_read` and
-`acdd_guide` remain available even under `minimal`. External `DomainProvider`
-plugins are toggled via `modules.domains.<domain_id>: true | false`.
+optional `enabled`, `disabled`, `required`, and `domains` maps). Module flags
+are physically enforced across indexing, CLI, MCP, and profile resolution:
+disabling `code` skips source indexing and rejects code queries/CLI commands
+with `FEATURE_DISABLED`; disabling `docs` skips documentation indexing/checks
+and strips `get_doc`, `search_docs`, and `docs.*` hooks from embedded `code`
+profiles; disabling `state` automatically disables `blackboard`. Core tools
+`acdd_read` and `acdd_guide` remain available even under `minimal`. External
+`DomainProvider` plugins are toggled via `modules.domains.<domain_id>: true | false`.
 
 Code-map output guards reject unreadable existing database targets and refuse
 to overwrite `.acdd/state.sqlite` or the configured `state_db` path. Opening the

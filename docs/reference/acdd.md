@@ -70,7 +70,7 @@ by `GateProfile` `git:` and `save:` policies:
 | Mode / Embedded Profile | Spec / Input | Isolation & `save` | Primary Use Case |
 | --- | --- | --- | --- |
 | **`default` / `code`** | `docs/milestones/*.md` or custom spec | `git.isolation: worktree`, `save: commit` | Multi-task milestones with `blueprint_synthesis`, task worktrees, and verified `handoff` |
-| **`in_place`** | `docs/plans/*.md` or feature spec | `git.isolation: in_place`, `save: snapshot` | Multi-step changes on the active branch without worktrees or auto-commits |
+| **`in_place`** | `docs/plans/*.md` or feature spec | Inherits `workspace`, `git.isolation: in_place`, `save: none` | Multi-step changes on the active branch without worktrees or auto-commits |
 | **Ephemeral (`acdd start --goal`)** | Materialized `.acdd/run/<run_id>/spec.md` + `--scope` | `git.isolation: in_place` (or custom profile `save: none`) | Ad-hoc goal sweeps, autonomous QA, and single-run tasks |
 
 ---
@@ -83,7 +83,7 @@ gate uses one primary proof/execution contract:
 - **Role / review / delivery gate** (`role: <role_id>`): Claimed via `acdd claim`
   / `acdd_claim` and completed via `acdd submit` / `acdd_submit`. Review gates
   declare `proof: review` and non-empty `contours:`; delivery/handoff gates
-  declare `receipt: true` and `save.post: commit` (or `snapshot` in `in_place`).
+  declare `receipt: true` and `save.post: commit` (or `none` in `in_place`).
 - **Command / contract gate** (`command: <command_id>`, optionally paired with a `role:`):
   Executed via `acdd verify` / `acdd_verify` (or headless `acdd run`) against the
   registered command slot and `test_filter`. Passing `command` proofs require
@@ -120,19 +120,20 @@ completion.
 - **Independent Worker Enforcement (`independent_from`)**: Claim and submission
   verify that `worker_id` differs from the accepted worker of each named
   predecessor gate (`TASK_REVIEW_NOT_INDEPENDENT`).
-- **Forward & Rejection Routing (`pass`, `fail`)**: Passing advances sequentially
-  or to `pass:`. Rejecting (`--action reject`) or failing routes to `fail:` with
-  mandatory structured `RejectionFindings`. Roles with `reuse_on_reject: true`
-  instruct the runner/coordinator to return findings to the prior worker.
+- **Forward & Rejection Routing (`pass`, `fail`, `fail_drift`)**: Passing advances sequentially
+  or to `pass:`. Rejecting (`--action reject`) or failing routes along `fail:` (on `defect`)
+  or `fail_drift:` (on `architectural_drift`, e.g., `rearchitect` -> `build` triggering builder
+  context reset) with mandatory structured `RejectionFindings`. Roles with `reuse_on_reject: true`
+  instruct the runner/coordinator to return findings to the prior worker on `defect` rejections.
 - **Conditional Task Tracks (`when`) & Retry Budgets (`max_attempts`)**: `- tasks:`
   and `task_gate` nodes support boolean `when:` tag expressions evaluated
   against each task's effective `tags` (`tags:` in profile + task YAML). Explicit
   `max_attempts` (default `3`, `>= 1`) caps failures/cycles before escalation.
-- **Save & Candidate Immutability (`save`)**: `save.pre: snapshot` captures a
-  claim tree (`claim_tree`); `save.immutable: true` rejects candidate drift at
-  submit (`TASK_CANDIDATE_MISMATCH`); `save.post: commit` creates a scoped Git
-  commit (with optional `git_commit_note`) without polluting untracked engine
-  paths excluded by `WorkspacePathPolicy`.
+- **Save & Candidate Immutability (`save`)**: Claim admission records `claim_tree`
+  from the scoped candidate tree (`TreeOid`); `save.immutable: true` rejects
+  candidate drift at submit (`TASK_CANDIDATE_MISMATCH`); `save.post: commit`
+  creates a scoped Git commit (with optional `git_commit_note`) without
+  polluting untracked engine paths excluded by `WorkspacePathPolicy`.
 
 ---
 
@@ -160,12 +161,15 @@ commands:
 ## Built-in Default Profile Walkthrough (`default.yaml` & `code.yaml`)
 
 [`crates/acdd-state/src/profile/embedded/default.yaml`](../../crates/acdd-state/src/profile/embedded/default.yaml)
-defines the canonical three-phase milestone lifecycle (`commands: test`,
-`build_check`, `verify_all` are marked `unbound: true` in `default.yaml` so
-overlays must bind concrete commands before running). Embedded
+defines the domain-pure three-phase milestone lifecycle (`commands: test`,
+`build_check`, `verify_all` are marked `unbound: true` in `default.yaml`, and
+`tasks.contract` uses `expected_failure: {}` without hardcoded language exit
+codes or `.acdd/frameworks` paths). Embedded
 [`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml) inherits
-`default.yaml` (`gates_merge: patch`) and binds the 19 `default_tools`,
-`code.seam` checks, and `docs.*` / `code.*` context lenses:
+`default.yaml` (`gates_merge: patch`), adds `tags: [default, docs]` (skipping
+`code.seam` on `docs` tasks), binds the 19 `default_tools`, attaches `code.seam`
+checks and `docs.*` / `code.*` context lenses, and strips `get_doc` /
+`search_docs` / `docs.*` hooks automatically when `modules.docs: false`.
 
 ```text
 Phase 1: Pre-Task Root Container (`blueprint_synthesis`)
@@ -173,11 +177,12 @@ Phase 1: Pre-Task Root Container (`blueprint_synthesis`)
           │
           ▼  (fans out per-task blueprint slices; unlocks `- tasks:` wave)
 Phase 2: Per-Task DAG Container (`- tasks:`, executed in topological waves)
-  └─ contract (role: contract_author, command: test, proof: contract, expected_failure [1, 101, 134], save.post: snapshot)
-       └─► contract_review (role: independent_reviewer, proof: review, contours [paths, claims], fail -> contract)
-             └─► build (role: builder, command: build_check, proof: command, save.post: snapshot)
-                   └─► review (role: independent_reviewer, proof: review, 5 contours, immutable, fail -> build)
+  └─ contract (role: contract_author, command: test, proof: contract, expected_failure: {})
+       └─► contract_review (role: independent_reviewer, proof: review, contours [paths, claims, architecture], immutable, fail -> contract)
+             └─► build (role: builder, command: build_check, proof: command)
+                   └─► review (role: independent_reviewer, proof: review, 6 contours, immutable, fail -> build, fail_drift -> rearchitect)
                          └─► deliver (role: independent_reviewer, need [build, review], receipt: true, save.post: commit)
+                   (rearchitect: role: architect, pass -> build with builder context reset)
           │
           ▼  (all non-cancelled tasks completed)
 Phase 3: Post-Task Closure
@@ -192,11 +197,16 @@ Phase 3: Post-Task Closure
 - **Roles**: `architect` (`subagent`, `reuse_on_reject: true`), `contract_author`
   (`subagent`, `reuse_on_reject: true`), `builder` (`subagent`, `reuse_on_reject: true`),
   and `independent_reviewer` (`subagent`, `reuse_on_reject: false`).
-- **Contours**: `paths`, `claims`, `concurrency`, `project_isolation`, and
-  `administration`.
-- **Guidance slots**: `milestone.synthesis`, `milestone.blueprint_review`,
-  `milestone.polish`, `milestone.review`, `milestone.handoff`, `task.contract`,
-  `task.contract_review`, `task.code`, `task.review`, and `hitl.pro`.
+- **Contours**: `paths`, `claims`, `architecture` (single-owner reuse, strict layer
+  boundaries, minimal mechanisms, and zero shadow subsystems or narrow string
+  heuristics), `concurrency`, `project_isolation`, and `administration`.
+- **Guidance slots**: `milestone.synthesis` (requires `INV-SINGLE-OWNER` audit and
+  forbids parallel registries/pipelines/shadow schedulers),
+  `milestone.blueprint_review`, `milestone.polish`, `milestone.review`,
+  `milestone.handoff`, `task.contract`, `task.contract_review`, `task.code`,
+  `task.review`, and `hitl.pro`. Code/polish slots enforce `REUSE & COMPLEXITY ESCALATION`
+  alongside `REBUTTAL OVER BLIND REWRITE`; review slots enforce `contours.architecture`
+  discipline alongside `BURDEN OF PROOF`.
 
 ---
 

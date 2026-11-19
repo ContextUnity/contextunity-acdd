@@ -18,8 +18,8 @@ use acdd_state::types::{
 use acdd_state::usecases::{
     BlackboardPostReq, BlackboardReadReq, ClaimReq, ClearReq, DraftReq, ExtendScopeReq,
     IntegrateReq, ListReq, NextReq, ObservabilityReq, ReopenReq, RollbackReq, RunReq, ShowReq,
-    SnapshotReq, StartReq, StateCommand, StateCommandOutput, StateQuery, StateQueryOutput,
-    StatusReq, SubmitReq, SubtaskReq, SyncReq, VerifyReq,
+    StartReq, StateCommand, StateCommandOutput, StateQuery, StateQueryOutput, StatusReq, SubmitReq,
+    SubtaskReq, SyncReq, VerifyReq,
 };
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -251,7 +251,6 @@ fn allowed_fields_for_tool(tool_name: &str) -> &'static [&'static str] {
             "status",
             "subtask_status",
             "evidence",
-            "label",
             "target",
             "strategy",
             "allow_main",
@@ -583,11 +582,6 @@ fn build_state_command_from_input(
                 evidence: p.evidence,
             }))
         }
-        McpStateAction::Snapshot => Ok(StateCommand::Snapshot(SnapshotReq {
-            run,
-            label: p.label,
-            worktree: explicit_worktree,
-        })),
         McpStateAction::Rollback => {
             let target = require_field(p.target, "target", "rollback")?;
             Ok(StateCommand::Rollback(RollbackReq {
@@ -842,7 +836,7 @@ impl Server {
 #[tool_router]
 impl Server {
     #[tool(
-        description = "Execute a canonical state lifecycle command (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `rollback`, `integrate`, `clear`, `run`) or read-only state query (`status`, `list`, `show`, `next`, `observability`). Read-only actions operate over `SQLITE_OPEN_READ_ONLY` with zero database creation."
+        description = "Execute a canonical state lifecycle command (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `rollback`, `integrate`, `clear`, `run`) or read-only state query (`status`, `list`, `show`, `next`, `observability`). Read-only actions operate over `SQLITE_OPEN_READ_ONLY` with zero database creation."
     )]
     async fn acdd_state(&self, Parameters(p): Parameters<StateInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
@@ -978,7 +972,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Submit `pass` or `reject` for a claimed gate node. Passing verifies trace freshness (`execution_digest`, `candidate_tree`), `independent_from`, `immutable`, and `need:`; `reject` requires structured `rejection_findings`."
+        description = "Submit `pass` or `reject` for a claimed gate node. Passing verifies trace freshness (`execution_digest`, `candidate_tree`), `independent_from`, `immutable`, and `need:`; `reject` requires structured `rejection_findings` (optional `kind`: `defect | architectural_drift`)."
     )]
     async fn acdd_submit(&self, Parameters(p): Parameters<SubmitInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
@@ -2226,7 +2220,6 @@ impl ServerHandler for Server {
             Err(_) => true,
         };
         span_guard.set_status(if is_err { "error" } else { "ok" });
-        span_guard.finish();
 
         if let Some((tool_name, tool_args)) = debug_request {
             let output_val = match &final_response {
@@ -2248,8 +2241,9 @@ impl ServerHandler for Server {
                 Ok(resp) => serde_json::json!({ "raw": format!("{resp:?}") }),
                 Err(err) => serde_json::json!({ "error": err.to_string() }),
             };
-            crate::telemetry::log_mcp(&self.root, &tool_name, &tool_args, &output_val);
+            span_guard.set_debug_mcp(&self.root, &tool_name, &tool_args, &output_val);
         }
+        span_guard.finish_async().await;
         final_response
     }
 }

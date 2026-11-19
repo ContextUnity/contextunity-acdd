@@ -32,6 +32,7 @@ pub struct SpanGuard {
     started_utc: String,
     status: String,
     attributes: Map<String, Value>,
+    debug_log: Option<PendingDebugLog>,
     finished: bool,
 }
 
@@ -47,7 +48,18 @@ impl SpanGuard {
             .ok()
             .and_then(|raw| TraceParent::parse(raw.trim()).ok());
         let (trace_id, parent_span_id) = match (ctx, env_parent) {
-            (Some(c), _) => (
+            (Some(c), Some(tp)) => {
+                let ctx_trace_id = c.trace_id.parse::<TraceId>().ok();
+                if ctx_trace_id == Some(tp.trace_id) {
+                    (tp.trace_id, Some(tp.span_id.to_string()))
+                } else {
+                    (
+                        ctx_trace_id.unwrap_or(tp.trace_id),
+                        Some(c.span_id.clone()),
+                    )
+                }
+            }
+            (Some(c), None) => (
                 c.trace_id.parse().unwrap_or_else(|_| TraceId::new()),
                 Some(c.span_id.clone()),
             ),
@@ -68,6 +80,7 @@ impl SpanGuard {
             started_utc: now_utc_iso_ms(),
             status: "ok".to_owned(),
             attributes: Map::new(),
+            debug_log: None,
             finished: false,
         }
     }
@@ -93,76 +106,163 @@ impl SpanGuard {
         TraceParent::new(self.trace_id, self.span_id).to_string()
     }
 
+    /// Attach a pending MCP debug log entry to be awaited at [`SpanGuard::finish_async`].
+    pub fn set_debug_mcp(
+        &mut self,
+        root: &Path,
+        tool: &str,
+        parameters: &str,
+        output: &serde_json::Value,
+    ) {
+        self.debug_log = prepare_mcp_debug_log(root, tool, parameters, output);
+    }
+
     /// Finish and flush this span explicitly.
     pub fn finish(mut self) {
         self.flush();
     }
 
-    fn flush(&mut self) {
+    /// Finish and await both trace and debug-log persistence without blocking a Tokio runtime thread.
+    pub async fn finish_async(mut self) {
+        let (span_payload, debug_payload) = self.take_flush_payloads();
+        if span_payload.is_some() || debug_payload.is_some() {
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Some(payload) = span_payload {
+                    flush_payload_sync(payload);
+                }
+                if let Some(debug) = debug_payload {
+                    write_entry_sync(&debug.root, &debug.date, &debug.line);
+                }
+            })
+            .await;
+        }
+    }
+
+    fn take_flush_payloads(&mut self) -> (Option<SpanFlushPayload>, Option<PendingDebugLog>) {
         if self.finished {
-            return;
+            return (None, None);
         }
         self.finished = true;
-        let Some(ref ctx) = self.context else {
-            return;
-        };
-
-        let layout = resolve_repo_layout(&self.root).ok();
-        let primary = layout
-            .as_ref()
-            .map(|l| l.primary_worktree.clone())
-            .or_else(|| primary_worktree_root(&self.root))
-            .unwrap_or_else(|| self.root.clone());
-        let lock_path = layout
-            .as_ref()
-            .map(|l| l.traces_lock_path.clone())
-            .unwrap_or_else(|| primary.join(".acdd/traces.lock"));
-
-        let Ok(_guard) = acquire_exclusive(&lock_path) else {
-            return;
-        };
-
-        let rel = Path::new(".acdd/run")
-            .join(ctx.run_id.as_str())
-            .join("traces.jsonl");
-        if let Some(parent) = primary.join(&rel).parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-
-        let finished_utc = now_utc_iso_ms();
-        let duration_ms = self.started_at.elapsed().as_millis() as u64;
-        let event = json!({
-            "kind": "span",
-            "trace_id": self.trace_id.to_string(),
-            "span_id": self.span_id.to_string(),
-            "parent_span_id": self.parent_span_id,
-            "run_id": ctx.run_id.as_str(),
-            "node_id": ctx.node_id,
-            "operation": self.operation,
-            "status": self.status,
-            "started_at": self.started_utc,
-            "finished_at": finished_utc,
-            "duration_ms": duration_ms,
-            "attributes": self.attributes,
+        let span_payload = self.context.clone().map(|ctx| SpanFlushPayload {
+            root: self.root.clone(),
+            ctx,
+            trace_id: self.trace_id.to_string(),
+            span_id: self.span_id.to_string(),
+            parent_span_id: self.parent_span_id.clone(),
+            operation: self.operation.clone(),
+            status: self.status.clone(),
+            started_utc: self.started_utc.clone(),
+            finished_utc: now_utc_iso_ms(),
+            duration_ms: self.started_at.elapsed().as_millis() as u64,
+            attributes: self.attributes.clone(),
+            retain_traces: self.retain_traces,
+            max_retained_trace_mib: self.max_retained_trace_mib,
         });
-        if let Ok(mut line) = serde_json::to_string(&event) {
-            line.push('\n');
-            if let Ok(mut file) = open_confined(
-                &primary,
-                &rel,
-                OpenOptions::new().create(true).append(true),
-            ) {
-                let _ = file.write_all(line.as_bytes());
+        let debug_payload = self.debug_log.take();
+        (span_payload, debug_payload)
+    }
+
+    fn flush(&mut self) {
+        let (span_payload, debug_payload) = self.take_flush_payloads();
+        if span_payload.is_none() && debug_payload.is_none() {
+            return;
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn_blocking(move || {
+                if let Some(payload) = span_payload {
+                    flush_payload_sync(payload);
+                }
+                if let Some(debug) = debug_payload {
+                    write_entry_sync(&debug.root, &debug.date, &debug.line);
+                }
+            });
+        } else {
+            if let Some(payload) = span_payload {
+                flush_payload_sync(payload);
+            }
+            if let Some(debug) = debug_payload {
+                write_entry_sync(&debug.root, &debug.date, &debug.line);
             }
         }
-
-        enforce_trace_retention(
-            &primary,
-            ctx.run_id.as_str(),
-            self.retain_traces,
-            self.max_retained_trace_mib,
-        );
     }
+}
+
+struct PendingDebugLog {
+    root: PathBuf,
+    date: String,
+    line: String,
+}
+
+struct SpanFlushPayload {
+    root: PathBuf,
+    ctx: WorktreeSpanContext,
+    trace_id: String,
+    span_id: String,
+    parent_span_id: Option<String>,
+    operation: String,
+    status: String,
+    started_utc: String,
+    finished_utc: String,
+    duration_ms: u64,
+    attributes: Map<String, Value>,
+    retain_traces: usize,
+    max_retained_trace_mib: u64,
+}
+
+fn flush_payload_sync(payload: SpanFlushPayload) {
+    let layout = resolve_repo_layout(&payload.root).ok();
+    let primary = layout
+        .as_ref()
+        .map(|l| l.primary_worktree.clone())
+        .or_else(|| primary_worktree_root(&payload.root))
+        .unwrap_or_else(|| payload.root.clone());
+    let lock_path = layout
+        .as_ref()
+        .map(|l| l.traces_lock_path.clone())
+        .unwrap_or_else(|| primary.join(".acdd/traces.lock"));
+
+    let Ok(_guard) = acquire_exclusive(&lock_path) else {
+        return;
+    };
+
+    let rel = Path::new(".acdd/run")
+        .join(payload.ctx.run_id.as_str())
+        .join("traces.jsonl");
+    if let Some(parent) = primary.join(&rel).parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let event = json!({
+        "kind": "span",
+        "trace_id": payload.trace_id,
+        "span_id": payload.span_id,
+        "parent_span_id": payload.parent_span_id,
+        "run_id": payload.ctx.run_id.as_str(),
+        "node_id": payload.ctx.node_id,
+        "operation": payload.operation,
+        "status": payload.status,
+        "started_at": payload.started_utc,
+        "finished_at": payload.finished_utc,
+        "duration_ms": payload.duration_ms,
+        "attributes": payload.attributes,
+    });
+    if let Ok(mut line) = serde_json::to_string(&event) {
+        line.push('\n');
+        if let Ok(mut file) = open_confined(
+            &primary,
+            &rel,
+            OpenOptions::new().create(true).append(true),
+        ) {
+            let _ = file.write_all(line.as_bytes());
+        }
+    }
+
+    enforce_trace_retention(
+        &primary,
+        payload.ctx.run_id.as_str(),
+        payload.retain_traces,
+        payload.max_retained_trace_mib,
+    );
 }
 
 impl Drop for SpanGuard {
@@ -242,20 +342,73 @@ fn report_log_error(operation: &str, destination: &Path, error: &dyn std::fmt::D
     );
 }
 
+fn prepare_debug_log(
+    root: &Path,
+    date: &str,
+    entry: &DebugLogEntry<'_>,
+) -> Option<PendingDebugLog> {
+    let destination = root
+        .join(".acdd")
+        .join(format!("command-log-debug--{date}.jsonl"));
+    match serde_json::to_string(entry) {
+        Ok(line) => Some(PendingDebugLog {
+            root: root.to_path_buf(),
+            date: date.to_owned(),
+            line,
+        }),
+        Err(error) => {
+            report_log_error("serialize", &destination, &error);
+            None
+        }
+    }
+}
+
+fn prepare_mcp_debug_log(
+    root: &Path,
+    tool: &str,
+    parameters: &str,
+    output: &serde_json::Value,
+) -> Option<PendingDebugLog> {
+    let now = Local::now();
+    let date_str = now.format("%Y-%m-%d").to_string();
+    let time_str = now.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+
+    let params_val = serde_json::from_str::<serde_json::Value>(parameters)
+        .unwrap_or_else(|_| serde_json::Value::String(parameters.to_owned()));
+
+    let entry = DebugLogEntry::Mcp {
+        timestamp: time_str,
+        tool,
+        parameters: params_val,
+        output: output.clone(),
+    };
+
+    prepare_debug_log(root, &date_str, &entry)
+}
+
+fn write_pending_debug_log(pending: PendingDebugLog) {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn_blocking(move || {
+            write_entry_sync(&pending.root, &pending.date, &pending.line);
+        });
+    } else {
+        write_entry_sync(&pending.root, &pending.date, &pending.line);
+    }
+}
+
 fn write_entry(root: &Path, date: &str, entry: &DebugLogEntry<'_>) {
+    if let Some(pending) = prepare_debug_log(root, date, entry) {
+        write_pending_debug_log(pending);
+    }
+}
+
+fn write_entry_sync(root: &Path, date: &str, line: &str) {
     let directory = root.join(".acdd");
+    let destination = directory.join(format!("command-log-debug--{date}.jsonl"));
     if let Err(error) = fs::create_dir_all(&directory) {
         report_log_error("create directory", &directory, &error);
         return;
     }
-    let destination = directory.join(format!("command-log-debug--{date}.jsonl"));
-    let line = match serde_json::to_string(entry) {
-        Ok(line) => line,
-        Err(error) => {
-            report_log_error("serialize", &destination, &error);
-            return;
-        }
-    };
     let mut file = match OpenOptions::new()
         .create(true)
         .append(true)
@@ -324,21 +477,9 @@ pub fn log_cli(
 
 /// Performs log mcp.
 pub fn log_mcp(root: &Path, tool: &str, parameters: &str, output: &serde_json::Value) {
-    let now = Local::now();
-    let date_str = now.format("%Y-%m-%d").to_string();
-    let time_str = now.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
-
-    let params_val = serde_json::from_str::<serde_json::Value>(parameters)
-        .unwrap_or_else(|_| serde_json::Value::String(parameters.to_owned()));
-
-    let entry = DebugLogEntry::Mcp {
-        timestamp: time_str,
-        tool,
-        parameters: params_val,
-        output: output.clone(),
-    };
-
-    write_entry(root, &date_str, &entry);
+    if let Some(pending) = prepare_mcp_debug_log(root, tool, parameters, output) {
+        write_pending_debug_log(pending);
+    }
 }
 
 /// Performs log command.
@@ -424,5 +565,47 @@ mod tests {
         assert_eq!(record["trace_id"], parent.trace_id.to_string());
         assert_eq!(record["parent_span_id"], parent.span_id.to_string());
         assert!(!old_dir.join("traces.jsonl").exists());
+
+        // Verify Tokio async runtime flush offloads without blocking/panicking on current_thread.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut async_guard =
+                SpanGuard::from_worktree_context(root, Some(&ctx), "acdd_async", 1);
+            async_guard.set_status("ok");
+            async_guard.set_debug_mcp(
+                root,
+                "acdd_async",
+                "{\"mode\":\"with_ctx\"}",
+                &serde_json::json!({ "ok": true }),
+            );
+            async_guard.finish_async().await;
+
+            let mut no_ctx_guard = SpanGuard::from_worktree_context(root, None, "code_map_search", 1);
+            no_ctx_guard.set_debug_mcp(
+                root,
+                "code_map_search",
+                "{\"pattern\":\"foo\"}",
+                &serde_json::json!({ "ok": true }),
+            );
+            no_ctx_guard.finish_async().await;
+        });
+        let after = fs::read_to_string(&trace_file).unwrap();
+        assert_eq!(after.lines().count(), 2);
+        let debug_files: Vec<_> = fs::read_dir(root.join(".acdd"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("command-log-debug--"))
+            })
+            .collect();
+        assert_eq!(debug_files.len(), 1);
+        let debug_lines = fs::read_to_string(&debug_files[0]).unwrap();
+        assert_eq!(debug_lines.lines().count(), 2);
     }
 }

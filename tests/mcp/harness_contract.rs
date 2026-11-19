@@ -142,6 +142,23 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
             build_claim["node_cursor"]["Task"]["gates"][0], "build",
             "{build_claim}"
         );
+        if !next {
+            let instructions = &build_claim["context_lenses"]["docs.instructions"];
+            assert!(
+                instructions["items"]
+                    .as_array()
+                    .is_some_and(|arr| arr.iter().any(|item| item["path"] == "AGENTS.md")),
+                "expected docs.instructions lens with AGENTS.md in acdd_claim: {build_claim}"
+            );
+            assert!(
+                instructions["mandatory_directives"]
+                    .as_array()
+                    .is_some_and(|arr| arr
+                        .iter()
+                        .any(|d| d.as_str().is_some_and(|s| s.contains("code_map_search")))),
+                "expected docs.instructions mandatory_directives: {instructions}"
+            );
+        }
         builder
             .payload(
                 "acdd_submit",
@@ -318,6 +335,37 @@ fn mcp_session_context_is_absent_from_schemas_and_rejected_in_json() {
             !schema.to_string().contains("session_fingerprint"),
             "{name}: {schema}"
         );
+        if name == "acdd_state" {
+            let state_schema = schema.to_string();
+            assert!(
+                !state_schema.contains("\"snapshot\"") && !state_schema.contains("\"label\""),
+                "acdd_state schema must exclude removed snapshot action/label: {schema}"
+            );
+            let (_, snap_resp) = client
+                .call(
+                    "acdd_state",
+                    json!({"action":"snapshot","worktree":workspace.root()}),
+                )
+                .expect("MCP transport");
+            assert!(
+                snap_resp["error"].is_object() || snap_resp["result"]["isError"] == true,
+                "snapshot action must fail closed: {snap_resp}"
+            );
+        }
+        if name == "acdd_submit" {
+            let kind_schema = &schema["$defs"]["McpRejectionKind"];
+            let kind_str = if kind_schema.is_null() {
+                schema["properties"]["rejection_findings"].to_string()
+            } else {
+                kind_schema.to_string()
+            };
+            assert!(
+                schema.to_string().contains("\"kind\"")
+                    && kind_str.contains("defect")
+                    && kind_str.contains("architectural_drift"),
+                "acdd_submit schema must expose rejection_findings.kind: {schema}"
+            );
+        }
         let mut arguments = match name {
             "acdd_claim" => {
                 json!({"node":"first.build","worker_id":"builder","worktree":workspace.root()})

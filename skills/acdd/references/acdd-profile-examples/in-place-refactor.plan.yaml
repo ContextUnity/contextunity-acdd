@@ -3,7 +3,7 @@
 # File pattern: {scenario}.plan.yaml (ADR 0003 — Unified Profile State Engine)
 #
 # Executes plan tasks and subtasks in the active working tree (`git.isolation: in_place`,
-# `save: snapshot`, zero automatic commits), omitting milestone blueprint/contract/handoff gates.
+# `save: none`, zero automatic commits), omitting milestone blueprint/contract/handoff gates.
 # Switch `inherit: none` to `inherit: in_place` or `inherit: workspace` to inherit
 # repository `roles`, `runner`, `commands`, and `scope_args_by_pattern`.
 # =============================================================================
@@ -17,7 +17,7 @@ git:
   commit_mode: plumbing
   integrate: manual
 
-save: snapshot
+save: none
 
 roles:
   builder:
@@ -41,6 +41,11 @@ contours:
     description: "Verify build evidence and passing test counts."
     criteria:
       - "Confirm scoped clippy and tests pass cleanly."
+  architecture:
+    description: "Verify single-owner reuse, layer boundaries, minimal mechanism design, and absence of shadow subsystems or narrow heuristics."
+    criteria:
+      - "Confirm existing canonical owners and shared abstractions are reused without duplicate helpers or parallel pipelines."
+      - "Verify strict layer boundaries, zero narrow string heuristics where structural data exists, and proportional complexity."
 
 scope_args_by_pattern:
   "src/**/*.rs": "--lib"
@@ -69,8 +74,7 @@ gates:
           command: rust-check-and-test
           proof: command
           save:
-            pre: snapshot
-            post: snapshot
+            post: none
           pass: review
 
         - id: review
@@ -79,6 +83,7 @@ gates:
           contours:
             - paths
             - claims
+            - architecture
           independent_from:
             - build
           need:
@@ -99,4 +104,4 @@ gates:
           fail: build
           save:
             immutable: true
-            post: snapshot
+            post: none

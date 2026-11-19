@@ -76,7 +76,7 @@ Removing `- tasks:` turns the task lifecycle into an ordinary named `GateDef` (f
 
 ### 2. Lock-free `save: none` CAS vs. disjoint-scope / worktree isolation (`save != none`)
 
-- **Lock-free non-Git workflows (`save: none`)**: Acquire `repo.lock` and capture/verify Git `TreeOid` snapshots **strictly** when `save != none` (`save.pre` or `save.post` is `snapshot` or `commit`). Parallel branches and swarm shards with `save: none` run concurrently with zero Git lock contention using millisecond SQLite `BEGIN IMMEDIATE` CAS (`claim_revision` + `node_version`).
+- **Lock-free non-Git workflows (`save: none`)**: Acquire `repo.lock` and capture/verify Git `TreeOid` state **strictly** when `save != none` (`save.post: commit`). Parallel branches and swarm shards with `save: none` run concurrently with zero Git lock contention using millisecond SQLite `BEGIN IMMEDIATE` CAS (`claim_revision` + `node_version`).
 - **Disjoint or worktree-isolated mutating branches (`save != none`)**: Concurrent `save != none` branches enforce disjoint admitted `scope` globs (failing closed with `TASK_SCOPE_CONFLICT` on overlap) or run in per-item/per-branch Git worktrees integrated deterministically via `crates/acdd-state/src/git_ops/integrate.rs`.
 
 ### 3. Multi-source coalescing `GateDef.with` & extended native `GateDef.when`
@@ -115,7 +115,7 @@ gates:
     when: "!docs"                         # skip code swarm on docs-only tracks
     with: spec.tasks | blueprint.tasks    # cursors: implement[core-cleanup].build
     max_concurrency: 4
-    save: snapshot
+    save: none
     gates:
       - { id: contract, role: builder,  proof: contract, pass: build }
       - { id: build,    role: builder,  proof: build,    pass: review }

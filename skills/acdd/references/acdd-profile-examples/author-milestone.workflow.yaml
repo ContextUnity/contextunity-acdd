@@ -27,7 +27,7 @@ roles:
     prompt_template: >-
       Execute architect for run {run_id}, gate {node_cursor}, in {worktree}.
       Contract: {contract}. Guidance: {guidance}.
-    guidance: "Read docs/milestones/README.md and docs/milestones/AGENTS.md first, inspect docs/milestones/ and docs/milestones/archive/, choose the matching domain prefix (AC, LS, PF, AR, UX, IN) and next unused sequential 3-digit number <TAG>-<NNN>-<slug>, and synthesize an actionable spec manifest in docs/milestones/<id>.md. Ground symbols with code_map_inspect and invariants with search_docs. Partition tasks into acyclic waves with disjoint same-wave scopes. Forbid protected files (Cargo.toml, .acdd/**) unless explicitly authorized."
+    guidance: "Read docs/milestones/README.md and docs/milestones/AGENTS.md first, inspect docs/milestones/ and docs/milestones/archive/, choose the matching domain prefix (AC, LS, PF, AR, UX, IN) and next unused sequential 3-digit number <TAG>-<NNN>-<slug>, and synthesize an actionable spec manifest in docs/milestones/<id>.md. Ground symbols with code_map_inspect and invariants with search_docs. Audit existing canonical owners (INV-SINGLE-OWNER) and forbid parallel pipelines or shadow subsystems. Partition tasks into acyclic waves with disjoint same-wave scopes. Forbid protected files (Cargo.toml, .acdd/**) unless explicitly authorized."
     models:
       - 'gpt-6.1-sol:high'
 
@@ -38,7 +38,7 @@ roles:
     prompt_template: >-
       Execute independent_reviewer for run {run_id}, gate {node_cursor}, in {worktree}.
       Contract: {contract}. Guidance: {guidance}.
-    guidance: "Audit the authored milestone manifest against docs/milestones/README.md and docs/milestones/AGENTS.md for domain taxonomy fit, non-colliding sequential <TAG>-<NNN> numbering across docs/milestones/ and docs/milestones/archive/, acyclic waves, disjoint write scopes, layer isolation, negative boundaries, and authentic symbol citations."
+    guidance: "Audit the authored milestone manifest against docs/milestones/README.md and docs/milestones/AGENTS.md for domain taxonomy fit, non-colliding sequential <TAG>-<NNN> numbering across docs/milestones/ and docs/milestones/archive/, acyclic waves, disjoint write scopes, canonical-owner reuse (INV-SINGLE-OWNER), layer isolation, negative boundaries, and authentic symbol citations."
     models:
       - 'gpt-6.1-sol:xhigh'
 

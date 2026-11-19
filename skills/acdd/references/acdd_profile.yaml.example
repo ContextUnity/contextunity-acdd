@@ -14,7 +14,7 @@
 # 2. Git & Save Policy (`git:` and `save:`):
 #    - `git`: `isolation` (`worktree|in_place`), `worktrees` (`manual|managed`),
 #      `commit_mode` (`plumbing|cli|manual`), `integrate` (`manual|rebase-ff|ff-only|no-ff|squash`).
-#    - `save.pre`: `none | snapshot`, `save.post`: `none | snapshot | commit`,
+#    - `save.post`: `none | commit`,
 #      `save.immutable: true`, `save.archive: true`, `save.prune: true`,
 #      `save.git_commit_note: default`.
 # 3. Guidance & Contours Catalog (`guidance:` and `contours:`):
@@ -111,6 +111,13 @@ proofs:
               negative_boundaries:
                 type: array
                 items: { type: string }
+              canonical_owners:
+                type: array
+                items: { type: string }
+              mechanism_rules:
+                type: array
+                items: { type: string }
+              max_net_loc: { type: integer }
               verification_seam: { type: string }
               incoming_seams:
                 type: array
@@ -261,6 +268,12 @@ contours:
     criteria:
       - "Trace every invariant and acceptance criterion to the production code path and real seam test."
 
+  architecture:
+    description: "Verify single-owner reuse, layer boundaries, minimal mechanism design, and absence of shadow subsystems or narrow heuristics."
+    criteria:
+      - "Confirm existing canonical owners and shared abstractions are reused instead of introducing duplicate helpers, parallel pipelines, or shadow resolvers."
+      - "Verify strict layer boundaries, absence of narrow string/filename heuristics where structural data exists, and complexity proportional to the accepted contract."
+
   concurrency:
     description: "Verify concurrent operations cannot admit stale authority, lose receipts, or publish partial task state."
     criteria:
@@ -286,24 +299,54 @@ guidance:
       - "Extend table-driven cases additively for existing units; author dedicated test functions for distinct capabilities."
       - "Avoid duplicate mechanisms or touching protected paths outside admitted task scope."
 
-  task.code: "Implement the accepted seam with the smallest change that satisfies the task contract."
+  task.code:
+    description: "MINIMAL DURABLE IMPLEMENTATION"
+    criteria:
+      - "Implement the accepted seam with the smallest change that satisfies the task contract."
+      - "REUSE & COMPLEXITY ESCALATION: Search and reuse existing canonical owners before writing any helper or pipeline; never introduce a new subsystem, shadow resolver, narrow string heuristic, or disproportionate bugfix complexity growth without recording justification in acdd_blackboard (topic: decisions or blockers) and escalating when exceeding task authority."
+      - "REBUTTAL OVER BLIND REWRITE: If a reviewer finding contradicts an ADR, accepted contract, or existing contract test, do not weaken the contract or add speculative abstractions—record an evidence-backed rebuttal via acdd_blackboard (topic: decisions) citing exact file:line proof and resubmit."
 
   task.review:
     description: "INDEPENDENT REVIEW CORE INVARIANTS & ENGINEERING PRINCIPLES"
     criteria:
       - "Evaluate diffs in full subsystem context using ACDD MCP tools (`code_map_inspect`, `code_map_impact`, `ast_grep_search`, `acdd_read`)."
-      - "Reject superficial heuristics, parallel hardcoded lookup lists, duplicate algorithms, and monolithic test functions."
+      - "Enforce single-owner reuse, strict layer purity, zero narrow string heuristics where structural data exists, and clean table-driven test discipline under contours.architecture."
       - "Treat review contours as an analytical framework and formulate constructive, evidence-backed findings."
+      - "BURDEN OF PROOF: Reject only on a concrete contract/invariant violation or reproducible defect (evaluating any file:line rebuttal in acdd_blackboard decisions objectively); record speculative hardening, style preferences, or out-of-scope ideas via acdd_blackboard (topic: deferred) and pass."
+      - "Use rejection kind `defect` (fail: build) for localized fixes or `architectural_drift` (fail_drift: rearchitect) when structural violations require resetting builder context."
+
+  task.rearchitect:
+    description: "ARCHITECTURAL RECOVERY AFTER ARCHITECTURAL DRIFT"
+    criteria:
+      - "Diagnose the structural cause behind the reviewer's architectural_drift finding against cited invariants, ADRs, and canonical owners."
+      - "Record an updated architectural decision on acdd_blackboard (topic: decisions) before routing a fresh builder context to build."
 
   hitl.careless: "HITL level CARELESS: allow autonomous changes; escalate only for unrecoverable infrastructure or circular dependencies."
   hitl.curious: "HITL level CURIOUS: report interface evolution; escalate breaking public APIs or irreversible storage changes."
   hitl.pro: "HITL level PRO: allow internal helpers; escalate public APIs, CLI/MCP surfaces, storage schemas, and cross-milestone contracts."
   hitl.paranoic: "HITL level PARANOIC: require explicit human approval for every new symbol or signature before contract admission."
 
-  milestone.synthesis: "Ground the milestone blueprint in repository symbols and invariants, define Clean Architecture slices and cross-task seams, and record the decision on acdd_blackboard."
-  milestone.blueprint_review: "Verify cited symbols and invariants exist, Clean Architecture boundaries hold, and per-task seam slices are consistent."
-  milestone.review: "Audit the integrated milestone diff against target base for cohesion, performance invariants, and analytical contours."
-  milestone.polish: "Resolve integration failures or reviewer findings on the integrated milestone branch."
+  milestone.synthesis: "Audit existing canonical owners (INV-SINGLE-OWNER), ground the milestone blueprint in repository symbols and invariants, define Clean Architecture slices and cross-task seams, forbid parallel registries/pipelines/shadow schedulers, and record the decision on acdd_blackboard."
+  milestone.blueprint_review: "Verify cited symbols and invariants exist, single-owner reuse and Clean Architecture boundaries hold (contours.architecture), and per-task seam slices are consistent without shadow subsystems."
+  milestone.review:
+    description: "RUN INTEGRATION REVIEW & BOUNDED VERIFICATION"
+    criteria:
+      - "Audit the integrated milestone diff against target base for cohesion, performance invariants, and analytical contours."
+      - "Enforce single-owner reuse, strict layer purity, zero narrow string heuristics where structural data exists, and clean table-driven test discipline under contours.architecture."
+      - "BURDEN OF PROOF: Reject only on a concrete contract/invariant violation or reproducible defect (evaluating any file:line rebuttal in acdd_blackboard decisions objectively); record speculative hardening, style preferences, or out-of-scope ideas via acdd_blackboard (topic: deferred) and pass."
+      - "Use rejection kind `defect` (fail: build) for localized fixes or `architectural_drift` (fail_drift: rearchitect) when structural violations require resetting builder context."
+
+  task.rearchitect:
+    description: "ARCHITECTURAL RECOVERY AFTER ARCHITECTURAL DRIFT"
+    criteria:
+      - "Diagnose the structural cause behind the reviewer's architectural_drift finding against cited invariants, ADRs, and canonical owners."
+      - "Record an updated architectural decision on acdd_blackboard (topic: decisions) before routing a fresh builder context to build."
+  milestone.polish:
+    description: "Resolve integration failures or reviewer findings on the integrated milestone branch."
+    criteria:
+      - "Keep edits confined to admitted polish paths and preserve verified task contracts."
+      - "REUSE & COMPLEXITY ESCALATION: Search and reuse existing canonical owners before writing any helper or pipeline; never introduce a new subsystem, shadow resolver, narrow string heuristic, or disproportionate bugfix complexity growth without recording justification in acdd_blackboard (topic: decisions or blockers) and escalating when exceeding task authority."
+      - "REBUTTAL OVER BLIND REWRITE: If a reviewer finding contradicts an ADR, accepted contract, or existing contract test, do not weaken the contract or add speculative abstractions—record an evidence-backed rebuttal via acdd_blackboard (topic: decisions) citing exact file:line proof and resubmit."
   milestone.handoff: "Terminal milestone delivery, capturing closure summary, receipts, and archiving completed spec."
 
 # Hierarchical workflow: blueprint synthesis -> per-task container -> verify / polish / review / handoff.
@@ -323,14 +366,13 @@ gates:
           - acdd_blackboard
         proof: blueprint
         save:
-          pre: snapshot
-          post: snapshot
+          post: none
         pass: review
       - id: review
         role: independent_reviewer
         proof: review
         guidance: [milestone.blueprint_review, hitl.pro]
-        contours: [claims, project_isolation, administration]
+        contours: [claims, architecture, project_isolation, administration]
         independent_from: [synthesize]
         fail: synthesize
         tools:
@@ -355,13 +397,13 @@ gates:
           expected_failure:
             exit_codes: [1, 101, 134]
           save:
-            post: snapshot
+            post: none
           pass: contract_review
 
         - id: contract_review
           role: independent_reviewer
           proof: review
-          contours: [paths, claims]
+          contours: [paths, claims, architecture]
           independent_from: [contract]
           need: [contract]
           guidance: [task.review, hitl.pro]
@@ -377,21 +419,28 @@ gates:
           proof: command
           checks: [code.seam]
           save:
-            pre: snapshot
-            post: snapshot
+            post: none
           pass: review
 
         - id: review
           role: independent_reviewer
           proof: review
           guidance: [task.review, hitl.pro]
-          contours: [paths, claims, concurrency, project_isolation, administration]
+          contours: [paths, claims, architecture, concurrency, project_isolation, administration]
           independent_from: [build]
           need: [build]
           fail: build
+          fail_drift: rearchitect
           save:
             immutable: true
           pass: deliver
+
+        - id: rearchitect
+          role: architect
+          guidance: [task.rearchitect, hitl.pro]
+          context: [docs.instructions, docs.adrs, docs.invariants, code.symbols]
+          pass: build
+          max_attempts: 3
 
         - id: deliver
           role: independent_reviewer
@@ -431,15 +480,14 @@ gates:
     tools: [acdd_read, search_docs, get_doc, acdd_blackboard, acdd_verify, acdd_submit]
     pass: verify
     save:
-      pre: snapshot
-      post: snapshot
+      post: none
 
   - id: integration_review
     role: independent_reviewer
     proof: review
     max_attempts: 2
     guidance: [milestone.review, hitl.pro]
-    contours: [paths, claims, concurrency, project_isolation, administration]
+    contours: [paths, claims, architecture, concurrency, project_isolation, administration]
     independent_from: [polish, "tasks.build"]
     need: [verify]
     pass: handoff

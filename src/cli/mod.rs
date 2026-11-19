@@ -583,10 +583,10 @@ use acdd_state::types::{
     RunStatus, SubmitAction, SubtaskStatus,
 };
 use acdd_state::usecases::{
-    BlackboardPostReq, BlackboardReadReq, CallPluginToolReq, ClaimReq, ClearReq, DraftReq,
-    ExtendScopeReq, IntegrateReq, ListReq, NextReq, ReopenReq, RollbackReq, RunReq, ShowReq,
-    SnapshotReq, StartReq, StateCommand, StateQuery, StatusReq, SubmitReq, SubtaskReq, SyncReq,
-    VerifyReq,
+    BlackboardPostReq, BlackboardReadReq, CallPluginToolReq, CallPluginToolResp, ClaimReq,
+    ClearReq, DraftReq, ExtendScopeReq, IntegrateReq, ListReq, NextReq, ReopenReq, RollbackReq,
+    RunReq, ShowReq, StartReq, StateCommand, StateCommandOutput, StateQuery,
+    StatusReq, SubmitReq, SubtaskReq, SyncReq, VerifyReq,
 };
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
@@ -803,7 +803,7 @@ pub enum Command {
         /// Typed review or custom schema JSON evidence (or `@path` to a confined JSON file).
         #[arg(long)]
         evidence: Option<String>,
-        /// Structured rejection findings JSON (or `@path` to a confined JSON file) required for `--action reject`.
+        /// Structured rejection findings JSON (or `@path` to a confined JSON file) required for `--action reject` (supports `kind: defect | architectural_drift`).
         #[arg(long)]
         findings: Option<String>,
         /// Verified invariant IDs attested by this submission.
@@ -917,20 +917,9 @@ pub enum Command {
         #[arg(long)]
         generation: Option<u64>,
     },
-    /// Capture an explicit manual Git snapshot under `refs/acdd/snapshots/<run_id>/manual/`.
-    Snapshot {
-        /// Optional human-readable snapshot label (defaults to UTC timestamp).
-        label: Option<String>,
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Explicit worktree path override.
-        #[arg(long)]
-        worktree: Option<PathBuf>,
-    },
-    /// Confined-restore working-tree files from a snapshot ref or commit/tree OID.
+    /// Confined-restore working-tree files from a commit ref, commit OID, or tree OID.
     Rollback {
-        /// Snapshot ref, commit OID, or tree OID to restore.
+        /// Commit ref (e.g. `HEAD`), commit OID, or tree OID to restore.
         target: String,
         /// Optional run ID or name selector.
         #[arg(long)]
@@ -1317,7 +1306,7 @@ pub enum AstCommand {
 
 /// Default code-map SQLite path under `root`.
 pub fn default_db(root: &Path) -> PathBuf {
-    root.join(".acdd/code-map.sqlite")
+    acdd_core::config::resolve_code_db_path(root, None)
 }
 
 fn command_presentation(command: &Command) -> (OperationKind, &'static str, Option<bool>) {
@@ -1333,7 +1322,6 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         | Command::Reopen { .. }
         | Command::Sync { .. }
         | Command::Subtask { .. }
-        | Command::Snapshot { .. }
         | Command::Rollback { .. }
         | Command::Integrate { .. }
         | Command::Clear { .. }
@@ -1469,12 +1457,14 @@ fn check_explicit_config_migration(
     config_path: &Path,
 ) -> std::result::Result<(), StateError> {
     let confined_target = if let Ok(rel) = config_path.strip_prefix(root) {
-        paths::verify_no_symlink_traversal(root, rel, "CLI_PATH_INVALID").map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("cannot inspect confined config '{}': {err}", config_path.display()),
-            )
-        })?
+        acdd_core::fs::check_ancestors_no_symlinks(root, rel)
+            .and_then(|()| acdd_core::fs::checked_child(root, rel))
+            .map_err(|err| {
+                StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!("cannot inspect confined config '{}': {err}", config_path.display()),
+                )
+            })?
     } else {
         match std::fs::symlink_metadata(config_path) {
             Ok(meta) if meta.file_type().is_symlink() => {
@@ -1711,7 +1701,23 @@ impl Cli {
 
         // `validate` handles potentially broken configs/profiles directly without ResolvedPaths pre-failing.
         if let Some(Command::Validate { path }) = self.command {
-            let result = validate::run(&root, path.as_deref())?;
+            let explicit_config = self.config.as_deref().map(|p| {
+                if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    root.join(p)
+                }
+            });
+            let explicit_profile = self
+                .profile
+                .as_deref()
+                .map(|p| p.to_string_lossy().into_owned());
+            let result = validate::run_with_options(
+                &root,
+                path.as_deref(),
+                explicit_config.as_deref(),
+                explicit_profile.as_deref(),
+            )?;
             let failed = result.get("valid").and_then(Value::as_bool) == Some(false);
             let formatted = format::render_for_operation(
                 &result,
@@ -1733,17 +1739,7 @@ impl Cli {
 
         let settings =
             paths::ResolvedPaths::resolve(&root, self.config.as_deref(), self.profile.as_deref())?;
-        let database = self
-            .db
-            .as_ref()
-            .map(|path| {
-                if path.is_absolute() {
-                    path.clone()
-                } else {
-                    root.join(path)
-                }
-            })
-            .unwrap_or_else(|| default_db(&root));
+        let database = acdd_core::config::resolve_code_db_path(&root, self.db.as_deref());
         let state_db = self.state_db.as_ref().map(|path| {
             if path.is_absolute() {
                 path.clone()
@@ -1790,6 +1786,13 @@ impl Cli {
                 command: DocsCommand::Check
             }
         ) {
+            if !settings.adapter.modules.is_enabled("docs") {
+                return Err(StateError::new(
+                    ErrorCode::FeatureDisabled,
+                    "FEATURE_DISABLED: 'docs' module is disabled in modules:",
+                )
+                .into());
+            }
             return docs_check::check(&root, output_format, output);
         }
 
@@ -1806,7 +1809,6 @@ impl Cli {
             Command::Claim { worktree, .. }
             | Command::Verify { worktree, .. }
             | Command::Submit { worktree, .. }
-            | Command::Snapshot { worktree, .. }
             | Command::Rollback { worktree, .. }
             | Command::Tool { worktree, .. } => worktree.as_deref().unwrap_or(&root),
             _ => &root,
@@ -2205,22 +2207,6 @@ impl Cli {
                         )));
                     }
                 },
-                Command::Snapshot {
-                    label,
-                    run,
-                    worktree,
-                } => exec_cli_state_command(
-                    &root,
-                    state_db.as_deref(),
-                    &adapter,
-                    output_format,
-                    title,
-                    StateCommand::Snapshot(SnapshotReq {
-                        run,
-                        label,
-                        worktree,
-                    }),
-                )?,
                 Command::Rollback {
                     target,
                     run,
@@ -2310,20 +2296,59 @@ impl Cli {
                     worktree,
                 } => {
                     let parsed_args = parse_json_or_at_file(&root, &args)?;
-                    exec_cli_state_command(
-                        &root,
-                        state_db.as_deref(),
-                        &adapter,
-                        output_format,
-                        title,
-                        StateCommand::CallPluginTool(CallPluginToolReq {
+                    if run.is_none() && node.is_none() {
+                        let providers =
+                            crate::state_bridge::build_domain_providers(&root, &adapter)?;
+                        let primary = acdd_core::git::primary_worktree_root(&root)
+                            .unwrap_or_else(|| root.clone());
+                        let wt = worktree
+                            .map(|p| acdd_core::fs::canonicalize_macos_var(&p));
+                        let tool_req = acdd_core::ports::DomainToolReq {
+                            workspace_root: primary,
+                            worktree: wt,
+                            run_id: None,
+                            node_cursor: None,
+                        };
+                        let output = providers
+                            .call_tool(&tool_name, &parsed_args, &tool_req)
+                            .map_err(|err| {
+                                if let Some(se) = StateError::from_anyhow(&err) {
+                                    anyhow::Error::from(se.clone())
+                                } else {
+                                    anyhow::Error::from(StateError::new(
+                                        ErrorCode::DomainCapabilityUnavailable,
+                                        format!("plugin tool '{tool_name}' failed: {err}"),
+                                    ))
+                                }
+                            })?;
+                        let wrapped = StateCommandOutput::CallPluginTool(CallPluginToolResp {
                             tool_name,
-                            args: parsed_args,
-                            run,
-                            node,
-                            worktree,
-                        }),
-                    )?
+                            output,
+                        });
+                        let md = (output_format == OutputFormat::Markdown)
+                            .then(|| format::render_state_command_markdown(&wrapped, title));
+                        let val = if output_format == OutputFormat::Json || adapter.debug {
+                            serde_json::to_value(&wrapped)?
+                        } else {
+                            Value::Null
+                        };
+                        (val, md)
+                    } else {
+                        exec_cli_state_command(
+                            &root,
+                            state_db.as_deref(),
+                            &adapter,
+                            output_format,
+                            title,
+                            StateCommand::CallPluginTool(CallPluginToolReq {
+                                tool_name,
+                                args: parsed_args,
+                                run,
+                                node,
+                                worktree,
+                            }),
+                        )?
+                    }
                 }
                 Command::Read {
                     path,
@@ -2485,8 +2510,13 @@ impl Cli {
                         }
                         None => explicit_config.clone(),
                     };
+                    let scan_adapter = if adapter_path == explicit_config {
+                        adapter.clone()
+                    } else {
+                        acdd_core::config::load_adapter(&root, adapter_path.as_deref())?
+                    };
                     (
-                        json!(acdd_index::scanner::scan(&root, adapter_path.as_deref())?),
+                        json!(acdd_index::scanner::scan_with_adapter(&root, &scan_adapter)?),
                         None,
                     )
                 }
@@ -2520,6 +2550,13 @@ impl Cli {
                             limit,
                         },
                 } => {
+                    if !adapter.modules.is_enabled("code") {
+                        return Err(StateError::new(
+                            ErrorCode::FeatureDisabled,
+                            "FEATURE_DISABLED: 'code' module is disabled in modules:",
+                        )
+                        .into());
+                    }
                     let conn =
                         open_or_rebuild(&db, &root, explicit_config.as_deref(), cache_dir)?;
                     let mut result = if (1..=MAX_PAGE_SIZE).contains(&limit) {
@@ -2548,6 +2585,13 @@ impl Cli {
                     (result, None)
                 }
                 Command::Query { command } => {
+                    if !adapter.modules.is_enabled("code") {
+                        return Err(StateError::new(
+                            ErrorCode::FeatureDisabled,
+                            "FEATURE_DISABLED: 'code' module is disabled in modules:",
+                        )
+                        .into());
+                    }
                     let conn =
                         open_or_rebuild(&db, &root, explicit_config.as_deref(), cache_dir)?;
                     let val = match command {
@@ -2780,6 +2824,13 @@ impl Cli {
                     (val, None)
                 }
                 Command::Docs { command } => {
+                    if !adapter.modules.is_enabled("docs") {
+                        return Err(StateError::new(
+                            ErrorCode::FeatureDisabled,
+                            "FEATURE_DISABLED: 'docs' module is disabled in modules:",
+                        )
+                        .into());
+                    }
                     let conn =
                         open_or_rebuild(&db, &root, explicit_config.as_deref(), cache_dir)?;
                     let val = match command {
@@ -2818,12 +2869,12 @@ impl Cli {
         let (mut result, pre_rendered) = match exec_result {
             Ok(pair) => {
                 span.set_status("ok");
-                span.finish();
+                span.finish_async().await;
                 pair
             }
             Err(err) => {
                 span.set_status("error");
-                span.finish();
+                span.finish_async().await;
                 return Err(err);
             }
         };
@@ -2944,7 +2995,6 @@ fn exec_cli_state_command(
         StateCommand::Claim(req) => req.worktree.as_deref(),
         StateCommand::Verify(req) => req.worktree.as_deref(),
         StateCommand::Submit(req) => req.worktree.as_deref(),
-        StateCommand::Snapshot(req) => req.worktree.as_deref(),
         StateCommand::Rollback(req) => req.worktree.as_deref(),
         StateCommand::CallPluginTool(req) => req.worktree.as_deref(),
         _ => None,
@@ -3054,8 +3104,7 @@ mod tests {
             vec!["acdd", "sync", "--run", "m1"],
             vec!["acdd", "subtask", "t1", "s1", "--run", "m1", "--status", "completed", "--evidence", "ok"],
             vec!["acdd", "blackboard", "--run", "m1", "--action", "read"],
-            vec!["acdd", "snapshot", "snap1", "--run", "m1"],
-            vec!["acdd", "rollback", "snap1", "--run", "m1"],
+            vec!["acdd", "rollback", "HEAD", "--run", "m1"],
             vec!["acdd", "integrate", "--run", "m1"],
             vec!["acdd", "clear", "--run", "m1"],
             vec!["acdd", "run", "--run", "m1"],
@@ -3070,6 +3119,7 @@ mod tests {
             vec!["acdd", "workflow", "list"],
             vec!["acdd", "task", "list"],
             vec!["acdd", "checkpoint", "save"],
+            vec!["acdd", "snapshot", "snap1", "--run", "m1"],
             vec!["acdd", "migrate"],
         ] {
             assert!(Cli::try_parse_from(&legacy).is_err(), "legacy cmd should be removed: {legacy:?}");
@@ -3157,15 +3207,54 @@ mod tests {
         let bad = super::validate::run(vroot, None).unwrap();
         assert_eq!(bad["valid"], serde_json::json!(false), "{bad}");
 
-        // 6. Default `.acdd/state.sqlite` keeps `state_db_override == None` (enabling `state.bak.sqlite`) even from linked worktrees.
+        // 6. Default `.acdd/state.sqlite` keeps `state_db_override == None` (enabling `state.bak.sqlite`) even from linked worktrees,
+        // and `code_db_path` is populated iff `code || docs` is enabled (#25).
         let cfg_default = crate::state_bridge::AcddConfig::default();
         let eng_default = crate::state_bridge::state_engine_config(vroot, vroot, None, &cfg_default);
         assert!(eng_default.state_db_override.is_none());
+        assert_eq!(
+            eng_default.code_db_path,
+            Some(acdd_core::config::resolve_code_db_path(vroot, None))
+        );
+        let cfg_minimal = crate::state_bridge::AcddConfig {
+            modules: acdd_core::subsystems::SubsystemRegistry {
+                profile: acdd_core::subsystems::SubsystemPreset::Minimal,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let eng_minimal = crate::state_bridge::state_engine_config(vroot, vroot, None, &cfg_minimal);
+        assert_eq!(eng_minimal.code_db_path, None);
         let cfg_custom = crate::state_bridge::AcddConfig {
             state_db: ".acdd/custom.sqlite".to_owned(),
             ..Default::default()
         };
         let eng_custom = crate::state_bridge::state_engine_config(vroot, vroot, None, &cfg_custom);
         assert!(eng_custom.state_db_override.is_some());
+
+        // 7. Stateless `acdd tool <name>` (no `--run`/`--node`) dispatches without opening `state.sqlite` even when `modules.state == false` (#30).
+        let tdir = TempDir::new("cli-tool-stateless");
+        let troot = tdir.path();
+        fs::write(
+            troot.join("acdd.yaml"),
+            "modules:\n  code: true\n  docs: true\n  state: false\n",
+        )
+        .unwrap();
+        let mut tool_out = Vec::new();
+        let tool_cli = Cli::try_parse_from([
+            "acdd",
+            "--root",
+            troot.to_str().unwrap(),
+            "tool",
+            "missing_plugin",
+        ])
+        .unwrap();
+        let tool_err = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(tool_cli.run_with_writer(&mut tool_out))
+            .unwrap_err();
+        let tool_state_err = StateError::from_anyhow(&tool_err).expect("StateError");
+        assert_eq!(tool_state_err.code, ErrorCode::DomainCapabilityUnavailable);
+        assert!(!troot.join(".acdd/state.sqlite").exists());
     }
 }

@@ -38,7 +38,7 @@ roles:
     prompt_template: >-
       Execute independent_reviewer for run {run_id}, gate {node_cursor}, in {worktree}.
       Contract: {contract}. Guidance: {guidance}.
-    guidance: "Audit the authored implementation plan for task granularity, acyclic dependency topology, in-place snapshot safety, and valid write scopes."
+    guidance: "Audit the authored implementation plan for task granularity, acyclic dependency topology, in-place candidate safety, and valid write scopes."
     models:
       - 'gpt-6.1-sol:xhigh'
 

@@ -74,32 +74,37 @@ fn test_prefilter_empty_candidate_fallback() {
         acdd_core::telemetry::unix_epoch_ms()
     )));
     std::fs::create_dir_all(&root.0).unwrap();
+    // File A defines top-level `def x()`, while File B assigns local `x = ...`.
+    // `x = $EXPR` must NOT SQL-prefilter via `nodes.name = 'x'` (which would skip File B).
+    std::fs::write(root.0.join("a_decl.py"), "def x():\n    return 0\n").unwrap();
     std::fs::write(
-        root.0.join("local.py"),
-        "def compute():\n    local_value = 1 + 2\n    return local_value\n",
+        root.0.join("b_local.py"),
+        "def compute():\n    x = 1 + 2\n    return x\n",
     )
     .unwrap();
     let database = root.0.join(".acdd/code-map.sqlite");
     crate::engine::pipeline::build(&root.0, &database, None).unwrap();
     let conn = acdd_index::db::reader::open(&database, &root.0).unwrap();
-    let pattern = "local_value = $EXPR";
-    let name = ast::pattern_symbol_name(pattern, "python")
-        .unwrap()
-        .unwrap();
-    assert_eq!(name, "local_value");
+    let pattern = "x = $EXPR";
+    assert_eq!(
+        ast::pattern_symbol_name(pattern, "python").unwrap(),
+        None,
+        "assignment patterns must never use nodes.name prefiltering"
+    );
+    assert_eq!(
+        ast::pattern_symbol_name("def x():", "python").unwrap().as_deref(),
+        Some("x")
+    );
     let indexed: i64 = conn
-        .query_row("SELECT count(*) FROM nodes WHERE name=?1", [&name], |row| {
+        .query_row("SELECT count(*) FROM nodes WHERE name='x'", [], |row| {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(
-        indexed, 0,
-        "local bindings must exercise an empty prefilter"
-    );
+    assert_eq!(indexed, 1, "file A defines top-level x");
     let options = QueryOptions::resolve(&ResponsePolicy::default(), None, 0, None, None).unwrap();
     let result = search_paged(&conn, &root.0, pattern, "python", None, &options).unwrap();
     assert_eq!(result["matches"]["total"], 1, "{result}");
-    assert_eq!(result["matches"]["items"][0]["path"], "local.py");
+    assert_eq!(result["matches"]["items"][0]["path"], "b_local.py");
     assert_eq!(result["matches"]["items"][0]["line"], 2);
 }
 

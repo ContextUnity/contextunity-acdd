@@ -139,7 +139,7 @@ gates:
         expected_failure:
           exit_codes: [1]
         save:
-          post: snapshot
+          post: none
         pass: implement
 
       # Step 2: Implementation & Code Verification
@@ -181,7 +181,7 @@ gates:
         pass: review
         fail: implement
         save:
-          post: snapshot
+          post: none
 
       # Step 5: Cognitive Review
       - id: review

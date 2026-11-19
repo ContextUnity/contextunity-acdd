@@ -1,6 +1,6 @@
 version: 2
 inherit: none
-save: snapshot
+save: none
 commands:
   implement:
     command: "printf 'implementation\n' >> src/first.rs"
@@ -10,8 +10,8 @@ gates:
       gates:
         - id: implement
           command: implement
-          save: { pre: snapshot, post: snapshot }
+          save: { post: none }
         - id: finish
           need: [implement]
           receipt: true
-          save: snapshot
+          save: none

@@ -46,7 +46,7 @@ modules:
   blackboard: true
 ```
 
-Note that `Adapter` rejects unknown fields when legacy keys are combined with invalid schema values; remove all obsolete `0.5.x` keys completely.
+Note that `AdapterFile` enforces `#[serde(deny_unknown_fields)]` and rejects legacy `0.5.x` top-level keys (`milestones`, `plans`, `tasks_db`, `workflows_dir`, `milestone_prefix`, `plan_prefix`, `task_repository`, `task_project`, `acdd_profile`) fail-closed with `CONFIG_MIGRATION_REQUIRED`; remove all obsolete `0.5.x` keys completely.
 
 ## 3. Update `.gitignore`
 
@@ -82,12 +82,13 @@ Convert every profile under `.acdd/profile.yaml`, `.acdd/profiles/`, and `docs/w
    - `review_sources` $\to$ `need`
    - `polish_scope` $\to$ `scope`
    - `steps` $\to$ `guidance` (inline `{ inline: "..." }` or key references into `guidance:`)
-   - `proof: delivery` $\to$ `receipt: true` with `save.post: commit` (or `snapshot`)
+   - `proof: delivery` $\to$ `receipt: true` with `save.post: commit` (or `none`)
 3. Replace `loop:` blocks with explicit `fail: <gate_id>` edges and `max_attempts:`.
 4. Replace `proof: seam_test` with `proof: contract` (`command`, `expected_failure`, `{test_filter}`) plus `checks: [code.seam]` (or inherit `code` which attaches `code.seam` automatically), removing legacy `- id: seam` containers.
 5. Convert any `*_proof` custom wrappers to `proofs.<name>` JSON Schemas (`SchemaDef`) or inline `proof: { scheme: ... }`.
 6. Rewrite legacy MCP tool names in `tools` / `default_tools` / `tools_add` (`task_*`, `session_checkpoint`, `forge_guide`) to `acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`, `acdd_read`, and `acdd_guide`.
 7. Recompute any local pinned `inherit: <path>:<sha256_prefix>` digests if the referenced profile changed.
+8. When using `inherit: code`, if your profile overrides `tags:`, retain/include `docs` (for example `tags: [default, docs, ...]`) or update the inherited `when: "!docs"` gates (`tasks.contract`, `tasks.contract_review`) so all `when:` tag references remain valid.
 
 ## 5. Clean Open `SpecDocument` Frontmatter and `### task:` Blocks
 

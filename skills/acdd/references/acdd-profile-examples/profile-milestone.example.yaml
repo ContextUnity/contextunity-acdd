@@ -111,6 +111,11 @@ contours:
     description: "Verify accepted contract claims with fresh traces."
     criteria:
       - "Trace invariants to production code and passing checks."
+  architecture:
+    description: "Verify single-owner reuse, layer boundaries, minimal mechanism design, and absence of shadow subsystems or narrow heuristics."
+    criteria:
+      - "Confirm existing canonical owners and shared abstractions are reused instead of introducing duplicate helpers, parallel pipelines, or shadow resolvers."
+      - "Verify strict layer boundaries, absence of narrow string/filename heuristics where structural data exists, and complexity proportional to the accepted contract."
   concurrency:
     description: "Verify CAS preconditions and lock ordering."
     criteria:
@@ -181,13 +186,12 @@ gates:
         role: architect
         proof: blueprint
         save:
-          pre: snapshot
-          post: snapshot
+          post: none
         pass: review
       - id: review
         role: independent_reviewer
         proof: review
-        contours: [claims, project_isolation, administration]
+        contours: [claims, architecture, project_isolation, administration]
         independent_from: [synthesize]
         fail: synthesize
         save:
@@ -202,13 +206,13 @@ gates:
           expected_failure:
             exit_codes: [1, 101, 134]
           save:
-            post: snapshot
+            post: none
           pass: contract_review
 
         - id: contract_review
           role: independent_reviewer
           proof: review
-          contours: [paths, claims]
+          contours: [paths, claims, architecture]
           independent_from: [contract]
           need: [contract]
           save:
@@ -221,14 +225,13 @@ gates:
           command: rust-check-and-test
           proof: command
           save:
-            pre: snapshot
-            post: snapshot
+            post: none
           pass: review
 
         - id: review
           role: independent_reviewer
           proof: review
-          contours: [paths, claims, concurrency, project_isolation, administration]
+          contours: [paths, claims, architecture, concurrency, project_isolation, administration]
           independent_from: [build]
           need: [build]
           fail: build
@@ -270,14 +273,13 @@ gates:
     proof: command
     pass: verify
     save:
-      pre: snapshot
-      post: snapshot
+      post: none
 
   - id: integration_review
     role: independent_reviewer
     proof: review
     max_attempts: 2
-    contours: [paths, claims, concurrency, project_isolation, administration]
+    contours: [paths, claims, architecture, concurrency, project_isolation, administration]
     independent_from: [polish, "tasks.build"]
     need: [verify]
     pass: handoff

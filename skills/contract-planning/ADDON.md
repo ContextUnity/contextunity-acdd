@@ -13,7 +13,7 @@ Before authoring, auditing, or amending any milestone contract or task in this r
 2. **Architectural Decisions:** Consult the relevant ADRs in [`docs/adr/`](../../docs/adr/):
    - `ADR 0001`: Leaf isolation and 3-library-crate dependency boundaries (`acdd-core`, `acdd-index`, `acdd-state`).
    - `ADR 0003` & `ADR 0004`: Unified `GateProfile` state engine (`crates/acdd-state`) and `DomainProvider` SPI (`crates/acdd-core/src/ports.rs`).
-   - `ADR 0005` & `ADR 0006`: Content-bound `TreeOid` snapshots and 6-tier `ClaimResp` context bundles.
+   - `ADR 0005` & `ADR 0006`: Content-bound `TreeOid` candidate verification and 6-tier `ClaimResp` context bundles.
 3. **Subsystem Routing:** Read [`src/AGENTS.md`](../../src/AGENTS.md) and [`docs/AGENTS.md`](../../docs/AGENTS.md) for module decomposition rules.
 
 ---
@@ -52,4 +52,4 @@ When executing the root `blueprint_synthesis` container (`synthesize` $\to$ `rev
 
 1. Apply the **Architectural Viability Audit** from `SKILL.md` to ensure the milestone, plan, or workflow design is minimal, clean, and robust.
 2. Post the synthesized architectural blueprint, data flow, and invariants to `acdd_blackboard` (topic: `decisions`) before gate submission.
-3. Submit the structured `proof` payload (`proof: blueprint` from `proofs:` or inline `proof.scheme`) including per-task `tasks[<task_ref>]` entries (`layer`, `summary`, `exported_interfaces`, `negative_boundaries`, `verification_seam`, `incoming_seams`, `outgoing_seams`), which the engine injects per task into `context_bundle` on `acdd_claim` / `acdd claim`.
+3. Submit the structured `proof` payload (`proof: blueprint` from `proofs:` or inline `proof.scheme`) including per-task `tasks[<task_ref>]` entries (`layer`, `summary`, `exported_interfaces`, `negative_boundaries`, `canonical_owners`, `mechanism_rules`, `max_net_loc`, `verification_seam`, `incoming_seams`, `outgoing_seams`), which the engine injects per task into `context_bundle` on `acdd_claim` / `acdd claim`.

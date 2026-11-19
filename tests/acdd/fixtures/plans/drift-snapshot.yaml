@@ -1,6 +1,6 @@
 version: 2
 inherit: none
-save: snapshot
+save: none
 commands:
   drift:
     command: "printf 'drift\n' >> docs/plans/linear.md"
@@ -10,8 +10,8 @@ gates:
       gates:
         - id: drift
           command: drift
-          save: { pre: snapshot, post: snapshot }
+          save: { post: none }
         - id: finish
           need: [drift]
           receipt: true
-          save: snapshot
+          save: none

@@ -136,7 +136,7 @@ Every core operation is available both to AI agents over MCP and to developers/s
 | **Blackboard Messaging** | `acdd_blackboard` | `blackboard` |
 | **Subtask Tracking** | `acdd_state(action: "subtask")` | `subtask` |
 | **Scope, Sync & Reopen** | `acdd_state(action: "extend_scope" \| "sync" \| "reopen")` | `extend-scope`, `sync`, `reopen` |
-| **Snapshots & Integration** | `acdd_state(action: "snapshot" \| "rollback" \| "integrate" \| "clear")` | `snapshot`, `rollback`, `integrate`, `clear` |
+| **Rollback & Integration** | `acdd_state(action: "rollback" \| "integrate" \| "clear")` | `rollback`, `integrate`, `clear` |
 | **Headless Run & Plugins** | `acdd_state(action: "run")`, `<domain>_<name>` | `run`, `tool <domain>_<name>`, `validate` |
 | **Built-in Reference** | `acdd_guide` | `guide` |
 

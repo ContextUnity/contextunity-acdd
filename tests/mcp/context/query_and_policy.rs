@@ -213,7 +213,7 @@ fn mcp_caps_documents_scalars_checkpoints_and_tool_errors() {
     let (workspace, harness) = McpTestHarness::with_files(&[
         (
             "acdd.yaml",
-            "roots: [.]\ntasks_db: .acdd/tasks.sqlite\nresponse:\n  max_output_bytes: 1024\n",
+            "roots: [.]\nstate_db: .acdd/state.sqlite\nresponse:\n  max_output_bytes: 1024\n",
         ),
         ("README.md", readme.as_str()),
     ]);

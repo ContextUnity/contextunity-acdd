@@ -378,7 +378,7 @@ gates:
                 );
                 let rel = format!("docs/plans/neg-scope-{idx}.md");
                 fs::write(ws.path(&rel), &raw).unwrap();
-                let started = match execute_on(
+                let start_err = execute_on(
                     &cfg,
                     &harness,
                     &providers,
@@ -388,25 +388,43 @@ gates:
                         ..StartReq::default()
                     }),
                 )
+                .expect_err("Start must reject unsafe scope glob fail-closed");
+                assert_eq!(start_err.code, ErrorCode::ProfileSchemaInvalid, "{}", item.relpath);
+
+                let valid_raw = fs::read_to_string(fixtures_dir.join("plans/linear.md")).unwrap();
+                let valid_rel = format!("docs/plans/neg-scope-valid-{idx}.md");
+                fs::write(ws.path(&valid_rel), &valid_raw).unwrap();
+                let started = match execute_on(
+                    &cfg,
+                    &harness,
+                    &providers,
+                    StateCommand::Start(StartReq {
+                        spec_path: Some(valid_rel),
+                        profile: Some(".acdd/profiles/two-gate.yaml".to_owned()),
+                        ..StartReq::default()
+                    }),
+                )
                 .unwrap()
                 {
                     acdd_state::usecases::StateCommandOutput::Start(s) => s,
                     _ => unreachable!(),
                 };
-                let err = execute_on(
-                    &cfg,
-                    &harness,
-                    &providers,
-                    StateCommand::ExtendScope(ExtendScopeReq {
-                        run: Some(started.run.run_id.to_string()),
-                        node: "first-step".to_owned(),
-                        paths: unsafe_scope.clone(),
-                        reason: "attempt escaping scope".to_owned(),
-                        worker_id: None,
-                    }),
-                )
-                .expect_err("ExtendScope must reject ../escape.rs");
-                assert_eq!(err.code, expected, "{}", item.relpath);
+                for bad_paths in [unsafe_scope.clone(), vec!["src/{a".to_owned()]] {
+                    let err = execute_on(
+                        &cfg,
+                        &harness,
+                        &providers,
+                        StateCommand::ExtendScope(ExtendScopeReq {
+                            run: Some(started.run.run_id.to_string()),
+                            node: "step-1".to_owned(),
+                            paths: bad_paths.clone(),
+                            reason: "attempt escaping or malformed scope".to_owned(),
+                            worker_id: None,
+                        }),
+                    )
+                    .expect_err(&format!("ExtendScope must reject {bad_paths:?}"));
+                    assert_eq!(err.code, expected, "{}", item.relpath);
+                }
             }
         }
     }

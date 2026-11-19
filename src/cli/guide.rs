@@ -257,7 +257,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             "steps": [
                 "Use `acdd next` / `acdd_state(action: \"next\")` or `acdd status` to discover ready cursors, then `acdd claim` / `acdd_claim` with `node`, `worker_id`, and `worktree`.",
                 "Implement strictly inside admitted write scope (`in_write_scope: ALLOWED` in `acdd_read`). Call `acdd verify <cursor> [--test <target>]` / `acdd_verify` to observe fresh trace evidence.",
-                "Submit via `acdd submit <cursor> --action pass|reject` / `acdd_submit`. Rejections require structured `findings` (`summary`, `items[]` with `severity`, `message`, `remediation`).",
+                "Submit via `acdd submit <cursor> --action pass|reject` / `acdd_submit`. Rejections require structured `findings` (`summary`, `items[]` with `severity`, `message`, `remediation`, and optional `kind`: `defect | architectural_drift`).",
                 "For automated DAG execution, run `acdd run [--jobs N]` / `acdd_state(action: \"run\")`. Complete all subtasks with non-empty `evidence` before container receipt gates."
             ],
             "runners": "Role runners receive `ACDD_RUN_ID`, `ACDD_NODE_CURSOR`, `ACDD_CLAIM_REVISION`, `ACDD_WORKER_ID`, `ACDD_AGENT_SESSION_ID`, `ACDD_WORKTREE`, `ACDD_STATE_DB`, `ACDD_CODE_DB`, and `TRACEPARENT`, with rendered ClaimResp delivered over stdin. Verification commands run sanitized without orchestrator env leakage.",
@@ -266,7 +266,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "TASK_ALREADY_CLAIMED": "Node holds an active claim by another worker/session. Resume the owning worker or pass `--force` when taking over a dead local PID (or `--steal-remote`).",
                 "STALE_CLAIM_REVISION": "Re-claim or fetch the current `claim_revision` via `acdd status` / `acdd show`, then re-run `acdd verify`.",
                 "TASK_PROOF_UNOBSERVED": "Run `acdd verify <cursor> --test <target>` under the active claim and current tree before submitting.",
-                "TASK_CANDIDATE_MISMATCH": "Working tree drifted from an immutable claim snapshot or predecessor `need:` snapshot. Inspect drift, `acdd rollback <ref>` or `acdd reopen <node>`, then re-verify.",
+                "TASK_CANDIDATE_MISMATCH": "Working tree drifted from an immutable claim tree or predecessor `need:` tree. Inspect drift, `acdd rollback <ref>` or `acdd reopen <node>`, then re-verify.",
                 "TASK_NOT_INTEGRATED": "Completed task deltas are missing from the run worktree. Run `acdd integrate` before post-task root gates.",
                 "CONFIG_MIGRATION_REQUIRED": "Legacy 0.5.x keys found in acdd.yaml. Follow docs/runbooks/migration-0.6.md."
             },
@@ -284,8 +284,8 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "Submit only fresh, claim-bound observations via `acdd submit` / `acdd_submit`."
             ],
             "when": "Boolean expression over task tags (`tag`, `!tag`, `&`/`+`, `|`, parentheses); valid on `- tasks:` blocks and `task_gate`s, forbidden on `root_gate`s.",
-            "transitions": "`pass:` and `fail:` select explicit next gate targets; `max_attempts` caps retries and root/container cycle counts before `escalated`. `independent_from` enforces `worker_id` inequality.",
-            "persistence": "`git.isolation` (`worktree | in_place`), `git.worktrees` (`manual | managed`), `git.commit_mode` (`plumbing | cli | manual`), and `git.integrate` (`manual | rebase-ff | ff-only | no-ff | squash`). `save.pre` / `save.post` apply `none | snapshot | commit`; `immutable: true` enforces `current_tree == claim_tree`.",
+            "transitions": "`pass:`, `fail:`, and `fail_drift:` select explicit next gate targets (`defect` routes via `fail:`, `architectural_drift` routes via `fail_drift:` and triggers builder context reset); `max_attempts` caps retries and root/container cycle counts before `escalated`. `independent_from` enforces `worker_id` inequality.",
+            "persistence": "`git.isolation` (`worktree | in_place`), `git.worktrees` (`manual | managed`), `git.commit_mode` (`plumbing | cli | manual`), and `git.integrate` (`manual | rebase-ff | ff-only | no-ff | squash`). `save` / `save.post` apply `none | commit`; `immutable: true` enforces `current_tree == claim_tree`.",
             "verification": "`verify` records `gate_traces` with RFC-8785 SHA-256 `execution_digest` bound to `contract_revision`, resolved commands, `test_target`, `checks:` salts (`index_generation` + `live_files_digest`), and `candidate_tree_before == candidate_tree_after`.",
             "example": {
                 "mcp": { "name": "acdd_verify", "arguments": { "node": "t1.contract", "test_target": "tests/seam.rs::case" } },
@@ -390,7 +390,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "decisions": "Decisions retained in the delivery receipt.",
                 "deferred": "Deferred items carried over to run closure."
             },
-            "review_contours": ["paths", "claims", "concurrency", "project_isolation", "administration"],
+            "review_contours": ["paths", "claims", "architecture", "concurrency", "project_isolation", "administration"],
             "commit_authority": "Follow current user authorization and repository AGENTS.md for commits, integration, and cleanup. Remote publication requires explicit user approval."
         })),
         "query" => Ok(json!({

@@ -1,11 +1,11 @@
 ---
-title: "ADR 0005: Content-Addressed Git Snapshots and Integration"
+title: "ADR 0005: Content-Addressed Git Candidate Verification, Commits, and Integration"
 doc_type: adr
 status: accepted
 date: 2026-11-17
 ---
 
-# ADR 0005: Content-Addressed Git Snapshots and Integration
+# ADR 0005: Content-Addressed Git Candidate Verification, Commits, and Integration
 
 ## Status
 
@@ -13,13 +13,13 @@ Accepted.
 
 ## Context
 
-Coupling gate verification to branch commit history (`-p HEAD` or `git merge-base --is-ancestor`) breaks when sibling worktrees modify unrelated files, when `rebase-ff` or `squash` integration rewrites commit SHAs, or when intermediate build gates run before review. Meanwhile, interrupted Git mutations must recover deterministically without a fragile SQLite intent journal.
+Coupling gate verification to branch commit history (`-p HEAD` or `git merge-base --is-ancestor`) breaks when sibling worktrees modify unrelated files, when `rebase-ff` or `squash` integration rewrites commit SHAs, or when intermediate build gates run before review. Meanwhile, interrupted Git mutations must recover deterministically without a fragile SQLite intent journal or hidden snapshot refs.
 
 ## Decision
 
-### 1. Scoped Rootless Snapshots & Content-Bound `TreeOid`
+### 1. Scoped Candidate `TreeOid` Verification and Explicit Commit Persistence
 
-- **Isolated `GIT_INDEX_FILE` snapshots**: Candidate states are captured as deterministic parentless Git commits/trees (`refs/acdd/snapshots/<run_id>/<node_slug>/rev-<N>`) built from `WorkspacePathPolicy::is_candidate_included` paths without touching the working branch index or `HEAD`.
+- **Deterministic scoped `TreeOid` (no snapshot refs)**: Candidate state is verified directly against deterministic Git tree OIDs (`WorkspacePathPolicy::is_candidate_included`) without touching the working branch index, creating `HEAD` commits prematurely, or storing hidden `refs/acdd/snapshots/*` refs. Explicit `acdd snapshot`, `save: snapshot`, and `save.pre` do not exist; `save` / `save.post` support `none | commit` only.
 - **Content equivalence via `TreeOid`**: Gate proofs, trace freshness (`candidate_tree_before == candidate_tree_after`), `save.immutable: true`, `need:` predecessor bindings, and `TASK_NOT_INTEGRATED` completeness checks compare exact scoped Git tree OIDs (`TreeOid`) rather than branch commit ancestry. Rebase, squash, cherry-pick, and fast-forward merges preserve accepted proofs whenever scoped tree content matches.
 
 ### 2. Declarative `git:` Policy and Five `integrate` Strategies
@@ -35,9 +35,9 @@ Profiles configure Git execution declaratively under `git:` ([`GitPolicy`](../..
 
 ### 3. Immutability, Scope Conflicts, and Review Contours
 
-- **Candidate drift & rebinding**: Non-runtime drift on `save.immutable: true` gates fails closed with `TASK_CANDIDATE_MISMATCH`. Reopening (`acdd reopen` / `acdd rollback`), re-verifying, and obtaining fresh independent review binds the new candidate cleanly.
+- **Candidate drift & rebinding**: Non-runtime drift on `save.immutable: true` gates fails closed with `TASK_CANDIDATE_MISMATCH`. Reopening (`acdd reopen`), confined restoring from a baseline commit/tree (`acdd rollback <ref|oid>`), re-verifying, and obtaining fresh independent review binds the new candidate cleanly.
 - **Hierarchical scope conflict detection**: `acdd extend-scope` checks exact, parent, and child path overlap against other claimed incomplete tasks (`TASK_SCOPE_CONFLICT`) and blocks `.acdd/**` and `protected_paths` (`OUT_OF_SCOPE_CHANGES`).
-- **Five review contours**: `paths`, `claims`, `concurrency`, `project_isolation`, and `administration` govern independent reviews (`proof: review`).
+- **Six review contours**: `paths`, `claims`, `architecture`, `concurrency`, `project_isolation`, and `administration` govern independent reviews (`proof: review`).
 
 ### 4. Stateless Git Recovery Without `op_intents`
 

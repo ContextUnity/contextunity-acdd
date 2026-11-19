@@ -166,7 +166,7 @@ gates:
         proof: command
         fail: rollback
         save:
-          post: snapshot
+          post: none
 
       # Rollback Gate: Triggered autonomously if deployment or smoke check fails
       - id: rollback

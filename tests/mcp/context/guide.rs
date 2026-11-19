@@ -291,7 +291,14 @@ fn guide_content_and_surfaces_matrix() {
                     assert!(when.contains(term), "when expression must explain {term}");
                 }
                 let transitions = value["transitions"].to_string().to_lowercase();
-                for term in ["pass", "fail", "max_attempts", "escalated", "independent_from"] {
+                for term in [
+                    "pass",
+                    "fail",
+                    "fail_drift",
+                    "max_attempts",
+                    "escalated",
+                    "independent_from",
+                ] {
                     assert!(transitions.contains(term), "missing routing rule {term}");
                 }
                 let persistence = value["persistence"].to_string().to_lowercase();
@@ -299,7 +306,7 @@ fn guide_content_and_surfaces_matrix() {
                     "git.isolation",
                     "worktree",
                     "in_place",
-                    "snapshot",
+                    "none",
                     "commit",
                     "immutable",
                 ] {
@@ -308,6 +315,10 @@ fn guide_content_and_surfaces_matrix() {
                         "missing persistence boundary {term}"
                     );
                 }
+                assert!(
+                    !persistence.contains("snapshot") && !persistence.contains("save.pre"),
+                    "removed snapshot references must stay absent from persistence guide: {persistence}"
+                );
                 let text = value["verification"].to_string().to_lowercase();
                 for term in [
                     "verify",

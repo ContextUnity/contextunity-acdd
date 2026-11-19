@@ -61,7 +61,7 @@ and the example feature plan in [example-feature-plan.md](../plans/example-featu
 
 ## Five Flat MCP State Tools and CLI Parity
 
-State operations map symmetrically across the flat `0.6.0` CLI and five state
+State operations map symmetrically across the flat `0.6.1` CLI and five state
 MCP tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`,
 `acdd_blackboard`):
 
@@ -70,7 +70,7 @@ MCP tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`,
 | Status / List / Show / Next | `acdd_state(action: "status \| list \| show \| next \| observability")` | `acdd status`, `list`, `show`, `next` | Read-only run/node inspection, ready waves, and telemetry |
 | Start / Draft | `acdd_state(action: "start \| draft")` | `acdd start`, `acdd draft` | Initialize a new `Run` or draft numbered spec |
 | Scope / Reopen / Sync / Subtask | `acdd_state(action: "extend_scope \| reopen \| sync \| subtask")` | `acdd extend-scope`, `reopen`, `sync`, `subtask` | Manage scope extensions, cascades, spec sync, and subtasks |
-| Snapshots / Integrate / Clear / Run | `acdd_state(action: "snapshot \| rollback \| integrate \| clear \| run")` | `acdd snapshot`, `rollback`, `integrate`, `clear`, `run` | Capture/restore snapshots, merge branches, clear tombstones, execute DAG waves |
+| Rollback / Integrate / Clear / Run | `acdd_state(action: "rollback \| integrate \| clear \| run")` | `acdd rollback`, `integrate`, `clear`, `run` | Confined-restore commits/trees, merge branches, clear tombstones, execute DAG waves |
 | Claim | `acdd_claim` | `acdd claim [<node>]` | Atomically claim a ready/active node and return `ClaimResp` |
 | Verify | `acdd_verify` | `acdd verify <node>` | Execute `command:`, `call:`, `checks:`, and scope barrier without advancing |
 | Submit | `acdd_submit` | `acdd submit <node> --action pass\|reject` | Advance on `pass` or rewind along `fail:` with `RejectionFindings` |
@@ -88,10 +88,11 @@ Every gate transition is mediated by `claim -> (verify) -> submit` inside
 `crates/acdd-state/src/machine/`:
 
 - **Claim (`claim`)**: Acquires or resumes an active claim in `gate_claims`,
-  bumping `claim_revision` and `node_version` atomically, capturing
-  `claim_tree` when `save.pre: snapshot`, and returning `ClaimResp`.
-  Concurrent foreign claims require `--force` (and `--steal-remote` if
-  `session_fingerprint` differs across hosts).
+  bumping `claim_revision` and `node_version` atomically, recording `claim_tree`
+  from the scoped Git tree (`WorkspacePathPolicy::is_candidate_included`), and
+  returning `ClaimResp` (including `context_reset_required: true` when re-entering
+  after `rearchitect`). Concurrent foreign claims require `--force` (and
+  `--steal-remote` if `session_fingerprint` differs across hosts).
 - **Verify (`verify`)**:
   1. Validates working-tree changes against `WorkspacePathPolicy::is_agent_writable`.
   2. Executes configured `command:` (applying `test_filter` / `{test_filter}`
@@ -106,16 +107,19 @@ Every gate transition is mediated by `claim -> (verify) -> submit` inside
   - Verifies `claim_revision` parity (`STALE_CLAIM_REVISION`) and
     `independent_from` worker separation (`TASK_REVIEW_NOT_INDEPENDENT`).
   - Checks `save.immutable` parity against `claim_tree` (`TASK_CANDIDATE_MISMATCH`)
-    and `need:` predecessor accepted tree parity.
+    and `need:` predecessor accepted tree parity, plus `blueprint` `max_net_loc`
+    production LOC budgets on `tasks.build` unless justified on `blackboard`
+    (`topic: decisions`).
   - On `--action pass`: validates proof (auto-verifying `command`/`contract` if
     no fresh trace exists, validating `review_evidence` against `contours:`, or
     validating `custom_evidence` against `proofs.<name>` / inline `{ scheme }`),
     checks that all task `subtasks` are `completed` or `cancelled` with
-    non-empty evidence when `receipt: true`, executes `save.post` (`snapshot` or
+    non-empty evidence when `receipt: true`, executes `save.post` (`none` or
     `commit`), writes `gate_artifacts`, and transitions along `pass:`.
   - On `--action reject`: requires structured `RejectionFindings` (`findings` +
-    `summary`), routes to `fail:`, increments `attempt` / `cycle_count`, or marks
-    the node `escalated` when `max_attempts` is reached.
+    `summary` + optional `kind`: `defect | architectural_drift`), routes to `fail:`
+    on `defect` or `fail_drift:` on `architectural_drift`, increments `attempt` /
+    `cycle_count`, or marks the node `escalated` when `max_attempts` is reached.
 
 ### 6-Tier Claim Context Budget (`ClaimResp`)
 
@@ -132,7 +136,7 @@ Every gate transition is mediated by `claim -> (verify) -> submit` inside
 4. **Tier 4 (`dependency_receipts`)**: Accepted receipts of completed dependency tasks.
 5. **Tier 5 (`blackboard`)**: Up to 15 messages (500 characters per payload).
 6. **Tier 6 (`context_lenses`)**: `DomainProvider` lenses declared in `gate.context`
-   (`docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`),
+   (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`),
    trimmed cleanly if the remaining envelope fills (`omitted_sections`).
 
 ---
@@ -151,22 +155,22 @@ authority, and agent writes never conflate:
    `.backup` sidecars), and `.acdd/**` **except** the tracked configuration
    whitelist (`.acdd/profile.yaml`, `.acdd/profiles/**`, `.acdd/frameworks/**`).
    Tracked assets like `Cargo.lock` and `tests/**/*.jsonl` remain included.
-3. **`is_scope_admitted(rel_path, scope)`**: Component-wise glob/directory match
-   against the node's initial `scope` + approved `extended_scope`.
+3. **`is_scope_admitted(rel_path, scope)`**: Brace-aware (`{a,b}`) component-wise
+   glob/directory match owned solely by `acdd_core::path_policy` against the
+   node's initial `scope` + approved `extended_scope`.
 4. **`is_agent_writable(rel_path, admitted_scope, protected_paths)`**: Enforces
    `is_candidate_included(rel_path)` AND `!is_scope_admitted(rel_path, protected_paths)`
    AND `is_scope_admitted(rel_path, admitted_scope)`. Out-of-scope edits fail
    closed with `OUT_OF_SCOPE_CHANGES`.
 
-### Scope extension, snapshots, rollback, and integration
+### Scope extension, rollback, and integration
 
 - **`extend-scope`**: Extends `admitted_scope` for a claimed node with a
   non-empty `--reason`, rejecting protected paths (`.acdd/**`, `protected_paths`)
   with `OUT_OF_SCOPE_CHANGES` and overlapping active incomplete tasks with
   `TASK_SCOPE_CONFLICT`.
-- **Snapshots & Rollback**: Engine and manual snapshots live under
-  `refs/acdd/snapshots/<run_id>/...`. `acdd rollback <target> [--node <cursor>]`
-  restores confined working-tree files cleanly.
+- **Rollback**: `acdd rollback <target> [--node <cursor>]` confined-restores
+  working-tree files from a commit ref, commit OID, or tree OID.
 - **Worktree integration**: `acdd integrate [<task_ref>]` merges delivered task
   branches into the run worktree (`manual | rebase-ff | ff-only | no-ff | squash`),
   protecting `main`/`master` unless `--allow-main` is supplied (`MAIN_BRANCH_PROTECTED`),
@@ -174,10 +178,13 @@ authority, and agent writes never conflate:
 
 ### Linked repository tasks
 
-In `0.6.0`, `linked_workspaces` in `acdd.yaml` applies solely to multi-repository
-code and documentation indexing (`acdd-index`). State runs (`runs`, `gate_nodes`)
-and write scopes stay strictly confined to the primary workspace repository and
-its linked Git worktrees; cross-repository state writes are not admitted.
+In `0.6.1`, `linked_workspaces` in `acdd.yaml` applies solely to multi-repository
+code and documentation indexing (`acdd-index`), except read-only cross-workspace
+dependency resolution (`<ws>/<run>:<task>`) in `acdd_state::usecases::deps`
+which reads the linked workspace's own `acdd.yaml` (`specs` and `state_db`)
+strictly read-only. State runs (`runs`, `gate_nodes`) and write scopes stay
+confined to the primary workspace repository and its linked Git worktrees;
+cross-repository state writes are not admitted.
 
 ---
 
@@ -187,6 +194,9 @@ its linked Git worktrees; cross-repository state writes are not admitted.
 provides two `StateBackend` implementations (`SqliteStateBackend` for durable runs
 and `MemoryStateBackend` for in-memory `RunHarness` tests) over `StateReader` and
 `StateTx` optimistic CAS mutations (`node_version` and `runs.generation`).
+Read-only queries (`open_read_only_if_exists`) strictly open
+`SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_NOFOLLOW` first (handling WAL databases
+without `-shm` without unintended writes) and never create missing DB files.
 
 ### Primary worktree layout and advisory locks
 
@@ -202,21 +212,21 @@ primary repository root and common Git dir via
   - `traces.lock`: Serializes run trace retention pruning
   - `state.bak.sqlite`: Verified SQLite online-backup snapshot maintained atomically alongside `_sqlite_meta.write_seq` / `last_backup_seq`
 
-### Schema (9 domain tables + `_sqlite_meta`)
+### Schema (`v2`: 9 domain tables + `_sqlite_meta`)
 
 [`crates/acdd-state/src/store/sqlite/schema.rs`](../../crates/acdd-state/src/store/sqlite/schema.rs)
-defines `_sqlite_meta` (`schema_version`, `write_seq`, `last_backup_seq`) plus
+defines `_sqlite_meta` (`schema_version = 2`, `write_seq`, `last_backup_seq`) plus
 9 pure domain tables:
 
 | Table | Purpose |
 | --- | --- |
-| `runs` | Run identity, resolved `profile_json`, `spec_digest`, `isolation`, `target_base`, `status`, `generation` |
+| `runs` | Run identity, `spec_id`, resolved `profile_json`, `spec_digest`, `isolation`, `target_base`, `status`, `generation` |
 | `gate_nodes` | Hierarchical nodes (`container`, `root_gate`, `task`, `task_gate`), status, `node_version`, `claim_revision`, `contract_revision`, trees, scopes |
 | `task_dependencies` | Intra-run and cross-run task dependency DAG edges and satisfaction flags |
 | `subtasks` | Subtask status (`pending \| in_progress \| completed \| cancelled`) with mandatory terminal `evidence` CHECK constraint |
 | `gate_claims` | Active and historical claim revisions (`active \| passed \| rejected \| superseded \| reopened \| cancelled`) |
 | `gate_traces` | Observed command/action/check verification runs (`passed`, `expected_failure`, `failed`, `timed_out`, `compile_error`, `check_failed`, `scope_violation`, `aborted`) |
-| `gate_artifacts` | Structured `proof`, `findings`, `receipt`, and `accepted_snapshot` JSON + Git snapshot refs |
+| `gate_artifacts` | Structured `proof`, `findings`, `receipt`, and accepted candidate tree JSON + commit OIDs |
 | `blackboard` | Scoped coordination messages (`draft \| notes \| findings \| blockers \| decisions \| deferred`) with resolution status |
 | `run_tombstones` | Compact closed-run summaries, `metrics_json`, and cleanup manifests retained across `archive` / `prune` / `clear` |
 
@@ -229,14 +239,13 @@ committed archive manifests and tombstones, and verifies SQLite `quick_check`.
 ## Canonical Diagnostic Error Codes (`ErrorCode`)
 
 [`crates/acdd-core/src/errors.rs`](../../crates/acdd-core/src/errors.rs) defines
-33 machine-readable `ErrorCode` variants mapped to stable CLI exit codes:
+30 machine-readable `ErrorCode` variants mapped to stable CLI exit codes:
 
 - **Exit `2` (Usage / Config / Schema)**:
   `CONFIG_MIGRATION_REQUIRED`, `ACDD_PROFILE_SCHEMA_INVALID`, `COMMAND_UNBOUND`,
   `COMMAND_TEST_FILTER_UNSUPPORTED`, `COMMAND_TEST_FILTER_PLACEHOLDER_REQUIRED`,
   `UNKNOWN_GUIDANCE_SLOT`, `GUIDANCE_BUDGET_EXCEEDED`, `RUN_SELECTOR_AMBIGUOUS`,
-  `FEATURE_DISABLED`, `WORKFLOW_RUNNER_REQUIRED`, `MIGRATION_AMBIGUOUS_LOOP`,
-  `MIGRATION_MANUAL_SCHEMA_WRAPPER`, `MIGRATION_EXTERNAL_PIN_MISMATCH`.
+  `FEATURE_DISABLED`, `WORKFLOW_RUNNER_REQUIRED`.
 - **Exit `3` (State / Gate / Scope Violation)**:
   `TASK_ALREADY_CLAIMED`, `STALE_CLAIM_REVISION`, `TASK_REVIEW_NOT_INDEPENDENT`,
   `OUT_OF_SCOPE_CHANGES`, `TASK_SCOPE_CONFLICT`, `TASK_PROOF_UNOBSERVED`,

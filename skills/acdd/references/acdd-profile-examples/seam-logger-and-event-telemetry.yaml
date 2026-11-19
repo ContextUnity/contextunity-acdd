@@ -127,6 +127,11 @@ contours:
     description: "Verify evidence: every acceptance claim must be proven by a reproducible test run."
     criteria:
       - "Confirm each admitted contract claim has at least one passing seam test."
+  architecture:
+    description: "Verify single-owner reuse, layer boundaries, minimal mechanism design, and absence of shadow subsystems or narrow heuristics."
+    criteria:
+      - "Confirm existing canonical owners and shared abstractions are reused without duplicate helpers or parallel pipelines."
+      - "Verify strict layer boundaries, zero narrow string heuristics where structural data exists, and proportional complexity."
   concurrency:
     description: "Verify thread safety, SQLite transaction fences, and lock acquisition order."
     criteria:
@@ -145,22 +150,26 @@ contours:
 # =============================================================================
 guidance:
   milestone.synthesis: >
-    Analyze requirements across all tasks. Group code, doc, and observer tasks
-    into parallel waves and record the architectural decision via acdd_blackboard.
+    Audit existing canonical owners (INV-SINGLE-OWNER) and analyze requirements across all tasks.
+    Group code, doc, and observer tasks into parallel waves, forbid parallel pipelines or shadow subsystems,
+    and record the architectural decision via acdd_blackboard.
 
   task.contract: >
     Author additive production-seam test for this task. Verify runtime-red assertion
     failure (exit 101/1/134) with clear assertion message.
 
   task.code: >
-    Implement minimal code to turn the red seam test green. Stay strictly within task scope.
+    Search and reuse existing canonical owners before writing helpers, stay strictly within task scope,
+    and escalate via acdd_blackboard (topic: decisions) before adding a new subsystem or disproportionate fix complexity.
+    REBUTTAL OVER BLIND REWRITE: refute ADR- or contract-conflicting review findings via acdd_blackboard (topic: decisions) with file:line proof.
 
   task.doc_audit: >
     Update documentation, architecture records (ADRs), and user guides to reflect newly
     introduced interfaces. Verify all clickable file links and markdown anchors.
 
   milestone.review: >
-    Evaluate integrated run changes against invariants and ADRs.
+    Evaluate integrated run changes against invariants, ADRs, and contours.architecture (single-owner reuse, layer purity, zero string heuristics, table-driven tests).
+    BURDEN OF PROOF: Reject only on concrete contract/invariant violations or defects; record speculative ideas via acdd_blackboard (topic: deferred).
     Confirm all seam receipts and telemetry events were verified.
 
 # =============================================================================
@@ -188,13 +197,12 @@ gates:
         proof: blueprint
         guidance: [milestone.synthesis]
         save:
-          pre: snapshot
-          post: snapshot
+          post: none
         pass: review
       - id: review
         role: reviewer
         proof: review
-        contours: [paths, claims, concurrency, project_isolation, administration]
+        contours: [paths, claims, architecture, concurrency, project_isolation, administration]
         independent_from: [synthesize]
         fail: synthesize
         save:
@@ -212,7 +220,7 @@ gates:
         expected_failure:
           exit_codes: [1, 101, 134]
         save:
-          post: snapshot
+          post: none
         pass: build
 
       - id: build
@@ -223,8 +231,7 @@ gates:
         proof: command
         checks: [code.seam]
         save:
-          pre: snapshot
-          post: snapshot
+          post: none
         pass: review
 
       - id: doc_audit
@@ -234,14 +241,13 @@ gates:
         command: check_docs
         proof: command
         save:
-          pre: snapshot
-          post: snapshot
+          post: none
         pass: review
 
       - id: review
         role: reviewer
         proof: review
-        contours: [paths, claims, concurrency, project_isolation, administration]
+        contours: [paths, claims, architecture, concurrency, project_isolation, administration]
         independent_from: [build]
         fail: build
         save:
@@ -280,7 +286,7 @@ gates:
     role: reviewer
     guidance: [milestone.review]
     proof: review
-    contours: [paths, claims, concurrency, project_isolation, administration]
+    contours: [paths, claims, architecture, concurrency, project_isolation, administration]
     independent_from: ["tasks.build"]
     need: [verify]
     pass: handoff

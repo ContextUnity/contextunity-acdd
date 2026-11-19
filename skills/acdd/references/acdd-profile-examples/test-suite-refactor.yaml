@@ -136,7 +136,7 @@ gates:
         pass: coverage_audit
         fail: refactor_cycle
         save:
-          post: snapshot
+          post: none
 
       - id: coverage_audit
         role: coverage_auditor

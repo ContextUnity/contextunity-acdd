@@ -158,13 +158,26 @@ fn acdd_read_validates_ranges_and_argument_names_at_the_mcp_seam() {
     for i in 1..=30 {
         lines_content.push_str(&format!("line {i}\n"));
     }
-    let mut client = McpTestHarness::indexed(&[
+    let workspace = Workspace::with_files(&[
         ("acdd.yaml", "profile: minimal\n"),
         ("notes.txt", lines_content.as_str()),
         ("src/lib.rs", "pub fn value() {}\n"),
         ("test.txt", "hello\n"),
-    ])
-    .expect("MCP initialize");
+    ]);
+    let disabled_build = contextunity_acdd::engine::pipeline::build(
+        workspace.root(),
+        &workspace.path(".acdd/code-map.sqlite"),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(
+        acdd_core::errors::StateError::from_anyhow(&disabled_build)
+            .expect("FeatureDisabled StateError")
+            .code,
+        acdd_core::errors::ErrorCode::FeatureDisabled
+    );
+    assert!(!workspace.path(".acdd/code-map.sqlite").exists());
+    let mut client = McpTestHarness::new(&workspace).expect("MCP initialize");
     for lines in [
         "",
         "garbage",
@@ -430,7 +443,7 @@ fn acdd_read_core_modes_and_cli_share_bounded_text_and_exports() {
 #[test]
 fn acdd_read_handles_path_aliases_and_rejects_unsafe_paths() {
     let linked = Workspace::with_files(&[("secrets/token.txt", "linked-secret\n")]);
-    let (w, harness) = McpTestHarness::with_files(&[
+    let w = Workspace::with_files(&[
         (
             "acdd.yaml",
             &format!("profile: minimal\nsensitive: ['secrets/**', '.env*']\nlinked_workspaces:\n  - name: linked\n    path: {}\n", linked.root().display()),
@@ -456,7 +469,7 @@ fn acdd_read_handles_path_aliases_and_rejects_unsafe_paths() {
         w.root().strip_prefix("/").unwrap().display()
     );
     let sibling = format!("{}small.txt", w.root().display());
-    let mut client = harness.expect("MCP initialize");
+    let mut client = McpTestHarness::new(&w).expect("MCP initialize");
 
     for (arguments, path, content) in [
         (

@@ -1023,6 +1023,13 @@ pub fn render_claim_markdown(claim: &acdd_state::context::ClaimResp) -> String {
     out.push_str(&format!("- **Worktree**: {}\n", format_path_or_link(None, &claim.worktree)));
     out.push_str(&format!("- **Candidate tree**: {}\n", inline_code(claim.candidate_tree.as_str())));
     out.push_str(&format!("- **Inspect**: {}\n", inline_code(&claim.inspect_cmd)));
+    if claim.context_reset_required {
+        out.push_str(
+            "\n> [!WARNING]\n\
+             > **CONTEXT RESET REQUIRED**: A prior `architectural_drift` rejection triggered `rearchitect`. \
+             Discard cached builder assumptions, read the latest `rearchitect` decision on `acdd_blackboard`, and implement cleanly from scratch.\n",
+        );
+    }
 
     let wt_path = std::path::Path::new(&claim.worktree);
     let mut state = RenderState::default();
@@ -1414,6 +1421,25 @@ pub fn render_state_query_markdown(
                 render_field(&mut out, "snapshot", &val, 0, &mut state);
                 out
             }
+        }
+        StateQueryOutput::Validate(resp) => {
+            let mut out = format!(
+                "# Validation: {}\n\n- **valid:** `{}`\n- **scope:** `{}`\n- **passed / failed / warnings / docs:** {} / {} / {} / {}\n",
+                if resp.valid { "PASS" } else { "FAIL" },
+                resp.valid,
+                resp.scope,
+                resp.summary.passed,
+                resp.summary.failed,
+                resp.summary.warnings,
+                resp.summary.documents_validated
+            );
+            for d in &resp.diagnostics {
+                out.push_str(&format!(
+                    "- `{}` [{}] {}:{}:{} — {}\n",
+                    d.code, d.status, d.path, d.line, d.column, d.message
+                ));
+            }
+            out
         }
     }
 }

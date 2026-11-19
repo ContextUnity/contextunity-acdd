@@ -5,7 +5,7 @@ doc_type: guide
 
 # Installation, Workspace Setup, and Operational Guide
 
-ContextUnity ACDD (`0.6.0`) is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and a unified `GateProfile` state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (19 built-in tools plus optional `DomainProvider` plugin tools) and as a command-line interface (CLI).
+ContextUnity ACDD (`0.6.1`) is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and a unified `GateProfile` state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (19 built-in tools plus optional `DomainProvider` plugin tools) and as a command-line interface (CLI).
 
 This guide walks you through installing ACDD MCP, configuring your workspace, selecting profiles, installing companion skills globally, establishing repository rules, authoring indexed documentation, and running milestones, plans, and workflows.
 
@@ -15,7 +15,7 @@ This guide walks you through installing ACDD MCP, configuring your workspace, se
 
 ### System Requirements
 
-- **Git**: Git 2.30+ for worktree management and snapshot-bound lifecycle operations.
+- **Git**: Git 2.30+ for worktree management and commit/tree-bound lifecycle operations.
 - **Release installation**: POSIX `sh`, ordinary shell utilities, `tar` with gzip support, `curl` or `wget`, and `sha256sum` or `shasum`. No Rust toolchain or C compiler is required.
 - **Building from source**: Stable Rust 2021 edition (`rustc` and `cargo` 1.88+) and a C compiler (`gcc` or `clang`) for bundled SQLite and native Tree-sitter parsers. Install Rust via [rustup.rs](https://rustup.rs).
 
@@ -194,7 +194,7 @@ Upgrading an existing `0.5.x` workspace? Follow the step-by-step [0.5.x to 0.6.0
 
 ### Complete Configuration Schema
 
-A fully featured `0.6.0` `acdd.yaml` template:
+A fully featured `0.6.1` `acdd.yaml` template:
 
 ```yaml
 # Source directories to parse and index into .acdd/code-map.sqlite
@@ -347,9 +347,9 @@ If an `inherit:` reference includes a SHA-256 prefix (`<path>:<sha256_prefix>`),
 ### Built-in Profiles
 
 ACDD embeds three `version: 2` profiles (`crates/acdd-state/src/profile/embedded/`):
-- **`default`**: Domain-agnostic lifecycle (`blueprint_synthesis` -> per-task `contract`, `contract_review`, `build`, `review`, `deliver` -> `verify`, `polish`, `integration_review`, `handoff`) with `git.isolation: worktree`.
-- **`code`**: Inherits `default`, enables all 19 built-in tools, attaches `code.seam` verification checks, and binds `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, and `code.external_callers` context lenses.
-- **`in_place`**: Inherits `default` with `git.isolation: in_place` and `save: snapshot` for single-checkout plan execution.
+- **`default`**: Domain-agnostic lifecycle (`blueprint_synthesis` -> per-task `contract`, `contract_review`, `build`, `review`, `deliver`, `rearchitect` -> `verify`, `polish`, `integration_review`, `handoff`) with `git.isolation: worktree`.
+- **`code`**: Inherits `default`, enables all 19 built-in tools, attaches `code.seam` verification checks, and binds `docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, and `code.external_callers` context lenses.
+- **`in_place`**: Inherits `workspace` (resolving `.acdd/profile.yaml` if present else `default`) with `git.isolation: in_place` and `save: none` for single-checkout plan execution.
 
 ### Authoring a Custom Universal Profile (`version: 2`)
 
@@ -537,7 +537,7 @@ ACDD marks the section with `is_invariant: true` and connects it to the governed
 
 ## 7. Working with Runs, Specs, Plans, and Workflows
 
-All stateful execution in ACDD `0.6.0` uses the unified flat CLI (`acdd draft`, `acdd start`, `acdd list`, `acdd show`, `acdd next`, `acdd claim`, `acdd verify`, `acdd submit`, `acdd integrate`, `acdd run`) backed by `.acdd/state.sqlite` and `GateProfile` v2.
+All stateful execution in ACDD `0.6.1` uses the unified flat CLI (`acdd draft`, `acdd start`, `acdd list`, `acdd show`, `acdd next`, `acdd claim`, `acdd verify`, `acdd submit`, `acdd integrate`, `acdd run`) backed by `.acdd/state.sqlite` and `GateProfile` v2.
 
 ### Spec & Run Lifecycle
 

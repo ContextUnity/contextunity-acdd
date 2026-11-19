@@ -99,7 +99,7 @@ fn guide_topics_preserve_query_and_acdd_shapes_and_reject_unknown_topics() {
 fn granular_diagnostics_preserve_resolution_evidence_and_crlf_utf8_source() {
     let diagnostics = DIAGNOSTICS_SOURCE;
     let fixture = AnalysisFixture::from_workspace(Workspace::with_files(&[
-        ("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n"),
+        ("acdd.yaml", "state_db: .acdd/state.sqlite\n"),
         ("cycle.py", "def a(): b()\ndef b(): a()\n"),
         ("other.py", "def idle(): pass\n"),
         ("requirements.txt", "pydantic\nrequests\n"),
@@ -241,7 +241,7 @@ fn granular_diagnostics_preserve_resolution_evidence_and_crlf_utf8_source() {
 #[test]
 fn workspace_coverage_keeps_published_scope_identity_across_restart_and_rebuild() {
     let workspace = Workspace::with_files(&[
-        ("acdd.yaml", "tasks_db: .acdd/tasks.sqlite\n"),
+        ("acdd.yaml", "state_db: .acdd/state.sqlite\n"),
         ("cycle.py", "def a(): b()\ndef b(): a()\n"),
         ("other.py", "def idle(): pass\n"),
         ("requirements.txt", "pydantic\nrequests\n"),

@@ -178,10 +178,10 @@ absent signals produce no hints. CLI flags use hyphens, for example
 | `search_docs` | Search indexed Markdown by `query` and optional `doc_type`; `include_excerpt=true` adds a bounded match excerpt. |
 | `get_doc` | Retrieve a Markdown document by `path_or_id` and optionally a heading `section`; full responses include source locations, citation links, uniquely verified referenced symbols, and a paged `referenced_symbol_candidates` collection for ambiguous eligible claims. Unscoped claims match symbols in the source document's workspace; an explicit normalized file link can cross workspaces. Compact responses omit candidate details and return a hint to request `detail="full"`. |
 | `acdd_guide` | Return shared CLI/MCP guidance by `topic`; defaults to `query`, whose topic index reflects enabled capabilities. |
-| `acdd_state` | Unified `0.6.0` run & lifecycle controller with 16 `action` values: read-only (`status`, `list`, `show`, `next`, `observability`) and mutating (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `rollback`, `integrate`, `clear`, `run`). |
-| `acdd_claim` | Atomically claim a ready or active node (`node` optional to auto-select next ready node) and materialize its 6-tier `ClaimResp` bundle (`contract`, `guidance`, `diff`, `context`, `blackboard`, `traces`). |
+| `acdd_state` | Unified `0.6.1` run & lifecycle controller with 15 `action` values: read-only (`status`, `list`, `show`, `next`, `observability`) and mutating (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `rollback`, `integrate`, `clear`, `run`). |
+| `acdd_claim` | Atomically claim a ready or active node (`node` optional to auto-select next ready node) and materialize its 6-tier `ClaimResp` bundle (`contract`, `guidance`, `diff`, `context`, `blackboard`, `traces`, plus `context_reset_required` after `rearchitect`). |
 | `acdd_verify` | Execute gate verification (`command:`, `call:`, `checks:` `DomainProvider` verifiers, write-scope perimeter) without advancing state; accepts optional `test_target` and `claim_revision`. |
-| `acdd_submit` | Submit `pass` or `reject` for a claimed node (`claim_revision`-bound), supporting `review_evidence`, `rejection_findings`, `custom_evidence`, `verified_invariants`, `summary`, `test_target`, and `allow_main`. |
+| `acdd_submit` | Submit `pass` or `reject` for a claimed node (`claim_revision`-bound), supporting `review_evidence`, `rejection_findings` (with optional `kind`: `defect \| architectural_drift`), `custom_evidence`, `verified_invariants`, `summary`, `test_target`, and `allow_main`. |
 | `acdd_blackboard` | Read (`action: "read"`) or post (`action: "post"`) scoped blackboard messages (`draft \| notes \| findings \| blockers \| decisions \| deferred`) with status filters (`open \| acknowledged \| resolved \| carried_over`) and `runs.generation` paging. |
 
 In addition to the 19 built-in static tools above, active `DomainProvider` plugins
@@ -204,7 +204,7 @@ adapter, and response formatter. Omitted or blank MCP topics select `query`. The
 | `code`, `ast` | Verified navigation, structural search, and language capabilities | `code` |
 | `docs` | Search, outlines, source reads, frontmatter, and invariants | `docs` |
 | `lifecycle` | Claims, verification, submission, role runners, rejection recovery, and commits | `state` |
-| `acdd` | Unified `0.6.0` `Run` / `GateProfile` lifecycle (`worktree`, `in_place`, `none`) | `state` |
+| `acdd` | Unified `0.6.1` `Run` / `GateProfile` lifecycle (`worktree`, `in_place`, `none`) | `state` |
 | `gates` | Conditions, profile routes, persistence, and `DomainProvider` hooks | `state` |
 | `subtasks` | Subtask status, mandatory evidence, and delivery checks | `state` |
 

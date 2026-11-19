@@ -808,6 +808,7 @@ impl Server {
 
 fn collect_worktree_candidates(
     repository: &std::path::Path,
+    repo_common_dir: Option<&std::path::Path>,
     linked_workspaces: &[(String, PathBuf)],
 ) -> Result<BTreeSet<PathBuf>> {
     let mut candidates = BTreeSet::new();
@@ -829,17 +830,39 @@ fn collect_worktree_candidates(
         }
     }
 
-    match std::fs::read_dir(repository.join(".worktrees")) {
-        Ok(entries) => {
-            let mut paths = Vec::new();
-            for entry in entries {
-                paths.push(entry?.path());
+    let worktrees_dir = repository.join(".worktrees");
+    match std::fs::symlink_metadata(&worktrees_dir) {
+        Ok(meta) if meta.file_type().is_symlink() => {}
+        Ok(meta) if meta.is_dir() => match std::fs::read_dir(&worktrees_dir) {
+            Ok(entries) => {
+                let mut paths = Vec::new();
+                for entry in entries {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if std::fs::symlink_metadata(&path)
+                        .is_ok_and(|entry_meta| entry_meta.file_type().is_symlink())
+                    {
+                        continue;
+                    }
+                    paths.push(path);
+                }
+                paths.sort();
+                for path in paths {
+                    if let Some(rcd) = repo_common_dir {
+                        let Ok(cand_common) = acdd_core::git::git_common_dir(&path) else {
+                            continue;
+                        };
+                        if canonicalize_macos_var(&cand_common) != rcd {
+                            continue;
+                        }
+                    }
+                    insert_worktree_candidate(&path, &mut candidates)?;
+                }
             }
-            paths.sort();
-            for path in paths {
-                insert_worktree_candidate(&path, &mut candidates)?;
-            }
-        }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        },
+        Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
@@ -855,18 +878,20 @@ fn is_owned_worktree_path(
     canon: &std::path::Path,
     root: &std::path::Path,
     repo_common_dir: Option<&std::path::Path>,
-    candidates: &BTreeSet<PathBuf>,
     linked_workspaces: &[(String, PathBuf)],
 ) -> bool {
-    if canon == root || candidates.contains(canon) {
-        return true;
-    }
     if let Some(rcd) = repo_common_dir {
+        if canon == rcd || canon.starts_with(rcd) {
+            return false;
+        }
         if let Ok(cand_common) = acdd_core::git::git_common_dir(canon) {
             if canonicalize_macos_var(&cand_common) == rcd {
                 return true;
             }
         }
+    }
+    if canon == root {
+        return true;
     }
     for (_, lw_path) in linked_workspaces {
         if canon == lw_path || canon.starts_with(lw_path) {
@@ -905,7 +930,6 @@ fn resolve_explicit_worktree_with_linked(
         return Ok(root);
     }
 
-    let candidates = collect_worktree_candidates(&repository, linked_workspaces)?;
     let repo_common_dir = acdd_core::git::git_common_dir(&repository)
         .ok()
         .map(|p| canonicalize_macos_var(&p));
@@ -924,7 +948,6 @@ fn resolve_explicit_worktree_with_linked(
                     &canon,
                     &root,
                     repo_common_dir.as_deref(),
-                    &candidates,
                     linked_workspaces,
                 ) {
                     anyhow::bail!(
@@ -944,6 +967,9 @@ fn resolve_explicit_worktree_with_linked(
             Err(error) => return Err(error.into()),
         }
     }
+
+    let candidates =
+        collect_worktree_candidates(&repository, repo_common_dir.as_deref(), linked_workspaces)?;
 
     let linked_names: BTreeMap<&std::path::Path, &str> = linked_workspaces
         .iter()
@@ -997,7 +1023,8 @@ fn insert_worktree_candidate(
     path: &std::path::Path,
     candidates: &mut BTreeSet<PathBuf>,
 ) -> Result<()> {
-    match std::fs::metadata(path) {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {}
         Ok(metadata) if metadata.is_dir() => {
             candidates.insert(canonicalize_existing_dir(path)?);
         }
@@ -1335,4 +1362,25 @@ fn worktree_name_contract() {
         .unwrap_err()
         .to_string()
         .contains("WORKTREE_NOT_FOUND"));
+
+    #[cfg(unix)]
+    {
+        // Symlink inside `.worktrees` targeting an external directory must never be admitted.
+        let escaped_link = root.join(".worktrees/999-escaped");
+        std::os::unix::fs::symlink(&external, &escaped_link).unwrap();
+        for probe in ["999-escaped", "999", ".worktrees/999-escaped"] {
+            let err = resolve_explicit_worktree(&root, &root, probe).unwrap_err();
+            assert!(err.to_string().contains("WORKTREE_NOT_FOUND"), "{probe}: {err}");
+        }
+        // Symlinked `.worktrees` directory itself must also be skipped.
+        let sym_repo = base.join("sym-repo");
+        std::fs::create_dir_all(&sym_repo).unwrap();
+        assert!(acdd_core::git::git_command(&sym_repo, &["init"]).unwrap().status.success());
+        std::os::unix::fs::symlink(&external, sym_repo.join(".worktrees")).unwrap();
+        let sym_err = resolve_explicit_worktree(&sym_repo, &sym_repo, "unrelated-external")
+            .unwrap_err();
+        assert!(sym_err.to_string().contains("WORKTREE_NOT_FOUND"), "{sym_err}");
+        let dotgit_err = resolve_explicit_worktree(&sym_repo, &sym_repo, ".git").unwrap_err();
+        assert!(dotgit_err.to_string().contains("WORKTREE_NOT_FOUND"), "{dotgit_err}");
+    }
 }

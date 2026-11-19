@@ -4,13 +4,13 @@ title: Example In-Place Feature Plan
 doc_type: plan
 profile: in_place
 status: planned
-spec: 'Demonstrate an operational in-place plan executed through the unified acdd-state Run engine using profile: in_place (snapshot persistence, zero auto-commits).'
+spec: 'Demonstrate an operational in-place plan executed through the unified acdd-state Run engine using profile: in_place (candidate TreeOid verification, zero auto-commits).'
 depends_on: []
 owners:
   - crates/acdd-core/src/
   - crates/acdd-state/src/
 invariants:
-  - 'INV-EXAMPLE-IN-PLACE-SNAPSHOT: In-place plan runs persist progress via Git tree snapshots without committing directly to the active branch.'
+  - 'INV-EXAMPLE-IN-PLACE-NONE: In-place plan runs persist progress via scoped candidate TreeOid verification and SQLite receipts without committing directly to the active branch.'
 acceptance_criteria:
   - 'AC-1: Plan validates under acdd validate with zero errors.'
 ---
@@ -22,7 +22,7 @@ This plan demonstrates an in-place `SpecDocument` executed on the unified `crate
 ## Execution Characteristics
 
 - **In-Place**: Executed via `acdd start docs/plans/example-feature-plan.md` (with `profile: in_place`, or explicit `--in-place`).
-- **Snapshot Persistence**: `in_place.yaml` patches `git.isolation: in_place`, `save: snapshot`, `tasks.deliver.save.post: snapshot`, and `handoff.save.post: snapshot` (never auto-commits to Git).
+- **Non-Committing Persistence**: `in_place.yaml` patches `git.isolation: in_place`, `save: none`, `tasks.deliver.save.post: none`, and `handoff.save.post: none` (never auto-commits to Git).
 - **Archiving**: Upon completion at the terminal `handoff` gate (`archive: true, prune: true`), the run moves the closed document to `docs/plans/archive/`.
 
 ---
