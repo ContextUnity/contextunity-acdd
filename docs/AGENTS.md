@@ -107,7 +107,7 @@ to code symbols in the SQLite code map. Follow these structural standards:
 ## Milestone and plan authoring
 
 When creating, reviewing, or materially amending a milestone (`docs/milestones/`) or plan:
-- **Mandatory skill**: Load and execute the [`contract-planning`](../skills/contract-planning/SKILL.md) skill and its repository add-on [`ADDON.md`](../skills/contract-planning/ADDON.md).
+- **Mandatory skill**: Load and execute the [`contract-planning`](../skills/contract-planning/SKILL.md) skill.
 - **Architectural viability audit**: Evaluate whether the proposed architecture is appropriate and minimal (Occam's razor). Challenge unnecessary code creation or in-binary bloat before committing to task boundaries.
 - **ADR and invariant reconciliation**: Reconcile the proposal against `docs/adr/`, `docs/architecture/`, and active repository invariants. Reconcile past architectural trade-offs rather than silently overturning them.
 - **Probe weak spots and ambiguities**: Identify ambiguous completion criteria, operational pitfalls (I/O amplification, concurrency bottlenecks, cross-platform traps), and failure modes before implementation starts.
@@ -129,7 +129,7 @@ branch merges. Obtain explicit approval for publication.
 ## Shared skill and example maintenance
 
 When modifying architecture, workflows, declarative profiles, schemas, CLI commands, or standing Git permissions:
-- Update the repository skill [`skills/acdd/SKILL.md`](../skills/acdd/SKILL.md) and reference examples under [`skills/acdd/references/`](../skills/acdd/references/) (`acdd_profile.yaml.example`, `agents.md.example`, `acdd.yaml.example`, `gitignore.example`) to match active system behavior and schemas.
+- Update the repository skill [`skills/acdd/SKILL.md`](../skills/acdd/SKILL.md) and reference examples under [`skills/acdd/references/`](../skills/acdd/references/) (`acdd_profile.yaml.example`, `profile-reference.md`, `agents.md.example`, `acdd.yaml.example`, `gitignore.example`) to match active system behavior and schemas.
 - Ensure all example configurations parse cleanly and adhere to strict validation invariants (e.g. `deny_unknown_fields`, valid `guidance` keys, and accurate model specs).
 - Do not write to external agent directories (`~/.agents/`) directly during task execution; external installation and distribution is handled via installer workflows and dedicated distribution commands.
 

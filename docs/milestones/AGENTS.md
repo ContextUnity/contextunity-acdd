@@ -16,7 +16,6 @@ This document defines the `SpecDocument` authoring format and lifecycle governan
 id: <TAG>-<NNN>-<slug>
 title: "Human-readable milestone title"
 doc_type: contract
-profile: workspace
 status: planned
 depends_on:
   - <upstream-milestone-id>
@@ -41,7 +40,7 @@ linked_to: []
 
 1. **`id`**: Must match `<TAG>-<NNN>-<slug>` conforming to the Domain Taxonomy (`AC`, `LS`, `PF`, `AR`, `UX`, `IN`) or numeric legacy format.
 2. **`doc_type: contract`**: Milestones are execution contracts (`doc_type: plan` is used for in-place plans under `docs/plans/`).
-3. **`profile`**: Optional profile selector (`default | code | in_place | workspace | <path>`). When omitted, collection defaults apply (`specs.milestones.profile` -> `workspace`).
+3. **`profile`**: Optional profile selector (`base | code | audit | <path>`). When omitted, collection defaults apply (`specs.milestones.profile` -> `code`).
 4. **`status`**: One of `planned`, `active`, `completed`, or `cancelled` (cancelled manifests require a non-empty `cancellation_reason`).
 5. **`guidance: { slot: tier }`**: Binds parameterized guidance slots (`hitl.pro`, etc.).
 6. **`invariants:`**: Prefixed with `INV-<NAME>` in single quotes; every invariant must be verifiable by automated tests.
@@ -139,7 +138,7 @@ subtasks:
 1. **Zero-Collision Test Registration**: Register new seam modules in canonical domain test binaries (`tests/acdd.rs`, `tests/core.rs`, `tests/mcp.rs`, `tests/query_context.rs`, `tests/linker.rs`, `tests/languages.rs`, `tests/commitment_integrity.rs`) in Task 0; downstream wave tasks edit only their own seam modules.
 2. **Disjoint File Scopes**: Concurrent tasks in the same wave must have disjoint `scope:` declarations.
 3. **Closed DAG & Valid Tags**: All `depends_on` references, `tags`, and `profile` references must pass `acdd validate <manifest>` before `acdd start <manifest>`.
-4. **Runtime-Red Contract Proof (`proof: contract`)**: Contract seam tests must compile cleanly and fail at runtime with an exit code matching `expected_failure.exit_codes` (e.g. `101` in Rust, `1` in Python/JS) while `code.seam` verifies AST reachability (`<= 8` hops) from the `--test` target to production symbols in `admitted_scope`.
+4. **Build Seam Proof (`proof: command` + `code.seam`)**: Author compiling, passing seam tests directly in `build` (`exit_code == 0`, respecting `max_net_loc` budgets) while `code.seam` verifies AST reachability (`<= 8` hops) from the `--test` target to production symbols in `admitted_scope`.
 
 ---
 
@@ -149,7 +148,7 @@ Under [ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md), all ga
 
 ```text
 blueprint_synthesis.synthesize -> blueprint_synthesis.review
-  -> tasks: contract -> contract_review -> build -> review -> deliver
+  -> tasks: build -> review -> deliver
   -> verify -> (fail -> polish -> verify) -> integration_review -> handoff
 ```
 

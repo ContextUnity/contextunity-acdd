@@ -19,5 +19,6 @@ __pycache__/
 .acdd/*.json
 .acdd/*.jsonl
 .acdd/run/
+.acdd/reports/
 .acdd/tmp/
 .acdd/backup-0.5/

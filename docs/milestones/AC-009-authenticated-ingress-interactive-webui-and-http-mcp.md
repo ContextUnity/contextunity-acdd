@@ -40,7 +40,7 @@ acceptance_criteria:
 required_skills:
   - acdd
   - contract-planning
-  - test-contract-seam
+  - test-suite-rules
   - agent-instructions
 ---
 

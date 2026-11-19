@@ -45,8 +45,9 @@ The pack's finite implicit-receiver table also classifies configured Alpine magi
 members such as `$root.querySelector` and `$el.addEventListener` as external
 runtime behavior when eligible. This classification supplies no local callback
 target. Ordinary local bindings and unsupported magic members retain their normal
-resolution guards. The [HTMX example](../../skills/acdd/references/frameworks/htmx.toml.example)
-shows the complete request operation without duplicating the Alpine rules.
+resolution guards. See the
+[bundled manifests on GitHub](https://github.com/ContextUnity/contextunity-acdd/tree/main/crates/acdd-index/src/languages/manifests)
+for the compiled HTMX request rules.
 
 ## Overrides and incremental indexing
 

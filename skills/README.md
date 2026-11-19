@@ -1,45 +1,36 @@
-# Recommended Agent Skills for ContextUnity ACDD
+# Companion Agent Skills for ContextUnity ACDD
 
-This directory contains the primary and recommended companion skills for AI coding agents operating within ACDD-indexed repositories.
+This directory contains the reusable companion skills for AI coding agents working in ACDD-indexed repositories.
 
 ---
 
 ## Skills Index
 
-| Skill | Description | Primary Role / Phase |
+| Skill | Description | Primary Phase |
 |---|---|---|
-| [`acdd`](acdd/SKILL.md) | **Primary ACDD Skill**: Guides agents in navigating the 19 built-in MCP tools (plus `DomainProvider` plugin tools), running the canonical code discovery workflow, and managing ACDD `GateProfile` / `Run` lifecycles. | All Agent Sessions |
-| [`test-contract-seam`](test-contract-seam/SKILL.md) | Guides the authoring of red seam tests (TDD) that prove behavioral contracts through observable production interfaces rather than private mocks. | `contract` & `build` Gates |
-| [`test-suite-refactor`](test-suite-refactor/SKILL.md) | Governs splitting monolithic test suites, improving typing, and eliminating duplicate or brittle tests without coverage regression. | Refactoring & Hardening |
-| [`agent-instructions`](agent-instructions/SKILL.md) | Standards for authoring and revising `AGENTS.md`, `SKILL.md`, and project documentation following affirmative, imperative guidelines. | Governance & Docs |
-| [`close-review-findings`](close-review-findings/SKILL.md) | Methodical framework for analyzing review feedback, attributing origins, proving root causes, and executing verified invariant repairs. | `review` & Defect Remediation |
-| `review-authority` (external prerequisite; see setup below) | Governs which findings may change scope, contracts, or implementation. Required by `close-review-findings`. | Review and repair authority |
-| [`lean-ctx`](lean-ctx/SKILL.md) | Tools for token-efficient source inspection, compressed shell output, and directory navigation to minimize LLM context window consumption. | Code Reading & Execution |
+| [`acdd`](acdd/SKILL.md) | **Primary ACDD Skill**: Navigation of ACDD MCP/CLI tools, graph discovery/hygiene (`duplicates`, `dead_tails`), profile & task lifecycle, and blackboard coordination. | All Sessions |
+| [`contract-planning`](contract-planning/SKILL.md) | Architectural viability audit, ADR/invariant reconciliation, risk probing, and end-to-end contract tracing before task authoring or amendments. | Spec & Blueprint Synthesis |
+| [`test-suite-rules`](test-suite-rules/SKILL.md) | Authoring, deduplicating, and refactoring tests through real production seams, table-driven contract matrices, lowest-cost isolation, and leak-free harnesses. | Testing & Refactoring |
+| [`close-review-findings`](close-review-findings/SKILL.md) | Classifying review findings, clustering by canonical owner invariant, generalizing defects without test bloat, and verifying closure. | Review & Defect Remediation |
+| [`agent-instructions`](agent-instructions/SKILL.md) | Standards for authoring and revising `AGENTS.md`, `SKILL.md`, and present-tense project documentation. | Governance & Docs |
+| `review-authority` *(external prerequisite)* | Governs finding admission and authority boundaries. Required by `close-review-findings`. | Review & Repair Authority |
 
 ---
 
 ## Installation & Setup
 
-`close-review-findings` requires the external `review-authority` skill. Install
-it from the [shared agent skills repository](https://github.com/alpiua/dot-agents)
-before using the bundle:
+Install the external `review-authority` prerequisite from [shared agent skills](https://github.com/alpiua/dot-agents) before using `close-review-findings`:
 
-```bash
+```sh
 git clone --depth 1 https://github.com/alpiua/dot-agents.git /tmp/acdd-shared-agent-skills
 mkdir -p ~/.agents/skills
 cp -r /tmp/acdd-shared-agent-skills/skills/review-authority ~/.agents/skills/
 ```
 
-`review-authority` governs finding admission and repair authority and is an
-external prerequisite, rather than a bundled companion. Verify that
-`~/.agents/skills/review-authority/SKILL.md` is present before invoking
-`close-review-findings`.
+Sync all bundled skills to `~/.agents/skills/` and detected agent directories (Antigravity/Gemini, Codex, Claude, Cursor):
 
-To make these skills globally available to your agent (Antigravity/Gemini, Codex, Claude, Cursor):
-
-```bash
-# Sync all bundled skills to ~/.agents/skills and link/update detected agent directories:
+```sh
 ./skills/install.sh
 ```
 
-In your repository's `AGENTS.md`, reference the required skills as described in [skills/acdd/references/agents.md.example](acdd/references/agents.md.example).
+In your repository's `AGENTS.md`, route agents to these skills using [skills/acdd/references/agents.md.example](acdd/references/agents.md.example).

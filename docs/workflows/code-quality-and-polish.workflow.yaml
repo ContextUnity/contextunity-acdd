@@ -11,8 +11,6 @@ inherit: none
 git:
   isolation: in_place
   worktrees: manual
-  commit_mode: manual
-  integrate: manual
 
 save: none
 
@@ -36,11 +34,6 @@ roles:
 commands:
   check_full_repo:
     command: "cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --lib"
-    output:
-      counts:
-        passed: '(?m)\b(\d+) passed\b'
-        failed: '(?m)\b(\d+) failed\b'
-      require_counts: true
     timeout_seconds: 600
 
 # Pure gate sequence with cyclic repair:

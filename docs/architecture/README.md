@@ -15,6 +15,6 @@ The architecture documentation describes verified system structure, contracts, a
 - [Domain extensions (DomainProvider shim-crates)](domain-extensions.md): Connecting new verification entities via thin `crates/acdd-domain-*` crates wired into `src/state_bridge/mod.rs`.
 - [Test harness and seam architecture](test-harness.md): Declarative `<Domain>Harness` contracts, `RunHarness` in-memory lifecycle stepping, session isolation, and test-suite decomposition.
 - [Performance guidance and compaction](performance.md): Recommended latency values, FTS5 BM25 hybrid search, inventory debouncing, and Zstd storage compaction.
-- [Response presentation](../reference/mcp-markdown-contracts.md): Pure formatting and operation-aware compaction in `src/format/`; CLI and MCP adapters own resolved coordinates, transport framing, and existing response budgets under [ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md).
+- [Response presentation](../reference/mcp-markdown-contracts.md): Pure formatting and operation-aware compaction in `src/format/` (delegating `ClaimResp` prompt rendering to `acdd_state::context::render_claim_prompt_markdown`); CLI and MCP adapters own resolved coordinates, transport framing, and existing response budgets under [ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md).
 
 Related architectural decisions are recorded in [Architectural Decisions](../adr/README.md).

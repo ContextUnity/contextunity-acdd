@@ -12,9 +12,10 @@ governs a run: its Git isolation & integration policy (`git:`), persistence mode
 and ordered verification gates with `pass` / `fail` routing edges.
 
 Profiles use strict schema validation (`deny_unknown_fields`). Legacy `0.5.x`
-profiles (without `version: 2`, or using removed `loop:`, `*_proof` wrappers,
-`proof: seam_test` / `proof: delivery`, or `expected_failure` without `test_filter`)
-fail closed with `ACDD_PROFILE_SCHEMA_INVALID`; upgrade them manually per the
+and pre-`0.6.2` profiles (without `version: 2`, or using removed `loop:`, `*_proof`
+wrappers, `proof: contract` / `seam_test` / `delivery`, `expected_failure`,
+`git.commit_mode`, `git.integrate`, `git_commit_notes`, or regex `output:` scrapers)
+fail closed with `ACDD_PROFILE_SCHEMA_INVALID`; upgrade `0.5.x` workspaces per the
 [0.6.0 migration guide](../runbooks/migration-0.6.md).
 
 > [!NOTE]
@@ -29,30 +30,42 @@ fail closed with `ACDD_PROFILE_SCHEMA_INVALID`; upgrade them manually per the
 ## Profile Loading Precedence & Embedded Baselines
 
 ACDD resolves the active profile reference (`--profile`, `ACDD_PROFILE`, spec
-`profile:`, `specs.<collection>.profile`, or `"workspace"`) as follows:
+`profile:`, `specs.<collection>.profile`, or the workspace default) as follows:
 
-1. **Built-in embedded names**:
-   - `default` ([`default.yaml`](../../crates/acdd-state/src/profile/embedded/default.yaml)):
-     domain-pure worktree-isolated lifecycle (`blueprint_synthesis` -> `tasks:` -> `verify`
-     -> `polish` -> `integration_review` -> `handoff`) with `save: commit`,
-     `git.isolation: worktree`, `expected_failure: {}`, six canonical review
-     contours (`paths`, `claims`, `architecture`, `concurrency`, `project_isolation`,
-     `administration`), anti-drift guidance (`REUSE & COMPLEXITY ESCALATION`,
-     `REBUTTAL OVER BLIND REWRITE`, `BURDEN OF PROOF`), and zero language-specific
-     exit codes or `.acdd/frameworks` assumptions.
+1. **Built-in embedded baselines** (3 embedded profiles):
+   - `base` ([`base.yaml`](../../crates/acdd-state/src/profile/embedded/base.yaml)):
+     domain-pure worktree-isolated baseline (`gates: []`) with `save: commit`,
+     `git.isolation: worktree`, 7 core MCP tools (`acdd_read`, `acdd_guide`,
+     `acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`),
+     universal guidance slots (`core.execution`, `core.review`, `hitl.pro`), and
+     three domain-pure review contours (`paths`, `claims`, `administration`).
    - `code` ([`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml)):
-     inherits `default` (`gates_merge: patch`), adds `tags: [default, docs]` so
-     `docs`-tagged tasks skip `code.seam`, binds `default_tools` to all 19
-     built-in MCP tools, attaches `code.*` and `docs.*` `DomainProvider`
-     `checks:` (`code.seam`) and `context:` lenses, and automatically strips
-     `get_doc`, `search_docs`, and `docs.*` hooks when `modules.docs: false`.
-   - `in_place` ([`in_place.yaml`](../../crates/acdd-state/src/profile/embedded/in_place.yaml)):
-     inherits `workspace` (resolving `.acdd/profile.yaml` when present else
-     `default`, `gates_merge: patch`), sets `git.isolation: in_place` and
-     `save: none` (and `save.post: none` on `tasks.deliver` and `handoff`) for
-     zero-worktree, zero-auto-commit feature runs.
-2. **`"workspace"` selector**: Resolves `.acdd/profile.yaml` when present in the
-   workspace root; otherwise falls back to embedded `default`.
+     built-in code-delivery baseline inheriting `base`, adding the three-phase
+     milestone lifecycle (`blueprint_synthesis` -> `tasks:` -> `verify` ->
+     `polish` -> `integration_review` -> `handoff`), `tags: [default, docs]` so
+     `docs`-tagged tasks skip `code.seam`, all 19 `default_tools`, additional
+     contours (`architecture`, `concurrency`, `project_isolation`), 4-layer
+     clean guidance (`milestone.*` / `task.*`, `core.*`, `code.principles`,
+     `code.tools`, `hitl.pro`), `code.seam` checks, `docs.*` / `code.*`
+     context lenses, and automatic stripping of disabled `code.*` / `docs.*`
+     hooks when `modules.code: false` or `modules.docs: false`.
+   - `audit` ([`audit.yaml`](../../crates/acdd-state/src/profile/embedded/audit.yaml)):
+     built-in read-only code review and security/taint scanning pipeline
+     inheriting `base` with `git.isolation: in_place`, `git.worktrees: manual`,
+     `save: none`, all 19 `default_tools` (automatically stripped when
+     `modules.code: false` or `modules.docs: false`), roles (`auditor`,
+     `independent_reviewer`), structured schemas (`recon_map`,
+     `candidate_findings`, `audit_report`), review contours (`correctness`,
+     `security`, `architecture`, `concurrency`, `tests`), and ordered root gates
+     `recon -> analyze -> triage` (adversarial false-positive disproof in
+     `triage` with `receipt: true`, `save.immutable: true`, and
+     `save.report: ".acdd/reports/{run_name}.md"`).
+2. **Automatic workspace default**: When no explicit profile is specified (`--profile`,
+   `ACDD_PROFILE`, spec `profile:`, or `specs.<collection>.profile`), ACDD uses
+   `.acdd/profile.yaml` automatically if present in the workspace root, and
+   otherwise falls back to embedded `code` (with disabled domain hooks stripped).
+   (`in_place` is selected as an execution mode via `--in-place` or
+   `git.isolation: in_place` inside a profile, not as a separate profile name.)
 3. **Explicit repository paths & `profiles_dirs`**: Any relative path confined to
    the workspace (optionally pinned with `:<sha256_prefix>`, min 7 lowercase hex
    chars) or named profile discovered in `acdd.yaml` `profiles_dirs`
@@ -70,48 +83,45 @@ Every `v2` profile requires `version: 2` and supports these top-level fields:
 
 ```yaml
 version: 2
-inherit: code                  # Optional: default | code | in_place | none | <rel-path>[:<sha256_prefix>]
-gates_merge: patch             # Optional: replace (default) | patch
+inherit: code                  # Optional: base | code | audit | none | <rel-path>[:<sha256_prefix>]
 git:
-  isolation: worktree          # worktree | in_place | none
+  isolation: worktree          # worktree | in_place
   worktrees: manual            # manual | managed
-  commit_mode: plumbing        # plumbing | cli | manual
-  integrate: manual            # manual | rebase-ff | ff-only | no-ff | squash
-save: commit                   # Default post save action (none | commit) or { post?, immutable?, archive?, prune? }
-tags: [default, docs_only, seam]
+save: commit                   # Default post save action (none | commit)
+tags: [default, docs]
 protected_paths: []
 default_tools: [acdd_read, acdd_guide, acdd_state, acdd_claim, acdd_verify, acdd_submit, acdd_blackboard]
 modules: {}                    # Optional SubsystemRegistryPatch
 limits: {}                     # Optional ResourceLimitsPatch
-git_commit_notes: {}           # Optional named GitCommitNotePolicy map
 roles: {}                      # RoleDef / RolePatch map
 commands: {}                   # CommandDef map (String | Script | Detailed | ByPattern | Unbound)
+scope_args_by_pattern: {}      # Optional path-pattern to {scope_target} CLI arguments map
 proofs: {}                     # Reusable ProofCatalogDef JSON Schema registry
 guidance: {}                   # Keyed GuidanceEntry slots (string or { description, criteria })
 contours: {}                   # Keyed ContourDef review lenses ({ description, criteria })
 gate_templates: {}             # Reusable GateTemplate subgraphs expanded via `use:`
-gates: []                      # Ordered RawGateItem list (root gates and `- tasks:` blocks)
+gates: []                      # Replace parent gates (mutually exclusive with gates_patch)
+gates_patch: []                # Patch inherited gates by id/cursor/after/before/null (requires inherit != none)
 ```
 
 ---
 
-## Inheritance and `gates_merge: replace | patch`
+## Inheritance (`inherit:`) and `gates:` vs `gates_patch:`
 
-- `inherit: none`: Compiles a standalone profile from scratch with no inherited
-  roles, commands, proofs, guidance, contours, or gates.
-- `inherit: default | code | in_place | <path>[:<sha256_prefix>]`:
-  - `roles`, `commands`, `proofs`, `guidance`, `contours`, `gate_templates`,
-    `git_commit_notes`, `limits`, and `modules` merge field-wise / by key
+- `inherit: none` (or omitted): Compiles a standalone profile from scratch with no
+  inherited roles, commands, proofs, guidance, contours, or gates.
+- `inherit: base | code | audit | <path>[:<sha256_prefix>]`:
+  - `roles`, `commands`, `scope_args_by_pattern`, `proofs`, `guidance`, `contours`,
+    `gate_templates`, `limits`, and `modules` merge field-wise / by key
     (supporting `PatchField` null-clearing on nullable fields).
   - `tags` and `protected_paths` extend or patch inherited sets. When inheriting
-    `code` (whose `tasks.contract` and `tasks.contract_review` gates use
-    `when: "!docs"`), any child profile that overrides `tags:` must retain or
-    include `docs` (or override the inherited `when:` expressions) so all
-    referenced tags remain declared.
-  - **`gates_merge: replace`** (default when omitted): If the child declares
-    `gates:`, it replaces the parent's `gates:` list completely.
-  - **`gates_merge: patch`**: Patches individual inherited gates without
-    rewriting the graph:
+    `code`, retain `docs` in `tags:` if `when: "!docs"` gates are used downstream.
+  - **`gates:` (replace)**: Replaces the parent's `gates:` list completely when
+    declared. When neither `gates:` nor `gates_patch:` is set, inherited gates
+    are kept as-is.
+  - **`gates_patch:` (patch)**: Mutually exclusive with `gates:` and requires an
+    inherited parent (`inherit:` cannot be omitted or `none`). Patches individual
+    inherited gates without rewriting the graph:
     - Update a gate by `id` (e.g. `id: polish`) or dotted cursor
       (`id: tasks.build`, `id: blueprint_synthesis.synthesize`), or match a
       `- tasks:` block by normalized `when:` expression.
@@ -121,40 +131,45 @@ gates: []                      # Ordered RawGateItem list (root gates and `- tas
 
 ---
 
-## `git:` Policy, `save:` Policy, and Stateless Mode
+## `git:`, `save:`, and `save.report` Policy
 
 - **`git:`**:
-  - `isolation`: `worktree` (separate git worktree per task/run), `in_place`
-    (active worktree, single-writer), or `none` (stateless/ephemeral run).
+  - `isolation`: `worktree` (separate git worktree per task/run) or `in_place`
+    (active worktree, single-writer). Passing `--in-place` (or setting
+    `git.isolation: in_place` in a profile) runs directly in the active checkout;
+    passing `--in-place` sets `isolation: in_place`, `worktrees: manual`,
+    `save: none`, and neutralizes gate `save.post: commit` to `none` while
+    keeping `save.immutable: true`. Passing `--worktree` overrides profile
+    `in_place` defaults to `isolation: worktree` and `worktrees: managed`.
   - `worktrees`: `manual` or `managed` (engine creates/removes `.worktrees/*` automatically).
-  - `commit_mode`: `plumbing` (git object/tree commit without hooks modifying
-    verified candidate), `cli` (runs `git commit` with hooks and checks tree
-    integrity), or `manual`.
-  - `integrate`: `manual`, `rebase-ff`, `ff-only`, `no-ff`, or `squash`
-    (controls `acdd integrate`).
-- **`save:`**: Controls working-tree commits and SQLite persistence per gate (also settable
-  at profile root as default or shorthand scalar `save: none` / `commit`):
-  - `post`: `none` or `commit` (records candidate tree or creates a scoped commit on submit).
+- **`save:`**: Controls working-tree commits, report materialization, and SQLite
+  persistence per gate (also settable at profile root as default or shorthand
+  scalar `save: none` / `commit`):
+  - `post`: `none` or `commit` (creates an atomic Git plumbing commit with `Acdd-Claim` on submit).
   - `immutable`: Require working tree at `submit` to match the claim tree (`TASK_CANDIDATE_MISMATCH` on drift).
   - `archive` / `prune`: Allowed on `root_gate` only (typically `handoff`); archives
     the completed spec or prunes terminal SQLite rows into `run_tombstones`.
-  - `git_commit_note`: Key in `profile.git_commit_notes` attached as a Git note when `post: commit`.
+  - `report`: Optional normalized workspace-relative template path strictly confined under `.acdd/reports/*.{md,json}` and materialized
+    atomically (`checked_child` + `atomic_write`) on `--action pass`, returning
+    the expanded path in `SubmitResp.report_path`:
+    - Supported template variables: `{run_id}`, `{run_name}`, `{gate_id}`, `{spec_id}` (`"goal"` for ephemeral `--goal` runs). Paths outside `.acdd/reports/*.{md,json}`, paths with `..`, leading `/`, `\`, or unknown `{...}` placeholders fail profile validation fail-closed.
+    - Format: `.json` writes structured pretty JSON (`schema_version: 1`, run/spec/gate metadata, `summary`, submitted `proof`, `predecessor_proofs`, `receipt`, `verified_invariants`, `blackboard`); `.md` renders GitHub-Flavored Markdown with metadata, summary, proof payload, predecessor stage proofs, and blackboard highlights.
+    - Destination: `.acdd/reports/` writes under the primary workspace `.acdd/` directory (gitignored by default via `.acdd/reports/`).
 
 ---
 
-## Commands, `test_filter`, and Output Rules
+## Commands and `test_filter`
 
 Each entry in `commands:` is one of:
 - **`unbound: true`**: Declared placeholder slot that must be bound by a child
   overlay before any gate referencing it can pass validation (`COMMAND_UNBOUND`).
 - **Simple string**: Shell command string.
-- **`Script` / `Detailed`**: `{ command, description?, timeout_seconds?, test_filter?, output?, compile_errors? }`.
-- **`Pattern` (`by_pattern`)**: `{ by_pattern: { "<glob>": ... }, description?, ... }`
+- **`Script` / `Detailed`**: `{ command, description?, timeout_seconds?, test_filter?, scope_args_by_pattern? }`.
+- **`Pattern` (`by_pattern`)**: `{ by_pattern: { "<glob>": ... }, description?, timeout_seconds?, test_filter?, scope_args_by_pattern? }`
   mapping changed/admitted scope globs to language commands via the canonical
-  brace-aware glob matcher in `acdd_core::path_policy` (most specific glob wins;
-  `compile_errors` can filter `include`/`exclude` regexes). Top-level
-  `scope_args_by_pattern` propagates as fallback arguments into resolved commands
-  (with `{file_stem}` and `{path}` expanded against concrete admitted paths).
+  brace-aware glob matcher in `acdd_core::path_policy` (most specific glob wins).
+  Top-level `scope_args_by_pattern` propagates as fallback arguments into resolved
+  commands (with `{file_stem}` and `{path}` expanded against concrete admitted paths).
 
 **`test_filter` & `--test`**:
 - `test_filter: false` (default on unbound/generic commands if omitted) rejects
@@ -165,10 +180,8 @@ Each entry in `commands:` is one of:
   the command string whenever `test_filter` is enabled
   (`COMMAND_TEST_FILTER_PLACEHOLDER_REQUIRED`).
 
-**`output:`**: Optional `{ counts: { passed, failed }, require_counts, noise, errors, tests: { passed, failed?, ignored?, target? } }`
-using regex capture group 1 to extract exact test counts and individual passed
-test names from command output. `limits.diagnostic_inline_bytes` defaults to
-`4096`; raw trace logs live under `<primary_worktree>/.acdd/run/<run_id>/traces.jsonl`.
+`limits.diagnostic_inline_bytes` defaults to `4096`; raw trace logs live under
+`<primary_worktree>/.acdd/run/<run_id>/traces.jsonl`.
 
 ---
 
@@ -187,11 +200,17 @@ test names from command output. `limits.diagnostic_inline_bytes` defaults to
 - `need`: Predecessor gate selectors whose accepted candidate `TreeOid` must match at submit.
 - `receipt: true`: Marks a terminal gate that records a durable receipt and closes its container.
 
+### Predecessor Gate Proof Propagation (`predecessor_proofs`)
+When sequential gates in the same container (e.g., `recon -> analyze -> triage` in
+`audit`) emit typed `ArtifactKind::Proof` payloads (`proof: <schema>` or `proof: review`),
+`GateContextAssembler` automatically injects completed predecessor sibling proofs into
+downstream `ClaimResp.pre_task_slice["predecessor_proofs"]` keyed by `gate_id`
+(ordered by `seq_order`, subject to Tier 3 response budgeting).
+
 ### Proofs (`proof:`)
 Built-in `ProofKind` values are:
 - `none`: Default when omitted.
-- `contract`: Runtime-red proof requiring `command`, `expected_failure` (`exit_codes` / `stderr_contains`), and `test_filter`. An empty `exit_codes: []` (as in `default.yaml`) accepts any runtime failure in `1..=125` with `0` `compile_errors`; non-empty `exit_codes` rejects `0`, negative values, `126`, and `127`.
-- `command`: Passing command verification (`exit_code == 0`, `tests_failed == 0`).
+- `command`: Passing command verification (`exit_code == 0`, plus any attached `checks:` such as `code.seam`).
 - `call`: Domain provider action (`call: <domain>.<action>` with optional `with:`).
 - `review`: Independent review proof requiring `role` and non-empty `contours` (for example `paths`, `claims`, `architecture`, `concurrency`, `project_isolation`, `administration`).
 - Named catalog proof (`proof: blueprint` referencing `proofs.blueprint`) or inline JSON Schema (`proof: { scheme: ... }`).
@@ -207,6 +226,6 @@ Domain-agnostic `acdd-state` delegates domain behavior via `DomainProvider` (`cr
 
 ## Reference Examples
 
-- See the canonical executable profile template in [`acdd_profile.yaml.example`](acdd_profile.yaml.example) (symlink to the full specification in `skills/acdd/`).
-- Embedded profiles: [`default.yaml`](../../crates/acdd-state/src/profile/embedded/default.yaml), [`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml), and [`in_place.yaml`](../../crates/acdd-state/src/profile/embedded/in_place.yaml).
+- See the starter overlay template in [`acdd_profile.yaml.example`](acdd_profile.yaml.example) (symlink into `skills/acdd/references/`) and the complete field guide in [`skills/acdd/references/profile-reference.md`](../../skills/acdd/references/profile-reference.md).
+- Embedded profiles: [`base.yaml`](../../crates/acdd-state/src/profile/embedded/base.yaml), [`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml), and [`audit.yaml`](../../crates/acdd-state/src/profile/embedded/audit.yaml).
 - See [Workspace configuration](configuration.md#declarative-acdd-profile-and-role-configuration) for loading precedence and `acdd.yaml` adapter settings.

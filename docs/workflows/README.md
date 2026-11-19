@@ -12,11 +12,12 @@ The `docs/workflows/` directory contains standalone and workspace-inherited `ver
 > [!NOTE]
 > `acdd start --goal "<goal>" --profile <name>` executes an ephemeral standalone workflow directly in the active workspace without creating spec files. See the [CLI reference](../reference/cli.md) for lifecycle commands and persistence modes.
 
-In `0.6.1`, every execution mode—standalone taskless workflows, in-place plans, and worktree-isolated milestones—runs on the unified `GateProfile` state engine (`crates/acdd-state`) configured through `git:` and `gates:`:
+In `0.6.2`, every execution mode—standalone taskless workflows, in-place plans, and worktree-isolated milestones—runs on the unified `GateProfile` state engine (`crates/acdd-state`) configured through `git:` and `gates:`:
 
 - **Taskless Workflows (`inherit: none`, `save: none`)**: Pure root-gate state machines with zero `tasks:` blocks and zero Git commits.
-- **In-Place Plans (`inherit: in_place`)**: `git.isolation: in_place`, `save: none`, executing tasks directly in the active checkout without spawning worktrees or auto-committing.
-- **Worktree Milestones (`inherit: default` or `inherit: code`)**: Full 3-tier `blueprint_synthesis` $\to$ `tasks:` DAG waves $\to$ post-task closure (`verify`, `polish`, `integration_review`, `handoff`).
+- **Audit Workflows (`inherit: audit`, `git.isolation: in_place`, `save: none`)**: Built-in read-only review & security/taint pipeline (`recon -> analyze -> triage`) emitting explicit Markdown/JSON reports via `save.report` (e.g., `.acdd/reports/{run_name}.md`).
+- **In-Place Plans (`--in-place` or `git.isolation: in_place` profile)**: Executes tasks directly in the active checkout without spawning worktrees, neutralizing `save.post: commit` to `none` while preserving `save.immutable: true`.
+- **Worktree Milestones (`.acdd/profile.yaml` default, else `inherit: code` or `inherit: base` with `gates:`)**: Full 3-tier `blueprint_synthesis` $\to$ `tasks:` DAG waves $\to$ post-task closure (`verify`, `polish`, `integration_review`, `handoff`).
 - **Use Cases**: Continuous quality checks, polish loops, PR review automation, scheduled health audits, and lifecycle test suites.
 
 ## Example & Test Profiles

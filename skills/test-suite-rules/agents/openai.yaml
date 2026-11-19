@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Suite Rules"
+  short_description: "Production-seam testing, table matrices, harness hygiene, and suite refactoring"
+  default_prompt: "Use $test-suite-rules to author, audit, or refactor tests through real production seams without harness bloat or coverage loss."

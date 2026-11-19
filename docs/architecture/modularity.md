@@ -35,8 +35,7 @@ crates/acdd-index/src/
 │   ├── rust/               # Rust profile extraction
 │   ├── typescript/         # TypeScript/JavaScript profile extraction
 │   └── toml_manifest.rs    # TOML traversal for package dependency metadata
-├── linker.rs               # Shared graph construction and dispatch
-└── linker/
+└── linker/                 # Shared graph construction and dispatch (`mod.rs`)
     ├── traits.rs
     ├── framework_relations.rs
     ├── resolution/

@@ -19,7 +19,7 @@ AI coding assistants and human/CI terminal operators must observe identical sema
 
 ### 1. Dual-Surface Parity and Markdown-First Presentation
 
-- **Shared Engine & Formatter**: `src/cli/` and `src/mcp/` are thin protocol adapters over `acdd-index`, `acdd-state`, `src/engine/`, and `src/state_bridge/`. Presentation is owned by `src/format/` ([`lifecycle.rs`](../../src/format/lifecycle.rs), `coordination.rs`), defaulting to GitHub-flavored Markdown on both surfaces with explicit `--format json` / `format: "json"` parity.
+- **Shared Engine & Formatter**: `src/cli/` and `src/mcp/` are thin protocol adapters over `acdd-index`, `acdd-state`, `src/engine/`, and `src/state_bridge/`. Presentation is owned by `src/format/` ([`mod.rs`](../../src/format/mod.rs), [`lifecycle.rs`](../../src/format/lifecycle.rs) delegating `ClaimResp` prompt rendering to [`render_claim_prompt_markdown`](../../crates/acdd-state/src/context.rs), [`coordination.rs`](../../src/format/coordination.rs)), defaulting to GitHub-flavored Markdown on both surfaces with explicit `--format json` / `format: "json"` parity.
 - **Coordinates & Diagnostics**: File, symbol, and document coordinates render as workspace-confined `file:///` links with line fragments where known. Errors and notices render as `[!CAUTION]`, `[!WARNING]`, or `[!NOTE]` callouts preserving `ErrorCode`, cause, and recovery steps without mutating JSON semantics.
 - **Scoped Compaction**: Omit inactive presentation metadata while preserving every continuation token, `ErrorCode`, candidate/content hash, receipt, and meaningful zero/false field.
 
@@ -31,14 +31,14 @@ AI coding assistants and human/CI terminal operators must observe identical sema
 
 ### 3. Six-Tier `ClaimResp` Context Budget Reservation
 
-[`build_claim_context`](../../crates/acdd-state/src/context.rs) constructs `ClaimResp` within `ResponsePolicy.max_output_bytes` in strict priority order:
+[`GateContextAssembler`](../../crates/acdd-state/src/context.rs) (backing `build_claim_context` across `claim`, `show`, and `run`) constructs `ClaimResp` within `ResponsePolicy.max_output_bytes` in strict priority order:
 
-1. **Tier 1 (`contract` + `guidance`)**: Mandatory claimed specification excerpt and resolved gate guidance entries (reserved inside `max_guidance_bytes`, never silently truncated; fails closed with `GUIDANCE_BUDGET_EXCEEDED` on overflow).
-2. **Tier 2 (`unresolved_findings` + failed trace tail)**: Structured `RejectionFindings` and tail of the latest failed trace log after a reject/fail rewind.
-3. **Tier 3 (`pre_task_slice`)**: Per-task architectural slice (`proof.tasks[<task_ref>]`) from pre-task blueprint artifacts.
-4. **Tier 4 (`dependency_receipts`)**: Accepted receipts of completed dependency tasks.
-5. **Tier 5 (`blackboard`)**: Up to 15 relevant blackboard messages, each truncated safely on UTF-8 character boundaries to 500 characters (`MAX_BLACKBOARD_ITEMS = 15`, `MAX_BLACKBOARD_CHARS = 500`).
-6. **Tier 6 (`context_lenses`)**: Dynamic `DomainProvider` lenses declared in `gate.context` (`docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`) evaluated in YAML declaration order and trimmed by section (`omitted_sections`) if the remaining byte budget is exhausted.
+1. **Tier 1 (`contract` + `guidance`)**: Mandatory claimed contract (omitting empty `invariants` and default `tools` equal to `profile.default_tools`; sending full spec content on `blueprint_synthesis` or taskless specs and `spec_path` on post-task root gates) and resolved gate guidance entries (reserved inside `max_guidance_bytes`, never silently truncated; fails closed with `GUIDANCE_BUDGET_EXCEEDED` on overflow).
+2. **Tier 2 (`unresolved_findings` + failed trace tail)**: Container-sibling (`parent_id == node.parent_id`) structured `RejectionFindings` and tail of the latest failed trace log across reject/fail rewinds, cleared automatically once the rejecting gate passes or the container's newest trace runs/passes.
+3. **Tier 3 (`pre_task_slice`)**: Enriched per-task architectural slice (`proof.tasks[<task_ref>]`, including global negative boundaries and cited invariants) or global blueprint slice on post-task root gates, plus `predecessor_proofs` from completed same-container sibling gates emitting `ArtifactKind::Proof` (e.g., `recon` $\to$ `analyze` $\to$ `triage` in `audit`) (skipped alongside Tiers 4–5 on receipt-only `proof: none` gates).
+4. **Tier 4 (`dependency_receipts`)**: Accepted receipts of completed dependency tasks, deduplicated to the latest `claim_revision` per dependency with compact coordinates (`node_cursor`, `candidate_tree`, `committed_oid?`, `accepted_at`).
+5. **Tier 5 (`blackboard`)**: Up to 15 `Open` blackboard messages (`Findings` and `Deferred` excluded), prioritizing `Decisions` and `Blockers` before filling remaining slots with newest `Notes`, each truncated safely on UTF-8 character boundaries to 500 characters (`MAX_BLACKBOARD_ITEMS = 15`, `MAX_BLACKBOARD_CHARS = 500`).
+6. **Tier 6 (`context_lenses`)**: Dynamic `DomainProvider` lenses declared in `gate.context` (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`) evaluated in YAML declaration order with proportional per-lens budget hints (`max(remaining / remaining_lenses, min(remaining, 4096))`), omitting empty `items: []` results cleanly and recording budget-exhausted lenses in `omitted_sections`.
 
 ### Archive Exclusion from Documentation Search and Code-Documentation Graph
 

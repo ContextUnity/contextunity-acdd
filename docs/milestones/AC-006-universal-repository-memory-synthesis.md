@@ -114,7 +114,7 @@ line-refreshed at Task 0:
 | `extract_typed_source_with_digest` | `src/engine/pipeline.rs` | Copies selected document metadata into document-node details |
 | `StateBackend`, `StateReader`, `StateTx` | `crates/acdd-state/src/store/traits.rs` | Owns `gate_traces`, `blackboard`, `gate_artifacts`, and `run_tombstones` evidence queries |
 | `SqliteStateBackend`, `StateBackend` | `crates/acdd-state/src/store/sqlite/mod.rs` | Durable SQLite storage backend for persistent runs and run tombstones |
-| `assemble_claim_context` | `crates/acdd-state/src/context.rs` | Bounded 6-tier `ClaimResp` assembly calling `DomainProvider::context_lens` for memory context |
+| `build_claim_context` | `crates/acdd-state/src/context.rs` | Bounded 6-tier `ClaimResp` assembly calling `DomainProvider::context_lens` for memory context |
 | `DomainProviderBridge`, `DocsDomainProvider` | `src/state_bridge/mod.rs`, `src/state_bridge/docs_domain.rs` | Hosts domain context lenses, checks, and plugin tool dispatch (`acdd_memory`) |
 | `Command` | `src/cli/mod.rs` | Flat `0.6.0` CLI dispatch (`acdd memory ...` and `acdd tool ...`); MCP shares the same backend |
 | `BUILTIN_MCP_TOOLS` dispatch & handlers | `src/mcp/tools.rs`, `src/mcp/tools/inputs.rs` | 19 built-in static tools + dynamic `<domain>_<name>` plugin dispatch (hosts `acdd_memory`) |
@@ -258,12 +258,12 @@ history, or duplicated root-level memory field enters a prompt.
 
 Gate context assembly calls this resolver via a `DomainProvider` context lens
 (e.g., `docs.memory` registered in `src/state_bridge/docs_domain.rs`) wired into
-`assemble_claim_context` (`crates/acdd-state/src/context.rs`) and spawner prompt
+`build_claim_context` (`crates/acdd-state/src/context.rs`) and spawner prompt
 construction (`crates/acdd-state/src/runner/spawner.rs`). All unified `Run` and
 `GateMode` shapes — `worktree`, `in_place`, and `ephemeral` (`save: none`) runs
 across `mode: linear`, `mode: parallel`, and `mode: swarm` shard cursors
 (`poll[telegram]`, `implement[core-cleanup].build`) — invoke the exact same
-`assemble_claim_context` / `DomainProvider::context_lens` contract using the node's
+`build_claim_context` / `DomainProvider::context_lens` contract using the node's
 explicit `admitted_scope`, resolved targets, and canonical `gate_id` (plus leaf ID). Both configured and default prompt templates
 receive the compact field once inside the `ClaimResp` 6-tier budget. Memory-free
 repositories preserve the existing context shape. Missing/unadmitted index or
@@ -288,14 +288,14 @@ not prove deletion and cannot persist staleness. Repairing anchors does not sile
 reactivate a source marked stale; an explicit checked maintenance update is needed.
 `acdd memory prune` defaults to preview and only removes explicitly selected
 stale/superseded files with `--apply`; reject active targets and dangling
-supersedes references. Neither `acdd clear` nor `acdd integrate` / archive
+supersedes references. Neither `acdd clear` nor terminal archive
 pruning deletes curated memory documents.
 
 `memory_synthesis` is an ordinary configured gate in `GateProfile` v2 (via
 `call:` / `checks:` or role execution alongside/after `docs_sync`). There is no
 new gate DSL, mandatory synthesis on every task, or replacement of live
-documentation. Milestone/worktree runs synthesize before `acdd integrate` /
-`acdd clear --prune` (and before final documentation verification); changes
+documentation. Milestone/worktree runs synthesize before terminal verification /
+`acdd clear` (and before final documentation verification); changes
 afterward require renewed verification and review. In-place runs use an admitted
 final gate/task without adding synthetic milestone rows. Ephemeral (`save: none`)
 runs pass explicit `--scope docs/memories/` to `acdd start <spec|goal> --profile ... --scope docs/memories/`
@@ -568,7 +568,7 @@ task_ref: universal-gate-context-and-closure-evidence
 target: Consume the same compact memories once across worktree, in_place, and ephemeral Run gate contexts via DomainProvider and capture failed attempts for explicit or configured closure synthesis without changing persistence, proof or contract documentation
 subtasks:
 - subtask_ref: equal-stage-context-consumption
-  title: Wire the docs.memory DomainProvider context lens into assemble_claim_context and spawner prompt construction across all Run modes
+  title: Wire the docs.memory DomainProvider context lens into build_claim_context and spawner prompt construction across all Run modes
 - subtask_ref: live-failure-evidence-bridge
   title: Retain bounded rejected/failed observations in StateBackend before retries and terminal returns so in-run synthesis receives authentic evidence
 - subtask_ref: closure-and-persistence-boundaries
@@ -596,7 +596,7 @@ status: planned
 ```
 
 Proof slice: `tests/acdd/memory/consumption.rs::all_execution_surfaces_consume_memories`.
-Compare equal normalized inputs through real `assemble_claim_context` (`worktree`,
+Compare equal normalized inputs through real `build_claim_context` (`worktree`,
 `in_place`, and `ephemeral`/`save: none` runs) and spawner prompt capture; test
 both default and configured templates. Exercise command rejection/repair and
 terminal failure with `RunHarness` fixtures only where actual prompt/process

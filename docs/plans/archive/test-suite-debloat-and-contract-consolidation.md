@@ -11,7 +11,7 @@ depends_on: []
 # Test Suite Debloat and Contract Consolidation Plan
 
 Operational in-place debloat plan governed by [tests/AGENTS.md](../../../tests/AGENTS.md),
-[test-suite-refactor](../../../skills/test-suite-refactor/SKILL.md), and the dedicated
+`skills/test-suite-refactor/SKILL.md`, and the dedicated
 [tests-debloat workflow](../../../skills/acdd/references/acdd-profile-examples/tests-debloat.workflow.yaml).
 
 **Non-negotiable budget & invariants:**

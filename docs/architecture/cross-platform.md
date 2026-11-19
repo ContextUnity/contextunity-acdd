@@ -39,7 +39,7 @@ ACDD MCP runs across Linux (`x86_64`, `aarch64`) and macOS Darwin/APFS (`x86_64`
 > [!IMPORTANT]
 > Invariant: Reader connection eviction, read-only probing, write-ahead log checkpointing, and `Identity` sampling obey strict ordering so SQLite connection closure never invalidates an in-flight admission baseline or a preserved receipt.
 > - INV-XPLAT-ADMISSION-ORDER: Close or evict any stale cached reader handle before sampling the database generation `Identity` and opening the replacement reader. [`Server::admit`](../../src/mcp/server.rs) [`open`](../../crates/acdd-index/src/db/reader.rs)
-> - INV-XPLAT-WAL-CHECKPOINT-BOUNDARY: Writers finish WAL cleanup before sealing verified receipts, check checkpoint busy status explicitly, and handle rollback WAL cleanup without breaking pre-transaction receipt identity. [`identity`](../../crates/acdd-index/src/db/cache.rs) [`persist_delta`](../../crates/acdd-index/src/db/delta.rs)
+> - INV-XPLAT-WAL-CHECKPOINT-BOUNDARY: Writers finish WAL cleanup before sealing verified receipts, check checkpoint busy status explicitly, and handle rollback WAL cleanup without breaking pre-transaction receipt identity. [`identity`](../../crates/acdd-index/src/db/cache.rs) [`persist_delta`](../../crates/acdd-index/src/db/writer/delta.rs)
 
 This boundary refines [Concurrency and Isolation](concurrency.md) and [ADR 0007](../adr/0007-sqlite-code-map-concurrency-and-staged-publication.md):
 

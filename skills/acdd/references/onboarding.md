@@ -50,7 +50,7 @@ Read [adapter defaults](adapters.md) and adapt the
 do not use `--force` over a tailored adapter. If an existing repository still
 uses `0.5.x` keys (`milestones`, `plans`, `tasks_db`, `task_repository`,
 `task_project`, `acdd_profile`), convert `acdd.yaml`, `.gitignore`,
-`.acdd/profile.yaml` (`version: 2`), and open specs first per the `0.6.0`
+`.acdd/profile.yaml` (`version: 2`), and open specs first per the `0.6.x`
 migration guide.
 
 - Set `roots` to real repository-relative source roots, or `.` when appropriate.
@@ -60,8 +60,8 @@ migration guide.
   `.gitignore`; do not use invented glob semantics for `ignore`. Use `sensitive`
   patterns for confidential paths that readers must block.
 - Configure `specs:` collections (`milestones` with `path: docs/milestones`,
-  `profile: workspace`, `prefixes: [AC]`; `plans` with `path: docs/plans`,
-  `profile: in_place`, `prefixes: [PLAN]`), `profiles_dirs` (`[.acdd/profiles, docs/workflows]`),
+  `prefixes: [AC]`; `plans` with `path: docs/plans`,
+  `prefixes: [PLAN]`), `profiles_dirs` (`[.acdd/profiles, docs/workflows]`),
   `state_db: .acdd/state.sqlite`, `retain_traces: 20`, and `modules:` (`code`, `docs`, `state`, `blackboard`).
 - Retain the default relative `state_db` unless the repository requires another
   location. Git-linked worktrees resolve `<primary_worktree>/.acdd/state.sqlite`
@@ -76,20 +76,21 @@ template-rendering code to ACDD.
 ## Synthesize a project profile
 
 For ACDD setup, write a compact overlay in `.acdd/profile.yaml` (`version: 2`,
-`inherit: code` when `modules.code: true` or `inherit: default` otherwise,
-`gates_merge: patch`), or adapt the
-[canonical ACDD profile](acdd_profile.yaml.example) when defining a standalone
-(`inherit: none`) profile. Use the
-[domain examples catalog](acdd-profile-examples/README.md) only for a relevant
-domain; examples are starting points, and the installed schema (`acdd validate`)
+`inherit: code` when `modules.code: true` or `inherit: base` / `inherit: audit`;
+when present, `.acdd/profile.yaml` automatically becomes the workspace default;
+use `gates:` to replace inherited gates or `gates_patch:` to patch them), using the
+[starter profile overlay](acdd_profile.yaml.example) and the complete
+[profile reference](profile-reference.md) for all `GateProfile v2` fields. Use the
+[audit examples catalog](acdd-profile-examples/README.md) when specializing
+`inherit: audit` workflows (`security-sast`, `pr-code-review`, `architecture-hygiene`);
+examples are starting points, and the installed schema (`acdd validate`)
 is the authority. Do not copy ACDD's Rust-specific guidance, models, protected
 files, or commands into an unrelated project.
 
 Bind registered `commands` (`test`, `rust-check-and-test`, `check_full_repo`, etc.)
 to verified local tooling. For each command, establish its working directory,
-prerequisites, failure exit behavior, timeout, `{test_filter}` support when used
-by `proof: contract`, and actual output parsing (`compile_errors`, `counts`,
-`tests`). Use `scope_args_by_pattern` only with arguments the real command
+prerequisites, failure exit behavior, timeout, and `{test_filter}` support when
+targeting scoped tests. Use `scope_args_by_pattern` only with arguments the real command
 accepts, and keep full repository verification distinct from focused task checks.
 
 Keep `version: 2`, `git:`, `roles`, `guidance`, `contours`, `proofs`, `commands`,
@@ -135,10 +136,10 @@ or `acdd start --goal "..."` for ephemeral runs). Give it an outcome, acceptance
 criteria, owner paths, invariants, and independently scoped tasks (`task_ref`,
 `target`, `scope`, `depends_on`, `tags`, `invariants`, `acceptance_criteria`,
 `contract_revision: 1`, `subtasks`). Use the
-[manifest example](acdd-profile-examples/milestone-manifest-with-skills.md.example)
+[manifest example](spec_manifest.md.example)
 for shape, removing unrelated skills, repositories, dependencies, and domains.
 
-Keep speculative sequencing in `docs/plans/` using `in_place` profiles. Leave
+Keep speculative sequencing in `docs/plans/` (run with `--in-place` or `git.isolation: in_place` when zero worktree/commit isolation is needed). Leave
 the spec unstarted when execution was not requested. When admission is
 authorized, use `acdd start` / `acdd_state` rather than editing SQLite or
 manufacturing status/receipts.

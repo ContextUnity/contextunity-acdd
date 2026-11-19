@@ -17,7 +17,7 @@ owners:
   - crates/acdd-index/src/languages/python/projections.rs
   - crates/acdd-index/src/languages/python/syntax_operations.rs
   - crates/acdd-index/src/languages/typescript/projections.rs
-  - crates/acdd-index/src/linker.rs
+  - crates/acdd-index/src/linker/mod.rs
   - crates/acdd-index/src/linker/resolution/mod.rs
   - crates/acdd-index/src/linker/resolution/value_flow_phase.rs
   - crates/acdd-index/src/linker/semantic_context.rs
@@ -116,7 +116,7 @@ See [ADR 0008: Merkle Commitments and Compressed Fact Storage](../adr/0008-merkl
 - **Lean Node Details**: Restrict `nodes.details` to selected navigation fields, including `signature`, `doc`, `receiver_name`, explicit decorators, parameter types and declared return types. Report `rows_ms` according to its actual phase scope; it includes broader persistence work rather than only node insertion.
 - **Bulk SQLite Ingestion Pragmas**: Cold indexing uses `PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;` on an isolated candidate database. It seals and commits the candidate, restores WAL mode, verifies SQLite integrity, and checkpoints WAL before atomic publication.
 - **Bounded cold fact writes**: Cold builds serialize each complete `local_facts` payload in parallel chunks instead of retaining a workspace-wide second map of compressed payloads. The writer holds at most 500 compressed facts per chunk and inserts each row batch in the existing write transaction, bounded by SQLite's live parameter limit; secondary indexes are created after the bulk load. `sqlite_ingestion` reports the active mode, deferred-index behavior, and effective row-batch size. Graph endpoint caching shares one path allocation across nodes in the same file, avoiding per-node path string copies.
-- **Shared coverage preparation**: [`PreparedCoverage`](../../crates/acdd-index/src/db/ingest.rs) sorts and deduplicates borrowed coverage rows once after retained facts are ready. SQL persistence and logical commitment projection share its module/file language fallback, ambiguous HTML reference ownership, and JavaScript island decisions. Each consumer streams its existing SQL rows or canonical commitment bytes. Delta uses the same preparation through the compatible `persist_graph` entry point and retains its database language fallback and transaction boundary.
+- **Shared coverage preparation**: [`PreparedCoverage`](../../crates/acdd-index/src/db/writer/ingest.rs) sorts and deduplicates borrowed coverage rows once after retained facts are ready. SQL persistence and logical commitment projection share its module/file language fallback, ambiguous HTML reference ownership, and JavaScript island decisions. Each consumer streams its existing SQL rows or canonical commitment bytes. Delta uses the same preparation through the compatible `persist_graph` entry point and retains its database language fallback and transaction boundary.
 - **Cold-build phase timing**: `encode_facts_ms` totals the per-file serialization and compression time performed while `local_facts` rows are batched. `batch_rows` reports the effective local-facts row cap, not the size of every other table's row batch.
 - **Throughput Recommendation**: Around 400 files/sec end-to-end and 800 files/sec for extraction are useful initial comparison values. The 10-second Commerce cold-build aspiration helps prioritize phase-level work; it is a gate only where a milestone explicitly admits it.
 
@@ -129,7 +129,7 @@ Milestone 031 (`m-cold-indexing-throughput-and-memory-optimization`) addressed c
 - **Byte Accounting**: Ingestion queue bounds operate on dynamic estimated byte budgets derived from `ScannerLimits.memory_budget_mb` (`crates/acdd-core/src/config.rs`) or the `ACDD_MEMORY_BUDGET_MB` environment variable (`MemoryPermit` in `crates/acdd-index/src/db/writer.rs`). Each file's permit accounts for its scanned file size multiplied by the extraction expansion factor. A single oversized item is admitted only when no other item holds an active permit, preventing memory exhaustion on massive generated or bundled files while guaranteeing progress without deadlocks.
 
 ### 2. Lean SymbolCatalog Decomposition and Streaming Storage Payloads
-- **Decoupled Linking State**: Historically, `TypedFacts` retained full AST details (`value_flow`, `bindings`, `rebindings`, `param_types`, and span details) in a workspace-wide map during global cross-file linking. Milestone 031 replaced this with `SymbolCatalog` and `CatalogSymbol` (`crates/acdd-index/src/semantic.rs`, `crates/acdd-index/src/linker/compact.rs`, `crates/acdd-index/src/linker.rs`).
+- **Decoupled Linking State**: Historically, `TypedFacts` retained full AST details (`value_flow`, `bindings`, `rebindings`, `param_types`, and span details) in a workspace-wide map during global cross-file linking. Milestone 031 replaced this with `SymbolCatalog` and `CatalogSymbol` (`crates/acdd-index/src/semantic.rs`, `crates/acdd-index/src/linker/compact.rs`, `crates/acdd-index/src/linker/mod.rs`).
 - **Catalog Admission**: Workers invoke `SymbolCatalog::insert_typed(..., false)` to omit storage-only detail fields and duplicate storage payloads. The linking catalog retains native binding metadata and typed flows needed for resolution.
 - **Precomputed Staged Storage**: Heavyweight storage rows are precomputed during extraction and Zstd-compressed into `PreparedCatalogStorage` within `StagedFilePayload` (`crates/acdd-index/src/db/writer.rs`).
 - **Bounded Chunk Hydration**: In `populate_owned` (`crates/acdd-index/src/db/writer.rs`, `crates/acdd-index/src/db/ingest.rs`), `LoadedCatalogFile` structures are loaded and persisted in bounded parallel chunks of up to 500 files (`MAX_MULTI_VALUE_BATCH_ROWS = 500`). Each payload chunk is dropped immediately after SQLite insertion, preventing simultaneous coexistence of raw ASTs and database rows.
@@ -170,7 +170,7 @@ better request latency.
 - **13 Logical Domains**: Commitments for `files`, `source_inventory`, `nodes`, `edges`, `edge_occurrences`, `dependencies`, `resolution_coverage`, `coverage_language_counts`, `coverage_owner_language`, `doc_sections`, `shared_owners`, `errors`, and `local_facts` are computed directly from in-memory projections and streaming buffers. This cut `seal_ms` from `~1,012 ms` down to `~75–112 ms`.
 - **Four independent FTS domains**: [`fts_commitment_digests`](../../crates/acdd-index/src/db/commitments/snapshot.rs) uses the existing FTS domain list for `node_search_postings`, `node_search_config`, `doc_search_postings`, and `doc_search_config`. Posting digests retain the canonical vocabulary streaming or sorted fallback encoding and document-size/owner validation. Config digests retain their canonical SQL encoding.
 - **Independent FTS Sealing Scaling**: [`fts_commitment_digests`](../../crates/acdd-index/src/db/commitments/snapshot.rs) evaluates the four independent FTS domains (`node_search_postings`, `node_search_config`, `doc_search_postings`, and `doc_search_config`) concurrently via bounded stage-private read-only SQLite connections on committed databases with >=8,192 nodes. This eliminates serial SQLite virtual table scan bottlenecks and achieves sub-second commitment sealing (`index_and_seal_ms < 1,000 ms`) while preserving 100% bit-identical Merkle roots.
-- **Unified Coverage Preparation**: [`PreparedCoverage`](../../crates/acdd-index/src/db/ingest.rs) shares borrowed deduplicated coverage facts between SQL persistence and in-memory logical commitment projection, avoiding duplicate sorting passes and allocations.
+- **Unified Coverage Preparation**: [`PreparedCoverage`](../../crates/acdd-index/src/db/writer/ingest.rs) shares borrowed deduplicated coverage facts between SQL persistence and in-memory logical commitment projection, avoiding duplicate sorting passes and allocations.
 - **Correctness evidence**: `parallel_owner_sealing_matches_serial_encoding_and_thread_counts` in `tests/commitment_integrity.rs` compares every persisted domain and owner digest across one, two, and four threads and against the SQL sealing oracle. Its SQLite authorizer observes stage-private read-only FTS access and verifies that a reader failure preserves the published database.
 
 ### 6. Cross-Worktree Content-Addressed Binary Extraction Cache
@@ -181,20 +181,20 @@ better request latency.
 
 ### 7. Single-Pass AST Extraction and Native Typed Sidecar Facts
 - **Incremental Lexical Route Binding**: [`RouteContextBuilder`](../../crates/acdd-index/src/ast/routes.rs) and [`SinglePassExtractor`](../../crates/acdd-index/src/ast/visitor.rs) collect lexical bindings, string/list/dict tables, and Python write assignments directly inside the primary `visitor::walk` pass instead of running a standalone `collect_lexical_bindings` pre-pass or recursive subtree walks per file.
-- **Native Typed Fact Stores**: [`SemanticStore`](../../crates/acdd-index/src/typed_facts.rs) and [`FlowStore`](../../crates/acdd-index/src/typed_facts.rs) hold [`SemanticFact`](../../crates/acdd-index/src/semantic.rs) and [`ValueFlowFacts`](../../crates/acdd-index/src/semantic.rs) in native Rust structs (`TypedFacts`) during extraction and [`SymbolCatalog`](../../crates/acdd-index/src/semantic.rs) linking. The local extraction cache stores typed facts directly in its V4 binary frame; public JSON projection remains a separate storage boundary.
-- **Optional Scope Storage**: [`FrameworkScopeFacts`](../../crates/acdd-index/src/semantic.rs) groups less common framework, template and collection vectors in an optional box. [`NodeSemanticEntry`](../../crates/acdd-index/src/typed_facts.rs) holds admitted bindings, rebindings and parameter types natively. Public JSON remains flat, retains parameter order and preserves malformed raw metadata.
+- **Native Typed Fact Stores**: [`SemanticStore`](../../crates/acdd-index/src/typed_facts/mod.rs) and [`FlowStore`](../../crates/acdd-index/src/typed_facts/mod.rs) hold [`SemanticFact`](../../crates/acdd-index/src/semantic.rs) and [`ValueFlowFacts`](../../crates/acdd-index/src/semantic.rs) in native Rust structs (`TypedFacts`) during extraction and [`SymbolCatalog`](../../crates/acdd-index/src/semantic.rs) linking. The local extraction cache stores typed facts directly in its V4 binary frame; public JSON projection remains a separate storage boundary.
+- **Optional Scope Storage**: [`FrameworkScopeFacts`](../../crates/acdd-index/src/semantic.rs) groups less common framework, template and collection vectors in an optional box. [`NodeSemanticEntry`](../../crates/acdd-index/src/typed_facts/mod.rs) holds admitted bindings, rebindings and parameter types natively. Public JSON remains flat, retains parameter order and preserves malformed raw metadata.
 - **Single-Pass Linker Post-Processing**: [`link_compact_with_typed_registry`](../../crates/acdd-index/src/linker/mod.rs) fuses value-flow propagation, uncertainty collection, and fault aggregation into a single pass over `all.values()`.
 
 ### 8. Shared Rule-IR Dispatch and Zero-Allocation Proof Lookups
 - **Workspace-Scoped `Arc<LanguageContext>`**: [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry.rs) builds [`LanguageContext`](../../crates/acdd-index/src/languages/mod.rs) per effective workspace/manifest scope and shares it via `Arc` across files without cloning `Vec<SyntaxRule>` per file. Python [`prepare_file`](../../crates/acdd-index/src/languages/python/syntax_operations.rs) prepares per-file render/import candidates while borrowing that shared context.
-- **Grammar-Sized Tables**: [`CompiledSyntaxGrammar`](../../crates/acdd-index/src/languages/mod.rs) and [`CompiledRuleIR`](../../crates/acdd-index/src/languages/manifests.rs) dispatch by numeric kind ID through vectors sized by the actual grammar's node-kind count. Warm parser reuse also covers Vue script islands and HTML JavaScript fragment import scans through [`with_warm_parser`](../../crates/acdd-index/src/languages/mod.rs).
+- **Grammar-Sized Tables**: [`CompiledSyntaxGrammar`](../../crates/acdd-index/src/languages/mod.rs) and [`CompiledRuleIR`](../../crates/acdd-index/src/languages/manifests/mod.rs) dispatch by numeric kind ID through vectors sized by the actual grammar's node-kind count. Warm parser reuse also covers Vue script islands and HTML JavaScript fragment import scans through [`with_warm_parser`](../../crates/acdd-index/src/languages/mod.rs).
 - **Indexed AST Kind & Callee Dispatch**: [`extract_projections`](../../crates/acdd-index/src/languages/typescript/projections.rs) and [`prepare`](../../crates/acdd-index/src/languages/python/projections.rs) pre-index declarative projection rules by AST node `kind` (`call_expression`, `jsx_Element`, `pair`, `decorator`) and callee/member name instead of scanning all rules linearly on every AST node.
 - **Zero-Allocation Proof Maps**: Python projection proofs in [`observe_import`](../../crates/acdd-index/src/languages/python/projections.rs) and [`prepare`](../../crates/acdd-index/src/languages/python/projections.rs) store imported statement lines as `HashMap<String, HashSet<usize>>` and constructors as `HashMap<usize, HashMap<String, Constructor>>` so per-call and per-attribute `Proof::imported` / `Proof::api` checks query borrowed `&str` keys without allocating `String`s on the heap.
 
 ### 9. Language-Gated Linker Resolution and Semantic Context Memoization
 - **Per-File Language Context Binding**: [`resolve`](../../crates/acdd-index/src/linker/resolution/mod.rs) binds `file_language_context = dependency_registry.language_context_for_path(path)` once at the top of the per-file `all.par_iter()` closure and reuses it across all candidate resolutions in that file.
-- **Strict Language Profile Gating**: HTML template rule vectors and builtin template evidence construction in [`phase_value_flow`](../../crates/acdd-index/src/linker/resolution/value_flow_phase.rs) are gated on the active HTML profile so non-HTML files and non-HTML references incur no template-rule preparation or evidence formatting.
-- **Shared Semantic Context Rule Tables**: [`Context`](../../crates/acdd-index/src/linker/semantic_context.rs) memoizes `Arc<ReceiverTypes>`, `Arc<ArgumentFactories>`, and `implicit_builtins` (`Arc<ImplicitBuiltinMap>`) per `(Arc::as_ptr(&rules), language)` key and Python `hierarchy_results` per `Arc::as_ptr(&rules)` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime to prevent ABA pointer reuse) instead of rescanning `syntax_rules` and cloning `HashMap<String, String>` for every file path in the workspace.
+- **Strict Language Profile Gating**: HTML template rule vectors and builtin template evidence construction in [`phase_value_flow`](../../crates/acdd-index/src/linker/resolution/value_flow_phase/mod.rs) are gated on the active HTML profile so non-HTML files and non-HTML references incur no template-rule preparation or evidence formatting.
+- **Shared Semantic Context Rule Tables**: [`Context`](../../crates/acdd-index/src/linker/semantic_context/mod.rs) memoizes `Arc<ReceiverTypes>`, `Arc<ArgumentFactories>`, and `implicit_builtins` (`Arc<ImplicitBuiltinMap>`) per `(Arc::as_ptr(&rules), language)` key and Python `hierarchy_results` per `Arc::as_ptr(&rules)` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime to prevent ABA pointer reuse) instead of rescanning `syntax_rules` and cloning `HashMap<String, String>` for every file path in the workspace.
 - **Single Codegen Unit Release Profile**: `Cargo.toml` configures `[profile.release]` with `codegen-units = 1` and `lto = "thin"` so hot loops across `ast`, `languages`, and `linker` inline across module boundaries.
 
 ### 10. Pipeline Hot-Path and Peak-RSS Optimizations
@@ -218,7 +218,7 @@ During Milestone 031, multiple plausible optimization hypotheses were empiricall
 | **Temporary SQLite Staging Table (`catalog_payloads`)** | Intermediate table in staged SQLite candidate | Wall time regressed by **`+6.2%`** | SQLite B-tree write and deserialize overhead exceeded in-memory compressed chunk queuing. |
 | **Concurrent Merkle Leaf Hashing with SQLite Index Creation** | `seal::logical_domain_leaves` overlapped with `CREATE INDEX` | Wall time regressed by **`+3.8%`** | Parallel Rayon CPU hashing and SQLite B-tree sort contended for memory bandwidth and allocator mutexes. |
 | **Parallel Posting Sorting (`par_sort_unstable_by_key`) & Removal of `term_map` in FTS Sealing** | `crates/acdd-index/src/commitments.rs` | Deterministic root mismatch (`INV-DETERMINISTIC-MERKLE` failed) | FTS5 C-API emits tokens in document order. Monotonic dictionary sorting `(term, docid, col, pos)` is required for `acdd-owner-sha256-v2` bit identity. |
-| **Tree-Sitter `QueryCursor` (S-Expression byte-code engine)** | `benchmarks/tree_cursor_probe.rs`, `tree_sitter::QueryCursor` | **`2.90x slower`** (`5.18s` vs `1.78s` for 3.3M nodes) | General AST queries (`"(_) @node"`) incur heavy query-state machine allocations and capture tracking compared to flat cursor iteration. |
+| **Tree-Sitter `QueryCursor` (S-Expression byte-code engine)** | Historical `QueryCursor` probe (`benchmarks/`), `tree_sitter::QueryCursor` | **`2.90x slower`** (`5.18s` vs `1.78s` for 3.3M nodes) | General AST queries (`"(_) @node"`) incur heavy query-state machine allocations and capture tracking compared to flat cursor iteration. |
 | **Leaf-Count Pre-check Guard (`named_child_count() == 0`)** | `crates/acdd-index/src/ast/visitor.rs` (`walk`) | **`5.89% slower`** (`1.89s` vs `1.78s`) | Calling `ts_node_named_child_count` before `goto_first_child` adds a redundant C FFI transition per node. |
 | **Lazy `symbol_name` Parent Node Lookup** | `crates/acdd-index/src/ast/mod.rs` | Wall: **`+1.47%`**, User CPU: **`+2.33%`** | Deferring parent lookup via `or_else` did not eliminate AST traversal and disrupted branch prediction in extraction hot loops. |
 | **Filtering Python Initializers (`__init__.py`) or Config Files** | `crates/acdd-index/src/scanner/mod.rs` | Broken re-exports and Merkle root divergence | Commerce contains 202 `__init__.py` files containing package exports and module docstrings; skipping them breaks 130,079 graph edges. |
@@ -242,7 +242,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `crates/acdd-index/src/db/writer.rs` (`populate_owned`), keep `StagedFilePayload.storage_rows` Zstandard-compressed during staging; `prepare_catalog_storage` uses compression level -3. Ingestion must process files in bounded batches of at most 500 rows (`MAX_MULTI_VALUE_BATCH_ROWS = 500`), removing payloads from memory prior to database insertion. Agents must preserve the explicit calls to `trim_allocator` (`libc::malloc_trim(0)`) after extraction and after persistence to prevent glibc multi-arena fragmentation from exceeding the 800 MB RSS ceiling.
 
-- INV-PERF-BOUNDED-STAGING-AND-TRIM: Keep staged file rows Zstandard-compressed, drain payloads in bounded batches, and invoke `trim_allocator` at extraction and persistence boundaries to stay within the 800 MB RSS budget. [`StagedFilePayload`](../../crates/acdd-index/src/db/writer.rs) [`populate_owned`](../../crates/acdd-index/src/db/writer.rs).
+- INV-PERF-BOUNDED-STAGING-AND-TRIM: Keep staged file rows Zstandard-compressed, drain payloads in bounded batches, and invoke `trim_allocator` at extraction and persistence boundaries to stay within the 800 MB RSS budget. [`StagedFilePayload`](../../crates/acdd-index/src/db/writer/mod.rs) [`populate_owned`](../../crates/acdd-index/src/db/writer/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Tree-Sitter AST Traversal Loop Integrity
@@ -263,7 +263,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `crates/acdd-index/src/typed_facts.rs` (`SemanticStore`, `FlowStore`, `TypedFacts`), keep semantic and value-flow facts in native typed stores during extraction and linking. Preserve the existing V3 JSON-value overlays at the binary cache boundary in `crates/acdd-index/src/db/writer/cache.rs` and hydrate typed stores when loading. Public and legacy compatibility views retain their existing serialization and malformed-evidence behavior.
 
-- INV-PERF-TYPED-SIDECAR-FACTS: Use native typed stores for in-memory extraction and linking, preserving the V3 cache and public compatibility boundaries. [`SemanticStore`](../../crates/acdd-index/src/typed_facts.rs) [`FlowStore`](../../crates/acdd-index/src/typed_facts.rs) [`TypedFacts`](../../crates/acdd-index/src/typed_facts.rs).
+- INV-PERF-TYPED-SIDECAR-FACTS: Use native typed stores for in-memory extraction and linking, preserving the V3 cache and public compatibility boundaries. [`SemanticStore`](../../crates/acdd-index/src/typed_facts/mod.rs) [`FlowStore`](../../crates/acdd-index/src/typed_facts/mod.rs) [`TypedFacts`](../../crates/acdd-index/src/typed_facts/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Shared Workspace Rule-IR Context and Indexed AST Dispatch
@@ -282,9 +282,9 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Language-Gated Linker Resolution and Memoized Semantic Context
 >
-> In `crates/acdd-index/src/linker/resolution/mod.rs` (`resolve`) and `resolution/value_flow_phase.rs` (`phase_value_flow`), `crates/acdd-index/src/languages/dependency_registry.rs` (`language_context_for_path`), `crates/acdd-index/src/linker/semantic_context.rs` (`Context`), and `crates/acdd-index/src/linker.rs` (`link_compact_with_typed_registry`), the registry and linker must memoize `language_context_for_path` per directory scope, bind contexts once per file, avoid reconstructing package-scope keys per reference, gate language-specific template rules and evidence builders behind the active language profile, memoize `ReceiverTypes`, `ArgumentFactories`, and `implicit_builtins` per shared `Arc<LanguageContext>` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime), and fuse post-resolution `all.values()` passes.
+> In `crates/acdd-index/src/linker/resolution/mod.rs` (`resolve`) and `resolution/value_flow_phase.rs` (`phase_value_flow`), `crates/acdd-index/src/languages/dependency_registry.rs` (`language_context_for_path`), `crates/acdd-index/src/linker/semantic_context.rs` (`Context`), and `crates/acdd-index/src/linker/mod.rs` (`link_compact_with_typed_registry`), the registry and linker must memoize `language_context_for_path` per directory scope, bind contexts once per file, avoid reconstructing package-scope keys per reference, gate language-specific template rules and evidence builders behind the active language profile, memoize `ReceiverTypes`, `ArgumentFactories`, and `implicit_builtins` per shared `Arc<LanguageContext>` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime), and fuse post-resolution `all.values()` passes.
 
-- INV-PERF-LANGUAGE-GATED-LINKER-RESOLUTION: Memoize `language_context_for_path` per directory scope in `DependencyRegistry`, bind contexts once per file in `resolve`, gate HTML template rule vectors and `template_evidence` behind active HTML guards, memoize `Context` rule tables per pinned `Arc<LanguageContext>`, and fuse post-resolution `all.values()` passes in `link_compact_with_typed_registry`. [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry.rs) [`resolve`](../../crates/acdd-index/src/linker/resolution/mod.rs) [`phase_value_flow`](../../crates/acdd-index/src/linker/resolution/value_flow_phase.rs) [`Context`](../../crates/acdd-index/src/linker/semantic_context.rs) [`link_compact_with_typed_registry`](../../crates/acdd-index/src/linker/mod.rs).
+- INV-PERF-LANGUAGE-GATED-LINKER-RESOLUTION: Memoize `language_context_for_path` per directory scope in `DependencyRegistry`, bind contexts once per file in `resolve`, gate HTML template rule vectors and `template_evidence` behind active HTML guards, memoize `Context` rule tables per pinned `Arc<LanguageContext>`, and fuse post-resolution `all.values()` passes in `link_compact_with_typed_registry`. [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry.rs) [`resolve`](../../crates/acdd-index/src/linker/resolution/mod.rs) [`phase_value_flow`](../../crates/acdd-index/src/linker/resolution/value_flow_phase/mod.rs) [`Context`](../../crates/acdd-index/src/linker/semantic_context/mod.rs) [`link_compact_with_typed_registry`](../../crates/acdd-index/src/linker/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Single Codegen Unit Release Optimization
@@ -298,7 +298,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `crates/acdd-index/src/db/writer.rs` (`prepare_pipeline_schema` and `populate_owned`), cold-indexing candidate databases must initialize with `journal_mode = MEMORY; synchronous = OFF; temp_store = MEMORY; cache_spill = ON;` and defer secondary index creation until after row ingestion (`sqlite_ingestion.mode = deferred-index-batched`). Before atomic publication, the writer must restore `journal_mode = WAL; synchronous = NORMAL;` and execute `PRAGMA wal_checkpoint(TRUNCATE);`. Changing pragma ordering or omitting WAL restoration causes reader lockouts and database corruption.
 
-- INV-PERF-SQLITE-INGESTION-PRAGMAS: Initialize staged SQLite databases with in-memory journal and deferred secondary indexes during bulk ingestion, then restore `WAL` mode and checkpoint before atomic publication. [`prepare_pipeline_schema`](../../crates/acdd-index/src/db/writer.rs) [`populate_owned`](../../crates/acdd-index/src/db/writer.rs).
+- INV-PERF-SQLITE-INGESTION-PRAGMAS: Initialize staged SQLite databases with in-memory journal and deferred secondary indexes during bulk ingestion, then restore `WAL` mode and checkpoint before atomic publication. [`prepare_pipeline_schema`](../../crates/acdd-index/src/db/writer/mod.rs) [`populate_owned`](../../crates/acdd-index/src/db/writer/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Deterministic 17-Domain Merkle Commitments
@@ -319,7 +319,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > Build one borrowed `LinkerInterner` per linking pass. Use its `SymbolId` and `PathId` keys in prepared semantic tables and restore canonical strings when emitting graph results. Preserve declared-package activation and lexical import proof; file-import presence does not replace dependency activation.
 
-- INV-PERF-INTERNER-KEYS: Preserve canonical graph identities and semantic proof while interning prepared linker keys. [`LinkerInterner`](../../crates/acdd-index/src/linker/interner.rs).
+- INV-PERF-INTERNER-KEYS: Preserve canonical graph identities and semantic proof while interning prepared linker keys. [`LinkerInterner`](../../crates/acdd-index/src/interner.rs).
 
 > [!IMPORTANT]
 > Invariant: Binary Catalog Storage and Reference Occurrences Without JSON Round-Trips
@@ -340,63 +340,63 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `crates/acdd-index/src/db/writer.rs` (`prepare_catalog_rows`), file chunks are already dispatched across Rayon worker threads. Agents must never nest Rayon parallel iterators (`.par_iter()`) inside individual chunk workers. Inner loops must use standard sequential iteration (`.iter()`) to avoid thread pool starvation, thread parking, futex contention, and massive system CPU spikes.
 
-- INV-PERF-NO-NESTED-PAR-ITER: Never nest Rayon `.par_iter()` inside already parallelized pipeline chunks; use sequential `.iter()` within worker tasks. [`prepare_catalog_rows`](../../crates/acdd-index/src/db/writer.rs) [`persist_catalog_files`](../../crates/acdd-index/src/db/ingest.rs).
+- INV-PERF-NO-NESTED-PAR-ITER: Never nest Rayon `.par_iter()` inside already parallelized pipeline chunks; use sequential `.iter()` within worker tasks. [`prepare_catalog_rows`](../../crates/acdd-index/src/db/writer/mod.rs) [`persist_catalog_files`](../../crates/acdd-index/src/db/writer/ingest.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Clone Ingestion for Navigation Details
 >
 > In `crates/acdd-index/src/db/ingest.rs` (`flush_node_batch`), database batch writes must never clone `Node` instances or allocate intermediate JSON maps to strip transient fields (`"doc"`, `"docstring"`). Filter fields on-the-fly during serialization through borrowed adapters (`NavigationDetails`) directly referencing source nodes.
 
-- INV-PERF-ZERO-NODE-CLONES-ON-INGEST: Filter navigation details during serialization through borrowed wrappers without cloning `Node` instances in batch write loops. [`flush_node_batch`](../../crates/acdd-index/src/db/ingest.rs) [`NavigationDetails`](../../crates/acdd-index/src/models.rs).
+- INV-PERF-ZERO-NODE-CLONES-ON-INGEST: Filter navigation details during serialization through borrowed wrappers without cloning `Node` instances in batch write loops. [`flush_node_batch`](../../crates/acdd-index/src/db/writer/ingest.rs) [`NavigationDetails`](../../crates/acdd-index/src/models/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Manifest Syntax Rule Interning
 >
-> In `crates/acdd-index/src/linker/interner.rs` (`LinkerInterner`) and `crates/acdd-index/src/linker.rs`, declarative framework manifest rules must be interned once per language context rather than re-evaluating or cloning rules on every file path in the workspace.
+> In `crates/acdd-index/src/linker/interner.rs` (`LinkerInterner`) and `crates/acdd-index/src/linker/mod.rs`, declarative framework manifest rules must be interned once per language context rather than re-evaluating or cloning rules on every file path in the workspace.
 
-- INV-PERF-MANIFEST-SYNTAX-INTERNING: Intern manifest syntax rules at language context scope instead of re-evaluating or allocating rules per file. [`LinkerInterner`](../../crates/acdd-index/src/linker/interner.rs).
+- INV-PERF-MANIFEST-SYNTAX-INTERNING: Intern manifest syntax rules at language context scope instead of re-evaluating or allocating rules per file. [`LinkerInterner`](../../crates/acdd-index/src/interner.rs).
 
 > [!IMPORTANT]
 > Invariant: Host Performance Profile and Governor Precondition
 >
 > Benchmarks and cold-build latency measurements reflect real algorithmic performance only when the host OS operates in `performance` platform profile (`powerprofilesctl set performance`, `energy_performance_preference: performance`). Running benchmarks under `power-saver` caps CPU clocks to low base frequencies (e.g. 400 MHz – 1.9 GHz instead of 4.5 GHz boost) and artificially inflates wall-clock and persistence timings by 1.8x–2.0x.
 
-- INV-PERF-HOST-POWER-GOVERNOR-FOR-BENCHMARKS: Benchmark runs require verification that the host platform profile is not set to `power-saver` before attributing measured wall-clock regressions to code changes. [`cold_test_coverage_benchmark.py`](../../benchmarks/cold_test_coverage_benchmark.py).
+- INV-PERF-HOST-POWER-GOVERNOR-FOR-BENCHMARKS: Benchmark runs require verification that the host platform profile is not set to `power-saver` before attributing measured wall-clock regressions to code changes. [benchmarks/README.md](../../benchmarks/README.md).
 
 > [!IMPORTANT]
 > Invariant: Stage Payload Disk Spooling
 >
 > In `src/engine/pipeline.rs` (`consume_pipeline_results`) and `crates/acdd-index/src/db/writer.rs` (`populate_owned`), cold-build extraction payloads (`encoded_facts` and `storage_rows`) must be spooled directly to stage-private temporary disk storage (`payloads.bin` under `.acdd-stage-*`) during consumer ingestion rather than accumulated in heap memory as raw byte vectors (`StagedFilePayload`). `StagedFilePayload` retains only lightweight offset/length references (`StagedPayloadBlob`), releasing 50–60 MB of heap memory during the cross-file linker phase. The final persistence pass reads blobs sequentially in bounded 500-file chunks, preserving route composition invalidation, Merkle leaf commitments, and atomic stage cleanup.
 
-- INV-PERF-STAGE-PAYLOAD-SPOOLING: Spool extraction payload blobs to stage-private disk storage during consumer ingestion and read by chunk during persistence to keep heap memory bounded during linking. [`consume_pipeline_results`](../../src/engine/pipeline.rs) [`populate_owned`](../../crates/acdd-index/src/db/writer.rs).
+- INV-PERF-STAGE-PAYLOAD-SPOOLING: Spool extraction payload blobs to stage-private disk storage during consumer ingestion and read by chunk during persistence to keep heap memory bounded during linking. [`consume_pipeline_results`](../../src/engine/pipeline.rs) [`populate_owned`](../../crates/acdd-index/src/db/writer/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Clone Ingestion for Batched Node Attributes
 >
 > In `crates/acdd-index/src/db/ingest.rs` (`persist_files_impl`), `node_batch` rows must borrow string attributes (`id`, `kind`, `name`, `qualname`, `language`) as `&str` (`BorrowedSqlValue::Text`) directly from the active loaded chunk rather than allocating owned `String`s (`BorrowedSqlValue::OwnedText`). The lifetime of `node_batch` is strictly bounded by the loaded chunk, flushing before the chunk is dropped to eliminate hundreds of thousands of heap string clones while keeping dynamic details in `BorrowedSqlValue::OwnedJsonText`.
 
-- INV-PERF-ZERO-CLONE-BATCHED-NODES: Borrow node string attributes directly from loaded file chunks in batch insertion loops without heap-cloning strings. [`persist_files_impl`](../../crates/acdd-index/src/db/ingest.rs) [`BorrowedSqlValue`](../../crates/acdd-index/src/db/batch.rs).
+- INV-PERF-ZERO-CLONE-BATCHED-NODES: Borrow node string attributes directly from loaded file chunks in batch insertion loops without heap-cloning strings. [`persist_files_impl`](../../crates/acdd-index/src/db/writer/ingest.rs) [`BorrowedSqlValue`](../../crates/acdd-index/src/db/writer/batch.rs).
 
 > [!IMPORTANT]
 > Invariant: Deferred Transient Node Paths Cache
 >
 > In `crates/acdd-index/src/db/writer.rs` (`populate_owned`) and `crates/acdd-index/src/db/delta.rs` (`persist_delta`), the `node_paths` lookup cache must be constructed immediately before `persist_graph` using `Cow<'a, str>` borrowed keys from in-memory facts rather than cloning owning `String` node IDs across the entire workspace. The cache must be explicitly dropped immediately after graph persistence to reclaim memory before index and Merkle sealing.
 
-- INV-PERF-DEFERRED-TRANSIENT-NODE-PATHS: Construct the `node_paths` cache immediately before graph persistence with borrowed `Cow<'a, str>` keys and drop it immediately after use. [`populate_owned`](../../crates/acdd-index/src/db/writer.rs) [`persist_graph`](../../crates/acdd-index/src/db/ingest.rs).
+- INV-PERF-DEFERRED-TRANSIENT-NODE-PATHS: Construct the `node_paths` cache immediately before graph persistence with borrowed `Cow<'a, str>` keys and drop it immediately after use. [`populate_owned`](../../crates/acdd-index/src/db/writer/mod.rs) [`persist_graph`](../../crates/acdd-index/src/db/writer/ingest.rs).
 
 > [!IMPORTANT]
 > Invariant: Edge Occurrence Endpoint Hash Reuse
 >
 > In `crates/acdd-index/src/db/ingest.rs` (`persist_graph`, `persist_dependencies`), resolved endpoint hashes `(src_target, dst_target)` computed during the occurrence pass must be retained in an occurrence-aligned vector (`resolved_edge_paths`) and forwarded directly to `persist_dependencies`. Dependencies must reuse these pre-resolved endpoint path hashes rather than repeating `graph_endpoint_hashes` lookups or executing redundant SQLite queries.
 
-- INV-PERF-OCCURRENCE-ENDPOINT-HASH-REUSE: Reuse resolved endpoint hashes from edge occurrence passes in dependency persistence to eliminate redundant hash-map lookups. [`persist_graph`](../../crates/acdd-index/src/db/ingest.rs) [`persist_dependencies`](../../crates/acdd-index/src/db/ingest.rs).
+- INV-PERF-OCCURRENCE-ENDPOINT-HASH-REUSE: Reuse resolved endpoint hashes from edge occurrence passes in dependency persistence to eliminate redundant hash-map lookups. [`persist_graph`](../../crates/acdd-index/src/db/writer/ingest.rs) [`persist_dependencies`](../../crates/acdd-index/src/db/writer/ingest.rs).
 
 > [!IMPORTANT]
 > Invariant: In-Memory File Language Fallback for Coverage
 >
 > In `crates/acdd-index/src/db/ingest.rs` (`persist_graph`), resolution coverage owner languages must be resolved from known in-memory file entries (`known_file_entries`) before falling back to SQLite queries. Cold builds must avoid round-tripping missing owners through JSON serialization and SQLite `json_each(?1)` subqueries whenever file metadata is available in memory.
 
-- INV-PERF-IN-MEMORY-FILE-LANGUAGE-FALLBACK: Resolve coverage owner languages from in-memory file entries to eliminate JSON-encoded SQLite subqueries. [`persist_graph`](../../crates/acdd-index/src/db/ingest.rs).
+- INV-PERF-IN-MEMORY-FILE-LANGUAGE-FALLBACK: Resolve coverage owner languages from in-memory file entries to eliminate JSON-encoded SQLite subqueries. [`persist_graph`](../../crates/acdd-index/src/db/writer/ingest.rs).
 
 > [!IMPORTANT]
 > Invariant: Compact Edge and Coverage Models with Shared Paths and Tags
@@ -415,7 +415,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Normalized Vector Storage for Node Binding Indexes
 >
-> In `crates/acdd-index/src/linker.rs` and downstream resolution modules, `NodeBindingIndex` must store per-node symbol identifiers in a sorted, deduplicated `Vec<SymbolId>` rather than separate heap hash tables (`hashbrown::HashSet<SymbolId>`). Membership checks must perform binary searches (`binary_search(&id).is_ok()`). Normalization (`sort_unstable()` and `dedup()`) must occur once after collecting declarations, Python flow bindings, and branch joins before publishing immutable indexes.
+> In `crates/acdd-index/src/linker/mod.rs` and downstream resolution modules, `NodeBindingIndex` must store per-node symbol identifiers in a sorted, deduplicated `Vec<SymbolId>` rather than separate heap hash tables (`hashbrown::HashSet<SymbolId>`). Membership checks must perform binary searches (`binary_search(&id).is_ok()`). Normalization (`sort_unstable()` and `dedup()`) must occur once after collecting declarations, Python flow bindings, and branch joins before publishing immutable indexes.
 
 - INV-PERF-NORMALIZED-NODE-BINDING-VECTORS: Store per-node binding identifiers in sorted, deduplicated vectors with binary search membership checks. [`NodeBindingIndex`](../../crates/acdd-index/src/linker/mod.rs) [`has_indexed_symbol_id`](../../crates/acdd-index/src/linker/typescript/resolution.rs).
 
@@ -438,7 +438,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `crates/acdd-index/src/db/dictionary.rs`, `PathDictionaryCache::bulk_insert` must accept `impl IntoIterator<Item = &'a str>` and push `BorrowedSqlValue::Text(path_ref)` into multi-value insertion batches, cloning strings only once for the in-memory dictionary cache.
 
-- INV-PERF-BORROWED-PATH-DICTIONARY-BULK-INSERT: Borrow path string references in dictionary bulk insertion batches to avoid duplicate SQL string cloning. [`PathDictionaryCache::bulk_insert`](../../crates/acdd-index/src/db/dictionary.rs).
+- INV-PERF-BORROWED-PATH-DICTIONARY-BULK-INSERT: Borrow path string references in dictionary bulk insertion batches to avoid duplicate SQL string cloning. [`PathDictionaryCache::bulk_insert`](../../crates/acdd-index/src/db/writer/dictionary.rs).
 
 > [!IMPORTANT]
 > Invariant: Strict Cargo Workspace Boundaries

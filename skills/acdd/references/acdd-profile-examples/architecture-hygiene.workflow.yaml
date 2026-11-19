@@ -1,0 +1,42 @@
+version: 2
+inherit: audit
+
+guidance:
+  audit.hygiene:
+    description: "GRAPH HYGIENE, CYCLES & SINGLE-OWNER AUDIT"
+    criteria:
+      - "Inspect code_map_overview(aspects=[\"counts\", \"components\", \"cycles\"]) to spot module cycles and layer violations."
+      - "Audit duplicate helpers (`duplicates`), unreferenced dead code (`dead_tails`), and canonical helper ownership (`INV-SINGLE-OWNER`) across subsystems."
+
+gates_patch:
+  - id: recon
+    guidance:
+      - audit.recon
+      - audit.hygiene
+      - code.tools
+      - hitl.pro
+    context:
+      - docs.instructions
+      - docs.adrs
+      - docs.invariants
+      - code.symbols
+
+  - id: analyze
+    contours:
+      - architecture
+      - correctness
+      - tests
+    guidance:
+      - audit.analyze
+      - audit.hygiene
+      - code.principles
+      - code.tools
+      - hitl.pro
+
+  - id: triage
+    contours:
+      - architecture
+      - claims
+      - administration
+    save:
+      report: ".acdd/reports/{run_name}-hygiene.md"

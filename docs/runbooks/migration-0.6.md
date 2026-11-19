@@ -26,12 +26,10 @@ docs:
 specs:
   milestones:
     path: docs/milestones
-    profile: workspace
     prefixes: [AC]
     digits: 3
   plans:
     path: docs/plans
-    profile: in_place
     prefixes: [PLAN]
     digits: 3
 profiles_dirs:
@@ -65,8 +63,8 @@ Ensure `.acdd/profile.yaml`, `.acdd/profiles/**`, and `.acdd/frameworks/**` rema
 .acdd/*.log
 .acdd/*.json
 .acdd/*.jsonl
+.acdd/reports/
 .acdd/run/
-.acdd/tasks/
 .acdd/tmp/
 ```
 
@@ -74,7 +72,7 @@ Ensure `.acdd/profile.yaml`, `.acdd/profiles/**`, and `.acdd/frameworks/**` rema
 
 Convert every profile under `.acdd/profile.yaml`, `.acdd/profiles/`, and `docs/workflows/` to the strict `GateProfile` (`version: 2`) schema (see [ACDD Profiles Reference](../reference/profiles.md)):
 
-1. Add `version: 2` at the top of the file (and `inherit: code` or `inherit: default`, `gates_merge: patch` when overlaying an embedded profile).
+1. Add `version: 2` at the top of the file (and `inherit: code` for standard software repositories, `inherit: audit` for read-only review/security scans, or `inherit: base` with explicit `gates:` for non-code workflows; use `gates_patch:` when patching specific inherited gates).
 2. Rename legacy gate keys:
    - `persistence` $\to$ `save`
    - `agent` $\to$ `role`
@@ -84,11 +82,11 @@ Convert every profile under `.acdd/profile.yaml`, `.acdd/profiles/`, and `docs/w
    - `steps` $\to$ `guidance` (inline `{ inline: "..." }` or key references into `guidance:`)
    - `proof: delivery` $\to$ `receipt: true` with `save.post: commit` (or `none`)
 3. Replace `loop:` blocks with explicit `fail: <gate_id>` edges and `max_attempts:`.
-4. Replace `proof: seam_test` with `proof: contract` (`command`, `expected_failure`, `{test_filter}`) plus `checks: [code.seam]` (or inherit `code` which attaches `code.seam` automatically), removing legacy `- id: seam` containers.
+4. Replace `proof: seam_test` (or legacy `proof: contract` / `expected_failure`) with `proof: command` plus `checks: [code.seam]` (or inherit `code` which attaches `code.seam` automatically), removing legacy `- id: seam` containers and `output:` regex scrapers.
 5. Convert any `*_proof` custom wrappers to `proofs.<name>` JSON Schemas (`SchemaDef`) or inline `proof: { scheme: ... }`.
 6. Rewrite legacy MCP tool names in `tools` / `default_tools` / `tools_add` (`task_*`, `session_checkpoint`, `forge_guide`) to `acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`, `acdd_read`, and `acdd_guide`.
 7. Recompute any local pinned `inherit: <path>:<sha256_prefix>` digests if the referenced profile changed.
-8. When using `inherit: code`, if your profile overrides `tags:`, retain/include `docs` (for example `tags: [default, docs, ...]`) or update the inherited `when: "!docs"` gates (`tasks.contract`, `tasks.contract_review`) so all `when:` tag references remain valid.
+8. When using `inherit: code`, if your profile overrides `tags:`, retain/include `docs` (for example `tags: [default, docs, ...]`) if downstream gates reference `!docs`. Remove obsolete `git.commit_mode`, `git.integrate`, `git_commit_notes`, and `save.git_commit_note` keys.
 
 ## 5. Clean Open `SpecDocument` Frontmatter and `### task:` Blocks
 

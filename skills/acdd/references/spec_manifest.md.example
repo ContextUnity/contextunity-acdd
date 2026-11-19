@@ -1,0 +1,50 @@
+---
+id: AC-010
+title: "Checkout Order Summary & Tax Guard"
+doc_type: contract
+status: active
+depends_on:
+  - AC-009
+owners:
+  - backend/src/checkout/
+  - tests/e2e/checkout/
+invariants:
+  - 'INV-ZERO-DOWNTIME-MIGRATION: Schema changes must be additive and backward-compatible.'
+  - 'INV-N-PLUS-ONE-GUARD: Order summary endpoints must execute <= 6 database queries.'
+required_skills:
+  - acdd
+  - test-suite-rules
+repositories:
+  - name: backend
+    path: backend
+  - name: e2e
+    path: tests/e2e
+---
+
+# Checkout Order Summary & Tax Guard
+
+## Outcome and purpose
+
+Deliver idempotent order summary calculation and tax validation with verified integration seams.
+
+---
+
+## Tasks in this milestone
+
+### task: backend-order-summary
+
+```yaml
+task_ref: backend-order-summary
+target: "Implement idempotent order summary and bounded query count in checkout service"
+contract_revision: 1
+scope:
+  - backend/src/checkout/services.py
+  - backend/src/checkout/views.py
+  - backend/tests/test_checkout_api.py
+status: planned
+subtasks:
+  - subtask_ref: query-budget-seam-test
+    title: "Prove <= 6 query budget on order summary endpoint"
+  - subtask_ref: tax-calculation
+    title: "Compute deterministic checkout tax"
+```

@@ -152,15 +152,12 @@ Reference qualified `<domain>.<capability>` identifiers inside `.acdd/profile.ya
 ```yaml
 version: 2
 inherit: code
-gates_merge: patch
 
-gates:
-  - id: tasks.contract
+gates_patch:
+  - id: tasks.build
     context:
       - docs.adrs
       - schema.contracts
-
-  - id: tasks.build
     checks:
       - code.seam
       - schema.lint

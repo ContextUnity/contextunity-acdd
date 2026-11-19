@@ -19,13 +19,11 @@ docs:
 specs:
   milestones:
     path: docs/milestones
-    profile: workspace
     prefixes:
       - AC
     digits: 3
   plans:
     path: docs/plans
-    profile: in_place
     prefixes:
       - PLAN
     digits: 3

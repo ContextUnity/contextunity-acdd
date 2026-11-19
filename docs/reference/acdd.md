@@ -47,17 +47,21 @@ ordered across 6 priority tiers inside `ResponsePolicy.max_output_bytes`:
 2. **Tier 2 (`unresolved_findings` + failed trace tail)**: Structured findings and
    the tail of the latest failed trace log after a reject/fail rewind.
 3. **Tier 3 (`pre_task_slice`)**: Pre-task blueprint slice (`proof.tasks[<task_ref>]`)
-   emitted by `blueprint_synthesis`.
+   emitted by `blueprint_synthesis`, and `predecessor_proofs` from completed
+   upstream sibling gates in the same container (e.g., `audit` `recon -> analyze -> triage`).
 4. **Tier 4 (`dependency_receipts`)**: Receipts from completed dependency tasks.
-5. **Tier 5 (`blackboard`)**: Up to 15 relevant blackboard entries capped at 500
-   characters each (including `decisions`, `findings`, and `blockers` callouts).
+5. **Tier 5 (`blackboard`)**: Up to 15 relevant blackboard `notes`, `blockers`,
+   and `decisions` entries capped at 500 characters each (excludes `findings`,
+   which arrive in Tier 2 `unresolved_findings`).
 6. **Tier 6 (`context_lenses`)**: Dynamic `DomainProvider` lenses declared on the
    gate's `context:` list (e.g., `docs.adrs`, `docs.invariants`, `code.symbols`,
    `code.tests`, `code.external_callers`), trimmed cleanly by section if needed
    and reported in `omitted_sections`.
 
 MCP state tools and flat CLI commands share `src/format/lifecycle.rs` Markdown
-rendering by default or structured JSON via `format: "json"` / `--format json`;
+rendering (delegating `ClaimResp` prompt formatting to
+[`render_claim_prompt_markdown`](../../crates/acdd-state/src/context.rs)) by
+default, or structured JSON via `format: "json"` / `--format json`;
 see the [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
 
 ### One Unified `Run` + `GateProfile` Engine
@@ -69,9 +73,10 @@ by `GateProfile` `git:` and `save:` policies:
 
 | Mode / Embedded Profile | Spec / Input | Isolation & `save` | Primary Use Case |
 | --- | --- | --- | --- |
-| **`default` / `code`** | `docs/milestones/*.md` or custom spec | `git.isolation: worktree`, `save: commit` | Multi-task milestones with `blueprint_synthesis`, task worktrees, and verified `handoff` |
-| **`in_place`** | `docs/plans/*.md` or feature spec | Inherits `workspace`, `git.isolation: in_place`, `save: none` | Multi-step changes on the active branch without worktrees or auto-commits |
-| **Ephemeral (`acdd start --goal`)** | Materialized `.acdd/run/<run_id>/spec.md` + `--scope` | `git.isolation: in_place` (or custom profile `save: none`) | Ad-hoc goal sweeps, autonomous QA, and single-run tasks |
+| **`base`** | Any spec or `--goal` | `git.isolation: worktree`, `save: commit` | Domain-pure baseline (`gates: []`) for custom overlays |
+| **`code`** (default) | `docs/milestones/*.md` or custom spec | `git.isolation: worktree`, `save: commit` | Multi-task milestones with `blueprint_synthesis`, task worktrees, and verified `handoff` |
+| **`audit`** | Any spec or `--goal` | `git.isolation: in_place`, `save: none` | Read-only `recon -> analyze -> triage` review and taint scanning with `.acdd/reports/{run_name}.md` |
+| **In-place / `--goal`** | Materialized `.acdd/run/<run_id>/spec.md` + `--scope` | Defaults to `code` (`worktree`) unless `--in-place` (`save: none`) or `--profile audit` | Taskless goal sweeps, autonomous QA, and single-branch runs |
 
 ---
 
@@ -84,11 +89,10 @@ gate uses one primary proof/execution contract:
   / `acdd_claim` and completed via `acdd submit` / `acdd_submit`. Review gates
   declare `proof: review` and non-empty `contours:`; delivery/handoff gates
   declare `receipt: true` and `save.post: commit` (or `none` in `in_place`).
-- **Command / contract gate** (`command: <command_id>`, optionally paired with a `role:`):
+- **Command gate** (`command: <command_id>`, optionally paired with a `role:`):
   Executed via `acdd verify` / `acdd_verify` (or headless `acdd run`) against the
   registered command slot and `test_filter`. Passing `command` proofs require
-  exit code `0` and `tests_failed == 0`; runtime-red `proof: contract` gates
-  require non-zero exit matching `expected_failure.exit_codes` and `--test`.
+  exit code `0` (plus any attached `checks:` such as `code.seam`).
 - **Domain action / check gate** (`call: <domain>.<action>`, `checks: [<domain>.<check>]`):
   Invokes `DomainProvider` capabilities registered in `src/state_bridge/` (such
   as `code.seam` reachability and `code.signature_scope` in `src/state_bridge/code_domain.rs`,
@@ -103,7 +107,7 @@ gate uses one primary proof/execution contract:
 
 Profile containers expand into `gate_nodes` rows (`container`, `root_gate`,
 `task`, `task_gate`) addressed by dotted `NodeCursor` identifiers
-(`blueprint_synthesis.synthesize`, `<task_ref>.contract`, `verify`, `handoff`).
+(`blueprint_synthesis.synthesize`, `<task_ref>.build`, `verify`, `handoff`).
 Pre-task root gates run before `- tasks:` blocks unlock; when a pre-task gate
 like `blueprint_synthesis.synthesize` submits `proof: blueprint` containing
 `tasks.<task_ref>`, `acdd-state` injects strictly that task's slice as Tier 3
@@ -132,7 +136,7 @@ completion.
 - **Save & Candidate Immutability (`save`)**: Claim admission records `claim_tree`
   from the scoped candidate tree (`TreeOid`); `save.immutable: true` rejects
   candidate drift at submit (`TASK_CANDIDATE_MISMATCH`); `save.post: commit`
-  creates a scoped Git commit (with optional `git_commit_note`) without
+  creates a scoped Git plumbing commit (`Acdd-Claim`) without
   polluting untracked engine paths excluded by `WorkspacePathPolicy`.
 
 ---
@@ -141,14 +145,15 @@ completion.
 
 Profiles follow the loading precedence documented in [ACDD profiles](profiles.md)
 and [Workspace configuration](configuration.md#declarative-acdd-profile-and-role-configuration).
-Repositories typically customize `.acdd/profile.yaml` with `version: 2`,
-`inherit: code` (or `default` / `in_place`), `gates_merge: patch`, and project
+Repositories typically rely on the automatic workspace default (`.acdd/profile.yaml`
+when present, else built-in `code`) and customize `.acdd/profile.yaml` with `version: 2`,
+`inherit: code` (or `base` / `audit`), `gates_patch:`, and project
 command bindings:
 
 ```yaml
 version: 2
 inherit: code
-gates_merge: patch
+gates_patch: []
 
 commands:
   test: "cargo test --lib {test_filter}"
@@ -158,18 +163,24 @@ commands:
 
 ---
 
-## Built-in Default Profile Walkthrough (`default.yaml` & `code.yaml`)
+## Built-in Default Profile Walkthrough (`base.yaml`, `code.yaml`, & `audit.yaml`)
 
-[`crates/acdd-state/src/profile/embedded/default.yaml`](../../crates/acdd-state/src/profile/embedded/default.yaml)
-defines the domain-pure three-phase milestone lifecycle (`commands: test`,
-`build_check`, `verify_all` are marked `unbound: true` in `default.yaml`, and
-`tasks.contract` uses `expected_failure: {}` without hardcoded language exit
-codes or `.acdd/frameworks` paths). Embedded
-[`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml) inherits
-`default.yaml` (`gates_merge: patch`), adds `tags: [default, docs]` (skipping
-`code.seam` on `docs` tasks), binds the 19 `default_tools`, attaches `code.seam`
-checks and `docs.*` / `code.*` context lenses, and strips `get_doc` /
-`search_docs` / `docs.*` hooks automatically when `modules.docs: false`.
+[`crates/acdd-state/src/profile/embedded/base.yaml`](../../crates/acdd-state/src/profile/embedded/base.yaml)
+defines the domain-pure baseline (`gates: []`, 7 core `default_tools`,
+universal `core.execution`, `core.review`, and `hitl.pro` guidance, and three
+core contours `paths`, `claims`, and `administration`). Embedded
+[`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml) (the
+built-in code-delivery fallback when `.acdd/profile.yaml` is absent) inherits `base`, adds the three-phase
+milestone lifecycle (`commands: build_check` and `verify_all` are marked
+`unbound: true`), sets `tags: [default, docs]` (`docs`-tagged tasks skip
+`code.seam`), binds the 19 `default_tools`, attaches `code.seam` checks and
+`docs.*` / `code.*` context lenses, adds `code.principles` and `code.tools`, and
+automatically strips disabled `code.*` / `docs.*` tools, checks, and lenses when
+`modules.code: false` or `modules.docs: false`. Embedded
+[`audit.yaml`](../../crates/acdd-state/src/profile/embedded/audit.yaml) inherits `base`
+with `git.isolation: in_place` and `save: none`, defining a read-only `recon -> analyze -> triage`
+review and security/taint scanning pipeline that propagates upstream stage proofs via
+`predecessor_proofs` and writes Markdown reports via `save.report: ".acdd/reports/{run_name}.md"`.
 
 ```text
 Phase 1: Pre-Task Root Container (`blueprint_synthesis`)
@@ -177,12 +188,10 @@ Phase 1: Pre-Task Root Container (`blueprint_synthesis`)
           │
           ▼  (fans out per-task blueprint slices; unlocks `- tasks:` wave)
 Phase 2: Per-Task DAG Container (`- tasks:`, executed in topological waves)
-  └─ contract (role: contract_author, command: test, proof: contract, expected_failure: {})
-       └─► contract_review (role: independent_reviewer, proof: review, contours [paths, claims, architecture], immutable, fail -> contract)
-             └─► build (role: builder, command: build_check, proof: command)
-                   └─► review (role: independent_reviewer, proof: review, 6 contours, immutable, fail -> build, fail_drift -> rearchitect)
-                         └─► deliver (role: independent_reviewer, need [build, review], receipt: true, save.post: commit)
-                   (rearchitect: role: architect, pass -> build with builder context reset)
+  └─ build (role: builder, command: build_check, proof: command)
+        └─► review (role: independent_reviewer, proof: review, 6 contours, immutable, fail -> build, fail_drift -> rearchitect)
+              └─► deliver (role: independent_reviewer, need [build, review], receipt: true, save.post: commit)
+        (rearchitect: role: architect, pass -> build with builder context reset)
           │
           ▼  (all non-cancelled tasks completed)
 Phase 3: Post-Task Closure
@@ -192,21 +201,24 @@ Phase 3: Post-Task Closure
                      └─ pass ──► handoff (role: independent_reviewer, need [verify, integration_review], receipt: true, save { immutable, commit, archive, prune })
 ```
 
-### Roles, Contours, and Guidance Slots in `default.yaml`
+### Roles, Contours, and Guidance Slots in `base.yaml` & `code.yaml`
 
-- **Roles**: `architect` (`subagent`, `reuse_on_reject: true`), `contract_author`
-  (`subagent`, `reuse_on_reject: true`), `builder` (`subagent`, `reuse_on_reject: true`),
-  and `independent_reviewer` (`subagent`, `reuse_on_reject: false`).
-- **Contours**: `paths`, `claims`, `architecture` (single-owner reuse, strict layer
-  boundaries, minimal mechanisms, and zero shadow subsystems or narrow string
-  heuristics), `concurrency`, `project_isolation`, and `administration`.
-- **Guidance slots**: `milestone.synthesis` (requires `INV-SINGLE-OWNER` audit and
-  forbids parallel registries/pipelines/shadow schedulers),
-  `milestone.blueprint_review`, `milestone.polish`, `milestone.review`,
-  `milestone.handoff`, `task.contract`, `task.contract_review`, `task.code`,
-  `task.review`, and `hitl.pro`. Code/polish slots enforce `REUSE & COMPLEXITY ESCALATION`
-  alongside `REBUTTAL OVER BLIND REWRITE`; review slots enforce `contours.architecture`
-  discipline alongside `BURDEN OF PROOF`.
+- **Roles** (`code.yaml`): `architect` (`subagent`, `reuse_on_reject: true`),
+  `builder` (`subagent`, `reuse_on_reject: true`), and `independent_reviewer`
+  (`subagent`, `reuse_on_reject: false`).
+- **Contours**: `paths`, `claims`, and `administration` (in `base.yaml`);
+  `architecture` (single-owner reuse, minimal complexity, strict layer
+  boundaries, and zero shadow subsystems), `concurrency`, and `project_isolation`
+  (in `code.yaml`).
+- **Guidance slots**:
+  - Universal (`base.yaml`): `core.execution` (admitted scope, proportional
+    verification, and `REBUTTAL OVER BLIND REWRITE`), `core.review` (`BURDEN OF
+    PROOF` and `acdd_blackboard` deferred routing), and `hitl.pro`.
+  - Code & milestone (`code.yaml`): `code.principles`, `code.tools`,
+    `milestone.synthesis`, `milestone.blueprint_review`, `milestone.polish`,
+    `milestone.review`, `milestone.handoff`, `task.code`, `task.review`, and
+    `task.rearchitect` (each gate composes four clean layers: task/stage slot,
+    `core.*`, `code.principles` + `code.tools`, and `hitl.pro`).
 
 ---
 
@@ -225,6 +237,6 @@ DAG waves using `crates/acdd-state/src/runner/`:
 
 ---
 
-## 6. Documentation and instructions co-evolution
+## 5. Documentation and instructions co-evolution
 
 A task that changes observable behavior, public interfaces, workflows, configuration, or operational assumptions updates matching documentation and agent instructions during its `build` stage (and includes those paths in its initial `scope`). Follow the [shared skill's task guidance](../../skills/acdd/SKILL.md#acdd-profiles-and-task-operations).

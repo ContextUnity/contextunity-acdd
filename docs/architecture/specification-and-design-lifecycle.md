@@ -8,7 +8,7 @@ doc_type: architecture
 ContextUnity ACDD separates problem definition (**Specify / Clarify**), architectural framing (**Design**), and automated proof (**Execution & Verification**), sizing ceremony to the scope of change (**S / M / L**) while keeping low-level component and code diagrams grounded in the live indexed AST graph.
 
 > [!NOTE]
-> Runtime boundaries are documented in the [architecture index](README.md) and [ACDD execution reference](../reference/acdd.md). The `default`, `code`, and `in_place` embedded profiles, blueprint properties `ac_mapping` and `c2_boundary_impact`, optional `spec` and `acceptance_criteria` projection, and unified `crates/acdd-state` `Run` execution support this lifecycle.
+> Runtime boundaries are documented in the [architecture index](README.md) and [ACDD execution reference](../reference/acdd.md). The `base`, `code`, and `audit` embedded profiles, blueprint properties `ac_mapping` and `c2_boundary_impact`, optional `spec` and `acceptance_criteria` projection, and unified `crates/acdd-state` `Run` execution support this lifecycle.
 
 ## Specify / Clarify before implementation
 
@@ -41,18 +41,18 @@ Every initiative maps to the lightest ACDD `GateProfile` (`git.isolation` and `s
 flowchart LR
   Spec["Specify / Clarify<br/>(Goal, Non-goals, AC-*)"] --> Triage{"Scope & Risk<br/>(S / M / L)"}
   Triage -->|"S: Ephemeral / standalone check"| WF["Ephemeral or Root-Only Run<br/>(--goal / workflow, save: none)"]
-  Triage -->|"M: Multi-step in-place refactor/feature"| PL["In-Place Plan Run<br/>(profile: in_place, save: none)"]
+  Triage -->|"M: Multi-step in-place refactor/feature"| PL["In-Place Plan Run<br/>(--in-place, save: none)"]
   Triage -->|"L: Architectural / multi-agent subsystem"| MS["Worktree Milestone Run<br/>(blueprint_synthesis + worktrees + commit/archive)"]
   WF --> Verify["Live Verification<br/>(Commands + Independent Review)"]
   PL --> Verify
-  MS --> Graph["Design & Seam Gate<br/>(SAD / C1-C2 / ADR + contract)"]
+  MS --> Graph["Design & Seam Gate<br/>(SAD / C1-C2 / ADR + build seam)"]
   Graph --> Verify
   Verify --> C34["Live C3/C4 Graph & Traceability<br/>(acdd-index + governs/cites_doc)"]
 ```
 
-- **Small (`S`) -> Ephemeral / Root-Only Run**: Single-purpose runs (`acdd start --goal ...` or root-gate workflow profiles) using `inherit: none` or `inherit: workspace` and `save: none`.
-- **Medium (`M`) -> In-Place Plan Run (`profile: in_place`)**: Coherent multi-step changes on the active working tree (`docs/plans/*.md`) with clear `AC-*` targets, ordered tasks and subtasks, `save: none` (zero auto-commits), and independent review.
-- **Large (`L`) -> Worktree Milestone Run (`profile: workspace` / `code`)**: Architectural or concurrent multi-task changes (`docs/milestones/*.md`) requiring pre-task `blueprint_synthesis` (`synthesize` -> `review`, mapping `AC-*` criteria, `C2` boundary impact, `ADR` requirements, and `SAD` updates into per-task slices), isolated Git worktrees, runtime-red `contract` tests with `code.seam` reachability, and bound `handoff` archival.
+- **Small (`S`) -> Ephemeral / Root-Only Run**: Single-purpose runs (`acdd start --goal ...` with `--profile audit` or root-gate workflow profiles) using `inherit: audit`, `inherit: base`, or `inherit: none` and `save: none` (and explicit `save.report` paths under `.acdd/reports/*.{md,json}` when emitting reports).
+- **Medium (`M`) -> In-Place Plan Run (`--in-place` or `git.isolation: in_place` profile)**: Coherent multi-step changes on the active working tree (`docs/plans/*.md`) with clear `AC-*` targets, ordered tasks and subtasks, `save: none` (zero auto-commits), and independent review.
+- **Large (`L`) -> Worktree Milestone Run (`.acdd/profile.yaml` default / `code`)**: Architectural or concurrent multi-task changes (`docs/milestones/*.md`) requiring pre-task `blueprint_synthesis` (`synthesize` -> `review`, mapping `AC-*` criteria, `C2` boundary impact, `ADR` requirements, and `SAD` updates into per-task slices), isolated Git worktrees, build seam tests with `code.seam` reachability, and bound `handoff` archival.
 
 ## Governance invariants
 

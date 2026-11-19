@@ -29,7 +29,7 @@ Unaffected files retain their cached nodes, edges, compressed `local_facts`, and
 
 ### 2. Parallel `ExtractionCache` Delta, Batch Hydration & `TEMP TABLE` Frontier (`PF-002`)
 
-Within [`delta_inner`](../../src/engine/pipeline.rs), [`crates/acdd-index/src/db/delta.rs`](../../crates/acdd-index/src/db/delta.rs), and archived [PF-002](../milestones/archive/PF-002-indexing-delta-and-query-acceleration.md):
+Within [`delta_inner`](../../src/engine/pipeline.rs), [`crates/acdd-index/src/db/writer/delta.rs`](../../crates/acdd-index/src/db/writer/delta.rs), and archived [PF-002](../milestones/archive/PF-002-indexing-delta-and-query-acceleration.md):
 
 - **Parallel extraction**: Modified files extract concurrently via Rayon using the shared [`ExtractionCache`](../../crates/acdd-index/src/db/writer/cache.rs) (`ACDD-EXTRACTION-FACTS\0\x04` under `O_NOFOLLOW`).
 - **Batch Zstd hydration**: Persisted `local_facts.facts_blob` rows for transitive frontier neighbors are batch-fetched from SQLite and decoded/hydrated in parallel rather than row-by-row.

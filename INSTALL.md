@@ -5,7 +5,7 @@ doc_type: guide
 
 # Installation, Workspace Setup, and Operational Guide
 
-ContextUnity ACDD (`0.6.1`) is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and a unified `GateProfile` state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (19 built-in tools plus optional `DomainProvider` plugin tools) and as a command-line interface (CLI).
+ContextUnity ACDD (`0.6.2`) is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and a unified `GateProfile` state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (19 built-in tools plus optional `DomainProvider` plugin tools) and as a command-line interface (CLI).
 
 This guide walks you through installing ACDD MCP, configuring your workspace, selecting profiles, installing companion skills globally, establishing repository rules, authoring indexed documentation, and running milestones, plans, and workflows.
 
@@ -194,7 +194,7 @@ Upgrading an existing `0.5.x` workspace? Follow the step-by-step [0.5.x to 0.6.0
 
 ### Complete Configuration Schema
 
-A fully featured `0.6.1` `acdd.yaml` template:
+A fully featured `0.6.2` `acdd.yaml` template:
 
 ```yaml
 # Source directories to parse and index into .acdd/code-map.sqlite
@@ -211,12 +211,10 @@ docs:
 specs:
   milestones:
     path: docs/milestones
-    profile: workspace
     prefixes: [AC]
     digits: 3
   plans:
     path: docs/plans
-    profile: in_place
     prefixes: [PLAN]
     digits: 3
 
@@ -322,9 +320,9 @@ ACDD uses `.acdd/` for runtime caches, indexes, and SQLite databases while persi
 .acdd/*.log
 .acdd/*.json
 .acdd/*.jsonl
+.acdd/reports/
 .acdd/run/
 .acdd/tmp/
-.acdd/backup-0.5/
 ```
 
 ---
@@ -336,20 +334,22 @@ Profiles (`GateProfile`, `version: 2`) govern lifecycle stages, `git:` isolation
 ### Profile Resolution Order
 
 When starting a run (`acdd start`) or validating (`acdd validate`), ACDD resolves the active profile in the following priority:
-1. **CLI `--profile` flag**: Explicit built-in name (`default`, `code`, `in_place`), `profiles_dirs` entry, or workspace-relative path.
-2. **Spec frontmatter `profile:`**: Profile declared in the specification Markdown frontmatter (e.g. `profile: workspace` or `profile: in_place`).
-3. **Collection default**: `specs.<collection>.profile` configured in `acdd.yaml`.
+1. **CLI `--profile` flag**: Explicit built-in name (`base`, `code`, `audit`), `profiles_dirs` entry, or workspace-relative path.
+2. **Spec frontmatter `profile:`**: Profile declared in the specification Markdown frontmatter (e.g. `profile: audit` or a custom `.workflow.yaml`).
+3. **Collection override**: Optional `specs.<collection>.profile` configured in `acdd.yaml`.
 4. **Repository default**: `.acdd/profile.yaml` if present.
-5. **Compiled built-in fallback**: The embedded `default` profile.
+5. **Compiled built-in fallback**: Embedded `code` (automatically stripping disabled `code`/`docs` domain hooks).
 
 If an `inherit:` reference includes a SHA-256 prefix (`<path>:<sha256_prefix>`), ACDD verifies the parent file digest on every load and fails closed if tampered.
 
 ### Built-in Profiles
 
 ACDD embeds three `version: 2` profiles (`crates/acdd-state/src/profile/embedded/`):
-- **`default`**: Domain-agnostic lifecycle (`blueprint_synthesis` -> per-task `contract`, `contract_review`, `build`, `review`, `deliver`, `rearchitect` -> `verify`, `polish`, `integration_review`, `handoff`) with `git.isolation: worktree`.
-- **`code`**: Inherits `default`, enables all 19 built-in tools, attaches `code.seam` verification checks, and binds `docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, and `code.external_callers` context lenses.
-- **`in_place`**: Inherits `workspace` (resolving `.acdd/profile.yaml` if present else `default`) with `git.isolation: in_place` and `save: none` for single-checkout plan execution.
+- **`base`**: Domain-pure worktree baseline (`gates: []`, 7 core tools, universal guidance, 3 core contours) with `git.isolation: worktree` and `save: commit`.
+- **`code`**: Built-in code-delivery baseline inheriting `base`, adding the three-phase milestone lifecycle (`blueprint_synthesis` -> per-task `build`, `review`, `deliver`, `rearchitect` -> `verify`, `polish`, `integration_review`, `handoff`), 19 built-in tools, `code.seam` verification checks, and `docs.*`/`code.*` context lenses.
+- **`audit`**: Read-only code review and security/taint scanning pipeline (`recon -> analyze -> triage`) inheriting `base` with `git.isolation: in_place`, `save: none`, structured `recon_map`/`candidate_findings`/`audit_report` schemas, adversarial false-positive disproof in `triage`, and `save.report: ".acdd/reports/{run_name}.md"`.
+
+Single-checkout in-place execution is selected via `--in-place` or `git.isolation: in_place` in a profile (`--in-place` sets `isolation: in_place`, `worktrees: manual`, `save: none`, and neutralizes `save.post: commit` to `none` while keeping `save.immutable: true`).
 
 ### Authoring a Custom Universal Profile (`version: 2`)
 
@@ -358,7 +358,6 @@ Create `.acdd/profile.yaml` to tailor commands, roles, and review contours to yo
 ```yaml
 version: 2
 inherit: code
-gates_merge: patch
 
 # Scoped command mappings referenced by patched gates
 commands:
@@ -371,16 +370,6 @@ commands:
     test_filter: "{test}"
     description: "Run strict checks and tests across project languages."
     timeout_seconds: 300
-    output:
-      counts: {passed: '(?m)\b(\d+) passed\b', failed: '(?m)\b(\d+) failed\b'}
-      require_counts: true
-
-  test:
-    command: "cargo test {test_filter}"
-    test_filter: "{test}"
-    output:
-      counts: {passed: '(?m)\b(\d+) passed\b', failed: '(?m)\b(\d+) failed\b'}
-      require_counts: false
 
   check_full_repo:
     command: "cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-targets"
@@ -388,11 +377,9 @@ commands:
     timeout_seconds: 1800
 
 # Patch command bindings onto the inherited gate tree
-gates:
+gates_patch:
   - tasks:
       gates:
-        - id: contract
-          command: test
         - id: build
           command: rust-check-and-test
   - id: verify
@@ -418,7 +405,7 @@ The repository includes a zero-config installer script (`./skills/install.sh`):
 ./skills/install.sh
 
 # Or install specific skills selectively:
-./skills/install.sh acdd test-contract-seam close-review-findings
+./skills/install.sh acdd test-suite-rules close-review-findings
 ```
 
 ### What `skills/install.sh` Does
@@ -438,11 +425,10 @@ The repository includes a zero-config installer script (`./skills/install.sh`):
 | Skill | Purpose |
 |---|---|
 | [`acdd`](skills/acdd/SKILL.md) | Essential ACDD operations: code navigation, symbol reads, task claims, blackboard, delivery |
-| [`test-contract-seam`](skills/test-contract-seam/SKILL.md) | Authoring compiling, failing seam tests for `contract` gates |
+| [`contract-planning`](skills/contract-planning/SKILL.md) | Architectural viability audit, ADR/invariant reconciliation, and contract planning |
+| [`test-suite-rules`](skills/test-suite-rules/SKILL.md) | Production-seam testing, table matrices, harness hygiene, and suite refactoring |
 | [`close-review-findings`](skills/close-review-findings/SKILL.md) | Diagnosing review rejections and implementing evidence-closed fixes |
-| [`test-suite-refactor`](skills/test-suite-refactor/SKILL.md) | Refactoring test suites while maintaining production coverage |
-| [`agent-instructions`](skills/agent-instructions/SKILL.md) | Authoring and updating `AGENTS.md`, SKILL.md, and documentation |
-| [`lean-ctx`](skills/lean-ctx/SKILL.md) | Compressed reading of source and command output |
+| [`agent-instructions`](skills/agent-instructions/SKILL.md) | Authoring and updating `AGENTS.md`, `SKILL.md`, and documentation |
 
 ---
 
@@ -537,7 +523,7 @@ ACDD marks the section with `is_invariant: true` and connects it to the governed
 
 ## 7. Working with Runs, Specs, Plans, and Workflows
 
-All stateful execution in ACDD `0.6.1` uses the unified flat CLI (`acdd draft`, `acdd start`, `acdd list`, `acdd show`, `acdd next`, `acdd claim`, `acdd verify`, `acdd submit`, `acdd integrate`, `acdd run`) backed by `.acdd/state.sqlite` and `GateProfile` v2.
+All stateful execution in ACDD `0.6.2` uses the unified flat CLI (`acdd draft`, `acdd start`, `acdd list`, `acdd show`, `acdd next`, `acdd claim`, `acdd verify`, `acdd submit`, `acdd run`) backed by `.acdd/state.sqlite` and `GateProfile` v2.
 
 ### Spec & Run Lifecycle
 
@@ -577,13 +563,13 @@ Agents advance gates through atomic claims, observed verification, and claim-bou
 acdd next
 
 # 2. Claim a ready node (or omit cursor to auto-select)
-acdd claim t1.contract --worker agent-1 --worktree .
+acdd claim t1.build --worker agent-1 --worktree .
 
 # 3. Run gate verification without advancing state (records fresh trace)
-acdd verify t1.contract --test tests/auth_test.rs::test_token_expiry
+acdd verify t1.build --test tests/auth_test.rs::test_token_expiry
 
 # 4. Submit pass against the observed trace (or --action reject --findings '<JSON>')
-acdd submit t1.contract --action pass
+acdd submit t1.build --action pass
 ```
 
 #### 4. Collaboration via `acdd_blackboard` and Scope Extensions
@@ -602,8 +588,8 @@ acdd extend-scope t1 --path src/auth/utils.rs --reason "Share token helper acros
 #### 5. Task Integration and Terminal Handoff
 
 ```bash
-# Integrate completed task branches into the run worktree
-acdd integrate --strategy rebase-ff
+# Integrate completed task branches into the run worktree (automated `acdd run` lands via rebase-ff)
+git merge --no-ff <task-branch>
 
 # Run terminal verification and submit handoff (commits receipt, archives spec, prunes run)
 acdd verify verify
@@ -615,6 +601,6 @@ acdd submit handoff --action pass
 
 ### In-Place Plans, Standalone Workflows, and Plugin Tools
 
-- **In-Place Plans (`docs/plans/*.md`)**: Start with `acdd start docs/plans/migration-plan.md --in-place` (or `profile: in_place` in frontmatter). Snapshots replace commits so work runs cleanly in the current checkout.
-- **Standalone Workflows (`docs/workflows/*.workflow.yaml`)**: Start taskless root-gate workflows with `acdd start --goal "Audit docs links" --profile docs-refactor-and-reconcile`.
+- **In-Place Plans (`docs/plans/*.md`)**: Start with `acdd start docs/plans/migration-plan.md --in-place` (or select a `git.isolation: in_place` profile via `profile:` / `specs.plans.profile`). `--in-place` neutralizes `save: commit` to `none` so work runs cleanly in the current checkout.
+- **Audit & Standalone Workflows (`audit`, `docs/workflows/*.workflow.yaml`)**: Start read-only audits via `acdd start --goal "Audit auth paths" --profile audit` (writing reports to `.acdd/reports/<run_name>.md` on `triage` pass), or run custom workflow files with `--profile <name>`.
 - **External `DomainProvider` Plugin Tools**: Invoke registered plugin tools from CLI via `acdd tool <domain>_<name> --args '{"key":"value"}'` or directly over MCP.

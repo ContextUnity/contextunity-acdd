@@ -24,7 +24,7 @@ Method-call linking (for example resolving `user.save()` to `User.save`) require
 
 ### 2. Bounded Local Branch Joins (`MAX_CANDIDATE_BRANCH_JOINS = 8`)
 
-In [`crates/acdd-index/src/linker/value_flow.rs`](../../crates/acdd-index/src/linker/value_flow.rs):
+In [`crates/acdd-index/src/linker/value_flow/mod.rs`](../../crates/acdd-index/src/linker/value_flow/mod.rs):
 
 - **Exact (`calls`) vs. Possible (`possible_calls`)**:
   - When every enumerated local exit path proves the same single declaration identity, emit an exact `calls` edge (`resolved`).

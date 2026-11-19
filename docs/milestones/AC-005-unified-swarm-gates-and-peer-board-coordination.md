@@ -33,7 +33,7 @@ invariants:
   - 'INV-CORE-LEAF: Keep pure unified-gate and blackboard DTOs (GateMode, WithSource, NamespaceRoot, BlackboardRecipient, BlackboardWaitReq) in acdd-core free of SQLite, Git, HTTP, or filesystem I/O.'
   - 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: Every AC-005 capability ships in the same milestone with updated ADR-0003, architecture/reference/runbook docs, executable docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml examples, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
 acceptance_criteria:
-  - 'AC-1: TasksBlock (- tasks:) is removed from GateDef (profile/schema.rs, inherit.rs, validate.rs) and embedded profiles (default.yaml, code.yaml, in_place.yaml), turning task execution into an ordinary mode: swarm GateDef with uniform hierarchical cursors.'
+  - 'AC-1: TasksBlock (- tasks:) is removed from GateDef (profile/schema.rs, inherit.rs, validate.rs) and embedded profiles (base.yaml, code.yaml, audit.yaml), turning task execution into an ordinary mode: swarm GateDef with uniform hierarchical cursors.'
   - 'AC-2: Existing GateDef.with resolves single refs, pipe chains, YAML lists, { count: N }, and { items, args } (for leaf swarm call: gates) left-to-right across spec.<field>, input.<field>, and <gate_id>.<field> (flattening sharded mode: swarm proofs in deterministic shard order) and propagates typed gate_artifacts into ClaimResp.inputs.'
   - 'AC-3: Extended native GateDef.when evaluates across root, container, and shard gates over tags, spec.*, input.*, <gate_id>.*, item.*, event.*, and diff.* (e.g. when: "!spec.tasks", when: "!docs", when: "item.is_new & !item.muted").'
   - 'AC-4: mode: parallel opens heterogeneous child gates[] simultaneously and joins at a consolidated barrier, while mode: swarm schedules depends_on items concurrently in topological waves—lock-free under SQLite CAS for save: none and disjoint-scope or worktree-isolated for save != none.'
@@ -42,7 +42,7 @@ acceptance_criteria:
 required_skills:
   - acdd
   - contract-planning
-  - test-contract-seam
+  - test-suite-rules
   - agent-instructions
 ---
 
@@ -66,13 +66,13 @@ Together, the five `AC` milestones compose into one general-purpose, local-first
 
 ### 1. Single gate execution model (`mode: linear | parallel | swarm`) & removal of `- tasks:`
 
-Replace `TasksBlock` (`tasks: Option<TasksBlock>` / `RawTasksBlock` / `WorkingTasksBlock` in `crates/acdd-state/src/profile/{schema,inherit,validate}.rs` and embedded profiles `default.yaml`, `code.yaml`, `in_place.yaml`) with one unified `GateMode` enum on `GateDef` plus optional `max_concurrency: Option<u32>`:
+Replace `TasksBlock` (`tasks: Option<TasksBlock>` / `RawTasksBlock` / `WorkingTasksBlock` in `crates/acdd-state/src/profile/{schema,inherit,validate}.rs` and embedded profiles `base.yaml`, `code.yaml`, `audit.yaml`) with one unified `GateMode` enum on `GateDef` plus optional `max_concurrency: Option<u32>`:
 
 1. **`mode: linear`** *(default)*: Executes child `gates[]` sequentially (`A -> B -> C`), or runs a leaf gate once.
 2. **`mode: parallel`**: Opens all admitted child `gates[]` simultaneously (`A || B || C` heterogeneous branches up to `max_concurrency`) and joins at a container barrier. If any branch fails or rejects, the barrier waits for in-flight siblings to settle, aggregates all branch `rejection_findings` into one consolidated batch, and routes once to `GateDef.fail` (respecting `max_attempts`).
 3. **`mode: swarm`**: Instantiates this gate (leaf or child `gates[]` pipeline) dynamically per item resolved from `with:` (`G[item_1] || ... || G[item_N]`), scheduling ready items concurrently in topological waves (up to `max_concurrency`) when items carry `depends_on`.
 
-Removing `- tasks:` turns the task lifecycle into an ordinary named `GateDef` (for example, `id: implement`, `mode: swarm`, `with: spec.tasks | blueprint.tasks`). Every gate and shard is addressed uniformly by hierarchical cursors (`poll[telegram]`, `implement[core-cleanup].build`), and profile inheritance (`gates_merge: patch`) addresses gates uniformly by `id` without special-cased `WorkingTasksBlock` patch rules.
+Removing `- tasks:` turns the task lifecycle into an ordinary named `GateDef` (for example, `id: implement`, `mode: swarm`, `with: spec.tasks | blueprint.tasks`). Every gate and shard is addressed uniformly by hierarchical cursors (`poll[telegram]`, `implement[core-cleanup].build`), and profile inheritance (`gates_patch:`) addresses gates uniformly by `id` without special-cased `WorkingTasksBlock` patch rules.
 
 ### 2. Lock-free `save: none` CAS vs. disjoint-scope / worktree isolation (`save != none`)
 
@@ -117,8 +117,7 @@ gates:
     max_concurrency: 4
     save: none
     gates:
-      - { id: contract, role: builder,  proof: contract, pass: build }
-      - { id: build,    role: builder,  proof: build,    pass: review }
+      - { id: build,    role: builder,  proof: command,  pass: review }
       - { id: review,   role: reviewer, proof: review,   independent_from: [build], pass: deliver, fail: build }
       - { id: deliver,  role: builder,  save: commit }
     pass: verify
@@ -179,9 +178,9 @@ scope:
   - crates/acdd-state/src/profile/inherit.rs
   - crates/acdd-state/src/profile/validate.rs
   - crates/acdd-state/src/profile/mod.rs
-  - crates/acdd-state/src/profile/embedded/default.yaml
+  - crates/acdd-state/src/profile/embedded/base.yaml
   - crates/acdd-state/src/profile/embedded/code.yaml
-  - crates/acdd-state/src/profile/embedded/in_place.yaml
+  - crates/acdd-state/src/profile/embedded/audit.yaml
   - crates/acdd-state/src/store/sqlite/migrations.rs
   - crates/acdd-state/src/store/sqlite/schema.rs
   - tests/acdd/mod.rs
@@ -193,7 +192,7 @@ subtasks:
   - subtask_ref: replace-tasks-block-and-sqlite-v2
     title: "Remove TasksBlock (- tasks:) from GateDef and embedded profiles in favor of mode/with/when/max_concurrency, lift root-gate when: restriction, plus SQLite v1->v2 blackboard @mentions/thread_id/seq migration"
   - subtask_ref: swarm-seam-registration
-    title: "Register tests/acdd/swarm.rs in tests/acdd/mod.rs with runtime-red contract matrices"
+    title: "Register tests/acdd/swarm.rs in tests/acdd/mod.rs with compiling seam test matrices"
 ```
 
 ### task: parallel-barrier-and-lockfree-cas

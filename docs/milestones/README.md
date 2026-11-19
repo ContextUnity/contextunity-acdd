@@ -43,7 +43,7 @@ Active commitments follow the `TAG-NNN` standard; archived milestone files retai
 
 ## Milestone Authoring and Contract Governance
 
-Every milestone document in `docs/milestones/` is a strict `SpecDocument` execution contract (`#[serde(deny_unknown_fields)]`). Follow [`docs/milestones/AGENTS.md`](AGENTS.md) for the active `0.6.0` format and Wave 0 bootstrap template.
+Every milestone document in `docs/milestones/` is a strict `SpecDocument` execution contract (`#[serde(deny_unknown_fields)]`). Follow [`docs/milestones/AGENTS.md`](AGENTS.md) for the active `SpecDocument` format and Wave 0 bootstrap template.
 
 ### 1. Frontmatter Format
 
@@ -52,7 +52,6 @@ Every milestone document in `docs/milestones/` is a strict `SpecDocument` execut
 id: AC-008-example-milestone
 title: "Example milestone title"
 doc_type: contract
-profile: workspace
 status: planned
 depends_on: []
 owners:

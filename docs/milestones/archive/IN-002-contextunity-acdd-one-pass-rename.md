@@ -274,7 +274,7 @@ build inputs, shell, YAML, and test fixtures as well.
 and workspace boundaries in
 [performance invariants](../../architecture/performance.md#model-and-agent-invariants-immutable-guidelines).
 The explicit protected-infrastructure exception comes from the user goal and
-[the planning add-on](../../../skills/contract-planning/ADDON.md), not a fabricated
+`skills/contract-planning/ADDON.md`, not a fabricated
 search hit. `docs/adr/0021-workflow-plan-and-milestone-lifecycle-hierarchy.md`
 keeps this taskless authoring workflow separate from future milestone task rows.
 

@@ -1,200 +1,109 @@
 ---
 name: acdd
-description: Load for repository onboarding to ACDD, code discovery, symbol lookup, dependency tracing, impact analysis, architectural verification, or ACDD task operations. Routes setup, structural search, and task coordination through ACDD MCP.
+description: Load for repository onboarding to ACDD, code discovery, symbol lookup, dependency tracing, impact analysis, graph hygiene, or ACDD task operations. Routes navigation, structural search, and task coordination through ACDD MCP.
 ---
 
 # ContextUnity ACDD
 
 Use ACDD's indexed code graph, AST search, documentation graph, and task tools.
-Prefer registered MCP tools; use the CLI for operations it owns. Fall back to
-local search only when ACDD is unavailable. The active registry and schemas are
-the authority; see the [tool catalog](references/tool-catalog.md) for signatures
-and [routing examples](references/agents.md.example) for repository integration.
+Prefer registered MCP tools; use the CLI (`acdd ...`) for offline operations it
+owns, and fall back to local search only when ACDD is unavailable. Active tool
+schemas are the authority; see [tool catalog](references/tool-catalog.md) for
+signatures, [profile reference](references/profile-reference.md) for `GateProfile`
+options, and [routing example](references/agents.md.example) for repo setup.
 
-For a request to onboard or configure a repository for ACDD, follow the
-[repository onboarding guide](references/onboarding.md). It adapts the companion
-examples to the repository's actual tooling, instructions, and delivery goals.
+For repository onboarding or setup, follow the
+[onboarding guide](references/onboarding.md). Before authoring or refactoring any
+test, load `test-suite-rules`.
 
-## Orient and select the workspace
+## Orient and select workspace
 
-Start with `code_map_overview()` and confirm the root, components, languages, and
-coverage before claiming a symbol or dependency is absent. Pass `worktree` to
-select another checkout; omission keeps the canonical server root regardless of
-client cwd or active task claims.
+Start with `code_map_overview()` to verify the root, components, languages, and
+coverage before assuming a symbol or dependency is absent. Pass `worktree` when
+targeting another checkout; omitting `worktree` uses the canonical server root
+regardless of active claims.
 
 Worktree selectors resolve explicit paths first, then exact directory name,
-literal or zero-normalized numeric prefix, suffix, and substring. The first
-nonempty tier must be unique. Selected worktrees use their own adapter and index;
-Git-linked worktrees share the resolved state store (`<primary_worktree>/.acdd/state.sqlite`).
-CLI navigation uses `--root`; CLI `acdd claim` uses an existing `--worktree` path, not MCP name aliases.
+literal or zero-normalized numeric prefix, suffix, and substring (first nonempty
+tier must be unique). Git-linked worktrees resolve `<primary_worktree>/.acdd/state.sqlite`
+and shared locks automatically. CLI `--worktree` takes an explicit directory path.
 
-Use [adapter defaults](references/adapters.md) and the
-[adapter example](references/acdd.yaml.example) for roots, linked workspaces,
-documentation paths, and response policy. Include both `src` and `crates` in
-multi-crate workspace roots.
+## Discovery & read protocol
 
-## Unified parameter conventions
-
-| Intent | Parameters and examples |
-| --- | --- |
-| Find symbols | `code_map_search(pattern="Router", path="src")`; `query` aliases `pattern`. Use `takes:Type`, `returns:Type`, decorators, or `prefix*` to narrow discovery. |
-| Resolve / inspect a symbol | `code_map_inspect(selector="Router", path="src")`; `symbol` aliases `selector`, and `file_path` aliases `path`. Selectors accept an exact ID or name, `path:name`, `path:known_kind:name`, `path:line`, or `path#Lline`. |
-| Match syntax | `ast_grep_search(pattern="fn $NAME($$$ARGS) {}", language="rust", path="crates")`; `query` aliases `pattern`, and `file_path` aliases `path`. Omit `language` for recognized file extensions or single-language indexed directories; supply `language` when `path` is omitted or spans multiple compiled languages. CLI requires `--lang`. |
-| Find documentation | `search_docs(query="routing", path="docs", include_excerpt=true)`; `pattern` aliases `query`, and `path` aliases `component`. |
-| Read documentation | `get_doc(path="docs/reference/tasks.md", detail="compact")`; `path` and `selector` alias `path_or_id`. Omit `section` for an outline; specify an exact section title to read its content. |
-| Diagnose | `code_map_analyze(path="src")`; `path` and `selector` alias `target`. Omit the target for workspace totals. `lint=true` reads stored syntax diagnostics; `include_cycles=true` opts into cycles. |
-| Query SQL | `code_map_query(sql="SELECT count(*) FROM nodes")` implies `operation="sql"`. The explicit form is `code_map_query(operation="sql", selector="SELECT ...")`; `query` also accepts SQL. |
-| Query graph | `code_map_query(operation="implementations", selector="LanguageLinker")` or `code_map_query(operation="untested", target="src")`; `query` aliases the selector. |
-| Find duplicates | `code_map_query(operation="duplicates", level="symbol", min_lines=10, target="crates")`; `level` accepts `"symbol"` (functions/methods body clones) or `"file"` (identical files by digest). `min_lines` defaults to 10. `target` or `path` restricts search scope. |
-
-Use one spelling for each aliased parameter in a request. The schemas advertise
-aliases as optional properties; handlers reject a nonempty canonical value combined
-with an alias. For SQL, an explicit `sql` field takes
-precedence over `query`, then `selector`. A `SELECT`/`WITH` statement in `operation`,
-or in `query` with an omitted/blank operation, also selects SQL mode. SQL accepts
-one read-only `SELECT`/`WITH` statement using integer `path_dictionary` and `node_hash` joins; see the [SQL column schema](references/tool-catalog.md#sql-columns-and-joins-code-mapsqlite) before writing custom queries. Missing-table or missing-column SQL errors retain the SQLite error and append a schema hint.
-
-## Read symbols and trace relationships
-
-Reuse sufficient search previews. Use `code_map_inspect` for a declaration,
-signature, docstring, and compact call summary; use `code_map_explain` for paged
-incoming/outgoing relationships. Request `include_coverage=true` when resolution
-evidence matters.
-
-**Known symbol reads**: When the unique name is already known, use
-`acdd_read(selector="SymbolName")` directly; add the owner path with
-`acdd_read(path="...", selector="SymbolName")` to restrict resolution. For
-example, prefer `acdd_read(selector="render_role_prompt")` over first calling
-`code_map_search(pattern="render_role_prompt")` and then reading a line range:
-the direct snippet checks the indexed digest and returns the complete symbol body
-within the response budget. If it is paged, continue with its `source_offset`
-and `generation` until complete. Search when the name is unknown or resolution
-needs disambiguation; inspect the returned node to confirm the intended owner.
-MCP also accepts `acdd_read(symbol="SymbolName")` as an alias. Two non-null
-`symbol` and `selector` values conflict even if one is empty; `null` is absent.
-Path restriction and paging are unchanged.
-
-For arbitrary line bounds, `acdd_read` accepts `start_line` and `line_count`, plus ergonomic variations: `end_line` computes the inclusive `line_count` from `start_line` (default 1) and rejects zero or an end before the start, `lines="100-200"` parses range bounds into `start_line` and `line_count`, `lines=50` or `max_lines=50` aliases `line_count`, `file_path` aliases `path`, and `query` aliases `pattern`. Workspace-root absolute paths are automatically stripped to relative workspace paths. When reading lines enclosed inside an indexed function, struct, or method, `acdd_read` emits an enclosing symbol hint in the output footer with the copy-ready `selector` call. Use `mode="search"` with `pattern` for literal/regex search, `mode="delta"` for Git changes, and `mode="outline"` for Markdown or code declarations.
-CLI parity is `acdd read notes.txt --mode lines`. Snippets default to the complete symbol within the
-serialized byte budget; `max_body_lines` sets an explicit smaller bound. Inspect
-and explain retain configured preview defaults. Core text reads work without codemap. Respect `sensitive` path blocking and
-confined `output_file` exports. Follow the conditional `Hints` footer only when
-the enabled graph or active task confirms the suggested operation. Use `ctx_read`
-for a single source line too large for the MCP budget.
-
-Run depth-1 `code_map_impact` before interface edits or removals. Git change views
-accept exactly one of `selector` or `changes="staged"|"unstaged"|"head"`; check
-`complete` and `unmapped_changes` before treating the view as exhaustive.
-`code_map_prove_removal` supplies indexed removal evidence, not runtime proof.
-
-`code_map_tests` follows exact `calls` paths from classified test cases. Helpers
-may occur inside a path but are not coverage roots. `possible_calls`, lexical
-suggestions, and an absent indexed test call do not prove runtime coverage.
-
-### Code clone and duplicate detection
-
-Use `code_map_query(operation="duplicates", level="symbol", min_lines=10, target="crates")` to identify duplicated code across the workspace:
-- `level="symbol"`: Finds function and method clones. Exact matches use SHA-256 hashes of literal symbol source slices; near-clones use normalized line similarity clustering among symbols with matching names.
-- `level="file"`: Finds byte-identical duplicate files by SHA-256 content digest.
-- `min_lines`: Filters candidates by minimum lines of code (default: 10).
-- `target` or `path`: Restricts detection scope to a specific directory or file.
-- Results provide grouped locations, line counts, duplicate counts, and actionable architectural `suggestion` strings indicating how and where to centralize or deduplicate code.
-- CLI equivalent: `acdd query run duplicates --level symbol --min-lines 10`.
-
-## Documentation and graph provenance
-
-Triage with `search_docs(query="...", include_excerpt=true)`, inspect an outline
-with `get_doc(path="...", detail="compact")`, then read a specific
-`section="..."`. Full content is the default for `get_doc`.
-
-Confined Markdown links/wikilinks create `cites_doc`/`cited_by_doc` only when one
-indexed section resolves. Code claims use the document's workspace unless an
-explicit normalized source-file path confines the target. Eligible declarations
-resolve by the first nonempty tier: normalized qualname, exact name, then
-qualified-name segment suffix. Only one target in that tier verifies a claim.
-
-Full document results expose ambiguous `referenced_symbol_candidates`;
-compact results omit them and hint at full detail. Candidates and suggestions
-are navigation only. Verified references appear in `documented_in`; impact
-returns `affected_docs`, including retained source-file claims after removal.
-An `INV-*` governance edge requires a unique code claim within the invariant
-node's line span. An explicit normalized source-file link confines resolution;
-an unscoped code claim uses the document's workspace and the same uniqueness rule.
-Archived documents under any `archive/` directory are excluded from default
-documentation search and hubs. Search them with an explicit archive
-`component`/`path`, or read them with `get_doc`. They emit no `documents`,
-`references_doc`, `governs`, or `governed_by` edges. Claim context bundles
-intersect indexed non-archive documentation across the repository via `governs`
-and `documents` edges while excluding `archive/**` and configured spec-collection
-or contract documents already materialized in `context_bundle.contract` and
-`context_bundle.governing_invariants`. Bounded governing-rule projections
-supplement task authority and proof.
-
-Follow the [documentation layout](references/documentation-layout.md); adapt the
-[docs README](references/docs-readme.md.example) and
-[docs rules](references/docs-agents.md.example) when setting up a repository.
-Read [framework pack guidance](references/framework-packs.md) before changing
-declarative extraction rules; keep API identities in rule data and preserve
-canonical typed facts and exact-target evidence.
-
-## Response bounds and continuation
-
-SQLite queries have a 2-second budget. Responses cap at 96 KiB unless configured
-lower; serialized metadata and Markdown/JSON escaping count toward that limit.
-Pages default to 30 items and allow 1–100. Prefer compact detail for discovery and
-full detail for one selected entity. MCP defaults to Markdown; use `format="json"`
-or CLI `--format json` for structured consumption.
-
-Continue collection pages with `next_offset` and the returned `generation`.
-Source continuation uses `next_source_offset` as `source_offset` with that page's
-explicit generation. Missing or stale tokens require a restart; no generation is
-inferred. Source pages contain complete lines and verify the on-disk digest.
-Task-list generations bind task state separately from code-index generations.
-On computation limits, narrow scope/depth; on byte limits, reduce detail or page
-size. Inspect a truncated blackboard message by its returned message ID.
-
-## Test harness ownership
-
-When present, read the target repository's `docs/architecture/test-harness.md`,
-section "Rule 3: The Two-Caller Rule".
-Shared disk setup lives in `tests/common`. Shared ACDD session, evidence, and
-task completion live in `tests/acdd/support.rs`. A domain harness function needs
-at least two callers. Load `test-suite-refactor` when moving setup out of a
-`#[test]`.
+- **Known symbol**: Call `acdd_read(selector="SymbolName")` directly (optionally add
+  `path="..."`); follow returned `source_offset` + `generation` until complete
+  instead of searching + slicing lines manually. `symbol` aliases `selector` (do
+  not supply both non-null).
+- **Line/text/diff reads**: Use `acdd_read(path=..., mode="lines|raw|search|delta|outline")`
+  (`end_line`, `lines="100-200"`, `file_path`, and `query` aliases supported).
+  Use `mode="search"` (`regex=false|true`) for workspace text/config searches;
+  reserve shell `rg -n` for gitignored or unadmitted paths.
+- **Discovery & call graph**: Use `code_map_search(pattern=..., detail="compact")`
+  (`takes:Type`, `returns:Type`, `prefix*`), `ast_grep_search` (`$NAME`, `$$$SEQ`
+  over `complete_syntax`, `declaration_without_body`, `fragment_probe`),
+  `code_map_inspect` / `code_map_explain`, and depth-1 `code_map_impact` before
+  changing or removing interfaces. `code_map_prove_removal` checks static
+  candidates (`possible_calls`) but is not a runtime-safety proof.
+- **Tests**: `code_map_tests` traverses verified `calls` paths from tests;
+  `possible_calls` and lexical suggestions are navigation hints, not verified
+  coverage.
+- **Documentation**: Use `search_docs(query=..., include_excerpt=true)`, then
+  `get_doc(path=..., detail="compact")` for outlines and `get_doc(path=..., section="...")`
+  for full sections. Archived files under `*/archive/` are excluded from default
+  search and emit no `governs` / `documents` graph edges.
+- **Graph hygiene (`duplicates` & `dead_tails`)**: Before submitting `build`,
+  `polish`, or any code review, run `code_map_query(operation="duplicates", level="symbol", min_lines=10, path=...)`
+  and `code_map_query(operation="dead_tails", path=...)` (workspace-wide without
+  `path`/`target` on integration reviews). `dead_tails` computes workspace-wide
+  production liveness first, then reports `phantom_tested`, `dead_tails`, and
+  `dangling_calls` (`crate::*`/`super::*`/`self::*`). Eliminate or reject new
+  clones, phantom-tested dead code, dead tails, and dangling calls.
+- **SQL & bounds**: Supply one alias per parameter (`sql` or `query` for read-only
+  `SELECT`/`WITH` joins over `path_dictionary` and `node_hash`; see
+  [tool catalog](references/tool-catalog.md#sql-columns-and-joins-code-mapsqlite)).
+  Queries have a 2s budget, 96 KiB cap, and default page size 30 (max 100); continue
+  with the returned `next_offset` / `next_source_offset` and `generation`.
 
 ## ACDD profiles and task operations
 
-> [!NOTE]
-> **Upgrading from `0.5.x`:** Legacy `0.5.x` top-level keys in `acdd.yaml` (`milestones`, `plans`, `tasks_db`, `workflows_dir`, `milestone_prefix`, `plan_prefix`, `task_repository`, `task_project`, `acdd_profile`) fail closed with `CONFIG_MIGRATION_REQUIRED`; upgrade `acdd.yaml`, `.gitignore`, `.acdd/profile.yaml` (`version: 2`), and open specs per the `0.6.x` migration runbook and verify fail-closed with `acdd validate`.
+Embedded profiles (`base`, `code`, `audit`) or repository `.acdd/profile.yaml`
+(`version: 2`, validated via `acdd validate`) govern gates, proof schemas,
+contours, isolation (`--in-place` overrides to `git.isolation: in_place`, `save: none`,
+preserving `save.immutable: true`), and `save.report` (written strictly under
+`.acdd/reports/*.{md,json}` on pass). Do not assume a hardcoded gate sequence:
 
-Workflow sequence, roles/models, proof gates, review contours, commands, `git:` isolation/integration policy, and persistence belong to the active embedded or repository `GateProfile` (`version: 2`). Read `workflow_guidance` returned by `acdd_claim` (`acdd claim`) and submit the declared proof payload; do not infer a fixed gate sequence from this skill. Repository `AGENTS.md` owns verification commands and Git permissions. Keep temporary run artifacts under `.acdd/tmp/` and outside source authority.
-
-Use `inherit: none` with `save: none` for taskless workflows, `inherit: in_place` (which inherits `workspace`, resolving `.acdd/profile.yaml` when present else domain-pure `default`, with `save: none`) or `--in-place` for single-checkout plans, and `inherit: default` or `inherit: code` (which adds `tags: [default, docs]` so `docs` tasks skip `code.seam` and strips `get_doc` / `search_docs` / `docs.*` hooks when `modules.docs: false`) for isolated worktree specs with blueprint synthesis and handoff gates (`acdd start <spec_path>` or `acdd start --goal "..."`). Specify numbered `AC-*` criteria before design and map each task to its applicable criteria. Keep C1/C2 boundaries in architecture documentation and inspect live C3/C4 relationships in the code map. Rebind candidate drift (`acdd reopen` / `acdd rollback`) and renew verification and independent review before a terminal receipt.
-
-To customize a repository or task workflow, copy the [canonical ACDD profile example](references/acdd_profile.yaml.example) into `.acdd/profile.yaml` (or a `profiles_dirs` path) and validate it with `acdd validate` (the single canonical validator backed by `acdd_state::validate` + `acdd_state::usecases::deps`) before starting a run. Start with `version: 2`:
-- With `inherit: default`, `inherit: code`, or `inherit: in_place`, repository profiles overlay the embedded profile by merging `roles`, `commands`, `proofs`, `guidance`, `contours`, `gate_templates`, `git_commit_notes`, and `scope_args_by_pattern` by key, and patching `gates:` via `gates_merge: patch` (matching gate `id` or `- tasks:` blocks, with optional `after:`/`before:` insertion). Use `inherit: none` for standalone workflows.
-- Gates declare explicit `proof:` (`none` when omitted, `contract` requiring `command` + `expected_failure` + `{test_filter}`, `command`, `call`, `review` requiring `role` + `contours`, or `<catalog>` / `{ scheme }`), optional `checks:` (`code.seam`, `code.signature_scope`, `docs.links`), and dynamic `context:` lenses (`code.symbols`, `code.tests`, `code.external_callers`, `docs.instructions`, `docs.adrs`, `docs.invariants`).
-- When a pre-task root gate (`blueprint_synthesis`) passes with `proof.tasks[<task_ref>]`, the engine records each task's slice and injects only that task's slice into `context_bundle` upon `acdd_claim`.
-- Use the [ACDD domain profile examples catalog](references/acdd-profile-examples/README.md) (including scenarios such as [`pentest-security-audit.workflow.yaml`](references/acdd-profile-examples/pentest-security-audit.workflow.yaml), [`ci-verification-gate.workflow.yaml`](references/acdd-profile-examples/ci-verification-gate.workflow.yaml), [`repo-polish.workflow.yaml`](references/acdd-profile-examples/repo-polish.workflow.yaml), [`docs-refactor-and-reconcile.workflow.yaml`](references/acdd-profile-examples/docs-refactor-and-reconcile.workflow.yaml), [`in-place-refactor.plan.yaml`](references/acdd-profile-examples/in-place-refactor.plan.yaml), and [`subsystem-feature.milestone.yaml`](references/acdd-profile-examples/subsystem-feature.milestone.yaml)) as starting points; `acdd validate` is the schema authority.
-
-Standalone role runners return a structured decision and matching proof; a role's registered command is observed by ACDD before acceptance. Bound repair loops with explicit `max_attempts`, `pass:`, `fail:`, and `fail_drift:` (`architectural_drift` -> `rearchitect` -> `build` resetting builder context and rotating `ACDD_AGENT_SESSION_ID`) targets, and use `independent_from` for reviewer separation (`worker_id` inequality enforced at both `acdd_claim` and `acdd_submit`). Custom profiles may configure `roles.<name>.runner` and `roles.<name>.prompt_template` (receiving `ACDD_RUN_ID`, `ACDD_NODE_CURSOR`, `ACDD_CLAIM_REVISION`, `ACDD_WORKER_ID`, `ACDD_AGENT_SESSION_ID`, `ACDD_WORKTREE`, `ACDD_STATE_DB`, `ACDD_CODE_DB`, `TRACEPARENT`, and rendered `ClaimResp` over stdin).
-
-Explicit gate `tools`, `default_tools`, `tools_add`, and `tools_remove` validate fail-closed against the 19 built-in static tools (physically gated by `modules:` — disabling `code` or `docs` skips indexing and blocks disabled operations with `FEATURE_DISABLED`, and embedded `code` strips `docs.*` hooks when `modules.docs: false`) plus active `<domain>_<name>` plugin tools from registered `DomainProvider` crates. Keep optional navigation advice out of hard `tools:` requirements when a workflow must run with `modules.code: false` or `modules.docs: false`.
-
-Use `acdd_guide` (or `acdd guide <topic>`) for live tool/gate/profile topic references. Claim the next ready node (`acdd_state(action="next")` / `acdd_claim` or `acdd next` / `acdd claim`), stay within admitted scope, and extend scope autonomously via `acdd_state(action="extend_scope", ...)` (`acdd extend-scope`) before expanding edits into unadmitted files within module roots. Run iterative checks with `acdd_verify(node="...", test_target="...")` or `acdd verify <cursor> [--test <file.rs::test_fn>]`, then submit via `acdd_submit` or `acdd submit`. Typed contract and command proofs require a fresh claim-bound trace (`execution_digest` verified live via `DomainProvider::observe_freshness` + `candidate_tree_before == candidate_tree_after`). Under `worktree` isolation, integrate completed tasks with `acdd_state(action="integrate")` (`acdd integrate`) before post-task root gates. For schemas, crash recovery, delivery, and handoff, consult the [task reference](https://github.com/ContextUnity/contextunity-acdd/blob/main/docs/reference/tasks.md).
-
-### Architectural discipline, `architecture` contour, and complexity escalation
-
-- **Canonical review contours**: Built-in `default` and `code` milestone profiles evaluate up to six contours (`paths`, `claims`, `architecture`, `concurrency`, `project_isolation`, `administration`). The `architecture` contour verifies single-owner reuse, strict layer boundaries, minimal mechanism design, clean table-driven test discipline, and absence of shadow subsystems or narrow string heuristics where structural data exists.
-- **Reuse-first & complexity escalation**: Before authoring any new helper, wrapper, or pipeline, search existing canonical owners and duplicates (`code_map_search`, `ast_grep_search`, `code_map_query(operation="duplicates")`) and reuse or extend them. Never introduce a new subsystem, parallel pipeline, shadow resolver, narrow string heuristic, or disproportionate defect-fix complexity growth without recording justification in `acdd_blackboard` (`topic="decisions"` or `"blockers"`) and escalating when exceeding task authority.
-- **Builder rebuttal vs. blind rewrite**: Follow the Blackboard [rebuttal and burden-of-proof rule](#blackboard) when a review finding conflicts with an ADR, accepted contract, or existing seam test.
+1. Start a run with `acdd start <spec_path>` or `acdd start --goal "..."`
+   (defaults to `code`; select `inherit: audit` for read-only SAST/PR/hygiene audits,
+   or `inherit: base` for non-code workflows).
+2. Inspect ready cursors (`acdd_state(action="next")` / `acdd next`) and claim
+   (`acdd_claim` / `acdd claim` with `node`, `worker_id`, `worktree`).
+3. Follow `ClaimResp` (`contract`, `guidance`, `unresolved_findings`, `pre_task_slice`
+   including `predecessor_proofs`, `blackboard`, and `context_lenses`). Stay within
+   admitted write scope (`in_write_scope: ALLOWED`); extend autonomously via
+   `acdd_state(action="extend_scope", ...)` (`acdd extend-scope`) inside module
+   roots when needed. Keep scratch files in `.acdd/tmp/`.
+4. Verify via `acdd_verify(node=..., test_target=...)` (`acdd verify <cursor> [--test <filter>]`)
+   before submitting command/check gates so `execution_digest` and candidate trees bind.
+5. Submit via `acdd_submit` / `acdd submit` (`pass` or `reject`). Note `acdd run`
+   requires shell `runner:` commands on roles (`WORKFLOW_RUNNER_REQUIRED` when roles
+   use `mode: subagent` without `runner:`); subagent orchestration coordinates
+   explicit `claim` / `verify` / `submit` steps. On `TASK_CANDIDATE_MISMATCH`,
+   restore via Git or `acdd reopen` and renew verification/review.
 
 ## Blackboard
 
-Use run-level messages (`node` omitted) for cross-task state and `node` / `subtask_ref` targeting for local decisions. Topics are `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred`. Post material architectural decisions, findings, blockers, and scope justifications via `acdd_blackboard(action="post", ...)` or `acdd blackboard --action post`. Use `notes` only for non-obvious technical context that the next worker needs; do not duplicate routine gate status, successful tests, or SHAs unless they add context.
+Topics are `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred`
+(`action: "read" | "post"`). Use `notes` only for non-obvious technical context—do
+not duplicate routine passing checks or gate status. Record accepted architectural
+decisions (`decisions`), blocking constraints (`blockers`), and non-blocking
+follow-ups (`deferred` with an owner) before delivery; blackboard supplements
+authority and never replaces proof.
 
-Before rejecting a review, post structured `findings` with the affected code, the observed issue, and a concrete remediation. Then submit the rejection with the Blackboard message ID referenced in `rejection_findings.blackboard_message_id` (plus optional `kind`: `defect` by default to route via `fail:`, or `architectural_drift` to route via `fail_drift:` and reset builder context). MCP uses `acdd_submit(..., action="reject", rejection_findings=<JSON>)`; CLI uses `acdd submit <cursor> --action reject --findings '<JSON>'` (plus `--evidence '<JSON_OBJECT>'` when the gate requires review/custom evidence). Respect the active profile's evidence and routing rules.
-
-**Rebuttal over blind rewrite and reviewer burden of proof:** If a review finding contradicts an ADR, accepted contract, or existing contract test, do not weaken the contract or add speculative abstractions—record an evidence-backed rebuttal with `topic="decisions"` citing exact `file:line` proof and resubmit. Reviewers reject only on a concrete contract/invariant violation or reproducible defect (evaluating any `file:line` rebuttal in `decisions` objectively); record speculative hardening, style preferences, or out-of-scope ideas under `topic="deferred"` and pass.
-
-Read applicable messages after claim (`acdd_blackboard(action="read", ...)` or `acdd blackboard --action read`) and inspect IDs for full payloads. A `blueprint_synthesis` architect records `topic="decisions"`; build drafts may target `gate="build"`. Active `decisions`, `findings`, and `blockers` remain eligible across gates in `context_bundle.blackboard`, preserving the original gate within response bounds. Other topics follow untargeted/current-gate selection. Record accepted decisions and deferred work with an owner/destination before delivery; blackboard content supplements authority and never replaces proof.
+Before rejecting a review, post structured `findings` naming the affected code,
+defect, and concrete remediation, then reference that returned message ID in
+`rejection_findings.blackboard_message_id` on `acdd_submit(action="reject")` (with
+`kind: "defect"` for `fail:` or `"architectural_drift"` for `fail_drift:` context reset).
+After claim, `ClaimResp.unresolved_findings` carries open findings while
+`ClaimResp.blackboard` carries active context (`decisions`, `blockers`, untargeted/current-gate
+messages); use `acdd_blackboard(action="read", ...)` (`limit` default `50`, max `100`)
+if a message payload was truncated.

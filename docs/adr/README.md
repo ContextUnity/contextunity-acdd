@@ -5,7 +5,7 @@ doc_type: guide
 
 # Architectural Decisions
 
-Accepted decisions live here as owner-approved ADR files with stable IDs, governing invariants, and links to affected architecture and code contracts. Consolidated `0.6.0` decisions are organized into three groups:
+Accepted decisions live here as owner-approved ADR files with stable IDs, governing invariants, and links to affected architecture and code contracts. Consolidated architectural decisions are organized into three groups:
 
 ## Group I: System Architecture, Layering & State Engine
 

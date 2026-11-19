@@ -15,8 +15,6 @@ inherit: none
 git:
   isolation: in_place
   worktrees: manual
-  commit_mode: manual
-  integrate: manual
 
 save: none
 
@@ -47,8 +45,6 @@ commands:
   validate_workflow:
     command: "acdd validate {scope_target}"
     timeout_seconds: 60
-    output:
-      require_counts: false
 
 gates:
   - id: synthesize

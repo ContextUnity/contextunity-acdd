@@ -6,6 +6,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-18
+
+This release streamlines the execution lifecycle onto `blueprint_synthesis -> tasks: build -> review -> deliver -> verify -> integration_review -> handoff`, embeds mandatory graph-hygiene checks (`dead_tails`, `duplicates`) and ACDD MCP tool rules into the `code` profile, unifies MCP DTO schemas via `schemars`, compresses Markdown formatting, isolates `RunHarness` behind `test-support`, and modernizes the `benchmarks/` suite.
+
+### Added
+
+- **Graph Hygiene (`dead_tails`), Taskless `--goal` & Audit/Report Pipeline**:
+  - Added `code_map_query(operation="dead_tails")` and `acdd query run dead_tails` computing workspace-wide production liveness across entrypoints, trait impls, `#[tool]` handlers, nested `contains` chains, and same-file bare-identifier/const-table callbacks before reporting scoped `phantom_tested`, `dead_tails`, and `dangling_calls`.
+  - Embedded `acdd.code_tools` across the `code` profile (`crates/acdd-state/src/profile/embedded/code.yaml`) so synthesis, build, polish, and review gates enforce ACDD MCP navigation, `duplicates`/`dead_tails` hygiene, and blast-radius checks.
+  - Added `gates_patch:` profile inheritance overrides, taskless `--goal` runs (defaulting to `code` with `worktree` isolation unless `--in-place` or `--profile audit`), `ClaimResp.pre_task_slice.predecessor_proofs`, and `save.report` materialization strictly confined under `.acdd/reports/*.{md,json}`.
+
+### Changed
+
+- **Embedded Profile Consolidation (`base`, `code`, `audit`)**:
+  - Consolidated embedded profiles to 3 (`base`, `code`, `audit`), replacing `default`, `in_place`, and `workspace` and removing `specs.<col>.isolation`.
+- **Unified DTO Schemas, Format Compression & State Layout**:
+  - Derived `schemars::JsonSchema` (`#[schemars(transparent)]`) on canonical wire IDs/cursors (`crates/acdd-core/src/ids.rs`) and `acdd-state` enums/inputs, replacing manual `Mcp*` clone structs, `From` converters in `src/mcp/tools/inputs.rs`, and `src/mcp/metadata.rs` with schema-derived MCP field validation.
+  - Compressed `src/format/` (`lifecycle.rs`, `coordination.rs`, `discovery.rs`, `traversal.rs`, `mod.rs`), delegating `ClaimResp` Markdown rendering to `acdd_state::context::render_claim_prompt_markdown` and removing dead 0.5 formatters.
+  - Gated `acdd_state::harness`, `store::memory`, and `InMemorySqliteStore` behind `#[cfg(any(test, feature = "test-support"))]`, split `usecases/{commands,submit}/` into directory modules, consolidated `acdd-index` module layout, relocated exhaustive `acdd-state` integration suites to `crates/acdd-state/tests/state_integration.rs`, and eliminated workspace-wide `duplicates` and confirmed `dead_tails`/`phantom_tested` dead code.
+  - Synchronized all workspace crates (`contextunity-acdd`, `acdd-core`, `acdd-index`, `acdd-state`) and documentation to `0.6.2`, and replaced legacy benchmark scripts/artifacts with a modernized `v0.6.2` `commerce-release-update` benchmark suite (`benchmarks/`).
+
+### Removed
+
+- **Legacy Profile, ErrorCode & VCS Surface Simplification**:
+  - Removed runtime-red `proof: contract` / `expected_failure` / `contract_author` gates and regex command `output:` / `compile_errors:` stdout scrapers (`exit_code == 0` + `code.seam` + `max_net_loc` govern verification).
+  - Removed `git_commit_notes`, `CommitMode` (`git.commit_mode`), `git.integrate`, and public `rollback` / `integrate` CLI commands and `acdd_state` actions (`acdd run` lands task branches internally via `rebase-ff` and terminal checks verify `TreeOid` parity via `verify_tasks_integrated`).
+  - Removed `GIT_HOOK_REJECTED` and `GIT_HOOK_MUTATED_TREE` from `ErrorCode` (`30 -> 28` canonical variants), `src/mcp/metadata.rs`, and legacy `#![allow(dead_code, unused_imports)]` suppressions, `core`/`engine` module shims, and temporary deleted-symbol allowlists across `crates/` and `tests/commitment_integrity`.
+
 ## [0.6.1] - 2026-11-18
 
 This maintenance and architectural hardening release enforces single-owner boundaries (`INV-SINGLE-OWNER`) across validation, glob matching, `WhenExpr` parsing, configuration loading, and process inspection, eliminates tautological verification paths, hardens SQLite read-only and schema `v2` handling, and unifies CI and release automation.
@@ -19,7 +47,7 @@ This maintenance and architectural hardening release enforces single-owner bound
   - Enforced strict `acdd.yaml` parsing (`#[serde(deny_unknown_fields)]`), explicit legacy `0.5.x` key rejection (`CONFIG_MIGRATION_REQUIRED`), linked-workspace path/name checks (`load_adapter_strict` / `load_adapter_report`), and pruned 3 dead `Migration*` variants from `ErrorCode` (`33 -> 30`).
 - **Domain-Pure Embedded Profiles & Profile Inheritance**:
   - Removed hardcoded Rust/Unix exit codes (`101`, `134`) and `.acdd/frameworks` assumptions from embedded `default.yaml` (`expected_failure: {}` accepts runtime failures `1..=125` with `0` compile errors).
-  - Updated embedded `in_place.yaml` to `inherit: workspace`, added `tags: [default, docs]` to `code.yaml` (skipping `code.seam` on `docs` tasks and stripping `docs.*` tools/lenses/checks when `modules.docs: false`; child profiles overriding `tags:` while inheriting `code` must retain `docs` or update inherited `when:` tags), and fixed `inherit.rs` `tools: null`, `tools` + `tools_add`, `use_template` overrides, `profiles_dirs`, and top-level `scope_args_by_pattern` propagation.
+  - Fixed `inherit.rs` `tools: null`, `tools` + `tools_add`, `use_template` overrides, `profiles_dirs`, and top-level `scope_args_by_pattern` propagation.
 - **Unified CI & Release Pipeline**:
   - Consolidated CI testing and multi-platform release packaging/publishing into [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 - **Workspace Version `0.6.1`**:
@@ -216,7 +244,8 @@ Initial public release of the pure-Rust `contextunity-forge-mcp` MCP server and 
 
 - **Initial Native Rust Forge Engine**: Released the standalone `contextunity-forge-mcp` MCP server and CLI featuring Tree-sitter AST indexing (`.forge/code-map.sqlite`), single-shot digest-verified symbol reads (`forge_read`), `ast_grep_search`, living documentation indexing, deterministic Merkle commitments, and SQLite task/milestone lifecycle management.
 
-[Unreleased]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.5.2...v0.5.3

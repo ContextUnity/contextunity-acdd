@@ -13,6 +13,6 @@
 .acdd/*.log
 .acdd/*.json
 .acdd/*.jsonl
+.acdd/reports/
 .acdd/run/
 .acdd/tmp/
-.acdd/backup-0.5/

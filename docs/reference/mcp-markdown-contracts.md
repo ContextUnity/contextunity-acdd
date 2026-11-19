@@ -68,81 +68,43 @@ turns a complete page into a continuing page, emit its token and next offset.
 Never skip a removed tail item. Preserve existing single-oversized-item errors,
 source bounds, timeout recovery, and wire-size enforcement. Markdown escaping
 and JSON-RPC escaping count toward the 96 KiB maximum response budget; a configured
-lower response limit remains authoritative. If a task-list tail is removed, update
+lower response limit remains authoritative. If a `acdd_state` list tail is removed, update
 `returned`, `byte_omitted`, `has_more`, and the actual `next_offset`, retaining the
 generation and effective filter hint. Omit `next_offset` on the final page.
 
 Durable gate/content/candidate hashes and receipts are evidence, not display
-metadata. Task and checkpoint content retains all data admitted by its operation.
+metadata. Run and gate state payloads retain all data admitted by their operation.
 
 ## Task lifecycle
 
-`acdd_state`, `acdd_claim`, `acdd_verify`, and `acdd_submit` (and their flat
-CLI equivalents `status`/`list`/`show`/`next`, `claim`, `verify`, `submit`) use
-dedicated Markdown layouts. Run and task rows retain identity, target, actual
-status and gate cursor, owner, worker/role, revision, declared `depends_on`
-references, and requested subtask detail. Task and subtask status rows use
-Markdown checkboxes; only `completed` is checked, while `cancelled` and every
-other status remain unchecked and keep their actual status label. A cancelled
-task is never rendered as completed. Listing filters and stored state
-transitions stay in `crates/acdd-state`.
+`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, and `acdd_blackboard`
+(and their flat CLI equivalents `status`/`list`/`show`/`next`, `claim`,
+`verify`, `submit`, `blackboard`) share `src/format/lifecycle.rs` and
+`src/format/coordination.rs` Markdown formatting:
 
-`acdd_state(action: "list")` / `acdd list` pages active runs (and optionally
-`run_tombstones` via `include_tombstones: true`) with `limit` (1–100), `offset`,
-and `runs.generation`. Nonzero offsets require the prior generation pin.
-Trimming retains complete run records.
+- **Claims (`ClaimResp`)**: `render_claim_markdown` delegates directly to
+  [`render_claim_prompt_markdown`](../../crates/acdd-state/src/context.rs) so
+  MCP responses, CLI `claim`, and role-runner stdin share one canonical prompt
+  renderer across all 6 budgeted tiers (`contract` + `guidance`,
+  `unresolved_findings`, `pre_task_slice`, `dependency_receipts`, `blackboard`,
+  and `context_lenses`), plus the context-reset warning when
+  `context_reset_required = true`.
+- **Verification, submission, state queries & blackboard**: `render_verify_markdown`,
+  `render_submit_markdown`, `render_state_command_markdown`,
+  `render_state_query_markdown`, and `render_blackboard_markdown` project
+  canonical typed records through `src/format/mod.rs::render_markdown`,
+  preserving run/node/claim IDs, claim revisions, findings, candidate trees,
+  durable receipts, and Prometheus metrics text. `CallPluginTool` delegates to
+  `render_plugin_tool_markdown` (Markdown verbatim or JSON rendered via
+  `render_markdown`).
+- **List paging**: `acdd_state(action: "list")` / `acdd list` pages active runs
+  (and optionally `run_tombstones` via `include_tombstones: true`) with `limit`
+  (1–100), `offset`, and `runs.generation`; nonzero offsets require the prior
+  generation pin.
 
-Claim and context layouts (`ClaimResp`) show lifecycle state, the admitted
-6-tier contract (`contract`, `guidance`, `diff`, `context`, `blackboard`,
-`traces`), active gate guidance, exact scoped commands and evidence templates,
-applicable invariants, scope, dependencies, subtasks, and available domain
-context lenses (`docs.*`, `code.*`). Identical contract data already shown in
-lifecycle state is not repeated. Show/status layouts retain available gate
-traces, claim revisions, findings, candidate trees, and durable receipts.
-
-Inspection Markdown links resolvable scope coordinates against the selected
-workspace root. Missing or unsafe paths remain plain text, and JSON scope arrays
-stay unchanged. Arbitrary JSON values, including persisted findings with `path`
-and `uri` fields, remain literal data.
-
-Full `show` keeps the run/task specification as canonical; extended write scopes
-show initial paths and added paths separately. Inspect/show retains gate trace
-records (`gate_traces`), attempts, and findings without exposing internal-only
-scratch metadata.
-
-Only blackboard messages whose topic is `blockers` become
-`> [!CAUTION] BLOCKER (#id) by author` callouts. The callout keeps the original
-message ID, scope, source/recipient node identity, gate, status
-(`open | acknowledged | resolved | carried_over`), timestamp, and supplied body.
-When context contains a truncated body summary, Markdown marks the summary and
-points to `acdd_blackboard(action: "read", ...)` full-body inspection. Other
-topics keep separate headings and their original payloads. JSON retains the same
-semantic values.
-
-Use headings for task/stage/revision/status/worktree and the admitted contract:
-target, dependencies, write scope, invariants, subtasks and DoD. Preserve the
-complete active `workflow_guidance`, stage rules, proof policies, role/model
-guidance, exact scoped commands, evidence templates and claim identities.
-Preserve rejected findings, candidate bindings, and durable receipts.
-
-Honor existing ADR 0006 stage tailoring and `bundle: false`; do not add raw
-historical archives to lean operations. Full inspect remains the on-demand
-history operation and preserves its available gate/finding/attempt evidence.
-Render task lists with actual status and dependencies; cancellation is not
-completion. Submit output retains acceptance/rejection, task identity,
-stage/revision transition, evidence binding and remediation.
-
-A contextual next-step line can replace duplicated prose only when it preserves
-all distinct operative instructions. Do not substitute hardcoded gate lists,
-invented `--proof` flags, made-up claim-force operations, or commit rules.
-Use returned workflow guidance and actual `--evidence` commands.
-
-Embedded blackboard context in claim/context and contract-stage bundles uses
-the same blocker callout specified below. Preserve the message identity,
-author, scope, gate, timestamp, supplied body and existing full-body recovery.
-The lifecycle task owns this embedded presentation; the coordination task owns
-standalone blackboard presentation. Existing stage selection and ADR 0006
-summary bounds remain binding; formatting adds no new truncation.
+Do not substitute hardcoded gate lists, invented `--proof` flags, or hand-built
+commit rules; follow the returned `ClaimResp.guidance` and declared command /
+evidence schemas.
 
 ## Code discovery
 
@@ -188,7 +150,7 @@ step; it does not claim the workspace contains no such symbol beyond index scope
 
 Render selected workspace root, actual worktree/branch when supplied, graph
 counts, language counts, compiled profiles, freshness warnings, documentation
-hubs, and active milestone progress. Use task-store/manifest authority for
+hubs, and active milestone progress. Use `state.sqlite` (`acdd_state`) and manifest authority for
 milestone state and configured admitted documentation roots for hubs.
 
 Resolution health is `resolved / (resolved + unresolved + ambiguous) * 100`.
@@ -239,7 +201,7 @@ a complete bounded scan. Component pages retain continuation under the shared
 response policy.
 
 Documentation hubs link admitted documents and their indexed section titles
-and actual lines. Active milestone rows come from the canonical task-store
+and actual lines. Active milestone rows come from the canonical `state.sqlite` / `acdd_state`
 listing and retain id, title, status, and completion. Link a milestone document
 only when its real coordinate is available; otherwise say that its document
 coordinate is unavailable rather than inferring a path from its id.
@@ -369,7 +331,7 @@ relation headings unless the page is an intentional compact omission stub.
 
 | Surface | Live producer / adapter | Presentation consumer |
 | --- | --- | --- |
-| Format and compaction | Shared `src/format/` | `src/mcp/response.rs`, CLI stdout; `src/mcp/metadata.rs` retains compatibility exports |
+| Format and compaction | Shared `src/format/` | `src/mcp/response.rs`, CLI stdout |
 | Request validation | `src/mcp/tools/inputs.rs`, `src/mcp/tools.rs`, `src/cli/mod.rs` | All existing shared operations |
 | Symbols and source | `crates/acdd-index/src/db/symbols.rs`, `crates/acdd-index/src/db/symbols/` | Inspect/search/snippet Markdown and JSON |
 | Overview | `crates/acdd-index/src/db/reader.rs`, scanner/config roots and `src/cli/discovery` (`active_runs`) | Overview Markdown and JSON |

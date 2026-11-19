@@ -1,0 +1,44 @@
+version: 2
+inherit: audit
+
+guidance:
+  audit.pr_review:
+    description: "DIFF-SCOPED CODE & INVARIANT REVIEW PROTOCOL"
+    criteria:
+      - "Inspect changed symbols and callers with acdd_read(mode=\"delta\") and code_map_impact before reading surrounding modules."
+      - "Run code_map_query(operation=\"duplicates\") and code_map_query(operation=\"dead_tails\") on touched crates or packages, and verify lock ordering and seam tests."
+
+gates_patch:
+  - id: recon
+    guidance:
+      - audit.recon
+      - audit.pr_review
+      - code.tools
+      - hitl.pro
+    context:
+      - docs.instructions
+      - docs.invariants
+      - code.symbols
+
+  - id: analyze
+    contours:
+      - correctness
+      - security
+      - architecture
+      - concurrency
+      - tests
+    guidance:
+      - audit.analyze
+      - audit.pr_review
+      - code.principles
+      - code.tools
+      - hitl.pro
+
+  - id: triage
+    contours:
+      - claims
+      - architecture
+      - tests
+      - security
+    save:
+      report: ".acdd/reports/{run_name}-review.md"

@@ -119,7 +119,7 @@ cross-mount another suite's private files via `#[path = "../..."]`.
 
 | Harness | Suite | Role |
 | --- | --- | --- |
-| `RunHarness` | `crates/acdd-state/src/harness.rs` + `tests/acdd/` | Unified in-memory (`:memory:`) and disk-backed `StateEngine` / `StateQueryEngine` lifecycle, git ops, waves, and blackboard testing |
+| `RunHarness` | `#[cfg(any(test, feature = "test-support"))]`-gated `crates/acdd-state/src/harness.rs` + `crates/acdd-state/tests/state_integration.rs` + `tests/acdd/` | Unified in-memory (`:memory:`) and disk-backed `StateEngine` / `StateQueryEngine` lifecycle, git ops, waves, and blackboard testing |
 | `McpTestHarness` | `tests/common/mcp_harness.rs` + `tests/mcp` | In-process MCP requests/tools (transport + session only) |
 | `CommitmentHarness` | `tests/commitment_integrity` | In-memory/disk commitment sealing, verification, and savepoint tamper probes |
 | Language / framework support | `tests/languages`, `tests/framework_manifests` | In-memory extract/index helpers and shared-cache cold parity checks |

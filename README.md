@@ -48,7 +48,11 @@ ContextUnity ACDD parses repository source code into an incremental, queryable S
   - `code_map_inspect`: Inspect full signatures, docstrings, callers, callees, and linked documentation.
   - `code_map_explain` & `code_map_impact`: Calculate the blast radius of proposed changes across call and reference hierarchies.
   - `code_map_tests`: Identify covering tests reaching a symbol or discover production components exercised by a test.
-  - `code_map_prove_removal`: Statically estimate structural side-effects before removing functions or types.
+  - **Graph Hygiene & Safe Deletion (`code_map_query`, `code_map_prove_removal`)**:
+    - `code_map_query(operation="duplicates")`: Detect exact and near-duplicate function/method clones (`level="symbol"`) and identical files (`level="file"`).
+    - `code_map_query(operation="dead_tails")`: Compute workspace-wide production liveness and isolate unreachable `phantom_tested`, `dead_tails`, and `dangling_calls` before delivery or review.
+    - `code_map_query(operation="untested")`: Page production functions/methods lacking direct indexed test `calls` edges.
+    - `code_map_prove_removal`: Statically evaluate incoming references and target-scoped diagnostics before removing symbols.
 - **Syntactic Pattern Search (`ast_grep_search`)**: Match structural AST patterns (e.g. `fn $NAME($ARGS) -> Result<$T> { $$$ }`) across admitted source files.
 - **Multi-Language & Multi-Repo Federation**: Built-in support for Python, Rust, TypeScript, JavaScript, Vue, HTML, Protocol Buffers, YAML, and TOML (extended with `--features all-languages` for Go, Java, C#, Kotlin, PHP, Ruby, C, C++).
 - **Linked Workspaces & Cross-Repository Indexing**: ACDD natively supports multi-repository architectures through `linked_workspaces` in `acdd.yaml`. Sibling repositories are integrated into the unified code graph for cross-workspace symbol resolution, import linking, and cross-repo impact analysis:
@@ -80,13 +84,13 @@ Documentation in ContextUnity ACDD is not an afterthought stored in disconnected
 
 **Augmented Context & Durable Dispatch (ACDD)** replaces open-ended, unstructured coding loops with a deterministic verification state machine (`crates/acdd-state` + `crates/acdd-core`). It binds Git-tracked specifications (`docs/milestones/*.md`, `docs/plans/*.md`, or ephemeral `--goal` specs), persistent SQLite state (`.acdd/state.sqlite`), and declarative YAML `GateProfile` v2 topologies so every worker receives only the context relevant to its active gate:
 
-- **Composable Gates & Universal Profiles**: Workflows are assembled from hierarchical agent, command, check, action, and container gates. Repositories inherit and specialize the embedded baselines (`default`, `code`, `in_place` under `crates/acdd-state/src/profile/embedded/`) through a thin `.acdd/profile.yaml` overlay (`gates_merge: patch`) or replace them via `inherit: none`.
-- **Topological DAG Waves & Flexible Git Policy**: Task dependencies (`depends_on`) resolve into execution waves governed by declarative `git:` policy (`isolation: worktree | in_place`, `worktrees: manual | managed`, `commit_mode: plumbing | cli | manual`, `integrate: manual | rebase-ff | ff-only | no-ff | squash`).
-- **Session-Preserving Repair Loops & Dynamic Context**: Every gate claim (`acdd_claim`) delivers tailored `workflow_guidance`, an isolated 6-tier `context_bundle` (with dynamic `context:` lenses such as `code.external_callers`), and persistent `acdd_blackboard` notes; reviewer rejections resume the builder session with structured findings intact.
-- **Unified `GateProfile` + `Run` Execution**: Ephemeral `--goal` runs, `in_place` plans, taskless root-gate workflows, and multi-task `worktree` specs all execute through one unified state machine and flat CLI (`acdd start`, `acdd claim`, `acdd verify`, `acdd submit`, `acdd integrate`, `acdd run`).
+- **Composable Gates & Universal Profiles**: Workflows are assembled from hierarchical role, command, check, action, and container gates (`blueprint_synthesis` $\to$ `tasks: build` $\to$ `review` $\to$ `deliver` $\to$ `verify` $\to$ `integration_review` $\to$ `handoff`, with bounded `rearchitect` / `polish` repair routes). Three embedded baselines exist under `crates/acdd-state/src/profile/embedded/` (`base`, `code`, and read-only review/SAST `audit`); `.acdd/profile.yaml` automatically becomes the workspace default when present, overlaying commands and roles with `gates_patch:` (or replacing gates via `gates:` / `inherit: none`), and optional `save.report` templates write explicit Markdown/JSON reports on pass.
+- **Topological DAG Waves & Declarative Git Policy**: Task dependencies (`depends_on`) resolve into execution waves governed by declarative `git:` (`isolation: worktree | in_place`, `worktrees: manual | managed`) and `save:` (`commit | none`) policies. Automated `acdd run` waves land completed task branches internally via `rebase-ff`, and terminal verification checks content equivalence by Git `TreeOid` (`TASK_NOT_INTEGRATED`).
+- **Session-Preserving Repair Loops & Dynamic Context**: Every gate claim (`acdd_claim`) delivers tailored `guidance`, a 6-tier budgeted `ClaimResp` envelope (`contract` + `guidance`, `unresolved_findings`, `pre_task_slice`, `dependency_receipts`, `blackboard`, and dynamic `context_lenses` such as `code.external_callers`), and persistent `acdd_blackboard` notes; reviewer rejections resume the builder session with structured findings intact.
+- **Unified `GateProfile` + `Run` Execution**: Ephemeral `--goal` runs, `in_place` plans, taskless root-gate workflows, and multi-task `worktree` specs all execute through one unified state machine and flat `29`-command CLI (`acdd start`, `acdd claim`, `acdd verify`, `acdd submit`, `acdd run`).
 
 > [!TIP] Complete ACDD, Profile & Tool References
-> - [**ACDD Architecture & Default Profile Guide (`docs/reference/acdd.md`)**](docs/reference/acdd.md) — full explanation of ACDD, how gates and universal profiles work, and a gate-by-gate walkthrough of the embedded `default`/`code`/`in_place` profiles.
+> - [**ACDD Architecture & Default Profile Guide (`docs/reference/acdd.md`)**](docs/reference/acdd.md) — full explanation of ACDD, how gates and universal profiles work, and a gate-by-gate walkthrough of the embedded `base`/`code`/`audit` profiles.
 > - [**ACDD Profiles Reference (`docs/reference/profiles.md`)**](docs/reference/profiles.md) — `version: 2` profile schema, `git:` policy, command pattern rules, and validation constraints.
 > - [**MCP Tools Reference (`docs/reference/mcp-tools.md`)**](docs/reference/mcp-tools.md) — full reference for all 19 built-in MCP tools and `DomainProvider` plugin tools exposed to AI agents.
 > - [**CLI Reference (`docs/reference/cli.md`)**](docs/reference/cli.md) — complete reference for all flat command-line operations and terminal automation.
@@ -129,14 +133,14 @@ Every core operation is available both to AI agents over MCP and to developers/s
 | **Read Symbol Source** | `acdd_read(selector="...")` | `read --selector "..."` |
 | **Blast Radius & Impact** | `code_map_impact`, `code_map_explain` | `query impact`, `query explain` |
 | **Test Coverage Seams** | `code_map_tests` | `query tests` |
+| **Graph Hygiene & Queries** | `code_map_query` (`duplicates`, `dead_tails`, `untested`, `sql`) | `query run <op>`, `query sql` |
 | **Safe Deletion Analysis** | `code_map_prove_removal` | `query remove` |
-| **Documentation Search** | `search_docs`, `get_doc` | `docs search`, `docs get` |
+| **Documentation Search** | `search_docs`, `get_doc` | `docs search`, `docs get`, `docs check` |
 | **Run Queue, Draft & Claims** | `acdd_state`, `acdd_claim`, `acdd_submit` | `init`, `draft`, `start`, `status`, `list`, `show`, `next`, `claim`, `submit` |
 | **Gate Verification** | `acdd_verify` | `verify` |
 | **Blackboard Messaging** | `acdd_blackboard` | `blackboard` |
 | **Subtask Tracking** | `acdd_state(action: "subtask")` | `subtask` |
-| **Scope, Sync & Reopen** | `acdd_state(action: "extend_scope" \| "sync" \| "reopen")` | `extend-scope`, `sync`, `reopen` |
-| **Rollback & Integration** | `acdd_state(action: "rollback" \| "integrate" \| "clear")` | `rollback`, `integrate`, `clear` |
+| **Scope, Sync, Reopen & Clear** | `acdd_state(action: "extend_scope" \| "sync" \| "reopen" \| "clear")` | `extend-scope`, `sync`, `reopen`, `clear` |
 | **Headless Run & Plugins** | `acdd_state(action: "run")`, `<domain>_<name>` | `run`, `tool <domain>_<name>`, `validate` |
 | **Built-in Reference** | `acdd_guide` | `guide` |
 
@@ -198,11 +202,10 @@ Companion skills teach AI agents how to leverage ContextUnity ACDD MCP tools, st
 | Skill | Purpose |
 |---|---|
 | [`acdd`](skills/acdd/SKILL.md) | Primary operational skill: code navigation, single-shot symbol reads, task claims, blackboard, delivery |
-| [`test-contract-seam`](skills/test-contract-seam/SKILL.md) | Synthesizing architectural contracts and authoring compiling runtime-red seam tests |
+| [`contract-planning`](skills/contract-planning/SKILL.md) | Architectural viability audit, ADR/invariant reconciliation, and contract synthesis |
+| [`test-suite-rules`](skills/test-suite-rules/SKILL.md) | Production-seam tests, table-driven matrices, harness hygiene, and test-suite refactoring |
 | [`close-review-findings`](skills/close-review-findings/SKILL.md) | Diagnosing review rejections and implementing evidence-closed remediations |
-| [`test-suite-refactor`](skills/test-suite-refactor/SKILL.md) | Refactoring and modularizing test suites without losing production coverage |
 | [`agent-instructions`](skills/agent-instructions/SKILL.md) | Authoring and updating `AGENTS.md`, `SKILL.md`, and documentation |
-| [`lean-ctx`](skills/lean-ctx/SKILL.md) | Reading source and command output with minimal token consumption |
 
 ---
 

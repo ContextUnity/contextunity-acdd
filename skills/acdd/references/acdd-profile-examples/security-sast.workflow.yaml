@@ -1,0 +1,49 @@
+version: 2
+inherit: audit
+
+guidance:
+  audit.sast:
+    description: "OWASP TAINT & BOUNDARY SAST PROTOCOL"
+    criteria:
+      - "Map untrusted inputs (HTTP, CLI, MCP, webhooks, file reads, env) to privileged sinks (SQL, shell/Command, symlink/path ops, deserialization, authz checks, credentials)."
+      - "Use code_map_impact(direction=\"both\") and ast_grep_search to prove or disprove sanitization and confinement guards along the call chain."
+
+contours:
+  injection:
+    description: "Verify SQL, command, template, and deserialization sinks reject or safely parameterize untrusted input."
+    criteria:
+      - "Cite an unguarded flow from external input into a dynamic interpreter or query."
+  authz:
+    description: "Verify authentication, authorization, and tenant/workspace isolation checks hold on every entrypoint."
+    criteria:
+      - "Cite an entrypoint reaching privileged state mutation or data exposure without an enforced check."
+
+gates_patch:
+  - id: recon
+    guidance:
+      - audit.recon
+      - audit.sast
+      - code.tools
+      - hitl.pro
+
+  - id: analyze
+    contours:
+      - security
+      - injection
+      - authz
+      - concurrency
+    guidance:
+      - audit.analyze
+      - audit.sast
+      - code.principles
+      - code.tools
+      - hitl.pro
+
+  - id: triage
+    contours:
+      - security
+      - injection
+      - authz
+      - claims
+    save:
+      report: ".acdd/reports/{run_name}-sast.json"

@@ -8,6 +8,7 @@ Use this short router in a repository root `AGENTS.md` when ContextUnity ACDD is
 
 - Load the shared `acdd` skill for generic ACDD MCP, CLI, and state lifecycle guidance.
 - Load the shared `contract-planning` skill when authoring, auditing, or revising specs, plans, and task contracts.
+- Load the shared `test-suite-rules` skill before authoring, modifying, or refactoring tests.
 - Follow its Blackboard procedure for claim context, progress reports, and gate or agent handoffs.
 - Follow the spec taxonomy (docs/milestones/README.md); spec numbers are sequential per prefix (`<PREFIX>-<NNN>`).
 - Follow the active gate profile and the `guidance` returned by `acdd_claim` or `acdd next` for gate sequence, proof contract, role and model selection, review contours, and profile-specific behavior.
@@ -39,12 +40,12 @@ Managed worktrees live at `.worktrees/<run_name>` for runs and `.worktrees/<run_
 ### Permitted Git operations inside active workflows
 
 - Task delivery:
-  - With `git.commit_mode: plumbing` (or `cli`) and `save.post: commit`, ACDD creates the scoped delivery commit with `Acdd-Claim` trailer and records the receipt; do not create duplicate commits.
-  - With `git.commit_mode: manual` or `save.post: none`, create scoped commits manually when required after delivery.
+  - With `save.post: commit`, ACDD creates the atomic plumbing delivery commit with `Acdd-Claim` trailer and records the receipt; do not create duplicate commits.
+  - With `save.post: none`, create scoped commits manually when required after delivery.
   - Candidate immutability: Never modify files during `deliver` or after `review` when `save.immutable: true`. Any edit triggers `TASK_CANDIDATE_MISMATCH`.
 - Integration and cleanup:
-  - Preserve accepted task proofs while integrating branches. `rebase-ff`, `ff-only`, `no-ff`, `squash`, or cherry-pick preserve content parity (`TreeOid`).
-  - Delivered task branches merge into the run branch (`acdd integrate`); temporary task worktrees are removed upon delivery integration.
+  - Preserve accepted task proofs while integrating branches (`rebase-ff`, `ff-only`, `no-ff`, `squash`, or cherry-pick preserve content parity via `TreeOid`).
+  - Delivered task branches merge into the run branch (automatically during `acdd run`, or via Git in manual runs); temporary task worktrees are removed upon delivery integration.
   - Run landing: fast-forward the run branch into `main` (`git merge --ff-only <run-branch>`) and remove the run worktree and branch upon verified handoff.
 
 ### Operations requiring explicit user approval

@@ -20,12 +20,10 @@ docs:
 specs:
   milestones:
     path: docs/milestones
-    profile: workspace
     prefixes: [AC]
     digits: 3
   plans:
     path: docs/plans
-    profile: in_place
     prefixes: [PLAN]
     digits: 3
 profiles_dirs:
@@ -48,8 +46,8 @@ linked_workspaces:
 
 `roots` and `docs` are literal, relative directories or paths inside the
 workspace. `specs:` declares named specification collections (`milestones` and
-`plans` by default), each configuring `path`, optional default `profile`, allowed
-`prefixes`, and numeric ID zero-padding `digits` (`1..=16`, default `3`).
+`plans` by default), each configuring `path`, optional explicit `profile` override,
+allowed `prefixes`, and numeric ID zero-padding `digits` (`1..=16`, default `3`).
 `specs.<name>.path` entries must be normalized relative paths that do not overlap
 by path components. `AdapterFile`, `LinkedWorkspaceConfig`, and `ScannerLimits`
 enforce `#[serde(deny_unknown_fields)]`, and `acdd_core::config::load_adapter`
@@ -206,12 +204,14 @@ using **v2 `GateProfile` YAML** files (`version: 2`).
 1. Explicit CLI flag `--profile <name|path[:sha256_prefix]>` / `ACDD_PROFILE`
    or `acdd start --profile ...`
 2. Spec frontmatter `profile: <name|path[:sha256_prefix]>` (optional `sha256` pin)
-3. Collection default `specs.<collection>.profile` in `acdd.yaml`
+3. Collection override `specs.<collection>.profile` in `acdd.yaml` (if set)
 4. Custom profile files searched under `profiles_dirs` (`.acdd/profiles/`,
    `docs/workflows/`)
-5. Repository default `.acdd/profile.yaml` (resolved by `"workspace"`, falling
-   back to embedded `"default"` if absent)
-6. Embedded built-in profiles (`default`, `code`, `in_place`)
+5. Repository default `.acdd/profile.yaml` when present in the workspace root,
+   automatically falling back to embedded `"code"` when absent (domain hooks
+   unavailable under `modules.code: false` / `modules.docs: false` are stripped
+   automatically)
+6. Embedded built-in profiles (`base`, `code`, `audit`)
 
 Profiles in linked workspaces are strictly **ignored**; only the active
 workspace root defines the ACDD profile.
@@ -227,8 +227,7 @@ Each gate declares a stable `id` (`[A-Za-z0-9_-]`), optional `role`, `command`,
 `call: <domain>.<action>` (+ `with:`), `checks: [<domain>.<check>]`,
 `context: [<domain>.<lens>]`, `tools` / `tools_add` / `tools_remove`, `proof`,
 `save`, `pass` / `fail` routing edges, `independent_from`, `need`, and optional
-`when` predicates. Built-in proof kinds are `none`, `contract` (requiring
-`command`, `expected_failure`, and `test_filter`), `command`, `call`, and
+`when` predicates. Built-in proof kinds are `none`, `command`, `call`, and
 `review` (requiring `role` and `contours`); named catalog schemas (`proofs:`)
 and inline `{ scheme: ... }` JSON Schemas bind typed `--evidence` payloads.
 Delivery/handoff gates use `receipt: true` with `save.post: commit` (and
@@ -255,8 +254,7 @@ Agent execution and model guidance are configured per **role** (`roles:`):
 ```yaml
 # .acdd/profile.yaml
 version: 2
-inherit: default
-gates_merge: patch
+inherit: code
 
 roles:
   builder:
@@ -283,6 +281,7 @@ committed repository assets, do **not** ignore the whole `.acdd/` directory. Kee
 ACDD runtime state ignored while unignoring configuration assets:
 
 ```gitignore
+/.worktrees/
 !/.acdd/
 !/.acdd/profile.yaml
 !/.acdd/profiles/
@@ -292,9 +291,11 @@ ACDD runtime state ignored while unignoring configuration assets:
 .acdd/*.sqlite*
 .acdd/*.lock
 .acdd/*.log
+.acdd/*.json
 .acdd/*.jsonl
+.acdd/reports/
 .acdd/run/
-.acdd/tasks/
+.acdd/tmp/
 ```
 
 See [MCP tools](mcp-tools.md) for response paging and [limits and freshness](../runbooks/limits-and-freshness.md) for computation budgets.

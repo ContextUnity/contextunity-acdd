@@ -13,14 +13,13 @@ Read the [root instructions](../AGENTS.md) and load `agent-instructions` before 
 
 1. **Co-evolve on every surface change**: Whenever CLI flags, MCP tools, profile fields (`deny_unknown_fields`, `inherit`, `save`, `guidance`, `proofs`), or ADR contracts change, update in the same change:
    - Affected `skills/<name>/SKILL.md` procedure sections;
-   - Canonical templates in [`skills/acdd/references/`](acdd/references/acdd_profile.yaml.example) (`acdd_profile.yaml.example`, `acdd.yaml.example`, `agents.md.example`, `docs-agents.md.example`, `gitignore.example`);
-   - Lifecycle scenario examples (`{scenario}.{workflow|plan|milestone}.yaml`) and index under [`skills/acdd/references/acdd-profile-examples/`](acdd/references/acdd-profile-examples/README.md).
-2. **Keep examples concise and distinct**: Avoid cloning overlapping domain examples. Use `{scenario}.{workflow|plan|milestone}.yaml` files to illustrate distinct lifecycle modes (`Workflow` `inherit: none` vs resource overlay, `Plan` `in-place`, `Milestone` worktree) with generic or representative tooling rather than product-coupled jargon.
+   - Canonical templates in [`skills/acdd/references/`](acdd/references/acdd_profile.yaml.example) (`acdd_profile.yaml.example`, `profile-reference.md`, `acdd.yaml.example`, `agents.md.example`, `docs-agents.md.example`, `gitignore.example`, `spec_manifest.md.example`);
+   - `inherit: audit` workflow scenario examples (`{scenario}.workflow.yaml`) and index under [`skills/acdd/references/acdd-profile-examples/`](acdd/references/acdd-profile-examples/README.md).
+2. **Keep examples concise and distinct**: Avoid cloning overlapping examples. Keep [`acdd-profile-examples/`](acdd/references/acdd-profile-examples/README.md) focused on distinct `inherit: audit` specializations (`security-sast`, `pr-code-review`, `architecture-hygiene`) using `gates_patch:` and `save.report`.
 3. **Preserve present-tense style**: Follow `agent-instructions`—state current rules cleanly in affirmative imperatives (`Use`, `Run`, `Keep`, `Verify`, `Do not`) with zero historical migration notes inside skill instructions.
 
 ## Validation & Host Distribution
 
-- Run `acdd validate <path>` on every modified YAML profile example and `acdd docs check` on documentation updates before committing.
-- Run skill link-isolation and profile-parser tests (`cargo test --test mcp skill_sync` and `cargo test --test acdd profile_parser`).
+- Run `acdd validate <path>` on modified YAML profile examples and `acdd docs check` on Markdown updates before committing.
 - Run `git diff --check` across `skills/`.
 - **Host sync guard**: Do not mutate `~/.agents/` automatically during automated `cargo` tests or sandboxed milestone task runs. Run `./skills/install.sh` (or `./skills/install.sh --dry-run` for inspection) only from explicit installer/user-requested sync workflows.

@@ -31,7 +31,7 @@ Every lifecycle execution instantiates one **`Run`** bound to a resolved
   - `container`: Structural group of root gates (e.g. `blueprint_synthesis`).
   - `root_gate`: Pre-task or post-task milestone/run gate (e.g. `verify`, `polish`, `integration_review`, `handoff`).
   - `task`: Task container (`gate_id = "__task__"`, `task_ref = <ref>`) matching the active track's `- tasks:` `when:` expression.
-  - `task_gate`: Leaf gate inside a task (e.g. `<task_ref>.contract`, `<task_ref>.build`, `<task_ref>.review`, `<task_ref>.deliver`).
+  - `task_gate`: Leaf gate inside a task (e.g. `<task_ref>.build`, `<task_ref>.review`, `<task_ref>.deliver`).
 - **Node statuses**: `pending`, `ready`, `in_progress`, `completed`, `stale`,
   `escalated`, and `cancelled`.
 
@@ -61,7 +61,7 @@ and the example feature plan in [example-feature-plan.md](../plans/example-featu
 
 ## Five Flat MCP State Tools and CLI Parity
 
-State operations map symmetrically across the flat `0.6.1` CLI and five state
+State operations map symmetrically across the flat `0.6.2` CLI and five state
 MCP tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`,
 `acdd_blackboard`):
 
@@ -70,7 +70,7 @@ MCP tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`,
 | Status / List / Show / Next | `acdd_state(action: "status \| list \| show \| next \| observability")` | `acdd status`, `list`, `show`, `next` | Read-only run/node inspection, ready waves, and telemetry |
 | Start / Draft | `acdd_state(action: "start \| draft")` | `acdd start`, `acdd draft` | Initialize a new `Run` or draft numbered spec |
 | Scope / Reopen / Sync / Subtask | `acdd_state(action: "extend_scope \| reopen \| sync \| subtask")` | `acdd extend-scope`, `reopen`, `sync`, `subtask` | Manage scope extensions, cascades, spec sync, and subtasks |
-| Rollback / Integrate / Clear / Run | `acdd_state(action: "rollback \| integrate \| clear \| run")` | `acdd rollback`, `integrate`, `clear`, `run` | Confined-restore commits/trees, merge branches, clear tombstones, execute DAG waves |
+| Clear / Run | `acdd_state(action: "clear \| run")` | `acdd clear`, `acdd run` | Clear tombstones and execute DAG waves (with internal `rebase-ff` landing) |
 | Claim | `acdd_claim` | `acdd claim [<node>]` | Atomically claim a ready/active node and return `ClaimResp` |
 | Verify | `acdd_verify` | `acdd verify <node>` | Execute `command:`, `call:`, `checks:`, and scope barrier without advancing |
 | Submit | `acdd_submit` | `acdd submit <node> --action pass\|reject` | Advance on `pass` or rewind along `fail:` with `RejectionFindings` |
@@ -100,9 +100,7 @@ Every gate transition is mediated by `claim -> (verify) -> submit` inside
      `gate_traces` row and streaming output to `.acdd/run/<run_id>/traces.jsonl`.
   3. Runs configured `checks: [<domain>.<check>]` (e.g., `code.seam` reachability
      and `code.signature_scope`).
-  4. Validates `ProofKind`: `contract` requires non-zero exit matching
-     `expected_failure.exit_codes` and `--test`; `command` requires exit `0` and
-     `tests_failed == 0`.
+  4. Validates `ProofKind`: `command` requires exit `0`.
 - **Submit (`submit`)**:
   - Verifies `claim_revision` parity (`STALE_CLAIM_REVISION`) and
     `independent_from` worker separation (`TASK_REVIEW_NOT_INDEPENDENT`).
@@ -110,12 +108,12 @@ Every gate transition is mediated by `claim -> (verify) -> submit` inside
     and `need:` predecessor accepted tree parity, plus `blueprint` `max_net_loc`
     production LOC budgets on `tasks.build` unless justified on `blackboard`
     (`topic: decisions`).
-  - On `--action pass`: validates proof (auto-verifying `command`/`contract` if
+  - On `--action pass`: validates proof (auto-verifying `command` if
     no fresh trace exists, validating `review_evidence` against `contours:`, or
     validating `custom_evidence` against `proofs.<name>` / inline `{ scheme }`),
     checks that all task `subtasks` are `completed` or `cancelled` with
     non-empty evidence when `receipt: true`, executes `save.post` (`none` or
-    `commit`), writes `gate_artifacts`, and transitions along `pass:`.
+    `commit`), materializes any declared `save.report` (returning `report_path` in `SubmitResp`), writes `gate_artifacts`, and transitions along `pass:`.
   - On `--action reject`: requires structured `RejectionFindings` (`findings` +
     `summary` + optional `kind`: `defect | architectural_drift`), routes to `fail:`
     on `defect` or `fail_drift:` on `architectural_drift`, increments `attempt` /
@@ -123,21 +121,36 @@ Every gate transition is mediated by `claim -> (verify) -> submit` inside
 
 ### 6-Tier Claim Context Budget (`ClaimResp`)
 
-[`assemble_claim_context`](../../crates/acdd-state/src/context.rs) constructs
-`ClaimResp` within `ResponsePolicy.max_output_bytes` across six ordered tiers:
+[`GateContextAssembler`](../../crates/acdd-state/src/context.rs) (exposed via
+`build_claim_context`) builds `ClaimResp` identically for `claim`, `show`, and
+`run` within `ResponsePolicy.max_output_bytes` across six ordered tiers:
 
-1. **Tier 1 (`contract` + `guidance`)**: Mandatory claimed contract and resolved
-   gate guidance entries inside `limits.max_guidance_bytes` (never truncated;
-   fails closed with `GUIDANCE_BUDGET_EXCEEDED`).
-2. **Tier 2 (`unresolved_findings` + failed trace tail)**: Structured findings
-   and latest failed trace excerpt after a reject/fail rewind.
+1. **Tier 1 (`contract` + `guidance`)**: Mandatory claimed contract (omitting
+   empty `invariants` and default `tools` matching `profile.default_tools`,
+   sending the full spec body on `blueprint_synthesis` or taskless specs and
+   `spec_path` on post-task root gates) plus resolved gate guidance inside
+   `limits.max_guidance_bytes` (never truncated; fails closed with
+   `GUIDANCE_BUDGET_EXCEEDED`).
+2. **Tier 2 (`unresolved_findings` + failed trace tail)**: Container-sibling
+   (`parent_id == node.parent_id`) rework findings and latest failed trace
+   excerpt, cleared automatically once the rejecting node passes or the latest
+   container trace passes/runs.
 3. **Tier 3 (`pre_task_slice`)**: Per-task slice (`proof.tasks[<task_ref>]`)
-   from pre-task blueprint artifacts.
-4. **Tier 4 (`dependency_receipts`)**: Accepted receipts of completed dependency tasks.
-5. **Tier 5 (`blackboard`)**: Up to 15 messages (500 characters per payload).
+   with global negative boundaries and cited invariants, or the global
+   blueprint slice on post-task root gates, plus `predecessor_proofs` from
+   completed same-container sibling gates emitting `ArtifactKind::Proof`
+   (e.g., `recon` $\to$ `analyze` $\to$ `triage` in `audit`) (skipped alongside Tiers 4–5 on pure
+   receipt/commit gates).
+4. **Tier 4 (`dependency_receipts`)**: Accepted receipts of completed dependency
+   tasks, deduplicated to the latest `claim_revision` per dependency with compact
+   coordinates (`node_cursor`, `candidate_tree`, `committed_oid?`, `accepted_at`).
+5. **Tier 5 (`blackboard`)**: Up to 15 open messages (`Open` only, excluding
+   `Findings` and `Deferred`; 500 characters per payload), prioritizing
+   `Decisions` and `Blockers` before filling remaining slots with newest `Notes`.
 6. **Tier 6 (`context_lenses`)**: `DomainProvider` lenses declared in `gate.context`
-   (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`),
-   trimmed cleanly if the remaining envelope fills (`omitted_sections`).
+   (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`)
+   given proportional per-lens budgets and skipping empty `items: []` lenses cleanly
+   without mutating `omitted_sections` (`omitted_sections` records only actual budget omissions).
 
 ---
 
@@ -163,22 +176,23 @@ authority, and agent writes never conflate:
    AND `is_scope_admitted(rel_path, admitted_scope)`. Out-of-scope edits fail
    closed with `OUT_OF_SCOPE_CHANGES`.
 
-### Scope extension, rollback, and integration
+### Scope extension and worktree integration
 
 - **`extend-scope`**: Extends `admitted_scope` for a claimed node with a
   non-empty `--reason`, rejecting protected paths (`.acdd/**`, `protected_paths`)
   with `OUT_OF_SCOPE_CHANGES` and overlapping active incomplete tasks with
   `TASK_SCOPE_CONFLICT`.
-- **Rollback**: `acdd rollback <target> [--node <cursor>]` confined-restores
-  working-tree files from a commit ref, commit OID, or tree OID.
-- **Worktree integration**: `acdd integrate [<task_ref>]` merges delivered task
-  branches into the run worktree (`manual | rebase-ff | ff-only | no-ff | squash`),
-  protecting `main`/`master` unless `--allow-main` is supplied (`MAIN_BRANCH_PROTECTED`),
-  and aborting cleanly on conflicts (`GIT_INTEGRATION_CONFLICT`).
+- **Worktree integration**: Headless `acdd run` waves land completed task
+  branches into the run worktree internally via `rebase-ff`
+  (`integrate_task_branch`), protecting `main`/`master` unless `--allow-main`
+  is supplied (`MAIN_BRANCH_PROTECTED`) and aborting cleanly on conflicts
+  (`GIT_INTEGRATION_CONFLICT`). Manual worktree runs integrate via standard
+  `git merge` / `git rebase`, and terminal verification checks content parity
+  by Git `TreeOid` (`verify_tasks_integrated` / `TASK_NOT_INTEGRATED`).
 
 ### Linked repository tasks
 
-In `0.6.1`, `linked_workspaces` in `acdd.yaml` applies solely to multi-repository
+In `0.6.2`, `linked_workspaces` in `acdd.yaml` applies solely to multi-repository
 code and documentation indexing (`acdd-index`), except read-only cross-workspace
 dependency resolution (`<ws>/<run>:<task>`) in `acdd_state::usecases::deps`
 which reads the linked workspace's own `acdd.yaml` (`specs` and `state_db`)
@@ -206,6 +220,7 @@ primary repository root and common Git dir via
 
 - **State DB**: `<primary_worktree>/.acdd/state.sqlite` (overridable via `state_db` / `--state-db`)
 - **Run trace dir**: `<primary_worktree>/.acdd/run/<run_id>/traces.jsonl` (pruned via `retain_traces`, default `20`)
+- **Report artifacts (`save.report`)**: `<primary_worktree>/.acdd/reports/...` (when `save.report` targets `.acdd/`, gitignored by default) or `<target_worktree>/<relpath>` (participates in scoped commits when `save.post: commit`)
 - **Advisory locks & backup** (inside `<git_common_dir>/acdd/`):
   - `repo.lock`: Serializes Git branch/worktree/ref mutations and run initialization
   - `backup.lock`: Serializes snapshot backup creation and recovery promotion
@@ -225,7 +240,7 @@ defines `_sqlite_meta` (`schema_version = 2`, `write_seq`, `last_backup_seq`) pl
 | `task_dependencies` | Intra-run and cross-run task dependency DAG edges and satisfaction flags |
 | `subtasks` | Subtask status (`pending \| in_progress \| completed \| cancelled`) with mandatory terminal `evidence` CHECK constraint |
 | `gate_claims` | Active and historical claim revisions (`active \| passed \| rejected \| superseded \| reopened \| cancelled`) |
-| `gate_traces` | Observed command/action/check verification runs (`passed`, `expected_failure`, `failed`, `timed_out`, `compile_error`, `check_failed`, `scope_violation`, `aborted`) |
+| `gate_traces` | Observed command/action/check verification runs (`running`, `passed`, `failed`, `timed_out`, `check_failed`, `scope_violation`, `aborted`; schema CHECK also accepts legacy `expected_failure` and `compile_error` rows) |
 | `gate_artifacts` | Structured `proof`, `findings`, `receipt`, and accepted candidate tree JSON + commit OIDs |
 | `blackboard` | Scoped coordination messages (`draft \| notes \| findings \| blockers \| decisions \| deferred`) with resolution status |
 | `run_tombstones` | Compact closed-run summaries, `metrics_json`, and cleanup manifests retained across `archive` / `prune` / `clear` |
@@ -239,7 +254,7 @@ committed archive manifests and tombstones, and verifies SQLite `quick_check`.
 ## Canonical Diagnostic Error Codes (`ErrorCode`)
 
 [`crates/acdd-core/src/errors.rs`](../../crates/acdd-core/src/errors.rs) defines
-30 machine-readable `ErrorCode` variants mapped to stable CLI exit codes:
+28 machine-readable `ErrorCode` variants mapped to stable CLI exit codes:
 
 - **Exit `2` (Usage / Config / Schema)**:
   `CONFIG_MIGRATION_REQUIRED`, `ACDD_PROFILE_SCHEMA_INVALID`, `COMMAND_UNBOUND`,
@@ -253,6 +268,6 @@ committed archive manifests and tombstones, and verifies SQLite `quick_check`.
   `DEPENDENT_TASK_COMPLETED`, `DOMAIN_CAPABILITY_UNAVAILABLE`,
   `MAIN_BRANCH_PROTECTED`.
 - **Exit `4` (Execution / Git / Backend / Uncertainty)**:
-  `GATE_VERIFICATION_FAILED`, `RUNNER_NO_SUBMISSION`, `GIT_HOOK_REJECTED`,
-  `GIT_HOOK_MUTATED_TREE`, `GIT_INTEGRATION_CONFLICT`, `EXTERNAL_GIT_DRIFT`,
+  `GATE_VERIFICATION_FAILED`, `RUNNER_NO_SUBMISSION`,
+  `GIT_INTEGRATION_CONFLICT`, `EXTERNAL_GIT_DRIFT`,
   `MUTATING_ACTION_UNCERTAIN_OUTCOME`, `BACKEND_CONFLICT`.

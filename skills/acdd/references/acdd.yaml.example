@@ -17,16 +17,14 @@ ignore:
 # Reader paths blocked before reads and exports (gitignore-style patterns).
 sensitive: ['.env*', 'secrets/**']
 
-# Specification collections and unified state configuration (0.6.0)
+# Specification collections and unified state configuration (0.6.2)
 specs:
   milestones:
     path: docs/milestones
-    profile: workspace
     prefixes: [AC]
     digits: 3
   plans:
     path: docs/plans
-    profile: in_place
     prefixes: [PLAN]
     digits: 3
 

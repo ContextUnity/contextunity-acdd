@@ -30,9 +30,9 @@ The finite autoimport table also includes configured Nuxt helpers such as
 classifies unshadowed `$fetch` with declared `nuxt` activation. These are external
 classifications, not local handler edges. Module-specific helper rules retain
 their declared-package activation; configured export and result contracts below
-add exact persisted-module proof. The [Nuxt](../../skills/acdd/references/frameworks/nuxt.toml.example)
-and [Vue/Pinia](../../skills/acdd/references/frameworks/vue-runtime.toml.example)
-examples show partial extensions of the canonical bundles.
+add exact persisted-module proof. See the
+[bundled manifests on GitHub](https://github.com/ContextUnity/contextunity-acdd/tree/main/crates/acdd-index/src/languages/manifests)
+for the compiled Nuxt and Vue/Pinia definitions.
 
 ## Vue components and Pinia stores
 

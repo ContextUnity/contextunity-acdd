@@ -15,8 +15,8 @@ Run the focused test command required by the admitted task contract (e.g. `cargo
 
 For Rust task builds and reviews, run strict Clippy alongside the focused test:
 `cargo clippy <scope_target> --all-features -- -D warnings` (or workspace-wide `cargo clippy --workspace --all-targets --all-features -- -D warnings`). Record its exact command and exit code with the build evidence; Clippy contributes no test count.
-The repository profile (`.acdd/profile.yaml`) registers `rust-check-and-test` as `cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter}`.
-Claim context (`acdd_claim` / `acdd claim`) supplies `workflow_guidance` with the contract seam and indexed covering-test targets; use the scoped command matching the task proof (with `--test <filter>`) and record its exact string. Full unfiltered suite execution (`cargo test --workspace --all-targets`) is deferred to the terminal verification gate.
+The repository profile (`.acdd/profile.yaml`) registers `rust-check-and-test` as `cargo clippy {scope_target} --all-features -- -D warnings && cargo test {scope_target} {test_filter} && cargo test --test commitment_integrity`.
+Claim context (`acdd_claim` / `acdd claim`) supplies `ClaimResp` (`guidance`, `contract`, and `context_lenses` with the contract seam and indexed covering-test targets); use the scoped command matching the task proof (with `--test <filter>`) and record its exact string. Full unfiltered suite execution (`cargo test --workspace --all-targets`) is deferred to the terminal verification gate.
 
 ## Milestone handoff gate
 
@@ -34,7 +34,7 @@ The root package's `--all-targets` run without `--workspace` does not execute wo
 
 Follow the documentation-agent scan in [AGENTS.md](AGENTS.md#documentation-scan-before-handoff) before final verification. The repository profile's `check_full_repo` runs commands 1–3 (`commitment_integrity`, workspace strict Clippy, and `cargo test --workspace --lib`); run `cargo test --workspace --all-targets` and `cargo run -- docs check && cargo run -- validate` alongside it when verifying terminal delivery. Obtain independent review against the settled diff and target base; any source or documentation change after review invalidates prior verification and requires fresh verification and review.
 
-Use `test-suite-refactor` only when the admitted change splits, replaces, deduplicates, or removes a typed test suite. It is not a general final-verification step.
+Use `test-suite-rules` when authoring, deduplicating, splitting, replacing, or removing tests.
 
 ## Test authoring and fixture invariants
 
@@ -92,7 +92,7 @@ To prevent test-suite bloat, redundant execution storms, and synthetic masking, 
     - When two or more read-only query, search, or linker tests inspect the same immutable file corpus, share a `std::sync::OnceLock<PersistedSnapshot>` from `tests/common/sqlite.rs`, dropping the builder `Workspace` inside `get_or_init`, and open per-test read-only connections. Use local `Workspace` instances when disk source files are required; never store a `Workspace` in a static.
 
 12. **Integration Binary Consolidation Budget (`INV-TEST-BINARY-BUDGET`)**:
-    - Every `.rs` file directly under `tests/` compiles and links a separate integration binary. Register new test modules inside the owning canonical domain binary (`tests/core.rs`, `tests/mcp.rs`, `tests/query_context.rs`, `tests/linker.rs`, `tests/languages.rs`, `tests/acdd.rs`, `tests/commitment_integrity.rs`) rather than creating new standalone `tests/<name>.rs` files.
+    - Every `.rs` file directly under `tests/` compiles and links a separate integration binary. Register new test modules inside the owning canonical domain binary (`tests/core.rs`, `tests/mcp.rs`, `tests/query_context.rs`, `tests/linker.rs`, `tests/languages.rs`, `tests/acdd.rs`, `tests/commitment_integrity.rs`) or in crate-local `crates/acdd-state/tests/state_integration.rs` rather than creating new standalone `tests/<name>.rs` files.
 
 ## Declarative Seam Testing via `<Domain>Harness`: Agent Authoring Guide
 
@@ -109,7 +109,7 @@ When writing or extending tests in this repository, agents MUST follow the **Pro
 ### Available `<Domain>Harness` Implementations
 | Harness | Subsystem / Scope | Canonical Fixtures | Key Production Seams |
 | :--- | :--- | :--- | :--- |
-| `RunHarness` | Unified `GateProfile` (`v2`), DAG gates, claims, verification, blackboard, git ops, runner waves | `tests/acdd/fixtures/{milestones,plans,workflows}/` (`< 15s` full suite) | `StateEngine::execute`, `StateQueryEngine::query`, `validate_profile_document` |
+| `RunHarness` | Unified `GateProfile` (`v2`), DAG gates, claims, verification, blackboard, git ops, runner waves | `tests/acdd/fixtures/{milestones,plans,workflows}/` (`crates/acdd-state/tests/state_integration.rs` + `tests/acdd/`, `< 15s` full suite) | `StateEngine::execute`, `StateQueryEngine::query`, `validate_profile_document` |
 | `ExtractorHarness` | Syntax parsing, AST extraction, fact emission (zero disk I/O) | In-memory code snippets | `languages::rust::extract`, `languages::python::extract` |
 | `McpTestHarness` | MCP JSON-RPC protocol, tool routing, response compaction | Real Workspace files, SQLite, and workspace-local extraction cache | Production RMCP server over an in-process duplex stream |
 
@@ -172,7 +172,8 @@ When a new subsystem emerges (e.g. a new `DomainProvider` or `StateBackend` cons
 - ❌ **NEVER** inline a single-caller helper as a 100-line `(|| -> Result<_> { ... })()` IIFE block returning a one-off `*Observation` struct, or leave zero-method `*Observation` struct shells in `harness.rs`.
 - ❌ **NEVER** run full-DB dumps (`persisted_state`) or $O(N^2)$ sequential cold index rebuilds inside per-row rejection/delta loops when lightweight checks or batched file updates prove the same contract.
 - ❌ **NEVER** synthesize 40–80 lines of raw JSON evidence manually (use `default_evidence()` and declarative mutators), or hide setup bugs behind silent `"unavailable"` digest fallbacks in happy-path fixture helpers.
-- ❌ **NEVER** combine unrelated workflows into 300-line mega-tests, author multi-hundred-line meta-test suites for test-only helpers, or write tautological enum/struct echo checks and brittle `Cargo.toml`/CI YAML substring assertions.
+- ❌ **NEVER** combine unrelated workflows into 300-line mega-tests, author multi-hundred-line meta-test suites for test-only helpers, copy-paste `TempDirDrop` helper structs where `tempfile::TempDir` applies, duplicate canonical DTOs as mirror `Mcp*` structs, keep temporary deleted-symbol lists in `commitment_integrity`, or write tautological enum/struct echo checks and brittle `Cargo.toml`/CI YAML substring assertions.
+- ❌ **NEVER** leave newly introduced clones (`duplicates`), `phantom_tested` dead code, `dead_tails`, or `dangling_calls` unaddressed before submitting `build` or passing `review`.
 - ❌ **NEVER** call `Workspace::build()` repeatedly per test when `>= 2` read-only query, search, or linker tests inspect the same immutable fixture corpus (share one read-only index via `OnceLock`).
 - ❌ **NEVER** spawn Git worktrees and child-process runner harnesses for pure in-memory DAG scheduling, dependency blocking, or SQLite state-transition assertions (use `RunHarness::in_memory()`).
 - ❌ **NEVER** add new top-level `tests/<name>.rs` Cargo test binaries; register new modules inside the owning canonical domain binary.

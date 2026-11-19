@@ -9,11 +9,11 @@ Framework manifests provide declarative rules to existing language extraction an
 
 ## Bundled manifests
 
-Bundled manifest tables live in `src/engine/languages/manifests/`. The build automatically embeds regular TOML, YAML and YML files from that directory in a sorted inventory, using each filename stem as its identifier. Duplicate identifiers and invalid UTF-8 identities fail the build. When the dependency registry is constructed, ACDD parses the embedded text into typed `FrameworkManifest` values. The `gridviewspec` table recognizes the declared Python distribution `grid-view-spec` and maps the verified `GridViewSpec` receiver to `grid_view_spec.types.spec.GridViewSpec`.
+Bundled manifest tables live in [crates/acdd-index/src/languages/manifests/](https://github.com/ContextUnity/contextunity-acdd/tree/main/crates/acdd-index/src/languages/manifests). The build automatically embeds regular TOML, YAML and YML files from that directory in a sorted inventory, using each filename stem as its identifier. Duplicate identifiers and invalid UTF-8 identities fail the build. When the dependency registry is constructed, ACDD parses the embedded text into typed `FrameworkManifest` values. The `gridviewspec` table recognizes the declared Python distribution `grid-view-spec` and maps the verified `GridViewSpec` receiver to `grid_view_spec.types.spec.GridViewSpec`.
 
 To ship another bundled manifest with ACDD, add a supported file in that directory and rebuild the binary. No Rust catalogue entry is needed. Cargo tracks the directory and individual files; relative filenames and file bytes contribute to the existing language-profile fingerprint, so additions, removals, renames and edits invalidate cached extraction. Typed sections execute through the existing extraction hooks. Adding a table does not introduce new extraction semantics.
 
-The GridViewSpec hierarchy rules describe the verified public API of the specification, metadata, configuration, layout, block types, nested column/action/filter/card types, and Django host adapter. Concrete block rules include inherited `GridViewBlockBase` fields; dataclass fields support member reads, while the host adapter also exposes callable methods. Unknown members remain unresolved. See the [GridViewSpec example](../../skills/acdd/references/frameworks/gridviewspec.toml.example).
+The GridViewSpec hierarchy rules describe the verified public API of the specification, metadata, configuration, layout, block types, nested column/action/filter/card types, and Django host adapter. Concrete block rules include inherited `GridViewBlockBase` fields; dataclass fields support member reads, while the host adapter also exposes callable methods. Unknown members remain unresolved.
 
 In the verified package API, `GridViewAction` is a union alias. The manifest registers its real `GridViewActionBase` and export, overlay, link, button, select, and menu action classes with their respective members.
 
@@ -34,19 +34,12 @@ external members, and `BaseHTTPMiddleware` exposes its configured constructor.
 The Django pack also supplies verified Form/ModelForm inheritance members; it
 does not infer an arbitrary object's type from a method such as `save`.
 
-Annotated partial extensions are available for
-[Starlette](../../skills/acdd/references/frameworks/starlette.toml.example),
-[FastAPI](../../skills/acdd/references/frameworks/fastapi.toml.example),
-[Nuxt](../../skills/acdd/references/frameworks/nuxt.toml.example),
-[Vue/Pinia](../../skills/acdd/references/frameworks/vue-runtime.toml.example)
-and [HTMX](../../skills/acdd/references/frameworks/htmx.toml.example).
-Their canonical filenames extend the corresponding bundle; they are not full
-replacement packs. See the [workspace verification runbook](../runbooks/framework-packs.md).
-The existing [Django](../../skills/acdd/references/frameworks/django.toml.example),
-[Alpine](../../skills/acdd/references/frameworks/alpinejs.toml.example)
-and [GridViewSpec](../../skills/acdd/references/frameworks/gridviewspec.toml.example)
-examples complete the eight-pack set. The generic TOML/YAML examples below show
-illustrative APIs; the concrete pack examples use verified bundled identities.
+Bundled manifests ship directly inside the compiled binary for Starlette,
+FastAPI, Nuxt, Vue/Pinia, HTMX, Django, Alpine, and GridViewSpec (see the
+[bundled manifests directory on GitHub](https://github.com/ContextUnity/contextunity-acdd/tree/main/crates/acdd-index/src/languages/manifests)
+and the [workspace verification runbook](../runbooks/framework-packs.md) for
+partial project overrides under `.acdd/frameworks/`). The generic TOML/YAML
+examples below show illustrative syntax; bundled packs use verified identities.
 
 ## Project manifests
 
