@@ -249,6 +249,8 @@ define_string_enum!(
         None => "none",
         /// Create a scoped Git commit on the node's branch.
         Commit => "commit",
+        /// Save a parentless scoped Git checkpoint.
+        Snapshot => "snapshot",
     }
 );
 

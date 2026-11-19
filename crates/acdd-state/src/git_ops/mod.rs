@@ -47,8 +47,12 @@ pub(super) fn run_git_raw(
     extra_env: &[(&str, &str)],
     stdin_bytes: Option<&[u8]>,
 ) -> Result<Output, StateError> {
-    acdd_core::git::run_git_raw(worktree, args, index_file, extra_env, stdin_bytes)
-        .map_err(|err| StateError::new(ErrorCode::ExternalGitDrift, err.to_string()))
+    let output = if index_file.is_none() && extra_env.is_empty() && stdin_bytes.is_none() {
+        acdd_core::git::git_command(worktree, args)
+    } else {
+        acdd_core::git::run_git_raw(worktree, args, index_file, extra_env, stdin_bytes)
+    };
+    output.map_err(|err| StateError::new(ErrorCode::ExternalGitDrift, err.to_string()))
 }
 
 pub(super) fn run_git_stdout(

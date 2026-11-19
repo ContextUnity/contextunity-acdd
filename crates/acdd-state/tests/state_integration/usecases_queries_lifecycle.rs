@@ -21,6 +21,330 @@ use acdd_state::usecases::{
 use serde_json::json;
 use std::fs;
 
+#[cfg(unix)]
+#[test]
+fn seam_snapshot_lifecycle_and_confinement_matrix() {
+    use acdd_state::usecases::{SnapshotAction::*, SnapshotReq};
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let tmp = make_temp_dir("snapshots");
+    let repo = tmp.path();
+    let head = init_git_repo(repo, "main");
+    let task = repo.join(".worktrees/checkpoint");
+    git_ok(repo, &["worktree", "add", "--detach", task.to_str().unwrap()]);
+    let index = git_ok(&task, &["rev-parse", "--path-format=absolute", "--git-path", "index"]);
+    let profile = write_profile(repo, "checkpoints.yaml", r#"
+version: 2
+inherit: none
+git: { isolation: worktree, worktrees: manual }
+gates:
+  - tasks:
+      gates:
+        - id: checkpoint
+          proof: none
+          save: snapshot
+          pass: deliver
+        - id: deliver
+          proof: none
+          need: [checkpoint]
+          receipt: true
+          save: none
+  - id: handoff
+    proof: none
+    save: { post: none, prune: true }
+"#);
+    let spec = "docs/milestones/AC-SNAPSHOT.md";
+    fs::create_dir_all(repo.join("docs/milestones")).unwrap();
+    fs::write(repo.join(spec), r#"---
+id: AC-SNAPSHOT
+title: Checkpoints
+status: planned
+---
+### task: t1
+```yaml
+task_ref: t1
+scope: [src/*.txt, src/z/f?le]
+```
+### task: t2
+```yaml
+task_ref: t2
+scope: [src/lib.rs]
+```
+"#).unwrap();
+    let cfg = base_config(repo);
+    let (_, provider) = build_provider_with_mock(&cfg.modules);
+    let engine = StateEngine::open(cfg.clone(), provider.clone()).unwrap();
+    let start = || start_run(&engine, StartReq {
+        spec_path: Some(spec.to_owned()),
+        profile: Some(profile.clone()),
+        ..StartReq::default()
+    }).unwrap().run.run_id;
+    let rid = start();
+    let pass = |node, override_worktree| {
+        let claim = claim_node(&engine, rid.as_str(), node, "worker", None, false, false, override_worktree).unwrap();
+        submit_req(&engine, pass_req(rid.as_str(), node, "worker", Some(claim.claim_revision), false))
+            .unwrap_or_else(|err| panic!("{node}: {err}"));
+        claim.claim_revision
+    };
+    let snapshot = |action, task_ref: Option<&str>, all, revision| {
+        engine.execute(StateCommand::Snapshot(SnapshotReq {
+            run: Some(rid.to_string()), action,
+            task_ref: task_ref.map(|t| TaskRef::new(t).unwrap()), all, revision,
+        }))
+    };
+    let prefix = format!("refs/acdd/snapshots/{rid}");
+    let refs = || git_ok(repo, &["for-each-ref", "--format=%(refname)", &prefix]);
+    fs::create_dir_all(task.join("src/z")).unwrap();
+    fs::write(task.join("src/a.txt"), "saved").unwrap();
+    fs::write(task.join("src/z/file"), "saved").unwrap();
+    let index_before = fs::read(&index).unwrap();
+    let rev = pass("t1.checkpoint", Some(task.clone()));
+    let auto_ref = format!("{prefix}/t1/r{rev}");
+    assert_eq!(refs(), auto_ref);
+    assert!(git_ok(repo, &["show", "-s", "--format=%P", &auto_ref]).is_empty());
+    fs::write(task.join("src/a.txt"), "manual").unwrap();
+    snapshot(Save, Some("t1"), false, Some(10)).unwrap();
+
+    let outside = repo.join("src/z");
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("file"), "outside").unwrap();
+    fs::write(repo.join("src/a.txt"), "primary").unwrap();
+    fs::write(task.join("README.md"), "task sentinel").unwrap();
+    fs::create_dir_all(task.join(".acdd")).unwrap();
+    fs::write(task.join(".acdd/sentinel"), "runtime").unwrap();
+
+    let nested = task.join("src/z");
+    let leaf = nested.join("file");
+    let cases = [
+        "symlink ancestor", "symlink leaf", "file ancestor", "directory leaf",
+        "nested repository", "checkout failure", "deletion failure", "regular restore",
+    ];
+    for case in cases {
+        fs::remove_dir_all(&nested).unwrap();
+        fs::write(task.join("src/a.txt"), "dirty").unwrap();
+        fs::write(task.join("src/extra.txt"), "delete me").unwrap();
+        match case {
+            "symlink ancestor" => symlink(&outside, &nested).unwrap(),
+            "symlink leaf" => {
+                fs::create_dir(&nested).unwrap();
+                symlink(outside.join("file"), &leaf).unwrap();
+            }
+            "file ancestor" => fs::write(&nested, "collision").unwrap(),
+            "directory leaf" => {
+                fs::create_dir_all(&leaf).unwrap();
+                fs::write(leaf.join("unrelated"), "keep").unwrap();
+            }
+            "nested repository" => {
+                fs::create_dir(&nested).unwrap();
+                git_ok(&nested, &["init"]);
+            }
+            "checkout failure" | "deletion failure" => {
+                fs::create_dir(&nested).unwrap();
+                let contents = if case == "checkout failure" { "dirty" } else { "saved" };
+                fs::write(&leaf, contents).unwrap();
+                fs::write(nested.join("fale"), "keep").unwrap();
+                fs::set_permissions(&nested, fs::Permissions::from_mode(0o555)).unwrap();
+            }
+            _ => {
+                fs::create_dir(&nested).unwrap();
+                fs::write(&leaf, "dirty").unwrap();
+            }
+        }
+        let restored = snapshot(Restore, Some("t1"), false, None);
+        if matches!(case, "checkout failure" | "deletion failure") {
+            fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).unwrap();
+            let error = restored.as_ref().unwrap_err();
+            assert!(!error.message.contains("Rollback"), "{error}");
+            let expected = if case == "checkout failure" { "checkout-index" } else { "fale" };
+            assert!(error.message.contains(expected), "{error}");
+            assert_eq!(fs::read_to_string(nested.join("fale")).unwrap(), "keep");
+        }
+        if case == "regular restore" {
+            let StateCommandOutput::Snapshot(out) = restored.unwrap() else { panic!("expected snapshot") };
+            assert_eq!(out.refs, [format!("{prefix}/t1/r10")]);
+            assert_eq!(fs::read_to_string(task.join("src/a.txt")).unwrap(), "manual");
+            assert_eq!(fs::read_to_string(&leaf).unwrap(), "saved");
+            assert!(!task.join("src/extra.txt").exists());
+        } else {
+            assert_eq!(restored.unwrap_err().code, ErrorCode::ExternalGitDrift, "{case}");
+            assert_eq!(fs::read_to_string(task.join("src/a.txt")).unwrap(), "dirty", "{case}");
+            assert!(task.join("src/extra.txt").exists(), "{case}");
+            if case == "nested repository" {
+                assert!(!leaf.exists() && nested.join(".git").is_dir());
+            }
+        }
+        assert_eq!(fs::read_to_string(outside.join("file")).unwrap(), "outside");
+        assert_eq!(fs::read_to_string(repo.join("src/a.txt")).unwrap(), "primary");
+        assert_eq!(fs::read_to_string(task.join("README.md")).unwrap(), "task sentinel");
+        assert_eq!(fs::read_to_string(task.join(".acdd/sentinel")).unwrap(), "runtime");
+        match case {
+            "symlink ancestor" | "file ancestor" => {
+                fs::remove_file(&nested).unwrap();
+                fs::create_dir(&nested).unwrap();
+            }
+            "directory leaf" => assert_eq!(fs::read_to_string(leaf.join("unrelated")).unwrap(), "keep"),
+            _ => {}
+        }
+    }
+    snapshot(Restore, Some("t1"), false, Some(rev)).unwrap();
+    assert_eq!(fs::read_to_string(task.join("src/a.txt")).unwrap(), "saved");
+    assert_eq!(fs::read(&index).unwrap(), index_before);
+    assert_eq!(git_ok(&task, &["rev-parse", "HEAD"]), head.as_str());
+    fs::write(task.join("README.md"), fs::read(repo.join("README.md")).unwrap()).unwrap();
+
+    fs::remove_file(repo.join("src/a.txt")).unwrap();
+    fs::remove_dir_all(outside).unwrap();
+    let second_rev = pass("t2.checkpoint", Some(repo.to_path_buf()));
+    let second_ref = format!("{prefix}/t2/r{second_rev}");
+    snapshot(Clear, Some("t1"), false, None).unwrap();
+    assert_eq!(refs(), second_ref);
+    snapshot(Clear, None, true, None).unwrap();
+    assert!(refs().is_empty());
+    snapshot(Save, Some("t1"), false, Some(rev)).unwrap();
+    pass("t1.deliver", Some(task.clone()));
+    assert!(refs().is_empty());
+    pass("t2.deliver", Some(repo.to_path_buf()));
+
+    snapshot(Save, Some("t1"), false, Some(rev)).unwrap();
+    pass("handoff", None);
+    let tomb = engine.backend().load_tombstone(&rid).unwrap().unwrap();
+    assert!(tomb.cleanup_manifest.is_empty() && !tomb.cleanup_pending && refs().is_empty());
+
+    let commit_profile = write_profile(repo, "checkpoint-commit.yaml",
+        &fs::read_to_string(repo.join(&profile)).unwrap().replace("          save: none", "          save: commit"));
+    let rid = start_run(&engine, StartReq {
+        spec_path: Some(spec.to_owned()), profile: Some(commit_profile), ..StartReq::default()
+    }).unwrap().run.run_id;
+    let foreign = repo.join(".worktrees/foreign");
+    init_git_repo(&foreign, "main");
+    fs::write(foreign.join("src/a.txt"), "candidate").unwrap();
+    let claim = claim_node(&engine, rid.as_str(), "t1.checkpoint", "worker", None, false, false, Some(foreign.clone())).unwrap();
+    for action in [Save, Restore] {
+        let error = engine.execute(StateCommand::Snapshot(SnapshotReq {
+            run: Some(rid.to_string()), action, task_ref: Some(TaskRef::new("t1").unwrap()),
+            all: false, revision: None,
+        })).unwrap_err();
+        assert_eq!(error.code, ErrorCode::ExternalGitDrift);
+        assert!(error.message.contains("outside the owning repositories"));
+    }
+    let rejected = submit_req(&engine, pass_req(rid.as_str(), "t1.checkpoint", "worker", Some(claim.claim_revision), false)).unwrap_err();
+    assert_eq!(rejected.code, ErrorCode::ExternalGitDrift);
+    assert!(git_ok(&foreign, &["for-each-ref", "refs/acdd/snapshots"]).is_empty());
+    let mut linked_config = cfg.clone();
+    let non_git = make_temp_dir("non-git-linked");
+    let delivery_repo = repo.join(".worktrees/delivery");
+    let delivery_head = init_git_repo(&delivery_repo, "main");
+    git_ok(&delivery_repo, &["checkout", "-b", "delivery"]);
+    fs::write(delivery_repo.join("src/a.txt"), "candidate").unwrap();
+    linked_config.linked_workspaces.extend([
+        ("checkpoint".to_owned(), foreign.clone()),
+        ("alias".to_owned(), foreign.clone()),
+        ("delivery".to_owned(), delivery_repo.clone()),
+        ("non-git".to_owned(), non_git.path().to_path_buf()),
+    ]);
+    let linked = StateEngine::open(linked_config, provider.clone()).unwrap();
+    submit_req(&linked, pass_req(rid.as_str(), "t1.checkpoint", "worker", Some(claim.claim_revision), false)).unwrap();
+    let linked_ref = format!("refs/acdd/snapshots/{rid}/t1/r{}", claim.claim_revision);
+    assert_eq!(git_ok(&foreign, &["for-each-ref", "--format=%(refname)", &linked_ref]), linked_ref);
+    let checkpoint = git_ok(&foreign, &["rev-parse", &linked_ref]);
+    let deliver = claim_node(&linked, rid.as_str(), "t1.deliver", "worker", None, false, false, Some(delivery_repo.clone())).unwrap();
+    assert_eq!(deliver.worktree, delivery_repo);
+    git_ok(&delivery_repo, &["update-ref", &linked_ref, delivery_head.as_str()]);
+    linked.execute(StateCommand::Snapshot(SnapshotReq {
+        run: Some(rid.to_string()), action: Clear, task_ref: Some(TaskRef::new("t1").unwrap()),
+        all: false, revision: None,
+    })).unwrap();
+    assert!(git_ok(&foreign, &["for-each-ref", &linked_ref]).is_empty());
+    assert!(git_ok(&delivery_repo, &["for-each-ref", &linked_ref]).is_empty());
+    git_ok(&foreign, &["update-ref", &linked_ref, &checkpoint]);
+    let linked_lock = foreign.join(".git/acdd/repo.lock");
+    let held = acdd_core::lock::acquire_exclusive(&linked_lock).unwrap();
+    let all = linked.execute(StateCommand::Snapshot(SnapshotReq {
+        run: Some(rid.to_string()), action: Clear, task_ref: None, all: true, revision: None,
+    })).unwrap_err();
+    assert_eq!(all.code, ErrorCode::BackendConflict);
+    assert_eq!(git_ok(&foreign, &["rev-parse", &linked_ref]), checkpoint);
+    let blocked = submit_req(&linked, pass_req(rid.as_str(), "t1.deliver", "worker", Some(deliver.claim_revision), false)).unwrap_err();
+    assert_eq!(blocked.code, ErrorCode::BackendConflict);
+    assert_eq!(git_ok(&delivery_repo, &["rev-parse", "HEAD"]), delivery_head.as_str());
+    assert_eq!(git_ok(&foreign, &["rev-parse", &linked_ref]), checkpoint);
+    drop(held);
+    let ref_lock = foreign.join(format!(".git/{linked_ref}.lock"));
+    fs::write(&ref_lock, "").unwrap();
+    let blocked = submit_req(&linked, pass_req(rid.as_str(), "t1.deliver", "worker", Some(deliver.claim_revision), false)).unwrap_err();
+    assert_eq!(blocked.code, ErrorCode::ExternalGitDrift);
+    let committed_head = git_ok(&delivery_repo, &["rev-parse", "HEAD"]);
+    assert_ne!(committed_head, delivery_head.as_str());
+    assert_eq!(git_ok(&delivery_repo, &["show", "HEAD:src/a.txt"]), "candidate");
+    assert_eq!(git_ok(&foreign, &["rev-parse", &linked_ref]), checkpoint);
+    fs::remove_file(ref_lock).unwrap();
+    let delivered = submit_req(&linked, pass_req(rid.as_str(), "t1.deliver", "worker", Some(deliver.claim_revision), false)).unwrap();
+    assert!(delivered.receipt.is_some());
+    assert_eq!(git_ok(&delivery_repo, &["rev-parse", "HEAD"]), committed_head);
+    assert!(git_ok(&foreign, &["for-each-ref", &linked_ref]).is_empty());
+
+    let linked_worktree = repo.join(".worktrees/transient");
+    git_ok(&foreign, &["worktree", "add", "--detach", linked_worktree.to_str().unwrap()]);
+    let transient = claim_node(&linked, rid.as_str(), "t2.checkpoint", "worker", None, false, false, Some(linked_worktree.clone())).unwrap();
+    submit_req(&linked, pass_req(rid.as_str(), "t2.checkpoint", "worker", Some(transient.claim_revision), false)).unwrap();
+    let transient_ref = format!("refs/acdd/snapshots/{rid}/t2/r{}", transient.claim_revision);
+    assert!(!git_ok(&foreign, &["for-each-ref", &transient_ref]).is_empty());
+    git_ok(&foreign, &["worktree", "remove", linked_worktree.to_str().unwrap()]);
+    linked.execute(StateCommand::Snapshot(SnapshotReq {
+        run: Some(rid.to_string()), action: Clear, task_ref: Some(TaskRef::new("t2").unwrap()),
+        all: false, revision: None,
+    })).unwrap();
+    assert!(git_ok(&foreign, &["for-each-ref", &transient_ref]).is_empty());
+
+    git_ok(&foreign, &["update-ref", &linked_ref, &checkpoint]);
+    let held = acdd_core::lock::acquire_exclusive(&linked_lock).unwrap();
+    let reference = format!("refs/acdd/snapshots/{rid}/t1/r1");
+    git_ok(repo, &["update-ref", &reference, head.as_str()]);
+    let lock = repo.join(format!(".git/{reference}.lock"));
+    fs::write(&lock, "").unwrap();
+    let cleared = linked.execute(StateCommand::Clear(ClearReq {
+        run: Some(rid.to_string()), reason: None, force: false,
+    })).unwrap();
+    let StateCommandOutput::Clear(cleared) = cleared else { panic!("expected clear") };
+    assert!(cleared.tombstone.cleanup_pending);
+    assert_eq!(git_ok(repo, &["rev-parse", &reference]), head.as_str());
+    fs::remove_file(lock).unwrap();
+    assert!(start_run(&linked, StartReq { spec_path: Some("docs/milestones/missing.md".to_owned()), ..StartReq::default() }).is_err());
+    assert!(linked.backend().load_tombstone(&rid).unwrap().unwrap().cleanup_pending);
+    assert_eq!(git_ok(&foreign, &["rev-parse", &linked_ref]), checkpoint);
+    assert_eq!(git_ok(repo, &["rev-parse", &reference]), head.as_str());
+    drop(held);
+    let next = start_run(&linked, StartReq {
+        spec_path: Some(spec.to_owned()), profile: Some(profile.clone()), ..StartReq::default()
+    }).unwrap().run.run_id;
+    assert!(!engine.backend().load_tombstone(&rid).unwrap().unwrap().cleanup_pending);
+    assert!(git_ok(&foreign, &["for-each-ref", &linked_ref]).is_empty());
+    assert!(git_ok(repo, &["for-each-ref", "--format=%(refname)", &reference]).is_empty());
+    drop(linked);
+    let archive_dir = repo.join("docs/milestones/archive");
+    fs::create_dir_all(&archive_dir).unwrap();
+    let completed = fs::read_to_string(repo.join(spec)).unwrap().replace("status: planned", "status: completed");
+    fs::write(archive_dir.join("AC-SNAPSHOT.md"), completed).unwrap();
+    let reconcile_ref = format!("refs/acdd/snapshots/{next}/t1/r1");
+    git_ok(repo, &["update-ref", &reconcile_ref, head.as_str()]);
+    git_ok(repo, &["add", "docs/milestones/archive"]);
+    git_ok(repo, &["commit", "-m", "Archive before state recovery"]);
+    let planned = fs::read(repo.join(spec)).unwrap();
+    fs::remove_file(repo.join(spec)).unwrap();
+    drop(engine);
+    fs::remove_file(cfg.resolved_state_db_path().0).unwrap();
+    let recovered = StateEngine::open(cfg, provider).unwrap();
+    let tomb = recovered.backend().load_tombstone(&next).unwrap().unwrap();
+    assert!(tomb.cleanup_manifest.is_empty() && tomb.cleanup_pending);
+    fs::write(repo.join(spec), planned).unwrap();
+    let restarted = start_run(&recovered, StartReq {
+        spec_path: Some(spec.to_owned()), profile: Some(profile), ..StartReq::default()
+    }).unwrap();
+    assert!(!recovered.backend().load_tombstone(&next).unwrap().unwrap().cleanup_pending);
+    assert!(git_ok(repo, &["for-each-ref", &reconcile_ref]).is_empty());
+    clear_run(&recovered, restarted.run.run_id.as_str());
+}
+
 #[test]
 fn seam_readonly_queries_matrix_and_zero_db_creation() {
     let empty_tmp = make_temp_dir("empty-ro");

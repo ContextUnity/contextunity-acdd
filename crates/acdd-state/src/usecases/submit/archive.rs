@@ -468,7 +468,7 @@ pub(super) fn finalize_with_prune(
         target_base_commit: snapshot.run.target_base_commit.clone(),
         archive_path,
         closed_commit,
-        cleanup_pending: !cleanup_manifest.is_empty(),
+        cleanup_pending: true,
         cleanup_manifest,
         summary_json: "{}".to_owned(),
         metrics_json: "{}".to_owned(),

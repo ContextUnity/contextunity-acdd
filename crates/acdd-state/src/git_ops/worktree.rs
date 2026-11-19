@@ -4,6 +4,7 @@ use super::{run_git_checked, run_git_raw, run_git_stdout};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::{atomic_write, checked_child, ensure_confined_dir_all, open_confined};
 use acdd_core::ids::{CommitOid, RunId};
+use acdd_core::lock::{try_acquire_exclusive, FileLockGuard};
 use acdd_core::path_policy::normalize_rel_path;
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
@@ -387,56 +388,85 @@ pub fn remove_worktree_and_branch(
 }
 
 /// Delete `refs/acdd/{runs,snapshots,keep}/<run_id>/*` across primary and linked workspaces.
-pub fn cleanup_run_refs(
-    workspaces: &[PathBuf],
+pub fn cleanup_run_refs<'a>(
+    locked: Option<&'a RepoWorktreeLayout>, workspaces: impl IntoIterator<Item = &'a PathBuf>,
     run_id: &RunId,
 ) -> Result<Vec<String>, StateError> {
-    let mut seen_common_dirs = BTreeSet::new();
-    let mut deleted = Vec::new();
-    let run_prefix = format!("refs/acdd/runs/{}/", run_id.as_str());
-    let snapshots_prefix = format!("refs/acdd/snapshots/{}/", run_id.as_str());
-    let keep_prefix = format!("refs/acdd/keep/{}/", run_id.as_str());
+    cleanup_refs(locked, workspaces, run_id, None)
+}
 
-    for ws in workspaces {
-        let layout = resolve_repo_layout(ws)?;
-        if !seen_common_dirs.insert(layout.git_common_dir.clone()) {
+pub(crate) fn try_lock_secondary_repo(
+    locked: Option<&RepoWorktreeLayout>, target: &RepoWorktreeLayout,
+) -> Result<Option<FileLockGuard>, StateError> {
+    if locked.is_some_and(|primary| primary.git_common_dir == target.git_common_dir) {
+        return Ok(None);
+    }
+    try_acquire_exclusive(&target.repo_lock_path)
+        .map_err(|err| StateError::new(ErrorCode::BackendConflict, err.to_string()))?
+        .map(Some).ok_or_else(|| StateError::new(ErrorCode::BackendConflict,
+            format!("repository lock is busy: '{}'", target.repo_lock_path.display())))
+}
+
+pub(crate) fn cleanup_refs<'a>(
+    locked: Option<&'a RepoWorktreeLayout>, workspaces: impl IntoIterator<Item = &'a PathBuf>,
+    run_id: &RunId, snapshot: Option<String>,
+) -> Result<Vec<String>, StateError> {
+    let repos = lock_cleanup_repos(locked, workspaces)?;
+    cleanup_locked_refs(&repos, run_id, snapshot)
+}
+
+pub(crate) fn lock_cleanup_repos<'a>(
+    locked: Option<&'a RepoWorktreeLayout>, workspaces: impl IntoIterator<Item = &'a PathBuf>,
+) -> Result<Vec<(RepoWorktreeLayout, Option<FileLockGuard>)>, StateError> {
+    let mut seen_common_dirs = BTreeSet::new();
+    let mut repos = Vec::new();
+    for ws in locked.map(|layout| &layout.primary_worktree).into_iter().chain(workspaces) {
+        if !locked.is_some_and(|primary| primary.primary_worktree == *ws)
+            && ws.is_dir()
+            && ws.join(".git").symlink_metadata().is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound)
+            && acdd_core::git::git_common_dir(ws).is_err()
+        {
             continue;
         }
+        let layout = resolve_repo_layout(ws)?;
+        if seen_common_dirs.insert(layout.git_common_dir.clone()) {
+            let guard = try_lock_secondary_repo(locked, &layout)?;
+            repos.push((layout, guard));
+        }
+    }
+    Ok(repos)
+}
+
+pub(crate) fn cleanup_locked_refs(
+    repos: &[(RepoWorktreeLayout, Option<FileLockGuard>)], run_id: &RunId, snapshot: Option<String>,
+) -> Result<Vec<String>, StateError> {
+    let mut deleted = Vec::new();
+    let prefixes = match snapshot {
+        Some(prefix) => vec![prefix],
+        None => ["runs", "snapshots", "keep"].map(|kind| format!("refs/acdd/{kind}/{run_id}/")).to_vec(),
+    };
+    let mut args = vec!["for-each-ref", "--format=%(refname)"];
+    args.extend(prefixes.iter().map(String::as_str));
+
+    for (layout, _guard) in repos {
         let listed = run_git_stdout(
             &layout.primary_worktree,
-            &[
-                "for-each-ref",
-                "--format=%(refname)",
-                &run_prefix,
-                &snapshots_prefix,
-                &keep_prefix,
-            ],
+            &args,
             None,
             ErrorCode::ExternalGitDrift,
         )?;
-        let refs: Vec<String> = listed
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(str::to_owned)
-            .collect();
-        if refs.is_empty() {
+        if listed.is_empty() {
             continue;
         }
-        let mut batch = String::new();
-        for ref_name in &refs {
-            batch.push_str("delete ");
-            batch.push_str(ref_name);
-            batch.push('\n');
-        }
+        let batch: String = listed.lines().map(|r| format!("delete {r}\n")).collect();
         run_git_checked(
             &layout.primary_worktree,
-            &["update-ref", "--stdin"],
+            &["update-ref", "--no-deref", "--stdin"],
             None,
             Some(batch.as_bytes()),
             ErrorCode::ExternalGitDrift,
         )?;
-        deleted.extend(refs);
+        deleted.extend(listed.lines().map(str::to_owned));
     }
 
     Ok(deleted)

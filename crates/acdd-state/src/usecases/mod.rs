@@ -250,6 +250,10 @@ fn execute_on_dyn(
         StateCommand::Clear(req) => Ok(StateCommandOutput::Clear(Box::new(
             commands::handle_clear_dyn(config, backend, req)?,
         ))),
+        StateCommand::Snapshot(req) => {
+            crate::usecases::commands::task_ops::handle_snapshot_dyn(config, backend, req)
+                .map(StateCommandOutput::Snapshot)
+        }
         StateCommand::Run(req) => Ok(StateCommandOutput::Run(run::handle_run_dyn(
             config, backend, provider, req,
         )?)),

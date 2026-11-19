@@ -1,5 +1,5 @@
 //! Gate submission orchestration (`submit`): freshness checks, `need:` stale-marking,
-//! `save.post` (`none | commit`), stateless archive retry,
+//! `save.post` (`none | commit | snapshot`), stateless archive retry,
 //! and atomic `archive_and_prune_run` + post-commit cleanup.
 
 mod archive;
@@ -23,7 +23,7 @@ use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
     ArtifactKind, NodeKind, NodeStatus,
     RunGraphSnapshot, RunStatus,
-    SubmitAction, TransitionPlan, ValidatedObservations,
+    SaveAction, SubmitAction, TransitionPlan, ValidatedObservations,
 };
 use crate::usecases::dto::{SubmitReq, SubmitResp, VerifyReq};
 use crate::usecases::lifecycle::{
@@ -277,7 +277,7 @@ pub(crate) fn submit_holding_repo_lock(
         };
         let external_satisfied_deps =
             collect_external_satisfied_deps(config, &snapshot)?;
-        let container_tree = if admitted_scope.is_empty() {
+        let container_tree = if admitted_scope.is_empty() && machine_gate.save.post != SaveAction::Snapshot {
             None
         } else {
             Some(current_scope_tree(
@@ -332,6 +332,7 @@ pub(crate) fn submit_holding_repo_lock(
             execute_post_save_git(
                 config,
                 backend,
+                layout,
                 &primary,
                 &target_worktree,
                 &snapshot,

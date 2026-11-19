@@ -644,7 +644,43 @@ pub struct ObservabilityResp {
     pub prometheus_text: Option<String>,
 }
 
-/// All 13 mutating/plugin state commands executed by [`super::StateEngine`].
+/// Snapshot operation on an active run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotAction {
+    /// Capture the task's current files.
+    Save,
+    /// Restore a task checkpoint.
+    Restore,
+    /// Delete checkpoint refs.
+    Clear,
+}
+
+/// Request for an active run's task checkpoints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotReq {
+    /// Optional active run ID or name.
+    pub run: Option<String>,
+    /// Operation to execute.
+    pub action: SnapshotAction,
+    /// Task to address for task-scoped operations.
+    pub task_ref: Option<TaskRef>,
+    /// Clear all checkpoints belonging to the run.
+    #[serde(default)]
+    pub all: bool,
+    /// Override the save revision or select an exact restore revision.
+    pub revision: Option<u32>,
+}
+
+/// Outcome of a checkpoint operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SnapshotResp {
+    /// Refs saved, restored, or deleted.
+    pub refs: Vec<String>,
+}
+
+/// Mutating and plugin commands executed by [`super::StateEngine`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum StateCommand {
     /// Start a new `Run` from a spec file or ephemeral `--goal`.
@@ -669,6 +705,8 @@ pub enum StateCommand {
     BlackboardPost(BlackboardPostReq),
     /// Clear/cancel an active `Run` into `run_tombstones(terminal_status = 'cleared')`.
     Clear(ClearReq),
+    /// Save, restore, or clear task checkpoints.
+    Snapshot(SnapshotReq),
     /// Execute automated DAG waves (`acdd run`).
     Run(RunReq),
     /// Invoke an external `DomainProvider` plugin tool (`<domain>_<name>`).
@@ -690,6 +728,7 @@ impl StateCommandOutput {
             Self::Subtask(resp) => serde_json::to_value(resp),
             Self::BlackboardPost(resp) => serde_json::to_value(resp),
             Self::Clear(resp) => serde_json::to_value(resp),
+            Self::Snapshot(resp) => serde_json::to_value(resp),
             Self::Run(resp) => serde_json::to_value(resp),
             Self::CallPluginTool(resp) => serde_json::to_value(resp),
         }
@@ -721,6 +760,8 @@ pub enum StateCommandOutput {
     BlackboardPost(BlackboardPostResp),
     /// Output of `Clear`.
     Clear(Box<ClearResp>),
+    /// Output of `Snapshot`.
+    Snapshot(SnapshotResp),
     /// Output of `Run`.
     Run(RunResp),
     /// Output of `CallPluginTool`.

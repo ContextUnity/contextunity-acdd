@@ -4,6 +4,8 @@ use crate::git_ops::commit::{
     archive_spec_with_git, create_scoped_commit_with_expected, current_branch_name,
     current_head_commit, is_protected_main_branch, ArchiveCommitReq, ScopedCommitReq,
 };
+use crate::git_ops::snapshot::{save_task_snapshot, snapshot_prefix};
+use crate::git_ops::worktree::{cleanup_locked_refs, lock_cleanup_repos, try_lock_secondary_repo, RepoWorktreeLayout};
 use crate::machine::{plan_container_blackboard_cleanup, MachineGateDef};
 use crate::spec::{is_safe_path_segment_id, render_archive_markdown};
 use crate::store::traits::StateBackend;
@@ -13,7 +15,7 @@ use crate::types::{
 };
 use crate::usecases::archive_notes::{build_archive_render_input, build_provisional_receipt};
 use crate::usecases::dto::SubmitReq;
-use crate::usecases::lifecycle::{compute_archive_relpath, read_confined_utf8};
+use crate::usecases::lifecycle::{compute_archive_relpath, read_confined_utf8, snapshot_worktree_layout};
 use crate::usecases::queries::extract_predecessor_gate_proofs;
 use crate::usecases::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
@@ -31,6 +33,7 @@ pub(super) type PersistPostSaveOutcome = (Option<CommitOid>, Option<String>, Opt
 pub(super) fn execute_post_save_git(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
+    locked: Option<&RepoWorktreeLayout>,
     primary: &Path,
     target_worktree: &Path,
     snapshot: &RunGraphSnapshot,
@@ -46,6 +49,19 @@ pub(super) fn execute_post_save_git(
     policy: &WorkspacePathPolicy,
 ) -> Result<PersistPostSaveOutcome, StateError> {
     let should_commit = machine_gate.save.post == SaveAction::Commit;
+    let should_snapshot = machine_gate.save.post == SaveAction::Snapshot;
+    let snapshot_task = node.task_ref.as_ref().filter(|_| should_snapshot || machine_gate.receipt);
+    let target = snapshot_task.map(|_| snapshot_worktree_layout(config, locked, target_worktree)).transpose()?;
+    let repos = if snapshot_task.is_some() && machine_gate.receipt {
+        Some(lock_cleanup_repos(locked, config.linked_workspaces.values())?)
+    } else {
+        None
+    };
+    let _guard = if repos.is_none() {
+        target.as_ref().map(|layout| try_lock_secondary_repo(locked, layout)).transpose()?
+    } else {
+        None
+    };
     let report_rel = machine_gate
         .save
         .report
@@ -214,6 +230,17 @@ pub(super) fn execute_post_save_git(
             )
         })
         .transpose()?;
+
+    if let Some(task) = snapshot_task {
+        let prefix = snapshot_prefix(&snapshot.run.run_id, Some(task));
+        if should_snapshot {
+            let reference = format!("{prefix}r{}", node.claim_revision);
+            save_task_snapshot(target_worktree, &reference, expected_scoped_tree)?;
+        }
+        if machine_gate.receipt {
+            cleanup_locked_refs(repos.as_ref().expect("receipt repositories locked"), &snapshot.run.run_id, Some(prefix))?;
+        }
+    }
 
     if archive_path.is_some() {
         acdd_core::failpoint::hit("submit_archive_after_git");

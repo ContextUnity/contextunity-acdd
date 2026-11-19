@@ -182,6 +182,19 @@ pub fn acquire_repo_lock(
     })
 }
 
+pub(super) fn snapshot_worktree_layout(
+    config: &StateEngineConfig, locked: Option<&RepoWorktreeLayout>, worktree: &Path,
+) -> Result<RepoWorktreeLayout, StateError> {
+    let layout = resolve_repo_layout(worktree)?;
+    if layout.target_worktree == worktree
+        && (locked.is_some_and(|primary| primary.git_common_dir == layout.git_common_dir)
+            || config.linked_workspaces.values().any(|root| git_common_dir(root).is_ok_and(|dir| dir == layout.git_common_dir)))
+    {
+        return Ok(layout);
+    }
+    Err(StateError::new(ErrorCode::ExternalGitDrift, format!("snapshot worktree '{}' is outside the owning repositories", worktree.display())))
+}
+
 /// Determine the canonical primary workspace root for `config`.
 pub fn primary_workspace_root(config: &StateEngineConfig) -> PathBuf {
     if let Some(primary) = acdd_core::git::primary_worktree_root(&config.workspace_root) {
@@ -1104,103 +1117,63 @@ pub(crate) fn build_tombstone_cleanup_manifest_from_snapshot(
 pub(crate) fn resume_pending_tombstone_cleanups_dyn(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
-    _layout: Option<&RepoWorktreeLayout>,
+    layout: Option<&RepoWorktreeLayout>,
 ) -> Result<Vec<String>, StateError> {
-    let tombs = list_all_tombstones(backend)?;
-    let primary = primary_workspace_root(config);
     let mut cleaned = Vec::new();
+    for tomb in list_all_tombstones(backend)?.iter().filter(|t| t.cleanup_pending) {
+        cleaned.extend(cleanup_tombstone(config, backend, tomb, layout)?);
+    }
+    Ok(cleaned)
+}
 
-    for tomb in tombs {
-        if !tomb.cleanup_pending {
-            continue;
-        }
-        let mut all_ok = true;
-        let mut workspaces = BTreeSet::new();
+pub(super) fn cleanup_tombstone(
+    config: &StateEngineConfig,
+    backend: &dyn StateBackend,
+    tomb: &RunTombstoneRecord,
+    locked: Option<&RepoWorktreeLayout>,
+) -> Result<Vec<String>, StateError> {
+    let primary = primary_workspace_root(config);
+    let mut workspaces = config.linked_workspaces.values().map(|ws| canonicalize_macos_var(ws)).collect::<BTreeSet<_>>();
+    if locked.is_none() && resolve_repo_layout_optional(&primary)?.is_some() {
         workspaces.insert(primary.clone());
-        for ws in config.linked_workspaces.values() {
+    }
+    let mut cleaned = Vec::new();
+    let mut all_ok = true;
+    for entry in &tomb.cleanup_manifest {
+        let path = Path::new(&entry.path_or_ref);
+        let workspace = entry.workspace.as_deref().map(Path::new);
+        if let Some(ws) = workspace.filter(|ws| !matches!(entry.kind.as_str(), "spec_file" | "worktree") && ws.exists()) {
             workspaces.insert(canonicalize_macos_var(ws));
         }
-        for entry in &tomb.cleanup_manifest {
-            if let Some(ref ws) = entry.workspace {
-                let ws_path = Path::new(ws);
-                if !matches!(entry.kind.as_str(), "spec_file" | "worktree") && ws_path.exists() {
-                    workspaces.insert(canonicalize_macos_var(ws_path));
-                }
+        let result = match entry.kind.as_str() {
+            "spec_file" => match checked_child(workspace.unwrap_or(&primary), path) {
+                Ok(target) if !target.exists() => continue,
+                Ok(target) => fs::remove_file(target).is_ok(),
+                Err(_) => false,
+            },
+            "worktree" => remove_worktree_and_branch(&primary, Some(path), None, entry.force).is_ok(),
+            "branch" => {
+                let force = entry.force || (tomb.terminal_status == TerminalStatus::Completed
+                    && tomb.closed_commit.as_ref().is_some_and(|closed| {
+                        is_branch_merged_into_ref(&primary, &entry.path_or_ref, closed.as_str()).unwrap_or(false)
+                    }));
+                remove_worktree_and_branch(&primary, None, Some(&entry.path_or_ref), force).is_ok()
             }
-            match entry.kind.as_str() {
-                "spec_file" => {
-                    let target_ws = entry
-                        .workspace
-                        .as_deref()
-                        .map(Path::new)
-                        .unwrap_or(primary.as_path());
-                    match checked_child(target_ws, Path::new(&entry.path_or_ref)) {
-                        Ok(target) => {
-                            if target.exists() {
-                                if fs::remove_file(&target).is_ok() {
-                                    cleaned.push(entry.path_or_ref.clone());
-                                } else {
-                                    all_ok = false;
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            all_ok = false;
-                        }
-                    }
-                }
-                "worktree" => {
-                    if remove_worktree_and_branch(
-                        &primary,
-                        Some(Path::new(&entry.path_or_ref)),
-                        None,
-                        entry.force,
-                    )
-                    .is_ok()
-                    {
-                        cleaned.push(entry.path_or_ref.clone());
-                    } else {
-                        all_ok = false;
-                    }
-                }
-                "branch" => {
-                    let allow_force_branch = entry.force
-                        || (tomb.terminal_status == TerminalStatus::Completed
-                            && tomb.closed_commit.as_ref().is_some_and(|closed| {
-                                is_branch_merged_into_ref(
-                                    &primary,
-                                    &entry.path_or_ref,
-                                    closed.as_str(),
-                                )
-                                .unwrap_or(false)
-                            }));
-                    if remove_worktree_and_branch(
-                        &primary,
-                        None,
-                        Some(&entry.path_or_ref),
-                        allow_force_branch,
-                    )
-                    .is_ok()
-                    {
-                        cleaned.push(entry.path_or_ref.clone());
-                    } else {
-                        all_ok = false;
-                    }
-                }
-                _ => {}
-            }
+            _ => continue,
+        };
+        if result {
+            cleaned.push(entry.path_or_ref.clone());
         }
-        let ws_vec: Vec<PathBuf> = workspaces.into_iter().collect();
-        match cleanup_run_refs(&ws_vec, &tomb.run_id) {
-            Ok(refs) => cleaned.extend(refs),
-            Err(_) => all_ok = false,
-        }
-        let _ = prune_old_run_trace_dirs(&primary, backend, config.retain_traces, None, None);
-        if all_ok {
-            exec_tx_with(backend, |tx| tx.mark_tombstone_cleaned(&tomb.run_id))?;
-        }
+        all_ok &= result;
     }
-
+    match cleanup_run_refs(locked, &workspaces, &tomb.run_id) {
+        Ok(refs) => cleaned.extend(refs),
+        Err(_) => all_ok = false,
+    }
+    let _ = prune_old_run_trace_dirs(&primary, backend, config.retain_traces, None, None);
+    if all_ok {
+        exec_tx_with(backend, |tx| tx.mark_tombstone_cleaned(&tomb.run_id))?;
+    }
     Ok(cleaned)
 }
 
@@ -1710,7 +1683,6 @@ pub(crate) fn reconcile_restored_runs_with_archives(
             },
             ws_root,
         );
-        let cleanup_pending = !cleanup_manifest.is_empty();
 
         let run_id = RunId::new(row.run_id.clone())?;
         let run_name = RunName::new(row.run_name.clone())?;
@@ -1741,7 +1713,7 @@ pub(crate) fn reconcile_restored_runs_with_archives(
             target_base_commit,
             archive_path: Some(archive_rel),
             closed_commit,
-            cleanup_pending,
+            cleanup_pending: true,
             cleanup_manifest,
             summary_json: r#"{"reconciled_from_archive":true}"#.to_owned(),
             metrics_json: "{}".to_owned(),

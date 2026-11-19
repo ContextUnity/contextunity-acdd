@@ -1,6 +1,9 @@
 //! Task/node mutation and plugin handlers (`extend_scope`, `reopen`, `subtask`, `blackboard_post`, `call_plugin_tool`).
 
-use crate::git_ops::worktree::canonicalize_macos_var;
+use crate::git_ops::snapshot::{
+    current_scope_tree, restore_task_snapshot, save_task_snapshot, snapshot_prefix,
+};
+use crate::git_ops::worktree::{canonicalize_macos_var, cleanup_refs, try_lock_secondary_repo};
 use crate::machine::{
     container_scope, evaluate_transition, ExtendScopeInput, ReopenInput, TransitionInput,
     TransitionOutcome,
@@ -8,22 +11,76 @@ use crate::machine::{
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
     BlackboardRecord, BlackboardStatus,
-    BlackboardTopic, SubtaskRecord, SubtaskStatus, ValidatedObservations,
+    BlackboardTopic, IsolationMode, NodeKind, SubtaskRecord, SubtaskStatus, ValidatedObservations,
 };
 use crate::usecases::dto::{
     BlackboardPostReq, BlackboardPostResp, CallPluginToolReq, CallPluginToolResp, ExtendScopeReq, ExtendScopeResp, ReopenReq,
-    ReopenResp, SubtaskReq, SubtaskResp,
+    ReopenResp, SnapshotAction, SnapshotReq, SnapshotResp, SubtaskReq, SubtaskResp,
 };
 use crate::usecases::lifecycle::{
-    build_path_policy, ensure_blackboard_enabled, ensure_state_enabled, parse_cursor_for_snapshot,
+    build_path_policy, ensure_blackboard_enabled, ensure_state_enabled, parse_cursor_for_snapshot, snapshot_worktree_layout,
     parse_profile_from_run, primary_workspace_root, resolve_active_run, resolve_node_worktree,
     to_machine_profile, with_repo_lock_and_maintenance, with_repo_lock_and_maintenance_unchecked,
 };
 use crate::usecases::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::fs::check_ancestors_no_symlinks;
 use acdd_core::ports::{CompositeDomainProvider, DomainToolReq};
 use std::path::Path;
 
+
+pub(crate) fn handle_snapshot_dyn(
+    config: &StateEngineConfig,
+    backend: &dyn StateBackend,
+    req: SnapshotReq,
+) -> Result<SnapshotResp, StateError> {
+    use SnapshotAction::{Clear, Save};
+    let invalid = |message| StateError::new(ErrorCode::ProfileSchemaInvalid, message);
+    if (req.all && (req.action != Clear || req.task_ref.is_some()))
+        || (req.action == Clear && req.revision.is_some())
+    {
+        return Err(invalid("snapshot --all requires clear without a task, and clear does not accept a revision"));
+    }
+    with_repo_lock_and_maintenance(config, backend, |_, locked| {
+        let run = resolve_active_run(config, backend, req.run.as_deref(), None)?;
+        let prefix = snapshot_prefix(&run.run_id, req.task_ref.as_ref());
+        let clear = |prefix| cleanup_refs(locked, config.linked_workspaces.values(), &run.run_id, Some(prefix))
+            .map(|refs| SnapshotResp { refs });
+        if req.all {
+            return clear(prefix);
+        }
+        let task = req.task_ref.ok_or_else(|| invalid("snapshot requires a task or --all"))?;
+        let snapshot = backend.load_run_graph(&run.run_id)?.ok_or_else(|| invalid("run graph missing"))?;
+        let node = snapshot.nodes.iter()
+            .find(|n| n.kind == NodeKind::Task && n.task_ref.as_ref() == Some(&task))
+            .ok_or_else(|| invalid("snapshot task does not exist"))?;
+        if req.action == Clear {
+            return clear(prefix);
+        }
+        if node.isolation == IsolationMode::Worktree && node.worktree.is_none() {
+            return Err(invalid("snapshot task has no assigned worktree"));
+        }
+        let literal = node.worktree.as_deref().or(run.worktree.as_deref())
+            .map(Path::new).unwrap_or(&config.worktree);
+        check_ancestors_no_symlinks(literal, Path::new(".git"))
+            .map_err(|err| StateError::new(ErrorCode::ExternalGitDrift, err.to_string()))?;
+        let worktree = resolve_node_worktree(config, &run, node, None);
+        let target = snapshot_worktree_layout(config, locked, &worktree)?;
+        let _guard = try_lock_secondary_repo(locked, &target)?;
+        let scope = container_scope(&snapshot, node);
+        let policy = build_path_policy(config, backend, &[])?;
+        let reference = if req.action == Save {
+            let rev = req.revision.unwrap_or(node.claim_revision);
+            let reference = format!("{prefix}r{rev}");
+            let tree = current_scope_tree(&worktree, Some(&scope), &policy)?;
+            save_task_snapshot(&worktree, &reference, &tree)?;
+            reference
+        } else {
+            restore_task_snapshot(&worktree, &prefix, req.revision, &scope, &policy)?
+        };
+        Ok(SnapshotResp { refs: vec![reference] })
+    })
+}
 
 pub(crate) fn handle_extend_scope_dyn(
     config: &StateEngineConfig,

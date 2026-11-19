@@ -4,7 +4,7 @@
 mod claim;
 mod run_ops;
 mod start;
-mod task_ops;
+pub(super) mod task_ops;
 
 pub(crate) use claim::handle_claim_dyn;
 pub(crate) use crate::context::is_context_reset_required;

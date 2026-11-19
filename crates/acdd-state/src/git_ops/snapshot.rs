@@ -3,9 +3,9 @@
 use super::{run_git_checked, run_git_stdout, ScopedTempDir};
 use crate::types::IsolationMode;
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::fs::{checked_child, open_confined};
-use acdd_core::ids::{CommitOid, TreeOid};
-use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
+use acdd_core::fs::{atomic_replace, checked_child, open_confined};
+use acdd_core::ids::{CommitOid, RunId, TaskRef, TreeOid};
+use acdd_core::path_policy::{is_under_dir_case_insensitive, normalize_rel_path, WorkspacePathPolicy};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Read;
@@ -186,84 +186,36 @@ pub(super) fn guard_candidate_path(
     rel_path: &str,
     index_mode: Option<&str>,
 ) -> Result<(), StateError> {
+    let relative = Path::new(rel_path);
+    let invalid = |reason| StateError::new(ErrorCode::ExternalGitDrift, format!("candidate '{rel_path}': {reason}"));
     if index_mode == Some("160000") {
-        return Err(StateError::new(
-            ErrorCode::ExternalGitDrift,
-            format!("submodule gitlink '{rel_path}' is not permitted in snapshot/commit scope"),
-        ));
+        return Err(invalid("submodule gitlink is not permitted"));
     }
-    let mut ancestor = worktree.to_path_buf();
-    if let Some(parent_rel) = Path::new(rel_path).parent() {
-        for comp in parent_rel.components() {
-            ancestor.push(comp);
-            if ancestor.join(".git").exists() {
-                return Err(StateError::new(
-                    ErrorCode::ExternalGitDrift,
-                    format!(
-                        "nested git repository/submodule ancestor for '{rel_path}' is not permitted in snapshot/commit scope"
-                    ),
-                ));
-            }
-        }
-    }
-    let abs = worktree.join(rel_path);
-    let meta = match fs::symlink_metadata(&abs) {
-        Ok(m) => m,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => {
-            return Err(StateError::new(
-                ErrorCode::ExternalGitDrift,
-                format!("failed inspecting candidate path '{rel_path}': {err}"),
-            ));
-        }
+    let metadata = match worktree.join(relative).symlink_metadata() {
+        Ok(meta) => Some(meta),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(snapshot_path_error(rel_path, err)),
     };
-    if meta.file_type().is_symlink() {
-        return Ok(());
+    let skip_leaf = !metadata.as_ref().is_some_and(fs::Metadata::is_dir);
+    for prefix in relative.ancestors().skip(usize::from(skip_leaf)).take_while(|p| !p.as_os_str().is_empty()) {
+        match worktree.join(prefix).join(".git").symlink_metadata() {
+            Ok(_) => return Err(invalid("nested git repository/submodule is not permitted")),
+            Err(err) if matches!(err.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {}
+            Err(err) => return Err(snapshot_path_error(rel_path, err)),
+        }
     }
-    if meta.is_dir() {
-        if abs.join(".git").exists() {
-            return Err(StateError::new(
-                ErrorCode::ExternalGitDrift,
-                format!(
-                    "nested git repository/submodule '{rel_path}' is not permitted in snapshot/commit scope"
-                ),
-            ));
-        }
+    let Some(metadata) = metadata.filter(fs::Metadata::is_file) else {
         return Ok(());
+    };
+    if metadata.len() > MAX_SNAPSHOT_FILE_BYTES {
+        return Err(invalid("file exceeds 16 MiB snapshot/commit limit"));
     }
-    if meta.is_file() {
-        if meta.len() > MAX_SNAPSHOT_FILE_BYTES {
-            return Err(StateError::new(
-                ErrorCode::ExternalGitDrift,
-                format!(
-                    "candidate file '{rel_path}' ({} bytes) exceeds 16 MiB snapshot/commit limit",
-                    meta.len()
-                ),
-            ));
-        }
-        let mut opts = OpenOptions::new();
-        opts.read(true);
-        let mut file = open_confined(worktree, Path::new(rel_path), &mut opts).map_err(|err| {
-            StateError::new(
-                ErrorCode::ExternalGitDrift,
-                format!("failed opening candidate file '{rel_path}': {err}"),
-            )
-        })?;
-        let mut buf = [0u8; BINARY_SNIFF_BYTES];
-        let n = file.read(&mut buf).map_err(|err| {
-            StateError::new(
-                ErrorCode::ExternalGitDrift,
-                format!("failed reading candidate file '{rel_path}': {err}"),
-            )
-        })?;
-        if buf[..n].contains(&0) {
-            return Err(StateError::new(
-                ErrorCode::ExternalGitDrift,
-                format!(
-                    "binary file '{rel_path}' containing NUL bytes is not permitted in snapshot/commit scope"
-                ),
-            ));
-        }
+    let mut file = open_confined(worktree, relative, OpenOptions::new().read(true))
+        .map_err(|err| snapshot_path_error(rel_path, err))?;
+    let mut buf = [0; BINARY_SNIFF_BYTES];
+    let size = file.read(&mut buf).map_err(|err| snapshot_path_error(rel_path, err))?;
+    if buf[..size].contains(&0) {
+        return Err(invalid("binary file contains NUL bytes"));
     }
     Ok(())
 }
@@ -348,44 +300,132 @@ pub fn current_scope_tree(
     temp_index.write_tree()
 }
 
-pub(crate) fn remove_confined_file(worktree: &Path, rel_path: &str) -> Result<(), StateError> {
-    let target = checked_child(worktree, Path::new(rel_path)).map_err(|err| {
-        StateError::new(
-            ErrorCode::ExternalGitDrift,
-            format!("delete path '{rel_path}' failed confinement: {err}"),
-        )
-    })?;
-    match fs::symlink_metadata(&target) {
-        Ok(meta) => {
-            if meta.is_dir() && !meta.file_type().is_symlink() {
-                return Err(StateError::new(
-                    ErrorCode::ExternalGitDrift,
-                    format!("refusing to delete directory '{rel_path}' as file"),
-                ));
+pub(crate) fn snapshot_prefix(run: &RunId, task: Option<&TaskRef>) -> String {
+    let mut prefix = format!("refs/acdd/snapshots/{run}/");
+    if let Some(task) = task {
+        prefix.push_str(&format!("{task}/"));
+    }
+    prefix
+}
+
+pub(crate) fn save_task_snapshot(worktree: &Path, reference: &str, tree: &TreeOid) -> Result<(), StateError> {
+    let code = ErrorCode::ExternalGitDrift;
+    let args = [
+        "-c", "user.name=acdd-agent", "-c", "user.email=acdd@contextunity.local",
+        "commit-tree", tree.as_str(), "--no-gpg-sign", "-m", reference,
+    ];
+    let commit = run_git_stdout(worktree, &args, None, code)?;
+    run_git_checked(worktree, &["update-ref", "--no-deref", reference, &commit], None, None, code)?;
+    Ok(())
+}
+
+pub(crate) fn restore_task_snapshot(
+    worktree: &Path, prefix: &str, revision: Option<u32>, scope: &[String], policy: &WorkspacePathPolicy,
+) -> Result<String, StateError> {
+    let code = ErrorCode::ExternalGitDrift;
+    let reference = if let Some(rev) = revision {
+        format!("{prefix}r{rev}")
+    } else {
+        let args = ["for-each-ref", "--sort=-version:refname", "--count=1", "--format=%(refname)", prefix];
+        run_git_stdout(worktree, &args, None, code)?
+    };
+    let tree = run_git_stdout(worktree, &["rev-parse", "--verify", &format!("{reference}^{{tree}}")], None, code)?;
+    let current = current_scope_tree(worktree, Some(scope), policy)?;
+    let args = ["diff-tree", "-r", "--no-renames", "--raw", "-z", current.as_str(), &tree];
+    let diff = run_git_checked(worktree, &args, None, None, code)?;
+    let (index, backup_dir) = TemporaryGitIndex::create_temp(worktree)?;
+    index.read_tree(&tree)?;
+    let mut writes = Vec::new();
+    let mut removals = Vec::new();
+    let mut originals = Vec::new();
+    let mut absent_dirs = BTreeSet::new();
+    let mut records = diff.stdout.split(|b| *b == 0).filter(|record| !record.is_empty());
+    while let Some(header) = records.next() {
+        let raw = records.next().and_then(|p| std::str::from_utf8(p).ok())
+            .ok_or_else(|| StateError::new(code, "snapshot path must be UTF-8"))?;
+        if normalize_rel_path(raw).as_deref() != Some(raw) {
+            return Err(StateError::new(code, format!("snapshot path '{raw}' is not normalized")));
+        }
+        if !policy.is_candidate_included(raw) || !policy.is_scope_admitted(raw, scope)
+            || is_under_dir_case_insensitive(raw, ".acdd")
+        {
+            continue;
+        }
+        let path = checked_child(worktree, Path::new(raw)).map_err(|err| snapshot_path_error(raw, err))?;
+        guard_candidate_path(worktree, raw, None)?;
+        if path.exists() && !path.is_file() {
+            return Err(StateError::new(code, format!("snapshot destination '{raw}' is not a regular file")));
+        }
+        match header.split(|b| *b == b' ').nth(1) {
+            Some(b"000000") if path.exists() => removals.push(path.clone()),
+            Some(b"000000") => continue,
+            Some(b"100644" | b"100755") => {
+                writes.extend_from_slice(raw.as_bytes());
+                writes.push(0);
             }
-            fs::remove_file(&target).map_err(|err| {
-                StateError::new(
-                    ErrorCode::ExternalGitDrift,
-                    format!("failed deleting '{rel_path}': {err}"),
-                )
-            })?;
-            let mut parent = target.parent();
-            while let Some(dir) = parent {
-                if dir == worktree || !dir.starts_with(worktree) {
-                    break;
-                }
-                match fs::remove_dir(dir) {
-                    Ok(()) => parent = dir.parent(),
-                    Err(_) => break,
-                }
+            _ => return Err(StateError::new(code, format!("snapshot entry '{raw}' is not a regular file"))),
+        }
+        let backup = if path.exists() {
+            let backup = backup_dir.path().join(originals.len().to_string());
+            fs::copy(&path, &backup).map_err(|err| snapshot_path_error(raw, err))?;
+            Some(backup)
+        } else {
+            absent_dirs.extend(path.ancestors().skip(1).take_while(|p| !p.exists()).map(Path::to_path_buf));
+            None
+        };
+        originals.push((raw, backup));
+    }
+    let args = ["checkout-index", "--force", "-z", "--stdin"];
+    let result = run_git_checked(worktree, &args, Some(&index.index_path), Some(&writes), code)
+        .and_then(|_| removals.iter().try_for_each(|path| {
+            fs::remove_file(path).map_err(|err| snapshot_path_error(path.display(), err))
+        }));
+    if let Err(mut error) = result {
+        for (raw, backup) in originals {
+            if let Err(err) = rollback_snapshot_path(worktree, raw, backup.as_deref()) {
+                error.message.push_str(&format!(". Rollback of '{raw}' failed: {err}"));
             }
         }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => {
-            return Err(StateError::new(
-                ErrorCode::ExternalGitDrift,
-                format!("failed inspecting '{rel_path}' for deletion: {err}"),
-            ));
+        for dir in absent_dirs.iter().rev().filter(|dir| dir.exists()) {
+            if let Err(err) = fs::remove_dir(dir) {
+                error.message.push_str(&format!(". Rollback of '{}' failed: {err}", dir.display()));
+            }
+        }
+        return Err(error);
+    }
+    Ok(reference)
+}
+
+fn rollback_snapshot_path(worktree: &Path, raw: &str, backup: Option<&Path>) -> anyhow::Result<()> {
+    let path = checked_child(worktree, Path::new(raw))?;
+    if let Some(backup) = backup {
+        let bytes = fs::read(backup)?;
+        let permissions = fs::metadata(backup)?.permissions();
+        if !fs::read(&path).is_ok_and(|actual| actual == bytes) {
+            atomic_replace(&path, &bytes)?;
+        }
+        if fs::metadata(&path)?.permissions() != permissions {
+            fs::set_permissions(&path, permissions)?;
+        }
+    } else if path.exists() {
+        fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn snapshot_path_error(path: impl std::fmt::Display, err: std::io::Error) -> StateError {
+    StateError::new(ErrorCode::ExternalGitDrift, format!("cannot update '{path}': {err}"))
+}
+
+pub(crate) fn remove_confined_file(worktree: &Path, rel_path: &str) -> Result<(), StateError> {
+    let target = checked_child(worktree, Path::new(rel_path)).map_err(|err| snapshot_path_error(rel_path, err))?;
+    match fs::remove_file(&target) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        result => result.map_err(|err| snapshot_path_error(rel_path, err))?,
+    }
+    for dir in target.ancestors().skip(1).take_while(|dir| *dir != worktree && dir.starts_with(worktree)) {
+        if fs::remove_dir(dir).is_err() {
+            break;
         }
     }
     Ok(())

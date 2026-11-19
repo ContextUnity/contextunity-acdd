@@ -249,7 +249,7 @@ mod tests {
         assert!(!code_tasks.gates.iter().any(|g| g.id == "contract" || g.id == "contract_review"));
         let code_build = code_tasks.gates.iter().find(|g| g.id == "build").unwrap();
         let code_review = code_tasks.gates.iter().find(|g| g.id == "review").unwrap();
-        assert_eq!(code_build.save.post, None);
+        assert_eq!(code_build.save.post, Some(SaveAction::Snapshot));
         assert_eq!(code_build.pass.as_ref().map(|g| g.as_str()), Some("review"));
         assert_eq!(code_review.pass.as_ref().map(|g| g.as_str()), Some("deliver"));
         assert_eq!(code_review.fail_drift.as_ref().map(|g| g.as_str()), Some("rearchitect"));
@@ -436,21 +436,6 @@ mod tests {
                 ErrorCode::UnknownGuidanceSlot,
             ),
             (
-                "legacy_save_snapshot",
-                "version: 2\nsave: snapshot\ngates:\n  - id: a\n",
-                ErrorCode::ProfileSchemaInvalid,
-            ),
-            (
-                "legacy_gate_save_post_snapshot",
-                "version: 2\ngates:\n  - id: a\n    save:\n      post: snapshot\n",
-                ErrorCode::ProfileSchemaInvalid,
-            ),
-            (
-                "legacy_gate_save_shorthand_snapshot",
-                "version: 2\ngates:\n  - id: a\n    save: snapshot\n",
-                ErrorCode::ProfileSchemaInvalid,
-            ),
-            (
                 "legacy_gate_save_pre",
                 "version: 2\ngates:\n  - id: a\n    save:\n      pre: none\n",
                 ErrorCode::ProfileSchemaInvalid,
@@ -558,6 +543,24 @@ mod tests {
                 .and_then(|p| validate_profile(&p, &opts))
                 .expect_err("expected validation failure");
             assert_eq!(err.code, expected_code, "case '{label}': {err}");
+        }
+
+        let cases = [
+            ("default", "save: {action}\ngates:\n  - id: root", false),
+            ("root", "gates:\n  - id: root\n    save: {action}", false),
+            ("container", "gates:\n  - id: c\n    save: {action}\n    gates:\n      - id: leaf", false),
+            ("container child", "gates:\n  - id: c\n    gates:\n      - id: leaf\n        save: {action}", false),
+            ("tasks block", "gates:\n  - save: {action}\n    tasks:\n      gates:\n        - id: b", false),
+            ("task container", "gates:\n  - tasks:\n      gates:\n        - id: c\n          save: {action}\n          gates:\n            - id: b", false),
+            ("task gate", "gates:\n  - tasks:\n      gates:\n        - id: b\n          save: {action}", true),
+        ];
+        for (label, body, supported) in cases {
+            for action in ["snapshot", "{ post: snapshot }"] {
+                let yaml = format!("version: 2\ninherit: none\n{}", body.replace("{action}", action));
+                let checked = resolve_profile_from_str_with_dirs(&yaml, label, None, None, None, None)
+                    .and_then(|p| validate_profile(&p, &opts));
+                assert_eq!(checked.err().map(|err| err.code), (!supported).then_some(ErrorCode::ProfileSchemaInvalid), "{label}: {action}");
+            }
         }
     }
 

@@ -6,6 +6,7 @@ use super::schema::{
 };
 use super::shell_template::validate_shell_template_placeholders;
 use super::when::WhenExpr;
+use crate::types::SaveAction;
 use acdd_core::subsystems::SubsystemRegistry;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{GateId, GateSelector};
@@ -90,6 +91,9 @@ pub fn validate_profile(
         }
     }
 
+    if profile.save == SaveAction::Snapshot {
+        return Err(StateError::new(ErrorCode::ProfileSchemaInvalid, "snapshot save is only allowed on leaf task gates"));
+    }
     validate_limits(&profile.limits)?;
     validate_protected_paths(profile)?;
     validate_proof_catalog(profile)?;
@@ -377,6 +381,11 @@ fn validate_gate_container(
     }
 
     for gate in gates {
+        if gate.save.post == Some(SaveAction::Snapshot)
+            && (scope_kind != GateScopeKind::TaskGate || gate.is_tasks_block() || !gate.gates.is_empty())
+        {
+            return Err(StateError::new(ErrorCode::ProfileSchemaInvalid, format!("gate '{}': snapshot save is only allowed on leaf task gates", gate.id)));
+        }
         if let Some(tb) = &gate.tasks {
             if scope_kind != GateScopeKind::Root {
                 return Err(StateError::new(

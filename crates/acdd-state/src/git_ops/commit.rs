@@ -162,6 +162,7 @@ pub fn create_scoped_commit_with_expected(
     );
 
     ensure_branch_writable(&req.worktree, req.allow_main)?;
+    let actual_head = current_head_commit(&req.worktree)?;
 
     let (temp_index, idx_dir) = TemporaryGitIndex::create_temp(&req.worktree)?;
     temp_index.read_tree(req.base_head.as_str())?;
@@ -170,6 +171,15 @@ pub fn create_scoped_commit_with_expected(
     let untracked = list_untracked_entries(&req.worktree)?;
 
     let mut candidates: BTreeMap<String, Option<String>> = BTreeMap::new();
+    if actual_head != req.base_head
+        && commit_tree_and_single_parent(&req.worktree, actual_head.as_str())
+            .is_ok_and(|(_, parent)| parent == req.base_head)
+        && commit_has_exact_trailer(&req.worktree, actual_head.as_str(), &claim_trailer)?
+    {
+        for path in diff_tree_paths(&req.worktree, req.base_head.as_str(), actual_head.as_str())? {
+            candidates.entry(path).or_insert(None);
+        }
+    }
     for (path, (mode, _oid)) in staged {
         candidates.insert(path, Some(mode));
     }
@@ -276,7 +286,6 @@ pub fn create_scoped_commit_with_expected(
         }
     }
 
-    let actual_head = current_head_commit(&req.worktree)?;
     if actual_head != req.base_head {
         if let Ok((head_tree, head_parent)) =
             commit_tree_and_single_parent(&req.worktree, actual_head.as_str())

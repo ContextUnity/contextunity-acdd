@@ -231,6 +231,7 @@ fn worktree_layout_macos_var_symlink_and_snapshot_guards_matrix() {
     );
 
     let cleaned = cleanup_run_refs(
+        None,
         &[created_wt.worktree.clone(), linked_repo.clone()],
         &run_id,
     )

@@ -1,8 +1,6 @@
 //! Run-level mutation handlers (`draft`, `sync`, `clear`).
 
-use crate::git_ops::worktree::{
-    canonicalize_macos_var, cleanup_run_refs, remove_worktree_and_branch,
-};
+use crate::git_ops::worktree::remove_worktree_and_branch;
 use crate::machine::{
     evaluate_transition, SyncInput, TransitionInput,
     TransitionOutcome,
@@ -22,8 +20,8 @@ use crate::usecases::dto::{
 };
 use crate::usecases::lifecycle::{
     apply_effective_isolation, build_tombstone_cleanup_manifest_from_snapshot, checkout_config,
-    collect_external_satisfied_deps, effective_spec_collections, ensure_state_enabled,
-    is_managed_run_branch, parse_profile_from_run, primary_workspace_root,
+    cleanup_tombstone, collect_external_satisfied_deps, effective_spec_collections,
+    ensure_state_enabled, is_managed_run_branch, parse_profile_from_run, primary_workspace_root,
     prune_old_run_trace_dirs, read_confined_utf8, resolve_active_run, resolve_source_checkout,
     sorted_dir_paths,
     to_machine_profile, validate_profile_fail_closed, with_repo_lock_and_maintenance,
@@ -291,24 +289,15 @@ pub(crate) fn handle_clear_dyn(
     backend: &dyn StateBackend,
     req: ClearReq,
 ) -> Result<ClearResp, StateError> {
-    with_repo_lock_and_maintenance(config, backend, |primary, _layout| {
+    with_repo_lock_and_maintenance(config, backend, |primary, layout| {
         let run = resolve_active_run(config, backend, req.run.as_deref(), None)?;
         let snapshot = backend
             .load_run_graph(&run.run_id)?
             .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
 
         // Never delete the user's non-ephemeral spec file on `clear`; only clean worktrees, branches (including `run.branch`), refs, and ephemeral spec.
-        let mut cleanup_manifest: Vec<ArchiveCleanupEntry> =
-            build_tombstone_cleanup_manifest_from_snapshot(config, &snapshot, primary)
-                .into_iter()
-                .filter(|e| e.kind != "spec_file")
-                .map(|mut e| {
-                    if matches!(e.kind.as_str(), "worktree" | "branch") {
-                        e.force = req.force;
-                    }
-                    e
-                })
-                .collect();
+        let mut cleanup_manifest = build_tombstone_cleanup_manifest_from_snapshot(config, &snapshot, primary);
+        cleanup_manifest.retain(|entry| entry.kind != "spec_file");
         if let Some(ref run_br) = snapshot.run.branch {
             if is_managed_run_branch(&snapshot.run, run_br)
                 && snapshot.run.target_base.as_ref() != Some(run_br)
@@ -375,8 +364,8 @@ pub(crate) fn handle_clear_dyn(
             target_base_commit: snapshot.run.target_base_commit.clone(),
             archive_path: None,
             closed_commit: None,
-            cleanup_pending: !remaining_manifest.is_empty(),
-            cleanup_manifest: remaining_manifest.clone(),
+            cleanup_pending: true,
+            cleanup_manifest: remaining_manifest,
             summary_json: "{}".to_owned(),
             metrics_json: "{}".to_owned(),
             closed_at,
@@ -409,29 +398,8 @@ pub(crate) fn handle_clear_dyn(
 
         exec_tx_with(backend, |tx| tx.archive_and_prune_run(&preconditions, &tombstone))?;
 
-        let mut workspaces = BTreeSet::new();
-        workspaces.insert(primary.to_path_buf());
-        for ws in config.linked_workspaces.values() {
-            workspaces.insert(canonicalize_macos_var(ws));
-        }
-        for entry in &remaining_manifest {
-            if entry.kind == "spec_file" {
-                if let Ok(p) = checked_child(primary, Path::new(&entry.path_or_ref)) {
-                    if p.exists() && fs::remove_file(&p).is_ok() {
-                        cleaned_items.push(entry.path_or_ref.clone());
-                    }
-                }
-            }
-        }
-        let ws_vec: Vec<PathBuf> = workspaces.into_iter().collect();
-        if let Ok(refs) = cleanup_run_refs(&ws_vec, &tombstone.run_id) {
-            cleaned_items.extend(refs);
-        }
-        let _ = prune_old_run_trace_dirs(primary, backend, config.retain_traces, None, None);
-        exec_tx_with(backend, |tx| tx.mark_tombstone_cleaned(&tombstone.run_id))?;
-
-        let mut final_tombstone = tombstone;
-        final_tombstone.cleanup_pending = false;
+        cleaned_items.extend(cleanup_tombstone(config, backend, &tombstone, layout)?);
+        let final_tombstone = backend.load_tombstone(&tombstone.run_id)?.unwrap_or(tombstone);
         Ok(ClearResp {
             tombstone: final_tombstone,
             cleaned_items,
