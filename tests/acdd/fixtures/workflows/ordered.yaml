@@ -5,12 +5,8 @@ save: none
 commands:
   first:
     command: "mkdir -p .acdd && printf 'first\n' >> .acdd/workflow-order.log"
-    output:
-      require_counts: false
   second:
     command: "mkdir -p .acdd && printf 'second\n' >> .acdd/workflow-order.log"
-    output:
-      require_counts: false
 gates:
   - id: first
     command: first

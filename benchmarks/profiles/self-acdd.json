@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "name": "self-acdd",
+  "project": "contextunity-acdd",
+  "workspace_root": ".",
+  "acdd_binary": "../../target/release/acdd",
+  "scope_note": "Self-benchmark targeting the ContextUnity ACDD v0.6.2 repository using its configured acdd.yaml roots and docs.",
+  "scenarios": [
+    {
+      "id": "workspace_overview",
+      "scenario": "Workspace orientation and index inventory",
+      "acdd": {
+        "tool": "code_map_overview",
+        "arguments": {"detail": "compact", "limit": 30}
+      }
+    },
+    {
+      "id": "symbol_search",
+      "scenario": "Locate StateEngine struct across the workspace",
+      "acdd": {
+        "tool": "code_map_search",
+        "arguments": {"pattern": "StateEngine", "kind": "struct", "limit": 10, "detail": "compact"}
+      }
+    },
+    {
+      "id": "symbol_inspection",
+      "scenario": "Inspect StateEngine identity, signature, docs, and references",
+      "acdd": {
+        "tool": "code_map_inspect",
+        "arguments": {"selector": "crates/acdd-state/src/usecases/mod.rs:StateEngine", "detail": "compact"}
+      }
+    },
+    {
+      "id": "source_read",
+      "scenario": "Read StateEngine source via digest-verified layered reader",
+      "acdd": {
+        "tool": "acdd_read",
+        "arguments": {"selector": "StateEngine"}
+      }
+    },
+    {
+      "id": "impact_analysis",
+      "scenario": "Trace inbound callers and references to StateEngine",
+      "acdd": {
+        "tool": "code_map_impact",
+        "arguments": {"selector": "crates/acdd-state/src/usecases/mod.rs:StateEngine", "depth": 1, "limit": 30}
+      }
+    },
+    {
+      "id": "test_relationships",
+      "scenario": "Find test nodes connected to StateEngine",
+      "acdd": {
+        "tool": "code_map_tests",
+        "arguments": {"selector": "crates/acdd-state/src/usecases/mod.rs:StateEngine", "direction": "inbound", "limit": 30}
+      }
+    },
+    {
+      "id": "removal_safety",
+      "scenario": "Evaluate indexed removal safety for StateEngine",
+      "acdd": {
+        "tool": "code_map_prove_removal",
+        "arguments": {"selector": "crates/acdd-state/src/usecases/mod.rs:StateEngine", "detail": "compact", "limit": 30}
+      }
+    },
+    {
+      "id": "ast_pattern_search",
+      "scenario": "Find Rust build entrypoints via Tree-sitter AST pattern",
+      "acdd": {
+        "tool": "ast_grep_search",
+        "arguments": {
+          "pattern": "pub fn build($$$ARGS) -> Result<Value> { $$$BODY }",
+          "language": "rust",
+          "path": "src/engine/pipeline.rs",
+          "limit": 30
+        }
+      }
+    },
+    {
+      "id": "documentation_search",
+      "scenario": "Search indexed documentation for StateEngine architecture guidance",
+      "acdd": {
+        "tool": "search_docs",
+        "arguments": {"query": "StateEngine", "include_excerpt": true, "limit": 10}
+      }
+    },
+    {
+      "id": "duplicate_detection",
+      "scenario": "Query duplicate symbol candidates inside acdd-state",
+      "acdd": {
+        "tool": "code_map_query",
+        "arguments": {"operation": "duplicates", "target": "crates/acdd-state/src", "limit": 20}
+      }
+    },
+    {
+      "id": "dead_tail_detection",
+      "scenario": "Query dead-tail symbol candidates inside acdd-state",
+      "acdd": {
+        "tool": "code_map_query",
+        "arguments": {"operation": "dead_tails", "target": "crates/acdd-state/src", "limit": 20}
+      }
+    },
+    {
+      "id": "state_status",
+      "scenario": "Read active run status in read-only mode",
+      "acdd": {
+        "tool": "acdd_state",
+        "arguments": {"action": "status"}
+      }
+    }
+  ]
+}

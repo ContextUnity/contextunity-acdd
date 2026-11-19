@@ -1344,3 +1344,219 @@ fn python_pep604_without_union_imports_and_nested_invariants_survive_readback() 
         );
     }
 }
+
+#[test]
+fn rust_linker_core_contract_matrix() {
+    use acdd_index::linker;
+    use std::collections::BTreeMap;
+
+    // 1. External/stdlib trait impls & unproven_bounds preserve receivers_by_method
+    //    without leaking external trait methods into inherent members.
+    // 2. Generic/lifetime impl qualnames normalize `<...>` for Type::method / self.method / .method.
+    // 3. receiver_type_name strips balanced `<...>` generic/lifetime arguments.
+    // 4. Value bindings do not shadow Rust type/module `::` namespaces.
+    // 5. &dyn Trait resolves parameter trait objects & emits single trait_object_dispatch row.
+    // 6. Mutually exclusive #[cfg(...)] siblings disambiguate; non-exclusive stay ambiguous.
+    let files: BTreeMap<String, _> = [
+        (
+            "src/interner.rs",
+            r#"
+pub struct LinkerInterner<'a> { pub label: &'a str }
+impl<'a> LinkerInterner<'a> {
+    pub fn from_catalog(label: &'a str) -> Self { Self { label } }
+    pub fn intern(&mut self) -> &'a str { self.peek() }
+    fn peek(&self) -> &'a str { self.label }
+}
+"#,
+        ),
+        (
+            "src/lib.rs",
+            r#"
+mod interner;
+
+pub struct Worker;
+impl Worker {
+    pub fn build() -> Self { Self }
+    pub fn finish(&self) {}
+    pub fn bounded<T: Clone>(&self, _value: T) {
+        self.finish();
+        let _ = Self::build();
+    }
+}
+impl Default for Worker {
+    fn default() -> Self { Self::build() }
+}
+impl std::fmt::Display for Worker {
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.finish();
+        Ok(())
+    }
+}
+
+pub trait Engine {
+    fn execute(&self);
+}
+pub struct FastEngine;
+impl Engine for FastEngine {
+    fn execute(&self) {}
+}
+
+pub struct Platform;
+impl Platform {
+    #[cfg(feature = "lang-rust")]
+    /// Enabled variant.
+    pub fn active(&self) {}
+
+    #[cfg(not(feature = "lang-rust"))]
+    /// Disabled variant.
+    pub fn active(&self) {}
+}
+
+#[cfg(unix)]
+/// Unix implementation.
+fn platform_call() {}
+#[cfg(not(unix))]
+/// Non-unix implementation.
+fn platform_call() {}
+
+#[cfg(target_os = "linux")]
+fn os_call() {}
+#[cfg(target_os = "macos")]
+fn os_call() {}
+
+#[cfg(feature = "alpha")]
+fn non_exclusive_cfg() {}
+#[cfg(feature = "beta")]
+fn non_exclusive_cfg() {}
+
+fn exercise<'a>(
+    interner: &mut interner::LinkerInterner<'a>,
+    opt: Option<Worker>,
+    items: Vec<Worker>,
+    map: std::collections::BTreeMap<String, Vec<Worker>>,
+    engine: &'a (dyn Engine + Sync),
+    writer: &mut dyn std::io::Write,
+    maybe_engine: Option<&'a dyn Engine>,
+    platform: &Platform,
+    worker: &Worker,
+) {
+    let _ = interner::LinkerInterner::from_catalog("x");
+    let _ = interner.intern();
+    let _ = opt.is_some();
+    let _ = items.len();
+    let _ = map.is_empty();
+    engine.execute();
+    let _ = writer.flush();
+    let _ = maybe_engine.is_some();
+    platform.active();
+    platform_call();
+    os_call();
+    non_exclusive_cfg();
+    worker.fmt();
+}
+"#,
+        ),
+    ]
+    .into_iter()
+    .map(|(path, src)| {
+        let facts = ast::extract(path, "rust", src).unwrap();
+        assert!(facts.errors.is_empty(), "{path}: {:?}", facts.errors);
+        (path.to_owned(), facts)
+    })
+    .collect();
+
+    // Generic/lifetime impl qualnames must be normalized without `<'a>`.
+    let interner_nodes = &files["src/interner.rs"].nodes;
+    assert!(
+        interner_nodes
+            .iter()
+            .any(|n| n.kind == "method" && n.qualname.ends_with(".LinkerInterner.from_catalog")),
+        "expected normalized qualname without <'a>: {interner_nodes:#?}"
+    );
+    assert!(
+        !interner_nodes.iter().any(|n| n.qualname.contains("<'a>")),
+        "unexpected generic qualname leak: {interner_nodes:#?}"
+    );
+
+    let graph = linker::link(&files);
+
+    // Table-driven coverage status contract rows
+    let coverage_cases = [
+        ("src/lib.rs", "Self::build", "resolved"),
+        ("src/lib.rs", "self.finish", "resolved"),
+        ("src/interner.rs", "self.peek", "resolved"),
+        ("src/lib.rs", "interner::LinkerInterner::from_catalog", "resolved"),
+        ("src/lib.rs", "interner.intern", "resolved"),
+        ("src/lib.rs", "opt.is_some", "external"),
+        ("src/lib.rs", "items.len", "external"),
+        ("src/lib.rs", "map.is_empty", "external"),
+        ("src/lib.rs", "maybe_engine.is_some", "external"),
+        ("src/lib.rs", "platform.active", "resolved"),
+        ("src/lib.rs", "platform_call", "resolved"),
+        ("src/lib.rs", "os_call", "resolved"),
+        ("src/lib.rs", "non_exclusive_cfg", "ambiguous"),
+        // External trait `Display::fmt` must NOT leak into inherent lookup
+        ("src/lib.rs", "worker.fmt", "unresolved"),
+    ];
+    for (path, expression, expected_status) in coverage_cases {
+        assert!(
+            graph
+                .coverage
+                .iter()
+                .any(|row| row.path == path
+                    && row.expression == expression
+                    && row.status == expected_status),
+            "{path} `{expression}` expected status `{expected_status}`, got: {:#?}",
+            graph
+                .coverage
+                .iter()
+                .filter(|row| row.path == path && row.expression == expression)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // No "Self has no indexed impl receiver" failures in external trait impls or unproven_bounds.
+    assert!(
+        !graph
+            .coverage
+            .iter()
+            .any(|row| row.evidence.contains("Self has no indexed impl receiver")),
+        "unexpected Self receiver failure: {:#?}",
+        graph.coverage
+    );
+
+    // &dyn (Engine + Sync) emits inferred call to trait decl + possible_calls to FastEngine.
+    assert!(
+        graph
+            .edges
+            .iter()
+            .any(|e| e.kind == "calls" && e.evidence == "engine.execute" && e.confidence == "inferred"),
+        "missing inferred dyn trait call: {:#?}",
+        graph.edges
+    );
+    assert!(
+        graph.edges.iter().any(
+            |e| e.kind == "possible_calls" && e.evidence == "engine.execute" && e.confidence == "possible"
+        ),
+        "missing possible_calls implementor edge: {:#?}",
+        graph.edges
+    );
+
+    // External &mut dyn std::io::Write emits exactly ONE trait_object_dispatch row (no duplicate unresolved row).
+    let writer_rows: Vec<_> = graph
+        .coverage
+        .iter()
+        .filter(|row| {
+            row.path == "src/lib.rs"
+                && (row.expression == "writer.flush"
+                    || (row.expression == "trait_object_dispatch"
+                        && row.evidence.contains("writer")))
+        })
+        .collect();
+    assert_eq!(
+        writer_rows.len(),
+        1,
+        "external dyn Trait call must not double-emit unresolved coverage: {writer_rows:#?}"
+    );
+    assert_eq!(writer_rows[0].expression, "trait_object_dispatch");
+}

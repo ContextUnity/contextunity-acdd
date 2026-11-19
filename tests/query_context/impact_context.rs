@@ -382,3 +382,353 @@ fn candidate_only_callers_appear_in_impact_and_block_removal() -> Result<()> {
     }));
     Ok(())
 }
+
+#[test]
+fn dead_tails_classifies_cross_crate_liveness_chains_phantom_tested_and_dangling_calls() -> Result<()>
+{
+    let workspace = Workspace::new();
+    let conn = Connection::open(workspace.path("dead_tails.sqlite"))?;
+    conn.execute_batch(SCHEMA_DDL)?;
+    conn.execute(
+        "INSERT INTO metadata(key,value) VALUES('output_root','test-generation')",
+        [],
+    )?;
+    conn.execute_batch(
+        "INSERT INTO path_dictionary(path_id,path) VALUES
+            (1,'crates/a/src/main.rs'),
+            (2,'crates/b/src/lib.rs'),
+            (3,'crates/b/tests/b_tests.rs'),
+            (4,'src/mcp/tools.rs');
+         INSERT INTO coverage_evidence(evidence_id,evidence) VALUES(1,'fixture'),(2,'exact');",
+    )?;
+
+    let insert_node = |id: &str,
+                       kind: &str,
+                       name: &str,
+                       path_id: i64,
+                       line: i64,
+                       end_line: i64,
+                       is_test: i64,
+                       details: &str|
+     -> Result<()> {
+        conn.execute(
+            "INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id)
+             VALUES(?1,?2,?3,?1,?4,?5,?6,?7,'rust',0,?8,?9,?4)",
+            params![
+                id,
+                kind,
+                name,
+                path_id,
+                line,
+                end_line,
+                is_test,
+                details,
+                stable_hash64(id)
+            ],
+        )?;
+        Ok(())
+    };
+
+    // Roots: main in main.rs, explicit entrypoint, trait impl container + implements, struct + serde ref, #[tool]
+    insert_node("a_main", "function", "main", 1, 1, 5, 0, "{}")?;
+    insert_node(
+        "a_entry",
+        "function",
+        "entry_hook",
+        1,
+        7,
+        10,
+        0,
+        r#"{"entrypoint":"cli"}"#,
+    )?;
+    insert_node("b_cross_live", "function", "cross_live", 2, 10, 15, 0, "{}")?;
+    insert_node(
+        "b_cross_live_leaf",
+        "function",
+        "cross_live_leaf",
+        2,
+        17,
+        20,
+        0,
+        "{}",
+    )?;
+    insert_node(
+        "b_dead_chain_a",
+        "function",
+        "dead_chain_a",
+        2,
+        22,
+        35,
+        0,
+        "{}",
+    )?;
+    insert_node(
+        "b_dead_chain_b",
+        "function",
+        "dead_chain_b",
+        2,
+        37,
+        42,
+        0,
+        "{}",
+    )?;
+    insert_node("b_phantom_a", "function", "phantom_a", 2, 44, 60, 0, "{}")?;
+    insert_node("b_phantom_b", "function", "phantom_b", 2, 62, 68, 0, "{}")?;
+    insert_node("b_serde_hook", "function", "serde_hook", 2, 70, 72, 0, "{}")?;
+    insert_node("b_cfg_struct", "struct", "Cfg", 2, 74, 78, 0, "{}")?;
+    insert_node(
+        "b_trait_impl",
+        "impl",
+        "Cfg",
+        2,
+        80,
+        86,
+        0,
+        r#"{"impl_trait":"MyTrait"}"#,
+    )?;
+    insert_node(
+        "b_trait_method",
+        "method",
+        "impl_trait_method",
+        2,
+        81,
+        85,
+        0,
+        "{}",
+    )?;
+    insert_node(
+        "b_implemented_fn",
+        "method",
+        "implemented_fn",
+        2,
+        88,
+        91,
+        0,
+        "{}",
+    )?;
+    insert_node("b_trait_decl", "trait", "MyTrait", 2, 93, 97, 0, "{}")?;
+    insert_node("b_dead_cycle_a", "function", "dead_cycle_a", 2, 98, 104, 0, "{}")?;
+    insert_node("b_dead_cycle_b", "function", "dead_cycle_b", 2, 106, 110, 0, "{}")?;
+    insert_node("b_status_field", "field", "status", 2, 75, 75, 0, "{}")?;
+    conn.execute(
+        "INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id)
+         VALUES('b_gen_macro','function','gen_macro_fn','b_gen_macro',2,112,115,0,'rust',1,'{}',?1,2)",
+        params![stable_hash64("b_gen_macro")],
+    )?;
+    insert_node("b_gen_callee", "function", "gen_callee", 2, 117, 120, 0, "{}")?;
+    insert_node("b_local_impl", "impl", "LocalHelper", 2, 12, 14, 0, "{}")?;
+    insert_node("b_nested_reap", "method", "nested_reap", 2, 13, 14, 0, "{}")?;
+    insert_node("b_decode_row", "function", "decode_row", 2, 122, 126, 0, "{}")?;
+    insert_node("b_apply_v2", "function", "apply_v2", 2, 128, 132, 0, "{}")?;
+    insert_node(
+        "b_test_case",
+        "function",
+        "test_phantom_entry",
+        3,
+        5,
+        12,
+        1,
+        "{}",
+    )?;
+    insert_node(
+        "mcp_tool",
+        "method",
+        "code_map_query",
+        4,
+        10,
+        20,
+        0,
+        r##"{"decorators":["#[tool(description=\"x\")]"]}"##,
+    )?;
+
+    for (src, dst, kind, path_id) in [
+        ("a_main", "b_cross_live", "calls", 1),
+        ("b_cross_live", "b_cross_live_leaf", "calls", 2),
+        ("b_cross_live", "b_local_impl", "contains", 2),
+        ("b_local_impl", "b_nested_reap", "contains", 2),
+        ("b_dead_chain_a", "b_dead_chain_b", "calls", 2),
+        ("b_dead_chain_b", "b_decode_row", "calls", 2),
+        ("b_dead_cycle_a", "b_dead_cycle_b", "calls", 2),
+        ("b_dead_cycle_b", "b_dead_cycle_a", "calls", 2),
+        ("b_gen_macro", "b_gen_callee", "calls", 2),
+        ("b_test_case", "b_phantom_a", "calls", 3),
+        ("b_phantom_a", "b_phantom_b", "calls", 2),
+        ("b_cfg_struct", "b_serde_hook", "references", 2),
+        ("b_trait_impl", "b_trait_method", "contains", 2),
+        ("b_implemented_fn", "b_trait_decl", "implements", 2),
+    ] {
+        conn.execute(
+            "INSERT INTO edges(src_hash,dst_hash,kind,path_id,line,evidence_id,confidence_id,occurrence_count)
+             VALUES(?1,?2,?3,?4,1,1,2,1)",
+            params![stable_hash64(src), stable_hash64(dst), kind, path_id],
+        )?;
+    }
+
+    for (owner_id, ordinal, symbol) in [
+        (2, 1, "crate::missing::deleted_fn"),
+        (2, 2, "super::gone_helper"),
+        (2, 3, "Self::new"),
+        (2, 4, "crate::a::b().chain"),
+        (2, 5, "crate::b::Cfg::Variant"),
+        (2, 6, "crate::b::cross_live"),
+        (2, 7, "crate::missing::status"),
+        (2, 8, "conn.query_row(&sql, params![], decode_row)"),
+        (2, 9, "MigrationStep { target_version: 2, apply: apply_v2 }"),
+        (2, 10, "fn caller() { let dead_chain_b = 1; }"),
+        (1, 1, "self::removed_local"),
+    ] {
+        conn.execute(
+            "INSERT INTO dependencies(owner_id,ordinal,target_hash,kind,symbol,resolution)
+             VALUES(?1,?2,NULL,'unresolved',?3,'unresolved')",
+            params![owner_id, ordinal, symbol],
+        )?;
+    }
+
+    let names = |page: &serde_json::Value| -> Vec<String> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let symbols = |page: &serde_json::Value| -> Vec<String> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["symbol"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    struct DeadTailsCase<'a> {
+        selector: Option<&'a str>,
+        path: Option<&'a str>,
+        limit: usize,
+        offset: usize,
+        exp_phantom: &'a [&'a str],
+        exp_dead: &'a [&'a str],
+        exp_dangling: &'a [&'a str],
+    }
+
+    let cases = &[
+        DeadTailsCase {
+            selector: None,
+            path: None,
+            limit: 30,
+            offset: 0,
+            exp_phantom: &["phantom_a", "phantom_b"],
+            exp_dead: &["dead_chain_a", "dead_cycle_a", "dead_chain_b", "dead_cycle_b"],
+            exp_dangling: &[
+                "self::removed_local",
+                "crate::missing::deleted_fn",
+                "crate::missing::status",
+                "super::gone_helper",
+            ],
+        },
+        DeadTailsCase {
+            selector: Some("crates/b"),
+            path: None,
+            limit: 30,
+            offset: 0,
+            exp_phantom: &["phantom_a", "phantom_b"],
+            exp_dead: &["dead_chain_a", "dead_cycle_a", "dead_chain_b", "dead_cycle_b"],
+            exp_dangling: &[
+                "crate::missing::deleted_fn",
+                "crate::missing::status",
+                "super::gone_helper",
+            ],
+        },
+        DeadTailsCase {
+            selector: None,
+            path: Some("crates/b"),
+            limit: 30,
+            offset: 0,
+            exp_phantom: &["phantom_a", "phantom_b"],
+            exp_dead: &["dead_chain_a", "dead_cycle_a", "dead_chain_b", "dead_cycle_b"],
+            exp_dangling: &[
+                "crate::missing::deleted_fn",
+                "crate::missing::status",
+                "super::gone_helper",
+            ],
+        },
+        DeadTailsCase {
+            selector: Some("crates/b"),
+            path: Some("crates/b"),
+            limit: 2,
+            offset: 2,
+            exp_phantom: &[],
+            exp_dead: &["dead_chain_b", "dead_cycle_b"],
+            exp_dangling: &["super::gone_helper"],
+        },
+    ];
+
+    for case in cases {
+        let page = options(case.limit, case.offset, Detail::Compact)?;
+        let res = traversal::query_with_path_options(
+            &conn,
+            "dead_tails",
+            case.selector,
+            case.path,
+            &traversal::GraphQueryOptions {
+                depth: 2,
+                direction: None,
+                coverage: acdd_core::response::CoverageOptions::default(),
+                page: &page,
+            },
+        )?;
+        assert_eq!(res["operation"], "dead_tails");
+        assert_eq!(names(&res["phantom_tested"]), case.exp_phantom);
+        assert_eq!(names(&res["dead_tails"]), case.exp_dead);
+        assert_eq!(symbols(&res["dangling_calls"]), case.exp_dangling);
+
+        if case.offset == 0 {
+            let p0 = &res["phantom_tested"]["items"][0];
+            assert_eq!(p0["test_caller_count"], 1);
+            assert_eq!(p0["test_callers"][0]["name"], "test_phantom_entry");
+            assert_eq!(res["dead_tails"]["items"][0]["dead_callees_count"], 1);
+            assert_eq!(res["dead_tails"]["items"][1]["dead_callees_count"], 1);
+            assert_eq!(res["dead_tails"]["items"][2]["dead_callees_count"], 0);
+            assert_eq!(res["dead_tails"]["items"][3]["dead_callees_count"], 1);
+        }
+
+        let mut compacted = res.clone();
+        if let Some(items) = compacted["dead_tails"]["items"].as_array_mut() {
+            for item in items {
+                item["uri"] = serde_json::json!(format!(
+                    "file:///repo/{}#L{}",
+                    item["path"].as_str().unwrap(),
+                    item["line"].as_i64().unwrap()
+                ));
+            }
+        }
+        contextunity_acdd::format::compact(
+            &mut compacted,
+            contextunity_acdd::format::OperationKind::Navigation,
+            None,
+        );
+        let md = contextunity_acdd::format::render_for_operation(
+            &compacted,
+            contextunity_acdd::format::OutputFormat::Markdown,
+            "code_map_query",
+            None,
+            contextunity_acdd::format::OperationKind::Navigation,
+        );
+        assert!(md.contains("## Dead tails & phantom-tested code"), "{md}");
+        assert!(md.contains("file:///repo/crates/b/src/lib.rs"), "{md}");
+        assert!(md.contains("## Dangling internal calls"), "{md}");
+        if case.selector == Some("crates/b") && case.offset == 0 {
+            assert!(md.contains("crate::missing::deleted_fn"), "{md}");
+        }
+    }
+
+    let conflict = traversal::dead_tails_paged(
+        &conn,
+        Some("crates/a"),
+        Some("crates/b"),
+        &options(10, 0, Detail::Compact)?,
+    );
+    assert!(conflict.is_err(), "conflicting target vs path must fail");
+
+    Ok(())
+}

@@ -7,7 +7,6 @@ roles:
 commands:
   check:
     command: "./workflow-role-fixture artifact-check {plan_name} {plan_slug} {artifact_path} {prerequisite}"
-    output: { require_counts: false }
 gates:
   - id: prerequisite
     role: author

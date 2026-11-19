@@ -1018,15 +1018,15 @@ fn acdd_read_docs_outline_keeps_hierarchy_and_filters_disabled_navigation() {
 fn acdd_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
     for with_command in [false, true] {
         let gate_def = if with_command {
-            "          - id: contract\n            role: builder\n            proof: command\n            command: reader-check\n"
+            "          - id: build\n            role: builder\n            proof: command\n            command: reader-check\n"
         } else {
-            "          - id: contract\n            role: builder\n            proof: none\n"
+            "          - id: build\n            role: builder\n            proof: none\n"
         };
         let profile_yaml = format!(
             "version: 2\n\
              git:\n  isolation: in_place\n  worktrees: manual\n\
              roles:\n  builder:\n    mode: subagent\n\
-             commands:\n  reader-check:\n    command: \"true\"\n    output:\n      require_counts: false\n\
+             commands:\n  reader-check:\n    command: \"true\"\n\
              gates:\n  - tasks:\n      gates:\n{gate_def}"
         );
         let w = Workspace::with_files(&[
@@ -1068,7 +1068,7 @@ fn acdd_read_acdd_badges_and_hints_follow_the_unique_claimed_worktree() {
         );
         let claim = crate::cli::run_cli_json(
             &w,
-            &["claim", "read.contract", "--worker-id", "reader-contract"],
+            &["claim", "read.build", "--worker-id", "reader-build"],
         );
         assert!(
             claim.status.success(),

@@ -24,8 +24,9 @@ def digest(value: Any) -> str:
 
 def evidence(db: pathlib.Path) -> dict[str, Any]:
     with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
-        nodes = {}
-        test_nodes, test_cases = set(), set()
+        nodes: dict[int, str] = {}
+        test_nodes: set[str] = set()
+        test_cases: set[str] = set()
         for node_hash, path, kind, qualname, line, language, is_test, details in conn.execute(
             "SELECT n.node_hash,p.path,n.kind,n.qualname,n.line,n.language,n.is_test,n.details "
             "FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id"
@@ -36,7 +37,7 @@ def evidence(db: pathlib.Path) -> dict[str, Any]:
             nodes[node_hash] = key
             if is_test:
                 test_nodes.add(key)
-            decoded_details = json.loads(details) if details is not None else None
+            decoded_details = json.loads(details) if details else None
             is_test_case = (
                 isinstance(decoded_details, dict)
                 and decoded_details.get("test_role") == "test_case"
@@ -45,43 +46,50 @@ def evidence(db: pathlib.Path) -> dict[str, Any]:
                 test_cases.add(key)
         if len(set(nodes.values())) != len(nodes):
             raise ValueError("canonical node identity collision; refine identity before comparing coverage")
-        occurrences, code_edges = [], set()
+
+        occurrences: list[tuple[str, str, str, int]] = []
+        code_edges: set[tuple[str, str, str]] = set()
         edge_counts = dict(conn.execute("SELECT kind,count(*) FROM edges GROUP BY kind"))
-        for src, dst, kind in conn.execute(
-            "SELECT src_hash,dst_hash,kind FROM edges"
-        ):
-            if src in nodes and dst in nodes:
-                if kind != "possible_calls":
-                    code_edges.add((nodes[src], nodes[dst], kind))
-        # Aggregate edges keep only one location per pair. Read all occurrences
-        # so losing a second call site is visible even when the pair survives.
+        for src, dst, kind in conn.execute("SELECT src_hash,dst_hash,kind FROM edges"):
+            if src in nodes and dst in nodes and kind != "possible_calls":
+                code_edges.add((nodes[src], nodes[dst], kind))
         for src, dst, path, line in conn.execute(
             "SELECT e.src_hash,e.dst_hash,p.path,e.line FROM edge_occurrences e "
             "JOIN path_dictionary p ON p.path_id=e.owner_id WHERE e.kind='calls'"
         ):
             if src in nodes and dst in nodes:
                 occurrences.append((nodes[src], nodes[dst], path, line))
-        resolved_references = sorted(set(conn.execute(
-            "SELECT p.path,c.line,x.expression FROM resolution_coverage c "
-            "JOIN path_dictionary p ON p.path_id=c.path_id "
-            "JOIN coverage_expressions x ON x.expression_id=c.expression_id WHERE c.status='resolved'"
-        )))
-        code_files = sorted(conn.execute(
-            "SELECT path,digest FROM files WHERE language NOT IN ('markdown','mdx') ORDER BY path"
-        ))
+
+        resolved_references = sorted(
+            set(
+                conn.execute(
+                    "SELECT p.path,c.line,x.expression FROM resolution_coverage c "
+                    "JOIN path_dictionary p ON p.path_id=c.path_id "
+                    "JOIN coverage_expressions x ON x.expression_id=c.expression_id "
+                    "WHERE c.status='resolved'"
+                )
+            )
+        )
+        code_files = sorted(
+            conn.execute(
+                "SELECT path,digest FROM files WHERE language NOT IN ('markdown','mdx') ORDER BY path"
+            )
+        )
         resolution: dict[str, Counter[str]] = defaultdict(Counter)
         for path, language, status, records in conn.execute(
             "SELECT p.path,c.language,c.status,c.records FROM coverage_language_counts c "
             "JOIN path_dictionary p ON p.path_id=c.path_id"
         ):
             resolution[f"{workspace(path)}:{language}"][status] += records
-        resolutions = {}
+
+        resolutions: dict[str, dict[str, Any]] = {}
         for group, counts in sorted(resolution.items()):
             denominator = sum(counts[k] for k in ("resolved", "ambiguous", "unresolved"))
             resolutions[group] = {
                 **dict(counts),
-                "resolved_percent_excluding_external": 100 * counts["resolved"] / denominator
-                if denominator else None,
+                "resolved_percent_excluding_external": round(100.0 * counts["resolved"] / denominator, 4)
+                if denominator
+                else None,
             }
         return {
             "code_files": code_files,
@@ -105,7 +113,7 @@ def metrics(graph: dict[str, Any], db_bytes: int, wall_seconds: float) -> dict[s
     for key in nodes:
         path, _, _, _, language = json.loads(key)
         groups[f"{workspace(path)}:{language}"]["code_nodes"] += 1
-        groups[f"{workspace(path)}:{language}"]["connected_nodes"] += key in connected
+        groups[f"{workspace(path)}:{language}"]["connected_nodes"] += int(key in connected)
     for src, _ in pairs:
         path, _, _, _, language = json.loads(src)
         groups[f"{workspace(path)}:{language}"]["exact_call_pairs"] += 1
@@ -116,11 +124,11 @@ def metrics(graph: dict[str, Any], db_bytes: int, wall_seconds: float) -> dict[s
         "exact_call_occurrences": len(calls),
         "code_edges": len(graph["code_edges"]),
         "resolved_references": len(graph["resolved_references"]),
-        "exact_calls_per_code_node": len(pairs) / len(nodes) if nodes else None,
+        "exact_calls_per_code_node": (len(pairs) / len(nodes)) if nodes else None,
         "connected_code_nodes": len(connected),
-        "connected_code_percent": 100 * len(connected) / len(nodes) if nodes else None,
-        "code_files_per_second": len(graph["code_files"]) / wall_seconds,
-        "database_bytes_per_code_node": db_bytes / len(nodes) if nodes else None,
+        "connected_code_percent": (100.0 * len(connected) / len(nodes)) if nodes else None,
+        "code_files_per_second": (len(graph["code_files"]) / wall_seconds) if wall_seconds > 0 else None,
+        "database_bytes_per_code_node": (db_bytes / len(nodes)) if nodes else None,
         "code_by_workspace_language": {k: dict(v) for k, v in sorted(groups.items())},
         "resolution_by_workspace_language": graph["resolution_by_workspace_language"],
         "edge_counts_by_kind": graph["edge_counts_by_kind"],

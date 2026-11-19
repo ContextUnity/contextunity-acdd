@@ -13,7 +13,7 @@ fn worktree_churn_keeps_one_registration_for_the_shared_slot() {
     });
     for root in roots {
         let mut rebound = server.clone();
-        rebound.db = root.join(".acdd/index.sqlite");
+        rebound.db = root.join(".acdd/code-map.sqlite");
         rebound.root = root;
         snapshot(&rebound).unwrap();
         assert_eq!(server.reader_registration_count().unwrap(), 1);
@@ -42,7 +42,10 @@ fn receipt_failures_report_reason_and_read_recovers() {
         ),
         (
             Fault::Directory,
-            Some(("verified receipt publication failed", "os error")),
+            Some((
+                "verified receipt publication failed",
+                "output must not be a directory",
+            )),
         ),
         (Fault::Missing, None),
     ] {

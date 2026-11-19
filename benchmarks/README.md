@@ -1,69 +1,67 @@
-# Manual ACDD benchmarks
+# ContextUnity ACDD Benchmarks (`v0.6.2`)
 
-These runners preserve paired baseline/candidate profiling outside Cargo's test inventory.
-Run them from the repository root with the release profile for meaningful timings.
+Self-contained benchmark suite for measuring ContextUnity ACDD cold builds, incremental delta updates, and stdio MCP tool latency/memory against `target/release/acdd`.
 
-Use `cold_test_coverage_benchmark.py` to compare fresh database builds on a configured
-workspace. It reads that workspace's `acdd.yaml` directly, so its enabled
-`linked_workspaces` are indexed using their configured paths. Every run gets a new
-database under the system temporary directory, and the script removes it after
-collecting graph counts, resolution coverage, elapsed time, CPU, peak RSS, and database
-size. Builds run one at a time and alternate baseline/candidate order.
+## Prerequisites
 
-```sh
-python3 benchmarks/cold_test_coverage_benchmark.py \
-  --repo /path/to/workspace \
-  --baseline-binary /path/to/older/acdd \
-  --candidate-binary /path/to/newer/acdd \
-  --repeats 5
-```
+1. Verify the host power profile is not throttled:
+   ```sh
+   powerprofilesctl get
+   ```
+   Set `powerprofilesctl set performance` before collecting timing baselines.
+2. Build the release binary:
+   ```sh
+   cargo build --release
+   ```
 
-Use `cold_memory_budget_benchmark.py` on an isolated workspace copy to compare
-adaptive cold builds and measure candidate extraction budgets. Keep the copy's
-enabled linked workspaces inside the isolated snapshot, and omit an explicit
-`limits.memory_budget_mb` there so the matrix's environment override takes effect.
-The runner uses the selected profile, alternates paired build order, reverses
-budget order between repetitions, and records every wall time, peak RSS, graph
-summary, and Merkle output root. Its JSON report includes medians, an aggregate of
-every persisted domain commitment, and root determinism for each binary across
-repetitions and candidate budgets. The overall root also commits the engine source
-fingerprint and discovery policy, so cross-version root equality is reported
-separately from fixture Merkle equality. The runner fails when fixture commitments
-differ or roots vary within one binary. The budget controls extraction working memory;
-peak process RSS also includes retained facts, linking, and SQLite.
-The recommended budget has the lowest median peak RSS among settings within 5%
-of the fastest median build; ties prefer lower latency, then the smaller budget.
-Use `--matrix-repeats 0` for a paired-only follow-up without repeating the budget
-matrix; that report does not select a new recommended budget.
-The runner succeeds only when fixture commitments and per-binary roots are
-deterministic and both the candidate wall median and median paired wall change
-are no worse than baseline. Timing checks use unrounded run values; every run is
-retained in the report, including a failed performance comparison.
+## Full Suite Execution
+
+Run all suites (`cold`, `delta`, `mcp`) against the primary control profile (`commerce-release-update.json`):
 
 ```sh
-python3 benchmarks/cold_memory_budget_benchmark.py \
+python3 benchmarks/run_benchmarks.py \
   --profile benchmarks/profiles/commerce-release-update.json \
-  --workspace /path/to/isolated/workspace \
-  --baseline-binary /path/to/older/acdd \
-  --candidate-binary /path/to/newer/acdd \
-  --repeats 5 --matrix-repeats 3 --budgets-mb 50 200 500 1000 \
-  --output /tmp/cold-memory-budget.json
+  --workspace /home/oleksii/ContextUnity/contextunity/.worktrees/commerce-release-update \
+  --binary target/release/acdd \
+  --suite all \
+  --repeats 5 \
+  --output benchmarks/results/v062-commerce-release-update.json
 ```
 
-```sh
-ACDD_BENCH_ROOT=/path/to/workspace \
-ACDD_BENCH_BASELINE=/path/to/baseline/acdd \
-cargo run --release --manifest-path benchmarks/Cargo.toml --bin frozen_workspace_profile
+This writes both `benchmarks/results/v062-commerce-release-update.json` and a companion Markdown summary at `benchmarks/results/v062-commerce-release-update.md`. An optional self-hosted profile is also available at `benchmarks/profiles/self-acdd.json`.
 
-ACDD_BASELINE_BIN=/path/to/baseline/acdd \
-cargo run --release --manifest-path benchmarks/Cargo.toml --bin document_suffix_delta_profile
-```
+## Individual Runners
 
-`frozen_workspace_profile` copies scanner-selected source files into a temporary workspace
-and reports cold builds, single and bulk deltas, and candidate MCP admission. Optional inputs
-are `ACDD_BENCH_REVERSE` to reverse execution order, `ACDD_BENCH_INPUT_LOG` to reuse a
-previous `PROFILE_INPUT` bulk-path selection, and `ACDD_BENCH_DELTA_PATH` to select the
-single-file delta path. The source workspace remains unchanged.
+- **Cold Build** (`cold_build_benchmark.py`):
+  Measures isolated `acdd --format json build` wall time (median/p95/mean ms), CPU seconds, peak RSS MiB, DB size MiB, graph counts, resolution coverage, and deterministic `output_root` across repetitions. Pass `--baseline-binary <path>` for paired A/B comparisons.
+  ```sh
+  python3 benchmarks/cold_build_benchmark.py \
+    --repo . \
+    --binary target/release/acdd \
+    --repeats 5
+  ```
 
-`document_suffix_delta_profile` compares a baseline CLI build/delta with the current
-production writer over 1,600 TOML files plus one documentation file.
+- **Incremental Delta** (`delta_benchmark.py`):
+  Clones Git-tracked workspace files into a disposable `TemporaryDirectory`, builds a warm index, and measures `acdd --format json delta` for:
+  1. 1 edited source file (`edit_1_py` / `edit_1_rs`)
+  2. 10 edited source files (`edit_10_py` / `edit_10_rs`)
+  3. 1 edited `.md` doc file (`edit_1_md`)
+  ```sh
+  python3 benchmarks/delta_benchmark.py \
+    --repo /path/to/workspace \
+    --binary target/release/acdd \
+    --repeats 5
+  ```
+
+- **MCP Latency & `inotify` Probe** (`mcp_latency_benchmark.py`):
+  Spawns `target/release/acdd serve` over stdio JSON-RPC 2.0 against a disposable index DB, probes `acdd.yaml` `IN_OPEN` events on warm calls via Linux `inotify`, and measures `initialize` latency plus per-scenario p50/p95/mean ms, payload bytes, and peak RSS across all profile scenarios.
+  ```sh
+  python3 benchmarks/mcp_latency_benchmark.py \
+    --profile benchmarks/profiles/commerce-release-update.json \
+    --binary target/release/acdd \
+    --repeats 5
+  ```
+
+## Isolation & Cleanup
+
+All runners place temporary SQLite databases, extraction caches, and workspace clones inside `tempfile.TemporaryDirectory` contexts that are cleaned up automatically on exit, leaving the source repository and `.acdd/` untouched.

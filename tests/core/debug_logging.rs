@@ -66,7 +66,8 @@ roots:
 #[test]
 fn debug_logger_writes_to_acdd_directory() {
     let ws = Workspace::new();
-    let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let utc_now = acdd_core::telemetry::now_utc_iso_ms();
+    let date_str = utc_now.split('T').next().unwrap();
     let expected_jsonl_file = ws
         .root()
         .join(".acdd")
@@ -83,12 +84,14 @@ fn debug_logger_writes_to_acdd_directory() {
     );
 
     // 2. MCP entry
-    debug_log::log_mcp(
+    if let Some(pending) = debug_log::prepare_mcp_debug_log(
         ws.root(),
         "code_map_inspect",
         "{\"selector\": \"foo::bar\"}",
         &serde_json::json!({"found": true}),
-    );
+    ) {
+        debug_log::write_pending_debug_log(pending);
+    }
 
     assert!(
         expected_jsonl_file.exists(),
@@ -141,16 +144,14 @@ fn debug_log_obstructions_report_errors_without_breaking_requests() {
                     directory.clone()
                 } else {
                     fs::create_dir(&directory).unwrap();
-                    let date = chrono::Local::now().format("%Y-%m-%d");
+                    let utc_now = acdd_core::telemetry::now_utc_iso_ms();
+                    let date = utc_now.split('T').next().unwrap();
                     let file = directory.join(format!("command-log-debug--{date}.jsonl"));
                     fs::create_dir(&file).unwrap();
                     file
                 };
                 let (operation, reason) = if obstruction == "directory" {
-                    (
-                        "create directory",
-                        fs::create_dir_all(&directory).unwrap_err().to_string(),
-                    )
+                    ("create directory", "expected directory at".to_owned())
                 } else {
                     (
                         "open",

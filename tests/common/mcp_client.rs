@@ -29,10 +29,7 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Constructs the real MCP server with an isolated workspace for in-process checks.
 pub fn in_process_server(workspace: &Workspace) -> Server {
-    Server::new(
-        workspace.root().to_path_buf(),
-        workspace.root().join(".acdd/index.sqlite"),
-    )
+    Server::new(workspace.root().to_path_buf(), workspace.db())
     .with_cache_dir(workspace.path(".acdd/extraction-cache"))
 }
 

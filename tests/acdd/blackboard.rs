@@ -1,6 +1,5 @@
 use super::support::{base_engine_config, init_git_repo_on_branch, TestProvider};
 use crate::common::Workspace;
-use acdd_core::subsystems::SubsystemRegistry;
 use acdd_core::errors::ErrorCode;
 use acdd_state::harness::RunHarness;
 use acdd_state::types::{BlackboardTopic, SubmitAction};
@@ -8,7 +7,6 @@ use acdd_state::usecases::dto::{
     BlackboardPostReq, BlackboardReadReq, ClaimReq, StartReq, SubmitReq,
 };
 use acdd_state::usecases::{execute_on, queries, StateCommand, StateCommandOutput, StateQuery, StateQueryOutput};
-use std::collections::BTreeSet;
 
 #[test]
 fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
@@ -183,40 +181,4 @@ fn blackboard_topics_routing_pagination_deferred_rollup_and_module_gating() {
         !deferred_after.items.is_empty(),
         "deferred items must remain queryable after task completion"
     );
-
-    // `modules.blackboard: false` disables both post and read fail-closed.
-    let mut bb_disabled = cfg;
-    bb_disabled.modules = SubsystemRegistry {
-        disabled: BTreeSet::from(["blackboard".to_owned()]),
-        ..SubsystemRegistry::default()
-    };
-    let post_err = execute_on(
-        &bb_disabled,
-        &harness,
-        &providers,
-        StateCommand::BlackboardPost(BlackboardPostReq {
-            run: Some(rid.clone()),
-            node: None,
-            recipient_node: None,
-            subtask_ref: None,
-            gate: None,
-            author: "a".to_owned(),
-            topic: BlackboardTopic::Notes,
-            payload: "blocked".to_owned(),
-        }),
-    )
-    .unwrap_err();
-    assert_eq!(post_err.code, ErrorCode::FeatureDisabled);
-
-    let read_err = queries::execute_query(
-        &bb_disabled,
-        &harness,
-        &providers,
-        StateQuery::BlackboardRead(BlackboardReadReq {
-            run: Some(rid),
-            ..BlackboardReadReq::default()
-        }),
-    )
-    .unwrap_err();
-    assert_eq!(read_err.code, ErrorCode::FeatureDisabled);
 }

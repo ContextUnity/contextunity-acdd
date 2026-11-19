@@ -316,7 +316,7 @@ fn manifest_changes_trigger_deterministic_rebuild_in_both_admit_and_delta() {
         ("src/app.py", "import requests\n"),
     ]);
 
-    let db = ws.path(".acdd/index.sqlite");
+    let db = ws.db();
     ws.build_to(&db);
     let initial_digest = crate::sqlite_fixture::manifest_digest_at(&db).unwrap();
 

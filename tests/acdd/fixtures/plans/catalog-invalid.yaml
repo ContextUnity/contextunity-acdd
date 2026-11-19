@@ -10,8 +10,6 @@ proofs:
 commands:
   check:
     command: "echo '1 passed; 0 failed'"
-    output:
-      counts: { passed: '(\d+) passed', failed: '(\d+) failed' }
 gates:
   - tasks:
       gates:

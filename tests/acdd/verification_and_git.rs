@@ -1,14 +1,13 @@
 use super::support::{base_engine_config, git_cmd, init_git_repo_on_branch, TestProvider};
 use crate::common::Workspace;
 use acdd_core::errors::ErrorCode;
-use acdd_core::ids::{TaskRef, WorkerId};
+use acdd_core::ids::WorkerId;
 use acdd_state::types::{
-    BlackboardTopic, FindingItem, FindingSeverity, IntegrateStrategy, NodeStatus, RejectionFindings,
-    RejectionKind, ReviewContourResult, ReviewEvidence, RunStatus, SubmitAction,
+    BlackboardTopic, FindingItem, FindingSeverity, NodeStatus, RejectionFindings, RejectionKind,
+    ReviewContourResult, ReviewEvidence, RunStatus, SubmitAction,
 };
 use acdd_state::usecases::dto::{
-    BlackboardPostReq, ClaimReq, IntegrateReq, ListReq, RollbackReq, RunReq, StartReq, SubmitReq,
-    VerifyReq,
+    BlackboardPostReq, ClaimReq, ListReq, RunReq, StartReq, SubmitReq, VerifyReq,
 };
 use acdd_state::usecases::{
     StateCommand, StateCommandOutput, StateEngine, StateQuery, StateQueryOutput,
@@ -22,47 +21,21 @@ inherit: none
 git:
   isolation: worktree
   worktrees: managed
-  commit_mode: plumbing
-  integrate: manual
 save: commit
 contours:
   claims:
     description: "Verify claims"
     criteria: ["Verify claims"]
 roles:
-  contract_author: {}
   builder: {}
   independent_reviewer:
     reuse_on_reject: false
 commands:
-  test_contract:
-    command: ": {test_filter} && if test -f .acdd/green; then printf 'test result: ok. 1 passed; 0 failed\nRunning target/debug/deps/seam\ntest seam_red ... ok\n'; else printf 'assertion failed\nRunning target/debug/deps/seam\ntest seam_red ... FAILED\n' >&2; exit 101; fi"
-    test_filter: "--exact {test}"
-    output:
-      require_counts: false
-      tests:
-        passed: '^test (\S+) \.\.\. ok$'
-        failed: '^test (\S+) \.\.\. FAILED$'
   test_build:
-    command: "printf 'test result: ok. 1 passed; 0 failed\nRunning target/debug/deps/seam\ntest seam_red ... ok\n'"
-    output:
-      require_counts: true
-      counts: { passed: '(\d+) passed', failed: '(\d+) failed' }
-      tests:
-        passed: '^test (\S+) \.\.\. ok$'
-        failed: '^test (\S+) \.\.\. FAILED$'
+    command: "printf 'test result: ok. 1 passed; 0 failed\nRunning target/debug/deps/seam\ntest seam_ok ... ok\n'"
 gates:
   - tasks:
       gates:
-        - id: contract
-          role: contract_author
-          proof: contract
-          command: test_contract
-          expected_failure:
-            exit_codes: [101]
-            stderr_contains: "assertion failed"
-          save: none
-          pass: build
         - id: build
           role: builder
           proof: command
@@ -93,7 +66,7 @@ gates:
 "#;
 
 #[test]
-fn git_verify_submit_commit_integrate_rollback_and_archive_e2e() {
+fn git_verify_submit_commit_and_archive_e2e() {
     let ws = Workspace::new();
     init_git_repo_on_branch(ws.root(), "main");
     ws.write(".acdd/profiles/e2e.yaml", GIT_E2E_PROFILE);
@@ -135,59 +108,10 @@ scope: [src/lib.rs]
     };
     let rid = started.run.run_id.to_string();
 
-    let w_contract = WorkerId::new("author-1").unwrap();
     let w_build = WorkerId::new("builder-1").unwrap();
     let w_rev = WorkerId::new("reviewer-1").unwrap();
 
-    // 1. Contract gate: runtime-red proof required.
-    let StateCommandOutput::Claim(c_contract) = engine
-        .execute(StateCommand::Claim(ClaimReq {
-            run: Some(rid.clone()),
-            node: Some("t1.contract".to_owned()),
-            worker_id: w_contract.clone(),
-            session_fingerprint: None,
-            force: false,
-            steal_remote: false,
-            worktree: None,
-        }))
-        .unwrap()
-    else {
-        panic!("expected ClaimResp");
-    };
-    let task_wt = PathBuf::from(&c_contract.worktree);
-    let StateCommandOutput::Verify(v_contract) = engine
-        .execute(StateCommand::Verify(VerifyReq {
-            run: Some(rid.clone()),
-            node: "t1.contract".to_owned(),
-            worker_id: Some(w_contract.clone()),
-            test_target: Some("seam_red".to_owned()),
-            claim_revision: Some(c_contract.claim_revision),
-            worktree: None,
-        }))
-        .unwrap()
-    else {
-        panic!("expected VerifyResp");
-    };
-    assert!(v_contract.passed);
-    engine
-        .execute(StateCommand::Submit(Box::new(SubmitReq {
-            run: Some(rid.clone()),
-            node: "t1.contract".to_owned(),
-            action: SubmitAction::Pass,
-            worker_id: w_contract,
-            claim_revision: Some(c_contract.claim_revision),
-            test_target: Some("seam_red".to_owned()),
-            review_evidence: None,
-            rejection_findings: None,
-            custom_evidence: None,
-            verified_invariants: Vec::new(),
-            summary: None,
-            allow_main: false,
-            worktree: None,
-        })))
-        .unwrap();
-
-    // 2. Build gate: out-of-scope blocked -> commit rollback restores clean -> immutable drift caught.
+    // 1. Build gate: out-of-scope blocked -> verify -> immutable drift caught.
     let StateCommandOutput::Claim(c_build) = engine
         .execute(StateCommand::Claim(ClaimReq {
             run: Some(rid.clone()),
@@ -202,6 +126,7 @@ scope: [src/lib.rs]
     else {
         panic!("expected ClaimResp");
     };
+    let task_wt = PathBuf::from(&c_build.worktree);
     fs::write(task_wt.join("README.md"), "# out of scope\n").unwrap();
     let oos_err = engine
         .execute(StateCommand::Verify(VerifyReq {
@@ -215,25 +140,6 @@ scope: [src/lib.rs]
         .unwrap_err();
     assert_eq!(oos_err.code, ErrorCode::OutOfScopeChanges);
     fs::write(task_wt.join("README.md"), "# ACDD Fixture Repo\n").unwrap();
-
-    // Mutate src/lib.rs, Rollback against baseline commit restores it.
-    let baseline_commit = git_cmd(&task_wt, &["rev-parse", "HEAD"]);
-    fs::write(task_wt.join("src/lib.rs"), "pub fn broken() -> i32 { 0 }\n").unwrap();
-    let StateCommandOutput::Rollback(rb) = engine
-        .execute(StateCommand::Rollback(RollbackReq {
-            run: Some(rid.clone()),
-            target: baseline_commit,
-            node: Some("t1.build".to_owned()),
-            worktree: Some(task_wt.clone()),
-        }))
-        .unwrap()
-    else {
-        panic!("expected RollbackResp");
-    };
-    assert!(rb.restored_paths.contains(&"src/lib.rs".to_owned()));
-    assert!(fs::read_to_string(task_wt.join("src/lib.rs"))
-        .unwrap()
-        .contains("pub fn base()"));
 
     // Verify, then drift in-scope file -> immutable gate returns TaskCandidateMismatch.
     let StateCommandOutput::Claim(c_build2) = engine
@@ -528,7 +434,7 @@ scope: [src/lib.rs]
         })))
         .unwrap();
 
-    // 4. Before `integrate`, claiming `handoff` fails with TaskNotIntegrated!
+    // 4. Before branch landing, claiming `handoff` fails with TaskNotIntegrated!
     let not_int_err = engine
         .execute(StateCommand::Claim(ClaimReq {
             run: Some(rid.clone()),
@@ -542,19 +448,10 @@ scope: [src/lib.rs]
         .unwrap_err();
     assert_eq!(not_int_err.code, ErrorCode::TaskNotIntegrated);
 
-    // 5. Integrate via rebase-ff -> claim & submit handoff -> verify archive, tombstone, backup!
-    let StateCommandOutput::Integrate(int_resp) = engine
-        .execute(StateCommand::Integrate(IntegrateReq {
-            run: Some(rid.clone()),
-            task_ref: Some(TaskRef::new("t1").unwrap()),
-            strategy: Some(IntegrateStrategy::RebaseFf),
-            allow_main: false,
-        }))
-        .unwrap()
-    else {
-        panic!("expected IntegrateResp");
-    };
-    assert_eq!(int_resp.integrated_tasks, vec![TaskRef::new("t1").unwrap()]);
+    // 5. Fast-forward task branch onto run worktree -> claim & submit handoff -> verify archive, tombstone, backup!
+    let run_wt = PathBuf::from(started.run.worktree.as_deref().unwrap());
+    let task_branch = git_cmd(&task_wt, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    git_cmd(&run_wt, &["merge", "--ff-only", task_branch.trim()]);
 
     let StateCommandOutput::Claim(c_hand) = engine
         .execute(StateCommand::Claim(ClaimReq {
@@ -633,13 +530,12 @@ fn blueprint_max_net_loc_and_architectural_drift_runner_seams() {
         ws.write(
             ".acdd/profiles/drift.yaml",
             r#"version: 2
-inherit: default
+inherit: code
 git: { isolation: in_place, worktrees: manual }
 commands:
   test:
     command: "true"
     test_filter: "--filter {test}"
-    output: { require_counts: false }
   build_check: { command: "true" }
   verify_all: { command: "true" }
 gates:

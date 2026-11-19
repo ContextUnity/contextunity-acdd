@@ -4,8 +4,9 @@ use acdd_core::subsystems::SubsystemRegistry;
 use acdd_core::errors::ErrorCode;
 use acdd_state::profile::{
     embedded_profile, render_command_with_test_filter, resolve_command_for_scope,
-    resolve_profile_from_str, resolve_profile_ref, validate_profile, CommandDef, DetailedCommandDef,
-    PatternCommandEntry, ProfileValidationOptions, TestFilterConfig,
+    resolve_profile_from_str_with_dirs, resolve_profile_ref_with_dirs, validate_profile,
+    CommandDef, DetailedCommandDef, PatternCommandEntry, ProfileValidationOptions,
+    TestFilterConfig,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,18 +19,26 @@ fn embedded_profiles_inheritance_pinning_and_patch_merge_matrix() {
         ..SubsystemRegistry::default()
     };
 
-    // 1. Embedded profiles matrix (`default`, `code`, `in_place`, `workspace`).
+    // 1. Embedded profiles matrix (`base`, `code`, `audit`; removed `"workspace"` / `"in_place"` rejected).
+    for removed in ["workspace", "in_place"] {
+        assert!(embedded_profile(removed).is_none());
+        let err = resolve_profile_ref_with_dirs(removed, None, None, None).unwrap_err();
+        assert_eq!(err.code, ErrorCode::ProfileSchemaInvalid, "{removed}");
+    }
+
     type EmbeddedCase<'a> = (&'a str, Option<&'a SubsystemRegistry>, bool, Result<(), ErrorCode>);
     let embedded_cases: &[EmbeddedCase<'_>] = &[
-        ("default", Some(&code_disabled), false, Ok(())),
-        ("default", None, true, Err(ErrorCode::CommandUnbound)),
+        ("base", Some(&code_disabled), false, Ok(())),
+        ("base", None, true, Ok(())),
+        ("code", None, true, Err(ErrorCode::CommandUnbound)),
         ("code", None, false, Ok(())),
         ("code", Some(&code_disabled), false, Err(ErrorCode::DomainCapabilityUnavailable)),
-        ("in_place", Some(&code_disabled), false, Ok(())),
+        ("audit", None, true, Ok(())),
+        ("audit", Some(&code_disabled), false, Ok(())),
     ];
     for &(name, mods, require_bound, expected) in embedded_cases {
-        assert!(embedded_profile(name).is_some() || name == "workspace");
-        let resolved = resolve_profile_ref(name, None, mods).expect("embedded resolves");
+        assert!(embedded_profile(name).is_some());
+        let resolved = resolve_profile_ref_with_dirs(name, None, mods, None).expect("embedded resolves");
         let opts = ProfileValidationOptions {
             domain_providers: Some(providers.as_ref()),
             acdd_modules: mods,
@@ -39,22 +48,18 @@ fn embedded_profiles_inheritance_pinning_and_patch_merge_matrix() {
         assert_eq!(actual, expected, "embedded profile {name}");
     }
 
-    // 2. Local pinned inheritance (`inherit: <path>:<sha256_prefix>`) + `gates_merge: patch`.
+    // 2. Local pinned inheritance (`inherit: <path>:<sha256_prefix>`) + `gates_patch:`.
     let ws = Workspace::new();
     let parent_yaml = r#"version: 2
 inherit: code
-gates_merge: patch
 commands:
   test:
     command: "cargo test {test_filter}"
     test_filter: "--exact {test}"
-    output: { require_counts: false }
   build_check:
     command: "cargo test"
-    output: { require_counts: false }
   verify_all:
     command: "cargo test --workspace"
-    output: { require_counts: false }
 "#;
     ws.write(".acdd/profiles/parent.yaml", parent_yaml);
     let parent_sha = hex::encode(Sha256::digest(parent_yaml.as_bytes()));
@@ -63,18 +68,18 @@ commands:
     let child_ok = format!(
         r#"version: 2
 inherit: ".acdd/profiles/parent.yaml:{good_pin}"
-gates_merge: patch
-gates:
+gates_patch:
   - id: tasks.build
     tools_add: [http_ping]
     tools_remove: [ast_grep_search]
 "#
     );
-    let resolved_child = resolve_profile_from_str(
+    let resolved_child = resolve_profile_from_str_with_dirs(
         &child_ok,
         "child-ok",
         Some(".acdd/profiles/child-ok.yaml"),
         Some(ws.root()),
+        None,
         None,
     )
     .unwrap();
@@ -103,11 +108,12 @@ gates:
 
     // Bad SHA pin and cyclic inherit fail closed with ProfileSchemaInvalid.
     let bad_pin_yaml = "version: 2\ninherit: \".acdd/profiles/parent.yaml:deadbeefcafe\"\n";
-    let err_pin = resolve_profile_from_str(
+    let err_pin = resolve_profile_from_str_with_dirs(
         bad_pin_yaml,
         "bad-pin",
         None,
         Some(ws.root()),
+        None,
         None,
     )
     .unwrap_err();
@@ -121,8 +127,9 @@ gates:
         ".acdd/profiles/cycle-b.yaml",
         "version: 2\ninherit: .acdd/profiles/cycle-a.yaml\n",
     );
-    let err_cycle = resolve_profile_ref(".acdd/profiles/cycle-a.yaml", Some(ws.root()), None)
-        .unwrap_err();
+    let err_cycle =
+        resolve_profile_ref_with_dirs(".acdd/profiles/cycle-a.yaml", Some(ws.root()), None, None)
+            .unwrap_err();
     assert_eq!(err_cycle.code, ErrorCode::ProfileSchemaInvalid);
 
     // 3. Reject legacy 0.5 keys and legacy tool names fail-closed.
@@ -137,7 +144,8 @@ gates:
             "version: 2\ninherit: none\ndefault_tools: [sql_query]\n",
         ),
     ] {
-        let res = resolve_profile_from_str(bad_yaml, label, None, Some(ws.root()), None).and_then(|p| {
+        let res = resolve_profile_from_str_with_dirs(bad_yaml, label, None, Some(ws.root()), None, None)
+            .and_then(|p| {
             validate_profile(
                 &p,
                 &ProfileValidationOptions {
@@ -169,7 +177,6 @@ fn command_pattern_specificity_and_test_filter_quoting_matrix() {
             test_filter: Some(TestFilterConfig::Template("--exact {test}".to_owned())),
             timeout_seconds: None,
             scope_args_by_pattern: BTreeMap::new(),
-            output: None,
         },
         PatternCommandEntry {
             pattern: "crates/acdd-state/src/*.rs".to_owned(),
@@ -178,7 +185,6 @@ fn command_pattern_specificity_and_test_filter_quoting_matrix() {
             test_filter: Some(TestFilterConfig::Template("--exact {test}".to_owned())),
             timeout_seconds: None,
             scope_args_by_pattern: BTreeMap::new(),
-            output: None,
         },
     ]);
     let picked = resolve_command_for_scope(
@@ -227,7 +233,6 @@ fn command_pattern_specificity_and_test_filter_quoting_matrix() {
         timeout_seconds: None,
         test_filter: None,
         scope_args_by_pattern: BTreeMap::new(),
-        output: None,
     };
     let no_filter = render_command_with_test_filter(&detailed.command, None, None).unwrap();
     assert_eq!(no_filter.trim(), "echo");

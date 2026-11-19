@@ -5,7 +5,9 @@ use acdd_core::errors::ErrorCode;
 use acdd_core::ids::WorkerId;
 use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_state::harness::RunHarness;
-use acdd_state::profile::{resolve_profile_from_str, validate_profile, ProfileValidationOptions};
+use acdd_state::profile::{
+    resolve_profile_from_str_with_dirs, validate_profile, ProfileValidationOptions,
+};
 use acdd_state::spec::parse_spec;
 use acdd_state::types::SubmitAction;
 use acdd_state::usecases::dto::{ClaimReq, ExtendScopeReq, StartReq, SubmitReq};
@@ -151,8 +153,14 @@ gates:
             .unwrap_or_else(|e| panic!("read {}: {e}", item.relpath));
         match item.kind {
             FixtureKind::ValidProfile => {
-                let resolved =
-                    resolve_profile_from_str(&raw, item.relpath, Some(item.relpath), Some(ws.root()), None)
+                let resolved = resolve_profile_from_str_with_dirs(
+                    &raw,
+                    item.relpath,
+                    Some(item.relpath),
+                    Some(ws.root()),
+                    None,
+                    None,
+                )
                         .unwrap_or_else(|e| panic!("resolve {}: {e}", item.relpath));
                 validate_profile(&resolved, &val_opts)
                     .unwrap_or_else(|e| panic!("validate {}: {e}", item.relpath));
@@ -206,8 +214,14 @@ gates:
                 assert_eq!(doc.id, "AC-TPL-1");
             }
             FixtureKind::NegativeProfile(expected) => {
-                let res =
-                    resolve_profile_from_str(&raw, item.relpath, Some(item.relpath), Some(ws.root()), None)
+                let res = resolve_profile_from_str_with_dirs(
+                    &raw,
+                    item.relpath,
+                    Some(item.relpath),
+                    Some(ws.root()),
+                    None,
+                    None,
+                )
                         .and_then(|p| validate_profile(&p, &val_opts));
                 let err = res.expect_err(&format!("{} must fail validation", item.relpath));
                 assert_eq!(err.code, expected, "{}", item.relpath);

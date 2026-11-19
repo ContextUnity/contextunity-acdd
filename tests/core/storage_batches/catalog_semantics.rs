@@ -528,6 +528,47 @@ fn storage_lock_and_confined_wal_seam_matrix() -> anyhow::Result<()> {
         Ok((nodes, edges))
     };
     assert_eq!(dump_rows(&cold_db)?, dump_rows(&delta_db)?);
+    for db_path in [&cold_db, &delta_db] {
+        let conn = reader::open_raw_confined_readonly(db_path)?;
+        let mode: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
+        assert_eq!(mode.to_ascii_lowercase(), "delete", "{}", db_path.display());
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = db_path.as_os_str().to_owned();
+            sidecar.push(suffix);
+            assert!(
+                !std::path::PathBuf::from(sidecar).exists(),
+                "published snapshot must not leave {suffix} sidecar"
+            );
+        }
+    }
+    // Generation mismatch in `persist_delta` must fail before mutating page 1 (journal_mode stays DELETE).
+    {
+        let before_bytes = std::fs::read(&delta_db)?;
+        let admitted_identity = acdd_index::db::cache::identity(&delta_db)?;
+        let err = acdd_index::db::delta::persist_delta(
+            acdd_index::db::delta::DeltaPersistenceInputs {
+                db: &delta_db,
+                root: ws.root(),
+                expected: "0000000000000000000000000000000000000000000000000000000000000000",
+                admitted_identity,
+                entries: &[],
+                affected: &std::collections::BTreeSet::new(),
+                replace_files: &std::collections::BTreeSet::new(),
+                facts: &std::collections::BTreeMap::new(),
+                graph: &acdd_index::models::compact_graph::Graph::default(),
+                manifest_digest: "",
+            },
+            |_, _, _, _| Ok(()),
+        )
+        .err()
+        .expect("generation mismatch must fail");
+        assert!(err.to_string().contains("generation changed"), "{err:#}");
+        assert_eq!(
+            std::fs::read(&delta_db)?,
+            before_bytes,
+            "generation mismatch must not mutate database page 1"
+        );
+    }
 
     // 2. `acdd_core::lock` generation lock contention and release on guard drop.
     let lock_path = ws.path(".acdd/generation.lock");
@@ -546,8 +587,10 @@ fn storage_lock_and_confined_wal_seam_matrix() -> anyhow::Result<()> {
     assert!(shared_b.is_some(), "shared locks must coexist after release");
     drop((shared_a, shared_b));
 
-    // 3. `open_raw_confined_readonly` reads uncheckpointed WAL frames even when `-shm` is absent.
-    let wal_db = ws.path(".acdd/wal-no-shm.sqlite");
+    // 3. `open_raw_confined_readonly` reads WAL-header snapshots without `-shm`, including in read-only directories.
+    let ro_dir = ws.path(".acdd/ro-wal-dir");
+    std::fs::create_dir_all(&ro_dir)?;
+    let wal_db = ro_dir.join("wal-no-shm.sqlite");
     {
         let rw = Connection::open(&wal_db)?;
         rw.execute_batch(
@@ -555,17 +598,33 @@ fn storage_lock_and_confined_wal_seam_matrix() -> anyhow::Result<()> {
              CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL);
              INSERT INTO kv (k, v) VALUES ('alpha', 'from-wal');",
         )?;
-        // Keep a single write committed in WAL; closing `rw` removes `-shm` automatically.
+        // Closing `rw` checkpoints and removes `-wal`/`-shm`, leaving WAL header bytes on page 1.
     }
-    let shm_path = ws.path(".acdd/wal-no-shm.sqlite-shm");
+    let shm_path = ro_dir.join("wal-no-shm.sqlite-shm");
     if shm_path.exists() {
         std::fs::remove_file(&shm_path)?;
     }
-    let ro = reader::open_raw_confined_readonly(&wal_db)?;
-    let val: String = ro.query_row("SELECT v FROM kv WHERE k = 'alpha'", [], |r| r.get(0))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555))?;
+    }
+    let ro = reader::open_raw_confined_readonly(&wal_db);
+    let read_result = ro.and_then(|conn| {
+        let val: String =
+            conn.query_row("SELECT v FROM kv WHERE k = 'alpha'", [], |r| r.get(0))?;
+        let query_only: i64 = conn.query_row("PRAGMA query_only", [], |r| r.get(0))?;
+        Ok((val, query_only))
+    });
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    let (val, query_only) = read_result?;
     assert_eq!(val, "from-wal");
-    let query_only: i64 = ro.query_row("PRAGMA query_only", [], |r| r.get(0))?;
     assert_eq!(query_only, 1);
+    assert!(!shm_path.exists(), "read-only WAL open must not create -shm");
 
     Ok(())
 }

@@ -261,47 +261,6 @@ fn cli_selector_commands_apply_workspace_path_scope() {
 }
 
 #[test]
-fn compact_page_metadata_preserves_pagination_evidence() {
-    let items: Vec<Value> = (0..30)
-        .map(|i| {
-            let name = format!("public_application_entrypoint_{i}");
-            json!({"id":format!("function:{i}"),"kind":"function","name":name,"qualname":name,"path":"a.py","is_test":0,"generated":false})
-        })
-        .collect();
-    let mut payload = json!({"generation":"a".repeat(64),"nodes":{"items":items,"total":30,"offset":0,"limit":30,"has_more":false,"generation":"a".repeat(64),"next_offset":null,"continuation_hint":null}});
-    let original_bytes = payload.to_string().len();
-    response::compact_mcp_metadata(&mut payload);
-    assert!(payload.to_string().len() * 100 <= original_bytes * 65);
-    assert_eq!(crate::json_array(&payload["nodes"]["items"]).len(), 30);
-    assert!(payload["nodes"].get("generation").is_none());
-    assert!(payload.get("generation").is_none());
-    let stable = payload.clone();
-    response::compact_mcp_metadata(&mut payload);
-    assert_eq!(payload, stable);
-    let mut flagged = json!({"nodes":{"items":[{"id":"test:1","kind":"function","name":"test","qualname":"suite.test","path":"test.py","is_test":1,"generated":true}]}});
-    response::compact_mcp_metadata(&mut flagged);
-    assert_eq!(flagged["nodes"]["items"][0]["is_test"], true);
-    assert_eq!(flagged["nodes"]["items"][0]["generated"], true);
-    assert_eq!(flagged["nodes"]["items"][0]["qualname"], "suite.test");
-
-    for flag in ["computation_truncated", "byte_limited"] {
-        let mut payload = json!({"matches":{
-            "total":null,"offset":0,"limit":30,"has_more":false,
-            "generation":"123456789abcdef","items":[],
-            "continuation_hint":"Narrow the pattern"
-        }});
-        payload["matches"][flag] = json!(true);
-        response::compact_mcp_metadata(&mut payload);
-        assert_eq!(payload["matches"][flag], true);
-        assert_eq!(payload["matches"]["generation"], "12345678");
-        assert_eq!(
-            payload["matches"]["continuation_hint"],
-            "Narrow the pattern"
-        );
-    }
-}
-
-#[test]
 fn mcp_zero_match_search_has_compact_page() {
     let mut client =
         McpTestHarness::indexed(&[("service.py", "def useful_symbol():\n    return 1\n")])

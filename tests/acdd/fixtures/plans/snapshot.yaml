@@ -4,7 +4,6 @@ save: none
 commands:
   record:
     command: "printf 'step\n' >> plan-execution.log"
-    output: { require_counts: false }
 gates:
   - tasks:
       gates:

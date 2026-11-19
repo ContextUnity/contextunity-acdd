@@ -514,7 +514,7 @@ fn guide_content_and_surfaces_matrix() {
     for args in [
         vec!["start", "--goal", "Test ephemeral run", "--in-place"],
         vec!["run", "--jobs", "2"],
-        vec!["verify", "t1.contract", "--test", "tests/seam.rs::case"],
+        vec!["verify", "t1.build", "--test", "tests/seam.rs::case"],
         vec![
             "subtask",
             "t1",

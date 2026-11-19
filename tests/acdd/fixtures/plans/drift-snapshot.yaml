@@ -4,7 +4,6 @@ save: none
 commands:
   drift:
     command: "printf 'drift\n' >> docs/plans/linear.md"
-    output: { require_counts: false }
 gates:
   - tasks:
       gates:

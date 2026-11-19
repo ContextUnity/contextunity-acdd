@@ -175,6 +175,7 @@ fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
         ("discovery", "workspace_root"),
         ("manifest_components", "manifest_components"),
         ("documentation_hubs", "documentation_hubs"),
+        ("runs", "active_runs"),
         ("milestones", "active_runs"),
     ] {
         let overview = client
@@ -359,6 +360,7 @@ fn mcp_lint_is_opt_in_bounded_and_rejects_incompatible_requests() {
         "discovery",
         "manifest_components",
         "documentation_hubs",
+        "runs",
         "milestones",
     ] {
         assert!(

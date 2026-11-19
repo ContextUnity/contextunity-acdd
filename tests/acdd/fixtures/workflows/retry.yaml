@@ -4,10 +4,8 @@ save: none
 commands:
   prepare:
     command: "true"
-    output: { require_counts: false }
   attempt:
     command: "mkdir -p .acdd && if test -f .acdd/retry-marker; then printf 'retried\n' >> .acdd/retry-result; else touch .acdd/retry-marker; exit 7; fi"
-    output: { require_counts: false }
 gates:
   - id: prepare
     command: prepare

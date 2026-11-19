@@ -381,7 +381,7 @@ fn delta_rollback_receipt_verification_matrix() {
     let seed = fs::read(&base_database).unwrap();
     let copy = Workspace::new();
     fs::create_dir_all(copy.path(".acdd")).unwrap();
-    let database = copy.path(".acdd/index.sqlite");
+    let database = copy.db();
     let receipt = PathBuf::from(format!("{}.verified.json", database.display()));
     let mut cases = Vec::new();
     for (name, before) in [

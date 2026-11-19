@@ -47,7 +47,7 @@ fn shared_server_constructor_keeps_cold_admission_in_the_workspace_cache() {
         })
         .expect("admit real shared server");
     assert_eq!(symbols["symbols"], 1);
-    assert!(workspace.path(".acdd/index.sqlite").is_file());
+    assert!(workspace.db().is_file());
     let cached = entries(&workspace.path(".acdd/extraction-cache"));
     assert!(!cached.is_empty());
     assert!(global_copies(&cached).is_empty(), "{cached:?}");

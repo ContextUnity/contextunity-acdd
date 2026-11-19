@@ -4,7 +4,6 @@ save: none
 commands:
   implement:
     command: "printf 'implementation\n' >> src/first.rs"
-    output: { require_counts: false }
 gates:
   - tasks:
       gates:

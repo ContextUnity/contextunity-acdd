@@ -10,7 +10,7 @@ fn ergonomic_task_aliases_reach_existing_operations() {
         (".gitignore", ".acdd/\n"),
         (
             ".acdd/profile.yaml",
-            "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: { mode: subagent }\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          role: worker\n          proof: none\n",
+            "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: { mode: subagent }\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: worker\n          proof: none\n",
         ),
         ("app.py", "def first(): pass\n"),
         (
@@ -24,10 +24,10 @@ fn ergonomic_task_aliases_reach_existing_operations() {
     w.query(&["start", "docs/milestones/010-aliases.md", "--in-place"])
         .expect("CLI start should succeed");
     let shown = w
-        .query(&["show", "aliases.contract"])
+        .query(&["show", "aliases.build"])
         .expect("CLI show should succeed");
     assert_eq!(
-        shown["Show"]["node"]["node_id"], "task:aliases:contract",
+        shown["Show"]["node"]["node_id"], "task:aliases:build",
         "{shown}"
     );
 
@@ -38,7 +38,7 @@ fn ergonomic_task_aliases_reach_existing_operations() {
 
     let mut m = McpTestHarness::new(&w).expect("MCP initialize");
     let mcp_show = m
-        .payload("acdd_state", json!({"action":"show","node":"aliases.contract","format":"json"}))
+        .payload("acdd_state", json!({"action":"show","node":"aliases.build","format":"json"}))
         .expect("MCP acdd_state show");
     assert_eq!(
         mcp_show["node"]["node_id"],
@@ -61,7 +61,7 @@ fn ergonomic_task_aliases_reach_existing_operations() {
     for args in [
         vec!["show", "no-such-node"],
         vec!["start"],
-        vec!["submit", "aliases.contract", "--action", "invalid"],
+        vec!["submit", "aliases.build", "--action", "invalid"],
     ] {
         assert!(!run_cli(&w, &args).status.success(), "{args:?}");
     }

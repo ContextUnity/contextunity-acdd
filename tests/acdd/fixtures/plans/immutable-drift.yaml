@@ -4,10 +4,8 @@ save: none
 commands:
   prepare:
     command: "printf 'candidate\n' > src/first.rs"
-    output: { require_counts: false }
   mutate:
     command: "printf 'changed\n' > src/first.rs"
-    output: { require_counts: false }
 gates:
   - tasks:
       gates:

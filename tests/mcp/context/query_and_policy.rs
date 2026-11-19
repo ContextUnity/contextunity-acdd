@@ -117,7 +117,7 @@ fn mcp_analyze_preserves_sql_columns_named_like_metadata() {
         ),
         ("durable", durable.clone()),
     ] {
-        response::compact_mcp_metadata(&mut semantic);
+        contextunity_acdd::format::compact(&mut semantic, contextunity_acdd::format::OperationKind::Navigation, None);
         match case {
             "inactive" => {
                 assert!(semantic.get("generation").is_none(), "{semantic}");

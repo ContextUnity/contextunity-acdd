@@ -4,7 +4,7 @@ use acdd_core::errors::ErrorCode;
 use acdd_core::ids::{GateId, NodeCursor, RunId, TaskRef, WorkerId};
 use acdd_state::profile::{RoleDef, RoleExecutionMode};
 use acdd_state::runner::{
-    spawn_role_runner, spawn_role_runner_borrowed, verify_runner_submitted, RoleSpawnReq,
+    spawn_role_runner_borrowed, verify_runner_submitted, RoleSpawnBorrow,
 };
 use acdd_state::types::ClaimOutcome;
 use acdd_state::usecases::dto::{RunReq, StartReq};
@@ -73,18 +73,9 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
         else {
             panic!("expected StartResp");
         };
-        // First run fails `attempt` (creating `retry-marker`) and routes back to `prepare`.
-        let err1 = engine
-            .execute(StateCommand::Run(RunReq {
-                run: Some(s.run.run_id.to_string()),
-                allow_main: true,
-                ..RunReq::default()
-            }))
-            .unwrap_err();
-        assert_eq!(err1.code, ErrorCode::GateVerificationFailed);
-
-        // Second run re-runs `prepare` -> `attempt` sees `retry-marker` and succeeds!
-        let StateCommandOutput::Run(r2) = engine
+        // Single `acdd run` recovers automatically: `prepare` -> `attempt` fails (creating
+        // `retry-marker`, routing via `fail: prepare`) -> `prepare` -> `attempt` succeeds!
+        let StateCommandOutput::Run(r) = engine
             .execute(StateCommand::Run(RunReq {
                 run: Some(s.run.run_id.to_string()),
                 allow_main: true,
@@ -94,7 +85,7 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
         else {
             panic!("expected RunResp");
         };
-        assert_eq!(r2.report.gates_completed, 2);
+        assert_eq!(r.report.gates_completed, 3);
         assert_eq!(fs::read_to_string(ws.path(".acdd/retry-result")).unwrap(), "retried\n");
     }
 
@@ -186,33 +177,36 @@ fn workflow_runner_execution_retries_failures_timeouts_and_roles_matrix() {
             TaskRef::new("t1").unwrap(),
             vec![GateId::new("build").unwrap()],
         );
-        let req = RoleSpawnReq {
-            run_id: run_id.clone(),
-            node_cursor: cursor,
-            node_container_id: "task:t1".to_owned(),
+        let role_def = RoleDef {
+            mode: RoleExecutionMode::Subagent,
+            reuse_on_reject: true,
+            runner: Some("cat > prompt.md && printf 'SID:%s\n' \"$ACDD_AGENT_SESSION_ID\"".to_owned()),
+            ..RoleDef::default()
+        };
+        let worker_id = WorkerId::new("w-role").unwrap();
+        let state_db = ws.path(".acdd/state.sqlite");
+        let req = RoleSpawnBorrow {
+            run_id: &run_id,
+            node_cursor: &cursor,
+            node_container_id: "task:t1",
             claim_revision: 1,
-            role_name: "builder".to_owned(),
-            role_def: RoleDef {
-                mode: RoleExecutionMode::Subagent,
-                reuse_on_reject: true,
-                runner: Some("cat > prompt.md && printf 'SID:%s\n' \"$ACDD_AGENT_SESSION_ID\"".to_owned()),
-                ..RoleDef::default()
-            },
-            worker_id: WorkerId::new("w-role").unwrap(),
-            worktree: ws.root().to_path_buf(),
-            primary_worktree: ws.root().to_path_buf(),
-            state_db_path: ws.path(".acdd/state.sqlite"),
+            role_name: "builder",
+            role_def: &role_def,
+            worker_id: &worker_id,
+            worktree: ws.root(),
+            primary_worktree: ws.root(),
+            state_db_path: &state_db,
             code_db_path: None,
-            trace_parent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".to_owned(),
-            prompt_markdown: "# Prompt Body\n".to_owned(),
+            trace_parent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+            prompt_markdown: "# Prompt Body\n",
             timeout_seconds: 5,
             max_log_bytes: 65536,
             max_line_bytes: 65536,
         };
-        let out = spawn_role_runner(&req, &mut cache).unwrap();
+        let out = spawn_role_runner_borrowed(&req, &mut cache).unwrap();
         assert_eq!(out.exit_code, Some(0));
         assert_eq!(fs::read_to_string(ws.path("prompt.md")).unwrap(), "# Prompt Body\n");
-        let borrowed_out = spawn_role_runner_borrowed(&req.as_borrow(), &mut cache).unwrap();
+        let borrowed_out = spawn_role_runner_borrowed(&req, &mut cache).unwrap();
         assert_eq!(borrowed_out.exit_code, Some(0));
         assert_eq!(borrowed_out.agent_session_id, out.agent_session_id);
         let no_sub = verify_runner_submitted(&out, Some(ClaimOutcome::Active)).unwrap_err();

@@ -4,7 +4,6 @@ save: none
 commands:
   record:
     command: "printf 'wrong profile\n' >> rejected-profile.log"
-    output: { require_counts: false }
 gates:
   - tasks:
       gates:

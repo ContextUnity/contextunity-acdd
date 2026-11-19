@@ -3,55 +3,56 @@
 ## Mandatory Invariant: User Consent Required
 
 > [!CAUTION]
-> **Explicit User Approval Required**: Benchmark scripts run full cold builds, MCP stress workloads, and multi-process comparisons.
+> **Explicit User Approval Required**: Benchmark scripts run full cold builds, incremental delta rebuilds, and stdio MCP workloads.
 > **DO NOT** execute benchmarks autonomously, in the background, or during normal development tasks without explicit user consent and instructions.
-
-## Profile-Based Benchmarks
-
-All benchmark runs are driven by declarative JSON profiles located in `benchmarks/profiles/`:
-
-- **Main Runner**:
-  ```bash
-  python3 benchmarks/run_benchmarks.py --profile benchmarks/profiles/commerce-release-update.json
-  ```
-- **Options**:
-  - `--profile <path>`: Path to benchmark profile (required).
-  - `--workspace <path>`: Override profile's `workspace_root` (resolves relative to CWD if relative).
-  - `--mode {all,comparison,quality}`: Choose between resource comparison, answer quality, or both (default: `all`).
-  - `--repeats <N>`: Repetitions per scenario (default: 5).
-  - `--scenario <id>`: Run only a single scenario from the profile.
-  - `--output-dir <path>`: Destination directory for JSON receipts (default: temporary directory).
-
-## Path & Workspace Resolution
-
-- Profiles configure `workspace_root` as a path relative to the ContextUnity ACDD repository root (e.g. `"../../worktrees/commerce-release-update"`).
-- Profile loader (`benchmarks/benchmark_profile.py`) automatically resolves relative workspace paths against the repository root.
-- Never hardcode user-specific absolute filesystem paths in profiles or scripts.
-
-## Subsystem Scripts
-
-- `benchmarks/run_benchmarks.py`: Primary CLI orchestrator.
-- `benchmarks/benchmark_profile.py`: Profile loader and workspace snapshot isolation logic.
-- `benchmarks/mcp_tool_comparison_benchmark.py`: Measures tool latency, RSS/HWM memory, and CPU utilization across MCP servers.
-- `benchmarks/mcp_tool_quality_benchmark.py`: Evaluates tool answer completeness and schema compliance.
-- `benchmarks/mcp_adapter_single_load.py`: Linux inotify probe verifying that adapter configurations (`acdd.yaml`) are not redundantly re-read on every request.
-- `benchmarks/cold_test_coverage_benchmark.py`: Sequentially compares cold builds and graph coverage from fresh temporary databases while honoring the selected workspace's `acdd.yaml` and linked workspaces.
 
 ## Host Performance Profile Precondition
 
 > [!IMPORTANT]
-> **Performance Governor Required**: Benchmark measurements are invalid if run under the OS `power-saver` platform profile or energy-performance preference (`energy_performance_preference: power`), which caps CPU clocks to 400 MHz – 1.9 GHz and artificially doubles measured latencies.
-> Before running benchmarks, ensure the host profile is active:
+> **Performance Governor Required**: Benchmark measurements are invalid if run under the OS `power-saver` platform profile, which caps CPU clocks and inflates measured latencies.
+> Before running benchmarks, verify the active host profile:
 > ```bash
-> powerprofilesctl get  # must be 'performance' or 'balanced'
+> powerprofilesctl get  # must be 'performance' (or at minimum not 'power-saver')
 > # If power-saver: powerprofilesctl set performance
 > ```
+> `benchmarks/run_benchmarks.py` fails closed when `powerprofilesctl get` reports `power-saver` unless `--allow-power-saver` is explicitly passed.
+
+## Profile-Based Benchmarks
+
+Declarative JSON profiles live in `benchmarks/profiles/` (`commerce-release-update.json` primary control profile; `self-acdd.json` optional self-hosted profile):
+
+- **Main Runner**:
+  ```bash
+  python3 benchmarks/run_benchmarks.py \
+    --profile benchmarks/profiles/commerce-release-update.json \
+    --workspace /home/oleksii/ContextUnity/contextunity/.worktrees/commerce-release-update \
+    --binary target/release/acdd \
+    --suite all \
+    --repeats 5 \
+    --output benchmarks/results/v062-commerce-release-update.json
+  ```
+- **Options**:
+  - `--profile <path>`: Path to benchmark JSON profile (default: `benchmarks/profiles/commerce-release-update.json`).
+  - `--workspace <path>`: Optional workspace root override.
+  - `--binary <path>`: Path or command name for the `acdd` release binary.
+  - `--baseline-binary <path>`: Optional baseline `acdd` binary for paired cold-build comparison.
+  - `--suite {all,cold,delta,mcp}`: Suite(s) to run sequentially (default: `all`).
+  - `--repeats <N>`: Repetitions per measurement (default: `5`).
+  - `--output <path>`: Destination JSON report path (also writes a companion `.md` Markdown summary).
+  - `--allow-power-saver`: Override the `power-saver` guard (not recommended for release baselines).
+
+## Subsystem Scripts
+
+- `benchmarks/run_benchmarks.py`: Primary CLI orchestrator enforcing host power-profile preconditions and writing JSON + Markdown reports.
+- `benchmarks/benchmark_profile.py`: Profile loader, binary resolver, tracked workspace cloning, and `wait4` CLI timing helpers.
+- `benchmarks/cold_build_benchmark.py` + `benchmarks/cold_coverage_metrics.py`: Sequential isolated cold `acdd --format json build` benchmark (single-binary or paired `--baseline-binary`), verifying deterministic `output_root`, DB size, peak RSS, CPU seconds, graph counts, and resolution coverage in disposable `TemporaryDirectory` workspaces.
+- `benchmarks/delta_benchmark.py`: Clones tracked workspace source files into an isolated `TemporaryDirectory`, builds a warm index, and benchmarks `acdd --format json delta` on 1 `.rs` edit, 10 `.rs` edits, and 1 `.md` edit without modifying the source tree.
+- `benchmarks/mcp_latency_benchmark.py`: Spawns `acdd serve` over stdio JSON-RPC 2.0, runs all profile scenarios, verifies zero JSON-RPC/tool errors, measures initialize latency + per-scenario p50/p95/mean ms + payload bytes + peak RSS, and probes `acdd.yaml` open counts on warm calls via Linux `inotify`.
 
 ## Staged Lifecycle
 
 When explicitly instructed to run benchmarks:
 1. Verify host power profile: `powerprofilesctl get` (ensure `performance`).
 2. Compile release binary: `cargo build --release`.
-3. Allow host to settle to idle baseline.
-4. Execute single controlled run: `python3 benchmarks/run_benchmarks.py --profile <profile>`.
-5. Run full test suite: `cargo test --workspace --all-targets`.
+3. Execute controlled run: `python3 benchmarks/run_benchmarks.py --profile benchmarks/profiles/commerce-release-update.json --workspace /home/oleksii/ContextUnity/contextunity/.worktrees/commerce-release-update --binary target/release/acdd --suite all --repeats 5 --output benchmarks/results/v062-commerce-release-update.json`.
+4. Verify no temporary directories leaked under `/tmp/` and zero changes in the target control workspace.

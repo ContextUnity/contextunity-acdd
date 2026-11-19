@@ -41,8 +41,9 @@ Rules for placing, creating, refactoring, and maintaining tests in
   cannot recur, and add at most one data row to an existing contract matrix ONLY
   when a genuine public boundary was missing (zero net new `#[test]` functions
   during review remediation).
-- **Runtime-red contract proof**: Contract tests compile and fail at runtime
-  (exit 101). Do not use compile failures as red proof.
+- **Build seam proof**: Author compiling, passing seam tests directly in `build`
+  (`exit_code == 0`, `code.seam` reachability, and `max_net_loc` budgets) without
+  separate runtime-red `contract` steps.
 - **Anti-fake-gating**: Do not hide unoptimized matrices behind `#[ignore]`,
   env filters, hardcoded `thread::sleep`, or `#[test]`-as-subprocess `libtest`
   hacks. Build shared base state once; mutate one field per row.
@@ -69,11 +70,13 @@ Rules for placing, creating, refactoring, and maintaining tests in
   deletion so `0555` directories never panic, and restores baseline modes
   bottom-up. `Workspace::drop` repairs permissions without following symlinks on
   initial removal failure and panics (when not already unwinding) if cleanup
-  leaves a directory behind.
+  leaves a directory behind. Use `tempfile::TempDir` instead of copy-pasting
+  `TempDirDrop` test helper structs.
 - **Seam-preserving decomposition**: Do not replace production seams with
   mockist unit doubles. Ban tautological enum/struct self-equality echoes,
-  brittle `Cargo.toml`/CI YAML substring assertions, and multi-hundred-line
-  meta-test suites for `tests/common` helpers.
+  brittle `Cargo.toml`/CI YAML substring assertions, mirror `Mcp*` test DTOs,
+  temporary deleted-symbol exclusion lists in `tests/commitment_integrity`, and
+  multi-hundred-line meta-test suites for `tests/common` helpers.
 - **Shared read-only indexed fixtures (`PersistedSnapshot`) & zero leaks**:
   NEVER store `Workspace` or `TempDir` inside a `static OnceLock` / `LazyLock`
   (statics never run `Drop` at process exit and leak `/tmp/contextunity-test-*`).
@@ -112,9 +115,12 @@ Every `.rs` file directly under `tests/` is a separate Cargo test binary.
 Do NOT create new top-level `tests/<name>.rs` binaries; register new test modules
 under one of the seven canonical domain binaries (`acdd.rs`, `core.rs`,
 `languages.rs`, `linker.rs`, `mcp.rs`,
-`query_context.rs`, `commitment_integrity.rs`). Prefer coherent domain modules:
+`query_context.rs`, `commitment_integrity.rs`), or place `acdd-state`
+integration suites in crate-local `crates/acdd-state/tests/state_integration.rs`
+(`cargo test -p acdd-state`). Prefer coherent domain modules:
 
-- `tests/acdd.rs` (`tests/acdd/`): unified `acdd-state` + `acdd-core` `RunHarness` suite (`< 15s`: fixtures matrix, profiles/inheritance, lifecycle/state, blackboard, verification/Git, runner/waves)
+- `crates/acdd-state/tests/state_integration.rs`: `acdd-state` integration suite (profile resolution, machine transitions, git ops, runner, and usecases E2E)
+- `tests/acdd.rs` (`tests/acdd/`): unified CLI/bridge `acdd-state` + `acdd-core` `RunHarness` suite (`< 15s`: fixtures matrix, profiles/inheritance, lifecycle/state, blackboard, verification/Git, runner/waves)
 - `tests/core.rs` (`tests/core/`, `tests/incremental/`): storage, adapters, scanner limits, docs checks, release packaging, delta indexing and scopes
 - `tests/languages.rs` (`tests/languages/`, `tests/framework_manifests/`): extraction, language semantics, packs and manifests
 - `tests/linker.rs` (`tests/linker/`, `tests/receivers/`): linking and receivers

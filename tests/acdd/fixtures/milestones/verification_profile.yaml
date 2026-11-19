@@ -22,46 +22,20 @@ contours:
 roles:
   architect: {}
   builder: {}
-  contract_author: {}
   independent_reviewer:
     reuse_on_reject: false
 
 commands:
-  test:
-    command: ": {test_filter} && rustc --test tests/runner_fixture.rs -o .acdd/runner_fixture && if test -f .acdd/runner_fixture_green; then .acdd/runner_fixture; else ACDD_FIXTURE_RED=1 .acdd/runner_fixture --nocapture; fi"
-    test_filter: "--exact {test}"
-    output:
-      require_counts: false
-      tests:
-        passed: '^test (\S+) \.\.\. ok$'
-        failed: '^test (\S+) \.\.\. FAILED$'
   rust-check-and-test:
     command: ": {scope_target} && rustc --test tests/runner_fixture.rs -o .acdd/runner_fixture && .acdd/runner_fixture"
-    output:
-      require_counts: true
-      counts: { passed: '(\d+) passed', failed: '(\d+) failed' }
-      tests:
-        passed: '^test (\S+) \.\.\. ok$'
-        failed: '^test (\S+) \.\.\. FAILED$'
   check_full_repo:
     command: "mkdir -p .acdd && printf '%4096s' '' | tr ' ' x && echo full-output-tail && echo check >> .acdd/verification-order && test ! -f .acdd/fail-check"
     description: "Fixture check command for milestone verification."
     timeout_seconds: 30
-    output:
-      require_counts: false
 
 gates:
   - tasks:
       gates:
-        - id: contract
-          role: contract_author
-          proof: contract
-          command: test
-          expected_failure:
-            exit_codes: [1, 101, 134]
-            stderr_contains: "assertion failed"
-          save: none
-          pass: build
         - id: build
           role: builder
           proof: command
@@ -81,6 +55,6 @@ gates:
             - administration
           fail: build
         - id: deliver
-          need: [contract, build, review]
+          need: [build, review]
           receipt: true
           save: none

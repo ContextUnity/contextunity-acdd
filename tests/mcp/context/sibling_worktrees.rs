@@ -9,7 +9,7 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
         ),
         (
             ".acdd/profile.yaml",
-            "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ngates:\n  - tasks:\n      gates:\n        - id: contract\n          role: worker\n          proof: none\n          pass: build\n        - id: build\n          role: worker\n          proof: none\n          pass: review\n        - id: review\n          role: worker\n          proof: none\n          independent_from: [build]\n          need: [build]\n          pass: deliver\n        - id: deliver\n          role: worker\n          receipt: true\n          need: [build, review]\n          save:\n            post: none\n",
+            "version: 2\ngit:\n  isolation: in_place\n  worktrees: manual\nroles:\n  worker: {mode: subagent}\ngates:\n  - tasks:\n      gates:\n        - id: build\n          role: worker\n          proof: none\n          pass: review\n        - id: review\n          role: worker\n          proof: none\n          independent_from: [build]\n          need: [build]\n          pass: deliver\n        - id: deliver\n          role: worker\n          receipt: true\n          need: [build, review]\n          save:\n            post: none\n",
         ),
         ("src/lib.rs", "pub fn primary_only() {}\n"),
     ]);
@@ -124,7 +124,7 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
         board["items"][0]["payload"], "branch-only message",
         "{board}"
     );
-    let node_id = "branch-task.contract";
+    let node_id = "branch-task.build";
     let claim = client
         .payload(
             "acdd_claim",
@@ -139,7 +139,7 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
     );
     let session = crate::sqlite_fixture::claim_session_fingerprint(
         &primary,
-        "task:branch-task:contract",
+        "task:branch-task:build",
         claim["claim_revision"].as_u64().unwrap(),
     )
     .unwrap();
@@ -165,7 +165,7 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
         )
         .expect("MCP reject should succeed");
     assert_eq!(
-        rejected["node_cursor"]["Task"]["gates"][0], "contract",
+        rejected["node_cursor"]["Task"]["gates"][0], "build",
         "{rejected}"
     );
     client

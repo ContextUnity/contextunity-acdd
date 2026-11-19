@@ -11,7 +11,6 @@ use acdd_state::usecases::StateEngineConfig;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 
 pub(crate) fn base_engine_config(workspace_root: &Path) -> StateEngineConfig {
@@ -30,26 +29,10 @@ pub(crate) fn base_engine_config(workspace_root: &Path) -> StateEngineConfig {
 }
 
 pub(crate) fn git_cmd(repo: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_OBJECT_DIRECTORY")
-        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-        .output()
-        .unwrap_or_else(|e| panic!("failed to run git {:?}: {e}", args));
-    assert!(
-        out.status.success(),
-        "git {:?} failed in {}:\nstdout: {}\nstderr: {}",
-        args,
-        repo.display(),
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    acdd_core::git::run_git_stdout(repo, args, None, &[], None)
+        .unwrap_or_else(|e| panic!("git {:?} failed in {}: {e}", args, repo.display()))
+        .trim()
+        .to_owned()
 }
 
 pub(crate) fn init_git_repo_on_branch(repo: &Path, branch: &str) {

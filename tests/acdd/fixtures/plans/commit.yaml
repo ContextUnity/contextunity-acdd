@@ -4,7 +4,6 @@ save: commit
 commands:
   record:
     command: "touch forbidden-plan-command"
-    output: { require_counts: false }
 gates:
   - tasks:
       gates:

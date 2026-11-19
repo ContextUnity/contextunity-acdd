@@ -344,7 +344,12 @@ fn three_crate_wiring_and_state_bridge_providers_seam() {
     assert_eq!(backend.read_meta().unwrap().schema_version, 2);
     drop(backend);
 
-    let providers = contextunity_acdd::state_bridge::build_domain_providers(ws.root(), &acdd_core::config::Adapter::default())
+    let providers = contextunity_acdd::state_bridge::build_domain_providers(
+        ws.root(),
+        &acdd_core::config::Adapter::default(),
+        None,
+        Vec::new(),
+    )
         .expect("state_bridge domain providers must initialize cleanly");
     assert!(providers.plugin_tools().is_empty());
 
@@ -410,8 +415,6 @@ fn inv_single_owner_architectural_fences() {
     let banned_duplicate_fns = [
         "fn verify_no_symlink_traversal", "fn glob_pattern_matches", "fn matches_path_pattern",
         "fn now_utc_iso(", "fn collapse_placeholder_spaces", "fn crate_name_from_cargo_toml",
-        "SaveAction::Snapshot", "fn capture_snapshot", "StateCommand::Snapshot",
-        "McpStateAction::Snapshot", "Command::Snapshot",
     ];
     let mut violations = Vec::new();
     for file in &all_src_rs {
@@ -442,7 +445,7 @@ fn inv_single_owner_architectural_fences() {
         }
         let check_prod_temp = rel.starts_with("src/")
             || rel.starts_with("crates/acdd-index/src/")
-            || (rel.starts_with("crates/acdd-state/src/") && rel != "crates/acdd-state/src/harness.rs");
+            || rel.starts_with("crates/acdd-state/src/");
         if check_prod_temp && strip_cfg_test_items(&code).contains("env::temp_dir") {
             violations.push(format!("{rel}: production `env::temp_dir` forbidden (use `acdd_core::fs::ScopedTempDir`)"));
         }
@@ -457,14 +460,52 @@ fn inv_single_owner_architectural_fences() {
         assert!(code.contains("acdd_core::path_policy"), "{delegator} must delegate to acdd_core::path_policy");
     }
 
-    // 4. Embedded `default.yaml` is domain-pure (no hardcoded 101, 134, or `.acdd/frameworks`).
-    let default_profile_raw = std::fs::read_to_string(manifest_dir.join("crates/acdd-state/src/profile/embedded/default.yaml")).unwrap();
-    for forbidden in ["101", "134", ".acdd/frameworks"] {
-        assert!(!default_profile_raw.contains(forbidden), "embedded default.yaml must stay domain-pure (found '{forbidden}')");
+    // 4. Embedded `base.yaml` is domain-pure and `code.yaml` inherits `base`.
+    let base_profile_raw = std::fs::read_to_string(
+        manifest_dir.join("crates/acdd-state/src/profile/embedded/base.yaml"),
+    )
+    .unwrap();
+    for forbidden in ["101", "134", ".acdd/frameworks", "code.", "docs."] {
+        assert!(
+            !base_profile_raw.contains(forbidden),
+            "embedded base.yaml must stay domain-pure (found '{forbidden}')"
+        );
     }
+    let code_profile_raw = std::fs::read_to_string(
+        manifest_dir.join("crates/acdd-state/src/profile/embedded/code.yaml"),
+    )
+    .unwrap();
+    let code_profile_yaml: serde_yaml::Value = serde_yaml::from_str(&code_profile_raw).unwrap();
+    assert_eq!(
+        code_profile_yaml["inherit"].as_str(),
+        Some("base"),
+        "embedded code.yaml must use `inherit: base`"
+    );
 
-    // 5. Embedded `in_place.yaml` inherits `workspace`.
-    let in_place_raw = std::fs::read_to_string(manifest_dir.join("crates/acdd-state/src/profile/embedded/in_place.yaml")).unwrap();
-    let in_place_yaml: serde_yaml::Value = serde_yaml::from_str(&in_place_raw).unwrap();
-    assert_eq!(in_place_yaml["inherit"].as_str(), Some("workspace"), "embedded in_place.yaml must use `inherit: workspace`");
+    // 5. Embedded `in_place.yaml` is removed; embedded `audit.yaml` inherits `base` with explicit `save.report`.
+    assert!(
+        !manifest_dir
+            .join("crates/acdd-state/src/profile/embedded/in_place.yaml")
+            .exists(),
+        "embedded in_place.yaml must be removed (`in_place` is an execution mode)"
+    );
+    let audit_raw = std::fs::read_to_string(
+        manifest_dir.join("crates/acdd-state/src/profile/embedded/audit.yaml"),
+    )
+    .unwrap();
+    let audit_yaml: serde_yaml::Value = serde_yaml::from_str(&audit_raw).unwrap();
+    assert_eq!(audit_yaml["inherit"].as_str(), Some("base"), "embedded audit.yaml must use `inherit: base`");
+    assert_eq!(audit_yaml["git"]["isolation"].as_str(), Some("in_place"), "audit.yaml must isolate in_place");
+    assert_eq!(audit_yaml["save"].as_str(), Some("none"), "audit.yaml must default save: none");
+    let triage_gate = audit_yaml["gates"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|g| g["id"].as_str() == Some("triage"))
+        .expect("audit.yaml must declare triage gate");
+    assert_eq!(
+        triage_gate["save"]["report"].as_str(),
+        Some(".acdd/reports/{run_name}.md"),
+        "audit.yaml triage gate must declare explicit save.report"
+    );
 }

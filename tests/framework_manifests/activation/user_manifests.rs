@@ -4,48 +4,46 @@ use super::*;
 #[test]
 fn framework_manifest_accepts_generic_typed_rules_and_formats() {
     let mut failures = Vec::new();
-    let examples =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/acdd/references/frameworks");
-    for (name, extension, example) in [
+    for (name, extension, source) in [
         (
             "django",
             "toml",
-            include_str!("../../../skills/acdd/references/frameworks/django.toml.example"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/django.toml"),
         ),
         (
             "starlette",
             "toml",
-            include_str!("../../../skills/acdd/references/frameworks/starlette.toml.example"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/starlette.toml"),
         ),
         (
             "fastapi",
             "toml",
-            include_str!("../../../skills/acdd/references/frameworks/fastapi.toml.example"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/fastapi.toml"),
         ),
         (
             "nuxt",
             "toml",
-            include_str!("../../../skills/acdd/references/frameworks/nuxt.toml.example"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/nuxt.toml"),
         ),
         (
             "vue-runtime",
             "toml",
-            include_str!("../../../skills/acdd/references/frameworks/vue-runtime.toml.example"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/vue-runtime.toml"),
         ),
         (
             "htmx",
             "toml",
-            include_str!("../../../skills/acdd/references/frameworks/htmx.toml.example"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/htmx.toml"),
         ),
         (
             "alpinejs",
             "toml",
-            include_str!("../../../skills/acdd/references/frameworks/alpinejs.toml.example"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/alpinejs.toml"),
         ),
         (
             "gridviewspec",
             "toml",
-            include_str!("../../../skills/acdd/references/frameworks/gridviewspec.toml.example"),
+            include_str!("../../../crates/acdd-index/src/languages/manifests/gridviewspec.toml"),
         ),
         (
             "declarative-rules",
@@ -62,7 +60,6 @@ fn framework_manifest_accepts_generic_typed_rules_and_formats() {
             ),
         ),
     ] {
-        let path = examples.join(format!("{name}.{extension}.example"));
         let identity = if name == "declarative-rules" {
             "project-rules"
         } else {
@@ -70,13 +67,12 @@ fn framework_manifest_accepts_generic_typed_rules_and_formats() {
         };
         let manifest = format!(".acdd/frameworks/{identity}.{extension}");
         let result =
-            FrameworkHarness::from_manifests(&[(&manifest, example)]).and_then(|harness| {
+            FrameworkHarness::from_manifests(&[(&manifest, source)]).and_then(|harness| {
                 harness.link_sources(&[("index.html", "html", "<p>Example manifest</p>")])
             });
         if let Err(error) = result {
             failures.push(format!(
-                "{} failed production loading: {error:#}",
-                path.display()
+                "{name}.{extension} ({manifest}) failed production loading: {error:#}"
             ));
         }
     }

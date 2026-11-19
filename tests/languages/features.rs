@@ -146,6 +146,15 @@ fn registry_and_extraction_match_the_compiled_feature_contract() {
             .collect::<BTreeSet<_>>(),
         expected
     );
+    let all_features: BTreeSet<_> = FIXTURES.iter().map(|fixture| fixture.feature).collect();
+    assert_eq!(
+        languages::AVAILABLE_LANGUAGE_FEATURES
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>(),
+        all_features,
+        "AVAILABLE_LANGUAGE_FEATURES must only contain Cargo-declared lang-* features"
+    );
     let features: BTreeSet<_> = FIXTURES
         .iter()
         .filter(|fixture| fixture.enabled)
@@ -198,13 +207,108 @@ fn registry_and_extraction_match_the_compiled_feature_contract() {
             assert!(error.contains(fixture.feature), "{error}");
         }
     }
-    let unknown = ExtractorHarness::for_lang("unknown")
-        .at_path("sample.unknown")
-        .try_extract("")
-        .unwrap_err()
-        .to_string();
-    assert!(unknown.contains("unknown AST language"), "{unknown}");
-    assert!(unknown.contains("sql"), "{unknown}");
+    for bogus in ["unknown", "semantic", "manifests", "dependency_registry"] {
+        let err = ExtractorHarness::for_lang(bogus)
+            .at_path(&format!("sample.{bogus}"))
+            .try_extract("")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown AST language"), "{bogus}: {err}");
+        assert!(err.contains("sql"), "{bogus}: {err}");
+    }
+}
+
+#[test]
+fn language_profile_edge_cases_contract_matrix() {
+    #[cfg(feature = "lang-rust")]
+    {
+        let rust = languages::by_id("rust").unwrap();
+        for cargo_only in ["Node", "Parser", "Error", "Value", "Graph", "Query", "Connection", "Row"] {
+            assert!(
+                !rust.builtin_type(cargo_only),
+                "Cargo short type `{cargo_only}` must not be a Rust stdlib builtin"
+            );
+        }
+        for std_type in ["Option", "Vec", "String", "HashMap", "BTreeMap"] {
+            assert!(rust.builtin_type(std_type), "expected stdlib type `{std_type}`");
+        }
+        assert!(languages::rust::is_registered_rust_type("rusqlite::Connection"));
+        assert!(!languages::rust::is_registered_rust_type("rusqlite::Parser"));
+    }
+
+    #[cfg(feature = "lang-php")]
+    {
+        let graph = ExtractorHarness::for_lang("php")
+            .at_path("app.php")
+            .linked("<?php\nfunction helper() {}\nfunction run($helper) { helper(); }\n");
+        assert!(
+            graph
+                .coverage
+                .iter()
+                .any(|row| row.expression == "helper" && row.status == "resolved"),
+            "PHP parameter `$helper` must not shadow function call `helper()`: {:#?}",
+            graph.coverage
+        );
+    }
+
+    #[cfg(feature = "lang-c")]
+    {
+        let c = languages::by_id("c").unwrap();
+        assert_eq!(
+            c.normalize_import("src/main.c", "\"dir.v1/config\"")
+                .map(|p| p.namespace),
+            Some("src.dir.v1.config".to_owned())
+        );
+        assert_eq!(
+            c.normalize_import("src/main.c", "\"dir.v1/config.h\"")
+                .map(|p| p.namespace),
+            Some("src.dir.v1.config".to_owned())
+        );
+    }
+
+    #[cfg(feature = "lang-proto")]
+    {
+        let proto = languages::by_id("proto").unwrap();
+        let root_rel = proto
+            .normalize_import("protos/order.proto", "protos/auth.proto")
+            .unwrap();
+        assert_eq!(root_rel.namespace, "protos.auth");
+        assert!(!root_rel.relative);
+        let sibling = proto
+            .normalize_import("protos/order.proto", "auth.proto")
+            .unwrap();
+        assert_eq!(sibling.namespace, "protos.auth");
+        assert!(sibling.relative);
+        assert_eq!(
+            proto.module_name_for_source("protos/a.proto", "packageFoo;\nmessage M {}\n"),
+            "protos.a"
+        );
+    }
+
+    #[cfg(feature = "lang-go")]
+    {
+        let go = languages::by_id("go").unwrap();
+        assert_eq!(
+            go.module_name_for_source("pkg/a.go", "// comment\npackageFoo\nfunc f() {}\n"),
+            "pkg"
+        );
+        assert_eq!(
+            go.module_name_for_source("foo/mybar/a.go", "package bar // inline\n"),
+            "foo.mybar.bar"
+        );
+    }
+
+    #[cfg(feature = "lang-kotlin")]
+    {
+        let kt = languages::by_id("kotlin").unwrap();
+        assert_eq!(
+            kt.module_name_for_source(
+                "src/App.kt",
+                "package com.acme.app; // trailing comment\nclass App\n"
+            ),
+            "com.acme.app"
+        );
+    }
 }
 
 #[test]
