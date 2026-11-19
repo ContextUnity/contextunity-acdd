@@ -17,13 +17,6 @@ pub fn unix_epoch_ms() -> u128 {
         .map_or(0, |d| d.as_millis())
 }
 
-/// Returns whole seconds elapsed since `UNIX_EPOCH` (`0` if the system clock precedes the epoch).
-pub fn unix_epoch_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 /// Formats `unix_ms` (milliseconds since `UNIX_EPOCH`) as UTC ISO-8601 (`%Y-%m-%dT%H:%M:%S.fffZ`)
 /// using Howard Hinnant's proleptic Gregorian `civil_from_days` algorithm.
 pub fn format_unix_ms_utc_iso(unix_ms: u128) -> String {
@@ -49,14 +42,6 @@ pub fn format_unix_ms_utc_iso(unix_ms: u128) -> String {
     let year = y + i64::from(m <= 2);
 
     format!("{year:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
-}
-
-/// Formats `time` as UTC ISO-8601 with millisecond precision (`%Y-%m-%dT%H:%M:%S.fffZ`).
-pub fn format_utc_iso_ms(time: SystemTime) -> String {
-    let millis = time
-        .duration_since(UNIX_EPOCH)
-        .map_or(0u128, |d| d.as_millis());
-    format_unix_ms_utc_iso(millis)
 }
 
 /// Returns the current UTC wall-clock timestamp formatted as `%Y-%m-%dT%H:%M:%S.fffZ`.
@@ -113,20 +98,6 @@ impl TraceId {
         }
         Self(bytes)
     }
-
-    /// Constructs a `TraceId` from raw bytes, rejecting all-zero inputs.
-    pub fn from_bytes(bytes: [u8; 16]) -> anyhow::Result<Self> {
-        ensure!(
-            bytes.iter().any(|&b| b != 0),
-            "trace_id must not be all zeros"
-        );
-        Ok(Self(bytes))
-    }
-
-    /// Returns the raw 16-byte representation.
-    pub fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
-    }
 }
 
 impl Default for TraceId {
@@ -176,20 +147,6 @@ impl SpanId {
             bytes[7] = 1;
         }
         Self(bytes)
-    }
-
-    /// Constructs a `SpanId` from raw bytes, rejecting all-zero inputs.
-    pub fn from_bytes(bytes: [u8; 8]) -> anyhow::Result<Self> {
-        ensure!(
-            bytes.iter().any(|&b| b != 0),
-            "span_id must not be all zeros"
-        );
-        Ok(Self(bytes))
-    }
-
-    /// Returns the raw 8-byte representation.
-    pub fn as_bytes(&self) -> &[u8; 8] {
-        &self.0
     }
 }
 
@@ -352,8 +309,7 @@ mod tests {
         ] {
             assert_eq!(format_unix_ms_utc_iso(ms), expected, "ms={ms}");
         }
-        assert!(unix_epoch_secs() > 0);
-        assert!(unix_epoch_ms() >= u128::from(unix_epoch_secs()) * 1000);
+        assert!(unix_epoch_ms() > 0);
         let now_iso = now_utc_iso_ms();
         assert_eq!(now_iso.len(), 24);
         assert!(now_iso.ends_with('Z'));

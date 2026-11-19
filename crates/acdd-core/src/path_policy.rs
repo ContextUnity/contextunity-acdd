@@ -1,10 +1,11 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 const MAX_BRACE_EXPANSIONS: usize = 64;
 
 /// Normalized pure workspace path policy implementing the four non-conflated predicates from `ADR-0002`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspacePathPolicy {
     /// Active `Run` `spec_path` and `archive_path` entries managed exclusively by the state engine.
@@ -73,26 +74,37 @@ impl WorkspacePathPolicy {
 
     /// Predicate 1: Return `true` if `rel_path` matches any active `Run`'s `spec_path` or `archive_path`.
     ///
-    /// Human edits to engine-managed specs during an active `Run` are reconciled strictly via `acdd sync`.
+    /// Uses APFS-safe case-folding so case variants (e.g. `DOCS/MILESTONES/AC-008.MD`) cannot bypass
+    /// engine-managed spec exclusions on case-insensitive volumes.
     pub fn is_engine_managed(&self, rel_path: &str) -> bool {
-        normalize_rel_path(rel_path)
-            .is_some_and(|norm| self.engine_managed_paths.contains(&norm))
+        let Some(norm) = normalize_rel_path(rel_path) else {
+            return false;
+        };
+        if self.engine_managed_paths.contains(&norm) {
+            return true;
+        }
+        let norm_lower = norm.to_lowercase();
+        self.engine_managed_paths
+            .iter()
+            .any(|managed| managed.to_lowercase() == norm_lower)
     }
 
     /// Predicate 2: Return `true` if `rel_path` belongs in candidate/snapshot `TreeOid` calculations.
     ///
     /// Excludes `.git/**`, `.worktrees/**`, `is_engine_managed(rel_path)`, configured `state_db`/`code_db`
-    /// (plus `-wal`, `-shm`, `.backup` sidecars), and `.acdd/**` EXCEPT the tracked whitelist
-    /// `.acdd/profile.yaml`, `.acdd/profiles/**`, and `.acdd/frameworks/**`.
+    /// (plus `-wal`, `-shm`, `.backup` sidecars), and `.acdd/**` (all APFS case-insensitively) EXCEPT
+    /// the tracked whitelist `.acdd/profile.yaml`, `.acdd/profiles/**`, and `.acdd/frameworks/**`.
     /// Explicitly includes tracked artifacts such as `Cargo.lock` and `tests/**/*.jsonl`.
     pub fn is_candidate_included(&self, rel_path: &str) -> bool {
         let Some(norm) = normalize_rel_path(rel_path) else {
             return false;
         };
-        if is_under_dir(&norm, ".git") || is_under_dir(&norm, ".worktrees") {
+        if is_under_dir_case_insensitive(&norm, ".git")
+            || is_under_dir_case_insensitive(&norm, ".worktrees")
+        {
             return false;
         }
-        if self.engine_managed_paths.contains(&norm) {
+        if self.is_engine_managed(&norm) {
             return false;
         }
         if is_db_or_sidecar(&norm, &self.state_db_path)
@@ -100,7 +112,7 @@ impl WorkspacePathPolicy {
         {
             return false;
         }
-        if is_under_dir(&norm, ".acdd") && !is_acdd_tracked_whitelist(&norm) {
+        if is_under_dir_case_insensitive(&norm, ".acdd") && !is_acdd_tracked_whitelist(&norm) {
             return false;
         }
         true
@@ -117,11 +129,31 @@ impl WorkspacePathPolicy {
             .any(|pattern| pattern_matches_segments(pattern, &path_segs))
     }
 
+    /// Return `true` if `rel_path` is protected by `protected_paths` (APFS case-insensitively)
+    /// or fails closed on an invalid `rel_path` or malformed `protected_paths` glob.
+    pub fn is_protected_path(&self, rel_path: &str, protected_paths: &[String]) -> bool {
+        let Some(norm) = normalize_rel_path(rel_path) else {
+            return true;
+        };
+        if protected_paths.iter().any(|p| !is_valid_scope_glob(p)) {
+            return true;
+        }
+        if protected_paths.is_empty() {
+            return false;
+        }
+        let lower_norm = norm.to_lowercase();
+        let lower_segs: Vec<&str> = lower_norm.split('/').collect();
+        protected_paths.iter().any(|pattern| {
+            let lower_pat = pattern.to_lowercase();
+            pattern_matches_segments(&lower_pat, &lower_segs)
+        })
+    }
+
     /// Predicate 4: Return `true` if an agent may write `rel_path` under `admitted_scope` and `protected_paths`.
     ///
     /// Forbids `.git/**`, `.worktrees/**`, `is_engine_managed`, `state_db`/`code_db` (+ sidecars),
-    /// `protected_paths`, and non-whitelisted `.acdd/**`; requires `is_scope_admitted(rel_path, admitted_scope)`
-    /// (so `.acdd/{profile.yaml,profiles/**,frameworks/**}` are writable only when explicitly covered by `admitted_scope`).
+    /// `protected_paths`, and non-whitelisted `.acdd/**` (all APFS case-insensitively); requires
+    /// `is_scope_admitted(rel_path, admitted_scope)`.
     pub fn is_agent_writable(
         &self,
         rel_path: &str,
@@ -134,13 +166,30 @@ impl WorkspacePathPolicy {
         if !self.is_candidate_included(&norm) {
             return false;
         }
-        if protected_paths.iter().any(|p| !is_valid_scope_glob(p)) {
-            return false;
-        }
-        if self.is_scope_admitted(&norm, protected_paths) {
+        if self.is_protected_path(&norm, protected_paths) {
             return false;
         }
         self.is_scope_admitted(&norm, admitted_scope)
+    }
+
+    /// Validate a `save.report` destination path against workspace confinement and `protected_paths`.
+    ///
+    /// Strictly confined to `.acdd/reports/*.{md,json}` (case-insensitive extension, APFS-safe
+    /// rejection of non-canonical `.ACDD/` casing, `state_db`/`code_db` + sidecars, engine-managed
+    /// paths, and `protected_paths`).
+    pub fn is_valid_report_path(&self, rel_path: &str, protected_paths: &[String]) -> bool {
+        let Some(norm) = normalize_rel_path(rel_path) else {
+            return false;
+        };
+        let under_reports =
+            norm.starts_with(".acdd/reports/") && norm.len() > ".acdd/reports/".len();
+        let valid_ext = has_extension_ci(&norm, "md") || has_extension_ci(&norm, "json");
+        under_reports
+            && valid_ext
+            && !is_db_or_sidecar(&norm, &self.state_db_path)
+            && !is_db_or_sidecar(&norm, &self.code_db_path)
+            && !self.is_engine_managed(&norm)
+            && !self.is_protected_path(&norm, protected_paths)
     }
 }
 
@@ -182,18 +231,36 @@ pub(crate) fn normalize_rel_path_exact(raw: &str) -> Option<String> {
     Some(segments.join("/"))
 }
 
-fn is_under_dir(norm_path: &str, dir: &str) -> bool {
-    norm_path == dir
-        || (norm_path.len() > dir.len()
-            && norm_path.starts_with(dir)
-            && norm_path.as_bytes()[dir.len()] == b'/')
+/// Return `true` if `norm_path` equals `dir` or is a descendant of `dir` using ASCII case-insensitive comparison.
+pub fn is_under_dir_case_insensitive(norm_path: &str, dir: &str) -> bool {
+    if norm_path.eq_ignore_ascii_case(dir) {
+        return true;
+    }
+    norm_path
+        .get(..dir.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(dir))
+        && norm_path.as_bytes().get(dir.len()) == Some(&b'/')
+}
+
+fn has_extension_ci(rel_path: &str, expected: &str) -> bool {
+    std::path::Path::new(rel_path.trim())
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(expected))
+}
+
+/// Return `true` if `rel_path` has a `.json` file extension (case-insensitive, APFS-safe).
+pub fn has_json_extension(rel_path: &str) -> bool {
+    has_extension_ci(rel_path, "json")
 }
 
 fn is_db_or_sidecar(norm_path: &str, db_path: &str) -> bool {
-    if norm_path == db_path {
+    let norm_lower = norm_path.to_lowercase();
+    let db_lower = db_path.to_lowercase();
+    if norm_lower == db_lower {
         return true;
     }
-    let Some(suffix) = norm_path.strip_prefix(db_path) else {
+    let Some(suffix) = norm_lower.strip_prefix(&db_lower) else {
         return false;
     };
     matches!(suffix, "-wal" | "-shm" | ".backup")
@@ -341,6 +408,13 @@ pub fn scopes_overlap(a: &[String], b: &[String]) -> bool {
         }
     }
     false
+}
+
+/// Return `true` if two scope pattern lists can match a common normalized path under APFS case-folding.
+pub fn scopes_overlap_case_insensitive(a: &[String], b: &[String]) -> bool {
+    let lower_a: Vec<String> = a.iter().map(|p| p.to_lowercase()).collect();
+    let lower_b: Vec<String> = b.iter().map(|p| p.to_lowercase()).collect();
+    scopes_overlap(&lower_a, &lower_b)
 }
 
 /// Return `true` if two normalized scope patterns (literal directories or globs, including `{a,b}` braces) can match a common path.
@@ -534,21 +608,28 @@ mod tests {
         // (path, expected_engine_managed, expected_candidate_included)
         let cases: &[(&str, bool, bool)] = &[
             ("docs/milestones/AC-008.md", true, false),
+            ("DOCS/MILESTONES/AC-008.MD", true, false),
             ("docs/milestones/archive/AC-008.md", true, false),
             ("docs/milestones/AC-009.md", false, true),
             (".git/HEAD", false, false),
+            (".GIT/HEAD", false, false),
             (".worktrees/foo/src/lib.rs", false, false),
+            (".WORKTREES/foo/src/lib.rs", false, false),
             (".acdd/state.sqlite", false, false),
+            (".ACDD/STATE.SQLITE", false, false),
             (".acdd/state.sqlite-wal", false, false),
+            (".ACDD/State.sqlite-WAL", false, false),
             (".acdd/state.sqlite-shm", false, false),
             (".acdd/state.sqlite.backup", false, false),
             ("custom/index/code-map.sqlite", false, false),
+            ("CUSTOM/INDEX/CODE-MAP.SQLITE-SHM", false, false),
             ("custom/index/code-map.sqlite-wal", false, false),
             ("custom/index/code-map.sqlite-shm", false, false),
             ("custom/index/code-map.sqlite.backup", false, false),
             (".acdd/run/r1/traces.jsonl", false, false),
             (".acdd/tmp/scratch.json", false, false),
             (".acdd/profile.yaml", false, true),
+            (".ACDD/profile.yaml", false, false),
             (".acdd/profiles/custom.yaml", false, true),
             (".acdd/frameworks/django.yaml", false, true),
             ("Cargo.lock", false, true),
@@ -588,9 +669,13 @@ mod tests {
             ("crates/acdd-core-extra/src/lib.rs", &["crates/acdd-core"], false, false),
             ("crates/acdd-core/Cargo.toml", &["crates/acdd-core/**"], true, true),
             ("Cargo.toml", &["Cargo.toml"], true, false),
+            ("CARGO.TOML", &["**"], true, false),
             ("build.rs", &["**"], true, false),
+            ("BUILD.RS", &["**"], true, false),
             ("docs/milestones/AC-008.md", &["docs/milestones/**"], true, false),
+            ("DOCS/MILESTONES/AC-008.MD", &["**"], true, false),
             (".acdd/state.sqlite", &[".acdd/**", "**"], true, false),
+            (".ACDD/state.sqlite", &["**"], true, false),
             (".acdd/run/r1/traces.jsonl", &[".acdd/**"], true, false),
             (".acdd/profile.yaml", &[".acdd/profile.yaml"], true, true),
             (".acdd/profile.yaml", &["src/**"], false, false),
@@ -600,6 +685,7 @@ mod tests {
             ("AGENTS.md", &["**/AGENTS.md"], true, true),
             ("docs/AGENTS.md", &["**/AGENTS.md"], true, true),
             (".git/config", &["**"], true, false),
+            (".GIT/config", &["**"], true, false),
             (".worktrees/w1/src/lib.rs", &["**"], true, false),
             ("../escape.rs", &["**"], false, false),
         ];
@@ -615,6 +701,35 @@ mod tests {
                 policy.is_agent_writable(path, &scope, &protected),
                 expect_writable,
                 "is_agent_writable({path:?}, {scope:?})"
+            );
+        }
+
+        // Canonical APFS-safe helpers & `is_valid_report_path` matrix (strictly `.acdd/reports/*.{md,json}`).
+        for &(path, expect_json, expect_valid_report) in &[
+            (".acdd/reports/run-1.md", false, true),
+            (".acdd/reports/run-1.JSON", true, true),
+            (".acdd/reports/nested/run-1.MD", false, true),
+            (".ACDD/reports/run-1.md", false, false),
+            (".acdd/reports/run-1.txt", false, false),
+            (".acdd/reports", false, false),
+            ("reports/AC-001.json", true, false),
+            ("reports/AC-001.JSON", true, false),
+            (".acdd/state.sqlite", false, false),
+            (".ACDD/state.sqlite", false, false),
+            (".acdd/code-map.sqlite", false, false),
+            (".acdd/profile.yaml", false, false),
+            (".git/config", false, false),
+            (".GIT/HEAD", false, false),
+            ("Cargo.toml", false, false),
+            ("CARGO.TOML", false, false),
+            ("docs/milestones/AC-008.md", false, false),
+            ("../escape.md", false, false),
+        ] {
+            assert_eq!(has_json_extension(path), expect_json, "has_json_extension({path:?})");
+            assert_eq!(
+                policy.is_valid_report_path(path, &protected),
+                expect_valid_report,
+                "is_valid_report_path({path:?})"
             );
         }
     }

@@ -3,7 +3,7 @@
 use crate::fs::ensure_confined_dir_all_abs;
 use anyhow::{bail, Context, Result};
 use std::fs::{self, File, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// An exclusive or shared OS file lock guard that explicitly unlocks on drop.
@@ -13,17 +13,6 @@ use std::time::{Duration, Instant};
 #[derive(Debug)]
 pub struct FileLockGuard {
     file: File,
-    path: PathBuf,
-}
-
-/// Alias for [`FileLockGuard`] preserved for callers expecting `FileLock`.
-pub type FileLock = FileLockGuard;
-
-impl FileLockGuard {
-    /// Returns the path of the locked file.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 impl Drop for FileLockGuard {
@@ -78,10 +67,7 @@ fn acquire_bounded(
         };
         match attempt {
             Ok(()) => {
-                return Ok(FileLockGuard {
-                    file,
-                    path: lock_path.to_path_buf(),
-                });
+                return Ok(FileLockGuard { file });
             }
             Err(std::fs::TryLockError::WouldBlock) => {
                 let elapsed = started.elapsed();
@@ -132,20 +118,14 @@ pub fn acquire_shared_bounded(
 pub fn acquire_exclusive(path: &Path) -> Result<FileLockGuard> {
     let file = open_confined_lock_file(path)?;
     file.lock()?;
-    Ok(FileLockGuard {
-        file,
-        path: path.to_path_buf(),
-    })
+    Ok(FileLockGuard { file })
 }
 
 /// Attempts to acquire an exclusive lock on `path` without blocking.
 pub fn try_acquire_exclusive(path: &Path) -> Result<Option<FileLockGuard>> {
     let file = open_confined_lock_file(path)?;
     match file.try_lock() {
-        Ok(()) => Ok(Some(FileLockGuard {
-            file,
-            path: path.to_path_buf(),
-        })),
+        Ok(()) => Ok(Some(FileLockGuard { file })),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
         Err(std::fs::TryLockError::Error(err)) => Err(err.into()),
     }
@@ -155,20 +135,14 @@ pub fn try_acquire_exclusive(path: &Path) -> Result<Option<FileLockGuard>> {
 pub fn acquire_shared(path: &Path) -> Result<FileLockGuard> {
     let file = open_confined_lock_file(path)?;
     file.lock_shared()?;
-    Ok(FileLockGuard {
-        file,
-        path: path.to_path_buf(),
-    })
+    Ok(FileLockGuard { file })
 }
 
 /// Attempts to acquire a shared lock on `path` without blocking.
 pub fn try_acquire_shared(path: &Path) -> Result<Option<FileLockGuard>> {
     let file = open_confined_lock_file(path)?;
     match file.try_lock_shared() {
-        Ok(()) => Ok(Some(FileLockGuard {
-            file,
-            path: path.to_path_buf(),
-        })),
+        Ok(()) => Ok(Some(FileLockGuard { file })),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
         Err(std::fs::TryLockError::Error(err)) => Err(err.into()),
     }
@@ -178,18 +152,10 @@ pub fn try_acquire_shared(path: &Path) -> Result<Option<FileLockGuard>> {
 mod tests {
     use super::*;
 
-    struct TempDirDrop(PathBuf);
-    impl Drop for TempDirDrop {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
     #[test]
     fn lock_guards_acquire_and_release_cleanly() {
-        let dir = std::env::temp_dir().join(format!("acdd_core_lock_test_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let _cleanup = TempDirDrop(dir.clone());
+        let _cleanup = crate::fs::ScopedTempDir::create("acdd_core_lock_test").unwrap();
+        let dir = _cleanup.path();
         let lock_path = dir.join("nested/repo.lock");
 
         let guard = acquire_exclusive(&lock_path).unwrap();

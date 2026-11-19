@@ -30,7 +30,7 @@ impl From<IdError> for StateError {
 }
 
 /// Validate `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`.
-fn validate_standard_ident(raw: &str, kind: &'static str) -> Result<(), IdError> {
+pub fn validate_standard_ident(raw: &str, kind: &'static str) -> Result<(), IdError> {
     let bytes = raw.as_bytes();
     if bytes.is_empty() || bytes.len() > 64 {
         return Err(IdError::new(format!(
@@ -77,22 +77,14 @@ pub fn is_valid_short_hex_prefix(raw: &str) -> bool {
     (7..=64).contains(&raw.len()) && raw.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Validate a CLI short Git hash prefix (`7..=64` ASCII hex digits) prior to `git rev-parse`.
-pub fn validate_short_hex_prefix(raw: &str) -> Result<(), IdError> {
-    if is_valid_short_hex_prefix(raw) {
-        Ok(())
-    } else {
-        Err(IdError::new(format!(
-            "git OID prefix '{raw}' must be 7..=64 hexadecimal characters"
-        )))
-    }
-}
-
 macro_rules! define_ident_newtype {
     ($(#[$meta:meta])* $name:ident, $kind:expr) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+        #[derive(
+            Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, schemars::JsonSchema,
+        )]
         #[serde(transparent)]
+        #[schemars(transparent)]
         pub struct $name(String);
 
         impl $name {
@@ -174,8 +166,9 @@ define_ident_newtype!(
 );
 
 /// Validated gate identifier forbidding reserved keywords (`tasks`, `__task__`, `__run__`, `__*`) and path/cursor separators.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
+#[schemars(transparent)]
 pub struct GateId(String);
 
 impl GateId {
@@ -241,8 +234,11 @@ impl<'de> Deserialize<'de> for GateId {
 macro_rules! define_oid_newtype {
     ($(#[$meta:meta])* $name:ident, $kind:expr) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+        #[derive(
+            Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, schemars::JsonSchema,
+        )]
         #[serde(transparent)]
+        #[schemars(transparent)]
         pub struct $name(String);
 
         impl $name {
@@ -332,7 +328,7 @@ fn join_gates(gates: &[GateId]) -> String {
 }
 
 /// Uniquely addresses a single gate node or task container in a `Run` graph.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, schemars::JsonSchema)]
 pub enum NodeCursor {
     /// A root-level gate or container path (`<g1>.<g2>`).
     Root(Vec<GateId>),
@@ -533,7 +529,7 @@ impl<'de> Deserialize<'de> for NodeCursor {
     }
 }
 
-/// Gate reference selector used in `independent_from` and `gates_merge: patch` (`polish` or `"tasks.build"`).
+/// Gate reference selector used in `independent_from` and `gates_patch:` (`polish` or `"tasks.build"`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GateSelector {
     /// Local or root gate path (`polish` or `blueprint_synthesis.review`).
@@ -605,6 +601,20 @@ impl<'de> Deserialize<'de> for GateSelector {
     {
         let raw = String::deserialize(deserializer)?;
         Self::from_str(&raw).map_err(de::Error::custom)
+    }
+}
+
+impl schemars::JsonSchema for GateSelector {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("GateSelector")
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        String::json_schema(generator)
     }
 }
 

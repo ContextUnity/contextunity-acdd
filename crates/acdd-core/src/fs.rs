@@ -69,60 +69,6 @@ pub fn is_normalized_relative(path: &Path) -> bool {
             .all(|part| matches!(part, std::path::Component::Normal(_)))
 }
 
-/// Return whether a string contains POSIX shell metacharacters that could enable command injection or argument splitting.
-pub fn contains_shell_metacharacters(value: &str) -> bool {
-    value.chars().any(|c| {
-        matches!(
-            c,
-            '$' | '`'
-                | ';'
-                | '&'
-                | '|'
-                | '('
-                | ')'
-                | '{'
-                | '}'
-                | '<'
-                | '>'
-                | '"'
-                | '\''
-                | '\\'
-                | '\n'
-                | '\r'
-                | '\t'
-        )
-    })
-}
-
-/// Return whether a string is a safe project-relative command path without shell metacharacters.
-pub fn is_safe_project_path(path: &str) -> bool {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    let path_ref = Path::new(trimmed);
-    is_normalized_relative(path_ref) && !contains_shell_metacharacters(trimmed)
-}
-
-/// Return whether a string is a valid alphanumeric/underscore identifier symbol.
-pub fn is_valid_symbol_identifier(symbol: &str) -> bool {
-    !symbol.is_empty()
-        && symbol
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-/// Return whether a string is a valid qualified symbol identifier (e.g. `foo::bar::baz` or `foo.bar`).
-pub fn is_valid_qualified_symbol_identifier(symbol: &str) -> bool {
-    if symbol.is_empty() || contains_shell_metacharacters(symbol) {
-        return false;
-    }
-    symbol
-        .split("::")
-        .flat_map(|seg| seg.split('.'))
-        .all(is_valid_symbol_identifier)
-}
-
 /// Return whether a path represents a documentation file.
 pub fn is_doc_path(p: &str) -> bool {
     p.starts_with("docs/")
@@ -213,14 +159,29 @@ pub fn confined_database_create_path(path: &Path) -> Result<PathBuf> {
     confined_sqlite_open_path(path, true)
 }
 
+fn reject_parent_dir_components(path: &Path) -> std::io::Result<()> {
+    if path
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(path_error(format!(
+            "path must not contain parent traversal: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Prepares a symlink-confined path for `SQLITE_OPEN_NOFOLLOW`, rejecting symlink
 /// targets and symlinked ancestor directories (`ADR-0002`).
 pub fn confined_sqlite_open_path(path: &Path, allow_missing: bool) -> Result<PathBuf> {
+    reject_parent_dir_components(path)?;
     let absolute = if path.is_absolute() {
-        path.to_owned()
+        normalize_path(path)
     } else {
-        std::env::current_dir()?.join(path)
+        normalize_path(&std::env::current_dir()?.join(path))
     };
+    check_ancestors_no_symlinks_abs(&absolute)?;
     match fs::symlink_metadata(&absolute) {
         Ok(meta) if meta.file_type().is_symlink() => bail!("database must not be a symlink"),
         Ok(_) => {}
@@ -228,7 +189,6 @@ pub fn confined_sqlite_open_path(path: &Path, allow_missing: bool) -> Result<Pat
         Err(err) => return Err(err.into()),
     }
     let parent = absolute.parent().context("database path needs a parent")?;
-    check_ancestors_no_symlinks_abs(&absolute)?;
     let file_name = absolute
         .file_name()
         .context("database path needs a file name")?;
@@ -240,18 +200,40 @@ pub fn confined_sqlite_open_path(path: &Path, allow_missing: bool) -> Result<Pat
     Ok(resolved_parent.join(file_name))
 }
 
+fn ensure_target_not_symlink(absolute: &Path) -> Result<()> {
+    match fs::symlink_metadata(absolute) {
+        Ok(meta) if meta.file_type().is_symlink() => bail!("output must not be a symlink"),
+        Ok(meta) if meta.is_dir() => bail!("output must not be a directory"),
+        Ok(_) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut probe = OpenOptions::new();
+                probe.read(true).custom_flags(libc::O_NOFOLLOW);
+                if let Err(err) = probe.open(absolute) {
+                    if err.raw_os_error() == Some(libc::ELOOP) {
+                        bail!("output must not be a symlink");
+                    }
+                }
+            }
+            Ok(())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
 /// Performs atomic write.
 pub fn atomic_write(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
+    reject_parent_dir_components(path)?;
     let absolute = if path.is_absolute() {
-        path.to_owned()
+        normalize_path(path)
     } else {
-        std::env::current_dir()?.join(path)
+        normalize_path(&std::env::current_dir()?.join(path))
     };
     let parent = absolute.parent().context("missing parent")?;
     ensure_confined_dir_all_abs(parent)?;
-    if fs::symlink_metadata(&absolute).is_ok_and(|m| m.file_type().is_symlink()) {
-        bail!("output must not be a symlink");
-    }
+    ensure_target_not_symlink(&absolute)?;
     let temporary = parent.join(format!(
         ".acdd-write-{}-{}",
         std::process::id(),
@@ -262,16 +244,24 @@ pub fn atomic_write(path: &Path, bytes: &[u8], executable: bool) -> Result<()> {
 
 /// Atomically replace a file with the supplied contents.
 pub fn atomic_replace(path: &Path, contents: &[u8]) -> Result<()> {
-    let name = path
+    reject_parent_dir_components(path)?;
+    let absolute = if path.is_absolute() {
+        normalize_path(path)
+    } else {
+        normalize_path(&std::env::current_dir()?.join(path))
+    };
+    check_ancestors_no_symlinks_abs(&absolute)?;
+    ensure_target_not_symlink(&absolute)?;
+    let name = absolute
         .file_name()
         .context("milestone filename missing")?
         .to_string_lossy();
-    let temporary = path.with_file_name(format!(
+    let temporary = absolute.with_file_name(format!(
         ".{name}.{}.{}.tmp",
         std::process::id(),
         NONCE.fetch_add(1, Ordering::Relaxed)
     ));
-    commit_atomic_temp(path, &temporary, contents, None, false)
+    commit_atomic_temp(&absolute, &temporary, contents, None, true)
 }
 
 fn commit_atomic_temp(
@@ -284,19 +274,25 @@ fn commit_atomic_temp(
     let result = (|| {
         #[cfg(unix)]
         let existing_permissions = if executable.is_none() {
-            fs::symlink_metadata(path)
-                .ok()
-                .filter(|meta| !meta.file_type().is_symlink())
-                .map(|meta| meta.permissions())
+            match fs::symlink_metadata(path) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    bail!("output must not be a symlink");
+                }
+                Ok(meta) => Some(meta.permissions()),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(err) => return Err(err.into()),
+            }
         } else {
             None
         };
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
-        if let Some(executable) = executable {
+        {
             use std::os::unix::fs::OpenOptionsExt;
-            options.mode(if executable { 0o755 } else { 0o600 });
+            options
+                .mode(if executable == Some(true) { 0o755 } else { 0o600 })
+                .custom_flags(libc::O_NOFOLLOW);
         }
         let mut file = options.open(temporary)?;
         file.write_all(bytes)?;
@@ -305,10 +301,18 @@ fn commit_atomic_temp(
             file.set_permissions(permissions)?;
         }
         file.sync_all()?;
+        ensure_target_not_symlink(path)?;
         fs::rename(temporary, path)?;
         if sync_parent {
             let parent = path.parent().context("missing parent")?;
-            OpenOptions::new().read(true).open(parent)?.sync_all()?;
+            let mut parent_opts = OpenOptions::new();
+            parent_opts.read(true);
+            #[cfg(unix)]
+            if !is_system_root_symlink(parent) {
+                use std::os::unix::fs::OpenOptionsExt;
+                parent_opts.custom_flags(libc::O_NOFOLLOW);
+            }
+            parent_opts.open(parent)?.sync_all()?;
         }
         Ok(())
     })();
@@ -355,12 +359,7 @@ fn resolve_confined_path(root: &Path, target: &Path) -> std::io::Result<PathBuf>
     if target.as_os_str().is_empty() {
         return Err(path_error("path must not be empty"));
     }
-    if target
-        .components()
-        .any(|part| matches!(part, std::path::Component::ParentDir))
-    {
-        return Err(path_error("path must not contain parent traversal"));
-    }
+    reject_parent_dir_components(target)?;
     let abs_root = if root.is_absolute() {
         normalize_path(root)
     } else {
@@ -384,7 +383,9 @@ fn resolve_confined_path(root: &Path, target: &Path) -> std::io::Result<PathBuf>
 }
 
 pub(crate) fn check_ancestors_no_symlinks_abs(abs_target: &Path) -> std::io::Result<()> {
-    let parent = abs_target
+    reject_parent_dir_components(abs_target)?;
+    let normalized = normalize_path(abs_target);
+    let parent = normalized
         .parent()
         .ok_or_else(|| path_error("path requires a parent directory"))?;
     let mut ancestor = PathBuf::new();
@@ -412,8 +413,10 @@ pub(crate) fn check_ancestors_no_symlinks_abs(abs_target: &Path) -> std::io::Res
 }
 
 pub(crate) fn ensure_confined_dir_all_abs(abs_dir: &Path) -> std::io::Result<()> {
+    reject_parent_dir_components(abs_dir)?;
+    let normalized = normalize_path(abs_dir);
     let mut current = PathBuf::new();
-    for component in abs_dir.components() {
+    for component in normalized.components() {
         current.push(component);
         match fs::symlink_metadata(&current) {
             Ok(meta) if meta.file_type().is_symlink() && !is_system_root_symlink(&current) => {
@@ -708,55 +711,6 @@ mod tests {
     }
 
     #[test]
-    fn test_contains_shell_metacharacters() {
-        assert!(!contains_shell_metacharacters("src/lib.rs"));
-        assert!(!contains_shell_metacharacters("src/space # λ.rs"));
-        assert!(!contains_shell_metacharacters("my_test_fn"));
-        assert!(contains_shell_metacharacters("$(touch evil)"));
-        assert!(contains_shell_metacharacters("foo; rm -rf"));
-        assert!(contains_shell_metacharacters("foo && bar"));
-        assert!(contains_shell_metacharacters("foo | bar"));
-        assert!(contains_shell_metacharacters("`id`"));
-        assert!(contains_shell_metacharacters("foo\nbar"));
-        assert!(contains_shell_metacharacters("foo'bar"));
-        assert!(contains_shell_metacharacters("foo\"bar"));
-    }
-
-    #[test]
-    fn test_is_safe_project_path() {
-        assert!(is_safe_project_path("src/lib.rs"));
-        assert!(is_safe_project_path("src/space # λ.rs"));
-        assert!(!is_safe_project_path(""));
-        assert!(!is_safe_project_path("   "));
-        assert!(!is_safe_project_path("/etc/passwd"));
-        assert!(!is_safe_project_path("../outside.rs"));
-        assert!(!is_safe_project_path("tests/x$(touch bad).rs"));
-    }
-
-    #[test]
-    fn test_is_valid_symbol_identifier() {
-        assert!(is_valid_symbol_identifier("my_test_fn"));
-        assert!(is_valid_symbol_identifier("Test123_abc"));
-        assert!(!is_valid_symbol_identifier(""));
-        assert!(!is_valid_symbol_identifier("my test"));
-        assert!(!is_valid_symbol_identifier("my_test; evil"));
-        assert!(!is_valid_symbol_identifier("test-dash"));
-    }
-
-    #[test]
-    fn test_is_valid_qualified_symbol_identifier() {
-        assert!(is_valid_qualified_symbol_identifier("my_test_fn"));
-        assert!(is_valid_qualified_symbol_identifier("foo::bar::my_test"));
-        assert!(is_valid_qualified_symbol_identifier("module.test_func"));
-        assert!(!is_valid_qualified_symbol_identifier(""));
-        assert!(!is_valid_qualified_symbol_identifier("foo::"));
-        assert!(!is_valid_qualified_symbol_identifier("::bar"));
-        assert!(!is_valid_qualified_symbol_identifier("foo::::bar"));
-        assert!(!is_valid_qualified_symbol_identifier("foo; rm -rf"));
-        assert!(!is_valid_qualified_symbol_identifier("foo::bar bad"));
-    }
-
-    #[test]
     fn test_is_system_root_symlink_only_exempts_macos_os_roots() {
         assert!(!is_system_root_symlink(Path::new("/")));
         assert!(!is_system_root_symlink(Path::new("/var/folders")));
@@ -776,12 +730,8 @@ mod tests {
     fn test_confined_database_open_path_canonicalizes_parent_and_rejects_symlinks() {
         use std::os::unix::fs::symlink;
 
-        let base = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("acdd_core_db_open_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        let _cleanup = TempDirDrop(base.clone());
+        let dir = ScopedTempDir::create("acdd_core_db_open").unwrap();
+        let base = dir.path();
         let real_dir = base.join("real");
         fs::create_dir_all(&real_dir).unwrap();
         let db = real_dir.join("code-map.sqlite");
@@ -798,24 +748,24 @@ mod tests {
         symlink(&real_dir, &symlink_dir).unwrap();
         assert!(confined_database_open_path(&symlink_dir.join("code-map.sqlite")).is_err());
 
-        check_ancestors_no_symlinks(&base, Path::new("real/missing/state.sqlite")).unwrap();
+        check_ancestors_no_symlinks(base, Path::new("real/missing/state.sqlite")).unwrap();
         assert_eq!(
-            check_ancestors_no_symlinks(&base, Path::new("link_dir/state.sqlite"))
+            check_ancestors_no_symlinks(base, Path::new("link_dir/state.sqlite"))
                 .unwrap_err()
                 .kind(),
             std::io::ErrorKind::InvalidInput
         );
         assert_eq!(
-            check_ancestors_no_symlinks(&base, Path::new("../outside.sqlite"))
+            check_ancestors_no_symlinks(base, Path::new("../outside.sqlite"))
                 .unwrap_err()
                 .kind(),
             std::io::ErrorKind::InvalidInput
         );
-        let created_dir = ensure_confined_dir_all(&base, Path::new("real/nested/logs")).unwrap();
+        let created_dir = ensure_confined_dir_all(base, Path::new("real/nested/logs")).unwrap();
         assert_eq!(created_dir, real_dir.join("nested/logs"));
         assert!(created_dir.is_dir());
         assert_eq!(
-            ensure_confined_dir_all(&base, Path::new("link_dir/escape"))
+            ensure_confined_dir_all(base, Path::new("link_dir/escape"))
                 .unwrap_err()
                 .kind(),
             std::io::ErrorKind::InvalidInput
@@ -824,8 +774,6 @@ mod tests {
             canonicalize_macos_var(&real_dir.join("missing.txt")),
             real_dir.join("missing.txt")
         );
-
-        let _ = fs::remove_dir_all(&base);
     }
 
     #[cfg(unix)]
@@ -833,12 +781,8 @@ mod tests {
     fn test_checked_child_allows_uncanonicalized_root_and_rejects_child_symlinks() {
         use std::os::unix::fs::symlink;
 
-        let base = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("acdd_core_checked_child_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        let _cleanup = TempDirDrop(base.clone());
+        let dir = ScopedTempDir::create("acdd_core_checked_child").unwrap();
+        let base = dir.path();
         let real_root = base.join("private_var/ws");
         fs::create_dir_all(real_root.join("src")).unwrap();
         fs::write(real_root.join("src/lib.rs"), b"pub fn ok() {}").unwrap();
@@ -854,8 +798,6 @@ mod tests {
         fs::write(&outside, b"pub fn secret() {}").unwrap();
         symlink(&outside, real_root.join("src/escape.rs")).unwrap();
         assert!(checked_child(&alias_root, Path::new("src/escape.rs")).is_err());
-
-        let _ = fs::remove_dir_all(&base);
     }
 
     #[cfg(unix)]
@@ -863,13 +805,8 @@ mod tests {
     fn test_atomic_replace_preserves_existing_permissions_and_applies_default_for_new() {
         use std::os::unix::fs::PermissionsExt;
 
-        let base = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("acdd_core_atomic_replace_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        let _cleanup = TempDirDrop(base.clone());
-        fs::create_dir_all(&base).unwrap();
+        let dir = ScopedTempDir::create("acdd_core_atomic_replace").unwrap();
+        let base = dir.path();
 
         let private_file = base.join("secret.md");
         fs::write(&private_file, b"v1").unwrap();
@@ -892,8 +829,6 @@ mod tests {
         let new_file = base.join("brand-new.md");
         atomic_replace(&new_file, b"hello").unwrap();
         assert_eq!(fs::read(&new_file).unwrap(), b"hello");
-
-        let _ = fs::remove_dir_all(&base);
     }
 
     #[cfg(unix)]
@@ -901,12 +836,8 @@ mod tests {
     fn test_same_filesystem_path_matches_absent_files_under_symlinked_ancestors() {
         use std::os::unix::fs::symlink;
 
-        let base = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("acdd_core_same_fs_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        let _cleanup = TempDirDrop(base.clone());
+        let dir = ScopedTempDir::create("acdd_core_same_fs").unwrap();
+        let base = dir.path();
         let real_root = base.join("real");
         fs::create_dir_all(&real_root).unwrap();
         let alias_root = base.join("alias");
@@ -918,16 +849,5 @@ mod tests {
 
         let other_absent = alias_root.join(".acdd/code-map.sqlite");
         assert!(!same_filesystem_path(&absent_real, &other_absent));
-
-        let _ = fs::remove_dir_all(&base);
-    }
-    #[cfg(unix)]
-    struct TempDirDrop(PathBuf);
-
-    #[cfg(unix)]
-    impl Drop for TempDirDrop {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
     }
 }

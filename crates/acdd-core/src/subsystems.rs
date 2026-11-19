@@ -3,57 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Typed identifier for built-in subsystems and external `DomainProvider` plugins.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SubsystemId {
-    /// Code indexing and AST/graph navigation (`code` / legacy `codemap`).
-    Code,
-    /// Documentation indexing and Markdown tools (`docs`).
-    Docs,
-    /// Unified state/lifecycle engine (`state` / legacy `acdd`).
-    State,
-    /// Blackboard collaboration surface (`blackboard`; auto-disabled when `state: false`).
-    Blackboard,
-    /// Reserved slot for repository memory (`memory`, `AC-006`).
-    Memory,
-    /// Legacy checkpoint subsystem (removed in 0.6.0 Phase 3).
-    Checkpoints,
-    /// External `DomainProvider` plugin toggle (`domains.<id>`).
-    Domain(String),
-}
-
-impl SubsystemId {
-    /// Parses a subsystem identifier or legacy alias.
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "code" | "codemap" => Some(Self::Code),
-            "docs" => Some(Self::Docs),
-            "state" | "acdd" => Some(Self::State),
-            "blackboard" => Some(Self::Blackboard),
-            "memory" => Some(Self::Memory),
-            "checkpoints" => Some(Self::Checkpoints),
-            other => other
-                .strip_prefix("domain:")
-                .filter(|id| !id.is_empty())
-                .map(|id| Self::Domain(id.to_owned())),
-        }
-    }
-
-    /// Returns the canonical subsystem name (or domain name for `Domain`).
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Code => "code",
-            Self::Docs => "docs",
-            Self::State => "state",
-            Self::Blackboard => "blackboard",
-            Self::Memory => "memory",
-            Self::Checkpoints => "checkpoints",
-            Self::Domain(name) => name.as_str(),
-        }
-    }
-}
-
 /// Built-in subsystem presets for the MCP tool surface.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -63,7 +12,7 @@ pub enum SubsystemPreset {
     Full,
     /// Enable code navigation and documentation tools.
     Navigator,
-    /// Enable task orchestration, blackboard, and checkpoint tools.
+    /// Enable task orchestration and blackboard tools.
     Orchestrator,
     /// Enable no module-owned tools; `acdd_guide` remains available as a core tool.
     Minimal,
@@ -149,9 +98,7 @@ impl SubsystemRegistry {
         match self.profile {
             SubsystemPreset::Full => is_known_subsystem(name),
             SubsystemPreset::Navigator => matches!(canonical, "code" | "docs"),
-            SubsystemPreset::Orchestrator => {
-                matches!(canonical, "state" | "blackboard" | "checkpoints")
-            }
+            SubsystemPreset::Orchestrator => matches!(canonical, "state" | "blackboard"),
             SubsystemPreset::Minimal => false,
         }
     }
@@ -174,24 +121,13 @@ impl SubsystemRegistry {
         self.domains.get(domain).copied().unwrap_or(false)
     }
 
-    /// Return whether a typed `SubsystemId` is enabled.
-    pub fn is_subsystem_enabled(&self, id: &SubsystemId) -> bool {
-        match id {
-            SubsystemId::Domain(name) => self.is_domain_enabled(name),
-            other => self.is_enabled(other.as_str()),
-        }
-    }
-
     /// Return the subsystem assigned to an MCP tool, if it is registered here.
     pub fn subsystem_for_tool(tool: &str) -> Option<&'static str> {
         match tool {
             "acdd_read" | "acdd_guide" => None,
-            "task_blackboard" | "acdd_blackboard" => Some("blackboard"),
-            "session_checkpoint" => Some("checkpoints"),
+            "acdd_blackboard" => Some("blackboard"),
             "get_doc" | "search_docs" => Some("docs"),
-            "task_list" | "task_claim" | "task_submit" | "task_manage" | "milestone_init"
-            | "milestone_verify" | "milestone_handoff" | "acdd_state" | "acdd_claim"
-            | "acdd_verify" | "acdd_submit" => Some("state"),
+            "acdd_state" | "acdd_claim" | "acdd_verify" | "acdd_submit" => Some("state"),
             name if name.starts_with("code_map_") || name == "ast_grep_search" => Some("code"),
             _ => None,
         }
@@ -244,7 +180,7 @@ pub fn disabled_read_mode_error(
 fn is_known_subsystem(name: &str) -> bool {
     matches!(
         name,
-        "code" | "codemap" | "state" | "acdd" | "blackboard" | "docs" | "checkpoints" | "memory"
+        "code" | "codemap" | "state" | "acdd" | "blackboard" | "docs" | "memory"
     )
 }
 
@@ -283,6 +219,5 @@ mod tests {
         assert!(reg.is_enabled("memory"));
         assert!(reg.is_domain_enabled("http"));
         assert!(!reg.is_domain_enabled("sql"));
-        assert!(reg.is_subsystem_enabled(&SubsystemId::Domain("http".into())));
     }
 }

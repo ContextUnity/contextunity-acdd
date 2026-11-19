@@ -60,10 +60,6 @@ pub enum ErrorCode {
     GateVerificationFailed,
     /// Role runner exited with status 0 without submitting a `pass` or `reject` decision.
     RunnerNoSubmission,
-    /// A `cli`-mode Git hook rejected the commit.
-    GitHookRejected,
-    /// A `cli`-mode Git hook mutated the committed tree away from the verified candidate tree.
-    GitHookMutatedTree,
     /// Branch integration failed due to merge or rebase conflicts (cleanly aborted).
     GitIntegrationConflict,
     /// Unexpected external Git HEAD movement prevented idempotent commit recovery.
@@ -76,7 +72,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Complete ordered list of all canonical error codes.
-    pub const ALL: [ErrorCode; 30] = [
+    pub const ALL: [ErrorCode; 28] = [
         Self::ConfigMigrationRequired,
         Self::ProfileSchemaInvalid,
         Self::CommandUnbound,
@@ -101,8 +97,6 @@ impl ErrorCode {
         Self::MainBranchProtected,
         Self::GateVerificationFailed,
         Self::RunnerNoSubmission,
-        Self::GitHookRejected,
-        Self::GitHookMutatedTree,
         Self::GitIntegrationConflict,
         Self::ExternalGitDrift,
         Self::MutatingActionUncertainOutcome,
@@ -136,8 +130,6 @@ impl ErrorCode {
             Self::MainBranchProtected => "MAIN_BRANCH_PROTECTED",
             Self::GateVerificationFailed => "GATE_VERIFICATION_FAILED",
             Self::RunnerNoSubmission => "RUNNER_NO_SUBMISSION",
-            Self::GitHookRejected => "GIT_HOOK_REJECTED",
-            Self::GitHookMutatedTree => "GIT_HOOK_MUTATED_TREE",
             Self::GitIntegrationConflict => "GIT_INTEGRATION_CONFLICT",
             Self::ExternalGitDrift => "EXTERNAL_GIT_DRIFT",
             Self::MutatingActionUncertainOutcome => "MUTATING_ACTION_UNCERTAIN_OUTCOME",
@@ -172,8 +164,6 @@ impl ErrorCode {
             | Self::MainBranchProtected => 3,
             Self::GateVerificationFailed
             | Self::RunnerNoSubmission
-            | Self::GitHookRejected
-            | Self::GitHookMutatedTree
             | Self::GitIntegrationConflict
             | Self::ExternalGitDrift
             | Self::MutatingActionUncertainOutcome
@@ -343,8 +333,6 @@ mod tests {
                 4,
             ),
             (ErrorCode::RunnerNoSubmission, "RUNNER_NO_SUBMISSION", 4),
-            (ErrorCode::GitHookRejected, "GIT_HOOK_REJECTED", 4),
-            (ErrorCode::GitHookMutatedTree, "GIT_HOOK_MUTATED_TREE", 4),
             (
                 ErrorCode::GitIntegrationConflict,
                 "GIT_INTEGRATION_CONFLICT",

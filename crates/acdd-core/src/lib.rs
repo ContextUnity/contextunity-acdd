@@ -19,12 +19,4 @@ pub mod telemetry;
 
 pub use config::{Detail, ResponsePolicy, ScannerLimits, SourceContextPolicy};
 pub use format::stable_hash64;
-pub use fs::{
-    contains_shell_metacharacters, is_doc_path, is_normalized_relative, is_safe_project_path,
-    is_valid_qualified_symbol_identifier, is_valid_symbol_identifier, safe_relative,
-};
-
-/// Returns the acdd-core crate version.
-pub fn version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
-}
+pub use fs::{is_doc_path, is_normalized_relative, safe_relative};

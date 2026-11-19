@@ -3,7 +3,7 @@
 use anyhow::{bail, Context, Result};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 
 /// Git environment variables cleared before invoking `git` in an explicit worktree.
 ///
@@ -131,7 +131,8 @@ pub fn git_stdout(worktree: &Path, args: &[&str], error_code: &str) -> Result<St
 }
 
 /// Returns whether a Git command completed successfully.
-pub fn git_status(worktree: &Path, args: &[&str]) -> Result<ExitStatus> {
+#[cfg(test)]
+pub fn git_status(worktree: &Path, args: &[&str]) -> Result<std::process::ExitStatus> {
     Ok(git_command(worktree, args)?.status)
 }
 

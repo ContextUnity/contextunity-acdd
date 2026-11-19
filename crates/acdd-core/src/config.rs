@@ -47,8 +47,8 @@ fn default_profiles_dirs() -> Vec<String> {
 pub struct SpecCollectionConfig {
     /// Workspace-relative directory path containing spec documents.
     pub path: String,
-    /// Optional default gate profile for specs in this collection.
-    #[serde(default)]
+    /// Optional explicit gate profile for specs in this collection (else workspace default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
     /// Allowed spec ID prefixes (e.g. `["AC"]`, `["PLAN"]`).
     #[serde(default)]
@@ -65,7 +65,7 @@ pub fn default_specs() -> BTreeMap<String, SpecCollectionConfig> {
             "milestones".to_owned(),
             SpecCollectionConfig {
                 path: "docs/milestones".to_owned(),
-                profile: Some("workspace".to_owned()),
+                profile: None,
                 prefixes: vec!["AC".to_owned()],
                 digits: DEFAULT_SPEC_DIGITS,
             },
@@ -74,7 +74,7 @@ pub fn default_specs() -> BTreeMap<String, SpecCollectionConfig> {
             "plans".to_owned(),
             SpecCollectionConfig {
                 path: "docs/plans".to_owned(),
-                profile: Some("in_place".to_owned()),
+                profile: None,
                 prefixes: vec!["PLAN".to_owned()],
                 digits: DEFAULT_SPEC_DIGITS,
             },
@@ -132,7 +132,6 @@ fn validate_and_normalize_specs(
 /// Standard directory and file names ignored during scanning.
 pub const DEFAULT_IGNORED_NAMES: &[&str] = &[
     ".git",
-    ".acdd",
     ".acdd",
     ".venv",
     "__pycache__",
@@ -522,7 +521,8 @@ pub struct StrictAdapterReport {
     pub linked_workspace_errors: Vec<String>,
 }
 
-const LEGACY_05_KEYS: &[&str] = &[
+/// Legacy `0.5.x` `acdd.yaml` top-level keys that trigger `CONFIG_MIGRATION_REQUIRED`.
+pub const LEGACY_05_KEYS: &[&str] = &[
     "milestones",
     "plans",
     "tasks_db",
@@ -539,18 +539,33 @@ pub fn resolve_state_db_path(root: &Path, adapter: &Adapter) -> PathBuf {
     adapter.resolve_state_db_path(root)
 }
 
-/// Resolves the code-map database path against `root`, defaulting to `.acdd/code-map.sqlite`.
-pub fn resolve_code_db_path(root: &Path, custom_db: Option<&Path>) -> PathBuf {
+/// Resolves an optional explicit DB path override against `root`, ignoring empty/whitespace values.
+pub fn resolve_custom_db_path(root: &Path, custom_db: Option<&Path>) -> Option<PathBuf> {
     match custom_db {
         Some(p) if !p.as_os_str().is_empty() && !p.to_str().is_some_and(|s| s.trim().is_empty()) => {
-            if p.is_absolute() {
+            Some(if p.is_absolute() {
                 p.to_path_buf()
             } else {
                 root.join(p)
-            }
+            })
         }
-        _ => root.join(DEFAULT_CODE_DB),
+        _ => None,
     }
+}
+
+/// Resolves the effective `state.sqlite` path from `primary`, optional explicit override, and [`Adapter`].
+pub fn resolve_effective_state_db_path(
+    primary: &Path,
+    custom_db: Option<&Path>,
+    adapter: &Adapter,
+) -> PathBuf {
+    resolve_custom_db_path(primary, custom_db)
+        .unwrap_or_else(|| adapter.resolve_state_db_path(primary))
+}
+
+/// Resolves the code-map database path against `root`, defaulting to `.acdd/code-map.sqlite`.
+pub fn resolve_code_db_path(root: &Path, custom_db: Option<&Path>) -> PathBuf {
+    resolve_custom_db_path(root, custom_db).unwrap_or_else(|| root.join(DEFAULT_CODE_DB))
 }
 
 /// Loads and normalizes workspace adapter configuration (logging linked-workspace warnings to stderr).
@@ -691,7 +706,7 @@ fn load_adapter_inner(
     let default_path = default_path.exists().then_some(default_path);
     let selected = adapter_path.or(default_path.as_deref());
     let mut explicit_adapter_path = None;
-    let (raw, mut identity, adapter_version) = match selected {
+    let (raw, identity, adapter_version) = match selected {
         None => (AdapterFile::default(), None, None),
         Some(path) => {
             let metadata = fs::symlink_metadata(path)?;
@@ -806,8 +821,8 @@ fn load_adapter_inner(
         .map(|(k, v)| (k.as_str(), v.path.as_str()))
         .collect();
     let identity_is_empty = identity
-        .as_mut()
-        .is_none_or(|val| val.as_mapping().is_some_and(|m| m.is_empty()));
+        .as_ref()
+        .is_none_or(|val| val.is_null() || val.as_mapping().is_some_and(|m| m.is_empty()));
     let digest = if identity_is_empty
         && code_enabled
         && docs_enabled
@@ -816,7 +831,9 @@ fn load_adapter_inner(
         String::new()
     } else {
         let identity_json = match identity {
-            Some(ref val) if !val.as_mapping().is_some_and(|m| m.is_empty()) => {
+            Some(ref val)
+                if !val.is_null() && !val.as_mapping().is_some_and(|m| m.is_empty()) =>
+            {
                 serde_json::to_value(val).map_err(|e| error(e.to_string()))?
             }
             _ => Value::Null,
@@ -1178,11 +1195,47 @@ pub fn persisted_adapter_path(root: &Path, value: &Value) -> Result<Option<PathB
     match value.get("adapter_path") {
         None | Some(Value::Null) => Ok(None),
         Some(path) => {
+            let raw = path.as_str().context("invalid persisted adapter path")?;
+            anyhow::ensure!(!raw.is_empty(), "invalid persisted adapter path");
+            let candidate = Path::new(raw);
             let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-            Ok(Some(checked_child(
-                &base,
-                Path::new(path.as_str().context("invalid persisted adapter path")?),
-            )?))
+            if candidate.is_absolute() {
+                if let Ok(rel) = candidate
+                    .strip_prefix(&base)
+                    .or_else(|_| candidate.strip_prefix(root))
+                {
+                    return Ok(Some(checked_child(&base, rel)?));
+                }
+                anyhow::ensure!(
+                    !candidate
+                        .components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir)),
+                    "persisted adapter path must not contain parent traversal"
+                );
+                crate::fs::check_ancestors_no_symlinks_abs(candidate)?;
+                if let Ok(meta) = fs::symlink_metadata(candidate) {
+                    anyhow::ensure!(
+                        !meta.file_type().is_symlink(),
+                        "persisted adapter path must not be a symlink"
+                    );
+                }
+                Ok(Some(crate::fs::normalize_path(candidate)))
+            } else {
+                Ok(Some(checked_child(&base, candidate)?))
+            }
+        }
+    }
+}
+
+fn parse_persisted_or<T: serde::de::DeserializeOwned>(
+    value: &Value,
+    field: &str,
+    default: impl FnOnce() -> T,
+) -> Result<T> {
+    match value.get(field) {
+        None | Some(Value::Null) => Ok(default()),
+        Some(v) => {
+            serde_json::from_value(v.clone()).with_context(|| format!("invalid persisted {field}"))
         }
     }
 }
@@ -1207,40 +1260,30 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
         serde_json::from_value(value["limits"].clone()).context("invalid persisted limits")?;
     let ignored_names: BTreeSet<String> = serde_json::from_value(value["ignored_names"].clone())
         .context("invalid persisted ignored names")?;
-    let adapter_version = value["adapter_version"].as_str().map(ToOwned::to_owned);
-    let digest = value["digest"].as_str().unwrap_or_default().to_owned();
+    let adapter_version = parse_persisted_or(value, "adapter_version", || None)?;
+    let digest = parse_persisted_or(value, "digest", String::new)?;
     let linked_workspaces: Vec<LinkedWorkspace> =
-        serde_json::from_value(value["linked_workspaces"].clone()).unwrap_or_default();
-    let owners: BTreeMap<String, String> =
-        serde_json::from_value(value["owners"].clone()).unwrap_or_default();
-    let aliases: BTreeMap<String, String> =
-        serde_json::from_value(value["aliases"].clone()).unwrap_or_default();
-    let milestones: Vec<String> =
-        serde_json::from_value(value["milestones"].clone()).unwrap_or_default();
-    let plans: Vec<String> = serde_json::from_value(value["plans"].clone()).unwrap_or_default();
-    let specs: BTreeMap<String, SpecCollectionConfig> = value
-        .get("specs")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_else(default_specs);
-    let profiles_dirs: Vec<String> = value
-        .get("profiles_dirs")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_else(default_profiles_dirs);
-    let state_db: String = value
-        .get("state_db")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| DEFAULT_STATE_DB.to_owned());
-    let retain_traces: usize = value
-        .get("retain_traces")
-        .and_then(Value::as_u64)
-        .and_then(|v| usize::try_from(v).ok())
-        .unwrap_or(DEFAULT_RETAIN_TRACES);
+        parse_persisted_or(value, "linked_workspaces", Vec::new)?;
+    let owners: BTreeMap<String, String> = parse_persisted_or(value, "owners", BTreeMap::new)?;
+    let aliases: BTreeMap<String, String> = parse_persisted_or(value, "aliases", BTreeMap::new)?;
+    let milestones: Vec<String> = parse_persisted_or(value, "milestones", Vec::new)?;
+    let plans: Vec<String> = parse_persisted_or(value, "plans", Vec::new)?;
+    let mut specs: BTreeMap<String, SpecCollectionConfig> =
+        parse_persisted_or(value, "specs", default_specs)?;
+    validate_and_normalize_specs(&mut specs)?;
+    let profiles_dirs: Vec<String> =
+        parse_persisted_or(value, "profiles_dirs", default_profiles_dirs)?;
+    let state_db: String = parse_persisted_or(value, "state_db", || DEFAULT_STATE_DB.to_owned())?;
+    anyhow::ensure!(!state_db.trim().is_empty(), "invalid persisted state_db");
+    let retain_traces: usize =
+        parse_persisted_or(value, "retain_traces", || DEFAULT_RETAIN_TRACES)?;
+    anyhow::ensure!(retain_traces > 0, "invalid persisted retain_traces");
+    let sensitive: Vec<String> = parse_persisted_or(value, "sensitive", Vec::new)?;
     Ok(Adapter {
         adapter_path,
         response: ResponsePolicy::default(),
         modules: SubsystemRegistry::default(),
-        sensitive: serde_json::from_value(value["sensitive"].clone()).unwrap_or_default(),
+        sensitive,
         limits,
         roots,
         ignored_names,
@@ -1259,12 +1302,6 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
     })
 }
 
-/// Reads and reconstructs an Adapter from raw JSON text.
-pub fn read_policy_from_str(root: &Path, raw: &str) -> Result<Adapter> {
-    let value: Value = serde_json::from_str(raw)?;
-    read_policy_from_value(root, &value)
-}
-
 /// Current engine schema version stored in database metadata.
 pub const ENGINE_SCHEMA_VERSION: &str = "15";
 
@@ -1276,50 +1313,14 @@ pub fn workspace_path(path: &str) -> (&str, &str) {
     }
 }
 
-/// Normalizes and resolves a relative template target against its enclosing owner template.
-pub fn local_template_target(owner: &str, target: &str) -> Option<String> {
-    let target = target.strip_prefix("./").unwrap_or(target);
-    if target.is_empty()
-        || target.contains([':', '\\'])
-        || target
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
-    {
-        return None;
-    }
-    let template_root = if owner.starts_with("templates/") {
-        "templates/"
-    } else if let Some(index) = owner.rfind("/templates/") {
-        &owner[..index + "/templates/".len()]
-    } else {
-        owner.rsplit_once('/').map_or("", |(parent, _)| parent)
-    };
-    if template_root.is_empty() {
-        Some(target.to_owned())
-    } else if template_root.ends_with('/') {
-        Some(format!("{template_root}{target}"))
-    } else {
-        Some(format!("{template_root}/{target}"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    struct TempDirDrop(PathBuf);
-
-    impl Drop for TempDirDrop {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     #[test]
     fn resolve_file_path_handles_dot_slash_and_absolute_paths() {
-        let temp_dir = std::env::temp_dir().join(format!("acdd_test_{}", std::process::id()));
-        let _cleanup = TempDirDrop(temp_dir.clone());
-        std::fs::create_dir_all(&temp_dir).unwrap();
+        let _cleanup = crate::fs::ScopedTempDir::create("acdd_test").unwrap();
+        let temp_dir = _cleanup.path().to_path_buf();
         let file_path = temp_dir.join("test.rs");
         std::fs::write(&file_path, "pub fn test() {}").unwrap();
 
@@ -1381,13 +1382,8 @@ mod tests {
             assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{system}");
         }
 
-        let temp_project = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("acdd_scope_ok_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&temp_project);
-        let _cleanup = TempDirDrop(temp_project.clone());
-        std::fs::create_dir_all(&temp_project).unwrap();
+        let _cleanup = crate::fs::ScopedTempDir::create("acdd_scope_ok").unwrap();
+        let temp_project = _cleanup.path().to_path_buf();
         std::fs::write(
             temp_project.join("Cargo.toml"),
             "[package]\nname = \"ok\"\n",
@@ -1399,33 +1395,40 @@ mod tests {
 
     #[test]
     fn specs_collections_and_adapter_digest_isolation_matrix() {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("acdd_specs_digest_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let _cleanup = TempDirDrop(dir.clone());
-        std::fs::create_dir_all(&dir).unwrap();
+        let _cleanup = crate::fs::ScopedTempDir::create("acdd_specs_digest").unwrap();
+        let dir = _cleanup.path().to_path_buf();
 
         let defaults = load_adapter(&dir, None).unwrap();
+        assert_eq!(
+            DEFAULT_IGNORED_NAMES.len(),
+            DEFAULT_IGNORED_NAMES
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .len(),
+            "DEFAULT_IGNORED_NAMES must not contain duplicates"
+        );
         assert_eq!(defaults.specs["milestones"].path, "docs/milestones");
+        assert_eq!(defaults.specs["milestones"].profile, None);
         assert_eq!(defaults.specs["plans"].path, "docs/plans");
+        assert_eq!(defaults.specs["plans"].profile, None);
         assert_eq!(defaults.profiles_dirs, [".acdd/profiles", "docs/workflows"]);
         assert_eq!(defaults.state_db, ".acdd/state.sqlite");
         assert_eq!(defaults.retain_traces, 20);
         assert_eq!(defaults.digest, "");
+
+        std::fs::write(dir.join("acdd.yaml"), "# comment only\n").unwrap();
+        assert_eq!(load_adapter(&dir, None).unwrap().digest, "");
 
         let base_yaml = "\
 roots: [.]
 specs:
   milestones:
     path: docs/milestones
-    profile: workspace
     prefixes: [AC]
     digits: 3
   plans:
     path: docs/plans
-    profile: in_place
     prefixes: [PLAN]
     digits: 3
 modules:
@@ -1464,6 +1467,12 @@ modules:
   domains:
     http: true
 ";
+        std::fs::write(dir.join("acdd.yaml"), invariant_yaml).unwrap();
+        let invariant = load_adapter(&dir, None).unwrap();
+        assert_eq!(invariant.digest, base.digest);
+        assert!(!invariant.modules.is_enabled("state"));
+        assert!(!invariant.modules.is_enabled("blackboard"));
+        assert!(invariant.modules.is_domain_enabled("http"));
         std::fs::write(dir.join("acdd.yaml"), invariant_yaml).unwrap();
         let invariant = load_adapter(&dir, None).unwrap();
         assert_eq!(invariant.digest, base.digest);
@@ -1527,13 +1536,8 @@ roots: [.]
 
     #[test]
     fn strict_adapter_rejects_unknown_fields_legacy_05_keys_and_invalid_linked_workspaces() {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("acdd_strict_cfg_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let _cleanup = TempDirDrop(dir.clone());
-        std::fs::create_dir_all(&dir).unwrap();
+        let _cleanup = crate::fs::ScopedTempDir::create("acdd_strict_cfg").unwrap();
+        let dir = _cleanup.path().to_path_buf();
 
         // 1. deny_unknown_fields on AdapterFile, LinkedWorkspaceConfig, ScannerLimits -> ProfileSchemaInvalid.
         for bad_yaml in [
@@ -1590,13 +1594,9 @@ roots: [.]
         // 3. load_adapter_report / load_adapter_strict linked_workspaces validation.
         let valid_ws = dir.join("valid_ws");
         let file_not_dir = dir.join("not_a_dir.txt");
-        let outside_dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("acdd_strict_outside_{}", std::process::id()));
-        let _outside_cleanup = TempDirDrop(outside_dir.clone());
+        let _outside_cleanup = crate::fs::ScopedTempDir::create("acdd_strict_outside").unwrap();
+        let outside_dir = _outside_cleanup.path().to_path_buf();
         std::fs::create_dir_all(&valid_ws).unwrap();
-        std::fs::create_dir_all(&outside_dir).unwrap();
         std::fs::write(&file_not_dir, "plain file").unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside_dir, dir.join("symlink_ws")).unwrap();
@@ -1665,5 +1665,57 @@ linked_workspaces:
             resolve_code_db_path(&dir, Some(Path::new("custom/code.sqlite"))),
             dir.join("custom/code.sqlite")
         );
+
+        // 5. read_policy_from_value fails closed on malformed non-null fields & handles external adapter_path.
+        let mut base_adapter = Adapter {
+            roots: vec![dir.clone()],
+            ..Default::default()
+        };
+        let external_cfg = outside_dir.join("external-adapter.yaml");
+        std::fs::write(&external_cfg, "roots: [.]\n").unwrap();
+        base_adapter.adapter_path = Some(external_cfg.clone());
+        let valid_policy = policy(&dir, &base_adapter);
+        let roundtripped = read_policy_from_value(&dir, &valid_policy).unwrap();
+        assert_eq!(
+            roundtripped.adapter_path.as_deref(),
+            Some(crate::fs::normalize_path(&external_cfg).as_path())
+        );
+
+        for (field, bad_value) in [
+            ("linked_workspaces", json!("not-an-array")),
+            ("owners", json!(42)),
+            ("aliases", json!(["bad"])),
+            ("milestones", json!({"bad": true})),
+            ("plans", json!(123)),
+            ("specs", json!(["not-a-map"])),
+            ("profiles_dirs", json!(true)),
+            ("state_db", json!(99)),
+            ("state_db", json!("   ")),
+            ("retain_traces", json!("five")),
+            ("retain_traces", json!(0)),
+            ("sensitive", json!("not-a-list")),
+            ("adapter_version", json!(["v1"])),
+            ("digest", json!(12345)),
+            ("adapter_path", json!("")),
+            ("adapter_path", json!("../escape.yaml")),
+        ] {
+            let mut tampered = valid_policy.clone();
+            tampered[field] = bad_value;
+            assert!(
+                read_policy_from_value(&dir, &tampered).is_err(),
+                "read_policy_from_value must fail closed on invalid '{field}'"
+            );
+        }
+        #[cfg(unix)]
+        {
+            let link_cfg = outside_dir.join("link-adapter.yaml");
+            std::os::unix::fs::symlink(&external_cfg, &link_cfg).unwrap();
+            let mut tampered = valid_policy.clone();
+            tampered["adapter_path"] = json!(link_cfg.to_string_lossy().to_string());
+            assert!(
+                read_policy_from_value(&dir, &tampered).is_err(),
+                "persisted symlink external adapter_path must fail closed"
+            );
+        }
     }
 }

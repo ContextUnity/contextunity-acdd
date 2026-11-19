@@ -325,26 +325,22 @@ pub trait DomainProvider: Send + Sync {
 }
 
 /// Fail-closed domain provider stub that exposes no capabilities and rejects every invocation.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct NoopDomainProvider {
     domain_id: String,
 }
 
+#[cfg(test)]
 impl Default for NoopDomainProvider {
     fn default() -> Self {
-        Self::new("noop")
-    }
-}
-
-impl NoopDomainProvider {
-    /// Construct a `NoopDomainProvider` bound to `domain_id`.
-    pub fn new(domain_id: impl Into<String>) -> Self {
         Self {
-            domain_id: domain_id.into(),
+            domain_id: "noop".to_owned(),
         }
     }
 }
 
+#[cfg(test)]
 impl DomainProvider for NoopDomainProvider {
     fn domain_id(&self) -> &str {
         &self.domain_id
@@ -730,19 +726,7 @@ impl CompositeDomainProvider {
 }
 
 fn validate_component_name(name: &str, kind: &'static str) -> std::result::Result<(), StateError> {
-    let valid = !name.is_empty()
-        && name.len() <= 64
-        && name.as_bytes()[0].is_ascii_alphanumeric()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
-    if !valid {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("{kind} '{name}' must match ^[A-Za-z0-9][A-Za-z0-9_-]{{0,63}}$"),
-        ));
-    }
-    Ok(())
+    crate::ids::validate_standard_ident(name, kind).map_err(StateError::from)
 }
 
 fn validate_capabilities(
