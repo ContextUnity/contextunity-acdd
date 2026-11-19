@@ -6,15 +6,25 @@ use crate::machine::inputs::{ExtendScopeInput, MachineProfileInput};
 use crate::machine::schedule::{is_task_claimed_unfinished, scopes_overlap};
 use crate::types::{
     ExtendedScopeEntry, NodeKind, NodeStatus, NodeStatusPatch, RunGraphSnapshot, RunStatus,
-    TransitionPlan,
+    TransitionPlan, ValidatedObservations,
 };
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::path_policy::{is_valid_scope_glob, normalize_rel_path, WorkspacePathPolicy};
+use acdd_core::path_policy::{is_valid_scope_glob, normalize_rel_path};
 
 /// Plan a pure `extend_scope` update for a task container and its child gates.
 pub fn plan_extend_scope(
     snapshot: &RunGraphSnapshot,
     profile: &MachineProfileInput,
+    input: &ExtendScopeInput,
+) -> Result<TransitionPlan, StateError> {
+    plan_extend_scope_with_obs(snapshot, profile, &ValidatedObservations::default(), input)
+}
+
+/// Plan a pure `extend_scope` update honoring shell `ValidatedObservations` (e.g. custom DB path policy).
+pub(crate) fn plan_extend_scope_with_obs(
+    snapshot: &RunGraphSnapshot,
+    profile: &MachineProfileInput,
+    obs: &ValidatedObservations,
     input: &ExtendScopeInput,
 ) -> Result<TransitionPlan, StateError> {
     if snapshot.run.status != RunStatus::Active {
@@ -89,12 +99,7 @@ pub fn plan_extend_scope(
         ));
     }
 
-    let engine_managed: Vec<String> = snapshot.run.spec_path.iter().cloned().collect();
-    let policy = WorkspacePathPolicy::new(
-        engine_managed,
-        ".acdd/state.sqlite",
-        ".acdd/code-map.sqlite",
-    );
+    let policy = crate::machine::verify::effective_path_policy(snapshot, obs);
 
     let mut normalized_paths = Vec::with_capacity(input.paths.len());
     for raw_path in &input.paths {
@@ -116,7 +121,10 @@ pub fn plan_extend_scope(
                 format!("extend_scope path '{norm}' is excluded from candidate/agent writes"),
             ));
         }
-        if scopes_overlap(std::slice::from_ref(&norm), &profile.protected_paths) {
+        if acdd_core::path_policy::scopes_overlap_case_insensitive(
+            std::slice::from_ref(&norm),
+            &profile.protected_paths,
+        ) {
             return Err(StateError::new(
                 ErrorCode::OutOfScopeChanges,
                 format!("extend_scope path '{norm}' overlaps protected_paths"),

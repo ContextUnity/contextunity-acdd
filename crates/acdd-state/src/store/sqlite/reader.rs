@@ -368,17 +368,14 @@ fn decode_trace_row(row: &Row<'_>) -> rusqlite::Result<Result<GateTraceRecord, S
     let test_target: Option<String> = row.get(10)?;
     let status_raw: String = row.get(11)?;
     let exit_code: Option<i32> = row.get(12)?;
-    let tests_passed_raw: i64 = row.get(13)?;
-    let tests_failed_raw: i64 = row.get(14)?;
-    let tests_ignored_raw: i64 = row.get(15)?;
-    let passed_tests_json: String = row.get(16)?;
-    let failed_tests_json: String = row.get(17)?;
-    let check_results_json: String = row.get(18)?;
-    let candidate_tree_before_raw: String = row.get(19)?;
-    let candidate_tree_after_raw: Option<String> = row.get(20)?;
-    let log_relpath: String = row.get(21)?;
-    let started_at: String = row.get(22)?;
-    let finished_at: Option<String> = row.get(23)?;
+    let passed_tests_json: String = row.get(13)?;
+    let failed_tests_json: String = row.get(14)?;
+    let check_results_json: String = row.get(15)?;
+    let candidate_tree_before_raw: String = row.get(16)?;
+    let candidate_tree_after_raw: Option<String> = row.get(17)?;
+    let log_relpath: String = row.get(18)?;
+    let started_at: String = row.get(19)?;
+    let finished_at: Option<String> = row.get(20)?;
 
     Ok((|| {
         Ok(GateTraceRecord {
@@ -395,9 +392,6 @@ fn decode_trace_row(row: &Row<'_>) -> rusqlite::Result<Result<GateTraceRecord, S
             test_target,
             status: parse_enum(&status_raw, "gate_traces.status")?,
             exit_code,
-            tests_passed: to_u32(tests_passed_raw, "gate_traces.tests_passed")?,
-            tests_failed: to_u32(tests_failed_raw, "gate_traces.tests_failed")?,
-            tests_ignored: to_u32(tests_ignored_raw, "gate_traces.tests_ignored")?,
             passed_tests: parse_json_col(&passed_tests_json, "gate_traces.passed_tests_json")?,
             failed_tests: parse_json_col(&failed_tests_json, "gate_traces.failed_tests_json")?,
             check_results: parse_json_col::<Vec<CheckResultRecord>>(
@@ -427,9 +421,8 @@ fn decode_artifact_row(row: &Row<'_>) -> rusqlite::Result<Result<GateArtifactRec
     let claim_revision_raw: i64 = row.get(2)?;
     let kind_raw: String = row.get(3)?;
     let payload_json: String = row.get(4)?;
-    let snapshot_ref: Option<String> = row.get(5)?;
-    let snapshot_commit_raw: Option<String> = row.get(6)?;
-    let created_at: String = row.get(7)?;
+    let snapshot_commit_raw: Option<String> = row.get(5)?;
+    let created_at: String = row.get(6)?;
 
     Ok((|| {
         Ok(GateArtifactRecord {
@@ -438,7 +431,6 @@ fn decode_artifact_row(row: &Row<'_>) -> rusqlite::Result<Result<GateArtifactRec
             claim_revision: to_u32(claim_revision_raw, "gate_artifacts.claim_revision")?,
             kind: parse_enum(&kind_raw, "gate_artifacts.kind")?,
             payload_json,
-            snapshot_ref,
             snapshot_commit: parse_opt_id(
                 snapshot_commit_raw,
                 CommitOid::new,
@@ -600,6 +592,7 @@ const TOMBSTONE_COLS: &str = "run_id, run_name, collection, workspace, spec_id, 
     archive_path, closed_commit, cleanup_pending, cleanup_manifest_json, summary_json, \
     metrics_json, closed_at";
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn load_run_graph(
     conn: &Connection,
     run_id: &RunId,
@@ -696,7 +689,7 @@ fn load_run_graph_inner(
         .prepare(
             "SELECT trace_row_id, run_id, node_id, claim_revision, contract_revision,
                     execution_digest, idempotency_key, command_id, command_line, action_id,
-                    test_target, status, exit_code, tests_passed, tests_failed, tests_ignored,
+                    test_target, status, exit_code,
                     passed_tests_json, failed_tests_json, check_results_json,
                     candidate_tree_before, candidate_tree_after, log_relpath, started_at, finished_at
              FROM gate_traces
@@ -713,7 +706,7 @@ fn load_run_graph_inner(
 
     let mut artifacts_stmt = conn
         .prepare(
-            "SELECT run_id, node_id, claim_revision, kind, payload_json, snapshot_ref, snapshot_commit, created_at
+            "SELECT run_id, node_id, claim_revision, kind, payload_json, snapshot_commit, created_at
              FROM gate_artifacts
              WHERE run_id = ?1
              ORDER BY node_id ASC, claim_revision ASC, kind ASC",
@@ -737,6 +730,7 @@ fn load_run_graph_inner(
     }))
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn list_runs(conn: &Connection, req: &ListRunsReq) -> Result<ListRunsPage, StateError> {
     list_runs_with_version(conn, req, super::schema::CURRENT_SCHEMA_VERSION)
 }
@@ -875,6 +869,7 @@ fn list_runs_inner(
     })
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn resolve_active_run_by_worktree(
     conn: &Connection,
     worktree: &str,
@@ -1045,7 +1040,7 @@ pub(crate) fn latest_trace(
     conn.query_row(
         "SELECT trace_row_id, run_id, node_id, claim_revision, contract_revision,
                 execution_digest, idempotency_key, command_id, command_line, action_id,
-                test_target, status, exit_code, tests_passed, tests_failed, tests_ignored,
+                test_target, status, exit_code,
                 passed_tests_json, failed_tests_json, check_results_json,
                 candidate_tree_before, candidate_tree_after, log_relpath, started_at, finished_at
          FROM gate_traces
@@ -1068,7 +1063,7 @@ pub(crate) fn load_artifact(
     kind: ArtifactKind,
 ) -> Result<Option<GateArtifactRecord>, StateError> {
     conn.query_row(
-        "SELECT run_id, node_id, claim_revision, kind, payload_json, snapshot_ref, snapshot_commit, created_at
+        "SELECT run_id, node_id, claim_revision, kind, payload_json, snapshot_commit, created_at
          FROM gate_artifacts
          WHERE run_id = ?1 AND node_id = ?2 AND claim_revision = ?3 AND kind = ?4",
         params![

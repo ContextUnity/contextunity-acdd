@@ -110,9 +110,6 @@ fn completed_run_digest_builds_canonical_summary_and_metrics_matrix() {
         test_target: None,
         status: TraceStatus::Passed,
         exit_code: Some(0),
-        tests_passed: 12,
-        tests_failed: 0,
-        tests_ignored: 1,
         passed_tests: vec!["t_one".to_owned()],
         failed_tests: Vec::new(),
         check_results: Vec::new(),
@@ -204,9 +201,7 @@ fn completed_run_digest_builds_canonical_summary_and_metrics_matrix() {
 
     let metrics: Value = serde_json::from_str(&metrics_json).unwrap();
     assert_eq!(metrics["rejections_total"], 1);
-    assert_eq!(metrics["tests_passed_total"], 12);
-    assert_eq!(metrics["tests_failed_total"], 0);
-    assert_eq!(metrics["tests_ignored_total"], 1);
+    assert_eq!(metrics["traces_total"], 1);
 
     // Cleared run without closure still succeeds cleanly.
     let mut seed_cleared = seed_completed;

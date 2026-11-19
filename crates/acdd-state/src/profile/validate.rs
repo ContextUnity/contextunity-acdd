@@ -1,18 +1,15 @@
 //! Fail-closed `GateProfile` validation, command pattern selection, and guidance budgeting.
 
 use super::schema::{
-    CommandDef, CommandOutputSpec, CompileErrorsSpec, DetailedCommandDef, GateDef, GateGuidanceRef,
-    ProofDef, ProofKind, ResolvedGateProfile, ResourceLimits, TestFilterConfig,
+    CommandDef, DetailedCommandDef, GateDef, GateGuidanceRef, ProofDef, ProofKind,
+    ResolvedGateProfile, ResourceLimits, TestFilterConfig,
 };
-use super::shell_template::{
-    has_unescaped_chain_operator, validate_shell_template_placeholders,
-};
+use super::shell_template::validate_shell_template_placeholders;
 use super::when::WhenExpr;
 use acdd_core::subsystems::SubsystemRegistry;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{GateId, GateSelector};
 use acdd_core::ports::{is_builtin_mcp_tool, CompositeDomainProvider};
-use regex::Regex;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -53,8 +50,6 @@ pub struct ResolvedCommandInvocation {
     pub timeout_seconds: Option<u64>,
     /// Path-pattern to `{scope_target}` argument overrides.
     pub scope_args_by_pattern: BTreeMap<String, String>,
-    /// Optional output parser specification.
-    pub output: Option<CommandOutputSpec>,
     /// Sorted `scope` paths that matched this invocation (empty for non-pattern commands).
     pub matched_paths: Vec<String>,
 }
@@ -97,7 +92,6 @@ pub fn validate_profile(
 
     validate_limits(&profile.limits)?;
     validate_protected_paths(profile)?;
-    validate_git_commit_notes(profile)?;
     validate_proof_catalog(profile)?;
     validate_roles(profile)?;
     validate_commands(profile)?;
@@ -164,33 +158,6 @@ fn validate_protected_paths(profile: &ResolvedGateProfile) -> Result<(), StateEr
             return Err(StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
                 format!("protected_paths contains invalid or non-normalized scope glob '{pat}'"),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_git_commit_notes(profile: &ResolvedGateProfile) -> Result<(), StateError> {
-    for (name, note) in &profile.git_commit_notes {
-        if name.trim().is_empty() {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                "git_commit_notes key cannot be empty",
-            ));
-        }
-        if !note.ref_name.starts_with("refs/") || note.ref_name.trim().len() <= 5 {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!(
-                    "git_commit_notes.{name}.ref_name '{}' must start with 'refs/'",
-                    note.ref_name
-                ),
-            ));
-        }
-        if note.max_bytes == 0 {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("git_commit_notes.{name}.max_bytes must be > 0"),
             ));
         }
     }
@@ -301,9 +268,6 @@ fn validate_commands(profile: &ResolvedGateProfile) -> Result<(), StateError> {
                         &entry.scope_args_by_pattern,
                         &format!("{path}.scope_args_by_pattern"),
                     )?;
-                    if let Some(output) = &entry.output {
-                        validate_command_output_spec(output, &format!("{path}.output"))?;
-                    }
                 }
             }
         }
@@ -323,9 +287,6 @@ fn validate_detailed_command(d: &DetailedCommandDef, ctx: &str) -> Result<(), St
         &d.scope_args_by_pattern,
         &format!("{ctx}.scope_args_by_pattern"),
     )?;
-    if let Some(output) = &d.output {
-        validate_command_output_spec(output, &format!("{ctx}.output"))?;
-    }
     Ok(())
 }
 
@@ -357,69 +318,6 @@ fn validate_command_string(
             ));
         }
         validate_shell_template_placeholders(tpl, &["{test}"], &format!("{ctx}.test_filter"))?;
-    }
-    Ok(())
-}
-
-fn validate_command_output_spec(spec: &CommandOutputSpec, ctx: &str) -> Result<(), StateError> {
-    let mut simple_regexes: Vec<(String, &str)> = Vec::new();
-    for (idx, p) in spec.noise.iter().enumerate() {
-        simple_regexes.push((format!("{ctx}.noise[{idx}]"), p.as_str()));
-    }
-    match &spec.compile_errors {
-        CompileErrorsSpec::Patterns(pats) => {
-            for (idx, p) in pats.iter().enumerate() {
-                simple_regexes.push((format!("{ctx}.compile_errors[{idx}]"), p.as_str()));
-            }
-        }
-        CompileErrorsSpec::IncludeExclude(filter) => {
-            for (idx, p) in filter.include.iter().enumerate() {
-                simple_regexes.push((format!("{ctx}.compile_errors.include[{idx}]"), p.as_str()));
-            }
-            for (idx, p) in filter.exclude.iter().enumerate() {
-                simple_regexes.push((format!("{ctx}.compile_errors.exclude[{idx}]"), p.as_str()));
-            }
-        }
-    }
-    for (field, pat) in simple_regexes {
-        Regex::new(pat).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("invalid regex at {field}: {err}"),
-            )
-        })?;
-    }
-
-    let mut group_regexes: Vec<(String, &str)> = Vec::new();
-    if let Some(counts) = &spec.counts {
-        group_regexes.push((format!("{ctx}.counts.passed"), counts.passed.as_str()));
-        group_regexes.push((format!("{ctx}.counts.failed"), counts.failed.as_str()));
-    }
-    if let Some(tests) = &spec.tests {
-        group_regexes.push((format!("{ctx}.tests.passed"), tests.passed.as_str()));
-        if let Some(failed) = &tests.failed {
-            group_regexes.push((format!("{ctx}.tests.failed"), failed.as_str()));
-        }
-        if let Some(ignored) = &tests.ignored {
-            group_regexes.push((format!("{ctx}.tests.ignored"), ignored.as_str()));
-        }
-        if let Some(target) = &tests.target {
-            group_regexes.push((format!("{ctx}.tests.target"), target.as_str()));
-        }
-    }
-    for (field, pat) in group_regexes {
-        let re = Regex::new(pat).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("invalid regex at {field}: {err}"),
-            )
-        })?;
-        if re.captures_len() < 2 {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("{field} regex requires capture group 1"),
-            ));
-        }
     }
     Ok(())
 }
@@ -611,13 +509,8 @@ fn validate_single_gate(
             format!("{ctx}: terminal root_gate with archive/prune must not declare 'pass:'"),
         ));
     }
-    if let Some(note_key) = &gate.save.git_commit_note {
-        if !profile.git_commit_notes.contains_key(note_key) {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("{ctx}: unknown git_commit_note '{note_key}'"),
-            ));
-        }
+    if let Some(ref tpl) = gate.save.report {
+        validate_report_path_template(&ctx, tpl, &profile.protected_paths)?;
     }
 
     if let Some(pass_target) = &gate.pass {
@@ -766,6 +659,82 @@ fn validate_single_gate(
     Ok(())
 }
 
+fn validate_report_path_template(
+    ctx: &str,
+    raw: &str,
+    protected_paths: &[String],
+) -> Result<(), StateError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed != raw {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("{ctx}: 'save.report' must be a non-empty normalized workspace-relative path"),
+        ));
+    }
+    let mut substituted = String::with_capacity(trimmed.len());
+    let mut chars = trimmed.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '{' {
+            let mut token = String::new();
+            let mut closed = false;
+            for next in chars.by_ref() {
+                if next == '}' {
+                    closed = true;
+                    break;
+                }
+                if next == '{' {
+                    return Err(StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        format!("{ctx}: malformed placeholder in 'save.report' ('{raw}')"),
+                    ));
+                }
+                token.push(next);
+            }
+            if !closed
+                || !matches!(
+                    token.as_str(),
+                    "run_id" | "run_name" | "gate_id" | "spec_id"
+                )
+            {
+                return Err(StateError::new(
+                    ErrorCode::ProfileSchemaInvalid,
+                    format!(
+                        "{ctx}: unsupported placeholder '{{{token}}}' in 'save.report'; expected {{run_id}}, {{run_name}}, {{gate_id}}, or {{spec_id}}"
+                    ),
+                ));
+            }
+            substituted.push('x');
+        } else if ch == '}' {
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("{ctx}: unmatched '}}' in 'save.report' ('{raw}')"),
+            ));
+        } else {
+            substituted.push(ch);
+        }
+    }
+    if substituted.contains('\\')
+        || !acdd_core::fs::is_normalized_relative(std::path::Path::new(&substituted))
+    {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!(
+                "{ctx}: 'save.report' must be a normalized workspace-relative path, got '{raw}'"
+            ),
+        ));
+    }
+    let default_policy = acdd_core::path_policy::WorkspacePathPolicy::default();
+    if !default_policy.is_valid_report_path(&substituted, protected_paths) {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!(
+                "{ctx}: 'save.report' path '{raw}' must resolve under .acdd/reports/*.{{md,json}} without violating protected_paths"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_gate_selector(
     sel: &GateSelector,
     self_id: &str,
@@ -817,48 +786,8 @@ fn validate_gate_proof(
     ctx: &str,
 ) -> Result<(), StateError> {
     match &gate.proof {
-        ProofDef::Kind(ProofKind::None) => {
-            if gate.expected_failure.is_some() {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("{ctx}: 'expected_failure' is only allowed when proof is 'contract'"),
-                ));
-            }
-        }
-        ProofDef::Kind(ProofKind::Contract) => {
-            let Some(cmd_name) = &gate.command else {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("{ctx}: 'proof: contract' requires 'command'"),
-                ));
-            };
-            let Some(ef) = &gate.expected_failure else {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("{ctx}: 'proof: contract' requires 'expected_failure'"),
-                ));
-            };
-            for &code in &ef.exit_codes {
-                if code <= 0 || code == 126 || code == 127 {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "{ctx}: 'expected_failure.exit_codes' contains invalid exit code {code} (must not be <= 0, 126, or 127)"
-                        ),
-                    ));
-                }
-            }
-            if let Some(cmd) = profile.commands.get(cmd_name) {
-                validate_contract_command_filter_support(cmd, ctx)?;
-            }
-        }
+        ProofDef::Kind(ProofKind::None) => {}
         ProofDef::Kind(ProofKind::Command) => {
-            if gate.expected_failure.is_some() {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("{ctx}: 'expected_failure' is only allowed when proof is 'contract'"),
-                ));
-            }
             if gate.command.is_none() {
                 return Err(StateError::new(
                     ErrorCode::ProfileSchemaInvalid,
@@ -867,12 +796,6 @@ fn validate_gate_proof(
             }
         }
         ProofDef::Kind(ProofKind::Call) => {
-            if gate.expected_failure.is_some() {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("{ctx}: 'expected_failure' is only allowed when proof is 'contract'"),
-                ));
-            }
             if gate.call.is_none() {
                 return Err(StateError::new(
                     ErrorCode::ProfileSchemaInvalid,
@@ -881,12 +804,6 @@ fn validate_gate_proof(
             }
         }
         ProofDef::Kind(ProofKind::Review) => {
-            if gate.expected_failure.is_some() {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("{ctx}: 'expected_failure' is only allowed when proof is 'contract'"),
-                ));
-            }
             if gate.command.is_some() {
                 return Err(StateError::new(
                     ErrorCode::ProfileSchemaInvalid,
@@ -901,12 +818,6 @@ fn validate_gate_proof(
             }
         }
         ProofDef::Named(name) | ProofDef::ResolvedNamed { name, .. } => {
-            if gate.expected_failure.is_some() {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("{ctx}: 'expected_failure' is only allowed when proof is 'contract'"),
-                ));
-            }
             let Some(catalog_entry) = profile.proofs.get(name) else {
                 return Err(StateError::new(
                     ErrorCode::ProfileSchemaInvalid,
@@ -924,12 +835,6 @@ fn validate_gate_proof(
             }
         }
         ProofDef::Scheme { scheme } => {
-            if gate.expected_failure.is_some() {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("{ctx}: 'expected_failure' is only allowed when proof is 'contract'"),
-                ));
-            }
             scheme.validate_schema(&format!("{ctx}.proof.scheme"))?;
             if gate.call.is_none() && gate.role.is_none() {
                 return Err(StateError::new(
@@ -938,45 +843,6 @@ fn validate_gate_proof(
                 ));
             }
         }
-    }
-    Ok(())
-}
-
-fn validate_contract_command_filter_support(
-    cmd: &CommandDef,
-    ctx: &str,
-) -> Result<(), StateError> {
-    match cmd {
-        CommandDef::Unbound { .. } => Ok(()),
-        CommandDef::Script(s) => check_filterable(s, None, ctx),
-        CommandDef::Detailed(d) => check_filterable(&d.command, d.test_filter.as_ref(), ctx),
-        CommandDef::Pattern(entries) => {
-            for e in entries {
-                check_filterable(&e.command, e.test_filter.as_ref(), ctx)?;
-            }
-            Ok(())
-        }
-    }
-}
-
-fn check_filterable(
-    cmd: &str,
-    test_filter: Option<&TestFilterConfig>,
-    ctx: &str,
-) -> Result<(), StateError> {
-    if matches!(test_filter, Some(TestFilterConfig::Enabled(false))) {
-        return Err(StateError::new(
-            ErrorCode::CommandTestFilterUnsupported,
-            format!("{ctx}: command disables test_filter but is used by 'proof: contract'"),
-        ));
-    }
-    if !cmd.contains("{test_filter}") && has_unescaped_chain_operator(cmd) {
-        return Err(StateError::new(
-            ErrorCode::CommandTestFilterPlaceholderRequired,
-            format!(
-                "{ctx}: chained contract command '{cmd}' must declare '{{test_filter}}' placeholder"
-            ),
-        ));
     }
     Ok(())
 }
@@ -1078,7 +944,6 @@ pub fn resolve_command_for_scope(
             test_filter: None,
             timeout_seconds: None,
             scope_args_by_pattern: BTreeMap::new(),
-            output: None,
             matched_paths: Vec::new(),
         }]),
         CommandDef::Detailed(d) => Ok(vec![ResolvedCommandInvocation {
@@ -1086,7 +951,6 @@ pub fn resolve_command_for_scope(
             test_filter: d.test_filter.clone(),
             timeout_seconds: d.timeout_seconds,
             scope_args_by_pattern: d.scope_args_by_pattern.clone(),
-            output: d.output.clone(),
             matched_paths: Vec::new(),
         }]),
         CommandDef::Pattern(entries) => {
@@ -1139,7 +1003,6 @@ pub fn resolve_command_for_scope(
                         test_filter: entry.test_filter.clone(),
                         timeout_seconds: entry.timeout_seconds,
                         scope_args_by_pattern: entry.scope_args_by_pattern.clone(),
-                        output: entry.output.clone(),
                         matched_paths: matched_by_idx.remove(&idx).unwrap_or_default(),
                     }
                 })

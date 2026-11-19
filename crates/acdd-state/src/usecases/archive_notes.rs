@@ -1,9 +1,6 @@
-//! Pure archive Markdown input construction and Git commit-note rendering.
+//! Pure archive Markdown input construction and closure rollup rendering.
 
-use crate::git_ops::commit::{cap_note_body, write_git_note, GitNoteReq};
-use crate::profile::{
-    GitCommitNoteFormat, GitCommitNotePolicy, GitCommitNoteSection, ResolvedGateProfile,
-};
+use crate::machine::MachineGateDef;
 use crate::spec::{
     ArchiveRenderInput, ArchiveTaskUpdate, ClosureSummary, Receipt, ReceiptRollup, SpecStatus,
     Subtask,
@@ -13,11 +10,9 @@ use crate::types::{
     InvariantsState, NodeKind, NodeStatus, RunGraphSnapshot, TraceStatus,
 };
 use crate::usecases::dto::SubmitReq;
-use crate::machine::MachineGateDef;
 use acdd_core::ids::{CommitOid, NodeCursor, TreeOid};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::BTreeMap;
-use std::path::Path;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_provisional_receipt(
@@ -190,10 +185,7 @@ pub(super) fn build_archive_render_input(
         .filter(|t| {
             matches!(
                 t.status,
-                TraceStatus::Failed
-                    | TraceStatus::TimedOut
-                    | TraceStatus::CompileError
-                    | TraceStatus::ScopeViolation
+                TraceStatus::Failed | TraceStatus::TimedOut | TraceStatus::ScopeViolation
             )
         })
         .count();
@@ -240,225 +232,9 @@ pub(super) fn build_archive_render_input(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn attach_best_effort_git_note(
-    worktree: &Path,
-    profile: &ResolvedGateProfile,
-    note_key: &str,
-    commit_oid: &CommitOid,
-    snapshot: &RunGraphSnapshot,
-    node: &GateNodeRecord,
-    cursor: &NodeCursor,
-    changed_paths: &[String],
-    now_utc: &str,
-) {
-    let Some(policy) = profile.git_commit_notes.get(note_key) else {
-        return;
-    };
-    let body = render_git_commit_note(policy, snapshot, node, cursor, changed_paths, now_utc);
-    let _ = write_git_note(&GitNoteReq {
-        worktree: worktree.to_path_buf(),
-        commit_oid: commit_oid.clone(),
-        policy: policy.clone(),
-        body,
-    });
-}
-
-fn elapsed_seconds_between(start_rfc3339: &str, end_rfc3339: &str) -> Option<i64> {
-    let start = chrono::DateTime::parse_from_rfc3339(start_rfc3339).ok()?;
-    let end = chrono::DateTime::parse_from_rfc3339(end_rfc3339).ok()?;
-    Some((end.timestamp() - start.timestamp()).max(0))
-}
-
-pub(super) fn render_git_commit_note(
-    policy: &GitCommitNotePolicy,
-    snapshot: &RunGraphSnapshot,
-    node: &GateNodeRecord,
-    cursor: &NodeCursor,
-    changed_paths: &[String],
-    now_utc: &str,
-) -> String {
-    let tasks_total = snapshot
-        .nodes
-        .iter()
-        .filter(|n| n.kind == NodeKind::Task)
-        .count();
-    let tasks_completed = snapshot
-        .nodes
-        .iter()
-        .filter(|n| n.kind == NodeKind::Task && n.status == NodeStatus::Completed)
-        .count();
-    let total_cycles: u64 = snapshot
-        .nodes
-        .iter()
-        .map(|n| u64::from(n.cycle_count))
-        .sum::<u64>()
-        + u64::from(snapshot.run.root_cycle_count);
-    let latest_trace = snapshot
-        .traces
-        .iter()
-        .filter(|t| t.node_id == node.node_id && t.claim_revision == node.claim_revision)
-        .max_by_key(|t| t.trace_row_id.unwrap_or(0));
-    let elapsed_secs = elapsed_seconds_between(&snapshot.run.created_at, now_utc);
-
-    let raw = match policy.format {
-        GitCommitNoteFormat::Json => {
-            let mut obj = serde_json::Map::new();
-            obj.insert("run_id".to_owned(), json!(snapshot.run.run_id.as_str()));
-            obj.insert("run_name".to_owned(), json!(snapshot.run.run_name.as_str()));
-            obj.insert("node_cursor".to_owned(), json!(cursor.to_string()));
-            obj.insert("claim_revision".to_owned(), json!(node.claim_revision));
-            obj.insert("attempt".to_owned(), json!(node.attempt));
-            obj.insert("isolation".to_owned(), json!(snapshot.run.isolation.as_str()));
-            for section in &policy.sections {
-                match section {
-                    GitCommitNoteSection::Duration => {
-                        obj.insert(
-                            "duration".to_owned(),
-                            json!({
-                                "created_at": snapshot.run.created_at,
-                                "recorded_at": now_utc,
-                                "elapsed_seconds": elapsed_secs,
-                            }),
-                        );
-                    }
-                    GitCommitNoteSection::TasksSummary => {
-                        obj.insert(
-                            "tasks_summary".to_owned(),
-                            json!({
-                                "total": tasks_total,
-                                "completed": tasks_completed,
-                            }),
-                        );
-                    }
-                    GitCommitNoteSection::ReviewCycles => {
-                        obj.insert(
-                            "review_cycles".to_owned(),
-                            json!({
-                                "node_cycles": node.cycle_count,
-                                "root_cycles": snapshot.run.root_cycle_count,
-                                "total_cycles": total_cycles,
-                            }),
-                        );
-                    }
-                    GitCommitNoteSection::DiffBreakdown => {
-                        obj.insert(
-                            "diff_breakdown".to_owned(),
-                            json!({
-                                "changed_files_count": changed_paths.len(),
-                                "changed_paths": changed_paths,
-                            }),
-                        );
-                    }
-                    GitCommitNoteSection::TestSuite => {
-                        if let Some(tr) = latest_trace {
-                            obj.insert(
-                                "test_suite".to_owned(),
-                                json!({
-                                    "status": tr.status.as_str(),
-                                    "passed": tr.tests_passed,
-                                    "failed": tr.tests_failed,
-                                    "ignored": tr.tests_ignored,
-                                }),
-                            );
-                        } else {
-                            obj.insert(
-                                "test_suite".to_owned(),
-                                json!({
-                                    "passed": 0,
-                                    "failed": 0,
-                                    "ignored": 0,
-                                }),
-                            );
-                        }
-                    }
-                    GitCommitNoteSection::Topology => {
-                        obj.insert(
-                            "topology".to_owned(),
-                            json!({
-                                "isolation": snapshot.run.isolation.as_str(),
-                                "branch": node.branch.as_ref().or(snapshot.run.branch.as_ref()),
-                                "worktree": node.worktree.as_ref().or(snapshot.run.worktree.as_ref()),
-                                "target_base": snapshot.run.target_base,
-                            }),
-                        );
-                    }
-                }
-            }
-            Value::Object(obj).to_string()
-        }
-        GitCommitNoteFormat::Markdown => {
-            let mut md = format!(
-                "# ACDD Gate Commit Note\n\n- Run: `{}` (`{}`)\n- Node: `{}` (rev {})\n- Isolation: `{}`\n",
-                snapshot.run.run_name,
-                snapshot.run.run_id,
-                cursor,
-                node.claim_revision,
-                snapshot.run.isolation
-            );
-            for section in &policy.sections {
-                match section {
-                    GitCommitNoteSection::Duration => {
-                        if let Some(secs) = elapsed_secs {
-                            md.push_str(&format!(
-                                "- Duration: {secs}s (since `{}`)\n",
-                                snapshot.run.created_at
-                            ));
-                        } else {
-                            md.push_str(&format!(
-                                "- Duration: started `{}`\n",
-                                snapshot.run.created_at
-                            ));
-                        }
-                    }
-                    GitCommitNoteSection::TasksSummary => {
-                        md.push_str(&format!("- Tasks: {tasks_completed}/{tasks_total} completed\n"));
-                    }
-                    GitCommitNoteSection::ReviewCycles => {
-                        md.push_str(&format!(
-                            "- Review cycles: node={}, total={}\n",
-                            node.cycle_count, total_cycles
-                        ));
-                    }
-                    GitCommitNoteSection::DiffBreakdown => {
-                        md.push_str(&format!(
-                            "- Diff breakdown: {} changed path(s)\n",
-                            changed_paths.len()
-                        ));
-                    }
-                    GitCommitNoteSection::TestSuite => {
-                        if let Some(tr) = latest_trace {
-                            md.push_str(&format!(
-                                "- Test suite ({}): {} passed, {} failed, {} ignored\n",
-                                tr.status, tr.tests_passed, tr.tests_failed, tr.tests_ignored
-                            ));
-                        } else {
-                            md.push_str("- Test suite: no trace recorded\n");
-                        }
-                    }
-                    GitCommitNoteSection::Topology => {
-                        md.push_str(&format!(
-                            "- Topology: isolation=`{}`, branch=`{}`, target_base=`{}`\n",
-                            snapshot.run.isolation,
-                            node.branch
-                                .as_deref()
-                                .or(snapshot.run.branch.as_deref())
-                                .unwrap_or("-"),
-                            snapshot.run.target_base.as_deref().unwrap_or("-")
-                        ));
-                    }
-                }
-            }
-            md
-        }
-    };
-    cap_note_body(&raw, policy.max_bytes, policy.format)
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::profile::GitCommitNotePolicy;
     use crate::spec::ReceiptRollup;
     use crate::types::{
         GateArtifactRecord, IsolationMode, RunRecord, RunStatus, SubtaskRecord, SubtaskStatus,
@@ -583,7 +359,6 @@ pub(crate) mod tests {
                     }),
                 })
                 .expect("receipt json"),
-                snapshot_ref: None,
                 snapshot_commit: None,
                 created_at: "2026-01-01T00:01:00Z".to_owned(),
             }],
@@ -601,59 +376,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn commit_note_sections_truncation_and_closure_rollup() {
+    fn closure_rollup_collects_decisions_deferred_and_metrics() {
         let run_id = RunId::new("run-submit-unit").expect("run_id");
         let snapshot = sample_snapshot(&run_id);
-        let node = &snapshot.nodes[1];
-        let cursor = NodeCursor::task(
-            TaskRef::new("T1").expect("task_ref"),
-            vec![GateId::new("deliver").expect("gate_id")],
-        );
-
-        let json_policy = GitCommitNotePolicy {
-            ref_name: "refs/notes/acdd".to_owned(),
-            format: GitCommitNoteFormat::Json,
-            max_bytes: 4096,
-            sections: vec![
-                GitCommitNoteSection::Duration,
-                GitCommitNoteSection::TasksSummary,
-                GitCommitNoteSection::ReviewCycles,
-                GitCommitNoteSection::DiffBreakdown,
-                GitCommitNoteSection::TestSuite,
-                GitCommitNoteSection::Topology,
-            ],
-        };
-        let rendered_json = render_git_commit_note(
-            &json_policy,
-            &snapshot,
-            node,
-            &cursor,
-            &["crates/a.rs".to_owned()],
-            "2026-01-01T00:05:00Z",
-        );
-        let parsed: Value = serde_json::from_str(&rendered_json).expect("valid json note");
-        assert_eq!(parsed["duration"]["elapsed_seconds"], 300);
-        assert_eq!(parsed["tasks_summary"]["completed"], 1);
-        assert_eq!(parsed["review_cycles"]["total_cycles"], 3);
-        assert_eq!(parsed["diff_breakdown"]["changed_files_count"], 1);
-        assert!(parsed.get("test_suite").is_some());
-        assert_eq!(parsed["topology"]["target_base"], "main");
-
-        // Tight max_bytes still yields valid UTF-8 and valid JSON!
-        let capped_policy = GitCommitNotePolicy {
-            max_bytes: 48,
-            ..json_policy
-        };
-        let capped_json = render_git_commit_note(
-            &capped_policy,
-            &snapshot,
-            node,
-            &cursor,
-            &["crates/a.rs".to_owned()],
-            "2026-01-01T00:05:00Z",
-        );
-        assert!(capped_json.len() <= 48);
-        assert!(serde_json::from_str::<Value>(&capped_json).is_ok());
 
         // Closure rollup populates decisions, deferred_findings, and metrics_summary.
         let bb = vec![

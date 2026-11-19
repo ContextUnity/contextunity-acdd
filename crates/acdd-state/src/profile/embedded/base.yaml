@@ -1,0 +1,61 @@
+version: 2
+
+git:
+  isolation: worktree
+  worktrees: manual
+
+save: commit
+
+tags:
+  - default
+
+protected_paths: []
+
+default_tools:
+  - acdd_read
+  - acdd_guide
+  - acdd_state
+  - acdd_claim
+  - acdd_verify
+  - acdd_submit
+  - acdd_blackboard
+
+limits:
+  max_guidance_bytes: 32768
+  max_log_bytes: 1048576
+  max_capture_bytes: 262144
+  max_line_bytes: 65536
+  diagnostic_inline_bytes: 4096
+  max_metadata_bytes: 2048
+  max_trace_summary_bytes: 2048
+  max_command_timeout_seconds: 1800
+
+guidance:
+  core.execution:
+    description: "UNIVERSAL EXECUTION & CLEAN COMPLETION"
+    criteria:
+      - "Stay strictly within the admitted scope, satisfy all declared acceptance criteria, keep verification proportional to operational risk, and submit immediately once criteria and checks pass without out-of-scope churn."
+      - "REBUTTAL OVER BLIND REWRITE: If a review finding contradicts an accepted specification, decision, or verified check, record an evidence-backed rebuttal via acdd_blackboard (topic: decisions) with exact citations and resubmit rather than weakening the contract."
+  core.review:
+    description: "INDEPENDENT EVIDENCE-BASED REVIEW"
+    criteria:
+      - "BURDEN OF PROOF: Recognize when acceptance criteria and existing safeguards are satisfied; reject only on a concrete contract/invariant violation or reproducible defect (evaluating any cited rebuttal in acdd_blackboard decisions objectively). Record optional ideas or future improvements via acdd_blackboard (topic: deferred) and pass."
+  hitl.pro: "HITL level PRO: allow internal implementation adjustments within admitted scope; escalate public interfaces, schemas, or cross-run contract changes via acdd_blackboard (topic: decisions or blockers)."
+
+contours:
+  paths:
+    description: "Verify changes stay within the admitted write scope and preserve protected paths."
+    criteria:
+      - "Compare changed, staged, and untracked files against admitted scope and protected_paths."
+      - "Confirm each modified path contributes directly to the accepted task or polish contract."
+  claims:
+    description: "Verify every accepted contract claim is implemented and supported by risk-proportional evidence."
+    criteria:
+      - "Trace each invariant and acceptance criterion to live evidence and verification proportional to actual operational risk."
+      - "Enforce fail-closed diagnostics at untrusted external boundaries while trusting existing validated internal safeguards without duplicate checks."
+  administration:
+    description: "Verify protected configuration, profile pins, receipts, and privileged delivery remain governed."
+    criteria:
+      - "Verify schema integrity, commit tree parity, and durable receipt generation."
+
+gates: []

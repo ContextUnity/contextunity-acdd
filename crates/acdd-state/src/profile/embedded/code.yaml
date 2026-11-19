@@ -1,6 +1,5 @@
 version: 2
-inherit: default
-gates_merge: patch
+inherit: base
 
 tags:
   - default
@@ -27,87 +26,395 @@ default_tools:
   - acdd_submit
   - acdd_blackboard
 
+proofs:
+  blueprint:
+    description: "Architectural blueprint with grounded citations and per-task slices"
+    schema:
+      type: object
+      required:
+        - cited_invariants
+        - cited_symbols
+        - global_negative_boundaries
+        - blackboard_decision_id
+        - tasks
+      properties:
+        ac_mapping:
+          type: array
+          items:
+            type: string
+        c2_boundary_impact:
+          type: string
+        adr_required:
+          type: boolean
+        sad_updates:
+          type: array
+          items:
+            type: string
+        cited_invariants:
+          type: array
+          items:
+            type: string
+        cited_symbols:
+          type: array
+          items:
+            type: string
+        global_negative_boundaries:
+          type: array
+          items:
+            type: string
+        blackboard_decision_id:
+          type: string
+        tasks:
+          type: object
+          additionalProperties:
+            type: object
+            required:
+              - layer
+              - summary
+              - exported_interfaces
+              - negative_boundaries
+              - incoming_seams
+              - outgoing_seams
+            properties:
+              layer:
+                type: string
+              summary:
+                type: string
+              exported_interfaces:
+                type: array
+                items:
+                  type: string
+              negative_boundaries:
+                type: array
+                items:
+                  type: string
+              canonical_owners:
+                type: array
+                items:
+                  type: string
+              mechanism_rules:
+                type: array
+                items:
+                  type: string
+              max_net_loc:
+                type: integer
+              verification_seam:
+                type: string
+              incoming_seams:
+                type: array
+                items:
+                  type: object
+                  required:
+                    - source_task
+                    - contract_type
+                    - contract_ref
+                    - specification
+                  properties:
+                    source_task:
+                      type: string
+                    contract_type:
+                      type: string
+                      enum:
+                        - seam_dependency
+                        - shared_type
+                        - shared_helper
+                    contract_ref:
+                      type: string
+                    specification:
+                      type: string
+              outgoing_seams:
+                type: array
+                items:
+                  type: object
+                  required:
+                    - target_task
+                    - contract_type
+                    - contract_ref
+                    - specification
+                  properties:
+                    target_task:
+                      type: string
+                    contract_type:
+                      type: string
+                      enum:
+                        - seam_dependency
+                        - shared_type
+                        - shared_helper
+                    contract_ref:
+                      type: string
+                    specification:
+                      type: string
+
 roles:
   architect:
-    guidance: "Lead architectural synthesis, ground decisions in repository invariants and extension seams, record the decision on acdd_blackboard, and define per-task slices before task execution. Prioritize ACDD MCP tools (code_map_search, code_map_inspect, code_map_impact, code_map_query, acdd_read, ast_grep_search) over raw grep/full reads."
-  contract_author:
-    guidance: "Author the executable contract and runtime-red proof inside the admitted scope without touching protected paths. Prioritize ACDD MCP tools (code_map_search, code_map_inspect, code_map_impact, code_map_query, acdd_read, ast_grep_search) over raw grep/full reads."
+    mode: subagent
+    reuse_on_reject: true
+    guidance: "Lead minimal, grounded architectural synthesis using ACDD MCP navigation (acdd_read, code_map_search, code_map_impact, search_docs) before proposing changes."
   builder:
-    guidance: "Implement the accepted contract inside the admitted write scope and verify all gate checks. Prioritize ACDD MCP tools (code_map_search, code_map_inspect, code_map_impact, code_map_query, acdd_read, ast_grep_search) over raw grep/full reads."
+    mode: subagent
+    reuse_on_reject: true
+    guidance: "Implement the accepted slice with minimal complexity inside admitted scope using ACDD MCP navigation, keeping verification proportional to risk."
   independent_reviewer:
-    guidance: "Conduct an independent architectural and verification review across the declared contours; reject defects with structured findings. Prioritize ACDD MCP tools (code_map_search, code_map_inspect, code_map_impact, code_map_query, acdd_read, ast_grep_search) over raw grep/full reads."
+    mode: subagent
+    reuse_on_reject: false
+    guidance: "Review declared contours independently; verify blast radius with code_map_impact and run code_map_query(operation: \"duplicates\", path: <scope>) and code_map_query(operation: \"dead_tails\", path: <scope>) (workspace-wide without path on integration_review), rejecting new clones, phantom_tested dead code, dead_tails, or dangling_calls with structured findings."
+
+guidance:
+  code.principles:
+    description: "CODE ENGINEERING & SIMPLICITY PRINCIPLES"
+    criteria:
+      - "Prefer simpler, maintainable solutions and canonical owner reuse (INV-SINGLE-OWNER) over accumulating defensive abstractions, shadow resolvers, or narrow string heuristics."
+      - "Validate untrusted inputs once at external boundaries and trust validated internal types/schemas/locks without duplicating checks."
+      - "Never convert one-time incidents into permanent architectural layers or fence lists; fix the owning mechanism instead."
+      - "Eliminate redundant validations and dead code in touched files; keep tests proportional to actual operational risk."
+      - "Escalate via acdd_blackboard (topic: decisions or blockers) before introducing any new subsystem or exceeding max_net_loc (`BUDGET_OVERRIDE: <reason>`)."
+  code.tools:
+    description: "MANDATORY ACDD GRAPH & SOURCE NAVIGATION PROTOCOL"
+    criteria:
+      - "Use acdd_read(selector: \"SymbolName\", path: ...) for complete symbol reads, code_map_overview / code_map_search(detail: \"compact\") / ast_grep_search for discovery, and rg strictly for literals/config/error text."
+      - "Run code_map_impact, code_map_tests, code_map_prove_removal, search_docs, and get_doc before editing or deleting declarations to reconcile ADRs and INV-* owners."
+      - "Before submitting build, polish, or review (or workspace-wide on integration_review), run code_map_query(operation: \"duplicates\") and code_map_query(operation: \"dead_tails\") and eliminate or reject clones, phantom_tested dead code, dead_tails, and dangling_calls."
+  milestone.synthesis:
+    description: "ARCHITECTURAL BLUEPRINT SYNTHESIS"
+    criteria:
+      - "Audit existing canonical owners and extension seams before decomposing tasks; assign minimal layers, exported interfaces, negative boundaries, cross-task seams, mechanism_rules, and realistic max_net_loc in proof.tasks."
+      - "Record the architectural decision via acdd_blackboard and cite its ID in blackboard_decision_id."
+  milestone.blueprint_review:
+    description: "INDEPENDENT BLUEPRINT REVIEW"
+    criteria:
+      - "Verify cited invariants, canonical-owner reuse, layer boundaries, and cross-task seams across proof.tasks."
+      - "Confirm every slice defines canonical_owners, mechanism_rules, realistic max_net_loc, proportional verification, and a valid blackboard_decision_id."
+  task.code:
+    description: "TASK IMPLEMENTATION & SEAM VERIFICATION"
+    criteria:
+      - "Follow proof.tasks[task_ref] (`canonical_owners`, `mechanism_rules`, `max_net_loc`), author seam checks directly in build, and verify exit_code == 0."
+      - "If context_reset_required is set after rearchitect, read the latest rearchitect decision from acdd_blackboard (topic: decisions) and rebuild cleanly from scratch."
+  task.review:
+    description: "INDEPENDENT TASK IMPLEMENTATION REVIEW"
+    criteria:
+      - "Verify task contract satisfaction, concurrency safety, and code/graph hygiene across the declared contours."
+      - "Use rejection kind: defect (fail: build) for localized bugs, or kind: architectural_drift (fail_drift: rearchitect) for structural violations requiring builder context reset."
+  task.rearchitect:
+    description: "ARCHITECTURAL RECOVERY AFTER DRIFT"
+    criteria:
+      - "Diagnose the structural cause behind architectural_drift against cited invariants and canonical owners."
+      - "Record the simplest seam correction on acdd_blackboard (topic: decisions) before routing a fresh builder context to build."
+  milestone.polish:
+    description: "INTEGRATION POLISH & DOCS RECONCILIATION"
+    criteria:
+      - "Resolve integration or review findings strictly inside admitted polish paths without weakening verified contracts."
+  milestone.review:
+    description: "INTEGRATION REVIEW"
+    criteria:
+      - "Review the integrated diff against target base across all declared contours, verify trace freshness, and reject only concrete contract defects or workspace hygiene regressions."
+  milestone.handoff:
+    description: "TERMINAL DELIVERY RECEIPT"
+    criteria:
+      - "Confirm every non-cancelled task is completed and all required predecessor proofs match the current tree."
+
+contours:
+  architecture:
+    description: "Verify single-owner reuse, simplicity, layer boundaries, and absence of redundant or incident-driven abstractions."
+    criteria:
+      - "Confirm canonical owners and existing safeguards are reused instead of accumulating defensive wrappers, redundant validations, parallel pipelines, or shadow resolvers."
+      - "Verify strict layer boundaries, zero unnecessary code or narrow string heuristics where structural data exists, proportional complexity, and zero incident-driven permanent abstractions."
+  concurrency:
+    description: "Verify concurrent operations preserve revision fencing, claim ownership, and rollback integrity."
+    criteria:
+      - "Verify CAS preconditions, claim revisions, and lock ordering prevent partial or stale state publication."
+  project_isolation:
+    description: "Verify data, profiles, paths, and Git operations stay confined to the owning workspace."
+    criteria:
+      - "Confirm path confinement, symlink rejection, and workspace isolation."
+
+commands:
+  build_check:
+    unbound: true
+  verify_all:
+    unbound: true
 
 gates:
-  - id: blueprint_synthesis.synthesize
-    context:
-      - docs.instructions
-      - docs.adrs
-      - docs.invariants
-      - code.symbols
+  - id: blueprint_synthesis
+    gates:
+      - id: synthesize
+        role: architect
+        proof: blueprint
+        guidance:
+          - milestone.synthesis
+          - core.execution
+          - code.principles
+          - code.tools
+          - hitl.pro
+        context:
+          - docs.instructions
+          - docs.adrs
+          - docs.invariants
+        pass: review
+      - id: review
+        role: independent_reviewer
+        proof: review
+        contours:
+          - claims
+          - architecture
+          - project_isolation
+          - administration
+        independent_from:
+          - synthesize
+        guidance:
+          - milestone.blueprint_review
+          - core.review
+          - code.principles
+          - code.tools
+          - hitl.pro
+        context:
+          - docs.instructions
+          - docs.adrs
+          - docs.invariants
+        save:
+          immutable: true
+        fail: synthesize
 
-  - id: blueprint_synthesis.review
-    context:
-      - docs.instructions
-      - docs.adrs
-      - docs.invariants
-      - code.symbols
+  - tasks:
+      gates:
+        - id: build
+          role: builder
+          command: build_check
+          proof: command
+          checks:
+            - code.seam
+          guidance:
+            - task.code
+            - core.execution
+            - code.principles
+            - code.tools
+            - hitl.pro
+          context:
+            - docs.instructions
+            - docs.adrs
+            - docs.invariants
+            - code.symbols
+            - code.tests
+            - code.external_callers
+          pass: review
 
-  - id: tasks.contract
-    when: "!docs"
-    checks:
-      - code.seam
-    context:
-      - docs.instructions
-      - docs.adrs
-      - docs.invariants
-      - code.symbols
-      - code.tests
+        - id: review
+          role: independent_reviewer
+          proof: review
+          contours:
+            - paths
+            - claims
+            - architecture
+            - concurrency
+            - project_isolation
+            - administration
+          independent_from:
+            - build
+          need:
+            - build
+          guidance:
+            - task.review
+            - core.review
+            - code.principles
+            - code.tools
+            - hitl.pro
+          context:
+            - docs.instructions
+            - docs.adrs
+            - docs.invariants
+            - code.symbols
+            - code.tests
+            - code.external_callers
+          save:
+            immutable: true
+          pass: deliver
+          fail: build
+          fail_drift: rearchitect
 
-  - id: tasks.contract_review
-    when: "!docs"
-    context:
-      - docs.instructions
-      - docs.adrs
-      - docs.invariants
-      - code.symbols
-      - code.tests
+        - id: deliver
+          role: independent_reviewer
+          independent_from:
+            - build
+          need:
+            - build
+            - review
+          receipt: true
+          guidance:
+            - hitl.pro
+          save:
+            immutable: true
+            post: commit
+          fail: build
 
-  - id: tasks.build
-    checks:
-      - code.seam
-    context:
-      - docs.instructions
-      - docs.adrs
-      - docs.invariants
-      - code.symbols
-      - code.tests
-      - code.external_callers
+        - id: rearchitect
+          role: architect
+          guidance:
+            - task.rearchitect
+            - core.execution
+            - code.principles
+            - code.tools
+            - hitl.pro
+          context:
+            - docs.instructions
+            - docs.adrs
+            - docs.invariants
+            - code.symbols
+          pass: build
+          max_attempts: 3
 
-  - id: tasks.review
-    context:
-      - docs.instructions
-      - docs.adrs
-      - docs.invariants
-      - code.symbols
-      - code.tests
-      - code.external_callers
-
-  - id: tasks.rearchitect
-    context:
-      - docs.instructions
-      - docs.adrs
-      - docs.invariants
-      - code.symbols
+  - id: verify
+    command: verify_all
+    proof: command
+    max_attempts: 3
+    pass: integration_review
+    fail: polish
 
   - id: polish
+    role: builder
+    scope:
+      - ".acdd/profile.yaml"
+      - ".acdd/profiles/**"
+      - "docs/**"
+      - "skills/**"
+      - "AGENTS.md"
+      - "**/AGENTS.md"
+      - "README.md"
+      - ".gitignore"
+    command: verify_all
+    proof: command
+    max_attempts: 3
+    guidance:
+      - milestone.polish
+      - core.execution
+      - code.principles
+      - code.tools
+      - hitl.pro
     context:
       - docs.instructions
       - docs.adrs
       - docs.invariants
-      - code.symbols
-      - code.tests
+    pass: verify
 
   - id: integration_review
+    role: independent_reviewer
+    proof: review
+    contours:
+      - paths
+      - claims
+      - architecture
+      - concurrency
+      - project_isolation
+      - administration
+    independent_from:
+      - polish
+      - "tasks.build"
+    need:
+      - verify
+    guidance:
+      - milestone.review
+      - core.review
+      - code.principles
+      - code.tools
+      - hitl.pro
     context:
       - docs.instructions
       - docs.adrs
@@ -115,3 +422,26 @@ gates:
       - code.symbols
       - code.tests
       - code.external_callers
+    save:
+      immutable: true
+    pass: handoff
+    fail: polish
+
+  - id: handoff
+    role: independent_reviewer
+    independent_from:
+      - polish
+      - "tasks.build"
+    need:
+      - verify
+      - integration_review
+    receipt: true
+    guidance:
+      - milestone.handoff
+      - hitl.pro
+    save:
+      immutable: true
+      post: commit
+      archive: true
+      prune: true
+    fail: polish

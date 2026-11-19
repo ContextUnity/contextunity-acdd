@@ -20,7 +20,7 @@ use crate::types::{
     TransitionPlan, ValidatedObservations,
 };
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::ids::{GateSelector, NodeCursor, TaskRef, WorkerId};
+use acdd_core::ids::{GateSelector, TaskRef, WorkerId};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -129,19 +129,6 @@ pub fn evaluate_submit(
             active_claim.claim_revision,
             input,
         ),
-    }
-}
-
-/// Convenience wrapper returning `TransitionPlan` directly (collapsing `MarkStaleAndReject` into `Err`).
-pub fn evaluate_submit_plan(
-    snapshot: &RunGraphSnapshot,
-    profile: &MachineProfileInput,
-    obs: &ValidatedObservations,
-    input: &SubmitInput,
-) -> Result<TransitionPlan, StateError> {
-    match evaluate_submit(snapshot, profile, obs, input)? {
-        SubmitEvaluation::Apply(plan) => Ok(plan),
-        SubmitEvaluation::MarkStaleAndReject { error, .. } => Err(error),
     }
 }
 
@@ -342,7 +329,6 @@ fn evaluate_reject(
                 format!("failed to serialize findings artifact: {err}"),
             )
         })?,
-        snapshot_ref: None,
         snapshot_commit: None,
         created_at: obs.now_utc.clone(),
     };
@@ -604,23 +590,19 @@ fn evaluate_pass(
     // 4. Trace freshness + `current_tree` check.
     let needs_trace = matches!(
         gate.proof,
-        MachineProofKind::Contract | MachineProofKind::Command | MachineProofKind::Call
+        MachineProofKind::Command | MachineProofKind::Call
     ) || !gate.checks.is_empty()
         || gate.command.is_some()
         || gate.call.is_some();
 
     if needs_trace {
-        let required_status = match gate.proof {
-            MachineProofKind::Contract => TraceStatus::ExpectedFailure,
-            _ => TraceStatus::Passed,
-        };
         let trace = snapshot
             .traces
             .iter()
             .filter(|t| {
                 t.node_id == node.node_id
                     && t.claim_revision == claim_revision
-                    && t.status == required_status
+                    && t.status == TraceStatus::Passed
             })
             .max_by_key(|t| t.trace_row_id.unwrap_or(0))
             .ok_or_else(|| {
@@ -628,7 +610,9 @@ fn evaluate_pass(
                     ErrorCode::TaskProofUnobserved,
                     format!(
                         "missing fresh '{}' verification trace for '{}' at claim_revision {}",
-                        required_status, node.node_id, claim_revision
+                        TraceStatus::Passed,
+                        node.node_id,
+                        claim_revision
                     ),
                 )
             })?;
@@ -689,7 +673,6 @@ fn evaluate_pass(
                         format!("failed to serialize review evidence: {err}"),
                     )
                 })?,
-                snapshot_ref: input.snapshot_ref.clone(),
                 snapshot_commit: input.snapshot_commit.clone(),
                 created_at: obs.now_utc.clone(),
             });
@@ -722,7 +705,6 @@ fn evaluate_pass(
                         format!("failed to serialize custom proof evidence: {err}"),
                     )
                 })?,
-                snapshot_ref: input.snapshot_ref.clone(),
                 snapshot_commit: input.snapshot_commit.clone(),
                 created_at: obs.now_utc.clone(),
             });
@@ -748,7 +730,6 @@ fn evaluate_pass(
                 format!("failed to serialize accepted_snapshot: {err}"),
             )
         })?,
-        snapshot_ref: input.snapshot_ref.clone(),
         snapshot_commit: input.snapshot_commit.clone(),
         created_at: obs.now_utc.clone(),
     });
@@ -757,7 +738,7 @@ fn evaluate_pass(
     let mut watch_ids = vec![node.node_id.as_str()];
     let mut node_patches = Vec::new();
     let mut dependency_patches = Vec::new();
-    let mut blackboard_patches = Vec::new();
+    let blackboard_patches = Vec::new();
     let mut new_run_status = None;
     let mut completed_at = None;
 
@@ -892,7 +873,6 @@ fn evaluate_pass(
                             format!("failed to serialize task receipt: {err}"),
                         )
                     })?,
-                    snapshot_ref: input.snapshot_ref.clone(),
                     snapshot_commit: input.snapshot_commit.clone(),
                     created_at: obs.now_utc.clone(),
                 });
@@ -936,24 +916,6 @@ fn evaluate_pass(
                         }
                     }
                 }
-
-                // Close container blackboard items (notes/draft -> resolved, deferred -> carried_over).
-                let container_ids: BTreeSet<&str> = snapshot
-                    .nodes
-                    .iter()
-                    .filter(|n| {
-                        n.node_id == parent_task.node_id
-                            || n.parent_id.as_deref() == Some(parent_task.node_id.as_str())
-                    })
-                    .map(|n| n.node_id.as_str())
-                    .collect();
-                for bb_id in obs.changed_paths.iter().take(0) {
-                    let _ = bb_id;
-                }
-                // Note: `RunGraphSnapshot` doesn't hold blackboard rows; when blackboard items are
-                // present in usecases, `blackboard_patches` carries explicit IDs; we expose a pure helper
-                // `plan_container_blackboard_cleanup` below as well!
-                let _ = (container_ids, &mut blackboard_patches);
             }
             NodeKind::RootGate => {
                 // Post-task root receipt requires all non-cancelled tasks completed & integrated.
@@ -996,7 +958,6 @@ fn evaluate_pass(
                             format!("failed to serialize root receipt: {err}"),
                         )
                     })?,
-                    snapshot_ref: input.snapshot_ref.clone(),
                     snapshot_commit: input.snapshot_commit.clone(),
                     created_at: obs.now_utc.clone(),
                 });
@@ -1337,10 +1298,4 @@ fn activate_tasks_after_pre_barrier<'a>(
             }
         }
     }
-}
-
-/// Convenience helper for converting a cursor into a `NodeCursor` reference check without unused warnings.
-#[allow(dead_code)]
-fn _ensure_cursor(c: &NodeCursor) -> &NodeCursor {
-    c
 }

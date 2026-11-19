@@ -12,10 +12,9 @@ pub use command::{
     execute_gate_commands, sanitize_command_process, CommandExecOutcome, CommandExecReq,
 };
 pub use spawner::{
-    spawn_role_runner, spawn_role_runner_borrowed, verify_runner_submitted, RoleSpawnBorrow,
-    RoleSpawnOutcome, RoleSpawnReq,
+    spawn_role_runner_borrowed, verify_runner_submitted, RoleSpawnBorrow, RoleSpawnOutcome,
 };
-pub use waves::{compute_ready_waves, run_wave_scheduler, WaveExecutionReport, WaveRunConfig};
+pub use waves::WaveExecutionReport;
 
 use acdd_core::errors::{ErrorCode, StateError};
 pub(super) use acdd_core::format::{utf8_floor_boundary, utf8_tail};
@@ -40,6 +39,21 @@ pub(super) enum StreamKind {
 pub(super) struct ProcessRunOutcome {
     pub(super) exit_code: Option<i32>,
     pub(super) timed_out: bool,
+}
+
+pub(super) fn shell_command(command: &str) -> Command {
+    #[cfg(unix)]
+    {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(command);
+        cmd
+    }
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(command);
+        cmd
+    }
 }
 
 pub(super) fn node_slug(cursor: &NodeCursor) -> String {

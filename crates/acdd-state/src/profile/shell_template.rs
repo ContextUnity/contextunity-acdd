@@ -208,15 +208,6 @@ pub fn ends_inside_shell_comment(cmd: &str) -> bool {
     scan_shell_template(cmd.trim_end(), &[]).ends_in_comment
 }
 
-/// Return byte offsets of every uncommented occurrence of `placeholder`.
-pub fn active_shell_placeholder_positions(cmd: &str, placeholder: &str) -> Vec<usize> {
-    scan_shell_template(cmd, &[placeholder])
-        .active_placeholders
-        .into_iter()
-        .map(|(_, pos)| pos)
-        .collect()
-}
-
 /// Validate balanced POSIX shell quotes and ensure every substitution `placeholder`
 /// occurs strictly in `Unquoted`, non-escaped shell position before rendering.
 pub fn validate_shell_template_placeholders(
@@ -226,11 +217,6 @@ pub fn validate_shell_template_placeholders(
 ) -> Result<(), StateError> {
     let scan = scan_shell_template(template, placeholders);
     check_scan_safety(&scan, ctx)
-}
-
-/// Detect unescaped shell chain operators (`&&`, `||`, `;`, `|`) outside quotes and `#` comments.
-pub fn has_unescaped_chain_operator(cmd: &str) -> bool {
-    scan_shell_template(cmd, &[]).has_chain_op
 }
 
 /// Render a command template with optional `--test <test_target>` substitution.

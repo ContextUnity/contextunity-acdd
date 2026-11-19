@@ -117,16 +117,10 @@ pub fn build_completed_run_digest(
     }
 
     let mut traces_by_status: BTreeMap<String, usize> = BTreeMap::new();
-    let mut tests_passed_total = 0u64;
-    let mut tests_failed_total = 0u64;
-    let mut tests_ignored_total = 0u64;
     for trace in &graph.traces {
         *traces_by_status
             .entry(trace.status.as_str().to_owned())
             .or_insert(0) += 1;
-        tests_passed_total += u64::from(trace.tests_passed);
-        tests_failed_total += u64::from(trace.tests_failed);
-        tests_ignored_total += u64::from(trace.tests_ignored);
     }
 
     let metrics_val = json!({
@@ -137,9 +131,6 @@ pub fn build_completed_run_digest(
         "rejections_total": rejections_total,
         "traces_total": graph.traces.len(),
         "traces_by_status": traces_by_status,
-        "tests_passed_total": tests_passed_total,
-        "tests_failed_total": tests_failed_total,
-        "tests_ignored_total": tests_ignored_total,
         "subtasks_total": graph.subtasks.len(),
         "artifacts_total": graph.artifacts.len(),
         "root_cycle_count": graph.run.root_cycle_count,

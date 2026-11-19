@@ -33,7 +33,7 @@ pub struct RepoEntry {
 }
 
 /// Aggregated invariant, decision, deferred finding, and review summary stored in receipts/closures.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReceiptRollup {
     /// Applicable and verified invariants captured from `gate_nodes.invariants_json`.
@@ -51,13 +51,14 @@ pub struct ReceiptRollup {
 }
 
 /// Durable task or root-gate delivery receipt stored in archive Markdown and `gate_artifacts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
     /// Owning `Run` identifier.
     pub run_id: RunId,
     /// Cursor of the accepting delivery/handoff gate (serialized as canonical `task:<t>:<g>` / `root:<g>`).
     #[serde(serialize_with = "serialize_node_cursor")]
+    #[schemars(with = "String")]
     pub node_cursor: NodeCursor,
     /// Accepting gate identifier.
     pub gate_id: GateId,
@@ -342,6 +343,17 @@ pub fn compute_spec_digest(raw: &str) -> String {
     acdd_core::format::sha256_hex(raw.as_bytes())
 }
 
+/// Return `true` when `segment` is a safe single path-component identifier (no separators, `..`, or control/placeholder chars).
+pub(crate) fn is_safe_path_segment_id(segment: &str) -> bool {
+    let trimmed = segment.trim();
+    !trimmed.is_empty()
+        && trimmed == segment
+        && trimmed != "."
+        && trimmed != ".."
+        && !trimmed.contains(['/', '\\', '\0'])
+        && !trimmed.contains("..")
+}
+
 /// Parse a Markdown + YAML frontmatter `SpecDocument` strictly.
 pub fn parse_spec(raw: &str) -> Result<SpecDocument, StateError> {
     let digest = compute_spec_digest(raw);
@@ -357,6 +369,15 @@ pub fn parse_spec(raw: &str) -> Result<SpecDocument, StateError> {
         return Err(StateError::new(
             ErrorCode::ProfileSchemaInvalid,
             "spec frontmatter 'id' cannot be empty",
+        ));
+    }
+    if !is_safe_path_segment_id(&fm.id) {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!(
+                "spec frontmatter 'id' must be a single safe identifier without path separators or traversal, got '{}'",
+                fm.id
+            ),
         ));
     }
     if fm.title.trim().is_empty() {
@@ -501,6 +522,27 @@ pub fn materialize_ephemeral_goal_spec(
     scope: &[String],
     tags: &[String],
 ) -> Result<String, StateError> {
+    materialize_ephemeral_goal_spec_with_options(
+        run_id,
+        run_name,
+        goal,
+        profile_id,
+        scope,
+        tags,
+        true,
+    )
+}
+
+/// Materialize an ephemeral `--goal` specification document with optional `### task: goal` emission.
+pub fn materialize_ephemeral_goal_spec_with_options(
+    run_id: &RunId,
+    run_name: &RunName,
+    goal: &str,
+    profile_id: &str,
+    scope: &[String],
+    tags: &[String],
+    include_goal_task: bool,
+) -> Result<String, StateError> {
     let trimmed_goal = goal.trim();
     if trimmed_goal.is_empty() {
         return Err(StateError::new(
@@ -517,7 +559,11 @@ pub fn materialize_ephemeral_goal_spec(
         cancellation_reason: None,
         spec: Some(trimmed_goal.to_owned()),
         depends_on: Vec::new(),
-        owners: Vec::new(),
+        owners: if include_goal_task {
+            Vec::new()
+        } else {
+            scope.to_vec()
+        },
         invariants: Vec::new(),
         acceptance_criteria: Vec::new(),
         guidance: None,
@@ -533,42 +579,51 @@ pub fn materialize_ephemeral_goal_spec(
         )
     })?;
 
-    let effective_tags = if tags.is_empty() {
-        default_task_tags()
-    } else {
-        tags.to_vec()
-    };
-    let task_ref = TaskRef::new("goal")?;
-    let task_yaml = TaskSpecYaml {
-        task_ref: Some(task_ref.clone()),
-        target: Some(trimmed_goal.to_owned()),
-        spec: Some(trimmed_goal.to_owned()),
-        scope: scope.to_vec(),
-        extended_scope: Vec::new(),
-        depends_on: Vec::new(),
-        tags: effective_tags,
-        invariants: Vec::new(),
-        acceptance_criteria: Vec::new(),
-        contract_revision: 1,
-        status: SpecStatus::Planned,
-        subtasks: Vec::new(),
-        receipt: None,
-    };
-    let task_yaml_str = serde_yaml::to_string(&task_yaml).map_err(|err| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("failed to serialize ephemeral task YAML: {err}"),
-        )
-    })?;
+    let rendered = if include_goal_task {
+        let effective_tags = if tags.is_empty() {
+            default_task_tags()
+        } else {
+            tags.to_vec()
+        };
+        let task_ref = TaskRef::new("goal")?;
+        let task_yaml = TaskSpecYaml {
+            task_ref: Some(task_ref.clone()),
+            target: Some(trimmed_goal.to_owned()),
+            spec: Some(trimmed_goal.to_owned()),
+            scope: scope.to_vec(),
+            extended_scope: Vec::new(),
+            depends_on: Vec::new(),
+            tags: effective_tags,
+            invariants: Vec::new(),
+            acceptance_criteria: Vec::new(),
+            contract_revision: 1,
+            status: SpecStatus::Planned,
+            subtasks: Vec::new(),
+            receipt: None,
+        };
+        let task_yaml_str = serde_yaml::to_string(&task_yaml).map_err(|err| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("failed to serialize ephemeral task YAML: {err}"),
+            )
+        })?;
 
-    let rendered = format!(
-        "---\n{}---\n\n# {}\n\n{}\n\n### task: {}\n\n```yaml\n{}```\n",
-        fm_yaml,
-        fm.title,
-        trimmed_goal,
-        task_ref,
-        task_yaml_str
-    );
+        format!(
+            "---\n{}---\n\n# {}\n\n{}\n\n### task: {}\n\n```yaml\n{}```\n",
+            fm_yaml,
+            fm.title,
+            trimmed_goal,
+            task_ref,
+            task_yaml_str
+        )
+    } else {
+        format!(
+            "---\n{}---\n\n# {}\n\n{}\n",
+            fm_yaml,
+            fm.title,
+            trimmed_goal
+        )
+    };
     // Self-verify round-trip invariants.
     let _ = parse_spec(&rendered)?;
     Ok(rendered)
@@ -884,6 +939,18 @@ status: planned
             (
                 "missing_frontmatter",
                 "# No frontmatter\n",
+            ),
+            (
+                "spec_id_parent_traversal",
+                "---\nid: \"../escape\"\ntitle: t\n---\n",
+            ),
+            (
+                "spec_id_multi_segment",
+                "---\nid: \"sub/AC-1\"\ntitle: t\n---\n",
+            ),
+            (
+                "spec_id_backslash",
+                "---\nid: \"sub\\\\AC-1\"\ntitle: t\n---\n",
             ),
             (
                 "cancelled_without_reason",

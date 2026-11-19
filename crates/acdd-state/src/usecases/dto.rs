@@ -5,19 +5,20 @@ use crate::runner::WaveExecutionReport;
 use crate::spec::{Receipt, SpecStatus};
 use crate::types::{
     BlackboardRecord, BlackboardStatus, BlackboardTopic, CheckResultRecord, GateNodeRecord,
-    IntegrateStrategy, IsolationMode, ListRunsPage, ObservabilitySnapshot, RejectionFindings,
-    ReviewEvidence, RunRecord, RunStatus, RunTombstoneRecord, SubmitAction, SubtaskRecord,
-    SubtaskStatus, TraceStatus,
+    IsolationMode, ListRunsPage, ObservabilitySnapshot, RejectionFindings, ReviewEvidence,
+    RunRecord, RunStatus, RunTombstoneRecord, SubmitAction, SubtaskRecord, SubtaskStatus,
+    TraceStatus,
 };
-use acdd_core::ids::{CommitOid, NodeCursor, RunId, RunName, SubtaskRef, TaskRef, TreeOid, WorkerId};
+use acdd_core::ids::{CommitOid, NodeCursor, RunId, RunName, SubtaskRef, TaskRef, WorkerId};
 use acdd_core::ports::DomainToolOutput;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Request payload for starting a new `Run` from a spec file or ephemeral `--goal`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartReq {
     /// Path to an existing spec Markdown file (mutually exclusive with `goal`).
@@ -29,7 +30,7 @@ pub struct StartReq {
     /// Optional explicit run name override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_name: Option<RunName>,
-    /// Optional profile override (`default | code | in_place | workspace | <path>`).
+    /// Optional profile override (`base | code | audit | <path>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
     /// Optional initial scope globs (used for `--goal` ephemeral runs).
@@ -50,7 +51,7 @@ pub struct StartReq {
 }
 
 /// Response payload returned by `StateCommand::Start`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StartResp {
     /// Created `Run` record.
     pub run: RunRecord,
@@ -61,7 +62,7 @@ pub struct StartResp {
 }
 
 /// Request payload for drafting the next numbered spec document in a configured collection.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DraftReq {
     /// Target collection key from `acdd.yaml` `specs:` (e.g. `"milestones"`, `"plans"`).
@@ -80,7 +81,7 @@ pub struct DraftReq {
 }
 
 /// Response payload returned by `StateCommand::Draft`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DraftResp {
     /// Generated sequential spec ID (e.g. `"AC-008"`).
     pub spec_id: String,
@@ -91,7 +92,7 @@ pub struct DraftResp {
 }
 
 /// Request payload for claiming or re-claiming a ready/active node.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClaimReq {
     /// Optional run ID or name selector.
@@ -117,7 +118,7 @@ pub struct ClaimReq {
 }
 
 /// Request payload for running gate verification (`command`, `call`, `checks`, scope barrier).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct VerifyReq {
     /// Optional run ID or name selector.
@@ -128,7 +129,7 @@ pub struct VerifyReq {
     /// Optional claiming worker identity check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<WorkerId>,
-    /// Optional `--test` filter target (required for `proof: contract`).
+    /// Optional `--test` filter target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_target: Option<String>,
     /// Optional expected `claim_revision`.
@@ -140,7 +141,7 @@ pub struct VerifyReq {
 }
 
 /// Response payload returned by `StateCommand::Verify`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VerifyResp {
     /// Run identifier.
     pub run_id: RunId,
@@ -154,10 +155,6 @@ pub struct VerifyResp {
     pub execution_digest: String,
     /// Process exit code if a command ran.
     pub exit_code: Option<i32>,
-    /// Passed test count.
-    pub tests_passed: u32,
-    /// Failed test count.
-    pub tests_failed: u32,
     /// Domain check outcomes recorded.
     pub check_results: Vec<CheckResultRecord>,
     /// Log path relative to `.acdd/run/<run_id>/`.
@@ -167,7 +164,7 @@ pub struct VerifyResp {
 }
 
 /// Request payload for submitting a gate decision (`pass` or `reject`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SubmitReq {
     /// Optional run ID or name selector.
@@ -209,7 +206,7 @@ pub struct SubmitReq {
 }
 
 /// Response payload returned by `StateCommand::Submit`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SubmitResp {
     /// Run identifier.
     pub run_id: RunId,
@@ -222,19 +219,23 @@ pub struct SubmitResp {
     /// Updated run status (`Completed` if terminal archive/handoff gate closed).
     pub run_status: RunStatus,
     /// Created/recovered commit OID if `save.post == commit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub committed_oid: Option<CommitOid>,
-    /// Created snapshot ref if `save.post == snapshot`.
-    pub snapshot_ref: Option<String>,
     /// Receipt emitted if `receipt: true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt: Option<Receipt>,
     /// Archive path if archived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_path: Option<String>,
+    /// Repository-relative path to the materialized gate report when `save.report` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_path: Option<String>,
     /// Newly unblocked/ready node cursors.
     pub unblocked_nodes: Vec<String>,
 }
 
 /// Request payload for extending a task's admitted write scope (`extend_scope`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExtendScopeReq {
     /// Optional run ID or name selector.
@@ -252,7 +253,7 @@ pub struct ExtendScopeReq {
 }
 
 /// Response payload returned by `StateCommand::ExtendScope`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ExtendScopeResp {
     /// Run identifier.
     pub run_id: RunId,
@@ -265,7 +266,7 @@ pub struct ExtendScopeResp {
 }
 
 /// Request payload for reopening a gate or task container (`reopen`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReopenReq {
     /// Optional run ID or name selector.
@@ -282,7 +283,7 @@ pub struct ReopenReq {
 }
 
 /// Response payload returned by `StateCommand::Reopen`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReopenResp {
     /// Run identifier.
     pub run_id: RunId,
@@ -293,7 +294,7 @@ pub struct ReopenResp {
 }
 
 /// Request payload for synchronizing spec edits (and optional profile rebind) into an active `Run`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SyncReq {
     /// Optional run ID or name selector.
@@ -305,7 +306,7 @@ pub struct SyncReq {
 }
 
 /// Response payload returned by `StateCommand::Sync`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SyncResp {
     /// Run identifier.
     pub run_id: RunId,
@@ -320,7 +321,7 @@ pub struct SyncResp {
 }
 
 /// Request payload for updating a subtask status and mandatory terminal evidence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SubtaskReq {
     /// Optional run ID or name selector.
@@ -338,14 +339,14 @@ pub struct SubtaskReq {
 }
 
 /// Response payload returned by `StateCommand::Subtask`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SubtaskResp {
     /// Updated subtask row.
     pub subtask: SubtaskRecord,
 }
 
 /// Request payload for posting a message to the run blackboard (`blackboard post`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BlackboardPostReq {
     /// Optional run ID or name selector.
@@ -372,73 +373,14 @@ pub struct BlackboardPostReq {
 }
 
 /// Response payload returned by `StateCommand::BlackboardPost`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BlackboardPostResp {
     /// Persisted blackboard entry with assigned `id`.
     pub entry: BlackboardRecord,
 }
 
-/// Request payload for restoring working-tree files from a commit or tree OID (`acdd rollback`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RollbackReq {
-    /// Optional run ID or name selector.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<String>,
-    /// Snapshot ref, commit OID, or tree OID to restore.
-    pub target: String,
-    /// Optional node cursor restricting rollback to that node's `admitted_scope`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node: Option<String>,
-    /// Explicit worktree path override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<PathBuf>,
-}
-
-/// Response payload returned by `StateCommand::Rollback`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RollbackResp {
-    /// Run identifier.
-    pub run_id: RunId,
-    /// Target tree OID restored.
-    pub target_tree: TreeOid,
-    /// Repository-relative paths restored/deleted.
-    pub restored_paths: Vec<String>,
-    /// Gate node IDs marked `stale` due to candidate tree rollback.
-    pub staled_nodes: Vec<String>,
-}
-
-/// Request payload for integrating completed task branches into the run worktree (`acdd integrate`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct IntegrateReq {
-    /// Optional run ID or name selector.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<String>,
-    /// Optional specific task reference (`None` integrates all completed unintegrated tasks in order).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_ref: Option<TaskRef>,
-    /// Optional strategy override (`manual | rebase-ff | ff-only | no-ff | squash`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub strategy: Option<IntegrateStrategy>,
-    /// Explicitly permit integrating onto `main` / `master`.
-    #[serde(default)]
-    pub allow_main: bool,
-}
-
-/// Response payload returned by `StateCommand::Integrate`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IntegrateResp {
-    /// Run identifier.
-    pub run_id: RunId,
-    /// Integrated task references.
-    pub integrated_tasks: Vec<TaskRef>,
-    /// Resulting run worktree `HEAD` commit OID.
-    pub target_head: CommitOid,
-}
-
 /// Request payload for clearing/cancelling an active `Run` (`acdd clear`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClearReq {
     /// Optional run ID or name selector.
@@ -453,7 +395,7 @@ pub struct ClearReq {
 }
 
 /// Response payload returned by `StateCommand::Clear`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ClearResp {
     /// Recorded tombstone with `terminal_status = cleared`.
     pub tombstone: RunTombstoneRecord,
@@ -462,7 +404,7 @@ pub struct ClearResp {
 }
 
 /// Request payload for automated wave orchestration (`acdd run`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RunReq {
     /// Optional run ID or name selector.
@@ -489,7 +431,7 @@ pub struct RunResp {
 }
 
 /// Request payload for invoking an external `DomainProvider` plugin tool (`acdd tool <domain>_<name>`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CallPluginToolReq {
     /// Full plugin tool name (`<domain>_<name>`).
@@ -518,7 +460,7 @@ pub struct CallPluginToolResp {
 }
 
 /// Read-only query request for `StateQuery::Status`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StatusReq {
     /// Optional run ID or name selector.
@@ -540,7 +482,7 @@ pub struct StatusResp {
 }
 
 /// Read-only query request for `StateQuery::List`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListReq {
     /// Optional workspace filter.
@@ -564,14 +506,14 @@ pub struct ListReq {
 }
 
 /// Read-only response returned by `StateQuery::List`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListResp {
     /// Paginated runs and tombstones.
     pub page: ListRunsPage,
 }
 
 /// Read-only query request for `StateQuery::Show`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ShowReq {
     /// Optional run ID or name selector.
@@ -583,7 +525,7 @@ pub struct ShowReq {
 }
 
 /// Read-only response returned by `StateQuery::Show`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ShowResp {
     /// Resolved `Run` record.
     pub run: RunRecord,
@@ -596,7 +538,7 @@ pub struct ShowResp {
 }
 
 /// Read-only query request for `StateQuery::Next`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NextReq {
     /// Optional run ID or name selector.
@@ -608,7 +550,7 @@ pub struct NextReq {
 }
 
 /// Read-only response returned by `StateQuery::Next`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NextResp {
     /// Active run identifier (`None` when no active run exists).
     pub run_id: Option<RunId>,
@@ -621,7 +563,7 @@ pub struct NextResp {
 }
 
 /// Read-only query request for `StateQuery::BlackboardRead`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BlackboardReadReq {
     /// Optional run ID or name selector.
@@ -651,7 +593,7 @@ pub struct BlackboardReadReq {
 }
 
 /// Read-only response returned by `StateQuery::BlackboardRead`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BlackboardReadResp {
     /// Run identifier.
     pub run_id: RunId,
@@ -668,7 +610,7 @@ pub struct BlackboardReadResp {
 }
 
 /// Read-only query request for `StateQuery::Observability`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ObservabilityReq {
     /// Whether to include Prometheus 0.0.4 text output.
@@ -677,7 +619,7 @@ pub struct ObservabilityReq {
 }
 
 /// Read-only response returned by `StateQuery::Observability`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ObservabilityResp {
     /// Aggregate state metrics snapshot.
     pub snapshot: ObservabilitySnapshot,
@@ -685,8 +627,8 @@ pub struct ObservabilityResp {
     pub prometheus_text: Option<String>,
 }
 
-/// All 16 mutating/plugin state commands executed by [`super::StateEngine`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// All 13 mutating/plugin state commands executed by [`super::StateEngine`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum StateCommand {
     /// Start a new `Run` from a spec file or ephemeral `--goal`.
     Start(StartReq),
@@ -708,10 +650,6 @@ pub enum StateCommand {
     Subtask(SubtaskReq),
     /// Post a message to the run blackboard.
     BlackboardPost(BlackboardPostReq),
-    /// Confined-restore files from a commit/tree OID.
-    Rollback(RollbackReq),
-    /// Integrate completed task branches into the run worktree.
-    Integrate(IntegrateReq),
     /// Clear/cancel an active `Run` into `run_tombstones(terminal_status = 'cleared')`.
     Clear(ClearReq),
     /// Execute automated DAG waves (`acdd run`).
@@ -734,8 +672,6 @@ impl StateCommandOutput {
             Self::Sync(resp) => serde_json::to_value(resp),
             Self::Subtask(resp) => serde_json::to_value(resp),
             Self::BlackboardPost(resp) => serde_json::to_value(resp),
-            Self::Rollback(resp) => serde_json::to_value(resp),
-            Self::Integrate(resp) => serde_json::to_value(resp),
             Self::Clear(resp) => serde_json::to_value(resp),
             Self::Run(resp) => serde_json::to_value(resp),
             Self::CallPluginTool(resp) => serde_json::to_value(resp),
@@ -766,10 +702,6 @@ pub enum StateCommandOutput {
     Subtask(SubtaskResp),
     /// Output of `BlackboardPost`.
     BlackboardPost(BlackboardPostResp),
-    /// Output of `Rollback`.
-    Rollback(RollbackResp),
-    /// Output of `Integrate`.
-    Integrate(IntegrateResp),
     /// Output of `Clear`.
     Clear(Box<ClearResp>),
     /// Output of `Run`.
@@ -779,7 +711,7 @@ pub enum StateCommandOutput {
 }
 
 /// Read-only request payload for `StateQuery::Validate`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ValidateReq {
     /// Optional workspace-relative document path; `None` validates the whole workspace.
@@ -794,7 +726,7 @@ pub struct ValidateReq {
 }
 
 /// Single diagnostic entry emitted by `StateQuery::Validate`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ValidateDiagnostic {
     /// Outcome status (`"pass"` or `"fail"`).
@@ -812,7 +744,7 @@ pub struct ValidateDiagnostic {
 }
 
 /// Summary counters returned by `StateQuery::Validate`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ValidateSummary {
     /// Passed diagnostic checks count.
@@ -826,7 +758,7 @@ pub struct ValidateSummary {
 }
 
 /// Typed response payload returned by `StateQuery::Validate`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ValidateResp {
     /// Overall validation pass (`failed == 0`).
@@ -844,7 +776,7 @@ pub struct ValidateResp {
 }
 
 /// All read-only state queries executed directly over `dyn StateReader` by [`super::StateQueryEngine`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum StateQuery {
     /// Inspect status of an active run.
     Status(StatusReq),

@@ -1,4 +1,4 @@
-//! Branch integration strategies (`manual | rebase-ff | ff-only | no-ff | squash`) and completeness checks.
+//! Task branch integration (`rebase-ff` landing) and completeness checks.
 
 use super::commit::{current_branch_name, current_head_commit, is_protected_main_branch};
 use super::snapshot::tree_entry_at;
@@ -6,7 +6,6 @@ use super::{
     commit_has_exact_trailer, ensure_non_empty_git_identity, git_dir_path, run_git_checked,
     run_git_raw, run_git_stdout, ScopedTempDir,
 };
-use crate::types::IntegrateStrategy;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{CommitOid, RunId, TaskRef, TreeOid};
 use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
@@ -29,8 +28,6 @@ pub struct IntegrateTaskReq {
     pub task_ref: TaskRef,
     /// Accepted candidate tree OID for the `Acdd-Integrated` trailer.
     pub accepted_tree: TreeOid,
-    /// Integration strategy (`manual | rebase-ff | ff-only | no-ff | squash`).
-    pub strategy: IntegrateStrategy,
     /// Explicitly permit integrating onto `main` / `master`.
     pub allow_main: bool,
 }
@@ -38,9 +35,7 @@ pub struct IntegrateTaskReq {
 /// Result of integrating a task branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntegrateTaskResp {
-    /// Strategy executed.
-    pub strategy: IntegrateStrategy,
-    /// Created/landed commit OID (`None` for `IntegrateStrategy::Manual`).
+    /// Created/landed commit OID.
     pub integrated_commit: Option<CommitOid>,
     /// Resulting `HEAD` commit OID in `target_worktree`.
     pub target_head: CommitOid,
@@ -112,20 +107,11 @@ pub fn abort_in_progress_git_ops(worktree: &Path) -> Result<bool, StateError> {
     Ok(aborted)
 }
 
-/// Integrate `source_branch` into `target_worktree` using `strategy`, aborting cleanly on conflict.
+/// Integrate `source_branch` into `target_worktree` via `rebase-ff`, aborting cleanly on conflict.
 pub fn integrate_task_branch(req: &IntegrateTaskReq) -> Result<IntegrateTaskResp, StateError> {
     abort_in_progress_git_ops(&req.target_worktree)?;
     if let Some(src_wt) = &req.source_worktree {
         abort_in_progress_git_ops(src_wt)?;
-    }
-
-    if req.strategy == IntegrateStrategy::Manual {
-        let target_head = current_head_commit(&req.target_worktree)?;
-        return Ok(IntegrateTaskResp {
-            strategy: IntegrateStrategy::Manual,
-            integrated_commit: None,
-            target_head,
-        });
     }
 
     if req.source_branch.trim().is_empty() || req.source_branch.starts_with('-') {
@@ -162,253 +148,98 @@ pub fn integrate_task_branch(req: &IntegrateTaskReq) -> Result<IntegrateTaskResp
     let target_head_before = current_head_commit(&req.target_worktree)?;
     let identity_env = ensure_non_empty_git_identity(&req.target_worktree);
 
-    match req.strategy {
-        IntegrateStrategy::Manual => unreachable!(),
-        IntegrateStrategy::RebaseFf => {
-            let mut temp_wt_guard: Option<TempRebaseWorktree> = None;
-            let existing_wt = match &req.source_worktree {
-                Some(wt) => Some(wt.clone()),
-                None => find_branch_worktree(&req.target_worktree, &req.source_branch),
-            };
-            let rebase_wt = match existing_wt.as_deref() {
-                Some(wt) => {
-                    abort_in_progress_git_ops(wt)?;
-                    wt
-                }
-                None => {
-                    let wt = TempRebaseWorktree::create(&req.target_worktree, &req.source_branch)?;
-                    temp_wt_guard = Some(wt);
-                    temp_wt_guard
-                        .as_ref()
-                        .map(|g| g.worktree_dir.as_path())
-                        .unwrap()
-                }
-            };
+    let mut temp_wt_guard: Option<TempRebaseWorktree> = None;
+    let existing_wt = match &req.source_worktree {
+        Some(wt) => Some(wt.clone()),
+        None => find_branch_worktree(&req.target_worktree, &req.source_branch),
+    };
+    let rebase_wt = match existing_wt.as_deref() {
+        Some(wt) => {
+            abort_in_progress_git_ops(wt)?;
+            wt
+        }
+        None => {
+            let wt = TempRebaseWorktree::create(&req.target_worktree, &req.source_branch)?;
+            temp_wt_guard = Some(wt);
+            temp_wt_guard
+                .as_ref()
+                .map(|g| g.worktree_dir.as_path())
+                .unwrap()
+        }
+    };
 
-            let rebase_out = run_git_raw(
-                rebase_wt,
-                &["rebase", target_head_before.as_str()],
-                None,
-                &identity_env,
-                None,
-            )?;
-            if !rebase_out.status.success() {
-                let conflicts = collect_conflicting_paths(rebase_wt);
-                super::failpoint_hit("git_integrate_before_abort");
-                let _ = run_git_raw(rebase_wt, &["rebase", "--abort"], None, &[], None);
-                drop(temp_wt_guard);
-                return Err(integration_conflict_error(
-                    "rebase-ff",
-                    &conflicts,
-                    &req.source_branch,
-                    target_branch.as_deref(),
-                ));
-            }
+    let rebase_out = run_git_raw(
+        rebase_wt,
+        &["rebase", target_head_before.as_str()],
+        None,
+        &identity_env,
+        None,
+    )?;
+    if !rebase_out.status.success() {
+        let conflicts = collect_conflicting_paths(rebase_wt);
+        super::failpoint_hit("git_integrate_before_abort");
+        let _ = run_git_raw(rebase_wt, &["rebase", "--abort"], None, &[], None);
+        drop(temp_wt_guard);
+        return Err(integration_conflict_error(
+            "rebase-ff",
+            &conflicts,
+            &req.source_branch,
+            target_branch.as_deref(),
+        ));
+    }
 
-            let rebased_tip = current_head_commit(rebase_wt)?;
-            if rebased_tip != target_head_before {
-                let existing_msg = run_git_stdout(
-                    rebase_wt,
-                    &["show", "-s", "--format=%B", rebased_tip.as_str()],
-                    None,
-                    ErrorCode::ExternalGitDrift,
-                )?;
-                let amended_msg = append_trailer_if_missing(&existing_msg, &trailer);
-                let amend_out = run_git_raw(
-                    rebase_wt,
-                    &["commit", "--amend", "--no-verify", "-F", "-"],
-                    None,
-                    &identity_env,
-                    Some(amended_msg.as_bytes()),
-                )?;
-                if !amend_out.status.success() {
-                    drop(temp_wt_guard);
-                    return Err(StateError::new(
-                        ErrorCode::ExternalGitDrift,
-                        format!(
-                            "failed appending Acdd-Integrated trailer on rebased tip: {}",
-                            String::from_utf8_lossy(&amend_out.stderr).trim()
-                        ),
-                    ));
-                }
-                let final_tip = current_head_commit(rebase_wt)?;
-                let ff_out = run_git_raw(
-                    &req.target_worktree,
-                    &["merge", "--ff-only", final_tip.as_str()],
-                    None,
-                    &identity_env,
-                    None,
-                )?;
-                if !ff_out.status.success() {
-                    let conflicts = collect_conflicting_paths(&req.target_worktree);
-                    let _ = abort_in_progress_git_ops(&req.target_worktree);
-                    drop(temp_wt_guard);
-                    return Err(integration_conflict_error(
-                        "rebase-ff",
-                        &conflicts,
-                        &req.source_branch,
-                        target_branch.as_deref(),
-                    ));
-                }
-            }
+    let rebased_tip = current_head_commit(rebase_wt)?;
+    if rebased_tip != target_head_before {
+        let existing_msg = run_git_stdout(
+            rebase_wt,
+            &["show", "-s", "--format=%B", rebased_tip.as_str()],
+            None,
+            ErrorCode::ExternalGitDrift,
+        )?;
+        let amended_msg = append_trailer_if_missing(&existing_msg, &trailer);
+        let amend_out = run_git_raw(
+            rebase_wt,
+            &["commit", "--amend", "--no-verify", "-F", "-"],
+            None,
+            &identity_env,
+            Some(amended_msg.as_bytes()),
+        )?;
+        if !amend_out.status.success() {
             drop(temp_wt_guard);
-            let target_head = current_head_commit(&req.target_worktree)?;
-            Ok(IntegrateTaskResp {
-                strategy: IntegrateStrategy::RebaseFf,
-                integrated_commit: Some(target_head.clone()),
-                target_head,
-            })
+            return Err(StateError::new(
+                ErrorCode::ExternalGitDrift,
+                format!(
+                    "failed appending Acdd-Integrated trailer on rebased tip: {}",
+                    String::from_utf8_lossy(&amend_out.stderr).trim()
+                ),
+            ));
         }
-        IntegrateStrategy::FfOnly => {
-            let out = run_git_raw(
-                &req.target_worktree,
-                &["merge", "--ff-only", &req.source_branch],
-                None,
-                &identity_env,
-                None,
-            )?;
-            if !out.status.success() {
-                let conflicts = collect_conflicting_paths(&req.target_worktree);
-                let _ = abort_in_progress_git_ops(&req.target_worktree);
-                return Err(integration_conflict_error(
-                    "ff-only",
-                    &conflicts,
-                    &req.source_branch,
-                    target_branch.as_deref(),
-                ));
-            }
-            let target_head = current_head_commit(&req.target_worktree)?;
-            Ok(IntegrateTaskResp {
-                strategy: IntegrateStrategy::FfOnly,
-                integrated_commit: Some(target_head.clone()),
-                target_head,
-            })
-        }
-        IntegrateStrategy::NoFf => {
-            let msg = format!(
-                "Integrate task {} from {}\n\n{}\n",
-                req.task_ref.as_str(),
-                req.source_branch,
-                trailer
-            );
-            let out = run_git_raw(
-                &req.target_worktree,
-                &["merge", "--no-ff", "--no-edit", "-m", &msg, &req.source_branch],
-                None,
-                &identity_env,
-                None,
-            )?;
-            if !out.status.success() {
-                let conflicts = collect_conflicting_paths(&req.target_worktree);
-                super::failpoint_hit("git_integrate_before_abort");
-                let _ = run_git_raw(&req.target_worktree, &["merge", "--abort"], None, &[], None);
-                return Err(integration_conflict_error(
-                    "no-ff",
-                    &conflicts,
-                    &req.source_branch,
-                    target_branch.as_deref(),
-                ));
-            }
-            let target_head = current_head_commit(&req.target_worktree)?;
-            Ok(IntegrateTaskResp {
-                strategy: IntegrateStrategy::NoFf,
-                integrated_commit: Some(target_head.clone()),
-                target_head,
-            })
-        }
-        IntegrateStrategy::Squash => {
-            let staged_check = run_git_raw(
-                &req.target_worktree,
-                &["diff", "--cached", "--quiet"],
-                None,
-                &[],
-                None,
-            )?;
-            if !staged_check.status.success() {
-                return Err(StateError::new(
-                    ErrorCode::ExternalGitDrift,
-                    "target worktree has staged local changes; commit or unstage before squash integration",
-                ));
-            }
-            let squash_out = run_git_raw(
-                &req.target_worktree,
-                &["merge", "--squash", &req.source_branch],
-                None,
-                &identity_env,
-                None,
-            )?;
-            if !squash_out.status.success() {
-                let conflicts = collect_conflicting_paths(&req.target_worktree);
-                super::failpoint_hit("git_integrate_before_abort");
-                if let Ok(gd) = git_dir_path(&req.target_worktree) {
-                    let squash_msg = gd.join("SQUASH_MSG");
-                    if squash_msg.exists() || !conflicts.is_empty() {
-                        let _ = run_git_raw(
-                            &req.target_worktree,
-                            &["reset", "--merge"],
-                            None,
-                            &[],
-                            None,
-                        );
-                        let _ = fs::remove_file(squash_msg);
-                    }
-                }
-                if conflicts.is_empty() {
-                    return Err(StateError::new(
-                        ErrorCode::ExternalGitDrift,
-                        format!(
-                            "squash integration failed: {}",
-                            String::from_utf8_lossy(&squash_out.stderr).trim()
-                        ),
-                    ));
-                }
-                return Err(integration_conflict_error(
-                    "squash",
-                    &conflicts,
-                    &req.source_branch,
-                    target_branch.as_deref(),
-                ));
-            }
-            let msg = format!(
-                "Integrate task {} from {}\n\n{}\n",
-                req.task_ref.as_str(),
-                req.source_branch,
-                trailer
-            );
-            let commit_out = run_git_raw(
-                &req.target_worktree,
-                &["commit", "--allow-empty", "-F", "-"],
-                None,
-                &identity_env,
-                Some(msg.as_bytes()),
-            )?;
-            if !commit_out.status.success() {
-                let _ = run_git_raw(
-                    &req.target_worktree,
-                    &["reset", "--merge"],
-                    None,
-                    &[],
-                    None,
-                );
-                if let Ok(gd) = git_dir_path(&req.target_worktree) {
-                    let _ = fs::remove_file(gd.join("SQUASH_MSG"));
-                }
-                return Err(StateError::new(
-                    ErrorCode::ExternalGitDrift,
-                    format!(
-                        "squash integration commit failed: {}",
-                        String::from_utf8_lossy(&commit_out.stderr).trim()
-                    ),
-                ));
-            }
-            let target_head = current_head_commit(&req.target_worktree)?;
-            Ok(IntegrateTaskResp {
-                strategy: IntegrateStrategy::Squash,
-                integrated_commit: Some(target_head.clone()),
-                target_head,
-            })
+        let final_tip = current_head_commit(rebase_wt)?;
+        let ff_out = run_git_raw(
+            &req.target_worktree,
+            &["merge", "--ff-only", final_tip.as_str()],
+            None,
+            &identity_env,
+            None,
+        )?;
+        if !ff_out.status.success() {
+            let conflicts = collect_conflicting_paths(&req.target_worktree);
+            let _ = abort_in_progress_git_ops(&req.target_worktree);
+            drop(temp_wt_guard);
+            return Err(integration_conflict_error(
+                "rebase-ff",
+                &conflicts,
+                &req.source_branch,
+                target_branch.as_deref(),
+            ));
         }
     }
+    drop(temp_wt_guard);
+    let target_head = current_head_commit(&req.target_worktree)?;
+    Ok(IntegrateTaskResp {
+        integrated_commit: Some(target_head.clone()),
+        target_head,
+    })
 }
 
 /// Verify every completed task's scoped delta is present in `run_worktree`, returning unintegrated `TaskRef`s.

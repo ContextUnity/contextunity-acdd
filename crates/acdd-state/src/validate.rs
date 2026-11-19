@@ -5,8 +5,9 @@
 
 use crate::machine::{effective_task_tags, matches_when};
 use crate::profile::{
-    resolve_profile_from_str_with_dirs, resolve_profile_ref_with_dirs, validate_profile,
-    ProfileValidationOptions, ResolvedGateProfile,
+    resolve_optional_profile_ref_with_dirs, resolve_profile_from_str_with_dirs,
+    resolve_profile_ref_with_dirs, validate_profile, ProfileValidationOptions,
+    ResolvedGateProfile,
 };
 use crate::spec::{parse_spec, SpecDocument, SpecStatus};
 use crate::store::sqlite::SqliteStateReader;
@@ -65,7 +66,6 @@ pub fn validate_workspace(
         ));
     }
 
-    let profile_ref = explicit_profile.unwrap_or("workspace");
     let require_bound = adapter.modules.is_enabled("state");
     let has_workspace_profile = root.join(".acdd/profile.yaml").is_file();
     let profile_diag_path = if let Some(explicit) = explicit_profile {
@@ -73,11 +73,11 @@ pub fn validate_workspace(
     } else if has_workspace_profile {
         ".acdd/profile.yaml".to_owned()
     } else {
-        "embedded:workspace".to_owned()
+        "embedded:code".to_owned()
     };
 
-    let active_profile = match resolve_profile_ref_with_dirs(
-        profile_ref,
+    let active_profile = match resolve_optional_profile_ref_with_dirs(
+        explicit_profile,
         Some(root),
         Some(&adapter.modules),
         Some(&adapter.profiles_dirs),
@@ -240,10 +240,16 @@ pub fn validate_document(
                     return Ok(build_resp(&scope_label, diagnostics, warnings, 1));
                 }
             };
-            let profile_ref = explicit_profile.unwrap_or("workspace");
-            let profile_diag_path = explicit_profile.unwrap_or(".acdd/profile.yaml");
-            let active_profile = match resolve_profile_ref_with_dirs(
-                profile_ref,
+            let has_workspace_profile = root.join(".acdd/profile.yaml").is_file();
+            let profile_diag_path = if let Some(explicit) = explicit_profile {
+                explicit
+            } else if has_workspace_profile {
+                ".acdd/profile.yaml"
+            } else {
+                "embedded:code"
+            };
+            let active_profile = match resolve_optional_profile_ref_with_dirs(
+                explicit_profile,
                 Some(root),
                 Some(&adapter.modules),
                 Some(&adapter.profiles_dirs),
@@ -920,7 +926,6 @@ fn build_resp(
 mod tests {
     use super::*;
     use crate::harness::RunHarness;
-    use crate::profile::resolve_profile_ref;
     use crate::types::{
         GateNodeRecord, IsolationMode, NodeKind, RunGraphSnapshot, RunRecord, RunTombstoneRecord,
         StoragePreconditions, TerminalStatus,
@@ -953,7 +958,11 @@ mod tests {
                     ..DomainCapabilities::default()
                 },
                 "docs" => DomainCapabilities {
-                    context_lenses: BTreeSet::from(["adrs".to_owned(), "invariants".to_owned()]),
+                    context_lenses: BTreeSet::from([
+                        "instructions".to_owned(),
+                        "adrs".to_owned(),
+                        "invariants".to_owned(),
+                    ]),
                     ..DomainCapabilities::default()
                 },
                 _ => DomainCapabilities::default(),
@@ -1016,7 +1025,7 @@ mod tests {
         fs::write(
             root.join(".acdd/profile.yaml"),
             format!(
-                "version: 2\ninherit: default\ncommands:\n  test: \"cargo test {{test_filter}}\"\n  build_check: \"cargo check\"\n  verify_all: \"cargo test\"\n{extra}"
+                "version: 2\ninherit: code\ncommands:\n  test: \"cargo test {{test_filter}}\"\n  build_check: \"cargo check\"\n  verify_all: \"cargo test\"\n{extra}"
             ),
         )
         .unwrap();
@@ -1050,7 +1059,7 @@ mod tests {
         )
         .unwrap();
         fs::create_dir_all(root.join(".acdd")).unwrap();
-        fs::write(root.join(".acdd/profile.yaml"), "version: 2\ninherit: default\n").unwrap();
+        fs::write(root.join(".acdd/profile.yaml"), "version: 2\ninherit: code\n").unwrap();
         let res_unbound = validate_workspace(root, None, None, &providers).unwrap();
         assert!(!res_unbound.valid);
         assert_eq!(res_unbound.diagnostics[0].code, "CONFIG_VALID");
@@ -1166,7 +1175,9 @@ mod tests {
             response_policy: acdd_core::response::ResponsePolicy::default(),
             retain_traces: 5,
         };
-        let resolved_p = resolve_profile_ref("workspace", Some(root), Some(&cfg.modules)).unwrap();
+        let resolved_p =
+            resolve_optional_profile_ref_with_dirs(None, Some(root), Some(&cfg.modules), None)
+                .unwrap();
         let harness = RunHarness::in_memory().unwrap();
         validate_spec_for_run(&cfg, &harness, &providers, &dep_05_doc, &resolved_p).unwrap();
 

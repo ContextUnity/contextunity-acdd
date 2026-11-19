@@ -7,6 +7,7 @@ pub mod context;
 /// Git worktree, snapshot, scoped commit, integration, and crash-recovery operations.
 pub mod git_ops;
 /// In-memory and disk test harness for state transitions and storage invariants.
+#[cfg(any(test, feature = "test-support"))]
 pub mod harness;
 /// 100% pure functional state-machine transitions and DAG scheduling core.
 pub mod machine;

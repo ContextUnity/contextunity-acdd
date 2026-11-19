@@ -1,7 +1,9 @@
 //! Role runner subprocess spawning (`stdin` Markdown prompt, `ACDD_*` env, session reuse).
 
 use crate::profile::RoleDef;
-use crate::runner::{node_slug, open_run_log_file, run_isolated_process, BoundedLogWriter};
+use crate::runner::{
+    node_slug, open_run_log_file, run_isolated_process, shell_command, BoundedLogWriter,
+};
 use crate::types::ClaimOutcome;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::sha256_hex;
@@ -9,49 +11,11 @@ use acdd_core::git::scrub_git_env;
 use acdd_core::ids::{NodeCursor, RunId, WorkerId};
 use acdd_core::telemetry::unix_epoch_ms;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-/// Parameters for spawning a configured `RoleDef.runner` process.
-#[derive(Debug, Clone)]
-pub struct RoleSpawnReq {
-    /// Owning run identifier.
-    pub run_id: RunId,
-    /// Target node cursor.
-    pub node_cursor: NodeCursor,
-    /// Owning container ID (`task:<t>` or `root:<c>`) for `reuse_on_reject` session scoping.
-    pub node_container_id: String,
-    /// Active claim revision.
-    pub claim_revision: u32,
-    /// Role name (`architect`, `builder`, `independent_reviewer`, etc.).
-    pub role_name: String,
-    /// Resolved role definition (`runner`, `reuse_on_reject`, `prompt_template`, etc.).
-    pub role_def: RoleDef,
-    /// Assigned worker ID for this invocation.
-    pub worker_id: WorkerId,
-    /// Node worktree path.
-    pub worktree: PathBuf,
-    /// Primary workspace root.
-    pub primary_worktree: PathBuf,
-    /// State SQLite path passed via `ACDD_STATE_DB`.
-    pub state_db_path: PathBuf,
-    /// Optional code-map SQLite path passed via `ACDD_CODE_DB`.
-    pub code_db_path: Option<PathBuf>,
-    /// W3C `TRACEPARENT` propagated to the agent runner.
-    pub trace_parent: String,
-    /// Rendered Markdown prompt delivered via `stdin`.
-    pub prompt_markdown: String,
-    /// Timeout ceiling in seconds.
-    pub timeout_seconds: u64,
-    /// Maximum log bytes retained in `.acdd/run/<run_id>/logs/`.
-    pub max_log_bytes: usize,
-    /// Maximum log line length in bytes.
-    pub max_line_bytes: usize,
-}
 
 /// Borrowed parameters for spawning a configured `RoleDef.runner` process without cloning owned strings or paths.
 #[derive(Debug, Clone, Copy)]
@@ -90,31 +54,7 @@ pub struct RoleSpawnBorrow<'a> {
     pub max_line_bytes: usize,
 }
 
-impl RoleSpawnReq {
-    /// Borrow all fields as a zero-clone [`RoleSpawnBorrow`].
-    pub fn as_borrow(&self) -> RoleSpawnBorrow<'_> {
-        RoleSpawnBorrow {
-            run_id: &self.run_id,
-            node_cursor: &self.node_cursor,
-            node_container_id: &self.node_container_id,
-            claim_revision: self.claim_revision,
-            role_name: &self.role_name,
-            role_def: &self.role_def,
-            worker_id: &self.worker_id,
-            worktree: &self.worktree,
-            primary_worktree: &self.primary_worktree,
-            state_db_path: &self.state_db_path,
-            code_db_path: self.code_db_path.as_deref(),
-            trace_parent: &self.trace_parent,
-            prompt_markdown: &self.prompt_markdown,
-            timeout_seconds: self.timeout_seconds,
-            max_log_bytes: self.max_log_bytes,
-            max_line_bytes: self.max_line_bytes,
-        }
-    }
-}
-
-/// Result returned by `spawn_role_runner`.
+/// Result returned by `spawn_role_runner_borrowed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoleSpawnOutcome {
     /// Process exit code (`None` on timeout/signal).
@@ -128,14 +68,6 @@ pub struct RoleSpawnOutcome {
 }
 
 /// Spawn a role runner with `stdin` prompt delivery, `ACDD_*` env, and process-group timeout enforcement.
-pub fn spawn_role_runner(
-    req: &RoleSpawnReq,
-    session_cache: &mut BTreeMap<(RunId, String, String), String>,
-) -> Result<RoleSpawnOutcome, StateError> {
-    spawn_role_runner_borrowed(&req.as_borrow(), session_cache)
-}
-
-/// Borrowed variant of [`spawn_role_runner`] that avoids cloning `RoleDef` and owned path/string fields.
 pub fn spawn_role_runner_borrowed(
     req: &RoleSpawnBorrow<'_>,
     session_cache: &mut BTreeMap<(RunId, String, String), String>,
@@ -143,16 +75,7 @@ pub fn spawn_role_runner_borrowed(
     spawn_role_runner_borrowed_inner(req, session_cache, None)
 }
 
-#[cfg(test)]
-pub(super) fn spawn_role_runner_inner(
-    req: &RoleSpawnReq,
-    session_cache: &mut BTreeMap<(RunId, String, String), String>,
-    timeout_override: Option<Duration>,
-) -> Result<RoleSpawnOutcome, StateError> {
-    spawn_role_runner_borrowed_inner(&req.as_borrow(), session_cache, timeout_override)
-}
-
-fn spawn_role_runner_borrowed_inner(
+pub(super) fn spawn_role_runner_borrowed_inner(
     req: &RoleSpawnBorrow<'_>,
     session_cache: &mut BTreeMap<(RunId, String, String), String>,
     timeout_override: Option<Duration>,
@@ -253,21 +176,6 @@ fn spawn_role_runner_borrowed_inner(
         agent_session_id,
         log_relpath,
     })
-}
-
-fn shell_command(runner_cmd: &str) -> Command {
-    #[cfg(unix)]
-    {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c").arg(runner_cmd);
-        cmd
-    }
-    #[cfg(windows)]
-    {
-        let mut cmd = Command::new("cmd");
-        cmd.arg("/C").arg(runner_cmd);
-        cmd
-    }
 }
 
 fn generate_agent_session_id(run_id: &RunId, role_name: &str) -> String {

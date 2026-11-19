@@ -46,6 +46,7 @@ pub struct SqliteBackendOptions {
 
 impl SqliteBackendOptions {
     /// Construct options for a custom/standalone database path with automatic backup disabled.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn custom(db_path: impl Into<PathBuf>) -> Self {
         Self {
             db_path: db_path.into(),
@@ -428,16 +429,19 @@ pub struct SqliteStateBackend {
 
 impl SqliteStateBackend {
     /// Open (or initialize) a custom/standalone SQLite database at `db_path` without backups.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open(db_path: impl AsRef<Path>) -> Result<Self, StateError> {
         Self::open_inner(db_path.as_ref())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn open_inner(db_path: &Path) -> Result<Self, StateError> {
         Self::open_with_options(SqliteBackendOptions::custom(db_path))
     }
 
     /// Open (or initialize/restore) a SQLite state backend with full backup and reconciliation options
     /// (crate-internal so external callers must use `open` or `StateEngine`-wired reconciliation).
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn open_with_options(options: SqliteBackendOptions) -> Result<Self, StateError> {
         Self::open_with_reconciler(options, |_| Ok(Vec::new()))
     }
@@ -545,6 +549,7 @@ impl SqliteStateBackend {
     }
 
     /// Return current `_sqlite_meta` counters (`schema_version`, `write_seq`, `last_backup_seq`).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn read_meta(&self) -> Result<migrations::SqliteMeta, StateError> {
         let guard = self.write_conn.lock().map_err(|_| {
             StateError::new(
@@ -556,6 +561,7 @@ impl SqliteStateBackend {
     }
 
     /// Execute a read-only SQLite closure against a fresh `SQLITE_OPEN_READ_ONLY` reader connection.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn inspect_read_only<T>(
         &self,
         f: impl FnOnce(&Connection) -> Result<T, StateError>,
@@ -573,6 +579,7 @@ impl SqliteStateBackend {
     }
 
     /// Execute a read-only closure against the writer connection (e.g., to inspect WAL pragmas).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn inspect_writer<T>(
         &self,
         f: impl FnOnce(&Connection) -> Result<T, StateError>,
@@ -587,71 +594,7 @@ impl SqliteStateBackend {
     }
 }
 
-impl StateReader for SqliteStateBackend {
-    fn load_run_graph(&self, run_id: &RunId) -> Result<Option<RunGraphSnapshot>, StateError> {
-        self.reader.load_run_graph(run_id)
-    }
-
-    fn list_runs(&self, req: &ListRunsReq) -> Result<ListRunsPage, StateError> {
-        self.reader.list_runs(req)
-    }
-
-    fn resolve_active_run_by_worktree(&self, worktree: &str) -> Result<Option<RunRecord>, StateError> {
-        self.reader.resolve_active_run_by_worktree(worktree)
-    }
-
-    fn load_node(&self, run_id: &RunId, node_id: &str) -> Result<Option<GateNodeRecord>, StateError> {
-        self.reader.load_node(run_id, node_id)
-    }
-
-    fn latest_claim(
-        &self,
-        run_id: &RunId,
-        node_id: &str,
-    ) -> Result<Option<GateClaimRecord>, StateError> {
-        self.reader.latest_claim(run_id, node_id)
-    }
-
-    fn latest_trace(
-        &self,
-        run_id: &RunId,
-        node_id: &str,
-        claim_revision: u32,
-    ) -> Result<Option<GateTraceRecord>, StateError> {
-        self.reader.latest_trace(run_id, node_id, claim_revision)
-    }
-
-    fn load_artifact(
-        &self,
-        run_id: &RunId,
-        node_id: &str,
-        claim_revision: u32,
-        kind: ArtifactKind,
-    ) -> Result<Option<GateArtifactRecord>, StateError> {
-        self.reader
-            .load_artifact(run_id, node_id, claim_revision, kind)
-    }
-
-    fn list_blackboard(
-        &self,
-        run_id: &RunId,
-        req: &BlackboardListReq,
-    ) -> Result<BlackboardPage, StateError> {
-        self.reader.list_blackboard(run_id, req)
-    }
-
-    fn load_tombstone(&self, run_id: &RunId) -> Result<Option<RunTombstoneRecord>, StateError> {
-        self.reader.load_tombstone(run_id)
-    }
-
-    fn max_spec_number(&self, collection: &str, prefix: &str) -> Result<Option<u32>, StateError> {
-        self.reader.max_spec_number(collection, prefix)
-    }
-
-    fn observability_snapshot(&self) -> Result<ObservabilitySnapshot, StateError> {
-        self.reader.observability_snapshot()
-    }
-}
+crate::store::impl_state_reader_delegate!(SqliteStateBackend, |s| s.reader);
 
 impl StateBackend for SqliteStateBackend {
     fn exec_tx_dyn(
@@ -715,8 +658,10 @@ impl StateBackend for SqliteStateBackend {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 struct QueryOnlyGuard<'a>(&'a Connection);
 
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for QueryOnlyGuard<'_> {
     fn drop(&mut self) {
         let _ = self.0.execute_batch("PRAGMA query_only = OFF;");
@@ -724,10 +669,12 @@ impl Drop for QueryOnlyGuard<'_> {
 }
 
 /// Shared `:memory:` SQLite connection wrapper keeping all `rusqlite` imports confined to `store/sqlite/`.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct InMemorySqliteStore {
     conn: Mutex<Connection>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl InMemorySqliteStore {
     pub(crate) fn new() -> Result<Self, StateError> {
         let mut conn = Connection::open_in_memory().map_err(|err| {

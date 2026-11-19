@@ -1,17 +1,15 @@
-//! Scoped Git commits (`plumbing | cli | manual`), commit notes, and crash-safe archive commits.
+//! Scoped plumbing Git commits and crash-safe archive commits.
 
 use super::snapshot::{
-    blob_oid_at, collect_literal_scope_paths, current_scope_tree, guard_candidate_path,
-    list_stage_entries, list_untracked_entries, remove_confined_file, TemporaryGitIndex,
+    blob_oid_at, collect_literal_scope_paths, guard_candidate_path, list_stage_entries,
+    list_untracked_entries, remove_confined_file, TemporaryGitIndex,
 };
 use super::{
     commit_has_exact_trailer, ensure_non_empty_git_identity, run_git_checked, run_git_raw,
     run_git_stdout, sync_default_index_paths, ScopedTempDir,
 };
-use crate::profile::{GitCommitNoteFormat, GitCommitNotePolicy};
-use crate::types::CommitMode;
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::format::{sha256_hex, utf8_floor_boundary};
+use acdd_core::format::sha256_hex;
 use acdd_core::fs::{atomic_write, checked_child, open_confined};
 use acdd_core::ids::{CommitOid, RunId, TreeOid};
 use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
@@ -20,7 +18,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::path::Path;
 
-/// Parameters for creating a scoped commit (or manual scope verification) with `Acdd-Claim` trailer.
+/// Parameters for creating a scoped commit with `Acdd-Claim` trailer.
 #[derive(Debug, Clone)]
 pub struct ScopedCommitReq {
     /// Worktree where the commit executes.
@@ -33,8 +31,6 @@ pub struct ScopedCommitReq {
     pub claim_revision: u32,
     /// Expected parent commit OID (`baseline_commit` / `HEAD`).
     pub base_head: CommitOid,
-    /// Configured commit mode (`plumbing`, `cli`, or `manual`).
-    pub commit_mode: CommitMode,
     /// Scoped paths (`scope ∪ extended_scope` + optional spec/archive paths) to include.
     pub admitted_scope: Vec<String>,
     /// Workspace path policy.
@@ -48,27 +44,12 @@ pub struct ScopedCommitReq {
 /// Result of creating or idempotently recovering a scoped commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedCommitResp {
-    /// New, recovered, or current HEAD commit OID (`CommitMode::Manual` returns current HEAD if any).
+    /// New or recovered HEAD commit OID.
     pub committed_oid: Option<CommitOid>,
-    /// Tree OID of the committed or verified scoped state.
+    /// Tree OID of the committed scoped state.
     pub committed_tree: TreeOid,
-    /// Always `None` (orphan snapshot refs were removed in v0.6.1).
-    pub snapshot_ref: Option<String>,
     /// `true` if a pre-existing `Acdd-Claim` commit was recovered idempotently after a crash.
     pub recovered_idempotently: bool,
-}
-
-/// Parameters for attaching a post-commit Git note (`git_commit_notes`).
-#[derive(Debug, Clone)]
-pub struct GitNoteReq {
-    /// Repository/worktree path.
-    pub worktree: std::path::PathBuf,
-    /// Target commit OID.
-    pub commit_oid: CommitOid,
-    /// Note policy (`ref_name`, `max_bytes`, `format`, `sections`).
-    pub policy: GitCommitNotePolicy,
-    /// Rendered note content (truncated cleanly to `policy.max_bytes` if needed).
-    pub body: String,
 }
 
 /// Parameters for writing and optionally committing the final archive Markdown document.
@@ -94,8 +75,6 @@ pub struct ArchiveCommitReq {
     pub rendered_archive_digest: String,
     /// Whether `save.post == SaveAction::Commit`.
     pub should_commit: bool,
-    /// Effective commit mode (`plumbing | cli | manual`).
-    pub commit_mode: CommitMode,
     /// Explicitly permit committing on `main` / `master`.
     pub allow_main: bool,
     /// Commit message used when `should_commit == true`.
@@ -165,42 +144,16 @@ pub fn is_protected_main_branch(branch: Option<&str>) -> bool {
     )
 }
 
-/// Create or idempotently recover a scoped commit under `plumbing | cli | manual`.
+/// Create or idempotently recover a scoped plumbing commit.
 pub fn create_scoped_commit(req: &ScopedCommitReq) -> Result<ScopedCommitResp, StateError> {
     create_scoped_commit_with_expected(req, None)
 }
 
-/// Create or idempotently recover a scoped commit while verifying the staged scoped subset matches `expected_scoped_tree`.
+/// Create or idempotently recover a scoped plumbing commit while verifying the staged scoped subset matches `expected_scoped_tree`.
 pub fn create_scoped_commit_with_expected(
     req: &ScopedCommitReq,
     expected_scoped_tree: Option<&TreeOid>,
 ) -> Result<ScopedCommitResp, StateError> {
-    if req.commit_mode == CommitMode::Manual {
-        let scope = if req.admitted_scope.is_empty() {
-            None
-        } else {
-            Some(req.admitted_scope.as_slice())
-        };
-        let committed_tree = current_scope_tree(&req.worktree, scope, &req.path_policy)?;
-        if let Some(expected) = expected_scoped_tree {
-            if &committed_tree != expected {
-                return Err(StateError::new(
-                    ErrorCode::TaskCandidateMismatch,
-                    format!(
-                        "working tree changed before manual scope verification (expected scoped tree {}, got {})",
-                        expected, committed_tree
-                    ),
-                ));
-            }
-        }
-        return Ok(ScopedCommitResp {
-            committed_oid: current_head_commit(&req.worktree).ok(),
-            committed_tree,
-            snapshot_ref: None,
-            recovered_idempotently: false,
-        });
-    }
-
     let claim_trailer = format!(
         "Acdd-Claim: {}/{}/{}",
         req.run_id.as_str(),
@@ -338,7 +291,6 @@ pub fn create_scoped_commit_with_expected(
                 return Ok(ScopedCommitResp {
                     committed_oid: Some(actual_head),
                     committed_tree: expected_tree,
-                    snapshot_ref: None,
                     recovered_idempotently: true,
                 });
             }
@@ -359,59 +311,14 @@ pub fn create_scoped_commit_with_expected(
         idx_dir,
         &req.base_head,
         &expected_tree,
-        req.commit_mode,
         &full_msg,
     )?;
 
     Ok(ScopedCommitResp {
         committed_oid: Some(committed_oid),
         committed_tree: expected_tree,
-        snapshot_ref: None,
         recovered_idempotently: false,
     })
-}
-
-/// Attach a bounded `git notes` entry; failures log warnings and never roll back commits.
-pub fn write_git_note(req: &GitNoteReq) -> Result<(), StateError> {
-    if req.policy.max_bytes == 0 {
-        return Ok(());
-    }
-    let bounded = cap_note_body(&req.body, req.policy.max_bytes, req.policy.format);
-    let identity_env = ensure_non_empty_git_identity(&req.worktree);
-    let result = run_git_raw(
-        &req.worktree,
-        &[
-            "notes",
-            "--ref",
-            &req.policy.ref_name,
-            "add",
-            "-f",
-            "-F",
-            "-",
-            req.commit_oid.as_str(),
-        ],
-        None,
-        &identity_env,
-        Some(bounded.as_bytes()),
-    );
-    match result {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => {
-            eprintln!(
-                "[acdd][warn] git notes --ref={} add failed for {}: {}",
-                req.policy.ref_name,
-                req.commit_oid,
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Err(err) => {
-            eprintln!(
-                "[acdd][warn] git notes --ref={} execution failed for {}: {}",
-                req.policy.ref_name, req.commit_oid, err
-            );
-        }
-    }
-    Ok(())
 }
 
 /// Write `archive_relpath` (confined + atomic), optionally commit, or idempotently recover after crash.
@@ -453,7 +360,7 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
         )
     })?;
 
-    let will_commit = req.should_commit && req.commit_mode != CommitMode::Manual;
+    let will_commit = req.should_commit;
     if will_commit {
         if let Some(existing_oid) = find_claim_commit_in_range(
             &req.worktree,
@@ -550,7 +457,6 @@ pub fn archive_spec_with_git(req: &ArchiveCommitReq) -> Result<ArchiveCommitResp
             idx_dir,
             &base_head,
             &expected_tree,
-            req.commit_mode,
             &full_msg,
         ) {
             Ok(oid) => oid,
@@ -599,108 +505,42 @@ fn commit_temp_index(
     idx_dir: ScopedTempDir,
     base_head: &CommitOid,
     expected_tree: &TreeOid,
-    commit_mode: CommitMode,
     commit_message: &str,
 ) -> Result<CommitOid, StateError> {
     let identity_env = ensure_non_empty_git_identity(worktree);
-    let new_head = match commit_mode {
-        CommitMode::Plumbing => {
-            drop((temp_index, idx_dir));
-            let out = run_git_raw(
-                worktree,
-                &[
-                    "commit-tree",
-                    expected_tree.as_str(),
-                    "-p",
-                    base_head.as_str(),
-                    "-F",
-                    "-",
-                ],
-                None,
-                &identity_env,
-                Some(commit_message.as_bytes()),
-            )?;
-            if !out.status.success() {
-                return Err(StateError::new(
-                    ErrorCode::ExternalGitDrift,
-                    format!(
-                        "git commit-tree failed: {}",
-                        String::from_utf8_lossy(&out.stderr).trim()
-                    ),
-                ));
-            }
-            let new_oid = CommitOid::new(String::from_utf8_lossy(&out.stdout).trim())?;
-            run_git_checked(
-                worktree,
-                &["update-ref", "HEAD", new_oid.as_str(), base_head.as_str()],
-                None,
-                None,
-                ErrorCode::ExternalGitDrift,
-            )?;
-            super::failpoint_hit("git_commit_after_update_ref");
-            new_oid
-        }
-        CommitMode::Cli => {
-            let out = run_git_raw(
-                worktree,
-                &["commit", "--allow-empty", "-F", "-"],
-                Some(&temp_index.index_path),
-                &identity_env,
-                Some(commit_message.as_bytes()),
-            );
-            drop((temp_index, idx_dir));
-            let out = out?;
-            if !out.status.success() {
-                if let Ok(cur_head) = current_head_commit(worktree) {
-                    if cur_head != *base_head {
-                        let _ = run_git_raw(
-                            worktree,
-                            &["update-ref", "HEAD", base_head.as_str(), cur_head.as_str()],
-                            None,
-                            &[],
-                            None,
-                        );
-                    }
-                }
-                let detail = String::from_utf8_lossy(&out.stderr).trim().to_owned();
-                return Err(StateError::new(
-                    ErrorCode::GitHookRejected,
-                    format!("git commit failed in cli mode: {detail}"),
-                ));
-            }
-            let landed = current_head_commit(worktree)?;
-            let tree_parent_ok = match commit_tree_and_single_parent(worktree, landed.as_str()) {
-                Ok((landed_tree, landed_parent)) => {
-                    landed_tree == *expected_tree && landed_parent == *base_head
-                }
-                Err(_) => false,
-            };
-            if !tree_parent_ok {
-                run_git_checked(
-                    worktree,
-                    &["update-ref", "HEAD", base_head.as_str(), landed.as_str()],
-                    None,
-                    None,
-                    ErrorCode::ExternalGitDrift,
-                )?;
-                return Err(StateError::new(
-                    ErrorCode::GitHookMutatedTree,
-                    format!(
-                        "cli commit hook mutated tree or parent away from verified tree '{}' on base '{}'",
-                        expected_tree, base_head
-                    ),
-                ));
-            }
-            super::failpoint_hit("git_commit_after_update_ref");
-            landed
-        }
-        CommitMode::Manual => {
-            return Err(StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                "CommitMode::Manual cannot execute commit_temp_index",
-            ));
-        }
-    };
+    drop((temp_index, idx_dir));
+    let out = run_git_raw(
+        worktree,
+        &[
+            "commit-tree",
+            expected_tree.as_str(),
+            "-p",
+            base_head.as_str(),
+            "-F",
+            "-",
+        ],
+        None,
+        &identity_env,
+        Some(commit_message.as_bytes()),
+    )?;
+    if !out.status.success() {
+        return Err(StateError::new(
+            ErrorCode::ExternalGitDrift,
+            format!(
+                "git commit-tree failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        ));
+    }
+    let new_head = CommitOid::new(String::from_utf8_lossy(&out.stdout).trim())?;
+    run_git_checked(
+        worktree,
+        &["update-ref", "HEAD", new_head.as_str(), base_head.as_str()],
+        None,
+        None,
+        ErrorCode::ExternalGitDrift,
+    )?;
+    super::failpoint_hit("git_commit_after_update_ref");
 
     let changed = diff_tree_paths(worktree, base_head.as_str(), new_head.as_str())?;
     sync_default_index_paths(worktree, new_head.as_str(), &changed)?;
@@ -795,49 +635,4 @@ fn format_message_with_trailer(message: &str, trailer: &str) -> String {
     } else {
         format!("{trimmed}\n\n{trailer}\n")
     }
-}
-
-pub(crate) fn cap_note_body(body: &str, max_bytes: usize, format: GitCommitNoteFormat) -> String {
-    if max_bytes == 0 {
-        return String::new();
-    }
-    if body.len() <= max_bytes {
-        return body.to_owned();
-    }
-    if format == GitCommitNoteFormat::Json {
-        let wrapper_overhead = r#"{"truncated":true,"preview":""}"#.len();
-        if max_bytes > wrapper_overhead + 4 {
-            let mut preview_budget = max_bytes - wrapper_overhead;
-            loop {
-                let slice = &body[..utf8_floor_boundary(body, preview_budget)];
-                let candidate = serde_json::json!({
-                    "truncated": true,
-                    "preview": slice,
-                })
-                .to_string();
-                if candidate.len() <= max_bytes {
-                    return candidate;
-                }
-                if preview_budget == 0 {
-                    break;
-                }
-                preview_budget = preview_budget.saturating_sub(8);
-            }
-        }
-        let minimal = r#"{"truncated":true}"#;
-        if max_bytes >= minimal.len() {
-            return minimal.to_owned();
-        }
-        return if max_bytes >= 2 {
-            "{}".to_owned()
-        } else {
-            String::new()
-        };
-    }
-    if max_bytes <= 3 {
-        let end = utf8_floor_boundary(body, max_bytes);
-        return body[..end].to_owned();
-    }
-    let end = utf8_floor_boundary(body, max_bytes - 3);
-    format!("{}...", &body[..end])
 }

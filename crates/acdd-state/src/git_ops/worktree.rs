@@ -289,6 +289,38 @@ fn copy_uncommitted_files(
     Ok(())
 }
 
+/// Return `true` when `branch` exists and is an ancestor of `target_ref` (e.g. `HEAD` or a `closed_commit`).
+pub fn is_branch_merged_into_ref(
+    primary_worktree: &Path,
+    branch_ref: &str,
+    target_ref: &str,
+) -> Result<bool, StateError> {
+    let primary = canonicalize_macos_var(primary_worktree);
+    let full_ref = if branch_ref.starts_with("refs/") {
+        branch_ref.to_owned()
+    } else {
+        format!("refs/heads/{branch_ref}")
+    };
+    let exists = run_git_raw(
+        &primary,
+        &["show-ref", "--verify", "--quiet", &full_ref],
+        None,
+        &[],
+        None,
+    )?;
+    if !exists.status.success() {
+        return Ok(false);
+    }
+    let out = run_git_raw(
+        &primary,
+        &["merge-base", "--is-ancestor", &full_ref, target_ref],
+        None,
+        &[],
+        None,
+    )?;
+    Ok(out.status.success())
+}
+
 /// Remove a task/run worktree and delete its temporary branch.
 pub fn remove_worktree_and_branch(
     primary_worktree: &Path,

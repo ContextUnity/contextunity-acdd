@@ -1,8 +1,8 @@
-//! Profile inheritance (`inherit`), `gates_merge: replace | patch` resolution, SHA-256 pin verification, and template expansion.
+//! Profile inheritance (`inherit`), `gates` (replace) vs `gates_patch` (patch) resolution, SHA-256 pin verification, and template expansion.
 
 use super::schema::{
-    parse_profile, CommandDef, DetailedCommandDef, GateDef, GateTemplate, GatesMergeMode,
-    GitPolicy, GitPolicyPatch, ParsedProfileFile, PatchField, ProofDef, RawGateDef, RawGateItem,
+    parse_profile, CommandDef, DetailedCommandDef, GateDef, GateTemplate, GitPolicy,
+    GitPolicyPatch, ParsedProfileFile, PatchField, ProofDef, RawGateDef, RawGateItem,
     ResolvedGateProfile, ResourceLimits, RoleDef, RolePatch, SavePolicy, SavePolicyPatch,
     SubsystemRegistryPatch, TasksBlock, DEFAULT_MAX_ATTEMPTS,
 };
@@ -17,16 +17,16 @@ use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::Path;
 
-const DEFAULT_YAML: &str = include_str!("embedded/default.yaml");
+const BASE_YAML: &str = include_str!("embedded/base.yaml");
 const CODE_YAML: &str = include_str!("embedded/code.yaml");
-const IN_PLACE_YAML: &str = include_str!("embedded/in_place.yaml");
+const AUDIT_YAML: &str = include_str!("embedded/audit.yaml");
 
-/// Return the raw embedded YAML for a built-in profile (`"default"`, `"code"`, or `"in_place"`).
+/// Return the raw embedded YAML for a built-in profile (`"base"`, `"code"`, or `"audit"`).
 pub fn embedded_profile(name: &str) -> Option<&'static str> {
     match name {
-        "default" => Some(DEFAULT_YAML),
+        "base" => Some(BASE_YAML),
         "code" => Some(CODE_YAML),
-        "in_place" => Some(IN_PLACE_YAML),
+        "audit" => Some(AUDIT_YAML),
         _ => None,
     }
 }
@@ -92,24 +92,6 @@ impl WorkingGate {
     }
 }
 
-/// Resolve a profile YAML string (with optional source relative path and workspace root for `inherit:`).
-pub fn resolve_profile_from_str(
-    yaml: &str,
-    profile_id: &str,
-    source_rel_path: Option<&str>,
-    workspace_root: Option<&Path>,
-    acdd_modules: Option<&SubsystemRegistry>,
-) -> Result<ResolvedGateProfile, StateError> {
-    resolve_profile_from_str_with_dirs(
-        yaml,
-        profile_id,
-        source_rel_path,
-        workspace_root,
-        acdd_modules,
-        None,
-    )
-}
-
 /// Resolve a profile YAML string using an explicit `profiles_dirs` search list for `inherit:`.
 pub fn resolve_profile_from_str_with_dirs(
     yaml: &str,
@@ -134,16 +116,7 @@ pub fn resolve_profile_from_str_with_dirs(
         profiles_dirs,
         &mut stack,
     )?;
-    finalize_working_profile(working)
-}
-
-/// Load and resolve a built-in (`default | code | in_place`) or workspace-relative profile path.
-pub fn resolve_profile_ref(
-    profile_ref: &str,
-    workspace_root: Option<&Path>,
-    acdd_modules: Option<&SubsystemRegistry>,
-) -> Result<ResolvedGateProfile, StateError> {
-    resolve_profile_ref_with_dirs(profile_ref, workspace_root, acdd_modules, None)
+    finalize_working_profile(working, &BTreeSet::new())
 }
 
 /// Load and resolve a built-in or workspace profile reference using an explicit `profiles_dirs` list.
@@ -160,17 +133,7 @@ pub fn resolve_profile_ref_with_dirs(
             workspace_root,
             acdd_modules,
             profiles_dirs,
-        );
-    }
-    if profile_ref == "workspace" {
-        let yaml = "version: 2\ninherit: workspace\n";
-        return resolve_profile_from_str_with_dirs(
-            yaml,
-            "workspace",
-            None,
-            workspace_root,
-            acdd_modules,
-            profiles_dirs,
+            false,
         );
     }
     let root = workspace_root.ok_or_else(|| {
@@ -201,12 +164,51 @@ pub fn resolve_profile_ref_with_dirs(
     )
 }
 
+/// Resolve an optional explicit profile reference, defaulting to `.acdd/profile.yaml` when present
+/// in `workspace_root`, or embedded `"code"` (stripping disabled domain hooks) otherwise.
+pub fn resolve_optional_profile_ref_with_dirs(
+    profile_ref: Option<&str>,
+    workspace_root: Option<&Path>,
+    acdd_modules: Option<&SubsystemRegistry>,
+    profiles_dirs: Option<&[String]>,
+) -> Result<ResolvedGateProfile, StateError> {
+    if let Some(explicit) = profile_ref {
+        return resolve_profile_ref_with_dirs(explicit, workspace_root, acdd_modules, profiles_dirs);
+    }
+    if let Some(root) = workspace_root {
+        if std::fs::symlink_metadata(root.join(".acdd/profile.yaml")).is_ok() {
+            return resolve_profile_ref_with_dirs(
+                ".acdd/profile.yaml",
+                Some(root),
+                acdd_modules,
+                profiles_dirs,
+            );
+        }
+    }
+    resolve_builtin("code", CODE_YAML, workspace_root, acdd_modules, profiles_dirs, true)
+}
+
+/// Resolve an active run's `profile_id` during `sync --rebind-profile`, matching `start`'s
+/// disabled-domain stripping behavior when rebinding the default embedded `"code"` profile.
+pub(crate) fn resolve_profile_for_rebind(
+    profile_id: &str,
+    workspace_root: Option<&Path>,
+    acdd_modules: Option<&SubsystemRegistry>,
+    profiles_dirs: Option<&[String]>,
+) -> Result<ResolvedGateProfile, StateError> {
+    if profile_id == "code" {
+        return resolve_builtin("code", CODE_YAML, workspace_root, acdd_modules, profiles_dirs, true);
+    }
+    resolve_profile_ref_with_dirs(profile_id, workspace_root, acdd_modules, profiles_dirs)
+}
+
 fn resolve_builtin(
     name: &str,
     yaml: &str,
     workspace_root: Option<&Path>,
     acdd_modules: Option<&SubsystemRegistry>,
     profiles_dirs: Option<&[String]>,
+    strip_self_domain: bool,
 ) -> Result<ResolvedGateProfile, StateError> {
     let mut stack = vec![format!("builtin:{name}")];
     let working = resolve_recursive(
@@ -218,11 +220,20 @@ fn resolve_builtin(
         profiles_dirs,
         &mut stack,
     )?;
-    finalize_working_profile(working)
+    let disabled_domains = if strip_self_domain {
+        collect_disabled_domains(name, acdd_modules, true)
+    } else {
+        BTreeSet::new()
+    };
+    finalize_working_profile(working, &disabled_domains)
 }
 
-fn finalize_working_profile(mut working: WorkingProfile) -> Result<ResolvedGateProfile, StateError> {
+fn finalize_working_profile(
+    mut working: WorkingProfile,
+    disabled_domains: &BTreeSet<String>,
+) -> Result<ResolvedGateProfile, StateError> {
     expand_templates_in_working(&mut working)?;
+    strip_disabled_domain_capabilities(&mut working, disabled_domains);
     propagate_scope_args_to_commands(&mut working.resolved);
     let default_tools = working.resolved.default_tools.clone();
     working.resolved.gates = working
@@ -248,7 +259,6 @@ fn propagate_scope_args_to_commands(resolved: &mut ResolvedGateProfile) {
                         timeout_seconds: None,
                         test_filter: None,
                         scope_args_by_pattern: resolved.scope_args_by_pattern.clone(),
-                        output: None,
                     }));
                 }
             }
@@ -389,8 +399,8 @@ fn resolve_recursive(
                 "inherit field cannot be an empty string",
             ));
         }
-        Some("default") | Some("code") | Some("in_place") => {
-            let builtin = parsed.inherit.as_deref().unwrap_or("default");
+        Some("base") | Some("code") | Some("audit") => {
+            let builtin = parsed.inherit.as_deref().unwrap_or("base");
             let identity = format!("builtin:{builtin}");
             if stack.contains(&identity) {
                 return Err(StateError::new(
@@ -416,67 +426,6 @@ fn resolve_recursive(
             )?;
             stack.pop();
             res
-        }
-        Some("workspace") => {
-            if source_rel_path == Some(".acdd/profile.yaml") {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    "'.acdd/profile.yaml' cannot inherit 'workspace' (self-inheritance)",
-                ));
-            }
-            let has_workspace_file = workspace_root
-                .is_some_and(|root| std::fs::symlink_metadata(root.join(".acdd/profile.yaml")).is_ok());
-            if has_workspace_file {
-                let root = workspace_root.expect("checked above");
-                let identity = path_cycle_identity(Some(root), ".acdd/profile.yaml")?;
-                if stack.contains(&identity) {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        "cyclic profile inheritance detected at '.acdd/profile.yaml'",
-                    ));
-                }
-                let bytes = read_confined_profile_bytes(root, ".acdd/profile.yaml")?;
-                let parent_yaml = std::str::from_utf8(&bytes).map_err(|err| {
-                    StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!("'.acdd/profile.yaml' is not valid UTF-8: {err}"),
-                    )
-                })?;
-                stack.push(identity);
-                let res = resolve_recursive(
-                    parent_yaml,
-                    ".acdd/profile.yaml",
-                    Some(".acdd/profile.yaml"),
-                    Some(root),
-                    acdd_modules,
-                    profiles_dirs,
-                    stack,
-                )?;
-                stack.pop();
-                res
-            } else {
-                let fallback = "default";
-                let identity = format!("builtin:{fallback}");
-                if stack.contains(&identity) {
-                    return Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!("cyclic profile inheritance detected at '{identity}'"),
-                    ));
-                }
-                let parent_yaml = embedded_profile(fallback).expect("builtin exists");
-                stack.push(identity);
-                let res = resolve_recursive(
-                    parent_yaml,
-                    fallback,
-                    None,
-                    workspace_root,
-                    acdd_modules,
-                    profiles_dirs,
-                    stack,
-                )?;
-                stack.pop();
-                res
-            }
         }
         Some(raw_ref) => {
             let (raw_path, expected_pin) = parse_path_and_pin(raw_ref)?;
@@ -534,7 +483,7 @@ fn resolve_recursive(
         }
     }
     if source_rel_path.is_none() && embedded_profile(profile_id).is_some() {
-        let disabled_domains = collect_disabled_domains(profile_id, acdd_modules);
+        let disabled_domains = collect_disabled_domains(profile_id, acdd_modules, false);
         strip_disabled_domain_capabilities(&mut base, &disabled_domains);
     }
     Ok(base)
@@ -564,18 +513,19 @@ fn collect_when_tags(gates: &[WorkingGate]) -> BTreeSet<String> {
 fn collect_disabled_domains(
     profile_id: &str,
     acdd_modules: Option<&SubsystemRegistry>,
+    strip_self_domain: bool,
 ) -> BTreeSet<String> {
     let mut disabled = BTreeSet::new();
     let Some(mods) = acdd_modules else {
         return disabled;
     };
     for builtin_domain in ["code", "docs"] {
-        if builtin_domain != profile_id && !mods.is_enabled(builtin_domain) {
+        if (strip_self_domain || builtin_domain != profile_id) && !mods.is_enabled(builtin_domain) {
             disabled.insert(builtin_domain.to_owned());
         }
     }
     for (domain, &enabled) in &mods.domains {
-        if !enabled && domain != profile_id {
+        if !enabled && (strip_self_domain || domain != profile_id) {
             disabled.insert(domain.clone());
         }
     }
@@ -635,6 +585,12 @@ fn strip_disabled_domains_from_gates(
                 .iter()
                 .any(|d| has_domain_prefix(ctx, d))
         });
+        gate.gate.guidance.retain(|g| match g {
+            super::schema::GateGuidanceRef::Slot(slot) => {
+                !disabled_domains.iter().any(|d| has_domain_prefix(slot, d))
+            }
+            super::schema::GateGuidanceRef::Inline(_) => true,
+        });
         gate.gate.checks.retain(|chk| {
             !disabled_domains
                 .iter()
@@ -666,7 +622,7 @@ fn parse_path_and_pin(raw: &str) -> Result<(String, Option<String>), StateError>
         }
         None => (raw, None),
     };
-    if embedded_profile(path_part).is_some() || matches!(path_part, "workspace" | "none") {
+    if embedded_profile(path_part).is_some() || path_part == "none" {
         return Err(StateError::new(
             ErrorCode::ProfileSchemaInvalid,
             format!("built-in profile reference '{path_part}' cannot carry a SHA-256 pin"),
@@ -857,27 +813,11 @@ fn apply_parsed_layer(
         merge_limits(&mut res.limits, lim_patch);
     }
 
-    for (name, note_opt) in parsed.git_commit_notes {
-        match note_opt {
-            None => {
-                res.git_commit_notes.remove(&name);
-            }
-            Some(patch) => {
-                let entry = res.git_commit_notes.entry(name).or_default();
-                merge_git_commit_note(entry, patch);
-            }
-        }
-    }
-
     if let Some(gate_items) = parsed.gates {
-        match parsed.gates_merge {
-            GatesMergeMode::Replace => {
-                working.gates = build_gates_replace(gate_items)?;
-            }
-            GatesMergeMode::Patch => {
-                apply_gates_patch(&mut working.gates, gate_items)?;
-            }
-        }
+        working.gates = build_gates_replace(gate_items)?;
+    }
+    if let Some(patch_items) = parsed.gates_patch {
+        apply_gates_patch(&mut working.gates, patch_items)?;
     }
 
     Ok(())
@@ -889,12 +829,6 @@ fn merge_git_policy(target: &mut GitPolicy, patch: GitPolicyPatch) {
     }
     if let Some(v) = patch.worktrees {
         target.worktrees = v;
-    }
-    if let Some(v) = patch.commit_mode {
-        target.commit_mode = v;
-    }
-    if let Some(v) = patch.integrate {
-        target.integrate = v;
     }
 }
 
@@ -979,32 +913,6 @@ fn merge_limits(target: &mut ResourceLimits, patch: super::schema::ResourceLimit
     }
 }
 
-fn merge_git_commit_note(
-    target: &mut super::schema::GitCommitNotePolicy,
-    patch: super::schema::GitCommitNotePolicyPatch,
-) {
-    match patch.ref_name {
-        PatchField::Unset => {}
-        PatchField::Clear => target.ref_name = "refs/notes/acdd".to_owned(),
-        PatchField::Set(v) => target.ref_name = v,
-    }
-    match patch.max_bytes {
-        PatchField::Unset => {}
-        PatchField::Clear => target.max_bytes = 2048,
-        PatchField::Set(v) => target.max_bytes = v,
-    }
-    match patch.format {
-        PatchField::Unset => {}
-        PatchField::Clear => target.format = Default::default(),
-        PatchField::Set(v) => target.format = v,
-    }
-    match patch.sections {
-        PatchField::Unset => {}
-        PatchField::Clear => target.sections.clear(),
-        PatchField::Set(v) => target.sections = v,
-    }
-}
-
 fn build_gates_replace(items: Vec<RawGateItem>) -> Result<Vec<WorkingGate>, StateError> {
     let mut out = Vec::with_capacity(items.len());
     for item in items {
@@ -1012,21 +920,21 @@ fn build_gates_replace(items: Vec<RawGateItem>) -> Result<Vec<WorkingGate>, Stat
             RawGateItem::Delete(sel) => {
                 return Err(StateError::new(
                     ErrorCode::ProfileSchemaInvalid,
-                    format!("gate deletion '{sel}: null' is only allowed with 'gates_merge: patch'"),
+                    format!("gate deletion '{sel}: null' is only allowed inside 'gates_patch'"),
                 ));
             }
             RawGateItem::Gate(raw) => {
                 if raw.after.is_some() || raw.before.is_some() {
                     return Err(StateError::new(
                         ErrorCode::ProfileSchemaInvalid,
-                        "'after'/'before' gate positioning is only allowed with 'gates_merge: patch'",
+                        "'after'/'before' gate positioning is only allowed inside 'gates_patch'",
                     ));
                 }
                 if raw.id.as_deref().is_some_and(|id| id.contains('.')) {
                     return Err(StateError::new(
                         ErrorCode::ProfileSchemaInvalid,
                         format!(
-                            "dotted gate cursor '{}' is only allowed with 'gates_merge: patch'",
+                            "dotted gate cursor '{}' is only allowed inside 'gates_patch'",
                             raw.id.as_deref().unwrap_or_default()
                         ),
                     ));
@@ -1116,11 +1024,6 @@ fn raw_to_working_gate(raw: RawGateDef) -> Result<WorkingGate, StateError> {
     }
     if let Some(save_patch) = raw.save {
         merge_save_policy(&mut gate.save, save_patch);
-    }
-    if let PatchField::Set(ef_patch) = raw.expected_failure {
-        let mut ef = Default::default();
-        merge_expected_failure(&mut ef, ef_patch);
-        gate.expected_failure = Some(ef);
     }
     if let PatchField::Set(v) = raw.max_attempts {
         gate.max_attempts = v;
@@ -1529,14 +1432,6 @@ fn patch_existing_working_gate(
     if let Some(save_patch) = raw.save {
         merge_save_policy(&mut g.save, save_patch);
     }
-    match raw.expected_failure {
-        PatchField::Unset => {}
-        PatchField::Clear => g.expected_failure = None,
-        PatchField::Set(ef_patch) => {
-            let ef = g.expected_failure.get_or_insert_with(Default::default);
-            merge_expected_failure(ef, ef_patch);
-        }
-    }
     match raw.max_attempts {
         PatchField::Unset => {}
         PatchField::Clear => {
@@ -1588,23 +1483,7 @@ fn merge_save_policy(target: &mut SavePolicy, patch: SavePolicyPatch) {
         PatchField::Clear => target.prune = false,
         PatchField::Set(v) => target.prune = v,
     }
-    patch
-        .git_commit_note
-        .apply_to_option(&mut target.git_commit_note, Clone::clone);
-}
-
-fn merge_expected_failure(
-    target: &mut super::schema::ExpectedFailureSpec,
-    patch: super::schema::ExpectedFailurePatch,
-) {
-    match patch.exit_codes {
-        PatchField::Unset => {}
-        PatchField::Clear => target.exit_codes.clear(),
-        PatchField::Set(v) => target.exit_codes = v,
-    }
-    patch
-        .stderr_contains
-        .apply_to_option(&mut target.stderr_contains, Clone::clone);
+    patch.report.apply_to_option(&mut target.report, Clone::clone);
 }
 
 fn expand_templates_in_working(working: &mut WorkingProfile) -> Result<(), StateError> {

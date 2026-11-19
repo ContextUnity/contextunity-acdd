@@ -1,0 +1,266 @@
+version: 2
+inherit: base
+
+git:
+  isolation: in_place
+  worktrees: manual
+
+save: none
+
+tags:
+  - default
+  - docs
+
+default_tools:
+  - code_map_overview
+  - code_map_search
+  - code_map_inspect
+  - code_map_impact
+  - code_map_analyze
+  - code_map_explain
+  - code_map_tests
+  - code_map_prove_removal
+  - code_map_query
+  - ast_grep_search
+  - get_doc
+  - search_docs
+  - acdd_read
+  - acdd_guide
+  - acdd_state
+  - acdd_claim
+  - acdd_verify
+  - acdd_submit
+  - acdd_blackboard
+
+roles:
+  auditor:
+    mode: subagent
+    reuse_on_reject: true
+    guidance: "Perform read-only evidence-backed code and taint auditing using ACDD MCP navigation (code_map_overview, code_map_search(detail: \"compact\"), code_map_impact, ast_grep_search, acdd_read(selector: ...), search_docs, get_doc). Do not modify repository files."
+  independent_reviewer:
+    mode: subagent
+    reuse_on_reject: false
+    guidance: "Independently triage candidate findings by attempting to disprove each claim against upstream guards, types, and workspace invariants. Reject speculative findings and emit a concise evidence-grounded report."
+
+proofs:
+  recon_map:
+    description: "Attack surface, entrypoints, sensitive sinks, and invariants in scope"
+    schema:
+      type: object
+      required:
+        - scope_summary
+        - entrypoints
+        - sensitive_sinks
+        - invariants_in_play
+      properties:
+        scope_summary: { type: string }
+        entrypoints:
+          type: array
+          items: { type: string }
+        sensitive_sinks:
+          type: array
+          items: { type: string }
+        invariants_in_play:
+          type: array
+          items: { type: string }
+        blast_radius_notes:
+          type: array
+          items: { type: string }
+
+  candidate_findings:
+    description: "Grounded candidate findings with source-to-sink or invariant trace"
+    schema:
+      type: object
+      required:
+        - summary
+        - candidates
+      properties:
+        summary: { type: string }
+        candidates:
+          type: array
+          items:
+            type: object
+            required:
+              - id
+              - category
+              - severity
+              - location
+              - trace
+              - violated_invariant_or_cwe
+              - remediation
+            properties:
+              id: { type: string }
+              category: { type: string }
+              severity:
+                type: string
+                enum: [low, medium, high, critical]
+              location: { type: string }
+              trace:
+                type: array
+                items: { type: string }
+              violated_invariant_or_cwe: { type: string }
+              remediation: { type: string }
+
+  audit_report:
+    description: "Final adversarial-triaged audit report with confirmed findings only"
+    schema:
+      type: object
+      required:
+        - verdict
+        - summary
+        - confirmed_findings
+        - dismissed_count
+      properties:
+        verdict:
+          type: string
+          enum: [pass, findings]
+        summary: { type: string }
+        confirmed_findings:
+          type: array
+          items:
+            type: object
+            required:
+              - id
+              - category
+              - severity
+              - location
+              - trace
+              - violated_invariant_or_cwe
+              - remediation
+            properties:
+              id: { type: string }
+              category: { type: string }
+              severity:
+                type: string
+                enum: [low, medium, high, critical]
+              location: { type: string }
+              trace:
+                type: array
+                items: { type: string }
+              violated_invariant_or_cwe: { type: string }
+              remediation: { type: string }
+        dismissed_count:
+          type: integer
+          minimum: 0
+        deferred_notes:
+          type: array
+          items: { type: string }
+
+guidance:
+  code.principles:
+    description: "READ-ONLY AUDIT & SECURITY SIGNAL DISCIPLINE"
+    criteria:
+      - "Report only reproducible defects, unmet invariants, or unguarded source-to-sink paths backed by exact file:line citations."
+      - "Recognize existing validated internal safeguards and static type guarantees rather than inventing redundant defensive layers."
+  code.tools:
+    description: "MANDATORY ACDD GRAPH & SOURCE NAVIGATION PROTOCOL"
+    criteria:
+      - "Use code_map_overview / code_map_search(detail: \"compact\") / ast_grep_search for discovery, code_map_impact (calls/data-flow) for trace proof, code_map_query (duplicates/dead_tails/untested) for hygiene, and acdd_read(selector: ...) for complete symbol inspection."
+      - "Consult docs.invariants and search_docs/get_doc to bind findings to active repository invariants and ADRs."
+  audit.recon:
+    description: "PHASE 1: RECONNAISSANCE & SURFACE MAPPING"
+    criteria:
+      - "Map untrusted inputs/entrypoints (CLI, MCP, HTTP, deserialization, filesystem), sensitive sinks (SQL, subprocesses, path confinement, auth, secrets), affected callers, and active invariants without editing files."
+  audit.analyze:
+    description: "PHASE 2: FLOW TRACE & CONTOUR ANALYSIS"
+    criteria:
+      - "Trace each candidate from entrypoint/origin through guards to the sink using code_map_impact and acdd_read(selector: ...); inspect any triage feedback first on rework and drop disproved candidates."
+  audit.triage:
+    description: "PHASE 3: ADVERSARIAL FALSE-POSITIVE TRIAGE"
+    criteria:
+      - "Challenge every candidate from analyze: verify whether upstream parsing, type invariants, path confinement, or existing locks already block exploitation; dismiss false positives in dismissed_count, reject back to analyze if the candidate proof is unsubstantiated, and record only verified findings in audit_report."
+
+contours:
+  correctness:
+    description: "Verify logic invariants, edge-case handling, and state transitions hold without panics or silent corruption."
+    criteria:
+      - "Trace callers and boundary assumptions to confirm concrete failure paths."
+  security:
+    description: "Verify untrusted inputs are validated/confined before reaching privileged SQL, shell, path, auth, or secret sinks."
+    criteria:
+      - "Confirm an unbroken source-to-sink path missing effective sanitization or confinement."
+  architecture:
+    description: "Verify canonical owner reuse (INV-SINGLE-OWNER), layer boundaries, and absence of shadow subsystems or duplicate logic."
+    criteria:
+      - "Confirm findings cite real architectural violations or clone/dead-tail regressions."
+  concurrency:
+    description: "Verify locks, CAS preconditions, and transaction ordering prevent races and partial persistence."
+    criteria:
+      - "Verify shared mutable state and filesystem mutations serialize safely."
+  tests:
+    description: "Verify changed or critical behavior has proportional production-seam test coverage."
+    criteria:
+      - "Identify untested critical paths and fragile or tautological assertions."
+
+gates:
+  - id: recon
+    role: auditor
+    proof: recon_map
+    guidance:
+      - audit.recon
+      - core.execution
+      - code.tools
+      - hitl.pro
+    context:
+      - docs.instructions
+      - docs.adrs
+      - docs.invariants
+      - code.symbols
+    save:
+      immutable: true
+    pass: analyze
+
+  - id: analyze
+    role: auditor
+    proof: candidate_findings
+    contours:
+      - correctness
+      - security
+      - architecture
+      - concurrency
+      - tests
+    guidance:
+      - audit.analyze
+      - core.execution
+      - code.principles
+      - code.tools
+      - hitl.pro
+    context:
+      - docs.instructions
+      - docs.adrs
+      - docs.invariants
+      - code.symbols
+      - code.tests
+      - code.external_callers
+    save:
+      immutable: true
+    pass: triage
+
+  - id: triage
+    role: independent_reviewer
+    proof: audit_report
+    contours:
+      - claims
+      - security
+      - architecture
+      - administration
+    independent_from:
+      - analyze
+    need:
+      - recon
+      - analyze
+    receipt: true
+    guidance:
+      - audit.triage
+      - core.review
+      - code.principles
+      - code.tools
+      - hitl.pro
+    context:
+      - docs.instructions
+      - docs.invariants
+    save:
+      immutable: true
+      post: none
+      report: ".acdd/reports/{run_name}.md"
+    fail: analyze

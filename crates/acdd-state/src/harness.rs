@@ -2,28 +2,16 @@
 
 use crate::store::memory::MemoryStateBackend;
 use crate::store::sqlite::migrations::SqliteMeta;
-use crate::store::sqlite::{SqliteBackendOptions, SqliteStateBackend, SqliteStateReader};
+use crate::store::sqlite::{SqliteBackendOptions, SqliteStateBackend};
 use crate::store::traits::{StateBackend, StateReader, StateTx};
 use crate::types::{
-    ArtifactKind, BlackboardListReq, BlackboardPage, GateArtifactRecord, GateClaimRecord,
-    GateNodeRecord, GateTraceRecord, InvariantsState, IsolationMode, ListRunsPage, ListRunsReq,
-    NodeKind, NodeStatus, ObservabilitySnapshot, RunGraphSnapshot, RunRecord, RunStatus,
-    RunTombstoneRecord, TaskDependencyRecord,
+    GateNodeRecord, InvariantsState, IsolationMode, NodeKind, NodeStatus, RunGraphSnapshot,
+    RunRecord, RunStatus, TaskDependencyRecord,
 };
 use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::fs::ScopedTempDir;
 use acdd_core::ids::{CommitOid, RunId, RunName, TaskRef, TreeOid};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static HARNESS_NONCE: AtomicU64 = AtomicU64::new(0);
-
-struct TempDirGuard(PathBuf);
-
-impl Drop for TempDirGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 
 enum HarnessBackend {
     Memory(MemoryStateBackend),
@@ -31,7 +19,7 @@ enum HarnessBackend {
         backend: Box<SqliteStateBackend>,
         backup_dir: Option<PathBuf>,
         workspace_root: Option<PathBuf>,
-        _temp_dir: Option<TempDirGuard>,
+        _temp_dir: Option<ScopedTempDir>,
     },
 }
 
@@ -54,20 +42,13 @@ impl RunHarness {
     ///
     /// Owned temporary directories are removed automatically on drop.
     pub fn on_disk(spec_collection_paths: Vec<String>) -> Result<Self, StateError> {
-        let nonce = HARNESS_NONCE.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "acdd-state-harness-{}-{}",
-            std::process::id(),
-            nonce
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).map_err(|err| {
+        let temp_guard = ScopedTempDir::create("acdd-state-harness").map_err(|err| {
             StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
-                format!("failed to create RunHarness tempdir '{}': {err}", root.display()),
+                format!("failed to create RunHarness tempdir: {err}"),
             )
         })?;
-        let temp_guard = TempDirGuard(root.clone());
+        let root = temp_guard.path();
         let workspace_root = root.join("workspace");
         let backup_dir = root.join("git-common/acdd");
         std::fs::create_dir_all(&workspace_root).map_err(|err| {
@@ -113,28 +94,6 @@ impl RunHarness {
         })
     }
 
-    /// Construct a disk-backed `RunHarness` using explicit [`SqliteBackendOptions`].
-    pub fn on_disk_with_options(options: SqliteBackendOptions) -> Result<Self, StateError> {
-        let backup_dir = options.backup_dir.clone();
-        let workspace_root = options.workspace_root.clone();
-        let reconciler_cols = options.spec_collection_paths.clone();
-        let backend = SqliteStateBackend::open_with_reconciler(options, |runs| {
-            crate::usecases::lifecycle::reconcile_restored_runs_with_archives(
-                runs,
-                workspace_root.as_deref(),
-                &reconciler_cols,
-            )
-        })?;
-        Ok(Self {
-            inner: HarnessBackend::Disk {
-                backend: Box::new(backend),
-                backup_dir,
-                workspace_root,
-                _temp_dir: None,
-            },
-        })
-    }
-
     /// Return a `dyn StateReader` view over this harness backend.
     pub fn reader(&self) -> &dyn StateReader {
         match &self.inner {
@@ -165,11 +124,6 @@ impl RunHarness {
             HarnessBackend::Memory(_) => None,
             HarnessBackend::Disk { workspace_root, .. } => workspace_root.as_deref(),
         }
-    }
-
-    /// Return a standalone read-only [`SqliteStateReader`] for disk harnesses.
-    pub fn standalone_reader(&self) -> Option<SqliteStateReader> {
-        self.db_path().map(SqliteStateReader::new)
     }
 
     /// Read `_sqlite_meta` counters from the underlying SQLite backend.
@@ -335,71 +289,7 @@ impl RunHarness {
     }
 }
 
-impl StateReader for RunHarness {
-    fn load_run_graph(&self, run_id: &RunId) -> Result<Option<RunGraphSnapshot>, StateError> {
-        self.reader().load_run_graph(run_id)
-    }
-
-    fn list_runs(&self, req: &ListRunsReq) -> Result<ListRunsPage, StateError> {
-        self.reader().list_runs(req)
-    }
-
-    fn resolve_active_run_by_worktree(&self, worktree: &str) -> Result<Option<RunRecord>, StateError> {
-        self.reader().resolve_active_run_by_worktree(worktree)
-    }
-
-    fn load_node(&self, run_id: &RunId, node_id: &str) -> Result<Option<GateNodeRecord>, StateError> {
-        self.reader().load_node(run_id, node_id)
-    }
-
-    fn latest_claim(
-        &self,
-        run_id: &RunId,
-        node_id: &str,
-    ) -> Result<Option<GateClaimRecord>, StateError> {
-        self.reader().latest_claim(run_id, node_id)
-    }
-
-    fn latest_trace(
-        &self,
-        run_id: &RunId,
-        node_id: &str,
-        claim_revision: u32,
-    ) -> Result<Option<GateTraceRecord>, StateError> {
-        self.reader().latest_trace(run_id, node_id, claim_revision)
-    }
-
-    fn load_artifact(
-        &self,
-        run_id: &RunId,
-        node_id: &str,
-        claim_revision: u32,
-        kind: ArtifactKind,
-    ) -> Result<Option<GateArtifactRecord>, StateError> {
-        self.reader()
-            .load_artifact(run_id, node_id, claim_revision, kind)
-    }
-
-    fn list_blackboard(
-        &self,
-        run_id: &RunId,
-        req: &BlackboardListReq,
-    ) -> Result<BlackboardPage, StateError> {
-        self.reader().list_blackboard(run_id, req)
-    }
-
-    fn load_tombstone(&self, run_id: &RunId) -> Result<Option<RunTombstoneRecord>, StateError> {
-        self.reader().load_tombstone(run_id)
-    }
-
-    fn max_spec_number(&self, collection: &str, prefix: &str) -> Result<Option<u32>, StateError> {
-        self.reader().max_spec_number(collection, prefix)
-    }
-
-    fn observability_snapshot(&self) -> Result<ObservabilitySnapshot, StateError> {
-        self.reader().observability_snapshot()
-    }
-}
+crate::store::impl_state_reader_delegate!(RunHarness, |s| s.reader());
 
 impl StateBackend for RunHarness {
     fn exec_tx_dyn(
@@ -424,10 +314,12 @@ impl StateBackend for RunHarness {
 mod tests {
     use super::*;
     use crate::store::sqlite::schema::DOMAIN_TABLES;
+    use crate::store::sqlite::SqliteStateReader;
     use crate::types::{
-        BlackboardRecord, BlackboardStatus, BlackboardStatusPatch, BlackboardTopic,
-        ClaimInsertInput, ClaimOutcome, ClaimOutcomePatch, DependencySatisfiedPatch,
-        NodeStatusPatch, NodeVersionExpectation, PredecessorTreeExpectation,
+        ArtifactKind, BlackboardListReq, BlackboardRecord, BlackboardStatus, BlackboardStatusPatch,
+        BlackboardTopic, ClaimInsertInput, ClaimOutcome, ClaimOutcomePatch,
+        DependencySatisfiedPatch, GateArtifactRecord, ListRunsReq, NodeStatusPatch,
+        NodeVersionExpectation, PredecessorTreeExpectation, RunTombstoneRecord,
         StoragePreconditions, SubtaskRecord, SubtaskStatus, TerminalStatus, TraceFinishInput,
         TraceStartInput, TraceStatus, TransitionPlan,
     };
@@ -887,9 +779,6 @@ mod tests {
                     trace_row_id: trace_id,
                     status: TraceStatus::Passed,
                     exit_code: Some(0),
-                    tests_passed: 3,
-                    tests_failed: 0,
-                    tests_ignored: 0,
                     passed_tests: vec!["t1".to_owned()],
                     failed_tests: Vec::new(),
                     check_results: Vec::new(),
@@ -965,7 +854,6 @@ mod tests {
                             claim_revision: 3,
                             kind: ArtifactKind::Proof,
                             payload_json: r#"{"ok":true}"#.to_owned(),
-                            snapshot_ref: None,
                             snapshot_commit: None,
                             created_at: "2026-11-17T10:02:06.000Z".to_owned(),
                         }],

@@ -21,12 +21,11 @@ pub use graph::{
 };
 pub use inputs::{
     ActionExecutionOutcome, BuildGraphInput, ClaimDecision, ClaimInput, ExtendScopeInput,
-    MachineCheckDef, MachineExpectedFailure, MachineGateDef, MachineGitPolicy, MachineGraphItem,
-    MachineProfileInput, MachineProofKind, MachineSavePolicy, MachineSpecInput,
-    MachineSubtaskInput, MachineTaskDep, MachineTaskSpec, MachineTasksBlockDef, ReopenInput,
-    SubmitEvaluation,
-    SubmitInput, SyncInput, SyncPlan, TransitionInput, TransitionOutcome, VerifyEvaluation,
-    VerifyExecutionObservation, VerifyInput,
+    MachineCheckDef, MachineGateDef, MachineGitPolicy, MachineGraphItem, MachineProfileInput,
+    MachineProofKind, MachineSavePolicy, MachineSpecInput, MachineSubtaskInput, MachineTaskDep,
+    MachineTaskSpec, MachineTasksBlockDef, ReopenInput, SubmitEvaluation, SubmitInput, SyncInput,
+    SyncPlan, TransitionInput, TransitionOutcome, VerifyEvaluation, VerifyExecutionObservation,
+    VerifyInput,
 };
 pub use reopen::plan_reopen;
 pub use schedule::{
@@ -34,7 +33,7 @@ pub use schedule::{
     ScheduleReport,
 };
 pub use scope::plan_extend_scope;
-pub use submit::{evaluate_submit, evaluate_submit_plan, plan_container_blackboard_cleanup};
+pub use submit::{evaluate_submit, plan_container_blackboard_cleanup};
 pub use sync::plan_sync;
 pub use verify::{compute_execution_digest, evaluate_verify, ExecutionDigestInput};
 
@@ -59,7 +58,7 @@ pub fn evaluate_transition(
             snapshot, profile, obs, req,
         )?))),
         TransitionInput::ExtendScope(req) => Ok(TransitionOutcome::Plan(Box::new(
-            plan_extend_scope(snapshot, profile, req)?,
+            scope::plan_extend_scope_with_obs(snapshot, profile, obs, req)?,
         ))),
         TransitionInput::Reopen(req) => Ok(TransitionOutcome::Plan(Box::new(plan_reopen(
             snapshot, obs, req,

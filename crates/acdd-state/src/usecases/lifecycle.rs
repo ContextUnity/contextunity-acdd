@@ -3,17 +3,16 @@
 
 use acdd_core::git::read_git_blob_utf8;
 use crate::git_ops::worktree::{
-    canonicalize_macos_var, cleanup_run_refs, remove_worktree_and_branch, resolve_repo_layout,
-    RepoWorktreeLayout,
+    canonicalize_macos_var, cleanup_run_refs, is_branch_merged_into_ref,
+    remove_worktree_and_branch, resolve_repo_layout, RepoWorktreeLayout,
 };
 use crate::machine::{
-    compute_schedule, container_scope, MachineCheckDef, MachineExpectedFailure, MachineGateDef,
-    MachineGitPolicy, MachineGraphItem, MachineProfileInput, MachineProofKind, MachineSavePolicy,
+    compute_schedule, container_scope, MachineCheckDef, MachineGateDef, MachineGitPolicy,
+    MachineGraphItem, MachineProfileInput, MachineProofKind, MachineSavePolicy,
     MachineTasksBlockDef,
 };
 use crate::profile::{
-    validate_profile, CommandDef, GateDef, ProfileValidationOptions, ProofDef, ProofKind,
-    ResolvedGateProfile,
+    validate_profile, GateDef, ProfileValidationOptions, ProofDef, ProofKind, ResolvedGateProfile,
 };
 use crate::spec::{parse_spec, SpecDocument, SpecStatus};
 use crate::store::sqlite::backup::RestoredActiveRun;
@@ -105,14 +104,6 @@ pub fn ensure_blackboard_enabled(config: &StateEngineConfig) -> Result<(), State
         ));
     }
     Ok(())
-}
-
-/// Extract `domain_id -> enabled` flags from `config.modules` for [`CompositeDomainProvider`].
-pub fn module_domain_flags(config: &StateEngineConfig) -> BTreeMap<String, bool> {
-    let mut flags = config.modules.domains.clone();
-    flags.insert("code".to_owned(), config.modules.is_enabled("code"));
-    flags.insert("docs".to_owned(), config.modules.is_enabled("docs"));
-    flags
 }
 
 /// Compute the effective intersection of workspace `modules:` and profile `modules:`.
@@ -270,6 +261,28 @@ pub(crate) fn compute_archive_relpath(
     }
 }
 
+fn relativize_db_path(
+    raw: &Path,
+    primary: &Path,
+    workspace_root: &Path,
+    default_rel: &str,
+) -> String {
+    if raw.is_relative() {
+        return acdd_core::path_policy::normalize_rel_path(&raw.to_string_lossy())
+            .unwrap_or_else(|| default_rel.to_owned());
+    }
+    let canon = canonicalize_macos_var(raw);
+    let canon_ws = canonicalize_macos_var(workspace_root);
+    canon
+        .strip_prefix(primary)
+        .or_else(|_| canon.strip_prefix(&canon_ws))
+        .or_else(|_| raw.strip_prefix(primary))
+        .or_else(|_| raw.strip_prefix(workspace_root))
+        .ok()
+        .and_then(|rel| acdd_core::path_policy::normalize_rel_path(&rel.to_string_lossy()))
+        .unwrap_or_else(|| default_rel.to_owned())
+}
+
 /// Build [`WorkspacePathPolicy`] incorporating `spec_path` and derived `archive_path` of all
 /// active runs plus `extra_managed`.
 pub fn build_path_policy(
@@ -306,21 +319,13 @@ pub fn build_path_policy(
 
     let primary = primary_workspace_root(config);
     let (state_db_abs, _) = config.resolved_state_db_path();
-    let state_db_rel = state_db_abs
-        .strip_prefix(&primary)
-        .or_else(|_| state_db_abs.strip_prefix(&config.workspace_root))
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_else(|_| ".acdd/state.sqlite".to_owned());
+    let state_db_rel =
+        relativize_db_path(&state_db_abs, &primary, &config.workspace_root, ".acdd/state.sqlite");
 
     let code_db_rel = config
         .code_db_path
         .as_ref()
-        .and_then(|p| {
-            p.strip_prefix(&primary)
-                .or_else(|_| p.strip_prefix(&config.workspace_root))
-                .ok()
-                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
-        })
+        .map(|p| relativize_db_path(p, &primary, &config.workspace_root, ".acdd/code-map.sqlite"))
         .unwrap_or_else(|| ".acdd/code-map.sqlite".to_owned());
 
     Ok(WorkspacePathPolicy::new(managed, state_db_rel, code_db_rel))
@@ -513,8 +518,6 @@ pub fn to_machine_profile(profile: &ResolvedGateProfile) -> Result<MachineProfil
         git: MachineGitPolicy {
             isolation: profile.git.isolation,
             worktrees: profile.git.worktrees,
-            commit_mode: profile.git.commit_mode,
-            integrate: profile.git.integrate,
         },
         default_save: profile.save,
         protected_paths: profile.protected_paths.clone(),
@@ -533,7 +536,6 @@ fn convert_gate_def(
     let id = GateId::new(&gate.id)?;
     let proof = match &gate.proof {
         ProofDef::Kind(ProofKind::None) => MachineProofKind::None,
-        ProofDef::Kind(ProofKind::Contract) => MachineProofKind::Contract,
         ProofDef::Kind(ProofKind::Command) => MachineProofKind::Command,
         ProofDef::Kind(ProofKind::Call) => MachineProofKind::Call,
         ProofDef::Kind(ProofKind::Review) => MachineProofKind::Review,
@@ -550,12 +552,6 @@ fn convert_gate_def(
             MachineProofKind::CustomSchema(synthetic)
         }
     };
-
-    let require_counts = gate
-        .command
-        .as_deref()
-        .and_then(|cmd_id| profile.commands.get(cmd_id))
-        .is_some_and(command_requires_counts);
 
     let mut children = Vec::with_capacity(gate.gates.len());
     for child in &gate.gates {
@@ -586,12 +582,6 @@ fn convert_gate_def(
                 params: c.with.clone(),
             })
             .collect(),
-        expected_failure: gate.expected_failure.as_ref().map(|ef| {
-            MachineExpectedFailure {
-                exit_codes: ef.exit_codes.clone(),
-                stderr_contains: ef.stderr_contains.clone(),
-            }
-        }),
         contours: gate.contours.clone(),
         independent_from: gate.independent_from.clone(),
         need: gate.need.clone(),
@@ -600,30 +590,18 @@ fn convert_gate_def(
         fail_drift: gate.fail_drift.as_ref().map(|g| g.as_str().to_owned()),
         max_attempts: gate.max_attempts.max(1),
         receipt: gate.receipt,
-        require_test_target: matches!(gate.proof, ProofDef::Kind(ProofKind::Contract)),
-        require_counts,
         save: MachineSavePolicy {
             post: effective_post,
             immutable: gate.save.immutable,
             archive: gate.save.archive,
             prune: gate.save.prune,
-            git_commit_note: gate.save.git_commit_note.clone(),
+            report: gate.save.report.clone(),
         },
         scope: gate.scope.clone(),
         when: gate.when.clone(),
         children,
         definition_digest: gate.definition_digest()?,
     })
-}
-
-fn command_requires_counts(cmd: &CommandDef) -> bool {
-    match cmd {
-        CommandDef::Unbound { .. } | CommandDef::Script(_) => false,
-        CommandDef::Detailed(d) => d.output.as_ref().is_some_and(|o| o.require_counts),
-        CommandDef::Pattern(entries) => entries
-            .iter()
-            .any(|e| e.output.as_ref().is_some_and(|o| o.require_counts)),
-    }
 }
 
 /// Parse a user-supplied node cursor string against the tasks present in `snapshot`.
@@ -770,6 +748,9 @@ pub fn is_local_pid_alive(session_fingerprint: Option<&str>) -> Option<bool> {
         return None;
     }
     let pid = pid_str.parse::<u32>().ok()?;
+    if pid == 0 {
+        return Some(false);
+    }
 
     #[cfg(target_os = "linux")]
     {
@@ -788,6 +769,12 @@ pub fn is_local_pid_alive(session_fingerprint: Option<&str>) -> Option<bool> {
     }
     #[cfg(all(unix, not(target_os = "linux")))]
     {
+        let Ok(pid_t) = libc::pid_t::try_from(pid) else {
+            return Some(false);
+        };
+        if pid_t <= 0 {
+            return Some(false);
+        }
         if recorded_start != "0" {
             if let Some(current_start) =
                 acdd_core::sys::read_process_start_time(pid).map(|v| v.to_string())
@@ -797,7 +784,7 @@ pub fn is_local_pid_alive(session_fingerprint: Option<&str>) -> Option<bool> {
                 }
             }
         }
-        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        let rc = unsafe { libc::kill(pid_t, 0) };
         if rc == 0 {
             return Some(true);
         }
@@ -870,8 +857,8 @@ fn is_managed_task_branch_entry(
 
 /// Build the canonical `run_tombstones.cleanup_manifest` (`INV-SINGLE-OWNER`).
 ///
-/// Includes `spec_file` (when present under `primary`), managed task worktrees/branches, any
-/// managed run worktree distinct from `primary`, and `snapshot_ref`s. Never includes `run.branch`
+/// Includes `spec_file` (when present under `primary`), managed task worktrees/branches, and any
+/// managed run worktree distinct from `primary`. Never includes `run.branch`
 /// or manual `--worktree` checkouts/branches.
 pub(crate) fn build_tombstone_cleanup_manifest(
     input: &CleanupManifestInput<'_>,
@@ -894,6 +881,7 @@ fn build_tombstone_cleanup_manifest_with_policy(
                 kind: "spec_file".to_owned(),
                 path_or_ref: sp.to_owned(),
                 workspace: None,
+                force: false,
             });
         }
     }
@@ -911,6 +899,7 @@ fn build_tombstone_cleanup_manifest_with_policy(
                         kind: "worktree".to_owned(),
                         path_or_ref: wt.to_owned(),
                         workspace: None,
+                        force: false,
                     });
                 }
             }
@@ -922,6 +911,7 @@ fn build_tombstone_cleanup_manifest_with_policy(
                         kind: "branch".to_owned(),
                         path_or_ref: br.to_owned(),
                         workspace: None,
+                        force: false,
                     });
                 }
             }
@@ -935,6 +925,7 @@ fn build_tombstone_cleanup_manifest_with_policy(
                     kind: "worktree".to_owned(),
                     path_or_ref: run_wt.to_owned(),
                     workspace: None,
+                    force: false,
                 });
             }
         }
@@ -970,15 +961,6 @@ pub(crate) fn build_tombstone_cleanup_manifest_from_snapshot(
     )
 }
 
-/// Resume and finalize any `run_tombstones` rows with `cleanup_pending == true`.
-pub fn resume_pending_tombstone_cleanups<B: StateBackend>(
-    config: &StateEngineConfig,
-    backend: &B,
-    layout: Option<&RepoWorktreeLayout>,
-) -> Result<Vec<String>, StateError> {
-    resume_pending_tombstone_cleanups_dyn(config, backend, layout)
-}
-
 pub(crate) fn resume_pending_tombstone_cleanups_dyn(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,
@@ -1001,10 +983,7 @@ pub(crate) fn resume_pending_tombstone_cleanups_dyn(
         for entry in &tomb.cleanup_manifest {
             if let Some(ref ws) = entry.workspace {
                 let ws_path = Path::new(ws);
-                if entry.kind == "snapshot_ref"
-                    || (!matches!(entry.kind.as_str(), "spec_file" | "worktree")
-                        && ws_path.exists())
-                {
+                if !matches!(entry.kind.as_str(), "spec_file" | "worktree") && ws_path.exists() {
                     workspaces.insert(canonicalize_macos_var(ws_path));
                 }
             }
@@ -1035,7 +1014,7 @@ pub(crate) fn resume_pending_tombstone_cleanups_dyn(
                         &primary,
                         Some(Path::new(&entry.path_or_ref)),
                         None,
-                        true,
+                        entry.force,
                     )
                     .is_ok()
                     {
@@ -1045,11 +1024,21 @@ pub(crate) fn resume_pending_tombstone_cleanups_dyn(
                     }
                 }
                 "branch" => {
+                    let allow_force_branch = entry.force
+                        || (tomb.terminal_status == TerminalStatus::Completed
+                            && tomb.closed_commit.as_ref().is_some_and(|closed| {
+                                is_branch_merged_into_ref(
+                                    &primary,
+                                    &entry.path_or_ref,
+                                    closed.as_str(),
+                                )
+                                .unwrap_or(false)
+                            }));
                     if remove_worktree_and_branch(
                         &primary,
                         None,
                         Some(&entry.path_or_ref),
-                        true,
+                        allow_force_branch,
                     )
                     .is_ok()
                     {
@@ -1066,7 +1055,7 @@ pub(crate) fn resume_pending_tombstone_cleanups_dyn(
             Ok(refs) => cleaned.extend(refs),
             Err(_) => all_ok = false,
         }
-        let _ = prune_old_run_trace_dirs(&primary, backend, config.retain_traces);
+        let _ = prune_old_run_trace_dirs(&primary, backend, config.retain_traces, None, None);
         if all_ok {
             exec_tx_with(backend, |tx| tx.mark_tombstone_cleaned(&tomb.run_id))?;
         }
@@ -1075,46 +1064,148 @@ pub(crate) fn resume_pending_tombstone_cleanups_dyn(
     Ok(cleaned)
 }
 
-/// Remove closed `.acdd/run/<run_id>/` directories beyond `retain_traces`, preserving active runs.
+/// Canonical helper applying effective `IsolationMode` and `WorktreeLifecycle` to a resolved
+/// profile, neutralizing `save: commit` -> `none` whenever `isolation == IsolationMode::InPlace`.
+pub(crate) fn apply_effective_isolation(
+    profile: &mut ResolvedGateProfile,
+    isolation: crate::types::IsolationMode,
+    worktrees: WorktreeLifecycle,
+) {
+    profile.git.isolation = isolation;
+    profile.git.worktrees = if isolation == crate::types::IsolationMode::InPlace {
+        WorktreeLifecycle::Manual
+    } else {
+        worktrees
+    };
+    if isolation == crate::types::IsolationMode::InPlace {
+        neutralize_in_place_save(profile);
+    }
+}
+
+fn neutralize_in_place_save(profile: &mut ResolvedGateProfile) {
+    profile.save = SaveAction::None;
+    for gate in &mut profile.gates {
+        neutralize_gate_commit(gate);
+    }
+}
+
+fn neutralize_gate_commit(gate: &mut GateDef) {
+    if gate.save.post == Some(SaveAction::Commit) {
+        gate.save.post = Some(SaveAction::None);
+    }
+    for child in &mut gate.gates {
+        neutralize_gate_commit(child);
+    }
+    if let Some(ref mut tb) = gate.tasks {
+        for task_gate in &mut tb.gates {
+            neutralize_gate_commit(task_gate);
+        }
+    }
+}
+
+/// Join non-empty check observation salts or index generations deterministically (`None` if empty).
+pub(crate) fn combine_check_observations(items: &[String]) -> Option<String> {
+    if items.is_empty() {
+        None
+    } else {
+        Some(items.join("|"))
+    }
+}
+
+fn dir_size_bytes_no_follow(dir: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let Ok(meta) = fs::symlink_metadata(&p) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            total = total.saturating_add(dir_size_bytes_no_follow(&p));
+        } else if meta.is_file() {
+            total = total.saturating_add(meta.len());
+        }
+    }
+    total
+}
+
+fn confined_run_traces_dir(primary_worktree: &Path) -> Option<PathBuf> {
+    let run_dir = checked_child(primary_worktree, Path::new(".acdd/run")).ok()?;
+    fs::symlink_metadata(&run_dir)
+        .is_ok_and(|m| m.file_type().is_dir())
+        .then_some(run_dir)
+}
+
+/// Remove closed `.acdd/run/<run_id>/` directories beyond `retain_traces` and optional
+/// `max_total_bytes` budget, ALWAYS preserving active runs queried from `reader` plus optional
+/// `exempt_run_id`. Fails closed (deletes nothing) if querying active runs errors.
 pub fn prune_old_run_trace_dirs(
     primary_worktree: &Path,
     reader: &dyn StateReader,
     retain_traces: usize,
+    max_total_bytes: Option<u64>,
+    exempt_run_id: Option<&str>,
 ) -> Result<(), StateError> {
-    let run_dir = primary_worktree.join(".acdd/run");
-    if !run_dir.is_dir() {
+    let Some(run_dir) = confined_run_traces_dir(primary_worktree) else {
         return Ok(());
-    }
-    let active_ids: BTreeSet<String> = list_all_runs(reader, Some(RunStatus::Active))?
+    };
+    let mut active_ids: BTreeSet<String> = list_all_runs(reader, Some(RunStatus::Active))?
         .into_iter()
         .map(|r| r.run_id.as_str().to_owned())
         .collect();
-
-    let mut closed_dirs: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    if let Some(exempt) = exempt_run_id {
+        active_ids.insert(exempt.to_owned());
+    }
     let Ok(entries) = fs::read_dir(&run_dir) else {
         return Ok(());
     };
+
+    let mut closed_dirs: Vec<(std::time::SystemTime, String, u64, PathBuf)> = Vec::new();
+    let mut kept_count = 0usize;
+    let mut kept_bytes: u64 = 0;
+
     for entry in entries.flatten() {
         let p = entry.path();
-        if !p.is_dir() {
+        let Ok(meta) = fs::symlink_metadata(&p) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_dir() {
             continue;
         }
         let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
+        let bytes = if max_total_bytes.is_some() {
+            dir_size_bytes_no_follow(&p)
+        } else {
+            0
+        };
         if active_ids.contains(name) {
+            kept_count = kept_count.saturating_add(1);
+            kept_bytes = kept_bytes.saturating_add(bytes);
             continue;
         }
-        let mtime = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::UNIX_EPOCH);
-        closed_dirs.push((mtime, p));
+        let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        closed_dirs.push((mtime, name.to_owned(), bytes, p));
     }
 
-    closed_dirs.sort_by_key(|a| std::cmp::Reverse(a.0));
-    for (_, old_dir) in closed_dirs.into_iter().skip(retain_traces) {
-        let _ = fs::remove_dir_all(old_dir);
+    closed_dirs.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+
+    for (_, _, bytes, old_dir) in closed_dirs {
+        let within_count = kept_count < retain_traces;
+        let within_bytes =
+            max_total_bytes.is_none_or(|limit| kept_bytes.saturating_add(bytes) <= limit);
+        if within_count && within_bytes {
+            kept_count = kept_count.saturating_add(1);
+            kept_bytes = kept_bytes.saturating_add(bytes);
+        } else {
+            let _ = fs::remove_dir_all(old_dir);
+        }
     }
     Ok(())
 }
@@ -1214,14 +1305,6 @@ pub fn generate_run_id(prefix: &str) -> Result<RunId, StateError> {
     };
     let raw = format!("{head}-{ts}-{pid}-{seq}");
     RunId::new(raw).map_err(StateError::from)
-}
-
-/// Build the `ValidatedObservations` structure for pure state machine evaluation.
-pub fn empty_observations() -> ValidatedObservations {
-    ValidatedObservations {
-        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
-        ..ValidatedObservations::default()
-    }
 }
 
 /// Collect `TaskIntegrationCheckInput` descriptors for all completed tasks in `snapshot`.
@@ -1642,6 +1725,7 @@ mod tests {
                 kind: "worktree".to_owned(),
                 path_or_ref: root.to_string_lossy().into_owned(),
                 workspace: None,
+                force: false,
             }],
             summary_json: "{}".to_owned(),
             metrics_json: "{}".to_owned(),
@@ -1662,7 +1746,7 @@ mod tests {
                 )
             })
             .expect("archive fail tomb");
-        let _ = resume_pending_tombstone_cleanups(&cfg, &harness, None).expect("resume");
+        let _ = resume_pending_tombstone_cleanups_dyn(&cfg, &harness, None).expect("resume");
         fail_tomb = list_all_tombstones(&harness)
             .expect("list tombs")
             .into_iter()
@@ -1672,5 +1756,60 @@ mod tests {
             fail_tomb.cleanup_pending,
             "failed worktree cleanup must leave cleanup_pending=true for retry"
         );
+
+        // 5. `is_local_pid_alive` guards `pid == 0` and overflowing/negative `pid_t` values.
+        let host = current_host_id();
+        for bad_fp in [
+            format!("{host}:0:0"),
+            format!("{host}:{}:0", u32::MAX),
+            format!("{host}:{}:0", (i32::MAX as u32) + 1),
+        ] {
+            assert_eq!(
+                is_local_pid_alive(Some(&bad_fp)),
+                Some(false),
+                "is_local_pid_alive must reject unsafe pid in '{bad_fp}'"
+            );
+        }
+
+        // 6. `prune_old_run_trace_dirs` preserves active runs & `exempt_run_id` under count & byte
+        //    budgets, and fails closed (deletes nothing) when the state DB reader errors.
+        let run_root = root.join(".acdd/run");
+        let active_dir = run_root.join("run-active-keep");
+        let exempt_dir = run_root.join("run-exempt-keep");
+        let closed_small = run_root.join("run-closed-small");
+        let closed_big = run_root.join("run-closed-big");
+        for d in [&active_dir, &exempt_dir, &closed_small, &closed_big] {
+            fs::create_dir_all(d).expect("mkdir trace dir");
+        }
+        fs::write(active_dir.join("traces.jsonl"), vec![b'a'; 64]).unwrap();
+        fs::write(exempt_dir.join("traces.jsonl"), vec![b'e'; 64]).unwrap();
+        fs::write(closed_big.join("traces.jsonl"), vec![b'b'; 256]).unwrap();
+        fs::write(closed_small.join("traces.jsonl"), vec![b's'; 32]).unwrap();
+        let active_graph = RunHarness::build_sample_graph(
+            "run-active-keep",
+            "AC-ACTIVE",
+            root.to_str().unwrap(),
+            None,
+            &[],
+        )
+        .expect("active graph");
+        harness
+            .exec_tx(|tx| tx.insert_run_graph(&active_graph))
+            .expect("seed active");
+
+        // Budget = 160 bytes (active 64 + exempt 64 = 128 -> closed_small 32 fits, closed_big 256 pruned!).
+        prune_old_run_trace_dirs(root, &harness, 10, Some(160), Some("run-exempt-keep"))
+            .expect("prune with budget");
+        assert!(active_dir.is_dir(), "active run dir must never be pruned");
+        assert!(exempt_dir.is_dir(), "exempt_run_id dir must never be pruned");
+        assert!(!closed_big.exists(), "closed dir exceeding byte budget must be pruned");
+        assert!(closed_small.is_dir(), "closed dir within count & byte budget kept");
+
+        // Fail closed when the state DB cannot be read: preserve existing closed dirs.
+        let corrupt_db = root.join(".acdd/corrupt-state.sqlite");
+        fs::write(&corrupt_db, b"not-a-valid-sqlite-database").unwrap();
+        let corrupt_reader = crate::store::sqlite::SqliteStateReader::new(corrupt_db);
+        assert!(prune_old_run_trace_dirs(root, &corrupt_reader, 0, Some(0), None).is_err());
+        assert!(closed_small.is_dir(), "corrupt reader must fail closed without deleting trace dirs");
     }
 }

@@ -116,13 +116,30 @@ pub fn admit_claim(
         patch.claim_tree = Some(Some(input.claim_tree.clone()));
         patch.active_span_id = Some(Some(input.span_id.clone()));
 
+        let mut node_patches = vec![patch];
+        if node.kind == NodeKind::TaskGate {
+            if let Some(ref parent_id) = node.parent_id {
+                if let Ok(parent_task) = find_node(snapshot, parent_id) {
+                    if parent_task.worktree.as_deref() != Some(input.worktree.as_str())
+                        || parent_task.branch != input.branch
+                    {
+                        let mut parent_patch =
+                            NodeStatusPatch::status_only(&parent_task.node_id, parent_task.status);
+                        parent_patch.worktree = Some(Some(input.worktree.clone()));
+                        parent_patch.branch = Some(input.branch.clone());
+                        node_patches.push(parent_patch);
+                    }
+                }
+            }
+        }
+
         let transition = TransitionPlan {
             preconditions,
             bump_run_generation: true,
             new_run_status: None,
             new_root_cycle_count: None,
             completed_at: None,
-            node_patches: vec![patch],
+            node_patches,
             dependency_patches: Vec::new(),
             claim_patches: vec![ClaimOutcomePatch {
                 node_id: node.node_id.clone(),

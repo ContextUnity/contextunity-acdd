@@ -2,6 +2,7 @@
 
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{CommitOid, RunId, RunName, SubtaskRef, TaskRef, TreeOid, WorkerId};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -10,7 +11,7 @@ use std::str::FromStr;
 macro_rules! define_string_enum {
     ($(#[$meta:meta])* $name:ident, { $($(#[$vmeta:meta])* $variant:ident => $wire:literal),+ $(,)? }) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
         pub enum $name {
             $(
                 $(#[$vmeta])*
@@ -141,14 +142,10 @@ define_string_enum!(
         Running => "running",
         /// Command/checks satisfied `proof: command` or `call` contract.
         Passed => "passed",
-        /// `proof: contract` observed the expected runtime assertion failure.
-        ExpectedFailure => "expected_failure",
         /// Command/contract exited with an unexpected status or missing target test.
         Failed => "failed",
         /// Process exceeded `max_command_timeout_seconds` and was killed.
         TimedOut => "timed_out",
-        /// Output matched `compile_errors` patterns.
-        CompileError => "compile_error",
         /// One or more `checks:` domain verifiers failed.
         CheckFailed => "check_failed",
         /// Working-tree changes violated `is_agent_writable` for the admitted scope.
@@ -245,36 +242,6 @@ define_string_enum!(
 );
 
 define_string_enum!(
-    /// Git commit creation strategy configured in `git.commit_mode`.
-    CommitMode,
-    {
-        /// Low-level `git commit-tree` + CAS `update-ref` without running hooks.
-        Plumbing => "plumbing",
-        /// Standard `git commit` with `GIT_INDEX_FILE`, enforcing `HEAD^{tree}` integrity post-hook.
-        Cli => "cli",
-        /// Engine validates scoped working tree; operator/agent creates commits manually.
-        Manual => "manual",
-    }
-);
-
-define_string_enum!(
-    /// Branch integration strategy configured in `git.integrate`.
-    IntegrateStrategy,
-    {
-        /// Engine does not automatically integrate task branches.
-        Manual => "manual",
-        /// Rebase task branch onto target HEAD and fast-forward.
-        RebaseFf => "rebase-ff",
-        /// Strict fast-forward merge only.
-        FfOnly => "ff-only",
-        /// Two-parent merge commit (`--no-ff`).
-        NoFf => "no-ff",
-        /// Single squashed commit onto target branch.
-        Squash => "squash",
-    }
-);
-
-define_string_enum!(
     /// Persistence action configured in `save` / `save.post`.
     SaveAction,
     {
@@ -284,6 +251,13 @@ define_string_enum!(
         Commit => "commit",
     }
 );
+
+#[allow(clippy::derivable_impls)]
+impl Default for SaveAction {
+    fn default() -> Self {
+        Self::None
+    }
+}
 
 define_string_enum!(
     /// Gate submission decision passed to `acdd submit --action`.
@@ -308,7 +282,7 @@ define_string_enum!(
 );
 
 /// Invariants applicability and verification state stored in `gate_nodes.invariants_json`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InvariantsState {
     /// Invariant identifiers applicable to this task or node.
@@ -320,7 +294,7 @@ pub struct InvariantsState {
 }
 
 /// Recorded scope extension entry stored in `gate_nodes.extended_scope_json` and archive receipts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExtendedScopeEntry {
     /// Admitted path or glob pattern added via `extend_scope`.
@@ -330,7 +304,7 @@ pub struct ExtendedScopeEntry {
 }
 
 /// Individual structured finding item required when rejecting a review gate.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FindingItem {
     /// Finding severity classification.
@@ -345,7 +319,7 @@ pub struct FindingItem {
 }
 
 /// Classification of a gate rejection finding.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RejectionKind {
     /// Localized implementation or verification defect fixed by returning to the target gate.
@@ -356,7 +330,7 @@ pub enum RejectionKind {
 }
 
 /// Structured findings payload required for `submit --action reject`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RejectionFindings {
     /// Classification of the rejection (`defect` by default, or `architectural_drift`).
@@ -372,7 +346,7 @@ pub struct RejectionFindings {
 }
 
 /// Per-contour review attestation inside `ReviewEvidence`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewContourResult {
     /// Whether this contour applied to the reviewed diff/artifacts.
@@ -382,7 +356,7 @@ pub struct ReviewContourResult {
 }
 
 /// Typed evidence payload required for `proof: review` submissions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewEvidence {
     /// Review outcome matching the submission action.
@@ -397,7 +371,7 @@ pub struct ReviewEvidence {
 }
 
 /// Recorded outcome of a single `DomainProvider::run_check` invocation inside a trace.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CheckResultRecord {
     /// Domain identifier (e.g. `"code"`, `"docs"`).
@@ -417,7 +391,7 @@ pub struct CheckResultRecord {
 }
 
 /// Row representation for the `runs` table.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunRecord {
     /// Immutable run identifier.
     pub run_id: RunId,
@@ -467,7 +441,7 @@ pub struct RunRecord {
 }
 
 /// Row representation for the `gate_nodes` table.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GateNodeRecord {
     /// Owning run identifier.
     pub run_id: RunId,
@@ -528,7 +502,7 @@ pub struct GateNodeRecord {
 }
 
 /// Row representation for the `task_dependencies` table.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskDependencyRecord {
     /// Owning run identifier.
     pub run_id: RunId,
@@ -545,7 +519,7 @@ pub struct TaskDependencyRecord {
 }
 
 /// Row representation for the `subtasks` table.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SubtaskRecord {
     /// Owning run identifier.
     pub run_id: RunId,
@@ -566,7 +540,7 @@ pub struct SubtaskRecord {
 }
 
 /// Row representation for the `gate_claims` table.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GateClaimRecord {
     /// Surrogate database primary key (`None` before insertion).
     pub claim_id: Option<i64>,
@@ -595,7 +569,7 @@ pub struct GateClaimRecord {
 }
 
 /// Row representation for the `gate_traces` table.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GateTraceRecord {
     /// Surrogate database primary key (`None` before insertion).
     pub trace_row_id: Option<i64>,
@@ -623,12 +597,6 @@ pub struct GateTraceRecord {
     pub status: TraceStatus,
     /// Process exit code if a command ran.
     pub exit_code: Option<i32>,
-    /// Parsed number of passed tests.
-    pub tests_passed: u32,
-    /// Parsed number of failed tests.
-    pub tests_failed: u32,
-    /// Parsed number of ignored tests.
-    pub tests_ignored: u32,
     /// Names of individual passing tests observed.
     pub passed_tests: Vec<String>,
     /// Names of individual failing tests observed.
@@ -648,7 +616,7 @@ pub struct GateTraceRecord {
 }
 
 /// Row representation for the `gate_artifacts` table.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GateArtifactRecord {
     /// Owning run identifier.
     pub run_id: RunId,
@@ -660,16 +628,14 @@ pub struct GateArtifactRecord {
     pub kind: ArtifactKind,
     /// Canonical JSON payload string.
     pub payload_json: String,
-    /// Optional Git snapshot reference (`refs/acdd/snapshots/...`).
-    pub snapshot_ref: Option<String>,
-    /// Optional Git snapshot or commit OID.
+    /// Optional Git commit OID.
     pub snapshot_commit: Option<CommitOid>,
     /// UTC ISO-8601 creation timestamp.
     pub created_at: String,
 }
 
 /// Row representation for the `blackboard` table.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BlackboardRecord {
     /// Surrogate database primary key (`None` before insertion).
     pub id: Option<i64>,
@@ -696,7 +662,7 @@ pub struct BlackboardRecord {
 }
 
 /// Row representation for the `run_tombstones` table.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunTombstoneRecord {
     /// Closed run identifier.
     pub run_id: RunId,
@@ -738,8 +704,12 @@ pub struct RunTombstoneRecord {
     pub closed_at: String,
 }
 
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
 /// Cleanup item recorded inside `run_tombstones.cleanup_manifest_json` for crash-safe resumption.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ArchiveCleanupEntry {
     /// Resource kind (`spec_file`, `worktree`, `branch`, `snapshot_ref`).
@@ -749,10 +719,13 @@ pub struct ArchiveCleanupEntry {
     /// Optional linked workspace root if different from primary workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// Whether removal was explicitly authorized with `--force` (defaults to `false`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub force: bool,
 }
 
 /// Complete hydrated snapshot of an active `Run` and all its child rows.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunGraphSnapshot {
     /// Top-level `runs` row.
     pub run: RunRecord,
@@ -771,7 +744,7 @@ pub struct RunGraphSnapshot {
 }
 
 /// Optimistic concurrency check on a single `gate_nodes` row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NodeVersionExpectation {
     /// Target `node_id`.
     pub node_id: String,
@@ -780,7 +753,7 @@ pub struct NodeVersionExpectation {
 }
 
 /// Predecessor accepted-tree invariant checked atomically or prior to transition commit.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PredecessorTreeExpectation {
     /// Predecessor `node_id`.
     pub node_id: String,
@@ -789,7 +762,7 @@ pub struct PredecessorTreeExpectation {
 }
 
 /// Storage-level CAS preconditions produced by the pure state machine and enforced by `StateTx`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StoragePreconditions {
     /// Expected `runs.generation` before committing the transaction.
     pub expected_run_generation: u64,
@@ -806,7 +779,7 @@ pub struct StoragePreconditions {
 }
 
 /// Partial field updates applied atomically to a `gate_nodes` row inside `apply_transition_plan`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NodeStatusPatch {
     /// Target `node_id` to update.
     pub node_id: String,
@@ -876,7 +849,7 @@ impl NodeStatusPatch {
 }
 
 /// Update to `task_dependencies.satisfied` when a prerequisite task completes or reopens.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DependencySatisfiedPatch {
     /// Dependent task reference (or prerequisite reference depending on direction; targets `depends_on_ref` inside the run).
     pub depends_on_ref: TaskRef,
@@ -887,7 +860,7 @@ pub struct DependencySatisfiedPatch {
 }
 
 /// Outcome update applied to an existing `gate_claims` row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ClaimOutcomePatch {
     /// Target `node_id`.
     pub node_id: String,
@@ -900,7 +873,7 @@ pub struct ClaimOutcomePatch {
 }
 
 /// Status update applied to an existing `blackboard` row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BlackboardStatusPatch {
     /// Target `blackboard.id`.
     pub id: i64,
@@ -909,7 +882,7 @@ pub struct BlackboardStatusPatch {
 }
 
 /// Pure transition plan computed by `acdd_state::machine` and persisted atomically by `StateTx`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TransitionPlan {
     /// Optimistic concurrency preconditions checked before mutating state.
     pub preconditions: StoragePreconditions,
@@ -940,7 +913,7 @@ pub struct TransitionPlan {
 }
 
 /// Validated imperative-shell observations fed into the pure state machine.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ValidatedObservations {
     /// Current working tree OID across `is_candidate_included` paths.
     pub current_tree: Option<TreeOid>,
@@ -954,12 +927,15 @@ pub struct ValidatedObservations {
     pub unintegrated_tasks: Vec<TaskRef>,
     /// External cross-workspace dependencies confirmed completed (`(workspace, run_id, task_ref)`).
     pub external_satisfied_deps: Vec<(String, RunId, TaskRef)>,
+    /// Optional workspace path policy resolved by the shell (incorporating custom `state_db`/`code_db` overrides).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_policy: Option<acdd_core::path_policy::WorkspacePathPolicy>,
     /// Current UTC ISO-8601 timestamp supplied by the shell.
     pub now_utc: String,
 }
 
 /// Input parameters for inserting a new `gate_claims` row via `StateTx::admit_claim`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ClaimInsertInput {
     /// Target `node_id`.
     pub node_id: String,
@@ -984,7 +960,7 @@ pub struct ClaimInsertInput {
 }
 
 /// Input parameters for inserting a `running` trace via `StateTx::start_trace`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TraceStartInput {
     /// Owning run identifier.
     pub run_id: RunId,
@@ -1015,7 +991,7 @@ pub struct TraceStartInput {
 }
 
 /// Input parameters for finalizing a `gate_traces` row via `StateTx::finish_trace`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TraceFinishInput {
     /// Primary key of the running trace row.
     pub trace_row_id: i64,
@@ -1023,12 +999,6 @@ pub struct TraceFinishInput {
     pub status: TraceStatus,
     /// Process exit code if a command ran.
     pub exit_code: Option<i32>,
-    /// Passed test count.
-    pub tests_passed: u32,
-    /// Failed test count.
-    pub tests_failed: u32,
-    /// Ignored test count.
-    pub tests_ignored: u32,
     /// Passing test target names.
     pub passed_tests: Vec<String>,
     /// Failing test target names.
@@ -1042,7 +1012,7 @@ pub struct TraceFinishInput {
 }
 
 /// Paginated query parameters for `StateReader::list_runs`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListRunsReq {
     /// Optional workspace filter.
     pub workspace: Option<String>,
@@ -1072,7 +1042,7 @@ impl Default for ListRunsReq {
 }
 
 /// Paginated response returned by `StateReader::list_runs`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListRunsPage {
     /// Active/persisted runs in the requested page.
     pub runs: Vec<RunRecord>,
@@ -1089,7 +1059,7 @@ pub struct ListRunsPage {
 }
 
 /// Paginated query parameters for `StateReader::list_blackboard`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BlackboardListReq {
     /// Optional filter by source `node_id`.
     pub node_id: Option<String>,
@@ -1122,7 +1092,7 @@ impl Default for BlackboardListReq {
 }
 
 /// Paginated response returned by `StateReader::list_blackboard`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BlackboardPage {
     /// Blackboard items in the requested page.
     pub items: Vec<BlackboardRecord>,
@@ -1137,7 +1107,7 @@ pub struct BlackboardPage {
 }
 
 /// Read-only aggregate metrics snapshot returned by `StateReader::observability_snapshot`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ObservabilitySnapshot {
     /// Number of active runs in `runs`.
     pub active_runs: usize,
@@ -1156,7 +1126,7 @@ pub struct ObservabilitySnapshot {
 }
 
 /// Compact summary digest of a completed/cleared run stored in `run_tombstones`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CompletedRunDigest {
     /// Closed run identifier.

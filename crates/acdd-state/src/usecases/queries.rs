@@ -2,14 +2,14 @@
 //!
 //! Never opens write handles and never creates missing `.sqlite` or `.bak.sqlite` files.
 
-use crate::context::{build_claim_context, ClaimContextRequest};
+use crate::context::{GateContextAssembler, SnapshotContextInput};
 use crate::machine::compute_schedule;
 use crate::observability::render_prometheus_text;
 use crate::profile::{GateDef, ResolvedGateProfile};
 use crate::spec::{parse_spec, Receipt, SpecDocument, SpecStatus};
 use crate::store::traits::StateReader;
 use crate::types::{
-    ArtifactKind, BlackboardListReq, GateNodeRecord, ListRunsReq, NodeKind, NodeStatus,
+    ArtifactKind, GateNodeRecord, ListRunsReq, NodeKind, NodeStatus,
     RunGraphSnapshot, RunStatus, SubtaskRecord, ValidatedObservations,
 };
 use crate::usecases::dto::{
@@ -26,6 +26,7 @@ use crate::usecases::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, TreeOid, WorkerId};
 use acdd_core::ports::CompositeDomainProvider;
+use crate::types::BlackboardListReq;
 
 /// Execute a read-only [`StateQuery`] over `reader` without opening any write handles.
 pub fn execute_query(
@@ -226,7 +227,6 @@ fn build_show_context_preview(
     let Some(gate_def) = find_profile_gate_def(&profile, cursor) else {
         return Ok(None);
     };
-    let spec = read_spec_readonly(config, &graph.run);
     let worktree = resolve_node_worktree(config, &graph.run, node, None);
     let candidate_tree = node
         .claim_tree
@@ -237,56 +237,24 @@ fn build_show_context_preview(
         .worker_id
         .clone()
         .unwrap_or_else(|| WorkerId::new("preview").expect("valid WorkerId"));
-
-    let bb_page = if config.modules.is_enabled("blackboard") {
-        reader.list_blackboard(
-            &graph.run.run_id,
-            &BlackboardListReq {
-                limit: 15,
-                offset: 0,
-                ..BlackboardListReq::default()
-            },
-        )?
-    } else {
-        crate::types::BlackboardPage {
-            items: Vec::new(),
-            total: 0,
-            generation: graph.run.generation,
-            limit: 15,
-            offset: 0,
-        }
-    };
-
-    let dependency_receipts = collect_dependency_receipts(graph, node);
-    let pre_task_slice = node
-        .task_ref
-        .as_ref()
-        .and_then(|tr| extract_pre_task_slice(graph, tr.as_str()));
-
-    let context_reset_required =
-        crate::usecases::commands::is_context_reset_required(graph, node, &gate_def);
+    let primary = primary_workspace_root(config);
     let path_policy = build_path_policy(config, reader, &[])?;
-    let ctx_req = ClaimContextRequest {
-        run: graph.run.clone(),
-        node: node.clone(),
+    let ctx_req = GateContextAssembler::build_request_from_snapshot(SnapshotContextInput {
+        config,
+        reader,
+        snapshot: graph,
+        node,
         gate: gate_def,
         profile,
-        spec,
         claim_revision: node.claim_revision.max(1),
         worker_id,
         worktree,
         candidate_tree,
         path_policy,
-        unresolved_findings: None,
-        failed_trace_log_tail: None,
-        pre_task_slice,
-        dependency_receipts,
-        blackboard_items: bb_page.items,
-        context_reset_required,
-        response_max_bytes: config.response_policy.max_output_bytes,
-    };
+        primary: &primary,
+    })?;
 
-    match build_claim_context(&ctx_req, provider) {
+    match GateContextAssembler::assemble(&ctx_req, provider) {
         Ok(resp) => Ok(Some(serde_json::to_value(resp).map_err(|err| {
             StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
@@ -541,22 +509,28 @@ pub(crate) fn collect_dependency_receipts(
     let mut receipts = Vec::new();
     for dep_ref in dep_refs {
         let prefix = format!("task:{dep_ref}:");
-        for art in &graph.artifacts {
-            if art.kind == ArtifactKind::Receipt && art.node_id.starts_with(&prefix) {
-                if let Ok(rec) = serde_json::from_str::<Receipt>(&art.payload_json) {
-                    receipts.push(rec);
-                }
+        let latest = graph
+            .artifacts
+            .iter()
+            .enumerate()
+            .filter(|(_, art)| art.kind == ArtifactKind::Receipt && art.node_id.starts_with(&prefix))
+            .max_by(|(idx_a, a), (idx_b, b)| {
+                a.claim_revision
+                    .cmp(&b.claim_revision)
+                    .then_with(|| a.created_at.cmp(&b.created_at))
+                    .then_with(|| idx_a.cmp(idx_b))
+            })
+            .map(|(_, art)| art);
+        if let Some(art) = latest {
+            if let Ok(rec) = serde_json::from_str::<Receipt>(&art.payload_json) {
+                receipts.push(rec);
             }
         }
     }
     receipts
 }
 
-/// Extract `tasks[<task_ref>]` slice from the latest accepted pre-task root proof/receipt artifact.
-pub(crate) fn extract_pre_task_slice(
-    graph: &RunGraphSnapshot,
-    task_ref: &str,
-) -> Option<serde_json::Value> {
+fn latest_pre_task_proof_value(graph: &RunGraphSnapshot) -> Option<serde_json::Value> {
     let min_tasks_seq = graph
         .nodes
         .iter()
@@ -584,25 +558,121 @@ pub(crate) fn extract_pre_task_slice(
         if !matches!(art.kind, ArtifactKind::Proof | ArtifactKind::Receipt) {
             continue;
         }
-        // Reject stale claim revisions whenever the node has a newer accepted claim_revision.
         if node_claim_rev > 0 && art.claim_revision < node_claim_rev {
             continue;
         }
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&art.payload_json) {
-            if let Some(slice) = val.get("tasks").and_then(|t| t.get(task_ref)) {
-                let replace = match best {
-                    None => true,
-                    Some((prev_rev, prev_at, _)) => {
-                        (art.claim_revision, art.created_at.as_str()) > (prev_rev, prev_at)
-                    }
-                };
-                if replace {
-                    best = Some((art.claim_revision, art.created_at.as_str(), slice.clone()));
+            let replace = match best {
+                None => true,
+                Some((prev_rev, prev_at, _)) => {
+                    (art.claim_revision, art.created_at.as_str()) > (prev_rev, prev_at)
+                }
+            };
+            if replace {
+                best = Some((art.claim_revision, art.created_at.as_str(), val));
+            }
+        }
+    }
+    best.map(|(_, _, val)| val)
+}
+
+/// Extract `tasks[<task_ref>]` slice (plus global boundaries/invariants if present) from the latest accepted pre-task root artifact.
+pub(crate) fn extract_pre_task_slice(
+    graph: &RunGraphSnapshot,
+    task_ref: &str,
+) -> Option<serde_json::Value> {
+    let val = latest_pre_task_proof_value(graph)?;
+    let mut slice = val.get("tasks").and_then(|t| t.get(task_ref))?.clone();
+    if let serde_json::Value::Object(ref mut map) = slice {
+        for shared_key in ["global_negative_boundaries", "cited_invariants"] {
+            if !map.contains_key(shared_key) {
+                if let Some(shared) = val.get(shared_key).filter(|v| !matches!(v, serde_json::Value::Array(a) if a.is_empty())) {
+                    map.insert(shared_key.to_owned(), shared.clone());
                 }
             }
         }
     }
-    best.map(|(_, _, slice)| slice)
+    Some(slice)
+}
+
+/// Extract global architectural boundaries from the accepted pre-task blueprint artifact for root closure/polish gates.
+pub(crate) fn extract_global_blueprint_slice(graph: &RunGraphSnapshot) -> Option<serde_json::Value> {
+    let val = latest_pre_task_proof_value(graph)?;
+    let mut out = serde_json::Map::new();
+    for key in [
+        "cited_invariants",
+        "global_negative_boundaries",
+        "c2_boundary_impact",
+    ] {
+        if let Some(field) = val.get(key) {
+            let non_empty = match field {
+                serde_json::Value::Array(a) => !a.is_empty(),
+                serde_json::Value::String(s) => !s.trim().is_empty(),
+                serde_json::Value::Null => false,
+                _ => true,
+            };
+            if non_empty {
+                out.insert(key.to_owned(), field.clone());
+            }
+        }
+    }
+    (!out.is_empty()).then_some(serde_json::Value::Object(out))
+}
+
+/// Extract latest `ArtifactKind::Proof` payloads from completed predecessor sibling gates in the same container, ordered by `seq_order`.
+pub(crate) fn extract_predecessor_gate_proofs(
+    graph: &RunGraphSnapshot,
+    node: &GateNodeRecord,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let mut predecessors: Vec<&GateNodeRecord> = graph
+        .nodes
+        .iter()
+        .filter(|n| {
+            n.parent_id == node.parent_id
+                && n.seq_order < node.seq_order
+                && n.status == NodeStatus::Completed
+                && matches!(n.kind, NodeKind::RootGate | NodeKind::TaskGate)
+                && !n.node_id.starts_with("root:blueprint_synthesis")
+        })
+        .collect();
+    predecessors.sort_by_key(|n| n.seq_order);
+
+    let mut proofs = serde_json::Map::new();
+    for pred in predecessors {
+        let latest = graph
+            .artifacts
+            .iter()
+            .enumerate()
+            .filter(|(_, art)| {
+                art.node_id == pred.node_id
+                    && art.kind == ArtifactKind::Proof
+                    && (pred.claim_revision == 0 || art.claim_revision >= pred.claim_revision)
+            })
+            .max_by(|(idx_a, a), (idx_b, b)| {
+                a.claim_revision
+                    .cmp(&b.claim_revision)
+                    .then_with(|| a.created_at.cmp(&b.created_at))
+                    .then_with(|| idx_a.cmp(idx_b))
+            })
+            .map(|(_, art)| art);
+        let Some(art) = latest else {
+            continue;
+        };
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(&art.payload_json) else {
+            continue;
+        };
+        let non_empty = match &val {
+            serde_json::Value::Object(m) => !m.is_empty(),
+            serde_json::Value::Array(a) => !a.is_empty(),
+            serde_json::Value::String(s) => !s.trim().is_empty(),
+            serde_json::Value::Null => false,
+            _ => true,
+        };
+        if non_empty {
+            proofs.insert(pred.gate_id.clone(), val);
+        }
+    }
+    (!proofs.is_empty()).then_some(proofs)
 }
 
 #[cfg(test)]
@@ -724,7 +794,6 @@ mod tests {
             claim_revision: 1,
             kind: ArtifactKind::Proof,
             payload_json: r#"{"tasks":{"T1":{"ver":"stale-rev-1"}}}"#.to_owned(),
-            snapshot_ref: None,
             snapshot_commit: None,
             created_at: "2026-01-01T00:01:00Z".to_owned(),
         };
@@ -734,7 +803,6 @@ mod tests {
             claim_revision: 2,
             kind: ArtifactKind::Proof,
             payload_json: r#"{"tasks":{"T1":{"ver":"accepted-rev-2"}}}"#.to_owned(),
-            snapshot_ref: None,
             snapshot_commit: None,
             created_at: "2026-01-01T00:02:00Z".to_owned(),
         };

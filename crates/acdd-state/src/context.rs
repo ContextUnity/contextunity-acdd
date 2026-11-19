@@ -1,19 +1,33 @@
 //! Claim context assembly (`ClaimResp`) enforcing 6-tier budget reservation and prompt rendering.
 
 use crate::profile::{
-    check_guidance_budget, resolve_and_budget_guidance, GateDef, ResolvedGateProfile,
+    check_guidance_budget, resolve_and_budget_guidance, GateDef, ProofDef, ProofKind,
+    ResolvedGateProfile,
 };
 use crate::spec::{Receipt, SpecDocument};
-use crate::types::{BlackboardRecord, GateNodeRecord, RejectionFindings, RunRecord};
+use crate::store::traits::StateReader;
+use crate::types::{
+    ArtifactKind, BlackboardListReq, BlackboardRecord, BlackboardStatus, BlackboardTopic,
+    ClaimOutcome, GateNodeRecord, NodeKind, NodeStatus, RejectionFindings, RunGraphSnapshot,
+    RunRecord, TraceStatus,
+};
+use crate::usecases::queries::{
+    collect_dependency_receipts, extract_global_blueprint_slice, extract_pre_task_slice,
+    extract_predecessor_gate_proofs, read_spec_readonly,
+};
+use crate::usecases::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::{estimate_json_bytes, utf8_tail};
+use acdd_core::fs::open_confined;
 use acdd_core::ids::{GateId, NodeCursor, RunId, TreeOid, WorkerId};
 use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_core::ports::{CompositeDomainProvider, DomainContextReq};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 /// Maximum blackboard messages included in Tier 5 (`ADR-0006`).
 const MAX_BLACKBOARD_ITEMS: usize = 15;
@@ -123,72 +137,228 @@ pub(crate) fn baseline_ref_for_node(node: &crate::types::GateNodeRecord) -> Opti
     }
 }
 
-/// Validate Tier 1 mandatory budget (`contract` + `guidance` + mandatory envelope) and build initial `ClaimResp`.
-pub(crate) fn preflight_mandatory_budget(
-    req: &ClaimContextRequest,
-) -> Result<(ClaimResp, NodeCursor, usize), StateError> {
-    let node_cursor = NodeCursor::from_node_id(&req.node.node_id)?;
-    let inspect_cmd = format!("acdd show {} --run {}", node_cursor, req.run.run_id);
+/// Parameters for [`GateContextAssembler::build_request_from_snapshot`].
+pub(crate) struct SnapshotContextInput<'a> {
+    pub config: &'a StateEngineConfig,
+    pub reader: &'a dyn StateReader,
+    pub snapshot: &'a RunGraphSnapshot,
+    pub node: &'a GateNodeRecord,
+    pub gate: GateDef,
+    pub profile: ResolvedGateProfile,
+    pub claim_revision: u32,
+    pub worker_id: WorkerId,
+    pub worktree: PathBuf,
+    pub candidate_tree: TreeOid,
+    pub path_policy: WorkspacePathPolicy,
+    pub primary: &'a Path,
+}
 
-    // Tier 1: Mandatory contract + guidance (fail-closed, never silently truncated).
-    let contract = build_contract_value(req);
-    let contract_bytes = estimate_json_bytes(&contract);
+/// Single authoritative context builder shared by `claim`, `show`, and `run`.
+pub struct GateContextAssembler;
 
-    let mut guidance_texts = resolve_and_budget_guidance(
-        &req.profile,
-        &req.gate,
-        contract_bytes,
-        req.response_max_bytes,
-    )?;
-    if let Some(role_name) = &req.gate.role {
-        if let Some(role_def) = req.profile.roles.get(role_name) {
-            if let Some(role_guidance) = &role_def.guidance {
-                guidance_texts.push(format!("[role:{role_name}] {role_guidance}"));
+impl GateContextAssembler {
+    /// Build a [`ClaimContextRequest`] from a [`RunGraphSnapshot`] with container rework diagnostics and filtered blackboard state.
+    pub(crate) fn build_request_from_snapshot(
+        input: SnapshotContextInput<'_>,
+    ) -> Result<ClaimContextRequest, StateError> {
+        let SnapshotContextInput {
+            config,
+            reader,
+            snapshot,
+            node,
+            gate,
+            profile,
+            claim_revision,
+            worker_id,
+            worktree,
+            candidate_tree,
+            path_policy,
+            primary,
+        } = input;
+        let spec = read_spec_readonly(config, &snapshot.run);
+        let skip_enrichment = matches!(gate.proof, ProofDef::Kind(ProofKind::None)) && gate.receipt;
+        let (unresolved_findings, failed_trace_log_tail) = resolve_rework_diagnostics(
+            snapshot,
+            node,
+            primary,
+            profile.limits.diagnostic_inline_bytes,
+        );
+        let context_reset_required = is_context_reset_required(snapshot, node, &gate);
+        let (pre_task_slice, dependency_receipts, blackboard_items) = if skip_enrichment {
+            (None, Vec::new(), Vec::new())
+        } else {
+            let mut slice = match node.task_ref.as_ref() {
+                Some(tr) => extract_pre_task_slice(snapshot, tr.as_str()),
+                None if !node.node_id.starts_with("root:blueprint_synthesis") => {
+                    extract_global_blueprint_slice(snapshot)
+                }
+                None => None,
+            };
+            if let Some(pred_proofs) = extract_predecessor_gate_proofs(snapshot, node) {
+                let pred_val = Value::Object(pred_proofs);
+                slice = match slice {
+                    Some(Value::Object(mut map)) => {
+                        map.insert("predecessor_proofs".to_owned(), pred_val);
+                        Some(Value::Object(map))
+                    }
+                    _ => {
+                        let mut map = Map::new();
+                        map.insert("predecessor_proofs".to_owned(), pred_val);
+                        Some(Value::Object(map))
+                    }
+                };
+            }
+            let receipts = collect_dependency_receipts(snapshot, node);
+            let bb = if config.modules.is_enabled("blackboard") {
+                reader
+                    .list_blackboard(
+                        &snapshot.run.run_id,
+                        &BlackboardListReq {
+                            status: Some(BlackboardStatus::Open),
+                            limit: 100,
+                            offset: 0,
+                            ..BlackboardListReq::default()
+                        },
+                    )?
+                    .items
+            } else {
+                Vec::new()
+            };
+            (slice, receipts, bb)
+        };
+        Ok(ClaimContextRequest {
+            run: snapshot.run.clone(),
+            node: node.clone(),
+            gate,
+            profile,
+            spec,
+            claim_revision,
+            worker_id,
+            worktree,
+            candidate_tree,
+            path_policy,
+            unresolved_findings,
+            failed_trace_log_tail,
+            pre_task_slice,
+            dependency_receipts,
+            blackboard_items,
+            context_reset_required,
+            response_max_bytes: config.response_policy.max_output_bytes,
+        })
+    }
+
+    /// Validate Tier 1 mandatory budget (`contract` + `guidance` + mandatory envelope) and build initial `ClaimResp`.
+    pub(crate) fn preflight_mandatory(
+        req: &ClaimContextRequest,
+    ) -> Result<(ClaimResp, NodeCursor, usize), StateError> {
+        let node_cursor = NodeCursor::from_node_id(&req.node.node_id)?;
+        let inspect_cmd = format!("acdd show {} --run {}", node_cursor, req.run.run_id);
+
+        // Tier 1: Mandatory contract + guidance (fail-closed, never silently truncated).
+        let contract = build_contract_value(req);
+        let contract_bytes = estimate_json_bytes(&contract);
+
+        let mut guidance_texts = resolve_and_budget_guidance(
+            &req.profile,
+            &req.gate,
+            contract_bytes,
+            req.response_max_bytes,
+        )?;
+        if let Some(role_name) = &req.gate.role {
+            if let Some(role_def) = req.profile.roles.get(role_name) {
+                if let Some(role_guidance) = &role_def.guidance {
+                    guidance_texts.push(format!("[role:{role_name}] {role_guidance}"));
+                }
             }
         }
+        let guidance: Vec<Value> = guidance_texts.into_iter().map(Value::String).collect();
+        let guidance_bytes = estimate_json_bytes(&guidance);
+        check_guidance_budget(
+            contract_bytes,
+            guidance_bytes,
+            &req.profile.limits,
+            req.response_max_bytes,
+        )?;
+
+        let resp = ClaimResp {
+            run_id: req.run.run_id.clone(),
+            node_cursor: node_cursor.clone(),
+            claim_revision: req.claim_revision,
+            contract_revision: req.node.contract_revision,
+            worker_id: req.worker_id.clone(),
+            worktree: req.worktree.to_string_lossy().into_owned(),
+            candidate_tree: req.candidate_tree.clone(),
+            inspect_cmd,
+            context_reset_required: req.context_reset_required,
+            contract,
+            guidance,
+            unresolved_findings: None,
+            pre_task_slice: None,
+            dependency_receipts: Vec::new(),
+            blackboard: Vec::new(),
+            context_lenses: Map::new(),
+            omitted_sections: Vec::new(),
+            total_bytes: req.response_max_bytes,
+        };
+
+        let running_bytes = estimate_json_bytes(&resp);
+        if running_bytes > req.response_max_bytes {
+            return Err(StateError::new(
+                ErrorCode::GuidanceBudgetExceeded,
+                format!(
+                    "mandatory claim metadata + contract + guidance ({running_bytes} bytes) exceeds response_max_bytes ({} bytes)",
+                    req.response_max_bytes
+                ),
+            ));
+        }
+
+        Ok((resp, node_cursor, running_bytes))
     }
-    let guidance: Vec<Value> = guidance_texts.into_iter().map(Value::String).collect();
-    let guidance_bytes = estimate_json_bytes(&guidance);
-    check_guidance_budget(
-        contract_bytes,
-        guidance_bytes,
-        &req.profile.limits,
-        req.response_max_bytes,
-    )?;
 
-    let resp = ClaimResp {
-        run_id: req.run.run_id.clone(),
-        node_cursor: node_cursor.clone(),
-        claim_revision: req.claim_revision,
-        contract_revision: req.node.contract_revision,
-        worker_id: req.worker_id.clone(),
-        worktree: req.worktree.to_string_lossy().into_owned(),
-        candidate_tree: req.candidate_tree.clone(),
-        inspect_cmd,
-        context_reset_required: req.context_reset_required,
-        contract,
-        guidance,
-        unresolved_findings: None,
-        pre_task_slice: None,
-        dependency_receipts: Vec::new(),
-        blackboard: Vec::new(),
-        context_lenses: Map::new(),
-        omitted_sections: Vec::new(),
-        total_bytes: req.response_max_bytes,
-    };
+    /// Assemble `ClaimResp` under the strict 6-tier budget reservation order (`GuidanceBudgetExceeded` on Tier 1 overflow).
+    pub fn assemble(
+        req: &ClaimContextRequest,
+        provider: &CompositeDomainProvider,
+    ) -> Result<ClaimResp, StateError> {
+        let (mut resp, node_cursor, mut running_bytes) = Self::preflight_mandatory(req)?;
 
-    let running_bytes = estimate_json_bytes(&resp);
-    if running_bytes > req.response_max_bytes {
-        return Err(StateError::new(
-            ErrorCode::GuidanceBudgetExceeded,
-            format!(
-                "mandatory claim metadata + contract + guidance ({running_bytes} bytes) exceeds response_max_bytes ({} bytes)",
-                req.response_max_bytes
-            ),
-        ));
+        // Tier 2: Unresolved findings + tail of failed trace log.
+        apply_tier2_findings(&mut resp, &mut running_bytes, req);
+
+        // Tier 3: Pre-task architectural slice.
+        if let Some(slice) = &req.pre_task_slice {
+            // `,"pre_task_slice":` = 18 bytes
+            let slice_delta = 18 + estimate_json_bytes(slice);
+            if running_bytes + slice_delta <= req.response_max_bytes {
+                resp.pre_task_slice = Some(slice.clone());
+                running_bytes += slice_delta;
+            } else {
+                add_omitted_section(
+                    &mut resp,
+                    &mut running_bytes,
+                    "pre_task_slice".to_owned(),
+                    req.response_max_bytes,
+                );
+            }
+        }
+
+        // Tier 4: Completed dependency receipts.
+        apply_tier4_receipts(&mut resp, &mut running_bytes, req)?;
+
+        // Tier 5: Blackboard items (up to 15 x 500 chars).
+        apply_tier5_blackboard(&mut resp, &mut running_bytes, req);
+
+        // Tier 6: Dynamic DomainProvider context lenses in YAML declaration order.
+        apply_tier6_context_lenses(&mut resp, &mut running_bytes, req, provider, &node_cursor)?;
+
+        debug_assert_eq!(running_bytes, estimate_json_bytes(&resp));
+
+        // Exact serialized total_bytes fixpoint.
+        resp.total_bytes = estimate_json_bytes(&resp);
+        resp.total_bytes = estimate_json_bytes(&resp);
+
+        Ok(resp)
     }
-
-    Ok((resp, node_cursor, running_bytes))
 }
 
 /// Assemble `ClaimResp` under the strict 6-tier budget reservation order (`GuidanceBudgetExceeded` on Tier 1 overflow).
@@ -196,44 +366,145 @@ pub fn build_claim_context(
     req: &ClaimContextRequest,
     provider: &CompositeDomainProvider,
 ) -> Result<ClaimResp, StateError> {
-    let (mut resp, node_cursor, mut running_bytes) = preflight_mandatory_budget(req)?;
+    GateContextAssembler::assemble(req, provider)
+}
 
-    // Tier 2: Unresolved findings + tail of failed trace log.
-    apply_tier2_findings(&mut resp, &mut running_bytes, req);
-
-    // Tier 3: Pre-task architectural slice.
-    if let Some(slice) = &req.pre_task_slice {
-        // `,"pre_task_slice":` = 18 bytes
-        let slice_delta = 18 + estimate_json_bytes(slice);
-        if running_bytes + slice_delta <= req.response_max_bytes {
-            resp.pre_task_slice = Some(slice.clone());
-            running_bytes += slice_delta;
-        } else {
-            add_omitted_section(
-                &mut resp,
-                &mut running_bytes,
-                "pre_task_slice".to_owned(),
-                req.response_max_bytes,
-            );
+/// Return whether prior `architectural_drift` findings require discarding cached builder context.
+pub(crate) fn is_context_reset_required(
+    snapshot: &RunGraphSnapshot,
+    node: &GateNodeRecord,
+    gate: &GateDef,
+) -> bool {
+    let container_node_ids: BTreeSet<&str> = snapshot
+        .nodes
+        .iter()
+        .filter(|n| {
+            n.parent_id == node.parent_id
+                && matches!(n.kind, NodeKind::RootGate | NodeKind::TaskGate)
+        })
+        .map(|n| n.node_id.as_str())
+        .collect();
+    let last_passed_at = snapshot
+        .claims
+        .iter()
+        .filter(|c| c.node_id == node.node_id && c.outcome == ClaimOutcome::Passed)
+        .filter_map(|c| c.ended_at.as_deref())
+        .max();
+    let latest_findings = snapshot
+        .artifacts
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| {
+            a.kind == ArtifactKind::Findings && container_node_ids.contains(a.node_id.as_str())
+        })
+        .max_by(|(idx_a, a), (idx_b, b)| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.claim_revision.cmp(&b.claim_revision))
+                .then_with(|| idx_a.cmp(idx_b))
+        })
+        .map(|(_, a)| a);
+    let Some(art) = latest_findings else {
+        return false;
+    };
+    if let Some(passed_ts) = last_passed_at {
+        if art.created_at.as_str() < passed_ts {
+            return false;
+        }
+        if art.created_at.as_str() == passed_ts
+            && node.status == NodeStatus::Completed
+            && node.accepted_tree.is_some()
+        {
+            return false;
         }
     }
+    let Some(stored) = crate::machine::submit::parse_findings_artifact(&art.payload_json) else {
+        return false;
+    };
+    if !stored.reset_worker_context {
+        return false;
+    }
+    match stored.reset_gate_id.as_deref() {
+        Some(target_gate_id) => target_gate_id == node.gate_id.as_str(),
+        None => node.parent_id.is_some() && gate.role.as_deref() == Some("builder"),
+    }
+}
 
-    // Tier 4: Completed dependency receipts.
-    apply_tier4_receipts(&mut resp, &mut running_bytes, req)?;
+fn resolve_rework_diagnostics(
+    snapshot: &RunGraphSnapshot,
+    node: &GateNodeRecord,
+    primary: &Path,
+    max_bytes: usize,
+) -> (Option<RejectionFindings>, Option<String>) {
+    let container_node_ids: BTreeSet<&str> = snapshot
+        .nodes
+        .iter()
+        .filter(|n| {
+            n.parent_id == node.parent_id
+                && matches!(n.kind, NodeKind::RootGate | NodeKind::TaskGate)
+        })
+        .map(|n| n.node_id.as_str())
+        .collect();
 
-    // Tier 5: Blackboard items (up to 15 x 500 chars).
-    apply_tier5_blackboard(&mut resp, &mut running_bytes, req);
+    let latest_findings = snapshot
+        .artifacts
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| {
+            a.kind == ArtifactKind::Findings && container_node_ids.contains(a.node_id.as_str())
+        })
+        .max_by(|(idx_a, a), (idx_b, b)| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.claim_revision.cmp(&b.claim_revision))
+                .then_with(|| idx_a.cmp(idx_b))
+        })
+        .map(|(_, a)| a);
 
-    // Tier 6: Dynamic DomainProvider context lenses in YAML declaration order.
-    apply_tier6_context_lenses(&mut resp, &mut running_bytes, req, provider, &node_cursor)?;
+    let unresolved_findings = latest_findings.and_then(|art| {
+        let art_node_resolved = snapshot.claims.iter().any(|c| {
+            c.node_id == art.node_id
+                && c.outcome == ClaimOutcome::Passed
+                && c.claim_revision >= art.claim_revision
+        });
+        if art_node_resolved {
+            return None;
+        }
+        let show_findings = if art.node_id == node.node_id {
+            node.status == NodeStatus::Escalated
+        } else {
+            node.status != NodeStatus::Completed
+        };
+        if !show_findings {
+            return None;
+        }
+        crate::machine::submit::parse_findings_artifact(&art.payload_json)
+            .map(|stored| stored.findings)
+    });
 
-    debug_assert_eq!(running_bytes, estimate_json_bytes(&resp));
+    let failed_trace_log_tail = snapshot
+        .traces
+        .iter()
+        .filter(|t| container_node_ids.contains(t.node_id.as_str()))
+        .max_by(|a, b| {
+            a.trace_row_id
+                .unwrap_or(0)
+                .cmp(&b.trace_row_id.unwrap_or(0))
+                .then_with(|| a.started_at.cmp(&b.started_at))
+        })
+        .filter(|t| !matches!(t.status, TraceStatus::Running | TraceStatus::Passed))
+        .and_then(|trace| {
+            let rel = Path::new(".acdd/run")
+                .join(snapshot.run.run_id.as_str())
+                .join(&trace.log_relpath);
+            let mut file =
+                open_confined(primary, &rel, fs::OpenOptions::new().read(true)).ok()?;
+            let mut content = String::new();
+            file.read_to_string(&mut content).ok()?;
+            Some(utf8_tail(&content, max_bytes).to_owned())
+        });
 
-    // Exact serialized total_bytes fixpoint.
-    resp.total_bytes = estimate_json_bytes(&resp);
-    resp.total_bytes = estimate_json_bytes(&resp);
-
-    Ok(resp)
+    (unresolved_findings, failed_trace_log_tail)
 }
 
 fn build_contract_value(req: &ClaimContextRequest) -> Value {
@@ -266,8 +537,12 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
             json!(req.node.extended_scope),
         );
     }
-    obj.insert("invariants".to_owned(), json!(req.node.invariants));
-    obj.insert("tools".to_owned(), json!(req.gate.tools));
+    if !req.node.invariants.applicable.is_empty() || !req.node.invariants.verified.is_empty() {
+        obj.insert("invariants".to_owned(), json!(req.node.invariants));
+    }
+    if !req.gate.tools.is_empty() && req.gate.tools != req.profile.default_tools {
+        obj.insert("tools".to_owned(), json!(req.gate.tools));
+    }
     if let Some(cmd) = &req.gate.command {
         obj.insert("command".to_owned(), json!(cmd));
     }
@@ -302,14 +577,23 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
                 obj.insert("subtasks".to_owned(), json!(task.subtasks));
             }
         } else {
-            if let Some(root_spec) = &spec.spec {
-                obj.insert("spec".to_owned(), json!(root_spec));
+            let include_full_spec = req.node.node_id.starts_with("root:blueprint_synthesis")
+                || spec.tasks.is_empty();
+            if include_full_spec {
+                if let Some(root_spec) = &spec.spec {
+                    obj.insert("spec".to_owned(), json!(root_spec));
+                }
+            } else if let Some(ref sp) = req.run.spec_path {
+                obj.insert("spec_path".to_owned(), json!(sp));
             }
             if !spec.acceptance_criteria.is_empty() {
                 obj.insert(
                     "acceptance_criteria".to_owned(),
                     json!(spec.acceptance_criteria),
                 );
+            }
+            if !spec.owners.is_empty() {
+                obj.insert("owners".to_owned(), json!(spec.owners));
             }
         }
     }
@@ -387,12 +671,14 @@ fn apply_tier4_receipts(
     }
     let mut omitted = false;
     for receipt in &req.dependency_receipts {
-        let val = serde_json::to_value(receipt).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("failed to serialize dependency receipt: {err}"),
-            )
-        })?;
+        let mut obj = Map::new();
+        obj.insert("node_cursor".to_owned(), json!(receipt.node_cursor));
+        obj.insert("candidate_tree".to_owned(), json!(receipt.candidate_tree));
+        if let Some(oid) = &receipt.committed_oid {
+            obj.insert("committed_oid".to_owned(), json!(oid));
+        }
+        obj.insert("accepted_at".to_owned(), json!(receipt.accepted_at));
+        let val = Value::Object(obj);
         // `,"dependency_receipts":[]` = 25 bytes on first element, `,` = 1 byte thereafter.
         let overhead = if resp.dependency_receipts.is_empty() { 25 } else { 1 };
         let delta = overhead + estimate_json_bytes(&val);
@@ -420,15 +706,42 @@ fn apply_tier5_blackboard(
     running_bytes: &mut usize,
     req: &ClaimContextRequest,
 ) {
-    if req.blackboard_items.is_empty() {
+    let mut priority: Vec<&BlackboardRecord> = Vec::new();
+    let mut notes: Vec<&BlackboardRecord> = Vec::new();
+    for item in &req.blackboard_items {
+        if item.status != BlackboardStatus::Open
+            || matches!(
+                item.topic,
+                BlackboardTopic::Deferred | BlackboardTopic::Findings
+            )
+        {
+            continue;
+        }
+        if matches!(
+            item.topic,
+            BlackboardTopic::Decisions | BlackboardTopic::Blockers
+        ) {
+            priority.push(item);
+        } else {
+            notes.push(item);
+        }
+    }
+    if priority.is_empty() && notes.is_empty() {
         return;
     }
-    let start = req
-        .blackboard_items
-        .len()
-        .saturating_sub(MAX_BLACKBOARD_ITEMS);
+
+    let selected: Vec<&BlackboardRecord> = if priority.len() >= MAX_BLACKBOARD_ITEMS {
+        let start = priority.len().saturating_sub(MAX_BLACKBOARD_ITEMS);
+        priority[start..].to_vec()
+    } else {
+        let mut combined = priority;
+        let remaining_slots = MAX_BLACKBOARD_ITEMS - combined.len();
+        let notes_start = notes.len().saturating_sub(remaining_slots);
+        combined.extend(&notes[notes_start..]);
+        combined
+    };
     let mut omitted = false;
-    for item in &req.blackboard_items[start..] {
+    for item in selected {
         let truncated_payload: String = item.payload.chars().take(MAX_BLACKBOARD_CHARS).collect();
         let entry = json!({
             "id": item.id,
@@ -492,6 +805,16 @@ fn admitted_scope_for_request(req: &ClaimContextRequest) -> Vec<String> {
     combined
 }
 
+fn is_empty_items_lens(val: &Value) -> bool {
+    let Some(obj) = val.as_object() else {
+        return false;
+    };
+    obj.get("items")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty)
+        && obj.get("total").and_then(Value::as_u64).unwrap_or(0) == 0
+}
+
 fn apply_tier6_context_lenses(
     resp: &mut ClaimResp,
     running_bytes: &mut usize,
@@ -511,7 +834,7 @@ fn apply_tier6_context_lenses(
             .and_then(|t| t.target.clone())
     });
 
-    for qualified_lens in &req.gate.context {
+    for (idx, qualified_lens) in req.gate.context.iter().enumerate() {
         let remaining = req.response_max_bytes.saturating_sub(*running_bytes);
         if remaining == 0 {
             add_omitted_section(
@@ -523,6 +846,20 @@ fn apply_tier6_context_lenses(
             continue;
         }
 
+        let remaining_lenses = req.gate.context.len().saturating_sub(idx).max(1);
+        let lens_budget = (remaining / remaining_lenses).max(remaining.min(4096));
+        let baseline_ref = if req.node.kind == NodeKind::RootGate
+            && gate_id.as_str() == "integration_review"
+        {
+            req.run
+                .target_base_commit
+                .as_ref()
+                .map(|c| c.to_string())
+                .or_else(|| req.run.target_base.clone())
+                .or_else(|| baseline_ref_for_node(&req.node))
+        } else {
+            baseline_ref_for_node(&req.node)
+        };
         let ctx_req = DomainContextReq {
             run_id: req.run.run_id.clone(),
             node_cursor: node_cursor.clone(),
@@ -531,9 +868,9 @@ fn apply_tier6_context_lenses(
             worktree: req.worktree.clone(),
             admitted_scope: admitted_scope.clone(),
             target: target.clone(),
-            max_bytes: remaining,
+            max_bytes: lens_budget,
             path_policy: req.path_policy.clone(),
-            baseline_ref: baseline_ref_for_node(&req.node),
+            baseline_ref,
         };
 
         let val = provider.provide_context(qualified_lens, &ctx_req).map_err(|err| {
@@ -546,6 +883,10 @@ fn apply_tier6_context_lenses(
                 )
             }
         })?;
+
+        if is_empty_items_lens(&val) && !resp.context_lenses.contains_key(qualified_lens) {
+            continue;
+        }
 
         let new_val_bytes = estimate_json_bytes(&val);
         if let Some(old_val) = resp.context_lenses.get(qualified_lens) {

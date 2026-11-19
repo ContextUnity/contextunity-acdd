@@ -373,11 +373,10 @@ fn order_nodes_parent_first_with_existing<'a>(
 fn insert_artifact(conn: &Transaction<'_>, art: &GateArtifactRecord) -> Result<(), StateError> {
     conn.execute(
         "INSERT INTO gate_artifacts (
-            run_id, node_id, claim_revision, kind, payload_json, snapshot_ref, snapshot_commit, created_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            run_id, node_id, claim_revision, kind, payload_json, snapshot_commit, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         ON CONFLICT(run_id, node_id, claim_revision, kind) DO UPDATE SET
             payload_json = excluded.payload_json,
-            snapshot_ref = excluded.snapshot_ref,
             snapshot_commit = excluded.snapshot_commit,
             created_at = excluded.created_at",
         params![
@@ -386,7 +385,6 @@ fn insert_artifact(conn: &Transaction<'_>, art: &GateArtifactRecord) -> Result<(
             i64::from(art.claim_revision),
             art.kind.as_str(),
             art.payload_json,
-            art.snapshot_ref,
             art.snapshot_commit.as_ref().map(|c| c.as_str()),
             art.created_at,
         ],
@@ -669,15 +667,15 @@ impl StateTx for SqliteTx<'_> {
                     "INSERT INTO gate_traces (
                         run_id, node_id, claim_revision, contract_revision, execution_digest,
                         idempotency_key, command_id, command_line, action_id, test_target,
-                        status, exit_code, tests_passed, tests_failed, tests_ignored,
+                        status, exit_code,
                         passed_tests_json, failed_tests_json, check_results_json,
                         candidate_tree_before, candidate_tree_after, log_relpath, started_at, finished_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5,
                         ?6, ?7, ?8, ?9, ?10,
-                        ?11, ?12, ?13, ?14, ?15,
-                        ?16, ?17, ?18,
-                        ?19, ?20, ?21, ?22, ?23
+                        ?11, ?12,
+                        ?13, ?14, ?15,
+                        ?16, ?17, ?18, ?19, ?20
                     )",
                     params![
                         trace.run_id.as_str(),
@@ -692,9 +690,6 @@ impl StateTx for SqliteTx<'_> {
                         trace.test_target,
                         trace.status.as_str(),
                         trace.exit_code,
-                        i64::from(trace.tests_passed),
-                        i64::from(trace.tests_failed),
-                        i64::from(trace.tests_ignored),
                         passed_tests_json,
                         failed_tests_json,
                         check_results_json,
@@ -955,9 +950,6 @@ impl StateTx for SqliteTx<'_> {
             test_target: input.test_target.clone(),
             status: TraceStatus::Running,
             exit_code: None,
-            tests_passed: 0,
-            tests_failed: 0,
-            tests_ignored: 0,
             passed_tests: Vec::new(),
             failed_tests: Vec::new(),
             check_results: Vec::new(),
@@ -986,21 +978,15 @@ impl StateTx for SqliteTx<'_> {
                 "UPDATE gate_traces SET
                     status = ?1,
                     exit_code = ?2,
-                    tests_passed = ?3,
-                    tests_failed = ?4,
-                    tests_ignored = ?5,
-                    passed_tests_json = ?6,
-                    failed_tests_json = ?7,
-                    check_results_json = ?8,
-                    candidate_tree_after = ?9,
-                    finished_at = ?10
-                 WHERE trace_row_id = ?11 AND status = 'running'",
+                    passed_tests_json = ?3,
+                    failed_tests_json = ?4,
+                    check_results_json = ?5,
+                    candidate_tree_after = ?6,
+                    finished_at = ?7
+                 WHERE trace_row_id = ?8 AND status = 'running'",
                 params![
                     input.status.as_str(),
                     input.exit_code,
-                    i64::from(input.tests_passed),
-                    i64::from(input.tests_failed),
-                    i64::from(input.tests_ignored),
                     passed_tests_json,
                     failed_tests_json,
                     check_results_json,

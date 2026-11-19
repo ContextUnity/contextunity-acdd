@@ -2,44 +2,42 @@
 //! mechanical gate verification/submission, `RoleDef.runner` spawning, and wave-boundary integration.
 
 use crate::context::render_claim_prompt_markdown;
-use crate::git_ops::integrate::verify_tasks_integrated;
+use crate::git_ops::commit::{current_branch_name, is_protected_main_branch};
+use crate::git_ops::integrate::{
+    abort_in_progress_git_ops, integrate_task_branch, verify_tasks_integrated, IntegrateTaskReq,
+};
+use crate::git_ops::worktree::canonicalize_macos_var;
 use crate::machine::compute_schedule;
+use crate::machine::graph::{build_preconditions, is_post_task_root_node};
 use crate::machine::schedule::all_non_cancelled_tasks_completed;
 use crate::profile::ResolvedGateProfile;
 use crate::runner::{
     spawn_role_runner_borrowed, verify_runner_submitted, RoleSpawnBorrow, WaveExecutionReport,
 };
-use crate::store::traits::StateBackend;
+use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
-    ClaimOutcome, GateNodeRecord, IntegrateStrategy, IsolationMode, NodeKind, NodeStatus,
-    RunGraphSnapshot, RunStatus, SubmitAction, TerminalStatus, ValidatedObservations,
+    ClaimOutcome, GateNodeRecord, IsolationMode, NodeKind, NodeStatus, NodeStatusPatch,
+    RunGraphSnapshot, RunStatus, SubmitAction, TerminalStatus, TransitionPlan,
+    ValidatedObservations,
 };
-use crate::usecases::commands::{handle_claim_dyn, handle_integrate_dyn, is_context_reset_required};
-use crate::usecases::dto::{ClaimReq, IntegrateReq, RunReq, RunResp, SubmitReq, VerifyReq};
+use crate::usecases::commands::{handle_claim_dyn, is_context_reset_required};
+use crate::usecases::dto::{ClaimReq, RunReq, RunResp, SubmitReq, VerifyReq};
 use crate::usecases::lifecycle::{
     collect_external_satisfied_deps, collect_integration_inputs, ensure_state_enabled,
     parse_profile_from_run, primary_workspace_root, resolve_active_run,
+    with_repo_lock_and_maintenance,
 };
 use crate::usecases::queries::find_profile_gate_def_ref;
 use crate::usecases::submit::handle_submit_dyn;
-use crate::usecases::verify::handle_verify_dyn;
+use crate::usecases::verify::handle_verify_with_failure_return;
 use crate::usecases::StateEngineConfig;
 use acdd_core::telemetry::{SpanId, TraceId, TraceParent};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, RunId, TaskRef, WorkerId};
 use acdd_core::ports::CompositeDomainProvider;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-
-/// Execute automated DAG waves (`StateCommand::Run`).
-pub fn handle_run<B: StateBackend + Send + Sync>(
-    config: &StateEngineConfig,
-    backend: &B,
-    provider: &CompositeDomainProvider,
-    req: RunReq,
-) -> Result<RunResp, StateError> {
-    handle_run_dyn(config, backend, provider, req)
-}
 
 pub(crate) fn handle_run_dyn(
     config: &StateEngineConfig,
@@ -84,6 +82,7 @@ pub(crate) fn handle_run_dyn(
     let mut waves_executed = 0u32;
     let mut gates_completed = 0u32;
     let mut tasks_integrated: Vec<TaskRef> = Vec::new();
+    let mut integrated_set: BTreeSet<TaskRef> = BTreeSet::new();
     let mut halted_reason: Option<String> = None;
 
     // Guard against pathological infinite loops on state backends that refuse forward progress.
@@ -191,20 +190,15 @@ pub(crate) fn handle_run_dyn(
                     }
                 }
 
-                if snapshot.run.isolation == IsolationMode::Worktree
-                    && profile.git.integrate != IntegrateStrategy::Manual
-                {
-                    let int_resp = handle_integrate_dyn(
+                if snapshot.run.isolation == IsolationMode::Worktree {
+                    let landed = land_completed_task_branches(
                         config,
                         backend,
-                        IntegrateReq {
-                            run: Some(run.run_id.to_string()),
-                            task_ref: None,
-                            strategy: None,
-                            allow_main: req.allow_main,
-                        },
+                        &run.run_id,
+                        req.allow_main,
+                        &mut integrated_set,
                     )?;
-                    tasks_integrated.extend(int_resp.integrated_tasks);
+                    tasks_integrated.extend(landed);
                 }
 
                 if halted_reason.is_some() {
@@ -217,23 +211,19 @@ pub(crate) fn handle_run_dyn(
         if schedule.all_tasks_completed
             && schedule.post_task_blocked_reason == Some(ErrorCode::TaskNotIntegrated)
         {
-            if profile.git.integrate != IntegrateStrategy::Manual {
-                let int_resp = handle_integrate_dyn(
-                    config,
-                    backend,
-                    IntegrateReq {
-                        run: Some(run.run_id.to_string()),
-                        task_ref: None,
-                        strategy: None,
-                        allow_main: req.allow_main,
-                    },
-                )?;
-                tasks_integrated.extend(int_resp.integrated_tasks);
+            let landed = land_completed_task_branches(
+                config,
+                backend,
+                &run.run_id,
+                req.allow_main,
+                &mut integrated_set,
+            )?;
+            if !landed.is_empty() {
+                tasks_integrated.extend(landed);
                 continue;
             }
             halted_reason = Some(
-                "all tasks completed; awaiting manual `acdd integrate` before post-task gates"
-                    .to_owned(),
+                "all tasks completed; unintegrated task deltas remain in run worktree".to_owned(),
             );
             break;
         }
@@ -526,7 +516,7 @@ pub(crate) fn execute_gate_node(
         },
     )?;
 
-    let verify_resp = handle_verify_dyn(
+    let verify_resp = handle_verify_with_failure_return(
         config,
         backend,
         provider,
@@ -538,6 +528,7 @@ pub(crate) fn execute_gate_node(
             claim_revision: Some(claim_resp.claim_revision),
             worktree: None,
         },
+        true,
     )?;
 
     if !verify_resp.passed {
@@ -551,10 +542,12 @@ pub(crate) fn execute_gate_node(
                 halted_reason: Some(format!("mechanical gate `{cursor}` escalated")),
             });
         }
-        return Err(StateError::new(
-            ErrorCode::GateVerificationFailed,
-            format!("mechanical gate `{cursor}` failed verification"),
-        ));
+        // Recoverable `fail:` transition reset the target recovery gate to `Ready`;
+        // continue the runner loop without crashing so the recovery gate executes.
+        return Ok(StepOutcome {
+            gates_completed: 0,
+            halted_reason: None,
+        });
     }
 
     let submit_resp = handle_submit_dyn(
@@ -615,4 +608,125 @@ pub(crate) fn check_post_runner_completion(
     };
     verify_runner_submitted(outcome, claim_outcome_after)?;
     Ok(completed_now)
+}
+
+fn land_completed_task_branches(
+    config: &StateEngineConfig,
+    backend: &dyn StateBackend,
+    run_id: &RunId,
+    allow_main: bool,
+    already_integrated: &mut BTreeSet<TaskRef>,
+) -> Result<Vec<TaskRef>, StateError> {
+    with_repo_lock_and_maintenance(config, backend, |primary, _layout| {
+        let snapshot = backend
+            .load_run_graph(run_id)?
+            .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
+        let run_worktree = snapshot
+            .run
+            .worktree
+            .as_deref()
+            .map(|p| canonicalize_macos_var(Path::new(p)))
+            .unwrap_or_else(|| primary.to_path_buf());
+        let _ = abort_in_progress_git_ops(&run_worktree)?;
+
+        let run_branch = current_branch_name(&run_worktree)?;
+        if is_protected_main_branch(run_branch.as_deref()) && !allow_main {
+            return Err(StateError::new(
+                ErrorCode::MainBranchProtected,
+                format!(
+                    "refusing wave integration onto protected branch '{}' without --allow-main",
+                    run_branch.as_deref().unwrap_or("main")
+                ),
+            ));
+        }
+
+        let mut completed_tasks: Vec<&GateNodeRecord> = snapshot
+            .nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Task && n.status == NodeStatus::Completed)
+            .collect();
+        completed_tasks.sort_by_key(|n| n.seq_order);
+
+        let mut landed = Vec::new();
+        for task_node in completed_tasks {
+            let Some(ref tref) = task_node.task_ref else {
+                continue;
+            };
+            if already_integrated.contains(tref) {
+                continue;
+            }
+            let Some(ref accepted_tree) = task_node.accepted_tree else {
+                continue;
+            };
+            let Some(ref source_branch) = task_node.branch else {
+                continue;
+            };
+            if run_branch.as_deref() == Some(source_branch.as_str()) {
+                continue;
+            }
+            let source_wt = task_node.worktree.as_deref().map(PathBuf::from);
+            if let Some(ref swt) = source_wt {
+                if swt.exists() {
+                    let _ = abort_in_progress_git_ops(swt)?;
+                }
+            }
+
+            let resp = integrate_task_branch(&IntegrateTaskReq {
+                target_worktree: run_worktree.clone(),
+                source_worktree: source_wt,
+                source_branch: source_branch.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                task_ref: tref.clone(),
+                accepted_tree: accepted_tree.clone(),
+                allow_main,
+            })?;
+            if resp.integrated_commit.is_some() {
+                already_integrated.insert(tref.clone());
+                landed.push(tref.clone());
+            }
+        }
+
+        if all_non_cancelled_tasks_completed(&snapshot) {
+            let inputs = collect_integration_inputs(&snapshot);
+            let missing = verify_tasks_integrated(&snapshot.run.run_id, &run_worktree, &inputs)?;
+            if missing.is_empty() {
+                if let Some(first_post) = snapshot
+                    .nodes
+                    .iter()
+                    .filter(|n| is_post_task_root_node(&snapshot, n))
+                    .min_by_key(|n| n.seq_order)
+                {
+                    if first_post.status == NodeStatus::Pending {
+                        let plan = TransitionPlan {
+                            preconditions: build_preconditions(
+                                &snapshot,
+                                &[&first_post.node_id],
+                                None,
+                            ),
+                            bump_run_generation: true,
+                            new_run_status: None,
+                            new_root_cycle_count: None,
+                            completed_at: None,
+                            node_patches: vec![NodeStatusPatch::status_only(
+                                &first_post.node_id,
+                                NodeStatus::Ready,
+                            )],
+                            dependency_patches: Vec::new(),
+                            claim_patches: Vec::new(),
+                            new_artifacts: Vec::new(),
+                            new_blackboard: Vec::new(),
+                            blackboard_patches: Vec::new(),
+                            new_subtasks: Vec::new(),
+                            significant_transition: true,
+                        };
+                        exec_tx_with(backend, |tx| {
+                            tx.apply_transition_plan(&snapshot.run.run_id, &plan)
+                        })?;
+                    }
+                }
+            }
+        }
+
+        Ok(landed)
+    })
 }

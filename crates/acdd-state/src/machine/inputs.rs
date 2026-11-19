@@ -1,14 +1,13 @@
 //! Pure input and output models consumed and produced by the `acdd_state::machine` core.
 
 use crate::types::{
-    CommitMode, ExtendedScopeEntry, GateClaimRecord, GateNodeRecord, IntegrateStrategy,
-    IsolationMode, RejectionFindings, ReviewEvidence, SaveAction, StoragePreconditions,
-    SubmitAction, SubtaskStatus, TaskDependencyRecord, TransitionPlan, WorktreeLifecycle,
+    ExtendedScopeEntry, GateClaimRecord, GateNodeRecord, IsolationMode, RejectionFindings,
+    ReviewEvidence, SaveAction, StoragePreconditions, SubmitAction, SubtaskStatus,
+    TaskDependencyRecord, TransitionPlan, WorktreeLifecycle,
 };
 use acdd_core::errors::StateError;
 use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, SubtaskRef, TaskRef, TreeOid, WorkerId};
 use acdd_core::schema::SchemaDef;
-use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,10 +19,6 @@ pub struct MachineGitPolicy {
     pub isolation: IsolationMode,
     /// Worktree lifecycle ownership (`manual` or `managed`).
     pub worktrees: WorktreeLifecycle,
-    /// Commit creation mode (`plumbing`, `cli`, or `manual`).
-    pub commit_mode: CommitMode,
-    /// Branch integration strategy (`manual`, `rebase-ff`, `ff-only`, `no-ff`, `squash`).
-    pub integrate: IntegrateStrategy,
 }
 
 impl Default for MachineGitPolicy {
@@ -31,26 +26,13 @@ impl Default for MachineGitPolicy {
         Self {
             isolation: IsolationMode::Worktree,
             worktrees: WorktreeLifecycle::Manual,
-            commit_mode: CommitMode::Plumbing,
-            integrate: IntegrateStrategy::Manual,
         }
     }
 }
 
-fn deserialize_compat_machine_save_action<'de, D>(deserializer: D) -> Result<SaveAction, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let raw = String::deserialize(deserializer)?;
-    if raw == "snapshot" {
-        Ok(SaveAction::None)
-    } else {
-        raw.parse::<SaveAction>().map_err(de::Error::custom)
-    }
-}
-
 /// Pure `save:` policy projection for a single gate.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct MachineSavePolicy {
     /// Persistence action taken on gate acceptance (`none` or `commit`).
     pub post: SaveAction,
@@ -60,69 +42,9 @@ pub struct MachineSavePolicy {
     pub archive: bool,
     /// Whether accepting this root gate prunes active run tables into `run_tombstones`.
     pub prune: bool,
-    /// Optional `git_commit_notes` key attached on `post == commit`.
-    pub git_commit_note: Option<String>,
-}
-
-impl<'de> Deserialize<'de> for MachineSavePolicy {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(default, deny_unknown_fields)]
-        struct CompatRepr {
-            pre: Option<de::IgnoredAny>,
-            #[serde(deserialize_with = "deserialize_compat_machine_save_action")]
-            post: SaveAction,
-            immutable: bool,
-            archive: bool,
-            prune: bool,
-            git_commit_note: Option<String>,
-        }
-        impl Default for CompatRepr {
-            fn default() -> Self {
-                Self {
-                    pre: None,
-                    post: SaveAction::None,
-                    immutable: false,
-                    archive: false,
-                    prune: false,
-                    git_commit_note: None,
-                }
-            }
-        }
-        let repr = CompatRepr::deserialize(deserializer)?;
-        let _ = repr.pre;
-        Ok(Self {
-            post: repr.post,
-            immutable: repr.immutable,
-            archive: repr.archive,
-            prune: repr.prune,
-            git_commit_note: repr.git_commit_note,
-        })
-    }
-}
-
-impl Default for MachineSavePolicy {
-    fn default() -> Self {
-        Self {
-            post: SaveAction::None,
-            immutable: false,
-            archive: false,
-            prune: false,
-            git_commit_note: None,
-        }
-    }
-}
-
-/// Expected failure rules for `proof: contract` gates.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MachineExpectedFailure {
-    /// Process exit codes accepted as runtime-red failures.
-    pub exit_codes: Vec<i32>,
-    /// Optional substring required in stderr.
-    pub stderr_contains: Option<String>,
+    /// Optional workspace-relative report path rendered after gate acceptance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<String>,
 }
 
 /// Pure proof kind configured on a gate.
@@ -130,8 +52,6 @@ pub struct MachineExpectedFailure {
 pub enum MachineProofKind {
     /// No proof required beyond submission.
     None,
-    /// Runtime-red contract test failure proof (`--test` required).
-    Contract,
     /// Zero-exit command/test verification proof.
     Command,
     /// DomainProvider action call proof.
@@ -168,8 +88,6 @@ pub struct MachineGateDef {
     pub with_params: Value,
     /// Domain checks evaluated during `verify`.
     pub checks: Vec<MachineCheckDef>,
-    /// Expected runtime-red failure specification for `proof: contract`.
-    pub expected_failure: Option<MachineExpectedFailure>,
     /// Required review contour keys for `proof: review`.
     pub contours: Vec<String>,
     /// Gate selectors whose closing workers must differ from this gate's worker.
@@ -186,10 +104,6 @@ pub struct MachineGateDef {
     pub max_attempts: u32,
     /// Whether passing this gate closes its owning task/run container with a receipt.
     pub receipt: bool,
-    /// Whether `command` requires an explicit `--test` filter (`proof: contract`).
-    pub require_test_target: bool,
-    /// Whether command output requires `tests_passed > 0`.
-    pub require_counts: bool,
     /// Gate persistence policy.
     pub save: MachineSavePolicy,
     /// Optional explicit scope globs (for root gates such as `polish`).
@@ -204,6 +118,7 @@ pub struct MachineGateDef {
 
 impl MachineGateDef {
     /// Construct a minimal `MachineGateDef` with sensible defaults for testing or builders.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn minimal(id: GateId) -> Self {
         let digest = format!("def:{id}");
         Self {
@@ -214,7 +129,6 @@ impl MachineGateDef {
             call: None,
             with_params: Value::Object(Default::default()),
             checks: Vec::new(),
-            expected_failure: None,
             contours: Vec::new(),
             independent_from: Vec::new(),
             need: Vec::new(),
@@ -223,8 +137,6 @@ impl MachineGateDef {
             fail_drift: None,
             max_attempts: 3,
             receipt: false,
-            require_test_target: false,
-            require_counts: false,
             save: MachineSavePolicy::default(),
             scope: Vec::new(),
             when: None,
@@ -417,22 +329,8 @@ pub struct VerifyExecutionObservation {
     pub aborted: bool,
     /// Exit code returned by the command, if a command ran.
     pub exit_code: Option<i32>,
-    /// Tail of stderr captured for `expected_failure.stderr_contains`.
+    /// Tail of stderr captured for diagnostics.
     pub stderr_tail: String,
-    /// Count of output lines matching `compile_errors`.
-    pub compile_error_count: u32,
-    /// Parsed passed test count.
-    pub tests_passed: u32,
-    /// Parsed failed test count.
-    pub tests_failed: u32,
-    /// Parsed ignored test count.
-    pub tests_ignored: u32,
-    /// Individual passing test names observed.
-    pub passed_tests: Vec<String>,
-    /// Individual failing test names observed.
-    pub failed_tests: Vec<String>,
-    /// Individual ignored test names observed.
-    pub ignored_tests: Vec<String>,
     /// Domain check results observed.
     pub check_results: Vec<crate::types::CheckResultRecord>,
     /// Optional `DomainProvider` action outcome.
@@ -460,8 +358,6 @@ pub struct VerifyInput {
     pub command_line: Option<String>,
     /// Deterministic resolved command strings hashed into `execution_digest`.
     pub resolved_commands: Vec<String>,
-    /// Canonical JSON representation of `CommandOutputSpec` hashed into `execution_digest`.
-    pub output_spec: Value,
     /// Qualified `<domain>.<action>` identifier if `call:` ran.
     pub action_id: Option<String>,
     /// Optional live index generation salt hashed into `execution_digest`.
@@ -514,9 +410,7 @@ pub struct SubmitInput {
     pub custom_evidence: Option<Value>,
     /// Invariant identifiers verified by this submission.
     pub verified_invariants: Vec<String>,
-    /// Optional snapshot ref created by `save.post` (`snapshot`).
-    pub snapshot_ref: Option<String>,
-    /// Optional snapshot/commit OID created by `save.post`.
+    /// Optional commit OID created by `save.post`.
     pub snapshot_commit: Option<CommitOid>,
     /// Optional closure summary text for receipt rollups.
     pub summary: Option<String>,

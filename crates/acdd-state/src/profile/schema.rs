@@ -1,6 +1,6 @@
 //! Version-2 `GateProfile` schema definitions, patch types, and strict `deny_unknown_fields` deserialization.
 
-use crate::types::{CommitMode, IntegrateStrategy, IsolationMode, SaveAction, WorktreeLifecycle};
+use crate::types::{IsolationMode, SaveAction, WorktreeLifecycle};
 use acdd_core::format::{canonical_json_sha256, canonical_json_string};
 use acdd_core::subsystems::{SubsystemPreset, SubsystemRegistry};
 use acdd_core::errors::{ErrorCode, StateError};
@@ -28,11 +28,6 @@ pub enum PatchField<T> {
 }
 
 impl<T> PatchField<T> {
-    /// Returns `true` when the field was omitted in YAML.
-    pub fn is_unset(&self) -> bool {
-        matches!(self, Self::Unset)
-    }
-
     /// Apply this patch to an `Option<U>` target using `map_fn`.
     pub fn apply_to_option<U>(&self, target: &mut Option<U>, map_fn: impl FnOnce(&T) -> U) {
         match self {
@@ -55,18 +50,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for PatchField<T> {
     }
 }
 
-/// Strategy controlling how a child profile's `gates:` list combines with its inherited parent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GatesMergeMode {
-    /// Replace the parent's `gates:` sequence completely when child specifies `gates:`.
-    #[default]
-    Replace,
-    /// Patch inherited gates by ID, cursor (`tasks.build`), normalized `when:`, `after:`/`before:`, or `<id>: null`.
-    Patch,
-}
-
-/// Flexible Git isolation, worktree, commit, and integration policy (`git:`).
+/// Flexible Git isolation and worktree policy (`git:`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GitPolicy {
@@ -74,10 +58,6 @@ pub struct GitPolicy {
     pub isolation: IsolationMode,
     /// Worktree lifecycle ownership (`manual` or `managed`).
     pub worktrees: WorktreeLifecycle,
-    /// Git commit mode (`plumbing`, `cli`, or `manual`).
-    pub commit_mode: CommitMode,
-    /// Branch integration strategy (`manual`, `rebase-ff`, `ff-only`, `no-ff`, `squash`).
-    pub integrate: IntegrateStrategy,
 }
 
 impl Default for GitPolicy {
@@ -85,8 +65,6 @@ impl Default for GitPolicy {
         Self {
             isolation: IsolationMode::Worktree,
             worktrees: WorktreeLifecycle::Manual,
-            commit_mode: CommitMode::Plumbing,
-            integrate: IntegrateStrategy::Manual,
         }
     }
 }
@@ -99,10 +77,6 @@ pub struct GitPolicyPatch {
     pub isolation: Option<IsolationMode>,
     /// Override `git.worktrees`.
     pub worktrees: Option<WorktreeLifecycle>,
-    /// Override `git.commit_mode`.
-    pub commit_mode: Option<CommitMode>,
-    /// Override `git.integrate`.
-    pub integrate: Option<IntegrateStrategy>,
 }
 
 /// Execution mode for a configured role.
@@ -124,16 +98,6 @@ pub struct ModelSpec {
     /// Optional reasoning effort level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
-}
-
-impl ModelSpec {
-    /// Format as `"model:reasoning"` or `"model"`.
-    pub fn formatted(&self) -> String {
-        match &self.reasoning {
-            Some(r) => format!("{}:{r}", self.model),
-            None => self.model.clone(),
-        }
-    }
 }
 
 impl<'de> Deserialize<'de> for ModelSpec {
@@ -266,119 +230,6 @@ impl<'de> Deserialize<'de> for TestFilterConfig {
     }
 }
 
-/// Regex patterns extracting passed and failed test counts from command output.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CommandCountsSpec {
-    /// Regex with capture group 1 extracting passed test count.
-    pub passed: String,
-    /// Regex with capture group 1 extracting failed test count.
-    pub failed: String,
-}
-
-/// `compile_errors:` matcher supporting either pattern list or `{ include, exclude }`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(untagged)]
-pub enum CompileErrorsSpec {
-    /// Plain list of regex patterns matching compile error lines.
-    Patterns(Vec<String>),
-    /// Include/exclude regex filter pair.
-    IncludeExclude(CompileErrorsFilter),
-}
-
-impl Default for CompileErrorsSpec {
-    fn default() -> Self {
-        Self::Patterns(Vec::new())
-    }
-}
-
-impl CompileErrorsSpec {
-    /// Returns `true` if no include or exclude patterns are configured.
-    pub fn is_empty(&self) -> bool {
-        match self {
-            Self::Patterns(items) => items.is_empty(),
-            Self::IncludeExclude(filter) => filter.include.is_empty() && filter.exclude.is_empty(),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for CompileErrorsSpec {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Helper {
-            Patterns(Vec<String>),
-            IncludeExclude(CompileErrorsFilter),
-        }
-
-        match Helper::deserialize(deserializer)? {
-            Helper::Patterns(v) => Ok(Self::Patterns(v)),
-            Helper::IncludeExclude(f) => Ok(Self::IncludeExclude(f)),
-        }
-    }
-}
-
-/// Structured include/exclude regex filters for `compile_errors`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct CompileErrorsFilter {
-    /// Regexes matching candidate compile error lines.
-    pub include: Vec<String>,
-    /// Regexes excluding false positives from `include` (e.g. `^error: test failed`).
-    pub exclude: Vec<String>,
-}
-
-/// Regex rules extracting individual test target and test outcome names.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OutputTestsSpec {
-    /// Optional regex with capture group 1 extracting the test suite/target.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
-    /// Regex with capture group 1 extracting passed test names.
-    pub passed: String,
-    /// Optional regex with capture group 1 extracting failed test names.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failed: Option<String>,
-    /// Optional regex with capture group 1 extracting ignored test names.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ignored: Option<String>,
-}
-
-/// Declarative output parsing rules for a command.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct CommandOutputSpec {
-    /// Optional test count extraction patterns.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub counts: Option<CommandCountsSpec>,
-    /// Whether non-zero test count evidence is required on `proof: command`.
-    pub require_counts: bool,
-    /// Noise line regexes stripped from captured diagnostics.
-    pub noise: Vec<String>,
-    /// Compile error detection patterns or include/exclude filter.
-    #[serde(skip_serializing_if = "CompileErrorsSpec::is_empty")]
-    pub compile_errors: CompileErrorsSpec,
-    /// Individual test outcome extraction regexes.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tests: Option<OutputTestsSpec>,
-}
-
-impl Default for CommandOutputSpec {
-    fn default() -> Self {
-        Self {
-            counts: None,
-            require_counts: true,
-            noise: Vec::new(),
-            compile_errors: CompileErrorsSpec::default(),
-            tests: None,
-        }
-    }
-}
-
 /// Detailed shell command configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -397,9 +248,6 @@ pub struct DetailedCommandDef {
     /// Optional path-pattern to `{scope_target}` argument mappings.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub scope_args_by_pattern: BTreeMap<String, String>,
-    /// Optional output parser specification.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<CommandOutputSpec>,
 }
 
 /// Pattern-matched command entry preserving YAML declaration order.
@@ -422,16 +270,13 @@ pub struct PatternCommandEntry {
     /// Optional path-pattern to `{scope_target}` argument mappings.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub scope_args_by_pattern: BTreeMap<String, String>,
-    /// Optional output parser specification.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output: Option<CommandOutputSpec>,
 }
 
 /// Command slot definition (`unbound: true`, `Script`, `Detailed`, or `Pattern`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum CommandDef {
-    /// Abstract command slot declared in `default.yaml` requiring project override before run binding.
+    /// Abstract command slot declared in `code.yaml` requiring project override before run binding.
     Unbound {
         /// Must be `true`.
         unbound: bool,
@@ -472,8 +317,6 @@ impl<'de> Deserialize<'de> for CommandDef {
             test_filter: Option<TestFilterConfig>,
             #[serde(default)]
             scope_args_by_pattern: BTreeMap<String, String>,
-            #[serde(default)]
-            output: Option<CommandOutputSpec>,
         }
 
         struct ByPatternPairs(Vec<(String, String)>);
@@ -544,7 +387,6 @@ impl<'de> Deserialize<'de> for CommandDef {
                             timeout_seconds: block.timeout_seconds,
                             test_filter: block.test_filter.clone(),
                             scope_args_by_pattern: block.scope_args_by_pattern.clone(),
-                            output: block.output.clone(),
                         })
                         .collect();
                     Ok(Self::Pattern(entries))
@@ -567,9 +409,7 @@ impl<'de> Deserialize<'de> for CommandDef {
 pub enum ProofKind {
     /// No typed proof required beyond gate execution/submission rules.
     None,
-    /// Runtime-red contract proof requiring `command` + `expected_failure` + `test_filter`.
-    Contract,
-    /// Passing command verification proof (`exit_code == 0`, `tests_failed == 0`).
+    /// Passing command verification proof (`exit_code == 0`).
     Command,
     /// Domain provider `call: <domain>.<action>` proof.
     Call,
@@ -582,7 +422,6 @@ impl ProofKind {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::None => "none",
-            Self::Contract => "contract",
             Self::Command => "command",
             Self::Call => "call",
             Self::Review => "review",
@@ -592,17 +431,17 @@ impl ProofKind {
     fn from_name(raw: &str) -> Result<Option<Self>, &'static str> {
         match raw {
             "none" => Ok(Some(Self::None)),
-            "contract" => Ok(Some(Self::Contract)),
             "command" => Ok(Some(Self::Command)),
             "call" => Ok(Some(Self::Call)),
             "review" => Ok(Some(Self::Review)),
+            "contract" => Err("legacy proof kind 'contract' is removed in v0.6.2 (author seam tests in build)"),
             "seam_test" | "delivery" => Err("legacy proof kinds 'seam_test' and 'delivery' are removed in v2 profiles"),
             _ => Ok(None),
         }
     }
 }
 
-/// Gate proof specification (`none`, `contract`, `command`, `call`, `review`, catalog name, or `{ scheme }`).
+/// Gate proof specification (`none`, `command`, `call`, `review`, catalog name, or `{ scheme }`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProofDef {
     /// Built-in proof behavior (defaults to `ProofKind::None`).
@@ -626,34 +465,6 @@ pub enum ProofDef {
 impl Default for ProofDef {
     fn default() -> Self {
         Self::Kind(ProofKind::None)
-    }
-}
-
-impl ProofDef {
-    /// Return the built-in `ProofKind`, or `None` for schema/catalog proofs.
-    pub fn kind(&self) -> Option<ProofKind> {
-        match self {
-            Self::Kind(k) => Some(*k),
-            Self::Scheme { .. } | Self::Named(_) | Self::ResolvedNamed { .. } => None,
-        }
-    }
-
-    /// Return the referenced catalog name when this proof is `Named` or `ResolvedNamed`.
-    pub fn catalog_name(&self) -> Option<&str> {
-        match self {
-            Self::Named(n) | Self::ResolvedNamed { name: n, .. } => Some(n.as_str()),
-            _ => None,
-        }
-    }
-
-    /// Return the resolved `SchemaDef` when inline or already resolved.
-    pub fn inline_or_resolved_schema(&self) -> Option<&SchemaDef> {
-        match self {
-            Self::Scheme { scheme: schema } | Self::ResolvedNamed { schema, .. } => {
-                Some(schema.as_ref())
-            }
-            _ => None,
-        }
     }
 }
 
@@ -836,42 +647,9 @@ impl<'de> Deserialize<'de> for CheckRef {
     }
 }
 
-/// Expected failure signature required for `proof: contract`.
+/// Persistence, immutability, archive, prune, and report policy on a `GateDef`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ExpectedFailureSpec {
-    /// Accepted non-zero exit codes (e.g. `[1, 101, 134]`).
-    pub exit_codes: Vec<i32>,
-    /// Optional substring required in stderr.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stderr_contains: Option<String>,
-}
-
-/// Field-wise patch for `ExpectedFailureSpec`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ExpectedFailurePatch {
-    /// Replace `exit_codes`.
-    pub exit_codes: PatchField<Vec<i32>>,
-    /// Override or clear `stderr_contains`.
-    pub stderr_contains: PatchField<String>,
-}
-
-/// Deserialize `SaveAction`, mapping legacy `"snapshot"` from persisted `runs.profile_json` to `None`.
-fn deserialize_compat_save_action<'de, D>(deserializer: D) -> Result<SaveAction, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let raw = String::deserialize(deserializer)?;
-    if raw == "snapshot" {
-        Ok(SaveAction::None)
-    } else {
-        raw.parse::<SaveAction>().map_err(de::Error::custom)
-    }
-}
-
-/// Persistence, immutability, archive, prune, and Git commit note policy on a `GateDef`.
-#[derive(Debug, Clone, Eq, Default, Serialize)]
 pub struct SavePolicy {
     /// Post-acceptance save action (`none` or `commit`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -882,66 +660,9 @@ pub struct SavePolicy {
     pub archive: bool,
     /// Trigger run pruning after archive (`root_gate` only).
     pub prune: bool,
-    /// Key referencing `profile.git_commit_notes` attached when `post == commit`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub git_commit_note: Option<String>,
-    /// True when deserialized from pre-v0.6.1 `runs.profile_json` (`save.pre` or `save.post: "snapshot"`).
-    #[serde(skip)]
-    pub(crate) had_legacy_save_compat: bool,
-    /// Preserved v0.6.0 `save.pre` string value for legacy verification digest checks.
-    #[serde(skip)]
-    legacy_pre: Option<String>,
-    /// True when pre-v0.6.1 `runs.profile_json` carried `save.post: "snapshot"`.
-    #[serde(skip)]
-    legacy_post_snapshot: bool,
-}
-
-impl PartialEq for SavePolicy {
-    fn eq(&self, other: &Self) -> bool {
-        self.post == other.post
-            && self.immutable == other.immutable
-            && self.archive == other.archive
-            && self.prune == other.prune
-            && self.git_commit_note == other.git_commit_note
-    }
-}
-
-impl<'de> Deserialize<'de> for SavePolicy {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize, Default)]
-        #[serde(default, deny_unknown_fields)]
-        struct CompatRepr {
-            /// Legacy pre-execution save field from v0.6.0 `runs.profile_json`.
-            pre: Option<String>,
-            post: Option<String>,
-            immutable: bool,
-            archive: bool,
-            prune: bool,
-            git_commit_note: Option<String>,
-        }
-
-        let repr = CompatRepr::deserialize(deserializer)?;
-        let legacy_post_snapshot = repr.post.as_deref() == Some("snapshot");
-        let post = match repr.post.as_deref() {
-            None => None,
-            Some("snapshot") => Some(SaveAction::None),
-            Some(other) => Some(other.parse::<SaveAction>().map_err(de::Error::custom)?),
-        };
-        let had_legacy_save_compat = repr.pre.is_some() || legacy_post_snapshot;
-        Ok(Self {
-            post,
-            immutable: repr.immutable,
-            archive: repr.archive,
-            prune: repr.prune,
-            git_commit_note: repr.git_commit_note,
-            had_legacy_save_compat,
-            legacy_pre: repr.pre,
-            legacy_post_snapshot,
-        })
-    }
+    /// Optional workspace-relative report output path rendered on acceptance (`{run_id}`, `{run_name}`, `{gate_id}`, `{spec_id}`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<String>,
 }
 
 /// Field-wise patch representation for `GateDef.save` (supports scalar shorthand `save: commit`).
@@ -955,8 +676,8 @@ pub struct SavePolicyPatch {
     pub archive: PatchField<bool>,
     /// Override `prune`.
     pub prune: PatchField<bool>,
-    /// Override or clear `git_commit_note`.
-    pub git_commit_note: PatchField<String>,
+    /// Override or clear `report`.
+    pub report: PatchField<String>,
 }
 
 impl<'de> Deserialize<'de> for SavePolicyPatch {
@@ -971,7 +692,7 @@ impl<'de> Deserialize<'de> for SavePolicyPatch {
             immutable: PatchField<bool>,
             archive: PatchField<bool>,
             prune: PatchField<bool>,
-            git_commit_note: PatchField<String>,
+            report: PatchField<String>,
         }
 
         impl Default for MapRepr {
@@ -981,7 +702,7 @@ impl<'de> Deserialize<'de> for SavePolicyPatch {
                     immutable: PatchField::Unset,
                     archive: PatchField::Unset,
                     prune: PatchField::Unset,
-                    git_commit_note: PatchField::Unset,
+                    report: PatchField::Unset,
                 }
             }
         }
@@ -1003,7 +724,7 @@ impl<'de> Deserialize<'de> for SavePolicyPatch {
                 immutable: m.immutable,
                 archive: m.archive,
                 prune: m.prune,
-                git_commit_note: m.git_commit_note,
+                report: m.report,
             }),
         }
     }
@@ -1066,81 +787,6 @@ pub struct ResourceLimitsPatch {
     pub max_trace_summary_bytes: Option<usize>,
     /// Override `max_command_timeout_seconds`.
     pub max_command_timeout_seconds: Option<u64>,
-}
-
-/// Output format for `git_commit_notes`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GitCommitNoteFormat {
-    /// Human-readable Markdown note.
-    #[default]
-    Markdown,
-    /// Machine-readable JSON note.
-    Json,
-}
-
-/// Canonical telemetry sections allowed in `git_commit_notes.<name>.sections` (excluding legacy `ast_delta`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GitCommitNoteSection {
-    /// Elapsed wall-clock duration.
-    Duration,
-    /// Completed task receipt summary.
-    TasksSummary,
-    /// Review cycle count summary.
-    ReviewCycles,
-    /// Diff file/line breakdown.
-    DiffBreakdown,
-    /// Test suite counts.
-    TestSuite,
-    /// Run/worktree topology summary.
-    Topology,
-}
-
-/// Configuration for one named Git commit note template in `git_commit_notes`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct GitCommitNotePolicy {
-    /// Git notes ref name (default `refs/notes/acdd`).
-    pub ref_name: String,
-    /// Maximum rendered note bytes (default `2048`).
-    pub max_bytes: usize,
-    /// Rendering format (`markdown` or `json`).
-    pub format: GitCommitNoteFormat,
-    /// Included telemetry sections.
-    pub sections: Vec<GitCommitNoteSection>,
-}
-
-impl Default for GitCommitNotePolicy {
-    fn default() -> Self {
-        Self {
-            ref_name: "refs/notes/acdd".to_owned(),
-            max_bytes: 2048,
-            format: GitCommitNoteFormat::Markdown,
-            sections: vec![
-                GitCommitNoteSection::Duration,
-                GitCommitNoteSection::TasksSummary,
-                GitCommitNoteSection::ReviewCycles,
-                GitCommitNoteSection::DiffBreakdown,
-                GitCommitNoteSection::TestSuite,
-                GitCommitNoteSection::Topology,
-            ],
-        }
-    }
-}
-
-/// Field-wise patch for `GitCommitNotePolicy`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct GitCommitNotePolicyPatch {
-    /// Override `ref_name`.
-    pub ref_name: PatchField<String>,
-    /// Override `max_bytes`.
-    pub max_bytes: PatchField<usize>,
-    /// Override `format`.
-    pub format: PatchField<GitCommitNoteFormat>,
-    /// Replace `sections`.
-    pub sections: PatchField<Vec<GitCommitNoteSection>>,
 }
 
 /// Field-wise patch for `SubsystemRegistry` (`modules:`).
@@ -1240,9 +886,6 @@ pub struct GateDef {
     pub scope: Vec<String>,
     /// Persistence, immutability, archive, prune, and commit note settings.
     pub save: SavePolicy,
-    /// Expected runtime-red failure signature (allowed only on `proof: contract`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected_failure: Option<ExpectedFailureSpec>,
     /// Maximum failure/rejection attempts before escalation (`>= 1`, default `3`).
     pub max_attempts: u32,
     /// Whether passing this gate produces a durable receipt and closes the container.
@@ -1283,7 +926,6 @@ impl PartialEq for GateDef {
             && self.contours == other.contours
             && self.scope == other.scope
             && self.save == other.save
-            && self.expected_failure == other.expected_failure
             && self.max_attempts == other.max_attempts
             && self.receipt == other.receipt
             && self.independent_from == other.independent_from
@@ -1315,7 +957,6 @@ impl Default for GateDef {
             contours: Vec::new(),
             scope: Vec::new(),
             save: SavePolicy::default(),
-            expected_failure: None,
             max_attempts: DEFAULT_MAX_ATTEMPTS,
             receipt: false,
             independent_from: Vec::new(),
@@ -1339,37 +980,9 @@ impl GateDef {
         Ok(canonical_json_sha256(&value))
     }
 
-    /// Compute the pre-`v0.6.1` RFC-8785 SHA-256 digest when loaded from a legacy `runs.profile_json`
-    /// that carried `save.pre` or `save.post: "snapshot"`.
-    pub(crate) fn legacy_v060_definition_digest(&self) -> Result<String, StateError> {
-        let mut value = serde_json::to_value(self).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("failed to serialize GateDef for legacy digest: {err}"),
-            )
-        })?;
-        if let Some(save_obj) = value.get_mut("save").and_then(serde_json::Value::as_object_mut) {
-            if let Some(ref pre) = self.save.legacy_pre {
-                save_obj.insert("pre".to_owned(), serde_json::Value::String(pre.clone()));
-            }
-            if self.save.legacy_post_snapshot {
-                save_obj.insert(
-                    "post".to_owned(),
-                    serde_json::Value::String("snapshot".to_owned()),
-                );
-            }
-        }
-        Ok(canonical_json_sha256(&value))
-    }
-
     /// Returns `true` if this entry represents a `- tasks:` block.
     pub fn is_tasks_block(&self) -> bool {
         self.tasks.is_some()
-    }
-
-    /// Returns `true` if this entry is a container node holding child gates.
-    pub fn is_container(&self) -> bool {
-        !self.gates.is_empty() || self.tasks.is_some()
     }
 }
 
@@ -1437,9 +1050,6 @@ pub struct RawGateDef {
     /// Field-wise save policy patch.
     #[serde(skip_serializing)]
     pub save: Option<SavePolicyPatch>,
-    /// Field-wise expected_failure patch.
-    #[serde(skip_serializing)]
-    pub expected_failure: PatchField<ExpectedFailurePatch>,
     /// Retry limit override.
     #[serde(skip_serializing)]
     pub max_attempts: PatchField<u32>,
@@ -1478,7 +1088,7 @@ pub struct RawTasksBlock {
 pub enum RawGateItem {
     /// Gate definition, container, `- tasks:` block, or patch object.
     Gate(Box<RawGateDef>),
-    /// Explicit gate deletion (`- <id_or_cursor>: null`) permitted under `gates_merge: patch`.
+    /// Explicit gate deletion (`- <id_or_cursor>: null`) permitted inside `gates_patch`.
     Delete(String),
 }
 
@@ -1524,12 +1134,9 @@ impl GateSelectorExt for GateSelector {
 pub struct ParsedProfileFile {
     /// Schema version (must equal `2`).
     pub version: u32,
-    /// Optional inheritance source (`default | code | in_place | workspace | none | <path>[:<sha256_prefix>]`).
+    /// Optional inheritance source (`base | code | audit | none | <path>[:<sha256_prefix>]`).
     #[serde(default)]
     pub inherit: Option<String>,
-    /// How `gates:` combines with the inherited parent (`replace` or `patch`).
-    #[serde(default)]
-    pub gates_merge: GatesMergeMode,
     /// Field-wise Git policy overrides.
     #[serde(default)]
     pub git: Option<GitPolicyPatch>,
@@ -1572,12 +1179,12 @@ pub struct ParsedProfileFile {
     /// Field-wise resource limit overrides.
     #[serde(default)]
     pub limits: Option<ResourceLimitsPatch>,
-    /// Key-wise Git commit note policies (`null` deletes a policy).
-    #[serde(default)]
-    pub git_commit_notes: BTreeMap<String, Option<GitCommitNotePolicyPatch>>,
-    /// Ordered root gates and `- tasks:` blocks (or patch entries under `gates_merge: patch`).
+    /// Ordered root gates and `- tasks:` blocks replacing inherited gates.
     #[serde(default)]
     pub gates: Option<Vec<RawGateItem>>,
+    /// Targeted patch entries modifying inherited gates by ID, cursor, `after:`/`before:`, or `<id>: null`.
+    #[serde(default)]
+    pub gates_patch: Option<Vec<RawGateItem>>,
 }
 
 /// Fully resolved, inherited, and template-expanded `GateProfile` persisted in `runs.profile_json`.
@@ -1586,12 +1193,11 @@ pub struct ParsedProfileFile {
 pub struct ResolvedGateProfile {
     /// Profile schema version (`2`).
     pub version: u32,
-    /// Resolved profile identifier (e.g. `"default"`, `"code"`, `"in_place"`, or workspace relative path).
+    /// Resolved profile identifier (e.g. `"base"`, `"code"`, `"audit"`, or workspace relative path).
     pub profile_id: String,
-    /// Resolved Git isolation/worktree/commit/integration policy.
+    /// Resolved Git isolation/worktree policy.
     pub git: GitPolicy,
-    /// Default terminal root-gate persistence action (accepts legacy `"snapshot"` in persisted `profile_json`).
-    #[serde(deserialize_with = "deserialize_compat_save_action")]
+    /// Default terminal root-gate persistence action.
     pub save: SaveAction,
     /// Admitted tags (`"default"` is always included).
     pub tags: BTreeSet<String>,
@@ -1617,8 +1223,6 @@ pub struct ResolvedGateProfile {
     pub modules: SubsystemRegistry,
     /// Resolved resource and timeout limits.
     pub limits: ResourceLimits,
-    /// Resolved Git commit note policies.
-    pub git_commit_notes: BTreeMap<String, GitCommitNotePolicy>,
     /// Resolved ordered workflow gate graph.
     pub gates: Vec<GateDef>,
 }
@@ -1627,7 +1231,7 @@ impl Default for ResolvedGateProfile {
     fn default() -> Self {
         Self {
             version: 2,
-            profile_id: "default".to_owned(),
+            profile_id: "code".to_owned(),
             git: GitPolicy::default(),
             save: SaveAction::Commit,
             tags: BTreeSet::from(["default".to_owned()]),
@@ -1642,7 +1246,6 @@ impl Default for ResolvedGateProfile {
             gate_templates: BTreeMap::new(),
             modules: SubsystemRegistry::default(),
             limits: ResourceLimits::default(),
-            git_commit_notes: BTreeMap::new(),
             gates: Vec::new(),
         }
     }
@@ -1676,6 +1279,18 @@ pub fn parse_profile(yaml: &str) -> Result<ParsedProfileFile, StateError> {
                 "unsupported gate profile version {}; expected version: 2",
                 parsed.version
             ),
+        ));
+    }
+    if parsed.gates.is_some() && parsed.gates_patch.is_some() {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            "'gates' and 'gates_patch' cannot both be declared in the same profile layer",
+        ));
+    }
+    if parsed.gates_patch.is_some() && matches!(parsed.inherit.as_deref(), None | Some("none")) {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            "'gates_patch' requires inheriting a parent profile via 'inherit'",
         ));
     }
     Ok(parsed)

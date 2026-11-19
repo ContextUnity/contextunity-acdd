@@ -10,8 +10,8 @@ mod tests;
 
 pub use commit::{
     archive_spec_with_git, create_scoped_commit, current_branch_name, current_head_commit,
-    is_protected_main_branch, write_git_note, ArchiveCommitReq, ArchiveCommitResp, GitNoteReq,
-    ScopedCommitReq, ScopedCommitResp,
+    is_protected_main_branch, ArchiveCommitReq, ArchiveCommitResp, ScopedCommitReq,
+    ScopedCommitResp,
 };
 pub use integrate::{
     abort_in_progress_git_ops, integrate_task_branch, verify_tasks_integrated, IntegrateTaskReq,
@@ -19,7 +19,7 @@ pub use integrate::{
 };
 pub use snapshot::{
     blob_oid_at, current_scope_tree, diff_scope_changed_paths, list_git_tree_files,
-    restore_rollback, tree_entry_at, RollbackReq, RollbackResp, TemporaryGitIndex,
+    tree_entry_at, TemporaryGitIndex,
 };
 pub use worktree::{
     canonicalize_macos_var, cleanup_run_refs, create_run_worktree, create_task_worktree,

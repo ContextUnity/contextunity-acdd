@@ -17,31 +17,22 @@ use crate::types::{
 };
 use crate::usecases::dto::{VerifyReq, VerifyResp};
 use crate::usecases::lifecycle::{
-    acquire_repo_lock, append_trace_event, build_path_policy, ensure_state_enabled,
-    parse_cursor_for_snapshot, parse_profile_from_run, primary_workspace_root, resolve_active_run,
-    resolve_node_worktree, resolve_repo_layout_optional, to_machine_profile,
+    acquire_repo_lock, append_trace_event, build_path_policy, combine_check_observations,
+    ensure_state_enabled, parse_cursor_for_snapshot, parse_profile_from_run,
+    primary_workspace_root, resolve_active_run, resolve_node_worktree,
+    resolve_repo_layout_optional, to_machine_profile,
 };
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::StateEngineConfig;
-use acdd_core::telemetry::TraceParent;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{GateId, NodeCursor};
 use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_core::ports::{
     CompositeDomainProvider, DomainActionReq, DomainCheckOutcome, DomainCheckReq,
+    FreshnessObservation,
 };
 use serde_json::{json, Value};
 use std::path::Path;
-
-/// Execute `StateCommand::Verify` with full `repo.lock` -> `after_commit_maintenance` discipline.
-pub fn handle_verify<B: StateBackend>(
-    config: &StateEngineConfig,
-    backend: &B,
-    provider: &CompositeDomainProvider,
-    req: VerifyReq,
-) -> Result<VerifyResp, StateError> {
-    handle_verify_dyn(config, backend, provider, req)
-}
 
 struct CapturedVerifyClaim {
     claim_revision: u32,
@@ -125,6 +116,16 @@ pub(crate) fn handle_verify_dyn(
     provider: &CompositeDomainProvider,
     req: VerifyReq,
 ) -> Result<VerifyResp, StateError> {
+    handle_verify_with_failure_return(config, backend, provider, req, false)
+}
+
+pub(crate) fn handle_verify_with_failure_return(
+    config: &StateEngineConfig,
+    backend: &dyn StateBackend,
+    provider: &CompositeDomainProvider,
+    req: VerifyReq,
+    return_on_failure_transition: bool,
+) -> Result<VerifyResp, StateError> {
     ensure_state_enabled(config)?;
     let primary = primary_workspace_root(config);
     let layout = resolve_repo_layout_optional(&primary)?;
@@ -168,7 +169,7 @@ pub(crate) fn handle_verify_dyn(
     let admitted_scope = container_scope(&snapshot, &node);
     let is_unscoped_root = node.kind == NodeKind::RootGate && admitted_scope.is_empty();
 
-    let (resolved_commands, output_spec) = resolve_commands_and_output_spec(
+    let resolved_commands = resolve_commands(
         &resolved_profile,
         &gate_def,
         &admitted_scope,
@@ -189,6 +190,7 @@ pub(crate) fn handle_verify_dyn(
     let pre_obs = ValidatedObservations {
         current_tree: Some(candidate_tree_before.clone()),
         changed_paths: pre_changed_paths.clone(),
+        path_policy: Some(policy.clone()),
         now_utc: started_at.clone(),
         ..ValidatedObservations::default()
     };
@@ -222,7 +224,6 @@ pub(crate) fn handle_verify_dyn(
             command_id: gate_def.command,
             command_line: resolved_commands.first().cloned(),
             resolved_commands,
-            output_spec,
             action_id: gate_def.call,
             index_generation: None,
             live_files_digest: None,
@@ -233,13 +234,6 @@ pub(crate) fn handle_verify_dyn(
                 aborted: false,
                 exit_code: None,
                 stderr_tail: String::new(),
-                compile_error_count: 0,
-                tests_passed: 0,
-                tests_failed: 0,
-                tests_ignored: 0,
-                passed_tests: Vec::new(),
-                failed_tests: Vec::new(),
-                ignored_tests: Vec::new(),
                 check_results: Vec::new(),
                 action_outcome: None,
                 candidate_tree_before: candidate_tree_before.clone(),
@@ -255,6 +249,7 @@ pub(crate) fn handle_verify_dyn(
             &pre_obs,
             &verify_input,
             None,
+            return_on_failure_transition,
         );
         drop(pre_lock);
         backend.after_commit_maintenance()?;
@@ -265,7 +260,7 @@ pub(crate) fn handle_verify_dyn(
     drop(pre_lock);
 
     // Phase 2 (no `repo.lock`): run domain `checks:`, optional `call:`, and optional `command:`.
-    let (check_results, live_files_digest) = run_gate_checks(
+    let (check_results, index_generation, live_files_digest) = run_gate_checks(
         provider,
         &snapshot,
         &node,
@@ -293,10 +288,9 @@ pub(crate) fn handle_verify_dyn(
         admitted_scope: admitted_scope.clone(),
         resolved_commands: resolved_commands.clone(),
         test_target: req.test_target.clone(),
-        output_spec: output_spec.clone(),
         call_with: machine_gate.with_params.clone(),
         checks_params,
-        index_generation: None,
+        index_generation: index_generation.clone(),
         live_files_digest: live_files_digest.clone(),
     })?;
 
@@ -339,10 +333,6 @@ pub(crate) fn handle_verify_dyn(
                     )
                 })?
                 .clone();
-            let trace_parent = node.active_span_id.as_deref().map(|span_id| {
-                format!("00-{}-{span_id}-01", snapshot.run.trace_id)
-            });
-            let _ = TraceParent::parse(trace_parent.as_deref().unwrap_or(""));
             Some(execute_gate_commands(&CommandExecReq {
                 run_id: snapshot.run.run_id.clone(),
                 node_cursor: cursor.clone(),
@@ -354,7 +344,6 @@ pub(crate) fn handle_verify_dyn(
                 scope: admitted_scope.clone(),
                 test_target: req.test_target.clone(),
                 limits: resolved_profile.limits.clone(),
-                trace_parent,
             })?)
         } else {
             None
@@ -381,6 +370,7 @@ pub(crate) fn handle_verify_dyn(
     let post_obs = ValidatedObservations {
         current_tree: Some(candidate_tree_after.clone()),
         changed_paths: post_changed_paths,
+        path_policy: Some(policy.clone()),
         now_utc: acdd_core::telemetry::now_utc_iso_ms(),
         ..ValidatedObservations::default()
     };
@@ -390,13 +380,6 @@ pub(crate) fn handle_verify_dyn(
         exit_code,
         timed_out,
         aborted,
-        tests_passed,
-        tests_failed,
-        tests_ignored,
-        passed_tests,
-        failed_tests,
-        ignored_tests,
-        compile_error_count,
         stderr_tail,
         final_log_relpath,
     ) = match cmd_outcome {
@@ -405,13 +388,6 @@ pub(crate) fn handle_verify_dyn(
             c.exit_code,
             c.timed_out,
             c.aborted,
-            c.tests_passed,
-            c.tests_failed,
-            c.tests_ignored,
-            c.passed_tests,
-            c.failed_tests,
-            c.ignored_tests,
-            c.compile_error_count,
             c.stderr_tail,
             c.log_relpath,
         ),
@@ -420,13 +396,6 @@ pub(crate) fn handle_verify_dyn(
             None,
             false,
             false,
-            0,
-            0,
-            0,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            0,
             String::new(),
             log_relpath,
         ),
@@ -440,9 +409,8 @@ pub(crate) fn handle_verify_dyn(
         command_id: gate_def.command,
         command_line,
         resolved_commands,
-        output_spec,
         action_id: gate_def.call,
-        index_generation: None,
+        index_generation,
         live_files_digest,
         log_relpath: final_log_relpath,
         started_at,
@@ -451,13 +419,6 @@ pub(crate) fn handle_verify_dyn(
             aborted,
             exit_code,
             stderr_tail,
-            compile_error_count,
-            tests_passed,
-            tests_failed,
-            tests_ignored,
-            passed_tests,
-            failed_tests,
-            ignored_tests,
             check_results,
             action_outcome,
             candidate_tree_before,
@@ -474,6 +435,7 @@ pub(crate) fn handle_verify_dyn(
         &post_obs,
         &verify_input,
         existing_running_trace_id,
+        return_on_failure_transition,
     );
     drop(post_lock);
     backend.after_commit_maintenance()?;
@@ -490,6 +452,7 @@ fn persist_and_finalize_verify(
     obs: &ValidatedObservations,
     verify_input: &VerifyInput,
     existing_running_trace_id: Option<i64>,
+    return_on_failure_transition: bool,
 ) -> Result<VerifyResp, StateError> {
     let eval = evaluate_verify(snapshot, machine_profile, obs, verify_input)?;
 
@@ -512,6 +475,7 @@ fn persist_and_finalize_verify(
             eval.failure_transition,
             eval.execution_digest,
             Err(err),
+            return_on_failure_transition,
         );
     }
 
@@ -528,6 +492,7 @@ fn persist_and_finalize_verify(
         eval.failure_transition,
         eval.execution_digest,
         Ok(()),
+        return_on_failure_transition,
     )
 }
 
@@ -545,7 +510,9 @@ fn finish_and_return_verify(
     failure_transition: Option<crate::types::TransitionPlan>,
     execution_digest: String,
     outcome: Result<(), StateError>,
+    return_on_failure_transition: bool,
 ) -> Result<VerifyResp, StateError> {
+    let has_failure_transition = failure_transition.is_some();
     exec_tx_with(backend, |tx| {
         let trace_row_id = match existing_running_trace_id {
             Some(id) => id,
@@ -584,7 +551,14 @@ fn finish_and_return_verify(
         }),
     );
 
-    outcome?;
+    let passed = if outcome.is_ok() {
+        true
+    } else if return_on_failure_transition && has_failure_transition {
+        false
+    } else {
+        outcome?;
+        unreachable!()
+    };
 
     Ok(VerifyResp {
         run_id: snapshot.run.run_id.clone(),
@@ -593,23 +567,21 @@ fn finish_and_return_verify(
         trace_status: trace_finish.status,
         execution_digest,
         exit_code: trace_finish.exit_code,
-        tests_passed: trace_finish.tests_passed,
-        tests_failed: trace_finish.tests_failed,
         check_results: trace_finish.check_results,
         log_relpath: trace_start.log_relpath,
-        passed: true,
+        passed,
     })
 }
 
-/// Resolve deterministic command lines and canonical `output_spec` JSON for a gate's `command:`.
-pub(crate) fn resolve_commands_and_output_spec(
+/// Resolve deterministic rendered command lines for a gate's `command:`.
+pub(crate) fn resolve_commands(
     profile: &ResolvedGateProfile,
     gate_def: &GateDef,
     admitted_scope: &[String],
     test_target: Option<&str>,
-) -> Result<(Vec<String>, Value), StateError> {
+) -> Result<Vec<String>, StateError> {
     let Some(ref cmd_id) = gate_def.command else {
-        return Ok((Vec::new(), Value::Null));
+        return Ok(Vec::new());
     };
     let cmd_def = profile.commands.get(cmd_id).ok_or_else(|| {
         StateError::new(
@@ -619,24 +591,13 @@ pub(crate) fn resolve_commands_and_output_spec(
     })?;
     let invocations = resolve_command_for_scope(cmd_def, admitted_scope)?;
     let mut rendered = Vec::with_capacity(invocations.len());
-    let mut output_specs = Vec::with_capacity(invocations.len());
     for inv in invocations {
-        let cmd_str = render_invocation_command(&inv, admitted_scope, test_target)?;
-        rendered.push(cmd_str);
-        output_specs.push(serde_json::to_value(&inv.output).map_err(|err| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("failed to serialize output spec: {err}"),
-            )
-        })?);
+        rendered.push(render_invocation_command(&inv, admitted_scope, test_target)?);
     }
-    let output_val = match output_specs.len() {
-        0 => Value::Null,
-        1 => output_specs.into_iter().next().unwrap_or(Value::Null),
-        _ => Value::Array(output_specs),
-    };
-    Ok((rendered, output_val))
+    Ok(rendered)
 }
+
+type GateChecksOutput = (Vec<CheckResultRecord>, Option<String>, Option<String>);
 
 #[allow(clippy::too_many_arguments)]
 fn run_gate_checks(
@@ -652,8 +613,9 @@ fn run_gate_checks(
     changed_paths: &[String],
     test_target: Option<&str>,
     policy: &WorkspacePathPolicy,
-) -> Result<(Vec<CheckResultRecord>, Option<String>), StateError> {
+) -> Result<GateChecksOutput, StateError> {
     let mut results = Vec::with_capacity(gate_def.checks.len());
+    let mut index_generations = Vec::new();
     let mut salts = Vec::new();
     let req = DomainCheckReq {
         run_id: snapshot.run.run_id.clone(),
@@ -680,6 +642,13 @@ fn run_gate_checks(
                 summary,
                 execution_digest_salt,
             }) => {
+                if let Ok(FreshnessObservation::Passed {
+                    index_generation: Some(gen),
+                    ..
+                }) = provider.observe_freshness(&chk.check, &chk.with, &req)
+                {
+                    index_generations.push(format!("{}:{gen}", chk.check));
+                }
                 if let Some(ref salt) = execution_digest_salt {
                     salts.push(format!("{}:{salt}", chk.check));
                 }
@@ -717,12 +686,9 @@ fn run_gate_checks(
         }
     }
 
-    let combined_salt = if salts.is_empty() {
-        None
-    } else {
-        Some(salts.join("|"))
-    };
-    Ok((results, combined_salt))
+    let combined_index_gen = combine_check_observations(&index_generations);
+    let combined_salt = combine_check_observations(&salts);
+    Ok((results, combined_index_gen, combined_salt))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -816,9 +782,6 @@ fn execute_gate_call_if_configured(
                 trace_row_id: prev_row_id,
                 status: TraceStatus::Aborted,
                 exit_code: None,
-                tests_passed: 0,
-                tests_failed: 0,
-                tests_ignored: 0,
                 passed_tests: Vec::new(),
                 failed_tests: Vec::new(),
                 check_results: Vec::new(),
@@ -876,9 +839,6 @@ fn execute_gate_call_if_configured(
                             trace_row_id,
                             status: TraceStatus::Failed,
                             exit_code: None,
-                            tests_passed: 0,
-                            tests_failed: 0,
-                            tests_ignored: 0,
                             passed_tests: Vec::new(),
                             failed_tests: Vec::new(),
                             check_results: Vec::new(),

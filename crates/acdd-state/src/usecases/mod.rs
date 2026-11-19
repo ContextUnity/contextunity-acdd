@@ -103,34 +103,6 @@ impl StateQueryEngine {
         })
     }
 
-    /// Construct a read-only query engine over an arbitrary [`StateReader`] (e.g. `:memory:` harness).
-    pub fn from_reader(
-        config: StateEngineConfig,
-        reader: Box<dyn StateReader>,
-        provider: Arc<CompositeDomainProvider>,
-    ) -> Self {
-        Self {
-            config,
-            reader,
-            provider,
-        }
-    }
-
-    /// Access the engine configuration.
-    pub fn config(&self) -> &StateEngineConfig {
-        &self.config
-    }
-
-    /// Access the underlying read-only [`StateReader`].
-    pub fn reader(&self) -> &dyn StateReader {
-        self.reader.as_ref()
-    }
-
-    /// Access the registered [`CompositeDomainProvider`].
-    pub fn provider(&self) -> &CompositeDomainProvider {
-        self.provider.as_ref()
-    }
-
     /// Execute a read-only [`StateQuery`], enforcing `modules.state` fail-closed.
     pub fn query(&self, query: StateQuery) -> Result<StateQueryOutput, StateError> {
         queries::execute_query(&self.config, self.reader.as_ref(), &self.provider, query)
@@ -195,11 +167,6 @@ impl StateEngine {
         self.backend.as_ref()
     }
 
-    /// Access the registered [`CompositeDomainProvider`].
-    pub fn provider(&self) -> &CompositeDomainProvider {
-        self.provider.as_ref()
-    }
-
     /// Execute a mutating or plugin [`StateCommand`].
     pub fn execute(&self, cmd: StateCommand) -> Result<StateCommandOutput, StateError> {
         execute_on(&self.config, self.backend.as_ref(), &self.provider, cmd)
@@ -261,12 +228,6 @@ fn execute_on_dyn(
         )?)),
         StateCommand::BlackboardPost(req) => Ok(StateCommandOutput::BlackboardPost(
             commands::handle_blackboard_post_dyn(config, backend, req)?,
-        )),
-        StateCommand::Rollback(req) => Ok(StateCommandOutput::Rollback(
-            commands::handle_rollback_dyn(config, backend, req)?,
-        )),
-        StateCommand::Integrate(req) => Ok(StateCommandOutput::Integrate(
-            commands::handle_integrate_dyn(config, backend, req)?,
         )),
         StateCommand::Clear(req) => Ok(StateCommandOutput::Clear(Box::new(
             commands::handle_clear_dyn(config, backend, req)?,

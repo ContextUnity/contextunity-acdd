@@ -1,5 +1,5 @@
 //! Pure verification evaluation, RFC-8785 `execution_digest` computation, scope barrier checks,
-//! `proof: contract` runtime-red validation, universal `proof: command` validation, and mechanical `fail:` routing.
+//! universal `proof: command` exit-code validation, and mechanical `fail:` routing.
 
 use crate::machine::graph::{
     active_claim_for_node, build_preconditions, container_scope, find_node, resolve_gate_def,
@@ -32,8 +32,6 @@ pub struct ExecutionDigestInput {
     pub resolved_commands: Vec<String>,
     /// Optional `--test` target.
     pub test_target: Option<String>,
-    /// Canonical JSON representation of `CommandOutputSpec`.
-    pub output_spec: Value,
     /// JSON `with:` parameters passed to `call:`.
     pub call_with: Value,
     /// JSON check definitions/parameters (`[[qualified, params], ...]`).
@@ -52,7 +50,6 @@ pub fn compute_execution_digest(input: &ExecutionDigestInput) -> Result<String, 
         "admitted_scope": input.admitted_scope,
         "resolved_commands": input.resolved_commands,
         "test_target": input.test_target,
-        "output_spec": input.output_spec,
         "call_with": input.call_with,
         "checks_params": input.checks_params,
         "index_generation": input.index_generation,
@@ -129,7 +126,6 @@ pub fn evaluate_verify(
         admitted_scope: admitted_scope.clone(),
         resolved_commands: input.resolved_commands.clone(),
         test_target: input.test_target.clone(),
-        output_spec: input.output_spec.clone(),
         call_with: gate.with_params.clone(),
         checks_params,
         index_generation: input.index_generation.clone(),
@@ -173,11 +169,8 @@ pub fn evaluate_verify(
         trace_row_id: 0,
         status: trace_status,
         exit_code: input.exec_obs.exit_code,
-        tests_passed: input.exec_obs.tests_passed,
-        tests_failed: input.exec_obs.tests_failed,
-        tests_ignored: input.exec_obs.tests_ignored,
-        passed_tests: input.exec_obs.passed_tests.clone(),
-        failed_tests: input.exec_obs.failed_tests.clone(),
+        passed_tests: Vec::new(),
+        failed_tests: Vec::new(),
         check_results: input.exec_obs.check_results.clone(),
         candidate_tree_after: input.exec_obs.candidate_tree_after.clone(),
         finished_at: obs.now_utc.clone(),
@@ -210,6 +203,27 @@ pub fn evaluate_verify(
     })
 }
 
+/// Resolve the effective `WorkspacePathPolicy` from shell observations (preserving configured
+/// custom `state_db`/`code_db` overrides and active managed spec/archive paths).
+pub(crate) fn effective_path_policy(
+    snapshot: &RunGraphSnapshot,
+    obs: &ValidatedObservations,
+) -> WorkspacePathPolicy {
+    let mut policy = obs.path_policy.clone().unwrap_or_else(|| {
+        WorkspacePathPolicy::new(
+            snapshot.run.spec_path.iter().cloned(),
+            ".acdd/state.sqlite",
+            ".acdd/code-map.sqlite",
+        )
+    });
+    if let Some(ref spec_path) = snapshot.run.spec_path {
+        if let Some(norm) = acdd_core::path_policy::normalize_rel_path(spec_path) {
+            policy.engine_managed_paths.insert(norm);
+        }
+    }
+    policy
+}
+
 /// Check pure scope barrier for changed paths against `container_scope` and `protected_paths`.
 pub fn detect_scope_violations(
     snapshot: &RunGraphSnapshot,
@@ -219,17 +233,12 @@ pub fn detect_scope_violations(
     is_unscoped_root_gate: bool,
 ) -> Vec<String> {
     let mut violations: BTreeSet<String> = obs.out_of_scope_paths.iter().cloned().collect();
-    let engine_managed: Vec<String> = snapshot.run.spec_path.iter().cloned().collect();
-    let policy = WorkspacePathPolicy::new(
-        engine_managed,
-        ".acdd/state.sqlite",
-        ".acdd/code-map.sqlite",
-    );
+    let policy = effective_path_policy(snapshot, obs);
 
     for path in &obs.changed_paths {
         let allowed = if is_unscoped_root_gate {
             policy.is_candidate_included(path)
-                && !policy.is_scope_admitted(path, &profile.protected_paths)
+                && !policy.is_protected_path(path, &profile.protected_paths)
         } else {
             policy.is_agent_writable(path, admitted_scope, &profile.protected_paths)
         };
@@ -299,18 +308,6 @@ fn classify_verify_outcome(
             )),
         );
     }
-    if exec.compile_error_count > 0 {
-        return (
-            TraceStatus::CompileError,
-            Err(StateError::new(
-                ErrorCode::GateVerificationFailed,
-                format!(
-                    "detected {} compile error(s) during verification of '{}'",
-                    exec.compile_error_count, node.node_id
-                ),
-            )),
-        );
-    }
 
     if let Some(ActionExecutionOutcome::Failed(ref msg)) = exec.action_outcome {
         return (
@@ -323,115 +320,13 @@ fn classify_verify_outcome(
     }
 
     match &gate.proof {
-        MachineProofKind::Contract => {
-            let Some(target) = input
-                .test_target
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            else {
-                return (
-                    TraceStatus::Failed,
-                    Err(StateError::new(
-                        ErrorCode::GateVerificationFailed,
-                        format!("proof: contract on '{}' requires --test <target>", node.node_id),
-                    )),
-                );
-            };
-
-            let Some(ref expected) = gate.expected_failure else {
-                return (
-                    TraceStatus::Failed,
-                    Err(StateError::new(
-                        ErrorCode::ProfileSchemaInvalid,
-                        format!(
-                            "proof: contract on '{}' is missing expected_failure configuration",
-                            node.node_id
-                        ),
-                    )),
-                );
-            };
-
-            let exit_ok = exec.exit_code.is_some_and(|code| {
-                if expected.exit_codes.is_empty() {
-                    (1..=125).contains(&code)
-                } else {
-                    expected.exit_codes.contains(&code)
-                }
-            });
-            if !exit_ok {
-                return (
-                    TraceStatus::Failed,
-                    Err(StateError::new(
-                        ErrorCode::GateVerificationFailed,
-                        if expected.exit_codes.is_empty() {
-                            format!(
-                                "contract test '{target}' exited with {:?}, expected runtime exit code in 1..=125",
-                                exec.exit_code
-                            )
-                        } else {
-                            format!(
-                                "contract test '{target}' exited with {:?}, expected one of {:?}",
-                                exec.exit_code, expected.exit_codes
-                            )
-                        },
-                    )),
-                );
-            }
-
-            if let Some(ref substr) = expected.stderr_contains {
-                if !exec.stderr_tail.contains(substr) {
-                    return (
-                        TraceStatus::Failed,
-                        Err(StateError::new(
-                            ErrorCode::GateVerificationFailed,
-                            format!(
-                                "contract stderr did not contain required pattern '{substr}'"
-                            ),
-                        )),
-                    );
-                }
-            }
-
-            if exec.ignored_tests.iter().any(|t| t == target)
-                || !exec.failed_tests.iter().any(|t| t == target)
-            {
-                return (
-                    TraceStatus::Failed,
-                    Err(StateError::new(
-                        ErrorCode::GateVerificationFailed,
-                        format!(
-                            "contract target '{target}' must appear in failed_tests (and not ignored_tests)"
-                        ),
-                    )),
-                );
-            }
-
-            if gate.call.is_some()
-                && !matches!(exec.action_outcome, Some(ActionExecutionOutcome::Succeeded))
-            {
-                return (
-                    TraceStatus::Failed,
-                    Err(StateError::new(
-                        ErrorCode::GateVerificationFailed,
-                        format!("gate '{}' requires successful call execution", node.node_id),
-                    )),
-                );
-            }
-
-            if let Err(err) = verify_required_checks(gate, &exec.check_results) {
-                return (TraceStatus::CheckFailed, Err(err));
-            }
-
-            (TraceStatus::ExpectedFailure, Ok(()))
-        }
         MachineProofKind::Command
         | MachineProofKind::Call
         | MachineProofKind::None
         | MachineProofKind::Review
         | MachineProofKind::CustomSchema(_) => {
             if matches!(gate.proof, MachineProofKind::Command) || gate.command.is_some() {
-                if let Err(err) = verify_command_success(snapshot, profile, node, gate, input) {
+                if let Err(err) = verify_command_success(node, input) {
                     return (TraceStatus::Failed, Err(err));
                 }
             }
@@ -454,13 +349,7 @@ fn classify_verify_outcome(
     }
 }
 
-fn verify_command_success(
-    snapshot: &RunGraphSnapshot,
-    profile: &MachineProfileInput,
-    node: &GateNodeRecord,
-    gate: &MachineGateDef,
-    input: &VerifyInput,
-) -> Result<(), StateError> {
+fn verify_command_success(node: &GateNodeRecord, input: &VerifyInput) -> Result<(), StateError> {
     let exec = &input.exec_obs;
     if exec.exit_code != Some(0) {
         return Err(StateError::new(
@@ -471,80 +360,8 @@ fn verify_command_success(
             ),
         ));
     }
-    if exec.tests_failed > 0 {
-        return Err(StateError::new(
-            ErrorCode::GateVerificationFailed,
-            format!(
-                "command on '{}' reported {} failing test(s)",
-                node.node_id, exec.tests_failed
-            ),
-        ));
-    }
-    if gate.require_counts && exec.tests_passed == 0 {
-        return Err(StateError::new(
-            ErrorCode::GateVerificationFailed,
-            format!(
-                "command on '{}' requires tests_passed > 0 (require_counts = true)",
-                node.node_id
-            ),
-        ));
-    }
-
-    // If an earlier gate in the same container completed with `proof: contract`,
-    // its `<test_target>` must appear in `passed_tests`.
-    for prior_target in prior_contract_targets(snapshot, profile, node)? {
-        if !exec.passed_tests.iter().any(|t| t == &prior_target) {
-            return Err(StateError::new(
-                ErrorCode::GateVerificationFailed,
-                format!(
-                    "command on '{}' did not pass prior contract target '{prior_target}'",
-                    node.node_id
-                ),
-            ));
-        }
-    }
 
     Ok(())
-}
-
-/// Find any `<test_target>` proven by an earlier `proof: contract` gate in the same container.
-pub fn prior_contract_targets(
-    snapshot: &RunGraphSnapshot,
-    profile: &MachineProfileInput,
-    node: &GateNodeRecord,
-) -> Result<Vec<String>, StateError> {
-    let mut targets = Vec::new();
-    for sibling in &snapshot.nodes {
-        if sibling.parent_id != node.parent_id
-            || sibling.seq_order >= node.seq_order
-            || sibling.status != NodeStatus::Completed
-        {
-            continue;
-        }
-        let Ok(sib_gate) = resolve_gate_def(profile, sibling) else {
-            continue;
-        };
-        if sib_gate.proof != MachineProofKind::Contract {
-            continue;
-        }
-        if let Some(trace) = snapshot
-            .traces
-            .iter()
-            .filter(|t| {
-                t.node_id == sibling.node_id
-                    && t.claim_revision == sibling.claim_revision
-                    && t.status == TraceStatus::ExpectedFailure
-            })
-            .max_by_key(|t| t.trace_row_id.unwrap_or(0))
-        {
-            if let Some(ref target) = trace.test_target {
-                if !targets.contains(target) {
-                    targets.push(target.clone());
-                }
-            }
-        }
-    }
-    Ok(targets)
 }
 
 fn verify_required_checks(
@@ -702,9 +519,9 @@ fn build_mechanical_failure_transition(
 mod tests {
     use super::evaluate_verify;
     use crate::machine::inputs::{
-        ActionExecutionOutcome, MachineExpectedFailure, MachineGateDef, MachineGitPolicy,
-        MachineGraphItem, MachineProfileInput, MachineProofKind, MachineTasksBlockDef,
-        VerifyExecutionObservation, VerifyInput,
+        ActionExecutionOutcome, MachineGateDef, MachineGitPolicy, MachineGraphItem,
+        MachineProfileInput, MachineProofKind, MachineTasksBlockDef, VerifyExecutionObservation,
+        VerifyInput,
     };
     use crate::types::{
         ClaimOutcome, GateClaimRecord, GateNodeRecord, InvariantsState, IsolationMode, NodeKind,
@@ -716,17 +533,17 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
-    fn contract_expected_failure_empty_and_explicit_exit_code_matrix() {
-        let run_id = RunId::new("run-verify-contract").expect("run_id");
+    fn command_and_call_checks_verification_matrix() {
+        let run_id = RunId::new("run-verify-call").expect("run_id");
         let t1 = TaskRef::new("T1").expect("task_ref");
-        let contract_gate = GateId::new("contract").expect("gate_id");
-        let node_id = "task:T1:contract";
+        let build_gate = GateId::new("build").expect("gate_id");
+        let node_id = "task:T1:build";
         let tree_oid = TreeOid::new("0".repeat(40)).expect("tree");
 
         let snapshot = RunGraphSnapshot {
             run: RunRecord {
                 run_id: run_id.clone(),
-                run_name: RunName::new("run-verify-contract").expect("run_name"),
+                run_name: RunName::new("run-verify-call").expect("run_name"),
                 collection: None,
                 workspace: "/tmp/ws".to_owned(),
                 profile_id: "code".to_owned(),
@@ -785,7 +602,7 @@ mod tests {
                     parent_id: Some("task:T1".to_owned()),
                     kind: NodeKind::TaskGate,
                     task_ref: Some(t1.clone()),
-                    gate_id: "contract".to_owned(),
+                    gate_id: "build".to_owned(),
                     seq_order: 2,
                     status: NodeStatus::InProgress,
                     node_version: 1,
@@ -830,21 +647,6 @@ mod tests {
             subtasks: vec![],
         };
 
-        let cases = [
-            // (configured exit_codes, observed exit_code, compile_errors, timed_out, should_pass)
-            (vec![], Some(1), 0, false, true),
-            (vec![], Some(101), 0, false, true),
-            (vec![], Some(125), 0, false, true),
-            (vec![], Some(0), 0, false, false),
-            (vec![], Some(126), 0, false, false),
-            (vec![], Some(127), 0, false, false),
-            (vec![], Some(137), 0, false, false),
-            (vec![], Some(101), 1, false, false),
-            (vec![], Some(101), 0, true, false),
-            (vec![101], Some(101), 0, false, true),
-            (vec![101], Some(1), 0, false, false),
-        ];
-
         let obs = ValidatedObservations {
             current_tree: Some(tree_oid.clone()),
             container_tree: Some(tree_oid.clone()),
@@ -852,76 +654,7 @@ mod tests {
             ..ValidatedObservations::default()
         };
 
-        for (configured_codes, exit_code, compile_error_count, timed_out, should_pass) in cases {
-            let mut gate = MachineGateDef::minimal(contract_gate.clone());
-            gate.proof = MachineProofKind::Contract;
-            gate.expected_failure = Some(MachineExpectedFailure {
-                exit_codes: configured_codes.clone(),
-                stderr_contains: None,
-            });
-            let profile = MachineProfileInput {
-                profile_id: "code".to_owned(),
-                profile_json: "{}".to_owned(),
-                git: MachineGitPolicy::default(),
-                default_save: SaveAction::Commit,
-                protected_paths: Vec::new(),
-                tags: BTreeSet::from(["default".to_owned()]),
-                proof_schemas: BTreeMap::new(),
-                gates: vec![MachineGraphItem::TasksBlock(MachineTasksBlockDef {
-                    when: None,
-                    gates: vec![gate],
-                })],
-            };
-            let input = VerifyInput {
-                node_cursor: NodeCursor::task(t1.clone(), vec![contract_gate.clone()]),
-                worker_id: Some(WorkerId::new("w1").expect("worker_id")),
-                claim_revision: Some(1),
-                test_target: Some("test_mod::test_fn".to_owned()),
-                command_id: None,
-                command_line: None,
-                resolved_commands: vec![],
-                output_spec: json!({}),
-                action_id: None,
-                index_generation: None,
-                live_files_digest: None,
-                log_relpath: ".acdd/run/log.txt".to_owned(),
-                started_at: "2026-01-01T00:00:00Z".to_owned(),
-                exec_obs: VerifyExecutionObservation {
-                    timed_out,
-                    aborted: false,
-                    exit_code,
-                    stderr_tail: String::new(),
-                    compile_error_count,
-                    tests_passed: 0,
-                    tests_failed: 0,
-                    tests_ignored: 0,
-                    passed_tests: Vec::new(),
-                    failed_tests: vec!["test_mod::test_fn".to_owned()],
-                    ignored_tests: Vec::new(),
-                    check_results: Vec::new(),
-                    action_outcome: None,
-                    candidate_tree_before: tree_oid.clone(),
-                    candidate_tree_after: Some(tree_oid.clone()),
-                },
-            };
-            let eval = evaluate_verify(&snapshot, &profile, &obs, &input)
-                .expect("evaluate_verify returns structured VerifyEvaluation");
-            if should_pass {
-                assert!(
-                    eval.outcome.is_ok(),
-                    "expected pass for codes={configured_codes:?} exit={exit_code:?}: {:?}",
-                    eval.outcome
-                );
-                assert_eq!(eval.trace_finish.status, TraceStatus::ExpectedFailure);
-            } else {
-                assert!(
-                    eval.outcome.is_err(),
-                    "expected fail for codes={configured_codes:?} exit={exit_code:?} compile={compile_error_count} timed_out={timed_out}"
-                );
-            }
-        }
-
-        // Proof::Call with `command` enforces command exit/counts, and duplicate checks match 1:1.
+        // Proof::Call with `command` enforces zero-exit, and duplicate checks match 1:1.
         use crate::machine::inputs::MachineCheckDef;
         use crate::types::CheckResultRecord;
 
@@ -945,7 +678,7 @@ mod tests {
         for (idx, (has_cmd, exit_code, action_outcome, checks_count, check_results, exp_pass, exp_trace)) in
             call_cases.into_iter().enumerate()
         {
-            let mut gate = MachineGateDef::minimal(contract_gate.clone());
+            let mut gate = MachineGateDef::minimal(build_gate.clone());
             gate.proof = MachineProofKind::Call;
             gate.call = Some("http.deploy".to_owned());
             gate.command = has_cmd.then(|| "build_check".to_owned());
@@ -969,14 +702,13 @@ mod tests {
                 })],
             };
             let input = VerifyInput {
-                node_cursor: NodeCursor::task(t1.clone(), vec![contract_gate.clone()]),
+                node_cursor: NodeCursor::task(t1.clone(), vec![build_gate.clone()]),
                 worker_id: Some(WorkerId::new("w1").expect("worker_id")),
                 claim_revision: Some(1),
                 test_target: None,
                 command_id: has_cmd.then(|| "build_check".to_owned()),
                 command_line: has_cmd.then(|| "cargo test".to_owned()),
                 resolved_commands: Vec::new(),
-                output_spec: json!({}),
                 action_id: Some("http.deploy".to_owned()),
                 index_generation: None,
                 live_files_digest: None,
@@ -987,13 +719,6 @@ mod tests {
                     aborted: false,
                     exit_code,
                     stderr_tail: String::new(),
-                    compile_error_count: 0,
-                    tests_passed: 1,
-                    tests_failed: 0,
-                    tests_ignored: 0,
-                    passed_tests: Vec::new(),
-                    failed_tests: Vec::new(),
-                    ignored_tests: Vec::new(),
                     check_results,
                     action_outcome,
                     candidate_tree_before: tree_oid.clone(),
@@ -1005,5 +730,51 @@ mod tests {
             assert_eq!(eval.outcome.is_ok(), exp_pass, "call_case[{idx}]: {:?}", eval.outcome);
             assert_eq!(eval.trace_finish.status, exp_trace, "call_case[{idx}]");
         }
+
+        // Custom state_db/code_db overrides and APFS case-variant protected_paths in detect_scope_violations.
+        let custom_policy = acdd_core::path_policy::WorkspacePathPolicy::new(
+            Vec::<String>::new(),
+            "var/custom-state.sqlite",
+            "var/custom-code.sqlite",
+        );
+        let mut custom_profile = MachineProfileInput {
+            profile_id: "code".to_owned(),
+            profile_json: "{}".to_owned(),
+            git: MachineGitPolicy::default(),
+            default_save: SaveAction::Commit,
+            protected_paths: vec!["Cargo.toml".to_owned()],
+            tags: BTreeSet::from(["default".to_owned()]),
+            proof_schemas: BTreeMap::new(),
+            gates: Vec::new(),
+        };
+        let scope = vec!["**".to_owned()];
+        for &(changed, unscoped_root, expect_violation) in &[
+            ("var/custom-state.sqlite", false, true),
+            ("var/custom-state.sqlite-wal", false, true),
+            ("VAR/CUSTOM-CODE.SQLITE", false, true),
+            ("CARGO.TOML", false, true),
+            ("CARGO.TOML", true, true),
+            ("var/allowed.rs", false, false),
+            ("var/allowed.rs", true, false),
+        ] {
+            let custom_obs = ValidatedObservations {
+                changed_paths: vec![changed.to_owned()],
+                path_policy: Some(custom_policy.clone()),
+                ..ValidatedObservations::default()
+            };
+            let v = super::detect_scope_violations(
+                &snapshot,
+                &custom_profile,
+                &custom_obs,
+                &scope,
+                unscoped_root,
+            );
+            assert_eq!(
+                !v.is_empty(),
+                expect_violation,
+                "detect_scope_violations({changed:?}, unscoped={unscoped_root})"
+            );
+        }
+        custom_profile.protected_paths.clear();
     }
 }
