@@ -6,6 +6,7 @@ use serde_json::{Map, Value};
 mod coordination;
 mod discovery;
 pub(crate) mod lifecycle;
+mod roadmap;
 mod traversal;
 pub use coordination::{render_blackboard_markdown, render_plugin_tool_markdown};
 pub use discovery::{file_uri_for_path, DiscoveryKind};

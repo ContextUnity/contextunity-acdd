@@ -608,7 +608,8 @@ use acdd_state::types::{
 };
 use acdd_state::usecases::{
     BlackboardPostReq, BlackboardReadReq, CallPluginToolReq, CallPluginToolResp, ClaimReq,
-    ClearReq, ContextReq, DraftReq, ExtendScopeReq, ListReq, NextReq, ReopenReq, RunReq, ShowReq, StartReq,
+    ClearReq, ContextReq, DraftReq, ExtendScopeReq, ListReq, NextReq, ReopenReq, RoadmapReq,
+    RunReq, ShowReq, StartReq,
     StateCommand, StateCommandOutput, StateQuery, StatusReq, SubmitReq, SubtaskReq, SyncReq,
     VerifyReq,
 };
@@ -772,6 +773,23 @@ pub enum Command {
         /// Optional maximum number of ready cursors.
         #[arg(long)]
         limit: Option<usize>,
+    },
+    /// Cross-collection roadmap: in-progress runs, dependency waves, and task drill-down (read-only).
+    Roadmap {
+        /// Optional spec ID filter / drill-down selector.
+        spec_id: Option<String>,
+        /// Optional spec collection display filter.
+        #[arg(long)]
+        collection: Option<String>,
+        /// Show only Wave 0 ready specs.
+        #[arg(long)]
+        ready: bool,
+        /// Show only in-progress specs (active runs).
+        #[arg(long)]
+        active: bool,
+        /// Include intra-spec task drill-down.
+        #[arg(long)]
+        tasks: bool,
     },
     /// Claim or re-claim a ready/active node and materialize budgeted claim context.
     Claim {
@@ -1326,6 +1344,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         | Command::Show { .. }
         | Command::Next { .. }
         | Command::Context { .. }
+        | Command::Roadmap { .. }
         | Command::ExtendScope { .. }
         | Command::Reopen { .. }
         | Command::Sync { .. }
@@ -1946,6 +1965,23 @@ impl Cli {
                 Command::Next { run, limit } => {
                     state_ctx.query(&root, StateQuery::Next(NextReq { run, limit }))?
                 }
+                Command::Roadmap {
+                    spec_id,
+                    collection,
+                    ready,
+                    active,
+                    tasks,
+                } => state_ctx.query(
+                    &root,
+                    StateQuery::Roadmap(RoadmapReq {
+                        spec_id,
+                        collection,
+                        ready_only: ready,
+                        active_only: active,
+                        include_tasks: tasks,
+                        ..Default::default()
+                    }),
+                )?,
                 Command::Claim {
                     node,
                     run,
@@ -2925,6 +2961,10 @@ impl CliStateCtx<'_> {
 
     fn query(&self, worktree: &Path, query: StateQuery) -> Result<(Value, Option<String>)> {
         let providers = build_domain_providers(self.root, self.adapter, self.code_db, Vec::new())?;
+        let roadmap_detail = matches!(
+            &query,
+            StateQuery::Roadmap(req) if req.spec_id.is_some()
+        );
         let res = execute_state_query(
             self.root,
             worktree,
@@ -2938,7 +2978,7 @@ impl CliStateCtx<'_> {
             &res,
             self.output_format,
             self.adapter.debug,
-            || format::render_state_query_markdown(&res, self.title),
+            || format::render_state_query_markdown(&res, self.title, roadmap_detail),
         )
     }
 }
@@ -2992,6 +3032,8 @@ mod tests {
             vec!["acdd", "list"],
             vec!["acdd", "show", "--run", "m1"],
             vec!["acdd", "next", "--run", "m1"],
+            vec!["acdd", "roadmap"],
+            vec!["acdd", "roadmap", "--format", "json"],
             vec!["acdd", "claim", "t1.build", "--run", "m1", "--worker", "w1"],
             vec!["acdd", "verify", "t1.build", "--run", "m1"],
             vec!["acdd", "submit", "t1.build", "--run", "m1", "--action", "pass"],

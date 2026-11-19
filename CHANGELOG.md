@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- **`acdd roadmap` CLI and MCP parity**: Read-only `acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]` delegates to `StateQuery::Roadmap` via `execute_state_query`, renders compact Markdown through `src/format/roadmap.rs`, and exposes `acdd_state(action: "roadmap")` with matching JSON output.
+
 ## [0.6.2] - 2026-11-18
 
 This release streamlines the execution lifecycle onto `blueprint_synthesis -> tasks: build -> review -> deliver -> verify -> integration_review -> handoff`, embeds mandatory graph-hygiene checks (`dead_tails`, `duplicates`) and ACDD MCP tool rules into the `code` profile, unifies MCP DTO schemas via `schemars`, compresses Markdown formatting, isolates `RunHarness` behind `test-support`, and modernizes the `benchmarks/` suite.

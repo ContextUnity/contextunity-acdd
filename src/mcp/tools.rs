@@ -20,7 +20,8 @@ use acdd_state::types::{
 };
 use acdd_state::usecases::{
     BlackboardPostReq, BlackboardReadReq, ClaimReq, ClearReq, DraftReq, ExtendScopeReq, ListReq,
-    NextReq, ObservabilityReq, ReopenReq, RunReq, ShowReq, ContextReq, StartReq, StateCommand,
+    ContextReq, NextReq, ObservabilityReq, ReopenReq, RoadmapReq, RunReq, ShowReq, StartReq,
+    StateCommand,
     StateCommandOutput, StateQuery, StateQueryOutput, StatusReq, SubmitReq, SubtaskReq, SyncReq,
     VerifyReq,
 };
@@ -331,7 +332,8 @@ fn build_state_command_from_input(
         | McpStateAction::Show
         | McpStateAction::Next
         | McpStateAction::Observability
-        | McpStateAction::Context => unreachable!("read-only actions route via StateQuery"),
+        | McpStateAction::Context
+        | McpStateAction::Roadmap => unreachable!("read-only actions route via StateQuery"),
     }
 }
 
@@ -366,6 +368,14 @@ fn build_state_query_from_input(p: StateInput) -> std::result::Result<StateQuery
             run,
             node: p.node,
             worker_id: p.worker_id,
+        })),
+        McpStateAction::Roadmap => Ok(StateQuery::Roadmap(RoadmapReq {
+            spec_id: p.spec_id,
+            collection: p.collection.clone(),
+            ready_only: p.ready_only.unwrap_or(false),
+            active_only: p.active_only.unwrap_or(false),
+            include_tasks: p.include_tasks.unwrap_or(false),
+            ..Default::default()
         })),
         _ => unreachable!("mutating actions route via StateCommand"),
     }
@@ -556,7 +566,7 @@ impl Server {
 #[tool_router]
 impl Server {
     #[tool(
-        description = "Execute a canonical state lifecycle command (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `clear`, `run`) or read-only state query (`status`, `list`, `show`, `next`, `context`, `observability`). Read-only actions operate over `SQLITE_OPEN_READ_ONLY` with zero database creation."
+        description = "Execute a canonical state lifecycle command (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `clear`, `run`) or read-only state query (`status`, `list`, `show`, `next`, `context`, `observability`, `roadmap`). Read-only actions operate over `SQLITE_OPEN_READ_ONLY` with zero database creation."
     )]
     async fn acdd_state(&self, Parameters(p): Parameters<StateInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
@@ -568,6 +578,10 @@ impl Server {
         self.run_state_blocking(format, "acdd_state", move |ctx| {
             if p.action.is_read_only() {
                 let query = build_state_query_from_input(p)?;
+                let roadmap_detail = matches!(
+                    &query,
+                    StateQuery::Roadmap(req) if req.spec_id.is_some()
+                );
                 let out = crate::state_bridge::execute_state_query(
                     ctx.workspace_root,
                     ctx.target_root,
@@ -577,7 +591,7 @@ impl Server {
                     ctx.providers,
                     query,
                 )?;
-                let md = crate::format::render_state_query_markdown(&out, "acdd_state");
+                let md = crate::format::render_state_query_markdown(&out, "acdd_state", roadmap_detail);
                 let val = out.into_untagged_json()?;
                 Ok((md, val))
             } else {
@@ -2207,6 +2221,7 @@ mod tests {
             ("acdd_state", serde_json::json!({"action": "next", "format": "json"})),
             ("acdd_state", serde_json::json!({"action": "observability", "format": "json"})),
             ("acdd_state", serde_json::json!({"action": "context", "format": "json"})),
+            ("acdd_state", serde_json::json!({"action": "roadmap", "format": "json"})),
             ("acdd_blackboard", serde_json::json!({"action": "read", "format": "json"})),
         ]
         .into_iter()

@@ -37,7 +37,14 @@ pub fn render_state_command_markdown(output: &StateCommandOutput, title: &str) -
 }
 
 /// Render a [`StateQueryOutput`] as readable Markdown (`ADR-0006`).
-pub fn render_state_query_markdown(output: &StateQueryOutput, title: &str) -> String {
+///
+/// For [`StateQueryOutput::Roadmap`], `roadmap_detail` must be `spec_id.is_some()` on the
+/// originating request (ignored for other variants).
+pub fn render_state_query_markdown(
+    output: &StateQueryOutput,
+    title: &str,
+    roadmap_detail: bool,
+) -> String {
     match output {
         StateQueryOutput::BlackboardRead(resp) => {
             let val = serde_json::json!({
@@ -55,6 +62,7 @@ pub fn render_state_query_markdown(output: &StateQueryOutput, title: &str) -> St
             None => super::render_serializable(&resp.snapshot, "Observability"),
         },
         StateQueryOutput::Context(claim) => render_claim_markdown(claim),
+        StateQueryOutput::Roadmap(resp) => super::roadmap::render_roadmap_markdown(resp, roadmap_detail),
         other => render_tagged_enum_markdown(other, title),
     }
 }

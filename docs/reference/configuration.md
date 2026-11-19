@@ -46,8 +46,10 @@ linked_workspaces:
 
 `roots` and `docs` are literal, relative directories or paths inside the
 workspace. `specs:` declares named specification collections (`milestones` and
-`plans` by default), each configuring `path`, optional explicit `profile` override,
-allowed `prefixes`, and numeric ID zero-padding `digits` (`1..=16`, default `3`).
+`plans` by default), each configuring `path` or `paths` (including confined globs),
+optional explicit `profile` override, allowed `prefixes`, and numeric ID zero-padding
+`digits` (`1..=16`, default `3`). `acdd roadmap` discovers specs across every
+configured collection for cross-collection dependency waves and drill-down.
 `specs.<name>.path` entries must be normalized relative paths that do not overlap
 by path components. `AdapterFile`, `LinkedWorkspaceConfig`, and `ScannerLimits`
 enforce `#[serde(deny_unknown_fields)]`, and `acdd_core::config::load_adapter`

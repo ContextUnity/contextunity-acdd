@@ -64,6 +64,12 @@ rendering (delegating `ClaimResp` prompt formatting to
 default, or structured JSON via `format: "json"` / `--format json`;
 see the [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
 
+Read-only **`StateQuery::Roadmap`** (`acdd roadmap`, `acdd_state(action: "roadmap")`)
+aggregates specs across configured `specs:` collections with active runs, dependency
+waves, critical-path ordering, scope-overlap markers, and optional per-spec task
+drill-down. Formatting lives in `src/format/roadmap.rs`; the query opens
+`.acdd/state.sqlite` read-only when present and does not create a missing database.
+
 ### One Unified `Run` + `GateProfile` Engine
 
 Under [ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md)
