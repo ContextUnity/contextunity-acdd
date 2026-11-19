@@ -55,18 +55,39 @@ pub struct WorktreeSpanContext {
     pub span_id: String,
 }
 
-/// Build the composite [`CompositeDomainProvider`] for the workspace (`code`, `docs`, and optional external providers).
+/// Resolve the effective `state.sqlite` path from workspace root, optional `--state-db` override, and [`Adapter`].
+pub fn resolve_effective_state_db(
+    root: &Path,
+    state_db: Option<&Path>,
+    config: &AcddConfig,
+) -> PathBuf {
+    let primary = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
+    acdd_core::config::resolve_effective_state_db_path(&primary, state_db, config)
+}
+
+/// Build the composite [`CompositeDomainProvider`] for the workspace (`code`, `docs`, and optional external providers)
+/// honoring an optional explicit `code_db` override.
 ///
 /// Built-in `code` and `docs` follow `config.modules.is_enabled(...)` (default-on unless disabled);
 /// external providers follow `config.modules.is_domain_enabled(id)` (default-off unless `modules.domains.<id>: true`).
-pub fn build_domain_providers_with_extra(
+pub fn build_domain_providers(
     root: &Path,
     config: &AcddConfig,
+    code_db: Option<&Path>,
     extra_providers: Vec<Arc<dyn DomainProvider>>,
 ) -> Result<Arc<CompositeDomainProvider>, StateError> {
+    let code_db_owned = acdd_core::config::resolve_custom_db_path(root, code_db);
     let mut providers: Vec<Arc<dyn DomainProvider>> = vec![
-        Arc::new(CodeDomainProvider::new(root.to_path_buf(), config.clone())),
-        Arc::new(DocsDomainProvider::new(root.to_path_buf(), config.clone())),
+        Arc::new(CodeDomainProvider::with_code_db(
+            root.to_path_buf(),
+            config.clone(),
+            code_db_owned.clone(),
+        )),
+        Arc::new(DocsDomainProvider::with_code_db(
+            root.to_path_buf(),
+            config.clone(),
+            code_db_owned,
+        )),
     ];
     providers.extend(extra_providers);
     let mut flags = BTreeMap::new();
@@ -82,41 +103,27 @@ pub fn build_domain_providers_with_extra(
     Ok(Arc::new(composite))
 }
 
-/// Build the composite [`CompositeDomainProvider`] for the workspace (`code`, `docs`, and module flags).
-pub fn build_domain_providers(
-    root: &Path,
-    config: &AcddConfig,
-) -> Result<Arc<CompositeDomainProvider>, StateError> {
-    build_domain_providers_with_extra(root, config, Vec::new())
-}
-
-/// Construct a [`StateEngineConfig`] from workspace root, active worktree, optional `--state-db`, and [`Adapter`].
+/// Construct a [`StateEngineConfig`] from workspace root, active worktree, optional `--state-db` / `--db` overrides, and [`Adapter`].
 pub fn state_engine_config(
     root: &Path,
     worktree: &Path,
     state_db: Option<&Path>,
+    code_db: Option<&Path>,
     config: &AcddConfig,
 ) -> StateEngineConfig {
     let primary = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
     let default_state_db = primary.join(".acdd/state.sqlite");
-    let state_db_override = match state_db {
-        Some(explicit) => Some(explicit.to_path_buf()),
-        None => {
-            let configured = config.resolve_state_db_path(&primary);
-            if configured == default_state_db {
-                None
-            } else {
-                Some(configured)
-            }
-        }
-    };
+    let state_db_override = acdd_core::config::resolve_custom_db_path(&primary, state_db).or_else(|| {
+        let configured = config.resolve_state_db_path(&primary);
+        (configured != default_state_db).then_some(configured)
+    });
     let linked_workspaces = config
         .linked_workspaces
         .iter()
         .map(|lw| (lw.name.clone(), lw.path.clone()))
         .collect();
     let code_db_path = (config.modules.is_enabled("code") || config.modules.is_enabled("docs"))
-        .then(|| acdd_core::config::resolve_code_db_path(&primary, None));
+        .then(|| acdd_core::config::resolve_code_db_path(&primary, code_db));
     StateEngineConfig {
         workspace_root: primary,
         worktree: worktree.to_path_buf(),
@@ -131,64 +138,71 @@ pub fn state_engine_config(
     }
 }
 
-/// Open a read/write [`StateEngine`] for the workspace.
-pub fn open_state_engine(
-    root: &Path,
-    state_db: Option<&Path>,
-    config: &AcddConfig,
-) -> Result<StateEngine, StateError> {
-    let providers = build_domain_providers(root, config)?;
-    let engine_cfg = state_engine_config(root, root, state_db, config);
-    StateEngine::open(engine_cfg, providers)
+pub(crate) fn unsupported_domain_action(
+    domain: &str,
+    action: &str,
+) -> anyhow::Result<acdd_core::ports::DomainActionResult> {
+    Err(StateError::new(
+        ErrorCode::DomainCapabilityUnavailable,
+        format!("{domain} domain does not expose action '{action}'"),
+    )
+    .into())
 }
 
-/// Open a strictly read-only, zero-create [`StateQueryEngine`] for the workspace.
-pub fn open_state_query_engine(
-    root: &Path,
-    state_db: Option<&Path>,
-    config: &AcddConfig,
-) -> Result<StateQueryEngine, StateError> {
-    let providers = build_domain_providers(root, config)?;
-    let engine_cfg = state_engine_config(root, root, state_db, config);
-    StateQueryEngine::open_read_only(engine_cfg, providers)
-}
-
-/// Execute a mutating [`StateCommand`] against the workspace state engine.
+/// Execute a mutating [`StateCommand`] against the workspace state engine using caller-supplied
+/// [`CompositeDomainProvider`] and optional `--state-db` / `--db` overrides.
 pub fn execute_state_command(
     root: &Path,
     worktree: &Path,
     state_db: Option<&Path>,
+    code_db: Option<&Path>,
     config: &AcddConfig,
+    providers: Arc<CompositeDomainProvider>,
     cmd: StateCommand,
 ) -> Result<StateCommandOutput, StateError> {
-    let providers = build_domain_providers(root, config)?;
-    let engine_cfg = state_engine_config(root, worktree, state_db, config);
+    let engine_cfg = state_engine_config(root, worktree, state_db, code_db, config);
     let engine = StateEngine::open(engine_cfg, providers)?;
     engine.execute(cmd)
 }
 
-/// Execute a read-only [`StateQuery`] against the workspace state query engine (`SQLITE_OPEN_READ_ONLY`).
+/// Execute a read-only [`StateQuery`] against the workspace state query engine (`SQLITE_OPEN_READ_ONLY`)
+/// using caller-supplied [`CompositeDomainProvider`] and optional `--state-db` / `--db` overrides.
 pub fn execute_state_query(
     root: &Path,
     worktree: &Path,
     state_db: Option<&Path>,
+    code_db: Option<&Path>,
     config: &AcddConfig,
+    providers: Arc<CompositeDomainProvider>,
     query: StateQuery,
 ) -> Result<StateQueryOutput, StateError> {
-    let providers = build_domain_providers(root, config)?;
-    let engine_cfg = state_engine_config(root, worktree, state_db, config);
+    let engine_cfg = state_engine_config(root, worktree, state_db, code_db, config);
     let engine = StateQueryEngine::open_read_only(engine_cfg, providers)?;
     engine.query(query)
 }
 
-pub(super) fn open_code_db_readonly(root: &Path, worktree: &Path) -> Option<Connection> {
+pub(super) fn open_code_db_readonly(
+    root: &Path,
+    worktree: &Path,
+    code_db: Option<&Path>,
+) -> Option<Connection> {
     let primary = primary_worktree_root(worktree)
         .or_else(|| primary_worktree_root(root))
         .unwrap_or_else(|| root.to_path_buf());
-    for candidate in [
-        worktree.join(".acdd/code-map.sqlite"),
-        primary.join(".acdd/code-map.sqlite"),
-    ] {
+    let wt_override: Option<PathBuf> = code_db.filter(|p| p.is_absolute()).and_then(|p| {
+        let canon = acdd_core::fs::canonicalize_macos_var(p);
+        canon
+            .strip_prefix(acdd_core::fs::canonicalize_macos_var(&primary))
+            .or_else(|_| canon.strip_prefix(acdd_core::fs::canonicalize_macos_var(root)))
+            .ok()
+            .map(Path::to_path_buf)
+    });
+    let wt_candidate = acdd_core::config::resolve_code_db_path(
+        worktree,
+        wt_override.as_deref().or(code_db),
+    );
+    let primary_candidate = acdd_core::config::resolve_code_db_path(&primary, code_db);
+    for candidate in [wt_candidate, primary_candidate] {
         if candidate.is_file() {
             if let Ok(conn) = open_raw_confined_readonly(&candidate) {
                 return Some(conn);
@@ -210,21 +224,9 @@ pub(super) fn combine_file_hashes(file_hashes: &BTreeMap<String, String>) -> Str
 }
 
 pub(super) fn budget_items(kind: &str, items: Vec<Value>, max_bytes: usize) -> Value {
-    budget_items_with_fields(kind, items, max_bytes, serde_json::Map::new())
-}
-
-pub(super) fn budget_items_with_fields(
-    kind: &str,
-    items: Vec<Value>,
-    max_bytes: usize,
-    extra_fields: serde_json::Map<String, Value>,
-) -> Value {
     let total = items.len();
     let mut envelope = serde_json::Map::new();
     envelope.insert("kind".to_owned(), json!(kind));
-    for (k, v) in extra_fields {
-        envelope.insert(k, v);
-    }
     envelope.insert("items".to_owned(), json!([]));
     envelope.insert("total".to_owned(), json!(total));
     envelope.insert("truncated".to_owned(), json!(false));
@@ -249,10 +251,12 @@ pub(super) fn budget_items_with_fields(
     Value::Object(envelope)
 }
 
-/// Resolve the active W3C span context (`trace_id`, `span_id`) for `worktree` in read-only mode.
+/// Resolve the active W3C span context (`trace_id`, `span_id`) for `worktree` in read-only mode,
+/// honoring an optional explicit `--state-db` override.
 pub fn resolve_worktree_span_context(
     root: &Path,
     worktree: &Path,
+    state_db: Option<&Path>,
     config: &AcddConfig,
 ) -> Result<Option<WorktreeSpanContext>, StateError> {
     if !config.modules.is_enabled("state") {
@@ -261,10 +265,9 @@ pub fn resolve_worktree_span_context(
             "state subsystem is disabled in modules:",
         ));
     }
-    let primary = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
-    let state_db = config.resolve_state_db_path(&primary);
+    let resolved_state_db = resolve_effective_state_db(root, state_db, config);
     let resolved = crate::engine::reader::resolve_worktree_active_run_node(
-        &state_db,
+        &resolved_state_db,
         worktree,
         &|n| n.status == NodeStatus::InProgress && n.active_span_id.is_some(),
     )?;

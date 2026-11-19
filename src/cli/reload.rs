@@ -435,11 +435,8 @@ mod tests {
         use super::executable_matches;
         use std::os::unix::fs::symlink;
 
-        let base = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("acdd_reload_exe_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let temp = acdd_core::fs::ScopedTempDir::create("acdd_reload_exe").unwrap();
+        let base = temp.path().canonicalize().unwrap();
         let real_dir = base.join("private_var/bin");
         let alias_dir = base.join("var_bin");
         std::fs::create_dir_all(&real_dir).unwrap();
@@ -502,7 +499,5 @@ mod tests {
             &canonical,
             device.map(|id| id.wrapping_add(1))
         ));
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -26,7 +26,7 @@ pub fn run_with_options(
         Ok(report) => report.adapter,
         Err(_) => Adapter::default(),
     };
-    let providers = build_domain_providers(root, &adapter)?;
+    let providers = build_domain_providers(root, &adapter, None, Vec::new())?;
     let resp: ValidateResp = match relative {
         Some(rel) => validate_document(root, rel, explicit_config, explicit_profile, &providers)?,
         None => validate_workspace(root, explicit_config, explicit_profile, &providers)?,

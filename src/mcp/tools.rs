@@ -1,4 +1,7 @@
-use super::{response, server::Server};
+use super::{
+    response,
+    server::{primary_workspace_root_for, Server},
+};
 use crate::{
     cli,
     format::{DiscoveryKind, OperationKind, OutputFormat},
@@ -9,17 +12,17 @@ use acdd_index::{
     scanner,
 };
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::ids::{NodeCursor, RunName, SubtaskRef, TaskRef, WorkerId};
+use acdd_core::ids::NodeCursor;
 use acdd_core::ports::{DomainToolDef, DomainToolOutput, DomainToolReq};
 use acdd_core::schema::AdditionalPropertiesDef;
 use acdd_state::types::{
-    BlackboardStatus, BlackboardTopic, IntegrateStrategy, RunStatus, SubtaskStatus,
+    BlackboardStatus, BlackboardTopic, RunStatus, SubtaskStatus,
 };
 use acdd_state::usecases::{
-    BlackboardPostReq, BlackboardReadReq, ClaimReq, ClearReq, DraftReq, ExtendScopeReq,
-    IntegrateReq, ListReq, NextReq, ObservabilityReq, ReopenReq, RollbackReq, RunReq, ShowReq,
-    StartReq, StateCommand, StateCommandOutput, StateQuery, StateQueryOutput, StatusReq, SubmitReq,
-    SubtaskReq, SyncReq, VerifyReq,
+    BlackboardPostReq, BlackboardReadReq, ClaimReq, ClearReq, DraftReq, ExtendScopeReq, ListReq,
+    NextReq, ObservabilityReq, ReopenReq, RunReq, ShowReq, StartReq, StateCommand,
+    StateCommandOutput, StateQuery, StateQueryOutput, StatusReq, SubmitReq, SubtaskReq, SyncReq,
+    VerifyReq,
 };
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -38,282 +41,32 @@ pub use inputs::{
     SearchSymbols, Selector, Snippet, StateInput, SubmitInput, Tests, VerifyInput, WorktreeInput,
 };
 
-fn allowed_fields_for_tool(tool_name: &str) -> &'static [&'static str] {
-    match tool_name {
-        "code_map_overview" => &[
-            "aspects",
-            "limit",
-            "offset",
-            "detail",
-            "generation",
-            "worktree",
-        ],
-        "code_map_inspect" => &[
-            "selector",
-            "symbol",
-            "path",
-            "file_path",
-            "show_doc",
-            "include_coverage",
-            "show_source",
-            "leading_lines",
-            "max_body_lines",
-            "source_offset",
-            "limit",
-            "offset",
-            "detail",
-            "generation",
-            "worktree",
-        ],
-        "acdd_read" => &[
-            "mode",
-            "start_line",
-            "end_line",
-            "lines",
-            "line_count",
-            "max_lines",
-            "file_path",
-            "query",
-            "pattern",
-            "regex",
-            "context",
-            "baseline",
-            "output_file",
-            "include_hints",
-            "selector",
-            "symbol",
-            "path",
-            "paths",
-            "show_source",
-            "leading_lines",
-            "max_body_lines",
-            "source_offset",
-            "limit",
-            "offset",
-            "detail",
-            "generation",
-            "worktree",
-        ],
-        "code_map_tests" => &[
-            "selector",
-            "path",
-            "direction",
-            "limit",
-            "offset",
-            "detail",
-            "generation",
-            "worktree",
-        ],
-        "code_map_impact" => &[
-            "selector",
-            "changes",
-            "path",
-            "direction",
-            "depth",
-            "mode",
-            "edge_types",
-            "limit",
-            "offset",
-            "detail",
-            "generation",
-            "worktree",
-        ],
-        "code_map_explain" => &[
-            "selector",
-            "path",
-            "direction",
-            "show_doc",
-            "include_coverage",
-            "show_source",
-            "leading_lines",
-            "max_body_lines",
-            "source_offset",
-            "limit",
-            "offset",
-            "detail",
-            "generation",
-            "worktree",
-        ],
-        "code_map_query" => &[
-            "operation",
-            "selector",
-            "sql",
-            "query",
-            "target",
-            "path",
-            "direction",
-            "include_coverage",
-            "depth",
-            "level",
-            "min_lines",
-            "limit",
-            "offset",
-            "detail",
-            "generation",
-            "worktree",
-        ],
-        "code_map_prove_removal" => &[
-            "selector",
-            "path",
-            "limit",
-            "offset",
-            "detail",
-            "generation",
-            "worktree",
-        ],
-        "code_map_search" => &[
-            "pattern",
-            "query",
-            "exact",
-            "kind",
-            "path",
-            "group_by_file",
-            "include_docs",
-            "include_preview",
-            "limit",
-            "offset",
-            "detail",
-            "generation",
-            "worktree",
-        ],
-        "ast_grep_search" => &[
-            "pattern",
-            "query",
-            "language",
-            "path",
-            "limit",
-            "offset",
-            "detail",
-            "generation",
-            "worktree",
-        ],
-        "search_docs" => &[
-            "query",
-            "pattern",
-            "doc_type",
-            "component",
-            "path",
-            "include_excerpt",
-            "limit",
-            "offset",
-            "detail",
-            "generation",
-            "worktree",
-        ],
-        "get_doc" => &[
-            "path_or_id",
-            "path",
-            "selector",
-            "section",
-            "limit",
-            "offset",
-            "detail",
-            "generation",
-            "worktree",
-        ],
-        "code_map_analyze" => &[
-            "target",
-            "path",
-            "selector",
-            "include_cycles",
-            "lint",
-            "limit",
-            "offset",
-            "detail",
-            "generation",
-            "worktree",
-        ],
-        "acdd_guide" => &["topic", "force", "worktree"],
-        "acdd_state" => &[
-            "action",
-            "run",
-            "node",
-            "spec_path",
-            "goal",
-            "run_name",
-            "profile",
-            "scope",
-            "target_base",
-            "create_worktree",
-            "in_place",
-            "worktree_path",
-            "collection",
-            "slug",
-            "prefix",
-            "title",
-            "paths",
-            "reason",
-            "worker_id",
-            "cascade",
-            "rebind_profile",
-            "task_ref",
-            "subtask_ref",
-            "status",
-            "subtask_status",
-            "evidence",
-            "target",
-            "strategy",
-            "allow_main",
-            "force",
-            "jobs",
-            "dry_run",
-            "workspace",
-            "include_tombstones",
-            "limit",
-            "offset",
-            "generation",
-            "include_prometheus",
-            "worktree",
-        ],
-        "acdd_claim" => &[
-            "run",
-            "node",
-            "worker_id",
-            "force",
-            "steal_remote",
-            "worktree",
-        ],
-        "acdd_verify" => &[
-            "run",
-            "node",
-            "worker_id",
-            "test_target",
-            "claim_revision",
-            "worktree",
-        ],
-        "acdd_submit" => &[
-            "run",
-            "node",
-            "action",
-            "worker_id",
-            "claim_revision",
-            "test_target",
-            "review_evidence",
-            "rejection_findings",
-            "custom_evidence",
-            "verified_invariants",
-            "summary",
-            "allow_main",
-            "worktree",
-        ],
-        "acdd_blackboard" => &[
-            "action",
-            "run",
-            "node",
-            "recipient_node",
-            "subtask_ref",
-            "gate",
-            "author",
-            "topic",
-            "status",
-            "payload",
-            "limit",
-            "offset",
-            "generation",
-            "worktree",
-        ],
-        _ => &[],
-    }
+fn allowed_fields_for_tool(tool_name: &str) -> &'static [String] {
+    static CACHE: std::sync::OnceLock<std::collections::HashMap<String, Vec<String>>> =
+        std::sync::OnceLock::new();
+    let map = CACHE.get_or_init(|| {
+        Server::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| {
+                let mut fields: Vec<String> = tool
+                    .input_schema
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .map(|props| {
+                        props
+                            .keys()
+                            .filter(|k| k.as_str() != "format")
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                fields.sort();
+                (tool.name.into_owned(), fields)
+            })
+            .collect()
+    });
+    map.get(tool_name).map_or(&[], Vec::as_slice)
 }
 
 fn rejected_selector_fields(
@@ -329,7 +82,7 @@ fn rejected_selector_fields(
     }
     arguments
         .keys()
-        .filter(|field| field.as_str() != "format" && !allowed.contains(&field.as_str()))
+        .filter(|field| field.as_str() != "format" && !allowed.iter().any(|a| a == field.as_str()))
         .take(16)
         .cloned()
         .collect()
@@ -439,25 +192,17 @@ fn rejected_arguments_error(
     response::rejected_arguments(fields, Some(message), Some(allowed), &suggestions)
 }
 
-fn require_field(value: Option<String>, field: &str, action: &str) -> Result<String, StateError> {
-    value
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| {
-            StateError::new(
-                ErrorCode::ProfileSchemaInvalid,
-                format!("'{field}' is required for action '{action}'"),
-            )
-        })
+fn require_present<T>(value: Option<T>, field: &str, action: &str) -> Result<T, StateError> {
+    value.ok_or_else(|| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("'{field}' is required for action '{action}'"),
+        )
+    })
 }
 
-fn primary_workspace_root_for(server_root: &Path, target_root: &Path) -> PathBuf {
-    acdd_core::git::primary_worktree_root(target_root)
-        .map(|p| acdd_core::fs::canonicalize_macos_var(&p))
-        .unwrap_or_else(|| {
-            acdd_core::git::primary_worktree_root(server_root)
-                .map(|p| acdd_core::fs::canonicalize_macos_var(&p))
-                .unwrap_or_else(|| acdd_core::fs::canonicalize_macos_var(server_root))
-        })
+fn require_field(value: Option<String>, field: &str, action: &str) -> Result<String, StateError> {
+    require_present(value.filter(|s| !s.trim().is_empty()), field, action)
 }
 
 fn plugin_tool_to_rmcp(full_name: String, def: DomainToolDef) -> anyhow::Result<Tool> {
@@ -496,23 +241,17 @@ fn build_state_command_from_input(
     let run = p.run;
     match p.action {
         McpStateAction::Start => {
-            let run_name = p
-                .run_name
-                .as_deref()
-                .map(RunName::from_str)
-                .transpose()?;
             let create_wt = p
                 .create_worktree
                 .unwrap_or_else(|| p.worktree.as_ref().and_then(WorktreeInput::as_flag).unwrap_or(false));
             let in_place = p.in_place.unwrap_or(false);
             let worktree_path = p
                 .worktree_path
-                .map(PathBuf::from)
                 .or(if in_place { None } else { explicit_worktree });
             Ok(StateCommand::Start(StartReq {
                 spec_path: p.spec_path,
                 goal: p.goal,
-                run_name,
+                run_name: p.run_name,
                 profile: p.profile,
                 scope: p.scope.unwrap_or_default(),
                 target_base: p.target_base,
@@ -542,17 +281,12 @@ fn build_state_command_from_input(
                 ));
             }
             let reason = require_field(p.reason, "reason", "extend_scope")?;
-            let worker_id = p
-                .worker_id
-                .as_deref()
-                .map(WorkerId::from_str)
-                .transpose()?;
             Ok(StateCommand::ExtendScope(ExtendScopeReq {
                 run,
                 node,
                 paths,
                 reason,
-                worker_id,
+                worker_id: p.worker_id,
             }))
         }
         McpStateAction::Reopen => {
@@ -569,9 +303,8 @@ fn build_state_command_from_input(
             rebind_profile: p.rebind_profile.unwrap_or(false),
         })),
         McpStateAction::Subtask => {
-            let task_ref = TaskRef::from_str(&require_field(p.task_ref, "task_ref", "subtask")?)?;
-            let subtask_ref =
-                SubtaskRef::from_str(&require_field(p.subtask_ref, "subtask_ref", "subtask")?)?;
+            let task_ref = require_present(p.task_ref, "task_ref", "subtask")?;
+            let subtask_ref = require_present(p.subtask_ref, "subtask_ref", "subtask")?;
             let status_raw = require_field(p.status.or(p.subtask_status), "status", "subtask")?;
             let status = SubtaskStatus::from_str(&status_raw)?;
             Ok(StateCommand::Subtask(SubtaskReq {
@@ -580,33 +313,6 @@ fn build_state_command_from_input(
                 subtask_ref,
                 status,
                 evidence: p.evidence,
-            }))
-        }
-        McpStateAction::Rollback => {
-            let target = require_field(p.target, "target", "rollback")?;
-            Ok(StateCommand::Rollback(RollbackReq {
-                run,
-                target,
-                node: p.node,
-                worktree: explicit_worktree,
-            }))
-        }
-        McpStateAction::Integrate => {
-            let task_ref = p
-                .task_ref
-                .as_deref()
-                .map(TaskRef::from_str)
-                .transpose()?;
-            let strategy = p
-                .strategy
-                .as_deref()
-                .map(IntegrateStrategy::from_str)
-                .transpose()?;
-            Ok(StateCommand::Integrate(IntegrateReq {
-                run,
-                task_ref,
-                strategy,
-                allow_main: p.allow_main.unwrap_or(false),
             }))
         }
         McpStateAction::Clear => Ok(StateCommand::Clear(ClearReq {
@@ -757,21 +463,24 @@ impl Server {
             ),
         }
     }
+}
 
+struct StateCallContext<'a> {
+    server: &'a Server,
+    workspace_root: &'a Path,
+    target_root: &'a Path,
+    state_db: Option<&'a Path>,
+    code_db: Option<&'a Path>,
+    adapter: &'a scanner::Adapter,
+    providers: std::sync::Arc<acdd_core::ports::CompositeDomainProvider>,
+}
+
+impl Server {
     async fn run_state_blocking(
         &self,
         output_format: OutputFormat,
         title: &'static str,
-        requested_worktree: Option<String>,
-        op: impl FnOnce(
-                &Server,
-                &Path,
-                &Path,
-                Option<&Path>,
-                &scanner::Adapter,
-            ) -> anyhow::Result<(String, Value)>
-            + Send
-            + 'static,
+        op: impl FnOnce(StateCallContext<'_>) -> anyhow::Result<(String, Value)> + Send + 'static,
     ) -> CallToolResult {
         let server = self.clone();
         match tokio::task::spawn_blocking(move || {
@@ -796,28 +505,33 @@ impl Server {
                     title,
                 );
             }
-            let (target_root, _) = match server
-                .resolve_target_root_and_db_with_adapter(requested_worktree.as_deref(), Some(&adapter))
-            {
-                Ok(pair) => pair,
+            let target_root = server.root.clone();
+            let workspace_root = server
+                .request_workspace_root()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| primary_workspace_root_for(&server.root, &target_root));
+            let state_db = server.state_db().map(Path::to_path_buf);
+            let code_db = Some(server.db.as_path());
+            let providers = match server.domain_providers_for(&workspace_root, code_db, &adapter) {
+                Ok(providers) => providers,
                 Err(err) => {
                     return response::state_result(
-                        Err(err),
+                        Err(err.into()),
                         &adapter.response,
                         output_format,
                         title,
                     );
                 }
             };
-            let workspace_root = primary_workspace_root_for(&server.root, &target_root);
-            let state_db = server.state_db().map(Path::to_path_buf);
-            let result = op(
-                &server,
-                &workspace_root,
-                &target_root,
-                state_db.as_deref(),
-                &adapter,
-            );
+            let result = op(StateCallContext {
+                server: &server,
+                workspace_root: &workspace_root,
+                target_root: &target_root,
+                state_db: state_db.as_deref(),
+                code_db,
+                adapter: &adapter,
+                providers,
+            });
             response::state_result(result, &adapter.response, output_format, title)
         })
         .await
@@ -836,51 +550,47 @@ impl Server {
 #[tool_router]
 impl Server {
     #[tool(
-        description = "Execute a canonical state lifecycle command (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `rollback`, `integrate`, `clear`, `run`) or read-only state query (`status`, `list`, `show`, `next`, `observability`). Read-only actions operate over `SQLITE_OPEN_READ_ONLY` with zero database creation."
+        description = "Execute a canonical state lifecycle command (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `clear`, `run`) or read-only state query (`status`, `list`, `show`, `next`, `observability`). Read-only actions operate over `SQLITE_OPEN_READ_ONLY` with zero database creation."
     )]
     async fn acdd_state(&self, Parameters(p): Parameters<StateInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
-        let requested_worktree = p
+        let explicit_wt_nonempty = p
             .worktree
             .as_ref()
             .and_then(WorktreeInput::as_selector)
-            .map(str::to_owned);
-        let explicit_wt_nonempty = requested_worktree
-            .as_deref()
             .is_some_and(|s| !s.trim().is_empty());
-        self.run_state_blocking(
-            format,
-            "acdd_state",
-            requested_worktree,
-            move |_server, workspace_root, target_root, state_db, adapter| {
-                if p.action.is_read_only() {
-                    let query = build_state_query_from_input(p)?;
-                    let out = crate::state_bridge::execute_state_query(
-                        workspace_root,
-                        target_root,
-                        state_db,
-                        adapter,
-                        query,
-                    )?;
-                    let md = crate::format::render_state_query_markdown(&out, "acdd_state");
-                    let val = out.into_untagged_json()?;
-                    Ok((md, val))
-                } else {
-                    let explicit = explicit_wt_nonempty.then(|| target_root.to_path_buf());
-                    let cmd = build_state_command_from_input(p, explicit)?;
-                    let out = crate::state_bridge::execute_state_command(
-                        workspace_root,
-                        target_root,
-                        state_db,
-                        adapter,
-                        cmd,
-                    )?;
-                    let md = crate::format::render_state_command_markdown(&out, "acdd_state");
-                    let val = out.into_untagged_json()?;
-                    Ok((md, val))
-                }
-            },
-        )
+        self.run_state_blocking(format, "acdd_state", move |ctx| {
+            if p.action.is_read_only() {
+                let query = build_state_query_from_input(p)?;
+                let out = crate::state_bridge::execute_state_query(
+                    ctx.workspace_root,
+                    ctx.target_root,
+                    ctx.state_db,
+                    ctx.code_db,
+                    ctx.adapter,
+                    ctx.providers,
+                    query,
+                )?;
+                let md = crate::format::render_state_query_markdown(&out, "acdd_state");
+                let val = out.into_untagged_json()?;
+                Ok((md, val))
+            } else {
+                let explicit = explicit_wt_nonempty.then(|| ctx.target_root.to_path_buf());
+                let cmd = build_state_command_from_input(p, explicit)?;
+                let out = crate::state_bridge::execute_state_command(
+                    ctx.workspace_root,
+                    ctx.target_root,
+                    ctx.state_db,
+                    ctx.code_db,
+                    ctx.adapter,
+                    ctx.providers,
+                    cmd,
+                )?;
+                let md = crate::format::render_state_command_markdown(&out, "acdd_state");
+                let val = out.into_untagged_json()?;
+                Ok((md, val))
+            }
+        })
         .await
     }
 
@@ -889,40 +599,33 @@ impl Server {
     )]
     async fn acdd_claim(&self, Parameters(p): Parameters<ClaimInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
-        let requested_worktree = p.worktree.clone();
-        let explicit_wt_nonempty = requested_worktree
-            .as_deref()
-            .is_some_and(|s| !s.trim().is_empty());
-        self.run_state_blocking(
-            format,
-            "acdd_claim",
-            requested_worktree,
-            move |server, workspace_root, target_root, state_db, adapter| {
-                let worker_id = WorkerId::from_str(&p.worker_id)?;
-                let req = ClaimReq {
-                    run: p.run,
-                    node: p.node,
-                    worker_id,
-                    session_fingerprint: server.session_fingerprint.clone(),
-                    force: p.force,
-                    steal_remote: p.steal_remote,
-                    worktree: explicit_wt_nonempty.then(|| target_root.to_path_buf()),
-                };
-                let out = crate::state_bridge::execute_state_command(
-                    workspace_root,
-                    target_root,
-                    state_db,
-                    adapter,
-                    StateCommand::Claim(req),
-                )?;
-                let StateCommandOutput::Claim(claim) = out else {
-                    unreachable!("Claim command always returns Claim output");
-                };
-                let md = crate::format::render_claim_markdown(&claim);
-                let val = serde_json::to_value(&claim)?;
-                Ok((md, val))
-            },
-        )
+        let explicit_wt_nonempty = p.worktree.as_deref().is_some_and(|s| !s.trim().is_empty());
+        self.run_state_blocking(format, "acdd_claim", move |ctx| {
+            let req = ClaimReq {
+                run: p.run,
+                node: p.node,
+                worker_id: p.worker_id,
+                session_fingerprint: ctx.server.session_fingerprint.clone(),
+                force: p.force,
+                steal_remote: p.steal_remote,
+                worktree: explicit_wt_nonempty.then(|| ctx.target_root.to_path_buf()),
+            };
+            let out = crate::state_bridge::execute_state_command(
+                ctx.workspace_root,
+                ctx.target_root,
+                ctx.state_db,
+                ctx.code_db,
+                ctx.adapter,
+                ctx.providers,
+                StateCommand::Claim(req),
+            )?;
+            let StateCommandOutput::Claim(claim) = out else {
+                unreachable!("Claim command always returns Claim output");
+            };
+            let md = crate::format::render_claim_markdown(&claim);
+            let val = serde_json::to_value(&claim)?;
+            Ok((md, val))
+        })
         .await
     }
 
@@ -931,43 +634,32 @@ impl Server {
     )]
     async fn acdd_verify(&self, Parameters(p): Parameters<VerifyInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
-        let requested_worktree = p.worktree.clone();
-        let explicit_wt_nonempty = requested_worktree
-            .as_deref()
-            .is_some_and(|s| !s.trim().is_empty());
-        self.run_state_blocking(
-            format,
-            "acdd_verify",
-            requested_worktree,
-            move |_server, workspace_root, target_root, state_db, adapter| {
-                let worker_id = p
-                    .worker_id
-                    .as_deref()
-                    .map(WorkerId::from_str)
-                    .transpose()?;
-                let req = VerifyReq {
-                    run: p.run,
-                    node: p.node,
-                    worker_id,
-                    test_target: p.test_target,
-                    claim_revision: p.claim_revision,
-                    worktree: explicit_wt_nonempty.then(|| target_root.to_path_buf()),
-                };
-                let out = crate::state_bridge::execute_state_command(
-                    workspace_root,
-                    target_root,
-                    state_db,
-                    adapter,
-                    StateCommand::Verify(req),
-                )?;
-                let StateCommandOutput::Verify(verify) = out else {
-                    unreachable!("Verify command always returns Verify output");
-                };
-                let md = crate::format::render_verify_markdown(&verify);
-                let val = serde_json::to_value(&verify)?;
-                Ok((md, val))
-            },
-        )
+        let explicit_wt_nonempty = p.worktree.as_deref().is_some_and(|s| !s.trim().is_empty());
+        self.run_state_blocking(format, "acdd_verify", move |ctx| {
+            let req = VerifyReq {
+                run: p.run,
+                node: p.node,
+                worker_id: p.worker_id,
+                test_target: p.test_target,
+                claim_revision: p.claim_revision,
+                worktree: explicit_wt_nonempty.then(|| ctx.target_root.to_path_buf()),
+            };
+            let out = crate::state_bridge::execute_state_command(
+                ctx.workspace_root,
+                ctx.target_root,
+                ctx.state_db,
+                ctx.code_db,
+                ctx.adapter,
+                ctx.providers,
+                StateCommand::Verify(req),
+            )?;
+            let StateCommandOutput::Verify(verify) = out else {
+                unreachable!("Verify command always returns Verify output");
+            };
+            let md = crate::format::render_verify_markdown(&verify);
+            let val = serde_json::to_value(&verify)?;
+            Ok((md, val))
+        })
         .await
     }
 
@@ -976,46 +668,39 @@ impl Server {
     )]
     async fn acdd_submit(&self, Parameters(p): Parameters<SubmitInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
-        let requested_worktree = p.worktree.clone();
-        let explicit_wt_nonempty = requested_worktree
-            .as_deref()
-            .is_some_and(|s| !s.trim().is_empty());
-        self.run_state_blocking(
-            format,
-            "acdd_submit",
-            requested_worktree,
-            move |_server, workspace_root, target_root, state_db, adapter| {
-                let worker_id = WorkerId::from_str(&p.worker_id)?;
-                let req = SubmitReq {
-                    run: p.run,
-                    node: p.node,
-                    action: p.action.into(),
-                    worker_id,
-                    claim_revision: p.claim_revision,
-                    test_target: p.test_target,
-                    review_evidence: p.review_evidence.map(Into::into),
-                    rejection_findings: p.rejection_findings.map(Into::into),
-                    custom_evidence: p.custom_evidence,
-                    verified_invariants: p.verified_invariants,
-                    summary: p.summary,
-                    allow_main: p.allow_main,
-                    worktree: explicit_wt_nonempty.then(|| target_root.to_path_buf()),
-                };
-                let out = crate::state_bridge::execute_state_command(
-                    workspace_root,
-                    target_root,
-                    state_db,
-                    adapter,
-                    StateCommand::Submit(Box::new(req)),
-                )?;
-                let StateCommandOutput::Submit(submit) = out else {
-                    unreachable!("Submit command always returns Submit output");
-                };
-                let md = crate::format::render_submit_markdown(&submit);
-                let val = serde_json::to_value(&submit)?;
-                Ok((md, val))
-            },
-        )
+        let explicit_wt_nonempty = p.worktree.as_deref().is_some_and(|s| !s.trim().is_empty());
+        self.run_state_blocking(format, "acdd_submit", move |ctx| {
+            let req = SubmitReq {
+                run: p.run,
+                node: p.node,
+                action: p.action,
+                worker_id: p.worker_id,
+                claim_revision: p.claim_revision,
+                test_target: p.test_target,
+                review_evidence: p.review_evidence,
+                rejection_findings: p.rejection_findings,
+                custom_evidence: p.custom_evidence,
+                verified_invariants: p.verified_invariants,
+                summary: p.summary,
+                allow_main: p.allow_main,
+                worktree: explicit_wt_nonempty.then(|| ctx.target_root.to_path_buf()),
+            };
+            let out = crate::state_bridge::execute_state_command(
+                ctx.workspace_root,
+                ctx.target_root,
+                ctx.state_db,
+                ctx.code_db,
+                ctx.adapter,
+                ctx.providers,
+                StateCommand::Submit(Box::new(req)),
+            )?;
+            let StateCommandOutput::Submit(submit) = out else {
+                unreachable!("Submit command always returns Submit output");
+            };
+            let md = crate::format::render_submit_markdown(&submit);
+            let val = serde_json::to_value(&submit)?;
+            Ok((md, val))
+        })
         .await
     }
 
@@ -1024,83 +709,76 @@ impl Server {
     )]
     async fn acdd_blackboard(&self, Parameters(p): Parameters<BlackboardInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
-        let requested_worktree = p.worktree.clone();
-        self.run_state_blocking(
-            format,
-            "acdd_blackboard",
-            requested_worktree,
-            move |_server, workspace_root, target_root, state_db, adapter| match p.action {
-                McpBlackboardAction::Read => {
-                    let topic = p
-                        .topic
-                        .as_deref()
-                        .map(BlackboardTopic::from_str)
-                        .transpose()?;
-                    let status = p
-                        .status
-                        .as_deref()
-                        .map(BlackboardStatus::from_str)
-                        .transpose()?;
-                    let req = BlackboardReadReq {
-                        run: p.run,
-                        node: p.node,
-                        recipient_node: p.recipient_node,
-                        topic,
-                        status,
-                        limit: p.limit,
-                        offset: p.offset.unwrap_or(0),
-                        generation: p.generation,
-                    };
-                    let out = crate::state_bridge::execute_state_query(
-                        workspace_root,
-                        target_root,
-                        state_db,
-                        adapter,
-                        StateQuery::BlackboardRead(req),
-                    )?;
-                    let StateQueryOutput::BlackboardRead(resp) = out else {
-                        unreachable!("BlackboardRead query always returns BlackboardRead output");
-                    };
-                    let val = serde_json::to_value(&resp)?;
-                    let md = crate::format::render_blackboard_markdown(&val, "acdd_blackboard");
-                    Ok((md, val))
-                }
-                McpBlackboardAction::Post => {
-                    let topic_str = require_field(p.topic, "topic", "post")?;
-                    let topic = BlackboardTopic::from_str(&topic_str)?;
-                    let payload = require_field(p.payload, "payload", "post")?;
-                    let author = p.author.unwrap_or_else(|| "mcp".to_owned());
-                    let subtask_ref = p
-                        .subtask_ref
-                        .as_deref()
-                        .map(SubtaskRef::from_str)
-                        .transpose()?;
-                    let req = BlackboardPostReq {
-                        run: p.run,
-                        node: p.node,
-                        recipient_node: p.recipient_node,
-                        subtask_ref,
-                        gate: p.gate,
-                        author,
-                        topic,
-                        payload,
-                    };
-                    let out = crate::state_bridge::execute_state_command(
-                        workspace_root,
-                        target_root,
-                        state_db,
-                        adapter,
-                        StateCommand::BlackboardPost(req),
-                    )?;
-                    let StateCommandOutput::BlackboardPost(resp) = out else {
-                        unreachable!("BlackboardPost command always returns BlackboardPost output");
-                    };
-                    let val = serde_json::to_value(&resp)?;
-                    let md = crate::format::render_blackboard_markdown(&val, "acdd_blackboard");
-                    Ok((md, val))
-                }
-            },
-        )
+        self.run_state_blocking(format, "acdd_blackboard", move |ctx| match p.action {
+            McpBlackboardAction::Read => {
+                let topic = p
+                    .topic
+                    .as_deref()
+                    .map(BlackboardTopic::from_str)
+                    .transpose()?;
+                let status = p
+                    .status
+                    .as_deref()
+                    .map(BlackboardStatus::from_str)
+                    .transpose()?;
+                let req = BlackboardReadReq {
+                    run: p.run,
+                    node: p.node,
+                    recipient_node: p.recipient_node,
+                    topic,
+                    status,
+                    limit: p.limit,
+                    offset: p.offset.unwrap_or(0),
+                    generation: p.generation,
+                };
+                let out = crate::state_bridge::execute_state_query(
+                    ctx.workspace_root,
+                    ctx.target_root,
+                    ctx.state_db,
+                    ctx.code_db,
+                    ctx.adapter,
+                    ctx.providers,
+                    StateQuery::BlackboardRead(req),
+                )?;
+                let StateQueryOutput::BlackboardRead(resp) = out else {
+                    unreachable!("BlackboardRead query always returns BlackboardRead output");
+                };
+                let val = serde_json::to_value(&resp)?;
+                let md = crate::format::render_blackboard_markdown(&val, "acdd_blackboard");
+                Ok((md, val))
+            }
+            McpBlackboardAction::Post => {
+                let topic_str = require_field(p.topic, "topic", "post")?;
+                let topic = BlackboardTopic::from_str(&topic_str)?;
+                let payload = require_field(p.payload, "payload", "post")?;
+                let author = p.author.unwrap_or_else(|| "mcp".to_owned());
+                let req = BlackboardPostReq {
+                    run: p.run,
+                    node: p.node,
+                    recipient_node: p.recipient_node,
+                    subtask_ref: p.subtask_ref,
+                    gate: p.gate,
+                    author,
+                    topic,
+                    payload,
+                };
+                let out = crate::state_bridge::execute_state_command(
+                    ctx.workspace_root,
+                    ctx.target_root,
+                    ctx.state_db,
+                    ctx.code_db,
+                    ctx.adapter,
+                    ctx.providers,
+                    StateCommand::BlackboardPost(req),
+                )?;
+                let StateCommandOutput::BlackboardPost(resp) = out else {
+                    unreachable!("BlackboardPost command always returns BlackboardPost output");
+                };
+                let val = serde_json::to_value(&resp)?;
+                let md = crate::format::render_blackboard_markdown(&val, "acdd_blackboard");
+                Ok((md, val))
+            }
+        })
         .await
     }
 
@@ -1204,7 +882,14 @@ impl Server {
                 let source = p.source(policy)?;
                 let read = |conn: Option<&rusqlite::Connection>| {
                     crate::engine::reader::acdd_read_tool(
-                        &server.root, adapter, &p.read, &page, &source, conn,
+                        &server.root,
+                        adapter,
+                        &p.read,
+                        &page,
+                        &source,
+                        conn,
+                        server.state_db(),
+                        Some(&server.db),
                     )
                 };
                 let structural = p.read.requires_index(adapter)?;
@@ -1387,7 +1072,7 @@ impl Server {
         .await
     }
     #[tool(
-        description = "Bounded graph operation or one read-only SELECT/WITH. untested lists production functions without direct indexed test callers; implementations lists indexed subclasses and implementors; duplicates lists duplicate functions/methods or identical files. unwired is not a dead-code proof."
+        description = "Bounded graph operation or one read-only SELECT/WITH. untested lists production functions without direct indexed test callers; implementations lists indexed subclasses and implementors; duplicates lists duplicate functions/methods or identical files; dead_tails detects phantom_tested prod functions (only reachable from tests), dead_tails (0 prod & 0 test reachability), and dangling_calls (unresolved internal crate/super/self references). unwired is not a dead-code proof."
     )]
     async fn code_map_query(&self, Parameters(p): Parameters<Query>) -> CallToolResult {
         let format = p.page.output_format();
@@ -1433,14 +1118,18 @@ impl Server {
                     if p.target.is_some()
                         && effective_op.trim() != "untested"
                         && effective_op.trim() != "duplicates"
+                        && effective_op.trim() != "dead_tails"
                     {
-                        anyhow::bail!("target is supported only for untested and duplicates");
+                        anyhow::bail!(
+                            "target is supported only for untested, duplicates, and dead_tails"
+                        );
                     }
                     if let Some(target) = p.target.as_deref() {
                         anyhow::ensure!(
                             p.selector.as_deref().is_none_or(|s| s == target)
+                                && p.query.as_deref().is_none_or(|s| s == target)
                                 && p.path.as_deref().is_none_or(|s| s == target),
-                            "target conflicts with selector or path"
+                            "target conflicts with selector, query, or path"
                         );
                     }
                     let mut result = if effective_op.trim() == "duplicates" {
@@ -1898,8 +1587,11 @@ impl ServerHandler for Server {
         let operation = operation_kind(&tool_name, request.arguments.as_ref());
         let rejected = rejected_selector_fields(&request.name, request.arguments.as_ref());
         if !rejected.is_empty() {
-            let allowed = allowed_fields_for_tool(&request.name);
-            return Ok(rejected_arguments_error(&request.name, &rejected, allowed).into());
+            let allowed: Vec<&str> = allowed_fields_for_tool(&request.name)
+                .iter()
+                .map(String::as_str)
+                .collect();
+            return Ok(rejected_arguments_error(&request.name, &rejected, &allowed).into());
         }
 
         let requested_worktree = request
@@ -1998,11 +1690,14 @@ impl ServerHandler for Server {
                 }
             }
             let is_static_route = Self::tool_router().has_route(&tool_name_prep);
+            let ws_root = primary_workspace_root_for(&server_prep.root, &target_root);
             // Lazily build CompositeDomainProvider only for dynamic plugin tools.
             let providers = if !is_static_route {
-                loaded_adapter
-                    .as_ref()
-                    .and_then(|a| server_prep.domain_providers(a).ok())
+                loaded_adapter.as_ref().and_then(|a| {
+                    server_prep
+                        .domain_providers_for(&ws_root, Some(&target_db), a)
+                        .ok()
+                })
             } else {
                 None
             };
@@ -2037,10 +1732,10 @@ impl ServerHandler for Server {
 
             let span_ctx = loaded_adapter.as_ref().and_then(|a| {
                 if a.modules.is_enabled("state") {
-                    let ws_root = primary_workspace_root_for(&server_prep.root, &target_root);
                     crate::state_bridge::resolve_worktree_span_context(
                         &ws_root,
                         &target_root,
+                        server_prep.state_db(),
                         a,
                     )
                     .ok()
@@ -2076,12 +1771,19 @@ impl ServerHandler for Server {
             .loaded_adapter
             .as_ref()
             .map_or(acdd_core::config::DEFAULT_RETAIN_TRACES, |a| a.retain_traces);
+        let span_state_db = prep.loaded_adapter.as_ref().map(|a| {
+            let ws_root = primary_workspace_root_for(&self.root, &prep.target_root);
+            crate::state_bridge::resolve_effective_state_db(&ws_root, self.state_db(), a)
+        });
         let mut span_guard = crate::telemetry::SpanGuard::from_worktree_context(
             &prep.target_root,
             prep.span_ctx.as_ref(),
             &tool_name,
             retain_traces,
         );
+        if let Some(state_db) = span_state_db {
+            span_guard = span_guard.with_state_db(state_db);
+        }
         span_guard.set_attribute("mcp.tool", serde_json::json!(tool_name.as_ref()));
         span_guard.set_attribute(
             "mcp.worktree",
@@ -2173,7 +1875,15 @@ impl ServerHandler for Server {
                     };
                     Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into())
                 }
-                Ok(Err(err)) => Err(rmcp::ErrorData::internal_error(err.to_string(), None)),
+                Ok(Err(err)) => Ok(response::result_for(
+                    Err(err),
+                    policy,
+                    output_format,
+                    operation,
+                    &tool_name,
+                    None,
+                )
+                .into()),
                 Err(join_err) => Err(rmcp::ErrorData::internal_error(
                     format!("plugin tool blocking task failed: {join_err}"),
                     None,
@@ -2260,29 +1970,6 @@ mod tests {
     use rmcp::service::{serve_directly, Peer, RequestContext, RoleServer};
     use std::collections::BTreeSet;
     use std::sync::Arc;
-
-    struct TempDirGuard(PathBuf);
-    impl TempDirGuard {
-        fn new(label: &str) -> Self {
-            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let dir = std::env::temp_dir().join(format!(
-                "acdd-mcp-tools-{label}-{}-{seq}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-    impl Drop for TempDirGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     struct MockHttpProvider;
     impl DomainProvider for MockHttpProvider {
@@ -2377,7 +2064,7 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_19_builtin_tools_and_plugin_tool_contract() {
-        let ws = TempDirGuard::new("19tools");
+        let ws = acdd_core::fs::ScopedTempDir::create("acdd-mcp-tools-19tools").unwrap();
         std::fs::write(
             ws.path().join("acdd.yaml"),
             "roots: [.]\nmodules:\n  domains:\n    http: true\n",
@@ -2496,7 +2183,7 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_modules_isolation_and_readonly_state_queries() {
-        let ws = TempDirGuard::new("modules");
+        let ws = acdd_core::fs::ScopedTempDir::create("acdd-mcp-tools-modules").unwrap();
         std::fs::write(
             ws.path().join("acdd.yaml"),
             "roots: [.]\nmodules:\n  domains:\n    http: true\n",
@@ -2587,7 +2274,7 @@ mod tests {
         ];
 
         for (idx, case) in cases.iter().enumerate() {
-            let sub_ws = TempDirGuard::new(&format!("mod-{idx}"));
+            let sub_ws = acdd_core::fs::ScopedTempDir::create(&format!("acdd-mcp-tools-mod-{idx}")).unwrap();
             std::fs::write(sub_ws.path().join("acdd.yaml"), case.yaml).unwrap();
             let s = Server::new(
                 sub_ws.path().to_path_buf(),

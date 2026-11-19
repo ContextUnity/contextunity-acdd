@@ -1,8 +1,11 @@
 use crate::format::OutputFormat;
+use acdd_core::ids::{RunName, SubtaskRef, TaskRef, WorkerId};
 use acdd_core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions};
+use acdd_state::types::{RejectionFindings, ReviewEvidence, SubmitAction};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
+use std::path::PathBuf;
 
 fn yes() -> bool {
     true
@@ -115,6 +118,50 @@ pub struct Selector {
     /// The page value.
     pub page: PageInput,
 }
+#[derive(Default, Deserialize, JsonSchema)]
+/// Shared source preview and continuation options.
+pub struct SourceInput {
+    /// Optional show source value.
+    pub show_source: Option<bool>,
+    /// Optional leading lines value.
+    pub leading_lines: Option<usize>,
+    /// Optional source body line limit; values clamp to 1..=500, omitted uses the configured default (200 by default).
+    pub max_body_lines: Option<usize>,
+    /// Body line offset returned by a previous source page. Nonzero offsets require that page's generation explicitly.
+    #[serde(default)]
+    pub source_offset: usize,
+}
+
+impl SourceInput {
+    pub(super) fn resolve_with(
+        &self,
+        policy: &ResponsePolicy,
+        generation: Option<&str>,
+        required: Option<bool>,
+    ) -> anyhow::Result<SourceOptions> {
+        let source = match required {
+            Some(req) => SourceOptions::resolve(
+                policy,
+                if req { Some(true) } else { self.show_source },
+                self.leading_lines,
+                self.max_body_lines,
+                self.source_offset,
+            )?,
+            None => SourceOptions::resolve_full_symbol(
+                policy,
+                self.leading_lines,
+                self.max_body_lines,
+                self.source_offset,
+            )?,
+        };
+        anyhow::ensure!(
+            source.has_valid_paging_anchor(generation),
+            "source continuation requires generation from the previous preview; pass the previous page's generation or restart at source_offset=0"
+        );
+        Ok(source)
+    }
+}
+
 #[derive(Deserialize, JsonSchema)]
 /// Represents inspect data.
 pub struct Inspect {
@@ -133,15 +180,9 @@ pub struct Inspect {
     /// Include paged resolution coverage in addition to the compact summary.
     #[serde(default)]
     pub include_coverage: bool,
-    /// Optional show source value.
-    pub show_source: Option<bool>,
-    /// Optional leading lines value.
-    pub leading_lines: Option<usize>,
-    /// Optional source body line limit; values clamp to 1..=500, omitted uses the configured default (200 by default).
-    pub max_body_lines: Option<usize>,
-    /// Body line offset returned by a previous source page. Nonzero offsets require that page's generation explicitly.
-    #[serde(default)]
-    pub source_offset: usize,
+    #[serde(flatten)]
+    /// Source preview and continuation options.
+    pub source_input: SourceInput,
     #[serde(flatten)]
     /// The page value.
     pub page: PageInput,
@@ -165,15 +206,8 @@ impl Inspect {
         policy: &ResponsePolicy,
         required: bool,
     ) -> anyhow::Result<SourceOptions> {
-        source_options(
-            policy,
-            self.show_source,
-            self.leading_lines,
-            self.max_body_lines,
-            self.source_offset,
-            self.page.generation.as_deref(),
-            required,
-        )
+        self.source_input
+            .resolve_with(policy, self.page.generation.as_deref(), Some(required))
     }
 }
 
@@ -203,15 +237,9 @@ pub struct Snippet {
     pub max_lines: Option<usize>,
     /// Alias for pattern search.
     pub query: Option<String>,
-    /// Optional show source value.
-    pub show_source: Option<bool>,
-    /// Optional leading lines value.
-    pub leading_lines: Option<usize>,
-    /// Optional smaller source body line limit; omitted requests the complete symbol within the response byte budget.
-    pub max_body_lines: Option<usize>,
-    /// Body line offset returned by a previous source page. Nonzero offsets require that page's generation explicitly.
-    #[serde(default)]
-    pub source_offset: usize,
+    #[serde(flatten)]
+    /// Source preview and continuation options.
+    pub source_input: SourceInput,
     #[serde(flatten)]
     /// The page value.
     pub page: PageInput,
@@ -310,42 +338,11 @@ impl Snippet {
     }
 
     pub(super) fn source(&self, policy: &ResponsePolicy) -> anyhow::Result<SourceOptions> {
-        let source = SourceOptions::resolve_full_symbol(
-            policy,
-            self.leading_lines,
-            self.max_body_lines,
-            self.source_offset,
-        )?;
-        anyhow::ensure!(
-            source.has_valid_paging_anchor(self.page.generation.as_deref()),
-            "source continuation requires generation from the previous preview; pass the previous page's generation or restart at source_offset=0"
-        );
-        Ok(source)
+        self.source_input
+            .resolve_with(policy, self.page.generation.as_deref(), None)
     }
 }
 
-fn source_options(
-    policy: &ResponsePolicy,
-    show_source: Option<bool>,
-    leading_lines: Option<usize>,
-    max_body_lines: Option<usize>,
-    source_offset: usize,
-    generation: Option<&str>,
-    required: bool,
-) -> anyhow::Result<SourceOptions> {
-    let source = SourceOptions::resolve(
-        policy,
-        if required { Some(true) } else { show_source },
-        leading_lines,
-        max_body_lines,
-        source_offset,
-    )?;
-    anyhow::ensure!(
-        source.has_valid_paging_anchor(generation),
-        "source continuation requires generation from the previous preview; pass the previous page's generation or restart at source_offset=0"
-    );
-    Ok(source)
-}
 #[derive(Deserialize, JsonSchema)]
 /// Represents explain data.
 pub struct Explain {
@@ -361,15 +358,9 @@ pub struct Explain {
     /// Include paged resolution coverage in addition to the compact summary.
     #[serde(default)]
     pub include_coverage: bool,
-    /// Optional show source value.
-    pub show_source: Option<bool>,
-    /// Optional leading lines value.
-    pub leading_lines: Option<usize>,
-    /// Optional source body line limit; values clamp to 1..=500, omitted uses the configured default (200 by default).
-    pub max_body_lines: Option<usize>,
-    /// Body line offset returned by a previous source page. Nonzero offsets require that page's generation explicitly.
-    #[serde(default)]
-    pub source_offset: usize,
+    #[serde(flatten)]
+    /// Source preview and continuation options.
+    pub source_input: SourceInput,
     #[serde(flatten)]
     /// The page value.
     pub page: PageInput,
@@ -380,15 +371,8 @@ impl Explain {
         policy: &ResponsePolicy,
         required: bool,
     ) -> anyhow::Result<SourceOptions> {
-        source_options(
-            policy,
-            self.show_source,
-            self.leading_lines,
-            self.max_body_lines,
-            self.source_offset,
-            self.page.generation.as_deref(),
-            required,
-        )
+        self.source_input
+            .resolve_with(policy, self.page.generation.as_deref(), Some(required))
     }
 }
 #[derive(Deserialize, JsonSchema)]
@@ -465,7 +449,7 @@ pub struct Impact {
 /// Bounded graph or read-only SQL query. SQL uses the compact canonical tables;
 /// join nodes to path_dictionary on path_id and edges to nodes on node_hash.
 pub struct Query {
-    /// Query operation: 'sql' (default when 'sql' is provided), 'untested', 'implementations', 'slice', 'unwired', or 'duplicates'.
+    /// Query operation: 'sql' (default when 'sql' is provided), 'untested', 'implementations', 'slice', 'unwired', 'duplicates', or 'dead_tails'.
     #[serde(default)]
     pub operation: String,
     /// Exact symbol ID or name (path:name, path:known_kind:name, path:line, path#Lline), or the read-only SELECT/WITH SQL statement when operation='sql'.
@@ -477,7 +461,7 @@ pub struct Query {
     pub sql: Option<String>,
     /// Alias for selector (or SQL query when operation='sql').
     pub query: Option<String>,
-    /// File or directory scope for untested and duplicates operations; cannot conflict with selector or path.
+    /// File or directory scope for untested, duplicates, and dead_tails operations; cannot conflict with selector or path.
     pub target: Option<String>,
     /// Duplicate search granularity for duplicates operation: 'symbol' (default) or 'file'.
     pub level: Option<String>,
@@ -674,10 +658,6 @@ pub enum McpStateAction {
     Sync,
     /// Update a subtask's status and mandatory terminal evidence (`StateCommand::Subtask`).
     Subtask,
-    /// Confined-restore working-tree files from a commit ref, commit OID, or tree OID (`StateCommand::Rollback`).
-    Rollback,
-    /// Integrate completed task branches into the run worktree (`StateCommand::Integrate`).
-    Integrate,
     /// Clear/cancel an active `Run` into `run_tombstones` (`StateCommand::Clear`).
     Clear,
     /// Execute automated DAG waves (`StateCommand::Run`).
@@ -693,11 +673,11 @@ impl McpStateAction {
     }
 }
 
-/// Canonical `acdd_state` MCP tool input covering 10 `StateCommand` actions and 5 read-only `StateQuery` actions.
+/// Canonical `acdd_state` MCP tool input covering 8 `StateCommand` actions and 5 read-only `StateQuery` actions.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StateInput {
-    /// State action (`status`, `list`, `show`, `next`, `observability`, `start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `rollback`, `integrate`, `clear`, `run`).
+    /// State action (`status`, `list`, `show`, `next`, `observability`, `start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `clear`, `run`).
     pub action: McpStateAction,
     /// Optional run ID or run name selector.
     pub run: Option<String>,
@@ -708,7 +688,7 @@ pub struct StateInput {
     /// Ephemeral goal text materializing `.acdd/run/<run_id>/spec.md` (`start`).
     pub goal: Option<String>,
     /// Optional explicit run name override (`start`).
-    pub run_name: Option<String>,
+    pub run_name: Option<RunName>,
     /// Optional profile override (`start`, `draft`).
     pub profile: Option<String>,
     /// Optional initial scope globs for ephemeral `goal` runs (`start`).
@@ -720,7 +700,7 @@ pub struct StateInput {
     /// Force `in_place` isolation for this run (`start`).
     pub in_place: Option<bool>,
     /// Explicit worktree path override (`start`).
-    pub worktree_path: Option<String>,
+    pub worktree_path: Option<PathBuf>,
     /// Target spec collection key from `acdd.yaml` `specs:` (`draft`, e.g. `milestones`, `plans`).
     pub collection: Option<String>,
     /// URL/file slug for the drafted spec document (`draft`).
@@ -734,26 +714,22 @@ pub struct StateInput {
     /// Justification/cancellation reason (`extend_scope`, `reopen`, `clear`).
     pub reason: Option<String>,
     /// Optional worker identity check (`extend_scope`).
-    pub worker_id: Option<String>,
+    pub worker_id: Option<WorkerId>,
     /// Cascade-stale downstream dependent tasks (`reopen`).
     pub cascade: Option<bool>,
     /// Rebind non-completed gates against the latest resolved profile (`sync`).
     pub rebind_profile: Option<bool>,
-    /// Target task reference (`subtask`, `integrate`).
-    pub task_ref: Option<String>,
+    /// Target task reference (`subtask`).
+    pub task_ref: Option<TaskRef>,
     /// Target subtask reference (`subtask`).
-    pub subtask_ref: Option<String>,
+    pub subtask_ref: Option<SubtaskRef>,
     /// Status filter (`list`: `active | completed | cancelled`) or new subtask status (`subtask`: `pending | in_progress | completed | cancelled`).
     pub status: Option<String>,
     /// Alias for `status` on `subtask`.
     pub subtask_status: Option<String>,
     /// Required non-empty evidence when `subtask` status is `completed` or `cancelled`.
     pub evidence: Option<String>,
-    /// Commit ref, commit OID, or tree OID to restore (`rollback`).
-    pub target: Option<String>,
-    /// Integration strategy override (`integrate`: `manual | rebase-ff | ff-only | no-ff | squash`).
-    pub strategy: Option<String>,
-    /// Explicitly permit committing/integrating onto `main` / `master` (`integrate`, `run`).
+    /// Explicitly permit committing/integrating onto `main` / `master` (`run`).
     pub allow_main: Option<bool>,
     /// Force cleanup of dirty managed worktrees (`clear`).
     pub force: Option<bool>,
@@ -790,7 +766,7 @@ pub struct ClaimInput {
     /// Target node cursor (`<gate>`, `<task_ref>`, `<task_ref>.<gate>`), or omit to auto-select the next ready node.
     pub node: Option<String>,
     /// Claiming worker identity.
-    pub worker_id: String,
+    pub worker_id: WorkerId,
     /// Force take-over of an existing active claim.
     #[serde(default)]
     pub force: bool,
@@ -814,8 +790,8 @@ pub struct VerifyInput {
     /// Target node cursor (`<gate>`, `<task_ref>.<gate>`).
     pub node: String,
     /// Optional claiming worker identity check.
-    pub worker_id: Option<String>,
-    /// Optional `--test` filter target (required for `proof: contract`).
+    pub worker_id: Option<WorkerId>,
+    /// Optional `--test` filter target passed to `{test_filter}` and `code.seam`.
     pub test_target: Option<String>,
     /// Optional expected `claim_revision`.
     pub claim_revision: Option<u32>,
@@ -827,162 +803,6 @@ pub struct VerifyInput {
     pub format: Option<OutputFormat>,
 }
 
-/// Submission action (`pass` or `reject`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum McpSubmitAction {
-    /// Accept the gate and advance downstream transitions.
-    Pass,
-    /// Reject the gate with structured findings and route to `fail:`.
-    Reject,
-}
-
-impl From<McpSubmitAction> for acdd_state::types::SubmitAction {
-    fn from(value: McpSubmitAction) -> Self {
-        match value {
-            McpSubmitAction::Pass => Self::Pass,
-            McpSubmitAction::Reject => Self::Reject,
-        }
-    }
-}
-
-/// Finding severity level (`critical | high | medium | low`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum McpFindingSeverity {
-    Critical,
-    High,
-    Medium,
-    Low,
-}
-
-impl From<McpFindingSeverity> for acdd_state::types::FindingSeverity {
-    fn from(value: McpFindingSeverity) -> Self {
-        match value {
-            McpFindingSeverity::Critical => Self::Critical,
-            McpFindingSeverity::High => Self::High,
-            McpFindingSeverity::Medium => Self::Medium,
-            McpFindingSeverity::Low => Self::Low,
-        }
-    }
-}
-
-/// Structured review finding item required when rejecting a gate.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct McpFindingItem {
-    /// Severity level (`critical`, `high`, `medium`, `low`).
-    pub severity: McpFindingSeverity,
-    /// Optional repository-relative path affected by the finding.
-    pub path: Option<String>,
-    /// Concrete defect description.
-    pub message: String,
-    /// Actionable remediation required before re-submission.
-    pub remediation: String,
-}
-
-/// Classification of a gate rejection (`defect` or `architectural_drift`).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum McpRejectionKind {
-    /// Localized implementation or verification defect routed via `fail:`.
-    #[default]
-    Defect,
-    /// Structural/architectural mismatch routed via `fail_drift:` with builder context reset.
-    ArchitecturalDrift,
-}
-
-impl From<McpRejectionKind> for acdd_state::types::RejectionKind {
-    fn from(value: McpRejectionKind) -> Self {
-        match value {
-            McpRejectionKind::Defect => Self::Defect,
-            McpRejectionKind::ArchitecturalDrift => Self::ArchitecturalDrift,
-        }
-    }
-}
-
-/// Structured findings payload required for `acdd_submit(action: "reject")`.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct McpRejectionFindings {
-    /// Optional rejection classification (`defect` by default, or `architectural_drift`).
-    #[serde(default)]
-    pub kind: Option<McpRejectionKind>,
-    /// Concise summary of why the gate was rejected.
-    pub summary: String,
-    /// Optional blackboard message ID referencing the posted findings thread.
-    pub blackboard_message_id: Option<i64>,
-    /// One or more structured finding items.
-    pub items: Vec<McpFindingItem>,
-}
-
-impl From<McpRejectionFindings> for acdd_state::types::RejectionFindings {
-    fn from(value: McpRejectionFindings) -> Self {
-        Self {
-            kind: value.kind.map(Into::into).unwrap_or_default(),
-            summary: value.summary,
-            blackboard_message_id: value.blackboard_message_id,
-            items: value
-                .items
-                .into_iter()
-                .map(|item| acdd_state::types::FindingItem {
-                    severity: item.severity.into(),
-                    path: item.path,
-                    message: item.message,
-                    remediation: item.remediation,
-                })
-                .collect(),
-        }
-    }
-}
-
-/// Per-contour review attestation inside `review_evidence`.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct McpReviewContourResult {
-    /// Whether this contour applied to the reviewed diff/artifacts.
-    pub applicable: bool,
-    /// Concrete verification evidence (must be non-empty on `pass`).
-    pub evidence: String,
-}
-
-/// Typed evidence payload required for `proof: review` submissions.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct McpReviewEvidence {
-    /// Review outcome matching `action` (`pass` or `reject`).
-    pub decision: McpSubmitAction,
-    /// Map keyed 1:1 by the gate's declared `contours`.
-    pub contours: std::collections::BTreeMap<String, McpReviewContourResult>,
-    /// Concise review summary.
-    pub summary: String,
-    /// Optional non-blocking notes.
-    pub notes: Option<String>,
-}
-
-impl From<McpReviewEvidence> for acdd_state::types::ReviewEvidence {
-    fn from(value: McpReviewEvidence) -> Self {
-        Self {
-            decision: value.decision.into(),
-            contours: value
-                .contours
-                .into_iter()
-                .map(|(k, v)| {
-                    (
-                        k,
-                        acdd_state::types::ReviewContourResult {
-                            applicable: v.applicable,
-                            evidence: v.evidence,
-                        },
-                    )
-                })
-                .collect(),
-            summary: value.summary,
-            notes: value.notes,
-        }
-    }
-}
-
 /// Canonical `acdd_submit` MCP tool input (`StateCommand::Submit`).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -992,17 +812,17 @@ pub struct SubmitInput {
     /// Target node cursor (`<gate>`, `<task_ref>.<gate>`).
     pub node: String,
     /// Submission action (`pass` or `reject`).
-    pub action: McpSubmitAction,
+    pub action: SubmitAction,
     /// Submitting worker identity.
-    pub worker_id: String,
+    pub worker_id: WorkerId,
     /// Optional expected `claim_revision`.
     pub claim_revision: Option<u32>,
     /// Optional `--test` target forwarded if `submit` auto-triggers `verify`.
     pub test_target: Option<String>,
     /// Typed review evidence for `proof: review`.
-    pub review_evidence: Option<McpReviewEvidence>,
+    pub review_evidence: Option<ReviewEvidence>,
     /// Structured rejection findings required for `action: "reject"` (supports optional `kind`: `defect | architectural_drift`).
-    pub rejection_findings: Option<McpRejectionFindings>,
+    pub rejection_findings: Option<RejectionFindings>,
     /// Custom schema JSON evidence (`proof: blueprint` or custom `proofs:` schema).
     #[schemars(schema_with = "any_json_schema")]
     pub custom_evidence: Option<Value>,
@@ -1045,7 +865,7 @@ pub struct BlackboardInput {
     /// Optional target recipient node cursor (`read` filter or `post` target).
     pub recipient_node: Option<String>,
     /// Optional subtask reference (`post`).
-    pub subtask_ref: Option<String>,
+    pub subtask_ref: Option<SubtaskRef>,
     /// Optional gate label (`post`).
     pub gate: Option<String>,
     /// Author identity (`post`; defaults to `"mcp"` when omitted).

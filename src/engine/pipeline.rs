@@ -444,6 +444,18 @@ fn extract_typed_source_with_digest(
             .map(|(doc, _)| doc.clone())
             .collect::<Vec<_>>();
         let mut nodes = Vec::new();
+        let mut errors = Vec::new();
+        if let Some(err_msg) = parsed
+            .first()
+            .and_then(|(_, metadata)| metadata.get("frontmatter_error"))
+            .and_then(Value::as_str)
+        {
+            errors.push(acdd_index::models::Diagnostic {
+                path: file.path.clone(),
+                line: 1,
+                message: format!("invalid frontmatter: {err_msg}"),
+            });
+        }
         for (doc, metadata) in &parsed {
             let line = metadata["line"].as_u64().unwrap_or(1) as usize;
             let end_line = metadata["end_line"].as_u64().unwrap_or(line as u64) as usize;
@@ -502,6 +514,7 @@ fn extract_typed_source_with_digest(
         TypedFacts::from_public(Facts {
             docs: sections,
             nodes,
+            errors,
             ..Facts::default()
         })
     } else {
@@ -1475,7 +1488,14 @@ fn atomic_build(
             bail!("candidate database failed integrity check: {integrity}");
         }
         report["verify_ms"] = json!(verifying.elapsed().as_secs_f64() * 1000.);
-        cache::checkpoint(&streamed.connection, false)?;
+        cache::checkpoint(&streamed.connection, true)?;
+        let candidate_mode: String = streamed
+            .connection
+            .query_row("PRAGMA journal_mode=DELETE;", [], |r| r.get(0))?;
+        anyhow::ensure!(
+            candidate_mode.eq_ignore_ascii_case("delete"),
+            "candidate database failed to finalize in DELETE journal mode (got '{candidate_mode}')"
+        );
         streamed.connection.close().map_err(|(_, e)| e)?;
         if let Some(action) = test_hooks
             .as_ref()

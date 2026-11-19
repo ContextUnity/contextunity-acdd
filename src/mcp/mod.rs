@@ -1,5 +1,3 @@
-/// Implements metadata support.
-pub mod metadata;
 /// Implements response support.
 pub mod response;
 /// Implements server support.

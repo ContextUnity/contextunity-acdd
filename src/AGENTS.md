@@ -41,12 +41,12 @@ Crate-local instructions:
 
 - **`crates/acdd-core`**: Strict leaf crate owning decoded identifiers (`ids`), diagnostic codes (`errors`), normalized `WorkspacePathPolicy` predicates (`path_policy`), self-contained `SchemaDef` (`schema`), `DomainProvider` SPI (`ports`), workspace `Adapter` configuration (`config`, `subsystems`), response budgets (`response`), confined filesystem/Git/lock wrappers (`fs`, `git`, `lock`), hashing/JSON counting (`format`), cgroup memory calculation (`sys`), and telemetry wire DTOs (`telemetry`). See [crates/acdd-core/AGENTS.md](../crates/acdd-core/AGENTS.md).
 - **`crates/acdd-index`**: Tree-sitter AST fact extraction, language profiles, cross-file symbol linking, filesystem scanner, documentation parser, Merkle commitments (`commitments`), compact graph/fact encoding (`models`, `typed_facts`, `interner`), and `code-map.sqlite` persistence (`db`). See [crates/acdd-index/AGENTS.md](../crates/acdd-index/AGENTS.md).
-- **`crates/acdd-state`**: Domain-agnostic `GateProfile` (`version: 2`) parser/validator, `SpecDocument` parser, pure `machine/` transitions, `StateBackend` (`StateReader` / `StateTx`) persistence, `git_ops/`, `runner/`, `context`, `observability`, and `harness::RunHarness`. See [crates/acdd-state/AGENTS.md](../crates/acdd-state/AGENTS.md).
+- **`crates/acdd-state`**: Domain-agnostic `GateProfile` (`version: 2`) parser/validator, `SpecDocument` parser, pure `machine/` transitions, `StateBackend` (`StateReader` / `StateTx`) persistence, `git_ops/`, `runner/`, `context`, `observability`, and `#[cfg(any(test, feature = "test-support"))]`-gated `harness::RunHarness`. See [crates/acdd-state/AGENTS.md](../crates/acdd-state/AGENTS.md).
 - **`src/state_bridge`**: Host `CodeDomainProvider` (`code.seam`, `code.signature_scope`, `code.symbols`, `code.tests`, `code.external_callers`), `DocsDomainProvider` (`docs.links`, `docs.instructions`, `docs.adrs`, `docs.invariants`), and `StateEngine` / `StateQueryEngine` initialization. External `crates/acdd-domain-*` shim-crates follow an opt-in extension pattern (none shipped in-tree; see [domain extensions](../docs/architecture/domain-extensions.md)).
 - **`src/engine`**: Host indexing pipeline orchestration (`pipeline`) and layered file/symbol reader (`reader`).
 - **`src/format`**: Shared Markdown/JSON presentation and workspace-confined `file://` URI attachment ([ADR 0006](../docs/adr/0006-budgeted-gate-context-and-dual-surface-parity.md)).
 - **`src/mcp`**: JSON-RPC Model Context Protocol server (`19` static built-in tools plus registered `DomainProvider` plugin tools), input validation, and response byte-budget enforcement.
-- **`src/cli`**: Flat `0.6.0` command-line entry points (`31` commands: `init`, `start`, `draft`, `status`, `list`, `show`, `next`, `claim`, `verify`, `submit`, `extend-scope`, `reopen`, `sync`, `subtask`, `blackboard`, `rollback`, `integrate`, `clear`, `run`, `tool`, `read`, `validate`, `serve`, `reload`, `build`, `scan`, `delta`, `query`, `docs`, `ast`, `guide`).
+- **`src/cli`**: Flat `0.6.2` command-line entry points (`29` commands: `init`, `start`, `draft`, `status`, `list`, `show`, `next`, `claim`, `verify`, `submit`, `extend-scope`, `reopen`, `sync`, `subtask`, `blackboard`, `clear`, `run`, `tool`, `read`, `validate`, `serve`, `reload`, `build`, `scan`, `delta`, `query`, `docs`, `ast`, `guide`).
 
 ## 2. Balanced Modularity and Code Deduplication
 
@@ -91,7 +91,7 @@ Crate-local instructions:
 
 1. **Git Process Execution (`acdd_core::git`)**:
    - `acdd_core::git` (`crates/acdd-core/src/git.rs`) owns the low-level subprocess runner: env scrubbing (`scrub_git_env` / `STRIPPED_GIT_ENV_VARS`), working directory (`cwd`) binding, exit status checks, `primary_worktree_root`, `git_common_dir`, and stdout/raw capture (`run_git_*`, `git_command`, `git_stdout`, `git_status`). Raw `std::process::Command::new("git")` is strictly banned anywhere outside `crates/acdd-core/src/git.rs`.
-   - High-level Git workflows (candidate rollback, scoped commits, integration strategies, and worktree lifecycle) remain domain logic in `crates/acdd-state/src/git_ops/` (`snapshot.rs`, `commit.rs`, `integrate.rs`, `worktree.rs`).
+   - High-level Git workflows (tree snapshots, scoped plumbing commits, internal `rebase-ff` wave landing + `verify_tasks_integrated`, and worktree lifecycle) remain domain logic in `crates/acdd-state/src/git_ops/` (`snapshot.rs`, `commit.rs`, `integrate.rs`, `worktree.rs`).
 2. **Filesystem, Path Confinement & Brace-Aware Glob Matching (`acdd_core::fs` & `acdd_core::path_policy`)**:
    - `acdd_core::path_policy` owns `WorkspacePathPolicy` (`is_engine_managed`, `is_candidate_included`, `is_scope_admitted`, `is_agent_writable`, `from_workspace_config`) and the sole brace-aware glob/overlap engine (`expand_glob_braces`, `glob_matches`, `patterns_overlap`, `scopes_overlap`).
    - `acdd_core::fs` (`crates/acdd-core/src/fs.rs`) owns workspace path validation (`canonical_root`, `canonicalize_macos_var`, `checked_child`, `safe_relative`, `ensure_confined_dir_all`, `check_ancestors_no_symlinks`, `confined_database_open_path`), secure `atomic_write` (`0o600`/`0o755`), and `atomic_replace`.
@@ -135,6 +135,14 @@ Before delivering any source code change, verify the required gates from [TESTS.
    cargo clippy --workspace --all-targets --all-features -- -D warnings
    ```
 3. **Milestone Handoff Gate**: Run the workspace verification commands before handoff:
+   Cargo test & handoff gate:
    ```bash
    cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --lib && cargo test --workspace --all-targets
    ```
+
+## 7. Anti-Patterns (Do Not Introduce)
+
+- **No dead-code suppression or legacy module shims**: Ban `#![allow(dead_code, unused_imports)]` and legacy re-export shims (`pub(crate) mod core`, `pub(crate) mod engine`, `src/core/*`, `src/db/*`). Remove unused items rather than suppressing warnings.
+- **No mirror `Mcp*` clone structs**: Do not duplicate `acdd_core` / `acdd_state` DTOs as `Mcp*` clone structs with manual `From` converters in `src/mcp/tools/inputs.rs`; derive `schemars::JsonSchema` directly on canonical DTOs.
+- **No duplicate `ClaimResp`/status Markdown renderers**: Do not reimplement `ClaimResp` or status Markdown formatting in `src/format/`; delegate `ClaimResp` rendering to `acdd_state::context::render_claim_prompt_markdown` and reuse shared `src/format/` primitives.
+- **No `phantom_tested`, `dead_tails`, or `>= 10`-line clones**: Eliminate `phantom_tested` dead code, `dead_tails`, `dangling_calls`, and `>= 10`-line clones (`duplicates`) before submission, and use `tempfile::TempDir` instead of copy-pasted `TempDirDrop` test structs.

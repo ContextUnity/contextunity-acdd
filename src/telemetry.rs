@@ -1,19 +1,19 @@
 //! W3C Trace Context span correlation (`SpanGuard`), `traces.jsonl` persistence, and debug logging.
 
 use crate::state_bridge::WorktreeSpanContext;
-use acdd_core::fs::open_confined;
+use acdd_core::fs::{ensure_confined_dir_all, open_confined};
 use acdd_core::git::primary_worktree_root;
 use acdd_core::lock::acquire_exclusive;
 use acdd_core::telemetry::{now_utc_iso_ms, SpanId, TraceId, TraceParent};
 use acdd_state::git_ops::worktree::resolve_repo_layout;
-use chrono::Local;
+use acdd_state::store::sqlite::SqliteStateReader;
+use acdd_state::usecases::lifecycle::prune_old_run_trace_dirs;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime};
-use walkdir::WalkDir;
+use std::time::Instant;
 
 /// Default maximum total size (in MiB) across retained `.acdd/run/*` trace directories.
 pub const DEFAULT_MAX_RETAINED_TRACE_MIB: u64 = 128;
@@ -21,6 +21,7 @@ pub const DEFAULT_MAX_RETAINED_TRACE_MIB: u64 = 128;
 /// W3C Trace Context span guard recording bounded span events into `<primary_worktree>/.acdd/run/<run_id>/traces.jsonl`.
 pub struct SpanGuard {
     root: PathBuf,
+    state_db: Option<PathBuf>,
     context: Option<WorktreeSpanContext>,
     trace_id: TraceId,
     span_id: SpanId,
@@ -69,6 +70,7 @@ impl SpanGuard {
         let span_id = SpanId::new();
         Self {
             root: root.to_path_buf(),
+            state_db: None,
             context: ctx.cloned(),
             trace_id,
             span_id,
@@ -83,6 +85,12 @@ impl SpanGuard {
             debug_log: None,
             finished: false,
         }
+    }
+
+    /// Override the `state.sqlite` path queried when enforcing active-run-safe trace retention.
+    pub fn with_state_db(mut self, state_db: PathBuf) -> Self {
+        self.state_db = Some(state_db);
+        self
     }
 
     /// Override the maximum retained trace disk budget in MiB.
@@ -145,6 +153,7 @@ impl SpanGuard {
         self.finished = true;
         let span_payload = self.context.clone().map(|ctx| SpanFlushPayload {
             root: self.root.clone(),
+            state_db: self.state_db.clone(),
             ctx,
             trace_id: self.trace_id.to_string(),
             span_id: self.span_id.to_string(),
@@ -187,7 +196,8 @@ impl SpanGuard {
     }
 }
 
-struct PendingDebugLog {
+/// Prepared JSONL debug log line awaiting persistence.
+pub struct PendingDebugLog {
     root: PathBuf,
     date: String,
     line: String,
@@ -195,6 +205,7 @@ struct PendingDebugLog {
 
 struct SpanFlushPayload {
     root: PathBuf,
+    state_db: Option<PathBuf>,
     ctx: WorktreeSpanContext,
     trace_id: String,
     span_id: String,
@@ -216,6 +227,7 @@ fn flush_payload_sync(payload: SpanFlushPayload) {
         .map(|l| l.primary_worktree.clone())
         .or_else(|| primary_worktree_root(&payload.root))
         .unwrap_or_else(|| payload.root.clone());
+    let primary = primary.canonicalize().unwrap_or(primary);
     let lock_path = layout
         .as_ref()
         .map(|l| l.traces_lock_path.clone())
@@ -225,40 +237,41 @@ fn flush_payload_sync(payload: SpanFlushPayload) {
         return;
     };
 
-    let rel = Path::new(".acdd/run")
-        .join(payload.ctx.run_id.as_str())
-        .join("traces.jsonl");
-    if let Some(parent) = primary.join(&rel).parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-
-    let event = json!({
-        "kind": "span",
-        "trace_id": payload.trace_id,
-        "span_id": payload.span_id,
-        "parent_span_id": payload.parent_span_id,
-        "run_id": payload.ctx.run_id.as_str(),
-        "node_id": payload.ctx.node_id,
-        "operation": payload.operation,
-        "status": payload.status,
-        "started_at": payload.started_utc,
-        "finished_at": payload.finished_utc,
-        "duration_ms": payload.duration_ms,
-        "attributes": payload.attributes,
-    });
-    if let Ok(mut line) = serde_json::to_string(&event) {
-        line.push('\n');
-        if let Ok(mut file) = open_confined(
-            &primary,
-            &rel,
-            OpenOptions::new().create(true).append(true),
-        ) {
-            let _ = file.write_all(line.as_bytes());
+    let run_rel_dir = Path::new(".acdd/run").join(payload.ctx.run_id.as_str());
+    let rel = run_rel_dir.join("traces.jsonl");
+    if ensure_confined_dir_all(&primary, &run_rel_dir).is_ok() {
+        let event = json!({
+            "kind": "span",
+            "trace_id": payload.trace_id,
+            "span_id": payload.span_id,
+            "parent_span_id": payload.parent_span_id,
+            "run_id": payload.ctx.run_id.as_str(),
+            "node_id": payload.ctx.node_id,
+            "operation": payload.operation,
+            "status": payload.status,
+            "started_at": payload.started_utc,
+            "finished_at": payload.finished_utc,
+            "duration_ms": payload.duration_ms,
+            "attributes": payload.attributes,
+        });
+        if let Ok(mut line) = serde_json::to_string(&event) {
+            line.push('\n');
+            let mut open_opts = OpenOptions::new();
+            open_opts.create(true).append(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                open_opts.mode(0o600);
+            }
+            if let Ok(mut file) = open_confined(&primary, &rel, &mut open_opts) {
+                let _ = file.write_all(line.as_bytes());
+            }
         }
     }
 
     enforce_trace_retention(
         &primary,
+        payload.state_db.as_deref(),
         payload.ctx.run_id.as_str(),
         payload.retain_traces,
         payload.max_retained_trace_mib,
@@ -271,67 +284,48 @@ impl Drop for SpanGuard {
     }
 }
 
+fn resolve_retention_state_db(primary: &Path, explicit_state_db: Option<&Path>) -> Option<PathBuf> {
+    if let Some(explicit) = acdd_core::config::resolve_custom_db_path(primary, explicit_state_db) {
+        return Some(explicit);
+    }
+    let adapter = acdd_core::config::load_adapter(primary, None).ok()?;
+    Some(adapter.resolve_state_db_path(primary))
+}
+
 fn enforce_trace_retention(
     primary: &Path,
+    state_db: Option<&Path>,
     current_run_id: &str,
     retain_traces: usize,
     max_retained_trace_mib: u64,
 ) {
-    let run_root = primary.join(".acdd/run");
-    if !run_root.is_dir() {
-        return;
-    }
-    let Ok(entries) = fs::read_dir(&run_root) else {
+    let Some(resolved_state_db) = resolve_retention_state_db(primary, state_db) else {
+        // Fail closed when workspace config cannot be read/parsed; never guess DB paths and delete run dirs.
         return;
     };
-
-    let mut dirs: Vec<(String, SystemTime, u64, PathBuf)> = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        let mtime = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        let bytes = dir_size_bytes(&path);
-        dirs.push((name.to_owned(), mtime, bytes, path));
-    }
-
-    // Sort newest first so we keep `retain_traces` newest entries and prune older ones.
-    dirs.sort_by_key(|entry| std::cmp::Reverse(entry.1));
-    let max_bytes = max_retained_trace_mib.saturating_mul(1024 * 1024);
-    let mut kept_count = 0usize;
-    let mut kept_bytes = 0u64;
-
-    for (run_id, _, bytes, path) in dirs {
-        if run_id == current_run_id {
-            kept_count += 1;
-            kept_bytes = kept_bytes.saturating_add(bytes);
-            continue;
-        }
-        let within_count = kept_count < retain_traces;
-        let within_bytes = kept_bytes.saturating_add(bytes) <= max_bytes;
-        if within_count && within_bytes {
-            kept_count += 1;
-            kept_bytes = kept_bytes.saturating_add(bytes);
-        } else {
-            let _ = fs::remove_dir_all(path);
-        }
-    }
+    // Fail closed if `state.sqlite` exists but cannot be opened/queried (corrupt/locked/symlink).
+    let reader = SqliteStateReader::new(resolved_state_db);
+    let max_total_bytes = max_retained_trace_mib.saturating_mul(1024 * 1024);
+    let _ = prune_old_run_trace_dirs(
+        primary,
+        &reader,
+        retain_traces,
+        Some(max_total_bytes),
+        Some(current_run_id),
+    );
 }
 
-fn dir_size_bytes(dir: &Path) -> u64 {
-    WalkDir::new(dir)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-        .filter_map(|e| e.metadata().ok().map(|m| m.len()))
-        .sum()
+fn utc_date_and_timestamp() -> (String, String) {
+    let timestamp = now_utc_iso_ms();
+    let date = timestamp
+        .split_once('T')
+        .map_or_else(|| timestamp.clone(), |(d, _)| d.to_owned());
+    (date, timestamp)
+}
+
+fn debug_log_root(root: &Path) -> PathBuf {
+    let resolved = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
+    resolved.canonicalize().unwrap_or(resolved)
 }
 
 fn report_log_error(operation: &str, destination: &Path, error: &dyn std::fmt::Display) {
@@ -347,12 +341,13 @@ fn prepare_debug_log(
     date: &str,
     entry: &DebugLogEntry<'_>,
 ) -> Option<PendingDebugLog> {
-    let destination = root
+    let target_root = debug_log_root(root);
+    let destination = target_root
         .join(".acdd")
         .join(format!("command-log-debug--{date}.jsonl"));
     match serde_json::to_string(entry) {
         Ok(line) => Some(PendingDebugLog {
-            root: root.to_path_buf(),
+            root: target_root,
             date: date.to_owned(),
             line,
         }),
@@ -363,15 +358,14 @@ fn prepare_debug_log(
     }
 }
 
-fn prepare_mcp_debug_log(
+/// Prepare an MCP debug log entry for persistence.
+pub fn prepare_mcp_debug_log(
     root: &Path,
     tool: &str,
     parameters: &str,
     output: &serde_json::Value,
 ) -> Option<PendingDebugLog> {
-    let now = Local::now();
-    let date_str = now.format("%Y-%m-%d").to_string();
-    let time_str = now.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+    let (date_str, time_str) = utc_date_and_timestamp();
 
     let params_val = serde_json::from_str::<serde_json::Value>(parameters)
         .unwrap_or_else(|_| serde_json::Value::String(parameters.to_owned()));
@@ -386,7 +380,8 @@ fn prepare_mcp_debug_log(
     prepare_debug_log(root, &date_str, &entry)
 }
 
-fn write_pending_debug_log(pending: PendingDebugLog) {
+/// Persist a prepared debug log entry.
+pub fn write_pending_debug_log(pending: PendingDebugLog) {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn_blocking(move || {
             write_entry_sync(&pending.root, &pending.date, &pending.line);
@@ -403,17 +398,23 @@ fn write_entry(root: &Path, date: &str, entry: &DebugLogEntry<'_>) {
 }
 
 fn write_entry_sync(root: &Path, date: &str, line: &str) {
-    let directory = root.join(".acdd");
-    let destination = directory.join(format!("command-log-debug--{date}.jsonl"));
-    if let Err(error) = fs::create_dir_all(&directory) {
+    let target_root = debug_log_root(root);
+    let rel_dir = Path::new(".acdd");
+    let rel_file = rel_dir.join(format!("command-log-debug--{date}.jsonl"));
+    let directory = target_root.join(rel_dir);
+    let destination = target_root.join(&rel_file);
+    if let Err(error) = ensure_confined_dir_all(&target_root, rel_dir) {
         report_log_error("create directory", &directory, &error);
         return;
     }
-    let mut file = match OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&destination)
+    let mut open_opts = OpenOptions::new();
+    open_opts.create(true).append(true);
+    #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
+        open_opts.mode(0o600);
+    }
+    let mut file = match open_confined(&target_root, &rel_file, &mut open_opts) {
         Ok(file) => file,
         Err(error) => {
             report_log_error("open", &destination, &error);
@@ -461,9 +462,7 @@ pub fn log_cli(
     parameters: Option<&serde_json::Value>,
     output: &serde_json::Value,
 ) {
-    let now = Local::now();
-    let date_str = now.format("%Y-%m-%d").to_string();
-    let time_str = now.format("%Y-%m-%dT%H:%M:%S%.3f").to_string();
+    let (date_str, time_str) = utc_date_and_timestamp();
 
     let entry = DebugLogEntry::Cli {
         timestamp: time_str,
@@ -475,61 +474,18 @@ pub fn log_cli(
     write_entry(root, &date_str, &entry);
 }
 
-/// Performs log mcp.
-pub fn log_mcp(root: &Path, tool: &str, parameters: &str, output: &serde_json::Value) {
-    if let Some(pending) = prepare_mcp_debug_log(root, tool, parameters, output) {
-        write_pending_debug_log(pending);
-    }
-}
-
-/// Performs log command.
-pub fn log_command(root: &Path, command: &str, input: Option<&str>, output: &str) {
-    let output_val = serde_json::from_str::<serde_json::Value>(output)
-        .unwrap_or_else(|_| serde_json::Value::String(output.to_string()));
-    let input_val = input.map(|inp| {
-        serde_json::from_str::<serde_json::Value>(inp)
-            .unwrap_or_else(|_| serde_json::Value::String(inp.to_string()))
-    });
-    log_cli(root, command, input_val.as_ref(), &output_val);
-}
-
 #[cfg(test)]
 mod tests {
     use super::SpanGuard;
     use crate::state_bridge::WorktreeSpanContext;
+    use acdd_core::fs::ScopedTempDir;
     use acdd_core::telemetry::{SpanId, TraceId, TraceParent};
     use acdd_core::ids::RunId;
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NONCE: AtomicU64 = AtomicU64::new(0);
-
-    struct TempDir(PathBuf);
-    impl TempDir {
-        fn new(tag: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "acdd-ut-{tag}-{}-{}",
-                std::process::id(),
-                NONCE.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = fs::remove_dir_all(&p);
-            fs::create_dir_all(&p).unwrap();
-            Self(p)
-        }
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     #[test]
     fn span_guard_writes_w3c_traces_and_enforces_retention() {
-        let dir = TempDir::new("telemetry");
+        let dir = ScopedTempDir::create("acdd-ut-telemetry").unwrap();
         let root = dir.path();
         let ok = acdd_core::git::git_command(root, &["init"])
             .unwrap()
@@ -607,5 +563,18 @@ mod tests {
         assert_eq!(debug_files.len(), 1);
         let debug_lines = fs::read_to_string(&debug_files[0]).unwrap();
         assert_eq!(debug_lines.lines().count(), 2);
+        for line in debug_lines.lines() {
+            let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert!(entry["timestamp"].as_str().unwrap().ends_with('Z'));
+        }
+        // Symlinked `.acdd` directory must be rejected without escaping.
+        #[cfg(unix)]
+        {
+            let outside = ScopedTempDir::create("acdd-ut-telemetry-outside").unwrap();
+            let sym_ws = ScopedTempDir::create("acdd-ut-telemetry-symws").unwrap();
+            std::os::unix::fs::symlink(outside.path(), sym_ws.path().join(".acdd")).unwrap();
+            super::log_cli(sym_ws.path(), "scan", None, &serde_json::json!({"ok": 1}));
+            assert!(fs::read_dir(outside.path()).unwrap().next().is_none());
+        }
     }
 }

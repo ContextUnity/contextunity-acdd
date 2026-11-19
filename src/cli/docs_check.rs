@@ -646,37 +646,12 @@ fn check_links(root: &Path) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::collect_link_errors;
+    use acdd_core::fs::ScopedTempDir;
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NONCE: AtomicU64 = AtomicU64::new(0);
-
-    struct TempDir(PathBuf);
-    impl TempDir {
-        fn new(tag: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "acdd-ut-{tag}-{}-{}",
-                std::process::id(),
-                NONCE.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = fs::remove_dir_all(&p);
-            fs::create_dir_all(&p).unwrap();
-            Self(p)
-        }
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     #[test]
     fn archive_skips_missing_code_targets_while_active_docs_still_fail() {
-        let dir = TempDir::new("docs-check");
+        let dir = ScopedTempDir::create("acdd-ut-docs-check").unwrap();
         let root = dir.path();
         fs::create_dir_all(root.join("docs/archive")).unwrap();
         fs::write(root.join("README.md"), "# Root\n").unwrap();

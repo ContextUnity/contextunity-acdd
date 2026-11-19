@@ -20,12 +20,10 @@ ignore:
 specs:
   milestones:
     path: docs/milestones
-    profile: workspace
     prefixes: [AC]
     digits: 3
   plans:
     path: docs/plans
-    profile: in_place
     prefixes: [PLAN]
     digits: 3
 profiles_dirs:
@@ -49,6 +47,7 @@ pub const CANONICAL_GITIGNORE_BLOCK: &str = "\
 .acdd/*.log
 .acdd/*.json
 .acdd/*.jsonl
+.acdd/reports/
 .acdd/run/
 .acdd/tmp/";
 
@@ -143,7 +142,7 @@ pub fn run_with_adapter(
     Ok(value)
 }
 
-/// Initialize `acdd.yaml`, `.acdd/profile.yaml` (`inherit: code` or `inherit: default`), and canonical `.gitignore` block.
+/// Initialize `acdd.yaml`, `.acdd/profile.yaml` (`inherit: code` or `inherit: base`), and canonical `.gitignore` block.
 pub fn initialize(root: &Path, force: bool) -> Result<Value> {
     let acdd_yaml = root.join("acdd.yaml");
     let profile_yaml = root.join(".acdd/profile.yaml");
@@ -160,7 +159,7 @@ pub fn initialize(root: &Path, force: bool) -> Result<Value> {
 
     let adapter = load_adapter(root, Some(&acdd_yaml))?;
     let code_enabled = adapter.modules.is_enabled("code");
-    let inherit = if code_enabled { "code" } else { "default" };
+    let inherit = if code_enabled { "code" } else { "base" };
     let profile_content = format!(
         "version: 2\ninherit: {inherit}\n\n# Bind abstract command slots (`test`, `build_check`, `verify_all`) for your project:\n# commands:\n#   test: \"cargo test --lib {{test_filter}}\"\n#   build_check: \"cargo clippy --workspace --all-targets -- -D warnings && cargo test --lib\"\n#   verify_all: \"cargo test --workspace\"\n"
     );
@@ -258,7 +257,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "Use `acdd next` / `acdd_state(action: \"next\")` or `acdd status` to discover ready cursors, then `acdd claim` / `acdd_claim` with `node`, `worker_id`, and `worktree`.",
                 "Implement strictly inside admitted write scope (`in_write_scope: ALLOWED` in `acdd_read`). Call `acdd verify <cursor> [--test <target>]` / `acdd_verify` to observe fresh trace evidence.",
                 "Submit via `acdd submit <cursor> --action pass|reject` / `acdd_submit`. Rejections require structured `findings` (`summary`, `items[]` with `severity`, `message`, `remediation`, and optional `kind`: `defect | architectural_drift`).",
-                "For automated DAG execution, run `acdd run [--jobs N]` / `acdd_state(action: \"run\")`. Complete all subtasks with non-empty `evidence` before container receipt gates."
+                "For automated DAG execution, run `acdd run [--jobs N]` / `acdd_state(action: \"run\")` (requires role `runner:` commands; returns `WORKFLOW_RUNNER_REQUIRED` when roles use `mode: subagent` without `runner:`). Complete all subtasks with non-empty `evidence` before container receipt gates."
             ],
             "runners": "Role runners receive `ACDD_RUN_ID`, `ACDD_NODE_CURSOR`, `ACDD_CLAIM_REVISION`, `ACDD_WORKER_ID`, `ACDD_AGENT_SESSION_ID`, `ACDD_WORKTREE`, `ACDD_STATE_DB`, `ACDD_CODE_DB`, and `TRACEPARENT`, with rendered ClaimResp delivered over stdin. Verification commands run sanitized without orchestrator env leakage.",
             "blackboard": "Use `acdd blackboard` / `acdd_blackboard` for `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred` entries.",
@@ -266,8 +265,8 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
                 "TASK_ALREADY_CLAIMED": "Node holds an active claim by another worker/session. Resume the owning worker or pass `--force` when taking over a dead local PID (or `--steal-remote`).",
                 "STALE_CLAIM_REVISION": "Re-claim or fetch the current `claim_revision` via `acdd status` / `acdd show`, then re-run `acdd verify`.",
                 "TASK_PROOF_UNOBSERVED": "Run `acdd verify <cursor> --test <target>` under the active claim and current tree before submitting.",
-                "TASK_CANDIDATE_MISMATCH": "Working tree drifted from an immutable claim tree or predecessor `need:` tree. Inspect drift, `acdd rollback <ref>` or `acdd reopen <node>`, then re-verify.",
-                "TASK_NOT_INTEGRATED": "Completed task deltas are missing from the run worktree. Run `acdd integrate` before post-task root gates.",
+                "TASK_CANDIDATE_MISMATCH": "Working tree drifted from an immutable claim tree or predecessor `need:` tree. Inspect drift, restore via Git or `acdd reopen <node>`, then re-verify.",
+                "TASK_NOT_INTEGRATED": "Completed task deltas are missing from the run worktree. Integrate completed task branches into the run worktree (or run `acdd run`) before post-task root gates.",
                 "CONFIG_MIGRATION_REQUIRED": "Legacy 0.5.x keys found in acdd.yaml. Follow docs/runbooks/migration-0.6.md."
             },
             "example": {
@@ -285,11 +284,11 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             ],
             "when": "Boolean expression over task tags (`tag`, `!tag`, `&`/`+`, `|`, parentheses); valid on `- tasks:` blocks and `task_gate`s, forbidden on `root_gate`s.",
             "transitions": "`pass:`, `fail:`, and `fail_drift:` select explicit next gate targets (`defect` routes via `fail:`, `architectural_drift` routes via `fail_drift:` and triggers builder context reset); `max_attempts` caps retries and root/container cycle counts before `escalated`. `independent_from` enforces `worker_id` inequality.",
-            "persistence": "`git.isolation` (`worktree | in_place`), `git.worktrees` (`manual | managed`), `git.commit_mode` (`plumbing | cli | manual`), and `git.integrate` (`manual | rebase-ff | ff-only | no-ff | squash`). `save` / `save.post` apply `none | commit`; `immutable: true` enforces `current_tree == claim_tree`.",
+            "persistence": "`git.isolation` (`worktree | in_place` via profile or `--in-place`) and `git.worktrees` (`manual | managed`). `save` / `save.post` apply `none | commit` (atomic plumbing commit with `Acdd-Claim`); `immutable: true` enforces `current_tree == claim_tree`; `save.report: <relpath>` writes a gate report strictly under `.acdd/reports/*.{md,json}` on pass.",
             "verification": "`verify` records `gate_traces` with RFC-8785 SHA-256 `execution_digest` bound to `contract_revision`, resolved commands, `test_target`, `checks:` salts (`index_generation` + `live_files_digest`), and `candidate_tree_before == candidate_tree_after`.",
             "example": {
-                "mcp": { "name": "acdd_verify", "arguments": { "node": "t1.contract", "test_target": "tests/seam.rs::case" } },
-                "cli": "acdd verify t1.contract --test tests/seam.rs::case"
+                "mcp": { "name": "acdd_verify", "arguments": { "node": "t1.build", "test_target": "tests/seam.rs::case" } },
+                "cli": "acdd verify t1.build --test tests/seam.rs::case"
             },
             "references": ["docs/reference/tasks.md", "docs/reference/profiles.md", "docs/reference/cli.md"]
         })),
@@ -367,11 +366,11 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             "references": ["docs/AGENTS.md", "docs/reference/mcp-tools.md", "docs/reference/cli.md"]
         })),
         "acdd" => Ok(json!({
-            "purpose": "Execute specs, plans, workflows, or ephemeral `--goal` runs under one unified `0.6.0` GateProfile engine and 19 static + external DomainProvider plugin tools.",
+            "purpose": "Execute specs, plans, workflows, or ephemeral `--goal` runs under one unified `0.6.2` GateProfile engine (`gates_patch:`, `save.report`, `predecessor_proofs`) and 19 static + external DomainProvider plugin tools.",
             "steps": [
-                "Initialize with `acdd init` (selects `inherit: code` or `inherit: default`, writes canonical `.gitignore`).",
+                "Initialize with `acdd init` (selects `inherit: code | base | audit`, writes canonical `.gitignore`).",
                 "Validate workspace config, active profile, `DomainProvider` capabilities, and active specs with `acdd validate`.",
-                "Start a run via `acdd start <spec_path>` or `acdd start --goal \"...\"`, then claim/verify/submit with flat CLI commands (`claim`, `verify`, `submit`, `next`, `status`, `show`, `integrate`, `clear`, `run`, `tool`) or the 5 MCP state tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`)."
+                "Start a run via `acdd start <spec_path>` or `acdd start --goal \"...\"`, then claim/verify/submit with flat CLI commands (`claim`, `verify`, `submit`, `next`, `status`, `show`, `clear`, `run`, `tool`) or the 5 MCP state tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`)."
             ],
             "mcp_tools": {
                 "code": ["code_map_overview", "code_map_search", "code_map_inspect", "code_map_impact", "code_map_analyze", "code_map_explain", "code_map_tests", "code_map_prove_removal", "code_map_query", "ast_grep_search"],
@@ -399,7 +398,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             "symbols": "Use code_map_search with FTS terms or prefix* pattern. Compact inspect and explain include signature, docstring, receiver-aware container, inbound/outbound call counts, and up to five direct callers/callees.",
             "snippets": "Use acdd_read(selector=...) for digest-verified symbol bodies, or acdd_read(path=..., mode=lines|raw|search|delta|outline) for layered file reads. CLI: acdd read <path> --mode <mode>.",
             "tests": "Call code_map_tests on a narrow symbol or module; broad scopes are rejected before unbounded traversal.",
-            "queries": "Use code_map_inspect and code_map_explain for symbols, code_map_analyze for diagnostics, and code_map_impact for traversal. Use code_map_query for sql, untested, implementations, slice, unwired, and duplicates; pages use limit, offset, and generation.",
+            "queries": "Use code_map_inspect and code_map_explain for symbols, code_map_analyze for diagnostics, and code_map_impact for traversal. Use code_map_query for sql, untested, implementations, slice, unwired, duplicates, and dead_tails; pages use limit, offset, and generation.",
             "diagnostics": "Call code_map_analyze with target='' for workspace totals; cycles require include_cycles=true.",
             "documents": "Use search_docs with include_excerpt=true to find sections, get_doc with detail='compact' for section outlines, and get_doc with section='...' to read a specific section.",
             "pages": "Start with compact detail and a small limit. Continue with the returned next_offset and generation for the same selector and filters.",

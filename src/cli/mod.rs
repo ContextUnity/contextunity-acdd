@@ -108,7 +108,12 @@ pub(crate) mod discovery {
             offset: page.offset,
             generation: None,
         });
-        match crate::state_bridge::execute_state_query(root, root, None, cfg, query) {
+        let Ok(providers) =
+            crate::state_bridge::build_domain_providers(root, cfg, None, Vec::new())
+        else {
+            return unavailable("active_runs", "domain providers unavailable");
+        };
+        match crate::state_bridge::execute_state_query(root, root, None, None, cfg, providers, query) {
             Ok(StateQueryOutput::List(resp)) => {
                 let items: Vec<Value> = resp
                     .page
@@ -373,10 +378,27 @@ pub(crate) mod discovery {
             "resolution_statuses",
             "resolution_causes",
             "parse_error_languages",
+            "dead_tails",
         ] {
             if let Some(page) = value.get_mut(field) {
                 attach_traversal_page(root, adapter, page, "line");
             }
+        }
+        if let Some(page) = value.get_mut("phantom_tested") {
+            attach_traversal_page(root, adapter, page, "line");
+            if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
+                for item in items {
+                    if let Some(callers) = item.get_mut("test_callers").and_then(Value::as_array_mut)
+                    {
+                        for caller in callers {
+                            attach_uri_from_fields(root, adapter, caller, "path", "line");
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(page) = value.get_mut("dangling_calls") {
+            attach_traversal_page(root, adapter, page, "__no_line");
         }
         if let Some(invariants) = value.get_mut("governing_invariants") {
             if let Some(rules) = invariants.get_mut("direct").and_then(Value::as_array_mut) {
@@ -570,7 +592,9 @@ pub mod validate;
 use crate::{
     engine::pipeline as writer,
     format::{self, OperationKind, OutputFormat},
-    state_bridge::{execute_state_command, execute_state_query, InvocationSettings},
+    state_bridge::{
+        build_domain_providers, execute_state_command, execute_state_query, InvocationSettings,
+    },
 };
 use acdd_core::response::{
     CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions, MAX_PAGE_SIZE,
@@ -579,14 +603,14 @@ use acdd_index::db::{reader, symbols, traversal};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{RunName, SubtaskRef, TaskRef, WorkerId};
 use acdd_state::types::{
-    BlackboardStatus, BlackboardTopic, IntegrateStrategy, RejectionFindings, ReviewEvidence,
-    RunStatus, SubmitAction, SubtaskStatus,
+    BlackboardStatus, BlackboardTopic, RejectionFindings, ReviewEvidence, RunStatus, SubmitAction,
+    SubtaskStatus,
 };
 use acdd_state::usecases::{
     BlackboardPostReq, BlackboardReadReq, CallPluginToolReq, CallPluginToolResp, ClaimReq,
-    ClearReq, DraftReq, ExtendScopeReq, IntegrateReq, ListReq, NextReq, ReopenReq, RollbackReq,
-    RunReq, ShowReq, StartReq, StateCommand, StateCommandOutput, StateQuery,
-    StatusReq, SubmitReq, SubtaskReq, SyncReq, VerifyReq,
+    ClearReq, DraftReq, ExtendScopeReq, ListReq, NextReq, ReopenReq, RunReq, ShowReq, StartReq,
+    StateCommand, StateCommandOutput, StateQuery, StatusReq, SubmitReq, SubtaskReq, SyncReq,
+    VerifyReq,
 };
 use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
@@ -771,7 +795,7 @@ pub enum Command {
         /// Optional claiming worker identity check.
         #[arg(long, alias = "worker-id")]
         worker: Option<String>,
-        /// Test target filter passed to `{test_filter}` and `code.seam` (required for `proof: contract`).
+        /// Optional `--test` filter target passed to `{test_filter}` and `code.seam`.
         #[arg(long, alias = "test-target")]
         test: Option<String>,
         /// Optional expected `claim_revision`.
@@ -916,34 +940,6 @@ pub enum Command {
         /// Optional `runs.generation` pin for `read`.
         #[arg(long)]
         generation: Option<u64>,
-    },
-    /// Confined-restore working-tree files from a commit ref, commit OID, or tree OID.
-    Rollback {
-        /// Commit ref (e.g. `HEAD`), commit OID, or tree OID to restore.
-        target: String,
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Optional node cursor restricting rollback to that node's `admitted_scope`.
-        #[arg(long)]
-        node: Option<String>,
-        /// Explicit worktree path override.
-        #[arg(long)]
-        worktree: Option<PathBuf>,
-    },
-    /// Integrate completed task branches into the run worktree.
-    Integrate {
-        /// Optional specific task reference (omitting integrates all unintegrated completed tasks).
-        task_ref: Option<String>,
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Strategy override (`manual | rebase-ff | ff-only | no-ff | squash`).
-        #[arg(long)]
-        strategy: Option<String>,
-        /// Explicitly permit integrating onto `main` / `master`.
-        #[arg(long)]
-        allow_main: bool,
     },
     /// Clear/cancel an active `Run` into `run_tombstones(terminal_status = 'cleared')`.
     Clear {
@@ -1228,7 +1224,7 @@ pub enum QueryCommand {
     },
     /// Represents the run case.
     Run {
-        /// The operation value ('sql', 'untested', 'implementations', 'slice', 'unwired', 'duplicates', or a direct SELECT/WITH statement).
+        /// The operation value ('sql', 'untested', 'implementations', 'slice', 'unwired', 'duplicates', 'dead_tails', or a direct SELECT/WITH statement).
         operation: String,
         /// Optional selector value.
         selector: Option<String>,
@@ -1322,8 +1318,6 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         | Command::Reopen { .. }
         | Command::Sync { .. }
         | Command::Subtask { .. }
-        | Command::Rollback { .. }
-        | Command::Integrate { .. }
         | Command::Clear { .. }
         | Command::Run { .. }
         | Command::Tool { .. } => (OperationKind::Task, "acdd_state", None),
@@ -1456,57 +1450,44 @@ fn check_explicit_config_migration(
     root: &Path,
     config_path: &Path,
 ) -> std::result::Result<(), StateError> {
-    let confined_target = if let Ok(rel) = config_path.strip_prefix(root) {
-        acdd_core::fs::check_ancestors_no_symlinks(root, rel)
-            .and_then(|()| acdd_core::fs::checked_child(root, rel))
-            .map_err(|err| {
-                StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("cannot inspect confined config '{}': {err}", config_path.display()),
-                )
-            })?
+    use std::io::Read;
+    let mut open_opts = std::fs::OpenOptions::new();
+    open_opts.read(true);
+    let opened = if let Ok(rel) = config_path.strip_prefix(root) {
+        acdd_core::fs::open_confined(root, rel, &mut open_opts)
+    } else if let (Some(parent), Some(name)) = (config_path.parent(), config_path.file_name()) {
+        acdd_core::fs::open_confined(parent, Path::new(name), &mut open_opts)
     } else {
-        match std::fs::symlink_metadata(config_path) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("config path '{}' must not be a symlink", config_path.display()),
-                ));
-            }
-            Ok(_) => config_path.to_path_buf(),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(err) => {
-                return Err(StateError::new(
-                    ErrorCode::ProfileSchemaInvalid,
-                    format!("cannot inspect config '{}': {err}", config_path.display()),
-                ));
-            }
+        return Ok(());
+    };
+    let mut file = match opened {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("cannot inspect confined config '{}': {err}", config_path.display()),
+            ));
         }
     };
-    if !confined_target.is_file() {
+    if !file.metadata().is_ok_and(|meta| meta.is_file()) {
         return Ok(());
     }
-    let Ok(raw) = std::fs::read_to_string(&confined_target) else {
+    let mut raw = String::new();
+    if file.read_to_string(&mut raw).is_err() {
         return Ok(());
-    };
+    }
     let Ok(yaml) = serde_yaml::from_str::<serde_yaml::Value>(&raw) else {
         return Ok(());
     };
     if let Some(map) = yaml.as_mapping() {
-        for legacy_key in [
-            "milestones",
-            "plans",
-            "tasks_db",
-            "task_repository",
-            "task_project",
-            "acdd_profile",
-        ] {
-            if map.contains_key(serde_yaml::Value::String(legacy_key.to_owned())) {
+        for legacy_key in acdd_core::config::LEGACY_05_KEYS {
+            if map.contains_key(serde_yaml::Value::String((*legacy_key).to_owned())) {
                 return Err(StateError::new(
                     ErrorCode::ConfigMigrationRequired,
                     format!(
                         "legacy 0.5.x key '{legacy_key}' found in '{}'",
-                        confined_target.display()
+                        config_path.display()
                     ),
                 )
                 .with_hint(
@@ -1809,14 +1790,18 @@ impl Cli {
             Command::Claim { worktree, .. }
             | Command::Verify { worktree, .. }
             | Command::Submit { worktree, .. }
-            | Command::Rollback { worktree, .. }
             | Command::Tool { worktree, .. } => worktree.as_deref().unwrap_or(&root),
             _ => &root,
         };
         let span_ctx = if adapter.modules.is_enabled("state") {
-            crate::state_bridge::resolve_worktree_span_context(&root, span_worktree, &adapter)
-                .ok()
-                .flatten()
+            crate::state_bridge::resolve_worktree_span_context(
+                &root,
+                span_worktree,
+                state_db.as_deref(),
+                &adapter,
+            )
+            .ok()
+            .flatten()
         } else {
             None
         };
@@ -1826,6 +1811,17 @@ impl Cli {
             title,
             adapter.retain_traces,
         );
+        if let Some(custom_state_db) = state_db.as_ref() {
+            span = span.with_state_db(custom_state_db.clone());
+        }
+        let state_ctx = CliStateCtx {
+            root: &root,
+            state_db: state_db.as_deref(),
+            code_db: Some(db.as_path()),
+            adapter: &adapter,
+            output_format,
+            title,
+        };
 
         let exec_result: Result<(Value, Option<String>)> = (|| async {
             let (val, pre_rendered) = match command {
@@ -1847,53 +1843,33 @@ impl Cli {
                         .map(RunName::new)
                         .transpose()
                         .map_err(anyhow::Error::from)?;
-                    exec_cli_state_command(
-                        &root,
-                        state_db.as_deref(),
-                        &adapter,
-                        output_format,
-                        title,
-                        StateCommand::Start(StartReq {
-                            spec_path: spec,
-                            goal,
-                            run_name,
-                            profile: explicit_profile_ref,
-                            scope,
-                            target_base,
-                            worktree,
-                            in_place,
-                            worktree_path,
-                        }),
-                    )?
+                    state_ctx.command(StateCommand::Start(StartReq {
+                        spec_path: spec,
+                        goal,
+                        run_name,
+                        profile: explicit_profile_ref,
+                        scope,
+                        target_base,
+                        worktree,
+                        in_place,
+                        worktree_path,
+                    }))?
                 }
                 Command::Draft {
                     collection,
                     slug,
                     prefix,
                     title: spec_title,
-                } => exec_cli_state_command(
-                    &root,
-                    state_db.as_deref(),
-                    &adapter,
-                    output_format,
-                    title,
-                    StateCommand::Draft(DraftReq {
-                        collection,
-                        slug,
-                        prefix,
-                        title: spec_title,
-                        profile: explicit_profile_ref,
-                    }),
-                )?,
-                Command::Status { run } => exec_cli_state_query(
-                    &root,
-                    &root,
-                    state_db.as_deref(),
-                    &adapter,
-                    output_format,
-                    title,
-                    StateQuery::Status(StatusReq { run }),
-                )?,
+                } => state_ctx.command(StateCommand::Draft(DraftReq {
+                    collection,
+                    slug,
+                    prefix,
+                    title: spec_title,
+                    profile: explicit_profile_ref,
+                }))?,
+                Command::Status { run } => {
+                    state_ctx.query(&root, StateQuery::Status(StatusReq { run }))?
+                }
                 Command::List {
                     workspace,
                     status,
@@ -1907,13 +1883,8 @@ impl Cli {
                         .map(RunStatus::from_str)
                         .transpose()
                         .map_err(anyhow::Error::from)?;
-                    exec_cli_state_query(
+                    state_ctx.query(
                         &root,
-                        &root,
-                        state_db.as_deref(),
-                        &adapter,
-                        output_format,
-                        title,
                         StateQuery::List(ListReq {
                             workspace,
                             status,
@@ -1924,24 +1895,12 @@ impl Cli {
                         }),
                     )?
                 }
-                Command::Show { node, run } => exec_cli_state_query(
-                    &root,
-                    &root,
-                    state_db.as_deref(),
-                    &adapter,
-                    output_format,
-                    title,
-                    StateQuery::Show(ShowReq { run, node }),
-                )?,
-                Command::Next { run, limit } => exec_cli_state_query(
-                    &root,
-                    &root,
-                    state_db.as_deref(),
-                    &adapter,
-                    output_format,
-                    title,
-                    StateQuery::Next(NextReq { run, limit }),
-                )?,
+                Command::Show { node, run } => {
+                    state_ctx.query(&root, StateQuery::Show(ShowReq { run, node }))?
+                }
+                Command::Next { run, limit } => {
+                    state_ctx.query(&root, StateQuery::Next(NextReq { run, limit }))?
+                }
                 Command::Claim {
                     node,
                     run,
@@ -1952,22 +1911,15 @@ impl Cli {
                     worktree,
                 } => {
                     let worker_id = WorkerId::new(&worker)?;
-                    exec_cli_state_command(
-                        &root,
-                        state_db.as_deref(),
-                        &adapter,
-                        output_format,
-                        title,
-                        StateCommand::Claim(ClaimReq {
-                            run,
-                            node,
-                            worker_id,
-                            session_fingerprint,
-                            force,
-                            steal_remote,
-                            worktree,
-                        }),
-                    )?
+                    state_ctx.command(StateCommand::Claim(ClaimReq {
+                        run,
+                        node,
+                        worker_id,
+                        session_fingerprint,
+                        force,
+                        steal_remote,
+                        worktree,
+                    }))?
                 }
                 Command::Verify {
                     node,
@@ -1978,21 +1930,14 @@ impl Cli {
                     worktree,
                 } => {
                     let worker_id = worker.as_deref().map(WorkerId::new).transpose()?;
-                    exec_cli_state_command(
-                        &root,
-                        state_db.as_deref(),
-                        &adapter,
-                        output_format,
-                        title,
-                        StateCommand::Verify(VerifyReq {
-                            run,
-                            node,
-                            worker_id,
-                            test_target: test,
-                            claim_revision,
-                            worktree,
-                        }),
-                    )?
+                    state_ctx.command(StateCommand::Verify(VerifyReq {
+                        run,
+                        node,
+                        worker_id,
+                        test_target: test,
+                        claim_revision,
+                        worktree,
+                    }))?
                 }
                 Command::Submit {
                     node,
@@ -2029,28 +1974,21 @@ impl Cli {
                             })
                         })
                         .transpose()?;
-                    exec_cli_state_command(
-                        &root,
-                        state_db.as_deref(),
-                        &adapter,
-                        output_format,
-                        title,
-                        StateCommand::Submit(Box::new(SubmitReq {
-                            run,
-                            node,
-                            action: submit_action,
-                            worker_id,
-                            claim_revision,
-                            test_target: test,
-                            review_evidence,
-                            rejection_findings,
-                            custom_evidence,
-                            verified_invariants: invariants,
-                            summary,
-                            allow_main,
-                            worktree,
-                        })),
-                    )?
+                    state_ctx.command(StateCommand::Submit(Box::new(SubmitReq {
+                        run,
+                        node,
+                        action: submit_action,
+                        worker_id,
+                        claim_revision,
+                        test_target: test,
+                        review_evidence,
+                        rejection_findings,
+                        custom_evidence,
+                        verified_invariants: invariants,
+                        summary,
+                        allow_main,
+                        worktree,
+                    })))?
                 }
                 Command::ExtendScope {
                     node,
@@ -2060,53 +1998,32 @@ impl Cli {
                     worker,
                 } => {
                     let worker_id = worker.as_deref().map(WorkerId::new).transpose()?;
-                    exec_cli_state_command(
-                        &root,
-                        state_db.as_deref(),
-                        &adapter,
-                        output_format,
-                        title,
-                        StateCommand::ExtendScope(ExtendScopeReq {
-                            run,
-                            node,
-                            paths,
-                            reason,
-                            worker_id,
-                        }),
-                    )?
+                    state_ctx.command(StateCommand::ExtendScope(ExtendScopeReq {
+                        run,
+                        node,
+                        paths,
+                        reason,
+                        worker_id,
+                    }))?
                 }
                 Command::Reopen {
                     node,
                     run,
                     cascade,
                     reason,
-                } => exec_cli_state_command(
-                    &root,
-                    state_db.as_deref(),
-                    &adapter,
-                    output_format,
-                    title,
-                    StateCommand::Reopen(ReopenReq {
-                        run,
-                        node,
-                        cascade,
-                        reason,
-                    }),
-                )?,
+                } => state_ctx.command(StateCommand::Reopen(ReopenReq {
+                    run,
+                    node,
+                    cascade,
+                    reason,
+                }))?,
                 Command::Sync {
                     run,
                     rebind_profile,
-                } => exec_cli_state_command(
-                    &root,
-                    state_db.as_deref(),
-                    &adapter,
-                    output_format,
-                    title,
-                    StateCommand::Sync(SyncReq {
-                        run,
-                        rebind_profile,
-                    }),
-                )?,
+                } => state_ctx.command(StateCommand::Sync(SyncReq {
+                    run,
+                    rebind_profile,
+                }))?,
                 Command::Subtask {
                     task_ref,
                     subtask_ref,
@@ -2117,20 +2034,13 @@ impl Cli {
                     let task_ref = TaskRef::new(&task_ref)?;
                     let subtask_ref = SubtaskRef::new(&subtask_ref)?;
                     let status = SubtaskStatus::from_str(&status)?;
-                    exec_cli_state_command(
-                        &root,
-                        state_db.as_deref(),
-                        &adapter,
-                        output_format,
-                        title,
-                        StateCommand::Subtask(SubtaskReq {
-                            run,
-                            task_ref,
-                            subtask_ref,
-                            status,
-                            evidence,
-                        }),
-                    )?
+                    state_ctx.command(StateCommand::Subtask(SubtaskReq {
+                        run,
+                        task_ref,
+                        subtask_ref,
+                        status,
+                        evidence,
+                    }))?
                 }
                 Command::Blackboard {
                     action,
@@ -2153,13 +2063,8 @@ impl Cli {
                             .as_deref()
                             .map(BlackboardStatus::from_str)
                             .transpose()?;
-                        exec_cli_state_query(
+                        state_ctx.query(
                             &root,
-                            &root,
-                            state_db.as_deref(),
-                            &adapter,
-                            output_format,
-                            title,
                             StateQuery::BlackboardRead(BlackboardReadReq {
                                 run,
                                 node,
@@ -2183,23 +2088,16 @@ impl Cli {
                         })?;
                         let author_val = author.unwrap_or_else(|| "cli".to_owned());
                         let subtask_ref = subtask_ref.as_deref().map(SubtaskRef::new).transpose()?;
-                        exec_cli_state_command(
-                            &root,
-                            state_db.as_deref(),
-                            &adapter,
-                            output_format,
-                            title,
-                            StateCommand::BlackboardPost(BlackboardPostReq {
-                                run,
-                                node,
-                                recipient_node,
-                                subtask_ref,
-                                gate,
-                                author: author_val,
-                                topic: topic_val,
-                                payload: payload_val,
-                            }),
-                        )?
+                        state_ctx.command(StateCommand::BlackboardPost(BlackboardPostReq {
+                            run,
+                            node,
+                            recipient_node,
+                            subtask_ref,
+                            gate,
+                            author: author_val,
+                            topic: topic_val,
+                            payload: payload_val,
+                        }))?
                     }
                     other => {
                         return Err(state_err_invalid(format!(
@@ -2207,49 +2105,6 @@ impl Cli {
                         )));
                     }
                 },
-                Command::Rollback {
-                    target,
-                    run,
-                    node,
-                    worktree,
-                } => exec_cli_state_command(
-                    &root,
-                    state_db.as_deref(),
-                    &adapter,
-                    output_format,
-                    title,
-                    StateCommand::Rollback(RollbackReq {
-                        run,
-                        target,
-                        node,
-                        worktree,
-                    }),
-                )?,
-                Command::Integrate {
-                    task_ref,
-                    run,
-                    strategy,
-                    allow_main,
-                } => {
-                    let task_ref = task_ref.as_deref().map(TaskRef::new).transpose()?;
-                    let strategy = strategy
-                        .as_deref()
-                        .map(IntegrateStrategy::from_str)
-                        .transpose()?;
-                    exec_cli_state_command(
-                        &root,
-                        state_db.as_deref(),
-                        &adapter,
-                        output_format,
-                        title,
-                        StateCommand::Integrate(IntegrateReq {
-                            run,
-                            task_ref,
-                            strategy,
-                            allow_main,
-                        }),
-                    )?
-                }
                 Command::Clear {
                     run_id,
                     run,
@@ -2257,37 +2112,23 @@ impl Cli {
                     force,
                 } => {
                     let effective_run = run.or(run_id);
-                    exec_cli_state_command(
-                        &root,
-                        state_db.as_deref(),
-                        &adapter,
-                        output_format,
-                        title,
-                        StateCommand::Clear(ClearReq {
-                            run: effective_run,
-                            reason,
-                            force,
-                        }),
-                    )?
+                    state_ctx.command(StateCommand::Clear(ClearReq {
+                        run: effective_run,
+                        reason,
+                        force,
+                    }))?
                 }
                 Command::Run {
                     run,
                     jobs,
                     allow_main,
                     dry_run,
-                } => exec_cli_state_command(
-                    &root,
-                    state_db.as_deref(),
-                    &adapter,
-                    output_format,
-                    title,
-                    StateCommand::Run(RunReq {
-                        run,
-                        jobs,
-                        allow_main,
-                        dry_run,
-                    }),
-                )?,
+                } => state_ctx.command(StateCommand::Run(RunReq {
+                    run,
+                    jobs,
+                    allow_main,
+                    dry_run,
+                }))?,
                 Command::Tool {
                     tool_name,
                     args,
@@ -2297,8 +2138,12 @@ impl Cli {
                 } => {
                     let parsed_args = parse_json_or_at_file(&root, &args)?;
                     if run.is_none() && node.is_none() {
-                        let providers =
-                            crate::state_bridge::build_domain_providers(&root, &adapter)?;
+                        let providers = build_domain_providers(
+                            &root,
+                            &adapter,
+                            Some(db.as_path()),
+                            Vec::new(),
+                        )?;
                         let primary = acdd_core::git::primary_worktree_root(&root)
                             .unwrap_or_else(|| root.clone());
                         let wt = worktree
@@ -2325,29 +2170,20 @@ impl Cli {
                             tool_name,
                             output,
                         });
-                        let md = (output_format == OutputFormat::Markdown)
-                            .then(|| format::render_state_command_markdown(&wrapped, title));
-                        let val = if output_format == OutputFormat::Json || adapter.debug {
-                            serde_json::to_value(&wrapped)?
-                        } else {
-                            Value::Null
-                        };
-                        (val, md)
-                    } else {
-                        exec_cli_state_command(
-                            &root,
-                            state_db.as_deref(),
-                            &adapter,
+                        render_cli_state_output(
+                            &wrapped,
                             output_format,
-                            title,
-                            StateCommand::CallPluginTool(CallPluginToolReq {
-                                tool_name,
-                                args: parsed_args,
-                                run,
-                                node,
-                                worktree,
-                            }),
+                            adapter.debug,
+                            || format::render_state_command_markdown(&wrapped, title),
                         )?
+                    } else {
+                        state_ctx.command(StateCommand::CallPluginTool(CallPluginToolReq {
+                            tool_name,
+                            args: parsed_args,
+                            run,
+                            node,
+                            worktree,
+                        }))?
                     }
                 }
                 Command::Read {
@@ -2406,6 +2242,8 @@ impl Cli {
                             &page,
                             &source,
                             Some(&conn),
+                            state_db.as_deref(),
+                            Some(db.as_path()),
                         )?
                     } else if db.is_file()
                         && (adapter.modules.is_enabled("code") || adapter.modules.is_enabled("docs"))
@@ -2419,16 +2257,32 @@ impl Cli {
                                     &page,
                                     &source,
                                     Some(&conn),
+                                    state_db.as_deref(),
+                                    Some(db.as_path()),
                                 )
                             })
                             .or_else(|_| {
                                 crate::engine::reader::acdd_read_tool(
-                                    &root, &adapter, &request, &page, &source, None,
+                                    &root,
+                                    &adapter,
+                                    &request,
+                                    &page,
+                                    &source,
+                                    None,
+                                    state_db.as_deref(),
+                                    Some(db.as_path()),
                                 )
                             })?
                     } else {
                         crate::engine::reader::acdd_read_tool(
-                            &root, &adapter, &request, &page, &source, None,
+                            &root,
+                            &adapter,
+                            &request,
+                            &page,
+                            &source,
+                            None,
+                            state_db.as_deref(),
+                            Some(db.as_path()),
                         )?
                     };
                     (val, None)
@@ -2439,12 +2293,12 @@ impl Cli {
                         root: root.clone(),
                         config: explicit_config.clone(),
                         profile: profile_argument,
-                        state_db,
+                        state_db: state_db.clone(),
                         code_db: db.clone(),
                     };
                     crate::mcp::server::serve_with_state_config(
                         root.clone(),
-                        db,
+                        db.clone(),
                         cache_dir.map(Path::to_path_buf),
                         Some(invocation),
                     )
@@ -2983,54 +2837,72 @@ impl Cli {
     }
 }
 
-fn exec_cli_state_command(
-    root: &Path,
-    state_db: Option<&Path>,
-    adapter: &acdd_core::config::Adapter,
+struct CliStateCtx<'a> {
+    root: &'a Path,
+    state_db: Option<&'a Path>,
+    code_db: Option<&'a Path>,
+    adapter: &'a acdd_core::config::Adapter,
     output_format: OutputFormat,
-    title: &str,
-    cmd: StateCommand,
-) -> Result<(Value, Option<String>)> {
-    let worktree = match &cmd {
-        StateCommand::Claim(req) => req.worktree.as_deref(),
-        StateCommand::Verify(req) => req.worktree.as_deref(),
-        StateCommand::Submit(req) => req.worktree.as_deref(),
-        StateCommand::Rollback(req) => req.worktree.as_deref(),
-        StateCommand::CallPluginTool(req) => req.worktree.as_deref(),
-        _ => None,
-    }
-    .map(Path::to_path_buf);
-    let res = execute_state_command(
-        root,
-        worktree.as_deref().unwrap_or(root),
-        state_db,
-        adapter,
-        cmd,
-    )?;
-    let md = (output_format == OutputFormat::Markdown)
-        .then(|| format::render_state_command_markdown(&res, title));
-    let val = if output_format == OutputFormat::Json || adapter.debug {
-        serde_json::to_value(&res)?
-    } else {
-        Value::Null
-    };
-    Ok((val, md))
+    title: &'a str,
 }
 
-fn exec_cli_state_query(
-    root: &Path,
-    worktree: &Path,
-    state_db: Option<&Path>,
-    adapter: &acdd_core::config::Adapter,
+impl CliStateCtx<'_> {
+    fn command(&self, cmd: StateCommand) -> Result<(Value, Option<String>)> {
+        let worktree = match &cmd {
+            StateCommand::Claim(req) => req.worktree.as_deref(),
+            StateCommand::Verify(req) => req.worktree.as_deref(),
+            StateCommand::Submit(req) => req.worktree.as_deref(),
+            StateCommand::CallPluginTool(req) => req.worktree.as_deref(),
+            _ => None,
+        }
+        .map(Path::to_path_buf);
+        let providers = build_domain_providers(self.root, self.adapter, self.code_db, Vec::new())?;
+        let res = execute_state_command(
+            self.root,
+            worktree.as_deref().unwrap_or(self.root),
+            self.state_db,
+            self.code_db,
+            self.adapter,
+            providers,
+            cmd,
+        )?;
+        render_cli_state_output(
+            &res,
+            self.output_format,
+            self.adapter.debug,
+            || format::render_state_command_markdown(&res, self.title),
+        )
+    }
+
+    fn query(&self, worktree: &Path, query: StateQuery) -> Result<(Value, Option<String>)> {
+        let providers = build_domain_providers(self.root, self.adapter, self.code_db, Vec::new())?;
+        let res = execute_state_query(
+            self.root,
+            worktree,
+            self.state_db,
+            self.code_db,
+            self.adapter,
+            providers,
+            query,
+        )?;
+        render_cli_state_output(
+            &res,
+            self.output_format,
+            self.adapter.debug,
+            || format::render_state_query_markdown(&res, self.title),
+        )
+    }
+}
+
+fn render_cli_state_output<T: serde::Serialize>(
+    res: &T,
     output_format: OutputFormat,
-    title: &str,
-    query: StateQuery,
+    debug: bool,
+    render_md: impl FnOnce() -> String,
 ) -> Result<(Value, Option<String>)> {
-    let res = execute_state_query(root, worktree, state_db, adapter, query)?;
-    let md = (output_format == OutputFormat::Markdown)
-        .then(|| format::render_state_query_markdown(&res, title));
-    let val = if output_format == OutputFormat::Json || adapter.debug {
-        serde_json::to_value(&res)?
+    let md = (output_format == OutputFormat::Markdown).then(render_md);
+    let val = if output_format == OutputFormat::Json || debug {
+        serde_json::to_value(res)?
     } else {
         Value::Null
     };
@@ -3041,34 +2913,9 @@ fn exec_cli_state_query(
 mod tests {
     use super::Cli;
     use acdd_core::errors::{ErrorCode, StateError};
+    use acdd_core::fs::ScopedTempDir;
     use clap::Parser;
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NONCE: AtomicU64 = AtomicU64::new(0);
-
-    struct TempDir(PathBuf);
-    impl TempDir {
-        fn new(tag: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "acdd-ut-{tag}-{}-{}",
-                std::process::id(),
-                NONCE.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = fs::remove_dir_all(&p);
-            fs::create_dir_all(&p).unwrap();
-            Self(p)
-        }
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     #[test]
     fn cli_exit_codes_preflight_init_validate_and_flat_dispatch() {
@@ -3089,7 +2936,7 @@ mod tests {
         for args in [
             vec!["acdd", "init"],
             vec!["acdd", "start", "--goal", "ship feature", "--name", "m1"],
-            vec!["acdd", "start", "--goal", "ship feature", "--name", "m1", "--profile", "in_place"],
+            vec!["acdd", "start", "--goal", "ship feature", "--name", "m1", "--profile", "audit"],
             vec!["acdd", "draft", "milestones", "my-slug"],
             vec!["acdd", "draft", "milestones", "my-slug", "--profile", "code"],
             vec!["acdd", "status", "--run", "m1"],
@@ -3104,8 +2951,6 @@ mod tests {
             vec!["acdd", "sync", "--run", "m1"],
             vec!["acdd", "subtask", "t1", "s1", "--run", "m1", "--status", "completed", "--evidence", "ok"],
             vec!["acdd", "blackboard", "--run", "m1", "--action", "read"],
-            vec!["acdd", "rollback", "HEAD", "--run", "m1"],
-            vec!["acdd", "integrate", "--run", "m1"],
             vec!["acdd", "clear", "--run", "m1"],
             vec!["acdd", "run", "--run", "m1"],
             vec!["acdd", "tool", "code_extra"],
@@ -3125,12 +2970,12 @@ mod tests {
             assert!(Cli::try_parse_from(&legacy).is_err(), "legacy cmd should be removed: {legacy:?}");
         }
 
-        // 3. `acdd init` picks inherit: code vs default and writes canonical .gitignore block
+        // 3. `acdd init` picks inherit: code vs base and writes canonical .gitignore block
         for (acdd_yaml, expected_inherit) in [
             ("modules:\n  code: true\n  docs: true\n  state: true\n", "inherit: code"),
-            ("modules:\n  code: false\n  docs: true\n  state: true\n", "inherit: default"),
+            ("modules:\n  code: false\n  docs: true\n  state: true\n", "inherit: base"),
         ] {
-            let dir = TempDir::new("cli-init");
+            let dir = ScopedTempDir::create("acdd-ut-cli-init").unwrap();
             let root = dir.path();
             assert!(acdd_core::git::git_command(root, &["init"]).unwrap().status.success());
             fs::write(root.join("acdd.yaml"), acdd_yaml).unwrap();
@@ -3157,7 +3002,7 @@ mod tests {
                 .status
                 .success());
 
-            if expected_inherit == "inherit: default" {
+            if expected_inherit == "inherit: base" {
                 let cli_force = Cli::try_parse_from([
                     "acdd",
                     "--root",
@@ -3177,7 +3022,7 @@ mod tests {
         }
 
         // 4. `CONFIG_MIGRATION_REQUIRED` preflight blocks legacy 0.5.x config keys
-        let dir = TempDir::new("cli-migrate");
+        let dir = ScopedTempDir::create("acdd-ut-cli-migrate").unwrap();
         let root = dir.path();
         fs::write(root.join("acdd.yaml"), "milestones:\n  path: docs/milestones\ntasks_db: .acdd/tasks.sqlite\n").unwrap();
         let err = super::ensure_migrated_preflight(root, None).unwrap_err();
@@ -3186,19 +3031,19 @@ mod tests {
         assert_eq!(state_err.exit_code(), 2);
 
         // 5. `acdd validate` succeeds on valid workspace with bound commands and fails on unbound/broken profile
-        let vdir = TempDir::new("cli-validate");
+        let vdir = ScopedTempDir::create("acdd-ut-cli-validate").unwrap();
         let vroot = vdir.path();
         fs::create_dir_all(vroot.join(".acdd")).unwrap();
         fs::write(vroot.join("acdd.yaml"), "modules:\n  code: true\n  docs: true\n  state: true\n").unwrap();
         fs::write(
             vroot.join(".acdd/profile.yaml"),
-            "version: 2\ninherit: default\ncommands:\n  test: \"cargo test --lib {test_filter}\"\n  build_check: \"cargo check --lib\"\n  verify_all: \"cargo test --lib\"\n",
+            "version: 2\ninherit: code\ncommands:\n  test: \"cargo test --lib {test_filter}\"\n  build_check: \"cargo check --lib\"\n  verify_all: \"cargo test --lib\"\n",
         )
         .unwrap();
         let val = super::validate::run(vroot, None).unwrap();
         assert_eq!(val["valid"], serde_json::json!(true), "{val}");
 
-        fs::write(vroot.join(".acdd/profile.yaml"), "version: 2\ninherit: default\n").unwrap();
+        fs::write(vroot.join(".acdd/profile.yaml"), "version: 2\ninherit: code\n").unwrap();
         let unbound = super::validate::run(vroot, None).unwrap();
         assert_eq!(unbound["valid"], serde_json::json!(false), "{unbound}");
         assert_eq!(unbound["diagnostics"][1]["code"], "COMMAND_UNBOUND");
@@ -3210,7 +3055,8 @@ mod tests {
         // 6. Default `.acdd/state.sqlite` keeps `state_db_override == None` (enabling `state.bak.sqlite`) even from linked worktrees,
         // and `code_db_path` is populated iff `code || docs` is enabled (#25).
         let cfg_default = crate::state_bridge::AcddConfig::default();
-        let eng_default = crate::state_bridge::state_engine_config(vroot, vroot, None, &cfg_default);
+        let eng_default =
+            crate::state_bridge::state_engine_config(vroot, vroot, None, None, &cfg_default);
         assert!(eng_default.state_db_override.is_none());
         assert_eq!(
             eng_default.code_db_path,
@@ -3223,17 +3069,19 @@ mod tests {
             },
             ..Default::default()
         };
-        let eng_minimal = crate::state_bridge::state_engine_config(vroot, vroot, None, &cfg_minimal);
+        let eng_minimal =
+            crate::state_bridge::state_engine_config(vroot, vroot, None, None, &cfg_minimal);
         assert_eq!(eng_minimal.code_db_path, None);
         let cfg_custom = crate::state_bridge::AcddConfig {
             state_db: ".acdd/custom.sqlite".to_owned(),
             ..Default::default()
         };
-        let eng_custom = crate::state_bridge::state_engine_config(vroot, vroot, None, &cfg_custom);
+        let eng_custom =
+            crate::state_bridge::state_engine_config(vroot, vroot, None, None, &cfg_custom);
         assert!(eng_custom.state_db_override.is_some());
 
         // 7. Stateless `acdd tool <name>` (no `--run`/`--node`) dispatches without opening `state.sqlite` even when `modules.state == false` (#30).
-        let tdir = TempDir::new("cli-tool-stateless");
+        let tdir = ScopedTempDir::create("acdd-ut-cli-tool-stateless").unwrap();
         let troot = tdir.path();
         fs::write(
             troot.join("acdd.yaml"),

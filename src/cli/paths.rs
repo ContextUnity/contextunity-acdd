@@ -1,22 +1,15 @@
 //! Confined CLI path and profile resolution helpers (`ADR-0002`).
 
 use acdd_core::config::{load_adapter, Adapter};
-use acdd_state::profile::{resolve_profile_ref_with_dirs, ResolvedGateProfile};
+use acdd_state::profile::resolve_optional_profile_ref_with_dirs;
 use anyhow::{ensure, Context, Result};
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::{Path, PathBuf};
 
 /// Immutable path choices for one in-process CLI invocation.
 pub(super) struct ResolvedPaths {
     pub config: Option<PathBuf>,
     pub adapter: Adapter,
     pub profile_ref: Option<String>,
-    #[allow(dead_code)]
-    pub profile: Arc<ResolvedGateProfile>,
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub explicit_profile: bool,
 }
 
 impl ResolvedPaths {
@@ -33,19 +26,21 @@ impl ResolvedPaths {
         let profile_ref = match profile {
             Some(path) => {
                 let raw = path.to_string_lossy();
-                if matches!(raw.as_ref(), "default" | "code" | "in_place" | "workspace") {
+                let (target_str, pin) = match raw.rsplit_once(':') {
+                    Some((prefix, suffix))
+                        if !prefix.is_empty()
+                            && !suffix.is_empty()
+                            && !suffix.contains(['/', '\\']) =>
+                    {
+                        (prefix, Some(suffix))
+                    }
+                    _ => (raw.as_ref(), None),
+                };
+                if matches!(target_str, "base" | "code" | "audit")
+                    || (!target_str.contains(['/', '\\']) && !root.join(target_str).is_file())
+                {
                     Some(raw.into_owned())
                 } else {
-                    let (target_str, pin) = match raw.rsplit_once(':') {
-                        Some((prefix, suffix))
-                            if !prefix.is_empty()
-                                && !suffix.is_empty()
-                                && !suffix.contains(['/', '\\']) =>
-                        {
-                            (prefix, Some(suffix))
-                        }
-                        _ => (raw.as_ref(), None),
-                    };
                     let confined = confined_file(root, Path::new(target_str))?;
                     let canonical_root = root.canonicalize()?;
                     let relative = confined
@@ -61,19 +56,18 @@ impl ResolvedPaths {
             }
             None => None,
         };
-        let effective_ref = profile_ref.as_deref().unwrap_or("workspace");
-        let resolved = resolve_profile_ref_with_dirs(
-            effective_ref,
-            Some(root),
-            Some(&adapter.modules),
-            Some(&adapter.profiles_dirs),
-        )?;
+        if profile_ref.is_some() {
+            let _resolved = resolve_optional_profile_ref_with_dirs(
+                profile_ref.as_deref(),
+                Some(root),
+                Some(&adapter.modules),
+                Some(&adapter.profiles_dirs),
+            )?;
+        }
         Ok(Self {
             config: config_path,
             adapter,
             profile_ref,
-            profile: Arc::new(resolved),
-            explicit_profile: profile.is_some(),
         })
     }
 }
@@ -110,7 +104,7 @@ mod tests {
         let real_repo = base.join("private_var/repo");
         fs::create_dir_all(real_repo.join(".acdd")).unwrap();
         let profile_file = real_repo.join(".acdd/profile.yaml");
-        fs::write(&profile_file, "version: 2\ninherit: default\n").unwrap();
+        fs::write(&profile_file, "version: 2\ninherit: code\n").unwrap();
 
         let alias_repo = base.join("var_repo");
         symlink(&real_repo, &alias_repo).unwrap();
@@ -118,7 +112,7 @@ mod tests {
         let canonical_root = real_repo.canonicalize().unwrap();
         let alias_profile = alias_repo.join(".acdd/profile.yaml");
         let resolved = ResolvedPaths::resolve(&canonical_root, None, Some(&alias_profile)).unwrap();
-        assert!(resolved.explicit_profile);
+        assert!(resolved.profile_ref.is_some());
 
         let outside = base.join("outside-profile.yaml");
         fs::write(&outside, "version: 2\n").unwrap();

@@ -1,8 +1,6 @@
 //! Host `DocsDomainProvider` (`domain_id = "docs"`) implementation.
 
-use super::{
-    budget_items, budget_items_with_fields, combine_file_hashes, open_code_db_readonly,
-};
+use super::{budget_items, combine_file_hashes, open_code_db_readonly};
 use crate::format::file_uri_for_path;
 use acdd_core::config::Adapter;
 use acdd_core::errors::{ErrorCode, StateError};
@@ -35,12 +33,22 @@ enum LinksScope {
 pub struct DocsDomainProvider {
     root: PathBuf,
     config: Adapter,
+    code_db: Option<PathBuf>,
 }
 
 impl DocsDomainProvider {
     /// Construct a `DocsDomainProvider` bound to `root` and workspace `config`.
     pub fn new(root: PathBuf, config: Adapter) -> Self {
-        Self { root, config }
+        Self::with_code_db(root, config, None)
+    }
+
+    /// Construct a `DocsDomainProvider` bound to `root`, workspace `config`, and an optional explicit `code_db` path.
+    pub fn with_code_db(root: PathBuf, config: Adapter, code_db: Option<PathBuf>) -> Self {
+        Self {
+            root,
+            config,
+            code_db,
+        }
     }
 
     fn resolve_links_scope(&self, req: &DomainCheckReq) -> LinksScope {
@@ -163,7 +171,7 @@ impl DocsDomainProvider {
             }
         }
 
-        if let Some(conn) = open_code_db_readonly(&self.root, &req.worktree) {
+        if let Some(conn) = open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref()) {
             let mut stmt = conn.prepare(
                 "SELECT path, MIN(section_title) AS title, doc_type
                  FROM doc_sections
@@ -243,31 +251,6 @@ impl DocsDomainProvider {
             }
         }
 
-        // 4. Relevant `docs/adr/*.md` files (prioritizing scope-relevant ADRs before general ADRs).
-        let scope_tokens = extract_scope_tokens(&req.admitted_scope, req.target.as_deref());
-        let mut matched_adrs = Vec::new();
-        let mut other_adrs = Vec::new();
-        for (rel, title, _doc_type) in self.collect_adr_records(req)? {
-            if !seen.insert(rel.clone()) {
-                continue;
-            }
-            if !checked_child(&req.worktree, Path::new(&rel)).is_ok_and(|p| p.is_file()) {
-                continue;
-            }
-            let lower_rel = rel.to_ascii_lowercase();
-            let lower_title = title.to_ascii_lowercase();
-            let is_match = scope_tokens
-                .iter()
-                .any(|tok| lower_rel.contains(tok) || lower_title.contains(tok));
-            if is_match {
-                matched_adrs.push((rel, "adr", title));
-            } else {
-                other_adrs.push((rel, "adr", title));
-            }
-        }
-        ordered_paths.extend(matched_adrs);
-        ordered_paths.extend(other_adrs);
-
         let mut items = Vec::with_capacity(ordered_paths.len());
         for (rel, kind, fallback_title) in ordered_paths {
             let Ok(abs) = checked_child(&req.worktree, Path::new(&rel)) else {
@@ -279,8 +262,7 @@ impl DocsDomainProvider {
             let title = frontmatter_field(&text, "title")
                 .or_else(|| first_markdown_heading(&text))
                 .unwrap_or(fallback_title);
-            let max_headings = if kind == "adr" { 6 } else { 10 };
-            let headings = extract_markdown_headings(&text, max_headings);
+            let headings = extract_markdown_headings(&text, 10);
             let uri = abs
                 .canonicalize()
                 .ok()
@@ -298,33 +280,16 @@ impl DocsDomainProvider {
             items.push(Value::Object(obj));
         }
 
-        let mut extra = serde_json::Map::new();
-        extra.insert(
-            "mandatory_directives".to_owned(),
-            json!([
-                "Read all listed AGENTS.md and ADRs before edits, contracts, or reviews; reuse INV-SINGLE-OWNER owners before adding code.",
-                "Prioritize ACDD MCP tools (code_map_search, code_map_inspect, code_map_impact, code_map_query, acdd_read, ast_grep_search) before shell grep/rg."
-            ]),
-        );
-        // Reserve room for the outer `"docs.instructions":` map key inside `ClaimResp` Tier 6.
-        let effective_max = if req.max_bytes >= 512 {
-            req.max_bytes.saturating_sub(48)
-        } else {
-            req.max_bytes
-        };
-        let mut budgeted = budget_items_with_fields(
-            "instructions",
-            items.clone(),
-            effective_max,
-            extra.clone(),
-        );
-        if acdd_core::format::estimate_json_bytes(&budgeted) > req.max_bytes {
+        let mut budgeted = budget_items("instructions", items.clone(), req.max_bytes);
+        if budgeted["truncated"].as_bool() == Some(true)
+            || acdd_core::format::estimate_json_bytes(&budgeted) > req.max_bytes
+        {
             for item in &mut items {
                 if let Some(obj) = item.as_object_mut() {
                     obj.remove("headings");
                 }
             }
-            budgeted = budget_items_with_fields("instructions", items, effective_max, extra);
+            budgeted = budget_items("instructions", items, req.max_bytes);
         }
         Ok(budgeted)
     }
@@ -333,7 +298,7 @@ impl DocsDomainProvider {
         let mut items: Vec<Value> = Vec::new();
         let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
 
-        if let Some(conn) = open_code_db_readonly(&self.root, &req.worktree) {
+        if let Some(conn) = open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref()) {
             if !req.admitted_scope.is_empty() {
                 if let Ok(scoped) =
                     reader::governing_invariants_for_scope(&conn, &req.admitted_scope)
@@ -364,33 +329,35 @@ impl DocsDomainProvider {
                 }
             }
 
-            let mut stmt = conn.prepare(
-                "SELECT path, section_title, invariants
-                 FROM doc_sections
-                 WHERE is_invariant = 1 AND doc_type != 'contract'
-                 ORDER BY path, section_title
-                 LIMIT 64",
-            )?;
-            let rows = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            })?;
-            for row in rows.flatten() {
-                let (path, section_title, inv_raw) = row;
-                if is_contract_spec_path(&path, &self.config) {
-                    continue;
-                }
-                let id = inv_raw.unwrap_or_else(|| section_title.clone());
-                if seen.insert((path.clone(), id.clone())) {
-                    items.push(json!({
-                        "id": id,
-                        "path": path,
-                        "section_title": section_title,
-                        "scope_match": false,
-                    }));
+            if req.admitted_scope.is_empty() || items.is_empty() {
+                let mut stmt = conn.prepare(
+                    "SELECT path, section_title, invariants
+                     FROM doc_sections
+                     WHERE is_invariant = 1 AND doc_type != 'contract'
+                     ORDER BY path, section_title
+                     LIMIT 64",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?;
+                for row in rows.flatten() {
+                    let (path, section_title, inv_raw) = row;
+                    if is_contract_spec_path(&path, &self.config) {
+                        continue;
+                    }
+                    let id = inv_raw.unwrap_or_else(|| section_title.clone());
+                    if seen.insert((path.clone(), id.clone())) {
+                        items.push(json!({
+                            "id": id,
+                            "path": path,
+                            "section_title": section_title,
+                            "scope_match": false,
+                        }));
+                    }
                 }
             }
         }
@@ -472,11 +439,7 @@ impl DomainProvider for DocsDomainProvider {
         _idempotency_key: &str,
         _req: &DomainActionReq,
     ) -> Result<DomainActionResult> {
-        Err(StateError::new(
-            ErrorCode::DomainCapabilityUnavailable,
-            format!("docs domain does not expose action '{action}'"),
-        )
-        .into())
+        super::unsupported_domain_action("docs", action)
     }
 
     fn run_check(
@@ -721,25 +684,6 @@ fn collect_scoped_agents_md(
     found
 }
 
-fn extract_scope_tokens(admitted_scope: &[String], target: Option<&str>) -> Vec<String> {
-    let mut tokens = BTreeSet::new();
-    for raw in admitted_scope.iter().map(String::as_str).chain(target) {
-        for part in raw
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .filter(|s| s.len() >= 3)
-        {
-            let lower = part.to_ascii_lowercase();
-            if !matches!(
-                lower.as_str(),
-                "src" | "tests" | "test" | "docs" | "crates" | "mod" | "lib" | "main"
-            ) {
-                tokens.insert(lower);
-            }
-        }
-    }
-    tokens.into_iter().collect()
-}
-
 fn extract_markdown_headings(markdown: &str, max_headings: usize) -> Vec<String> {
     let mut headings = Vec::new();
     let mut lines = markdown.lines().peekable();
@@ -788,41 +732,16 @@ fn extract_invariant_id(line: &str) -> Option<String> {
 mod tests {
     use super::DocsDomainProvider;
     use acdd_core::config::Adapter;
+    use acdd_core::fs::ScopedTempDir;
     use acdd_core::ids::RunId;
     use acdd_core::ports::{
         DomainCheckOutcome, DomainCheckReq, DomainContextReq, DomainProvider, FreshnessObservation,
     };
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NONCE: AtomicU64 = AtomicU64::new(0);
-
-    struct TempDir(PathBuf);
-    impl TempDir {
-        fn new(tag: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "acdd-ut-{tag}-{}-{}",
-                std::process::id(),
-                NONCE.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = fs::remove_dir_all(&p);
-            fs::create_dir_all(&p).unwrap();
-            Self(p)
-        }
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     #[test]
     fn docs_domain_checks_links_and_filters_contracts_from_lenses() {
-        let dir = TempDir::new("docs-domain");
+        let dir = ScopedTempDir::create("acdd-ut-docs-domain").unwrap();
         let root = dir.path();
         fs::create_dir_all(root.join("docs/adr")).unwrap();
         fs::create_dir_all(root.join("docs/milestones")).unwrap();
@@ -958,24 +877,11 @@ mod tests {
             .collect();
         assert_eq!(
             src_paths,
-            vec!["AGENTS.md", "src/AGENTS.md", "docs/adr/ADR-0001-test.md"]
+            vec!["AGENTS.md", "src/AGENTS.md"]
         );
         assert!(src_inst["items"][0]["uri"].as_str().is_some_and(|u| u.starts_with("file://")));
         assert_eq!(src_inst["items"][0]["headings"], serde_json::json!(["Root Agent Rules", "Routes"]));
-        let directives = src_inst["mandatory_directives"].to_string();
-        for tool in [
-            "AGENTS.md",
-            "ADRs",
-            "code_map_search",
-            "code_map_inspect",
-            "code_map_impact",
-            "code_map_query",
-            "acdd_read",
-            "ast_grep_search",
-            "grep/rg",
-        ] {
-            assert!(directives.contains(tool), "missing directive {tool}: {directives}");
-        }
+        assert!(src_inst.get("mandatory_directives").is_none());
 
         let tests_ctx = DomainContextReq {
             admitted_scope: vec!["tests/**".into()],
@@ -995,7 +901,6 @@ mod tests {
                 "TESTS.md",
                 "tests/AGENTS.md",
                 "tests/acdd/AGENTS.md",
-                "docs/adr/ADR-0001-test.md",
             ]
         );
 
@@ -1003,13 +908,13 @@ mod tests {
             .provide_context(
                 "instructions",
                 &DomainContextReq {
-                    max_bytes: 700,
+                    max_bytes: 400,
                     ..tests_ctx
                 },
             )
             .unwrap();
         assert_eq!(tight_inst["truncated"], true);
-        assert!(acdd_core::format::estimate_json_bytes(&tight_inst) <= 700);
+        assert!(acdd_core::format::estimate_json_bytes(&tight_inst) <= 400);
 
         let adrs = provider.provide_context("adrs", &ctx_req).unwrap();
         assert_eq!(adrs["items"].as_array().map(|a| a.len()), Some(1));
@@ -1019,8 +924,9 @@ mod tests {
         assert!(inv_text.contains("INV-TEST-1"), "{inv_text}");
         assert!(!inv_text.contains("INV-CONTRACT-ONLY"), "{inv_text}");
 
-        // With indexed `code-map.sqlite` containing archived/README ADRs, both `docs.instructions`
-        // and `docs.adrs` must exclude archived/README rows and still surface live unindexed ADRs.
+        // With indexed `code-map.sqlite` containing archived/README ADRs, `docs.adrs` must
+        // exclude archived/README rows and still surface live unindexed ADRs, while
+        // `docs.instructions` surfaces AGENTS.md only without repeating ADRs.
         fs::create_dir_all(root.join("docs/adr/archive")).unwrap();
         fs::write(
             root.join("docs/adr/archive/0000-old.md"),
@@ -1041,13 +947,13 @@ mod tests {
         for (lens, expected_paths, excluded_paths) in [
             (
                 "instructions",
+                vec!["AGENTS.md", "src/AGENTS.md"],
                 vec![
-                    "AGENTS.md",
-                    "src/AGENTS.md",
                     "docs/adr/ADR-0001-test.md",
                     "docs/adr/ADR-0002-live.md",
+                    "docs/adr/archive/0000-old.md",
+                    "docs/adr/README.md",
                 ],
-                vec!["docs/adr/archive/0000-old.md", "docs/adr/README.md"],
             ),
             (
                 "adrs",

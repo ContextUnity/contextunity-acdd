@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 const MAX_SEAM_HOPS: usize = 8;
 const MAX_SEAM_CONTEXT_FILES: usize = 128;
@@ -56,15 +57,37 @@ impl PreparedSeamState {
     }
 }
 
+struct ParsedScopedFile {
+    source_digest: String,
+    facts: Facts,
+}
+
+struct ScopedCodeSnapshot {
+    worktree: PathBuf,
+    files: Vec<String>,
+    parsed: BTreeMap<String, ParsedScopedFile>,
+}
+
 /// Host `code` domain provider exposing `code.seam`, `code.signature_scope`, and `code.*` context lenses.
 pub struct CodeDomainProvider {
     root: PathBuf,
+    code_db: Option<PathBuf>,
+    snapshot_cache: Mutex<Option<Arc<ScopedCodeSnapshot>>>,
 }
 
 impl CodeDomainProvider {
     /// Construct a `CodeDomainProvider` bound to `root` and workspace `config`.
-    pub fn new(root: PathBuf, _config: Adapter) -> Self {
-        Self { root }
+    pub fn new(root: PathBuf, config: Adapter) -> Self {
+        Self::with_code_db(root, config, None)
+    }
+
+    /// Construct a `CodeDomainProvider` bound to `root`, workspace `config`, and an optional explicit `code_db` path.
+    pub fn with_code_db(root: PathBuf, _config: Adapter, code_db: Option<PathBuf>) -> Self {
+        Self {
+            root,
+            code_db,
+            snapshot_cache: Mutex::new(None),
+        }
     }
 
     fn index_generation(conn: Option<&Connection>) -> String {
@@ -82,7 +105,7 @@ impl CodeDomainProvider {
 
     fn prepare_seam_state(&self, req: &DomainCheckReq) -> Result<PreparedSeamState> {
         let policy = &req.path_policy;
-        let conn = open_code_db_readonly(&self.root, &req.worktree);
+        let conn = open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref());
         let index_gen = Self::index_generation(conn.as_ref());
 
         let mut live_facts: BTreeMap<String, Facts> = BTreeMap::new();
@@ -183,7 +206,7 @@ impl CodeDomainProvider {
     fn observe_signature_scope_state(&self, req: &DomainCheckReq) -> Result<(Option<Connection>, String, Vec<String>, String)> {
         let policy = &req.path_policy;
         let baseline = effective_baseline_ref(req.baseline_ref.as_deref());
-        let conn = open_code_db_readonly(&self.root, &req.worktree);
+        let conn = open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref());
         let index_gen = Self::index_generation(conn.as_ref());
         let mut scoped_set: BTreeSet<String> =
             collect_scoped_worktree_files(&req.worktree, &req.admitted_scope, policy)
@@ -642,11 +665,19 @@ impl CodeDomainProvider {
         }
     }
 
-    fn provide_symbols(&self, req: &DomainContextReq) -> Result<Value> {
-        let scoped_files =
-            collect_scoped_worktree_files(&req.worktree, &req.admitted_scope, &req.path_policy);
-        let mut items = Vec::new();
-        for rel in &scoped_files {
+    fn effective_context_files(&self, req: &DomainContextReq) -> Vec<String> {
+        let files = collect_scoped_worktree_files(&req.worktree, &req.admitted_scope, &req.path_policy);
+        if !files.is_empty() || req.gate_id.as_str() != "integration_review" {
+            return files;
+        }
+        let baseline = effective_baseline_ref(req.baseline_ref.as_deref());
+        collect_changed_worktree_files(&req.worktree, &req.path_policy, baseline)
+    }
+
+    fn scoped_code_snapshot(&self, req: &DomainContextReq) -> Arc<ScopedCodeSnapshot> {
+        let files = self.effective_context_files(req);
+        let mut live_inputs: Vec<(String, &'static str, String, String)> = Vec::new();
+        for rel in &files {
             let Some(lang) = languages::for_path(Path::new(rel)) else {
                 continue;
             };
@@ -656,11 +687,59 @@ impl CodeDomainProvider {
             let Ok(source) = fs::read_to_string(&abs) else {
                 continue;
             };
-            let Ok(typed) = extract_typed(rel, lang.id(), &source) else {
+            let digest = sha256_hex(source.as_bytes());
+            live_inputs.push((rel.clone(), lang.id(), source, digest));
+        }
+
+        if let Ok(guard) = self.snapshot_cache.lock() {
+            if let Some(ref cached) = *guard {
+                let digests_match = cached.worktree == req.worktree
+                    && cached.files == files
+                    && cached.parsed.len() == live_inputs.len()
+                    && live_inputs.iter().all(|(rel, _, _, digest)| {
+                        cached
+                            .parsed
+                            .get(rel)
+                            .is_some_and(|entry| entry.source_digest == *digest)
+                    });
+                if digests_match {
+                    return Arc::clone(cached);
+                }
+            }
+        }
+
+        let mut parsed = BTreeMap::new();
+        for (rel, lang_id, source, digest) in live_inputs {
+            if let Ok(typed) = extract_typed(&rel, lang_id, &source) {
+                parsed.insert(
+                    rel,
+                    ParsedScopedFile {
+                        source_digest: digest,
+                        facts: typed.into_public(),
+                    },
+                );
+            }
+        }
+        let snap = Arc::new(ScopedCodeSnapshot {
+            worktree: req.worktree.clone(),
+            files,
+            parsed,
+        });
+        if let Ok(mut guard) = self.snapshot_cache.lock() {
+            *guard = Some(Arc::clone(&snap));
+        }
+        snap
+    }
+
+    fn provide_symbols(&self, req: &DomainContextReq) -> Result<Value> {
+        let snapshot = self.scoped_code_snapshot(req);
+        let mut items = Vec::new();
+        for rel in &snapshot.files {
+            let Some(parsed) = snapshot.parsed.get(rel) else {
                 continue;
             };
-            for node in typed.facts.nodes {
-                if node.kind == "module" {
+            for node in &parsed.facts.nodes {
+                if node.kind == "module" || node.is_test {
                     continue;
                 }
                 items.push(json!({
@@ -679,15 +758,14 @@ impl CodeDomainProvider {
     }
 
     fn provide_tests(&self, req: &DomainContextReq) -> Result<Value> {
-        let policy = &req.path_policy;
-        let conn = open_code_db_readonly(&self.root, &req.worktree);
+        let snapshot = self.scoped_code_snapshot(req);
+        let conn = open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref());
         let mut items = Vec::new();
         let mut seen = BTreeSet::new();
-        let scoped_files = collect_scoped_worktree_files(&req.worktree, &req.admitted_scope, policy);
 
         if let Some(ref conn) = conn {
             let page = QueryOptions::resolve(&ResponsePolicy::default(), Some(25), 0, None, None)?;
-            for rel in scoped_files.iter().take(10) {
+            for rel in snapshot.files.iter().take(10) {
                 if let Ok(res) = symbols::tests_paged_with_path(conn, rel, None, "inbound", &page) {
                     if let Some(arr) = res.pointer("/nodes/items").and_then(Value::as_array) {
                         for item in arr {
@@ -714,27 +792,19 @@ impl CodeDomainProvider {
         }
 
         // Also include live test symbols from scoped files.
-        for rel in &scoped_files {
-            let Some(lang) = languages::for_path(Path::new(rel)) else {
+        for rel in &snapshot.files {
+            let Some(parsed) = snapshot.parsed.get(rel) else {
                 continue;
             };
-            let Ok(abs) = checked_child(&req.worktree, Path::new(rel)) else {
-                continue;
-            };
-            let Ok(source) = fs::read_to_string(&abs) else {
-                continue;
-            };
-            if let Ok(typed) = extract_typed(rel, lang.id(), &source) {
-                for node in typed.facts.nodes {
-                    if node.is_test && seen.insert((node.path.clone(), node.qualname.clone())) {
-                        items.push(json!({
-                            "path": node.path,
-                            "name": node.name,
-                            "qualname": node.qualname,
-                            "line": node.line,
-                            "discovery": "live_ast",
-                        }));
-                    }
+            for node in &parsed.facts.nodes {
+                if node.is_test && seen.insert((node.path.clone(), node.qualname.clone())) {
+                    items.push(json!({
+                        "path": node.path,
+                        "name": node.name,
+                        "qualname": node.qualname,
+                        "line": node.line,
+                        "discovery": "live_ast",
+                    }));
                 }
             }
         }
@@ -743,16 +813,24 @@ impl CodeDomainProvider {
     }
 
     fn provide_external_callers(&self, req: &DomainContextReq) -> Result<Value> {
+        let snapshot = self.scoped_code_snapshot(req);
         let policy = &req.path_policy;
         let baseline = effective_baseline_ref(req.baseline_ref.as_deref());
-        let conn = open_code_db_readonly(&self.root, &req.worktree);
-        let mut scoped_set: BTreeSet<String> =
-            collect_scoped_worktree_files(&req.worktree, &req.admitted_scope, policy)
-                .into_iter()
-                .collect();
+        let conn = open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref());
+        let scope_for_external: Vec<String> = if req.admitted_scope.is_empty() {
+            snapshot.files.clone()
+        } else {
+            req.admitted_scope.clone()
+        };
+        let mut scoped_set: BTreeSet<String> = snapshot.files.iter().cloned().collect();
+        let deleted_scope = if req.admitted_scope.is_empty() && req.gate_id.as_str() == "integration_review" {
+            vec!["**".to_owned()]
+        } else {
+            req.admitted_scope.clone()
+        };
         scoped_set.extend(collect_deleted_scoped_files(
             &req.worktree,
-            &req.admitted_scope,
+            &deleted_scope,
             policy,
             baseline,
         ));
@@ -779,12 +857,8 @@ impl CodeDomainProvider {
                 .collect();
 
             let mut cur_keys: BTreeSet<(String, String)> = BTreeSet::new();
-            if let Some(current_src) = checked_child(&req.worktree, Path::new(rel))
-                .ok()
-                .and_then(|abs| fs::read_to_string(&abs).ok())
-            {
-                let cur_facts = extract_typed(rel, lang.id(), &current_src)?.into_public();
-                for node in public_callable_nodes(&cur_facts) {
+            if let Some(parsed) = snapshot.parsed.get(rel) {
+                for node in public_callable_nodes(&parsed.facts) {
                     cur_keys.insert((node.kind.clone(), node.qualname.clone()));
                     let cur_sig =
                         normalize_sig(node.details["signature"].as_str().unwrap_or_default());
@@ -796,7 +870,7 @@ impl CodeDomainProvider {
                         &req.worktree,
                         conn.as_ref(),
                         &node,
-                        &req.admitted_scope,
+                        &scope_for_external,
                         policy,
                         baseline,
                     )?;
@@ -819,7 +893,7 @@ impl CodeDomainProvider {
                     &req.worktree,
                     conn.as_ref(),
                     &head_node,
-                    &req.admitted_scope,
+                    &scope_for_external,
                     policy,
                     baseline,
                 )?;
@@ -870,11 +944,7 @@ impl DomainProvider for CodeDomainProvider {
         _idempotency_key: &str,
         _req: &DomainActionReq,
     ) -> Result<DomainActionResult> {
-        Err(StateError::new(
-            ErrorCode::DomainCapabilityUnavailable,
-            format!("code domain does not expose action '{action}'"),
-        )
-        .into())
+        super::unsupported_domain_action("code", action)
     }
 
     fn run_check(
@@ -1047,20 +1117,30 @@ fn collect_scoped_worktree_files(
         return Vec::new();
     }
     let mut found = BTreeSet::new();
+    let mut needs_walk = false;
     for entry in scope {
         for expanded in expand_glob_braces(entry) {
-            if !expanded.contains('*') && !expanded.contains('?') {
-                if let Some(norm) = normalize_rel_path(&expanded) {
-                    if policy.is_candidate_included(&norm) {
-                        if let Ok(abs) = checked_child(worktree, Path::new(&norm)) {
-                            if abs.is_file() {
-                                found.insert(norm);
-                            }
-                        }
+            if expanded.contains('*')
+                || expanded.contains('?')
+                || expanded.contains('[')
+                || expanded.ends_with('/')
+            {
+                needs_walk = true;
+                continue;
+            }
+            if let Some(norm) = normalize_rel_path(&expanded) {
+                if let Ok(abs) = checked_child(worktree, Path::new(&norm)) {
+                    if abs.is_dir() {
+                        needs_walk = true;
+                    } else if policy.is_candidate_included(&norm) && abs.is_file() {
+                        found.insert(norm);
                     }
                 }
             }
         }
+    }
+    if !needs_walk {
+        return found.into_iter().collect();
     }
     let walker = ignore::WalkBuilder::new(worktree)
         .follow_links(false)
@@ -1083,6 +1163,47 @@ fn collect_scoped_worktree_files(
         }
     }
     found.into_iter().collect()
+}
+
+fn collect_changed_worktree_files(
+    worktree: &Path,
+    policy: &WorkspacePathPolicy,
+    baseline: &str,
+) -> Vec<String> {
+    if baseline.starts_with('-')
+        || (!worktree.join(".git").exists() && acdd_core::git::git_common_dir(worktree).is_err())
+    {
+        return Vec::new();
+    }
+    let Ok(out) = git_command(
+        worktree,
+        &[
+            "diff",
+            "--name-only",
+            "--diff-filter=ACMRT",
+            "--no-renames",
+            "-z",
+            baseline,
+            "--",
+        ],
+    ) else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let mut changed = BTreeSet::new();
+    for raw in out.stdout.split(|b| *b == 0).filter(|b| !b.is_empty()) {
+        let rel = String::from_utf8_lossy(raw);
+        if let Some(norm) = normalize_rel_path(&rel) {
+            if policy.is_candidate_included(&norm)
+                && checked_child(worktree, Path::new(&norm)).is_ok_and(|abs| abs.is_file())
+            {
+                changed.insert(norm);
+            }
+        }
+    }
+    changed.into_iter().collect()
 }
 
 fn collect_deleted_scoped_files(
@@ -1681,8 +1802,8 @@ mod tests {
         let provider = CodeDomainProvider::new(root.to_path_buf(), Adapter::default());
         let seam_req = DomainCheckReq {
             run_id: RunId::new("r1").unwrap(),
-            node_cursor: "t1.contract".parse().unwrap(),
-            gate_id: "contract".parse().unwrap(),
+            node_cursor: "t1.build".parse().unwrap(),
+            gate_id: "build".parse().unwrap(),
             workspace_root: root.to_path_buf(),
             worktree: root.to_path_buf(),
             admitted_scope: vec!["src/engine.rs".into(), "tests/seam_test.rs".into()],

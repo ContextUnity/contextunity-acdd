@@ -61,30 +61,18 @@ pub fn search(
 #[cfg(all(test, feature = "lang-python"))]
 #[test]
 fn test_prefilter_empty_candidate_fallback() {
-    struct TempRoot(std::path::PathBuf);
-    impl Drop for TempRoot {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    let root = TempRoot(std::env::temp_dir().join(format!(
-        "acdd-ast-prefilter-{}-{}",
-        std::process::id(),
-        acdd_core::telemetry::unix_epoch_ms()
-    )));
-    std::fs::create_dir_all(&root.0).unwrap();
+    let root = acdd_core::fs::ScopedTempDir::create("acdd-ast-prefilter").unwrap();
     // File A defines top-level `def x()`, while File B assigns local `x = ...`.
     // `x = $EXPR` must NOT SQL-prefilter via `nodes.name = 'x'` (which would skip File B).
-    std::fs::write(root.0.join("a_decl.py"), "def x():\n    return 0\n").unwrap();
+    std::fs::write(root.path().join("a_decl.py"), "def x():\n    return 0\n").unwrap();
     std::fs::write(
-        root.0.join("b_local.py"),
+        root.path().join("b_local.py"),
         "def compute():\n    x = 1 + 2\n    return x\n",
     )
     .unwrap();
-    let database = root.0.join(".acdd/code-map.sqlite");
-    crate::engine::pipeline::build(&root.0, &database, None).unwrap();
-    let conn = acdd_index::db::reader::open(&database, &root.0).unwrap();
+    let database = root.path().join(".acdd/code-map.sqlite");
+    crate::engine::pipeline::build(root.path(), &database, None).unwrap();
+    let conn = acdd_index::db::reader::open(&database, root.path()).unwrap();
     let pattern = "x = $EXPR";
     assert_eq!(
         ast::pattern_symbol_name(pattern, "python").unwrap(),
@@ -102,7 +90,7 @@ fn test_prefilter_empty_candidate_fallback() {
         .unwrap();
     assert_eq!(indexed, 1, "file A defines top-level x");
     let options = QueryOptions::resolve(&ResponsePolicy::default(), None, 0, None, None).unwrap();
-    let result = search_paged(&conn, &root.0, pattern, "python", None, &options).unwrap();
+    let result = search_paged(&conn, root.path(), pattern, "python", None, &options).unwrap();
     assert_eq!(result["matches"]["total"], 1, "{result}");
     assert_eq!(result["matches"]["items"][0]["path"], "b_local.py");
     assert_eq!(result["matches"]["items"][0]["line"], 2);

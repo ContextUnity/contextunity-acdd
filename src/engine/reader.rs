@@ -256,12 +256,17 @@ pub(crate) fn resolve_worktree_active_run_node(
     Ok(active_node.map(|node| (run, graph, node)))
 }
 
-fn active_node_context(root: &Path, adapter: &Adapter) -> Result<Option<ActiveNodeContext>> {
+fn active_node_context(
+    root: &Path,
+    adapter: &Adapter,
+    state_db: Option<&Path>,
+    code_db: Option<&Path>,
+) -> Result<Option<ActiveNodeContext>> {
     if !adapter.modules.is_enabled("state") {
         return Ok(None);
     }
     let primary = acdd_core::git::primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
-    let state_db = adapter.resolve_state_db_path(&primary);
+    let state_db = acdd_core::config::resolve_effective_state_db_path(&primary, state_db, adapter);
     let Some((run, graph, node)) = resolve_worktree_active_run_node(&state_db, root, &|n| {
         n.status == acdd_state::types::NodeStatus::InProgress
             && matches!(
@@ -297,7 +302,7 @@ fn active_node_context(root: &Path, adapter: &Adapter) -> Result<Option<ActiveNo
     let default_state_db = primary.join(".acdd/state.sqlite");
     let state_db_override = (state_db != default_state_db).then(|| state_db.clone());
     let code_db_path = (adapter.modules.is_enabled("code") || adapter.modules.is_enabled("docs"))
-        .then(|| acdd_core::config::resolve_code_db_path(&primary, None));
+        .then(|| acdd_core::config::resolve_code_db_path(&primary, code_db));
     let engine_cfg = acdd_state::usecases::StateEngineConfig {
         workspace_root: primary,
         worktree: root.to_path_buf(),
@@ -377,7 +382,9 @@ pub struct ActiveNodeContext {
     pub has_command: bool,
 }
 
-/// Read a file or symbol using already admitted graph state when available.
+/// Read a file or symbol using already admitted graph state when available,
+/// honoring optional explicit `--state-db` and `--db` overrides for active-node context.
+#[allow(clippy::too_many_arguments)]
 pub fn acdd_read_tool(
     root: &Path,
     adapter: &Adapter,
@@ -385,6 +392,8 @@ pub fn acdd_read_tool(
     page: &QueryOptions,
     source: &SourceOptions,
     conn: Option<&Connection>,
+    state_db: Option<&Path>,
+    code_db: Option<&Path>,
 ) -> Result<Value> {
     if request.resolved_mode() == ReadMode::Lines {
         line_coordinates(request.start_line.unwrap_or(1), request.line_count)?;
@@ -434,7 +443,16 @@ pub fn acdd_read_tool(
                 single_req.path = Some(p.clone());
                 single_req.paths = None;
                 single_req.output_file = None;
-                match acdd_read_single(root, adapter, &single_req, page, source, conn) {
+                match acdd_read_single(
+                    root,
+                    adapter,
+                    &single_req,
+                    page,
+                    source,
+                    conn,
+                    state_db,
+                    code_db,
+                ) {
                     Ok(mut val) => {
                         let content = exportable_content(&val).unwrap_or("");
                         markdown_sections.push(format!("### {p}\n\n{content}"));
@@ -467,7 +485,9 @@ pub fn acdd_read_tool(
             return Ok(response);
         }
     }
-    acdd_read_single(root, adapter, request, page, source, conn)
+    acdd_read_single(
+        root, adapter, request, page, source, conn, state_db, code_db,
+    )
 }
 
 fn line_coordinates(start: usize, count: Option<usize>) -> Result<(i64, Option<i64>)> {
@@ -545,6 +565,7 @@ fn find_enclosing_symbol(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn acdd_read_single(
     root: &Path,
     adapter: &Adapter,
@@ -552,6 +573,8 @@ fn acdd_read_single(
     page: &QueryOptions,
     source: &SourceOptions,
     conn: Option<&Connection>,
+    state_db: Option<&Path>,
+    code_db: Option<&Path>,
 ) -> Result<Value> {
     let mut normalized_req;
     let request = if let Some(stripped) = request
@@ -571,7 +594,9 @@ fn acdd_read_single(
         .as_deref()
         .is_some_and(|p| p.ends_with(".md") || p.ends_with(".markdown"));
     request.requires_index(adapter)?;
-    let node_ctx = active_node_context(root, adapter).ok().flatten();
+    let node_ctx = active_node_context(root, adapter, state_db, code_db)
+        .ok()
+        .flatten();
     let mut value = if mode == ReadMode::Snippet {
         let conn = conn.context("snippet requires the code index")?;
         let selector = request
@@ -659,11 +684,27 @@ fn acdd_read_single(
                     false,
                 ),
                 ReadMode::Outline => {
+                    let parent = file.parent().context("outline file needs a parent")?;
+                    let name = file.file_name().context("outline file needs a file name")?;
+                    let mut opts = std::fs::OpenOptions::new();
+                    opts.read(true);
+                    let handle = acdd_core::fs::open_confined(parent, Path::new(name), &mut opts)?;
+                    let metadata = handle.metadata()?;
+                    ensure!(metadata.is_file(), "reader path must name a regular file");
                     ensure!(
-                        file.metadata()?.len() <= adapter.limits.max_file_bytes,
+                        metadata.len() <= adapter.limits.max_file_bytes,
                         "outline file exceeds max_file_bytes"
                     );
-                    let text = std::fs::read_to_string(&file)?;
+                    let mut bytes = Vec::with_capacity((metadata.len() as usize).min(64 * 1024));
+                    handle
+                        .take(adapter.limits.max_file_bytes.saturating_add(1))
+                        .read_to_end(&mut bytes)?;
+                    ensure!(
+                        bytes.len() as u64 <= adapter.limits.max_file_bytes,
+                        "outline file exceeds max_file_bytes"
+                    );
+                    let text =
+                        String::from_utf8(bytes).context("outline file is not valid UTF-8")?;
                     if markdown {
                         (
                             acdd_index::docs::render_outline(path, &text, &adapter.spec_paths())?,
@@ -1477,6 +1518,7 @@ pub fn render_read_hints(
 mod tests {
     use super::{acdd_read_tool, sensitive_with_case, ReadMode, ReadRequest};
     use acdd_core::config::Adapter;
+    use acdd_core::fs::ScopedTempDir;
     use acdd_core::response::{QueryOptions, SourceOptions};
     use acdd_core::ids::WorkerId;
     use acdd_core::ports::CompositeDomainProvider;
@@ -1484,33 +1526,7 @@ mod tests {
         ClaimReq, StartReq, StateCommand, StateCommandOutput, StateEngine, StateEngineConfig,
     };
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
-
-    static NONCE: AtomicU64 = AtomicU64::new(0);
-
-    struct TempDir(PathBuf);
-    impl TempDir {
-        fn new(tag: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "acdd-ut-{tag}-{}-{}",
-                std::process::id(),
-                NONCE.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = fs::remove_dir_all(&p);
-            fs::create_dir_all(&p).unwrap();
-            Self(p)
-        }
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     #[test]
     fn sensitive_policy_honors_case_insensitive_volume_flag() {
@@ -1528,7 +1544,7 @@ mod tests {
 
     #[test]
     fn read_with_state_module_resolves_active_node_scope_delta_and_hints() {
-        let dir = TempDir::new("reader-state");
+        let dir = ScopedTempDir::create("acdd-ut-reader-state").unwrap();
         let root = dir.path().canonicalize().unwrap();
         let run_git = |args: &[&str]| {
             let out = acdd_core::git::git_command(&root, args).unwrap();
@@ -1614,13 +1630,16 @@ mod tests {
 
         let page = QueryOptions::resolve(&adapter.response, None, 0, None, None).unwrap();
         let source = SourceOptions::resolve(&adapter.response, None, None, None, 0).unwrap();
+        let read = |req: &ReadRequest| {
+            acdd_read_tool(&root, &adapter, req, &page, &source, None, None, None).unwrap()
+        };
         let req_allowed = ReadRequest {
             path: Some("src/scoped.rs".into()),
             mode: ReadMode::Delta,
             include_hints: true,
             ..Default::default()
         };
-        let allowed = acdd_read_tool(&root, &adapter, &req_allowed, &page, &source, None).unwrap();
+        let allowed = read(&req_allowed);
         assert_eq!(allowed["in_write_scope"], "ALLOWED");
         assert_eq!(allowed["baseline_commit"], base_commit);
         assert_eq!(allowed["claim_tree"], claim_tree);
@@ -1630,19 +1649,11 @@ mod tests {
         let hints = allowed["Hints"].as_str().unwrap_or_default();
         assert!(hints.contains("acdd_blackboard"), "{hints}");
 
-        let untracked_delta = acdd_read_tool(
-            &root,
-            &adapter,
-            &ReadRequest {
-                path: Some("src/untracked.rs".into()),
-                mode: ReadMode::Delta,
-                ..Default::default()
-            },
-            &page,
-            &source,
-            None,
-        )
-        .unwrap();
+        let untracked_delta = read(&ReadRequest {
+            path: Some("src/untracked.rs".into()),
+            mode: ReadMode::Delta,
+            ..Default::default()
+        });
         let untracked_diff = untracked_delta["content"].as_str().unwrap_or_default();
         assert!(untracked_diff.contains("--- /dev/null"), "{untracked_diff}");
         assert!(untracked_diff.contains("+pub fn newly_added() {}"), "{untracked_diff}");
@@ -1650,38 +1661,22 @@ mod tests {
             ("src/ leading.rs", "pub fn spaced()", "plain_name()"),
             ("src/leading.rs", "pub fn plain_name()", "spaced()"),
         ] {
-            let delta = acdd_read_tool(
-                &root,
-                &adapter,
-                &ReadRequest {
-                    path: Some(rel.to_owned()),
-                    mode: ReadMode::Delta,
-                    ..Default::default()
-                },
-                &page,
-                &source,
-                None,
-            )
-            .unwrap();
+            let delta = read(&ReadRequest {
+                path: Some(rel.to_owned()),
+                mode: ReadMode::Delta,
+                ..Default::default()
+            });
             let diff = delta["content"].as_str().unwrap_or_default();
             assert!(diff.contains(expected_fn), "{rel}: {diff}");
             assert!(!diff.contains(forbidden_fn), "{rel}: {diff}");
         }
 
         // #12: Untracked file already identical in `claim_tree` must yield empty delta, NOT full `/dev/null` add.
-        let pre_claim_untracked_delta = acdd_read_tool(
-            &root,
-            &adapter,
-            &ReadRequest {
-                path: Some("src/pre_claim_untracked.rs".into()),
-                mode: ReadMode::Delta,
-                ..Default::default()
-            },
-            &page,
-            &source,
-            None,
-        )
-        .unwrap();
+        let pre_claim_untracked_delta = read(&ReadRequest {
+            path: Some("src/pre_claim_untracked.rs".into()),
+            mode: ReadMode::Delta,
+            ..Default::default()
+        });
         assert_eq!(
             pre_claim_untracked_delta["content"].as_str(),
             Some(""),
@@ -1695,19 +1690,11 @@ mod tests {
             let mut perms = fs::metadata(&pre_abs).unwrap().permissions();
             perms.set_mode(0o755);
             fs::set_permissions(&pre_abs, perms).unwrap();
-            let mode_delta = acdd_read_tool(
-                &root,
-                &adapter,
-                &ReadRequest {
-                    path: Some("src/pre_claim_untracked.rs".into()),
-                    mode: ReadMode::Delta,
-                    ..Default::default()
-                },
-                &page,
-                &source,
-                None,
-            )
-            .unwrap();
+            let mode_delta = read(&ReadRequest {
+                path: Some("src/pre_claim_untracked.rs".into()),
+                mode: ReadMode::Delta,
+                ..Default::default()
+            });
             let mode_diff = mode_delta["content"].as_str().unwrap_or_default();
             assert_eq!(mode_diff.matches("old mode 100644").count(), 1, "{mode_diff}");
             assert_eq!(mode_diff.matches("new mode 100755").count(), 1, "{mode_diff}");
@@ -1716,19 +1703,11 @@ mod tests {
             let mut perms2 = fs::metadata(&pre_abs).unwrap().permissions();
             perms2.set_mode(0o755);
             fs::set_permissions(&pre_abs, perms2).unwrap();
-            let mode_content_delta = acdd_read_tool(
-                &root,
-                &adapter,
-                &ReadRequest {
-                    path: Some("src/pre_claim_untracked.rs".into()),
-                    mode: ReadMode::Delta,
-                    ..Default::default()
-                },
-                &page,
-                &source,
-                None,
-            )
-            .unwrap();
+            let mode_content_delta = read(&ReadRequest {
+                path: Some("src/pre_claim_untracked.rs".into()),
+                mode: ReadMode::Delta,
+                ..Default::default()
+            });
             let mode_content_diff = mode_content_delta["content"].as_str().unwrap_or_default();
             assert_eq!(
                 mode_content_diff.matches("old mode 100644").count(),
@@ -1743,19 +1722,11 @@ mod tests {
             assert!(mode_content_diff.contains("+pub fn pre_claim_untracked_v2()"), "{mode_content_diff}");
         }
 
-        let protected_read = acdd_read_tool(
-            &root,
-            &adapter,
-            &ReadRequest {
-                path: Some("Cargo.toml".into()),
-                mode: ReadMode::Lines,
-                ..Default::default()
-            },
-            &page,
-            &source,
-            None,
-        )
-        .unwrap();
+        let protected_read = read(&ReadRequest {
+            path: Some("Cargo.toml".into()),
+            mode: ReadMode::Lines,
+            ..Default::default()
+        });
         assert_eq!(protected_read["in_write_scope"], "OUT_OF_SCOPE", "{protected_read}");
 
         let req_outside = ReadRequest {
@@ -1764,7 +1735,7 @@ mod tests {
             include_hints: true,
             ..Default::default()
         };
-        let outside = acdd_read_tool(&root, &adapter, &req_outside, &page, &source, None).unwrap();
+        let outside = read(&req_outside);
         assert_eq!(outside["in_write_scope"], "OUT_OF_SCOPE");
         let outside_hints = outside["Hints"].as_str().unwrap_or_default();
         assert!(outside_hints.contains("acdd_state"), "{outside_hints}");
@@ -1811,33 +1782,17 @@ mod tests {
                 worktree: Some(root.clone()),
             }))
             .unwrap();
-        let root_protected = acdd_read_tool(
-            &root,
-            &adapter,
-            &ReadRequest {
-                path: Some("Cargo.toml".into()),
-                mode: ReadMode::Lines,
-                ..Default::default()
-            },
-            &page,
-            &source,
-            None,
-        )
-        .unwrap();
+        let root_protected = read(&ReadRequest {
+            path: Some("Cargo.toml".into()),
+            mode: ReadMode::Lines,
+            ..Default::default()
+        });
         assert_eq!(root_protected["in_write_scope"], "OUT_OF_SCOPE", "{root_protected}");
-        let root_allowed = acdd_read_tool(
-            &root,
-            &adapter,
-            &ReadRequest {
-                path: Some("src/other.rs".into()),
-                mode: ReadMode::Lines,
-                ..Default::default()
-            },
-            &page,
-            &source,
-            None,
-        )
-        .unwrap();
+        let root_allowed = read(&ReadRequest {
+            path: Some("src/other.rs".into()),
+            mode: ReadMode::Lines,
+            ..Default::default()
+        });
         assert_eq!(root_allowed["in_write_scope"], "ALLOWED", "{root_allowed}");
     }
 }

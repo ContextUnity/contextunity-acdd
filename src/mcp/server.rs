@@ -138,6 +138,19 @@ fn rebase_invocation_settings(
     }
 }
 
+pub(crate) fn primary_workspace_root_for(
+    server_root: &std::path::Path,
+    target_root: &std::path::Path,
+) -> PathBuf {
+    acdd_core::git::primary_worktree_root(target_root)
+        .map(|p| canonicalize_macos_var(&p))
+        .unwrap_or_else(|| {
+            acdd_core::git::primary_worktree_root(server_root)
+                .map(|p| canonicalize_macos_var(&p))
+                .unwrap_or_else(|| canonicalize_macos_var(server_root))
+        })
+}
+
 #[derive(Clone)]
 /// Represents server data.
 pub struct Server {
@@ -149,8 +162,9 @@ pub struct Server {
     pub connection: Arc<Mutex<ConnectionSlot>>,
     reader_evictor: Arc<cache::IdleReader>,
     request_adapter: Option<RequestAdapter>,
+    request_workspace_root: Option<PathBuf>,
     extraction_cache_dir: Option<PathBuf>,
-    pub(crate) invocation: Option<crate::state_bridge::InvocationSettings>,
+    pub(crate) invocation: Option<Arc<crate::state_bridge::InvocationSettings>>,
     pub(crate) session_fingerprint: Option<String>,
     extra_domain_providers: Vec<Arc<dyn acdd_core::ports::DomainProvider>>,
 }
@@ -170,6 +184,7 @@ impl Server {
             connection,
             reader_evictor,
             request_adapter: None,
+            request_workspace_root: None,
             extraction_cache_dir: None,
             invocation: None,
             session_fingerprint: Some(
@@ -190,7 +205,7 @@ impl Server {
         mut self,
         settings: crate::state_bridge::InvocationSettings,
     ) -> Self {
-        self.invocation = Some(rebase_invocation_settings(&settings, &self.root));
+        self.invocation = Some(Arc::new(rebase_invocation_settings(&settings, &self.root)));
         self
     }
 
@@ -209,6 +224,10 @@ impl Server {
             .and_then(|settings| settings.state_db.as_deref())
     }
 
+    pub(crate) fn request_workspace_root(&self) -> Option<&std::path::Path> {
+        self.request_workspace_root.as_deref()
+    }
+
     pub(crate) fn domain_providers(
         &self,
         adapter: &scanner::Adapter,
@@ -216,9 +235,22 @@ impl Server {
         Arc<acdd_core::ports::CompositeDomainProvider>,
         acdd_core::errors::StateError,
     > {
-        crate::state_bridge::build_domain_providers_with_extra(
-            &self.root,
+        self.domain_providers_for(&self.root, Some(&self.db), adapter)
+    }
+
+    pub(crate) fn domain_providers_for(
+        &self,
+        root: &std::path::Path,
+        code_db: Option<&std::path::Path>,
+        adapter: &scanner::Adapter,
+    ) -> std::result::Result<
+        Arc<acdd_core::ports::CompositeDomainProvider>,
+        acdd_core::errors::StateError,
+    > {
+        crate::state_bridge::build_domain_providers(
+            root,
             adapter,
+            code_db,
             self.extra_domain_providers.clone(),
         )
     }
@@ -279,16 +311,20 @@ impl Server {
         db: PathBuf,
         adapter: RequestAdapter,
     ) -> Self {
-        let invocation = self
-            .invocation
-            .as_ref()
-            .map(|settings| rebase_invocation_settings(settings, &root));
+        let origin_root = self.request_workspace_root.as_deref().unwrap_or(&self.root);
+        let request_workspace_root = Some(primary_workspace_root_for(origin_root, &root));
+        let invocation = self.invocation.as_deref().map(|settings| {
+            let mut rebased = rebase_invocation_settings(settings, &root);
+            rebased.code_db = db.clone();
+            Arc::new(rebased)
+        });
         Self {
             root,
             db,
             connection: Arc::clone(&self.connection),
             reader_evictor: Arc::clone(&self.reader_evictor),
             request_adapter: Some(adapter),
+            request_workspace_root,
             extraction_cache_dir: self.extraction_cache_dir.clone(),
             invocation,
             session_fingerprint: self.session_fingerprint.clone(),
@@ -304,10 +340,6 @@ impl Server {
             }
             None => self.load_adapter(&self.root).map(Arc::new),
         }
-    }
-    /// Performs ensure fresh.
-    pub fn ensure_fresh(&self) -> Result<()> {
-        self.read(|_| Ok(serde_json::Value::Null)).map(|_| ())
     }
 
     fn check_rebuild_needed(&self, current_adapter: &scanner::Adapter) -> Result<bool> {
@@ -744,15 +776,6 @@ fn canonicalize_existing_dir(path: &std::path::Path) -> Result<PathBuf> {
 }
 
 impl Server {
-    /// Resolves an explicit worktree while keeping the unselected server root stable.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn resolve_target_root_and_db(
-        &self,
-        requested_worktree: Option<&str>,
-    ) -> Result<(PathBuf, PathBuf)> {
-        self.resolve_target_root_and_db_with_adapter(requested_worktree, None)
-    }
-
     /// Resolves an explicit worktree using a caller-supplied root [`scanner::Adapter`] when available.
     pub(crate) fn resolve_target_root_and_db_with_adapter(
         &self,
@@ -907,15 +930,6 @@ fn is_owned_worktree_path(
         }
     }
     repo_common_dir.is_none() && canon.starts_with(root)
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn resolve_explicit_worktree(
-    root: &std::path::Path,
-    repository: &std::path::Path,
-    requested: &str,
-) -> Result<PathBuf> {
-    resolve_explicit_worktree_with_linked(root, repository, &[], requested)
 }
 
 fn resolve_explicit_worktree_with_linked(
@@ -1272,19 +1286,8 @@ fn parent_identity_contract() {
 #[cfg(test)]
 #[test]
 fn worktree_name_contract() {
-    struct TempDirCleanup(PathBuf);
-    impl Drop for TempDirCleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    let base = std::env::temp_dir().join(format!(
-        "acdd-worktree-name-{}-{}",
-        std::process::id(),
-        unix_epoch_ms()
-    ));
-    let _cleanup = TempDirCleanup(base.clone());
+    let _cleanup = acdd_core::fs::ScopedTempDir::create("acdd-worktree-name").unwrap();
+    let base = _cleanup.path();
     let root = base.join("repo");
     let external = base.join("unrelated-external");
     let linked_ws = base.join("linked-ws");
@@ -1299,22 +1302,22 @@ fn worktree_name_contract() {
 
     let server = Server::new(root.clone(), root.join(".acdd/code-map.sqlite"));
     assert_eq!(
-        server.resolve_target_root_and_db(None).unwrap().0,
+        server.resolve_target_root_and_db_with_adapter(None, None).unwrap().0,
         canon_root
     );
     assert_eq!(
-        server.resolve_target_root_and_db(Some("")).unwrap().0,
+        server.resolve_target_root_and_db_with_adapter(Some(""), None).unwrap().0,
         canon_root
     );
     assert_eq!(
-        server.resolve_target_root_and_db(Some("   ")).unwrap().0,
+        server.resolve_target_root_and_db_with_adapter(Some("   "), None).unwrap().0,
         canon_root
     );
 
-    let result = resolve_explicit_worktree(&root, &root, "selected");
+    let result = resolve_explicit_worktree_with_linked(&root, &root, &[], "selected");
     let aliases: Vec<_> = ["049", "49", "049-sel", "9-selec"]
         .into_iter()
-        .map(|alias| (alias, resolve_explicit_worktree(&root, &root, alias)))
+        .map(|alias| (alias, resolve_explicit_worktree_with_linked(&root, &root, &[], alias)))
         .collect();
 
     let outside_err = resolve_explicit_worktree_with_linked(
@@ -1345,8 +1348,8 @@ fn worktree_name_contract() {
     assert_eq!(linked_by_path, canon_linked);
 
     std::fs::create_dir_all(root.join(".worktrees/050-selected")).unwrap();
-    let ambiguous = resolve_explicit_worktree(&root, &root, "selected");
-    let missing = resolve_explicit_worktree(&root, &root, "absent");
+    let ambiguous = resolve_explicit_worktree_with_linked(&root, &root, &[], "selected");
+    let missing = resolve_explicit_worktree_with_linked(&root, &root, &[], "absent");
     assert_eq!(result.unwrap(), selected);
     for (alias, result) in aliases {
         assert_eq!(
@@ -1369,7 +1372,7 @@ fn worktree_name_contract() {
         let escaped_link = root.join(".worktrees/999-escaped");
         std::os::unix::fs::symlink(&external, &escaped_link).unwrap();
         for probe in ["999-escaped", "999", ".worktrees/999-escaped"] {
-            let err = resolve_explicit_worktree(&root, &root, probe).unwrap_err();
+            let err = resolve_explicit_worktree_with_linked(&root, &root, &[], probe).unwrap_err();
             assert!(err.to_string().contains("WORKTREE_NOT_FOUND"), "{probe}: {err}");
         }
         // Symlinked `.worktrees` directory itself must also be skipped.
@@ -1377,10 +1380,12 @@ fn worktree_name_contract() {
         std::fs::create_dir_all(&sym_repo).unwrap();
         assert!(acdd_core::git::git_command(&sym_repo, &["init"]).unwrap().status.success());
         std::os::unix::fs::symlink(&external, sym_repo.join(".worktrees")).unwrap();
-        let sym_err = resolve_explicit_worktree(&sym_repo, &sym_repo, "unrelated-external")
-            .unwrap_err();
+        let sym_err =
+            resolve_explicit_worktree_with_linked(&sym_repo, &sym_repo, &[], "unrelated-external")
+                .unwrap_err();
         assert!(sym_err.to_string().contains("WORKTREE_NOT_FOUND"), "{sym_err}");
-        let dotgit_err = resolve_explicit_worktree(&sym_repo, &sym_repo, ".git").unwrap_err();
+        let dotgit_err =
+            resolve_explicit_worktree_with_linked(&sym_repo, &sym_repo, &[], ".git").unwrap_err();
         assert!(dotgit_err.to_string().contains("WORKTREE_NOT_FOUND"), "{dotgit_err}");
     }
 }

@@ -532,11 +532,6 @@ pub(crate) fn invalid_format(value: &Value, policy: &ResponsePolicy) -> CallTool
     }
 }
 
-/// Performs compact mcp metadata.
-pub fn compact_mcp_metadata(value: &mut Value) {
-    super::metadata::finalize_mcp_metadata(value);
-}
-
 /// Formats a state or plugin tool output in Markdown or JSON, enforcing the active `ResponsePolicy`.
 pub(crate) fn state_result(
     rendered_or_value: anyhow::Result<(String, Value)>,
