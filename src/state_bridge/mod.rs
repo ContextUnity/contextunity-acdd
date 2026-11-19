@@ -60,9 +60,9 @@ pub fn resolve_effective_state_db(
     root: &Path,
     state_db: Option<&Path>,
     config: &AcddConfig,
-) -> PathBuf {
-    let primary = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
-    acdd_core::config::resolve_effective_state_db_path(&primary, state_db, config)
+) -> Result<PathBuf, StateError> {
+    let _ = config;
+    acdd_state::usecases::deps::try_resolve_effective_state_db(root, state_db)
 }
 
 /// Build the composite [`CompositeDomainProvider`] for the workspace (`code`, `docs`, and optional external providers)
@@ -110,13 +110,11 @@ pub fn state_engine_config(
     state_db: Option<&Path>,
     code_db: Option<&Path>,
     config: &AcddConfig,
-) -> StateEngineConfig {
+) -> Result<StateEngineConfig, StateError> {
     let primary = primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
     let default_state_db = primary.join(".acdd/state.sqlite");
-    let state_db_override = acdd_core::config::resolve_custom_db_path(&primary, state_db).or_else(|| {
-        let configured = config.resolve_state_db_path(&primary);
-        (configured != default_state_db).then_some(configured)
-    });
+    let configured = resolve_effective_state_db(root, state_db, config)?;
+    let state_db_override = (configured != default_state_db).then_some(configured);
     let linked_workspaces = config
         .linked_workspaces
         .iter()
@@ -124,7 +122,7 @@ pub fn state_engine_config(
         .collect();
     let code_db_path = (config.modules.is_enabled("code") || config.modules.is_enabled("docs"))
         .then(|| acdd_core::config::resolve_code_db_path(&primary, code_db));
-    StateEngineConfig {
+    Ok(StateEngineConfig {
         workspace_root: primary,
         worktree: worktree.to_path_buf(),
         state_db_override,
@@ -135,7 +133,7 @@ pub fn state_engine_config(
         modules: config.modules.clone(),
         response_policy: config.response.clone(),
         retain_traces: config.retain_traces,
-    }
+    })
 }
 
 pub(crate) fn unsupported_domain_action(
@@ -160,9 +158,27 @@ pub fn execute_state_command(
     providers: Arc<CompositeDomainProvider>,
     cmd: StateCommand,
 ) -> Result<StateCommandOutput, StateError> {
-    let engine_cfg = state_engine_config(root, worktree, state_db, code_db, config);
+    execute_state_command_with_config(root, worktree, state_db, code_db, config, providers, cmd, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_state_command_with_config(
+    root: &Path,
+    worktree: &Path,
+    state_db: Option<&Path>,
+    code_db: Option<&Path>,
+    config: &AcddConfig,
+    providers: Arc<CompositeDomainProvider>,
+    cmd: StateCommand,
+    explicit_config: bool,
+) -> Result<StateCommandOutput, StateError> {
+    let engine_cfg = state_engine_config(root, worktree, state_db, code_db, config)?;
     let engine = StateEngine::open(engine_cfg, providers)?;
-    engine.execute(cmd)
+    if explicit_config {
+        engine.execute_with_source_config(cmd, config)
+    } else {
+        engine.execute(cmd)
+    }
 }
 
 /// Execute a read-only [`StateQuery`] against the workspace state query engine (`SQLITE_OPEN_READ_ONLY`)
@@ -176,7 +192,7 @@ pub fn execute_state_query(
     providers: Arc<CompositeDomainProvider>,
     query: StateQuery,
 ) -> Result<StateQueryOutput, StateError> {
-    let engine_cfg = state_engine_config(root, worktree, state_db, code_db, config);
+    let engine_cfg = state_engine_config(root, worktree, state_db, code_db, config)?;
     let engine = StateQueryEngine::open_read_only(engine_cfg, providers)?;
     engine.query(query)
 }
@@ -265,7 +281,7 @@ pub fn resolve_worktree_span_context(
             "state subsystem is disabled in modules:",
         ));
     }
-    let resolved_state_db = resolve_effective_state_db(root, state_db, config);
+    let resolved_state_db = resolve_effective_state_db(root, state_db, config)?;
     let resolved = crate::engine::reader::resolve_worktree_active_run_node(
         &resolved_state_db,
         worktree,

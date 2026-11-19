@@ -537,7 +537,24 @@ pub struct ShowResp {
     pub context_preview: Option<Value>,
 }
 
+
+/// Read-only query request for `StateQuery::Context`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ContextReq {
+    /// Optional run ID or name selector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    /// Target gate cursor (`None` auto-selects the single active claimed or ready gate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// Optional worker filter when auto-selecting or validating an active claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<WorkerId>,
+}
+
 /// Read-only query request for `StateQuery::Next`.
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NextReq {
@@ -792,6 +809,8 @@ pub enum StateQuery {
     Observability(ObservabilityReq),
     /// Validate workspace specs, config, profiles, and dependencies.
     Validate(ValidateReq),
+    /// Assemble a budgeted `ClaimResp` without mutating claim state.
+    Context(ContextReq),
 }
 
 /// Typed output returned by [`super::StateQueryEngine::query`].
@@ -811,6 +830,8 @@ pub enum StateQueryOutput {
     Observability(ObservabilityResp),
     /// Output of `Validate`.
     Validate(ValidateResp),
+    /// Output of `Context` (`ClaimResp` assembled read-only).
+    Context(Box<crate::context::ClaimResp>),
 }
 
 impl StateQueryOutput {
@@ -824,6 +845,7 @@ impl StateQueryOutput {
             Self::BlackboardRead(resp) => serde_json::to_value(resp),
             Self::Observability(resp) => serde_json::to_value(resp),
             Self::Validate(resp) => serde_json::to_value(resp),
+            Self::Context(resp) => serde_json::to_value(resp),
         }
     }
 }

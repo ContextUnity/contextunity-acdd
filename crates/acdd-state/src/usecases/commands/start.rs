@@ -2,8 +2,8 @@
 
 use crate::git_ops::commit::{current_branch_name, current_head_commit};
 use crate::git_ops::worktree::{
-    canonicalize_macos_var, create_run_worktree, remove_worktree_and_branch, CreateWorktreeReq,
-    RepoWorktreeLayout,
+    canonicalize_macos_var, create_managed_worktree, create_run_worktree,
+    remove_worktree_and_branch, CreateWorktreeReq, RepoWorktreeLayout,
 };
 use crate::machine::{
     build_initial_run_graph, compute_schedule,
@@ -21,21 +21,22 @@ use crate::usecases::dto::{
     StartReq, StartResp,
 };
 use crate::usecases::lifecycle::{
-    append_trace_event, apply_effective_isolation, collect_external_satisfied_deps,
+    append_trace_event, apply_effective_isolation, checkout_config, collect_external_satisfied_deps,
     effective_spec_collections, ensure_state_enabled, generate_run_id, match_spec_collection,
-    read_confined_utf8, resume_pending_tombstone_cleanups_dyn, to_machine_profile,
+    read_confined_utf8, resolve_source_checkout, resume_pending_tombstone_cleanups_dyn,
+    to_machine_profile,
     validate_profile_fail_closed, verify_run_level_depends_on,
     with_repo_lock_and_maintenance_unchecked,
 };
 use crate::usecases::StateEngineConfig;
+use acdd_core::config::Adapter;
 use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::telemetry::TraceId;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, RunId, RunName, TaskRef};
 use acdd_core::ports::CompositeDomainProvider;
 use serde_json::json;
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::{
     build_machine_spec_input, derive_run_name, ensure_no_managed_worktree_collision,
@@ -47,6 +48,7 @@ pub(crate) fn handle_start_dyn(
     backend: &dyn StateBackend,
     provider: &CompositeDomainProvider,
     req: StartReq,
+    source_override: Option<&Adapter>,
 ) -> Result<StartResp, StateError> {
     ensure_state_enabled(config)?;
     if req.spec_path.is_some() == req.goal.is_some() {
@@ -63,7 +65,7 @@ pub(crate) fn handle_start_dyn(
     }
 
     with_repo_lock_and_maintenance_unchecked(config, backend, |primary, layout| {
-        start_holding_repo_lock(config, backend, provider, layout, primary, req)
+        start_holding_repo_lock(config, backend, provider, layout, primary, req, source_override)
     })
 }
 
@@ -74,10 +76,22 @@ fn start_holding_repo_lock(
     layout: Option<&RepoWorktreeLayout>,
     primary: &Path,
     req: StartReq,
+    source_override: Option<&Adapter>,
 ) -> Result<StartResp, StateError> {
     let _ = resume_pending_tombstone_cleanups_dyn(config, backend, layout)?;
 
-    let collections = effective_spec_collections(config);
+    let caller = resolve_source_checkout(primary, layout, &config.worktree, false)?;
+    let explicit = req
+        .worktree_path
+        .as_deref()
+        .map(|path| resolve_source_checkout(primary, layout, path, true))
+        .transpose()?;
+    let source = explicit
+        .as_deref()
+        .filter(|path| path.is_dir())
+        .unwrap_or(&caller);
+    let spec_source = if req.spec_path.is_some() { source } else { primary };
+    let checkout = checkout_config(config, primary, spec_source, source_override)?;
     let created_at = acdd_core::telemetry::now_utc_iso_ms();
     let trace_id = TraceId::new().to_string();
 
@@ -92,8 +106,9 @@ fn start_holding_repo_lock(
         materialized_spec_path,
         ephemeral_spec_to_write,
     ) = if let Some(ref raw_spec_path) = req.spec_path {
+        let collections = effective_spec_collections(&checkout);
         let norm_rel = normalize_spec_relpath(raw_spec_path)?;
-        let raw_content = read_confined_utf8(primary, &norm_rel)?;
+        let raw_content = read_confined_utf8(source, &norm_rel)?;
         let doc = parse_spec(&raw_content)?;
         if matches!(doc.status, SpecStatus::Completed | SpecStatus::Cancelled) {
             return Err(StateError::new(
@@ -104,7 +119,7 @@ fn start_holding_repo_lock(
                 ),
             ));
         }
-        verify_run_level_depends_on(config, backend, &doc)?;
+        verify_run_level_depends_on(&checkout, backend, &doc)?;
 
         let col = match_spec_collection(&collections, &norm_rel);
         let col_profile = col
@@ -114,14 +129,21 @@ fn start_holding_repo_lock(
         let profile_ref = req
             .profile
             .as_deref()
+            .map(|reference| {
+                Path::new(reference)
+                    .strip_prefix(source)
+                    .ok()
+                    .and_then(Path::to_str)
+                    .unwrap_or(reference)
+            })
             .or(doc.profile.as_deref())
             .or(col_profile);
 
         let resolved = resolve_optional_profile_ref_with_dirs(
             profile_ref,
-            Some(primary),
+            Some(source),
             Some(&config.modules),
-            Some(&config.profiles_dirs),
+            Some(&checkout.profiles_dirs),
         )?;
         validate_profile_fail_closed(config, &resolved, provider, true)?;
 
@@ -199,7 +221,7 @@ fn start_holding_repo_lock(
     };
 
     crate::validate::validate_spec_for_run(
-        config,
+        &checkout,
         backend,
         provider,
         &spec_doc,
@@ -239,40 +261,48 @@ fn start_holding_repo_lock(
 
     let target_base = match req.target_base {
         Some(ref b) => Some(b.clone()),
-        None if layout.is_some() => current_branch_name(primary)?,
+        None if layout.is_some() => current_branch_name(source)?,
         None => None,
     };
     let target_base_commit = if layout.is_some() {
-        current_head_commit(primary).ok()
+        current_head_commit(source).ok()
     } else {
         None
     };
 
-    let (planned_worktree, planned_branch, managed_wt_req) = plan_start_worktree(
-        config,
+    let (planned_worktree, planned_branch, mut managed_wt_req) = plan_start_worktree(
         primary,
+        source,
+        explicit.as_deref(),
         layout.is_some(),
         &run_name,
         effective_isolation,
         effective_worktrees,
-        &req,
-        target_base.as_deref(),
+        target_base
+            .as_deref()
+            .or(target_base_commit.as_ref().map(|commit| commit.as_str())),
         spec_path_rel.as_deref(),
     )?;
+    if let Some(worktree) = managed_wt_req.as_mut().filter(|_| !is_ephemeral) {
+        worktree.copy_uncommitted_paths.extend(crate::profile::inherit::profile_lineage_paths(
+            spec_source, &resolved_profile.profile_id, &checkout.profiles_dirs,
+        )?);
+        if source != primary {
+            worktree.copy_uncommitted_paths.push("acdd.yaml".to_owned());
+        }
+    }
 
     let machine_profile = to_machine_profile(&resolved_profile)?;
 
-    let mut spec_repos = BTreeMap::new();
-    for r in &spec_doc.repositories {
-        spec_repos.insert(r.name.clone(), PathBuf::from(&r.path));
-    }
+    let spec_repos = crate::usecases::deps::resolve_spec_repositories(spec_source, &spec_doc);
     let primary_str = primary.to_string_lossy().into_owned();
     let machine_spec = build_machine_spec_input(
         &spec_doc,
         &primary_str,
         &run_id,
-        &config.linked_workspaces,
+        &checkout.linked_workspaces,
         &spec_repos,
+        &checkout.resolved_state_db_path().0,
     )?;
 
     let mut graph = build_initial_run_graph(
@@ -281,7 +311,7 @@ fn start_holding_repo_lock(
             run_id: run_id.clone(),
             run_name,
             collection,
-            workspace: primary_str,
+            workspace: primary_str.clone(),
             spec_path: spec_path_rel,
             is_ephemeral,
             target_base,
@@ -290,22 +320,88 @@ fn start_holding_repo_lock(
             worktree: planned_worktree,
             trace_id,
             created_at,
-            spec: machine_spec,
+            spec: machine_spec.clone(),
         },
     )?;
     graph.run.spec_id = Some(spec_doc.id.clone());
 
     // Check external dependencies at start so already-completed external tasks unlock wave-0 tasks immediately.
     let ext_satisfied =
-        collect_external_satisfied_deps(config, &run_id, &graph.dependencies)?;
+        collect_external_satisfied_deps(&checkout, &run_id, &graph.dependencies)?;
     apply_initial_external_dep_satisfaction(&mut graph, &ext_satisfied);
+    let obs = ValidatedObservations {
+        external_satisfied_deps: ext_satisfied,
+        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
+        ..ValidatedObservations::default()
+    };
+    let schedule = compute_schedule(&graph, &obs)?;
+    let mut ready_nodes = Vec::new();
+    for nid in &schedule.ready_root_nodes {
+        ready_nodes.push(NodeCursor::from_node_id(nid)?.to_string());
+    }
+    for tref in &schedule.ready_tasks {
+        let parent_id = format!("task:{tref}");
+        if let Some(g) = graph
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.kind == NodeKind::TaskGate
+                    && n.parent_id.as_deref() == Some(parent_id.as_str())
+                    && n.status == NodeStatus::Ready
+            })
+            .min_by_key(|n| n.seq_order)
+        {
+            ready_nodes.push(NodeCursor::from_node_id(&g.node_id)?.to_string());
+        }
+    }
 
     // Create managed run worktree (if requested) ONLY after all spec/profile/graph validation succeeds,
     // and roll back worktree/branch/disk artifacts cleanly if SQL persistence fails.
     let created_managed = if let Some(ref wt_req) = managed_wt_req {
-        let created = create_run_worktree(wt_req)?;
+        let created = if spec_source == primary {
+            create_run_worktree(wt_req)?
+        } else {
+            create_managed_worktree(wt_req, Some(spec_source))?
+        };
         graph.run.worktree = Some(created.worktree.to_string_lossy().into_owned());
         graph.run.branch = Some(created.branch.clone());
+        let checked = (|| {
+            if !is_ephemeral {
+                let destination = checkout_config(config, primary, &created.worktree, source_override)?;
+                let mut dest_profile = resolve_optional_profile_ref_with_dirs(
+                    Some(&resolved_profile.profile_id), Some(&created.worktree),
+                    Some(&config.modules), Some(&destination.profiles_dirs),
+                )?;
+                apply_effective_isolation(&mut dest_profile, effective_isolation, effective_worktrees);
+                if to_machine_profile(&dest_profile)?.profile_json != machine_profile.profile_json {
+                    return Err(StateError::new(ErrorCode::ProfileSchemaInvalid, "managed checkout profile differs from source"));
+                }
+                let dest_doc = parse_spec(&read_confined_utf8(&created.worktree, graph.run.spec_path.as_deref().unwrap_or_default())?)?;
+                crate::validate::validate_spec_for_run(&destination, backend, provider, &dest_doc, &dest_profile)?;
+                let dest_repos = crate::usecases::deps::resolve_spec_repositories(&created.worktree, &dest_doc);
+                let dest_spec = build_machine_spec_input(&dest_doc, &primary_str, &run_id, &destination.linked_workspaces, &dest_repos, &destination.resolved_state_db_path().0)?;
+                if dest_spec != machine_spec {
+                    return Err(StateError::new(ErrorCode::ProfileSchemaInvalid, "managed checkout dependency bindings differ from source"));
+                }
+                let mut observed_deps = graph.dependencies.clone();
+                for dep in &mut observed_deps {
+                    dep.satisfied = false;
+                }
+                let dest_satisfied =
+                    collect_external_satisfied_deps(&destination, &run_id, &observed_deps)?;
+                if dest_satisfied != obs.external_satisfied_deps {
+                    return Err(StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        "managed checkout dependency satisfaction differs from source",
+                    ));
+                }
+            }
+            Ok::<(), StateError>(())
+        })();
+        if let Err(err) = checked {
+            remove_worktree_and_branch(primary, Some(&created.worktree), Some(&created.branch), true)?;
+            return Err(err);
+        }
         Some((created.worktree, created.branch))
     } else {
         None
@@ -336,31 +432,6 @@ fn start_holding_repo_lock(
         )
     })?;
 
-    let obs = ValidatedObservations {
-        external_satisfied_deps: ext_satisfied,
-        now_utc: acdd_core::telemetry::now_utc_iso_ms(),
-        ..ValidatedObservations::default()
-    };
-    let schedule = compute_schedule(&graph, &obs)?;
-    let mut ready_nodes = Vec::new();
-    for nid in &schedule.ready_root_nodes {
-        ready_nodes.push(NodeCursor::from_node_id(nid)?.to_string());
-    }
-    for tref in &schedule.ready_tasks {
-        let parent_id = format!("task:{tref}");
-        if let Some(g) = graph
-            .nodes
-            .iter()
-            .filter(|n| {
-                n.kind == NodeKind::TaskGate
-                    && n.parent_id.as_deref() == Some(parent_id.as_str())
-                    && n.status == NodeStatus::Ready
-            })
-            .min_by_key(|n| n.seq_order)
-        {
-            ready_nodes.push(NodeCursor::from_node_id(&g.node_id)?.to_string());
-        }
-    }
 
     let _ = append_trace_event(
         layout,
@@ -388,48 +459,25 @@ type PlannedStartWorktree = (Option<String>, Option<String>, Option<CreateWorktr
 
 #[allow(clippy::too_many_arguments)]
 fn plan_start_worktree(
-    config: &StateEngineConfig,
     primary: &Path,
+    source: &Path,
+    explicit: Option<&Path>,
     has_git: bool,
     run_name: &RunName,
     isolation: IsolationMode,
     worktrees: WorktreeLifecycle,
-    req: &StartReq,
     target_base: Option<&str>,
     spec_path_rel: Option<&str>,
 ) -> Result<PlannedStartWorktree, StateError> {
-    if isolation == IsolationMode::InPlace {
-        let target_wt =
-            canonicalize_macos_var(req.worktree_path.as_deref().unwrap_or(&config.worktree));
-        let branch = if has_git && target_wt.exists() {
-            current_branch_name(&target_wt)?
-        } else {
-            None
-        };
-        return Ok((Some(target_wt.to_string_lossy().into_owned()), branch, None));
-    }
-
-    if let Some(ref explicit) = req.worktree_path {
-        let canon = canonicalize_macos_var(explicit);
-        let branch = if has_git && canon.exists() {
-            current_branch_name(&canon)?
-        } else {
-            None
-        };
-        if worktrees == WorktreeLifecycle::Managed {
-            ensure_no_managed_worktree_collision(
-                primary,
-                run_name.as_str(),
-                &canon,
-                branch.as_deref(),
-                None,
-            )?;
-        }
-        return Ok((Some(canon.to_string_lossy().into_owned()), branch, None));
-    }
-
-    if worktrees == WorktreeLifecycle::Managed && has_git {
-        let wt_path = primary.join(".worktrees").join(run_name.as_str());
+    if isolation == IsolationMode::Worktree
+        && worktrees == WorktreeLifecycle::Managed
+        && has_git
+        && explicit != Some(source)
+    {
+        let wt_path = explicit.map_or_else(
+            || primary.join(".worktrees").join(run_name.as_str()),
+            Path::to_path_buf,
+        );
         let canon_wt = canonicalize_macos_var(&wt_path);
         let branch_name = format!("run/{run_name}");
         let base_ref = target_base.unwrap_or("HEAD").to_owned();
@@ -447,13 +495,21 @@ fn plan_start_worktree(
         ));
     }
 
-    let caller_wt = canonicalize_macos_var(&config.worktree);
     let branch = if has_git {
-        current_branch_name(&caller_wt)?
+        current_branch_name(source)?
     } else {
         None
     };
-    Ok((Some(caller_wt.to_string_lossy().into_owned()), branch, None))
+    if explicit.is_some() && worktrees == WorktreeLifecycle::Managed {
+        ensure_no_managed_worktree_collision(
+            primary,
+            run_name.as_str(),
+            source,
+            branch.as_deref(),
+            None,
+        )?;
+    }
+    Ok((Some(source.to_string_lossy().into_owned()), branch, None))
 }
 
 fn apply_initial_external_dep_satisfaction(

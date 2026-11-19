@@ -24,8 +24,7 @@ specs:
     digits: 3
   plans:
     path: docs/plans
-    prefixes:
-      - PLAN
+    prefixes: []
     digits: 3
 profiles_dirs:
   - .acdd/profiles

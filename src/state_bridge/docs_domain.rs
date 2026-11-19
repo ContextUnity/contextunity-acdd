@@ -4,7 +4,7 @@ use super::{budget_items, combine_file_hashes, open_code_db_readonly};
 use crate::format::file_uri_for_path;
 use acdd_core::config::Adapter;
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::format::sha256_hex;
+use acdd_core::format::{estimate_json_bytes, sha256_hex, utf8_floor_boundary};
 use acdd_core::fs::{checked_child, is_doc_path};
 use acdd_core::path_policy::{
     expand_glob_braces, glob_matches, normalize_rel_path, scopes_overlap, WorkspacePathPolicy,
@@ -22,6 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
+
+const MAX_INSTRUCTION_EXCERPT_BYTES: usize = 1_024;
 
 enum LinksScope {
     NoDocsInScope,
@@ -220,77 +222,103 @@ impl DocsDomainProvider {
     }
 
     fn provide_instructions(&self, req: &DomainContextReq) -> Result<Value> {
-        let mut ordered_paths: Vec<(String, &'static str, String)> = Vec::new();
-        let mut seen = BTreeSet::new();
+        let mut ordered_paths = vec![("AGENTS.md".to_owned(), "instructions_root", true)];
 
-        // 1. Root AGENTS.md (if present).
-        if checked_child(&req.worktree, Path::new("AGENTS.md")).is_ok_and(|p| p.is_file())
-            && seen.insert("AGENTS.md".to_owned())
-        {
-            ordered_paths.push((
-                "AGENTS.md".to_owned(),
-                "instructions_root",
-                "AGENTS.md".to_owned(),
-            ));
-        }
-
-        // 2. TESTS.md (when `tests/**` or `TESTS.md` overlaps `req.admitted_scope`).
         let tests_patterns = ["tests/**".to_owned(), "TESTS.md".to_owned()];
         if !req.admitted_scope.is_empty()
             && scopes_overlap(&req.admitted_scope, &tests_patterns)
-            && checked_child(&req.worktree, Path::new("TESTS.md")).is_ok_and(|p| p.is_file())
-            && seen.insert("TESTS.md".to_owned())
         {
-            ordered_paths.push(("TESTS.md".to_owned(), "tests_guide", "TESTS.md".to_owned()));
+            ordered_paths.push(("TESTS.md".to_owned(), "tests_guide", false));
         }
+        ordered_paths.extend(
+            collect_scoped_agents_md(&req.worktree, &req.admitted_scope, &req.path_policy)
+                .into_iter()
+                .map(|(path, is_owner)| (path, "instructions_subtree", is_owner)),
+        );
+        ordered_paths.sort_by_key(|(_, _, is_owner)| !is_owner);
 
-        // 3. Subtree `<dir>/AGENTS.md` along ancestor & matched directories of `req.admitted_scope`.
-        for rel in collect_scoped_agents_md(&req.worktree, &req.admitted_scope, &req.path_policy) {
-            if seen.insert(rel.clone()) {
-                ordered_paths.push((rel.clone(), "instructions_subtree", rel));
-            }
-        }
+        // Leave room for transports that serialize the claim as text and escape it again.
+        let max_bytes = req.max_bytes / 2;
+        let owner_count = ordered_paths.iter().filter(|(_, _, is_owner)| *is_owner).count();
+        let owner_share = max_bytes / 2 / owner_count;
+        let descendant_count = ordered_paths.len() - owner_count;
+        let descendant_share = max_bytes / 4 / descendant_count.max(1);
 
         let mut items = Vec::with_capacity(ordered_paths.len());
-        for (rel, kind, fallback_title) in ordered_paths {
+        let mut metadata = Vec::with_capacity(ordered_paths.len());
+        let mut truncated = false;
+        for (rel, kind, is_owner) in ordered_paths {
             let Ok(abs) = checked_child(&req.worktree, Path::new(&rel)) else {
                 continue;
             };
+            if !fs::symlink_metadata(&abs).is_ok_and(|metadata| metadata.is_file()) {
+                continue;
+            }
             let Ok(text) = fs::read_to_string(&abs) else {
                 continue;
             };
             let title = frontmatter_field(&text, "title")
                 .or_else(|| first_markdown_heading(&text))
-                .unwrap_or(fallback_title);
+                .unwrap_or_else(|| rel.clone());
             let headings = extract_markdown_headings(&text, 10);
             let uri = abs
                 .canonicalize()
                 .ok()
                 .and_then(|canon| file_uri_for_path(&canon, None));
-            let mut obj = serde_json::Map::new();
-            obj.insert("path".to_owned(), json!(rel));
+            let mut fields = serde_json::Map::new();
             if let Some(uri) = uri {
-                obj.insert("uri".to_owned(), json!(uri));
+                fields.insert("uri".to_owned(), json!(uri));
             }
-            obj.insert("kind".to_owned(), json!(kind));
-            obj.insert("title".to_owned(), json!(title));
+            fields.insert("title".to_owned(), json!(title));
             if !headings.is_empty() {
-                obj.insert("headings".to_owned(), json!(headings));
+                fields.insert("headings".to_owned(), json!(headings));
             }
-            items.push(Value::Object(obj));
+            let mut item = json!({"path": rel, "kind": kind});
+            if kind != "tests_guide" {
+                let text = text.trim();
+                let prefix = utf8_floor_boundary(text, MAX_INSTRUCTION_EXCERPT_BYTES);
+                let share = if is_owner { owner_share } else { descendant_share };
+                let content = instruction_excerpt(&text[..prefix], share);
+                if !content.is_empty() {
+                    item["content"] = json!(content);
+                }
+                truncated |= content.len() < text.len();
+            }
+            items.push(item);
+            metadata.push(fields);
         }
 
-        let mut budgeted = budget_items("instructions", items.clone(), req.max_bytes);
-        if budgeted["truncated"].as_bool() == Some(true)
-            || acdd_core::format::estimate_json_bytes(&budgeted) > req.max_bytes
-        {
-            for item in &mut items {
-                if let Some(obj) = item.as_object_mut() {
-                    obj.remove("headings");
+        let mut budgeted = budget_items("instructions", items, max_bytes);
+        let Some(mut remaining) = max_bytes.checked_sub(estimate_json_bytes(&budgeted)) else {
+            budgeted["items"] = json!([]);
+            budgeted["truncated"] = json!(true);
+            return Ok(budgeted);
+        };
+        truncated |= budgeted["truncated"] == true;
+        let items = budgeted["items"]
+            .as_array_mut()
+            .expect("budget_items returns an array");
+        for (item, fields) in items.iter_mut().zip(metadata) {
+            for (key, value) in fields {
+                let bytes = estimate_json_bytes(&key) + 2 + estimate_json_bytes(&value);
+                if bytes <= remaining {
+                    item[key] = value;
+                    remaining -= bytes;
+                } else {
+                    truncated = true;
                 }
             }
-            budgeted = budget_items("instructions", items, req.max_bytes);
         }
+        items.sort_by(|a, b| {
+            // Preserve the presentation order independently of admission priority.
+            let order = |item: &Value| match item["kind"].as_str() {
+                Some("instructions_root") => 0,
+                Some("tests_guide") => 1,
+                _ => 2,
+            };
+            (order(a), a["path"].as_str()).cmp(&(order(b), b["path"].as_str()))
+        });
+        budgeted["truncated"] = json!(truncated);
         Ok(budgeted)
     }
 
@@ -578,12 +606,26 @@ fn first_markdown_heading(markdown: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn instruction_excerpt(text: &str, budget: usize) -> &str {
+    let field_bytes = ",\"content\":".len();
+    let mut end = utf8_floor_boundary(text, budget.saturating_sub(field_bytes + 2));
+    while end > 0 {
+        let content = text[..end].trim_end();
+        let bytes = field_bytes + estimate_json_bytes(content);
+        if bytes <= budget {
+            return content;
+        }
+        end = utf8_floor_boundary(text, end.saturating_sub(bytes - budget));
+    }
+    ""
+}
+
 fn collect_scoped_agents_md(
     worktree: &Path,
     admitted_scope: &[String],
     policy: &WorkspacePathPolicy,
-) -> BTreeSet<String> {
-    let mut found = BTreeSet::new();
+) -> BTreeMap<String, bool> {
+    let mut found = BTreeMap::new();
     if admitted_scope.is_empty() || !worktree.exists() {
         return found;
     }
@@ -622,7 +664,7 @@ fn collect_scoped_agents_md(
                 prefix.push_str(seg);
                 let cand = format!("{prefix}/AGENTS.md");
                 if checked_child(worktree, Path::new(&cand)).is_ok_and(|p| p.is_file()) {
-                    found.insert(cand);
+                    found.insert(cand, true);
                 }
             }
 
@@ -676,7 +718,7 @@ fn collect_scoped_agents_md(
                 || policy.is_scope_admitted(&rel, admitted_scope))
                 && checked_child(worktree, Path::new(&rel)).is_ok_and(|p| p.is_file())
             {
-                found.insert(rel);
+                found.entry(rel).or_insert(false);
             }
         }
     }

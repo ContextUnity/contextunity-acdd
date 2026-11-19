@@ -47,6 +47,17 @@ pub fn parse_task_dependency(
     linked_workspaces: &BTreeMap<String, PathBuf>,
     spec_repos: &BTreeMap<String, PathBuf>,
 ) -> Result<MachineTaskDep, StateError> {
+    parse_task_dependency_with_db(raw, current_workspace, current_run_id, linked_workspaces, spec_repos, None)
+}
+
+pub(crate) fn parse_task_dependency_with_db(
+    raw: &str,
+    current_workspace: &str,
+    current_run_id: &RunId,
+    linked_workspaces: &BTreeMap<String, PathBuf>,
+    spec_repos: &BTreeMap<String, PathBuf>,
+    local_db: Option<(&Path, &Path)>,
+) -> Result<MachineTaskDep, StateError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(StateError::new(
@@ -63,14 +74,15 @@ pub fn parse_task_dependency(
                 linked_workspaces,
                 spec_repos,
             )?;
-            let rid = resolve_external_run_id(&canon_ws, run_part)?;
+            let db = local_db.filter(|(primary, _)| same_repository(primary, &canon_ws)).map(|(_, db)| db);
+            let rid = resolve_external_run_id(&canon_ws, run_part, db)?;
             Ok(MachineTaskDep {
                 depends_on_workspace: canon_ws.to_string_lossy().into_owned(),
                 depends_on_run_id: rid,
                 depends_on_ref: tref,
             })
         } else {
-            let rid = resolve_external_run_id(Path::new(current_workspace), left)?;
+            let rid = resolve_external_run_id(Path::new(current_workspace), left, local_db.map(|(_, db)| db))?;
             Ok(MachineTaskDep {
                 depends_on_workspace: current_workspace.to_owned(),
                 depends_on_run_id: rid,
@@ -114,7 +126,7 @@ fn resolve_linked_workspace_root(
     })
 }
 
-fn load_ws_adapter(ws_root: &Path) -> Result<Adapter, StateError> {
+pub(crate) fn load_ws_adapter(ws_root: &Path) -> Result<Adapter, StateError> {
     load_adapter(ws_root, None).map_err(|err| {
         if let Some(se) = err.get_ref().and_then(|inner| inner.downcast_ref::<StateError>()) {
             se.clone()
@@ -125,6 +137,24 @@ fn load_ws_adapter(ws_root: &Path) -> Result<Adapter, StateError> {
             )
         }
     })
+}
+
+/// Resolve the explicit or owning-primary state database without guessing on invalid configuration.
+pub fn try_resolve_effective_state_db(root: &Path, explicit: Option<&Path>) -> Result<PathBuf, StateError> {
+    let primary = acdd_core::git::primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
+    if let Some(path) = acdd_core::config::resolve_custom_db_path(&primary, explicit) {
+        return Ok(path);
+    }
+    Ok(resolve_state_db_path(&primary, &load_ws_adapter(&primary)?))
+}
+
+pub(crate) fn same_repository(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    acdd_core::git::primary_worktree_root(left)
+        .zip(acdd_core::git::primary_worktree_root(right))
+        .is_some_and(|(a, b)| a == b)
 }
 
 fn resolve_ws_context(
@@ -139,7 +169,11 @@ fn resolve_ws_context(
         ));
     }
     let adapter = load_ws_adapter(ws_path)?;
-    let db_path = resolve_state_db_path(ws_path, &adapter);
+    let db_path = if same_repository(primary_root, ws_path) {
+        config.resolved_state_db_path().0
+    } else {
+        resolve_state_db_path(ws_path, &adapter)
+    };
     Ok((db_path, adapter.specs))
 }
 
@@ -177,8 +211,10 @@ fn tombstone_superseded_by_cleared(
         .is_some_and(|latest| latest.terminal_status == TerminalStatus::Cleared)
 }
 
-fn resolve_external_run_id(ws_root: &Path, run_sel: &str) -> Result<RunId, StateError> {
-    let db_path = if fs::symlink_metadata(ws_root.join("acdd.yaml")).is_ok() {
+fn resolve_external_run_id(ws_root: &Path, run_sel: &str, local_db: Option<&Path>) -> Result<RunId, StateError> {
+    let db_path = if let Some(db) = local_db {
+        db.to_path_buf()
+    } else if fs::symlink_metadata(ws_root.join("acdd.yaml")).is_ok() {
         let adapter = load_ws_adapter(ws_root)?;
         resolve_state_db_path(ws_root, &adapter)
     } else {
@@ -300,9 +336,17 @@ pub fn collect_external_satisfied_deps(
         if dep.depends_on_run_id == *current_run_id && dep.depends_on_workspace == primary_str {
             continue;
         }
-        let ws_path = PathBuf::from(&dep.depends_on_workspace);
+        let ws_path = if dep.depends_on_workspace == primary_str {
+            config.worktree.clone()
+        } else {
+            PathBuf::from(&dep.depends_on_workspace)
+        };
         if !contexts.contains_key(&dep.depends_on_workspace) {
-            let (db_path, collections) = resolve_ws_context(&ws_path, &primary, config)?;
+            let (db_path, collections) = if dep.depends_on_workspace == primary_str {
+                (config.resolved_state_db_path().0, effective_spec_collections(config))
+            } else {
+                resolve_ws_context(&ws_path, &primary, config)?
+            };
             contexts.insert(
                 dep.depends_on_workspace.clone(),
                 (SqliteStateReader::new(db_path), collections),
@@ -575,7 +619,8 @@ pub fn verify_run_level_depends_on(
         return Ok(());
     }
     let primary = primary_workspace_root(config);
-    let spec_repos = spec_repo_map(&primary, doc);
+    let source = &config.worktree;
+    let spec_repos = resolve_spec_repositories(source, doc);
 
     for dep_raw in &doc.depends_on {
         let trimmed = dep_raw.trim();
@@ -597,11 +642,20 @@ pub fn verify_run_level_depends_on(
                 &config.linked_workspaces,
                 &spec_repos,
             )?;
-            let (db_path, collections) = resolve_ws_context(&canon, &primary, config)?;
-            (canon, collections, rest, Some(SqliteStateReader::new(db_path)))
+            if same_repository(&primary, &canon) {
+                let collections = if &canon == source {
+                    effective_spec_collections(config)
+                } else {
+                    load_ws_adapter(&canon)?.specs
+                };
+                (canon, collections, rest, None)
+            } else {
+                let (db_path, collections) = resolve_ws_context(&canon, &primary, config)?;
+                (canon, collections, rest, Some(SqliteStateReader::new(db_path)))
+            }
         } else {
             (
-                primary.clone(),
+                source.clone(),
                 effective_spec_collections(config),
                 trimmed,
                 None,
@@ -705,7 +759,7 @@ pub fn validate_spec_dependencies(
         .iter()
         .map(|lw| (lw.name.clone(), lw.path.clone()))
         .collect();
-    let spec_repos = spec_repo_map(root, doc);
+    let spec_repos = resolve_spec_repositories(root, doc);
 
     // 1. Validate intra-spec task DAG and external task.depends_on entries.
     let task_refs: BTreeSet<&str> = doc.tasks.iter().map(|t| t.task_ref.as_str()).collect();
@@ -864,7 +918,7 @@ enum DfsColor {
     Visited,
 }
 
-fn spec_repo_map(primary_root: &Path, spec_doc: &SpecDocument) -> BTreeMap<String, PathBuf> {
+pub(crate) fn resolve_spec_repositories(primary_root: &Path, spec_doc: &SpecDocument) -> BTreeMap<String, PathBuf> {
     let mut map = BTreeMap::new();
     for r in &spec_doc.repositories {
         let p = Path::new(&r.path);
@@ -962,7 +1016,7 @@ fn has_cross_spec_cycle(
         stack.push(node.clone());
 
         if let Some(spec_doc) = by_id.get(node.spec_id()) {
-            let repos = spec_repo_map(primary_root, spec_doc);
+            let repos = resolve_spec_repositories(primary_root, spec_doc);
             let mut neighbors: Vec<DepGraphNode<'a>> = Vec::new();
             for raw in &spec_doc.depends_on {
                 if let Some(target) = parse_dep_node(
@@ -1071,16 +1125,16 @@ fn validate_external_dep_ref(
         if let Some((ws_alias, rest)) = trimmed.split_once('/') {
             let canon =
                 resolve_linked_workspace_root(ws_alias, trimmed, linked_workspaces, spec_repos)?;
-            if primary_canon.as_deref() == Some(canon.as_path()) {
+            if primary_canon.as_deref().is_some_and(|root| same_repository(root, &canon)) {
                 let db_path = match state_db_override {
                     Some(p) if p.is_absolute() => p.to_path_buf(),
                     Some(rel) => primary_root.join(rel),
                     None => resolve_state_db_path(primary_root, primary_adapter),
                 };
                 (
-                    primary_root.to_path_buf(),
+                    canon.clone(),
                     true,
-                    primary_adapter.specs.clone(),
+                    if canon == primary_root { primary_adapter.specs.clone() } else { load_ws_adapter(&canon)?.specs },
                     db_path,
                     rest,
                 )
@@ -1134,7 +1188,7 @@ fn validate_external_dep_ref(
     }
 
     let active_storage: Vec<SpecDocument>;
-    let active_list: &[SpecDocument] = if is_primary {
+    let active_list: &[SpecDocument] = if ws_path == primary_root {
         primary_active_specs
     } else {
         let scan = collect_workspace_specs(&ws_path, &ws_collections);

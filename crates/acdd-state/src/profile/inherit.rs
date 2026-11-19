@@ -374,6 +374,28 @@ fn resolve_profile_path_in_workspace(
     Ok(raw_rel.to_owned())
 }
 
+pub(crate) fn profile_lineage_paths(
+    root: &Path,
+    profile_id: &str,
+    profiles_dirs: &[String],
+) -> Result<Vec<String>, StateError> {
+    let mut reference = profile_id.to_owned();
+    let mut paths = Vec::new();
+    while reference != "none" && embedded_profile(&reference).is_none() {
+        let (raw, pin) = parse_path_and_pin(&reference)?;
+        let rel = resolve_profile_path_in_workspace(root, &raw, Some(profiles_dirs))?;
+        if paths.contains(&rel) {
+            return Err(StateError::new(ErrorCode::ProfileSchemaInvalid, "cyclic profile inheritance"));
+        }
+        let bytes = read_confined_profile_bytes(root, &rel)?;
+        if let Some(pin) = pin { verify_sha256_prefix(&bytes, &pin, &rel)?; }
+        let yaml = std::str::from_utf8(&bytes).map_err(|err| StateError::new(ErrorCode::ProfileSchemaInvalid, err.to_string()))?;
+        reference = parse_profile(yaml)?.inherit.unwrap_or_else(|| "none".to_owned());
+        paths.push(rel);
+    }
+    Ok(paths)
+}
+
 fn resolve_recursive(
     yaml: &str,
     profile_id: &str,

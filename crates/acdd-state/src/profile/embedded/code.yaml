@@ -167,13 +167,17 @@ guidance:
       - "Validate untrusted inputs once at external boundaries and trust validated internal types/schemas/locks without duplicating checks."
       - "Never convert one-time incidents into permanent architectural layers or fence lists; fix the owning mechanism instead."
       - "Eliminate redundant validations and dead code in touched files; keep tests proportional to actual operational risk."
-      - "Escalate via acdd_blackboard (topic: decisions or blockers) before introducing any new subsystem or exceeding max_net_loc (`BUDGET_OVERRIDE: <reason>`)."
+      - "Escalate via acdd_blackboard (topic: decisions or blockers) before introducing any new subsystem or exceeding max_net_loc (`BUDGET_OVERRIDE: <reason>`). Reviewers must verify any approved BUDGET_OVERRIDE reason against the measured net production LOC delta before accepting an overage."
+      - "Do NOT invent unrequested architecture, fallback layers, modes, or parallel pipelines outside the accepted spec and pre_task_slice; any contract or scope expansion requires an approved decision in acdd_blackboard (topic: decisions)."
+      - "Keep cohesive pipelines in one module; extract a separate file/submodule only for an independent domain or shared multi-consumer component rather than splitting tight internal state into pub(super) import boilerplate."
+      - "Reuse existing test harnesses when available; reserve disk tempdirs and child-process executions strictly for genuine environment or isolation contracts."
   code.tools:
     description: "MANDATORY ACDD GRAPH & SOURCE NAVIGATION PROTOCOL"
     criteria:
       - "Use acdd_read(selector: \"SymbolName\", path: ...) for complete symbol reads, code_map_overview / code_map_search(detail: \"compact\") / ast_grep_search for discovery, and rg strictly for literals/config/error text."
       - "Run code_map_impact, code_map_tests, code_map_prove_removal, search_docs, and get_doc before editing or deleting declarations to reconcile ADRs and INV-* owners."
       - "Before submitting build, polish, or review (or workspace-wide on integration_review), run code_map_query(operation: \"duplicates\") and code_map_query(operation: \"dead_tails\") and eliminate or reject clones, phantom_tested dead code, dead_tails, and dangling_calls."
+      - "If ACDD MCP tools are unavailable in the current harness/runtime, use the equivalent `acdd` CLI commands (`acdd claim`, `verify`, `submit`, `blackboard`, `read`, `query`, `context`, `doc`) following `skills/acdd/SKILL.md`."
   milestone.synthesis:
     description: "ARCHITECTURAL BLUEPRINT SYNTHESIS"
     criteria:
@@ -189,11 +193,17 @@ guidance:
     criteria:
       - "Follow proof.tasks[task_ref] (`canonical_owners`, `mechanism_rules`, `max_net_loc`), author seam checks directly in build, and verify exit_code == 0."
       - "If context_reset_required is set after rearchitect, read the latest rearchitect decision from acdd_blackboard (topic: decisions) and rebuild cleanly from scratch."
+      - "Keep functions cohesive; consider decomposing long production functions (>150 LOC) when they mix unrelated responsibilities or obscure control flow, while keeping linear pipelines, tables, or dispatchers intact when splitting adds indirection without clarity; extract repeated logic (>=5 lines) within or across functions."
+      - "Fix defects across the full pattern class via the canonical owner (check sibling call sites with code_map_search/ast_grep_search) rather than patching one line at a time."
+      - "Ensure every regression test isolates its failure condition cleanly and lives in a genuine data-driven `for case in cases` matrix or reusable local helper (never paste sequential `git init` / `make_temp_dir` mega-tests inside one `#[test]`). Reuse existing in-process test harnesses when available; reserve disk tempdirs and child-process executions strictly for genuine environment or isolation contracts."
   task.review:
     description: "INDEPENDENT TASK IMPLEMENTATION REVIEW"
     criteria:
       - "Verify task contract satisfaction, concurrency safety, and code/graph hygiene across the declared contours."
       - "Use rejection kind: defect (fail: build) for localized bugs, or kind: architectural_drift (fail_drift: rearchitect) for structural violations requiring builder context reset."
+      - "Complete all contours before rejecting (`NO EARLY-ABORT`) and sweep sibling call sites (`DEFECT-CLASS SWEEP`) so related defects are closed in one round."
+      - "Check long functions (>150 LOC) for genuine entanglement or poor readability and recommend decomposition only when warranted (do not reject cohesive linear/declarative/dispatch functions purely for line count); reject repeated logic (>=5 lines), orphan helpers, unapproved net LOC overages (verifying that approved BUDGET_OVERRIDE reasons cover the measured delta), and imperative non-tabular mega-tests."
+      - "Audit new regression tests to confirm each assertion proves the claimed defect path without fixture masking, rejects slow imperative multi-setup bloat, and enforces reuse of existing test harnesses when available."
   task.rearchitect:
     description: "ARCHITECTURAL RECOVERY AFTER DRIFT"
     criteria:
@@ -376,7 +386,6 @@ gates:
       - "docs/**"
       - "skills/**"
       - "AGENTS.md"
-      - "**/AGENTS.md"
       - "README.md"
       - ".gitignore"
     command: verify_all

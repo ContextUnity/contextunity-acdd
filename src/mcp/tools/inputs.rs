@@ -646,6 +646,8 @@ pub enum McpStateAction {
     Next,
     /// Read-only aggregate state observability metrics and Prometheus text (`StateQuery::Observability`).
     Observability,
+    /// Read-only budgeted gate context refresh (`StateQuery::Context`).
+    Context,
     /// Start a new `Run` from a spec file or ephemeral `--goal` (`StateCommand::Start`).
     Start,
     /// Draft the next sequentially numbered spec document in a configured collection (`StateCommand::Draft`).
@@ -668,16 +670,16 @@ impl McpStateAction {
     pub(super) fn is_read_only(self) -> bool {
         matches!(
             self,
-            Self::Status | Self::List | Self::Show | Self::Next | Self::Observability
+            Self::Status | Self::List | Self::Show | Self::Next | Self::Observability | Self::Context
         )
     }
 }
 
-/// Canonical `acdd_state` MCP tool input covering 8 `StateCommand` actions and 5 read-only `StateQuery` actions.
+/// Canonical `acdd_state` MCP tool input covering 8 `StateCommand` actions and 6 read-only `StateQuery` actions.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StateInput {
-    /// State action (`status`, `list`, `show`, `next`, `observability`, `start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `clear`, `run`).
+    /// State action (`status`, `list`, `show`, `next`, `context`, `observability`, `start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `clear`, `run`).
     pub action: McpStateAction,
     /// Optional run ID or run name selector.
     pub run: Option<String>,

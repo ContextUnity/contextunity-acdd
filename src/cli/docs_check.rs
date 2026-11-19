@@ -507,7 +507,7 @@ pub(crate) fn collect_link_errors(
             || !entry.file_type().is_dir()
             || !matches!(
                 entry.file_name().to_str(),
-                Some("target" | ".git" | ".worktrees")
+                Some("target" | ".git" | ".worktrees" | ".acdd")
             )
     }) {
         let entry = entry?;

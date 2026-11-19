@@ -14,26 +14,28 @@ use crate::spec::{
 };
 use crate::store::traits::{exec_tx_with, StateBackend};
 use crate::types::{
-    ArchiveCleanupEntry, IsolationMode,
-    RunTombstoneRecord, StoragePreconditions, TerminalStatus, ValidatedObservations,
+    ArchiveCleanupEntry, RunTombstoneRecord, StoragePreconditions, TerminalStatus,
+    ValidatedObservations,
 };
 use crate::usecases::dto::{
     ClearReq, ClearResp, DraftReq, DraftResp, SyncReq, SyncResp,
 };
 use crate::usecases::lifecycle::{
-    apply_effective_isolation, build_tombstone_cleanup_manifest_from_snapshot,
+    apply_effective_isolation, build_tombstone_cleanup_manifest_from_snapshot, checkout_config,
     collect_external_satisfied_deps, effective_spec_collections, ensure_state_enabled,
     is_managed_run_branch, parse_profile_from_run, primary_workspace_root,
-    prune_old_run_trace_dirs, read_confined_utf8, resolve_active_run, sorted_dir_paths,
+    prune_old_run_trace_dirs, read_confined_utf8, resolve_active_run, resolve_source_checkout,
+    sorted_dir_paths,
     to_machine_profile, validate_profile_fail_closed, with_repo_lock_and_maintenance,
 };
 use crate::usecases::queries::read_spec_readonly;
 use crate::usecases::StateEngineConfig;
+use acdd_core::config::Adapter;
 use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ports::CompositeDomainProvider;
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -156,8 +158,10 @@ pub(crate) fn handle_sync_dyn(
     backend: &dyn StateBackend,
     provider: &CompositeDomainProvider,
     req: SyncReq,
+    source_override: Option<&Adapter>,
 ) -> Result<SyncResp, StateError> {
-    with_repo_lock_and_maintenance(config, backend, |primary, _layout| {
+    with_repo_lock_and_maintenance(config, backend, |primary, layout| {
+        let caller = resolve_source_checkout(primary, layout, &config.worktree, false)?;
         let run = resolve_active_run(config, backend, req.run.as_deref(), None)?;
         let snapshot = backend
             .load_run_graph(&run.run_id)?
@@ -170,26 +174,27 @@ pub(crate) fn handle_sync_dyn(
         } else {
             format!(".acdd/run/{}/spec.md", snapshot.run.run_id)
         };
-        let raw_spec = read_confined_utf8(primary, &spec_rel)?;
+        let source = if snapshot.run.is_ephemeral {
+            primary.to_path_buf()
+        } else if let Some(path) = snapshot.run.worktree.as_deref() {
+            resolve_source_checkout(primary, layout, Path::new(path), false)?
+        } else {
+            caller
+        };
+        let raw_spec = read_confined_utf8(&source, &spec_rel)?;
         let doc = parse_spec(&raw_spec)?;
+        let checkout = checkout_config(config, primary, &source, source_override)?;
 
         let (new_machine_profile, new_profile_pair_owned, rebound_resolved) = if req.rebind_profile {
             let mut refreshed = resolve_profile_for_rebind(
                 &snapshot.run.profile_id,
-                Some(primary),
+                Some(&source),
                 Some(&config.modules),
-                Some(&config.profiles_dirs),
+                Some(&checkout.profiles_dirs),
             )?;
-            let effective_isolation = if snapshot.run.isolation == IsolationMode::InPlace
-                || refreshed.git.isolation == IsolationMode::InPlace
-            {
-                IsolationMode::InPlace
-            } else {
-                snapshot.run.isolation
-            };
             apply_effective_isolation(
                 &mut refreshed,
-                effective_isolation,
+                snapshot.run.isolation,
                 current_resolved.git.worktrees,
             );
             validate_profile_fail_closed(config, &refreshed, provider, true)?;
@@ -202,22 +207,20 @@ pub(crate) fn handle_sync_dyn(
         };
 
         let effective_profile = rebound_resolved.as_ref().unwrap_or(&current_resolved);
-        crate::validate::validate_spec_for_run(config, backend, provider, &doc, effective_profile)?;
+        crate::validate::validate_spec_for_run(&checkout, backend, provider, &doc, effective_profile)?;
 
-        let mut spec_repos = BTreeMap::new();
-        for r in &doc.repositories {
-            spec_repos.insert(r.name.clone(), PathBuf::from(&r.path));
-        }
+        let spec_repos = crate::usecases::deps::resolve_spec_repositories(&checkout.worktree, &doc);
         let primary_str = primary.to_string_lossy().into_owned();
         let machine_spec = build_machine_spec_input(
             &doc,
             &primary_str,
             &snapshot.run.run_id,
-            &config.linked_workspaces,
+            &checkout.linked_workspaces,
             &spec_repos,
+            &checkout.resolved_state_db_path().0,
         )?;
         let ext_deps =
-            collect_external_satisfied_deps(config, &snapshot.run.run_id, &snapshot.dependencies)?;
+            collect_external_satisfied_deps(&checkout, &snapshot.run.run_id, &snapshot.dependencies)?;
         let obs = ValidatedObservations {
             external_satisfied_deps: ext_deps,
             now_utc: acdd_core::telemetry::now_utc_iso_ms(),

@@ -122,7 +122,36 @@ fn shared_mcp_harness_supports_server_rpc_and_cli_seams() {
 fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
     let workspace =
         crate::harness::session_workspace().expect("real session fixture should initialize");
-    for next in [false, true] {
+    let root_rules = "# Rules\n\nKeep shared interfaces stable.\n";
+    let local_rules = format!(
+        "# Source rules\n\nKeep domain checks in their owner.\n{}",
+        "\t\\\"🦀".repeat(2_000)
+    );
+    let long_root = format!(
+        "{root_rules}{}",
+        "Keep changes within the task scope. ".repeat(40)
+    );
+    let long_local = format!(
+        "# Source rules\n\nKeep domain checks in their owner.\n{}",
+        "Use the owning domain's test harness. ".repeat(40)
+    );
+    let config = |cap| format!("roots: [src/]\nspecs:\n  milestones:\n    path: docs/milestones\nresponse:\n  max_output_bytes: {cap}\n");
+    workspace.write("acdd.yaml", &config(4096));
+    for (next, cap, root_source, local_source, descendants) in [
+        (false, 4096, root_rules, local_rules.as_str(), 0),
+        (true, 2048, long_root.as_str(), long_local.as_str(), 0),
+        (true, 2048, long_root.as_str(), long_local.as_str(), 9),
+    ] {
+        workspace.write("AGENTS.md", root_source);
+        workspace.write("src/AGENTS.md", local_source);
+        if descendants > 0 {
+            let path = "docs/milestones/010-session.md";
+            let spec = std::fs::read_to_string(workspace.path(path)).unwrap();
+            workspace.write(path, &spec.replace("scope: [src/]", "scope: [src/, tests/]"));
+        }
+        for index in 0..descendants {
+            workspace.write(format!("src/{index}/AGENTS.md"), local_source);
+        }
         let mut builder =
             McpTestHarness::with_session(&workspace, "builder-session").expect("MCP initialize");
         builder
@@ -131,25 +160,65 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
                 json!({"action":"start","spec_path":"docs/milestones/010-session.md","in_place":true}),
             )
             .expect("MCP start should succeed");
-        let build_claim = builder
-            .payload(
-                "acdd_claim",
-                json!({"node":"first.build","worker_id":"builder","worktree":workspace.root()}),
-            )
-            .expect("MCP claim should succeed");
+        let claim_args = json!({
+            "node":"first.build","worker_id":"builder","worktree":workspace.root(),"format":"json"
+        });
+        if cap < 4096 {
+            // Bind the candidate with the normal config before changing the response budget.
+            builder
+                .payload("acdd_claim", claim_args.clone())
+                .expect("initial MCP claim should succeed");
+            workspace.write("acdd.yaml", &config(cap));
+        }
+        #[cfg(unix)]
+        let fifo = (descendants > 0).then(|| {
+            use std::os::unix::ffi::OsStrExt;
+            let path = workspace.path("TESTS.md");
+            let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: The NUL-terminated path lives through the synchronous syscall.
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            path
+        });
+        let claim = builder.call("acdd_claim", claim_args);
+        #[cfg(unix)]
+        if let Some(fifo) = fifo {
+            if claim.is_err() {
+                // Release a blocked reader on request timeout before dropping the harness.
+                let _ = std::fs::OpenOptions::new().read(true).write(true).open(&fifo);
+            }
+            std::fs::remove_file(fifo).unwrap();
+        }
+        let (bytes, response) = claim.expect("MCP claim should succeed");
+        let build_claim: Value = mcp_payload(&response);
         assert_eq!(
             build_claim["node_cursor"]["Task"]["gates"][0], "build",
             "{build_claim}"
         );
-        if !next {
-            let instructions = &build_claim["context_lenses"]["docs.instructions"];
-            assert!(
-                instructions["items"]
-                    .as_array()
-                    .is_some_and(|arr| arr.iter().any(|item| item["path"] == "AGENTS.md")),
-                "expected docs.instructions lens with AGENTS.md in acdd_claim: {build_claim}"
-            );
+        assert!(bytes <= cap, "claim response used {bytes} bytes");
+        assert_eq!(build_claim["context_lenses"].as_object().unwrap().len(), 1);
+        let instructions = &build_claim["context_lenses"]["docs.instructions"];
+        let items = instructions["items"].as_array().unwrap();
+        if descendants > 0 {
+            assert_eq!(instructions["total"], 11);
+            assert_eq!(instructions["truncated"], true);
+            assert!(items.iter().all(|item| item["path"] != "TESTS.md"));
         }
+        for (path, rule, source) in [
+            ("src/AGENTS.md", "Keep domain checks in their owner.", local_source),
+            ("AGENTS.md", "Keep shared interfaces stable.", root_source),
+        ] {
+            let item = items.iter().find(|item| item["path"] == path).unwrap();
+            let content = item["content"].as_str().unwrap();
+            assert!(
+                content.contains(rule) && source.starts_with(content),
+                "{path}: {content}"
+            );
+            assert!(content.len() <= 1024, "{path}: {} bytes", content.len());
+            if descendants > 0 {
+                assert!(content.len() >= 100, "{path}: {content}");
+            }
+        }
+        workspace.write("acdd.yaml", &config(4096));
         builder
             .payload(
                 "acdd_submit",

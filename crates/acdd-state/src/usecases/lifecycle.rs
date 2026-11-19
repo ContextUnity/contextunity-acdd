@@ -23,13 +23,14 @@ use crate::types::{
     ValidatedObservations, WorktreeLifecycle,
 };
 use crate::usecases::StateEngineConfig;
-use acdd_core::config::SpecCollectionConfig;
+use acdd_core::config::{load_adapter, Adapter, SpecCollectionConfig};
+use crate::usecases::deps::load_ws_adapter;
 use acdd_core::fs::{checked_child, open_confined};
 use acdd_core::git::{git_common_dir, git_stdout};
 use acdd_core::lock::{acquire_exclusive, FileLockGuard};
 use acdd_core::subsystems::SubsystemRegistry;
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, RunName, TaskRef};
+use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, RunName, TaskRef, WorkerId};
 use acdd_core::path_policy::WorkspacePathPolicy;
 use acdd_core::ports::CompositeDomainProvider;
 use acdd_core::schema::SchemaDef;
@@ -619,6 +620,76 @@ pub fn parse_cursor_for_snapshot(
     .map_err(StateError::from)
 }
 
+
+
+/// Resolve an owned source checkout root for spec/profile IO while keeping state DB anchored on `primary`.
+pub fn resolve_source_checkout(
+    primary: &Path,
+    layout: Option<&RepoWorktreeLayout>,
+    candidate: &Path,
+    explicit: bool,
+) -> Result<PathBuf, StateError> {
+    let _ = primary;
+    let candidate = canonicalize_macos_var(candidate);
+    if !candidate.is_dir() {
+        return Err(StateError::new(
+            ErrorCode::ExternalGitDrift,
+            format!("checkout path '{}' is not a directory", candidate.display()),
+        ));
+    }
+    let Some(layout) = layout else {
+        return Ok(candidate);
+    };
+    if explicit {
+        let resolved = resolve_repo_layout(&candidate)?;
+        if resolved.primary_worktree != layout.primary_worktree {
+            return Err(StateError::new(
+                ErrorCode::ExternalGitDrift,
+                format!(
+                    "worktree path '{}' is not owned by this repository",
+                    candidate.display()
+                ),
+            ));
+        }
+    }
+    Ok(candidate)
+}
+
+/// Overlay checkout-local `acdd.yaml` bindings onto `config` while preserving primary DB routing.
+pub fn checkout_config(
+    config: &StateEngineConfig,
+    primary: &Path,
+    source: &Path,
+    source_override: Option<&Adapter>,
+) -> Result<StateEngineConfig, StateError> {
+    let source = canonicalize_macos_var(source);
+    let adapter = if let Some(ad) = source_override {
+        ad.clone()
+    } else if source == canonicalize_macos_var(primary) {
+        load_ws_adapter(primary)?
+    } else {
+        load_adapter(&source, None).map_err(|err| {
+            StateError::new(
+                ErrorCode::ConfigMigrationRequired,
+                format!("failed to load acdd.yaml from '{}': {err}", source.display()),
+            )
+        })?
+    };
+    let mut checkout = config.clone();
+    checkout.worktree = source;
+    checkout.spec_collections = adapter.specs.clone();
+    checkout.profiles_dirs = adapter.profiles_dirs.clone();
+    checkout.linked_workspaces = adapter
+        .linked_workspaces
+        .iter()
+        .map(|lw| (lw.name.clone(), lw.path.clone()))
+        .collect();
+    checkout.modules = adapter.modules.clone();
+    checkout.response_policy = adapter.response.clone();
+    checkout.retain_traces = adapter.retain_traces;
+    Ok(checkout)
+}
+
 /// Auto-select the next ready gate cursor when `ClaimReq.node` is omitted.
 pub fn auto_select_ready_cursor(
     snapshot: &RunGraphSnapshot,
@@ -658,6 +729,73 @@ pub fn auto_select_ready_cursor(
         ErrorCode::GateVerificationFailed,
         format!("no ready gate nodes available to claim in run '{}'", snapshot.run.run_id),
     ))
+}
+
+
+/// Auto-select the single active claimed or ready gate when `ContextReq.node` is omitted.
+pub fn auto_select_context_cursor(
+    snapshot: &RunGraphSnapshot,
+    worker_id: Option<&WorkerId>,
+) -> Result<NodeCursor, StateError> {
+    let is_gate = |n: &GateNodeRecord| matches!(n.kind, NodeKind::RootGate | NodeKind::TaskGate);
+    let matches_worker = |n: &GateNodeRecord| {
+        worker_id.is_none_or(|w| n.worker_id.as_ref() == Some(w))
+    };
+    let to_cursors = |nodes: &[&GateNodeRecord]| -> Result<Vec<String>, StateError> {
+        nodes
+            .iter()
+            .map(|n| NodeCursor::from_node_id(&n.node_id).map(|c| c.to_string()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StateError::from)
+    };
+
+    let mut claimed: Vec<_> = snapshot
+        .nodes
+        .iter()
+        .filter(|n| is_gate(n) && n.status == NodeStatus::InProgress && matches_worker(n))
+        .collect();
+    claimed.sort_by_key(|n| n.seq_order);
+    match claimed.len() {
+        1 => return NodeCursor::from_node_id(&claimed[0].node_id).map_err(StateError::from),
+        n if n > 1 => {
+            let cursors = to_cursors(&claimed)?;
+            return Err(StateError::new(
+                ErrorCode::RunSelectorAmbiguous,
+                format!(
+                    "multiple active claimed gates match context request: {}; specify `node`",
+                    cursors.join(", ")
+                ),
+            ));
+        }
+        _ => {}
+    }
+
+    let mut ready: Vec<_> = snapshot
+        .nodes
+        .iter()
+        .filter(|n| is_gate(n) && n.status == NodeStatus::Ready && matches_worker(n))
+        .collect();
+    ready.sort_by_key(|n| n.seq_order);
+    match ready.len() {
+        1 => NodeCursor::from_node_id(&ready[0].node_id).map_err(StateError::from),
+        n if n > 1 => {
+            let cursors = to_cursors(&ready)?;
+            Err(StateError::new(
+                ErrorCode::RunSelectorAmbiguous,
+                format!(
+                    "multiple ready gates match context request: {}; specify `node`",
+                    cursors.join(", ")
+                ),
+            ))
+        }
+        _ => Err(StateError::new(
+            ErrorCode::GateVerificationFailed,
+            format!(
+                "no active claimed or ready gate found for context in run '{}'",
+                snapshot.run.run_id
+            ),
+        )),
+    }
 }
 
 /// Resolve the effective worktree directory for a node, canonicalizing macOS `/var` aliases.

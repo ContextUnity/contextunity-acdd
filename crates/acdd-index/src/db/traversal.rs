@@ -1658,14 +1658,14 @@ fn format_suggestion(name: &str, locations: &[Value]) -> String {
     }
 }
 
-fn normalize_symbol_body_lines(lines: &[String]) -> (Option<String>, Option<Vec<String>>) {
+fn normalize_symbol_body_lines(lines: &[String]) -> (Option<String>, Option<Vec<String>>, usize) {
     let start = lines.iter().position(|l| !l.trim().is_empty());
     let end = lines.iter().rposition(|l| !l.trim().is_empty());
     let (Some(start), Some(end)) = (start, end) else {
-        return (None, None);
+        return (None, None, 0);
     };
     if start > end {
-        return (None, None);
+        return (None, None, start);
     }
     let slice = &lines[start..=end];
 
@@ -1708,7 +1708,62 @@ fn normalize_symbol_body_lines(lines: &[String]) -> (Option<String>, Option<Vec<
         normalized.push(stripped.to_string());
     }
 
-    (Some(hash_hex), Some(normalized))
+    (Some(hash_hex), Some(normalized), start)
+}
+
+fn hash_normalized_window(lines: &[String], start: usize, len: usize) -> String {
+    let mut hasher = Sha256::new();
+    for line in &lines[start..start + len] {
+        hasher.update(line.as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+#[derive(Clone, Copy)]
+struct DuplicateBlockWindow {
+    candidate_idx: usize,
+    window_start: usize,
+    abs_line: usize,
+    abs_end_line: usize,
+}
+
+fn duplicate_block_windows_overlap(a: DuplicateBlockWindow, b: DuplicateBlockWindow, min_lines: usize) -> bool {
+    if a.candidate_idx != b.candidate_idx {
+        return false;
+    }
+    let (lo, hi) = if a.window_start <= b.window_start {
+        (a.window_start, b.window_start)
+    } else {
+        (b.window_start, a.window_start)
+    };
+    hi.saturating_sub(lo) < min_lines
+}
+
+fn non_overlapping_block_windows(
+    occs: &[DuplicateBlockWindow],
+    min_lines: usize,
+) -> Vec<DuplicateBlockWindow> {
+    let mut by_candidate: BTreeMap<usize, Vec<DuplicateBlockWindow>> = BTreeMap::new();
+    for &occ in occs {
+        by_candidate.entry(occ.candidate_idx).or_default().push(occ);
+    }
+    let mut selected = Vec::new();
+    for (_, mut sym_occs) in by_candidate {
+        sym_occs.sort_by_key(|o| o.window_start);
+        let mut sym_selected = Vec::new();
+        for occ in sym_occs {
+            if sym_selected
+                .iter()
+                .any(|s| duplicate_block_windows_overlap(*s, occ, min_lines))
+            {
+                continue;
+            }
+            sym_selected.push(occ);
+        }
+        selected.extend(sym_selected);
+    }
+    selected
 }
 
 fn normalize_scope(target: Option<&str>, path: Option<&str>, label: &str) -> Result<String> {
@@ -1750,7 +1805,7 @@ pub fn duplicates_paged(
         "invalid level '{level_str}': expected 'symbol' or 'file'"
     );
 
-    let min_lines = min_lines.unwrap_or(10).max(1);
+    let min_lines = min_lines.unwrap_or(5).max(1);
 
     if level_str == "file" {
         let (lower, upper) = reader::path_bounds(scope);
@@ -1857,6 +1912,7 @@ pub fn duplicates_paged(
         path: String,
         body_hash: Option<String>,
         normalized_lines: Option<Vec<String>>,
+        body_trim_start: usize,
     }
 
     let mut stmt = conn.prepare(
@@ -1885,6 +1941,7 @@ pub fn duplicates_paged(
 
         let mut body_hash = None;
         let mut normalized_lines = None;
+        let mut body_trim_start = 0;
 
         if let Some(root) = &workspace_root {
             let lines = file_cache.entry(path.clone()).or_insert_with(|| {
@@ -1904,9 +1961,10 @@ pub fn duplicates_paged(
                 if line > 0 && end_line >= line && line <= lines.len() {
                     let end_idx = end_line.min(lines.len());
                     let slice = &lines[(line - 1)..end_idx];
-                    let (h, norm) = normalize_symbol_body_lines(slice);
+                    let (h, norm, trim_start) = normalize_symbol_body_lines(slice);
                     body_hash = h;
                     normalized_lines = norm;
+                    body_trim_start = trim_start;
                 }
             }
         }
@@ -1919,6 +1977,7 @@ pub fn duplicates_paged(
             path,
             body_hash,
             normalized_lines,
+            body_trim_start,
         });
     }
     drop(rows);
@@ -1946,6 +2005,7 @@ pub fn duplicates_paged(
     let mut result_groups = Vec::new();
     let mut counted_duplicate_locations: std::collections::HashSet<(String, usize)> =
         std::collections::HashSet::new();
+    let mut whole_symbol_duplicate_members: HashSet<usize> = HashSet::new();
 
     for (_, indices) in exact_groups {
         if indices.len() < 2 {
@@ -1994,6 +2054,9 @@ pub fn duplicates_paged(
         let dup_count = locations.len();
         let duplicated_lines = line_count * dup_line_locations;
         let suggestion = format_suggestion(&first.name, &locations);
+        for &idx in &unique_locs {
+            whole_symbol_duplicate_members.insert(idx);
+        }
         result_groups.push(DuplicateGroup {
             name: first.name.clone(),
             kind: first.kind.clone(),
@@ -2106,6 +2169,9 @@ pub fn duplicates_paged(
             let dup_count = locations.len();
             let duplicated_lines = line_count * dup_line_locations;
             let suggestion = format_suggestion(&name, &locations);
+            for &idx in &all_indices {
+                whole_symbol_duplicate_members.insert(idx);
+            }
             result_groups.push(DuplicateGroup {
                 name: name.clone(),
                 kind: first.kind.clone(),
@@ -2117,6 +2183,84 @@ pub fn duplicates_paged(
                 suggestion,
             });
         }
+    }
+
+    let mut block_hashes: BTreeMap<String, Vec<DuplicateBlockWindow>> = BTreeMap::new();
+    for (idx, c) in candidates.iter().enumerate() {
+        let Some(lines) = &c.normalized_lines else {
+            continue;
+        };
+        if lines.len() < min_lines {
+            continue;
+        }
+        for window_start in 0..=lines.len().saturating_sub(min_lines) {
+            let hash = hash_normalized_window(lines, window_start, min_lines);
+            let abs_line = c.line + c.body_trim_start + window_start;
+            block_hashes.entry(hash).or_default().push(DuplicateBlockWindow {
+                candidate_idx: idx,
+                window_start,
+                abs_line,
+                abs_end_line: abs_line + min_lines - 1,
+            });
+        }
+    }
+
+    for (_hash, occs) in block_hashes {
+        let filtered = non_overlapping_block_windows(&occs, min_lines);
+        if filtered.len() < 2 {
+            continue;
+        }
+        let mut unique_locs = Vec::new();
+        let mut seen_locs = HashSet::new();
+        for occ in filtered {
+            let c = &candidates[occ.candidate_idx];
+            if seen_locs.insert((c.path.clone(), occ.abs_line)) {
+                unique_locs.push(occ);
+            }
+        }
+        if unique_locs.len() < 2 {
+            continue;
+        }
+        if unique_locs
+            .iter()
+            .all(|occ| whole_symbol_duplicate_members.contains(&occ.candidate_idx))
+        {
+            continue;
+        }
+        unique_locs.sort_by(|a, b| {
+            let ca = &candidates[a.candidate_idx];
+            let cb = &candidates[b.candidate_idx];
+            ca.path.cmp(&cb.path).then_with(|| a.abs_line.cmp(&b.abs_line))
+        });
+        let mut dup_line_locations = 0;
+        for occ in &unique_locs[1..] {
+            let c = &candidates[occ.candidate_idx];
+            if counted_duplicate_locations.insert((c.path.clone(), occ.abs_line)) {
+                dup_line_locations += 1;
+            }
+        }
+        let first = &candidates[unique_locs[0].candidate_idx];
+        let locations: Vec<Value> = unique_locs
+            .iter()
+            .map(|occ| {
+                let c = &candidates[occ.candidate_idx];
+                json!({
+                    "path": c.path,
+                    "line": occ.abs_line,
+                    "end_line": occ.abs_end_line,
+                })
+            })
+            .collect();
+        result_groups.push(DuplicateGroup {
+            name: first.name.clone(),
+            kind: first.kind.clone(),
+            line_count: min_lines,
+            match_type: "block".to_string(),
+            locations: locations.clone(),
+            duplicate_count: locations.len(),
+            duplicated_lines: min_lines * dup_line_locations,
+            suggestion: format_suggestion(&first.name, &locations),
+        });
     }
 
     result_groups.sort_by(|a, b| {
@@ -3371,5 +3515,26 @@ pub fn query_with_path_options(
         _ => {
             bail!("unknown operation; supported: overview,inspect,explain,impact,slice,unwired,sql,untested,implementations,duplicates,dead_tails")
         }
+    }
+}
+
+#[cfg(test)]
+mod duplicates_paged_seam_tests {
+    use super::*;
+    use acdd_core::response::{QueryOptions, ResponsePolicy};
+    use crate::db::SCHEMA_DDL;
+    use rusqlite::Connection;
+
+    #[test]
+    fn duplicates_paged_symbol_clone_matrix() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "{SCHEMA_DDL}INSERT INTO metadata(key,value) VALUES ('output_root','test-generation'),('workspace_root','/tmp');"
+        ))
+        .unwrap();
+        let options =
+            QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
+        let result = duplicates_paged(&conn, None, None, None, None, &options).unwrap();
+        assert_eq!(result["min_lines"], 5);
     }
 }

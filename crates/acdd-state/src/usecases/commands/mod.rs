@@ -18,7 +18,7 @@ pub(crate) use task_ops::{
 use crate::git_ops::worktree::canonicalize_macos_var;
 use crate::machine::{MachineSpecInput, MachineSubtaskInput, MachineTaskSpec};
 use crate::spec::SpecDocument;
-use crate::usecases::lifecycle::parse_task_dependency;
+use crate::usecases::deps::{parse_task_dependency, parse_task_dependency_with_db};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{RunId, RunName};
 use std::collections::BTreeMap;
@@ -61,18 +61,20 @@ pub(super) fn build_machine_spec_input(
     run_id: &RunId,
     linked_workspaces: &BTreeMap<String, PathBuf>,
     spec_repos: &BTreeMap<String, PathBuf>,
+    local_db: &Path,
 ) -> Result<MachineSpecInput, StateError> {
     let mut tasks = Vec::with_capacity(doc.tasks.len());
     for t in &doc.tasks {
         let mut deps = Vec::with_capacity(t.depends_on.len());
         for raw_dep in &t.depends_on {
-            deps.push(parse_task_dependency(
-                raw_dep,
-                primary_workspace,
-                run_id,
-                linked_workspaces,
-                spec_repos,
-            )?);
+            deps.push(if raw_dep.contains(':') {
+                parse_task_dependency_with_db(
+                    raw_dep, primary_workspace, run_id, linked_workspaces, spec_repos,
+                    Some((Path::new(primary_workspace), local_db)),
+                )?
+            } else {
+                parse_task_dependency(raw_dep, primary_workspace, run_id, linked_workspaces, spec_repos)?
+            });
         }
         let subtasks = t
             .subtasks

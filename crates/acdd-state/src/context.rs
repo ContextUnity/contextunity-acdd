@@ -4,7 +4,7 @@ use crate::profile::{
     check_guidance_budget, resolve_and_budget_guidance, GateDef, ProofDef, ProofKind,
     ResolvedGateProfile,
 };
-use crate::spec::{Receipt, SpecDocument};
+use crate::spec::{Receipt, SpecDocument, Subtask};
 use crate::store::traits::StateReader;
 use crate::types::{
     ArtifactKind, BlackboardListReq, BlackboardRecord, BlackboardStatus, BlackboardTopic,
@@ -47,6 +47,8 @@ pub struct ClaimContextRequest {
     pub profile: ResolvedGateProfile,
     /// Optional parsed specification document.
     pub spec: Option<SpecDocument>,
+    /// Current subtask checklist from the owning task's persisted rows.
+    pub live_subtasks: Vec<Subtask>,
     /// Active claim revision.
     pub claim_revision: u32,
     /// Active worker ID.
@@ -226,12 +228,29 @@ impl GateContextAssembler {
             };
             (slice, receipts, bb)
         };
+        let mut live_subtasks: Vec<_> = snapshot
+            .subtasks
+            .iter()
+            .filter(|subtask| {
+                node.task_ref.is_some()
+                    && (subtask.node_id == node.node_id
+                        || node.parent_id.as_deref() == Some(subtask.node_id.as_str()))
+            })
+            .map(|subtask| Subtask {
+                subtask_ref: subtask.subtask_ref.clone(),
+                title: subtask.title.clone(),
+                status: subtask.status,
+                evidence: subtask.evidence.clone(),
+            })
+            .collect();
+        live_subtasks.sort_by_key(|subtask| subtask.status != crate::types::SubtaskStatus::InProgress);
         Ok(ClaimContextRequest {
             run: snapshot.run.clone(),
             node: node.clone(),
             gate,
             profile,
             spec,
+            live_subtasks,
             claim_revision,
             worker_id,
             worktree,
@@ -280,7 +299,7 @@ impl GateContextAssembler {
             req.response_max_bytes,
         )?;
 
-        let resp = ClaimResp {
+        let mut resp = ClaimResp {
             run_id: req.run.run_id.clone(),
             node_cursor: node_cursor.clone(),
             claim_revision: req.claim_revision,
@@ -312,6 +331,12 @@ impl GateContextAssembler {
             ));
         }
 
+        project_live_subtasks(
+            &mut resp.contract,
+            &req.live_subtasks,
+            (req.response_max_bytes - running_bytes) / 2,
+        );
+        let running_bytes = estimate_json_bytes(&resp);
         Ok((resp, node_cursor, running_bytes))
     }
 
@@ -350,6 +375,11 @@ impl GateContextAssembler {
 
         // Tier 6: Dynamic DomainProvider context lenses in YAML declaration order.
         apply_tier6_context_lenses(&mut resp, &mut running_bytes, req, provider, &node_cursor)?;
+        running_bytes += add_live_subtask_evidence(
+            &mut resp.contract,
+            &req.live_subtasks,
+            req.response_max_bytes - running_bytes,
+        );
 
         debug_assert_eq!(running_bytes, estimate_json_bytes(&resp));
 
@@ -573,9 +603,6 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
                     json!(task.acceptance_criteria),
                 );
             }
-            if !task.subtasks.is_empty() {
-                obj.insert("subtasks".to_owned(), json!(task.subtasks));
-            }
         } else {
             let include_full_spec = req.node.node_id.starts_with("root:blueprint_synthesis")
                 || spec.tasks.is_empty();
@@ -598,7 +625,68 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
         }
     }
 
+    if req.live_subtasks.is_empty() {
+        if let Some(task) = task_spec.filter(|task| !task.subtasks.is_empty()) {
+            obj.insert("subtasks".to_owned(), json!(task.subtasks));
+        }
+    }
+
     Value::Object(obj)
+}
+
+fn project_live_subtasks(contract: &mut Value, subtasks: &[Subtask], available: usize) {
+    let omitted_bytes = ",\"subtasks_omitted\":".len() + estimate_json_bytes(&subtasks.len());
+    if subtasks.is_empty() || omitted_bytes > available {
+        return;
+    }
+    let mut remaining = available.min(1024).saturating_sub(omitted_bytes + ",\"subtasks\":[]".len());
+    let mut rows = Vec::new();
+    for subtask in subtasks {
+        if rows.len() == 16 {
+            break;
+        }
+        let row = json!({
+            "subtask_ref": subtask.subtask_ref,
+            "title": subtask.title,
+            "status": subtask.status,
+        });
+        let bytes = estimate_json_bytes(&row) + usize::from(!rows.is_empty());
+        if bytes <= remaining {
+            remaining -= bytes;
+            rows.push(row);
+        }
+    }
+    let omitted = subtasks.len() - rows.len();
+    if !rows.is_empty() {
+        contract["subtasks"] = Value::Array(rows);
+    }
+    if omitted != 0 {
+        contract["subtasks_omitted"] = json!(omitted);
+    }
+}
+
+fn add_live_subtask_evidence(contract: &mut Value, subtasks: &[Subtask], remaining: usize) -> usize {
+    // Keep short evidence when it fits. The complete records remain available through subtask reads.
+    let budget = remaining.min(512);
+    let Some(items) = contract.get_mut("subtasks").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    let mut used = 0;
+    for item in items {
+        let evidence = subtasks.iter().find(|subtask| item["subtask_ref"] == subtask.subtask_ref.as_str())
+            .and_then(|subtask| subtask.evidence.as_deref());
+        if let Some(evidence) = evidence {
+            let available = budget - used;
+            if evidence.len() <= available {
+                let bytes = ",\"evidence\":".len() + estimate_json_bytes(evidence);
+                if bytes <= available {
+                    item["evidence"] = json!(evidence);
+                    used += bytes;
+                }
+            }
+        }
+    }
+    used
 }
 
 fn add_omitted_section(
@@ -835,7 +923,14 @@ fn apply_tier6_context_lenses(
     });
 
     for (idx, qualified_lens) in req.gate.context.iter().enumerate() {
-        let remaining = req.response_max_bytes.saturating_sub(*running_bytes);
+        let key_bytes = estimate_json_bytes(qualified_lens) + 1;
+        let container_bytes = ",\"context_lenses\":{}".len();
+        let entry_overhead = if resp.context_lenses.contains_key(qualified_lens) {
+            0
+        } else {
+            key_bytes + if resp.context_lenses.is_empty() { container_bytes } else { 1 }
+        };
+        let remaining = req.response_max_bytes.saturating_sub(*running_bytes + entry_overhead);
         if remaining == 0 {
             add_omitted_section(
                 resp,
@@ -898,9 +993,8 @@ fn apply_tier6_context_lenses(
             } else {
                 resp.context_lenses.shift_remove(qualified_lens);
                 let removed_delta = old_val_bytes
-                    + estimate_json_bytes(qualified_lens)
-                    + 1
-                    + if resp.context_lenses.is_empty() { 20 } else { 1 };
+                    + key_bytes
+                    + if resp.context_lenses.is_empty() { container_bytes } else { 1 };
                 *running_bytes -= removed_delta;
                 add_omitted_section(
                     resp,
@@ -910,9 +1004,7 @@ fn apply_tier6_context_lenses(
                 );
             }
         } else {
-            // `,"context_lenses":{}` = 20 bytes on first entry, `,` = 1 byte thereafter; plus `<key>:<val>`.
-            let overhead = if resp.context_lenses.is_empty() { 20 } else { 1 };
-            let entry_delta = overhead + estimate_json_bytes(qualified_lens) + 1 + new_val_bytes;
+            let entry_delta = entry_overhead + new_val_bytes;
             if *running_bytes + entry_delta <= req.response_max_bytes {
                 resp.context_lenses.insert(qualified_lens.clone(), val);
                 *running_bytes += entry_delta;
@@ -1249,6 +1341,7 @@ mod tests {
             gate,
             profile,
             spec: Some(spec),
+            live_subtasks: Vec::new(),
             claim_revision: 1,
             worker_id,
             worktree: PathBuf::from("/tmp/ws"),

@@ -33,6 +33,157 @@ gates:
 "#;
 
 #[test]
+fn cli_start_and_sync_share_state_from_linked_checkout() {
+    use super::support::git_cmd;
+    use std::process::Command;
+
+    let ws = Workspace::new();
+    let primary = ws.root().canonicalize().unwrap();
+    init_git_repo_on_branch(&primary, "primary");
+    ws.write("acdd.yaml", "state_db: .acdd/repo.sqlite\n");
+    let linked = primary.join(".worktrees/source");
+    let linked_arg = linked.to_str().unwrap();
+    git_cmd(&primary, &["worktree", "add", "-b", "source", linked_arg]);
+    let spec = "work/AC-001.md";
+    ws.write(
+        ".worktrees/source/work/AC-001.md",
+        "---\nid: AC-001\ntitle: Linked\nstatus: active\n---\n",
+    );
+    ws.write(
+        ".worktrees/source/.acdd/profile.yaml",
+        "version: 2\ninherit: none\nsave: none\ngates:\n  - id: handoff\n",
+    );
+    ws.write(
+        ".worktrees/source/acdd.yaml",
+        "state_db: .acdd/linked.sqlite\nspecs:\n  custom: {path: work}\n",
+    );
+    ws.write(
+        ".worktrees/source/alternate.yaml",
+        "state_db: .acdd/alternate.sqlite\nprofiles_dirs: [overrides]\nspecs:\n  override: {path: alternate-work}\n",
+    );
+    ws.write(
+        ".worktrees/source/alternate-work/AC-004.md",
+        "---\nid: AC-004\ntitle: Alternate collection\nstatus: active\ndepends_on: [AC-005]\n---\n",
+    );
+    ws.write(
+        ".worktrees/source/alternate-work/archive/AC-005.md",
+        "---\nid: AC-005\ntitle: Alternate archive\nstatus: completed\n---\n",
+    );
+    git_cmd(&linked, &["add", "alternate-work/archive"]);
+    git_cmd(&linked, &["commit", "-m", "seed alternate archive"]);
+    ws.write(".worktrees/source/overrides/chosen.yaml", "version: 2\ninherit: parent\n");
+    ws.write(
+        ".worktrees/source/overrides/parent.yaml",
+        "version: 2\ninherit: none\nsave: none\ngates:\n  - id: handoff\n",
+    );
+
+    let cases = [
+        ("cwd", linked.as_path(), vec![], vec![]),
+        (
+            "root",
+            primary.as_path(),
+            vec!["--root", linked_arg],
+            vec![],
+        ),
+        (
+            "configured",
+            primary.as_path(),
+            vec!["--root", linked_arg, "--config", "alternate.yaml"],
+            vec!["--profile", "chosen"],
+        ),
+        (
+            "explicit",
+            primary.as_path(),
+            vec!["--profile", ".acdd/profile.yaml"],
+            vec!["--worktree-path", ".worktrees/source"],
+        ),
+    ];
+    for case in cases {
+        let (name, cwd, options, start_options) = case;
+        let spec = if name == "configured" { "alternate-work/AC-004.md" } else { spec };
+        let run_cli = |options: &[&str], args: &[&str], trailing: &[&str]| {
+            let result = Command::new(env!("CARGO_BIN_EXE_acdd"))
+                .current_dir(cwd)
+                .args(["--format", "json"])
+                .args(options)
+                .args(args)
+                .args(trailing)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{name} {args:?}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            serde_json::from_slice::<StateCommandOutput>(&result.stdout).unwrap()
+        };
+        let StateCommandOutput::Start(started) =
+            run_cli(&options, &["start", spec, "--name", name], &start_options)
+        else {
+            panic!("expected start output");
+        };
+        let (collection, profile) = if name == "configured" {
+            ("override", "overrides/chosen.yaml")
+        } else {
+            ("custom", ".acdd/profile.yaml")
+        };
+        assert_eq!(started.run.collection.as_deref(), Some(collection));
+        assert_eq!(started.run.profile_id, profile);
+        assert_eq!(started.run.worktree.as_deref(), Some(linked_arg));
+        let sync_options = if name == "explicit" {
+            &[][..]
+        } else {
+            &options
+        };
+        assert!(matches!(run_cli(sync_options,
+            &["sync", "--run", started.run.run_id.as_str(), "--rebind-profile"], &[]),
+            StateCommandOutput::Sync(output) if output.rebound_profile));
+        if name == "explicit" {
+            assert!(matches!(run_cli(&["--root", linked_arg],
+                &["claim", "handoff", "--run", started.run.run_id.as_str(), "--worker", "trace-worker"], &[]),
+                StateCommandOutput::Claim(_)));
+            let traces = primary.join(format!(".acdd/run/{}/traces.jsonl", started.run.run_id));
+            let before = fs::read_to_string(&traces).unwrap().lines().count();
+            let status = Command::new(env!("CARGO_BIN_EXE_acdd"))
+                .current_dir(&linked)
+                .args(["status", "--run", started.run.run_id.as_str()])
+                .output().unwrap();
+            assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+            assert!(fs::read_to_string(&traces).unwrap().lines().count() > before);
+            let before = fs::read(&traces).unwrap();
+            let keep = primary.join(".acdd/run/retention-sentinel");
+            fs::create_dir_all(&keep).unwrap();
+            fs::write(keep.join("traces.jsonl"), "sentinel\n").unwrap();
+            fs::write(primary.join("acdd.yaml"), "state_db: [invalid\n").unwrap();
+            let status = Command::new(env!("CARGO_BIN_EXE_acdd"))
+                .current_dir(&linked)
+                .args(["status", "--run", started.run.run_id.as_str()])
+                .output().unwrap();
+            assert!(!status.status.success());
+            assert_eq!(fs::read(&traces).unwrap(), before);
+            assert!(keep.exists());
+            fs::write(primary.join("acdd.yaml"), "state_db: .acdd/repo.sqlite\n").unwrap();
+        }
+        if name != "explicit" {
+            assert!(matches!(
+                run_cli(
+                    sync_options,
+                    &["clear", "--run", started.run.run_id.as_str()],
+                    &[]
+                ),
+                StateCommandOutput::Clear(_)
+            ));
+        }
+    }
+    assert!(primary.join(".acdd/repo.sqlite").is_file());
+    for name in ["state", "linked", "alternate"] {
+        for root in [&primary, &linked] {
+            assert!(!root.join(format!(".acdd/{name}.sqlite")).exists());
+        }
+    }
+}
+
+#[test]
 fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() {
     let ws = Workspace::new();
     init_git_repo_on_branch(ws.root(), "dev");

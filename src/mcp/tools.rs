@@ -20,7 +20,7 @@ use acdd_state::types::{
 };
 use acdd_state::usecases::{
     BlackboardPostReq, BlackboardReadReq, ClaimReq, ClearReq, DraftReq, ExtendScopeReq, ListReq,
-    NextReq, ObservabilityReq, ReopenReq, RunReq, ShowReq, StartReq, StateCommand,
+    NextReq, ObservabilityReq, ReopenReq, RunReq, ShowReq, ContextReq, StartReq, StateCommand,
     StateCommandOutput, StateQuery, StateQueryOutput, StatusReq, SubmitReq, SubtaskReq, SyncReq,
     VerifyReq,
 };
@@ -330,7 +330,8 @@ fn build_state_command_from_input(
         | McpStateAction::List
         | McpStateAction::Show
         | McpStateAction::Next
-        | McpStateAction::Observability => unreachable!("read-only actions route via StateQuery"),
+        | McpStateAction::Observability
+        | McpStateAction::Context => unreachable!("read-only actions route via StateQuery"),
     }
 }
 
@@ -360,6 +361,11 @@ fn build_state_query_from_input(p: StateInput) -> std::result::Result<StateQuery
         })),
         McpStateAction::Observability => Ok(StateQuery::Observability(ObservabilityReq {
             include_prometheus: p.include_prometheus.unwrap_or(false),
+        })),
+        McpStateAction::Context => Ok(StateQuery::Context(ContextReq {
+            run,
+            node: p.node,
+            worker_id: p.worker_id,
         })),
         _ => unreachable!("mutating actions route via StateCommand"),
     }
@@ -550,7 +556,7 @@ impl Server {
 #[tool_router]
 impl Server {
     #[tool(
-        description = "Execute a canonical state lifecycle command (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `clear`, `run`) or read-only state query (`status`, `list`, `show`, `next`, `observability`). Read-only actions operate over `SQLITE_OPEN_READ_ONLY` with zero database creation."
+        description = "Execute a canonical state lifecycle command (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `clear`, `run`) or read-only state query (`status`, `list`, `show`, `next`, `context`, `observability`). Read-only actions operate over `SQLITE_OPEN_READ_ONLY` with zero database creation."
     )]
     async fn acdd_state(&self, Parameters(p): Parameters<StateInput>) -> CallToolResult {
         let format = p.format.unwrap_or_default();
@@ -1771,9 +1777,9 @@ impl ServerHandler for Server {
             .loaded_adapter
             .as_ref()
             .map_or(acdd_core::config::DEFAULT_RETAIN_TRACES, |a| a.retain_traces);
-        let span_state_db = prep.loaded_adapter.as_ref().map(|a| {
+        let span_state_db = prep.loaded_adapter.as_ref().and_then(|a| {
             let ws_root = primary_workspace_root_for(&self.root, &prep.target_root);
-            crate::state_bridge::resolve_effective_state_db(&ws_root, self.state_db(), a)
+            crate::state_bridge::resolve_effective_state_db(&ws_root, self.state_db(), a).ok()
         });
         let mut span_guard = crate::telemetry::SpanGuard::from_worktree_context(
             &prep.target_root,
@@ -2200,6 +2206,7 @@ mod tests {
             ("acdd_state", serde_json::json!({"action": "list", "format": "json"})),
             ("acdd_state", serde_json::json!({"action": "next", "format": "json"})),
             ("acdd_state", serde_json::json!({"action": "observability", "format": "json"})),
+            ("acdd_state", serde_json::json!({"action": "context", "format": "json"})),
             ("acdd_blackboard", serde_json::json!({"action": "read", "format": "json"})),
         ]
         .into_iter()

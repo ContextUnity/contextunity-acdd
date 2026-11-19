@@ -54,6 +54,7 @@ pub fn render_state_query_markdown(output: &StateQueryOutput, title: &str) -> St
             Some(ref prom) => format!("# Observability\n\n```text\n{prom}\n```\n"),
             None => super::render_serializable(&resp.snapshot, "Observability"),
         },
+        StateQueryOutput::Context(claim) => render_claim_markdown(claim),
         other => render_tagged_enum_markdown(other, title),
     }
 }

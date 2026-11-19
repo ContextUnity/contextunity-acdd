@@ -4,6 +4,7 @@ target/
 *.log
 .env
 .forge-mcp/
+.playwright-mcp/
 __pycache__/
 *.pyc
 /.worktrees/

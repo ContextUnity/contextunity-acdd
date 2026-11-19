@@ -120,15 +120,18 @@ pub fn resolve_repo_layout(worktree: &Path) -> Result<RepoWorktreeLayout, StateE
 
 /// Create a managed run-level worktree under `.worktrees/<run_name>`.
 pub fn create_run_worktree(req: &CreateWorktreeReq) -> Result<CreatedWorktree, StateError> {
-    create_managed_worktree(req)
+    create_managed_worktree(req, None)
 }
 
 /// Create a managed task-level worktree under `.worktrees/<run_name>-<task_ref>`.
 pub fn create_task_worktree(req: &CreateWorktreeReq) -> Result<CreatedWorktree, StateError> {
-    create_managed_worktree(req)
+    create_managed_worktree(req, None)
 }
 
-fn create_managed_worktree(req: &CreateWorktreeReq) -> Result<CreatedWorktree, StateError> {
+pub(crate) fn create_managed_worktree(
+    req: &CreateWorktreeReq,
+    copy_source: Option<&Path>,
+) -> Result<CreatedWorktree, StateError> {
     let primary = canonicalize_macos_var(&req.primary_worktree);
     if !primary.exists() {
         return Err(StateError::new(
@@ -191,7 +194,8 @@ fn create_managed_worktree(req: &CreateWorktreeReq) -> Result<CreatedWorktree, S
         ErrorCode::ExternalGitDrift,
     )?;
 
-    if let Err(copy_err) = copy_uncommitted_files(&primary, &target_wt, &req.copy_uncommitted_paths) {
+    let copy_source = copy_source.unwrap_or(&primary);
+    if let Err(copy_err) = copy_uncommitted_files(copy_source, &target_wt, &req.copy_uncommitted_paths) {
         let _ = remove_worktree_and_branch(&primary, Some(&target_wt), Some(&req.branch_name), true);
         return Err(copy_err);
     }

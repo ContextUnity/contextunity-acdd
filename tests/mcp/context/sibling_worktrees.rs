@@ -131,6 +131,16 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
             json!({"node":node_id, "worker_id":"routing-author", "worktree":"51"}),
         )
         .expect("MCP claim should succeed");
+    let traces = primary.path(format!(".acdd/run/{run_id}/traces.jsonl"));
+    let before = fs::read(&traces).unwrap();
+    let sentinel = primary.path(".acdd/run/retention-sentinel");
+    fs::create_dir_all(&sentinel).unwrap();
+    fs::write(sentinel.join("traces.jsonl"), "sentinel\n").unwrap();
+    primary.write("acdd.yaml", "state_db: [invalid\n");
+    let _ = client.payload("acdd_state", json!({"action":"status", "run":&run_id, "worktree":"51"}));
+    assert_eq!(fs::read(&traces).unwrap(), before);
+    assert!(sentinel.exists());
+    primary.write("acdd.yaml", "roots: [src]\ndocs: [docs]\nstate_db: .acdd/state.sqlite\n");
     let canonical_sibling = sibling.canonicalize().unwrap();
     assert_eq!(
         claim["worktree"],

@@ -17,10 +17,10 @@ use crate::usecases::deps::{collect_workspace_specs, validate_spec_dependencies}
 use crate::usecases::dto::{ValidateDiagnostic, ValidateResp, ValidateSummary};
 use crate::usecases::lifecycle::{
     effective_modules_for_profile, effective_spec_collections, match_spec_collection,
-    primary_workspace_root, read_confined_utf8, validate_profile_fail_closed,
+    read_confined_utf8, validate_profile_fail_closed,
 };
 use crate::usecases::StateEngineConfig;
-use acdd_core::config::{load_adapter_report, resolve_state_db_path, Adapter, SpecCollectionConfig};
+use acdd_core::config::{load_adapter_report, Adapter, SpecCollectionConfig};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::checked_child;
 use acdd_core::path_policy::{is_valid_scope_glob, scopes_overlap};
@@ -113,7 +113,7 @@ pub fn validate_workspace(
         }
     };
 
-    let state_db_path = resolve_state_db_path(root, &adapter);
+    let state_db_path = crate::usecases::deps::try_resolve_effective_state_db(root, None)?;
     let (scanned_specs, scan_failed_count) = scan_collection_specs(root, &adapter, &mut diagnostics);
     let active_docs: Vec<SpecDocument> = scanned_specs.iter().map(|s| s.doc.clone()).collect();
     let docs_count = scanned_specs.len() + scan_failed_count;
@@ -276,7 +276,7 @@ pub fn validate_document(
                 scanned_specs.into_iter().map(|s| s.doc).collect();
             let col = match_spec_collection(&adapter.specs, &rel_display)
                 .and_then(|k| adapter.specs.get(&k));
-            let state_db_path = resolve_state_db_path(root, &adapter);
+            let state_db_path = crate::usecases::deps::try_resolve_effective_state_db(root, None)?;
             validate_parsed_spec(
                 root,
                 &adapter,
@@ -323,7 +323,7 @@ pub fn validate_spec_for_run(
 
     validate_profile_fail_closed(config, profile, provider, true)?;
 
-    let primary = primary_workspace_root(config);
+    let source = &config.worktree;
     let adapter = Adapter {
         specs: effective_spec_collections(config),
         profiles_dirs: config.profiles_dirs.clone(),
@@ -342,18 +342,17 @@ pub fn validate_spec_for_run(
     };
 
     let mut sink = Vec::new();
-    let (scanned_specs, _) = scan_collection_specs(&primary, &adapter, &mut sink);
+    let (scanned_specs, _) = scan_collection_specs(source, &adapter, &mut sink);
     let mut active_docs: Vec<SpecDocument> = scanned_specs.into_iter().map(|s| s.doc).collect();
     if !active_docs.iter().any(|d| d.id == doc.id) {
         active_docs.push(doc.clone());
     }
 
-    let state_db_override = config.state_db_override.as_deref();
     let dep_issues = validate_spec_dependencies(
-        &primary,
+        source,
         &adapter,
         Some(reader),
-        state_db_override,
+        Some(&config.resolved_state_db_path().0),
         doc,
         &active_docs,
     );

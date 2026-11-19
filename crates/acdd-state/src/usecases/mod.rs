@@ -14,9 +14,10 @@ pub mod verify;
 
 pub use dto::*;
 
+use self::commands::{handle_start_dyn, handle_sync_dyn};
 use crate::store::sqlite::{SqliteBackendOptions, SqliteStateBackend, SqliteStateReader};
 use crate::store::traits::{StateBackend, StateReader};
-use acdd_core::config::SpecCollectionConfig;
+use acdd_core::config::{Adapter, SpecCollectionConfig};
 use acdd_core::response::ResponsePolicy;
 use acdd_core::subsystems::SubsystemRegistry;
 use acdd_core::errors::{ErrorCode, StateError};
@@ -172,6 +173,21 @@ impl StateEngine {
         execute_on(&self.config, self.backend.as_ref(), &self.provider, cmd)
     }
 
+    /// Use explicit checkout settings for start and sync.
+    pub fn execute_with_source_config(
+        &self,
+        cmd: StateCommand,
+        source_override: &Adapter,
+    ) -> Result<StateCommandOutput, StateError> {
+        execute_on_dyn(
+            &self.config,
+            self.backend.as_ref(),
+            &self.provider,
+            cmd,
+            Some(source_override),
+        )
+    }
+
     /// Execute a read-only [`StateQuery`] via the underlying `StateReader`.
     pub fn query(&self, query: StateQuery) -> Result<StateQueryOutput, StateError> {
         queries::execute_query(&self.config, self.backend.as_ref(), &self.provider, query)
@@ -185,7 +201,7 @@ pub fn execute_on<B: StateBackend + Send + Sync>(
     provider: &CompositeDomainProvider,
     cmd: StateCommand,
 ) -> Result<StateCommandOutput, StateError> {
-    execute_on_dyn(config, backend, provider, cmd)
+    execute_on_dyn(config, backend, provider, cmd, None)
 }
 
 fn execute_on_dyn(
@@ -193,6 +209,7 @@ fn execute_on_dyn(
     backend: &dyn StateBackend,
     provider: &CompositeDomainProvider,
     cmd: StateCommand,
+    source_override: Option<&Adapter>,
 ) -> Result<StateCommandOutput, StateError> {
     match &cmd {
         StateCommand::CallPluginTool(req) if req.run.is_none() && req.node.is_none() => {}
@@ -200,7 +217,7 @@ fn execute_on_dyn(
     }
     match cmd {
         StateCommand::Start(req) => Ok(StateCommandOutput::Start(Box::new(
-            commands::handle_start_dyn(config, backend, provider, req)?,
+            handle_start_dyn(config, backend, provider, req, source_override)?,
         ))),
         StateCommand::Draft(req) => Ok(StateCommandOutput::Draft(commands::handle_draft_dyn(
             config, backend, req,
@@ -220,8 +237,8 @@ fn execute_on_dyn(
         StateCommand::Reopen(req) => Ok(StateCommandOutput::Reopen(commands::handle_reopen_dyn(
             config, backend, req,
         )?)),
-        StateCommand::Sync(req) => Ok(StateCommandOutput::Sync(commands::handle_sync_dyn(
-            config, backend, provider, req,
+        StateCommand::Sync(req) => Ok(StateCommandOutput::Sync(handle_sync_dyn(
+            config, backend, provider, req, source_override,
         )?)),
         StateCommand::Subtask(req) => Ok(StateCommandOutput::Subtask(commands::handle_subtask_dyn(
             config, backend, req,

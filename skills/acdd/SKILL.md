@@ -90,6 +90,24 @@ preserving `save.immutable: true`), and `save.report` (written strictly under
    explicit `claim` / `verify` / `submit` steps. On `TASK_CANDIDATE_MISMATCH`,
    restore via Git or `acdd reopen` and renew verification/review.
 
+
+
+## Context refresh after compaction
+
+When a host session compacts context (Claude `PostCompact` or Codex `SessionStart(compact)` hooks), reload gate authority without re-claiming:
+
+```bash
+acdd context [<node>] [--run <name>] [--worker <id>]
+```
+
+MCP equivalent:
+
+```json
+{"action": "context", "node": "T-03.build", "worker_id": "builder", "format": "json"}
+```
+
+This call is strictly read-only (`SQLITE_OPEN_READ_ONLY`) and must not create `.acdd/state.sqlite` or mutate `claim_revision`.
+
 ## Blackboard
 
 Topics are `draft`, `notes`, `findings`, `blockers`, `decisions`, and `deferred`

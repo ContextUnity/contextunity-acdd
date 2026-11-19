@@ -13,14 +13,14 @@ use crate::types::{
     RunGraphSnapshot, RunStatus, SubtaskRecord, ValidatedObservations,
 };
 use crate::usecases::dto::{
-    BlackboardReadReq, BlackboardReadResp, ListReq, ListResp, NextReq, NextResp, ObservabilityReq,
+    BlackboardReadReq, BlackboardReadResp, ContextReq, ListReq, ListResp, NextReq, NextResp, ObservabilityReq,
     ObservabilityResp, ShowReq, ShowResp, StateQuery, StateQueryOutput, StatusReq, StatusResp,
 };
 use crate::usecases::lifecycle::{
     build_path_policy, collect_external_satisfied_deps, compute_unintegrated_tasks,
     ensure_blackboard_enabled, ensure_state_enabled, parse_cursor_for_snapshot,
-    parse_profile_from_run, primary_workspace_root, read_confined_utf8, resolve_node_worktree,
-    resolve_run_optional,
+    auto_select_context_cursor, parse_profile_from_run, primary_workspace_root, read_confined_utf8,
+    resolve_node_worktree, resolve_run_optional,
 };
 use crate::usecases::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
@@ -76,6 +76,9 @@ pub fn execute_query(
         StateQuery::Observability(req) => Ok(StateQueryOutput::Observability(
             handle_observability(reader, req)?,
         )),
+        StateQuery::Context(req) => Ok(StateQueryOutput::Context(Box::new(handle_context(
+            config, reader, provider, req,
+        )?))),
         StateQuery::Validate(_) => unreachable!("handled prior to modules.state gate"),
     }
 }
@@ -389,6 +392,124 @@ fn handle_observability(
     })
 }
 
+
+
+fn handle_context(
+    config: &StateEngineConfig,
+    reader: &dyn StateReader,
+    provider: &CompositeDomainProvider,
+    req: ContextReq,
+) -> Result<crate::context::ClaimResp, StateError> {
+    let run = resolve_run_optional(config, reader, req.run.as_deref(), None, false)?
+        .ok_or_else(|| {
+            StateError::new(
+                ErrorCode::RunSelectorAmbiguous,
+                "no run found matching context request",
+            )
+        })?;
+
+    let graph = reader.load_run_graph(&run.run_id)?.ok_or_else(|| {
+        StateError::new(
+            ErrorCode::RunSelectorAmbiguous,
+            format!("run '{}' no longer exists in active storage", run.run_id),
+        )
+    })?;
+
+    let cursor = match req.node {
+        Some(ref raw) => parse_cursor_for_snapshot(&graph, raw)?,
+        None => auto_select_context_cursor(&graph, req.worker_id.as_ref())?,
+    };
+    let node_id = cursor.to_node_id()?;
+    let node = graph
+        .nodes
+        .iter()
+        .find(|n| n.node_id == node_id)
+        .ok_or_else(|| {
+            StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("node '{cursor}' does not exist in run '{}'", run.run_id),
+            )
+        })?;
+
+    if !matches!(node.kind, NodeKind::RootGate | NodeKind::TaskGate) {
+        return Err(StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("context is only available for gate nodes; '{cursor}' is {:?}", node.kind),
+        ));
+    }
+    if !matches!(node.status, NodeStatus::InProgress | NodeStatus::Ready) {
+        return Err(StateError::new(
+            ErrorCode::GateVerificationFailed,
+            format!(
+                "gate '{cursor}' is {:?}; context requires an active claimed or ready gate",
+                node.status
+            ),
+        ));
+    }
+    if let Some(ref worker) = req.worker_id {
+        if node.status == NodeStatus::InProgress
+            && node.worker_id.as_ref().is_some_and(|owned| owned != worker)
+        {
+            return Err(StateError::new(
+                ErrorCode::TaskAlreadyClaimed,
+                format!(
+                    "gate '{cursor}' is claimed by {}; specify the owning worker or omit --worker",
+                    node.worker_id.as_ref().map(ToString::to_string).unwrap_or_default()
+                ),
+            ));
+        }
+    }
+
+    let profile = parse_profile_from_run(&graph.run)?;
+    let gate_def = find_profile_gate_def(&profile, &cursor).ok_or_else(|| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("no gate definition found for '{cursor}'"),
+        )
+    })?;
+    let worktree = resolve_node_worktree(config, &graph.run, node, None);
+    let candidate_tree = node
+        .claim_tree
+        .clone()
+        .or_else(|| node.accepted_tree.clone())
+        .unwrap_or_else(|| TreeOid::new("0".repeat(40)).expect("40 zeros valid"));
+    let claim_revision = node.claim_revision;
+    let worker_id = req
+        .worker_id
+        .clone()
+        .or_else(|| node.worker_id.clone())
+        .unwrap_or_else(|| WorkerId::new("context").expect("valid WorkerId"));
+    let primary = primary_workspace_root(config);
+    let path_policy = build_path_policy(config, reader, &[])?;
+    let ctx_req = GateContextAssembler::build_request_from_snapshot(SnapshotContextInput {
+        config,
+        reader,
+        snapshot: &graph,
+        node,
+        gate: gate_def,
+        profile,
+        claim_revision,
+        worker_id,
+        worktree,
+        candidate_tree,
+        path_policy,
+        primary: &primary,
+    })?;
+    let resp = GateContextAssembler::assemble(&ctx_req, provider)?;
+
+    if let Some(graph_after) = reader.load_run_graph(&run.run_id)? {
+        if let Some(after) = graph_after.nodes.iter().find(|n| n.node_id == node_id) {
+            if after.claim_revision != claim_revision {
+                return Err(StateError::new(
+                    ErrorCode::GateVerificationFailed,
+                    "context query must not mutate claim_revision",
+                ));
+            }
+        }
+    }
+    Ok(resp)
+}
+
 fn collect_ready_cursors(
     graph: &RunGraphSnapshot,
     obs: &ValidatedObservations,
@@ -562,6 +683,9 @@ fn latest_pre_task_proof_value(graph: &RunGraphSnapshot) -> Option<serde_json::V
             continue;
         }
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&art.payload_json) {
+            if !val.get("tasks").is_some_and(serde_json::Value::is_object) {
+                continue;
+            }
             let replace = match best {
                 None => true,
                 Some((prev_rev, prev_at, _)) => {

@@ -166,11 +166,12 @@ acdd start [<spec>] [--goal TEXT] [--name RUN_NAME] [--profile PROFILE] [--scope
 acdd status [--run RUN_ID_OR_NAME]
 acdd list [--workspace NAME] [--status active|completed|cancelled] [--include-tombstones] [--limit 1..100] [--offset N] [--generation GEN]
 acdd show [<node>] [--run RUN_ID_OR_NAME]
+acdd context [<node>] [--run RUN_ID_OR_NAME] [--worker WORKER_ID]
 acdd next [--run RUN_ID_OR_NAME] [--limit N]
 ```
 
 - `start`: Starts a new `Run` from a spec file (`<spec>`) or an ephemeral `--goal` (materializing `.acdd/run/<run_id>/spec.md`, attaching `--scope` globs as task scope or frontmatter `owners:` on taskless profiles like `audit`). Selects `worktree` (`--worktree`, `--worktree-path`, `--target-base`) or `--in-place` isolation (neutralizing `save.post: commit` to `none` while preserving `save.immutable: true`).
-- `status`, `list`, `show`, `next`: Read-only queries (`StateQuery`). `list` supports `--include-tombstones` for cleared/completed/cancelled `run_tombstones` and stable `runs.generation` paging. `show` renders the full run tree or a specific node cursor (`<gate>`, `<task_ref>`, `<task_ref>.<gate>`). `next` lists currently schedulable node cursors and topological execution waves.
+- `status`, `list`, `show`, `next`, `context`: Read-only queries (`StateQuery`). `list` supports `--include-tombstones` for cleared/completed/cancelled `run_tombstones` and stable `runs.generation` paging. `show` renders the full run tree or a specific node cursor (`<gate>`, `<task_ref>`, `<task_ref>.<gate>`). `next` lists currently schedulable node cursors and topological execution waves. `context` executes over `SQLITE_OPEN_READ_ONLY` and refreshes the 6-tier budgeted `ClaimResp` without mutating claim state or advancing `claim_revision` (auto-selecting the active or single ready node when `<node>` is omitted, failing closed on ambiguity); configure it as a `PostCompact` and `SessionStart(compact)` hook in agent environments to reload current contract and blackboard context automatically after context compactions.
 
 ### Gate execution: `claim`, `verify`, `submit`
 

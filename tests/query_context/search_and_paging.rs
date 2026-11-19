@@ -574,3 +574,193 @@ fn natural_symbol_queries_use_bm25_and_skip_markdown_by_default() {
     assert_eq!(visible_docs["nodes"]["total"], 1);
     assert_eq!(visible_docs["nodes"]["items"][0]["language"], "markdown");
 }
+
+struct DuplicatesCase {
+    label: &'static str,
+    min_lines: Option<usize>,
+    expect_groups: usize,
+    expect_match_type: Option<&'static str>,
+    expect_min_duplicate_count: Option<usize>,
+    forbid_match_types: &'static [&'static str],
+    build: fn(&Workspace),
+}
+
+fn five_line_clone_block() -> &'static str {
+    "    step_one()\n    step_two()\n    step_three()\n    step_four()\n    step_five()\n"
+}
+
+#[test]
+fn duplicates_paged_symbol_clone_matrix() {
+    let cases = [
+        DuplicatesCase {
+            label: "cross_function_five_line",
+            min_lines: None,
+            expect_groups: 1,
+            expect_match_type: Some("block"),
+            expect_min_duplicate_count: Some(2),
+            forbid_match_types: &[],
+            build: |workspace| {
+                let block = five_line_clone_block();
+                workspace.write(
+                    "cross_a.py",
+                    &format!("def alpha():\n{block}    return 1\n"),
+                );
+                workspace.write(
+                    "cross_b.py",
+                    &format!("def beta():\n{block}    return 2\n"),
+                );
+            },
+        },
+        DuplicatesCase {
+            label: "intra_function_repeated_block",
+            min_lines: None,
+            expect_groups: 1,
+            expect_match_type: Some("block"),
+            expect_min_duplicate_count: Some(2),
+            forbid_match_types: &[],
+            build: |workspace| {
+                let block = five_line_clone_block();
+                workspace.write(
+                    "intra.py",
+                    &format!(
+                        "def repeated():\n{block}    marker_a()\n{block}    return 0\n"
+                    ),
+                );
+            },
+        },
+        DuplicatesCase {
+            label: "six_unique_lines_no_self_match",
+            min_lines: Some(6),
+            expect_groups: 0,
+            expect_match_type: None,
+            expect_min_duplicate_count: None,
+            forbid_match_types: &[],
+            build: |workspace| {
+                let mut body = String::from("def unique_run():\n");
+                for i in 0..6 {
+                    body.push_str(&format!("    unique_line_{i}()\n"));
+                }
+                body.push_str("    return None\n");
+                workspace.write("unique.py", &body);
+            },
+        },
+        DuplicatesCase {
+            label: "five_line_body_embedded_in_longer_symbol",
+            min_lines: None,
+            expect_groups: 1,
+            expect_match_type: Some("block"),
+            expect_min_duplicate_count: Some(2),
+            forbid_match_types: &[],
+            build: |workspace| {
+                let block = five_line_clone_block();
+                workspace.write("tiny.py", &format!("def tiny():
+{block}"));
+                workspace.write(
+                    "long.py",
+                    &format!(
+                        "def long_fn():
+    preamble()
+{block}    epilogue()
+    return 0
+"
+                    ),
+                );
+            },
+        },
+        DuplicatesCase {
+            label: "cross_file_exact_without_block",
+            min_lines: None,
+            expect_groups: 1,
+            expect_match_type: Some("exact"),
+            expect_min_duplicate_count: Some(2),
+            forbid_match_types: &["block"],
+            build: |workspace| {
+                let block = five_line_clone_block();
+                workspace.write("twin_a.py", &format!("def twin():
+{block}    return None
+"));
+                workspace.write("twin_b.py", &format!("def twin():
+{block}    return None
+"));
+            },
+        },
+        DuplicatesCase {
+            label: "short_three_line_not_clone",
+            min_lines: None,
+            expect_groups: 0,
+            expect_match_type: None,
+            expect_min_duplicate_count: None,
+            forbid_match_types: &[],
+            build: |workspace| {
+                let short = "    one()\n    two()\n    three()\n";
+                workspace.write("short_a.py", &format!("def short_a():\n{short}"));
+                workspace.write("short_b.py", &format!("def short_b():\n{short}"));
+            },
+        },
+    ];
+
+    for case in cases {
+        let workspace = Workspace::new();
+        (case.build)(&workspace);
+        workspace.build();
+        let conn = workspace.open();
+
+        let default_probe =
+            traversal::duplicates_paged(&conn, None, None, None, None, &options(50)).unwrap();
+        if case.min_lines.is_none() {
+            assert_eq!(
+                default_probe["min_lines"].as_u64(),
+                Some(5),
+                "{}: default min_lines",
+                case.label
+            );
+        }
+
+        let result = traversal::duplicates_paged(
+            &conn,
+            None,
+            None,
+            None,
+            case.min_lines,
+            &options(50),
+        )
+        .unwrap();
+        assert_eq!(
+            result["total_duplicate_groups"].as_u64().unwrap() as usize,
+            case.expect_groups,
+            "{}: group count",
+            case.label
+        );
+        if case.expect_groups == 0 {
+            continue;
+        }
+        let item = &result["items"][0];
+        if let Some(kind) = case.expect_match_type {
+            assert_eq!(item["match_type"], kind, "{}: match_type", case.label);
+        }
+        if let Some(min_count) = case.expect_min_duplicate_count {
+            assert!(
+                item["duplicate_count"].as_u64().unwrap() >= min_count as u64,
+                "{}: duplicate_count",
+                case.label
+            );
+        }
+        if case.expect_match_type == Some("block") {
+            assert_eq!(
+                item["line_count"].as_u64().unwrap(),
+                case.min_lines.unwrap_or(5) as u64,
+                "{}: line_count",
+                case.label
+            );
+        }
+        let items = result["items"].as_array().unwrap();
+        for forbidden in case.forbid_match_types {
+            assert!(
+                !items.iter().any(|item| item["match_type"] == *forbidden),
+                "{}: unexpected match_type {}",
+                case.label,
+                forbidden
+            );
+        }
+    }
+}

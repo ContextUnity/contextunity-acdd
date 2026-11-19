@@ -119,6 +119,21 @@ indexed test reachability into admitted production scope (`calls`, `imports`,
 `possible_calls`, etc.) and reject out-of-scope public signature callers before
 completion.
 
+`code_map_query(operation: "duplicates")` pages duplicate symbol bodies and
+repeated normalized code blocks in the indexed graph. At `level: "symbol"`
+(default), `duplicates_paged` and MCP `code_map_query(operation: "duplicates")`
+default `min_lines` to **5** when the argument is omitted; the CLI
+`acdd query run duplicates --min-lines` flag still defaults to **10** unless set
+explicitly. **`exact`** whole-symbol groups hash the blank-trimmed raw symbol
+body (leading/trailing blank lines removed, indentation preserved). **`block`**
+windows hash indent-normalized non-empty lines for each `>= min_lines` slice.
+Near clones cluster by name and line similarity. **`block`** matches cover
+repeated normalized windows across symbols/files or at non-overlapping positions
+within one function (overlapping shifted windows are not double-counted). Block
+groups that only repeat an already-reported whole-symbol **`exact`** or
+**`similar`** clone are suppressed. See [mcp-tools.md](mcp-tools.md) and
+[cli.md](cli.md) for pagination and scope options.
+
 ### Independence, Routing, Conditions, and Persistence
 
 - **Independent Worker Enforcement (`independent_from`)**: Claim and submission

@@ -593,7 +593,7 @@ use crate::{
     engine::pipeline as writer,
     format::{self, OperationKind, OutputFormat},
     state_bridge::{
-        build_domain_providers, execute_state_command, execute_state_query, InvocationSettings,
+        build_domain_providers, execute_state_command_with_config, execute_state_query, InvocationSettings,
     },
 };
 use acdd_core::response::{
@@ -608,7 +608,7 @@ use acdd_state::types::{
 };
 use acdd_state::usecases::{
     BlackboardPostReq, BlackboardReadReq, CallPluginToolReq, CallPluginToolResp, ClaimReq,
-    ClearReq, DraftReq, ExtendScopeReq, ListReq, NextReq, ReopenReq, RunReq, ShowReq, StartReq,
+    ClearReq, ContextReq, DraftReq, ExtendScopeReq, ListReq, NextReq, ReopenReq, RunReq, ShowReq, StartReq,
     StateCommand, StateCommandOutput, StateQuery, StatusReq, SubmitReq, SubtaskReq, SyncReq,
     VerifyReq,
 };
@@ -752,6 +752,17 @@ pub enum Command {
         /// Optional run ID or name selector.
         #[arg(long)]
         run: Option<String>,
+    },
+    /// Refresh budgeted claim context without mutating claim state (read-only).
+    Context {
+        /// Optional target node cursor (`<gate>`, `<task_ref>`, or `<task_ref>.<gate>`).
+        node: Option<String>,
+        /// Optional run ID or name selector.
+        #[arg(long)]
+        run: Option<String>,
+        /// Optional worker filter when auto-selecting the active gate.
+        #[arg(long, alias = "worker-id")]
+        worker: Option<String>,
     },
     /// Show ready node cursors and topological execution waves (read-only).
     Next {
@@ -1314,6 +1325,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         | Command::List { .. }
         | Command::Show { .. }
         | Command::Next { .. }
+        | Command::Context { .. }
         | Command::ExtendScope { .. }
         | Command::Reopen { .. }
         | Command::Sync { .. }
@@ -1718,8 +1730,16 @@ impl Cli {
             return Ok(());
         }
 
+        let profile_at_root = match &self.command {
+            Some(Command::Start {
+                spec: Some(_),
+                worktree_path: Some(_),
+                ..
+            }) => None,
+            _ => self.profile.as_deref(),
+        };
         let settings =
-            paths::ResolvedPaths::resolve(&root, self.config.as_deref(), self.profile.as_deref())?;
+            paths::ResolvedPaths::resolve(&root, self.config.as_deref(), profile_at_root)?;
         let database = acdd_core::config::resolve_code_db_path(&root, self.db.as_deref());
         let state_db = self.state_db.as_ref().map(|path| {
             if path.is_absolute() {
@@ -1811,11 +1831,14 @@ impl Cli {
             title,
             adapter.retain_traces,
         );
-        if let Some(custom_state_db) = state_db.as_ref() {
-            span = span.with_state_db(custom_state_db.clone());
-        }
+        if let Ok(db) = crate::state_bridge::resolve_effective_state_db(
+            &root, state_db.as_deref(), &adapter,
+        ) { span = span.with_state_db(db); }
+        let checkout_root = self.root.as_deref().map(std::path::absolute).transpose()?;
         let state_ctx = CliStateCtx {
             root: &root,
+            checkout_root: checkout_root.as_deref().unwrap_or(&root),
+            explicit_config: self.config.is_some(),
             state_db: state_db.as_deref(),
             code_db: Some(db.as_path()),
             adapter: &adapter,
@@ -1843,11 +1866,20 @@ impl Cli {
                         .map(RunName::new)
                         .transpose()
                         .map_err(anyhow::Error::from)?;
+                    let worktree_path = match worktree_path {
+                        Some(path) if path.is_relative() => Some(acdd_core::fs::checked_child(
+                            &std::env::current_dir()?,
+                            &path,
+                        )?),
+                        path => path,
+                    };
                     state_ctx.command(StateCommand::Start(StartReq {
                         spec_path: spec,
                         goal,
                         run_name,
-                        profile: explicit_profile_ref,
+                        profile: explicit_profile_ref.or_else(|| {
+                            self.profile.as_ref().map(|p| p.to_string_lossy().into_owned())
+                        }),
                         scope,
                         target_base,
                         worktree,
@@ -1897,6 +1929,19 @@ impl Cli {
                 }
                 Command::Show { node, run } => {
                     state_ctx.query(&root, StateQuery::Show(ShowReq { run, node }))?
+                }
+                Command::Context { node, run, worker } => {
+                    state_ctx.query(
+                        &root,
+                        StateQuery::Context(ContextReq {
+                            run,
+                            node,
+                            worker_id: worker
+                                .map(|w| WorkerId::new(&w))
+                                .transpose()
+                                .map_err(anyhow::Error::from)?,
+                        }),
+                    )?
                 }
                 Command::Next { run, limit } => {
                     state_ctx.query(&root, StateQuery::Next(NextReq { run, limit }))?
@@ -2839,6 +2884,8 @@ impl Cli {
 
 struct CliStateCtx<'a> {
     root: &'a Path,
+    checkout_root: &'a Path,
+    explicit_config: bool,
     state_db: Option<&'a Path>,
     code_db: Option<&'a Path>,
     adapter: &'a acdd_core::config::Adapter,
@@ -2849,6 +2896,7 @@ struct CliStateCtx<'a> {
 impl CliStateCtx<'_> {
     fn command(&self, cmd: StateCommand) -> Result<(Value, Option<String>)> {
         let worktree = match &cmd {
+            StateCommand::Start(_) | StateCommand::Sync(_) => Some(self.checkout_root),
             StateCommand::Claim(req) => req.worktree.as_deref(),
             StateCommand::Verify(req) => req.worktree.as_deref(),
             StateCommand::Submit(req) => req.worktree.as_deref(),
@@ -2857,7 +2905,7 @@ impl CliStateCtx<'_> {
         }
         .map(Path::to_path_buf);
         let providers = build_domain_providers(self.root, self.adapter, self.code_db, Vec::new())?;
-        let res = execute_state_command(
+        let res = execute_state_command_with_config(
             self.root,
             worktree.as_deref().unwrap_or(self.root),
             self.state_db,
@@ -2865,6 +2913,7 @@ impl CliStateCtx<'_> {
             self.adapter,
             providers,
             cmd,
+            self.explicit_config,
         )?;
         render_cli_state_output(
             &res,
@@ -3056,7 +3105,7 @@ mod tests {
         // and `code_db_path` is populated iff `code || docs` is enabled (#25).
         let cfg_default = crate::state_bridge::AcddConfig::default();
         let eng_default =
-            crate::state_bridge::state_engine_config(vroot, vroot, None, None, &cfg_default);
+            crate::state_bridge::state_engine_config(vroot, vroot, None, None, &cfg_default).unwrap();
         assert!(eng_default.state_db_override.is_none());
         assert_eq!(
             eng_default.code_db_path,
@@ -3070,15 +3119,14 @@ mod tests {
             ..Default::default()
         };
         let eng_minimal =
-            crate::state_bridge::state_engine_config(vroot, vroot, None, None, &cfg_minimal);
+            crate::state_bridge::state_engine_config(vroot, vroot, None, None, &cfg_minimal).unwrap();
         assert_eq!(eng_minimal.code_db_path, None);
-        let cfg_custom = crate::state_bridge::AcddConfig {
-            state_db: ".acdd/custom.sqlite".to_owned(),
-            ..Default::default()
-        };
-        let eng_custom =
-            crate::state_bridge::state_engine_config(vroot, vroot, None, None, &cfg_custom);
-        assert!(eng_custom.state_db_override.is_some());
+        let custom_db = std::path::Path::new(".acdd/custom.sqlite");
+        let eng_custom = crate::state_bridge::state_engine_config(
+            vroot, vroot, Some(custom_db), None, &cfg_default,
+        )
+        .unwrap();
+        assert_eq!(eng_custom.state_db_override, Some(vroot.join(custom_db)));
 
         // 7. Stateless `acdd tool <name>` (no `--run`/`--node`) dispatches without opening `state.sqlite` even when `modules.state == false` (#30).
         let tdir = ScopedTempDir::create("acdd-ut-cli-tool-stateless").unwrap();
