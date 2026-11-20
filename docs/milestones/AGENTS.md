@@ -139,6 +139,9 @@ subtasks:
 2. **Disjoint File Scopes**: Concurrent tasks in the same wave must have disjoint `scope:` declarations.
 3. **Closed DAG & Valid Tags**: All `depends_on` references, `tags`, and `profile` references must pass `acdd validate <manifest>` before `acdd start <manifest>`.
 4. **Build Seam Proof (`proof: command` + `code.seam`)**: Author compiling, passing seam tests directly in `build` (`exit_code == 0`, respecting `max_net_loc` budgets) while `code.seam` verifies AST reachability (`<= 8` hops) from the `--test` target to production symbols in `admitted_scope`.
+5. **Replace, Don't Stack**: Whenever an AC introduces a new enum, type, or facade, explicitly name the retired symbol/wrapper to delete and the live production call sites to migrate; never specify production enum variants or predicates with zero production callers.
+6. **Non-Fallback Fast-Path Proof**: Whenever an AC introduces an optimization with a silent fallback (`Ok(None) => slow_path`), require a production-seam test asserting the fast path actually executes on realistic production-generated data (e.g. `pipeline::build` with full-range hashes) rather than only synthetic fixtures.
+7. **Bounded Milestone Scope**: Keep each milestone to a cohesive 2–4 task slice; do not bolt unrelated architectural refactor waves onto a mid-flight performance or feature milestone.
 
 ---
 

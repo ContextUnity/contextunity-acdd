@@ -18,6 +18,11 @@ Read the [root instructions](../../AGENTS.md), [source architecture](../../src/A
 - **Stream hashes**: Use `acdd_core::format::sha256_serde_json` instead of allocating intermediate `serde_json::to_vec` buffers.
 - **Determinism (`INV-PERF-DETERMINISTIC-MERKLE-SEALING`)**: Never assign `SymbolId` or emit rows, edges, or commitments from unsorted `hashbrown::HashMap`/`HashSet` or unsorted `fs::read_dir` iteration; sort keys explicitly or use `BTreeMap`/`BTreeSet`.
 - **De-monomorphize hot paths**: Pass `&Facts`, `&mut dyn std::io::Write`, or non-generic inner functions instead of duplicating large generic bodies across `Facts`/`TypedFacts` or writers.
+- **Compile-time codec coupling**: Never hand-encode raw bytes pretending to match another struct's `BinaryDecode` layout without compile-time field destructuring or a shared `struct_codecs!`; never duplicate binary magic constants (`LOCAL_MAGIC`, etc.) outside their canonical owning module.
+- **Non-fallback fast-path proofs**: Any fast path with a silent fallback (`Ok(None) => slow_path`, such as `fts5_fastpath`) must have a production-seam test asserting `Some(...)` on a real `pipeline::build` index (covering full-range signed `stable_hash64` rowids), not only synthetic sequential rowid fixtures or transparent `commitments::verify`.
+- **Zero `N+1` SQLite / Disk / Git Loops**: Never execute per-node, per-edge, or per-file `rusqlite` queries, `verified_source` reads, or `acdd_core::git` spawns inside loops (`db/{reader,traversal}`, `commitments`, `pipeline`); preload into `BTreeMap` / `IN (...)` / temp tables or batched `git cat-file --batch` reads.
+- **Single-Pass Parse & Shared Query Helpers**: Never re-parse ASTs, source bodies, or manifests inside the same build/query pass, and consolidate shared SQL predicates/row decoders/pagination across `db/reader` and `db/traversal` into single canonical helpers.
+- **Release Hot-Path Measurement**: Verify changes in `pipeline`, `linker`, `db/reader`, and `db/traversal` with `--release` timing (`wall` + `sys`) and peak RSS, not only debug `--lib` unit tests.
 
 ## SQLite & Cross-Platform Invariants
 

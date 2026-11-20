@@ -37,12 +37,32 @@ scope_args_by_pattern:
   "tests/query_context/**/*.rs": "--test query_context"
   "tests/receivers/**/*.rs": "--test linker"
 
+roles:
+  coordinator:
+    mode: inline
+    reuse_on_reject: true
+    guidance: "Execute inline as the main coordinator agent: synthesize milestone telemetry, cycle history, code quality assessment, and rule updates into gitignored docs/memories/<spec.name>.md before submitting handoff."
+
 guidance:
+  repo.rust: "Enforce Rust SSOT & zero-copy hot-path standards: (1) model finite variants with closed `enum`s, validated newtypes, `From`/`TryFrom`, trait objects (`&dyn Trait`), and non-generic inner functions instead of magic strings, mirror `Mcp*` structs, or monomorphization bloat; (2) borrow `&str`/`&Path`/`Cow<'_, str>` and intern repeated symbols (`Arc<str>`, `CompactTag`) rather than cloning DTOs/ASTs across pipeline stages, stream hashes via `acdd_core::format::sha256_serde_json`, and bind codecs with `struct_codecs!` / compile-time destructuring; (3) never run per-object `git` (`cat-file -t` + `cat-file blob`, repeated `rev-parse`), `N+1` `rusqlite` SELECTs, or `visit_archived_specs` fallbacks inside loops — batch via `git cat-file --batch`, single `ls-tree`, and preloaded `BTreeMap` snapshots; (4) prove non-fallback fast paths (`Ok(None) => slow_path`) on real production seams and measure CLI/index hot paths (`index`, `query`, `roadmap`, `validate`) on `--release` builds (wall, `sys`, peak RSS)."
   repo.tests: "Follow `tests/AGENTS.md` and `docs/architecture/test-harness.md`: keep `RunHarness::in_memory()` / unit scenarios `< 5 ms`, focused integration tests `< 1 s`, `tests/acdd < 15 s`, set `commit.gpgsign=false` in fixture Git setups, and verify zero `/tmp/contextunity-test-*` leaks (`BEFORE == AFTER`)."
+  repo.memory_synthesis:
+    description: "PRE-HANDOFF MILESTONE MEMORY & TELEMETRY SYNTHESIS"
+    criteria:
+      - "Before submitting `handoff`, analyze the full milestone run using `acdd_state(action: \"show\")` (or `acdd show <run>`), `.acdd/state.sqlite` read-only data (`runs`, `gate_nodes`, `gate_claims`, `gate_traces`, `gate_artifacts`, `blackboard`), `git log --stat <target_base_commit>..HEAD`, and session/subagent usage logs."
+      - "Compile per-task and run-wide statistics: elapsed wall time (run/claim/trace timestamps), token usage per worker/task (when exposed by the harness, or `N/A` when unavailable), loop/cycle counts (`attempt`, `cycle_count`, `build <-> review` rounds, `rearchitect` drift), trace pass/fail counts, scope extensions, and blackboard decisions/deferred counts."
+      - "Write the structured retrospective to `docs/memories/<spec.name>.md` (spec ID/file stem, or `<run_name>.md` for ephemeral `--goal` runs; `/docs/memories/` is gitignored so writing it preserves `claim_tree` with zero extra commits) covering: (1) telemetry table, (2) what went well, (3) what went wrong / friction & bottlenecks, (4) code quality assessment (architecture, SSOT/types, clones/dead_tails, hot-path & test quality), and (5) concrete rule/profile update recommendations (`AGENTS.md`, crate `AGENTS.md`, `skills/`, `.acdd/profile.yaml`, `code.yaml`)."
 
 gates_patch:
   - id: tasks.build
-    guidance: [task.code, core.execution, code.principles, code.tools, repo.tests, hitl.pro]
+    guidance: [task.code, core.execution, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
   - id: tasks.review
-    guidance: [task.review, core.review, code.principles, code.tools, repo.tests, hitl.pro]
+    guidance: [task.review, core.review, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
+  - id: tasks.rearchitect
+    guidance: [task.rearchitect, core.execution, code.principles, code.tools, repo.rust, hitl.pro]
+  - id: integration_review
+    guidance: [milestone.review, core.review, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
+  - id: handoff
+    role: coordinator
+    guidance: [milestone.handoff, repo.memory_synthesis, core.execution, hitl.pro]
 

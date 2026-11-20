@@ -590,6 +590,9 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
     if let Some(spec) = &req.spec {
         obj.insert("spec_id".to_owned(), json!(spec.id));
         obj.insert("title".to_owned(), json!(spec.title));
+        if !spec.required_skills.is_empty() {
+            obj.insert("required_skills".to_owned(), json!(spec.required_skills));
+        }
         if let Some(task) = task_spec {
             obj.insert("task_ref".to_owned(), json!(task.task_ref));
             if let Some(target) = &task.target {
@@ -1490,14 +1493,23 @@ mod tests {
         assert!(md_custom.contains("Run=run-1 Node=t1.build Rev=1"));
         assert!(md_custom.contains("\"gate_id\": \"build\""));
 
-        // `context_reset_required: true` emits reset warning in markdown and keeps exact total_bytes.
+        // `context_reset_required: true` emits reset warning in markdown and keeps exact total_bytes,
+        // and non-empty `spec.required_skills` is propagated into `contract.required_skills`.
         let mut reset_req = base_request();
         reset_req.gate.context.clear();
         reset_req.context_reset_required = true;
+        if let Some(spec) = &mut reset_req.spec {
+            spec.required_skills = vec!["acdd".to_owned(), "close-review-findings".to_owned()];
+        }
         let reset_resp = build_claim_context(&reset_req, &empty_provider).unwrap();
         assert!(reset_resp.context_reset_required);
+        assert_eq!(
+            reset_resp.contract["required_skills"],
+            json!(["acdd", "close-review-findings"])
+        );
         assert_eq!(reset_resp.total_bytes, serde_json::to_vec(&reset_resp).unwrap().len());
         let reset_md = render_claim_prompt_markdown(&reset_resp, None);
         assert!(reset_md.contains("CONTEXT RESET REQUIRED"));
+        assert!(reset_md.contains("close-review-findings"));
     }
 }

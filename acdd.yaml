@@ -21,6 +21,9 @@ specs:
     path: docs/milestones
     prefixes:
       - AC
+      - AR
+      - PF
+      - LS
     digits: 3
   plans:
     path: docs/plans

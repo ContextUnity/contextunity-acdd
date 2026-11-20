@@ -164,6 +164,10 @@ guidance:
     description: "CODE ENGINEERING & SIMPLICITY PRINCIPLES"
     criteria:
       - "Prefer simpler, maintainable solutions and canonical owner reuse (INV-SINGLE-OWNER) over accumulating defensive abstractions, shadow resolvers, or narrow string heuristics."
+      - "Model domain states and variants with strong language-native types (closed enums/sum types, value objects/classes, typed interfaces/traits, and inheritance/polymorphism where appropriate) and one Single Source of Truth (SSOT) instead of parallel magic strings, boolean flag bags, or duplicated copy-pasted logic."
+      - "Extract shared helpers, base types, or dispatch tables whenever two or more consumers share logic (`>= 5` lines or repeated pipelines), while keeping single-caller pipelines cohesive without gratuitous boilerplate."
+      - "Zero production N+1 I/O, DB, parse, or subprocess loops: preload or batch lookups once at the operation boundary (bulk queries, pre-indexed maps, batched object reads) and pass borrowed views into resolvers rather than querying storage, parsing whole files, or spawning child processes per item/edge."
+      - "Trust already-validated internal artifacts within the same request instead of re-checking them, and skip computing or resolving data branches discarded by the caller's active filters."
       - "Validate untrusted inputs once at external boundaries and trust validated internal types/schemas/locks without duplicating checks."
       - "Never convert one-time incidents into permanent architectural layers or fence lists; fix the owning mechanism instead."
       - "Eliminate redundant validations and dead code in touched files; keep tests proportional to actual operational risk."
@@ -193,8 +197,9 @@ guidance:
     criteria:
       - "Follow proof.tasks[task_ref] (`canonical_owners`, `mechanism_rules`, `max_net_loc`), author seam checks directly in build, and verify exit_code == 0."
       - "If context_reset_required is set after rearchitect, read the latest rearchitect decision from acdd_blackboard (topic: decisions) and rebuild cleanly from scratch."
-      - "Keep functions cohesive; consider decomposing long production functions (>150 LOC) when they mix unrelated responsibilities or obscure control flow, while keeping linear pipelines, tables, or dispatchers intact when splitting adds indirection without clarity; extract repeated logic (>=5 lines) within or across functions."
+      - "Keep functions cohesive; consider decomposing long production functions (>150 LOC) when they mix unrelated responsibilities or obscure control flow, while keeping linear pipelines, tables, or dispatchers intact when splitting adds indirection without clarity; extract repeated logic (>=5 lines) and multi-consumer behavior into shared helpers, classes, enums, or typed interfaces."
       - "Fix defects across the full pattern class via the canonical owner (check sibling call sites with code_map_search/ast_grep_search) rather than patching one line at a time."
+      - "Avoid N+1 I/O, DB queries, repeated parses, unbatched subprocess spawns, and quadratic fallback scans in production loops; preload shared snapshots at the command boundary and verify hot-path latency/resource usage proportionally."
       - "Keep tests fast and within runtime budget: test pure logic and state matrices in-memory without disk or VCS I/O, consolidate variants into data-driven table matrices sharing one base setup outside the loop (avoid sequential multi-setup mega-tests inside one test), reuse existing in-process test harnesses, eliminate redundant VCS/subprocess queries in callers, and profile slow tests before submitting."
   task.review:
     description: "INDEPENDENT TASK IMPLEMENTATION REVIEW"
@@ -202,7 +207,8 @@ guidance:
       - "Verify task contract satisfaction, concurrency safety, and code/graph hygiene across the declared contours."
       - "Use rejection kind: defect (fail: build) for localized bugs, or kind: architectural_drift (fail_drift: rearchitect) for structural violations requiring builder context reset."
       - "Complete all contours before rejecting (`NO EARLY-ABORT`) and sweep sibling call sites (`DEFECT-CLASS SWEEP`) so related defects are closed in one round."
-      - "Check long functions (>150 LOC) for genuine entanglement or poor readability and recommend decomposition only when warranted (do not reject cohesive linear/declarative/dispatch functions purely for line count); reject repeated logic (>=5 lines), orphan helpers, unapproved net LOC overages (verifying that approved BUDGET_OVERRIDE reasons cover the measured delta), and imperative non-tabular mega-tests."
+      - "Check long functions (>150 LOC) for genuine entanglement or poor readability and recommend decomposition only when warranted (do not reject cohesive linear/declarative/dispatch functions purely for line count); reject repeated logic (>=5 lines), stringly-typed or duplicated variant branching where enums/SSOT helpers belong, orphan helpers, unapproved net LOC overages (verifying that approved BUDGET_OVERRIDE reasons cover the measured delta), and imperative non-tabular mega-tests."
+      - "Reject production N+1 I/O, DB, full-parse, or subprocess loops, quadratic O(N*M) fallback scans, redundant re-verification of trusted internal artifacts, and wasted computation for filtered-out outputs."
       - "Audit tests for runtime budget compliance, full coverage parity, and anti-bloat: reject slow tests caused by repeated VCS/subprocess spawns, per-case tempdir/worktree rebuilds, unhoisted fixtures, or disk-backed testing of pure in-memory logic; reject missing assertions or weakened coverage during refactors, verify zero fixture masking, and enforce harness reuse and data-driven table matrices."
   task.rearchitect:
     description: "ARCHITECTURAL RECOVERY AFTER DRIFT"

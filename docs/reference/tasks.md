@@ -55,7 +55,7 @@ status: planned
 ```
 
 For full field parsing rules, see [`crates/acdd-state/src/spec.rs`](../../crates/acdd-state/src/spec.rs)
-and the example feature plan in [example-feature-plan.md](../plans/example-feature-plan.md).
+and the example feature plan in [example-feature-plan.md](example-feature-plan.md).
 
 ---
 

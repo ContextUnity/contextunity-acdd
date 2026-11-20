@@ -19,6 +19,7 @@ Read the [root instructions](../../AGENTS.md), [source architecture](../../src/A
 - **Single Validator & `WhenExpr`**: Route all workspace/spec/profile/dependency validation through `crate::validate` + `crate::usecases::deps`; reuse `crate::profile::when::WhenExpr` inside `machine/graph.rs` with zero duplicate parsers or evaluators.
 - **Borrow & budget cleanly**: Borrow `GateProfile`, `RoleProfile`, and `&str`/`&Path` across `runner/` until owned DTOs or spawned processes require ownership, and size 6-tier `context.rs` payloads in $O(N)$ using `acdd_core::format::estimate_json_bytes`.
 - **Determinism**: Sort all `fs::read_dir` entries before scanning specs, profiles, or archives.
+- **Single-Pass Query Snapshot (`roadmap.rs`, `deps.rs`, `validate.rs`)**: Preload `runs`, `tombstones`, owned worktrees, and parsed spec/archive indexes once per command and pass borrowed snapshots into `resolve_dep_target`; ban per-edge `visit_archived_specs` fallbacks, repeated `parse_spec` across unchanged worktrees, and resolving archived `depends_on` edges when archived output is not requested.
 
 ## SQLite & Cross-Platform Invariants
 

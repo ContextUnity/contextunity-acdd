@@ -54,7 +54,7 @@ and shared locks automatically. CLI `--worktree` takes an explicit directory pat
   for full sections. Archived files under `*/archive/` are excluded from default
   search and emit no `governs` / `documents` graph edges.
 - **Graph hygiene (`duplicates` & `dead_tails`)**: Before submitting `build`,
-  `polish`, or any code review, run `code_map_query(operation="duplicates", level="symbol", min_lines=10, path=...)`
+  `polish`, or any code review, run `code_map_query(operation="duplicates", level="symbol", min_lines=5, path=...)`
   and `code_map_query(operation="dead_tails", path=...)` (workspace-wide without
   `path`/`target` on integration reviews). `dead_tails` computes workspace-wide
   production liveness first, then reports `phantom_tested`, `dead_tails`, and
@@ -74,7 +74,7 @@ contours, isolation (`--in-place` overrides to `git.isolation: in_place`, `save:
 preserving `save.immutable: true`), and `save.report` (written strictly under
 `.acdd/reports/*.{md,json}` on pass). Do not assume a hardcoded gate sequence:
 
-1. Start a run with `acdd start <spec_path>` or `acdd start --goal "..."`
+1. Inspect cross-worktree specs, dependency waves, critical paths, and scope-overlap markers with `acdd_state(action="roadmap")` (`acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]`), then start a run with `acdd start <spec_path>` or `acdd start --goal "..."`
    (defaults to `code`; select `inherit: audit` for read-only SAST/PR/hygiene audits,
    or `inherit: base` for non-code workflows).
 2. Inspect ready cursors (`acdd_state(action="next")` / `acdd next`) and claim
