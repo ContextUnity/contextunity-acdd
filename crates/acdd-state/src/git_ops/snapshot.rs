@@ -566,7 +566,6 @@ pub fn tree_entry_at(
         None,
         ErrorCode::ExternalGitDrift,
     )?;
-
     let out = run_git_checked(
         worktree,
         &["ls-tree", "-z", "--full-tree", trimmed, "--", &norm],
@@ -647,7 +646,10 @@ pub fn list_git_tree_entries(
     let dir_prefix = if dir_rel.is_empty() || dir_rel == "." {
         None
     } else {
-        let stripped = dir_rel.strip_prefix("./").unwrap_or(dir_rel).trim_end_matches('/');
+        let stripped = dir_rel
+            .strip_prefix("./")
+            .unwrap_or(dir_rel)
+            .trim_end_matches('/');
         if stripped.is_empty()
             || stripped
                 .split('/')
@@ -660,13 +662,17 @@ pub fn list_git_tree_entries(
         }
         Some(format!("{stripped}/"))
     };
-    let tree_spec = format!("{trimmed}^{{tree}}");
-    run_git_stdout(
-        worktree,
-        &["rev-parse", "--verify", &tree_spec],
-        None,
-        ErrorCode::ExternalGitDrift,
-    )?;
+    let is_hex_oid = (trimmed.len() == 40 || trimmed.len() == 64)
+        && trimmed.bytes().all(|b| b.is_ascii_hexdigit());
+    if !is_hex_oid {
+        let tree_spec = format!("{trimmed}^{{tree}}");
+        run_git_stdout(
+            worktree,
+            &["rev-parse", "--verify", &tree_spec],
+            None,
+            ErrorCode::ExternalGitDrift,
+        )?;
+    }
     let out = match dir_prefix {
         Some(ref prefix) => run_git_checked(
             worktree,

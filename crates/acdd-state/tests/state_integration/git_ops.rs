@@ -353,6 +353,19 @@ fn scoped_commit_plumbing_and_archive_matrix() {
     )
     .expect("broad commit");
     let broad_oid = broad_commit.committed_oid.expect("broad oid");
+    let tree = snapshot::resolve_git_tree_oid(&repo, broad_oid.as_str()).unwrap();
+    let expected = snapshot::list_git_tree_entries(&repo, "HEAD", "src").unwrap();
+    for reference in [tree.as_str(), broad_oid.as_str(), "HEAD"] {
+        assert_eq!(snapshot::list_git_tree_entries(&repo, reference, "src").unwrap(), expected);
+    }
+    for (reference, directory, code) in [
+        ("-invalid", "src", ErrorCode::ProfileSchemaInvalid),
+        (tree.as_str(), "../src", ErrorCode::ProfileSchemaInvalid),
+        ("0000000000000000000000000000000000000000", "src", ErrorCode::ExternalGitDrift),
+        ("missing-reference", "src", ErrorCode::ExternalGitDrift),
+    ] {
+        assert_eq!(snapshot::list_git_tree_entries(&repo, reference, directory).unwrap_err().code, code);
+    }
     assert!(
         blob_oid_at(&repo, broad_oid.as_str(), "docs/milestones/AC-002.md")
             .expect("blob check")

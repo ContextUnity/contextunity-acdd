@@ -67,17 +67,21 @@ pub fn run_git_raw(
                 worktree.display()
             )
         })?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(bytes).with_context(|| {
-                format!("failed to write stdin to git {:?} in '{}'", args, worktree.display())
-            })?;
-        }
-        child.wait_with_output().with_context(|| {
-            format!(
-                "failed waiting on git {:?} in '{}'",
-                args,
-                worktree.display()
-            )
+        let stdin = child.stdin.take();
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| -> Result<()> {
+                if let Some(mut stdin) = stdin {
+                    stdin.write_all(bytes).with_context(|| {
+                        format!("failed to write stdin to git {:?} in '{}'", args, worktree.display())
+                    })?;
+                }
+                Ok(())
+            });
+            let output = child.wait_with_output().with_context(|| {
+                format!("failed waiting on git {:?} in '{}'", args, worktree.display())
+            });
+            writer.join().expect("git stdin writer panicked")?;
+            output
         })
     } else {
         cmd.output().with_context(|| {
@@ -214,11 +218,13 @@ pub fn list_owned_worktrees(root: &Path) -> Result<Vec<PathBuf>> {
         let Ok(canon_p) = p.canonicalize() else {
             continue;
         };
-        if git_toplevel_exact(&canon_p).ok().as_ref() != Some(&canon_p) {
-            continue;
-        }
-        if git_common_dir(&canon_p).ok().as_ref() != Some(&expected_common) {
-            continue;
+        if canon_p != root {
+            if git_toplevel_exact(&canon_p).ok().as_ref() != Some(&canon_p) {
+                continue;
+            }
+            if git_common_dir(&canon_p).ok().as_ref() != Some(&expected_common) {
+                continue;
+            }
         }
         if seen.insert(canon_p.clone()) {
             out.push(canon_p);
@@ -272,10 +278,75 @@ pub fn read_git_blob_utf8(worktree: &Path, rev: &str, rel_path: &str) -> Result<
 
 /// Reads a Git blob by exact object ID (`oid`) as UTF-8 text without path-normalization aliasing.
 pub fn read_git_blob_utf8_by_oid(worktree: &Path, oid: &str) -> Result<Option<String>> {
-    if oid.is_empty() || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
-        bail!("invalid git blob oid '{oid}'");
+    Ok(read_git_blobs_utf8_batch(worktree, &[oid])?.into_iter().next().flatten())
+}
+
+/// Reads Git blobs in input order using one byte-framed batch request.
+pub fn read_git_blobs_utf8_batch(worktree: &Path, oids: &[&str]) -> Result<Vec<Option<String>>> {
+    if oids.is_empty() {
+        return Ok(Vec::new());
     }
-    read_git_blob_utf8_spec(worktree, oid)
+    let mut stdin_bytes = Vec::new();
+    for oid in oids {
+        if oid.is_empty() || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            bail!("invalid git blob oid '{oid}'");
+        }
+        stdin_bytes.extend_from_slice(oid.as_bytes());
+        stdin_bytes.push(b'\n');
+    }
+    let output = run_git_raw(
+        worktree,
+        &["cat-file", "--batch"],
+        None,
+        &[],
+        Some(&stdin_bytes),
+    )?;
+    if !output.status.success() {
+        bail!(
+            "git cat-file --batch failed: stderr: {}; stdout: {}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+    let mut remaining = output.stdout.as_slice();
+    let mut results = Vec::with_capacity(oids.len());
+    for oid in oids {
+        let header_end = remaining
+            .iter()
+            .position(|&b| b == b'\n')
+            .context("missing git batch header newline")?;
+        let header =
+            std::str::from_utf8(&remaining[..header_end]).context("invalid git batch header")?;
+        remaining = &remaining[header_end + 1..];
+        if header.ends_with(" missing") {
+            results.push(None);
+            continue;
+        }
+        let mut parts = header.split_whitespace();
+        let _object = parts.next().context("missing git batch object")?;
+        let kind = parts.next().context("missing git batch object kind")?;
+        let size: usize = parts
+            .next()
+            .context("missing git batch object size")?
+            .parse()
+            .context("invalid git batch object size")?;
+        let data = remaining
+            .get(..size)
+            .context("truncated git batch object")?;
+        results.push(if kind == "blob" {
+            Some(
+                String::from_utf8(data.to_vec())
+                    .with_context(|| format!("git blob '{oid}' is not UTF-8"))?,
+            )
+        } else {
+            None
+        });
+        remaining = remaining
+            .get(size..)
+            .and_then(|rest| rest.strip_prefix(b"\n"))
+            .context("missing git batch object terminator")?;
+    }
+    Ok(results)
 }
 
 fn read_git_blob_utf8_spec(worktree: &Path, spec: &str) -> Result<Option<String>> {
@@ -636,6 +707,27 @@ mod tests {
         assert!(git_status(&repo, &["commit", "-m", "add sub and bin"]).unwrap().success());
         assert_eq!(read_git_blob_utf8(&repo, "HEAD", "sub").unwrap(), None);
         assert!(read_git_blob_utf8(&repo, "HEAD", "bin.dat").is_err());
+
+        let blob = run_git_stdout(&repo, &["rev-parse", "HEAD:README.md"], None, &[], None).unwrap();
+        let binary = run_git_stdout(&repo, &["rev-parse", "HEAD:bin.dat"], None, &[], None).unwrap();
+        let tree = run_git_stdout(&repo, &["rev-parse", "HEAD^{tree}"], None, &[], None).unwrap();
+        let commit = run_git_stdout(&repo, &["rev-parse", "HEAD"], None, &[], None).unwrap();
+        let missing = "0000000000000000000000000000000000000000";
+        let cases: &[(&[&str], bool)] = &[
+            (&[&blob, missing, &tree, &commit, &blob], false),
+            (&[], false), (&["not-hex"], true), (&[""], true), (&[&binary], true),
+        ];
+        assert_eq!(read_git_blobs_utf8_batch(&repo, cases[0].0).unwrap(),
+            vec![Some("hi\n".into()), None, None, None, Some("hi\n".into())]);
+        for (oids, expect_error) in cases {
+            let batch = read_git_blobs_utf8_batch(&repo, oids);
+            let individual: Result<Vec<_>> = oids.iter().map(|oid| read_git_blob_utf8_by_oid(&repo, oid)).collect();
+            assert_eq!(batch.is_err(), *expect_error, "{oids:?}");
+            assert_eq!(individual.is_err(), *expect_error, "{oids:?}");
+            if !expect_error { assert_eq!(batch.unwrap(), individual.unwrap(), "{oids:?}"); }
+        }
+        let many = vec![blob.as_str(); 4096];
+        assert_eq!(read_git_blobs_utf8_batch(&repo, &many).unwrap().len(), many.len());
 
         // Verify diff_worktree_file_against_rev for tracked, untracked, pre-baseline untracked, deleted, and mode diffs.
         assert_eq!(
