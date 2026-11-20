@@ -356,6 +356,11 @@ fn seam_roadmap_query_waves_cross_worktree_dedup() {
 )
 .unwrap();
     fs::write(
+    feat_wt.join("docs/milestones/AC-014-sec-active.md"),
+    "---\nid: AC-014\ntitle: Secondary Active\nstatus: active\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [crates/c/**]\nacceptance_criteria: [ok]\n```\n",
+)
+.unwrap();
+    fs::write(
     feat_wt.join("docs/milestones/AC-001-shared.md"),
     "---\nid: AC-001\ntitle: Diverged In Feat\nstatus: active\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [crates/a/**]\nacceptance_criteria: [ok]\n```\n",
 )
@@ -404,17 +409,31 @@ fn seam_roadmap_query_waves_cross_worktree_dedup() {
         &["add", "docs/milestones/archive/AC-012-sib-arch.md"],
     );
     git_ok(&feat_wt, &["commit", "-m", "Commit sibling archive"]);
+    // Archived copies present in multiple checkouts with different digests must NOT warn about divergence.
+    fs::create_dir_all(main_root.join("docs/milestones/archive")).unwrap();
+    fs::write(
+        main_root.join("docs/milestones/archive/AC-012-sib-arch.md"),
+        "---\nid: AC-012\ntitle: Sibling Archive In Main With Different Digest\nstatus: completed\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [crates/s/**]\nstatus: completed\nacceptance_criteria: [ok]\n```\n",
+    )
+    .unwrap();
+    git_ok(main_root, &["add", "docs/milestones/archive/AC-012-sib-arch.md"]);
+    git_ok(main_root, &["commit", "-m", "Commit archive in main"]);
     let cross_resp = query_cross_worktree();
     let all_w0: Vec<_> = cross_resp.waves[0].specs.iter().collect();
     assert_eq!(all_w0.iter().filter(|s| s.spec_id == "AC-011").count(), 1);
-    let ac10 = all_w0
+    assert!(
+        !all_w0.iter().any(|s| s.spec_id == "AC-010"),
+        "Inactive planned spec in secondary worktree must not overlay onto main"
+    );
+    let ac14 = all_w0
         .iter()
-        .find(|s| s.spec_id == "AC-010")
-        .expect("AC-010 visible from main");
-    assert_eq!(ac10.source_worktree.as_deref(), Some(".worktrees/feat-x"));
+        .find(|s| s.spec_id == "AC-014")
+        .expect("AC-014 active in secondary worktree visible from main");
+    assert_eq!(ac14.source_worktree.as_deref(), Some(".worktrees/feat-x"));
     let ac01 = all_w0.iter().find(|s| s.spec_id == "AC-001").unwrap();
     assert_eq!(ac01.divergence.len(), 2);
     assert!(cross_resp.warnings.iter().any(|w| w.contains("AC-001")));
+    assert!(!cross_resp.warnings.iter().any(|w| w.contains("AC-012")));
     let ac13 = all_w0
         .iter()
         .find(|s| s.spec_id == "AC-013")
@@ -433,6 +452,10 @@ fn seam_roadmap_query_waves_cross_worktree_dedup() {
         .specs
         .iter()
         .any(|s| s.spec_id == "AC-010"));
+    assert!(!cur_resp.waves[0]
+        .specs
+        .iter()
+        .any(|s| s.spec_id == "AC-014"));
     assert!(cur_resp.warnings.is_empty());
 }
 
@@ -850,6 +873,12 @@ fn seam_roadmap_query_waves_archive_symlink_identity_and_non_utf8() {
         "not valid yaml frontmatter\n",
     )
     .unwrap();
+    // Legacy/unparseable frontmatter in archive must NOT emit schema warnings in roadmap.
+    fs::write(
+        ws_root.join("docs/milestones/archive/legacy_invalid.md"),
+        "---\nid: AC-LEGACY\ntitle: Old Milestone\nstatus: completed\nrelated_plans: [docs/plans/old.md]\nstarted_at: 2026-01-01\n---\n",
+    )
+    .unwrap();
     // Unrelated symlink outside extensions/*/docs/archive/ must be ignored cleanly.
     std::os::unix::fs::symlink(
         outside.path().join("secret.md"),
@@ -1056,7 +1085,7 @@ fn seam_roadmap_query_waves_stale_and_same_basename_sibling_checkouts() {
     );
     fs::write(
         wt_space_dir.join("docs/milestones/AC-WT-SPACE.md"),
-        "---\nid: AC-WT-SPACE\ntitle: Trailing Space WT\nstatus: planned\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [src/space/**]\nacceptance_criteria: [ok]\n```\n",
+        "---\nid: AC-WT-SPACE\ntitle: Trailing Space WT\nstatus: active\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [src/space/**]\nacceptance_criteria: [ok]\n```\n",
     )
     .unwrap();
     // Unrelated sibling without trailing space must NOT be discovered.
@@ -1193,12 +1222,12 @@ fn seam_roadmap_query_waves_stale_and_same_basename_sibling_checkouts() {
     fs::create_dir_all(sib_right.join("docs/milestones")).unwrap();
     fs::write(
         sib_left.join("docs/milestones/AC-DIV.md"),
-        "---\nid: AC-DIV\ntitle: Left Copy\nstatus: planned\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [src/left/**]\nacceptance_criteria: [ok]\n```\n",
+        "---\nid: AC-DIV\ntitle: Left Copy\nstatus: active\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [src/left/**]\nacceptance_criteria: [ok]\n```\n",
     )
     .unwrap();
     fs::write(
         sib_right.join("docs/milestones/AC-DIV.md"),
-        "---\nid: AC-DIV\ntitle: Right Copy\nstatus: planned\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [src/right/**]\nacceptance_criteria: [ok]\n```\n",
+        "---\nid: AC-DIV\ntitle: Right Copy\nstatus: active\n---\n### task: T-01\n```yaml\ntask_ref: T-01\nscope: [src/right/**]\nacceptance_criteria: [ok]\n```\n",
     )
     .unwrap();
     let sib_ro = StateQueryEngine::open_read_only(base_config(&sib_pri), adv_provider.clone()).unwrap();

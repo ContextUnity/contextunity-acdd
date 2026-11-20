@@ -896,9 +896,8 @@ pub(crate) fn collect_archived_specs(
         disk_only,
         &mut io_warnings,
         |col_name, rel_posix, raw| {
-            match parse_spec(raw) {
-                Ok(doc) => out.push((col_name.to_owned(), rel_posix, doc)),
-                Err(err) => warnings.push(format!("{rel_posix}: {err}")),
+            if let Ok(doc) = parse_spec(raw) {
+                out.push((col_name.to_owned(), rel_posix, doc));
             }
             None::<()>
         },

@@ -242,16 +242,24 @@ fn enumerate_worktree_roots(
         .collect()
 }
 
-fn copy_status_label(copy: &DiscoveredCopy, active_runs_by_spec: &ActiveRunMap) -> String {
-    if copy.is_archived {
-        "archived".to_owned()
-    } else if active_runs_by_spec.get(&copy.doc.id).is_some_and(|runs| {
+fn copy_matches_active_run(
+    spec_id: &str,
+    wt_path: &Path,
+    active_runs_by_spec: &ActiveRunMap,
+) -> bool {
+    active_runs_by_spec.get(spec_id).is_some_and(|runs| {
         runs.iter().any(|(r, _)| {
             r.worktree
                 .as_deref()
-                .is_some_and(|w| canonical_root(Path::new(w)).ok().as_ref() == Some(&copy.wt_path))
+                .is_some_and(|w| canonical_root(Path::new(w)).ok().as_deref() == Some(wt_path))
         })
-    }) {
+    })
+}
+
+fn copy_status_label(copy: &DiscoveredCopy, active_runs_by_spec: &ActiveRunMap) -> String {
+    if copy.is_archived {
+        "archived".to_owned()
+    } else if copy_matches_active_run(&copy.doc.id, &copy.wt_path, active_runs_by_spec) {
         "active".to_owned()
     } else {
         match copy.doc.status {
@@ -270,13 +278,7 @@ fn copy_priority_key(
     active_runs_by_spec: &ActiveRunMap,
 ) -> (u8, u8, u8, u8, std::cmp::Reverse<String>) {
     let matches_active_run = !copy.is_archived
-        && active_runs_by_spec.get(&copy.doc.id).is_some_and(|runs| {
-            runs.iter().any(|(r, _)| {
-                r.worktree.as_deref().is_some_and(|w| {
-                    canonical_root(Path::new(w)).ok().as_ref() == Some(&copy.wt_path)
-                })
-            })
-        });
+        && copy_matches_active_run(&copy.doc.id, &copy.wt_path, active_runs_by_spec);
     let lifecycle_rank = if copy.is_archived || copy.doc.status == SpecStatus::Completed {
         3
     } else if matches_active_run || copy.doc.status == SpecStatus::Active {
@@ -323,7 +325,13 @@ fn discover_specs_across_worktrees(
         if wt_path == primary_canon || owned_worktrees.contains(wt_path) {
             checkout_specs.insert(wt_path.clone(), checkout_specs_from(collections, &specs));
         }
+        let is_primary_or_current = wt_path == primary_canon || wt_path == current_root;
         for item in specs {
+            let is_active = copy_matches_active_run(&item.doc.id, wt_path, active_runs_by_spec)
+                || item.doc.status == SpecStatus::Active;
+            if !is_primary_or_current && !is_active {
+                continue;
+            }
             let collection_name = resolve_collection_name(collections, &item.rel_path);
             copies_by_id
                 .entry(item.doc.id.clone())
@@ -384,7 +392,7 @@ fn discover_specs_across_worktrees(
             .unwrap_or(0);
 
         let mut divergence = Vec::new();
-        if !all_identical {
+        if !all_identical && !copies.iter().all(|c| c.is_archived) {
             let canonical_wt = &copies[best_idx].wt_path;
             let mut seen_wt = BTreeSet::new();
             let mut parts = Vec::new();

@@ -6,12 +6,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-20
+
 ### Added
 
 - **`acdd roadmap` CLI and MCP parity**: Read-only `acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]` delegates to `StateQuery::Roadmap` via `execute_state_query`, renders compact Markdown through `src/format/roadmap.rs`, and exposes `acdd_state(action: "roadmap")` with matching JSON output.
 - **Task Git checkpoints (`save.post: snapshot`)**:
   - `acdd snapshot save|restore|clear` and `acdd_state(action: "snapshot")` manage confined per-task refs under `refs/acdd/snapshots/<run_id>/<task_ref>/r<rev>` without moving `HEAD`.
   - Embedded `code` `build` gates auto-save checkpoints on pass; deliver, run `clear`, and `handoff` delete matching refs.
+
+### Fixed
+
+- **Roadmap Cross-Worktree and Archive Noise**:
+  - Suppressed schema and worktree divergence warnings for archived specs in `acdd roadmap`.
+  - Secondary worktrees now overlay onto `main` only for active runs (`status: active` or active run in SQLite), preventing unmerged/draft branch plans from polluting the root roadmap.
 
 ## [0.6.2] - 2026-11-18
 
@@ -251,7 +259,8 @@ Initial public release of the pure-Rust `contextunity-forge-mcp` MCP server and 
 
 - **Initial Native Rust Forge Engine**: Released the standalone `contextunity-forge-mcp` MCP server and CLI featuring Tree-sitter AST indexing (`.forge/code-map.sqlite`), single-shot digest-verified symbol reads (`forge_read`), `ast_grep_search`, living documentation indexing, deterministic Merkle commitments, and SQLite task/milestone lifecycle management.
 
-[Unreleased]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/ContextUnity/contextunity-acdd/compare/v0.5.3...v0.6.0
