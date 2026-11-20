@@ -205,6 +205,15 @@ pub fn execute_on<B: StateBackend + Send + Sync>(
     execute_on_dyn(config, backend, provider, cmd, None)
 }
 
+/// Run `snapshot` without creating `.acdd/state.sqlite`.
+pub fn execute_snapshot_readonly(config: &StateEngineConfig, req: SnapshotReq) -> Result<StateCommandOutput, StateError> {
+    lifecycle::ensure_state_enabled(config)?;
+    acdd_core::fs::check_ancestors_no_symlinks(&config.workspace_root, std::path::Path::new(".git")).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+    let wt = req.worktree.as_deref().unwrap_or(&config.worktree); acdd_core::fs::check_ancestors_no_symlinks(wt, std::path::Path::new(".git")).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+    let reader = crate::store::sqlite::SqliteStateReader::new(config.resolved_state_db_path().0);
+    commands::task_ops::handle_snapshot_dyn(config, &reader, req).map(StateCommandOutput::Snapshot)
+}
+
 fn execute_on_dyn(
     config: &StateEngineConfig,
     backend: &dyn StateBackend,

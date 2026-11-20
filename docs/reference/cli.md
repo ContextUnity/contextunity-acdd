@@ -188,7 +188,7 @@ acdd submit <node> --action pass|reject [--run RUN] [--worker ID] [--claim-revis
 
 ### Scope, reopening, sync, subtasks, and blackboard
 
-Use `acdd snapshot save|restore|clear [<task_ref>] [--all] [--rev N] [--run RUN]` to manage task checkpoints. `--all` clears a run's checkpoints; `--rev` selects a save or restore revision. See [task snapshots](tasks.md#task-snapshots).
+Use `acdd snapshot save|restore|list|clear [<target>] [--all] [--rev N] [--run RUN] [--delete] [--older-than DUR] [--worktree PATH]` to manage checkpoints. `--run` keeps per-task refs `refs/acdd/snapshots/<run_id>/<task_ref>/r<rev>`. Without `--run`, an active-run task ref stays on that task; any other label uses `refs/acdd/snapshots/_adhoc/<label>/r<rev>`. `--delete` is `clear`; with `--rev` or `--older-than` and no `--run`, it targets standalone refs even when an active run task exists. `--older-than` accepts `<N><s|m|h|d|w>`. See [task snapshots](tasks.md#task-snapshots).
 
 ```sh
 acdd extend-scope <node> --path PATH [--path PATH ...] --reason TEXT [--run RUN] [--worker ID]

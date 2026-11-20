@@ -243,10 +243,9 @@ fn build_state_command_from_input(
     match p.action {
         McpStateAction::Snapshot => Ok(StateCommand::Snapshot(SnapshotReq {
             run,
-            action: require_present(p.snapshot_action, "snapshot_action", "snapshot")?,
-            task_ref: p.task_ref,
-            all: p.all.unwrap_or(false),
-            revision: p.rev,
+            action: if p.delete == Some(true) { acdd_state::usecases::SnapshotAction::Clear } else { require_present(p.snapshot_action, "snapshot_action", "snapshot")? },
+            task_ref: p.task_ref, all: p.all.unwrap_or(false), revision: p.rev,
+            name: p.name, worktree: explicit_worktree, older_than: p.older_than,
         })),
         McpStateAction::Start => {
             let create_wt = p
@@ -1642,6 +1641,7 @@ impl ServerHandler for Server {
         }
 
         let prep = tokio::task::spawn_blocking(move || {
+            if let Some(ref wt) = requested_worktree { let p = Path::new(wt); if p.is_absolute() || wt == "." || wt == ".." || wt.contains('/') || wt.contains('\\') { let candidate = if p.is_absolute() { p.to_path_buf() } else { server_prep.root.join(p) }; if candidate.is_dir() { if let Err(e) = acdd_core::fs::check_ancestors_no_symlinks(&candidate, Path::new(".git")) { let error = anyhow::anyhow!(StateError::new(ErrorCode::ExternalGitDrift, e.to_string())); return PreparedCall { target_root: server_prep.root.clone(), target_db: server_prep.db.clone(), adapter: super::server::RequestAdapter::Failed { kind: std::io::ErrorKind::Other, message: error.to_string() }, loaded_adapter: None, providers: None, span_ctx: None, early_response: Some(response::result_for(Err(error), &ResponsePolicy::default(), output_format, operation, &tool_name_prep, None)) }; } } } }
             let primary_adapter = server_prep.load_adapter(&server_prep.root);
             let (target_root, target_db) = match server_prep
                 .resolve_target_root_and_db_with_adapter(

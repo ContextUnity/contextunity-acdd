@@ -235,10 +235,10 @@ pub(super) fn execute_post_save_git(
         let prefix = snapshot_prefix(&snapshot.run.run_id, Some(task));
         if should_snapshot {
             let reference = format!("{prefix}r{}", node.claim_revision);
-            save_task_snapshot(target_worktree, &reference, expected_scoped_tree)?;
+            save_task_snapshot(target_worktree, &reference, expected_scoped_tree, false)?;
         }
         if machine_gate.receipt {
-            cleanup_locked_refs(repos.as_ref().expect("receipt repositories locked"), &snapshot.run.run_id, Some(prefix))?;
+            cleanup_locked_refs(repos.as_ref().expect("receipt repositories locked"), &snapshot.run.run_id, Some(prefix), None, None, None)?;
         }
     }
 

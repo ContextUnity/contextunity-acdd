@@ -136,6 +136,44 @@ fn removed_checkpoint_surfaces_are_absent_and_blackboard_serialization_is_opaque
         "failed restore after run-wide clear must preserve the worktree"
     );
 
+    let worktree = workspace.root().to_str().unwrap();
+    let saved_adhoc = client.payload("acdd_state", json!({
+        "action": "snapshot", "snapshot_action": "save", "name": "note", "rev": 1, "worktree": worktree,
+    })).expect("save adhoc snapshot");
+    assert!(saved_adhoc.to_string().contains("_adhoc/note/r1"), "{saved_adhoc}");
+    let restored_adhoc = client.payload("acdd_state", json!({
+        "action": "snapshot", "snapshot_action": "restore", "name": "note", "rev": 1, "worktree": worktree,
+    })).expect("restore adhoc snapshot");
+    assert!(restored_adhoc.to_string().contains("_adhoc/note/r1"), "{restored_adhoc}");
+    let tree = git(&["write-tree"]);
+    let backdated = std::process::Command::new("git")
+        .current_dir(workspace.root())
+        .env("GIT_AUTHOR_DATE", "1000000000 +0000")
+        .env("GIT_COMMITTER_DATE", "1000000000 +0000")
+        .args(["commit-tree", &tree, "-m", "backdated"])
+        .output()
+        .expect("create backdated commit");
+    assert!(backdated.status.success(), "{}", String::from_utf8_lossy(&backdated.stderr));
+    git(&["update-ref", "refs/acdd/snapshots/_adhoc/note/r2", std::str::from_utf8(&backdated.stdout).unwrap().trim()]);
+    let listed_rev1 = client.payload("acdd_state", json!({
+        "action": "snapshot", "snapshot_action": "list", "name": "note", "rev": 1, "worktree": worktree, "format": "json",
+    })).expect("list filtered adhoc snapshot");
+    let listed_refs = listed_rev1["refs"].as_array().expect("refs array");
+    assert_eq!(listed_refs.len(), 1, "{listed_rev1}");
+    assert_eq!(listed_refs[0].as_str(), Some("refs/acdd/snapshots/_adhoc/note/r1"));
+    client.payload("acdd_state", json!({
+        "action": "snapshot", "snapshot_action": "save", "name": "note", "rev": 3, "worktree": worktree,
+    })).expect("save fresh adhoc snapshot");
+    let cleared_adhoc = client.payload("acdd_state", json!({
+        "action": "snapshot", "delete": true, "name": "note", "older_than": "1d", "worktree": worktree,
+    })).expect("clear expired adhoc snapshot");
+    assert!(cleared_adhoc.to_string().contains("_adhoc/note/r2"), "{cleared_adhoc}");
+    let surviving_adhoc = snapshot_refs();
+    assert!(
+        surviving_adhoc.contains("_adhoc/note/r3") && !surviving_adhoc.contains("_adhoc/note/r2"),
+        "{surviving_adhoc}"
+    );
+
     let opaque = json!({
         "generation": "opaque-generation-token",
         "freshness": {"output_root": "user-root", "refresh": "none"},

@@ -674,22 +674,24 @@ impl From<CliOutputFormat> for OutputFormat {
 #[derive(Subcommand, Debug)]
 /// Flat `0.6.0` CLI subcommand surface.
 pub enum Command {
-    /// Save, restore, or clear task checkpoints.
+    /// Save, restore, list, or delete checkpoints (`--delete`, `--older-than`, `--worktree`).
     Snapshot {
-        /// Operation: save, restore, or clear.
-        #[arg(value_parser = ["save", "restore", "clear"])]
-        action: String,
-        /// Task reference.
-        task_ref: Option<String>,
-        /// Clear all task checkpoints.
-        #[arg(long)]
-        all: bool,
-        /// Checkpoint revision.
-        #[arg(long)]
-        rev: Option<u32>,
-        /// Run ID or name.
-        #[arg(long)]
-        run: Option<String>,
+        /// `save`, `restore`, `clear`, `delete`, or `list`.
+        action: Option<String>,
+        /// Task ref or standalone snapshot name.
+        target: Option<String>,
+        /// Clear every ref under the resolved prefix.
+        #[arg(long)] all: bool,
+        /// Save, restore, or delete this revision.
+        #[arg(long)] rev: Option<u32>,
+        /// Active run id or name.
+        #[arg(long)] run: Option<String>,
+        /// Delete checkpoints.
+        #[arg(long)] delete: bool,
+        /// Delete refs older than `<N><s|m|h|d|w>`.
+        #[arg(long)] older_than: Option<String>,
+        /// Git worktree to read and restore.
+        #[arg(long)] worktree: Option<std::path::PathBuf>,
     },
     /// Initialize `acdd.yaml`, `.acdd/profile.yaml`, and canonical `.gitignore` rules.
     Init {
@@ -1670,6 +1672,7 @@ impl Cli {
         output: &mut dyn io::Write,
         cache_dir: Option<&Path>,
     ) -> Result<()> {
+        if matches!(self.command.as_ref(), Some(Command::Snapshot { .. })) { if let Some(root) = self.root.as_deref() { acdd_core::fs::check_ancestors_no_symlinks(root, Path::new(".git")).map_err(|e| anyhow::anyhow!(e))?; } }
         let positional_root = match self.command.as_ref() {
             Some(
                 Command::Build { workspace_root, .. }
@@ -2204,15 +2207,21 @@ impl Cli {
                         )));
                     }
                 },
-                Command::Snapshot { action, task_ref, all, rev, run } => {
-                    let action = serde_json::from_value::<SnapshotAction>(json!(action))?;
-                    state_ctx.command(StateCommand::Snapshot(SnapshotReq {
-                        run,
-                        action,
-                        task_ref: task_ref.as_deref().map(TaskRef::new).transpose()?,
-                        all,
-                        revision: rev,
-                    }))?
+                Command::Snapshot { mut action, mut target, all, rev, run, delete, older_than, worktree } => {
+                    if delete {
+                        if target.is_none() { target = action.take(); }
+                        else if !matches!(action.as_deref(), Some("clear" | "delete")) { return Err(state_err_invalid("conflicting action with --delete")); }
+                        action = Some("clear".into());
+                    }
+                    let mapped = match action.as_deref() {
+                        Some("save") => SnapshotAction::Save,
+                        Some("restore") => SnapshotAction::Restore,
+                        Some("clear" | "delete") => SnapshotAction::Clear,
+                        Some("list") => SnapshotAction::List,
+                        _ => return Err(state_err_invalid("snapshot requires save, restore, list, or clear")),
+                    };
+                    let (task_ref, name) = match (run.is_some(), target) { (true, Some(t)) => (Some(TaskRef::new(&t).map_err(|err| state_err_invalid(err.to_string()))?), None), (false, Some(t)) => (None, Some(t)), (_, None) => (None, None) };
+                    state_ctx.command(StateCommand::Snapshot(SnapshotReq { run, action: mapped, task_ref, all, revision: rev, name, worktree, older_than }))?
                 }
                 Command::Clear {
                     run_id,
@@ -2965,6 +2974,7 @@ impl CliStateCtx<'_> {
             StateCommand::Verify(req) => req.worktree.as_deref(),
             StateCommand::Submit(req) => req.worktree.as_deref(),
             StateCommand::CallPluginTool(req) => req.worktree.as_deref(),
+            StateCommand::Snapshot(req) => req.worktree.as_deref(),
             _ => None,
         }
         .map(Path::to_path_buf);
@@ -3070,6 +3080,7 @@ mod tests {
             vec!["acdd", "sync", "--run", "m1"],
             vec!["acdd", "subtask", "t1", "s1", "--run", "m1", "--status", "completed", "--evidence", "ok"],
             vec!["acdd", "blackboard", "--run", "m1", "--action", "read"],
+            vec!["acdd", "snapshot", "list"],
             vec!["acdd", "clear", "--run", "m1"],
             vec!["acdd", "run", "--run", "m1"],
             vec!["acdd", "tool", "code_extra"],
@@ -3083,7 +3094,6 @@ mod tests {
             vec!["acdd", "workflow", "list"],
             vec!["acdd", "task", "list"],
             vec!["acdd", "checkpoint", "save"],
-            vec!["acdd", "snapshot", "snap1", "--run", "m1"],
             vec!["acdd", "migrate"],
         ] {
             assert!(Cli::try_parse_from(&legacy).is_err(), "legacy cmd should be removed: {legacy:?}");

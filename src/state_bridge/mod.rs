@@ -172,7 +172,14 @@ pub(crate) fn execute_state_command_with_config(
     cmd: StateCommand,
     explicit_config: bool,
 ) -> Result<StateCommandOutput, StateError> {
+    if let StateCommand::Snapshot(req) = &cmd {
+        acdd_core::fs::check_ancestors_no_symlinks(root, Path::new(".git")).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+        let wt = req.worktree.as_deref().unwrap_or(worktree); acdd_core::fs::check_ancestors_no_symlinks(wt, Path::new(".git")).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+    }
     let engine_cfg = state_engine_config(root, worktree, state_db, code_db, config)?;
+    if let StateCommand::Snapshot(req) = cmd {
+        return acdd_state::usecases::execute_snapshot_readonly(&engine_cfg, req);
+    }
     let engine = StateEngine::open(engine_cfg, providers)?;
     if explicit_config {
         engine.execute_with_source_config(cmd, config)

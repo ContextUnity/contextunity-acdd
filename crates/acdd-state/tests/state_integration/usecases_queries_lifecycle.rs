@@ -15,8 +15,8 @@ use acdd_state::usecases::dto::{
     StatusReq, SubtaskReq, SyncReq,
 };
 use acdd_state::usecases::{
-    execute_on, queries, StateCommand, StateCommandOutput, StateEngine, StateQuery,
-    StateQueryEngine, StateQueryOutput,
+    StateCommand, StateCommandOutput, StateEngine, StateQuery, StateQueryEngine, StateQueryOutput,
+    execute_on, queries,
 };
 use serde_json::json;
 use std::fs;
@@ -25,15 +25,24 @@ use std::fs;
 #[test]
 fn seam_snapshot_lifecycle_and_confinement_matrix() {
     use acdd_state::usecases::{SnapshotAction::*, SnapshotReq};
-    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     let tmp = make_temp_dir("snapshots");
     let repo = tmp.path();
     let head = init_git_repo(repo, "main");
     let task = repo.join(".worktrees/checkpoint");
-    git_ok(repo, &["worktree", "add", "--detach", task.to_str().unwrap()]);
-    let index = git_ok(&task, &["rev-parse", "--path-format=absolute", "--git-path", "index"]);
-    let profile = write_profile(repo, "checkpoints.yaml", r#"
+    git_ok(
+        repo,
+        &["worktree", "add", "--detach", task.to_str().unwrap()],
+    );
+    let index = git_ok(
+        &task,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+    );
+    let profile = write_profile(
+        repo,
+        "checkpoints.yaml",
+        r#"
 version: 2
 inherit: none
 git: { isolation: worktree, worktrees: manual }
@@ -52,10 +61,13 @@ gates:
   - id: handoff
     proof: none
     save: { post: none, prune: true }
-"#);
+"#,
+    );
     let spec = "docs/milestones/AC-SNAPSHOT.md";
     fs::create_dir_all(repo.join("docs/milestones")).unwrap();
-    fs::write(repo.join(spec), r#"---
+    fs::write(
+        repo.join(spec),
+        r#"---
 id: AC-SNAPSHOT
 title: Checkpoints
 status: planned
@@ -70,26 +82,61 @@ scope: [src/*.txt, src/z/f?le]
 task_ref: t2
 scope: [src/lib.rs]
 ```
-"#).unwrap();
+"#,
+    )
+    .unwrap();
     let cfg = base_config(repo);
     let (_, provider) = build_provider_with_mock(&cfg.modules);
     let engine = StateEngine::open(cfg.clone(), provider.clone()).unwrap();
-    let start = || start_run(&engine, StartReq {
-        spec_path: Some(spec.to_owned()),
-        profile: Some(profile.clone()),
-        ..StartReq::default()
-    }).unwrap().run.run_id;
+    let start = || {
+        start_run(
+            &engine,
+            StartReq {
+                spec_path: Some(spec.to_owned()),
+                profile: Some(profile.clone()),
+                ..StartReq::default()
+            },
+        )
+        .unwrap()
+        .run
+        .run_id
+    };
     let rid = start();
     let pass = |node, override_worktree| {
-        let claim = claim_node(&engine, rid.as_str(), node, "worker", None, false, false, override_worktree).unwrap();
-        submit_req(&engine, pass_req(rid.as_str(), node, "worker", Some(claim.claim_revision), false))
-            .unwrap_or_else(|err| panic!("{node}: {err}"));
+        let claim = claim_node(
+            &engine,
+            rid.as_str(),
+            node,
+            "worker",
+            None,
+            false,
+            false,
+            override_worktree,
+        )
+        .unwrap();
+        submit_req(
+            &engine,
+            pass_req(
+                rid.as_str(),
+                node,
+                "worker",
+                Some(claim.claim_revision),
+                false,
+            ),
+        )
+        .unwrap_or_else(|err| panic!("{node}: {err}"));
         claim.claim_revision
     };
     let snapshot = |action, task_ref: Option<&str>, all, revision| {
         engine.execute(StateCommand::Snapshot(SnapshotReq {
-            run: Some(rid.to_string()), action,
-            task_ref: task_ref.map(|t| TaskRef::new(t).unwrap()), all, revision,
+            run: Some(rid.to_string()),
+            action,
+            task_ref: task_ref.map(|t| TaskRef::new(t).unwrap()),
+            all,
+            revision,
+            name: None,
+            worktree: None,
+            older_than: None,
         }))
     };
     let prefix = format!("refs/acdd/snapshots/{rid}");
@@ -99,6 +146,28 @@ scope: [src/lib.rs]
     fs::write(task.join("src/z/file"), "saved").unwrap();
     let index_before = fs::read(&index).unwrap();
     let rev = pass("t1.checkpoint", Some(task.clone()));
+    let sibling = repo.join(".worktrees/sibling");
+    git_ok(
+        repo,
+        &["worktree", "add", "--detach", sibling.to_str().unwrap()],
+    );
+    let mismatch = engine
+        .execute(StateCommand::Snapshot(SnapshotReq {
+            run: Some(rid.to_string()),
+            action: Save,
+            task_ref: Some(TaskRef::new("t1").unwrap()),
+            all: false,
+            revision: None,
+            name: None,
+            worktree: Some(sibling),
+            older_than: None,
+        }))
+        .unwrap_err();
+    assert_eq!(mismatch.code, ErrorCode::ExternalGitDrift);
+    assert_eq!(
+        mismatch.message,
+        "explicit worktree does not match assigned task worktree"
+    );
     let auto_ref = format!("{prefix}/t1/r{rev}");
     assert_eq!(refs(), auto_ref);
     assert!(git_ok(repo, &["show", "-s", "--format=%P", &auto_ref]).is_empty());
@@ -116,8 +185,14 @@ scope: [src/lib.rs]
     let nested = task.join("src/z");
     let leaf = nested.join("file");
     let cases = [
-        "symlink ancestor", "symlink leaf", "file ancestor", "directory leaf",
-        "nested repository", "checkout failure", "deletion failure", "regular restore",
+        "symlink ancestor",
+        "symlink leaf",
+        "file ancestor",
+        "directory leaf",
+        "nested repository",
+        "checkout failure",
+        "deletion failure",
+        "regular restore",
     ];
     for case in cases {
         fs::remove_dir_all(&nested).unwrap();
@@ -140,7 +215,11 @@ scope: [src/lib.rs]
             }
             "checkout failure" | "deletion failure" => {
                 fs::create_dir(&nested).unwrap();
-                let contents = if case == "checkout failure" { "dirty" } else { "saved" };
+                let contents = if case == "checkout failure" {
+                    "dirty"
+                } else {
+                    "saved"
+                };
                 fs::write(&leaf, contents).unwrap();
                 fs::write(nested.join("fale"), "keep").unwrap();
                 fs::set_permissions(&nested, fs::Permissions::from_mode(0o555)).unwrap();
@@ -155,34 +234,62 @@ scope: [src/lib.rs]
             fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).unwrap();
             let error = restored.as_ref().unwrap_err();
             assert!(!error.message.contains("Rollback"), "{error}");
-            let expected = if case == "checkout failure" { "checkout-index" } else { "fale" };
+            let expected = if case == "checkout failure" {
+                "checkout-index"
+            } else {
+                "fale"
+            };
             assert!(error.message.contains(expected), "{error}");
             assert_eq!(fs::read_to_string(nested.join("fale")).unwrap(), "keep");
         }
         if case == "regular restore" {
-            let StateCommandOutput::Snapshot(out) = restored.unwrap() else { panic!("expected snapshot") };
+            let StateCommandOutput::Snapshot(out) = restored.unwrap() else {
+                panic!("expected snapshot")
+            };
             assert_eq!(out.refs, [format!("{prefix}/t1/r10")]);
-            assert_eq!(fs::read_to_string(task.join("src/a.txt")).unwrap(), "manual");
+            assert_eq!(
+                fs::read_to_string(task.join("src/a.txt")).unwrap(),
+                "manual"
+            );
             assert_eq!(fs::read_to_string(&leaf).unwrap(), "saved");
             assert!(!task.join("src/extra.txt").exists());
         } else {
-            assert_eq!(restored.unwrap_err().code, ErrorCode::ExternalGitDrift, "{case}");
-            assert_eq!(fs::read_to_string(task.join("src/a.txt")).unwrap(), "dirty", "{case}");
+            assert_eq!(
+                restored.unwrap_err().code,
+                ErrorCode::ExternalGitDrift,
+                "{case}"
+            );
+            assert_eq!(
+                fs::read_to_string(task.join("src/a.txt")).unwrap(),
+                "dirty",
+                "{case}"
+            );
             assert!(task.join("src/extra.txt").exists(), "{case}");
             if case == "nested repository" {
                 assert!(!leaf.exists() && nested.join(".git").is_dir());
             }
         }
         assert_eq!(fs::read_to_string(outside.join("file")).unwrap(), "outside");
-        assert_eq!(fs::read_to_string(repo.join("src/a.txt")).unwrap(), "primary");
-        assert_eq!(fs::read_to_string(task.join("README.md")).unwrap(), "task sentinel");
-        assert_eq!(fs::read_to_string(task.join(".acdd/sentinel")).unwrap(), "runtime");
+        assert_eq!(
+            fs::read_to_string(repo.join("src/a.txt")).unwrap(),
+            "primary"
+        );
+        assert_eq!(
+            fs::read_to_string(task.join("README.md")).unwrap(),
+            "task sentinel"
+        );
+        assert_eq!(
+            fs::read_to_string(task.join(".acdd/sentinel")).unwrap(),
+            "runtime"
+        );
         match case {
             "symlink ancestor" | "file ancestor" => {
                 fs::remove_file(&nested).unwrap();
                 fs::create_dir(&nested).unwrap();
             }
-            "directory leaf" => assert_eq!(fs::read_to_string(leaf.join("unrelated")).unwrap(), "keep"),
+            "directory leaf" => {
+                assert_eq!(fs::read_to_string(leaf.join("unrelated")).unwrap(), "keep")
+            }
             _ => {}
         }
     }
@@ -190,7 +297,11 @@ scope: [src/lib.rs]
     assert_eq!(fs::read_to_string(task.join("src/a.txt")).unwrap(), "saved");
     assert_eq!(fs::read(&index).unwrap(), index_before);
     assert_eq!(git_ok(&task, &["rev-parse", "HEAD"]), head.as_str());
-    fs::write(task.join("README.md"), fs::read(repo.join("README.md")).unwrap()).unwrap();
+    fs::write(
+        task.join("README.md"),
+        fs::read(repo.join("README.md")).unwrap(),
+    )
+    .unwrap();
 
     fs::remove_file(repo.join("src/a.txt")).unwrap();
     fs::remove_dir_all(outside).unwrap();
@@ -198,6 +309,25 @@ scope: [src/lib.rs]
     let second_ref = format!("{prefix}/t2/r{second_rev}");
     snapshot(Clear, Some("t1"), false, None).unwrap();
     assert_eq!(refs(), second_ref);
+    let adhoc_ref = "refs/acdd/snapshots/_adhoc/unrelated/r1";
+    git_ok(repo, &["update-ref", adhoc_ref, head.as_str()]);
+    let StateCommandOutput::Snapshot(pruned) = engine
+        .execute(StateCommand::Snapshot(SnapshotReq {
+            run: Some(rid.to_string()),
+            action: Clear,
+            task_ref: None,
+            all: false,
+            revision: Some(second_rev),
+            name: None,
+            worktree: None,
+            older_than: None,
+        }))
+        .unwrap()
+    else {
+        panic!("expected snapshot prune")
+    };
+    assert_eq!(pruned.refs, [second_ref]);
+    assert!(refs().is_empty() && !git_ok(repo, &["for-each-ref", adhoc_ref]).is_empty());
     snapshot(Clear, None, true, None).unwrap();
     assert!(refs().is_empty());
     snapshot(Save, Some("t1"), false, Some(rev)).unwrap();
@@ -210,24 +340,65 @@ scope: [src/lib.rs]
     let tomb = engine.backend().load_tombstone(&rid).unwrap().unwrap();
     assert!(tomb.cleanup_manifest.is_empty() && !tomb.cleanup_pending && refs().is_empty());
 
-    let commit_profile = write_profile(repo, "checkpoint-commit.yaml",
-        &fs::read_to_string(repo.join(&profile)).unwrap().replace("          save: none", "          save: commit"));
-    let rid = start_run(&engine, StartReq {
-        spec_path: Some(spec.to_owned()), profile: Some(commit_profile), ..StartReq::default()
-    }).unwrap().run.run_id;
+    let commit_profile = write_profile(
+        repo,
+        "checkpoint-commit.yaml",
+        &fs::read_to_string(repo.join(&profile))
+            .unwrap()
+            .replace("          save: none", "          save: commit"),
+    );
+    let rid = start_run(
+        &engine,
+        StartReq {
+            spec_path: Some(spec.to_owned()),
+            profile: Some(commit_profile),
+            ..StartReq::default()
+        },
+    )
+    .unwrap()
+    .run
+    .run_id;
     let foreign = repo.join(".worktrees/foreign");
     init_git_repo(&foreign, "main");
     fs::write(foreign.join("src/a.txt"), "candidate").unwrap();
-    let claim = claim_node(&engine, rid.as_str(), "t1.checkpoint", "worker", None, false, false, Some(foreign.clone())).unwrap();
+    let claim = claim_node(
+        &engine,
+        rid.as_str(),
+        "t1.checkpoint",
+        "worker",
+        None,
+        false,
+        false,
+        Some(foreign.clone()),
+    )
+    .unwrap();
     for action in [Save, Restore] {
-        let error = engine.execute(StateCommand::Snapshot(SnapshotReq {
-            run: Some(rid.to_string()), action, task_ref: Some(TaskRef::new("t1").unwrap()),
-            all: false, revision: None,
-        })).unwrap_err();
+        let error = engine
+            .execute(StateCommand::Snapshot(SnapshotReq {
+                run: Some(rid.to_string()),
+                action,
+                task_ref: Some(TaskRef::new("t1").unwrap()),
+                all: false,
+                revision: None,
+                name: None,
+                worktree: None,
+                older_than: None,
+            }))
+            .unwrap_err();
         assert_eq!(error.code, ErrorCode::ExternalGitDrift);
         assert!(error.message.contains("outside the owning repositories"));
     }
-    let rejected = submit_req(&engine, pass_req(rid.as_str(), "t1.checkpoint", "worker", Some(claim.claim_revision), false)).unwrap_err();
+    let rejected = submit_req(
+        &engine,
+        pass_req(
+            rid.as_str(),
+            "t1.checkpoint",
+            "worker",
+            Some(claim.claim_revision),
+            false,
+        ),
+    )
+    .unwrap_err();
     assert_eq!(rejected.code, ErrorCode::ExternalGitDrift);
     assert!(git_ok(&foreign, &["for-each-ref", "refs/acdd/snapshots"]).is_empty());
     let mut linked_config = cfg.clone();
@@ -243,57 +414,198 @@ scope: [src/lib.rs]
         ("non-git".to_owned(), non_git.path().to_path_buf()),
     ]);
     let linked = StateEngine::open(linked_config, provider.clone()).unwrap();
-    submit_req(&linked, pass_req(rid.as_str(), "t1.checkpoint", "worker", Some(claim.claim_revision), false)).unwrap();
+    submit_req(
+        &linked,
+        pass_req(
+            rid.as_str(),
+            "t1.checkpoint",
+            "worker",
+            Some(claim.claim_revision),
+            false,
+        ),
+    )
+    .unwrap();
     let linked_ref = format!("refs/acdd/snapshots/{rid}/t1/r{}", claim.claim_revision);
-    assert_eq!(git_ok(&foreign, &["for-each-ref", "--format=%(refname)", &linked_ref]), linked_ref);
+    assert_eq!(
+        git_ok(
+            &foreign,
+            &["for-each-ref", "--format=%(refname)", &linked_ref]
+        ),
+        linked_ref
+    );
     let checkpoint = git_ok(&foreign, &["rev-parse", &linked_ref]);
-    let deliver = claim_node(&linked, rid.as_str(), "t1.deliver", "worker", None, false, false, Some(delivery_repo.clone())).unwrap();
+    let deliver = claim_node(
+        &linked,
+        rid.as_str(),
+        "t1.deliver",
+        "worker",
+        None,
+        false,
+        false,
+        Some(delivery_repo.clone()),
+    )
+    .unwrap();
     assert_eq!(deliver.worktree, delivery_repo);
-    git_ok(&delivery_repo, &["update-ref", &linked_ref, delivery_head.as_str()]);
-    linked.execute(StateCommand::Snapshot(SnapshotReq {
-        run: Some(rid.to_string()), action: Clear, task_ref: Some(TaskRef::new("t1").unwrap()),
-        all: false, revision: None,
-    })).unwrap();
+    git_ok(
+        &delivery_repo,
+        &["update-ref", &linked_ref, delivery_head.as_str()],
+    );
+    linked
+        .execute(StateCommand::Snapshot(SnapshotReq {
+            run: Some(rid.to_string()),
+            action: Clear,
+            task_ref: Some(TaskRef::new("t1").unwrap()),
+            all: false,
+            revision: None,
+            name: None,
+            worktree: None,
+            older_than: None,
+        }))
+        .unwrap();
     assert!(git_ok(&foreign, &["for-each-ref", &linked_ref]).is_empty());
     assert!(git_ok(&delivery_repo, &["for-each-ref", &linked_ref]).is_empty());
     git_ok(&foreign, &["update-ref", &linked_ref, &checkpoint]);
     let linked_lock = foreign.join(".git/acdd/repo.lock");
     let held = acdd_core::lock::acquire_exclusive(&linked_lock).unwrap();
-    let all = linked.execute(StateCommand::Snapshot(SnapshotReq {
-        run: Some(rid.to_string()), action: Clear, task_ref: None, all: true, revision: None,
-    })).unwrap_err();
+    assert_eq!(linked.execute(StateCommand::Snapshot(SnapshotReq { run: Some(rid.to_string()), action: List, task_ref: Some(TaskRef::new("t1").unwrap()), all: false, revision: None, name: None, worktree: None, older_than: None })).unwrap_err().code, ErrorCode::BackendConflict);
+    let all = linked
+        .execute(StateCommand::Snapshot(SnapshotReq {
+            run: Some(rid.to_string()),
+            action: Clear,
+            task_ref: None,
+            all: true,
+            revision: None,
+            name: None,
+            worktree: None,
+            older_than: None,
+        }))
+        .unwrap_err();
     assert_eq!(all.code, ErrorCode::BackendConflict);
     assert_eq!(git_ok(&foreign, &["rev-parse", &linked_ref]), checkpoint);
-    let blocked = submit_req(&linked, pass_req(rid.as_str(), "t1.deliver", "worker", Some(deliver.claim_revision), false)).unwrap_err();
+    let blocked = submit_req(
+        &linked,
+        pass_req(
+            rid.as_str(),
+            "t1.deliver",
+            "worker",
+            Some(deliver.claim_revision),
+            false,
+        ),
+    )
+    .unwrap_err();
     assert_eq!(blocked.code, ErrorCode::BackendConflict);
-    assert_eq!(git_ok(&delivery_repo, &["rev-parse", "HEAD"]), delivery_head.as_str());
+    assert_eq!(
+        git_ok(&delivery_repo, &["rev-parse", "HEAD"]),
+        delivery_head.as_str()
+    );
     assert_eq!(git_ok(&foreign, &["rev-parse", &linked_ref]), checkpoint);
     drop(held);
     let ref_lock = foreign.join(format!(".git/{linked_ref}.lock"));
     fs::write(&ref_lock, "").unwrap();
-    let blocked = submit_req(&linked, pass_req(rid.as_str(), "t1.deliver", "worker", Some(deliver.claim_revision), false)).unwrap_err();
+    let blocked = submit_req(
+        &linked,
+        pass_req(
+            rid.as_str(),
+            "t1.deliver",
+            "worker",
+            Some(deliver.claim_revision),
+            false,
+        ),
+    )
+    .unwrap_err();
     assert_eq!(blocked.code, ErrorCode::ExternalGitDrift);
     let committed_head = git_ok(&delivery_repo, &["rev-parse", "HEAD"]);
     assert_ne!(committed_head, delivery_head.as_str());
-    assert_eq!(git_ok(&delivery_repo, &["show", "HEAD:src/a.txt"]), "candidate");
+    assert_eq!(
+        git_ok(&delivery_repo, &["show", "HEAD:src/a.txt"]),
+        "candidate"
+    );
     assert_eq!(git_ok(&foreign, &["rev-parse", &linked_ref]), checkpoint);
     fs::remove_file(ref_lock).unwrap();
-    let delivered = submit_req(&linked, pass_req(rid.as_str(), "t1.deliver", "worker", Some(deliver.claim_revision), false)).unwrap();
+    let delivered = submit_req(
+        &linked,
+        pass_req(
+            rid.as_str(),
+            "t1.deliver",
+            "worker",
+            Some(deliver.claim_revision),
+            false,
+        ),
+    )
+    .unwrap();
     assert!(delivered.receipt.is_some());
-    assert_eq!(git_ok(&delivery_repo, &["rev-parse", "HEAD"]), committed_head);
+    assert_eq!(
+        git_ok(&delivery_repo, &["rev-parse", "HEAD"]),
+        committed_head
+    );
     assert!(git_ok(&foreign, &["for-each-ref", &linked_ref]).is_empty());
 
     let linked_worktree = repo.join(".worktrees/transient");
-    git_ok(&foreign, &["worktree", "add", "--detach", linked_worktree.to_str().unwrap()]);
-    let transient = claim_node(&linked, rid.as_str(), "t2.checkpoint", "worker", None, false, false, Some(linked_worktree.clone())).unwrap();
-    submit_req(&linked, pass_req(rid.as_str(), "t2.checkpoint", "worker", Some(transient.claim_revision), false)).unwrap();
+    git_ok(
+        &foreign,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            linked_worktree.to_str().unwrap(),
+        ],
+    );
+    let transient = claim_node(
+        &linked,
+        rid.as_str(),
+        "t2.checkpoint",
+        "worker",
+        None,
+        false,
+        false,
+        Some(linked_worktree.clone()),
+    )
+    .unwrap();
+    submit_req(
+        &linked,
+        pass_req(
+            rid.as_str(),
+            "t2.checkpoint",
+            "worker",
+            Some(transient.claim_revision),
+            false,
+        ),
+    )
+    .unwrap();
     let transient_ref = format!("refs/acdd/snapshots/{rid}/t2/r{}", transient.claim_revision);
     assert!(!git_ok(&foreign, &["for-each-ref", &transient_ref]).is_empty());
-    git_ok(&foreign, &["worktree", "remove", linked_worktree.to_str().unwrap()]);
-    linked.execute(StateCommand::Snapshot(SnapshotReq {
-        run: Some(rid.to_string()), action: Clear, task_ref: Some(TaskRef::new("t2").unwrap()),
-        all: false, revision: None,
-    })).unwrap();
+    let StateCommandOutput::Snapshot(listed_linked) = linked
+        .execute(StateCommand::Snapshot(SnapshotReq {
+            run: Some(rid.to_string()),
+            action: List,
+            task_ref: Some(TaskRef::new("t2").unwrap()),
+            all: false,
+            revision: None,
+            name: None,
+            worktree: None,
+            older_than: None,
+        }))
+        .unwrap()
+    else {
+        panic!("expected snapshot list")
+    };
+    assert_eq!(listed_linked.refs, vec![transient_ref.clone()]);
+    git_ok(
+        &foreign,
+        &["worktree", "remove", linked_worktree.to_str().unwrap()],
+    );
+    linked
+        .execute(StateCommand::Snapshot(SnapshotReq {
+            run: Some(rid.to_string()),
+            action: Clear,
+            task_ref: Some(TaskRef::new("t2").unwrap()),
+            all: false,
+            revision: None,
+            name: None,
+            worktree: None,
+            older_than: None,
+        }))
+        .unwrap();
     assert!(git_ok(&foreign, &["for-each-ref", &transient_ref]).is_empty());
 
     git_ok(&foreign, &["update-ref", &linked_ref, &checkpoint]);
@@ -302,28 +614,67 @@ scope: [src/lib.rs]
     git_ok(repo, &["update-ref", &reference, head.as_str()]);
     let lock = repo.join(format!(".git/{reference}.lock"));
     fs::write(&lock, "").unwrap();
-    let cleared = linked.execute(StateCommand::Clear(ClearReq {
-        run: Some(rid.to_string()), reason: None, force: false,
-    })).unwrap();
-    let StateCommandOutput::Clear(cleared) = cleared else { panic!("expected clear") };
+    let cleared = linked
+        .execute(StateCommand::Clear(ClearReq {
+            run: Some(rid.to_string()),
+            reason: None,
+            force: false,
+        }))
+        .unwrap();
+    let StateCommandOutput::Clear(cleared) = cleared else {
+        panic!("expected clear")
+    };
     assert!(cleared.tombstone.cleanup_pending);
     assert_eq!(git_ok(repo, &["rev-parse", &reference]), head.as_str());
     fs::remove_file(lock).unwrap();
-    assert!(start_run(&linked, StartReq { spec_path: Some("docs/milestones/missing.md".to_owned()), ..StartReq::default() }).is_err());
-    assert!(linked.backend().load_tombstone(&rid).unwrap().unwrap().cleanup_pending);
+    assert!(
+        start_run(
+        &linked,
+        StartReq {
+            spec_path: Some("docs/milestones/missing.md".to_owned()),
+            ..StartReq::default()
+        }
+    )
+        .is_err()
+    );
+    assert!(
+        linked
+            .backend()
+            .load_tombstone(&rid)
+            .unwrap()
+            .unwrap()
+            .cleanup_pending
+    );
     assert_eq!(git_ok(&foreign, &["rev-parse", &linked_ref]), checkpoint);
     assert_eq!(git_ok(repo, &["rev-parse", &reference]), head.as_str());
     drop(held);
-    let next = start_run(&linked, StartReq {
-        spec_path: Some(spec.to_owned()), profile: Some(profile.clone()), ..StartReq::default()
-    }).unwrap().run.run_id;
-    assert!(!engine.backend().load_tombstone(&rid).unwrap().unwrap().cleanup_pending);
+    let next = start_run(
+        &linked,
+        StartReq {
+            spec_path: Some(spec.to_owned()),
+            profile: Some(profile.clone()),
+            ..StartReq::default()
+        },
+    )
+    .unwrap()
+    .run
+    .run_id;
+    assert!(
+        !engine
+            .backend()
+            .load_tombstone(&rid)
+            .unwrap()
+            .unwrap()
+            .cleanup_pending
+    );
     assert!(git_ok(&foreign, &["for-each-ref", &linked_ref]).is_empty());
     assert!(git_ok(repo, &["for-each-ref", "--format=%(refname)", &reference]).is_empty());
     drop(linked);
     let archive_dir = repo.join("docs/milestones/archive");
     fs::create_dir_all(&archive_dir).unwrap();
-    let completed = fs::read_to_string(repo.join(spec)).unwrap().replace("status: planned", "status: completed");
+    let completed = fs::read_to_string(repo.join(spec))
+        .unwrap()
+        .replace("status: planned", "status: completed");
     fs::write(archive_dir.join("AC-SNAPSHOT.md"), completed).unwrap();
     let reconcile_ref = format!("refs/acdd/snapshots/{next}/t1/r1");
     git_ok(repo, &["update-ref", &reconcile_ref, head.as_str()]);
@@ -333,16 +684,298 @@ scope: [src/lib.rs]
     fs::remove_file(repo.join(spec)).unwrap();
     drop(engine);
     fs::remove_file(cfg.resolved_state_db_path().0).unwrap();
-    let recovered = StateEngine::open(cfg, provider).unwrap();
+    let recovered = StateEngine::open(cfg.clone(), provider).unwrap();
     let tomb = recovered.backend().load_tombstone(&next).unwrap().unwrap();
     assert!(tomb.cleanup_manifest.is_empty() && tomb.cleanup_pending);
     fs::write(repo.join(spec), planned).unwrap();
-    let restarted = start_run(&recovered, StartReq {
-        spec_path: Some(spec.to_owned()), profile: Some(profile), ..StartReq::default()
-    }).unwrap();
-    assert!(!recovered.backend().load_tombstone(&next).unwrap().unwrap().cleanup_pending);
+    let restarted = start_run(
+        &recovered,
+        StartReq {
+            spec_path: Some(spec.to_owned()),
+            profile: Some(profile),
+            ..StartReq::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        !recovered
+            .backend()
+            .load_tombstone(&next)
+            .unwrap()
+            .unwrap()
+            .cleanup_pending
+    );
     assert!(git_ok(repo, &["for-each-ref", &reconcile_ref]).is_empty());
     clear_run(&recovered, restarted.run.run_id.as_str());
+
+    let bare = make_temp_dir("adhoc-snap");
+    let bare_repo = bare.path();
+    init_git_repo(bare_repo, "main");
+    let symlinked = make_temp_dir("adhoc-snapshot-git-symlink");
+    let symlinked_repo = symlinked.path();
+    init_git_repo(symlinked_repo, "main");
+    fs::rename(
+        symlinked_repo.join(".git"),
+        symlinked_repo.join(".git.real"),
+    )
+    .unwrap();
+    symlink(".git.real", symlinked_repo.join(".git")).unwrap();
+    let symlinked_error = acdd_state::usecases::execute_snapshot_readonly(
+        &base_config(bare_repo),
+        SnapshotReq {
+            run: None,
+            action: Save,
+            task_ref: None,
+            all: false,
+            revision: None,
+            name: Some("note".into()),
+            worktree: Some(symlinked_repo.to_path_buf()),
+            older_than: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(symlinked_error.code, ErrorCode::ExternalGitDrift);
+    fs::create_dir_all(bare_repo.join("src")).unwrap();
+    fs::write(bare_repo.join("src/a.txt"), "one").unwrap();
+    let mut bare_cfg = base_config(bare_repo);
+    bare_cfg.state_db_override = Some(bare_repo.join("runs.sqlite"));
+    {
+        let mut conn = rusqlite::Connection::open(bare_cfg.resolved_state_db_path().0).unwrap();
+        acdd_state::store::sqlite::migrations::ensure_schema(&mut conn).unwrap();
+        for id in ["amb-a", "amb-b"] {
+            conn.execute(
+                "INSERT INTO runs (run_id, run_name, collection, workspace, profile_id, profile_json, spec_path, spec_id, spec_digest, is_ephemeral, isolation, target_base, target_base_commit, branch, worktree, trace_id, status, cancellation_reason, root_cycle_count, generation, created_at, completed_at)
+                 VALUES (?1, ?1, 'milestones', 'w', 'p', '{}', 's', 's', 'd', 0, 'in_place', NULL, NULL, NULL, NULL, 't', 'active', NULL, 0, 1, 't', NULL)",
+                [id],
+            ).unwrap();
+        }
+    }
+    {
+        let amb = |action, revision| {
+            acdd_state::usecases::execute_snapshot_readonly(
+                &bare_cfg,
+                SnapshotReq {
+                    run: None,
+                    action,
+                    task_ref: None,
+                    all: false,
+                    revision,
+                    name: Some("amb".into()),
+                    worktree: Some(bare_repo.to_path_buf()),
+                    older_than: None,
+                },
+            )
+        };
+        for action in [Save, List, Restore, Clear] {
+            let out = amb(action, (action == Restore).then_some(1)).unwrap();
+            let StateCommandOutput::Snapshot(out) = out else {
+                panic!("amb")
+            };
+            assert!(
+                out.refs.iter().any(|r| r.contains("_adhoc/amb/")),
+                "{action:?} {out:?}"
+            );
+        }
+    }
+    let snap = |action, name: Option<&str>, revision, all, older_than: Option<&str>| {
+        acdd_state::usecases::execute_snapshot_readonly(
+            &bare_cfg,
+            SnapshotReq {
+                run: None,
+                action,
+                task_ref: None,
+                all,
+                revision,
+                name: name.map(str::to_owned),
+                worktree: Some(bare_repo.to_path_buf()),
+                older_than: older_than.map(str::to_owned),
+            },
+        )
+    };
+    let saved = snap(Save, Some("note"), Some(1), false, None).unwrap();
+    let StateCommandOutput::Snapshot(saved) = saved else {
+        panic!("snapshot")
+    };
+    assert_eq!(
+        saved.refs,
+        ["refs/acdd/snapshots/_adhoc/note/r1".to_owned()]
+    );
+    assert!(!bare_repo.join(".acdd").exists());
+    fs::write(bare_repo.join("src/a.txt"), "two").unwrap();
+    let tree = git_ok(bare_repo, &["write-tree"]);
+    let oid = std::process::Command::new("git")
+        .current_dir(bare_repo)
+        .env("GIT_AUTHOR_DATE", "1000000000 +0000")
+        .env("GIT_COMMITTER_DATE", "1000000000 +0000")
+        .args(["commit-tree", &tree, "-m", "backdated"])
+        .output()
+        .unwrap();
+    assert!(
+        oid.status.success(),
+        "{}",
+        String::from_utf8_lossy(&oid.stderr)
+    );
+    git_ok(
+        bare_repo,
+        &[
+            "update-ref",
+            "refs/acdd/snapshots/_adhoc/note/r2",
+            String::from_utf8(oid.stdout).unwrap().trim(),
+        ],
+    );
+    let listed = snap(List, Some("note"), None, false, None).unwrap();
+    let StateCommandOutput::Snapshot(listed) = listed else {
+        panic!("list")
+    };
+    assert!(
+        listed.refs.iter().any(|r| r.ends_with("/r2"))
+            && listed.refs.iter().any(|r| r.ends_with("/r1"))
+    );
+    let listed_rev1 = snap(List, Some("note"), Some(1), false, None).unwrap();
+    let StateCommandOutput::Snapshot(listed_rev1) = listed_rev1 else {
+        panic!("list revision")
+    };
+    assert_eq!(
+        listed_rev1.refs,
+        ["refs/acdd/snapshots/_adhoc/note/r1".to_owned()]
+    );
+    fs::write(bare_repo.join("src/a.txt"), "dirty").unwrap();
+    snap(Restore, Some("note"), Some(1), false, None).unwrap();
+    assert_eq!(
+        fs::read_to_string(bare_repo.join("src/a.txt")).unwrap(),
+        "one"
+    );
+    let checkpoint = git_ok(
+        bare_repo,
+        &["rev-parse", "refs/acdd/snapshots/_adhoc/note/r1"],
+    );
+    let extra = "refs/acdd/snapshots/_adhoc/note/r1_extra";
+    git_ok(bare_repo, &["update-ref", extra, &checkpoint]);
+    snap(Clear, Some("note"), Some(1), false, None).unwrap();
+    assert!(
+        git_ok(
+        bare_repo,
+        &["for-each-ref", "refs/acdd/snapshots/_adhoc/note/r1"]
+    )
+        .is_empty()
+    );
+    assert!(!git_ok(bare_repo, &["for-each-ref", extra]).is_empty());
+    let child = "refs/acdd/snapshots/_adhoc/note/r1/child";
+    git_ok(bare_repo, &["update-ref", child, &checkpoint]);
+    snap(Clear, Some("note"), Some(1), false, None).unwrap();
+    assert!(!git_ok(bare_repo, &["for-each-ref", child]).is_empty());
+    snap(Save, Some("note"), Some(3), false, None).unwrap();
+    snap(Clear, None, None, false, Some("1d")).unwrap();
+    let left = git_ok(bare_repo, &["for-each-ref", "refs/acdd/snapshots/_adhoc"]);
+    assert!(
+        left.contains("/note/r3") && !left.contains("/note/r2"),
+        "{left}"
+    );
+    snap(Clear, None, None, true, None).unwrap();
+    let refs = git_ok(bare_repo, &["for-each-ref", "refs/acdd/snapshots/_adhoc"]);
+    assert!(refs.contains(extra) && refs.contains(child), "{refs}");
+    for malformed in ["refs/acdd/snapshots/_adhoc/note/pre", "refs/acdd/snapshots/_adhoc/note+other/r1"] {
+        git_ok(bare_repo, &["update-ref", malformed, &checkpoint]);
+    }
+    snap(Clear, None, None, true, None).unwrap();
+    let refs = git_ok(bare_repo, &["for-each-ref", "refs/acdd/snapshots/_adhoc"]);
+    assert!(refs.contains("/note/pre") && refs.contains("/note+other/r1"), "{refs}");
+    assert!(snap(Save, Some("_adhoc"), Some(1), false, None).is_err());
+    assert!(snap(Clear, Some(""), Some(1), false, None).is_err());
+    assert_eq!(
+        snap(Save, Some("note.lock"), Some(1), false, None)
+            .unwrap_err()
+            .code,
+        ErrorCode::ProfileSchemaInvalid
+    );
+    let auto = snap(Save, Some("auto"), None, false, None).unwrap();
+    let StateCommandOutput::Snapshot(auto) = auto else {
+        panic!("auto")
+    };
+    assert_eq!(auto.refs, ["refs/acdd/snapshots/_adhoc/auto/r1".to_owned()]);
+    let auto = snap(Save, Some("auto"), None, false, None).unwrap();
+    let StateCommandOutput::Snapshot(auto) = auto else {
+        panic!("auto")
+    };
+    assert_eq!(auto.refs, ["refs/acdd/snapshots/_adhoc/auto/r2".to_owned()]);
+    let target_dir = make_temp_dir("adhoc-snap-target-lock");
+    let target_repo = target_dir.path();
+    init_git_repo(target_repo, "main");
+    let held_primary = acdd_core::lock::acquire_exclusive(&bare_repo.join(".git/acdd/repo.lock")).unwrap();
+    let target_snap = |action| acdd_state::usecases::execute_snapshot_readonly(&bare_cfg, SnapshotReq { run: None, action, task_ref: None, all: false, revision: None, name: Some("target".into()), worktree: Some(target_repo.to_path_buf()), older_than: None });
+    target_snap(Save).unwrap();
+    target_snap(List).unwrap();
+    target_snap(Restore).unwrap();
+    target_snap(Clear).unwrap();
+    drop(held_primary);
+    let sha256 = make_temp_dir("adhoc-snap-sha256");
+    let sha256_repo = sha256.path();
+    git_ok(
+        sha256_repo,
+        &["init", "--object-format=sha256", "-b", "main"],
+    );
+    git_ok(
+        sha256_repo,
+        &["config", "user.email", "test@contextunity.local"],
+    );
+    git_ok(sha256_repo, &["config", "user.name", "ACDD Test"]);
+    fs::write(sha256_repo.join("file"), "sha256").unwrap();
+    git_ok(sha256_repo, &["add", "file"]);
+    git_ok(sha256_repo, &["commit", "-m", "initial"]);
+    let sha256_cfg = base_config(sha256_repo);
+    let sha256_saved = acdd_state::usecases::execute_snapshot_readonly(
+        &sha256_cfg,
+        SnapshotReq {
+            run: None,
+            action: Save,
+            task_ref: None,
+            all: false,
+            revision: None,
+            name: Some("sha256".into()),
+            worktree: Some(sha256_repo.to_path_buf()),
+            older_than: None,
+        },
+    )
+    .unwrap();
+    let StateCommandOutput::Snapshot(sha256_saved) = sha256_saved else {
+        panic!("sha256 snapshot")
+    };
+    assert_eq!(
+        sha256_saved.refs,
+        ["refs/acdd/snapshots/_adhoc/sha256/r1".to_owned()]
+    );
+    assert_eq!(
+        git_ok(sha256_repo, &["rev-parse", &sha256_saved.refs[0]]).len(),
+        64
+    );
+    snap(Save, Some("other"), Some(1), false, None).unwrap();
+    let pruned = snap(Clear, None, Some(1), false, None).unwrap();
+    let StateCommandOutput::Snapshot(pruned) = pruned else {
+        panic!("prune")
+    };
+    assert!(
+        pruned.refs.iter().any(|r| r.ends_with("/auto/r1"))
+            && pruned.refs.iter().any(|r| r.ends_with("/other/r1"))
+    );
+    assert!(
+        git_ok(
+        bare_repo,
+        &["for-each-ref", "refs/acdd/snapshots/_adhoc/auto/r2"]
+    )
+        .contains("/r2")
+    );
+    let refs = git_ok(bare_repo, &["for-each-ref", "refs/acdd/snapshots/_adhoc"]);
+    assert!(
+        !refs.contains("/auto/r1") && !refs.contains("/other/r1"),
+        "{refs}"
+    );
+    for raw in ["1д", "9999999999w"] {
+        assert_eq!(
+            snap(Clear, None, None, false, Some(raw)).unwrap_err().code,
+            ErrorCode::ProfileSchemaInvalid,
+            "{raw}"
+        );
+    }
 }
 
 #[test]
@@ -438,14 +1071,18 @@ fn seam_readonly_queries_matrix_and_zero_db_creation() {
     {
         StateQueryOutput::Observability(o) => {
             assert_eq!(o.snapshot.active_runs, 1);
-            assert!(o
-                .prometheus_text
+            assert!(
+                o.prometheus_text
                 .as_deref()
-                .is_some_and(|t| t.contains("acdd_runs_active 1")));
+                    .is_some_and(|t| t.contains("acdd_runs_active 1"))
+            );
         }
         other => panic!("unexpected Observability output: {other:?}"),
     }
-    let graph_before = harness.load_run_graph(&RunId::new("run-ro-001").unwrap()).unwrap().unwrap();
+    let graph_before = harness
+        .load_run_graph(&RunId::new("run-ro-001").unwrap())
+        .unwrap()
+        .unwrap();
     let rev_before = graph_before
         .nodes
         .iter()
@@ -467,7 +1104,10 @@ fn seam_readonly_queries_matrix_and_zero_db_creation() {
         }
         other => panic!("unexpected Context output: {other:?}"),
     }
-    let graph_after = harness.load_run_graph(&RunId::new("run-ro-001").unwrap()).unwrap().unwrap();
+    let graph_after = harness
+        .load_run_graph(&RunId::new("run-ro-001").unwrap())
+        .unwrap()
+        .unwrap();
     let rev_after = graph_after
         .nodes
         .iter()
@@ -475,7 +1115,6 @@ fn seam_readonly_queries_matrix_and_zero_db_creation() {
         .map(|n| n.claim_revision)
         .unwrap_or(0);
     assert_eq!(rev_before, rev_after);
-
 }
 
 #[test]
@@ -559,13 +1198,15 @@ fn seam_modules_matrix_enforces_feature_disabled_and_domain_capabilities() {
         .code,
         ErrorCode::FeatureDisabled
     );
-    assert!(queries::execute_query(
+    assert!(
+        queries::execute_query(
         &bb_cfg,
         &harness,
         &bb_prov,
         StateQuery::Status(StatusReq::default())
     )
-    .is_ok());
+        .is_ok()
+    );
     assert_eq!(
         execute_on(
             &bb_cfg,
@@ -964,7 +1605,11 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
     let (_, provider) = build_provider_with_mock(&cfg.modules);
     let engine = StateEngine::open(cfg, provider.clone()).unwrap();
 
-    let bound_p = write_profile(root_tmp.path(), "bound.yaml", "version: 2\ninherit: base\ncommands:\n  test:\n    command: \"true\"\n    test_filter: \"--filter {test}\"\n  build_check: { command: \"true\" }\n  verify_all: { command: \"true\" }\ngates:\n  - tasks:\n      gates:\n        - id: build\n          proof: none\n  - id: handoff\n    proof: none\n    save: { archive: true, prune: true }\n");
+    let bound_p = write_profile(
+        root_tmp.path(),
+        "bound.yaml",
+        "version: 2\ninherit: base\ncommands:\n  test:\n    command: \"true\"\n    test_filter: \"--filter {test}\"\n  build_check: { command: \"true\" }\n  verify_all: { command: \"true\" }\ngates:\n  - tasks:\n      gates:\n        - id: build\n          proof: none\n  - id: handoff\n    proof: none\n    save: { archive: true, prune: true }\n",
+    );
     assert_eq!(
         start_run(
             &engine,
@@ -990,17 +1635,21 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
     )
     .unwrap();
     assert!(eph.run.is_ephemeral);
-    assert!(root_tmp
+    assert!(
+        root_tmp
         .path()
         .join(eph.materialized_spec_path.unwrap())
-        .is_file());
-    assert!(root_tmp
+            .is_file()
+    );
+    assert!(
+        root_tmp
         .path()
         .join(format!(
             ".acdd/run/{}/profile.resolved.yaml",
             eph.run.run_id
         ))
-        .is_file());
+            .is_file()
+    );
     clear_run(&engine, eph.run.run_id.as_str());
 
     fs::create_dir_all(root_tmp.path().join("docs/milestones")).unwrap();
@@ -1081,7 +1730,8 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
         .code,
         ErrorCode::GateVerificationFailed
     );
-    assert!(start_run(
+    assert!(
+        start_run(
         &engine,
         StartReq {
             spec_path: Some("docs/milestones/AC-010-dep.md".to_owned()),
@@ -1090,7 +1740,8 @@ fn seam_start_ephemeral_goal_and_cross_workspace_depends_on_matrix() {
             ..StartReq::default()
         }
     )
-    .is_ok());
+        .is_ok()
+    );
 }
 
 #[test]
@@ -1999,10 +2650,12 @@ fn seam_in_memory_lifecycle_subtask_blackboard_extend_scope_reopen_sync_clear() 
     {
         StateCommandOutput::Clear(c) => {
             assert_eq!(c.tombstone.terminal_status, TerminalStatus::Cleared);
-            assert!(harness
+            assert!(
+                harness
                 .load_run_graph(&RunId::new("run-life-001").unwrap())
                 .unwrap()
-                .is_none());
+                    .is_none()
+            );
         }
         other => panic!("unexpected Clear output: {other:?}"),
     }
@@ -2046,7 +2699,8 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
     };
     assert_eq!(draft_plan.spec_id, "my-slug");
     assert_eq!(draft_plan.spec_path, "docs/plans/my-slug.md");
-    assert!(execute_on(
+    assert!(
+        execute_on(
         &cfg,
         engine.backend(),
         &provider,
@@ -2058,7 +2712,8 @@ fn seam_multi_path_draft_prefixless_and_whole_spec_deps() {
             profile: None,
         }),
     )
-    .is_err());
+        .is_err()
+    );
 
     // 2. Multi-path draft scans extensions/*/docs/milestones for max_num.
     fs::write(

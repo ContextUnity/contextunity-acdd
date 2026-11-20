@@ -308,29 +308,47 @@ pub(crate) fn snapshot_prefix(run: &RunId, task: Option<&TaskRef>) -> String {
     prefix
 }
 
-pub(crate) fn save_task_snapshot(worktree: &Path, reference: &str, tree: &TreeOid) -> Result<(), StateError> {
+pub(crate) fn validate_snapshot_label(raw: &str) -> Result<(), StateError> {
+    ((1..=64).contains(&raw.len()) && raw != "_adhoc" && !raw.starts_with('.') && !raw.ends_with('.') && !raw.ends_with(".lock") && !raw.contains("..") && raw.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))).then_some(()).ok_or_else(|| StateError::new(ErrorCode::ProfileSchemaInvalid, format!("invalid snapshot name '{raw}'")))
+}
+
+pub(crate) fn parse_older_than(raw: &str) -> Result<u64, StateError> {
+    let bad = || StateError::new(ErrorCode::ProfileSchemaInvalid, format!("invalid duration '{raw}'")); let (n, unit) = (!raw.is_empty() && raw.is_ascii()).then(|| raw.split_at(raw.len() - 1)).ok_or_else(bad)?;
+    let mult = match unit { "s" => 1, "m" => 60, "h" => 3600, "d" => 86400, "w" => 604800, _ => return Err(bad()) };
+    n.parse::<u64>().ok().filter(|v| *v > 0).and_then(|v| v.checked_mul(mult)).ok_or_else(bad)
+}
+
+pub(crate) fn list_snapshot_refs(worktree: &Path, prefix: &str) -> Result<Vec<(String, i64)>, StateError> {
+    Ok(run_git_stdout(worktree, &["for-each-ref", "--format=%(refname)%09%(committerdate:unix)", prefix], None, ErrorCode::ExternalGitDrift)?.lines().filter(|line| !line.is_empty()).map(|line| { let (name, ts) = line.split_once('\t').unwrap_or((line, "0")); (name.to_owned(), ts.parse().unwrap_or(0)) }).collect())
+}
+
+pub(crate) fn parse_canonical_revision(name: &str, prefix: &str) -> Option<u32> {
+    let rest = name.strip_prefix(prefix)?;
+    let num = rest.strip_prefix('r')?;
+    num.parse::<u32>().ok().filter(|v| v.to_string() == num)
+}
+
+pub(crate) fn save_task_snapshot(worktree: &Path, reference: &str, tree: &TreeOid, create_only: bool) -> Result<(), StateError> {
     let code = ErrorCode::ExternalGitDrift;
-    let args = [
-        "-c", "user.name=acdd-agent", "-c", "user.email=acdd@contextunity.local",
-        "commit-tree", tree.as_str(), "--no-gpg-sign", "-m", reference,
-    ];
-    let commit = run_git_stdout(worktree, &args, None, code)?;
-    run_git_checked(worktree, &["update-ref", "--no-deref", reference, &commit], None, None, code)?;
-    Ok(())
+    let commit = run_git_stdout(worktree, &["-c", "user.name=acdd-agent", "-c", "user.email=acdd@contextunity.local", "commit-tree", tree.as_str(), "--no-gpg-sign", "-m", reference], None, code)?;
+    let zero = "0".repeat(commit.trim().len());
+    let args = if create_only { vec!["update-ref", "--no-deref", reference, &commit, &zero] } else { vec!["update-ref", "--no-deref", reference, &commit] };
+    run_git_checked(worktree, &args, None, None, code).map(|_| ())
 }
 
 pub(crate) fn restore_task_snapshot(
-    worktree: &Path, prefix: &str, revision: Option<u32>, scope: &[String], policy: &WorkspacePathPolicy,
+    worktree: &Path, prefix: &str, revision: Option<u32>, scope: Option<&[String]>, policy: &WorkspacePathPolicy,
 ) -> Result<String, StateError> {
     let code = ErrorCode::ExternalGitDrift;
     let reference = if let Some(rev) = revision {
         format!("{prefix}r{rev}")
     } else {
-        let args = ["for-each-ref", "--sort=-version:refname", "--count=1", "--format=%(refname)", prefix];
-        run_git_stdout(worktree, &args, None, code)?
+        list_snapshot_refs(worktree, prefix)?.into_iter().filter_map(|(name, _)| parse_canonical_revision(&name, prefix).map(|r| (r, name)))
+            .max_by_key(|(rev, _)| *rev).map(|(_, name)| name).unwrap_or_default()
     };
+    if reference.is_empty() { return Err(StateError::new(code, format!("no snapshot ref found under {prefix}"))); }
     let tree = run_git_stdout(worktree, &["rev-parse", "--verify", &format!("{reference}^{{tree}}")], None, code)?;
-    let current = current_scope_tree(worktree, Some(scope), policy)?;
+    let current = current_scope_tree(worktree, scope, policy)?;
     let args = ["diff-tree", "-r", "--no-renames", "--raw", "-z", current.as_str(), &tree];
     let diff = run_git_checked(worktree, &args, None, None, code)?;
     let (index, backup_dir) = TemporaryGitIndex::create_temp(worktree)?;
@@ -346,9 +364,7 @@ pub(crate) fn restore_task_snapshot(
         if normalize_rel_path(raw).as_deref() != Some(raw) {
             return Err(StateError::new(code, format!("snapshot path '{raw}' is not normalized")));
         }
-        if !policy.is_candidate_included(raw) || !policy.is_scope_admitted(raw, scope)
-            || is_under_dir_case_insensitive(raw, ".acdd")
-        {
+        if !policy.is_candidate_included(raw) || is_under_dir_case_insensitive(raw, ".acdd") || scope.is_some_and(|scope| !policy.is_scope_admitted(raw, scope)) {
             continue;
         }
         let path = checked_child(worktree, Path::new(raw)).map_err(|err| snapshot_path_error(raw, err))?;

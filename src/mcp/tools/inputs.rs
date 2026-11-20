@@ -697,6 +697,12 @@ pub struct StateInput {
     pub all: Option<bool>,
     /// Snapshot revision.
     pub rev: Option<u32>,
+    /// Standalone snapshot label.
+    pub name: Option<String>,
+    /// Delete refs older than `<N><s|m|h|d|w>`.
+    pub older_than: Option<String>,
+    /// When true, `snapshot` clears refs.
+    pub delete: Option<bool>,
     /// Optional run ID or run name selector.
     pub run: Option<String>,
     /// Target node cursor (`<gate>`, `<task_ref>`, `<task_ref>.<gate>`).

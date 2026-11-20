@@ -1,6 +1,7 @@
 //! Repository common-dir/worktree layout resolution, managed worktree lifecycle, and ref cleanup.
 
 use super::{run_git_checked, run_git_raw, run_git_stdout};
+use super::snapshot::parse_canonical_revision;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::{atomic_write, checked_child, ensure_confined_dir_all, open_confined};
 use acdd_core::ids::{CommitOid, RunId};
@@ -412,7 +413,7 @@ pub(crate) fn cleanup_refs<'a>(
     run_id: &RunId, snapshot: Option<String>,
 ) -> Result<Vec<String>, StateError> {
     let repos = lock_cleanup_repos(locked, workspaces)?;
-    cleanup_locked_refs(&repos, run_id, snapshot)
+    cleanup_locked_refs(&repos, run_id, snapshot, None, None, None)
 }
 
 pub(crate) fn lock_cleanup_repos<'a>(
@@ -438,36 +439,27 @@ pub(crate) fn lock_cleanup_repos<'a>(
 }
 
 pub(crate) fn cleanup_locked_refs(
-    repos: &[(RepoWorktreeLayout, Option<FileLockGuard>)], run_id: &RunId, snapshot: Option<String>,
+    repos: &[(RepoWorktreeLayout, Option<FileLockGuard>)], run_id: &RunId, snapshot: Option<String>, exact: Option<&str>,
+    suffix: Option<&str>, older_than: Option<i64>,
 ) -> Result<Vec<String>, StateError> {
     let mut deleted = Vec::new();
     let prefixes = match snapshot {
         Some(prefix) => vec![prefix],
         None => ["runs", "snapshots", "keep"].map(|kind| format!("refs/acdd/{kind}/{run_id}/")).to_vec(),
     };
-    let mut args = vec!["for-each-ref", "--format=%(refname)"];
+    let mut args = vec!["for-each-ref", "--format=%(refname)%09%(committerdate:unix)%09%(objectname)"];
     args.extend(prefixes.iter().map(String::as_str));
-
-    for (layout, _guard) in repos {
-        let listed = run_git_stdout(
-            &layout.primary_worktree,
-            &args,
-            None,
-            ErrorCode::ExternalGitDrift,
-        )?;
-        if listed.is_empty() {
-            continue;
-        }
-        let batch: String = listed.lines().map(|r| format!("delete {r}\n")).collect();
-        run_git_checked(
-            &layout.primary_worktree,
-            &["update-ref", "--no-deref", "--stdin"],
-            None,
-            Some(batch.as_bytes()),
-            ErrorCode::ExternalGitDrift,
-        )?;
-        deleted.extend(listed.lines().map(str::to_owned));
+    for (layout, _) in repos {
+        let listed = run_git_stdout(&layout.primary_worktree, &args, None, ErrorCode::ExternalGitDrift)?;
+        let names: Vec<(String, String)> = listed.lines().filter_map(|line| {
+            let mut fields = line.split('\t'); let (name, ts, oid) = (fields.next()?, fields.next()?, fields.next()?);
+            let valid_shape = name.strip_prefix("refs/acdd/snapshots/").is_none_or(|tail| { let mut parts = tail.split('/'); matches!((parts.next(), parts.next(), parts.next(), parts.next()), (Some(k), Some(lbl), Some(r), None) if if k == "_adhoc" { super::snapshot::validate_snapshot_label(lbl).is_ok() && parse_canonical_revision(r, "").is_some() } else { r == "pre" || parse_canonical_revision(r, "").is_some() }) });
+            (exact.is_none_or(|r| name == r) && valid_shape && suffix.is_none_or(|s| name.ends_with(s) && name.rsplit('/').next() == s.strip_prefix('/')) && older_than.is_none_or(|c| ts.parse::<i64>().ok().filter(|ts| *ts > 0).is_some_and(|ts| ts < c))).then(|| (name.to_owned(), oid.to_owned()))
+        }).collect();
+        if names.is_empty() { continue; }
+        let batch: String = names.iter().map(|(r, oid)| format!("delete {r} {oid}\n")).collect();
+        run_git_checked(&layout.primary_worktree, &["update-ref", "--no-deref", "--stdin"], None, Some(batch.as_bytes()), ErrorCode::ExternalGitDrift)?;
+        deleted.extend(names.into_iter().map(|(name, _)| name));
     }
-
     Ok(deleted)
 }

@@ -654,6 +654,8 @@ pub enum SnapshotAction {
     Restore,
     /// Delete checkpoint refs.
     Clear,
+    /// List checkpoint refs.
+    List,
 }
 
 /// Request for an active run's task checkpoints.
@@ -669,8 +671,17 @@ pub struct SnapshotReq {
     /// Clear all checkpoints belonging to the run.
     #[serde(default)]
     pub all: bool,
-    /// Override the save revision or select an exact restore revision.
+    /// Override the save revision or select an exact restore / delete revision.
     pub revision: Option<u32>,
+    /// Standalone label under `refs/acdd/snapshots/_adhoc/<name>/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Git worktree that owns the snapshot refs and file restore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<PathBuf>,
+    /// Delete refs older than `<N><s|m|h|d|w>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub older_than: Option<String>,
 }
 
 /// Outcome of a checkpoint operation.

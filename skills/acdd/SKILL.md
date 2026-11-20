@@ -5,7 +5,7 @@ description: Load for repository onboarding to ACDD, code discovery, symbol look
 
 # ContextUnity ACDD
 
-Use `acdd snapshot save|restore|clear [<task_ref>] [--all] [--rev N] [--run RUN]` or `acdd_state(action: "snapshot", snapshot_action: "save|restore|clear", task_ref: ..., all: ..., rev: ..., run: ...)` for task checkpoints. See [task snapshots](../../docs/reference/tasks.md#task-snapshots).
+Use `acdd snapshot save|restore|list|clear [<target>] [--all] [--rev N] [--run RUN] [--delete] [--older-than DUR] [--worktree PATH]` or `acdd_state(action: "snapshot", snapshot_action: "save|restore|clear|list", task_ref: ..., name: ..., delete: ..., older_than: ..., worktree: ...)` for task and standalone (`_adhoc/<label>`) checkpoints. See [task snapshots](../../docs/reference/tasks.md#task-snapshots).
 
 Use ACDD's indexed code graph, AST search, documentation graph, and task tools.
 Prefer registered MCP tools; use the CLI (`acdd ...`) for offline operations it

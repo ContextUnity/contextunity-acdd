@@ -331,7 +331,7 @@ For a Git change view, pass `changes:"staged"`, `changes:"unstaged"`, or `change
 
 ## Result size and source
 
-For task checkpoints, call `acdd_state` with `action: "snapshot"`, `snapshot_action: "save" | "restore" | "clear"`, and optional `task_ref`, `all`, `rev`, and `run`. See [task snapshots](tasks.md#task-snapshots).
+For checkpoints, call `acdd_state` with `action: "snapshot"`, `snapshot_action: "save" | "restore" | "clear" | "list"` (or `delete: true` for clear), and optional `task_ref`, `name`, `all`, `rev`, `run`, `older_than`, and `worktree`. `worktree` selects the Git worktree. See [task snapshots](tasks.md#task-snapshots).
 
 `code_map_inspect` and `code_map_explain` clamp `leading_lines` above 20 to 20
 and requested `max_body_lines` to 1–500. When omitted, their body limit uses

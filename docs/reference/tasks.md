@@ -74,7 +74,7 @@ MCP tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`,
 | Claim | `acdd_claim` | `acdd claim [<node>]` | Atomically claim a ready/active node and return `ClaimResp` |
 | Verify | `acdd_verify` | `acdd verify <node>` | Execute `command:`, `call:`, `checks:`, and scope barrier without advancing |
 | Submit | `acdd_submit` | `acdd submit <node> --action pass\|reject` | Advance on `pass` or rewind along `fail:` with `RejectionFindings` |
-| Snapshot | `acdd_state(action: "snapshot", snapshot_action: "save \| restore \| clear")` | `acdd snapshot save\|restore\|clear` | Save, restore, or clear per-task Git checkpoints |
+| Snapshot | `acdd_state(action: "snapshot", snapshot_action: "save \| restore \| clear \| list")` | `acdd snapshot save\|restore\|list\|clear` | Save, restore, list, or delete task and standalone Git checkpoints |
 | Blackboard | `acdd_blackboard(action: "read \| post")` | `acdd blackboard --action read\|post` | Scoped coordination messages (`draft`, `notes`, `findings`, `blockers`, `decisions`, `deferred`) |
 
 All 19 built-in MCP tools (plus `<domain>_<name>` plugin tools) accept an
@@ -157,7 +157,7 @@ Every gate transition is mediated by `claim -> (verify) -> submit` inside
 
 ## Task snapshots
 
-Use `acdd snapshot save|restore|clear [<task_ref>] [--all] [--rev N] [--run RUN]` or `acdd_state(action: "snapshot", snapshot_action: "save|restore|clear", task_ref: ..., all: ..., rev: ..., run: ...)` to manage checkpoints. Save captures admitted task files; restore applies a selected revision within the task scope. Clear accepts a task or `--all`. Profiles declare `save.post: snapshot` only on leaf task gates. Checkpoint refs are cleaned on delivery, run clear, or handoff.
+Use `acdd snapshot save|restore|list|clear [<target>] [--all] [--rev N] [--run RUN] [--delete] [--older-than DUR] [--worktree PATH]` or `acdd_state(action: "snapshot", snapshot_action: "save|restore|clear|list", task_ref: ..., name: ..., all: ..., rev: ..., run: ..., delete: ..., older_than: ..., worktree: ...)` to manage checkpoints. Save captures admitted files (task scope when a run task matches; otherwise the worktree candidates outside `.acdd/**`). Restore applies a selected revision inside that scope. Clear deletes one revision (`--rev`), refs older than `<N><s|m|h|d|w>`, a named prefix, or `--all`. Omitting `--run` resolves to task mode if the target matches a task in an unambiguously resolved active run (cleaned up on `deliver`, run `clear`, or `handoff`), except `clear` with `--rev` or `--older-than`, which requires `--run` to target task refs; otherwise it uses standalone refs at `refs/acdd/snapshots/_adhoc/<label>/r<rev>`, which `deliver`, run `clear`, and `handoff` do not remove. Profiles declare `save.post: snapshot` only on leaf task gates.
 
 ---
 

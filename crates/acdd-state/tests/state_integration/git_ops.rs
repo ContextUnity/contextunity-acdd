@@ -197,6 +197,11 @@ fn worktree_layout_macos_var_symlink_and_snapshot_guards_matrix() {
             created_wt.head_commit.as_str(),
         ],
     );
+    // Cleanup deletes this observed OID through update-ref's compare-and-delete form.
+    git_ok(
+        &created_wt.worktree,
+        &["update-ref", "refs/acdd/runs/run-wt-01/cas", created_wt.head_commit.as_str()],
+    );
     git_ok(
         &created_wt.worktree,
         &[
@@ -236,7 +241,7 @@ fn worktree_layout_macos_var_symlink_and_snapshot_guards_matrix() {
         &run_id,
     )
     .expect("cleanup refs");
-    assert_eq!(cleaned.len(), 4);
+    assert_eq!(cleaned.len(), 5);
     assert_eq!(
         git_ok(&private_repo, &["for-each-ref", "--format=%(refname)", "refs/acdd/"]).trim(),
         "refs/acdd/snapshots/run-wt-02/state"
