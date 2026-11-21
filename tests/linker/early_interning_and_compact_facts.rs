@@ -63,6 +63,32 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
         assert_eq!(compact.as_str(), tag);
         assert_eq!(String::from(compact), tag);
     }
+    use acdd_index::models::{CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind, ReferenceKind};
+    macro_rules! check_wire {
+        ($ty:ty, $($wire:literal),+ $(,)?) => {
+            for wire in [$($wire),+] {
+                let value: $ty = wire.parse().unwrap();
+                assert_eq!(value.to_string(), wire);
+                assert_eq!(serde_json::to_string(&value).unwrap(), format!("\"{wire}\""));
+                assert_eq!(serde_json::from_str::<$ty>(&format!("\"{wire}\"")).unwrap(), value);
+                assert_eq!(CompactTag::from(value).as_str(), wire);
+            }
+        };
+    }
+    check_wire!(EdgeKind, "calls", "imports", "possible_calls");
+    check_wire!(EdgeConfidence, "exact", "inferred", "possible", "heuristic");
+    check_wire!(CoverageStatus, "resolved", "external", "ambiguous", "unresolved");
+    check_wire!(NodeKind, "function", "class", "interface");
+    check_wire!(ReferenceKind, "call", "import", "semantic_key");
+    check_wire!(LanguageId, "rust", "python", "typescript", "javascript");
+    let mut typed_graph = CompactGraph::default();
+    typed_graph.push_edge("a.rs", "a", "b", EdgeKind::Calls, 1, "call", EdgeConfidence::Exact);
+    typed_graph.push_coverage("a.rs", 1, "b", CoverageStatus::Resolved, "call");
+    let mut wire_graph = CompactGraph::default();
+    wire_graph.push_edge("a.rs", "a", "b", "calls", 1, "call", "exact");
+    wire_graph.push_coverage("a.rs", 1, "b", "resolved", "call");
+    assert_eq!(serde_json::to_value(&typed_graph.edges).unwrap(), serde_json::to_value(&wire_graph.edges).unwrap());
+    assert_eq!(serde_json::to_value(&typed_graph.coverage).unwrap(), serde_json::to_value(&wire_graph.coverage).unwrap());
     let dynamic = CompactTag::from("custom_unknown_tag");
     assert!(matches!(dynamic, CompactTag::Owned(_)));
     assert_eq!(dynamic.as_str(), "custom_unknown_tag");
@@ -127,6 +153,15 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
 
         cold_catalog.insert(path.to_owned(), extracted);
         decoded_catalog.insert(path.to_owned(), decoded);
+    }
+
+    let owned: BTreeMap<String, Facts> = cold_catalog.iter().map(|(path, facts)| (path.clone(), facts.facts.clone())).collect();
+    let borrowed: BTreeMap<&str, &Facts> = owned.iter().map(|(path, facts)| (path.as_str(), facts)).collect();
+    for catalog in [&owned as &dyn acdd_index::models::FactsLookup, &borrowed as &dyn acdd_index::models::FactsLookup] {
+        assert_eq!(catalog.len(), files.len());
+        for (path, _, _) in files {
+            assert!(catalog.get_facts(path).is_some());
+        }
     }
 
     // 3. LinkerInterner pre-hashing & ID resolution parity.

@@ -10,7 +10,7 @@ use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
 
 pub const PARALLEL_LINKER_PREP_MIN_FILES: usize = 32;
-use std::{collections::BTreeMap, path::Path};
+use std::path::Path;
 
 pub(super) struct NamespaceIndexes<'a> {
     pub(super) profiles: HashMap<&'a str, &'static dyn LanguageProfile>,
@@ -326,8 +326,7 @@ pub(super) fn package_exports<'index, 'a>(
     modules_by_namespace: &'index ModulesByNamespace<'a>,
     by_module: &'index HashMap<&'a str, Vec<&'a Node>>,
     node_rebindings: &'index super::NodeBindingIndex,
-    public_all: Option<&'a BTreeMap<String, Facts>>,
-    borrowed: Option<&'index BTreeMap<&'a str, &'a Facts>>,
+    all: &'a dyn crate::FactsLookup,
     root: Option<&Path>,
     interner: &mut LinkerInterner<'a>,
     #[cfg(feature = "lang-rust")] rust_forwarding: &'index languages::rust::linker::RustForwarding<
@@ -343,25 +342,14 @@ pub(super) fn package_exports<'index, 'a>(
         .map(|id| {
             (
                 id,
-                if let Some(public_all) = public_all {
-                    languages::linker_for(id).package_exports(
-                        interner,
-                        node_rebindings,
-                        public_all,
-                        modules_by_namespace,
-                        by_module,
-                        root,
-                    )
-                } else {
-                    languages::linker_for(id).package_exports_borrowed(
-                        interner,
-                        node_rebindings,
-                        borrowed.expect("typed facts view exists"),
-                        modules_by_namespace,
-                        by_module,
-                        root,
-                    )
-                },
+                languages::linker_for(id).package_exports(
+                    interner,
+                    node_rebindings,
+                    all,
+                    modules_by_namespace,
+                    by_module,
+                    root,
+                ),
             )
         })
         .collect();

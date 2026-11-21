@@ -19,97 +19,18 @@ impl CompactTag {
     }
 
     pub fn known(value: &str) -> Option<&'static str> {
-        Some(match value {
-            // Edge & resolution coverage tags
-            "calls" => "calls",
-            "possible_calls" => "possible_calls",
-            "imports" => "imports",
-            "contains" => "contains",
-            "references" => "references",
-            "inherits" => "inherits",
-            "implements" => "implements",
-            "bases" => "bases",
-            "decorates" => "decorates",
-            "handles" => "handles",
-            "mutates" => "mutates",
-            "registers" => "registers",
-            "exact" => "exact",
-            "inferred" => "inferred",
-            "possible" => "possible",
-            "heuristic" => "heuristic",
-            "resolved" => "resolved",
-            "external" => "external",
-            "ambiguous" => "ambiguous",
-            "unresolved" => "unresolved",
-            // Frequent AST node kinds
-            "function" => "function",
-            "method" => "method",
-            "class" => "class",
-            "struct" => "struct",
-            "enum" => "enum",
-            "trait" => "trait",
-            "impl" => "impl",
-            "module" => "module",
-            "field" => "field",
-            "constant" => "constant",
-            "variable" => "variable",
-            "type" => "type",
-            "interface" => "interface",
-            "constructor" => "constructor",
-            "component" => "component",
-            "route" => "route",
-            "document" => "document",
-            "invariant" => "invariant",
-            "table" => "table",
-            "column" => "column",
-            "namespace" => "namespace",
-            "macro" => "macro",
-            "property" => "property",
-            "template_scope" => "template_scope",
-            "island_scope" => "island_scope",
-            "template_loader_root" => "template_loader_root",
-            "main_registration" => "main_registration",
-            "cli_command_registration" => "cli_command_registration",
-            // Frequent reference kinds
-            "call" => "call",
-            "calls_endpoint" => "calls_endpoint",
-            "import" => "import",
-            "reads" => "reads",
-            "writes" => "writes",
-            "injects" => "injects",
-            "renders" => "renders",
-            "includes" => "includes",
-            "member" => "member",
-            "extends" => "extends",
-            "defines_table" => "defines_table",
-            "references_route" => "references_route",
-            "semantic_named_definition" => "semantic_named_definition",
-            "semantic_named_reference" => "semantic_named_reference",
-            "semantic_key" => "semantic_key",
-            "sql_type_queries_table" => "sql_type_queries_table",
-            // Language identifiers
-            "rust" => "rust",
-            "python" => "python",
-            "typescript" => "typescript",
-            "javascript" => "javascript",
-            "vue" => "vue",
-            "html" => "html",
-            "go" => "go",
-            "java" => "java",
-            "kotlin" => "kotlin",
-            "csharp" => "csharp",
-            "php" => "php",
-            "ruby" => "ruby",
-            "c" => "c",
-            "cpp" => "cpp",
-            "sql" => "sql",
-            "proto" => "proto",
-            "yaml" => "yaml",
-            "toml" => "toml",
-            "markdown" => "markdown",
-            "workspace" => "workspace",
-            _ => return None,
-        })
+        use super::tags::{
+            CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind, ReferenceKind,
+        };
+        use std::str::FromStr;
+        EdgeKind::from_str(value)
+            .ok()
+            .map(|v| v.as_str())
+            .or_else(|| EdgeConfidence::from_str(value).ok().map(|v| v.as_str()))
+            .or_else(|| CoverageStatus::from_str(value).ok().map(|v| v.as_str()))
+            .or_else(|| NodeKind::from_str(value).ok().map(|v| v.as_str()))
+            .or_else(|| ReferenceKind::from_str(value).ok().map(|v| v.as_str()))
+            .or_else(|| LanguageId::from_str(value).ok().map(|v| v.as_str()))
     }
 
     pub fn into_string(self) -> String {
@@ -331,13 +252,13 @@ impl Graph {
         });
     }
 
-    pub fn reference_edge(
+    pub fn reference_edge<K: Into<CompactTag>, C: Into<CompactTag>>(
         &mut self,
         path: &str,
         reference: &super::Reference,
         target: String,
-        kind: &str,
-        confidence: &str,
+        kind: K,
+        confidence: C,
     ) {
         self.push_edge(
             path,
@@ -350,11 +271,11 @@ impl Graph {
         );
     }
 
-    pub fn reference_coverage(
+    pub fn reference_coverage<S: Into<CompactTag>>(
         &mut self,
         path: &str,
         reference: &super::Reference,
-        status: &str,
+        status: S,
         evidence: Cow<'static, str>,
     ) {
         self.push_coverage(

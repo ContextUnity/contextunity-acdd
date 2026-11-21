@@ -198,13 +198,11 @@ pub fn required_full_typed_facts(
     let mut seen = std::collections::BTreeSet::new();
     for profile in languages::profiles() {
         if seen.insert(profile.id()) {
-            required.extend(
-                languages::linker_for(profile.id()).required_full_facts_borrowed(
-                    &borrowed,
-                    &projection_owners,
-                    catalog,
-                ),
-            );
+            required.extend(languages::linker_for(profile.id()).required_full_facts(
+                &borrowed,
+                &projection_owners,
+                catalog,
+            ));
         }
     }
     #[cfg(feature = "lang-typescript")]
@@ -412,7 +410,6 @@ pub fn link_compact_catalog_with_registry(
     link_compact_impl(
         &catalog.files,
         None,
-        None,
         root,
         dependencies,
         &mut interner,
@@ -518,7 +515,6 @@ pub fn link_compact_with_registry(
         .collect();
     link_compact_impl(
         all,
-        Some(all),
         owners,
         root,
         dependency_registry,
@@ -574,7 +570,6 @@ pub fn link_compact_with_typed_registry(
     }
     link_compact_impl(
         all,
-        None,
         owners,
         root,
         dependency_registry,
@@ -656,7 +651,6 @@ fn language_context_key_hash(
 #[allow(clippy::too_many_arguments)]
 fn link_compact_impl<'a, 'maps, 'uncertainties>(
     all: &'a (dyn crate::FactsLookup + Sync),
-    public_all: Option<&'a BTreeMap<String, Facts>>,
     owners: Option<&std::collections::BTreeSet<String>>,
     root: Option<&Path>,
     dependency_registry: &'a languages::dependency_registry::DependencyRegistry,
@@ -1022,16 +1016,12 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
         }
         let namespace_indexes =
             indexing::NamespaceIndexes::build(all, &nodes, root, dependency_registry, interner);
-        let borrowed_all = public_all
-            .is_none()
-            .then(|| all.iter_facts().collect::<BTreeMap<_, _>>());
         let package_exports = indexing::package_exports(
             &namespace_indexes.profiles,
             &namespace_indexes.modules_by_namespace,
             &by_module,
             &node_rebindings,
-            public_all,
-            borrowed_all.as_ref(),
+            all,
             root,
             interner,
             #[cfg(feature = "lang-rust")]

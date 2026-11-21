@@ -1,17 +1,19 @@
 //! Language-owned import and receiver resolution used by the shared linker.
 
+pub use crate::models::FactsLookup;
+
 use super::NodeBindingIndex;
+use crate::models::{Facts, Node, Reference};
 use crate::{
+    interner::{LinkerInterner, PathId, SymbolId},
     languages::{
         dependency_registry::DependencyRegistry, manifests::FrameworkManifest, ImportPath,
         LanguageFamily, LanguageProfile,
     },
-    interner::{LinkerInterner, PathId, SymbolId},
 };
-use crate::models::{Facts, Node, Reference};
 use hashbrown::HashMap;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     path::Path,
 };
 
@@ -111,9 +113,7 @@ pub(crate) fn filter_stubs_and_overloads(candidates: &mut Vec<&Node>) {
 /// Disambiguate Rust candidate sets whose definitions are pairwise mutually exclusive
 /// under `#[cfg(...)]` attributes. Non-exclusive siblings remain ambiguous (fail-closed).
 pub(crate) fn disambiguate_rust_cfg_siblings(candidates: &mut Vec<&Node>) {
-    if candidates.len() <= 1
-        || !candidates.iter().all(|node| node.language == "rust")
-    {
+    if candidates.len() <= 1 || !candidates.iter().all(|node| node.language == "rust") {
         return;
     }
     let parsed: Vec<Option<CfgExpr>> = candidates.iter().map(|node| node_cfg_expr(node)).collect();
@@ -311,15 +311,8 @@ fn os_family_conflict(k_os: &str, v_os: &str, k_fam: &str, v_fam: &str) -> bool 
 }
 
 fn is_stub_or_overload(node: &Node) -> bool {
-    node.details
-        .get("is_stub")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false)
-        || node
-            .details
-            .get("is_overload")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
+    let flags = crate::models::NodeDetailFlags::from_value(&node.details);
+    flags.is_stub || flags.is_overload
 }
 
 /// Input for a language linker resolving one import.
@@ -440,22 +433,7 @@ pub trait LanguageLinker: Send + Sync {
         &self,
         _interner: &mut LinkerInterner<'a>,
         _node_rebindings: &NodeBindingIndex,
-        _all: &'a BTreeMap<String, Facts>,
-        _modules_by_namespace: &ModulesByNamespace<'a>,
-        _by_module: &HashMap<&'a str, Vec<&'a Node>>,
-        _root: Option<&Path>,
-    ) -> PackageExports<'a> {
-        HashMap::new()
-    }
-
-    /// Builds package re-export indexes from borrowed per-file facts.
-    ///
-    /// The borrowed form avoids cloning facts during incremental relinking.
-    fn package_exports_borrowed<'a>(
-        &self,
-        _interner: &mut LinkerInterner<'a>,
-        _node_rebindings: &NodeBindingIndex,
-        _all: &BTreeMap<&'a str, &'a Facts>,
+        _all: &'a dyn crate::FactsLookup,
         _modules_by_namespace: &ModulesByNamespace<'a>,
         _by_module: &HashMap<&'a str, Vec<&'a Node>>,
         _root: Option<&Path>,
@@ -466,19 +444,7 @@ pub trait LanguageLinker: Send + Sync {
     /// Returns files whose full facts are required to relink affected owners.
     fn required_full_facts(
         &self,
-        _facts: &BTreeMap<String, Facts>,
-        _affected: &BTreeSet<String>,
-        _catalog: &[(&str, &str)],
-    ) -> BTreeSet<String> {
-        BTreeSet::new()
-    }
-
-    /// Returns files whose borrowed full facts are needed to relink affected owners.
-    ///
-    /// Implementations keep the returned set scoped to the affected import graph.
-    fn required_full_facts_borrowed(
-        &self,
-        _facts: &BTreeMap<String, &Facts>,
+        _facts: &dyn crate::FactsLookup,
         _affected: &BTreeSet<String>,
         _catalog: &[(&str, &str)],
     ) -> BTreeSet<String> {

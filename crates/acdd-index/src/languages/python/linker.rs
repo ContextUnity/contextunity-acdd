@@ -6,7 +6,7 @@ use crate::linker::traits::{
     package_export, resolve_default_import,
 };
 use hashbrown::{HashMap, HashSet};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 pub(crate) struct PythonLinker;
@@ -156,7 +156,7 @@ impl LanguageLinker for PythonLinker {
         &self,
         interner: &mut LinkerInterner<'a>,
         node_rebindings: &crate::linker::NodeBindingIndex,
-        all: &'a BTreeMap<String, Facts>,
+        all: &'a dyn crate::FactsLookup,
         modules_by_namespace: &crate::linker::traits::ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
         root: Option<&Path>,
@@ -164,49 +164,23 @@ impl LanguageLinker for PythonLinker {
         package_exports(
             interner,
             node_rebindings,
-            all.values(),
+            all.values_facts(),
             modules_by_namespace,
             by_module,
             root,
         )
     }
 
-    fn package_exports_borrowed<'a>(
-        &self,
-        interner: &mut LinkerInterner<'a>,
-        node_rebindings: &crate::linker::NodeBindingIndex,
-        all: &BTreeMap<&'a str, &'a Facts>,
-        modules_by_namespace: &crate::linker::traits::ModulesByNamespace<'a>,
-        by_module: &HashMap<&'a str, Vec<&'a Node>>,
-        root: Option<&Path>,
-    ) -> crate::linker::traits::PackageExports<'a> {
-        package_exports(
-            interner,
-            node_rebindings,
-            all.values().copied(),
-            modules_by_namespace,
-            by_module,
-            root,
-        )
-    }
 
     fn required_full_facts(
         &self,
-        facts: &BTreeMap<String, Facts>,
+        facts: &dyn crate::FactsLookup,
         affected: &BTreeSet<String>,
         catalog: &[(&str, &str)],
     ) -> BTreeSet<String> {
         required_full_facts(facts, affected, catalog)
     }
 
-    fn required_full_facts_borrowed(
-        &self,
-        facts: &BTreeMap<String, &Facts>,
-        affected: &BTreeSet<String>,
-        catalog: &[(&str, &str)],
-    ) -> BTreeSet<String> {
-        required_full_facts(facts, affected, catalog)
-    }
 
     fn needs_reference_identity(&self, path: &str, facts: &Facts) -> bool {
         needs_reference_identity(path, facts)

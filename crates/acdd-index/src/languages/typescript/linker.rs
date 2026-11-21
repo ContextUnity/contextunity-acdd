@@ -471,23 +471,12 @@ impl LanguageLinker for TypeScriptLinker {
         &self,
         interner: &mut LinkerInterner<'a>,
         _node_rebindings: &crate::linker::NodeBindingIndex,
-        all: &'a BTreeMap<String, Facts>,
+        all: &'a dyn crate::FactsLookup,
         modules: &ModulesByNamespace<'a>,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
         root: Option<&Path>,
     ) -> PackageExports<'a> {
-        package_exports(interner, all.values(), modules, by_module, root)
-    }
-    fn package_exports_borrowed<'a>(
-        &self,
-        interner: &mut LinkerInterner<'a>,
-        _node_rebindings: &crate::linker::NodeBindingIndex,
-        all: &BTreeMap<&'a str, &'a Facts>,
-        modules: &ModulesByNamespace<'a>,
-        by_module: &HashMap<&'a str, Vec<&'a Node>>,
-        root: Option<&Path>,
-    ) -> PackageExports<'a> {
-        package_exports(interner, all.values().copied(), modules, by_module, root)
+        package_exports(interner, all.values_facts(), modules, by_module, root)
     }
     fn needs_reference_identity(&self, _path: &str, facts: &Facts) -> bool {
         javascript(facts)
@@ -511,15 +500,7 @@ impl LanguageLinker for TypeScriptLinker {
     }
     fn required_full_facts(
         &self,
-        facts: &BTreeMap<String, Facts>,
-        _affected: &BTreeSet<String>,
-        catalog: &[(&str, &str)],
-    ) -> BTreeSet<String> {
-        required_full_facts(facts, _affected, catalog)
-    }
-    fn required_full_facts_borrowed(
-        &self,
-        facts: &BTreeMap<String, &Facts>,
+        facts: &dyn crate::FactsLookup,
         _affected: &BTreeSet<String>,
         catalog: &[(&str, &str)],
     ) -> BTreeSet<String> {

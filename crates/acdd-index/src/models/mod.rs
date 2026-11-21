@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 pub mod compact_graph;
+pub mod details;
+pub use details::{NodeDetailFlags, NodeDetailKey};
+pub mod tags;
+pub use tags::{CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind, ReferenceKind};
 #[derive(Debug, Clone, Deserialize)]
 /// Indexed source declaration with a stable identity and compact metadata projection.
 pub struct Node {
@@ -692,8 +696,9 @@ impl AsRef<Facts> for Facts {
 
 /// Object-safe read view over a path-keyed catalog of file [`Facts`], allowing
 /// internal linker passes to compile once rather than monomorphizing per `AsRef<Facts>` type.
-pub(crate) trait FactsLookup {
+pub trait FactsLookup {
     fn len(&self) -> usize;
+    fn is_empty(&self) -> bool { self.len() == 0 }
     fn get_facts(&self, path: &str) -> Option<&Facts>;
     fn get_entry<'a>(&'a self, path: &str) -> Option<(&'a str, &'a Facts)>;
     fn contains_facts(&self, path: &str) -> bool {
@@ -723,7 +728,10 @@ impl<F: AsRef<Facts>> FactsLookup for std::collections::BTreeMap<String, F> {
     }
 
     fn iter_facts<'a>(&'a self) -> Box<dyn Iterator<Item = (&'a str, &'a Facts)> + 'a> {
-        Box::new(self.iter().map(|(path, facts)| (path.as_str(), facts.as_ref())))
+        Box::new(
+            self.iter()
+                .map(|(path, facts)| (path.as_str(), facts.as_ref())),
+        )
     }
 
     fn values_facts<'a>(&'a self) -> Box<dyn Iterator<Item = &'a Facts> + 'a> {

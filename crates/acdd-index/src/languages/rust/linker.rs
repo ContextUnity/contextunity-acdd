@@ -6,7 +6,6 @@ use crate::linker::traits::{
 };
 use crate::models::{Facts, Node};
 use hashbrown::{HashMap, HashSet};
-use std::collections::BTreeMap;
 
 const RUST_ALIAS_DEPTH: usize = 64;
 
@@ -1013,37 +1012,18 @@ impl LanguageLinker for RustLinker {
         &self,
         interner: &mut LinkerInterner<'a>,
         _node_rebindings: &crate::linker::NodeBindingIndex,
-        all: &'a BTreeMap<String, Facts>,
+        all: &'a dyn crate::FactsLookup,
         _modules_by_namespace: &ModulesByNamespace<'a>,
         _by_module: &HashMap<&'a str, Vec<&'a Node>>,
         _root: Option<&std::path::Path>,
     ) -> PackageExports<'a> {
-        declared_exports(all.values(), interner)
+        declared_exports(all.values_facts(), interner)
     }
 
-    fn package_exports_borrowed<'a>(
-        &self,
-        interner: &mut LinkerInterner<'a>,
-        _node_rebindings: &crate::linker::NodeBindingIndex,
-        all: &BTreeMap<&'a str, &'a Facts>,
-        _modules_by_namespace: &ModulesByNamespace<'a>,
-        _by_module: &HashMap<&'a str, Vec<&'a Node>>,
-        _root: Option<&std::path::Path>,
-    ) -> PackageExports<'a> {
-        declared_exports(all.values().copied(), interner)
-    }
 
     fn required_full_facts(
         &self,
-        facts: &BTreeMap<String, Facts>,
-        affected: &std::collections::BTreeSet<String>,
-        catalog: &[(&str, &str)],
-    ) -> std::collections::BTreeSet<String> {
-        required_full_facts(facts, affected, catalog)
-    }
-    fn required_full_facts_borrowed(
-        &self,
-        facts: &BTreeMap<String, &Facts>,
+        facts: &dyn crate::FactsLookup,
         affected: &std::collections::BTreeSet<String>,
         catalog: &[(&str, &str)],
     ) -> std::collections::BTreeSet<String> {

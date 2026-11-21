@@ -112,6 +112,15 @@ fn canonical_graph_tables_store_numeric_keys_and_first_class_owners() -> Result<
             && !object.contains_key("node_hash")
             && !object.contains_key("owner_path_id")
     }));
+    use acdd_index::models::NodeDetailFlags;
+    for (raw, entrypoint, cfg_test, stub) in [
+        (r##"{"entrypoint":false,"decorators":["#[cfg(test)]"],"is_stub":true}"##, true, true, true),
+        (r#"{"entrypoint":null,"decorators":[],"is_stub":"true"}"#, false, false, false),
+        ("invalid", false, false, false),
+    ] {
+        let flags = NodeDetailFlags::from_json(raw);
+        assert_eq!((flags.has_entrypoint, flags.has_cfg_test, flags.is_stub), (entrypoint, cfg_test, stub));
+    }
     commitments::seal(&conn)?;
     commitments::verify(&conn)?;
     Ok(())

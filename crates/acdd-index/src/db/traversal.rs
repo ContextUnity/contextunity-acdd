@@ -1,8 +1,8 @@
 use super::{paging, reader, symbols};
 use crate::db::commitments;
+use crate::models::stable_hash64;
 use acdd_core::config;
 use acdd_core::git;
-use crate::models::stable_hash64;
 use acdd_core::response::{CoverageOptions, QueryOptions, MAX_PAGE_SIZE};
 use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OptionalExtension};
@@ -552,7 +552,8 @@ fn collect_change_snapshot(
             let output = git::git_command(root, &["show", &object])?;
             output.status.success().then_some(output.stdout)
         } else {
-            let adapter = worktree_adapter.get_or_insert_with(|| config::load_adapter(root, None).ok());
+            let adapter =
+                worktree_adapter.get_or_insert_with(|| config::load_adapter(root, None).ok());
             adapter
                 .as_ref()
                 .and_then(|adapter| worktree_postimage(root, adapter, &path).ok())
@@ -1728,7 +1729,11 @@ struct DuplicateBlockWindow {
     abs_end_line: usize,
 }
 
-fn duplicate_block_windows_overlap(a: DuplicateBlockWindow, b: DuplicateBlockWindow, min_lines: usize) -> bool {
+fn duplicate_block_windows_overlap(
+    a: DuplicateBlockWindow,
+    b: DuplicateBlockWindow,
+    min_lines: usize,
+) -> bool {
     if a.candidate_idx != b.candidate_idx {
         return false;
     }
@@ -2196,12 +2201,15 @@ pub fn duplicates_paged(
         for window_start in 0..=lines.len().saturating_sub(min_lines) {
             let hash = hash_normalized_window(lines, window_start, min_lines);
             let abs_line = c.line + c.body_trim_start + window_start;
-            block_hashes.entry(hash).or_default().push(DuplicateBlockWindow {
-                candidate_idx: idx,
-                window_start,
-                abs_line,
-                abs_end_line: abs_line + min_lines - 1,
-            });
+            block_hashes
+                .entry(hash)
+                .or_default()
+                .push(DuplicateBlockWindow {
+                    candidate_idx: idx,
+                    window_start,
+                    abs_line,
+                    abs_end_line: abs_line + min_lines - 1,
+                });
         }
     }
 
@@ -2230,7 +2238,9 @@ pub fn duplicates_paged(
         unique_locs.sort_by(|a, b| {
             let ca = &candidates[a.candidate_idx];
             let cb = &candidates[b.candidate_idx];
-            ca.path.cmp(&cb.path).then_with(|| a.abs_line.cmp(&b.abs_line))
+            ca.path
+                .cmp(&cb.path)
+                .then_with(|| a.abs_line.cmp(&b.abs_line))
         });
         let mut dup_line_locations = 0;
         for occ in &unique_locs[1..] {
@@ -2411,42 +2421,6 @@ fn is_under_cfg_test_module(qualname: &str, cfg_test_mods: &HashSet<String>) -> 
     false
 }
 
-fn parse_node_detail_flags(details_raw: &str) -> (bool, bool, bool, bool, bool) {
-    if !details_raw.starts_with('{')
-        || !(details_raw.contains("\"entrypoint\"")
-            || details_raw.contains("\"impl_trait\"")
-            || details_raw.contains("\"trait_default\"")
-            || details_raw.contains("\"decorators\""))
-    {
-        return (false, false, false, false, false);
-    }
-    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(details_raw) else {
-        return (false, false, false, false, false);
-    };
-    let has_entrypoint = map.get("entrypoint").is_some_and(|v| !v.is_null());
-    let has_impl_trait = map.get("impl_trait").is_some_and(|v| !v.is_null());
-    let has_trait_default = map.get("trait_default").is_some_and(|v| !v.is_null());
-    let mut has_cfg_test = false;
-    let mut has_tool = false;
-    if let Some(decs) = map.get("decorators").and_then(Value::as_array) {
-        for dec in decs.iter().filter_map(Value::as_str) {
-            if dec.contains("cfg(test)") {
-                has_cfg_test = true;
-            }
-            if dec.starts_with("#[tool") || dec.starts_with("#[rmcp::tool") {
-                has_tool = true;
-            }
-        }
-    }
-    (
-        has_entrypoint,
-        has_impl_trait,
-        has_trait_default,
-        has_cfg_test,
-        has_tool,
-    )
-}
-
 fn load_dead_tails_graph(conn: &Connection) -> Result<DeadTailsGraph> {
     let mut nodes: HashMap<i64, DeadTailsNode> = HashMap::new();
     let mut cfg_test_mods: HashSet<String> = HashSet::new();
@@ -2475,8 +2449,14 @@ fn load_dead_tails_graph(conn: &Connection) -> Result<DeadTailsGraph> {
             let generated: bool = row.get(9)?;
             let details_raw: String = row.get(10)?;
 
-            let (has_entrypoint, has_impl_trait, has_trait_default, has_cfg_test, has_tool) =
-                parse_node_detail_flags(&details_raw);
+            let crate::models::NodeDetailFlags {
+                has_entrypoint,
+                has_impl_trait,
+                has_trait_default,
+                has_cfg_test,
+                has_tool,
+                ..
+            } = crate::models::NodeDetailFlags::from_json(&details_raw);
 
             if kind == "module_declaration" && has_cfg_test {
                 cfg_test_mods.insert(qualname.clone());
@@ -2487,10 +2467,7 @@ fn load_dead_tails_graph(conn: &Connection) -> Result<DeadTailsGraph> {
             ) {
                 node_names.insert(name.clone());
             }
-            if matches!(
-                kind.as_str(),
-                "module" | "module_declaration" | "namespace"
-            ) {
+            if matches!(kind.as_str(), "module" | "module_declaration" | "namespace") {
                 if let Some(tail) = qualname.rsplit('.').next() {
                     if !tail.is_empty() {
                         module_names.insert(tail.to_owned());
@@ -2669,9 +2646,7 @@ fn propagate_nested_contains(
             let Some(child) = nodes.get(&child_hash) else {
                 continue;
             };
-            if !child.is_test_ctx
-                && matches!(child.kind.as_str(), "struct" | "impl" | "enum")
-            {
+            if !child.is_test_ctx && matches!(child.kind.as_str(), "struct" | "impl" | "enum") {
                 if let Some(nested) = contains_children.get(&child_hash) {
                     queue.extend(nested.iter().copied());
                 }
@@ -2785,7 +2760,11 @@ fn strip_comments_and_strings_preserving_lines(src: &str) -> String {
             continue;
         }
         if bytes[i] == b'\'' {
-            if i + 2 < len && bytes[i + 1] != b'\\' && bytes[i + 1] != b'\n' && bytes[i + 2] == b'\'' {
+            if i + 2 < len
+                && bytes[i + 1] != b'\\'
+                && bytes[i + 1] != b'\n'
+                && bytes[i + 2] == b'\''
+            {
                 out[i] = b' ';
                 out[i + 1] = b' ';
                 out[i + 2] = b' ';
@@ -2812,10 +2791,8 @@ fn strip_comments_and_strings_preserving_lines(src: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn scan_bare_callback_tokens<F>(
-    text: &str,
-    match_token: &mut F,
-) where
+fn scan_bare_callback_tokens<F>(text: &str, match_token: &mut F)
+where
     F: FnMut(&str, bool),
 {
     let bytes = text.as_bytes();
@@ -2847,8 +2824,7 @@ fn scan_bare_callback_tokens<F>(
             let word_end = idx + 1;
             let mut word_start = word_end;
             while word_start > 0
-                && (bytes[word_start - 1].is_ascii_alphanumeric()
-                    || bytes[word_start - 1] == b'_')
+                && (bytes[word_start - 1].is_ascii_alphanumeric() || bytes[word_start - 1] == b'_')
             {
                 word_start -= 1;
             }
@@ -2928,7 +2904,10 @@ fn wire_same_file_callbacks(
 
     for node in nodes.values() {
         if node.is_test_ctx {
-            path_test_nodes.entry(node.path.as_str()).or_default().push(node);
+            path_test_nodes
+                .entry(node.path.as_str())
+                .or_default()
+                .push(node);
             continue;
         }
         if candidates.contains(&node.hash) {
@@ -2977,7 +2956,10 @@ fn wire_same_file_callbacks(
             for &cand in cands {
                 by_name.entry(cand.name.as_str()).or_default().push(cand);
             }
-            let prod_fns = path_all_prod_fns.get(path).map(Vec::as_slice).unwrap_or(&[]);
+            let prod_fns = path_all_prod_fns
+                .get(path)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             let test_nodes = path_test_nodes.get(path).map(Vec::as_slice).unwrap_or(&[]);
 
             let masked = strip_comments_and_strings_preserving_lines(&raw);
@@ -3009,7 +2991,10 @@ fn wire_same_file_callbacks(
                     .filter(|f| line_num >= f.line && line_num <= f.end_line)
                     .min_by_key(|f| (f.end_line - f.line, f.line, f.hash));
 
-                if enclosing.is_none() && !in_top_level_const && starts_top_level_const_or_static(trimmed) {
+                if enclosing.is_none()
+                    && !in_top_level_const
+                    && starts_top_level_const_or_static(trimmed)
+                {
                     in_top_level_const = true;
                     const_delim_depth = 0;
                 }
@@ -3043,7 +3028,9 @@ fn wire_same_file_callbacks(
                     for b in line_text.bytes() {
                         match b {
                             b'(' | b'[' | b'{' => const_delim_depth += 1,
-                            b')' | b']' | b'}' => const_delim_depth = const_delim_depth.saturating_sub(1),
+                            b')' | b']' | b'}' => {
+                                const_delim_depth = const_delim_depth.saturating_sub(1)
+                            }
                             b';' if const_delim_depth == 0 => terminated = true,
                             _ => {}
                         }
@@ -3302,12 +3289,7 @@ pub fn dead_tails_paged(
         .map(|(node, lines)| {
             let mut caller_nodes: Vec<&DeadTailsNode> = test_callers
                 .get(&node.hash)
-                .map(|hashes| {
-                    hashes
-                        .iter()
-                        .filter_map(|h| graph.nodes.get(h))
-                        .collect()
-                })
+                .map(|hashes| hashes.iter().filter_map(|h| graph.nodes.get(h)).collect())
                 .unwrap_or_default();
             caller_nodes.sort_by(|a, b| {
                 a.path
@@ -3347,10 +3329,9 @@ pub fn dead_tails_paged(
     let dead_tail_items: Vec<Value> = dead_tail_nodes
         .into_iter()
         .map(|(node, lines)| {
-            let dead_callees_count = graph
-                .fwd
-                .get(&node.hash)
-                .map_or(0, |callees| callees.iter().filter(|c| dead.contains(*c)).count());
+            let dead_callees_count = graph.fwd.get(&node.hash).map_or(0, |callees| {
+                callees.iter().filter(|c| dead.contains(*c)).count()
+            });
             json!({
                 "id": node.id,
                 "name": node.name,
@@ -3521,8 +3502,8 @@ pub fn query_with_path_options(
 #[cfg(test)]
 mod duplicates_paged_seam_tests {
     use super::*;
-    use acdd_core::response::{QueryOptions, ResponsePolicy};
     use crate::db::SCHEMA_DDL;
+    use acdd_core::response::{QueryOptions, ResponsePolicy};
     use rusqlite::Connection;
 
     #[test]
