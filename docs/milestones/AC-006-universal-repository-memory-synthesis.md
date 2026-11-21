@@ -11,10 +11,10 @@ owners:
 - crates/acdd-core/src/models.rs
 - crates/acdd-core/src/ports.rs
 - crates/acdd-index/src/docs.rs
-- crates/acdd-index/src/db/reader.rs
+- crates/acdd-index/src/db/reader/
 - crates/acdd-state/src/
 - src/state_bridge/
-- src/engine/pipeline.rs
+- src/engine/pipeline/
 - src/cli/
 - src/mcp/
 - docs/adr/
@@ -110,14 +110,14 @@ line-refreshed at Task 0:
 | `DocSection`, `NavigationDetails` | `crates/acdd-index/src/models.rs` | Existing docs DTO and metadata serialization boundary; adjacent pure memory DTO in `acdd-core`, no registry |
 | `ModulesConfig` | `crates/acdd-core/src/subsystems.rs` | `modules.memory` runtime toggle and module availability policy |
 | `extract_with_details` | `crates/acdd-index/src/docs.rs` | Returns document sections plus structured source metadata |
-| `search_docs_with_options`, `DocSearchOptions` | `crates/acdd-index/src/db/reader.rs` | Existing FTS5 `doc_search` `bm25(doc_search,3.0,1.0,1.0)` query path reused by `acdd_memory(action: "query")` |
-| `extract_typed_source_with_digest` | `src/engine/pipeline.rs` | Copies selected document metadata into document-node details |
+| `search_docs_with_options`, `DocSearchOptions` | `crates/acdd-index/src/db/reader/docs.rs` | Existing FTS5 `doc_search` `bm25(doc_search,3.0,1.0,1.0)` query path reused by `acdd_memory(action: "query")` |
+| `extract_typed_source_with_digest` | `src/engine/pipeline/cold.rs` | Copies selected document metadata into document-node details |
 | `StateBackend`, `StateReader`, `StateTx` | `crates/acdd-state/src/store/traits.rs` | Owns `gate_traces`, `blackboard`, `gate_artifacts`, and `run_tombstones` evidence queries |
 | `SqliteStateBackend`, `StateBackend` | `crates/acdd-state/src/store/sqlite/mod.rs` | Durable SQLite storage backend for persistent runs and run tombstones |
-| `build_claim_context` | `crates/acdd-state/src/context.rs` | Bounded 6-tier `ClaimResp` assembly calling `DomainProvider::context_lens` for memory context |
+| `build_claim_context` | `crates/acdd-state/src/context/mod.rs` | Bounded 6-tier `ClaimResp` assembly calling `DomainProvider::context_lens` for memory context |
 | `DomainProviderBridge`, `DocsDomainProvider` | `src/state_bridge/mod.rs`, `src/state_bridge/docs_domain.rs` | Hosts domain context lenses, checks, and plugin tool dispatch (`acdd_memory`) |
-| `Command` | `src/cli/mod.rs` | Flat `0.6.0` CLI dispatch (`acdd memory ...` and `acdd tool ...`); MCP shares the same backend |
-| `BUILTIN_MCP_TOOLS` dispatch & handlers | `src/mcp/tools.rs`, `src/mcp/tools/inputs.rs` | 19 built-in static tools + dynamic `<domain>_<name>` plugin dispatch (hosts `acdd_memory`) |
+| `Command` | `src/cli/args.rs` | Flat `0.6.0` CLI dispatch (`acdd memory ...` and `acdd tool ...`); MCP shares the same backend |
+| `BUILTIN_MCP_TOOLS` dispatch & handlers | `src/mcp/tools/mod.rs`, `src/mcp/tools/dispatch.rs`, `src/mcp/tools/inputs.rs` | 19 built-in static tools + dynamic `<domain>_<name>` plugin dispatch (hosts `acdd_memory`) |
 
 `search_docs` grounding covers core leaf isolation, minimal intervention and scope
 integrity in the contract-planning add-on, stage-tailored context in ADR 0006,
@@ -258,7 +258,7 @@ history, or duplicated root-level memory field enters a prompt.
 
 Gate context assembly calls this resolver via a `DomainProvider` context lens
 (e.g., `docs.memory` registered in `src/state_bridge/docs_domain.rs`) wired into
-`build_claim_context` (`crates/acdd-state/src/context.rs`) and spawner prompt
+`build_claim_context` (`crates/acdd-state/src/context/mod.rs`) and spawner prompt
 construction (`crates/acdd-state/src/runner/spawner.rs`). All unified `Run` and
 `GateMode` shapes — `worktree`, `in_place`, and `ephemeral` (`save: none`) runs
 across `mode: linear`, `mode: parallel`, and `mode: swarm` shard cursors
@@ -330,7 +330,7 @@ changes.
 `acdd memory query "<text>" [--include-stale]` MUST be implemented as a **thin typed
 alias/façade** over existing
 `reader::search_docs_with_options(..., DocSearchOptions { doc_type: Some("memory"), ... })`
-in `crates/acdd-index/src/db/reader.rs` (`doc_search` FTS5
+in `crates/acdd-index/src/db/reader/docs.rs` (`doc_search` FTS5
 `bm25(doc_search, 3.0, 1.0, 1.0)`). By default (`include_stale: false`), the façade
 filters out records whose declared status or live anchor validation resolves to
 `stale` or `superseded` (and surfaces explicit stale/superseded status markers when
@@ -359,7 +359,7 @@ already contains them: exact code-map searches returned no `RepositoryMemory`,
 `MemoryRequest`, state/bridge `memory` backend, or `acdd_memory` tool. Their
 declaring files are explicitly scoped. Existing container evidence is the
 inspected core `models.rs`, `crates/acdd-core/src/ports.rs`,
-`crates/acdd-index/src/db/reader.rs`, `crates/acdd-state/src/{context,store/traits}.rs`,
+`crates/acdd-index/src/db/reader/`, `crates/acdd-state/src/{context/mod,store/traits}.rs`,
 `src/state_bridge/docs_domain.rs`, and CLI/MCP input/handler modules.
 Task 0 creates and indexes the shared new declarations before downstream scope
 closure is checked. Do not declare a new symbol against an unrelated existing container.
@@ -465,10 +465,10 @@ depends_on:
 scope:
 - crates/acdd-index/src/docs.rs
 - crates/acdd-core/src/models.rs
-- crates/acdd-core/src/config.rs
-- crates/acdd-index/src/db/ingest.rs
-- crates/acdd-index/src/db/writer.rs
-- src/engine/pipeline.rs
+- crates/acdd-core/src/config/
+- crates/acdd-index/src/db/writer/ingest.rs
+- crates/acdd-index/src/db/writer/mod.rs
+- src/engine/pipeline/
 - docs/architecture/indexing.md
 - tests/acdd/memory/projection.rs
 - tests/acdd/fixtures/memories/projection/
@@ -540,7 +540,7 @@ depends_on:
 scope:
 - src/state_bridge/docs_domain.rs
 - src/state_bridge/mod.rs
-- crates/acdd-index/src/db/reader.rs
+- crates/acdd-index/src/db/reader/
 - docs/reference/repository-memory.md
 - docs/architecture/repository-memory.md
 - tests/acdd/memory/resolver.rs
@@ -577,12 +577,12 @@ contract_revision: 1
 depends_on:
 - deterministic-resolver-and-memory-lifecycle
 scope:
-- crates/acdd-state/src/context.rs
+- crates/acdd-state/src/context/
 - crates/acdd-state/src/machine/claim.rs
 - crates/acdd-state/src/machine/submit.rs
 - crates/acdd-state/src/runner/spawner.rs
 - crates/acdd-state/src/runner/waves.rs
-- crates/acdd-state/src/usecases/lifecycle.rs
+- crates/acdd-state/src/usecases/lifecycle/
 - src/state_bridge/mod.rs
 - src/state_bridge/docs_domain.rs
 - docs/adr/0003-unified-profile-graph-and-state-machine.md
@@ -622,9 +622,11 @@ contract_revision: 1
 depends_on:
 - universal-gate-context-and-closure-evidence
 scope:
+- src/cli/args.rs
 - src/cli/mod.rs
 - src/cli/memory.rs
-- src/mcp/tools.rs
+- src/mcp/tools/mod.rs
+- src/mcp/tools/dispatch.rs
 - src/mcp/tools/inputs.rs
 - src/mcp/metadata.rs
 - src/format/mod.rs

@@ -23,7 +23,7 @@ A client receives three texts for this server. Keep each fact in one layer.
 | Tool description | `description` on each tool | What that call returns, plus one limit the schema cannot express. |
 | Input schema | Description on each input field | Accepted values, defaults, and pairings such as nonzero `offset` with `generation`. |
 
-Selector grammar, SQL shape, proof objects, and examples stay in this page and in `acdd_guide`. Verify a changed sentence against the handler in `src/mcp/tools.rs` and the query implementation it calls. Connection and the first-call check stay in [MCP setup](mcp-setup.md).
+Selector grammar, SQL shape, proof objects, and examples stay in this page and in `acdd_guide`. Verify a changed sentence against the handler in `src/mcp/tools/` and the query implementation it calls. Connection and the first-call check stay in [MCP setup](mcp-setup.md).
 
 ## Efficient navigation
 
@@ -186,7 +186,7 @@ absent signals produce no hints. CLI flags use hyphens, for example
 
 In addition to the 19 built-in static tools above, active `DomainProvider` plugins
 can register domain-scoped tools as `<domain>_<name>` (dispatched dynamically by
-`src/mcp/tools.rs` when `modules.domains.<domain>` is enabled). See
+`src/mcp/tools/dispatch.rs` when `modules.domains.<domain>` is enabled). See
 [state, tasks & lifecycle](tasks.md) for action schemas, receipts, and recovery,
 and the `acdd` skill for agent execution workflows.
 

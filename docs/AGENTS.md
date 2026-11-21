@@ -27,7 +27,7 @@ commitments, ordering, and dependencies from `milestones/`.
 
 Keep connection steps in [MCP setup](reference/mcp-setup.md). Keep tool behavior in [MCP tools](reference/mcp-tools.md).
 
-When editing server instructions, tool descriptions, or input-schema text in `src/mcp/tools.rs`, assign each fact to one layer and match it to the handler before writing it. Update [MCP tools](reference/mcp-tools.md) in the same change when the contract changes.
+When editing server instructions, tool descriptions, or input-schema text in `src/mcp/tools/` (`mod.rs` and `inputs.rs`), assign each fact to one layer and match it to the handler before writing it. Update [MCP tools](reference/mcp-tools.md) in the same change when the contract changes.
 
 ## ACDD MCP indexing rules
 

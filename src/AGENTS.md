@@ -67,7 +67,7 @@ Crate-local instructions:
 
 ### When to Keep Together (DO NOT Split)
 - **High Domain Cohesion**: Closely related data structures, types, and their direct transformation logic belonging to the same semantic unit.
-- **Tightly Coupled Pipelines**: Complex static analysis algorithms (`crates/acdd-index/src/linker/value_flow.rs`, `crates/acdd-index/src/linker/semantic_context.rs`, and `crates/acdd-index/src/linker/mod.rs`) where splitting would require exposing private internal state, inventing synthetic glue DTOs, or creating circular imports.
+- **Tightly Coupled Pipelines**: Complex static analysis algorithms (`crates/acdd-index/src/linker/value_flow/`, `crates/acdd-index/src/linker/semantic_context/`, and `crates/acdd-index/src/linker/mod.rs`) where splitting would require exposing private internal state, inventing synthetic glue DTOs, or creating circular imports.
 - **Linear Readability**: Keeping a cohesive multi-pass algorithm readable top-to-bottom in a single file is preferred over scattering logic across shallow delegating helpers.
 
 ### When to Split (DO Split)
@@ -98,7 +98,7 @@ Crate-local instructions:
 3. **Advisory File Locks (`acdd_core::lock`)**:
    - `acdd_core::lock` (`crates/acdd-core/src/lock.rs`) owns blocking and bounded-retry shared/exclusive OS file locks via `std::fs::File::try_lock*` / `lock*` with `O_NOFOLLOW` regular-file opening (`0o600`). Do not reimplement `libc::flock` polling loops downstream.
 4. **Configuration, Errors, Hashing & Formatting (`acdd_core::{config, errors, format}`)**:
-   - `acdd_core::config` (`crates/acdd-core/src/config.rs`) is the sole owner of `Adapter`, `AdapterFile`, `LinkedWorkspace`, `ScannerLimits`, legacy `0.5` key detection (`ConfigMigrationRequired`), `load_adapter`, `load_adapter_strict`, `load_adapter_report`, `resolve_state_db_path`, and `resolve_code_db_path`.
+   - `acdd_core::config` (`crates/acdd-core/src/config/`) is the sole owner of `Adapter`, `AdapterFile`, `LinkedWorkspace`, `ScannerLimits`, legacy `0.5` key detection (`ConfigMigrationRequired`), `load_adapter`, `load_adapter_strict`, `load_adapter_report`, `resolve_state_db_path`, and `resolve_code_db_path`.
    - `acdd_core::errors` (`crates/acdd-core/src/errors.rs`) is the sole owner of `ErrorCode` (`30` canonical variants) and `StateError`.
    - `acdd_core::format` (`crates/acdd-core/src/format.rs`) owns `stable_hash64`, `sha256_hex`, streaming `sha256_serde_json`, `canonical_json_sha256`, `JsonByteCounter` / `estimate_json_bytes`, and `utf8_floor_boundary` / `utf8_tail`.
 5. **System Process/Memory and Telemetry (`acdd_core::{sys, telemetry}`)**:

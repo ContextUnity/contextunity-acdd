@@ -42,11 +42,11 @@ crates/acdd-index/src/
     │   ├── mod.rs          # Per-file resolver and phase order
     │   ├── imports.rs
     │   ├── framework_projections.rs
-    │   ├── value_flow_phase.rs
+    │   ├── value_flow_phase/
     │   └── documentation.rs
-    ├── semantic_context.rs
-    ├── semantic_context/components.rs
-    ├── value_flow.rs
+    ├── semantic_context/
+    │   └── components.rs
+    ├── value_flow/
     ├── value_flow/initialize.rs
     ├── python/             # Python receiver, resolution, semantic context, and flow
     ├── rust/               # Rust resolution support, semantic context, and flow

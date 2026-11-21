@@ -5,6 +5,7 @@ doc_type: contract
 status: planned
 depends_on:
   - PF-004-fts-fastpath-codec-safety-and-pipeline-cleanup
+  - AR-002-modularize-db-reader-and-traversal
 guidance:
   hitl: pro
 owners:

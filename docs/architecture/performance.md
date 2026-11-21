@@ -5,8 +5,8 @@ doc_type: architecture
 status: active
 owners:
   - crates/acdd-index/src/semantic/
-  - crates/acdd-index/src/typed_facts.rs
-  - crates/acdd-index/src/db/writer.rs
+  - crates/acdd-index/src/typed_facts/
+  - crates/acdd-index/src/db/writer/
   - crates/acdd-index/src/db/writer/cache.rs
   - crates/acdd-index/src/db/writer/seal.rs
   - crates/acdd-index/src/ast/mod.rs
@@ -19,9 +19,9 @@ owners:
   - crates/acdd-index/src/languages/typescript/projections.rs
   - crates/acdd-index/src/linker/mod.rs
   - crates/acdd-index/src/linker/resolution/mod.rs
-  - crates/acdd-index/src/linker/resolution/value_flow_phase.rs
-  - crates/acdd-index/src/linker/semantic_context.rs
-  - src/engine/pipeline.rs
+  - crates/acdd-index/src/linker/resolution/value_flow_phase/
+  - crates/acdd-index/src/linker/semantic_context/
+  - src/engine/pipeline/
 invariants:
   - INV-PERF-CATALOG-FACT-STRIPPING
   - INV-PERF-BOUNDED-STAGING-AND-TRIM
@@ -125,14 +125,14 @@ See [ADR 0008: Merkle Commitments and Compressed Fact Storage](../adr/0008-merkl
 Milestone 031 (`m-cold-indexing-throughput-and-memory-optimization`) addressed cold-build latency, peak memory spikes, and CPU load on large codebases (demonstrated on the Commerce reference repository of 3,990 files and 130,079 resolved edges). The following architectural mechanisms were delivered:
 
 ### 1. Staged Producer-Consumer Pipeline and Byte-Budget Backpressure
-- **Pipeline Architecture**: `acdd_index::scanner::stream_for_build` (`crates/acdd-index/src/scanner/mod.rs`) and `crate::engine::pipeline::run_cold_pipeline` (`src/engine/pipeline.rs`) overlap filesystem discovery, Rayon worker extraction, and SQLite `source_inventory` ingestion.
-- **Byte Accounting**: Ingestion queue bounds operate on dynamic estimated byte budgets derived from `ScannerLimits.memory_budget_mb` (`crates/acdd-core/src/config.rs`) or the `ACDD_MEMORY_BUDGET_MB` environment variable (`MemoryPermit` in `crates/acdd-index/src/db/writer.rs`). Each file's permit accounts for its scanned file size multiplied by the extraction expansion factor. A single oversized item is admitted only when no other item holds an active permit, preventing memory exhaustion on massive generated or bundled files while guaranteeing progress without deadlocks.
+- **Pipeline Architecture**: `acdd_index::scanner::stream_for_build` (`crates/acdd-index/src/scanner/mod.rs`) and `crate::engine::pipeline::run_cold_pipeline` (`src/engine/pipeline/mod.rs`) overlap filesystem discovery, Rayon worker extraction, and SQLite `source_inventory` ingestion.
+- **Byte Accounting**: Ingestion queue bounds operate on dynamic estimated byte budgets derived from `ScannerLimits.memory_budget_mb` (`crates/acdd-core/src/config/`) or the `ACDD_MEMORY_BUDGET_MB` environment variable (`MemoryPermit` in `crates/acdd-index/src/db/writer/`). Each file's permit accounts for its scanned file size multiplied by the extraction expansion factor. A single oversized item is admitted only when no other item holds an active permit, preventing memory exhaustion on massive generated or bundled files while guaranteeing progress without deadlocks.
 
 ### 2. Lean SymbolCatalog Decomposition and Streaming Storage Payloads
 - **Decoupled Linking State**: Historically, `TypedFacts` retained full AST details (`value_flow`, `bindings`, `rebindings`, `param_types`, and span details) in a workspace-wide map during global cross-file linking. Milestone 031 replaced this with `SymbolCatalog` and `CatalogSymbol` (`crates/acdd-index/src/semantic/catalog.rs`, `crates/acdd-index/src/linker/compact.rs`, `crates/acdd-index/src/linker/mod.rs`).
 - **Catalog Admission**: Workers invoke `SymbolCatalog::insert_typed(..., false)` to omit storage-only detail fields and duplicate storage payloads. The linking catalog retains native binding metadata and typed flows needed for resolution.
-- **Precomputed Staged Storage**: Heavyweight storage rows are precomputed during extraction and Zstd-compressed into `PreparedCatalogStorage` within `StagedFilePayload` (`crates/acdd-index/src/db/writer.rs`).
-- **Bounded Chunk Hydration**: In `populate_owned` (`crates/acdd-index/src/db/writer.rs`, `crates/acdd-index/src/db/ingest.rs`), `LoadedCatalogFile` structures are loaded and persisted in bounded parallel chunks of up to 500 files (`MAX_MULTI_VALUE_BATCH_ROWS = 500`). Each payload chunk is dropped immediately after SQLite insertion, preventing simultaneous coexistence of raw ASTs and database rows.
+- **Precomputed Staged Storage**: Heavyweight storage rows are precomputed during extraction and Zstd-compressed into `PreparedCatalogStorage` within `StagedFilePayload` (`crates/acdd-index/src/db/writer/`).
+- **Bounded Chunk Hydration**: In `populate_owned` (`crates/acdd-index/src/db/writer/mod.rs`, `crates/acdd-index/src/db/writer/ingest.rs`), `LoadedCatalogFile` structures are loaded and persisted in bounded parallel chunks of up to 500 files (`MAX_MULTI_VALUE_BATCH_ROWS = 500`). Each payload chunk is dropped immediately after SQLite insertion, preventing simultaneous coexistence of raw ASTs and database rows.
 
 ### 3. Allocator Arena Trimming
 
@@ -150,10 +150,10 @@ These costs keep trimming at batch boundaries; a lower RSS alone does not prove
 better request latency.
 
 - **Glibc Arena Reclamation**: Multi-threaded Rayon workloads cause glibc thread arenas to retain fragmented memory long after transient ASTs and serialization buffers are freed.
-- **Explicit Trimming**: `trim_allocator` (`libc::malloc_trim(0)`) is invoked in `src/engine/pipeline.rs` and `crates/acdd-index/src/db/writer.rs` at the boundary between extraction/staging and persistence, and again after bulk row insertions. This directly drops Commerce peak RSS from `~1,503.5 MB` down to **`766–785 MB`**, consistently respecting the `< 800 MB` milestone ceiling (-48% peak memory reduction).
+- **Explicit Trimming**: `trim_allocator` (`libc::malloc_trim(0)`) is invoked in `src/engine/pipeline/` and `crates/acdd-index/src/db/writer/` at the boundary between extraction/staging and persistence, and again after bulk row insertions. This directly drops Commerce peak RSS from `~1,503.5 MB` down to **`766–785 MB`**, consistently respecting the `< 800 MB` milestone ceiling (-48% peak memory reduction).
 
 ### 4. SQLite Turbo-Ingestion Mode
-- **Isolated Staged PRAGMAs**: `prepare_pipeline_schema` (`crates/acdd-index/src/db/writer.rs`) configures candidate SQLite databases with:
+- **Isolated Staged PRAGMAs**: `prepare_pipeline_schema` (`crates/acdd-index/src/db/writer/`) configures candidate SQLite databases with:
   ```sql
   PRAGMA journal_mode = MEMORY;
   PRAGMA synchronous = OFF;
@@ -201,9 +201,9 @@ better request latency.
 - **Zero-Allocation Route Mismatch Matching**: `has_client_route_mismatch` in `crates/acdd-index/src/linker/html/relations.rs` traverses URL paths using parallel iterators without heap vector allocations, verifying segment counts and parameter boundaries inline.
 - **Segment-Length Route Candidate Pre-Filtering**: `RouteIndex` in `crates/acdd-index/src/linker/routes.rs` indexes routes by segment count (`entries_by_len`), allowing `matching_routes_in_context` to filter candidate evaluations to matching lengths immediately and eliminating duplicate candidate scans in `match_request_route`.
 - **Pre-Indexed HTML Rule Operation Dispatch**: HTML extraction in `crates/acdd-index/src/languages/html/mod.rs` pre-indexes `HtmlRequestAttributes` and `TemplateNamedRoute` rule families once per file context, avoiding linear syntax ruleset scans on every HTML tag and template directive.
-- **Direct Borrowed Storage Node Serialization**: `prepare_catalog_storage_with_facts` in `crates/acdd-index/src/db/writer.rs` serializes storage nodes directly from borrowed `TypedFacts.nodes` without cloning intermediate `Node` records or heap strings.
+- **Direct Borrowed Storage Node Serialization**: `prepare_catalog_storage_with_facts` in `crates/acdd-index/src/db/writer/` serializes storage nodes directly from borrowed `TypedFacts.nodes` without cloning intermediate `Node` records or heap strings.
 - **Bounded Owner-Group Scratch Buffer for Dependency Sealing**: `project_dependency_domain` in `crates/acdd-index/src/db/writer/seal.rs` processes contiguous owner slices from sorted dependencies using a single reusable scratch row buffer, bounding peak auxiliary RSS to $O(\text{largest owner group})$.
-- **Batch SQL Statement Shape Reuse**: `insert_multi_value_batch` in `crates/acdd-index/src/db/batch.rs` uses `prepare_cached` to reuse compiled SQLite statement shapes across manual node/fact flush paths.
+- **Batch SQL Statement Shape Reuse**: `insert_multi_value_batch` in `crates/acdd-index/src/db/writer/batch.rs` uses `prepare_cached` to reuse compiled SQLite statement shapes across manual node/fact flush paths.
 
 ---
 
@@ -213,7 +213,7 @@ During Milestone 031, multiple plausible optimization hypotheses were empiricall
 
 | Candidate Optimization | Evaluated Scope / Symbol | Measured Result | Rejection Rationale |
 | :--- | :--- | :--- | :--- |
-| **Uncompressed In-Memory `PreparedCatalogStorage` (`direct-rows`)** | `StagedFilePayload` in `crates/acdd-index/src/db/writer.rs` | Wall: `9.907s`, Peak RSS: **`869.5 MB`** | Violated strict `< 800 MB` memory ceiling (+85 MB overshoot). Zstd frame compression on staged rows is mandatory. |
+| **Uncompressed In-Memory `PreparedCatalogStorage` (`direct-rows`)** | `StagedFilePayload` in `crates/acdd-index/src/db/writer/` | Wall: `9.907s`, Peak RSS: **`869.5 MB`** | Violated strict `< 800 MB` memory ceiling (+85 MB overshoot). Zstd frame compression on staged rows is mandatory. |
 | **Length-Prefixed Binary Packing (`packed-rows`)** | `prepare_catalog_storage` & `LoadedCatalogFile` | Paired user CPU: **`+1.38%`**, CPU load: **`+2.02%`** | Manual `u32` packing and scalar node cloning from `SymbolCatalog` increased allocation and slicing overhead compared to direct JSON serialization. |
 | **Temporary SQLite Staging Table (`catalog_payloads`)** | Intermediate table in staged SQLite candidate | Wall time regressed by **`+6.2%`** | SQLite B-tree write and deserialize overhead exceeded in-memory compressed chunk queuing. |
 | **Concurrent Merkle Leaf Hashing with SQLite Index Creation** | `seal::logical_domain_leaves` overlapped with `CREATE INDEX` | Wall time regressed by **`+3.8%`** | Parallel Rayon CPU hashing and SQLite B-tree sort contended for memory bandwidth and allocator mutexes. |
@@ -233,14 +233,14 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Symbol Catalog Fact Stripping
 >
-> In `src/engine/pipeline.rs` (`run_cold_pipeline`) and `crates/acdd-index/src/semantic/catalog.rs` (`SymbolCatalog::insert_typed`), encode full storage facts into compressed `PreparedCatalogStorage` within extraction workers. Pass `retain_storage = false` for cold catalog admission to remove storage-only details and omit duplicate storage payloads. Preserve native binding metadata and typed flows required for linking; retain no additional workspace-wide full-facts copy.
+> In `src/engine/pipeline/mod.rs` (`run_cold_pipeline`) and `crates/acdd-index/src/semantic/catalog.rs` (`SymbolCatalog::insert_typed`), encode full storage facts into compressed `PreparedCatalogStorage` within extraction workers. Pass `retain_storage = false` for cold catalog admission to remove storage-only details and omit duplicate storage payloads. Preserve native binding metadata and typed flows required for linking; retain no additional workspace-wide full-facts copy.
 
 - INV-PERF-CATALOG-FACT-STRIPPING: Remove storage-only details and duplicate storage payloads during cold catalog admission while retaining typed resolution facts. [`run_cold_pipeline`](../../src/engine/pipeline/mod.rs) [`SymbolCatalog`](../../crates/acdd-index/src/semantic/catalog.rs).
 
 > [!IMPORTANT]
 > Invariant: Bounded Chunk Persistence and Allocator Trimming
 >
-> In `crates/acdd-index/src/db/writer.rs` (`populate_owned`), keep `StagedFilePayload.storage_rows` Zstandard-compressed during staging; `prepare_catalog_storage` uses compression level -3. Ingestion must process files in bounded batches of at most 500 rows (`MAX_MULTI_VALUE_BATCH_ROWS = 500`), removing payloads from memory prior to database insertion. Agents must preserve the explicit calls to `trim_allocator` (`libc::malloc_trim(0)`) after extraction and after persistence to prevent glibc multi-arena fragmentation from exceeding the 800 MB RSS ceiling.
+> In `crates/acdd-index/src/db/writer/mod.rs` (`populate_owned`), keep `StagedFilePayload.storage_rows` Zstandard-compressed during staging; `prepare_catalog_storage` uses compression level -3. Ingestion must process files in bounded batches of at most 500 rows (`MAX_MULTI_VALUE_BATCH_ROWS = 500`), removing payloads from memory prior to database insertion. Agents must preserve the explicit calls to `trim_allocator` (`libc::malloc_trim(0)`) after extraction and after persistence to prevent glibc multi-arena fragmentation from exceeding the 800 MB RSS ceiling.
 
 - INV-PERF-BOUNDED-STAGING-AND-TRIM: Keep staged file rows Zstandard-compressed, drain payloads in bounded batches, and invoke `trim_allocator` at extraction and persistence boundaries to stay within the 800 MB RSS budget. [`StagedFilePayload`](../../crates/acdd-index/src/db/writer/mod.rs) [`populate_owned`](../../crates/acdd-index/src/db/writer/mod.rs).
 
@@ -261,7 +261,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Native Typed Sidecar Facts Without Intermediate JSON
 >
-> In `crates/acdd-index/src/typed_facts.rs` (`SemanticStore`, `FlowStore`, `TypedFacts`), keep semantic and value-flow facts in native typed stores during extraction and linking. Preserve the existing V3 JSON-value overlays at the binary cache boundary in `crates/acdd-index/src/db/writer/cache.rs` and hydrate typed stores when loading. Public and legacy compatibility views retain their existing serialization and malformed-evidence behavior.
+> In `crates/acdd-index/src/typed_facts/mod.rs` (`SemanticStore`, `FlowStore`, `TypedFacts`), keep semantic and value-flow facts in native typed stores during extraction and linking. Preserve the existing V3 JSON-value overlays at the binary cache boundary in `crates/acdd-index/src/db/writer/cache.rs` and hydrate typed stores when loading. Public and legacy compatibility views retain their existing serialization and malformed-evidence behavior.
 
 - INV-PERF-TYPED-SIDECAR-FACTS: Use native typed stores for in-memory extraction and linking, preserving the V3 cache and public compatibility boundaries. [`SemanticStore`](../../crates/acdd-index/src/typed_facts/mod.rs) [`FlowStore`](../../crates/acdd-index/src/typed_facts/mod.rs) [`TypedFacts`](../../crates/acdd-index/src/typed_facts/mod.rs).
 
@@ -282,7 +282,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Language-Gated Linker Resolution and Memoized Semantic Context
 >
-> In `crates/acdd-index/src/linker/resolution/mod.rs` (`resolve`) and `resolution/value_flow_phase.rs` (`phase_value_flow`), `crates/acdd-index/src/languages/dependency_registry.rs` (`language_context_for_path`), `crates/acdd-index/src/linker/semantic_context.rs` (`Context`), and `crates/acdd-index/src/linker/mod.rs` (`link_compact_with_typed_registry`), the registry and linker must memoize `language_context_for_path` per directory scope, bind contexts once per file, avoid reconstructing package-scope keys per reference, gate language-specific template rules and evidence builders behind the active language profile, memoize `ReceiverTypes`, `ArgumentFactories`, and `implicit_builtins` per shared `Arc<LanguageContext>` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime), and fuse post-resolution `all.values()` passes.
+> In `crates/acdd-index/src/linker/resolution/mod.rs` (`resolve`) and `resolution/value_flow_phase/` (`phase_value_flow`), `crates/acdd-index/src/languages/dependency_registry.rs` (`language_context_for_path`), `crates/acdd-index/src/linker/semantic_context/` (`Context`), and `crates/acdd-index/src/linker/mod.rs` (`link_compact_with_typed_registry`), the registry and linker must memoize `language_context_for_path` per directory scope, bind contexts once per file, avoid reconstructing package-scope keys per reference, gate language-specific template rules and evidence builders behind the active language profile, memoize `ReceiverTypes`, `ArgumentFactories`, and `implicit_builtins` per shared `Arc<LanguageContext>` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime), and fuse post-resolution `all.values()` passes.
 
 - INV-PERF-LANGUAGE-GATED-LINKER-RESOLUTION: Memoize `language_context_for_path` per directory scope in `DependencyRegistry`, bind contexts once per file in `resolve`, gate HTML template rule vectors and `template_evidence` behind active HTML guards, memoize `Context` rule tables per pinned `Arc<LanguageContext>`, and fuse post-resolution `all.values()` passes in `link_compact_with_typed_registry`. [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry.rs) [`resolve`](../../crates/acdd-index/src/linker/resolution/mod.rs) [`phase_value_flow`](../../crates/acdd-index/src/linker/resolution/value_flow_phase/mod.rs) [`Context`](../../crates/acdd-index/src/linker/semantic_context/mod.rs) [`link_compact_with_typed_registry`](../../crates/acdd-index/src/linker/mod.rs).
 
@@ -296,7 +296,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: SQLite Ingestion PRAGMAs and WAL Restoration Order
 >
-> In `crates/acdd-index/src/db/writer.rs` (`prepare_pipeline_schema` and `populate_owned`), cold-indexing candidate databases must initialize with `journal_mode = MEMORY; synchronous = OFF; temp_store = MEMORY; cache_spill = ON;` and defer secondary index creation until after row ingestion (`sqlite_ingestion.mode = deferred-index-batched`). Before atomic publication, the writer must restore `journal_mode = WAL; synchronous = NORMAL;` and execute `PRAGMA wal_checkpoint(TRUNCATE);`. Changing pragma ordering or omitting WAL restoration causes reader lockouts and database corruption.
+> In `crates/acdd-index/src/db/writer/mod.rs` (`prepare_pipeline_schema` and `populate_owned`), cold-indexing candidate databases must initialize with `journal_mode = MEMORY; synchronous = OFF; temp_store = MEMORY; cache_spill = ON;` and defer secondary index creation until after row ingestion (`sqlite_ingestion.mode = deferred-index-batched`). Before atomic publication, the writer must restore `journal_mode = WAL; synchronous = NORMAL;` and execute `PRAGMA wal_checkpoint(TRUNCATE);`. Changing pragma ordering or omitting WAL restoration causes reader lockouts and database corruption.
 
 - INV-PERF-SQLITE-INGESTION-PRAGMAS: Initialize staged SQLite databases with in-memory journal and deferred secondary indexes during bulk ingestion, then restore `WAL` mode and checkpoint before atomic publication. [`prepare_pipeline_schema`](../../crates/acdd-index/src/db/writer/mod.rs) [`populate_owned`](../../crates/acdd-index/src/db/writer/mod.rs).
 
@@ -324,7 +324,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Binary Catalog Storage and Reference Occurrences Without JSON Round-Trips
 >
-> In `crates/acdd-index/src/db/writer.rs` (`PreparedCatalogStorage`) and `crates/acdd-index/src/semantic/catalog.rs` (`SymbolCatalog::insert_typed`, `decode_catalog_references`), persisted catalog payloads and reference occurrence blobs must use compact binary encoding (`encode_references` / `decode_references`) compressed with Zstd rather than `serde_json::to_vec` / `serde_json::from_slice`.
+> In `crates/acdd-index/src/db/writer/` (`PreparedCatalogStorage`) and `crates/acdd-index/src/semantic/catalog.rs` (`SymbolCatalog::insert_typed`, `decode_catalog_references`), persisted catalog payloads and reference occurrence blobs must use compact binary encoding (`encode_references` / `decode_references`) compressed with Zstd rather than `serde_json::to_vec` / `serde_json::from_slice`.
 
 - INV-PERF-BINARY-CATALOG-STORAGE: Encode `PreparedCatalogStorage` and `SymbolCatalog` reference occurrences in binary format before Zstd compression instead of round-tripping through `serde_json`. [`SymbolCatalog`](../../crates/acdd-index/src/semantic/catalog.rs) [`encode_references`](../../crates/acdd-index/src/db/writer/cache.rs) [`decode_references`](../../crates/acdd-index/src/db/writer/cache.rs).
 
@@ -338,21 +338,21 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: No Nested Parallel Iterators Inside Chunked Pipelines
 >
-> In `crates/acdd-index/src/db/writer.rs` (`prepare_catalog_rows`), file chunks are already dispatched across Rayon worker threads. Agents must never nest Rayon parallel iterators (`.par_iter()`) inside individual chunk workers. Inner loops must use standard sequential iteration (`.iter()`) to avoid thread pool starvation, thread parking, futex contention, and massive system CPU spikes.
+> In `crates/acdd-index/src/db/writer/mod.rs` (`prepare_catalog_rows`), file chunks are already dispatched across Rayon worker threads. Agents must never nest Rayon parallel iterators (`.par_iter()`) inside individual chunk workers. Inner loops must use standard sequential iteration (`.iter()`) to avoid thread pool starvation, thread parking, futex contention, and massive system CPU spikes.
 
 - INV-PERF-NO-NESTED-PAR-ITER: Never nest Rayon `.par_iter()` inside already parallelized pipeline chunks; use sequential `.iter()` within worker tasks. [`prepare_catalog_rows`](../../crates/acdd-index/src/db/writer/mod.rs) [`persist_catalog_files`](../../crates/acdd-index/src/db/writer/ingest.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Clone Ingestion for Navigation Details
 >
-> In `crates/acdd-index/src/db/ingest.rs` (`flush_node_batch`), database batch writes must never clone `Node` instances or allocate intermediate JSON maps to strip transient fields (`"doc"`, `"docstring"`). Filter fields on-the-fly during serialization through borrowed adapters (`NavigationDetails`) directly referencing source nodes.
+> In `crates/acdd-index/src/db/writer/ingest.rs` (`flush_node_batch`), database batch writes must never clone `Node` instances or allocate intermediate JSON maps to strip transient fields (`"doc"`, `"docstring"`). Filter fields on-the-fly during serialization through borrowed adapters (`NavigationDetails`) directly referencing source nodes.
 
 - INV-PERF-ZERO-NODE-CLONES-ON-INGEST: Filter navigation details during serialization through borrowed wrappers without cloning `Node` instances in batch write loops. [`flush_node_batch`](../../crates/acdd-index/src/db/writer/ingest.rs) [`NavigationDetails`](../../crates/acdd-index/src/models/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Manifest Syntax Rule Interning
 >
-> In `crates/acdd-index/src/linker/interner.rs` (`LinkerInterner`) and `crates/acdd-index/src/linker/mod.rs`, declarative framework manifest rules must be interned once per language context rather than re-evaluating or cloning rules on every file path in the workspace.
+> In `crates/acdd-index/src/interner.rs` (`LinkerInterner`) and `crates/acdd-index/src/linker/mod.rs`, declarative framework manifest rules must be interned once per language context rather than re-evaluating or cloning rules on every file path in the workspace.
 
 - INV-PERF-MANIFEST-SYNTAX-INTERNING: Intern manifest syntax rules at language context scope instead of re-evaluating or allocating rules per file. [`LinkerInterner`](../../crates/acdd-index/src/interner.rs).
 
@@ -366,35 +366,35 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Stage Payload Disk Spooling
 >
-> In `src/engine/pipeline.rs` (`consume_pipeline_results`) and `crates/acdd-index/src/db/writer.rs` (`populate_owned`), cold-build extraction payloads (`encoded_facts` and `storage_rows`) must be spooled directly to stage-private temporary disk storage (`payloads.bin` under `.acdd-stage-*`) during consumer ingestion rather than accumulated in heap memory as raw byte vectors (`StagedFilePayload`). `StagedFilePayload` retains only lightweight offset/length references (`StagedPayloadBlob`), releasing 50–60 MB of heap memory during the cross-file linker phase. The final persistence pass reads blobs sequentially in bounded 500-file chunks, preserving route composition invalidation, Merkle leaf commitments, and atomic stage cleanup.
+> In `src/engine/pipeline/mod.rs` (`consume_pipeline_results`) and `crates/acdd-index/src/db/writer/mod.rs` (`populate_owned`), cold-build extraction payloads (`encoded_facts` and `storage_rows`) must be spooled directly to stage-private temporary disk storage (`payloads.bin` under `.acdd-stage-*`) during consumer ingestion rather than accumulated in heap memory as raw byte vectors (`StagedFilePayload`). `StagedFilePayload` retains only lightweight offset/length references (`StagedPayloadBlob`), releasing 50–60 MB of heap memory during the cross-file linker phase. The final persistence pass reads blobs sequentially in bounded 500-file chunks, preserving route composition invalidation, Merkle leaf commitments, and atomic stage cleanup.
 
 - INV-PERF-STAGE-PAYLOAD-SPOOLING: Spool extraction payload blobs to stage-private disk storage during consumer ingestion and read by chunk during persistence to keep heap memory bounded during linking. [`consume_pipeline_results`](../../src/engine/pipeline/mod.rs) [`populate_owned`](../../crates/acdd-index/src/db/writer/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Clone Ingestion for Batched Node Attributes
 >
-> In `crates/acdd-index/src/db/ingest.rs` (`persist_files_impl`), `node_batch` rows must borrow string attributes (`id`, `kind`, `name`, `qualname`, `language`) as `&str` (`BorrowedSqlValue::Text`) directly from the active loaded chunk rather than allocating owned `String`s (`BorrowedSqlValue::OwnedText`). The lifetime of `node_batch` is strictly bounded by the loaded chunk, flushing before the chunk is dropped to eliminate hundreds of thousands of heap string clones while keeping dynamic details in `BorrowedSqlValue::OwnedJsonText`.
+> In `crates/acdd-index/src/db/writer/ingest.rs` (`persist_files_impl`), `node_batch` rows must borrow string attributes (`id`, `kind`, `name`, `qualname`, `language`) as `&str` (`BorrowedSqlValue::Text`) directly from the active loaded chunk rather than allocating owned `String`s (`BorrowedSqlValue::OwnedText`). The lifetime of `node_batch` is strictly bounded by the loaded chunk, flushing before the chunk is dropped to eliminate hundreds of thousands of heap string clones while keeping dynamic details in `BorrowedSqlValue::OwnedJsonText`.
 
 - INV-PERF-ZERO-CLONE-BATCHED-NODES: Borrow node string attributes directly from loaded file chunks in batch insertion loops without heap-cloning strings. [`persist_files_impl`](../../crates/acdd-index/src/db/writer/ingest.rs) [`BorrowedSqlValue`](../../crates/acdd-index/src/db/writer/batch.rs).
 
 > [!IMPORTANT]
 > Invariant: Deferred Transient Node Paths Cache
 >
-> In `crates/acdd-index/src/db/writer.rs` (`populate_owned`) and `crates/acdd-index/src/db/delta.rs` (`persist_delta`), the `node_paths` lookup cache must be constructed immediately before `persist_graph` using `Cow<'a, str>` borrowed keys from in-memory facts rather than cloning owning `String` node IDs across the entire workspace. The cache must be explicitly dropped immediately after graph persistence to reclaim memory before index and Merkle sealing.
+> In `crates/acdd-index/src/db/writer/mod.rs` (`populate_owned`) and `crates/acdd-index/src/db/writer/delta.rs` (`persist_delta`), the `node_paths` lookup cache must be constructed immediately before `persist_graph` using `Cow<'a, str>` borrowed keys from in-memory facts rather than cloning owning `String` node IDs across the entire workspace. The cache must be explicitly dropped immediately after graph persistence to reclaim memory before index and Merkle sealing.
 
 - INV-PERF-DEFERRED-TRANSIENT-NODE-PATHS: Construct the `node_paths` cache immediately before graph persistence with borrowed `Cow<'a, str>` keys and drop it immediately after use. [`populate_owned`](../../crates/acdd-index/src/db/writer/mod.rs) [`persist_graph`](../../crates/acdd-index/src/db/writer/ingest.rs).
 
 > [!IMPORTANT]
 > Invariant: Edge Occurrence Endpoint Hash Reuse
 >
-> In `crates/acdd-index/src/db/ingest.rs` (`persist_graph`, `persist_dependencies`), resolved endpoint hashes `(src_target, dst_target)` computed during the occurrence pass must be retained in an occurrence-aligned vector (`resolved_edge_paths`) and forwarded directly to `persist_dependencies`. Dependencies must reuse these pre-resolved endpoint path hashes rather than repeating `graph_endpoint_hashes` lookups or executing redundant SQLite queries.
+> In `crates/acdd-index/src/db/writer/ingest.rs` (`persist_graph`, `persist_dependencies`), resolved endpoint hashes `(src_target, dst_target)` computed during the occurrence pass must be retained in an occurrence-aligned vector (`resolved_edge_paths`) and forwarded directly to `persist_dependencies`. Dependencies must reuse these pre-resolved endpoint path hashes rather than repeating `graph_endpoint_hashes` lookups or executing redundant SQLite queries.
 
 - INV-PERF-OCCURRENCE-ENDPOINT-HASH-REUSE: Reuse resolved endpoint hashes from edge occurrence passes in dependency persistence to eliminate redundant hash-map lookups. [`persist_graph`](../../crates/acdd-index/src/db/writer/ingest.rs) [`persist_dependencies`](../../crates/acdd-index/src/db/writer/ingest.rs).
 
 > [!IMPORTANT]
 > Invariant: In-Memory File Language Fallback for Coverage
 >
-> In `crates/acdd-index/src/db/ingest.rs` (`persist_graph`), resolution coverage owner languages must be resolved from known in-memory file entries (`known_file_entries`) before falling back to SQLite queries. Cold builds must avoid round-tripping missing owners through JSON serialization and SQLite `json_each(?1)` subqueries whenever file metadata is available in memory.
+> In `crates/acdd-index/src/db/writer/ingest.rs` (`persist_graph`), resolution coverage owner languages must be resolved from known in-memory file entries (`known_file_entries`) before falling back to SQLite queries. Cold builds must avoid round-tripping missing owners through JSON serialization and SQLite `json_each(?1)` subqueries whenever file metadata is available in memory.
 
 - INV-PERF-IN-MEMORY-FILE-LANGUAGE-FALLBACK: Resolve coverage owner languages from in-memory file entries to eliminate JSON-encoded SQLite subqueries. [`persist_graph`](../../crates/acdd-index/src/db/writer/ingest.rs).
 
@@ -436,7 +436,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Zero-Clone Dictionary Bulk Ingestion
 >
-> In `crates/acdd-index/src/db/dictionary.rs`, `PathDictionaryCache::bulk_insert` must accept `impl IntoIterator<Item = &'a str>` and push `BorrowedSqlValue::Text(path_ref)` into multi-value insertion batches, cloning strings only once for the in-memory dictionary cache.
+> In `crates/acdd-index/src/db/writer/dictionary.rs`, `PathDictionaryCache::bulk_insert` must accept `impl IntoIterator<Item = &'a str>` and push `BorrowedSqlValue::Text(path_ref)` into multi-value insertion batches, cloning strings only once for the in-memory dictionary cache.
 
 - INV-PERF-BORROWED-PATH-DICTIONARY-BULK-INSERT: Borrow path string references in dictionary bulk insertion batches to avoid duplicate SQL string cloning. [`PathDictionaryCache::bulk_insert`](../../crates/acdd-index/src/db/writer/dictionary.rs).
 
