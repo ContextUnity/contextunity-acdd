@@ -771,14 +771,34 @@ fn insert_commitment_chunk(
     stmt.execute(rusqlite::params_from_iter(params_vec))?;
     Ok(())
 }
+fn decode_stored_digest(value: ValueRef<'_>) -> rusqlite::Result<String> {
+    match value {
+        ValueRef::Blob(bytes) => Ok(hex::encode(bytes)),
+        ValueRef::Text(bytes) => std::str::from_utf8(bytes)
+            .map(str::to_owned)
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            }),
+        other => Err(rusqlite::Error::InvalidColumnType(
+            0,
+            "digest".into(),
+            other.data_type(),
+        )),
+    }
+}
+
 fn stored(conn: &Connection, table: &str) -> Result<BTreeMap<String, String>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT p.path,CASE WHEN typeof(d.digest)='blob' THEN lower(hex(d.digest)) ELSE d.digest END FROM domain_commitments d LEFT JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.domain=?1 AND d.owner_id!=0",
+        "SELECT p.path,d.digest FROM domain_commitments d LEFT JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.domain=?1 AND d.owner_id!=0",
     )?;
     let rows = stmt
         .query_map([table], |r| {
             let owner: String = r.get(0)?;
-            Ok((key(table, &owner), r.get(1)?))
+            Ok((key(table, &owner), decode_stored_digest(r.get_ref(1)?)?))
         })?
         .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
     Ok(rows)
@@ -801,11 +821,50 @@ pub fn seal(conn: &Connection) -> Result<String> {
 ///
 /// Fails on malformed graph references, hashing errors, or SQLite failures.
 pub fn seal_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Result<String> {
+    seal_owners_with_dirty_fts(
+        conn,
+        owners,
+        FtsDirtyDomains {
+            node_search: true,
+            doc_search: true,
+        },
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FtsDirtyDomains {
+    pub(crate) node_search: bool,
+    pub(crate) doc_search: bool,
+}
+
+pub(crate) fn seal_owners_with_dirty_fts(
+    conn: &Connection,
+    owners: Option<&BTreeSet<String>>,
+    dirty_fts: FtsDirtyDomains,
+) -> Result<String> {
     conn.execute(
         "INSERT OR REPLACE INTO metadata VALUES('commitment_algorithm',?1)",
         [ALGORITHM],
     )?;
     let encoded_owners = owners.map(serde_json::to_string).transpose()?;
+    let mut existing = BTreeMap::<String, BTreeMap<String, String>>::new();
+    if owners.is_some() {
+        let mut stmt = conn.prepare("SELECT d.domain,p.path,d.digest FROM domain_commitments d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.owner_id!=0")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                decode_stored_digest(row.get_ref(2)?)?,
+            ))
+        })?;
+        for row in rows {
+            let (domain, owner, digest) = row?;
+            existing
+                .entry(domain.clone())
+                .or_default()
+                .insert(key(&domain, &owner), digest);
+        }
+    }
     for table in DOMAINS {
         let changed = leaves(conn, table, owners)?;
         if let Some(encoded) = &encoded_owners {
@@ -823,12 +882,26 @@ pub fn seal_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Resu
         let digest = if owners.is_none() {
             aggregate(table, &changed)
         } else {
-            aggregate(table, &stored(conn, table)?)
+            let entries = existing.entry((*table).to_owned()).or_default();
+            for owner in owners.into_iter().flatten() {
+                entries.remove(&key(table, owner));
+            }
+            entries.extend(changed);
+            aggregate(table, entries)
         };
         conn.prepare_cached("INSERT OR REPLACE INTO domain_commitments VALUES(?1,0,unhex(?2))")?
             .execute(params![table, digest])?;
     }
     for &(table, order_by) in FTS {
+        let clean = owners.is_some()
+            && match table {
+                "node_search_postings" => !dirty_fts.node_search,
+                "doc_search_postings" => !dirty_fts.doc_search,
+                _ => false,
+            };
+        if clean && conn.query_row("SELECT EXISTS(SELECT 1 FROM domain_commitments WHERE domain=?1 AND owner_id=0 AND typeof(digest)='blob' AND length(digest)=32)", [table], |r| r.get::<_, bool>(0))? {
+            continue;
+        }
         conn.execute(
             "INSERT OR REPLACE INTO domain_commitments VALUES(?1,0,unhex(?2))",
             params![table, fts_digest(conn, table, order_by)?],
@@ -840,6 +913,35 @@ pub fn seal_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Resu
         [&root],
     )?;
     Ok(root)
+}
+
+pub(crate) fn verify_delta_seal(conn: &Connection, expected_root: &str) -> Result<()> {
+    let algorithm: String = conn.query_row(
+        "SELECT value FROM metadata WHERE key='commitment_algorithm'",
+        [],
+        |r| r.get(0),
+    )?;
+    let stored_root: String = conn.query_row(
+        "SELECT value FROM metadata WHERE key='output_root'",
+        [],
+        |r| r.get(0),
+    )?;
+    anyhow::ensure!(
+        algorithm == ALGORITHM && stored_root == expected_root,
+        "delta seal metadata mismatch"
+    );
+    let mut stmt = conn.prepare("SELECT domain FROM domain_commitments WHERE owner_id=0 AND typeof(digest)='blob' AND length(digest)=32")?;
+    let domains: BTreeSet<String> = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    anyhow::ensure!(
+        domains.len() == DOMAINS.len() + FTS.len()
+            && DOMAINS.iter().all(|d| domains.contains(*d))
+            && FTS.iter().all(|(d, _)| domains.contains(*d)),
+        "delta seal domains missing or invalid"
+    );
+    anyhow::ensure!(root(conn)? == expected_root, "delta seal root mismatch");
+    Ok(())
 }
 /// Verifies every stored owner leaf, domain root, and output root.
 ///

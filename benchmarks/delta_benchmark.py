@@ -120,6 +120,17 @@ def benchmark_delta(
                 run_work.mkdir(parents=True, exist_ok=True)
                 run_db = run_work / "index.sqlite"
                 shutil.copy2(base_db, run_db)
+                before_stat = run_db.stat()
+                run_cli_json(
+                    binary=acdd_bin, repo=clone_root, db=run_db,
+                    subcommand=["query", "overview", "--aspects", "metadata"],
+                    work=run_work, label="reader-admission",
+                )
+                after_stat = run_db.stat()
+                if (after_stat.st_ino, after_stat.st_mtime_ns) != (before_stat.st_ino, before_stat.st_mtime_ns):
+                    raise RuntimeError("reader admission changed the copied database")
+                if not pathlib.Path(f"{run_db}.verified.json").is_file():
+                    raise RuntimeError("reader admission did not publish a verified receipt")
 
                 try:
                     for rel in rel_paths:

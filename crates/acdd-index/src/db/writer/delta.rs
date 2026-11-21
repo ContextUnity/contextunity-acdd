@@ -1,7 +1,7 @@
 //! Incremental delta persistence operations.
 
 use anyhow::{bail, Result};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
@@ -19,6 +19,74 @@ use crate::typed_facts::TypedFacts;
 
 fn cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> rusqlite::Result<usize> {
     conn.prepare_cached(sql)?.execute(params)
+}
+
+fn node_search_rows(facts: Option<&TypedFacts>) -> Vec<(i64, String)> {
+    let mut rows = Vec::new();
+    if let Some(facts) = facts {
+        let mut text = String::new();
+        for node in &facts.nodes {
+            super::ingest::write_node_search_text(&mut text, node, facts);
+            rows.push((stable_hash64(&node.id), text.clone()));
+        }
+    }
+    rows.sort_unstable();
+    rows
+}
+
+fn node_search_changed(
+    conn: &Connection,
+    owner_id: i64,
+    path: &str,
+    new: Option<&TypedFacts>,
+) -> Result<bool> {
+    let nodes: Vec<(i64, String)> = conn
+        .prepare_cached(
+            "SELECT node_hash,id FROM nodes WHERE owner_path_id=?1 ORDER BY node_hash,id",
+        )?
+        .query_map([owner_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let blob: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT facts_blob FROM local_facts WHERE path=?1",
+            [path],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let old = match blob {
+        Some(blob) => match crate::typed_facts::decode_facts(&blob) {
+            Ok(facts) => Some(facts),
+            Err(_) => return Ok(true),
+        },
+        None if !nodes.is_empty() => return Ok(true),
+        None => None,
+    };
+    let mut old_nodes: Vec<_> = old
+        .iter()
+        .flat_map(|f| &f.nodes)
+        .map(|n| (stable_hash64(&n.id), n.id.clone()))
+        .collect();
+    old_nodes.sort_unstable();
+    Ok(nodes != old_nodes || node_search_rows(old.as_ref()) != node_search_rows(new))
+}
+
+fn doc_search_changed(conn: &Connection, path: &str, new: Option<&TypedFacts>) -> Result<bool> {
+    let old: Vec<(String, String, String, String, String)> = conn.prepare_cached("SELECT doc_id,path,section_title,content,invariants FROM doc_sections WHERE path=?1 ORDER BY doc_id,path,section_title,content,invariants")?
+        .query_map([path], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<rusqlite::Result<_>>()?;
+    let mut rows = Vec::new();
+    if let Some(facts) = new {
+        for d in &facts.docs {
+            rows.push((
+                d.doc_id.clone(),
+                d.path.clone(),
+                d.section_title.clone(),
+                d.content.clone(),
+                serde_json::to_string(&d.invariants)?,
+            ));
+        }
+    }
+    rows.sort_unstable();
+    Ok(old != rows)
 }
 
 fn delete_file(tx: &Connection, path_cache: &mut PathDictionaryCache, path: &str) -> Result<()> {
@@ -170,6 +238,21 @@ pub fn persist_delta(
     let deleting = Instant::now();
     let mut path_cache = PathDictionaryCache::new();
     path_cache.load_from_db(&tx)?;
+    let mut dirty_fts = commitments::FtsDirtyDomains {
+        node_search: false,
+        doc_search: false,
+    };
+    for path in replace_files {
+        let owner_id = path_cache.get_or_insert(&tx, path)?;
+        if !dirty_fts.node_search {
+            dirty_fts.node_search =
+                node_search_changed(&tx, owner_id, path, facts.get(path)).unwrap_or(true);
+        }
+        if !dirty_fts.doc_search {
+            dirty_fts.doc_search = doc_search_changed(&tx, path, facts.get(path))?;
+        }
+    }
+    tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS candidate_orphan_evidence(evidence_id INTEGER PRIMARY KEY) WITHOUT ROWID; DELETE FROM candidate_orphan_evidence;")?;
     tx.execute_batch("CREATE TEMP TABLE changed_edge_keys(src_hash INTEGER,dst_hash INTEGER,kind TEXT,PRIMARY KEY(src_hash,dst_hash,kind));")?;
     for path in affected {
         let owner_id = path_cache.get_or_insert(&tx, path)?;
@@ -204,9 +287,23 @@ pub fn persist_delta(
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?,
     );
+    for column in ["evidence_id", "confidence_id"] {
+        tx.execute(&format!("INSERT OR IGNORE INTO candidate_orphan_evidence SELECT {column} FROM edges WHERE {column} IS NOT NULL AND (src_hash,dst_hash,kind) IN (SELECT src_hash,dst_hash,kind FROM changed_edge_keys)"), [])?;
+    }
     tx.execute("DELETE FROM edges WHERE (src_hash,dst_hash,kind)IN(SELECT src_hash,dst_hash,kind FROM changed_edge_keys)", [])?;
     for path in affected {
         let owner_id = path_cache.get_or_insert(&tx, path)?;
+        for (table, owner) in [
+            ("edge_occurrences", "owner_id"),
+            ("resolution_coverage", "path_id"),
+        ] {
+            for column in ["evidence_id", "confidence_id"] {
+                if table == "resolution_coverage" && column == "confidence_id" {
+                    continue;
+                }
+                cached(&tx, &format!("INSERT OR IGNORE INTO candidate_orphan_evidence SELECT {column} FROM {table} WHERE {owner}=?1 AND {column} IS NOT NULL"), [owner_id])?;
+            }
+        }
         for (table, column) in [
             ("edge_occurrences", "owner_id"),
             ("dependencies", "owner_id"),
@@ -269,10 +366,6 @@ pub fn persist_delta(
     );
     drop(node_paths);
     graph_result?;
-    tx.execute(
-        "DELETE FROM coverage_evidence WHERE evidence_id NOT IN(SELECT evidence_id FROM resolution_coverage UNION SELECT evidence_id FROM edges UNION SELECT confidence_id FROM edges UNION SELECT evidence_id FROM edge_occurrences UNION SELECT confidence_id FROM edge_occurrences)",
-        [],
-    )?;
     let graph_ms = graph_writing.elapsed().as_secs_f64() * 1000.;
     let aggregating = Instant::now();
     let dangling: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM replaced_nodes r WHERE NOT EXISTS(SELECT 1 FROM nodes n WHERE n.id=r.id AND n.node_hash=r.node_hash) AND EXISTS(SELECT 1 FROM edges e WHERE e.src_hash=r.node_hash OR e.dst_hash=r.node_hash))", [], |r| r.get(0))?;
@@ -297,6 +390,19 @@ pub fn persist_delta(
         FROM ranked WHERE representative=1",
         [],
     )?;
+    for path in affected {
+        let owner_id = path_cache.get_or_insert(&tx, path)?;
+        cached(&tx, "DELETE FROM candidate_orphan_evidence WHERE evidence_id IN (SELECT evidence_id FROM resolution_coverage WHERE path_id=?1 UNION ALL SELECT evidence_id FROM edges WHERE path_id=?1 UNION ALL SELECT confidence_id FROM edges WHERE path_id=?1 UNION ALL SELECT evidence_id FROM edge_occurrences WHERE owner_id=?1 UNION ALL SELECT confidence_id FROM edge_occurrences WHERE owner_id=?1)", [owner_id])?;
+    }
+    let candidates: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM candidate_orphan_evidence)",
+        [],
+        |r| r.get(0),
+    )?;
+    if candidates {
+        tx.execute_batch("DELETE FROM candidate_orphan_evidence WHERE EXISTS (SELECT 1 FROM resolution_coverage r WHERE r.evidence_id=candidate_orphan_evidence.evidence_id) OR EXISTS (SELECT 1 FROM edges e WHERE e.evidence_id=candidate_orphan_evidence.evidence_id OR e.confidence_id=candidate_orphan_evidence.evidence_id) OR EXISTS (SELECT 1 FROM edge_occurrences o WHERE o.evidence_id=candidate_orphan_evidence.evidence_id OR o.confidence_id=candidate_orphan_evidence.evidence_id); DELETE FROM coverage_evidence WHERE evidence_id IN (SELECT evidence_id FROM candidate_orphan_evidence);")?;
+    }
+    tx.execute_batch("DROP TABLE candidate_orphan_evidence;")?;
     let dangling_changed: bool = tx.query_row(
         "SELECT EXISTS(
              SELECT 1 FROM changed_edge_keys k
@@ -338,10 +444,10 @@ pub fn persist_delta(
     )?;
     let persist_ms = persisting.elapsed().as_secs_f64() * 1000.;
     let sealing = Instant::now();
-    let seal = commitments::seal_owners(&tx, Some(&commitment_owners))?;
+    let seal = commitments::seal_owners_with_dirty_fts(&tx, Some(&commitment_owners), dirty_fts)?;
     let seal_ms = sealing.elapsed().as_secs_f64() * 1000.;
     let verifying = Instant::now();
-    commitments::verify_owners(&tx, Some(&commitment_owners))?;
+    commitments::verify_delta_seal(&tx, &seal)?;
 
     let verify_ms = verifying.elapsed().as_secs_f64() * 1000.;
     let verify_elapsed = verifying.elapsed().as_secs_f64() * 1000.;
