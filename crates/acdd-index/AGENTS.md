@@ -6,6 +6,9 @@ Read the [root instructions](../../AGENTS.md), [source architecture](../../src/A
 
 - `crates/acdd-index` owns AST extraction (`ast/`), language profiles and framework manifests (`src/languages/`), cross-file symbol linking (`linker/`), directory scanning (`scanner/`), documentation parsing (`docs.rs`), graph/fact encoding (`models/`, `typed_facts/`, `interner.rs`, `semantic.rs`), Merkle commitments (`commitments.rs`), and code-map SQLite persistence (`db/`).
 - Depend only on `acdd-core` inside this workspace; never import `acdd-state`.
+- `models::{tags, details}` own typed model tags and node detail accessors; `linker::traits::FactsLookup` owns borrowed fact lookup.
+- `commitments::{CommitmentDomain, FtsDomain}` own commitment and FTS domain identities; `db::commitments::fts5_fastpath` owns the FTS5 segment decoder.
+- `db::writer::temp_table::TempTableGuard` owns temporary-table lifetime and `db::writer::batch::MultiValueBatch` owns multi-value insertion batching.
 
 ## Production Rust Invariants
 

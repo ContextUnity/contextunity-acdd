@@ -7,11 +7,14 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Allocate the target set before graph changes so removed occurrences remain visible.
-pub(super) fn prepare_candidates(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TEMP TABLE entrypoint_candidates(node_hash INTEGER PRIMARY KEY) WITHOUT ROWID;",
-    )?;
-    Ok(())
+pub(super) fn prepare_candidates(
+    conn: &Connection,
+) -> Result<super::temp_table::TempTableGuard<'_>> {
+    super::temp_table::TempTableGuard::new(
+        conn,
+        "entrypoint_candidates",
+        "(node_hash INTEGER PRIMARY KEY) WITHOUT ROWID",
+    )
 }
 
 /// Add targets of changed relationships and nodes replaced by a delta.
@@ -111,8 +114,10 @@ pub(super) fn cold_ranks<'a>(
 ///
 /// Returns only node owners whose serialized navigation details actually changed.
 pub(super) fn project(conn: &Connection) -> Result<BTreeSet<String>> {
-    conn.execute_batch(
-        "CREATE TEMP TABLE entrypoint_graph_rank(node_hash INTEGER PRIMARY KEY, rank INTEGER NOT NULL) WITHOUT ROWID;",
+    let _rank_table = super::temp_table::TempTableGuard::new(
+        conn,
+        "entrypoint_graph_rank",
+        "(node_hash INTEGER PRIMARY KEY, rank INTEGER NOT NULL) WITHOUT ROWID",
     )?;
     let kind_rank = "CASE occurrence.kind WHEN 'routes_to' THEN 2 WHEN 'dispatches' THEN 5 WHEN 'listens_to' THEN 5 ELSE CASE source.kind WHEN 'main_registration' THEN 1 WHEN 'route' THEN 2 WHEN 'tool_registration' THEN 3 WHEN 'cli_command_registration' THEN 4 WHEN 'event_handler_registration' THEN 5 END END";
     let graph_filter = "(occurrence.kind IN ('routes_to','dispatches','listens_to') OR (occurrence.kind='handles' AND source.kind IN ('main_registration','route','tool_registration','cli_command_registration','event_handler_registration')))";

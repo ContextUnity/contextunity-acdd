@@ -9,7 +9,7 @@ use std::{
 };
 
 use super::{
-    batch::{BorrowedSqlValue, MultiValueBatch},
+    batch::BorrowedSqlValue,
     dictionary::PathDictionaryCache,
     ingest::{persist_files, persist_graph, CachedNodePath},
 };
@@ -238,7 +238,7 @@ pub fn persist_delta(
     let deleting = Instant::now();
     let mut path_cache = PathDictionaryCache::new();
     path_cache.load_from_db(&tx)?;
-    let mut dirty_fts = commitments::FtsDirtyDomains {
+    let mut dirty_fts = commitments::FtsDirtySet {
         node_search: false,
         doc_search: false,
     };
@@ -252,8 +252,16 @@ pub fn persist_delta(
             dirty_fts.doc_search = doc_search_changed(&tx, path, facts.get(path))?;
         }
     }
-    tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS candidate_orphan_evidence(evidence_id INTEGER PRIMARY KEY) WITHOUT ROWID; DELETE FROM candidate_orphan_evidence;")?;
-    tx.execute_batch("CREATE TEMP TABLE changed_edge_keys(src_hash INTEGER,dst_hash INTEGER,kind TEXT,PRIMARY KEY(src_hash,dst_hash,kind));")?;
+    let orphan_table = super::temp_table::TempTableGuard::new(
+        &tx,
+        "candidate_orphan_evidence",
+        "(evidence_id INTEGER PRIMARY KEY) WITHOUT ROWID",
+    )?;
+    let changed_table = super::temp_table::TempTableGuard::new(
+        &tx,
+        "changed_edge_keys",
+        "(src_hash INTEGER,dst_hash INTEGER,kind TEXT,PRIMARY KEY(src_hash,dst_hash,kind))",
+    )?;
     for path in affected {
         let owner_id = path_cache.get_or_insert(&tx, path)?;
         cached(
@@ -262,10 +270,8 @@ pub fn persist_delta(
             [owner_id],
         )?;
     }
-    let mut changed_edge_batch = MultiValueBatch::<3, BorrowedSqlValue<'_>>::new(
-        &tx,
-        "INSERT OR IGNORE INTO changed_edge_keys VALUES",
-    )?;
+    let mut changed_edge_batch = changed_table
+        .batch::<3, BorrowedSqlValue<'_>>("INSERT OR IGNORE INTO changed_edge_keys VALUES")?;
     for e in &graph.edges {
         changed_edge_batch.push([
             BorrowedSqlValue::Integer(stable_hash64(&e.src)),
@@ -275,11 +281,13 @@ pub fn persist_delta(
     }
     changed_edge_batch.flush()?;
     drop(changed_edge_batch);
-    tx.execute_batch(
-        "CREATE TEMP TABLE replaced_nodes(id TEXT PRIMARY KEY,node_hash INTEGER NOT NULL);",
+    let replaced_table = super::temp_table::TempTableGuard::new(
+        &tx,
+        "replaced_nodes",
+        "(id TEXT PRIMARY KEY,node_hash INTEGER NOT NULL)",
     )?;
     tx.execute("INSERT OR IGNORE INTO replaced_nodes SELECT n.id,n.node_hash FROM nodes n JOIN path_dictionary owner ON owner.path_id=n.owner_path_id WHERE owner.path IN(SELECT value FROM json_each(?1))", [serde_json::to_string(&replace_files)?])?;
-    super::entrypoints::prepare_candidates(&tx)?;
+    let candidates_table = super::entrypoints::prepare_candidates(&tx)?;
     super::entrypoints::add_delta_candidates(&tx, replace_files)?;
     let mut commitment_owners = affected.clone();
     commitment_owners.extend(
@@ -402,7 +410,7 @@ pub fn persist_delta(
     if candidates {
         tx.execute_batch("DELETE FROM candidate_orphan_evidence WHERE EXISTS (SELECT 1 FROM resolution_coverage r WHERE r.evidence_id=candidate_orphan_evidence.evidence_id) OR EXISTS (SELECT 1 FROM edges e WHERE e.evidence_id=candidate_orphan_evidence.evidence_id OR e.confidence_id=candidate_orphan_evidence.evidence_id) OR EXISTS (SELECT 1 FROM edge_occurrences o WHERE o.evidence_id=candidate_orphan_evidence.evidence_id OR o.confidence_id=candidate_orphan_evidence.evidence_id); DELETE FROM coverage_evidence WHERE evidence_id IN (SELECT evidence_id FROM candidate_orphan_evidence);")?;
     }
-    tx.execute_batch("DROP TABLE candidate_orphan_evidence;")?;
+    drop(orphan_table);
     let dangling_changed: bool = tx.query_row(
         "SELECT EXISTS(
              SELECT 1 FROM changed_edge_keys k
@@ -454,6 +462,7 @@ pub fn persist_delta(
     check_snapshot(persist_ms, seal_ms, verify_ms, verify_elapsed)?;
 
     let committing = Instant::now();
+    drop((candidates_table, replaced_table, changed_table));
     tx.commit()?;
     crate::db::cache::checkpoint(&conn, true)
         .map_err(|err| anyhow::anyhow!("delta committed but checkpoint failed: {err:#}"))?;

@@ -17,7 +17,11 @@ use std::time::Instant;
 type OwnerHashers<'a> = HashMap<&'a str, Sha256>;
 type Leaves = BTreeMap<String, String>;
 type NodePathMap<'a> = HashMap<&'a str, (&'a str, i64)>;
-type NodeLookupMaps<'a> = (NodePathMap<'a>, HashMap<i64, &'a str>, HashMap<&'a str, &'a str>);
+type NodeLookupMaps<'a> = (
+    NodePathMap<'a>,
+    HashMap<i64, &'a str>,
+    HashMap<&'a str, &'a str>,
+);
 
 pub(super) struct NodeDomain<'a> {
     hashers: OwnerHashers<'a>,
@@ -140,11 +144,14 @@ pub(super) fn file_domain_leaves(
     file: &FileEntry,
     file_facts: &TypedFacts,
     reference_keys: &[String],
-) -> Result<BTreeMap<&'static str, Leaves>> {
+) -> Result<BTreeMap<crate::commitments::CommitmentDomain, Leaves>> {
     let mut domains = BTreeMap::new();
     let mut docs = OwnerHashers::new();
     hash_doc_sections(&file_facts.docs, &mut docs)?;
-    domains.insert("doc_sections", finish_hashers("doc_sections", docs)?);
+    domains.insert(
+        crate::commitments::CommitmentDomain::DocSections,
+        finish_hashers("doc_sections", docs)?,
+    );
     let mut projected_nodes = Vec::with_capacity(file_facts.nodes.len());
     for (idx, node) in file_facts.nodes.iter().enumerate() {
         let node_id = i64::try_from(idx + 1).context("node ID overflow")?;
@@ -156,7 +163,7 @@ pub(super) fn file_domain_leaves(
         });
     }
     domains.insert(
-        "shared_owners",
+        crate::commitments::CommitmentDomain::SharedOwners,
         project_shared_owner_entries(
             std::iter::once((file.path.as_str(), file_facts)),
             &projected_nodes,

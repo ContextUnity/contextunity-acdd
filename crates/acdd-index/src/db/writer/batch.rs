@@ -126,7 +126,7 @@ pub(super) fn insert_multi_value_batch<const COLUMNS: usize>(
 #[cfg(test)]
 mod tests {
     use super::super::{dictionary::*, ingest::*, MAX_MULTI_VALUE_BATCH_ROWS};
-    use super::{insert_multi_value_batch, multi_value_batch_rows};
+    use super::{insert_multi_value_batch, multi_value_batch_rows, BorrowedSqlValue};
     use crate::db::schema::SCHEMA_DDL;
     use crate::models::compact_graph::{Coverage, Edge, Graph};
     use crate::models::{Facts, Node, Reference};
@@ -333,10 +333,9 @@ mod tests {
             crate::db::reader::rows(&cold, sql, &[], 1_000).unwrap()
         );
         let key = "collision probe";
-        batched.hash_to_key.insert(
-            crate::models::stable_hash64(key),
-            "different key".into(),
-        );
+        batched
+            .hash_to_key
+            .insert(crate::models::stable_hash64(key), "different key".into());
         assert!(batched
             .get_or_insert(key)
             .unwrap_err()
@@ -534,6 +533,37 @@ mod tests {
                 .unwrap(),
             280
         );
+        for duplicate in [false, true] {
+            {
+                let guard = super::super::temp_table::TempTableGuard::new(
+                    &conn,
+                    "guard_test",
+                    "(id INTEGER PRIMARY KEY, value TEXT)",
+                )
+                .unwrap();
+                let mut rows = guard
+                    .batch::<2, BorrowedSqlValue<'_>>("INSERT INTO guard_test VALUES")
+                    .unwrap();
+                rows.push([BorrowedSqlValue::Integer(1), BorrowedSqlValue::Text("one")])
+                    .unwrap();
+                if duplicate {
+                    rows.push([
+                        BorrowedSqlValue::Integer(1),
+                        BorrowedSqlValue::Text("duplicate"),
+                    ])
+                    .unwrap();
+                }
+                assert_eq!(rows.flush().is_err(), duplicate);
+            }
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_temp_master WHERE name='guard_test')",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(!exists);
+        }
     }
 
     #[test]

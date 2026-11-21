@@ -80,12 +80,13 @@ fn parallel_owner_sealing_matches_serial_encoding_and_thread_counts() {
         .install(move || commitments::seal(connection))
         .expect("serial sealing produces the reference root");
 
+    use acdd_index::commitments::CommitmentDomain;
     let owner_domains = [
-        "nodes",
-        "edges",
-        "edge_occurrences",
-        "dependencies",
-        "resolution_coverage",
+        (CommitmentDomain::Nodes, "nodes"),
+        (CommitmentDomain::Edges, "edges"),
+        (CommitmentDomain::EdgeOccurrences, "edge_occurrences"),
+        (CommitmentDomain::Dependencies, "dependencies"),
+        (CommitmentDomain::ResolutionCoverage, "resolution_coverage"),
     ];
     let mut digest_query = conn
         .prepare_cached(
@@ -94,7 +95,8 @@ fn parallel_owner_sealing_matches_serial_encoding_and_thread_counts() {
          WHERE d.domain=?1 AND p.path LIKE 'src/owner_%' ORDER BY p.path",
         )
         .unwrap();
-    for table in owner_domains {
+    for (domain, table) in owner_domains {
+        assert_eq!(domain.as_str(), table);
         let rows = digest_query
             .query_map([table], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
@@ -226,7 +228,12 @@ fn parallel_owner_sealing_matches_serial_encoding_and_thread_counts() {
              SELECT rowid,section_title,content,invariants FROM doc_sections;",
         )
         .unwrap();
-        for table in ["node_search", "doc_search"] {
+        for (domain, expected) in [
+            (commitments::FtsCommitmentTable::NodeSearch, "node_search"),
+            (commitments::FtsCommitmentTable::DocSearch, "doc_search"),
+        ] {
+            let table = domain.table_name();
+            assert_eq!(table, expected);
             assert_eq!(
                 commitments::fts_digest_fastpath(&conn, table).unwrap(),
                 Some(commitments::fts_digest_vocab(&conn, table, "term,doc,col,offset").unwrap()),
@@ -235,22 +242,40 @@ fn parallel_owner_sealing_matches_serial_encoding_and_thread_counts() {
         }
         for (key, value) in [("version", "3"), ("detail", "column"), ("detail", "none")] {
             conn.execute_batch("SAVEPOINT config_case").unwrap();
-            conn.execute("INSERT OR REPLACE INTO node_search_config(k,v) VALUES(?1,?2)", params![key, value]).unwrap();
-            assert_eq!(commitments::fts_digest_fastpath(&conn, "node_search").unwrap(), None);
-            conn.execute_batch("ROLLBACK TO config_case; RELEASE config_case").unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO node_search_config(k,v) VALUES(?1,?2)",
+                params![key, value],
+            )
+            .unwrap();
+            assert_eq!(
+                commitments::fts_digest_fastpath(&conn, "node_search").unwrap(),
+                None
+            );
+            conn.execute_batch("ROLLBACK TO config_case; RELEASE config_case")
+                .unwrap();
         }
         commitments::seal(&conn).unwrap();
         for (sql, restore, original, fastpath_errors) in [
             (
                 "UPDATE node_search_data SET block = X'0102' WHERE id = 10",
                 "UPDATE node_search_data SET block = ?1 WHERE id = 10",
-                conn.query_row("SELECT block FROM node_search_data WHERE id = 10", [], |row| row.get::<_, Vec<u8>>(0)).unwrap(),
+                conn.query_row(
+                    "SELECT block FROM node_search_data WHERE id = 10",
+                    [],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .unwrap(),
                 false,
             ),
             (
                 "UPDATE node_search_docsize SET sz = X'ffffffffff' WHERE id = 1",
                 "UPDATE node_search_docsize SET sz = ?1 WHERE id = 1",
-                conn.query_row("SELECT sz FROM node_search_docsize WHERE id = 1", [], |row| row.get::<_, Vec<u8>>(0)).unwrap(),
+                conn.query_row(
+                    "SELECT sz FROM node_search_docsize WHERE id = 1",
+                    [],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .unwrap(),
                 true,
             ),
         ] {
@@ -267,5 +292,4 @@ fn parallel_owner_sealing_matches_serial_encoding_and_thread_counts() {
             conn.execute(restore, [original]).unwrap();
         }
     }
-
 }

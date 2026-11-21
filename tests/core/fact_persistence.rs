@@ -65,6 +65,20 @@ fn navigation_storage_preserves_compressed_analysis_and_delta_calls() {
         )
         .unwrap();
     drop(conn);
+    writer::build(ws.root(), &db_path, None).unwrap();
+    let rebuilt = reader::open(&db_path, ws.root()).unwrap();
+    let cold_root: String = rebuilt
+        .query_row(
+            "SELECT value FROM metadata WHERE key='output_root'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        cold_root, root,
+        "cold and delta catalog storage must seal identically"
+    );
+    drop(rebuilt);
     let conn = Connection::open(&db_path).unwrap();
     conn.execute(
         "UPDATE local_facts SET facts_blob=?1 WHERE path='caller.py'",

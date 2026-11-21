@@ -11,13 +11,7 @@ use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
 use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::{
-    collections::BTreeMap,
-    fs::File,
-    path::Path,
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::BTreeMap, fs::File, path::Path, sync::Arc, time::Instant};
 
 mod batch;
 /// Database extraction cache facilities.
@@ -29,6 +23,7 @@ mod dictionary;
 pub(crate) mod entrypoints;
 mod ingest;
 mod seal;
+pub mod temp_table;
 
 use batch::*;
 use cache::PreparedCatalogStorage;
@@ -58,12 +53,24 @@ pub struct StagedFilePayload {
 /// RAM-backed payloads indexed by their reserved spool offsets.
 pub type RamStagedPayloads = std::sync::Mutex<BTreeMap<u64, Vec<u8>>>;
 
-fn read_staged_payload(file: &File, payload: StagedPayloadBlob, ram: &RamStagedPayloads, consume: bool) -> Result<Vec<u8>> {
+fn read_staged_payload(
+    file: &File,
+    payload: StagedPayloadBlob,
+    ram: &RamStagedPayloads,
+    consume: bool,
+) -> Result<Vec<u8>> {
     if payload.offset & (1 << 63) != 0 {
         let mut entries = ram.lock().unwrap_or_else(|error| error.into_inner());
-        let bytes = if consume { entries.remove(&payload.offset) } else { entries.get(&payload.offset).cloned() };
+        let bytes = if consume {
+            entries.remove(&payload.offset)
+        } else {
+            entries.get(&payload.offset).cloned()
+        };
         let bytes = bytes.context("missing staged RAM payload")?;
-        anyhow::ensure!(bytes.len() as u64 == payload.length, "staged RAM payload length mismatch");
+        anyhow::ensure!(
+            bytes.len() as u64 == payload.length,
+            "staged RAM payload length mismatch"
+        );
         return Ok(bytes);
     }
     let length = usize::try_from(payload.length).context("staged payload length overflow")?;
@@ -116,17 +123,24 @@ fn decode_prepared_storage(bytes: &[u8]) -> Result<PreparedCatalogStorage> {
 }
 
 /// Prepares encoded catalog storage rows for a file using extracted typed facts.
-pub fn prepare_catalog_storage_with_facts(
-    file: &FileEntry,
-    facts: &TypedFacts,
-) -> Result<Vec<u8>> {
-    let (search_texts, reference_keys, leaves) = catalog_metadata(file, facts)?;
-    let mut bytes = cache::encode_prepared_catalog_storage_with_facts(facts, &search_texts, &reference_keys, &leaves);
+pub fn prepare_catalog_storage_with_facts(file: &FileEntry, facts: &TypedFacts) -> Result<Vec<u8>> {
+    let metadata = catalog_metadata(file, facts)?;
+    let mut bytes = cache::CatalogStorageView {
+        facts,
+        search_texts: &metadata.search_texts,
+        reference_keys: &metadata.reference_keys,
+        leaves: &metadata.leaves,
+    }
+    .encode();
     bytes.shrink_to_fit();
     Ok(bytes)
 }
 
-type CatalogMetadata = (Vec<String>, Vec<String>, BTreeMap<String, BTreeMap<String, String>>);
+struct CatalogMetadata {
+    search_texts: Vec<String>,
+    reference_keys: Vec<String>,
+    leaves: BTreeMap<crate::commitments::CommitmentDomain, BTreeMap<String, String>>,
+}
 
 fn catalog_metadata(file: &FileEntry, facts: &TypedFacts) -> Result<CatalogMetadata> {
     let search_texts = facts
@@ -144,41 +158,57 @@ fn catalog_metadata(file: &FileEntry, facts: &TypedFacts) -> Result<CatalogMetad
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let leaves = seal::file_domain_leaves(file, facts, &reference_keys)?;
-    Ok((search_texts, reference_keys, leaves.into_iter().map(|(domain, leaves)| (domain.to_owned(), leaves)).collect()))
+    Ok(CatalogMetadata {
+        search_texts,
+        reference_keys,
+        leaves,
+    })
 }
 
 fn retained_node_details(node: &Node) -> Value {
-            match &node.details {
-                Value::Object(details) if !details.is_empty() => {
-                    let has_retained = details.iter().any(|(key, value)| {
+    match &node.details {
+        Value::Object(details) if !details.is_empty() => {
+            let has_retained = details.iter().any(|(key, value)| {
+                (key.as_str() == "default_export" && *value == true)
+                    || matches!(key.as_str(), "doc" | "docstring")
+            });
+            if has_retained {
+                let details = details
+                    .iter()
+                    .filter(|(key, value)| {
                         (key.as_str() == "default_export" && *value == true)
                             || matches!(key.as_str(), "doc" | "docstring")
-                    });
-                    if has_retained {
-                        let details = details
-                            .iter()
-                            .filter(|(key, value)| {
-                                (key.as_str() == "default_export" && *value == true)
-                                    || matches!(key.as_str(), "doc" | "docstring")
-                            })
-                            .map(|(key, value)| (key.clone(), value.clone()))
-                            .collect::<serde_json::Map<_, _>>();
-                        Value::Object(details)
-                    } else {
-                        Value::Null
-                    }
-                }
-                _ => Value::Null,
+                    })
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<serde_json::Map<_, _>>();
+                Value::Object(details)
+            } else {
+                Value::Null
             }
+        }
+        _ => Value::Null,
+    }
 }
 
 fn prepare_catalog_rows(file: &FileEntry, mut facts: TypedFacts) -> Result<PreparedCatalogStorage> {
-    let (search_texts, reference_keys, leaves) = catalog_metadata(file, &facts)?;
-    let nodes = std::mem::take(&mut facts.facts.nodes).into_iter().map(|mut node| {
-        node.details = retained_node_details(&node);
-        node.native_semantic = None;
-        node
-    }).collect::<Vec<_>>();
+    let metadata = catalog_metadata(file, &facts)?;
+    let CatalogMetadata {
+        search_texts,
+        reference_keys,
+        leaves,
+    } = metadata;
+    let leaves = leaves
+        .into_iter()
+        .map(|(domain, leaves)| (domain.as_str().to_owned(), leaves))
+        .collect();
+    let nodes = std::mem::take(&mut facts.facts.nodes)
+        .into_iter()
+        .map(|mut node| {
+            node.details = retained_node_details(&node);
+            node.native_semantic = None;
+            node
+        })
+        .collect::<Vec<_>>();
     let mut storage_facts = Facts {
         nodes,
         docs: std::mem::take(&mut facts.facts.docs),
@@ -253,7 +283,18 @@ pub fn populate_owned(
     staged_payloads: &mut BTreeMap<String, StagedFilePayload>,
     payload_spool_path: Option<&Path>,
 ) -> Result<Value> {
-    populate_owned_with_ram(conn, root, adapter, entries, facts, graph, build_inputs, staged_payloads, payload_spool_path, &RamStagedPayloads::default())
+    populate_owned_with_ram(
+        conn,
+        root,
+        adapter,
+        entries,
+        facts,
+        graph,
+        build_inputs,
+        staged_payloads,
+        payload_spool_path,
+        &RamStagedPayloads::default(),
+    )
 }
 
 /// Populates an index with optional RAM-backed staged payloads.
@@ -416,10 +457,12 @@ pub fn populate_owned_with_ram(
                         .into_par_iter()
                         .map(|(file, lean, staged)| {
                             let restoring = Instant::now();
-                            let encoded_facts = read_staged_payload(spool, staged.encoded_facts, ram, true)?;
+                            let encoded_facts =
+                                read_staged_payload(spool, staged.encoded_facts, ram, true)?;
                             let (storage, encoded) = if let Some(storage_blob) = staged.storage_rows
                             {
-                                let storage_bytes = read_staged_payload(spool, storage_blob, ram, true)?;
+                                let storage_bytes =
+                                    read_staged_payload(spool, storage_blob, ram, true)?;
                                 let storage = decode_prepared_storage(&storage_bytes)?;
                                 (storage, encoded_facts)
                             } else {

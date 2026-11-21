@@ -1,12 +1,12 @@
+use crate::models::Edge;
 #[cfg(test)]
 use crate::models::Node;
 #[cfg(test)]
 use crate::models::Reference;
 #[cfg(test)]
 use crate::typed_facts::FlowState;
-use acdd_core::format::{sha256_bytes, sha256_serde_json_hex};
 use crate::typed_facts::TypedFacts;
-use crate::models::Edge;
+use acdd_core::format::{sha256_bytes, sha256_serde_json_hex};
 use anyhow::Context;
 use serde::Serialize;
 use std::{
@@ -46,38 +46,58 @@ crate::struct_codecs! {
 
 const RAW_PREPARED_STORAGE_MAGIC: &[u8] = b"ACDD-RAW-STORAGE\0\x01";
 
-pub(super) fn encode_prepared_catalog_storage_with_facts(
-    facts: &TypedFacts,
-    search_texts: &[String],
-    reference_keys: &[String],
-    leaves: &BTreeMap<String, BTreeMap<String, String>>,
-) -> Vec<u8> {
-    let mut raw = Vec::with_capacity(512);
-    raw.extend_from_slice(RAW_PREPARED_STORAGE_MAGIC);
-    (facts.nodes.len() as u32).encode(&mut raw);
-    for node in &facts.nodes {
-        node.id.encode(&mut raw);
-        node.kind.encode(&mut raw);
-        node.name.encode(&mut raw);
-        node.qualname.encode(&mut raw);
-        node.path.encode(&mut raw);
-        node.line.encode(&mut raw);
-        node.end_line.encode(&mut raw);
-        node.is_test.encode(&mut raw);
-        node.language.encode(&mut raw);
-        node.generated.encode(&mut raw);
-        super::retained_node_details(node).encode(&mut raw);
-        Option::<crate::typed_facts::NodeSemanticEntry>::None.encode(&mut raw);
+pub(super) struct CatalogStorageView<'a> {
+    pub(super) facts: &'a TypedFacts,
+    pub(super) search_texts: &'a [String],
+    pub(super) reference_keys: &'a [String],
+    pub(super) leaves: &'a BTreeMap<crate::commitments::CommitmentDomain, BTreeMap<String, String>>,
+}
+
+impl CatalogStorageView<'_> {
+    pub(super) fn encode(&self) -> Vec<u8> {
+        let Self {
+            facts,
+            search_texts,
+            reference_keys,
+            leaves,
+        } = self;
+        let mut raw = Vec::with_capacity(512);
+        raw.extend_from_slice(RAW_PREPARED_STORAGE_MAGIC);
+        (facts.nodes.len() as u32).encode(&mut raw);
+        for node in &facts.nodes {
+            node.id.encode(&mut raw);
+            node.kind.encode(&mut raw);
+            node.name.encode(&mut raw);
+            node.qualname.encode(&mut raw);
+            node.path.encode(&mut raw);
+            node.line.encode(&mut raw);
+            node.end_line.encode(&mut raw);
+            node.is_test.encode(&mut raw);
+            node.language.encode(&mut raw);
+            node.generated.encode(&mut raw);
+            super::retained_node_details(node).encode(&mut raw);
+            Option::<crate::typed_facts::NodeSemanticEntry>::None.encode(&mut raw);
+        }
+        0u32.encode(&mut raw);
+        0u32.encode(&mut raw);
+        facts.docs.encode(&mut raw);
+        facts.errors.encode(&mut raw);
+        for _ in 0..5 {
+            0u32.encode(&mut raw);
+        }
+        search_texts.encode(&mut raw);
+        reference_keys.encode(&mut raw);
+        (leaves.len() as u32).encode(&mut raw);
+        let ordered: BTreeMap<_, _> = leaves
+            .iter()
+            .map(|(domain, leaves)| (domain.as_str(), leaves))
+            .collect();
+        for (domain, leaves) in ordered {
+            domain.encode(&mut raw);
+            leaves.encode(&mut raw);
+        }
+        raw
     }
-    0u32.encode(&mut raw);
-    0u32.encode(&mut raw);
-    facts.docs.encode(&mut raw);
-    facts.errors.encode(&mut raw);
-    for _ in 0..5 { 0u32.encode(&mut raw); }
-    search_texts.encode(&mut raw);
-    reference_keys.encode(&mut raw);
-    leaves.encode(&mut raw);
-    raw
 }
 
 pub(super) fn decode_prepared_catalog_storage_payload(
@@ -90,10 +110,7 @@ pub(super) fn decode_prepared_catalog_storage_payload(
         let mut cursor = 0;
         let prepared = PreparedCatalogStorage::decode(raw, &mut cursor)
             .context("corrupted prepared catalog storage")?;
-        anyhow::ensure!(
-            cursor == raw.len(),
-            "corrupted prepared catalog storage"
-        );
+        anyhow::ensure!(cursor == raw.len(), "corrupted prepared catalog storage");
         return Ok(prepared);
     }
 
@@ -174,12 +191,18 @@ impl ExtractionCache {
 
     /// Loads cached typed facts if valid and within payload byte limit.
     pub fn load(&self, key: &str, max_payload_bytes: u64) -> Option<TypedFacts> {
-        self.load_with_encoded(key, max_payload_bytes).map(|(facts, _)| facts)
+        self.load_with_encoded(key, max_payload_bytes)
+            .map(|(facts, _)| facts)
     }
 
     /// Loads facts and, for V5 entries, their canonical encoded payload.
-    pub fn load_with_encoded(&self, key: &str, max_payload_bytes: u64) -> Option<(TypedFacts, Option<Vec<u8>>)> {
-        self.load_for_build(key, max_payload_bytes).map(|(facts, encoded, _)| (facts, encoded))
+    pub fn load_with_encoded(
+        &self,
+        key: &str,
+        max_payload_bytes: u64,
+    ) -> Option<(TypedFacts, Option<Vec<u8>>)> {
+        self.load_for_build(key, max_payload_bytes)
+            .map(|(facts, encoded, _)| (facts, encoded))
     }
 
     /// Loads clean facts and the component edges present in the encoded payload.
@@ -349,13 +372,24 @@ fn decode_entry(bytes: &[u8], expected_key: &str, max_payload_bytes: u64) -> Opt
 }
 
 #[cfg(test)]
-fn decode_entry_with_encoded(bytes: &[u8], expected_key: &str, max_payload_bytes: u64) -> Option<(TypedFacts, Option<Vec<u8>>)> {
-    decode_entry_for_build(bytes, expected_key, max_payload_bytes).map(|(facts, encoded, _)| (facts, encoded))
+fn decode_entry_with_encoded(
+    bytes: &[u8],
+    expected_key: &str,
+    max_payload_bytes: u64,
+) -> Option<(TypedFacts, Option<Vec<u8>>)> {
+    decode_entry_for_build(bytes, expected_key, max_payload_bytes)
+        .map(|(facts, encoded, _)| (facts, encoded))
 }
 
-fn decode_entry_for_build(bytes: &[u8], expected_key: &str, max_payload_bytes: u64) -> Option<BuildCacheEntry> {
+fn decode_entry_for_build(
+    bytes: &[u8],
+    expected_key: &str,
+    max_payload_bytes: u64,
+) -> Option<BuildCacheEntry> {
     let v5 = bytes.starts_with(MAGIC_V5);
-    if !v5 && !bytes.starts_with(MAGIC_V4) { return None; }
+    if !v5 && !bytes.starts_with(MAGIC_V4) {
+        return None;
+    }
     let mut cursor = MAGIC_V4.len();
     let key_len = usize::try_from(u32::decode(bytes, &mut cursor)?).ok()?;
     let stored_key = bytes.get(cursor..cursor.checked_add(key_len)?)?;
@@ -369,9 +403,13 @@ fn decode_entry_for_build(bytes: &[u8], expected_key: &str, max_payload_bytes: u
     }
     let uncompressed_len = if v5 {
         let length = u64::decode(bytes, &mut cursor)?;
-        if length > max_payload_bytes { return None; }
+        if length > max_payload_bytes {
+            return None;
+        }
         Some(length)
-    } else { None };
+    } else {
+        None
+    };
     let checksum_end = cursor.checked_add(CHECKSUM_BYTES)?;
     let stored_checksum = bytes.get(cursor..checksum_end)?;
     cursor = checksum_end;
@@ -385,22 +423,42 @@ fn decode_entry_for_build(bytes: &[u8], expected_key: &str, max_payload_bytes: u
     let decoded = if let Some(length) = uncompressed_len {
         let compressed = payload.strip_prefix(LOCAL_MAGIC)?;
         let decoder = zstd::stream::read::Decoder::new(compressed).ok()?;
-        decoder.take(max_payload_bytes.saturating_add(1)).read_to_end(&mut raw).ok()?;
-        if raw.len() as u64 > max_payload_bytes || raw.len() as u64 != length { return None; }
+        decoder
+            .take(max_payload_bytes.saturating_add(1))
+            .read_to_end(&mut raw)
+            .ok()?;
+        if raw.len() as u64 > max_payload_bytes || raw.len() as u64 != length {
+            return None;
+        }
         raw.as_slice()
-    } else { payload };
+    } else {
+        payload
+    };
     let mut payload_cursor = 0;
-    let mut facts = if v5 { TypedFacts::decode_with_string_table(decoded, &mut payload_cursor)? } else { TypedFacts::decode(decoded, &mut payload_cursor)? };
+    let mut facts = if v5 {
+        TypedFacts::decode_with_string_table(decoded, &mut payload_cursor)?
+    } else {
+        TypedFacts::decode(decoded, &mut payload_cursor)?
+    };
     if payload_cursor != decoded.len() || facts.flows.has_invalid_named_uncertainty_carriers() {
         return None;
     }
     let mut components = Vec::new();
     facts.edges.retain(|edge| {
-        if edge.src.starts_with("component:") { components.push(edge.clone()); false } else { true }
+        if edge.src.starts_with("component:") {
+            components.push(edge.clone());
+            false
+        } else {
+            true
+        }
     });
     let has_component_node = facts.nodes.iter().any(|node| node.kind == "component");
     facts.facts.retain_nodes(|node| node.kind != "component");
-    Some((facts, v5.then(|| payload.to_vec()), (!has_component_node).then_some(components)))
+    Some((
+        facts,
+        v5.then(|| payload.to_vec()),
+        (!has_component_node).then_some(components),
+    ))
 }
 
 pub use crate::typed_facts::binary::{decode_references, encode_references};

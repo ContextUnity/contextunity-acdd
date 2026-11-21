@@ -1276,6 +1276,28 @@ impl StateTx for SqliteTx<'_> {
         plan: &SyncPlan,
         new_profile: Option<(&str, &str)>,
     ) -> Result<(), StateError> {
+        if !plan.added_nodes.is_empty() {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT node_id FROM gate_nodes WHERE run_id = ?1")
+                .map_err(|err| map_write_err(err, "apply_sync_plan load existing node_ids"))?;
+            let existing_rows = stmt
+                .query_map(params![run_id.as_str()], |row| row.get::<_, String>(0))
+                .map_err(|err| map_write_err(err, "apply_sync_plan query existing node_ids"))?;
+            let mut existing_parents = HashSet::new();
+            for row in existing_rows {
+                existing_parents.insert(
+                    row.map_err(|err| map_write_err(err, "apply_sync_plan read existing node_id"))?,
+                );
+            }
+            drop(stmt);
+
+            for node in order_nodes_parent_first_with_existing(&plan.added_nodes, &existing_parents)?
+            {
+                insert_gate_node(self.conn, node)?;
+            }
+        }
+
         self.apply_transition_plan(run_id, &plan.transition)?;
 
         if let Some((profile_id, profile_json)) = new_profile {
@@ -1305,28 +1327,6 @@ impl StateTx for SqliteTx<'_> {
                     ErrorCode::BackendConflict,
                     format!("apply_sync_plan run '{run_id}' missing"),
                 ));
-            }
-        }
-
-        if !plan.added_nodes.is_empty() {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT node_id FROM gate_nodes WHERE run_id = ?1")
-                .map_err(|err| map_write_err(err, "apply_sync_plan load existing node_ids"))?;
-            let existing_rows = stmt
-                .query_map(params![run_id.as_str()], |row| row.get::<_, String>(0))
-                .map_err(|err| map_write_err(err, "apply_sync_plan query existing node_ids"))?;
-            let mut existing_parents = HashSet::new();
-            for row in existing_rows {
-                existing_parents.insert(
-                    row.map_err(|err| map_write_err(err, "apply_sync_plan read existing node_id"))?,
-                );
-            }
-            drop(stmt);
-
-            for node in order_nodes_parent_first_with_existing(&plan.added_nodes, &existing_parents)?
-            {
-                insert_gate_node(self.conn, node)?;
             }
         }
 
