@@ -1,5 +1,6 @@
 use crate::models::{Node, Reference};
 use hashbrown::{HashMap, HashSet};
+use rayon::prelude::*;
 
 #[derive(Clone, Debug)]
 pub(crate) enum Base<'a> {
@@ -242,10 +243,15 @@ impl<'a> PythonReceivers<'a> {
         }
         let mut class_ids: Vec<&'a str> = classes.keys().copied().collect();
         class_ids.sort_unstable();
-        let mut orders = HashMap::new();
-        for &id in &class_ids {
-            linearize(id, &bases, &mut orders, &mut HashSet::new());
-        }
+        let orders = class_ids
+            .par_iter()
+            .map(|&id| {
+                (
+                    id,
+                    linearize(id, &bases, &mut HashMap::new(), &mut HashSet::new()),
+                )
+            })
+            .collect();
         Self {
             members: own,
             supers: HashMap::new(),

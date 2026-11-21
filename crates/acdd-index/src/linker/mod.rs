@@ -191,15 +191,11 @@ pub fn required_full_typed_facts(
             }
         }
     }
-    let borrowed: BTreeMap<_, _> = facts
-        .iter()
-        .map(|(path, facts)| (path.clone(), &facts.facts))
-        .collect();
     let mut seen = std::collections::BTreeSet::new();
     for profile in languages::profiles() {
         if seen.insert(profile.id()) {
             required.extend(languages::linker_for(profile.id()).required_full_facts(
-                &borrowed,
+                facts,
                 &projection_owners,
                 catalog,
             ));
@@ -215,7 +211,7 @@ pub fn required_full_typed_facts(
     let _ = dependencies;
     #[cfg(feature = "lang-html")]
     required.extend(html::templates::required_full_facts(
-        &borrowed,
+        facts,
         catalog,
         dependencies,
     ));
@@ -361,6 +357,49 @@ pub fn link_catalog(catalog: &crate::semantic::SymbolCatalog) -> PublicGraph {
     link_compact_catalog_with_registry(catalog, None, &dependencies).into()
 }
 
+type InternedFlows<'a> = HashMap<interner::SymbolId, &'a crate::typed_facts::FlowState>;
+type InternedUncertainties<'a> =
+    HashMap<interner::SymbolId, &'a [crate::semantic::NamedDefinitionUncertainty]>;
+
+fn intern_flow_inputs<'a>(
+    files: impl Iterator<Item = (&'a Facts, &'a crate::typed_facts::FlowStore)>,
+    interner: &interner::LinkerInterner<'_>,
+) -> (
+    InternedFlows<'a>,
+    InternedUncertainties<'a>,
+    HashSet<interner::SymbolId>,
+) {
+    let mut flows = HashMap::new();
+    let mut uncertainties = HashMap::new();
+    let mut faults = HashSet::new();
+    for (facts, store) in files {
+        for node in &facts.nodes {
+            if let Some(state) = store.state(node) {
+                flows.insert(
+                    interner
+                        .lookup_symbol(&node.id)
+                        .expect("node id is interned"),
+                    state,
+                );
+            }
+        }
+        uncertainties.extend(store.named_uncertainty_entries().map(|(owner, markers)| {
+            (
+                interner
+                    .lookup_symbol(owner)
+                    .expect("uncertainty owner is interned"),
+                markers,
+            )
+        }));
+        faults.extend(store.named_uncertainty_faults().map(|owner| {
+            interner
+                .lookup_symbol(owner)
+                .expect("fault owner is interned")
+        }));
+    }
+    (flows, uncertainties, faults)
+}
+
 /// Links compact catalog symbols using dependency registry.
 pub fn link_compact_catalog_with_registry(
     catalog: &crate::semantic::SymbolCatalog,
@@ -368,45 +407,13 @@ pub fn link_compact_catalog_with_registry(
     dependencies: &languages::dependency_registry::DependencyRegistry,
 ) -> Graph {
     let mut interner = interner::LinkerInterner::from_catalog(&catalog.files);
-    let flows: HashMap<_, _> = catalog
-        .files
-        .values()
-        .flat_map(|file| {
-            file.facts.nodes.iter().filter_map(|node| {
-                file.flows.state(node).map(|state| {
-                    (
-                        interner
-                            .lookup_symbol(&node.id)
-                            .expect("catalog node id is interned"),
-                        state,
-                    )
-                })
-            })
-        })
-        .collect();
-    let uncertainties: HashMap<_, _> = catalog
-        .files
-        .values()
-        .flat_map(|file| file.flows.named_uncertainty_entries())
-        .map(|(owner, markers)| {
-            (
-                interner
-                    .lookup_symbol(owner)
-                    .expect("catalog uncertainty owner is interned"),
-                markers,
-            )
-        })
-        .collect();
-    let faults: HashSet<_> = catalog
-        .files
-        .values()
-        .flat_map(|file| file.flows.named_uncertainty_faults())
-        .map(|owner| {
-            interner
-                .lookup_symbol(owner)
-                .expect("catalog fault owner is interned")
-        })
-        .collect();
+    let (flows, uncertainties, faults) = intern_flow_inputs(
+        catalog
+            .files
+            .values()
+            .map(|file| (&file.facts, &file.flows)),
+        &interner,
+    );
     link_compact_impl(
         &catalog.files,
         None,
@@ -456,9 +463,11 @@ pub fn link_compact_with_registry(
     dependency_registry: &languages::dependency_registry::DependencyRegistry,
 ) -> Graph {
     let mut interner = interner::LinkerInterner::from_catalog(all);
-    let mut flows = HashMap::new();
+    let (flows, stored_uncertainties, mut faults) = intern_flow_inputs(
+        all.values().map(|file| (file, &file.semantic.flows)),
+        &interner,
+    );
     let mut retained = HashMap::new();
-    let mut faults = HashSet::new();
     for node in all.values().flat_map(|file| &file.nodes) {
         match crate::typed_facts::FlowStore::read_named_uncertainties(node) {
             Ok(markers) if !markers.is_empty() => {
@@ -479,36 +488,11 @@ pub fn link_compact_with_registry(
             _ => {}
         }
     }
-    for file in all.values() {
-        for node in &file.nodes {
-            if let Some(state) = file.semantic.flows.state(node) {
-                flows.insert(
-                    interner
-                        .lookup_symbol(&node.id)
-                        .expect("node id is interned"),
-                    state,
-                );
-            }
-        }
-        retained.extend(
-            file.semantic
-                .flows
-                .named_uncertainty_entries()
-                .map(|(owner, markers)| {
-                    (
-                        interner
-                            .lookup_symbol(owner)
-                            .expect("uncertainty owner is interned"),
-                        markers.to_vec(),
-                    )
-                }),
-        );
-        faults.extend(file.semantic.flows.named_uncertainty_faults().map(|owner| {
-            interner
-                .lookup_symbol(owner)
-                .expect("fault owner is interned")
-        }));
-    }
+    retained.extend(
+        stored_uncertainties
+            .into_iter()
+            .map(|(owner, markers)| (owner, markers.to_vec())),
+    );
     let uncertainties: HashMap<_, _> = retained
         .iter()
         .map(|(owner, markers)| (*owner, markers.as_slice()))
@@ -536,38 +520,10 @@ pub fn link_compact_with_typed_registry(
     dependency_registry: &languages::dependency_registry::DependencyRegistry,
 ) -> Graph {
     let mut interner = interner::LinkerInterner::from_catalog(all);
-    let mut flows = HashMap::new();
-    let mut uncertainties = HashMap::new();
-    let mut faults = HashSet::new();
-    for file in all.values() {
-        for node in &file.facts.nodes {
-            if let Some(state) = file.flows.state(node) {
-                flows.insert(
-                    interner
-                        .lookup_symbol(&node.id)
-                        .expect("typed node id is interned"),
-                    state,
-                );
-            }
-        }
-        uncertainties.extend(
-            file.flows
-                .named_uncertainty_entries()
-                .map(|(owner, markers)| {
-                    (
-                        interner
-                            .lookup_symbol(owner)
-                            .expect("typed uncertainty owner is interned"),
-                        markers,
-                    )
-                }),
-        );
-        faults.extend(file.flows.named_uncertainty_faults().map(|owner| {
-            interner
-                .lookup_symbol(owner)
-                .expect("typed fault owner is interned")
-        }));
-    }
+    let (flows, uncertainties, faults) = intern_flow_inputs(
+        all.values().map(|file| (&file.facts, &file.flows)),
+        &interner,
+    );
     link_compact_impl(
         all,
         owners,
@@ -995,24 +951,21 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             } else {
                 (build_names(), (build_lookup(), build_bindings()))
             };
-        let mut children_by_parent: HashMap<interner::SymbolId, Vec<&Node>> = HashMap::new();
-        for f in all.values_facts() {
-            for e in &f.edges {
-                if e.kind == "contains" {
-                    let Some(source_id) = interner.lookup_symbol(&e.src) else {
-                        continue;
-                    };
-                    let Some(target_id) = interner.lookup_symbol(&e.dst) else {
-                        continue;
-                    };
-                    if let Some(target_node) = by_id.get(&target_id) {
-                        children_by_parent
-                            .entry(source_id)
-                            .or_default()
-                            .push(target_node);
-                    }
+        let edges: Vec<_> = all.values_facts().flat_map(|f| &f.edges).collect();
+        let children: Vec<_> = edges
+            .par_iter()
+            .filter_map(|e| {
+                if e.kind != "contains" {
+                    return None;
                 }
-            }
+                let source = interner.lookup_symbol(&e.src)?;
+                let target = interner.lookup_symbol(&e.dst)?;
+                Some((source, *by_id.get(&target)?))
+            })
+            .collect();
+        let mut children_by_parent: HashMap<interner::SymbolId, Vec<&Node>> = HashMap::new();
+        for (source, child) in children {
+            children_by_parent.entry(source).or_default().push(child);
         }
         let namespace_indexes =
             indexing::NamespaceIndexes::build(all, &nodes, root, dependency_registry, interner);
@@ -1088,11 +1041,6 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             &by_id,
             &semantic_context,
         );
-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        unsafe {
-            // SAFETY: initialization buffers have dropped; glibc synchronizes arenas.
-            libc::malloc_trim(0);
-        }
         mark("value flow");
         let prepared_semantic_facts =
             framework_relations::PreparedSemanticFacts::build(all, interner);
@@ -1125,11 +1073,6 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             value_flow: &value_flow,
         });
         drop(value_flow);
-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        unsafe {
-            // SAFETY: the reference pass no longer borrows the value-flow cache.
-            libc::malloc_trim(0);
-        }
         mark("reference linking");
         parts.extend(
             framework_relations::compose(
@@ -1151,11 +1094,6 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
         mark("framework relation composition");
         (parts, sort_per_file)
     };
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    unsafe {
-        // SAFETY: glibc synchronizes arenas; all resolution caches have dropped.
-        libc::malloc_trim(0);
-    }
     let mut result = Graph {
         edges: Vec::with_capacity(parts.iter().map(|g| g.counts().0).sum()),
         coverage: Vec::with_capacity(parts.iter().map(|g| g.counts().1).sum()),

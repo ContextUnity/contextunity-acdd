@@ -63,7 +63,9 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
         assert_eq!(compact.as_str(), tag);
         assert_eq!(String::from(compact), tag);
     }
-    use acdd_index::models::{CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind, ReferenceKind};
+    use acdd_index::models::{
+        CoverageStatus, EdgeConfidence, EdgeKind, LanguageId, NodeKind, ReferenceKind,
+    };
     macro_rules! check_wire {
         ($ty:ty, $($wire:literal),+ $(,)?) => {
             for wire in [$($wire),+] {
@@ -77,18 +79,38 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
     }
     check_wire!(EdgeKind, "calls", "imports", "possible_calls");
     check_wire!(EdgeConfidence, "exact", "inferred", "possible", "heuristic");
-    check_wire!(CoverageStatus, "resolved", "external", "ambiguous", "unresolved");
+    check_wire!(
+        CoverageStatus,
+        "resolved",
+        "external",
+        "ambiguous",
+        "unresolved"
+    );
     check_wire!(NodeKind, "function", "class", "interface");
     check_wire!(ReferenceKind, "call", "import", "semantic_key");
     check_wire!(LanguageId, "rust", "python", "typescript", "javascript");
     let mut typed_graph = CompactGraph::default();
-    typed_graph.push_edge("a.rs", "a", "b", EdgeKind::Calls, 1, "call", EdgeConfidence::Exact);
+    typed_graph.push_edge(
+        "a.rs",
+        "a",
+        "b",
+        EdgeKind::Calls,
+        1,
+        "call",
+        EdgeConfidence::Exact,
+    );
     typed_graph.push_coverage("a.rs", 1, "b", CoverageStatus::Resolved, "call");
     let mut wire_graph = CompactGraph::default();
     wire_graph.push_edge("a.rs", "a", "b", "calls", 1, "call", "exact");
     wire_graph.push_coverage("a.rs", 1, "b", "resolved", "call");
-    assert_eq!(serde_json::to_value(&typed_graph.edges).unwrap(), serde_json::to_value(&wire_graph.edges).unwrap());
-    assert_eq!(serde_json::to_value(&typed_graph.coverage).unwrap(), serde_json::to_value(&wire_graph.coverage).unwrap());
+    assert_eq!(
+        serde_json::to_value(&typed_graph.edges).unwrap(),
+        serde_json::to_value(&wire_graph.edges).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&typed_graph.coverage).unwrap(),
+        serde_json::to_value(&wire_graph.coverage).unwrap()
+    );
     let dynamic = CompactTag::from("custom_unknown_tag");
     assert!(matches!(dynamic, CompactTag::Owned(_)));
     assert_eq!(dynamic.as_str(), "custom_unknown_tag");
@@ -155,9 +177,18 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
         decoded_catalog.insert(path.to_owned(), decoded);
     }
 
-    let owned: BTreeMap<String, Facts> = cold_catalog.iter().map(|(path, facts)| (path.clone(), facts.facts.clone())).collect();
-    let borrowed: BTreeMap<&str, &Facts> = owned.iter().map(|(path, facts)| (path.as_str(), facts)).collect();
-    for catalog in [&owned as &dyn acdd_index::models::FactsLookup, &borrowed as &dyn acdd_index::models::FactsLookup] {
+    let owned: BTreeMap<String, Facts> = cold_catalog
+        .iter()
+        .map(|(path, facts)| (path.clone(), facts.facts.clone()))
+        .collect();
+    let borrowed: BTreeMap<&str, &Facts> = owned
+        .iter()
+        .map(|(path, facts)| (path.as_str(), facts))
+        .collect();
+    for catalog in [
+        &owned as &dyn acdd_index::models::FactsLookup,
+        &borrowed as &dyn acdd_index::models::FactsLookup,
+    ] {
         assert_eq!(catalog.len(), files.len());
         for (path, _, _) in files {
             assert!(catalog.get_facts(path).is_some());
@@ -217,7 +248,8 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
                 "python",
                 (0..70)
                     .map(|n| format!("def function_{index}_{n}():\n    return {n}\n"))
-                    .collect::<String>(),
+                    .collect::<String>()
+                    + "\nclass Base:\n    def run(self):\n        return 1\n\nclass Derived(Base):\n    def call(self):\n        return self.run()\n",
             )
         } else {
             (
@@ -313,8 +345,11 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
             let catalog_graph: acdd_index::models::Graph =
                 linker::link_compact_catalog_with_registry(&catalog, None, &registry).into();
             let interner = LinkerInterner::from_catalog(&large);
-            let ids: Vec<_> = large.values().flat_map(|facts| facts.nodes.iter())
-                .map(|node| interner.lookup_symbol(&node.id).unwrap()).collect();
+            let ids: Vec<_> = large
+                .values()
+                .flat_map(|facts| facts.nodes.iter())
+                .map(|node| interner.lookup_symbol(&node.id).unwrap())
+                .collect();
             (
                 serde_json::to_value(typed.edges).unwrap(),
                 serde_json::to_value(typed.coverage).unwrap(),
@@ -327,7 +362,13 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
     assert_eq!(roots[0], roots[1]);
     assert_eq!(results[0], results[1]);
     let edges = results[0].0.as_array().unwrap();
-    assert!(edges.iter().filter(|edge| edge["kind"] == "documents").count() >= 2);
+    assert!(
+        edges
+            .iter()
+            .filter(|edge| edge["kind"] == "documents")
+            .count()
+            >= 2
+    );
     for kind in ["documents", "governs"] {
         assert!(
             edges.iter().any(|edge| edge["kind"] == kind),
