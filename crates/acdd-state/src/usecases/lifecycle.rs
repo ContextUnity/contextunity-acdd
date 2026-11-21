@@ -24,7 +24,6 @@ use crate::types::{
 };
 use crate::usecases::StateEngineConfig;
 use acdd_core::config::{load_adapter, Adapter, SpecCollectionConfig};
-use crate::usecases::deps::load_ws_adapter;
 use acdd_core::fs::{checked_child, open_confined};
 use acdd_core::git::{git_common_dir, git_stdout};
 use acdd_core::lock::{acquire_exclusive, FileLockGuard};
@@ -638,36 +637,49 @@ pub fn parse_cursor_for_snapshot(
 
 
 /// Resolve an owned source checkout root for spec/profile IO while keeping state DB anchored on `primary`.
+/// When `explicit` is true, non-existent destinations are returned normalized for managed worktree creation
+/// once symlink/confinement checks succeed; existing paths must be owned Git worktree roots.
 pub fn resolve_source_checkout(
     primary: &Path,
     layout: Option<&RepoWorktreeLayout>,
     candidate: &Path,
     explicit: bool,
 ) -> Result<PathBuf, StateError> {
-    let _ = primary;
-    let candidate = canonicalize_macos_var(candidate);
-    if !candidate.is_dir() {
-        return Err(StateError::new(
-            ErrorCode::ExternalGitDrift,
-            format!("checkout path '{}' is not a directory", candidate.display()),
-        ));
+    let abs_raw = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        primary.join(candidate)
+    };
+    let drift = |msg: String| StateError::new(ErrorCode::ExternalGitDrift, msg);
+    acdd_core::fs::check_ancestors_no_symlinks(&abs_raw, Path::new(".git"))
+        .map_err(|err| drift(err.to_string()))?;
+    let canon = canonicalize_macos_var(&abs_raw);
+    if !canon.exists() && explicit && layout.is_some() {
+        return Ok(canon);
+    }
+    if !canon.is_dir() {
+        return Err(drift(format!(
+            "checkout path '{}' is not a directory",
+            canon.display()
+        )));
     }
     let Some(layout) = layout else {
-        return Ok(candidate);
+        return Ok(canon);
     };
-    if explicit {
-        let resolved = resolve_repo_layout(&candidate)?;
-        if resolved.primary_worktree != layout.primary_worktree {
-            return Err(StateError::new(
-                ErrorCode::ExternalGitDrift,
-                format!(
-                    "worktree path '{}' is not owned by this repository",
-                    candidate.display()
-                ),
-            ));
-        }
+    let resolved = resolve_repo_layout(&canon)?;
+    if resolved.primary_worktree != layout.primary_worktree {
+        return Err(drift(format!(
+            "worktree path '{}' is not owned by this repository",
+            canon.display()
+        )));
     }
-    Ok(candidate)
+    if resolved.target_worktree != canon {
+        return Err(drift(format!(
+            "checkout path '{}' is not a git worktree root",
+            canon.display()
+        )));
+    }
+    Ok(canon)
 }
 
 /// Overlay checkout-local `acdd.yaml` bindings onto `config` while preserving primary DB routing.
@@ -678,30 +690,35 @@ pub fn checkout_config(
     source_override: Option<&Adapter>,
 ) -> Result<StateEngineConfig, StateError> {
     let source = canonicalize_macos_var(source);
-    let adapter = if let Some(ad) = source_override {
-        ad.clone()
-    } else if source == canonicalize_macos_var(primary) {
-        load_ws_adapter(primary)?
-    } else {
-        load_adapter(&source, None).map_err(|err| {
+    let primary_canon = canonicalize_macos_var(primary);
+    let mut checkout = config.clone();
+    checkout.worktree = source.clone();
+    let apply_adapter = |target: &mut StateEngineConfig, adapter: &Adapter| {
+        target.spec_collections = adapter.specs.clone();
+        target.profiles_dirs = adapter.profiles_dirs.clone();
+        for lw in &adapter.linked_workspaces {
+            target.linked_workspaces.insert(lw.name.clone(), lw.path.clone());
+        }
+        target.modules = adapter.modules.clone();
+        target.response_policy = adapter.response.clone();
+        target.retain_traces = adapter.retain_traces;
+    };
+    if let Some(ad) = source_override {
+        apply_adapter(&mut checkout, ad);
+        return Ok(checkout);
+    }
+    if source == primary_canon {
+        return Ok(checkout);
+    }
+    if source.join("acdd.yaml").is_file() || primary_canon.join("acdd.yaml").is_file() {
+        let adapter = load_adapter(&source, None).map_err(|err| {
             StateError::new(
                 ErrorCode::ConfigMigrationRequired,
                 format!("failed to load acdd.yaml from '{}': {err}", source.display()),
             )
-        })?
-    };
-    let mut checkout = config.clone();
-    checkout.worktree = source;
-    checkout.spec_collections = adapter.specs.clone();
-    checkout.profiles_dirs = adapter.profiles_dirs.clone();
-    checkout.linked_workspaces = adapter
-        .linked_workspaces
-        .iter()
-        .map(|lw| (lw.name.clone(), lw.path.clone()))
-        .collect();
-    checkout.modules = adapter.modules.clone();
-    checkout.response_policy = adapter.response.clone();
-    checkout.retain_traces = adapter.retain_traces;
+        })?;
+        apply_adapter(&mut checkout, &adapter);
+    }
     Ok(checkout)
 }
 

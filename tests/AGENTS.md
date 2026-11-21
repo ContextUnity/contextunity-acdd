@@ -102,9 +102,16 @@ Rules for placing, creating, refactoring, and maintaining tests in
   `StdioClient` / `mkfifo` for dedicated transport smoke tests.
 - **Zero-disk AST**: Language extraction and framework-manifest unit tests stay
   in-memory (no tempdir Git/SQLite) unless the claim requires disk.
-- **Spec/profile fixtures**: Audit all valid and negative spec/profile fixtures
+- **Spec/profile fixtures & cross-platform assertions**: Audit all valid and negative spec/profile fixtures
   under `tests/acdd/fixtures/{milestones,plans,workflows}` through
   `tests/acdd/fixtures_matrix.rs` using `RunHarness` and `validate_profile_document`.
+  Keep `TempDir` roots uncanonicalized at setup ([cross-platform boundaries](../docs/architecture/cross-platform.md)),
+  and canonicalize expected worktree paths (`acdd_core::fs::canonicalize_macos_var`)
+  when comparing or calling `strip_prefix` against canonicalized engine paths (`/var` -> `/private/var`).
+  Never hardcode razor-thin `max_output_bytes` limits (such as `2048`) with `embedded:code`
+  when testing Tier-2+ omission; derive tight budgets from the measured baseline payload
+  or use a compact inline profile so guidance updates or longer `$TMPDIR` paths do not
+  trigger false `GuidanceBudgetExceeded` failures.
 <!-- acdd:test-invariants:end -->
 - For semantic receiver evidence, cover exact resolution separately from
   possible targets through the linker and persisted query seam.

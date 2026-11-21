@@ -346,7 +346,7 @@ If an `inherit:` reference includes a SHA-256 prefix (`<path>:<sha256_prefix>`),
 
 ACDD embeds three `version: 2` profiles (`crates/acdd-state/src/profile/embedded/`):
 - **`base`**: Domain-pure worktree baseline (`gates: []`, 7 core tools, universal guidance, 3 core contours) with `git.isolation: worktree` and `save: commit`.
-- **`code`**: Built-in code-delivery baseline inheriting `base`, adding the three-phase milestone lifecycle (`blueprint_synthesis` -> per-task `build`, `review`, `deliver`, `rearchitect` -> `verify`, `polish`, `integration_review`, `handoff`), 19 built-in tools, `code.seam` verification checks, and `docs.*`/`code.*` context lenses.
+- **`code`**: Built-in code-delivery baseline inheriting `base`, adding the three-phase milestone lifecycle (`blueprint_synthesis` -> per-task `build`, `review`, `deliver`, `rearchitect` -> `run_tests`, `polish`, `integration_review`, `handoff`), 19 built-in tools, `code.seam` verification checks, and `docs.*`/`code.*` context lenses.
 - **`audit`**: Read-only code review and security/taint scanning pipeline (`recon -> analyze -> triage`) inheriting `base` with `git.isolation: in_place`, `save: none`, structured `recon_map`/`candidate_findings`/`audit_report` schemas, adversarial false-positive disproof in `triage`, and `save.report: ".acdd/reports/{run_name}.md"`.
 
 Single-checkout in-place execution is selected via `--in-place` or `git.isolation: in_place` in a profile (`--in-place` sets `isolation: in_place`, `worktrees: manual`, `save: none`, and neutralizes `save.post: commit` to `none` while keeping `save.immutable: true`).
@@ -382,7 +382,7 @@ gates_patch:
       gates:
         - id: build
           command: rust-check-and-test
-  - id: verify
+  - id: run_tests
     command: check_full_repo
   - id: polish
     command: check_full_repo
@@ -592,8 +592,8 @@ acdd extend-scope t1 --path src/auth/utils.rs --reason "Share token helper acros
 git merge --no-ff <task-branch>
 
 # Run terminal verification and submit handoff (commits receipt, archives spec, prunes run)
-acdd verify verify
-acdd submit verify --action pass
+acdd verify run_tests
+acdd submit run_tests --action pass
 acdd claim integration_review --worker integration-reviewer
 acdd submit integration_review --action pass --evidence '{"decision":"pass","contours":{...},"summary":"..."}'
 acdd submit handoff --action pass

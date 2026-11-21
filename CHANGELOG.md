@@ -15,6 +15,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   - `acdd snapshot save|restore|clear` and `acdd_state(action: "snapshot")` manage confined per-task refs under `refs/acdd/snapshots/<run_id>/<task_ref>/r<rev>` without moving `HEAD`.
   - Embedded `code` `build` gates auto-save checkpoints on pass; deliver, run `clear`, and `handoff` delete matching refs.
 
+### Changed
+
+- **Roadmap & Dependency Resolution Hot-Path Consolidation (`PF-005`)**:
+  - Batched multi-blob Git reads through single-subprocess `git cat-file --batch` inspection in `crates/acdd-core/src/git.rs` and removed redundant `git rev-parse` checks in `list_git_tree_entries` and `list_owned_worktrees`.
+  - Consolidated `handle_roadmap` and `validate_spec_dependencies` to preload SQLite runs, tombstones, and archive summaries once per invocation instead of rescanning archives per edge across sibling worktrees.
+
 ### Fixed
 
 - **Roadmap Cross-Worktree and Archive Noise**:

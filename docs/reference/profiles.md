@@ -41,7 +41,7 @@ ACDD resolves the active profile reference (`--profile`, `ACDD_PROFILE`, spec
      three domain-pure review contours (`paths`, `claims`, `administration`).
    - `code` ([`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml)):
      built-in code-delivery baseline inheriting `base`, adding the three-phase
-     milestone lifecycle (`blueprint_synthesis` -> `tasks:` -> `verify` ->
+     milestone lifecycle (`blueprint_synthesis` -> `tasks:` -> `run_tests` ->
      `polish` -> `integration_review` -> `handoff`), `tags: [default, docs]` so
      `docs`-tagged tasks skip `code.seam`, all 19 `default_tools`, additional
      contours (`architecture`, `concurrency`, `project_isolation`), 4-layer

@@ -1796,7 +1796,7 @@ struct MultiRunFixture {
 impl MultiRunFixture {
     fn new(label: &str) -> Self {
         let tmp = make_temp_dir(label);
-        let root = tmp.path().to_path_buf();
+        let root = acdd_state::git_ops::worktree::canonicalize_macos_var(tmp.path());
         fs::create_dir_all(root.join("docs/milestones")).unwrap();
         fs::write(root.join("docs/milestones/AC-MULTI.md"), MULTI_RUN_SOURCE).unwrap();
         fs::write(root.join("docs/milestones/AC-ARC.md"), MULTI_ARC_SOURCE).unwrap();

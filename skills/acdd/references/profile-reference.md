@@ -12,7 +12,7 @@ and compiles via `acdd validate`. Repository defaults live in `.acdd/profile.yam
 - **`version: 2`** (required).
 - **`inherit`**:
   - `base`: domain-pure worktree-isolated baseline (`gates: []`, `save: commit`, `contours: [paths, claims, administration]`, 7 core tools).
-  - `code`: inherits `base`, adds full software lifecycle (`blueprint_synthesis` -> `tasks:` -> `verify` -> `polish` -> `integration_review` -> `handoff`), `tags: [default, docs]`, all 19 tools, `architecture`/`concurrency`/`project_isolation` contours, `code.seam` check, and automatic stripping of disabled `code.*`/`docs.*` hooks when `modules.code: false` or `modules.docs: false`.
+  - `code`: inherits `base`, adds full software lifecycle (`blueprint_synthesis` -> `tasks:` -> `run_tests` -> `polish` -> `integration_review` -> `handoff`), `tags: [default, docs]`, all 19 tools, `architecture`/`concurrency`/`project_isolation` contours, `code.seam` check, and automatic stripping of disabled `code.*`/`docs.*` hooks when `modules.code: false` or `modules.docs: false`.
   - `audit`: inherits `base`, sets `git.isolation: in_place`, `save: none`, roles `auditor` / `independent_reviewer`, and read-only gates `recon -> analyze -> triage` (`save.report: ".acdd/reports/{run_name}.md"`).
   - `none`: standalone graph with zero inherited settings.
   - `<relpath>[:<sha256_prefix>]`: inherit from a repo-confined YAML file (optional min-7-hex SHA-256 content pin).

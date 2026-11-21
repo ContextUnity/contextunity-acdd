@@ -29,7 +29,7 @@ Every lifecycle execution instantiates one **`Run`** bound to a resolved
   and `- tasks:` spec blocks into one tree of typed nodes addressed by dotted
   `NodeCursor` identifiers:
   - `container`: Structural group of root gates (e.g. `blueprint_synthesis`).
-  - `root_gate`: Pre-task or post-task milestone/run gate (e.g. `verify`, `polish`, `integration_review`, `handoff`).
+  - `root_gate`: Pre-task or post-task milestone/run gate (e.g. `run_tests`, `polish`, `integration_review`, `handoff`).
   - `task`: Task container (`gate_id = "__task__"`, `task_ref = <ref>`) matching the active track's `- tasks:` `when:` expression.
   - `task_gate`: Leaf gate inside a task (e.g. `<task_ref>.build`, `<task_ref>.review`, `<task_ref>.deliver`).
 - **Node statuses**: `pending`, `ready`, `in_progress`, `completed`, `stale`,
@@ -92,8 +92,15 @@ Every gate transition is mediated by `claim -> (verify) -> submit` inside
   bumping `claim_revision` and `node_version` atomically, recording `claim_tree`
   from the scoped Git tree (`WorkspacePathPolicy::is_candidate_included`), and
   returning `ClaimResp` (including `context_reset_required: true` when re-entering
-  after `rearchitect`). Concurrent foreign claims require `--force` (and
-  `--steal-remote` if `session_fingerprint` differs across hosts).
+  after `rearchitect`). When `git.worktrees: managed` (`acdd start --worktree` or
+  configured in the profile), claiming a `TaskGate` without an explicit
+  `worktree` override automatically creates `.worktrees/<run_name>-<task_ref>`
+  and branch `task/<run_name>-<task_ref>` (reused by downstream gates of that
+  task) and returns it in `ClaimResp.worktree`; under default `git.worktrees: manual`
+  or when an explicit `worktree` override is supplied, `claim` creates no new
+  worktree and binds to the active/selected checkout. Concurrent foreign claims
+  require `--force` (and `--steal-remote` if `session_fingerprint` differs across
+  hosts).
 - **Verify (`verify`)**:
   1. Validates working-tree changes against `WorkspacePathPolicy::is_agent_writable`.
   2. Executes configured `command:` (applying `test_filter` / `{test_filter}`

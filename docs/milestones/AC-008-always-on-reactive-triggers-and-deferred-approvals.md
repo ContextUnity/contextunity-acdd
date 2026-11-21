@@ -25,14 +25,14 @@ owners:
   - CHANGELOG.md
   - docs/milestones/AC-008-always-on-reactive-triggers-and-deferred-approvals.md
 invariants:
-  - 'INV-ZERO-TOKENS-AT-REST: Sleeping runs (awaiting RoleDef.mode: manual approval, escalated review, or timer wake-up) persist cursor state in SQLite and exit cleanly with zero background LLM polling, idle RAM, or token consumption; acdd tick runs as a bounded one-shot pulse and exits immediately.'
-  - 'INV-SERIALIZED-DISPATCH-AND-DEDUP: Triggers enter one durable inbox table with explicit dedup_key idempotency and coalesce_window burst folding before dispatching runs through AC-005 concurrent CAS swarm execution (acquiring repo.lock strictly when save != none, never blocking save: none parallel channels).'
-  - 'INV-SECRET-ISOLATION: Role runner subprocesses never inherit unapproved host secret variables; sensitive environment credentials (*_KEY, *_TOKEN, *_SECRET, *_PASSWORD) are scrubbed unless explicitly admitted via RoleDef.env_allowlist or external proxy.'
+  - 'INV-ZERO-TOKENS-AT-REST: Sleeping runs (awaiting AgentDef.mode: manual approval, escalated review, parked group coordinators/cycle workers awaiting @mention resume, or timer wake-up) persist cursor and session_id state in SQLite and exit cleanly with zero background LLM polling, idle RAM, or token consumption; acdd tick runs as a bounded one-shot pulse and exits immediately.'
+  - 'INV-SERIALIZED-DISPATCH-AND-DEDUP: Triggers enter one durable inbox table with explicit dedup_key idempotency and coalesce_window burst folding before dispatching runs through AC-005 concurrent CAS swarm execution (acquiring repo.lock strictly when save != none, never blocking save: none parallel channels), plus waking parked GateDef.coordinator or cycle worker sessions via persisted session_id resume on matching @mentions.'
+  - 'INV-SECRET-ISOLATION: Agent runner subprocesses never inherit unapproved host secret variables; sensitive environment credentials (*_KEY, *_TOKEN, *_SECRET, *_PASSWORD) are scrubbed unless explicitly admitted via AgentDef.env_allowlist or external proxy.'
   - 'INV-OUTBOX-IDEMPOTENCY-AND-RESTRAINT: Outgoing notifications fire only from durable outbox rows tied to discrete state transitions (approval_needed, escalated, run_completed), deduplicated per (run_id, node_id, claim_revision, event_kind) and paced by digest windows.'
   - 'INV-CORE-LEAF: Keep pure reactive DTOs (InboxMessage, TimerSpec, OutboxMessage, ApprovalDecision, TickSummary) in acdd-core free of filesystem, SQLite, HTTP, or process I/O.'
-  - 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: AC-008 ships in the same milestone with updated ADR-0003 and ADR-0005 (zero-daemon RoleDef.mode: manual, lease TTLs, SQLite timers, one-shot acdd tick, inbox -> concurrent swarm dispatch, outbox, secret scrubbing), architecture/reference/runbook docs (including systemd.timer / launchd / cron acdd tick setup), executable docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
+  - 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: AC-008 ships in the same milestone with updated ADR-0003 and ADR-0005 (zero-daemon AgentDef.mode: manual, wake-on-mention coordinator/worker session resume, lease TTLs, SQLite timers, one-shot acdd tick, inbox -> concurrent swarm dispatch, outbox, secret scrubbing), architecture/reference/runbook docs (including systemd.timer / launchd / cron acdd tick setup), executable docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
 acceptance_criteria:
-  - 'AC-1: RoleDef.mode: manual and escalated gates park runs cleanly with exit code 0 at zero tokens and resume via CLI/MCP approve/reject, while spawner.rs scrubs secret env vars unless allowed by env_allowlist.'
+  - 'AC-1: AgentDef.mode: manual and escalated gates park runs cleanly with exit code 0 at zero tokens and resume via CLI/MCP approve/reject, while spawner.rs scrubs secret env vars unless allowed by env_allowlist.'
   - 'AC-2: gate_claims.lease_expires_at auto-expires hung remote claims, renews on verify and AC-005 blackboard wait activity, and SQLite v2 -> v3 timers schedule recurring cron (e.g. AC-006 memory-dream) and one-shot snooze wake-ups.'
   - 'AC-3: One-shot acdd tick checks due timers, expired claim leases, queued inbox items, and pending outbox deliveries in milliseconds and exits cleanly with 0 idle RAM for systemd.timer, launchd, cron, or CI scheduling.'
   - 'AC-4: CLI/timer enqueue persists deduplicated/coalesced inbox triggers bound to input.<field> (with: input.events | event.*) and dispatches through AC-005 concurrent CAS swarm execution without blocking save: none channels, while durable outbox delivers deduplicated digest-paced notifications strictly on approval_needed, escalated, and run_completed transitions.'
@@ -89,14 +89,14 @@ behind `ADR-0013` authentication and confinement.
 
 ```yaml
 task_ref: deferred-human-gates-and-sandbox-secret-scrubbing
-target: 'Add RoleDef.mode: manual with clean park-and-sleep run suspension, CLI/MCP approve/reject resume paths, and strict secret env scrubbing in role spawner'
+target: 'Add AgentDef.mode: manual with clean park-and-sleep run suspension, CLI/MCP approve/reject resume paths, and strict secret env scrubbing in agent spawner'
 subtasks:
 - subtask_ref: manual-mode-and-park-on-approval
-  title: 'Support RoleDef.mode: manual and park acdd run cleanly with exit code 0 when awaiting human approval or escalated resolution'
+  title: 'Support AgentDef.mode: manual and park acdd run cleanly with exit code 0 when awaiting human approval or escalated resolution'
 - subtask_ref: cli-mcp-approve-reject-resume
   title: Resume parked nodes strictly via CLI/MCP approve and reject operations with CAS claim_revision verification
 - subtask_ref: spawner-secret-env-scrubbing
-  title: Strip *_KEY, *_TOKEN, *_SECRET, *_PASSWORD environment variables by default in spawner.rs unless explicitly admitted via RoleDef.env_allowlist
+  title: Strip *_KEY, *_TOKEN, *_SECRET, *_PASSWORD environment variables by default in spawner.rs unless explicitly admitted via AgentDef.env_allowlist
 contract_revision: 1
 tags:
 - default
@@ -149,7 +149,7 @@ subtasks:
 - subtask_ref: inbox-ingest-and-coalescing
   title: Enqueue local CLI/timer trigger payloads into inbox with atomic dedup_key idempotency and coalesce_window burst folding
 - subtask_ref: concurrent-cas-swarm-inbox-dispatch
-  title: 'Dispatch coalesced inbox items through AC-005 concurrent CAS swarm execution (input.<field>), holding repo.lock strictly when save != none without blocking save: none parallel channels'
+  title: 'Dispatch coalesced inbox items through AC-005 concurrent CAS swarm execution (input.<field>) and wake parked GateDef.coordinator or worker sessions via persisted session_id resume on matching @mentions, holding repo.lock strictly when save != none without blocking save: none parallel channels'
 contract_revision: 1
 tags:
 - default

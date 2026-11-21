@@ -23,6 +23,7 @@ Read the [root instructions](../../AGENTS.md), [source architecture](../../src/A
 
 ## SQLite & Cross-Platform Invariants
 
+- Read [cross-platform boundaries](../../docs/architecture/cross-platform.md) before changing checkout, worktree, dependency, or database path resolution. Never compare canonicalized paths (`canonical_root`, `canonicalize_macos_var`, `resolve_repo_layout`) directly against raw paths (`primary_root`, `config.worktree`, `tempfile::TempDir`) without canonicalizing both via `acdd_core::fs::canonicalize_macos_var` (or `is_primary`). Validate source and explicit checkouts through `acdd_core::fs::check_ancestors_no_symlinks` and `resolved.target_worktree == canon`.
 - Route all DB path confinement through `acdd_core::fs::confined_database_open_path` / `confined_database_create_path`.
 - Read-only state queries (`open_read_only_if_exists`) strictly open `SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_NOFOLLOW` first (handling WAL-mode databases with missing `-shm` recovery without unintended writes) and never create missing DB files.
 - SQLite backup/restore (`store/sqlite/backup.rs`) switches staged databases to `PRAGMA journal_mode = DELETE;` before atomic rename.

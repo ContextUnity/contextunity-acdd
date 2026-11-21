@@ -77,8 +77,7 @@ preserving `save.immutable: true`), and `save.report` (written strictly under
 1. Inspect cross-worktree specs, dependency waves, critical paths, and scope-overlap markers with `acdd_state(action="roadmap")` (`acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]`), then start a run with `acdd start <spec_path>` or `acdd start --goal "..."`
    (defaults to `code`; select `inherit: audit` for read-only SAST/PR/hygiene audits,
    or `inherit: base` for non-code workflows).
-2. Inspect ready cursors (`acdd_state(action="next")` / `acdd next`) and claim
-   (`acdd_claim` / `acdd claim` with `node`, `worker_id`, `worktree`).
+2. Inspect ready cursors (`acdd_state(action="next")` / `acdd next`). For `mode: subagent` gates, the coordinator dispatches `(run, node_cursor, worker_id)` and the **worker itself** calls `acdd_claim` / `acdd claim` first before editing files (omitting `worktree` under `git.worktrees: managed` so `claim` creates/reuses `.worktrees/<run_name>-<task_ref>`, because passing an explicit `worktree` overrides auto-creation; `session_fingerprint` and full `ClaimResp` bind to the real worker process, which then works strictly inside `ClaimResp.worktree`); the coordinator calls `acdd_claim` directly only for `mode: inline` gates or dead-worker recovery.
 3. Follow `ClaimResp` (`contract`, `guidance`, `unresolved_findings`, `pre_task_slice`
    including `predecessor_proofs`, `blackboard`, and `context_lenses`). Stay within
    admitted write scope (`in_write_scope: ALLOWED`); extend autonomously via

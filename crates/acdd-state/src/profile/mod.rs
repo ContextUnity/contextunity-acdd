@@ -1428,7 +1428,7 @@ gates_patch:
     tools: [acdd_read]
     tools_add: [acdd_verify]
   - id: pair_container
-    before: verify
+    before: run_tests
     use: pair
     max_attempts: 2
     gates:

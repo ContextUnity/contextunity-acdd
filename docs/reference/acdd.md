@@ -218,10 +218,10 @@ Phase 2: Per-Task DAG Container (`- tasks:`, executed in topological waves)
           │
           ▼  (all non-cancelled tasks completed)
 Phase 3: Post-Task Closure
-  └─ verify (command: verify_all, proof: command, max_attempts: 3)
-       ├─ fail ──► polish (role: builder, command: verify_all, explicit polish scope, pass -> verify)
-       └─ pass ──► integration_review (role: independent_reviewer, independent_from [polish, tasks.build], need [verify], immutable, fail -> polish)
-                     └─ pass ──► handoff (role: independent_reviewer, need [verify, integration_review], receipt: true, save { immutable, commit, archive, prune })
+  └─ run_tests (command: verify_all, proof: command, max_attempts: 3)
+       ├─ fail ──► polish (role: builder, command: verify_all, explicit polish scope, pass -> run_tests)
+       └─ pass ──► integration_review (role: independent_reviewer, independent_from [polish, tasks.build], need [run_tests], immutable, fail -> polish)
+                     └─ pass ──► handoff (role: independent_reviewer, need [run_tests, integration_review], receipt: true, save { immutable, commit, archive, prune })
 ```
 
 ### Roles, Contours, and Guidance Slots in `base.yaml` & `code.yaml`

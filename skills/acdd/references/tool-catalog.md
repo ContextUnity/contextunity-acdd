@@ -20,7 +20,7 @@ The server exports **19 built-in static MCP tools** (`10 code + 2 docs + 2 core 
 
 ## Discovery and search
 
-Built-in tools accept an optional `worktree` selector (`acdd_claim` and `acdd next` bind execution affinity to the target checkout). Without a selector, keep the canonical server root regardless of active claims. Use `worktree: "."` to select that root.
+Built-in tools accept an optional `worktree` selector (`acdd_claim` and `acdd next` bind execution affinity to the target checkout). Without a selector, keep the canonical server root regardless of active claims. Use `worktree: "."` to select that root for queries or manual worktrees, but **omit `worktree` when calling `acdd_claim` on a `git.worktrees: managed` `TaskGate`**—passing an explicit `worktree` overrides and bypasses automatic creation of `.worktrees/<run_name>-<task_ref>`, whereas leaving `worktree` unset creates/reuses the managed task worktree and returns it in `ClaimResp.worktree`.
 
 Otherwise, search canonicalized and deduplicated Git-registered worktrees and immediate `.worktrees/` children in this order: exact directory name; literal prefix or normalized numeric prefix; literal suffix; literal substring. The first nonempty tier must be unique. Multiple candidates fail without falling through to a lower tier; empty or unmatched selectors fail.
 

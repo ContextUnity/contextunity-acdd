@@ -20,19 +20,20 @@ Claim context (`acdd_claim` / `acdd claim`) supplies `ClaimResp` (`guidance`, `c
 
 ## Milestone handoff gate
 
-Before terminal `handoff`, run each command from the repository root:
+Before terminal `handoff`, run the repository's `run_tests` gate (`acdd verify run_tests` in `.acdd/profile.yaml`) or execute each command from the repository root:
 
 1. `cargo test --test commitment_integrity`
 2. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 3. `cargo test -p acdd-core --lib && cargo test -p acdd-state --lib` (and `cargo test --workspace --lib` covering all 3 library crates `acdd-core`, `acdd-index`, `acdd-state`, and root `--lib`)
 4. `cargo test --workspace --all-targets`
 5. `cargo run -- docs check && cargo run -- validate`
+6. `./scripts/test-macos-ssh.sh` (non-interactive remote macOS SSH verification on `ACDD_MACOS_SSH_HOST`, default `maxos`, syncing current `HEAD` + working tree into an isolated remote directory and running Clippy, `--workspace --all-targets`, and tempdir leak checks; supports `--scope <path> [--filter <pattern>] [--exact] [--no-clippy]` and `--target "<cargo_args>"` for fast targeted macOS test runs)
 
 Also verify temporary directory cleanup across test runs: compare `/tmp/contextunity-test-*` counts immediately before and after executing tests so shared fixtures (`PersistedSnapshot`, local `Workspace` drops, `RunHarness`, child processes) leave zero leaked directories (`BEFORE == AFTER`).
 
 The root package's `--all-targets` run without `--workspace` does not execute workspace member library unit tests (`acdd-core`, `acdd-index`, `acdd-state`). Record the workspace library result (`cargo test --workspace --lib` and/or `cargo test -p acdd-core --lib && cargo test -p acdd-state --lib`) alongside the integration suite result.
 
-Follow the documentation-agent scan in [AGENTS.md](AGENTS.md#documentation-scan-before-handoff) before final verification. The repository profile's `check_full_repo` runs commands 1–3 (`commitment_integrity`, workspace strict Clippy, and `cargo test --workspace --lib`); run `cargo test --workspace --all-targets` and `cargo run -- docs check && cargo run -- validate` alongside it when verifying terminal delivery. Obtain independent review against the settled diff and target base; any source or documentation change after review invalidates prior verification and requires fresh verification and review.
+Follow the documentation-agent scan in [AGENTS.md](AGENTS.md#documentation-scan-before-handoff) before final verification. The repository profile's `check_full_repo` (bound to gate `run_tests`) chains `commitment_integrity`, workspace strict Clippy, `cargo test --workspace --all-targets`, `docs check`, `validate`, and `./scripts/test-macos-ssh.sh` via `&&` so Linux failures stop fast before invoking SSH. Never hand-craft ad-hoc `ssh` / `rsync` commands for macOS testing; invoke `acdd verify run_tests` or `./scripts/test-macos-ssh.sh` directly. Follow [Cross-Platform Boundaries](docs/architecture/cross-platform.md) whenever modifying paths, worktrees, or temp-dir assertions (`/var` -> `/private/var`). Obtain independent review against the settled diff and target base; any source or documentation change after review invalidates prior verification and requires fresh verification and review.
 
 Use `test-suite-rules` when authoring, deduplicating, splitting, replacing, or removing tests.
 

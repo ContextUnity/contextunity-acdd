@@ -1,0 +1,11 @@
+version: 2
+inherit: .acdd/profile.yaml
+
+gates_patch:
+  - blueprint_synthesis: null
+  - id: run_tests
+    pass: handoff
+  - integration_review: null
+  - id: handoff
+    need: [run_tests]
+    guidance: [milestone.handoff, core.execution, hitl.pro]

@@ -445,7 +445,10 @@ scope: [src/lib.rs]
         Some(delivery_repo.clone()),
     )
     .unwrap();
-    assert_eq!(deliver.worktree, delivery_repo);
+    assert_eq!(
+        deliver.worktree,
+        acdd_core::fs::canonicalize_macos_var(&delivery_repo)
+    );
     git_ok(
         &delivery_repo,
         &["update-ref", &linked_ref, delivery_head.as_str()],
@@ -1810,8 +1813,6 @@ fn seam_claim_context_hydrates_blueprint_slice_and_live_subtasks() {
 
     let long_evidence = "🦀\\\"".repeat(440);
     assert_eq!(long_evidence.len(), 2640);
-    let mut tight_cfg = cfg.clone();
-    tight_cfg.response_policy.max_output_bytes = 2048;
     let set_subtask = |subtask_ref: &str, status, evidence: Option<&str>| {
         execute_on(
             &cfg,
@@ -1827,6 +1828,12 @@ fn seam_claim_context_hydrates_blueprint_slice_and_live_subtasks() {
         )
         .unwrap();
     };
+    set_subtask("s1", SubtaskStatus::InProgress, None);
+    let baseline_bytes = serde_json::to_vec(&show(&cfg, "t1.build").context_preview.unwrap())
+        .unwrap()
+        .len();
+    let mut tight_cfg = cfg.clone();
+    tight_cfg.response_policy.max_output_bytes = baseline_bytes + 300;
     for (config, status, evidence, include_evidence, count) in [
         (&cfg, SubtaskStatus::InProgress, None, true, 1),
         (
@@ -1964,6 +1971,10 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
             "---\nid: AC-006\ntitle: Archived task\nstatus: completed\n---\n### task: build\n```yaml\ntask_ref: build\ntarget: build\nscope: [src/]\nstatus: completed\n```\n",
         ),
         (
+            "work/archive/AC-PRODUCER.md",
+            "---\nid: AC-PRODUCER\ntitle: Archived producer\nstatus: completed\n---\n### task: build\n```yaml\ntask_ref: build\ntarget: build\nscope: [src/]\nstatus: completed\n```\n",
+        ),
+        (
             "work/AC-007.md",
             "---\nid: AC-007\ntitle: Archive dependency\nstatus: active\n---\n### task: consume\n```yaml\ntask_ref: consume\ntarget: consume\nscope: [src/]\ndepends_on: [\"AC-006:build\"]\n```\n",
         ),
@@ -2015,7 +2026,9 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
     let (_, provider) = build_provider_with_mock(&cfg.modules);
     let shared = StateEngine::open(cfg.clone(), provider.clone()).unwrap();
     let mut producer = build_rich_graph(&primary, "producer-id", IsolationMode::InPlace);
+    producer.run.worktree = Some(linked.display().to_string());
     producer.run.run_name = RunName::new("producer-case").unwrap();
+    producer.run.spec_id = Some("AC-PRODUCER".to_owned());
     let mut completed = producer
         .nodes
         .iter()
@@ -2026,9 +2039,19 @@ fn seam_start_and_sync_owned_worktree_checkout_matrix() {
     completed.task_ref = Some(TaskRef::new("build").unwrap());
     completed.status = NodeStatus::Completed;
     producer.nodes.push(completed);
+    let producer_tomb = sample_tombstone(
+        "producer-id",
+        "producer-case",
+        Some("AC-PRODUCER"),
+        TerminalStatus::Completed,
+        Some("work/archive/AC-PRODUCER.md"),
+    );
     shared
         .backend()
-        .exec_tx(|tx| tx.insert_run_graph(&producer))
+        .exec_tx(|tx| {
+            tx.insert_run_graph(&producer)?;
+            tx.archive_and_prune_run(&empty_preconditions(1), &producer_tomb)
+        })
         .unwrap();
     let mut started_run = None;
     let created = primary.join(".worktrees/custom-destination");

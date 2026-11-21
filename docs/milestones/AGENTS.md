@@ -142,6 +142,7 @@ subtasks:
 5. **Replace, Don't Stack**: Whenever an AC introduces a new enum, type, or facade, explicitly name the retired symbol/wrapper to delete and the live production call sites to migrate; never specify production enum variants or predicates with zero production callers.
 6. **Non-Fallback Fast-Path Proof**: Whenever an AC introduces an optimization with a silent fallback (`Ok(None) => slow_path`), require a production-seam test asserting the fast path actually executes on realistic production-generated data (e.g. `pipeline::build` with full-range hashes) rather than only synthetic fixtures.
 7. **Bounded Milestone Scope**: Keep each milestone to a cohesive 2–4 task slice; do not bolt unrelated architectural refactor waves onto a mid-flight performance or feature milestone.
+8. **Roadmap Alignment**: Update [the roadmap](../../ROADMAP.md) in the same change whenever adding a new milestone or refining milestone commitments, dependencies, or release targets with the user.
 
 ---
 
@@ -152,7 +153,7 @@ Under [ADR 0003](../adr/0003-unified-profile-graph-and-state-machine.md), all ga
 ```text
 blueprint_synthesis.synthesize -> blueprint_synthesis.review
   -> tasks: build -> review -> deliver
-  -> verify -> (fail -> polish -> verify) -> integration_review -> handoff
+  -> run_tests (or `verify` in base `code`) -> (fail -> polish -> run_tests) -> integration_review -> handoff
 ```
 
 - **Rejection routing**: `acdd submit <node> --action reject --findings <json>` records structured `RejectionFindings` (`summary`, optional `blackboard_message_id`, and `items` with `{ severity, path?, message, remediation }`) and transitions to `gate.fail` (e.g. `build` or `polish`) up to `max_attempts` (escalating to `escalated` when exhausted).
@@ -170,5 +171,5 @@ Before terminal `handoff` (`archive: true, prune: true`):
 
 1. Ensure all non-cancelled tasks are `completed` and integrated (`TASK_NOT_INTEGRATED` check passes).
 2. Run the documentation scan agent against the final diff and reconcile affected `docs/` pages.
-3. Run required repository gates in `TESTS.md` (`commitment_integrity`, strict Clippy, `cargo test --workspace --lib`, `cargo test --workspace --all-targets`, `acdd docs check`, `acdd validate`, and `/tmp/contextunity-test-*` leak check).
-4. Execute `verify` -> `integration_review` -> `handoff` (or `acdd run`) to archive the completed specification (`closure:` + per-task `receipt:` rollups) into `docs/milestones/archive/` and prune active run rows into `run_tombstones`.
+3. Run required repository gates in `TESTS.md` (via `acdd verify run_tests` / `./scripts/test-macos-ssh.sh`, covering `commitment_integrity`, strict Clippy, `cargo test --workspace --all-targets`, `acdd docs check`, `acdd validate`, `/tmp/contextunity-test-*` leak check, and remote macOS SSH verification).
+4. Execute `run_tests` -> `integration_review` -> `handoff` (or `acdd run`) to archive the completed specification (`closure:` + per-task `receipt:` rollups) into `docs/milestones/archive/` and prune active run rows into `run_tombstones`.

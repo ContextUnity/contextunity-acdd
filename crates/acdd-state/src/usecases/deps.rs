@@ -1092,7 +1092,7 @@ pub fn verify_run_level_depends_on(
                 &spec_repos,
             )?;
             if same_repository(&primary, &canon) {
-                let collections = if &canon == source {
+                let collections = if canonical_root(source).ok().as_ref() == Some(&canon) {
                     effective_spec_collections(config)
                 } else {
                     load_ws_adapter(&canon)?.specs
@@ -1695,7 +1695,7 @@ fn validate_external_dep_ref(
     }
 
     let active_storage: Vec<SpecDocument>;
-    let active_list: &[SpecDocument] = if ws_path == primary_root {
+    let active_list: &[SpecDocument] = if is_primary {
         primary_active_specs
     } else {
         let scan = collect_workspace_specs(&ws_path, &ws_collections);
