@@ -1,23 +1,116 @@
-use super::{is_code_path, paging, rows, SelectorError};
+use super::super::paging;
+use super::sql::rows;
+use super::{AmbiguousCandidate, SelectorError};
+use crate::models::details::{NodeDetailFlags, NodeDetailKey};
+use crate::models::tags::NodeKind;
 use acdd_core::response::Detail;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde_json::Value;
 
+/// Strips `file://`, `file:`, and leading `./` prefixes from a code or path selector.
+pub(crate) fn strip_selector_uri_prefix(selector: &str) -> &str {
+    let unprefixed = selector
+        .strip_prefix("file://")
+        .or_else(|| selector.strip_prefix("file:"))
+        .unwrap_or(selector);
+    unprefixed.strip_prefix("./").unwrap_or(unprefixed)
+}
+
+/// SQLite BINARY ordering makes [path + '/', path + '0') a literal descendant range.
+pub fn path_bounds(path: &str) -> (String, String) {
+    let path = path.trim_end_matches('/');
+    (format!("{path}/"), format!("{path}0"))
+}
+
+/// Directory selectors are resolved from indexed paths. A suffix is accepted only when it
+/// identifies one directory; otherwise the caller must supply a workspace-relative path.
+pub fn directory_path(conn: &Connection, selector: &str) -> Result<Option<String>> {
+    let selector = strip_selector_uri_prefix(selector.trim()).trim_end_matches('/');
+    if selector.is_empty()
+        || selector.starts_with('/')
+        || selector
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return Err(SelectorError::InvalidSyntax {
+            selector: selector.to_owned(),
+            reason: "directory path must be workspace-relative without empty, '.' or '..' segments"
+                .into(),
+        }
+        .into());
+    }
+    let (lower, upper) = path_bounds(selector);
+    let exact: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM files WHERE path>=?1 AND path<?2)",
+        [&lower, &upper],
+        |row| row.get(0),
+    )?;
+    if exact {
+        return Ok(Some(selector.to_owned()));
+    }
+    let needle = format!("/{selector}/");
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT substr(path,1,instr(path,?1)+length(?1)-2) AS directory \
+         FROM files WHERE instr(path,?1)>0 ORDER BY directory LIMIT 11",
+    )?;
+    let candidates = statement
+        .query_map([&needle], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    match candidates.as_slice() {
+        [] => Ok(None),
+        [path] => Ok(Some(path.clone())),
+        _ => Err(SelectorError::AmbiguousPaths {
+            selector: selector.to_owned(),
+            candidates,
+        }
+        .into()),
+    }
+}
+
+/// Suggests indexed paths that match or contain the given selector prefix.
+pub fn indexed_path_suggestions(conn: &Connection, selector: &str) -> Result<Vec<String>> {
+    let name = selector
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("");
+    if name.len() < 2 {
+        return Ok(Vec::new());
+    }
+    let mut statement =
+        conn.prepare("SELECT path FROM files WHERE instr(path,?1)>0 ORDER BY path LIMIT 5")?;
+    let suggestions = statement
+        .query_map([name], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(suggestions)
+}
+
+fn is_code_path(s: &str) -> bool {
+    const EXTENSIONS: &[&str] = &[
+        ".py", ".rs", ".ts", ".tsx", ".js", ".jsx", ".vue", ".go", ".c", ".cpp", ".cc", ".cxx",
+        ".h", ".hpp", ".cs", ".java", ".kt", ".rb", ".php", ".proto", ".json", ".yaml", ".yml",
+        ".toml", ".sql", ".sh", ".bash",
+    ];
+    EXTENSIONS.iter().any(|ext| s.ends_with(ext))
+}
+
 fn is_known_kind_name(kind: &str) -> bool {
-    matches!(
-        kind,
-        "function"
-            | "fn"
-            | "class"
-            | "module"
-            | "struct"
-            | "method"
-            | "trait"
-            | "interface"
-            | "type"
-            | "component"
-    )
+    kind == "fn"
+        || matches!(
+            NodeKind::parse(kind),
+            Some(
+                NodeKind::Function
+                    | NodeKind::Class
+                    | NodeKind::Module
+                    | NodeKind::Struct
+                    | NodeKind::Method
+                    | NodeKind::Trait
+                    | NodeKind::Interface
+                    | NodeKind::Type
+                    | NodeKind::Component
+            )
+        )
 }
 
 fn normalize_scope_path(path: Option<&str>, selector: &str) -> Result<String> {
@@ -54,7 +147,7 @@ fn bounded_chars(value: &str, maximum: usize) -> String {
 fn ambiguous_candidates(
     conn: &Connection,
     ids: &[String],
-) -> Result<Vec<super::AmbiguousCandidate>> {
+) -> Result<Vec<AmbiguousCandidate>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -71,13 +164,13 @@ fn ambiguous_candidates(
             Value::String(text) => serde_json::from_str::<Value>(text).unwrap_or(Value::Null),
             other => other.clone(),
         };
-        Ok(super::AmbiguousCandidate {
+        Ok(AmbiguousCandidate {
             id: row["id"].as_str().context("candidate id is missing")?.to_owned(),
             path: row["path"].as_str().context("candidate path is missing")?.to_owned(),
             line: row["line"].as_i64().unwrap_or(0),
             qualname: row["qualname"].as_str().unwrap_or_default().to_owned(),
             signature: details
-                .get("signature")
+                .get(NodeDetailKey::SIGNATURE)
                 .and_then(Value::as_str)
                 .map(|signature| bounded_chars(signature, 512))
                 .unwrap_or_default(),
@@ -106,14 +199,7 @@ pub(crate) fn select_detail_with_path(
         .into());
     }
     // 1. Normalize prefix: strip file:// or file: or leading ./
-    let unpeeled = if let Some(stripped) = trimmed.strip_prefix("file://") {
-        stripped
-    } else if let Some(stripped) = trimmed.strip_prefix("file:") {
-        stripped
-    } else {
-        trimmed
-    };
-    let unpeeled = unpeeled.strip_prefix("./").unwrap_or(unpeeled);
+    let unpeeled = strip_selector_uri_prefix(trimmed);
 
     // 1b. Check line anchor: #L123 or #123
     let (clean_selector, line_anchor) = if let Some((base, hash_part)) = unpeeled.split_once('#') {
@@ -198,19 +284,7 @@ pub(crate) fn select_detail_with_path(
             .unwrap_or(false);
         let is_path =
             prefix.contains('/') || prefix.contains('\\') || is_code_path(prefix) || indexed_path;
-        let is_known_kind = matches!(
-            prefix,
-            "function"
-                | "fn"
-                | "class"
-                | "module"
-                | "struct"
-                | "method"
-                | "trait"
-                | "interface"
-                | "type"
-                | "component"
-        );
+        let is_known_kind = is_known_kind_name(prefix);
         if is_path {
             path_qualified = true;
             let (path_kind, symbol) = symbol_part
@@ -385,15 +459,8 @@ pub(crate) fn select_detail_with_path(
                         Value::String(s) => serde_json::from_str::<Value>(s).unwrap_or(Value::Null),
                         other => other.clone(),
                     };
-                    let is_stub = details_val
-                        .get("is_stub")
-                        .and_then(|b| b.as_bool())
-                        .unwrap_or(false);
-                    let is_overload = details_val
-                        .get("is_overload")
-                        .and_then(|b| b.as_bool())
-                        .unwrap_or(false);
-                    !is_stub && !is_overload
+                    let flags = NodeDetailFlags::from_value(&details_val);
+                    !flags.is_stub && !flags.is_overload
                 })
                 .cloned()
                 .collect();

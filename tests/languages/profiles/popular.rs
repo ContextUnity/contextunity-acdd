@@ -243,7 +243,7 @@ fn popular_languages_preserve_calls_coverage_deltas_and_diagnostics() {
             None,
         )
         .unwrap();
-        let caller = reader::inspect_paged(&conn, "caller", true, &page).unwrap();
+        let caller = reader::inspect_paged_with_path(&conn, "caller", None, true, &page).unwrap();
         assert_eq!(caller["node"]["language"], language);
         let line = caller["node"]["line"].as_u64().unwrap() as usize;
         assert!(

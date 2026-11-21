@@ -133,7 +133,8 @@ fn htmx_request_identity_and_bounds() {
                 None,
             )
             .unwrap();
-            let inspected = reader::inspect_paged(&conn, &get.id, false, &options).unwrap();
+            let inspected =
+                reader::inspect_paged_with_path(&conn, &get.id, None, false, &options).unwrap();
             assert_eq!(inspected["node"]["name"], "GET /orders?state=open");
             assert_eq!(inspected["node"]["details"]["vals_key_count"], 1);
             let inspect_bytes = serde_json::to_vec(&inspected).unwrap().len();
@@ -271,7 +272,9 @@ fn htmx_requests_remain_complete_after_delta_and_cold_build() {
         None,
     )
     .unwrap();
-    let inspected = reader::inspect_paged(&delta, &requests[69].0, false, &full_options).unwrap();
+    let inspected =
+        reader::inspect_paged_with_path(&delta, &requests[69].0, None, false, &full_options)
+            .unwrap();
     let inspect_bytes = serde_json::to_vec(&inspected).unwrap().len();
     assert!(inspect_bytes < 64 * 1024, "{inspect_bytes} bytes");
     println!("HTMX 71 requests retained; page 10/70; full inspect={inspect_bytes} bytes");

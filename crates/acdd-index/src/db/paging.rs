@@ -1,4 +1,6 @@
-use super::reader::{rows, rows_with_mode, QueryBudget, RowMode};
+use super::commitments::{read_metadata, MetadataKey};
+use super::reader::{rows, rows_with_window_total, ExplainDirection, QueryBudget, RowMode};
+use crate::models::tags::EdgeKind;
 use acdd_core::response::{Detail, QueryOptions, MAX_PAGE_SIZE};
 use anyhow::{ensure, Result};
 use rusqlite::{Connection, ToSql};
@@ -21,11 +23,7 @@ pub fn generation(conn: &Connection, options: &QueryOptions) -> Result<String> {
         options.offset == 0 || options.generation.is_some(),
         "continuation requires generation from the previous page"
     );
-    let current: String = conn.query_row(
-        "SELECT value FROM metadata WHERE key='output_root'",
-        [],
-        |r| r.get(0),
-    )?;
+    let current = read_metadata(conn, MetadataKey::OutputRoot)?;
     ensure!(
         options.generation.as_ref().is_none_or(|previous| {
             previous == &current || (previous.len() >= 8 && current.starts_with(previous.as_str()))
@@ -83,17 +81,24 @@ fn query_with_mode(
     mode: RowMode,
 ) -> Result<Value> {
     let generation = generation(conn, options)?;
-    let total = count(conn, &format!("SELECT count(*) FROM ({sql}\n)"), params)?;
     let limit = options.limit as i64;
     let offset = options.offset as i64;
     let mut bindings = params.to_vec();
     bindings.extend([&limit as &dyn ToSql, &offset as &dyn ToSql]);
     let bounded = format!(
-        "SELECT * FROM ({sql}\n) LIMIT ?{} OFFSET ?{}",
+        "SELECT COUNT(*) OVER() AS __acdd_total, _q.* FROM ({sql}\n) _q LIMIT ?{} OFFSET ?{}",
         params.len() + 1,
         params.len() + 2
     );
-    let items = rows_with_mode(conn, &bounded, &bindings, options.limit, mode)?;
+    let (items, window_total) =
+        rows_with_window_total(conn, &bounded, &bindings, options.limit, mode)?;
+    let total = match window_total {
+        Some(total) => total,
+        None if items.is_empty() && options.offset > 0 => {
+            count(conn, &format!("SELECT count(*) FROM ({sql}\n)"), params)?
+        }
+        None => 0,
+    };
     Ok(value(items, total, options, &generation))
 }
 
@@ -198,20 +203,24 @@ pub(crate) fn populate_edge_relations(
     direction: Option<&str>,
     options: &QueryOptions,
 ) -> Result<()> {
-    let dir = match direction.unwrap_or("both") {
-        "inbound" => "incoming",
-        "outbound" => "outgoing",
-        direction => direction,
-    };
-    ensure!(
-        matches!(dir, "both" | "incoming" | "outgoing"),
-        "direction must be both, incoming (inbound), or outgoing (outbound)"
-    );
-    for (key, filter_col, order_col, dir_label) in [
-        ("incoming", "dst_hash", "src_hash", "inbound"),
-        ("outgoing", "src_hash", "dst_hash", "outbound"),
+    let parsed_dir = ExplainDirection::parse_optional(direction)?;
+    for (include, key, filter_col, order_col, dir_label) in [
+        (
+            parsed_dir.includes_incoming(),
+            "incoming",
+            "dst_hash",
+            "src_hash",
+            "inbound",
+        ),
+        (
+            parsed_dir.includes_outgoing(),
+            "outgoing",
+            "src_hash",
+            "dst_hash",
+            "outbound",
+        ),
     ] {
-        if dir == "both" || dir == key {
+        if include {
             let mut page = query(
                 conn,
                 &format!(
@@ -247,8 +256,11 @@ pub(crate) fn populate_edge_relations(
                  FROM edges e JOIN nodes n ON n.node_hash=e.{join_col} \
                  JOIN path_dictionary p ON p.path_id=e.path_id \
                  JOIN coverage_evidence v ON v.evidence_id=e.evidence_id \
-                 WHERE e.{filter_col}=?1 AND e.kind IN('implements','overrides','extends') \
-                 ORDER BY p.path,e.line"
+                 WHERE e.{filter_col}=?1 AND e.kind IN('{implements}','{overrides}','{extends}') \
+                 ORDER BY p.path,e.line",
+                implements = EdgeKind::Implements.as_str(),
+                overrides = EdgeKind::Overrides.as_str(),
+                extends = EdgeKind::Extends.as_str(),
             ),
             &[&node_hash],
             50,
@@ -257,6 +269,6 @@ pub(crate) fn populate_edge_relations(
             result[key] = json!(items);
         }
     }
-    result["direction"] = json!(dir);
+    result["direction"] = json!(parsed_dir.as_str());
     Ok(())
 }

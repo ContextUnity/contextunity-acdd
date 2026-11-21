@@ -1285,8 +1285,14 @@ fn coverage_page_contract_matrix() {
     for case in ["single_reference", "seventeen_references"] {
         match case {
             "single_reference" => {
-                let inspected =
-                    reader::inspect_paged(&conn, "target_func", false, &options(10)).unwrap();
+                let inspected = reader::inspect_paged_with_path(
+                    &conn,
+                    "target_func",
+                    None,
+                    false,
+                    &options(10),
+                )
+                .unwrap();
                 let coverage = &inspected["coverage"];
                 assert!(coverage["total"].as_u64().unwrap() >= 1);
                 let item = &coverage["items"][0];
@@ -1301,7 +1307,9 @@ fn coverage_page_contract_matrix() {
                     .any(|s| { s["status"] == "unresolved" && s["total"].as_u64().unwrap() > 0 }));
                 let mut full = options(10);
                 full.detail = Detail::Full;
-                let detailed = reader::inspect_paged(&conn, "target_func", false, &full).unwrap();
+                let detailed =
+                    reader::inspect_paged_with_path(&conn, "target_func", None, false, &full)
+                        .unwrap();
                 assert_eq!(detailed["coverage"]["total"], coverage["total"]);
                 assert!(detailed["coverage"]["items"][0]["evidence"].is_string());
                 assert_eq!(detailed["coverage"]["items"][0]["path"], "target.py");
@@ -1310,9 +1318,10 @@ fn coverage_page_contract_matrix() {
                 let mut query = options(4);
                 let mut references = Vec::new();
                 loop {
-                    let result = reader::inspect_paged(
+                    let result = reader::inspect_paged_with_path(
                         &conn,
                         "coverage_matrix_seventeen_references",
+                        None,
                         false,
                         &query,
                     )
@@ -1383,9 +1392,14 @@ fn compact_search_preserves_distinct_selectors_and_locations() {
         for field in ["id", "kind", "name", "path", "line", "end_line", "language"] {
             assert_eq!(item[field], full["nodes"]["items"][index][field]);
         }
-        let selected =
-            reader::inspect_paged(&conn, item["id"].as_str().unwrap(), false, &options(10))
-                .unwrap();
+        let selected = reader::inspect_paged_with_path(
+            &conn,
+            item["id"].as_str().unwrap(),
+            None,
+            false,
+            &options(10),
+        )
+        .unwrap();
         for field in ["id", "kind", "name", "path", "line", "end_line", "language"] {
             assert_eq!(selected["node"][field], item[field]);
         }

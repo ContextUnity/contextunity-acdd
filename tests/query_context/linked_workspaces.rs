@@ -109,18 +109,32 @@ linked_workspaces:
     let node_check = server
         .read(|conn| {
             // Inspect symbol from traverse
-            let tr =
-                reader::inspect_paged(conn, "function:run_traverse", false, &page(100)).is_ok();
+            let tr = reader::inspect_paged_with_path(
+                conn,
+                "function:run_traverse",
+                None,
+                false,
+                &page(100),
+            )
+            .is_ok();
             // Inspect symbol from commerce
-            let cm = reader::inspect_paged(
+            let cm = reader::inspect_paged_with_path(
                 conn,
                 "function:revert_confirmed_bindings",
+                None,
                 false,
                 &page(100),
             )
             .is_ok();
             // Inspect symbol from gridviewspec
-            let gr = reader::inspect_paged(conn, "interface:GridColumn", false, &page(100)).is_ok();
+            let gr = reader::inspect_paged_with_path(
+                conn,
+                "interface:GridColumn",
+                None,
+                false,
+                &page(100),
+            )
+            .is_ok();
             Ok(serde_json::json!({
                 "tr": tr,
                 "cm": cm,
@@ -205,16 +219,30 @@ linked_workspaces:
 
     let node_check2 = server
         .read(|conn| {
-            let tr =
-                reader::inspect_paged(conn, "function:run_traverse", false, &page(100)).is_ok();
-            let cm = reader::inspect_paged(
+            let tr = reader::inspect_paged_with_path(
                 conn,
-                "function:revert_confirmed_bindings",
+                "function:run_traverse",
+                None,
                 false,
                 &page(100),
             )
             .is_ok();
-            let gr = reader::inspect_paged(conn, "interface:GridColumn", false, &page(100)).is_ok();
+            let cm = reader::inspect_paged_with_path(
+                conn,
+                "function:revert_confirmed_bindings",
+                None,
+                false,
+                &page(100),
+            )
+            .is_ok();
+            let gr = reader::inspect_paged_with_path(
+                conn,
+                "interface:GridColumn",
+                None,
+                false,
+                &page(100),
+            )
+            .is_ok();
             Ok(serde_json::json!({
                 "tr": tr,
                 "cm": cm,

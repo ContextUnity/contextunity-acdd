@@ -9,11 +9,13 @@ fn compact_inspect_and_explain_omit_repeated_empty_data_without_losing_edges() {
     );
     workspace.build();
     let conn = workspace.open();
-    let compact = reader::inspect_paged(&conn, "target", false, &options(10)).unwrap();
+    let compact =
+        reader::inspect_paged_with_path(&conn, "target", None, false, &options(10)).unwrap();
     assert_eq!(compact["documents"], serde_json::json!({"total": 0}));
-    let incoming = reader::explain_with_options(
+    let incoming = reader::explain_with_path_options(
         &conn,
         "target",
+        None,
         &reader::ExplainOptions {
             direction: Some("incoming"),
             show_doc: true,
@@ -32,9 +34,10 @@ fn compact_inspect_and_explain_omit_repeated_empty_data_without_losing_edges() {
     assert!(incoming["incoming"]["generation"].is_string());
     let mut full = options(10);
     full.detail = Detail::Full;
-    let full_edge = reader::explain_with_options(
+    let full_edge = reader::explain_with_path_options(
         &conn,
         "target",
+        None,
         &reader::ExplainOptions {
             direction: Some("incoming"),
             show_doc: true,
