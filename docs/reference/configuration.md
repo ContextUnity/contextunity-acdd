@@ -251,7 +251,7 @@ Agent execution and model guidance are configured per **role** (`roles:`):
 - `mode`: `subagent` (default) or `inline`
 - `reuse_on_reject`: explicit boolean (`false` by default; `true` in embedded roles that retain builder sessions on reject)
 - `models`: ordered list of `'model:reasoning'`, `'model'`, or `{ model, reasoning? }`
-- `guidance`: advisory role text
+- `guidance`: coordinator-facing role dispatch guidance shown in `acdd next` / `acdd_state(action: "next")`
 - `runner` / `prompt_template`: optional command and prompt templates for automated `acdd run`
 
 ```yaml
@@ -262,20 +262,25 @@ inherit: code
 roles:
   builder:
     models:
-      - 'gpt6-luna:xhigh'
+      - gemini-4-hydrogen-high
   independent_reviewer:
     mode: subagent
-    reuse_on_reject: true
+    reuse_on_reject: false
     models:
-      - 'sol-6.1:high'
-    guidance: "Run independent review on a dedicated high-reasoning model."
+      - gemini-4-neon-xhigh
+      - gemini-4-neon-high
+    guidance: "Spawn an independent fresh reviewer on a high-reasoning model."
 ```
 
-During `acdd claim` / `acdd_claim` and `acdd show` / `acdd_state(action: "show")`,
-ACDD projects resolved role guidance, recommended models, active `tools`, and
-bound `ClaimResp` tiers (`contract`, `guidance`, `diff`, `context`, `blackboard`,
-`traces`). After a reject transition along `fail:`, rejection findings and prior
-worker reuse instructions are injected cleanly.
+During `acdd start`, ACDD projects the compact gate dispatch plan (`role`,
+`mode`, `reuse_on_reject`, recommended `models`, `command`/`call`) without
+per-gate guidance; during `acdd next` / `acdd_state(action: "next")`, it
+projects coordinator `guidance` alongside each currently ready gate right before
+dispatch. During `acdd claim` / `acdd_claim` and `acdd show` /
+`acdd_state(action: "show")`, ACDD projects bound `ClaimResp` tiers (`contract`, `guidance`, `diff`, `context`, `blackboard`, `traces`) for the
+assigned executor without spending `Tier 1` worker budget on model-selection lists.
+Headless `acdd run` also exports `ACDD_ROLE_MODE`, `ACDD_ROLE_MODELS`, and primary
+`ACDD_MODEL` / `ACDD_REASONING` environment variables to configured `runner:` processes.
 
 ### Repository `.gitignore` and protected paths
 

@@ -38,6 +38,17 @@ scope_args_by_pattern:
   "tests/receivers/**/*.rs": "--test linker"
 
 roles:
+  architect:
+    models:
+      - gemini-4-neon-xhigh
+      - gemini-4-hydrogen-xhigh
+  builder:
+    models:
+      - gemini-4-hydrogen-high
+  independent_reviewer:
+    models:
+      - gemini-4-neon-xhigh
+      - gemini-4-neon-high
   coordinator:
     mode: inline
     reuse_on_reject: true

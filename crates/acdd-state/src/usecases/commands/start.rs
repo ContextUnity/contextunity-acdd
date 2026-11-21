@@ -9,7 +9,7 @@ use crate::machine::{
     build_initial_run_graph, compute_schedule,
     BuildGraphInput,
 };
-use crate::profile::resolve_optional_profile_ref_with_dirs;
+use crate::profile::{resolve_optional_profile_ref_with_dirs, ResolvedGateProfile};
 use crate::spec::{
     materialize_ephemeral_goal_spec_with_options, parse_spec, SpecStatus,
 };
@@ -439,10 +439,12 @@ fn start_holding_repo_lock(
         }),
     );
 
+    let gate_plan = ResolvedGateProfile::dispatch_plan(&resolved_profile);
     Ok(StartResp {
         run: graph.run,
         ready_nodes,
         materialized_spec_path,
+        gate_plan,
     })
 }
 

@@ -143,7 +143,32 @@ pub(super) fn spawn_role_runner_borrowed_inner(
         .env("ACDD_AGENT_SESSION_ID", &agent_session_id)
         .env("ACDD_WORKTREE", req.worktree)
         .env("ACDD_STATE_DB", req.state_db_path)
+        .env("ACDD_ROLE_MODE", req.role_def.mode.to_string())
         .env("TRACEPARENT", req.trace_parent);
+
+    if req.role_def.models.is_empty() {
+        cmd.env_remove("ACDD_ROLE_MODELS")
+            .env_remove("ACDD_MODEL")
+            .env_remove("ACDD_REASONING");
+    } else {
+        let joined = req
+            .role_def
+            .models
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        cmd.env("ACDD_ROLE_MODELS", joined)
+            .env("ACDD_MODEL", &req.role_def.models[0].model);
+        match req.role_def.models[0].reasoning {
+            Some(ref reasoning) => {
+                cmd.env("ACDD_REASONING", reasoning);
+            }
+            None => {
+                cmd.env_remove("ACDD_REASONING");
+            }
+        }
+    }
 
     match req.code_db_path {
         Some(code_db) => {

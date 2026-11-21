@@ -11,10 +11,10 @@ pub use inherit::{
     resolve_profile_ref_with_dirs,
 };
 pub use schema::{
-    parse_profile, CheckRef, CommandDef, ContourDef, DetailedCommandDef, GateDef, GateGuidanceRef,
-    GateTemplate, GitPolicy, GitPolicyPatch, GuidanceEntry, InlineGuidance, ModelSpec,
-    ParsedProfileFile, PatchField, PatternCommandEntry, ProofCatalogDef, ProofDef, ProofKind,
-    RawGateDef, RawGateItem, RawTasksBlock, ResolvedGateProfile, ResourceLimits,
+    parse_profile, CheckRef, CommandDef, ContourDef, DetailedCommandDef, GateDef, GateDispatchInfo,
+    GateGuidanceRef, GateTemplate, GitPolicy, GitPolicyPatch, GuidanceEntry, InlineGuidance,
+    ModelSpec, ParsedProfileFile, PatchField, PatternCommandEntry, ProofCatalogDef, ProofDef,
+    ProofKind, RawGateDef, RawGateItem, RawTasksBlock, ResolvedGateProfile, ResourceLimits,
     ResourceLimitsPatch, RoleDef, RoleExecutionMode, RolePatch, SavePolicy, SavePolicyPatch,
     StructuredGuidance, SubsystemRegistryPatch, TasksBlock, TestFilterConfig, DEFAULT_MAX_ATTEMPTS,
 };
@@ -240,7 +240,11 @@ mod tests {
         assert!(code_p.roles["builder"].reuse_on_reject);
         assert_eq!(code_p.default_tools.len(), 19);
         assert!(code_p.tags.contains("docs"));
-        assert!(code_p.roles["independent_reviewer"].guidance.as_deref().is_some_and(|g| g.contains("duplicates") && g.contains("dead_tails")));
+        assert!(code_p.roles["independent_reviewer"].guidance.as_deref().is_some_and(|g| g.contains("fresh") && g.contains("distinct")));
+        assert!(match &code_p.guidance["task.review"] {
+            GuidanceEntry::Structured(s) => s.criteria.iter().any(|c| c.contains("duplicates") && c.contains("dead_tails")),
+            GuidanceEntry::Text(t) => t.contains("duplicates") && t.contains("dead_tails"),
+        });
         let code_tasks = code_p
             .gates
             .iter()
@@ -264,6 +268,58 @@ mod tests {
         assert_eq!(
             code_rearch.context,
             vec!["docs.instructions", "docs.adrs", "docs.invariants", "code.symbols"]
+        );
+        let plan = code_p.dispatch_plan();
+        let plan_cursors: Vec<&str> = plan.iter().map(|g| g.cursor.as_str()).collect();
+        assert_eq!(
+            plan_cursors,
+            vec![
+                "blueprint_synthesis.synthesize",
+                "blueprint_synthesis.review",
+                "tasks.build",
+                "tasks.review",
+                "tasks.deliver",
+                "tasks.rearchitect",
+                "run_tests",
+                "polish",
+                "integration_review",
+                "handoff",
+            ]
+        );
+        assert_eq!(plan[2].role.as_deref(), Some("builder"));
+        assert_eq!(plan[2].mode, Some(RoleExecutionMode::Subagent));
+        assert_eq!(plan[2].reuse_on_reject, Some(true));
+        assert_eq!(plan[6].role, None);
+        assert_eq!(plan[6].command.as_deref(), Some("verify_all"));
+        assert!(plan.iter().all(|g| g.guidance.is_none()), "dispatch_plan at start must omit per-role guidance: {plan:?}");
+
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let repo_p = resolve_profile_ref_with_dirs(".acdd/profile.yaml", Some(&repo_root), None, None).unwrap();
+        let repo_plan = repo_p.dispatch_plan();
+        let handoff = repo_plan.iter().find(|g| g.cursor == "handoff").unwrap();
+        assert_eq!(handoff.role.as_deref(), Some("coordinator"));
+        assert_eq!(handoff.mode, Some(RoleExecutionMode::Inline));
+        assert_eq!(handoff.models, repo_p.roles["coordinator"].models);
+        let build = repo_plan.iter().find(|g| g.cursor == "tasks.build").unwrap();
+        assert_eq!(build.mode, Some(RoleExecutionMode::Subagent));
+        assert_eq!(build.models, repo_p.roles["builder"].models);
+        let custom_models = resolve_profile_from_str_with_dirs(
+            "version: 2\ninherit: code\nroles:\n  builder:\n    models: ['model-a', 'model-b:high']\n",
+            "custom",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let custom_build = custom_models
+            .dispatch_plan()
+            .into_iter()
+            .find(|g| g.cursor == "tasks.build")
+            .unwrap();
+        assert_eq!(
+            custom_build.models.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            vec!["model-a", "model-b:high"]
         );
 
         let audit_p = resolve_profile_ref_with_dirs("audit", None, None, None).unwrap();

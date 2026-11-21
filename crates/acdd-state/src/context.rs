@@ -287,19 +287,12 @@ impl GateContextAssembler {
         let contract = build_contract_value(req);
         let contract_bytes = estimate_json_bytes(&contract);
 
-        let mut guidance_texts = resolve_and_budget_guidance(
+        let guidance_texts = resolve_and_budget_guidance(
             &req.profile,
             &req.gate,
             contract_bytes,
             req.response_max_bytes,
         )?;
-        if let Some(role_name) = &req.gate.role {
-            if let Some(role_def) = req.profile.roles.get(role_name) {
-                if let Some(role_guidance) = &role_def.guidance {
-                    guidance_texts.push(format!("[role:{role_name}] {role_guidance}"));
-                }
-            }
-        }
         let guidance: Vec<Value> = guidance_texts.into_iter().map(Value::String).collect();
         let guidance_bytes = estimate_json_bytes(&guidance);
         check_guidance_budget(

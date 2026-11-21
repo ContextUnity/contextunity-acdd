@@ -315,6 +315,7 @@ fn handle_next(
             isolation: None,
             ready_cursors: Vec::new(),
             waves: Vec::new(),
+            ready_gates: Vec::new(),
         });
     };
 
@@ -324,6 +325,7 @@ fn handle_next(
             isolation: None,
             ready_cursors: Vec::new(),
             waves: Vec::new(),
+            ready_gates: Vec::new(),
         });
     };
 
@@ -342,6 +344,15 @@ fn handle_next(
     if let Some(limit) = req.limit {
         ready_cursors.truncate(limit);
     }
+    let profile = parse_profile_from_run(&graph.run)?;
+    let ready_gates = ready_cursors
+        .iter()
+        .filter_map(|raw| {
+            let cursor = parse_cursor_for_snapshot(&graph, raw).ok()?;
+            let gate = find_profile_gate_def_ref(&profile, &cursor)?;
+            Some(profile.gate_dispatch_info(raw.clone(), gate, true))
+        })
+        .collect();
     let waves: Vec<Vec<String>> = schedule
         .waves
         .into_iter()
@@ -353,6 +364,7 @@ fn handle_next(
         isolation: Some(run.isolation),
         ready_cursors,
         waves,
+        ready_gates,
     })
 }
 

@@ -36,11 +36,11 @@ roles:
   auditor:
     mode: subagent
     reuse_on_reject: true
-    guidance: "Perform read-only evidence-backed code and taint auditing using ACDD MCP navigation (code_map_overview, code_map_search(detail: \"compact\"), code_map_impact, ast_grep_search, acdd_read(selector: ...), search_docs, get_doc). Do not modify repository files."
+    guidance: "Spawn a read-only auditor subagent in the target workspace with thin prompt; reuse the same worker if triage requests deeper evidence."
   independent_reviewer:
     mode: subagent
     reuse_on_reject: false
-    guidance: "Independently triage candidate findings by attempting to disprove each claim against upstream guards, types, and workspace invariants. Reject speculative findings and emit a concise evidence-grounded report."
+    guidance: "Spawn a fresh independent_reviewer distinct from the auditor to triage candidate findings against upstream guards and invariants."
 
 proofs:
   recon_map:

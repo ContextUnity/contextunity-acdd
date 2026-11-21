@@ -6,6 +6,7 @@ use acdd_core::subsystems::{SubsystemPreset, SubsystemRegistry};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{GateId, GateSelector};
 use acdd_core::schema::SchemaDef;
+use schemars::JsonSchema;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -80,7 +81,7 @@ pub struct GitPolicyPatch {
 }
 
 /// Execution mode for a configured role.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RoleExecutionMode {
     /// Run the role as a separate worker/subagent.
@@ -90,14 +91,60 @@ pub enum RoleExecutionMode {
     Inline,
 }
 
+impl fmt::Display for RoleExecutionMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Subagent => "subagent",
+            Self::Inline => "inline",
+        })
+    }
+}
+
 /// Model recommendation entry within a `RoleDef` (`"model"`, `"model:reasoning"`, or `{ model, reasoning? }`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ModelSpec {
     /// Model identifier.
     pub model: String,
     /// Optional reasoning effort level.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+}
+
+impl fmt::Display for ModelSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.reasoning {
+            Some(reasoning) => write!(f, "{}:{reasoning}", self.model),
+            None => f.write_str(&self.model),
+        }
+    }
+}
+
+/// Compact coordinator-facing dispatch metadata for a gate (`acdd start` / `acdd next`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GateDispatchInfo {
+    /// Runtime node cursor (`NextResp`) or profile gate path (`StartResp`, e.g. `tasks.build`).
+    pub cursor: String,
+    /// Assigned role name (`None` for mechanical command/call gates).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Execution mode (`inline` or `subagent`) when `role` is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<RoleExecutionMode>,
+    /// Whether to reuse an existing session across rejections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reuse_on_reject: Option<bool>,
+    /// Ordered recommended models (`model` or `model:reasoning`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelSpec>,
+    /// Coordinator-facing role guidance (`roles.<name>.guidance`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guidance: Option<String>,
+    /// Effective command slot name when the gate executes a command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Domain action (`<domain>.<action>`) when the gate invokes a provider call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for ModelSpec {
@@ -1259,6 +1306,67 @@ impl ResolvedGateProfile {
     /// Return the effective tool allowlist for `gate`, falling back to `self.default_tools` when `gate.tools` is `None`.
     pub fn effective_tools<'a>(&'a self, gate: &'a GateDef) -> &'a [String] {
         gate.tools.as_deref().unwrap_or(&self.default_tools)
+    }
+
+    /// Project coordinator-facing dispatch metadata for `gate` at `cursor`.
+    pub fn gate_dispatch_info(
+        &self,
+        cursor: impl Into<String>,
+        gate: &GateDef,
+        include_guidance: bool,
+    ) -> GateDispatchInfo {
+        let role_def = gate.role.as_deref().and_then(|name| self.roles.get(name));
+        GateDispatchInfo {
+            cursor: cursor.into(),
+            role: gate.role.clone(),
+            mode: role_def.map(|r| r.mode),
+            reuse_on_reject: role_def.map(|r| r.reuse_on_reject),
+            models: role_def.map(|r| r.models.clone()).unwrap_or_default(),
+            guidance: if include_guidance {
+                role_def.and_then(|r| r.guidance.clone())
+            } else {
+                None
+            },
+            command: gate.command.clone(),
+            call: gate.call.clone(),
+        }
+    }
+
+    /// Build the ordered compact coordinator dispatch plan across all executable gates in this profile.
+    pub fn dispatch_plan(&self) -> Vec<GateDispatchInfo> {
+        let mut out = Vec::new();
+        self.collect_dispatch_plan(&self.gates, None, &mut out);
+        out
+    }
+
+    fn collect_dispatch_plan(
+        &self,
+        gates: &[GateDef],
+        prefix: Option<&str>,
+        out: &mut Vec<GateDispatchInfo>,
+    ) {
+        for gate in gates {
+            if let Some(ref tb) = gate.tasks {
+                let task_prefix = if gate.id.is_empty() {
+                    "tasks".to_owned()
+                } else if let Some(p) = prefix {
+                    format!("{p}.{}", gate.id)
+                } else {
+                    gate.id.clone()
+                };
+                self.collect_dispatch_plan(&tb.gates, Some(&task_prefix), out);
+                continue;
+            }
+            let cursor = match prefix {
+                Some(p) => format!("{p}.{}", gate.id),
+                None => gate.id.clone(),
+            };
+            if gate.gates.is_empty() {
+                out.push(self.gate_dispatch_info(cursor, gate, false));
+            } else {
+                self.collect_dispatch_plan(&gate.gates, Some(&cursor), out);
+            }
+        }
     }
 
     /// Serialize this resolved profile into canonical JSON for storage in `runs.profile_json`.

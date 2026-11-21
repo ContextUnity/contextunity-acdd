@@ -184,7 +184,7 @@ fn sanitize_command_process_scrubs_orchestrator_and_all_git_vars() {
     let dir = TempDir::new().unwrap();
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(
-        "for k in TRACEPARENT ACDD_CONFIG ACDD_PROFILE ACDD_STATE_DB ACDD_CODE_DB ACDD_WORKSPACE_ROOT ACDD_AGENT_SESSION_ID GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_AUTHOR_NAME; do eval v=\\$$k; if [ -n \"$v\" ]; then echo \"LEAK:$k=$v\"; fi; done; echo \"KEEP:$ACDD_KEEP_OK\""
+        "for k in TRACEPARENT ACDD_CONFIG ACDD_PROFILE ACDD_STATE_DB ACDD_CODE_DB ACDD_WORKSPACE_ROOT ACDD_AGENT_SESSION_ID ACDD_ROLE_MODE ACDD_ROLE_MODELS ACDD_MODEL ACDD_REASONING GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_AUTHOR_NAME; do eval v=\\$$k; if [ -n \"$v\" ]; then echo \"LEAK:$k=$v\"; fi; done; echo \"KEEP:$ACDD_KEEP_OK\""
     );
     cmd.current_dir(dir.path());
     cmd.env("TRACEPARENT", "00-1111-2222-01")
@@ -194,6 +194,10 @@ fn sanitize_command_process_scrubs_orchestrator_and_all_git_vars() {
         .env("ACDD_CODE_DB", "/x/code-map.sqlite")
         .env("ACDD_WORKSPACE_ROOT", "/x")
         .env("ACDD_AGENT_SESSION_ID", "sess-1")
+        .env("ACDD_ROLE_MODE", "subagent")
+        .env("ACDD_ROLE_MODELS", "m1:high,m2")
+        .env("ACDD_MODEL", "m1")
+        .env("ACDD_REASONING", "high")
         .env("GIT_DIR", "/x/.git")
         .env("GIT_WORK_TREE", "/x")
         .env("GIT_INDEX_FILE", "/x/.git/index")
@@ -252,10 +256,20 @@ fn spawner_stdin_env_session_reuse_and_submission_verification_matrix() {
     let big_prompt = format!("# Gate Claim\n\n{}", "payload-line\n".repeat(12_000));
     assert!(big_prompt.len() > 130_000);
 
-    let builder_cmd = "wc -c; printf 'ENV:%s|%s|%s|%s|%s|%s|%s\\n' \"$ACDD_RUN_ID\" \"$ACDD_NODE_CURSOR\" \"$ACDD_CLAIM_REVISION\" \"$ACDD_WORKER_ID\" \"$ACDD_AGENT_SESSION_ID\" \"$ACDD_CODE_DB\" \"$TRACEPARENT\"";
+    let builder_cmd = "wc -c; printf 'ENV:%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n' \"$ACDD_RUN_ID\" \"$ACDD_NODE_CURSOR\" \"$ACDD_CLAIM_REVISION\" \"$ACDD_WORKER_ID\" \"$ACDD_AGENT_SESSION_ID\" \"$ACDD_CODE_DB\" \"$TRACEPARENT\" \"$ACDD_ROLE_MODE\" \"$ACDD_ROLE_MODELS\" \"$ACDD_MODEL\" \"$ACDD_REASONING\"";
     let builder_role = RoleDef {
         mode: RoleExecutionMode::Subagent,
         reuse_on_reject: true,
+        models: vec![
+            acdd_state::profile::ModelSpec {
+                model: "m1".to_owned(),
+                reasoning: Some("high".to_owned()),
+            },
+            acdd_state::profile::ModelSpec {
+                model: "m2".to_owned(),
+                reasoning: None,
+            },
+        ],
         runner: Some(builder_cmd.to_owned()),
         ..RoleDef::default()
     };
@@ -290,6 +304,52 @@ fn spawner_stdin_env_session_reuse_and_submission_verification_matrix() {
     assert!(log1.contains(&big_prompt.len().to_string()));
     assert!(log1.contains("ENV:run-runner-1|t1.build|1|w-build|"));
     assert!(log1.contains(&b1.agent_session_id));
+    assert!(log1.contains("|subagent|m1:high,m2|m1|high\n"), "{log1}");
+
+    // Inline role with empty models clears optional model/reasoning vars cleanly.
+    let mut empty_model_role = RoleDef {
+        mode: RoleExecutionMode::Inline,
+        models: Vec::new(),
+        ..builder_role.clone()
+    };
+    let r_empty = spawn_role_runner_borrowed(
+        &RoleSpawnBorrow {
+            role_name: "coordinator",
+            role_def: &empty_model_role,
+            ..builder_req
+        },
+        &mut cache,
+    )
+    .unwrap();
+    let log_empty = fs::read_to_string(
+        worktree
+            .join(".acdd/run")
+            .join(run_id.as_str())
+            .join(&r_empty.log_relpath),
+    )
+    .unwrap();
+    assert!(log_empty.contains("|inline|||\n"), "{log_empty}");
+    empty_model_role.models = vec![acdd_state::profile::ModelSpec {
+        model: "m3".to_owned(),
+        reasoning: None,
+    }];
+    let r_no_reasoning = spawn_role_runner_borrowed(
+        &RoleSpawnBorrow {
+            role_name: "coordinator",
+            role_def: &empty_model_role,
+            ..builder_req
+        },
+        &mut cache,
+    )
+    .unwrap();
+    let log_no_reasoning = fs::read_to_string(
+        worktree
+            .join(".acdd/run")
+            .join(run_id.as_str())
+            .join(&r_no_reasoning.log_relpath),
+    )
+    .unwrap();
+    assert!(log_no_reasoning.contains("|inline|m3|m3|\n"), "{log_no_reasoning}");
 
     // Re-spawning builder in the same (run_id, node_container_id, role) with reuse_on_reject=true reuses session ID.
     builder_req.claim_revision = 2;

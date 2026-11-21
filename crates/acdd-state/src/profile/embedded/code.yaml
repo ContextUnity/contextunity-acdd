@@ -149,15 +149,15 @@ roles:
   architect:
     mode: subagent
     reuse_on_reject: true
-    guidance: "Synthesize minimal grounded architecture using ACDD MCP navigation before proposing changes."
+    guidance: "Spawn an architect subagent in the run worktree with thin (run, cursor, worker, worktree) prompt; reuse the same worker on blueprint rejection."
   builder:
     mode: subagent
     reuse_on_reject: true
-    guidance: "Implement the accepted slice minimally within `admitted_scope`; never self-approve `max_net_loc` overrides (`BUDGET_OVERRIDE` requires architect/coordinator/operator)."
+    guidance: "Spawn a builder subagent in the assigned worktree with thin prompt; reuse the same worker on review rejection and handle BUDGET_OVERRIDE escalations."
   independent_reviewer:
     mode: subagent
     reuse_on_reject: false
-    guidance: "Audit all contours independently with `code_map_impact` and `code_map_query` (`duplicates` & `dead_tails`; workspace-wide on `integration_review`). Reject new clones, `phantom_tested`, `dead_tails`, or `dangling_calls` with structured findings."
+    guidance: "Spawn a fresh independent_reviewer (distinct worker_id from build/polish) with thin prompt to audit all contours independently."
 
 guidance:
   code.principles:
@@ -192,7 +192,7 @@ guidance:
   task.review:
     description: "INDEPENDENT TASK REVIEW"
     criteria:
-      - "Verify every `AC` 1:1, concurrency/path safety, non-self-approved `BUDGET_OVERRIDE` vs measured net LOC, and graph hygiene across all contours."
+      - "Verify every `AC` 1:1, concurrency/path safety, non-self-approved `BUDGET_OVERRIDE` vs measured net LOC, and `code_map_impact` / `code_map_query` (`duplicates`, `dead_tails`, `phantom_tested`, `dangling_calls`) across all contours."
       - "Reject localized bugs as `kind: defect` (`fail: build`); reject structural violations requiring context reset as `kind: architectural_drift` (`fail_drift: rearchitect`)."
       - "Reject N+1 loops, duplicate `>= 5`-line logic, orphan helpers, missing assertions, or slow disk/subprocess tests for pure logic (recommend >150 LOC splits only when responsibilities are tangled)."
   task.rearchitect:

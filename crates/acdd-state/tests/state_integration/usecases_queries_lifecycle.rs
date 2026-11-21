@@ -88,20 +88,17 @@ scope: [src/lib.rs]
     let cfg = base_config(repo);
     let (_, provider) = build_provider_with_mock(&cfg.modules);
     let engine = StateEngine::open(cfg.clone(), provider.clone()).unwrap();
-    let start = || {
-        start_run(
-            &engine,
-            StartReq {
-                spec_path: Some(spec.to_owned()),
-                profile: Some(profile.clone()),
-                ..StartReq::default()
-            },
-        )
-        .unwrap()
-        .run
-        .run_id
-    };
-    let rid = start();
+    let started = start_run(
+        &engine,
+        StartReq {
+            spec_path: Some(spec.to_owned()),
+            profile: Some(profile.clone()),
+            ..StartReq::default()
+        },
+    )
+    .unwrap();
+    assert!(!started.gate_plan.is_empty());
+    let rid = started.run.run_id;
     let pass = |node, override_worktree| {
         let claim = claim_node(
             &engine,
@@ -114,6 +111,14 @@ scope: [src/lib.rs]
             override_worktree,
         )
         .unwrap();
+        assert!(
+            claim
+                .guidance
+                .iter()
+                .all(|g| !g.as_str().unwrap_or_default().starts_with("[role:")),
+            "role.guidance belongs to coordinator dispatch plan, not worker ClaimResp: {:?}",
+            claim.guidance
+        );
         submit_req(
             &engine,
             pass_req(
@@ -1049,6 +1054,15 @@ fn seam_readonly_queries_matrix_and_zero_db_creation() {
         StateQueryOutput::Next(n) => {
             assert_eq!(n.ready_cursors, vec!["t1.build".to_owned()]);
             assert_eq!(n.waves, vec![vec!["t1".to_owned()], vec!["t2".to_owned()]]);
+            assert_eq!(n.ready_gates.len(), 1);
+            assert_eq!(n.ready_gates[0].cursor, "t1.build");
+            assert_eq!(n.ready_gates[0].role.as_deref(), Some("builder"));
+            assert_eq!(
+                n.ready_gates[0].mode,
+                Some(acdd_state::profile::RoleExecutionMode::Subagent)
+            );
+            assert_eq!(n.ready_gates[0].reuse_on_reject, Some(true));
+            assert!(n.ready_gates[0].guidance.is_some());
         }
         other => panic!("unexpected Next output: {other:?}"),
     }

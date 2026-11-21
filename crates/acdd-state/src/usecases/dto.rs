@@ -1,6 +1,7 @@
 //! Strictly-typed Request/Response DTOs and command/query enums for `StateEngine` and `StateQueryEngine`.
 
 use crate::context::ClaimResp;
+use crate::profile::GateDispatchInfo;
 use crate::runner::WaveExecutionReport;
 use crate::spec::{Receipt, SpecStatus};
 use crate::types::{
@@ -59,6 +60,9 @@ pub struct StartResp {
     pub ready_nodes: Vec<String>,
     /// Materialized spec path (`spec_path` or `.acdd/run/<run_id>/spec.md` when ephemeral).
     pub materialized_spec_path: Option<String>,
+    /// Sequential coordinator dispatch plan across all executable profile gates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gate_plan: Vec<GateDispatchInfo>,
 }
 
 /// Request payload for drafting the next numbered spec document in a configured collection.
@@ -577,6 +581,9 @@ pub struct NextResp {
     pub ready_cursors: Vec<String>,
     /// Parallel waves grouped for non-overlapping execution.
     pub waves: Vec<Vec<String>>,
+    /// Coordinator dispatch metadata for each cursor in `ready_cursors`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ready_gates: Vec<GateDispatchInfo>,
 }
 
 /// Read-only query request for `StateQuery::BlackboardRead`.
