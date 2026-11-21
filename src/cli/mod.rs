@@ -1,586 +1,10 @@
+mod args;
 /// Implements ast support.
 pub mod ast;
+pub(crate) mod discovery;
+mod dispatch_code;
+mod dispatch_state;
 pub(crate) mod docs_check;
-pub(crate) mod discovery {
-    use crate::format::{file_uri_for_path, DiscoveryKind};
-    use acdd_core::response::QueryOptions;
-    use acdd_index::{
-        db::reader,
-        scanner::{self, Adapter},
-    };
-    use acdd_state::types::RunStatus;
-    use acdd_state::usecases::{ListReq, StateQuery, StateQueryOutput};
-    use anyhow::Result;
-    use rusqlite::Connection;
-    use serde_json::{json, Value};
-    use std::path::Path;
-
-    /// Composes indexed, scanner-owned, and state-owned workspace evidence.
-    ///
-    /// This is an adapter-level composition point: the database reader stays read-only
-    /// and never invokes scanners or mutating state commands.
-    pub(crate) fn overview(
-        conn: &Connection,
-        root: &Path,
-        adapter: Option<&Adapter>,
-        aspects: Option<&[String]>,
-        page: &QueryOptions,
-    ) -> Result<Value> {
-        let mut result =
-            reader::overview_with_options(conn, &reader::OverviewOptions { aspects, page })?;
-        if !includes_discovery(aspects) {
-            return Ok(result);
-        }
-
-        let generation = result["generation"].as_str().unwrap_or_default().to_owned();
-        let mut discovery = serde_json::Map::new();
-        discovery.insert("workspace_root".into(), json!(root.display().to_string()));
-
-        let manifests = match adapter {
-            Some(adapter) => {
-                scanner::discovery::manifest_components(root, adapter, page, &generation)
-                    .unwrap_or_else(|error| unavailable("manifest_components", &error.to_string()))
-            }
-            None => unavailable("manifest_components", "workspace adapter is unavailable"),
-        };
-        discovery.insert("manifest_components".into(), manifests);
-
-        let hubs = if adapter.is_some() {
-            reader::documentation_hubs(conn, page)?
-        } else {
-            unavailable("documentation_hubs", "workspace adapter is unavailable")
-        };
-        discovery.insert("documentation_hubs".into(), hubs);
-        discovery.insert("active_runs".into(), active_runs(root, adapter, page));
-
-        result["workspace_root"] = json!(root.display().to_string());
-        result["discovery"] = Value::Object(discovery);
-        Ok(result)
-    }
-
-    fn includes_discovery(aspects: Option<&[String]>) -> bool {
-        match aspects {
-            None => true,
-            Some([]) => true,
-            Some(aspects) => aspects.iter().any(|aspect| {
-                matches!(
-                    aspect.to_ascii_lowercase().as_str(),
-                    "components"
-                        | "discovery"
-                        | "manifest_components"
-                        | "documentation_hubs"
-                        | "runs"
-                        | "milestones"
-                )
-            }),
-        }
-    }
-
-    fn unavailable(field: &str, cause: &str) -> Value {
-        json!({"availability":"unavailable","cause":cause,"items":[],"field":field})
-    }
-
-    fn active_runs(root: &Path, adapter: Option<&Adapter>, page: &QueryOptions) -> Value {
-        let owned_adapter;
-        let cfg = match adapter {
-            Some(a) => a,
-            None => match scanner::load_adapter(root, None) {
-                Ok(a) => {
-                    owned_adapter = a;
-                    &owned_adapter
-                }
-                Err(_) => {
-                    return unavailable(
-                        "active_runs",
-                        "workspace adapter unavailable for state query",
-                    );
-                }
-            },
-        };
-        if !cfg.modules.is_enabled("state") {
-            return unavailable("active_runs", "state module is disabled in acdd.yaml");
-        }
-        let query = StateQuery::List(ListReq {
-            workspace: None,
-            status: Some(RunStatus::Active),
-            include_tombstones: false,
-            limit: Some(page.limit.clamp(1, 100)),
-            offset: page.offset,
-            generation: None,
-        });
-        let Ok(providers) =
-            crate::state_bridge::build_domain_providers(root, cfg, None, Vec::new())
-        else {
-            return unavailable("active_runs", "domain providers unavailable");
-        };
-        match crate::state_bridge::execute_state_query(root, root, None, None, cfg, providers, query) {
-            Ok(StateQueryOutput::List(resp)) => {
-                let items: Vec<Value> = resp
-                    .page
-                    .runs
-                    .iter()
-                    .map(|run| {
-                        json!({
-                            "run_id": run.run_id.as_str(),
-                            "run_name": run.run_name.as_str(),
-                            "collection": run.collection,
-                            "profile_id": run.profile_id,
-                            "isolation": run.isolation.as_str(),
-                            "spec_path": run.spec_path,
-                            "status": run.status.as_str(),
-                            "worktree": run.worktree,
-                            "created_at": run.created_at,
-                        })
-                    })
-                    .collect();
-                let returned = items.len();
-                let total = resp.page.total_runs;
-                json!({
-                    "availability": "available",
-                    "total": total,
-                    "offset": resp.page.offset,
-                    "limit": resp.page.limit,
-                    "items": items,
-                    "omitted": total.saturating_sub(resp.page.offset.saturating_add(returned)),
-                    "continuation_available": resp.page.offset.saturating_add(returned) < total,
-                    "generation": Value::Null,
-                })
-            }
-            Ok(_) => unavailable("active_runs", "unexpected state query response"),
-            Err(err) => unavailable("active_runs", &err.to_string()),
-        }
-    }
-
-    fn attach_manifest_uris(root: &Path, adapter: &Adapter, page: &mut Value) {
-        let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) else {
-            return;
-        };
-        for item in items {
-            let workspace = item["workspace"].as_str().unwrap_or("primary").to_owned();
-            if let Some(relative) = item["root"].as_str() {
-                if let Some(absolute) = resolve_component_path(root, adapter, &workspace, relative)
-                {
-                    if let Some(uri) = file_uri_for_path(&absolute, None) {
-                        item["root_uri"] = json!(uri);
-                    }
-                }
-            }
-            if let Some(relative) = item["manifest_path"].as_str() {
-                if let Some(absolute) = resolve_component_path(root, adapter, &workspace, relative)
-                {
-                    if let Some(uri) = file_uri_for_path(&absolute, None) {
-                        item["manifest_uri"] = json!(uri);
-                    }
-                }
-            }
-        }
-    }
-
-    fn resolve_component_path(
-        root: &Path,
-        adapter: &Adapter,
-        workspace: &str,
-        relative: &str,
-    ) -> Option<std::path::PathBuf> {
-        if relative.is_empty() || relative == "." {
-            if workspace == "primary" {
-                return scanner::canonical_root(root).ok();
-            }
-            return adapter
-                .linked_workspaces
-                .iter()
-                .find(|linked| linked.name == workspace)
-                .and_then(|linked| scanner::canonical_root(&linked.path).ok());
-        }
-        let selector = if workspace == "primary" {
-            relative.to_owned()
-        } else {
-            format!("[{workspace}]/{relative}")
-        };
-        scanner::resolve_file_path(root, adapter, &selector).ok()
-    }
-
-    fn attach_document_uris(root: &Path, adapter: &Adapter, page: &mut Value) {
-        let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) else {
-            return;
-        };
-        for item in items {
-            let Some(path) = item.get("path").and_then(Value::as_str) else {
-                continue;
-            };
-            let Ok(absolute) = scanner::resolve_file_path(root, adapter, path) else {
-                continue;
-            };
-            let line = item
-                .get("line")
-                .and_then(Value::as_i64)
-                .and_then(|line| usize::try_from(line).ok());
-            if let Some(uri) = file_uri_for_path(&absolute, line) {
-                item["uri"] = json!(uri);
-            }
-        }
-    }
-
-    /// Adds workspace-resolved URIs to documentation coordinates before Markdown rendering.
-    pub(crate) fn attach_document_presentation_uris(
-        root: &Path,
-        adapter: &Adapter,
-        value: &mut Value,
-        title: &str,
-    ) {
-        match title {
-            "search_docs" => attach_page_uris(root, adapter, value.pointer_mut("/sections")),
-            "get_doc" => {
-                for field in ["sections", "referenced_symbols"] {
-                    attach_page_uris(root, adapter, value.get_mut(field));
-                }
-                for field in ["cites_doc", "cited_by_doc"] {
-                    attach_page_uris_without_line(root, adapter, value.get_mut(field));
-                }
-                if let Some(items) = value
-                    .pointer_mut("/referenced_symbol_candidates/items")
-                    .and_then(Value::as_array_mut)
-                {
-                    for candidate in items {
-                        for entity in ["source", "target"] {
-                            if let Some(entity) = candidate.get_mut(entity) {
-                                attach_uri_from_fields(root, adapter, entity, "path", "line");
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn attach_page_uris(root: &Path, adapter: &Adapter, page: Option<&mut Value>) {
-        let Some(items) = page
-            .and_then(|page| page.get_mut("items"))
-            .and_then(Value::as_array_mut)
-        else {
-            return;
-        };
-        for item in items {
-            attach_uri_from_fields(root, adapter, item, "path", "line");
-        }
-    }
-
-    fn attach_page_uris_without_line(root: &Path, adapter: &Adapter, page: Option<&mut Value>) {
-        let Some(items) = page
-            .and_then(|page| page.get_mut("items"))
-            .and_then(Value::as_array_mut)
-        else {
-            return;
-        };
-        for item in items {
-            let Some(path) = item.get("path").and_then(Value::as_str).map(str::to_owned) else {
-                continue;
-            };
-            let Ok(absolute) = scanner::resolve_file_path(root, adapter, &path) else {
-                continue;
-            };
-            if let Some(uri) = file_uri_for_path(&absolute, None) {
-                item["uri"] = json!(uri);
-            }
-        }
-    }
-
-    /// Adds absolute coordinates for Markdown presentation after canonical path resolution.
-    pub(crate) fn attach_presentation_uris(
-        root: &Path,
-        adapter: &Adapter,
-        value: &mut Value,
-        kind: DiscoveryKind,
-    ) {
-        match kind {
-            DiscoveryKind::Overview => {
-                if !value.get("workspace_root").is_some_and(Value::is_string) {
-                    value["workspace_root"] = json!(root.display().to_string());
-                }
-                if let Some(manifests) = value.pointer_mut("/discovery/manifest_components") {
-                    attach_manifest_uris(root, adapter, manifests);
-                }
-                if let Some(hubs) = value.pointer_mut("/discovery/documentation_hubs") {
-                    attach_document_uris(root, adapter, hubs);
-                }
-                for key in ["/discovery/active_runs/items", "/discovery/active_milestones/items"] {
-                    if let Some(items) = value.pointer_mut(key).and_then(Value::as_array_mut) {
-                        for item in items {
-                            if let Some(path) = item
-                                .get("spec_path")
-                                .or_else(|| item.get("path"))
-                                .and_then(Value::as_str)
-                                .map(str::to_owned)
-                            {
-                                attach_uri(root, adapter, item, &path, "line");
-                            }
-                        }
-                    }
-                }
-            }
-            DiscoveryKind::Inspect => attach_inspect_uris(root, adapter, value),
-            DiscoveryKind::Search => attach_search_uris(root, adapter, value),
-            DiscoveryKind::Ast => attach_ast_uris(root, adapter, value),
-        }
-    }
-
-    /// Adds guarded file links for supplied traversal coordinates in Markdown output.
-    pub(crate) fn attach_traversal_presentation_uris(
-        root: &Path,
-        adapter: &Adapter,
-        value: &mut Value,
-    ) {
-        if let Some(selector) = value.get_mut("selector") {
-            attach_uri_from_fields(root, adapter, selector, "path", "line");
-        }
-        if let Some(node) = value.get_mut("node") {
-            attach_uri_from_fields(root, adapter, node, "path", "line");
-        }
-
-        for field in ["nodes", "changed_symbols", "tests", "unmapped_changes"] {
-            if let Some(page) = value.get_mut(field) {
-                attach_traversal_page(root, adapter, page, "line");
-            }
-        }
-        for field in ["incoming", "outgoing"] {
-            if let Some(page) = value.get_mut(field) {
-                if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
-                    for item in items {
-                        attach_uri_from_fields(root, adapter, item, "path", "line");
-                    }
-                }
-            }
-        }
-        if let Some(page) = value.get_mut("affected_docs") {
-            if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
-                for item in items {
-                    attach_uri_from_fields(root, adapter, item, "path", "__no_line");
-                }
-            }
-        }
-        if let Some(page) = value.get_mut("documents") {
-            if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
-                for item in items {
-                    attach_uri_from_fields(root, adapter, item, "path", "doc_line");
-                }
-            }
-        }
-        for field in [
-            "analysis_gaps",
-            "untested_public_surface",
-            "errors",
-            "resolution",
-            "external_imports",
-            "doc_diagnostics",
-            "diagnostics",
-            "top_files",
-            "resolution_statuses",
-            "resolution_causes",
-            "parse_error_languages",
-            "dead_tails",
-        ] {
-            if let Some(page) = value.get_mut(field) {
-                attach_traversal_page(root, adapter, page, "line");
-            }
-        }
-        if let Some(page) = value.get_mut("phantom_tested") {
-            attach_traversal_page(root, adapter, page, "line");
-            if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
-                for item in items {
-                    if let Some(callers) = item.get_mut("test_callers").and_then(Value::as_array_mut)
-                    {
-                        for caller in callers {
-                            attach_uri_from_fields(root, adapter, caller, "path", "line");
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(page) = value.get_mut("dangling_calls") {
-            attach_traversal_page(root, adapter, page, "__no_line");
-        }
-        if let Some(invariants) = value.get_mut("governing_invariants") {
-            if let Some(rules) = invariants.get_mut("direct").and_then(Value::as_array_mut) {
-                for rule in rules {
-                    if let Some(source) = rule.get_mut("source") {
-                        attach_uri_from_fields(root, adapter, source, "path", "line");
-                    }
-                }
-            }
-            if let Some(entries) = invariants
-                .get_mut("omitted_sources")
-                .and_then(Value::as_array_mut)
-            {
-                for entry in entries {
-                    if let Some(source) = entry.get_mut("source") {
-                        attach_uri_from_fields(root, adapter, source, "path", "line");
-                    }
-                }
-            }
-        }
-        if let Some(changes) = value.get_mut("changes") {
-            if let Some(files) = changes.get_mut("files").and_then(Value::as_array_mut) {
-                for file in files {
-                    attach_uri_from_fields(root, adapter, file, "path", "__no_line");
-                }
-            }
-        }
-        if let Some(summary) = value.get_mut("summary") {
-            if let Some(calls) = summary.get_mut("calls") {
-                for direction in ["inbound", "outbound"] {
-                    if let Some(preview) = calls
-                        .get_mut(direction)
-                        .and_then(|direction| direction.get_mut("preview"))
-                        .and_then(Value::as_array_mut)
-                    {
-                        for item in preview {
-                            attach_uri_from_fields(root, adapter, item, "path", "line");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn attach_traversal_page(root: &Path, adapter: &Adapter, page: &mut Value, line: &str) {
-        if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
-            for item in items {
-                attach_uri_from_fields(root, adapter, item, "path", line);
-                if let Some(edge) = item.get_mut("edge") {
-                    attach_uri_from_fields(root, adapter, edge, "path", "line");
-                }
-                if let Some(path_nodes) = item
-                    .pointer_mut("/connection/verified_call_path_nodes")
-                    .and_then(Value::as_array_mut)
-                {
-                    for node in path_nodes {
-                        attach_uri_from_fields(root, adapter, node, "path", "line");
-                    }
-                }
-            }
-        }
-    }
-
-    fn attach_inspect_uris(root: &Path, adapter: &Adapter, value: &mut Value) {
-        attach_uri_from_fields(root, adapter, &mut value["node"], "path", "line");
-        if let Some(summary) = value.get_mut("summary") {
-            attach_uri_from_fields(root, adapter, &mut summary["container"], "path", "line");
-            for direction in ["inbound", "outbound"] {
-                if let Some(items) = summary["calls"][direction]["preview"].as_array_mut() {
-                    for item in items {
-                        attach_uri_from_fields(root, adapter, item, "path", "line");
-                    }
-                }
-            }
-        }
-        for rule in value["governing_invariants"]["direct"]
-            .as_array_mut()
-            .into_iter()
-            .flatten()
-        {
-            attach_uri_from_fields(root, adapter, &mut rule["source"], "path", "line");
-        }
-        for source in value["governing_invariants"]["omitted_sources"]
-            .as_array_mut()
-            .into_iter()
-            .flatten()
-        {
-            attach_uri_from_fields(root, adapter, &mut source["source"], "path", "line");
-        }
-        for (field, line) in [
-            ("documented_in", "doc_line"),
-            ("analysis_gaps", "line"),
-            ("documents", "doc_line"),
-        ] {
-            if let Some(items) = value[field]["items"].as_array_mut() {
-                for item in items {
-                    attach_uri_from_fields(root, adapter, item, "path", line);
-                }
-            }
-        }
-    }
-
-    fn attach_search_uris(root: &Path, adapter: &Adapter, value: &mut Value) {
-        if let Some(items) = value["nodes"]["items"].as_array_mut() {
-            for item in items {
-                attach_uri_from_fields(root, adapter, item, "path", "line");
-                attach_search_pulse_uris(root, adapter, item);
-            }
-        }
-        if let Some(groups) = value["nodes"]["grouped_by_file"].as_object_mut() {
-            for (path, items) in groups {
-                if let Some(items) = items.as_array_mut() {
-                    for item in items {
-                        attach_uri(root, adapter, item, path, "line");
-                        attach_search_pulse_uris(root, adapter, item);
-                    }
-                }
-            }
-        }
-    }
-
-    fn attach_search_pulse_uris(root: &Path, adapter: &Adapter, item: &mut Value) {
-        if let Some(callers) = item["graph_pulse"]["callers"]["preview"].as_array_mut() {
-            for caller in callers {
-                attach_uri_from_fields(root, adapter, caller, "path", "line");
-            }
-        }
-        if let Some(tests) = item["graph_pulse"]["covering_tests"]["items"].as_array_mut() {
-            for test in tests {
-                attach_uri_from_fields(root, adapter, test, "path", "line");
-            }
-        }
-    }
-
-    fn attach_uri_from_fields(
-        root: &Path,
-        adapter: &Adapter,
-        item: &mut Value,
-        path_field: &str,
-        line_field: &str,
-    ) {
-        let Some(path) = item
-            .get(path_field)
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-        else {
-            return;
-        };
-        attach_uri(root, adapter, item, &path, line_field);
-    }
-
-    fn attach_uri(root: &Path, adapter: &Adapter, item: &mut Value, path: &str, line_field: &str) {
-        let Ok(absolute) = scanner::resolve_file_path(root, adapter, path) else {
-            return;
-        };
-        let line = item
-            .get(line_field)
-            .and_then(|line| {
-                line.as_i64()
-                    .or_else(|| line.as_u64().and_then(|line| i64::try_from(line).ok()))
-            })
-            .and_then(|line| usize::try_from(line).ok());
-        if let Some(uri) = file_uri_for_path(&absolute, line) {
-            item["uri"] = json!(uri);
-        }
-    }
-
-    pub(crate) fn attach_ast_uris(root: &Path, adapter: &Adapter, result: &mut Value) {
-        let Some(matches) = result.get_mut("matches") else {
-            return;
-        };
-        let items = match matches {
-            Value::Array(items) => Some(items),
-            Value::Object(page) => page.get_mut("items").and_then(Value::as_array_mut),
-            _ => None,
-        };
-        let Some(items) = items else { return };
-        for item in items {
-            attach_uri_from_fields(root, adapter, item, "path", "line");
-        }
-    }
-}
 /// Implements guide support.
 pub mod guide;
 mod paths;
@@ -589,764 +13,19 @@ pub mod reload;
 /// Fail-fast ACDD profile and spec validation.
 pub mod validate;
 
+pub use args::{AstCommand, Cli, CliOutputFormat, Command, DocsCommand, QueryCommand};
+
 use crate::{
     engine::pipeline as writer,
     format::{self, OperationKind, OutputFormat},
-    state_bridge::{
-        build_domain_providers, execute_state_command_with_config, execute_state_query, InvocationSettings,
-    },
+    state_bridge::InvocationSettings,
 };
-use acdd_core::response::{
-    CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions, MAX_PAGE_SIZE,
-};
-use acdd_index::db::{reader, symbols, traversal};
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::ids::{RunName, SubtaskRef, TaskRef, WorkerId};
-use acdd_state::types::{
-    BlackboardStatus, BlackboardTopic, RejectionFindings, ReviewEvidence, RunStatus, SubmitAction,
-    SubtaskStatus,
-};
-use acdd_state::usecases::{
-    BlackboardPostReq, BlackboardReadReq, CallPluginToolReq, CallPluginToolResp, ClaimReq,
-    ClearReq, ContextReq, DraftReq, ExtendScopeReq, ListReq, NextReq, ReopenReq, RoadmapReq,
-    RunReq, ShowReq, StartReq,
-    StateCommand, StateCommandOutput, StateQuery, StatusReq, SubmitReq, SubtaskReq, SyncReq,
-    SnapshotAction, SnapshotReq, VerifyReq,
-};
-use anyhow::{bail, Context, Result};
-use clap::ValueEnum;
-use clap::{Parser, Subcommand};
-use serde_json::{json, Value};
+use acdd_core::subsystems::SubsystemId;
+use anyhow::{bail, Result};
+use serde_json::Value;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
-
-#[derive(Parser, Debug)]
-#[command(
-    name = "acdd",
-    version,
-    about = "Native code graph, documentation engine, unified state engine, MCP server and CLI"
-)]
-/// Top-level CLI parser.
-pub struct Cli {
-    #[arg(long, global = true, env = "ACDD_WORKSPACE_ROOT")]
-    /// Optional workspace root override.
-    pub root: Option<PathBuf>,
-    #[arg(long, global = true, env = "ACDD_DB")]
-    /// Optional code-map SQLite database path override.
-    pub db: Option<PathBuf>,
-    #[arg(long, global = true, env = "ACDD_STATE_DB")]
-    /// Optional state SQLite database path override.
-    pub state_db: Option<PathBuf>,
-    #[arg(long, global = true, env = "ACDD_CONFIG")]
-    /// Explicit root-confined ACDD configuration file.
-    pub config: Option<PathBuf>,
-    #[arg(long, global = true, env = "ACDD_PROFILE")]
-    /// Explicit gate profile reference or root-confined profile path.
-    pub profile: Option<PathBuf>,
-    #[arg(long, global = true, value_enum, default_value = "markdown")]
-    /// Output format: markdown (default) or json.
-    pub format: CliOutputFormat,
-    #[command(subcommand)]
-    /// Selected subcommand (defaults to `serve` when omitted).
-    pub command: Option<Command>,
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-/// Output representation selected for command results.
-pub enum CliOutputFormat {
-    #[default]
-    /// Human-readable Markdown, selected when `--format` is omitted.
-    Markdown,
-    /// JSON for callers that parse stdout.
-    Json,
-}
-
-impl From<CliOutputFormat> for OutputFormat {
-    fn from(value: CliOutputFormat) -> Self {
-        match value {
-            CliOutputFormat::Markdown => Self::Markdown,
-            CliOutputFormat::Json => Self::Json,
-        }
-    }
-}
-
-#[derive(Subcommand, Debug)]
-/// Flat `0.6.0` CLI subcommand surface.
-pub enum Command {
-    /// Save, restore, list, or delete checkpoints (`--delete`, `--older-than`, `--worktree`).
-    Snapshot {
-        /// `save`, `restore`, `clear`, `delete`, or `list`.
-        action: Option<String>,
-        /// Task ref or standalone snapshot name.
-        target: Option<String>,
-        /// Clear every ref under the resolved prefix.
-        #[arg(long)] all: bool,
-        /// Save, restore, or delete this revision.
-        #[arg(long)] rev: Option<u32>,
-        /// Active run id or name.
-        #[arg(long)] run: Option<String>,
-        /// Delete checkpoints.
-        #[arg(long)] delete: bool,
-        /// Delete refs older than `<N><s|m|h|d|w>`.
-        #[arg(long)] older_than: Option<String>,
-        /// Git worktree to read and restore.
-        #[arg(long)] worktree: Option<std::path::PathBuf>,
-    },
-    /// Initialize `acdd.yaml`, `.acdd/profile.yaml`, and canonical `.gitignore` rules.
-    Init {
-        /// Overwrite existing `acdd.yaml` and `.acdd/profile.yaml`.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Start a new `Run` from a spec file or ephemeral `--goal`.
-    Start {
-        /// Workspace-relative spec Markdown path (mutually exclusive with `--goal`).
-        spec: Option<String>,
-        /// Ephemeral goal text materializing `.acdd/run/<run_id>/spec.md`.
-        #[arg(long)]
-        goal: Option<String>,
-        /// Optional explicit run name override.
-        #[arg(long)]
-        name: Option<String>,
-        /// Initial scope globs (for `--goal` ephemeral runs).
-        #[arg(long = "scope")]
-        scope: Vec<String>,
-        /// Target integration base branch/ref for worktree isolation runs.
-        #[arg(long)]
-        target_base: Option<String>,
-        /// Create a managed run worktree under `.worktrees/<run_name>`.
-        #[arg(long)]
-        worktree: bool,
-        /// Force `in_place` isolation for this run.
-        #[arg(long)]
-        in_place: bool,
-        /// Explicit worktree path override.
-        #[arg(long)]
-        worktree_path: Option<PathBuf>,
-    },
-    /// Draft the next sequentially numbered spec document in a configured collection.
-    Draft {
-        /// Collection key from `acdd.yaml` `specs:` (e.g. `milestones`, `plans`).
-        collection: String,
-        /// URL/file slug for the drafted spec document.
-        slug: String,
-        /// Optional prefix override (must belong to `collection.prefixes`).
-        #[arg(long)]
-        prefix: Option<String>,
-        /// Optional human-readable title.
-        #[arg(long)]
-        title: Option<String>,
-    },
-    /// Inspect status of an active `Run` (read-only).
-    Status {
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-    },
-    /// List active runs and optional closed tombstones (read-only).
-    List {
-        /// Optional workspace filter.
-        #[arg(long)]
-        workspace: Option<String>,
-        /// Optional status filter (`active | completed | cancelled`).
-        #[arg(long)]
-        status: Option<String>,
-        /// Include closed `run_tombstones`.
-        #[arg(long)]
-        include_tombstones: bool,
-        /// Maximum items per page (`1..=100`).
-        #[arg(long)]
-        limit: Option<usize>,
-        /// Zero-based page offset.
-        #[arg(long, default_value_t = 0)]
-        offset: usize,
-        /// Optional `runs.generation` pin for stable pagination.
-        #[arg(long)]
-        generation: Option<u64>,
-    },
-    /// Show detailed run or node state, subtasks, and budgeted context preview (read-only).
-    Show {
-        /// Optional target node cursor (`<gate>`, `<task_ref>`, or `<task_ref>.<gate>`).
-        node: Option<String>,
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-    },
-    /// Refresh budgeted claim context without mutating claim state (read-only).
-    Context {
-        /// Optional target node cursor (`<gate>`, `<task_ref>`, or `<task_ref>.<gate>`).
-        node: Option<String>,
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Optional worker filter when auto-selecting the active gate.
-        #[arg(long, alias = "worker-id")]
-        worker: Option<String>,
-    },
-    /// Show ready node cursors and topological execution waves (read-only).
-    Next {
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Optional maximum number of ready cursors.
-        #[arg(long)]
-        limit: Option<usize>,
-    },
-    /// Cross-collection roadmap: in-progress runs, dependency waves, and task drill-down (read-only).
-    Roadmap {
-        /// Optional spec ID filter / drill-down selector.
-        spec_id: Option<String>,
-        /// Optional spec collection display filter.
-        #[arg(long)]
-        collection: Option<String>,
-        /// Show only Wave 0 ready specs.
-        #[arg(long)]
-        ready: bool,
-        /// Show only in-progress specs (active runs).
-        #[arg(long)]
-        active: bool,
-        /// Include intra-spec task drill-down.
-        #[arg(long)]
-        tasks: bool,
-    },
-    /// Claim or re-claim a ready/active node and materialize budgeted claim context.
-    Claim {
-        /// Optional node cursor (omitting auto-selects next ready node).
-        node: Option<String>,
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Claiming worker identity.
-        #[arg(long, alias = "worker-id", default_value = "cli")]
-        worker: String,
-        /// Optional explicit session fingerprint override.
-        #[arg(long)]
-        session_fingerprint: Option<String>,
-        /// Force take-over of an existing active claim.
-        #[arg(long)]
-        force: bool,
-        /// Explicitly authorize stealing an active claim from another host/remote session.
-        #[arg(long)]
-        steal_remote: bool,
-        /// Explicit worktree path override.
-        #[arg(long)]
-        worktree: Option<PathBuf>,
-    },
-    /// Run gate verification (`command:`, `call:`, `checks:`, scope barrier) without advancing state.
-    Verify {
-        /// Target node cursor.
-        node: String,
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Optional claiming worker identity check.
-        #[arg(long, alias = "worker-id")]
-        worker: Option<String>,
-        /// Optional `--test` filter target passed to `{test_filter}` and `code.seam`.
-        #[arg(long, alias = "test-target")]
-        test: Option<String>,
-        /// Optional expected `claim_revision`.
-        #[arg(long)]
-        claim_revision: Option<u32>,
-        /// Explicit worktree path override.
-        #[arg(long)]
-        worktree: Option<PathBuf>,
-    },
-    /// Submit `pass` or `reject` for a claimed node.
-    Submit {
-        /// Target node cursor.
-        node: String,
-        /// Submission decision (`pass` or `reject`).
-        #[arg(long)]
-        action: String,
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Submitting worker identity.
-        #[arg(long, alias = "worker-id", default_value = "cli")]
-        worker: String,
-        /// Optional expected `claim_revision`.
-        #[arg(long)]
-        claim_revision: Option<u32>,
-        /// Optional `--test` target forwarded if `submit` auto-triggers `verify`.
-        #[arg(long, alias = "test-target")]
-        test: Option<String>,
-        /// Typed review or custom schema JSON evidence (or `@path` to a confined JSON file).
-        #[arg(long)]
-        evidence: Option<String>,
-        /// Structured rejection findings JSON (or `@path` to a confined JSON file) required for `--action reject` (supports `kind: defect | architectural_drift`).
-        #[arg(long)]
-        findings: Option<String>,
-        /// Verified invariant IDs attested by this submission.
-        #[arg(long = "invariant")]
-        invariants: Vec<String>,
-        /// Optional human-readable summary for receipt rollups.
-        #[arg(long)]
-        summary: Option<String>,
-        /// Explicitly permit committing onto `main` / `master`.
-        #[arg(long)]
-        allow_main: bool,
-        /// Explicit worktree path override.
-        #[arg(long)]
-        worktree: Option<PathBuf>,
-    },
-    /// Extend a task's admitted write scope with a non-empty reason.
-    ExtendScope {
-        /// Target task or task-gate cursor.
-        node: String,
-        /// Additional workspace-relative paths or globs to admit.
-        #[arg(long = "path", required = true)]
-        paths: Vec<String>,
-        /// Non-empty justification for the scope extension.
-        #[arg(long)]
-        reason: String,
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Optional worker identity check.
-        #[arg(long, alias = "worker-id")]
-        worker: Option<String>,
-    },
-    /// Reopen a gate or task container (with optional `--cascade`).
-    Reopen {
-        /// Target gate or task container cursor.
-        node: String,
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Cascade-stale `in_progress` / `completed` downstream dependent tasks.
-        #[arg(long)]
-        cascade: bool,
-        /// Optional operator reason recorded on the blackboard.
-        #[arg(long)]
-        reason: Option<String>,
-    },
-    /// Synchronize spec edits (and optional `--rebind-profile`) into an active `Run`.
-    Sync {
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Rebind non-completed gates against the latest resolved profile.
-        #[arg(long)]
-        rebind_profile: bool,
-    },
-    /// Update a task's subtask status and mandatory terminal evidence.
-    Subtask {
-        /// Owning task reference.
-        task_ref: String,
-        /// Target subtask reference.
-        subtask_ref: String,
-        /// New subtask status (`pending | in_progress | completed | cancelled`).
-        #[arg(long)]
-        status: String,
-        /// Required non-empty evidence when `--status` is `completed` or `cancelled`.
-        #[arg(long)]
-        evidence: Option<String>,
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-    },
-    /// Read from or post to the run blackboard (`read | post`).
-    Blackboard {
-        /// Blackboard action (`read` or `post`).
-        #[arg(long, default_value = "read")]
-        action: String,
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Optional source node cursor.
-        #[arg(long)]
-        node: Option<String>,
-        /// Optional target recipient node cursor.
-        #[arg(long)]
-        recipient_node: Option<String>,
-        /// Optional subtask reference.
-        #[arg(long)]
-        subtask_ref: Option<String>,
-        /// Optional gate label.
-        #[arg(long)]
-        gate: Option<String>,
-        /// Author identity (for `--action post`).
-        #[arg(long)]
-        author: Option<String>,
-        /// Topic (`draft | notes | findings | blockers | decisions | deferred`).
-        #[arg(long)]
-        topic: Option<String>,
-        /// Message body (for `--action post`).
-        #[arg(long)]
-        payload: Option<String>,
-        /// Optional status filter (`open | acknowledged | resolved | carried_over`) for `read`.
-        #[arg(long)]
-        status: Option<String>,
-        /// Page size (`1..=100`) for `read`.
-        #[arg(long)]
-        limit: Option<usize>,
-        /// Zero-based page offset for `read`.
-        #[arg(long, default_value_t = 0)]
-        offset: usize,
-        /// Optional `runs.generation` pin for `read`.
-        #[arg(long)]
-        generation: Option<u64>,
-    },
-    /// Clear/cancel an active `Run` into `run_tombstones(terminal_status = 'cleared')`.
-    Clear {
-        /// Optional run ID or name selector.
-        run_id: Option<String>,
-        /// Optional run ID or name selector flag.
-        #[arg(long)]
-        run: Option<String>,
-        /// Optional cancellation reason recorded in the tombstone.
-        #[arg(long)]
-        reason: Option<String>,
-        /// Force cleanup of dirty managed worktrees.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Execute automated DAG waves (`--jobs N`, `--dry-run`, `--allow-main`).
-    Run {
-        /// Optional run ID or name selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Maximum concurrent wave jobs (clamped to `1` for `in_place`).
-        #[arg(long)]
-        jobs: Option<usize>,
-        /// Explicitly permit commits/integration onto `main` / `master`.
-        #[arg(long)]
-        allow_main: bool,
-        /// Dry-run mode computing waves without mutating state.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Invoke a plugin tool exposed by an active `DomainProvider` (`<domain>_<name>`).
-    Tool {
-        /// Full plugin tool name (`<domain>_<name>`).
-        tool_name: String,
-        /// JSON arguments validated against `DomainToolDef.input_schema`.
-        #[arg(long, default_value = "{}")]
-        args: String,
-        /// Optional active run selector.
-        #[arg(long)]
-        run: Option<String>,
-        /// Optional active node cursor.
-        #[arg(long)]
-        node: Option<String>,
-        /// Explicit worktree path override.
-        #[arg(long)]
-        worktree: Option<PathBuf>,
-    },
-    /// Read text, symbols, outlines, or Git changes through the layered reader.
-    Read {
-        /// Workspace-relative file, or symbol selector with --mode snippet.
-        path: String,
-        /// auto, lines, raw, search, delta, snippet, or outline.
-        #[arg(long, default_value = "auto")]
-        mode: String,
-        /// Indexed symbol selector, optionally confined by path.
-        #[arg(long)]
-        selector: Option<String>,
-        /// One-based first line.
-        #[arg(long)]
-        start_line: Option<usize>,
-        /// Maximum number of text lines.
-        #[arg(long)]
-        line_count: Option<usize>,
-        /// Search pattern.
-        #[arg(long)]
-        pattern: Option<String>,
-        /// Interpret pattern as a regular expression.
-        #[arg(long)]
-        regex: bool,
-        /// Search context lines on each side.
-        #[arg(long)]
-        context: Option<usize>,
-        /// Git baseline revision.
-        #[arg(long)]
-        baseline: Option<String>,
-        /// Workspace-relative export destination.
-        #[arg(long)]
-        output_file: Option<String>,
-        /// Include Hints footer with follow-up suggestions.
-        #[arg(long)]
-        include_hints: bool,
-        /// Symbol source page offset.
-        #[arg(long, default_value_t = 0)]
-        source_offset: usize,
-        /// Previous source page generation.
-        #[arg(long)]
-        generation: Option<String>,
-        /// Smaller symbol body limit.
-        #[arg(long)]
-        max_body_lines: Option<usize>,
-        /// Symbol leading context lines.
-        #[arg(long)]
-        leading_lines: Option<usize>,
-    },
-    /// Validate `acdd.yaml`, `.acdd/profile.yaml`, `DomainProvider` capabilities, and specs fail-closed.
-    Validate {
-        /// Optional workspace-relative file; when omitted, validates the full workspace.
-        path: Option<PathBuf>,
-    },
-    /// Serve the MCP stdio server.
-    Serve,
-    /// Reload running MCP servers owned by this user.
-    Reload,
-    /// Build or rebuild `.acdd/code-map.sqlite`.
-    Build {
-        /// Optional workspace root value.
-        workspace_root: Option<PathBuf>,
-        #[arg(long)]
-        /// Optional output database path.
-        output: Option<PathBuf>,
-        #[arg(long)]
-        /// Optional adapter config path.
-        adapter: Option<PathBuf>,
-        #[arg(long)]
-        /// Whether verbose applies.
-        verbose: bool,
-    },
-    /// Scan workspace files without writing the code-map database.
-    Scan {
-        /// Optional workspace root value.
-        workspace_root: Option<PathBuf>,
-        #[arg(long)]
-        /// Optional adapter config path.
-        adapter: Option<PathBuf>,
-        #[arg(long)]
-        /// Whether pretty applies.
-        pretty: bool,
-    },
-    /// Incrementally update `.acdd/code-map.sqlite` for modified files.
-    Delta {
-        /// Optional workspace root value.
-        workspace_root: Option<PathBuf>,
-        /// Modified workspace-relative files.
-        modified_files: Vec<PathBuf>,
-        #[arg(long = "modified", value_name = "FILE")]
-        /// Additional modified files.
-        modified: Vec<PathBuf>,
-    },
-    /// Query the indexed code graph.
-    Query {
-        #[command(subcommand)]
-        /// Selected query operation.
-        command: QueryCommand,
-    },
-    /// Check or query indexed documentation.
-    Docs {
-        #[command(subcommand)]
-        /// Selected docs operation.
-        command: DocsCommand,
-    },
-    /// Run structural AST pattern searches.
-    Ast {
-        #[command(subcommand)]
-        /// Selected AST operation.
-        command: AstCommand,
-    },
-    /// Display built-in ACDD guidance topics (`init | adapter | docs | acdd | query | ast | validate | lifecycle | gates | subtasks | code`).
-    Guide {
-        /// Topic name.
-        topic: String,
-        #[arg(long)]
-        /// Force overwrite when `topic == "init"`.
-        force: bool,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-/// Enumerates the supported query command values.
-pub enum QueryCommand {
-    /// Represents the overview case.
-    Overview {
-        /// Comma-separated overview aspects.
-        #[arg(long, value_delimiter = ',')]
-        aspects: Option<Vec<String>>,
-        /// Maximum items per aspect.
-        #[arg(long, default_value_t = 100)]
-        limit: usize,
-        /// Number of items to skip.
-        #[arg(long, default_value_t = 0)]
-        offset: usize,
-        /// Generation from the previous page.
-        #[arg(long)]
-        generation: Option<String>,
-    },
-    /// Represents the inspect case.
-    Inspect {
-        /// The selector value.
-        selector: String,
-        /// Restrict selector resolution to a workspace-relative file or directory.
-        #[arg(long)]
-        path: Option<String>,
-        #[arg(long,default_value_t=true,action=clap::ArgAction::Set,num_args=0..=1,default_missing_value="true")]
-        /// Whether show doc applies.
-        show_doc: bool,
-        #[arg(long)]
-        /// Whether show source applies.
-        show_source: bool,
-        #[arg(long, default_value_t = 0)]
-        /// Source body offset returned by the prior preview.
-        source_offset: usize,
-        #[arg(long)]
-        /// Generation returned by the prior source preview.
-        generation: Option<String>,
-    },
-    /// Represents the search case.
-    Search {
-        /// The pattern value.
-        pattern: String,
-        #[arg(long)]
-        /// Optional kind value.
-        kind: Option<String>,
-        #[arg(long, default_value_t = 100)]
-        /// The limit value.
-        limit: usize,
-    },
-    /// Represents the tests case.
-    Tests {
-        /// The selector value.
-        selector: String,
-        /// Restrict selector resolution to a workspace-relative file or directory.
-        #[arg(long)]
-        path: Option<String>,
-        #[arg(long, default_value = "inbound")]
-        /// The direction value.
-        direction: String,
-        #[arg(long, default_value_t = 100)]
-        /// The limit value.
-        limit: usize,
-    },
-    /// Represents the impact case.
-    Impact {
-        /// Optional exact symbol selector; provide this or --changes.
-        selector: Option<String>,
-        #[arg(long)]
-        /// Git change view: staged, unstaged, or head.
-        changes: Option<String>,
-        /// Restrict selector resolution to a workspace-relative file or directory.
-        #[arg(long)]
-        path: Option<String>,
-        #[arg(long, default_value_t = 1)]
-        /// Maximum impact depth; defaults to one edge.
-        depth: u32,
-        #[arg(long, default_value_t = 100)]
-        /// Maximum result page size (1..=100).
-        limit: usize,
-        #[arg(long, default_value_t = 0)]
-        /// Result page offset.
-        offset: usize,
-        #[arg(long)]
-        /// Continuation generation from the preceding result page.
-        generation: Option<String>,
-    },
-    /// Represents the explain case.
-    Explain {
-        /// The selector value.
-        selector: String,
-        /// Restrict selector resolution to a workspace-relative file or directory.
-        #[arg(long)]
-        path: Option<String>,
-    },
-    /// Represents the remove case.
-    Remove {
-        /// The selector value.
-        selector: String,
-        /// Restrict selector resolution to a workspace-relative file or directory.
-        #[arg(long)]
-        path: Option<String>,
-    },
-    /// Represents the analyze case.
-    Analyze {
-        #[arg(default_value = "")]
-        /// The target value.
-        target: String,
-    },
-    /// Execute a read-only SELECT/WITH SQL statement against the code graph.
-    Sql {
-        /// Read-only SELECT or WITH SQL statement.
-        sql: String,
-        #[arg(long, default_value_t = 100)]
-        /// The limit value.
-        limit: usize,
-    },
-    /// Represents the run case.
-    Run {
-        /// The operation value ('sql', 'untested', 'implementations', 'slice', 'unwired', 'duplicates', 'dead_tails', or a direct SELECT/WITH statement).
-        operation: String,
-        /// Optional selector value.
-        selector: Option<String>,
-        /// Restrict selector resolution to a workspace-relative file or directory.
-        #[arg(long)]
-        path: Option<String>,
-        #[arg(long, default_value_t = 2)]
-        /// Maximum graph depth for generic query operations; impact defaults to two.
-        depth: u32,
-        #[arg(long, default_value_t = 100)]
-        /// The limit value.
-        limit: usize,
-        #[arg(long, default_value_t = 0)]
-        /// Result page offset.
-        offset: usize,
-        #[arg(long)]
-        /// Continuation generation from the preceding result page.
-        generation: Option<String>,
-        #[arg(long)]
-        /// Deduplication level: 'symbol' (functions/methods) or 'file' (identical files).
-        level: Option<String>,
-        #[arg(long, default_value_t = 10)]
-        /// Minimum line count for duplicates detection (default 10).
-        min_lines: usize,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-/// Enumerates the supported docs command values.
-pub enum DocsCommand {
-    /// Check Markdown links and anchors in the workspace.
-    Check,
-    /// Represents the search case.
-    Search {
-        /// The query value.
-        query: String,
-        #[arg(long)]
-        /// Optional doc type value.
-        doc_type: Option<String>,
-        #[arg(long)]
-        /// Optional component value.
-        component: Option<String>,
-        #[arg(long, default_value_t = 100)]
-        /// The limit value.
-        limit: usize,
-    },
-    /// Represents the get case.
-    Get {
-        /// The path or id value.
-        path_or_id: String,
-        #[arg(long)]
-        /// Optional section value.
-        section: Option<String>,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-/// Enumerates the supported ast command values.
-pub enum AstCommand {
-    /// Represents the grep case.
-    Grep {
-        /// The pattern value.
-        pattern: String,
-        #[arg(long = "lang", alias = "language")]
-        /// The language value.
-        language: String,
-        #[arg(long)]
-        /// Optional path value.
-        path: Option<String>,
-        #[arg(long, default_value_t = 100)]
-        /// The limit value.
-        limit: usize,
-    },
-}
 
 /// Default code-map SQLite path under `root`.
 pub fn default_db(root: &Path) -> PathBuf {
@@ -1385,7 +64,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         Command::Query {
             command: QueryCommand::Run { operation, .. },
         } => (
-            if operation == "sql" || looks_like_sql(operation) {
+            if operation == "sql" || dispatch_code::looks_like_sql(operation) {
                 OperationKind::Sql
             } else {
                 OperationKind::Navigation
@@ -1396,7 +75,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         Command::Query {
             command: QueryCommand::Analyze { target },
         } => (
-            if looks_like_sql(target) {
+            if dispatch_code::looks_like_sql(target) {
                 OperationKind::Sql
             } else {
                 OperationKind::Navigation
@@ -1452,34 +131,6 @@ fn command_discovery(command: &Command) -> Option<format::DiscoveryKind> {
     }
 }
 
-fn looks_like_sql(value: &str) -> bool {
-    value.split_whitespace().next().is_some_and(|keyword| {
-        keyword.eq_ignore_ascii_case("select") || keyword.eq_ignore_ascii_case("with")
-    })
-}
-
-fn cli_page(limit: usize) -> Result<QueryOptions> {
-    QueryOptions::resolve(&ResponsePolicy::default(), Some(limit), 0, None, None)
-}
-
-fn cli_page_with_offset(
-    limit: usize,
-    offset: usize,
-    generation: Option<String>,
-) -> Result<QueryOptions> {
-    QueryOptions::resolve(
-        &ResponsePolicy::default(),
-        Some(limit),
-        offset,
-        None,
-        generation,
-    )
-}
-
-fn cli_source(enabled: bool) -> Result<SourceOptions> {
-    SourceOptions::resolve(&ResponsePolicy::default(), Some(enabled), None, None, 0)
-}
-
 fn command_root(global: Option<&Path>, positional: Option<&Path>) -> Result<PathBuf> {
     let global = global.map(Path::canonicalize).transpose()?;
     let positional = positional.map(Path::canonicalize).transpose()?;
@@ -1517,7 +168,10 @@ fn check_explicit_config_migration(
         Err(err) => {
             return Err(StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
-                format!("cannot inspect confined config '{}': {err}", config_path.display()),
+                format!(
+                    "cannot inspect confined config '{}': {err}",
+                    config_path.display()
+                ),
             ));
         }
     };
@@ -1551,91 +205,37 @@ fn check_explicit_config_migration(
 }
 
 fn ensure_migrated_preflight(root: &Path, explicit_config: Option<&Path>) -> Result<()> {
-    check_explicit_config_migration(root, &root.join("acdd.yaml"))?;
+    check_explicit_config_migration(root, &root.join(acdd_core::ACDD_CONFIG_FILE))?;
     if let Some(cfg) = explicit_config {
         let resolved = if cfg.is_absolute() {
             cfg.to_path_buf()
         } else {
             root.join(cfg)
         };
-        if resolved != root.join("acdd.yaml") {
+        if resolved != root.join(acdd_core::ACDD_CONFIG_FILE) {
             check_explicit_config_migration(root, &resolved)?;
         }
     }
     Ok(())
 }
 
-fn open_or_rebuild(
-    db: &Path,
-    root: &Path,
-    explicit_config: Option<&Path>,
-    cache_dir: Option<&Path>,
-) -> Result<reader::LockedConnection> {
-    writer::validate_code_map_target(root, db)?;
-    match reader::open_locked(db, root) {
-        Ok(conn) => {
-            let selected = acdd_index::scanner::load_adapter(root, explicit_config)?;
-            let persisted = reader::read_policy(root, &conn)?;
-            if selected.digest != persisted.digest
-                || selected.adapter_path != persisted.adapter_path
-                || selected.linked_workspaces != persisted.linked_workspaces
-            {
-                drop(conn);
-                match cache_dir {
-                    Some(cache_dir) => crate::engine::pipeline::build_with_cache_dir(
-                        root,
-                        db,
-                        explicit_config,
-                        cache_dir,
-                    )?,
-                    None => writer::build(root, db, explicit_config)?,
-                };
-                return reader::open_locked(db, root);
-            }
-            Ok(conn)
-        }
-        Err(err) => {
-            let msg = err.to_string();
-            let requires_rebuild = err
-                .downcast_ref::<reader::IndexRebuildRequired>()
-                .is_some();
-            if requires_rebuild || !db.exists() {
-                eprintln!(
-                    "ACDD index incompatible or missing ({msg}); auto-rebuilding for {}...",
-                    root.display()
-                );
-                match cache_dir {
-                    Some(cache_dir) => crate::engine::pipeline::build_with_cache_dir(
-                        root,
-                        db,
-                        explicit_config,
-                        cache_dir,
-                    )?,
-                    None => writer::build(root, db, explicit_config)?,
-                };
-                reader::open_locked(db, root)
-            } else {
-                Err(err)
-            }
-        }
+fn cli_command_line() -> String {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() {
+        "serve".to_string()
+    } else {
+        args.join(" ")
     }
 }
 
-fn parse_json_or_at_file(root: &Path, raw: &str) -> Result<Value> {
-    let trimmed = raw.trim();
-    let payload = if let Some(rel) = trimmed.strip_prefix('@') {
-        let confined = paths::confined_file(root, Path::new(rel))?;
-        std::fs::read_to_string(&confined)
-            .with_context(|| format!("reading JSON payload '{}'", confined.display()))?
-    } else {
-        trimmed.to_owned()
-    };
-    serde_json::from_str(&payload)
-        .map_err(|err| StateError::new(ErrorCode::ProfileSchemaInvalid, format!("invalid JSON payload: {err}")).into())
-}
-
-fn state_err_invalid(msg: impl Into<String>) -> anyhow::Error {
-    StateError::new(ErrorCode::ProfileSchemaInvalid, msg).into()
+fn write_output(output: &mut dyn io::Write, text: &str) -> Result<()> {
+    if let Err(e) = writeln!(output, "{text}") {
+        if e.kind() == io::ErrorKind::BrokenPipe {
+            return Ok(());
+        }
+        return Err(e.into());
+    }
+    Ok(())
 }
 
 impl Cli {
@@ -1672,7 +272,12 @@ impl Cli {
         output: &mut dyn io::Write,
         cache_dir: Option<&Path>,
     ) -> Result<()> {
-        if matches!(self.command.as_ref(), Some(Command::Snapshot { .. })) { if let Some(root) = self.root.as_deref() { acdd_core::fs::check_ancestors_no_symlinks(root, Path::new(".git")).map_err(|e| anyhow::anyhow!(e))?; } }
+        if matches!(self.command.as_ref(), Some(Command::Snapshot { .. })) {
+            if let Some(root) = self.root.as_deref() {
+                acdd_core::fs::check_ancestors_no_symlinks(root, Path::new(".git"))
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
+        }
         let positional_root = match self.command.as_ref() {
             Some(
                 Command::Build { workspace_root, .. }
@@ -1827,7 +432,7 @@ impl Cli {
                 command: DocsCommand::Check
             }
         ) {
-            if !settings.adapter.modules.is_enabled("docs") {
+            if !settings.adapter.modules.is_subsystem_enabled(SubsystemId::Docs) {
                 return Err(StateError::new(
                     ErrorCode::FeatureDisabled,
                     "FEATURE_DISABLED: 'docs' module is disabled in modules:",
@@ -1853,7 +458,7 @@ impl Cli {
             | Command::Tool { worktree, .. } => worktree.as_deref().unwrap_or(&root),
             _ => &root,
         };
-        let span_ctx = if adapter.modules.is_enabled("state") {
+        let span_ctx = if adapter.modules.is_subsystem_enabled(SubsystemId::State) {
             crate::state_bridge::resolve_worktree_span_context(
                 &root,
                 span_worktree,
@@ -1871,11 +476,13 @@ impl Cli {
             title,
             adapter.retain_traces,
         );
-        if let Ok(db) = crate::state_bridge::resolve_effective_state_db(
-            &root, state_db.as_deref(), &adapter,
-        ) { span = span.with_state_db(db); }
+        if let Ok(db) =
+            crate::state_bridge::resolve_effective_state_db(&root, state_db.as_deref(), &adapter)
+        {
+            span = span.with_state_db(db);
+        }
         let checkout_root = self.root.as_deref().map(std::path::absolute).transpose()?;
-        let state_ctx = CliStateCtx {
+        let state_ctx = dispatch_state::CliStateCtx {
             root: &root,
             checkout_root: checkout_root.as_deref().unwrap_or(&root),
             explicit_config: self.config.is_some(),
@@ -1885,525 +492,21 @@ impl Cli {
             output_format,
             title,
         };
+        let code_ctx = dispatch_code::CliCodeCtx {
+            root: &root,
+            db: &db,
+            state_db: state_db.as_deref(),
+            adapter: &adapter,
+            explicit_config: explicit_config.as_deref(),
+            has_explicit_config: self.config.is_some(),
+            cache_dir,
+            output_format,
+        };
 
         let exec_result: Result<(Value, Option<String>)> = (|| async {
-            let (val, pre_rendered) = match command {
+            match command {
                 Command::Init { .. } | Command::Validate { .. } => {
                     unreachable!("handled prior to run_selected")
-                }
-                Command::Start {
-                    spec,
-                    goal,
-                    name,
-                    scope,
-                    target_base,
-                    worktree,
-                    in_place,
-                    worktree_path,
-                } => {
-                    let run_name = name
-                        .as_deref()
-                        .map(RunName::new)
-                        .transpose()
-                        .map_err(anyhow::Error::from)?;
-                    let worktree_path = match worktree_path {
-                        Some(path) if path.is_relative() => Some(acdd_core::fs::checked_child(
-                            &std::env::current_dir()?,
-                            &path,
-                        )?),
-                        path => path,
-                    };
-                    state_ctx.command(StateCommand::Start(StartReq {
-                        spec_path: spec,
-                        goal,
-                        run_name,
-                        profile: explicit_profile_ref.or_else(|| {
-                            self.profile.as_ref().map(|p| p.to_string_lossy().into_owned())
-                        }),
-                        scope,
-                        target_base,
-                        worktree,
-                        in_place,
-                        worktree_path,
-                    }))?
-                }
-                Command::Draft {
-                    collection,
-                    slug,
-                    prefix,
-                    title: spec_title,
-                } => state_ctx.command(StateCommand::Draft(DraftReq {
-                    collection,
-                    slug,
-                    prefix,
-                    title: spec_title,
-                    profile: explicit_profile_ref,
-                }))?,
-                Command::Status { run } => {
-                    state_ctx.query(&root, StateQuery::Status(StatusReq { run }))?
-                }
-                Command::List {
-                    workspace,
-                    status,
-                    include_tombstones,
-                    limit,
-                    offset,
-                    generation,
-                } => {
-                    let status = status
-                        .as_deref()
-                        .map(RunStatus::from_str)
-                        .transpose()
-                        .map_err(anyhow::Error::from)?;
-                    state_ctx.query(
-                        &root,
-                        StateQuery::List(ListReq {
-                            workspace,
-                            status,
-                            include_tombstones,
-                            limit,
-                            offset,
-                            generation,
-                        }),
-                    )?
-                }
-                Command::Show { node, run } => {
-                    state_ctx.query(&root, StateQuery::Show(ShowReq { run, node }))?
-                }
-                Command::Context { node, run, worker } => {
-                    state_ctx.query(
-                        &root,
-                        StateQuery::Context(ContextReq {
-                            run,
-                            node,
-                            worker_id: worker
-                                .map(|w| WorkerId::new(&w))
-                                .transpose()
-                                .map_err(anyhow::Error::from)?,
-                        }),
-                    )?
-                }
-                Command::Next { run, limit } => {
-                    state_ctx.query(&root, StateQuery::Next(NextReq { run, limit }))?
-                }
-                Command::Roadmap {
-                    spec_id,
-                    collection,
-                    ready,
-                    active,
-                    tasks,
-                } => state_ctx.query(
-                    &root,
-                    StateQuery::Roadmap(RoadmapReq {
-                        spec_id,
-                        collection,
-                        ready_only: ready,
-                        active_only: active,
-                        include_tasks: tasks,
-                        ..Default::default()
-                    }),
-                )?,
-                Command::Claim {
-                    node,
-                    run,
-                    worker,
-                    session_fingerprint,
-                    force,
-                    steal_remote,
-                    worktree,
-                } => {
-                    let worker_id = WorkerId::new(&worker)?;
-                    state_ctx.command(StateCommand::Claim(ClaimReq {
-                        run,
-                        node,
-                        worker_id,
-                        session_fingerprint,
-                        force,
-                        steal_remote,
-                        worktree,
-                    }))?
-                }
-                Command::Verify {
-                    node,
-                    run,
-                    worker,
-                    test,
-                    claim_revision,
-                    worktree,
-                } => {
-                    let worker_id = worker.as_deref().map(WorkerId::new).transpose()?;
-                    state_ctx.command(StateCommand::Verify(VerifyReq {
-                        run,
-                        node,
-                        worker_id,
-                        test_target: test,
-                        claim_revision,
-                        worktree,
-                    }))?
-                }
-                Command::Submit {
-                    node,
-                    action,
-                    run,
-                    worker,
-                    claim_revision,
-                    test,
-                    evidence,
-                    findings,
-                    invariants,
-                    summary,
-                    allow_main,
-                    worktree,
-                } => {
-                    let submit_action = SubmitAction::from_str(&action)?;
-                    let worker_id = WorkerId::new(&worker)?;
-                    let mut review_evidence: Option<ReviewEvidence> = None;
-                    let mut custom_evidence: Option<Value> = None;
-                    if let Some(raw) = evidence.as_deref() {
-                        let parsed = parse_json_or_at_file(&root, raw)?;
-                        if let Ok(re) = serde_json::from_value::<ReviewEvidence>(parsed.clone()) {
-                            review_evidence = Some(re);
-                        } else {
-                            custom_evidence = Some(parsed);
-                        }
-                    }
-                    let rejection_findings = findings
-                        .as_deref()
-                        .map(|raw| {
-                            let parsed = parse_json_or_at_file(&root, raw)?;
-                            serde_json::from_value::<RejectionFindings>(parsed).map_err(|err| {
-                                state_err_invalid(format!("invalid rejection findings: {err}"))
-                            })
-                        })
-                        .transpose()?;
-                    state_ctx.command(StateCommand::Submit(Box::new(SubmitReq {
-                        run,
-                        node,
-                        action: submit_action,
-                        worker_id,
-                        claim_revision,
-                        test_target: test,
-                        review_evidence,
-                        rejection_findings,
-                        custom_evidence,
-                        verified_invariants: invariants,
-                        summary,
-                        allow_main,
-                        worktree,
-                    })))?
-                }
-                Command::ExtendScope {
-                    node,
-                    paths,
-                    reason,
-                    run,
-                    worker,
-                } => {
-                    let worker_id = worker.as_deref().map(WorkerId::new).transpose()?;
-                    state_ctx.command(StateCommand::ExtendScope(ExtendScopeReq {
-                        run,
-                        node,
-                        paths,
-                        reason,
-                        worker_id,
-                    }))?
-                }
-                Command::Reopen {
-                    node,
-                    run,
-                    cascade,
-                    reason,
-                } => state_ctx.command(StateCommand::Reopen(ReopenReq {
-                    run,
-                    node,
-                    cascade,
-                    reason,
-                }))?,
-                Command::Sync {
-                    run,
-                    rebind_profile,
-                } => state_ctx.command(StateCommand::Sync(SyncReq {
-                    run,
-                    rebind_profile,
-                }))?,
-                Command::Subtask {
-                    task_ref,
-                    subtask_ref,
-                    status,
-                    evidence,
-                    run,
-                } => {
-                    let task_ref = TaskRef::new(&task_ref)?;
-                    let subtask_ref = SubtaskRef::new(&subtask_ref)?;
-                    let status = SubtaskStatus::from_str(&status)?;
-                    state_ctx.command(StateCommand::Subtask(SubtaskReq {
-                        run,
-                        task_ref,
-                        subtask_ref,
-                        status,
-                        evidence,
-                    }))?
-                }
-                Command::Blackboard {
-                    action,
-                    run,
-                    node,
-                    recipient_node,
-                    subtask_ref,
-                    gate,
-                    author,
-                    topic,
-                    payload,
-                    status,
-                    limit,
-                    offset,
-                    generation,
-                } => match action.as_str() {
-                    "read" => {
-                        let topic = topic.as_deref().map(BlackboardTopic::from_str).transpose()?;
-                        let status = status
-                            .as_deref()
-                            .map(BlackboardStatus::from_str)
-                            .transpose()?;
-                        state_ctx.query(
-                            &root,
-                            StateQuery::BlackboardRead(BlackboardReadReq {
-                                run,
-                                node,
-                                recipient_node,
-                                topic,
-                                status,
-                                limit,
-                                offset,
-                                generation,
-                            }),
-                        )?
-                    }
-                    "post" => {
-                        let topic_val = BlackboardTopic::from_str(
-                            topic
-                                .as_deref()
-                                .ok_or_else(|| state_err_invalid("--topic is required for blackboard --action post"))?,
-                        )?;
-                        let payload_val = payload.ok_or_else(|| {
-                            state_err_invalid("--payload is required for blackboard --action post")
-                        })?;
-                        let author_val = author.unwrap_or_else(|| "cli".to_owned());
-                        let subtask_ref = subtask_ref.as_deref().map(SubtaskRef::new).transpose()?;
-                        state_ctx.command(StateCommand::BlackboardPost(BlackboardPostReq {
-                            run,
-                            node,
-                            recipient_node,
-                            subtask_ref,
-                            gate,
-                            author: author_val,
-                            topic: topic_val,
-                            payload: payload_val,
-                        }))?
-                    }
-                    other => {
-                        return Err(state_err_invalid(format!(
-                            "blackboard --action must be 'read' or 'post', got '{other}'"
-                        )));
-                    }
-                },
-                Command::Snapshot { mut action, mut target, all, rev, run, delete, older_than, worktree } => {
-                    if delete {
-                        if target.is_none() { target = action.take(); }
-                        else if !matches!(action.as_deref(), Some("clear" | "delete")) { return Err(state_err_invalid("conflicting action with --delete")); }
-                        action = Some("clear".into());
-                    }
-                    let mapped = match action.as_deref() {
-                        Some("save") => SnapshotAction::Save,
-                        Some("restore") => SnapshotAction::Restore,
-                        Some("clear" | "delete") => SnapshotAction::Clear,
-                        Some("list") => SnapshotAction::List,
-                        _ => return Err(state_err_invalid("snapshot requires save, restore, list, or clear")),
-                    };
-                    let (task_ref, name) = match (run.is_some(), target) { (true, Some(t)) => (Some(TaskRef::new(&t).map_err(|err| state_err_invalid(err.to_string()))?), None), (false, Some(t)) => (None, Some(t)), (_, None) => (None, None) };
-                    state_ctx.command(StateCommand::Snapshot(SnapshotReq { run, action: mapped, task_ref, all, revision: rev, name, worktree, older_than }))?
-                }
-                Command::Clear {
-                    run_id,
-                    run,
-                    reason,
-                    force,
-                } => {
-                    let effective_run = run.or(run_id);
-                    state_ctx.command(StateCommand::Clear(ClearReq {
-                        run: effective_run,
-                        reason,
-                        force,
-                    }))?
-                }
-                Command::Run {
-                    run,
-                    jobs,
-                    allow_main,
-                    dry_run,
-                } => state_ctx.command(StateCommand::Run(RunReq {
-                    run,
-                    jobs,
-                    allow_main,
-                    dry_run,
-                }))?,
-                Command::Tool {
-                    tool_name,
-                    args,
-                    run,
-                    node,
-                    worktree,
-                } => {
-                    let parsed_args = parse_json_or_at_file(&root, &args)?;
-                    if run.is_none() && node.is_none() {
-                        let providers = build_domain_providers(
-                            &root,
-                            &adapter,
-                            Some(db.as_path()),
-                            Vec::new(),
-                        )?;
-                        let primary = acdd_core::git::primary_worktree_root(&root)
-                            .unwrap_or_else(|| root.clone());
-                        let wt = worktree
-                            .map(|p| acdd_core::fs::canonicalize_macos_var(&p));
-                        let tool_req = acdd_core::ports::DomainToolReq {
-                            workspace_root: primary,
-                            worktree: wt,
-                            run_id: None,
-                            node_cursor: None,
-                        };
-                        let output = providers
-                            .call_tool(&tool_name, &parsed_args, &tool_req)
-                            .map_err(|err| {
-                                if let Some(se) = StateError::from_anyhow(&err) {
-                                    anyhow::Error::from(se.clone())
-                                } else {
-                                    anyhow::Error::from(StateError::new(
-                                        ErrorCode::DomainCapabilityUnavailable,
-                                        format!("plugin tool '{tool_name}' failed: {err}"),
-                                    ))
-                                }
-                            })?;
-                        let wrapped = StateCommandOutput::CallPluginTool(CallPluginToolResp {
-                            tool_name,
-                            output,
-                        });
-                        render_cli_state_output(
-                            &wrapped,
-                            output_format,
-                            adapter.debug,
-                            || format::render_state_command_markdown(&wrapped, title),
-                        )?
-                    } else {
-                        state_ctx.command(StateCommand::CallPluginTool(CallPluginToolReq {
-                            tool_name,
-                            args: parsed_args,
-                            run,
-                            node,
-                            worktree,
-                        }))?
-                    }
-                }
-                Command::Read {
-                    path,
-                    mode,
-                    selector,
-                    start_line,
-                    line_count,
-                    pattern,
-                    regex,
-                    context,
-                    baseline,
-                    output_file,
-                    include_hints,
-                    source_offset,
-                    generation,
-                    max_body_lines,
-                    leading_lines,
-                } => {
-                    let mode = serde_json::from_value::<acdd_core::model::ReadMode>(json!(mode))?;
-                    let request = crate::engine::reader::ReadRequest {
-                        path: Some(path),
-                        paths: None,
-                        mode,
-                        selector,
-                        start_line,
-                        line_count,
-                        pattern,
-                        regex,
-                        context,
-                        baseline,
-                        output_file,
-                        include_hints,
-                    };
-                    let source = SourceOptions::resolve_full_symbol(
-                        &adapter.response,
-                        leading_lines,
-                        max_body_lines,
-                        source_offset,
-                    )?;
-                    anyhow::ensure!(
-                        source.has_valid_paging_anchor(generation.as_deref()),
-                        "source continuation requires generation"
-                    );
-                    let mut page =
-                        QueryOptions::resolve(&adapter.response, None, 0, None, generation)?;
-                    page.detail = Detail::Full;
-                    let structural = request.requires_index(&adapter)?;
-                    let val = if structural {
-                        let conn =
-                            open_or_rebuild(&db, &root, explicit_config.as_deref(), cache_dir)?;
-                        crate::engine::reader::acdd_read_tool(
-                            &root,
-                            &adapter,
-                            &request,
-                            &page,
-                            &source,
-                            Some(&conn),
-                            state_db.as_deref(),
-                            Some(db.as_path()),
-                        )?
-                    } else if db.is_file()
-                        && (adapter.modules.is_enabled("code") || adapter.modules.is_enabled("docs"))
-                    {
-                        reader::open_locked(&db, &root)
-                            .and_then(|conn| {
-                                crate::engine::reader::acdd_read_tool(
-                                    &root,
-                                    &adapter,
-                                    &request,
-                                    &page,
-                                    &source,
-                                    Some(&conn),
-                                    state_db.as_deref(),
-                                    Some(db.as_path()),
-                                )
-                            })
-                            .or_else(|_| {
-                                crate::engine::reader::acdd_read_tool(
-                                    &root,
-                                    &adapter,
-                                    &request,
-                                    &page,
-                                    &source,
-                                    None,
-                                    state_db.as_deref(),
-                                    Some(db.as_path()),
-                                )
-                            })?
-                    } else {
-                        crate::engine::reader::acdd_read_tool(
-                            &root,
-                            &adapter,
-                            &request,
-                            &page,
-                            &source,
-                            None,
-                            state_db.as_deref(),
-                            Some(db.as_path()),
-                        )?
-                    };
-                    (val, None)
                 }
                 Command::Serve => {
                     writer::validate_code_map_target(&root, &db)?;
@@ -2421,422 +524,26 @@ impl Cli {
                         Some(invocation),
                     )
                     .await?;
-                    return Ok((Value::Null, Some(String::new())));
+                    Ok((Value::Null, Some(String::new())))
                 }
-                Command::Reload => (reload::run()?, None),
-                Command::Build {
-                    workspace_root: _,
-                    output,
-                    adapter: adapter_arg,
-                    verbose: _,
-                } => {
-                    let adapter_path = match adapter_arg {
-                        Some(adapter_arg) => {
-                            let confined = paths::confined_file(&root, &adapter_arg)?;
-                            if self.config.is_some() {
-                                anyhow::ensure!(
-                                    explicit_config.as_ref() == Some(&confined),
-                                    "CLI_CONFIG_CONFLICT: --adapter and --config select different files"
-                                );
-                            }
-                            Some(confined)
-                        }
-                        None => explicit_config.clone(),
-                    };
-                    let output_db = output
-                        .map(|path| {
-                            if path.is_absolute() {
-                                path
-                            } else {
-                                root.join(path)
-                            }
-                        })
-                        .unwrap_or_else(|| db.clone());
-                    writer::validate_code_map_target(&root, &output_db)?;
-                    let val = match cache_dir {
-                        Some(cache_dir) => crate::engine::pipeline::build_with_cache_dir(
-                            &root,
-                            &output_db,
-                            adapter_path.as_deref(),
-                            cache_dir,
-                        )?,
-                        None => writer::build(&root, &output_db, adapter_path.as_deref())?,
-                    };
-                    (val, None)
-                }
-                Command::Scan {
-                    workspace_root: _,
-                    adapter: adapter_arg,
-                    pretty: _,
-                } => {
-                    let adapter_path = match adapter_arg {
-                        Some(adapter_arg) => {
-                            let confined = paths::confined_file(&root, &adapter_arg)?;
-                            if self.config.is_some() {
-                                anyhow::ensure!(
-                                    explicit_config.as_ref() == Some(&confined),
-                                    "CLI_CONFIG_CONFLICT: --adapter and --config select different files"
-                                );
-                            }
-                            Some(confined)
-                        }
-                        None => explicit_config.clone(),
-                    };
-                    let scan_adapter = if adapter_path == explicit_config {
-                        adapter.clone()
-                    } else {
-                        acdd_core::config::load_adapter(&root, adapter_path.as_deref())?
-                    };
-                    (
-                        json!(acdd_index::scanner::scan_with_adapter(&root, &scan_adapter)?),
-                        None,
-                    )
-                }
-                Command::Delta {
-                    workspace_root: _,
-                    mut modified_files,
-                    modified,
-                } => {
-                    modified_files.extend(modified);
-                    if modified_files.is_empty() {
-                        bail!("delta requires at least one modified file");
-                    }
-                    let val = crate::engine::pipeline::delta_with_selection(
-                        &root,
-                        &db,
-                        &modified_files,
-                        self.config.as_ref().and(explicit_config.as_deref()),
-                        cache_dir,
-                    )?;
-                    (val, None)
-                }
+                Command::Reload => Ok((reload::run()?, None)),
                 Command::Guide { topic, force } => {
-                    (guide::run_with_adapter(&root, &topic, force, &adapter)?, None)
+                    Ok((guide::run_with_adapter(&root, &topic, force, &adapter)?, None))
                 }
-                Command::Ast {
-                    command:
-                        AstCommand::Grep {
-                            pattern,
-                            language,
-                            path,
-                            limit,
-                        },
-                } => {
-                    if !adapter.modules.is_enabled("code") {
-                        return Err(StateError::new(
-                            ErrorCode::FeatureDisabled,
-                            "FEATURE_DISABLED: 'code' module is disabled in modules:",
-                        )
-                        .into());
-                    }
-                    let conn =
-                        open_or_rebuild(&db, &root, explicit_config.as_deref(), cache_dir)?;
-                    let mut result = if (1..=MAX_PAGE_SIZE).contains(&limit) {
-                        ast::search_paged_with_adapter(
-                            &conn,
-                            &root,
-                            &adapter,
-                            &pattern,
-                            &language,
-                            path.as_deref(),
-                            &cli_page(limit)?,
-                        )?
-                    } else {
-                        ast::search(&conn, &root, &pattern, &language, path.as_deref(), limit)?
-                    };
-                    result["pattern"] = json!(pattern);
-                    result["language"] = json!(language);
-                    if output_format == OutputFormat::Markdown {
-                        result["request_scope"] = json!({
-                            "workspace_root": root.display().to_string(),
-                            "pattern": pattern,
-                            "language": language,
-                            "path": path,
-                        });
-                    }
-                    (result, None)
-                }
-                Command::Query { command } => {
-                    if !adapter.modules.is_enabled("code") {
-                        return Err(StateError::new(
-                            ErrorCode::FeatureDisabled,
-                            "FEATURE_DISABLED: 'code' module is disabled in modules:",
-                        )
-                        .into());
-                    }
-                    let conn =
-                        open_or_rebuild(&db, &root, explicit_config.as_deref(), cache_dir)?;
-                    let val = match command {
-                        QueryCommand::Overview {
-                            aspects,
-                            limit,
-                            offset,
-                            generation,
-                        } => {
-                            let page = QueryOptions::resolve(
-                                &ResponsePolicy::default(),
-                                Some(limit),
-                                offset,
-                                None,
-                                generation,
-                            )?;
-                            discovery::overview(
-                                &conn,
-                                &root,
-                                Some(&adapter),
-                                aspects.as_deref(),
-                                &page,
-                            )?
-                        }
-                        QueryCommand::Inspect {
-                            selector,
-                            path,
-                            show_doc,
-                            show_source,
-                            source_offset,
-                            generation,
-                        } => {
-                            let source = SourceOptions::resolve(
-                                &ResponsePolicy::default(),
-                                Some(show_source),
-                                None,
-                                None,
-                                source_offset,
-                            )?;
-                            anyhow::ensure!(
-                                source.has_valid_paging_anchor(generation.as_deref()),
-                                "source continuation requires restarting at source_offset=0 or providing the previous page's generation"
-                            );
-                            let page = QueryOptions::resolve(
-                                &ResponsePolicy::default(),
-                                Some(100),
-                                0,
-                                None,
-                                generation,
-                            )?;
-                            let mut result = symbols::inspect_with_path_options(
-                                &conn,
-                                &root,
-                                &selector,
-                                path.as_deref(),
-                                &symbols::InspectOptions {
-                                    show_doc,
-                                    source: &source,
-                                    coverage: CoverageOptions {
-                                        include_coverage: true,
-                                    },
-                                    page: &page,
-                                },
-                            )?;
-                            if output_format == OutputFormat::Markdown {
-                                result["request_scope"] = json!({
-                                    "workspace_root": root.display().to_string(),
-                                    "selector": selector,
-                                    "path": path,
-                                });
-                            }
-                            result
-                        }
-                        QueryCommand::Search {
-                            pattern,
-                            kind,
-                            limit,
-                        } => {
-                            let page = cli_page(limit)?;
-                            let exact = false;
-                            let include_docs = false;
-                            let result = symbols::search_with_options(
-                                &conn,
-                                &pattern,
-                                &symbols::SearchOptions {
-                                    kind: kind.as_deref(),
-                                    path: None,
-                                    include_docs,
-                                    exact,
-                                    page: &page,
-                                },
-                            )?;
-                            let mut result = symbols::search_results_with_navigation(
-                                &conn, &root, result, false,
-                            )?;
-                            if output_format == OutputFormat::Markdown {
-                                result["request_scope"] = json!({
-                                    "workspace_root": root.display().to_string(),
-                                    "pattern": pattern,
-                                    "kind": kind,
-                                    "exact": exact,
-                                    "include_docs": include_docs,
-                                });
-                            }
-                            result
-                        }
-                        QueryCommand::Tests {
-                            selector,
-                            path,
-                            direction,
-                            limit,
-                        } => symbols::tests_paged_with_path(
-                            &conn,
-                            &selector,
-                            path.as_deref(),
-                            &direction,
-                            &cli_page(limit)?,
-                        )?,
-                        QueryCommand::Impact {
-                            selector,
-                            changes,
-                            path,
-                            depth,
-                            limit,
-                            offset,
-                            generation,
-                        } => traversal::impact_with_path_options(
-                            &conn,
-                            &root,
-                            selector.as_deref(),
-                            changes.as_deref(),
-                            path.as_deref(),
-                            &traversal::TraversalOptions {
-                                depth,
-                                inbound: true,
-                                mode: None,
-                                edge_types: None,
-                                page: &QueryOptions::resolve(
-                                    &ResponsePolicy::default(),
-                                    Some(limit),
-                                    offset,
-                                    None,
-                                    generation,
-                                )?,
-                            },
-                        )?,
-                        QueryCommand::Explain { selector, path } => {
-                            symbols::explain_with_path_options(
-                                &conn,
-                                &root,
-                                &selector,
-                                path.as_deref(),
-                                &symbols::ExplainOptions {
-                                    explain: reader::ExplainOptions {
-                                        direction: reader::ExplainDirection::Both,
-                                        show_doc: true,
-                                        page: &cli_page(100)?,
-                                    },
-                                    source: &cli_source(false)?,
-                                    coverage: CoverageOptions {
-                                        include_coverage: true,
-                                    },
-                                },
-                            )?
-                        }
-                        QueryCommand::Remove { selector, path } => {
-                            traversal::removal_paged_with_path(
-                                &conn,
-                                &selector,
-                                path.as_deref(),
-                                &cli_page(100)?,
-                            )?
-                        }
-                        QueryCommand::Analyze { target } => {
-                            reader::analyze_paged(&conn, &target, None, &cli_page(100)?)?
-                        }
-                        QueryCommand::Sql { sql, limit } => traversal::query_with_path_options(
-                            &conn,
-                            "sql",
-                            Some(sql.as_str()),
-                            None,
-                            &traversal::GraphQueryOptions {
-                                depth: 2,
-                                direction: None,
-                                coverage: CoverageOptions::default(),
-                                page: &cli_page(limit)?,
-                            },
-                        )?,
-                        QueryCommand::Run {
-                            operation,
-                            selector,
-                            path,
-                            depth,
-                            limit,
-                            offset,
-                            generation,
-                            level,
-                            min_lines,
-                        } => {
-                            let (effective_op, effective_selector) =
-                                if selector.is_none() && looks_like_sql(&operation) {
-                                    ("sql", Some(operation.as_str()))
-                                } else {
-                                    (operation.as_str(), selector.as_deref())
-                                };
-                            let page = cli_page_with_offset(limit, offset, generation)?;
-                            if effective_op.trim() == "duplicates" {
-                                traversal::duplicates_paged(
-                                    &conn,
-                                    effective_selector,
-                                    path.as_deref(),
-                                    level.as_deref(),
-                                    Some(min_lines),
-                                    &page,
-                                )?
-                            } else {
-                                traversal::query_with_path_options(
-                                    &conn,
-                                    effective_op,
-                                    effective_selector,
-                                    path.as_deref(),
-                                    &traversal::GraphQueryOptions {
-                                        depth,
-                                        direction: None,
-                                        coverage: CoverageOptions::default(),
-                                        page: &page,
-                                    },
-                                )?
-                            }
-                        }
-                    };
-                    (val, None)
-                }
-                Command::Docs { command } => {
-                    if !adapter.modules.is_enabled("docs") {
-                        return Err(StateError::new(
-                            ErrorCode::FeatureDisabled,
-                            "FEATURE_DISABLED: 'docs' module is disabled in modules:",
-                        )
-                        .into());
-                    }
-                    let conn =
-                        open_or_rebuild(&db, &root, explicit_config.as_deref(), cache_dir)?;
-                    let val = match command {
-                        DocsCommand::Check => unreachable!(),
-                        DocsCommand::Search {
-                            query,
-                            doc_type,
-                            component,
-                            limit,
-                        } => reader::search_docs_with_options(
-                            &conn,
-                            &query,
-                            &reader::DocSearchOptions {
-                                doc_type: doc_type.as_deref(),
-                                component: component.as_deref(),
-                                include_excerpt: false,
-                                page: &cli_page(limit)?,
-                            },
-                        )?,
-                        DocsCommand::Get {
-                            path_or_id,
-                            section,
-                        } => {
-                            let mut options = cli_page(100)?;
-                            options.detail = Detail::Full;
-                            reader::get_doc_paged(&conn, &path_or_id, section.as_deref(), &options)?
-                        }
-                    };
-                    (val, None)
-                }
-            };
-            Ok((val, pre_rendered))
+                cmd @ (Command::Read { .. }
+                | Command::Build { .. }
+                | Command::Scan { .. }
+                | Command::Delta { .. }
+                | Command::Ast { .. }
+                | Command::Query { .. }
+                | Command::Docs { .. }) => dispatch_code::dispatch(&code_ctx, cmd),
+                cmd => dispatch_state::dispatch(
+                    &state_ctx,
+                    explicit_profile_ref,
+                    self.profile.as_deref(),
+                    cmd,
+                ),
+            }
         })()
         .await;
 
@@ -2858,23 +565,9 @@ impl Cli {
                 return Ok(());
             }
             if adapter.debug {
-                let cli_cmd = {
-                    let args: Vec<String> = std::env::args().skip(1).collect();
-                    if args.is_empty() {
-                        "serve".to_string()
-                    } else {
-                        args.join(" ")
-                    }
-                };
-                crate::telemetry::log_cli(&root, &cli_cmd, None, &result);
+                crate::telemetry::log_cli(&root, &cli_command_line(), None, &result);
             }
-            if let Err(e) = writeln!(output, "{text}") {
-                if e.kind() == io::ErrorKind::BrokenPipe {
-                    return Ok(());
-                }
-                return Err(e.into());
-            }
-            return Ok(());
+            return write_output(output, &text);
         }
 
         if output_format == OutputFormat::Markdown {
@@ -2919,15 +612,7 @@ impl Cli {
                 bail!("{text}");
             }
             if let Some(debug_result) = debug_snapshot {
-                let cli_cmd = {
-                    let args: Vec<String> = std::env::args().skip(1).collect();
-                    if args.is_empty() {
-                        "serve".to_string()
-                    } else {
-                        args.join(" ")
-                    }
-                };
-                crate::telemetry::log_cli(&root, &cli_cmd, None, &debug_result);
+                crate::telemetry::log_cli(&root, &cli_command_line(), None, &debug_result);
             }
             text.to_owned()
         } else {
@@ -2935,107 +620,12 @@ impl Cli {
             let formatted =
                 format::render_for_operation(&result, output_format, title, discovery, operation);
             if adapter.debug {
-                let cli_cmd = {
-                    let args: Vec<String> = std::env::args().skip(1).collect();
-                    if args.is_empty() {
-                        "serve".to_string()
-                    } else {
-                        args.join(" ")
-                    }
-                };
-                crate::telemetry::log_cli(&root, &cli_cmd, None, &result);
+                crate::telemetry::log_cli(&root, &cli_command_line(), None, &result);
             }
             formatted
         };
-        if let Err(e) = writeln!(output, "{formatted}") {
-            if e.kind() == io::ErrorKind::BrokenPipe {
-                return Ok(());
-            }
-            return Err(e.into());
-        }
-        Ok(())
+        write_output(output, &formatted)
     }
-}
-
-struct CliStateCtx<'a> {
-    root: &'a Path,
-    checkout_root: &'a Path,
-    explicit_config: bool,
-    state_db: Option<&'a Path>,
-    code_db: Option<&'a Path>,
-    adapter: &'a acdd_core::config::Adapter,
-    output_format: OutputFormat,
-    title: &'a str,
-}
-
-impl CliStateCtx<'_> {
-    fn command(&self, cmd: StateCommand) -> Result<(Value, Option<String>)> {
-        let worktree = match &cmd {
-            StateCommand::Start(_) | StateCommand::Sync(_) => Some(self.checkout_root),
-            StateCommand::Claim(req) => req.worktree.as_deref(),
-            StateCommand::Verify(req) => req.worktree.as_deref(),
-            StateCommand::Submit(req) => req.worktree.as_deref(),
-            StateCommand::CallPluginTool(req) => req.worktree.as_deref(),
-            StateCommand::Snapshot(req) => req.worktree.as_deref(),
-            _ => None,
-        }
-        .map(Path::to_path_buf);
-        let providers = build_domain_providers(self.root, self.adapter, self.code_db, Vec::new())?;
-        let res = execute_state_command_with_config(
-            self.root,
-            worktree.as_deref().unwrap_or(self.root),
-            self.state_db,
-            self.code_db,
-            self.adapter,
-            providers,
-            cmd,
-            self.explicit_config,
-        )?;
-        render_cli_state_output(
-            &res,
-            self.output_format,
-            self.adapter.debug,
-            || format::render_state_command_markdown(&res, self.title),
-        )
-    }
-
-    fn query(&self, worktree: &Path, query: StateQuery) -> Result<(Value, Option<String>)> {
-        let providers = build_domain_providers(self.root, self.adapter, self.code_db, Vec::new())?;
-        let roadmap_detail = matches!(
-            &query,
-            StateQuery::Roadmap(req) if req.spec_id.is_some()
-        );
-        let res = execute_state_query(
-            self.root,
-            worktree,
-            self.state_db,
-            self.code_db,
-            self.adapter,
-            providers,
-            query,
-        )?;
-        render_cli_state_output(
-            &res,
-            self.output_format,
-            self.adapter.debug,
-            || format::render_state_query_markdown(&res, self.title, roadmap_detail),
-        )
-    }
-}
-
-fn render_cli_state_output<T: serde::Serialize>(
-    res: &T,
-    output_format: OutputFormat,
-    debug: bool,
-    render_md: impl FnOnce() -> String,
-) -> Result<(Value, Option<String>)> {
-    let md = (output_format == OutputFormat::Markdown).then(render_md);
-    let val = if output_format == OutputFormat::Json || debug {
-        serde_json::to_value(res)?
-    } else {
-        Value::Null
-    };
-    Ok((val, md))
 }
 
 #[cfg(test)]
@@ -3058,16 +648,36 @@ mod tests {
             (ErrorCode::BackendConflict, 4),
         ];
         for (code, expected) in exit_cases {
-            assert_eq!(StateError::new(code, "test").exit_code(), expected, "{code:?}");
+            assert_eq!(
+                StateError::new(code, "test").exit_code(),
+                expected,
+                "{code:?}"
+            );
         }
 
         // 2. Flat CLI subcommand parsing preserves Cli/Command AST & removes legacy trees
         for args in [
             vec!["acdd", "init"],
             vec!["acdd", "start", "--goal", "ship feature", "--name", "m1"],
-            vec!["acdd", "start", "--goal", "ship feature", "--name", "m1", "--profile", "audit"],
+            vec![
+                "acdd",
+                "start",
+                "--goal",
+                "ship feature",
+                "--name",
+                "m1",
+                "--profile",
+                "audit",
+            ],
             vec!["acdd", "draft", "milestones", "my-slug"],
-            vec!["acdd", "draft", "milestones", "my-slug", "--profile", "code"],
+            vec![
+                "acdd",
+                "draft",
+                "milestones",
+                "my-slug",
+                "--profile",
+                "code",
+            ],
             vec!["acdd", "status", "--run", "m1"],
             vec!["acdd", "list"],
             vec!["acdd", "show", "--run", "m1"],
@@ -3077,10 +687,31 @@ mod tests {
             vec!["acdd", "claim", "t1.build", "--run", "m1", "--worker", "w1"],
             vec!["acdd", "verify", "t1.build", "--run", "m1"],
             vec!["acdd", "submit", "t1.build", "--run", "m1", "--action", "pass"],
-            vec!["acdd", "extend-scope", "t1.build", "--run", "m1", "--path", "src/a.rs", "--reason", "need helper"],
+            vec![
+                "acdd",
+                "extend-scope",
+                "t1.build",
+                "--run",
+                "m1",
+                "--path",
+                "src/a.rs",
+                "--reason",
+                "need helper",
+            ],
             vec!["acdd", "reopen", "t1.build", "--run", "m1"],
             vec!["acdd", "sync", "--run", "m1"],
-            vec!["acdd", "subtask", "t1", "s1", "--run", "m1", "--status", "completed", "--evidence", "ok"],
+            vec![
+                "acdd",
+                "subtask",
+                "t1",
+                "s1",
+                "--run",
+                "m1",
+                "--status",
+                "completed",
+                "--evidence",
+                "ok",
+            ],
             vec!["acdd", "blackboard", "--run", "m1", "--action", "read"],
             vec!["acdd", "snapshot", "list"],
             vec!["acdd", "clear", "--run", "m1"],
@@ -3098,9 +729,13 @@ mod tests {
             vec!["acdd", "checkpoint", "save"],
             vec!["acdd", "migrate"],
         ] {
-            assert!(Cli::try_parse_from(&legacy).is_err(), "legacy cmd should be removed: {legacy:?}");
+            assert!(
+                Cli::try_parse_from(&legacy).is_err(),
+                "legacy cmd should be removed: {legacy:?}"
+            );
         }
-        let snap_legacy = Cli::try_parse_from(["acdd", "snapshot", "snap1", "--run", "m1"]).unwrap();
+        let snap_legacy =
+            Cli::try_parse_from(["acdd", "snapshot", "snap1", "--run", "m1"]).unwrap();
         let mut sink = Vec::new();
         assert!(tokio::runtime::Runtime::new()
             .unwrap()
@@ -3109,22 +744,26 @@ mod tests {
 
         // 3. `acdd init` picks inherit: code vs base and writes canonical .gitignore block
         for (acdd_yaml, expected_inherit) in [
-            ("modules:\n  code: true\n  docs: true\n  state: true\n", "inherit: code"),
-            ("modules:\n  code: false\n  docs: true\n  state: true\n", "inherit: base"),
+            (
+                "modules:\n  code: true\n  docs: true\n  state: true\n",
+                "inherit: code",
+            ),
+            (
+                "modules:\n  code: false\n  docs: true\n  state: true\n",
+                "inherit: base",
+            ),
         ] {
             let dir = ScopedTempDir::create("acdd-ut-cli-init").unwrap();
             let root = dir.path();
-            assert!(acdd_core::git::git_command(root, &["init"]).unwrap().status.success());
+            assert!(acdd_core::git::git_command(root, &["init"])
+                .unwrap()
+                .status
+                .success());
             fs::write(root.join("acdd.yaml"), acdd_yaml).unwrap();
 
             let mut out = Vec::new();
-            let cli = Cli::try_parse_from([
-                "acdd",
-                "--root",
-                root.to_str().unwrap(),
-                "init",
-            ])
-            .unwrap();
+            let cli = Cli::try_parse_from(["acdd", "--root", root.to_str().unwrap(), "init"])
+                .unwrap();
             tokio::runtime::Runtime::new()
                 .unwrap()
                 .block_on(cli.run_with_writer(&mut out))
@@ -3134,10 +773,12 @@ mod tests {
             assert!(profile.contains(expected_inherit), "{profile}");
             let gi = fs::read_to_string(root.join(".gitignore")).unwrap();
             assert!(gi.contains(".acdd/*.sqlite*"), "{gi}");
-            assert!(acdd_core::git::git_command(root, &["check-ignore", "-q", ".acdd/state.sqlite"])
-                .unwrap()
-                .status
-                .success());
+            assert!(
+                acdd_core::git::git_command(root, &["check-ignore", "-q", ".acdd/state.sqlite"])
+                    .unwrap()
+                    .status
+                    .success()
+            );
 
             if expected_inherit == "inherit: base" {
                 let cli_force = Cli::try_parse_from([
@@ -3161,7 +802,11 @@ mod tests {
         // 4. `CONFIG_MIGRATION_REQUIRED` preflight blocks legacy 0.5.x config keys
         let dir = ScopedTempDir::create("acdd-ut-cli-migrate").unwrap();
         let root = dir.path();
-        fs::write(root.join("acdd.yaml"), "milestones:\n  path: docs/milestones\ntasks_db: .acdd/tasks.sqlite\n").unwrap();
+        fs::write(
+            root.join("acdd.yaml"),
+            "milestones:\n  path: docs/milestones\ntasks_db: .acdd/tasks.sqlite\n",
+        )
+        .unwrap();
         let err = super::ensure_migrated_preflight(root, None).unwrap_err();
         let state_err = StateError::from_anyhow(&err).expect("StateError");
         assert_eq!(state_err.code, ErrorCode::ConfigMigrationRequired);
@@ -3171,7 +816,11 @@ mod tests {
         let vdir = ScopedTempDir::create("acdd-ut-cli-validate").unwrap();
         let vroot = vdir.path();
         fs::create_dir_all(vroot.join(".acdd")).unwrap();
-        fs::write(vroot.join("acdd.yaml"), "modules:\n  code: true\n  docs: true\n  state: true\n").unwrap();
+        fs::write(
+            vroot.join("acdd.yaml"),
+            "modules:\n  code: true\n  docs: true\n  state: true\n",
+        )
+        .unwrap();
         fs::write(
             vroot.join(".acdd/profile.yaml"),
             "version: 2\ninherit: code\ncommands:\n  test: \"cargo test --lib {test_filter}\"\n  build_check: \"cargo check --lib\"\n  verify_all: \"cargo test --lib\"\n",
@@ -3193,7 +842,8 @@ mod tests {
         // and `code_db_path` is populated iff `code || docs` is enabled (#25).
         let cfg_default = crate::state_bridge::AcddConfig::default();
         let eng_default =
-            crate::state_bridge::state_engine_config(vroot, vroot, None, None, &cfg_default).unwrap();
+            crate::state_bridge::state_engine_config(vroot, vroot, None, None, &cfg_default)
+                .unwrap();
         assert!(eng_default.state_db_override.is_none());
         assert_eq!(
             eng_default.code_db_path,
@@ -3207,11 +857,16 @@ mod tests {
             ..Default::default()
         };
         let eng_minimal =
-            crate::state_bridge::state_engine_config(vroot, vroot, None, None, &cfg_minimal).unwrap();
+            crate::state_bridge::state_engine_config(vroot, vroot, None, None, &cfg_minimal)
+                .unwrap();
         assert_eq!(eng_minimal.code_db_path, None);
         let custom_db = std::path::Path::new(".acdd/custom.sqlite");
         let eng_custom = crate::state_bridge::state_engine_config(
-            vroot, vroot, Some(custom_db), None, &cfg_default,
+            vroot,
+            vroot,
+            Some(custom_db),
+            None,
+            &cfg_default,
         )
         .unwrap();
         assert_eq!(eng_custom.state_db_override, Some(vroot.join(custom_db)));
@@ -3240,5 +895,38 @@ mod tests {
         let tool_state_err = StateError::from_anyhow(&tool_err).expect("StateError");
         assert_eq!(tool_state_err.code, ErrorCode::DomainCapabilityUnavailable);
         assert!(!troot.join(".acdd/state.sqlite").exists());
+
+        // 8. `resolve_cli_adapter_path` and `discovery::includes_discovery` contracts.
+        let adir = ScopedTempDir::create("acdd-ut-cli-adapter").unwrap();
+        let aroot = adir.path().canonicalize().unwrap();
+        let cfg_a = aroot.join("a.yaml");
+        let cfg_b = aroot.join("b.yaml");
+        fs::write(&cfg_a, "modules:\n  code: true\n").unwrap();
+        fs::write(&cfg_b, "modules:\n  code: true\n").unwrap();
+        assert_eq!(
+            super::dispatch_code::resolve_cli_adapter_path(&aroot, Some(&cfg_a), true, Some(&cfg_a), true).unwrap(),
+            Some(cfg_a.clone())
+        );
+        let conflict = super::dispatch_code::resolve_cli_adapter_path(
+            &aroot,
+            Some(&cfg_b),
+            true,
+            Some(&cfg_a),
+            true,
+        )
+        .unwrap_err();
+        assert!(conflict.to_string().contains("CLI_CONFIG_CONFLICT"), "{conflict:#}");
+        assert_eq!(
+            super::dispatch_code::resolve_cli_adapter_path(&aroot, None, false, Some(&cfg_a), false).unwrap(),
+            None
+        );
+        assert_eq!(
+            super::dispatch_code::resolve_cli_adapter_path(&aroot, None, false, Some(&cfg_a), true).unwrap(),
+            Some(cfg_a)
+        );
+        assert!(super::discovery::includes_discovery(None));
+        assert!(super::discovery::includes_discovery(Some(&["COMPONENTS".into()])));
+        assert!(super::discovery::includes_discovery(Some(&["milestones".into()])));
+        assert!(!super::discovery::includes_discovery(Some(&["counts".into(), "cycles".into()])));
     }
 }

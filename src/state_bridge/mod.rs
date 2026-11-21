@@ -66,6 +66,7 @@ use acdd_core::format::{estimate_json_bytes, sha256_hex};
 use acdd_core::git::primary_worktree_root;
 use acdd_core::ids::RunId;
 use acdd_core::ports::{CompositeDomainProvider, DomainProvider};
+use acdd_core::subsystems::SubsystemId;
 use acdd_index::db::reader::open_raw_confined_readonly;
 use acdd_state::types::NodeStatus;
 use acdd_state::usecases::{
@@ -147,9 +148,10 @@ pub fn build_domain_providers(
     let mut flags = BTreeMap::new();
     for provider in &providers {
         let id = provider.domain_id();
-        let enabled = match id {
-            "code" | "docs" => config.modules.is_enabled(id),
-            _ => config.modules.is_domain_enabled(id),
+        let enabled = if id == SubsystemId::Code.as_str() || id == SubsystemId::Docs.as_str() {
+            config.modules.is_enabled(id)
+        } else {
+            config.modules.is_domain_enabled(id)
         };
         flags.insert(id.to_owned(), enabled);
     }
@@ -174,7 +176,8 @@ pub fn state_engine_config(
         .iter()
         .map(|lw| (lw.name.clone(), lw.path.clone()))
         .collect();
-    let code_db_path = (config.modules.is_enabled("code") || config.modules.is_enabled("docs"))
+    let code_db_path = (config.modules.is_subsystem_enabled(SubsystemId::Code)
+        || config.modules.is_subsystem_enabled(SubsystemId::Docs))
         .then(|| acdd_core::config::resolve_code_db_path(&primary, code_db));
     Ok(StateEngineConfig {
         workspace_root: primary,
@@ -336,7 +339,7 @@ pub fn resolve_worktree_span_context(
     state_db: Option<&Path>,
     config: &AcddConfig,
 ) -> Result<Option<WorktreeSpanContext>, StateError> {
-    if !config.modules.is_enabled("state") {
+    if !config.modules.is_subsystem_enabled(SubsystemId::State) {
         return Err(StateError::new(
             ErrorCode::FeatureDisabled,
             "state subsystem is disabled in modules:",

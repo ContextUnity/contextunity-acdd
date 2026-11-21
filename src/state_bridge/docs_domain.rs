@@ -13,6 +13,7 @@ use acdd_core::ports::{
     DomainCheckReq, DomainContextReq, DomainProvider, FreshnessObservation,
 };
 use acdd_core::schema::SchemaDef;
+use acdd_core::subsystems::SubsystemId;
 use acdd_index::db::reader;
 use anyhow::Result;
 use rusqlite::{params, Connection};
@@ -480,7 +481,7 @@ impl DocsDomainProvider {
 
 impl DomainProvider for DocsDomainProvider {
     fn domain_id(&self) -> &str {
-        "docs"
+        SubsystemId::Docs.as_str()
     }
 
     fn capabilities(&self) -> DomainCapabilities {
@@ -506,7 +507,7 @@ impl DomainProvider for DocsDomainProvider {
         _idempotency_key: &str,
         _req: &DomainActionReq,
     ) -> Result<DomainActionResult> {
-        super::unsupported_domain_action("docs", action)
+        super::unsupported_domain_action(SubsystemId::Docs.as_str(), action)
     }
 
     fn run_check(

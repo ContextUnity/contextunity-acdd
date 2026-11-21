@@ -101,7 +101,7 @@ gate uses one primary proof/execution contract:
   exit code `0` (plus any attached `checks:` such as `code.seam`).
 - **Domain action / check gate** (`call: <domain>.<action>`, `checks: [<domain>.<check>]`):
   Invokes `DomainProvider` capabilities registered in `src/state_bridge/` (such
-  as `code.seam` reachability and `code.signature_scope` in `src/state_bridge/code_domain.rs`,
+  as `code.seam` reachability and `code.signature_scope` in `src/state_bridge/code_domain/`,
   or `docs.links` in `src/state_bridge/docs_domain.rs`).
 - **Container gate** (`gates: [...]`): Groups sequential child gates under dotted
   hierarchical cursors (e.g., `blueprint_synthesis.synthesize` -> `blueprint_synthesis.review`).
@@ -120,7 +120,7 @@ like `blueprint_synthesis.synthesize` submits `proof: blueprint` containing
 (`pre_task_slice`) when claiming that task.
 
 Domain checks wired via `checks: [code.seam]` (implemented in
-[`src/state_bridge/code_domain.rs`](../../src/state_bridge/code_domain.rs)) verify
+[`src/state_bridge/code_domain/mod.rs`](../../src/state_bridge/code_domain/mod.rs)) verify
 indexed test reachability into admitted production scope (`calls`, `imports`,
 `possible_calls`, etc.) and reject out-of-scope public signature callers before
 completion.

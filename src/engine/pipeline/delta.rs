@@ -312,24 +312,118 @@ fn compute_delta_frontiers<'a>(
     admission: &'a DeltaAdmission,
     cache_dir: Option<&Path>,
 ) -> Result<DeltaFrontiers<'a>> {
+    let inventory: BTreeMap<&str, &FileEntry> = admission
+        .inventory
+        .iter()
+        .map(|(k, v)| (k.as_str(), v))
+        .collect();
+    let previous: BTreeMap<&str, &FileEntry> = admission
+        .previous
+        .iter()
+        .map(|f| (f.path.as_str(), f))
+        .collect();
+    let frontier_tables = ensure_temp_frontier_tables(&admission.admitted)?;
+    populate_temp_text_frontier(
+        &admission.admitted,
+        "delta_modified_paths",
+        admission.modified.iter().map(String::as_str),
+    )?;
+
+    let extracting = Instant::now();
+    let extracted =
+        extract_modified_and_detect_resolution_changes(admission, cache_dir, &inventory, &previous)?;
+    let mut facts = extracted.facts;
+    let changed_resolution = extracted.changed_resolution;
+    let old_modified_facts = extracted.old_modified_facts;
+    let names = collect_changed_resolution_names(
+        admission,
+        &facts,
+        &old_modified_facts,
+        &changed_resolution,
+        &inventory,
+        &previous,
+    )?;
+    let extract_ms = extracting.elapsed().as_secs_f64() * 1000.;
+
+    let mut affected = seed_initial_affected_owners(
+        admission,
+        &facts,
+        &old_modified_facts,
+        &changed_resolution,
+        &names,
+        &inventory,
+        &previous,
+    )?;
+    drop(old_modified_facts);
+
+    let loaded_fact_files = expand_import_frontier(
+        &admission.admitted,
+        &changed_resolution,
+        &inventory,
+        &previous,
+        &mut facts,
+        &mut affected,
+    )?;
+
+    let route_include_paths =
+        route_include_closure(&admission.admitted, &facts, &admission.modified, &inventory)?;
+    let mut replace_files = admission.modified.clone();
+    replace_files.extend(route_include_paths.iter().cloned());
+    affected.extend(route_include_paths);
+    let component_owners = delta_components(
+        &admission.admitted,
+        &admission.modified,
+        &facts,
+        &mut replace_files,
+    )?;
+    affected.extend(replace_files.iter().cloned());
+
+    let load_owners = expand_template_and_named_frontiers(
+        admission,
+        &facts,
+        &changed_resolution,
+        &inventory,
+        &previous,
+        &mut affected,
+    )?;
+
+    Ok(DeltaFrontiers {
+        frontier_tables,
+        facts,
+        changed_resolution,
+        affected,
+        named_candidates: load_owners.named_candidates,
+        replace_files,
+        component_owners,
+        load_owners: load_owners.load_owners,
+        loaded_fact_files,
+        extract_ms,
+    })
+}
+
+struct ExtractedDeltaFacts {
+    facts: BTreeMap<String, TypedFacts>,
+    changed_resolution: BTreeSet<String>,
+    old_modified_facts: BTreeMap<String, TypedFacts>,
+}
+
+struct TemplateFrontierOutputs {
+    named_candidates: BTreeSet<String>,
+    load_owners: BTreeSet<String>,
+}
+
+fn extract_modified_and_detect_resolution_changes(
+    admission: &DeltaAdmission,
+    cache_dir: Option<&Path>,
+    inventory: &BTreeMap<&str, &FileEntry>,
+    previous: &BTreeMap<&str, &FileEntry>,
+) -> Result<ExtractedDeltaFacts> {
     let root = &admission.root;
     let adapter = &admission.adapter;
     let dependencies = &admission.dependencies;
-    let _scan = &admission.scan;
-    let inventory: BTreeMap<&str, &FileEntry> =
-        admission.inventory.iter().map(|(k, v)| (k.as_str(), v)).collect();
-    let previous: BTreeMap<&str, &FileEntry> =
-        admission.previous.iter().map(|f| (f.path.as_str(), f)).collect();
     let modified = &admission.modified;
     let admitted = &admission.admitted;
-    let frontier_tables = ensure_temp_frontier_tables(admitted)?;
 
-    populate_temp_text_frontier(
-        admitted,
-        "delta_modified_paths",
-        modified.iter().map(String::as_str),
-    )?;
-    let extracting = Instant::now();
     let extraction_cache = Arc::new(ExtractionCache::new(match cache_dir {
         Some(dir) => Some(dir.to_owned()),
         None => extraction_cache::default_cache_root()
@@ -356,7 +450,7 @@ fn compute_delta_frontiers<'a>(
             Ok((file.path.clone(), extracted))
         })
         .collect::<Result<_>>()?;
-    let mut facts: BTreeMap<String, TypedFacts> = extracted_pairs.into_iter().collect();
+    let facts: BTreeMap<String, TypedFacts> = extracted_pairs.into_iter().collect();
     let mut changed_resolution: BTreeSet<String> = modified
         .iter()
         .filter(|path| !inventory.contains_key(path.as_str()) || !previous.contains_key(path.as_str()))
@@ -370,7 +464,11 @@ fn compute_delta_frontiers<'a>(
     let old_modified_facts: BTreeMap<String, TypedFacts> = if existing_modified.is_empty() {
         BTreeMap::new()
     } else {
-        populate_temp_text_frontier(admitted, "delta_frontier_text", existing_modified.iter().copied())?;
+        populate_temp_text_frontier(
+            admitted,
+            "delta_frontier_text",
+            existing_modified.iter().copied(),
+        )?;
         let mut st = admitted.prepare(
             "SELECT path,facts_blob FROM local_facts WHERE path IN(SELECT key FROM temp.delta_frontier_text)",
         )?;
@@ -403,9 +501,59 @@ fn compute_delta_frontiers<'a>(
         changed_resolution.extend(identity_changed);
         map
     };
+    Ok(ExtractedDeltaFacts {
+        facts,
+        changed_resolution,
+        old_modified_facts,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_changed_symbol_names(
+    names: &mut BTreeSet<String>,
+    name: &str,
+    qual: &str,
+    kind: &str,
+    mod_name: &str,
+    local_module: &str,
+    src_module: Option<&str>,
+) {
+    names.insert(qual.to_owned());
+    if kind == "route" {
+        names.insert(name.to_owned());
+    }
+    if !matches!(kind, "field" | "method" | "route" | "document") {
+        let is_top = qual == name
+            || qual
+                .strip_prefix(mod_name)
+                .and_then(|s| s.strip_prefix('.'))
+                == Some(name)
+            || qual
+                .strip_prefix(local_module)
+                .and_then(|s| s.strip_prefix('.'))
+                == Some(name)
+            || src_module.is_some_and(|m| {
+                qual.strip_prefix(m).and_then(|s| s.strip_prefix('.')) == Some(name)
+            });
+        if is_top {
+            names.insert(name.to_owned());
+        }
+    }
+}
+
+fn collect_changed_resolution_names(
+    admission: &DeltaAdmission,
+    facts: &BTreeMap<String, TypedFacts>,
+    old_modified_facts: &BTreeMap<String, TypedFacts>,
+    changed_resolution: &BTreeSet<String>,
+    inventory: &BTreeMap<&str, &FileEntry>,
+    previous: &BTreeMap<&str, &FileEntry>,
+) -> Result<BTreeSet<String>> {
+    let admitted = &admission.admitted;
+    let dependencies = &admission.dependencies;
     let mut names = BTreeSet::new();
     let callable_providers = linker::configured_callable_provider_paths(
-        &changed_resolution,
+        changed_resolution,
         inventory
             .iter()
             .chain(previous.iter())
@@ -451,41 +599,27 @@ fn compute_delta_frontiers<'a>(
             ))
         })? {
             let (owner, name, qual, kind) = row?;
-            names.insert(qual.clone());
-            if kind == "route" {
-                names.insert(name.clone());
-            }
-            if !matches!(kind.as_str(), "field" | "method" | "route" | "document") {
-                let mod_name = module_name(&owner);
-                let (_, local_path) = config::workspace_path(&owner);
-                let local_module = module_name(local_path);
-                let src_module = local_path
-                    .split_once("/src/")
-                    .map(|(_, r)| module_name(r))
-                    .or_else(|| local_path.strip_prefix("src/").map(module_name));
-                let is_top = qual == name
-                    || qual
-                        .strip_prefix(mod_name.as_str())
-                        .and_then(|s| s.strip_prefix('.'))
-                        == Some(name.as_str())
-                    || qual
-                        .strip_prefix(local_module.as_str())
-                        .and_then(|s| s.strip_prefix('.'))
-                        == Some(name.as_str())
-                    || src_module.as_ref().is_some_and(|m| {
-                        qual.strip_prefix(m.as_str())
-                            .and_then(|s| s.strip_prefix('.'))
-                            == Some(name.as_str())
-                    });
-                if is_top {
-                    names.insert(name);
-                }
-            }
+            let mod_name = module_name(&owner);
+            let (_, local_path) = config::workspace_path(&owner);
+            let local_module = module_name(local_path);
+            let src_module = local_path
+                .split_once("/src/")
+                .map(|(_, r)| module_name(r))
+                .or_else(|| local_path.strip_prefix("src/").map(module_name));
+            insert_changed_symbol_names(
+                &mut names,
+                &name,
+                &qual,
+                &kind,
+                &mod_name,
+                &local_module,
+                src_module.as_deref(),
+            );
         }
     }
     if !changed_resolution.is_empty() {
         let mut missing_old_resolution = Vec::new();
-        for path in &changed_resolution {
+        for path in changed_resolution {
             if let Some(old) = old_modified_facts.get(path) {
                 names.extend(linker::configured_result_names(old, dependencies));
             } else {
@@ -513,7 +647,7 @@ fn compute_delta_frontiers<'a>(
             }
         }
     }
-    for path in &changed_resolution {
+    for path in changed_resolution {
         let mod_name = module_name(path);
         names.insert(mod_name.clone());
         let (_, local_path) = config::workspace_path(path);
@@ -544,30 +678,15 @@ fn compute_delta_frontiers<'a>(
                     })
                 });
             for n in &f.nodes {
-                names.insert(n.qualname.clone());
-                if n.kind == "route" {
-                    names.insert(n.name.clone());
-                }
-                if !matches!(n.kind.as_str(), "field" | "method" | "route" | "document") {
-                    let is_top = n.qualname == n.name
-                        || n.qualname
-                            .strip_prefix(mod_name.as_str())
-                            .and_then(|s| s.strip_prefix('.'))
-                            == Some(n.name.as_str())
-                        || n.qualname
-                            .strip_prefix(local_module.as_str())
-                            .and_then(|s| s.strip_prefix('.'))
-                            == Some(n.name.as_str())
-                        || src_module.as_ref().is_some_and(|m| {
-                            n.qualname
-                                .strip_prefix(m.as_str())
-                                .and_then(|s| s.strip_prefix('.'))
-                                == Some(n.name.as_str())
-                        });
-                    if is_top {
-                        names.insert(n.name.clone());
-                    }
-                }
+                insert_changed_symbol_names(
+                    &mut names,
+                    &n.name,
+                    &n.qualname,
+                    &n.kind,
+                    &mod_name,
+                    &local_module,
+                    src_module.as_deref(),
+                );
             }
         }
         if !stable_module {
@@ -576,90 +695,98 @@ fn compute_delta_frontiers<'a>(
             }
         }
     }
-    let extract_ms = extracting.elapsed().as_secs_f64() * 1000.;
+    Ok(names)
+}
+
+fn seed_initial_affected_owners(
+    admission: &DeltaAdmission,
+    facts: &BTreeMap<String, TypedFacts>,
+    old_modified_facts: &BTreeMap<String, TypedFacts>,
+    changed_resolution: &BTreeSet<String>,
+    names: &BTreeSet<String>,
+    inventory: &BTreeMap<&str, &FileEntry>,
+    previous: &BTreeMap<&str, &FileEntry>,
+) -> Result<BTreeSet<String>> {
+    let admitted = &admission.admitted;
+    let modified = &admission.modified;
     let mut affected = modified.clone();
+    if !changed_resolution.is_empty() {
+        let mut st = admitted.prepare(
+            "SELECT p.path FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.target_hash IN(SELECT path_hash FROM files WHERE path IN(SELECT key FROM temp.delta_changed_resolution))",
+        )?;
+        for owner in st.query_map([], |r| r.get::<_, String>(0))? {
+            affected.insert(owner?);
+        }
+    }
+    #[cfg(feature = "lang-html")]
     {
-        if !changed_resolution.is_empty() {
-            let mut st = admitted.prepare(
-                "SELECT p.path FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.target_hash IN(SELECT path_hash FROM files WHERE path IN(SELECT key FROM temp.delta_changed_resolution))",
-            )?;
-            for owner in st.query_map([], |r| r.get::<_, String>(0))? {
-                affected.insert(owner?);
-            }
-        }
-        #[cfg(feature = "lang-html")]
-        {
-            let html_targets: BTreeMap<_, Vec<_>> = modified
-                .iter()
-                .filter(|path| {
-                    inventory
-                        .get(path.as_str())
-                        .or_else(|| previous.get(path.as_str()))
-                        .is_some_and(|file| file.language == "html")
-                })
-                .fold(BTreeMap::new(), |mut targets, path| {
-                    targets
-                        .entry(stable_hash64(path))
-                        .or_insert_with(Vec::new)
-                        .push(path.as_str());
-                    targets
-                });
-            if !html_targets.is_empty() {
-                populate_temp_int_frontier(
-                    admitted,
-                    "delta_frontier_int",
-                    html_targets.keys().copied(),
-                )?;
-                let mut st = admitted.prepare(
-                    "SELECT p.path,d.symbol,d.target_hash FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.kind='renders' AND d.target_hash IN(SELECT key FROM temp.delta_frontier_int)",
-                )?;
-                let family = languages::LanguageFamily("python");
-                for row in st.query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, i64>(2)?,
-                    ))
-                })? {
-                    let (owner, symbol, hash) = row?;
-                    let Some(target) = languages::html::local_template_target(
-                        &owner,
-                        &symbol,
-                        &dependencies.language_context_for_path(&owner),
-                    ) else {
-                        continue;
-                    };
-                    if inventory
-                        .get(owner.as_str())
-                        .is_some_and(|file| file.language == "python")
-                        && html_targets
-                            .get(&hash)
-                            .is_some_and(|paths| paths.contains(&target.as_str()))
-                        && config::workspace_path(&owner).0
-                            == config::workspace_path(&target).0
-                        && dependencies.nearest_manifest_scope_for_path(family, &owner)
-                            == dependencies.nearest_manifest_scope_for_path(family, &target)
-                    {
-                        affected.insert(owner);
-                    }
-                }
-            }
-        }
-        if !names.is_empty() {
+        let html_targets: BTreeMap<_, Vec<_>> = modified
+            .iter()
+            .filter(|path| {
+                inventory
+                    .get(path.as_str())
+                    .or_else(|| previous.get(path.as_str()))
+                    .is_some_and(|file| file.language == "html")
+            })
+            .fold(BTreeMap::new(), |mut targets, path| {
+                targets
+                    .entry(stable_hash64(path))
+                    .or_insert_with(Vec::new)
+                    .push(path.as_str());
+                targets
+            });
+        if !html_targets.is_empty() {
             populate_temp_int_frontier(
                 admitted,
                 "delta_frontier_int",
-                names.iter().map(|name| stable_hash64(name)),
+                html_targets.keys().copied(),
             )?;
-            populate_temp_text_frontier(
-                admitted,
-                "delta_frontier_text",
-                names.iter().map(String::as_str),
+            let mut st = admitted.prepare(
+                "SELECT p.path,d.symbol,d.target_hash FROM dependencies d JOIN path_dictionary p ON p.path_id=d.owner_id WHERE d.kind='renders' AND d.target_hash IN(SELECT key FROM temp.delta_frontier_int)",
             )?;
-            let mut st = admitted.prepare("SELECT p.path FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash LEFT JOIN nodes key_node ON typeof(k.key)='integer' AND key_node.node_id=k.key JOIN path_dictionary p ON p.path_id=s.owner_id WHERE s.kind_id=1 AND s.key_hash IN(SELECT key FROM temp.delta_frontier_int) AND (CASE WHEN typeof(k.key)='integer' THEN key_node.qualname ELSE k.key END) IN(SELECT key FROM temp.delta_frontier_text)")?;
-            for owner in st.query_map([], |r| r.get::<_, String>(0))? {
-                affected.insert(owner?);
+            let family = languages::LanguageFamily("python");
+            for row in st.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })? {
+                let (owner, symbol, hash) = row?;
+                let Some(target) = languages::html::local_template_target(
+                    &owner,
+                    &symbol,
+                    &admission.dependencies.language_context_for_path(&owner),
+                ) else {
+                    continue;
+                };
+                if inventory
+                    .get(owner.as_str())
+                    .is_some_and(|file| file.language == "python")
+                    && html_targets
+                        .get(&hash)
+                        .is_some_and(|paths| paths.contains(&target.as_str()))
+                    && is_scoped_html_pair(&owner, &target, &admission.dependencies, family)
+                {
+                    affected.insert(owner);
+                }
             }
+        }
+    }
+    if !names.is_empty() {
+        populate_temp_int_frontier(
+            admitted,
+            "delta_frontier_int",
+            names.iter().map(|name| stable_hash64(name)),
+        )?;
+        populate_temp_text_frontier(
+            admitted,
+            "delta_frontier_text",
+            names.iter().map(String::as_str),
+        )?;
+        let mut st = admitted.prepare("SELECT p.path FROM shared_owners s JOIN shared_keys k ON k.key_hash=s.key_hash LEFT JOIN nodes key_node ON typeof(k.key)='integer' AND key_node.node_id=k.key JOIN path_dictionary p ON p.path_id=s.owner_id WHERE s.kind_id=1 AND s.key_hash IN(SELECT key FROM temp.delta_frontier_int) AND (CASE WHEN typeof(k.key)='integer' THEN key_node.qualname ELSE k.key END) IN(SELECT key FROM temp.delta_frontier_text)")?;
+        for owner in st.query_map([], |r| r.get::<_, String>(0))? {
+            affected.insert(owner?);
         }
     }
     let changed_rust_paths: BTreeSet<_> = changed_resolution
@@ -672,35 +799,38 @@ fn compute_delta_frontiers<'a>(
         })
         .cloned()
         .collect();
-    let changed_impl_methods = changed_rust_impl_methods(
-        admitted,
-        &changed_rust_paths,
-        &facts,
-        &old_modified_facts,
-    )?;
-    drop(old_modified_facts);
-    affected.extend(persisted_possible_call_owners(
-        admitted,
-        &changed_rust_paths,
-    )?);
+    let changed_impl_methods =
+        changed_rust_impl_methods(admitted, &changed_rust_paths, facts, old_modified_facts)?;
+    affected.extend(persisted_possible_call_owners(admitted, &changed_rust_paths)?);
     affected.extend(unchanged_trait_dispatch_owners(
         admitted,
         &changed_impl_methods,
     )?);
+    Ok(affected)
+}
 
+fn expand_import_frontier(
+    admitted: &Connection,
+    changed_resolution: &BTreeSet<String>,
+    inventory: &BTreeMap<&str, &FileEntry>,
+    previous: &BTreeMap<&str, &FileEntry>,
+    facts: &mut BTreeMap<String, TypedFacts>,
+    affected: &mut BTreeSet<String>,
+) -> Result<usize> {
     let mut loaded_fact_files = 0;
+    let is_supported = |lang: &str| {
+        matches!(
+            lang,
+            "python" | "javascript" | "typescript" | "vue" | "rust"
+        )
+    };
     let mut import_frontier: BTreeSet<_> = changed_resolution
         .iter()
         .filter(|path| {
             inventory
                 .get(path.as_str())
                 .or_else(|| previous.get(path.as_str()))
-                .is_some_and(|file| {
-                    matches!(
-                        file.language.as_str(),
-                        "python" | "javascript" | "typescript" | "vue" | "rust"
-                    )
-                })
+                .is_some_and(|file| is_supported(&file.language))
         })
         .cloned()
         .collect();
@@ -721,12 +851,9 @@ fn compute_delta_frontiers<'a>(
         drop(importing_owners);
         let mut next = BTreeSet::new();
         for (owner, upstream) in importers {
-            let supported = inventory.get(owner.as_str()).is_some_and(|file| {
-                matches!(
-                    file.language.as_str(),
-                    "python" | "javascript" | "typescript" | "vue" | "rust"
-                )
-            });
+            let supported = inventory
+                .get(owner.as_str())
+                .is_some_and(|file| is_supported(&file.language));
             if supported && visited_imports.insert(owner.clone()) {
                 affected.insert(owner.clone());
             }
@@ -735,7 +862,7 @@ fn compute_delta_frontiers<'a>(
                     admitted,
                     &owner,
                     &upstream,
-                    &mut facts,
+                    facts,
                     &mut loaded_fact_files,
                 )?
                 && expanded_imports.insert(owner.clone())
@@ -745,12 +872,229 @@ fn compute_delta_frontiers<'a>(
         }
         import_frontier = next;
     }
-    let route_include_paths = route_include_closure(admitted, &facts, modified, &inventory)?;
-    let mut replace_files = modified.clone();
-    replace_files.extend(route_include_paths.iter().cloned());
-    affected.extend(route_include_paths);
-    let component_owners = delta_components(admitted, modified, &facts, &mut replace_files)?;
-    affected.extend(replace_files.iter().cloned());
+    Ok(loaded_fact_files)
+}
+
+#[cfg(feature = "lang-html")]
+fn is_scoped_html_pair(
+    owner: &str,
+    target: &str,
+    dependencies: &DependencyRegistry,
+    family: languages::LanguageFamily,
+) -> bool {
+    config::workspace_path(owner).0 == config::workspace_path(target).0
+        && dependencies.nearest_manifest_scope_for_path(family, owner)
+            == dependencies.nearest_manifest_scope_for_path(family, target)
+}
+
+#[cfg(feature = "lang-html")]
+fn initial_html_frontier(
+    affected: &BTreeSet<String>,
+    inventory: &BTreeMap<&str, &FileEntry>,
+) -> (BTreeSet<String>, BTreeSet<String>) {
+    let frontier: BTreeSet<_> = affected
+        .iter()
+        .filter(|path| {
+            inventory
+                .get(path.as_str())
+                .is_some_and(|file| file.language == "html")
+        })
+        .cloned()
+        .collect();
+    let visited = frontier.clone();
+    (frontier, visited)
+}
+
+#[cfg(feature = "lang-html")]
+fn expand_html_include_targets(
+    admission: &DeltaAdmission,
+    facts: &BTreeMap<String, TypedFacts>,
+    inventory: &BTreeMap<&str, &FileEntry>,
+    previous: &BTreeMap<&str, &FileEntry>,
+    affected: &mut BTreeSet<String>,
+) -> Result<()> {
+    let admitted = &admission.admitted;
+    let dependencies = &admission.dependencies;
+    let family = languages::LanguageFamily("python");
+    let modified_python: Vec<_> = admission
+        .modified
+        .iter()
+        .filter(|path| {
+            inventory
+                .get(path.as_str())
+                .or_else(|| previous.get(path.as_str()))
+                .is_some_and(|file| file.language == "python")
+        })
+        .collect();
+    if !modified_python.is_empty() {
+        populate_temp_text_frontier(
+            admitted,
+            "delta_frontier_text",
+            modified_python.iter().map(|path| path.as_str()),
+        )?;
+        let mut old_targets = admitted.prepare(
+            "SELECT DISTINCT f.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE d.kind='renders' AND owner.path IN(SELECT key FROM temp.delta_frontier_text)",
+        )?;
+        for row in old_targets.query_map([], |row| row.get::<_, String>(0))? {
+            let target = row?;
+            if inventory
+                .get(target.as_str())
+                .is_some_and(|file| file.language == "html")
+            {
+                affected.insert(target);
+            }
+        }
+        for provider in modified_python {
+            let Some(provider_facts) = facts.get(provider.as_str()) else {
+                continue;
+            };
+            let scope = dependencies.nearest_manifest_scope_for_path(family, provider);
+            let workspace = config::workspace_path(provider).0;
+            for node in provider_facts
+                .nodes
+                .iter()
+                .filter(|node| node.language == "python")
+            {
+                let Some(flow) = provider_facts.flows.get(node) else {
+                    continue;
+                };
+                for context in flow.template_contexts() {
+                    let Some(target) = context.target_path.clone() else {
+                        continue;
+                    };
+                    if inventory
+                        .get(target.as_str())
+                        .is_some_and(|file| file.language == "html")
+                        && config::workspace_path(&target).0 == workspace
+                        && dependencies.nearest_manifest_scope_for_path(family, &target) == scope
+                    {
+                        affected.insert(target);
+                    }
+                }
+            }
+        }
+    }
+    let (mut frontier, mut visited) = initial_html_frontier(affected, inventory);
+    for _ in 0..16 {
+        if frontier.is_empty() {
+            break;
+        }
+        populate_temp_text_frontier(
+            admitted,
+            "delta_frontier_text",
+            frontier.iter().map(String::as_str),
+        )?;
+        let mut old_includes = admitted.prepare_cached(
+            "SELECT owner.path,f.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE d.kind='includes' AND owner.path IN(SELECT key FROM temp.delta_frontier_text)",
+        )?;
+        let rows: Vec<(String, String)> = old_includes
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(old_includes);
+        let mut next = BTreeSet::new();
+        let mut record_target = |owner: &str, target: String| {
+            if inventory
+                .get(target.as_str())
+                .is_some_and(|file| file.language == "html")
+                && is_scoped_html_pair(owner, &target, dependencies, family)
+                && visited.insert(target.clone())
+            {
+                affected.insert(target.clone());
+                next.insert(target);
+            }
+        };
+        for (owner, target) in rows {
+            record_target(&owner, target);
+        }
+        for owner in &frontier {
+            let Some(file_facts) = facts.get(owner.as_str()) else {
+                continue;
+            };
+            for reference in file_facts
+                .references
+                .iter()
+                .filter(|reference| reference.kind == "includes")
+            {
+                let Some(target) = languages::html::local_template_target(
+                    owner,
+                    &reference.expression,
+                    &dependencies.language_context_for_path(owner),
+                ) else {
+                    continue;
+                };
+                record_target(owner, target);
+            }
+        }
+        frontier = next;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "lang-html")]
+fn expand_html_include_dependents(
+    admission: &DeltaAdmission,
+    inventory: &BTreeMap<&str, &FileEntry>,
+    affected: &BTreeSet<String>,
+    load_owners: &mut BTreeSet<String>,
+) -> Result<()> {
+    let admitted = &admission.admitted;
+    let dependencies = &admission.dependencies;
+    let modified = &admission.modified;
+    let family = languages::LanguageFamily("javascript");
+    let (mut frontier, mut visited) = initial_html_frontier(affected, inventory);
+    for _ in 0..16 {
+        if frontier.is_empty() {
+            break;
+        }
+        let mut targets = BTreeMap::<_, Vec<&str>>::new();
+        for path in &frontier {
+            targets.entry(stable_hash64(path)).or_default().push(path);
+        }
+        populate_temp_int_frontier(admitted, "delta_frontier_int", targets.keys().copied())?;
+        let mut incoming = admitted.prepare_cached(
+            "SELECT DISTINCT d.target_hash, owner.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id WHERE d.kind='includes' AND d.target_hash IN(SELECT key FROM temp.delta_frontier_int)",
+        )?;
+        let rows: Vec<(i64, String)> = incoming
+            .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(incoming);
+        let mut next = BTreeSet::new();
+        for (hash, owner) in rows {
+            let Some(owner_file) = inventory.get(owner.as_str()) else {
+                continue;
+            };
+            if owner_file.language != "html"
+                || !targets.get(&hash).is_some_and(|paths| {
+                    paths
+                        .iter()
+                        .any(|target| is_scoped_html_pair(&owner, target, dependencies, family))
+                })
+            {
+                continue;
+            }
+            if visited.insert(owner.clone()) {
+                if !modified.contains(&owner) {
+                    load_owners.insert(owner.clone());
+                }
+                next.insert(owner);
+            }
+        }
+        frontier = next;
+    }
+    Ok(())
+}
+
+fn expand_template_and_named_frontiers(
+    admission: &DeltaAdmission,
+    facts: &BTreeMap<String, TypedFacts>,
+    changed_resolution: &BTreeSet<String>,
+    inventory: &BTreeMap<&str, &FileEntry>,
+    previous: &BTreeMap<&str, &FileEntry>,
+    affected: &mut BTreeSet<String>,
+) -> Result<TemplateFrontierOutputs> {
+    let admitted = &admission.admitted;
+    let dependencies = &admission.dependencies;
+    let modified = &admission.modified;
     let template_inputs_changed = modified.iter().any(|path| {
         inventory
             .get(path.as_str())
@@ -772,7 +1116,7 @@ fn compute_delta_frontiers<'a>(
                 changed_roots.push((provider.as_str(), directory.as_str()));
             }
         }
-        for (provider, file_facts) in &facts {
+        for (provider, file_facts) in facts {
             if !modified.contains(provider) || !inventory.contains_key(provider.as_str()) {
                 continue;
             }
@@ -788,7 +1132,7 @@ fn compute_delta_frontiers<'a>(
             let Some(scope) = dependencies.nearest_manifest_scope_for_path(family, provider) else {
                 continue;
             };
-            for (path, file) in &inventory {
+            for (path, file) in inventory {
                 if file.language == "html"
                     && path
                         .strip_prefix(directory)
@@ -802,149 +1146,16 @@ fn compute_delta_frontiers<'a>(
     }
     #[cfg(feature = "lang-html")]
     if template_inputs_changed {
-        let family = languages::LanguageFamily("python");
-        let modified_python: Vec<_> = modified
-            .iter()
-            .filter(|path| {
-                inventory
-                    .get(path.as_str())
-                    .or_else(|| previous.get(path.as_str()))
-                    .is_some_and(|file| file.language == "python")
-            })
-            .collect();
-        if !modified_python.is_empty() {
-            populate_temp_text_frontier(
-                admitted,
-                "delta_frontier_text",
-                modified_python.iter().map(|path| path.as_str()),
-            )?;
-            let mut old_targets = admitted.prepare(
-                "SELECT DISTINCT f.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE d.kind='renders' AND owner.path IN(SELECT key FROM temp.delta_frontier_text)",
-            )?;
-            for row in old_targets.query_map([], |row| row.get::<_, String>(0))? {
-                let target = row?;
-                if inventory
-                    .get(target.as_str())
-                    .is_some_and(|file| file.language == "html")
-                {
-                    affected.insert(target);
-                }
-            }
-            for provider in modified_python {
-                let Some(provider_facts) = facts.get(provider.as_str()) else {
-                    continue;
-                };
-                let scope = dependencies.nearest_manifest_scope_for_path(family, provider);
-                let workspace = config::workspace_path(provider).0;
-                for node in provider_facts
-                    .nodes
-                    .iter()
-                    .filter(|node| node.language == "python")
-                {
-                    let Some(flow) = provider_facts.flows.get(node) else {
-                        continue;
-                    };
-                    for context in flow.template_contexts() {
-                        let Some(target) = context.target_path.clone() else {
-                            continue;
-                        };
-                        if inventory
-                            .get(target.as_str())
-                            .is_some_and(|file| file.language == "html")
-                            && config::workspace_path(&target).0 == workspace
-                            && dependencies.nearest_manifest_scope_for_path(family, &target)
-                                == scope
-                        {
-                            affected.insert(target);
-                        }
-                    }
-                }
-            }
-        }
-        let mut frontier: BTreeSet<_> = affected
-            .iter()
-            .filter(|path| {
-                inventory
-                    .get(path.as_str())
-                    .is_some_and(|file| file.language == "html")
-            })
-            .cloned()
-            .collect();
-        let mut visited = frontier.clone();
-        for _ in 0..16 {
-            if frontier.is_empty() {
-                break;
-            }
-            populate_temp_text_frontier(
-                admitted,
-                "delta_frontier_text",
-                frontier.iter().map(String::as_str),
-            )?;
-            let mut old_includes = admitted.prepare_cached(
-                "SELECT owner.path,f.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id JOIN files f ON f.path_hash=d.target_hash WHERE d.kind='includes' AND owner.path IN(SELECT key FROM temp.delta_frontier_text)",
-            )?;
-            let rows: Vec<(String, String)> = old_includes
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
-            drop(old_includes);
-            let mut next = BTreeSet::new();
-            for (owner, target) in rows {
-                if inventory
-                    .get(target.as_str())
-                    .is_some_and(|file| file.language == "html")
-                    && config::workspace_path(&owner).0
-                        == config::workspace_path(&target).0
-                    && dependencies.nearest_manifest_scope_for_path(family, &owner)
-                        == dependencies.nearest_manifest_scope_for_path(family, &target)
-                    && visited.insert(target.clone())
-                {
-                    affected.insert(target.clone());
-                    next.insert(target);
-                }
-            }
-            for owner in &frontier {
-                let Some(file_facts) = facts.get(owner.as_str()) else {
-                    continue;
-                };
-                for reference in file_facts
-                    .references
-                    .iter()
-                    .filter(|reference| reference.kind == "includes")
-                {
-                    let Some(target) = languages::html::local_template_target(
-                        owner,
-                        &reference.expression,
-                        &dependencies.language_context_for_path(owner),
-                    ) else {
-                        continue;
-                    };
-                    if inventory
-                        .get(target.as_str())
-                        .is_some_and(|file| file.language == "html")
-                        && config::workspace_path(owner).0
-                            == config::workspace_path(&target).0
-                        && dependencies.nearest_manifest_scope_for_path(family, owner)
-                            == dependencies.nearest_manifest_scope_for_path(family, &target)
-                        && visited.insert(target.clone())
-                    {
-                        affected.insert(target.clone());
-                        next.insert(target);
-                    }
-                }
-            }
-            frontier = next;
-        }
+        expand_html_include_targets(admission, facts, inventory, previous, affected)?;
     }
-    affected.extend(semantic_fact_owners(
-        admitted, &facts, &affected, &inventory,
-    )?);
+    affected.extend(semantic_fact_owners(admitted, facts, affected, inventory)?);
     let named_candidates = named_projection_candidates(
         admitted,
-        &facts,
-        &affected,
-        &inventory,
+        facts,
+        affected,
+        inventory,
         dependencies,
-        &changed_resolution,
+        changed_resolution,
         Some(modified),
     )?;
     let previously_affected = affected.clone();
@@ -985,75 +1196,11 @@ fn compute_delta_frontiers<'a>(
     }
     #[cfg(feature = "lang-html")]
     if template_inputs_changed {
-        let family = languages::LanguageFamily("javascript");
-        let mut frontier: BTreeSet<_> = affected
-            .iter()
-            .filter(|path| {
-                inventory
-                    .get(path.as_str())
-                    .is_some_and(|file| file.language == "html")
-            })
-            .cloned()
-            .collect();
-        let mut visited = frontier.clone();
-        for _ in 0..16 {
-            if frontier.is_empty() {
-                break;
-            }
-            let mut targets = BTreeMap::<_, Vec<&str>>::new();
-            for path in &frontier {
-                targets.entry(stable_hash64(path)).or_default().push(path);
-            }
-            populate_temp_int_frontier(
-                admitted,
-                "delta_frontier_int",
-                targets.keys().copied(),
-            )?;
-            let mut incoming = admitted.prepare_cached(
-                "SELECT DISTINCT d.target_hash, owner.path FROM dependencies d JOIN path_dictionary owner ON owner.path_id=d.owner_id WHERE d.kind='includes' AND d.target_hash IN(SELECT key FROM temp.delta_frontier_int)",
-            )?;
-            let rows: Vec<(i64, String)> = incoming
-                .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
-            drop(incoming);
-            let mut next = BTreeSet::new();
-            for (hash, owner) in rows {
-                let Some(owner_file) = inventory.get(owner.as_str()) else {
-                    continue;
-                };
-                if owner_file.language != "html"
-                    || !targets.get(&hash).is_some_and(|paths| {
-                        paths.iter().any(|target| {
-                            config::workspace_path(&owner).0
-                                == config::workspace_path(target).0
-                                && dependencies.nearest_manifest_scope_for_path(family, &owner)
-                                    == dependencies.nearest_manifest_scope_for_path(family, target)
-                        })
-                    })
-                {
-                    continue;
-                }
-                if visited.insert(owner.clone()) {
-                    if !modified.contains(&owner) {
-                        load_owners.insert(owner.clone());
-                    }
-                    next.insert(owner);
-                }
-            }
-            frontier = next;
-        }
+        expand_html_include_dependents(admission, inventory, affected, &mut load_owners)?;
     }
-    Ok(DeltaFrontiers {
-        frontier_tables,
-        facts,
-        changed_resolution,
-        affected,
+    Ok(TemplateFrontierOutputs {
         named_candidates,
-        replace_files,
-        component_owners,
         load_owners,
-        loaded_fact_files,
-        extract_ms,
     })
 }
 

@@ -404,18 +404,8 @@ pub fn acdd_read_tool(
     if request.resolved_mode() == ReadMode::Lines {
         line_coordinates(request.start_line.unwrap_or(1), request.line_count)?;
     }
-    let mut normalized_req;
-    let request = if let Some(stripped) = request
-        .path
-        .as_deref()
-        .and_then(|p| strip_root_path(p, root))
-    {
-        normalized_req = request.clone();
-        normalized_req.path = Some(stripped);
-        &normalized_req
-    } else {
-        request
-    };
+    let normalized_req = with_stripped_root_path(request, root);
+    let request = normalized_req.as_ref().unwrap_or(request);
     if let Some(paths) = &request.paths {
         if !paths.is_empty() {
             let normalized_paths: Vec<String> = paths
@@ -511,19 +501,27 @@ fn line_coordinates(start: usize, count: Option<usize>) -> Result<(i64, Option<i
     Ok((first, last))
 }
 
+fn with_stripped_root_path(request: &ReadRequest, root: &Path) -> Option<ReadRequest> {
+    let stripped = request
+        .path
+        .as_deref()
+        .and_then(|p| strip_root_path(p, root))?;
+    let mut normalized = request.clone();
+    normalized.path = Some(stripped);
+    Some(normalized)
+}
+
 fn exportable_content(value: &Value) -> Option<&str> {
     value["source"].as_str().or(value["content"].as_str())
 }
 
-fn find_enclosing_symbol(
+fn query_enclosing_symbol(
     conn: &Connection,
-    path: &str,
+    clean_path: &str,
     start_line: i64,
-    end_line: Option<i64>,
+    end_line: i64,
 ) -> Result<Option<(String, String)>> {
-    let clean_path = path.strip_prefix("./").unwrap_or(path);
-    let check_end = end_line.unwrap_or(start_line);
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT n.kind, CASE WHEN (SELECT count(*) FROM nodes duplicate
              WHERE duplicate.path_id = n.path_id AND duplicate.name = n.name) > 1
              THEN CASE WHEN (SELECT count(*) FROM nodes qualified
@@ -539,36 +537,28 @@ fn find_enclosing_symbol(
          ORDER BY (p.path = ?1) DESC, (n.end_line - n.line) ASC, n.id
          LIMIT 1",
     )?;
-    let mut rows = stmt.query(params![clean_path, start_line, check_end])?;
+    let mut rows = stmt.query(params![clean_path, start_line, end_line])?;
     if let Some(row) = rows.next()? {
-        let kind: String = row.get(0)?;
-        let name: String = row.get(1)?;
-        return Ok(Some((kind, name)));
+        return Ok(Some((row.get(0)?, row.get(1)?)));
     }
-    let mut stmt = conn.prepare(
-        "SELECT n.kind, CASE WHEN (SELECT count(*) FROM nodes duplicate
-             WHERE duplicate.path_id = n.path_id AND duplicate.name = n.name) > 1
-             THEN CASE WHEN (SELECT count(*) FROM nodes qualified
-                 WHERE qualified.path_id = n.path_id AND qualified.qualname = n.qualname) = 1
-                 THEN n.qualname ELSE n.id END ELSE n.name END
-         FROM path_dictionary p
-         JOIN nodes n ON n.path_id = p.path_id
-         WHERE (p.path = ?1 OR (substr(p.path, -length(?1) - 1) = '/' || ?1
-                AND NOT EXISTS (SELECT 1 FROM path_dictionary exact WHERE exact.path = ?1)))
-           AND n.line <= ?2
-           AND n.end_line >= ?2
-           AND n.kind IN ('function', 'method', 'struct', 'class', 'trait', 'interface', 'enum')
-         ORDER BY (p.path = ?1) DESC, (n.end_line - n.line) ASC, n.id
-         LIMIT 1",
-    )?;
-    let mut rows = stmt.query(params![clean_path, start_line])?;
-    if let Some(row) = rows.next()? {
-        let kind: String = row.get(0)?;
-        let name: String = row.get(1)?;
-        Ok(Some((kind, name)))
-    } else {
-        Ok(None)
+    Ok(None)
+}
+
+fn find_enclosing_symbol(
+    conn: &Connection,
+    path: &str,
+    start_line: i64,
+    end_line: Option<i64>,
+) -> Result<Option<(String, String)>> {
+    let clean_path = path.strip_prefix("./").unwrap_or(path);
+    let check_end = end_line.unwrap_or(start_line);
+    if let Some(found) = query_enclosing_symbol(conn, clean_path, start_line, check_end)? {
+        return Ok(Some(found));
     }
+    if check_end != start_line {
+        return query_enclosing_symbol(conn, clean_path, start_line, start_line);
+    }
+    Ok(None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -582,18 +572,8 @@ fn acdd_read_single(
     state_db: Option<&Path>,
     code_db: Option<&Path>,
 ) -> Result<Value> {
-    let mut normalized_req;
-    let request = if let Some(stripped) = request
-        .path
-        .as_deref()
-        .and_then(|p| strip_root_path(p, root))
-    {
-        normalized_req = request.clone();
-        normalized_req.path = Some(stripped);
-        &normalized_req
-    } else {
-        request
-    };
+    let normalized_req = with_stripped_root_path(request, root);
+    let request = normalized_req.as_ref().unwrap_or(request);
     let mode = request.resolved_mode();
     let markdown = request
         .path
