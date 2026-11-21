@@ -330,10 +330,11 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
                     page,
                 },
             ),
-            "code_map_query" => traversal::query_with_options(
+            "code_map_query" => traversal::query_with_path_options(
                 &conn,
                 "inspect",
                 Some("target"),
+                None,
                 &traversal::GraphQueryOptions {
                     depth: 1,
                     direction: None,
@@ -575,10 +576,11 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
     let mut query = options(6);
     let mut names = Vec::new();
     loop {
-        let result = traversal::query_with_options(
+        let result = traversal::query_with_path_options(
             &conn,
             "sql",
             Some(sql),
+            None,
             &traversal::GraphQueryOptions {
                 depth: 1,
                 direction: None,
@@ -604,10 +606,11 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
         names,
         (0..21).map(|i| format!("f{i:02}")).collect::<Vec<_>>()
     );
-    assert!(traversal::query_with_options(
+    assert!(traversal::query_with_path_options(
         &conn,
         "sql",
         Some("UPDATE nodes SET kind='changed'"),
+        None,
         &traversal::GraphQueryOptions {
             depth: 1,
             direction: None,
@@ -616,9 +619,10 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
         }
     )
     .is_err());
-    assert!(traversal::query_with_options(
+    assert!(traversal::query_with_path_options(
         &conn,
         "sql",
+        None,
         None,
         &traversal::GraphQueryOptions {
             depth: 1,
@@ -629,10 +633,11 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
     )
     .is_err());
 
-    let inbound = traversal::query_with_options(
+    let inbound = traversal::query_with_path_options(
         &conn,
         "impact",
         Some("target"),
+        None,
         &traversal::GraphQueryOptions {
             depth: 1,
             direction: None,
@@ -647,10 +652,11 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
         .unwrap()
         .iter()
         .any(|node| node["name"] == "caller"));
-    let outbound = traversal::query_with_options(
+    let outbound = traversal::query_with_path_options(
         &conn,
         "impact",
         Some("target"),
+        None,
         &traversal::GraphQueryOptions {
             depth: 1,
             direction: Some("outbound"),
@@ -665,10 +671,11 @@ fn query_sql_operation_pages_secure_selects_and_validates_impact_direction() {
         .unwrap()
         .iter()
         .any(|node| node["name"] == "helper"));
-    assert!(traversal::query_with_options(
+    assert!(traversal::query_with_path_options(
         &conn,
         "impact",
         Some("target"),
+        None,
         &traversal::GraphQueryOptions {
             depth: 1,
             direction: Some("sideways"),
@@ -1212,9 +1219,10 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
         impact_page.detail = detail;
         let mut reached = Vec::new();
         loop {
-            let impact = traversal::traverse_with_options(
+            let impact = traversal::traverse_with_path_options(
                 &conn,
                 "run",
+                None,
                 &traversal::TraversalOptions {
                     depth: 1,
                     inbound: false,
@@ -1262,9 +1270,10 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
         assert_eq!(reached.len(), 4);
         assert_eq!(reached.iter().collect::<BTreeSet<_>>().len(), 4);
         for edge in &possible {
-            let inbound = traversal::traverse_with_options(
+            let inbound = traversal::traverse_with_path_options(
                 &conn,
                 edge["dst_public_id"].as_str().unwrap(),
+                None,
                 &traversal::TraversalOptions {
                     depth: 1,
                     inbound: true,

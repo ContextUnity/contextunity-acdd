@@ -166,9 +166,14 @@ fn untested_sql_counts_only_calls_and_inheritance_cycles_terminate() {
         )
         .unwrap();
     assert_eq!(inserted, 1);
-    let reference_query =
-        traversal::query_with_options(&connection, "untested", Some("service.py"), &query_options)
-            .unwrap();
+    let reference_query = traversal::query_with_path_options(
+        &connection,
+        "untested",
+        Some("service.py"),
+        None,
+        &query_options,
+    )
+    .unwrap();
     assert!(reference_query["nodes"]["items"]
         .to_string()
         .contains("unused"));
@@ -178,9 +183,14 @@ fn untested_sql_counts_only_calls_and_inheritance_cycles_terminate() {
             rusqlite::params!["possible_calls", "references", "unused"],
         )
         .unwrap();
-    let possible_call_query =
-        traversal::query_with_options(&connection, "untested", Some("service.py"), &query_options)
-            .unwrap();
+    let possible_call_query = traversal::query_with_path_options(
+        &connection,
+        "untested",
+        Some("service.py"),
+        None,
+        &query_options,
+    )
+    .unwrap();
     assert!(possible_call_query["nodes"]["items"]
         .to_string()
         .contains("unused"));
@@ -190,9 +200,14 @@ fn untested_sql_counts_only_calls_and_inheritance_cycles_terminate() {
             rusqlite::params!["calls", "possible_calls", "unused"],
         )
         .unwrap();
-    let call_query =
-        traversal::query_with_options(&connection, "untested", Some("service.py"), &query_options)
-            .unwrap();
+    let call_query = traversal::query_with_path_options(
+        &connection,
+        "untested",
+        Some("service.py"),
+        None,
+        &query_options,
+    )
+    .unwrap();
     assert!(!call_query["nodes"]["items"].to_string().contains("unused"));
     let inserted_cycle = connection
         .execute(
@@ -201,10 +216,11 @@ fn untested_sql_counts_only_calls_and_inheritance_cycles_terminate() {
         )
         .unwrap();
     assert_eq!(inserted_cycle, 1);
-    let cyclic = traversal::query_with_options(
+    let cyclic = traversal::query_with_path_options(
         &connection,
         "implementations",
         Some("service.py:Base"),
+        None,
         &query_options,
     )
     .unwrap();

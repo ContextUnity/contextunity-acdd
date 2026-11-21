@@ -396,9 +396,10 @@ fn sql_impact_traversal_reaches_views_and_language_consumers() {
         None,
     )
     .unwrap();
-    let impact = acdd_index::db::traversal::traverse_with_options(
+    let impact = acdd_index::db::traversal::traverse_with_path_options(
         &db,
         "schema.sql:table:orders",
+        None,
         &acdd_index::db::traversal::TraversalOptions {
             depth: 1,
             inbound: true,

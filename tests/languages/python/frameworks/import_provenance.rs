@@ -30,9 +30,10 @@ fn known_external_alias_is_external_without_claiming_a_callable_target() {
             },
         )
         .unwrap(),
-        traversal::query_with_options(
+        traversal::query_with_path_options(
             &conn,
             "overview",
+            None,
             None,
             &traversal::GraphQueryOptions {
                 depth: 1,
@@ -46,7 +47,7 @@ fn known_external_alias_is_external_without_claiming_a_callable_target() {
         assert_eq!(overview["counts"]["unresolved"], 0);
         assert_eq!(overview["counts"]["external_imports"], 2);
     }
-    let removal = traversal::removal_paged(&conn, "consumer.py", &page).unwrap();
+    let removal = traversal::removal_paged_with_path(&conn, "consumer.py", None, &page).unwrap();
     assert_eq!(removal["unresolved_references"], 0);
 }
 

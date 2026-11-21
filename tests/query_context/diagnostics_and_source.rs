@@ -174,13 +174,13 @@ fn removal_safety_uses_complete_evidence_when_the_visible_page_is_empty() {
     );
     workspace.build();
     let conn = workspace.open();
-    let initial = traversal::removal_paged(&conn, "target", &options(1)).unwrap();
+    let initial = traversal::removal_paged_with_path(&conn, "target", None, &options(1)).unwrap();
     assert_eq!(initial["incoming_dependencies"]["total"], 1);
     assert_eq!(initial["safe_to_remove"], false);
     let mut query = options(1);
     query.offset = 20;
     query.generation = Some(initial["generation"].as_str().unwrap().to_owned());
-    let empty = traversal::removal_paged(&conn, "target", &query).unwrap();
+    let empty = traversal::removal_paged_with_path(&conn, "target", None, &query).unwrap();
     assert!(empty["incoming_dependencies"]["items"]
         .as_array()
         .unwrap()

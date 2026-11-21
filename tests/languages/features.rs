@@ -488,7 +488,7 @@ fn cross_layer_seams_endpoint_vue_alpine() {
         .unwrap(),
     };
     let impact =
-        acdd_index::db::traversal::traverse_with_options(&conn, &view_node_id, &options)
+        acdd_index::db::traversal::traverse_with_path_options(&conn, &view_node_id, None, &options)
             .unwrap();
     let impacted_items = impact["nodes"]["items"].as_array().expect("impact items");
     let impacted_paths: Vec<&str> = impacted_items

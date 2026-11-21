@@ -44,9 +44,10 @@ fn options(limit: usize, offset: usize, detail: Detail) -> Result<QueryOptions> 
 fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Result<()> {
     let workspace = Workspace::new();
     let conn = database(&workspace)?;
-    let first = traversal::traverse_with_options(
+    let first = traversal::traverse_with_path_options(
         &conn,
         "a",
+        None,
         &traversal::TraversalOptions {
             depth: 16,
             inbound: false,
@@ -80,9 +81,10 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
         "depth-grouped paths retain their relation without invented edge coordinates: {markdown}"
     );
 
-    let second = traversal::traverse_with_options(
+    let second = traversal::traverse_with_path_options(
         &conn,
         "a",
+        None,
         &traversal::TraversalOptions {
             depth: 16,
             inbound: false,
@@ -106,9 +108,10 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     assert_eq!(items[2]["via"]["kind"], "decorates");
     assert_eq!(second["nodes"]["has_more"], false);
 
-    let full = traversal::traverse_with_options(
+    let full = traversal::traverse_with_path_options(
         &conn,
         "a",
+        None,
         &traversal::TraversalOptions {
             depth: 16,
             inbound: false,
@@ -119,9 +122,10 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     )?;
     assert_eq!(full["nodes"]["items"][4]["via"], items[2]["via"]);
     assert_eq!(full["nodes"]["items"][4]["is_seed"], false);
-    let beyond = traversal::traverse_with_options(
+    let beyond = traversal::traverse_with_path_options(
         &conn,
         "a",
+        None,
         &traversal::TraversalOptions {
             depth: 16,
             inbound: false,
@@ -136,9 +140,10 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
         .expect("page items")
         .is_empty());
 
-    let zero = traversal::traverse_with_options(
+    let zero = traversal::traverse_with_path_options(
         &conn,
         "a",
+        None,
         &traversal::TraversalOptions {
             depth: 0,
             inbound: false,
@@ -149,9 +154,10 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     )?;
     assert_eq!(zero["nodes"]["total"], 1);
     assert_eq!(zero["nodes"]["items"][0]["is_seed"], true);
-    let inbound = traversal::traverse_with_options(
+    let inbound = traversal::traverse_with_path_options(
         &conn,
         "a",
+        None,
         &traversal::TraversalOptions {
             depth: 1,
             inbound: true,
@@ -167,9 +173,10 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     assert_eq!(inbound["nodes"]["items"][1]["edge"]["direction"], "inbound");
     assert_eq!(inbound["nodes"]["items"][1]["edge"]["path"], "fixture.py");
     assert_eq!(inbound["nodes"]["items"][1]["edge"]["line"], 1);
-    let shallow_reverse = traversal::traverse_with_options(
+    let shallow_reverse = traversal::traverse_with_path_options(
         &conn,
         "b",
+        None,
         &traversal::TraversalOptions {
             depth: 1,
             inbound: false,
@@ -191,9 +198,10 @@ fn impact_pages_explain_shortest_links_without_repeating_graph_evidence() -> Res
     assert_eq!(decorator["edge"]["path"], "fixture.py");
     assert_eq!(decorator["edge"]["line"], 1);
     conn.execute("INSERT INTO edges(src_hash,dst_hash,kind,path_id,line,evidence_id,confidence_id,occurrence_count) VALUES(?1,?1,'calls',1,1,3,2,1)",[stable_hash64("a")])?;
-    let shallow_self = traversal::traverse_with_options(
+    let shallow_self = traversal::traverse_with_path_options(
         &conn,
         "a",
+        None,
         &traversal::TraversalOptions {
             depth: 1,
             inbound: false,
@@ -213,9 +221,10 @@ fn structural_dependency_uses_the_same_edge_kind_for_reachability_and_explanatio
     let conn = database(&workspace)?;
     conn.execute("INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES('module','module','module','module',2,1,1,0,'python',0,'{}',?1,2)", [stable_hash64("module")])?;
     conn.execute("INSERT INTO edges(src_hash,dst_hash,kind,path_id,line,evidence_id,confidence_id,occurrence_count) VALUES(?1,?2,'imports',1,1,1,2,1)",params![stable_hash64("a"),stable_hash64("module")])?;
-    let page = traversal::traverse_with_options(
+    let page = traversal::traverse_with_path_options(
         &conn,
         "a",
+        None,
         &traversal::TraversalOptions {
             depth: 16,
             inbound: false,
@@ -242,12 +251,13 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
     let conn = database(&workspace)?;
     conn.execute_batch("INSERT INTO path_dictionary(path_id,path) VALUES(3,'orphan.py'),(4,'other.py'),(5,'caller.py'); INSERT INTO coverage_expressions(expression_id,expression) VALUES(1,'dynamic()'),(2,'orphan');")?;
     conn.execute("INSERT INTO nodes(id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id) VALUES('orphan','function','orphan','orphan',3,1,1,0,'python',0,'{}',?1,3)", [stable_hash64("orphan")])?;
-    let clean = traversal::removal_paged(&conn, "orphan", &options(10, 0, Detail::Compact)?)?;
+    let clean = traversal::removal_paged_with_path(&conn, "orphan", None, &options(10, 0, Detail::Compact)?)?;
     assert_eq!(clean["assessment"]["verdict"], "no_indexed_blockers");
     assert_eq!(clean["safe_to_remove"], true);
-    let isolated = traversal::traverse_with_options(
+    let isolated = traversal::traverse_with_path_options(
         &conn,
         "orphan",
+        None,
         &traversal::TraversalOptions {
             depth: 16,
             inbound: false,
@@ -264,7 +274,7 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
         "INSERT INTO errors(path,line,message) VALUES('other.py',1,'syntax error')",
         [],
     )?;
-    let unrelated = traversal::removal_paged(&conn, "orphan", &options(10, 0, Detail::Compact)?)?;
+    let unrelated = traversal::removal_paged_with_path(&conn, "orphan", None, &options(10, 0, Detail::Compact)?)?;
     assert_eq!(unrelated["safe_to_remove"], true);
     assert_eq!(unrelated["unresolved_references"], 0);
     assert_eq!(unrelated["parse_errors"], 0);
@@ -275,7 +285,7 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
     ] {
         assert!(unrelated.get(duplicate).is_none());
     }
-    let result = traversal::removal_paged(&conn, "b", &options(10, 0, Detail::Compact)?)?;
+    let result = traversal::removal_paged_with_path(&conn, "b", None, &options(10, 0, Detail::Compact)?)?;
     assert_eq!(result["assessment"]["verdict"], "blocked");
     assert_eq!(
         result["assessment"]["blocking_reasons"]
@@ -308,7 +318,7 @@ fn removal_assessment_names_each_indexed_blocker_without_changing_verdict() -> R
         [],
     )?;
     let blocked_target =
-        traversal::removal_paged(&conn, "orphan", &options(10, 0, Detail::Compact)?)?;
+        traversal::removal_paged_with_path(&conn, "orphan", None, &options(10, 0, Detail::Compact)?)?;
     assert_eq!(blocked_target["safe_to_remove"], false);
     assert_eq!(blocked_target["unresolved_references"], 1);
     assert_eq!(blocked_target["assessment"]["verdict"], "blocked");
@@ -340,9 +350,10 @@ fn candidate_only_callers_appear_in_impact_and_block_removal() -> Result<()> {
         |row| row.get(0),
     )?;
 
-    let impact = traversal::traverse_with_options(
+    let impact = traversal::traverse_with_path_options(
         &conn,
         &target_id,
+        None,
         &traversal::TraversalOptions {
             depth: 1,
             inbound: true,
@@ -369,7 +380,7 @@ fn candidate_only_callers_appear_in_impact_and_block_removal() -> Result<()> {
         "fixture must have only a candidate caller"
     );
 
-    let removal = traversal::removal_paged(&conn, &target_id, &options(10, 0, Detail::Full)?)?;
+    let removal = traversal::removal_paged_with_path(&conn, &target_id, None, &options(10, 0, Detail::Full)?)?;
     assert_eq!(removal["safe_to_remove"], false);
     assert_eq!(removal["assessment"]["verdict"], "blocked");
     let incoming = removal["incoming_dependencies"]["items"]

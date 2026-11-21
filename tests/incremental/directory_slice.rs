@@ -107,10 +107,11 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
             "{plan:?}"
         );
     }
-    let result = traversal::query_with_options(
+    let result = traversal::query_with_path_options(
         &conn,
         "slice",
         Some("contextunity/commerce/ingestion"),
+        None,
         &traversal::GraphQueryOptions {
             depth: 1,
             direction: None,
@@ -208,10 +209,11 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
                 generation.clone(),
             )
             .unwrap();
-            let part = traversal::query_with_options(
+            let part = traversal::query_with_path_options(
                 &conn,
                 "slice",
                 Some("contextunity/commerce/ingestion"),
+                None,
                 &traversal::GraphQueryOptions {
                     depth: 1,
                     direction: None,
@@ -247,10 +249,11 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
             generation.clone(),
         )
         .unwrap();
-        let part = traversal::query_with_options(
+        let part = traversal::query_with_path_options(
             &conn,
             "slice",
             Some("contextunity/commerce/ingestion"),
+            None,
             &traversal::GraphQueryOptions {
                 depth: 1,
                 direction: None,
@@ -407,10 +410,11 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         }
     )
     .is_err());
-    assert!(traversal::query_with_options(
+    assert!(traversal::query_with_path_options(
         &conn,
         "slice",
         Some("contextunity/commerce/ingestion"),
+        None,
         &traversal::GraphQueryOptions {
             depth: 1,
             direction: None,
@@ -434,10 +438,11 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
             "extensions/commerce/src/contextunity/commerce/pim/views/products/editor",
         ),
     ] {
-        let scoped = traversal::query_with_options(
+        let scoped = traversal::query_with_path_options(
             &conn,
             "slice",
             Some(selector),
+            None,
             &traversal::GraphQueryOptions {
                 depth: 1,
                 direction: None,
@@ -449,10 +454,11 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         assert_eq!(scoped["selector"]["path"], expected);
         assert_eq!(scoped["nodes"]["total"], 2);
     }
-    let exact = traversal::query_with_options(
+    let exact = traversal::query_with_path_options(
         &conn,
         "slice",
         Some(file),
+        None,
         &traversal::GraphQueryOptions {
             depth: 1,
             direction: None,
@@ -541,10 +547,11 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         let page =
             QueryOptions::resolve(&ResponsePolicy::default(), Some(100), 0, Some(detail), None)
                 .unwrap();
-        let result = traversal::query_with_options(
+        let result = traversal::query_with_path_options(
             &conn,
             "slice",
             Some("contextunity/commerce/ingestion"),
+            None,
             &traversal::GraphQueryOptions {
                 depth: 1,
                 direction: None,
@@ -557,16 +564,27 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
         assert!(edges.iter().any(|edge| edge["confidence"] == "aaa"));
         assert!(edges.iter().any(|edge| edge["confidence"] == "zzz"));
         let mut expected = edges.clone();
-        expected.sort_by_key(|edge| {
-            let mut old = serde_json::json!({
-                "src_public_id":edge["src_public_id"],"dst_public_id":edge["dst_public_id"],
-                "kind":edge["kind"],"line":edge["line"],"occurrence_count":edge["occurrence_count"],
-                "path":edge["path"],"confidence":edge["confidence"]
-            });
-            if detail == Detail::Full {
-                old["evidence"] = edge["evidence"].clone();
-            }
-            old.to_string()
+        expected.sort_by(|a, b| {
+            a["src_public_id"]
+                .as_str()
+                .cmp(&b["src_public_id"].as_str())
+                .then_with(|| a["dst_public_id"].as_str().cmp(&b["dst_public_id"].as_str()))
+                .then_with(|| a["kind"].as_str().cmp(&b["kind"].as_str()))
+                .then_with(|| a["line"].as_i64().cmp(&b["line"].as_i64()))
+                .then_with(|| {
+                    a["occurrence_count"]
+                        .as_i64()
+                        .cmp(&b["occurrence_count"].as_i64())
+                })
+                .then_with(|| a["path"].as_str().cmp(&b["path"].as_str()))
+                .then_with(|| a["confidence"].as_str().cmp(&b["confidence"].as_str()))
+                .then_with(|| {
+                    if detail == Detail::Full {
+                        a["evidence"].as_str().cmp(&b["evidence"].as_str())
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
         });
         assert_eq!(edges, &expected, "internal edge order for {detail:?}");
         let punctuated = edges
@@ -578,8 +596,8 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
             .position(|edge| edge["dst_public_id"] == "test-a")
             .unwrap();
         assert!(
-            punctuated < prefix,
-            "fixture must distinguish JSON string and raw ordering"
+            prefix < punctuated,
+            "fixture must verify native column ordering places 'test-a' before 'test-a!'"
         );
         let generation = result["edges"]["generation"].as_str().unwrap();
         for (offset, edge) in expected.iter().enumerate() {
@@ -591,10 +609,11 @@ fn directory_suffix_lists_real_nodes_and_exact_file_keeps_graph_traversal() {
                 Some(generation.to_owned()),
             )
             .unwrap();
-            let part = traversal::query_with_options(
+            let part = traversal::query_with_path_options(
                 &conn,
                 "slice",
                 Some("contextunity/commerce/ingestion"),
+                None,
                 &traversal::GraphQueryOptions {
                     depth: 1,
                     direction: None,
@@ -621,10 +640,11 @@ fn duplicate_directory_suffix_requires_full_path_and_unknown_path_suggests_index
     );
     ws.build();
     let conn = ws.open();
-    let error = traversal::query_with_options(
+    let error = traversal::query_with_path_options(
         &conn,
         "slice",
         Some("contextunity/commerce/ingestion"),
+        None,
         &traversal::GraphQueryOptions {
             depth: 1,
             direction: None,
@@ -643,10 +663,11 @@ fn duplicate_directory_suffix_requires_full_path_and_unknown_path_suggests_index
         error.contains("services/api/src/contextunity/commerce/ingestion"),
         "{error}"
     );
-    let exact = traversal::query_with_options(
+    let exact = traversal::query_with_path_options(
         &conn,
         "slice",
         Some("extensions/commerce/src/contextunity/commerce/ingestion"),
+        None,
         &traversal::GraphQueryOptions {
             depth: 1,
             direction: None,
@@ -656,10 +677,11 @@ fn duplicate_directory_suffix_requires_full_path_and_unknown_path_suggests_index
     )
     .unwrap();
     assert_eq!(exact["nodes"]["total"], 2);
-    let unknown = traversal::query_with_options(
+    let unknown = traversal::query_with_path_options(
         &conn,
         "slice",
         Some("contextunity/commerce/ingest"),
+        None,
         &traversal::GraphQueryOptions {
             depth: 1,
             direction: None,
@@ -684,10 +706,11 @@ fn large_directory_is_paged_without_graph_expansion() {
     ws.build();
     let conn = ws.open();
     let started = Instant::now();
-    let first = traversal::query_with_options(
+    let first = traversal::query_with_path_options(
         &conn,
         "slice",
         Some("pkg/large"),
+        None,
         &traversal::GraphQueryOptions {
             depth: 16,
             direction: None,
@@ -707,10 +730,11 @@ fn large_directory_is_paged_without_graph_expansion() {
     drop(conn);
     let writer = rusqlite::Connection::open(ws.db()).unwrap();
     writer.execute_batch("DELETE FROM edges").unwrap();
-    let empty = traversal::query_with_options(
+    let empty = traversal::query_with_path_options(
         &writer,
         "slice",
         Some("pkg/large"),
+        None,
         &traversal::GraphQueryOptions {
             depth: 1,
             direction: None,
@@ -731,10 +755,11 @@ fn large_directory_is_paged_without_graph_expansion() {
         .unwrap();
     assert_eq!(links, 1100);
     for selector in ["pkg", "./pkg", "file:pkg", "file://./pkg", "pkg/"] {
-        let root = traversal::query_with_options(
+        let root = traversal::query_with_path_options(
             &writer,
             "slice",
             Some(selector),
+            None,
             &traversal::GraphQueryOptions {
                 depth: 2,
                 direction: None,
@@ -745,10 +770,11 @@ fn large_directory_is_paged_without_graph_expansion() {
         .unwrap();
         assert_eq!(root["scope"], "directory_members");
     }
-    let component = traversal::query_with_options(
+    let component = traversal::query_with_path_options(
         &writer,
         "slice",
         Some("component:pkg"),
+        None,
         &traversal::GraphQueryOptions {
             depth: 1,
             direction: None,
@@ -762,10 +788,11 @@ fn large_directory_is_paged_without_graph_expansion() {
     writer.execute_batch("DELETE FROM edges").unwrap();
     writer.execute_batch("INSERT OR IGNORE INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) SELECT a.node_hash,'calls',b.node_hash,a.path_id,1,(SELECT evidence_id FROM coverage_evidence LIMIT 1),(SELECT evidence_id FROM coverage_evidence LIMIT 1),1 FROM nodes a CROSS JOIN nodes b WHERE a.kind='function' AND b.kind='function' LIMIT 10001").unwrap();
     let conn = writer;
-    let dense = traversal::query_with_options(
+    let dense = traversal::query_with_path_options(
         &conn,
         "slice",
         Some("pkg/large"),
+        None,
         &traversal::GraphQueryOptions {
             depth: 1,
             direction: None,

@@ -1,5 +1,7 @@
 use super::commitments::{read_metadata, MetadataKey};
-use super::reader::{rows, rows_with_window_total, ExplainDirection, QueryBudget, RowMode};
+use super::reader::{
+    rows, rows_with_mode, rows_with_window_total, ExplainDirection, QueryBudget, RowMode,
+};
 use crate::models::tags::EdgeKind;
 use acdd_core::response::{Detail, QueryOptions, MAX_PAGE_SIZE};
 use anyhow::{ensure, Result};
@@ -73,6 +75,18 @@ pub fn query_opaque(
     query_with_mode(conn, sql, params, options, RowMode::Opaque)
 }
 
+const QUERY_RESULT_TOO_LARGE: &str = "query result exceeds the 8 MiB row budget; narrow the selector or path, request detail='compact' with a smaller limit, or select fewer and smaller SQL columns. Continue paged requests with the returned offset and generation";
+
+fn is_sqlite_too_big(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(sqlite_err, _))
+                if sqlite_err.code == rusqlite::ErrorCode::TooBig
+        )
+    })
+}
+
 fn query_with_mode(
     conn: &Connection,
     sql: &str,
@@ -90,16 +104,38 @@ fn query_with_mode(
         params.len() + 1,
         params.len() + 2
     );
-    let (items, window_total) =
-        rows_with_window_total(conn, &bounded, &bindings, options.limit, mode)?;
-    let total = match window_total {
-        Some(total) => total,
-        None if items.is_empty() && options.offset > 0 => {
-            count(conn, &format!("SELECT count(*) FROM ({sql}\n)"), params)?
+    match rows_with_window_total(conn, &bounded, &bindings, options.limit, mode) {
+        Ok((items, window_total)) => {
+            let total = match window_total {
+                Some(total) => total,
+                None if items.is_empty() && options.offset > 0 => {
+                    count(conn, &format!("SELECT count(*) FROM ({sql}\n)"), params)?
+                }
+                None => 0,
+            };
+            Ok(value(items, total, options, &generation))
         }
-        None => 0,
-    };
-    Ok(value(items, total, options, &generation))
+        Err(err) if is_sqlite_too_big(&err) => {
+            // Window materialization packs all columns into one B-tree record and can hit
+            // SQLITE_LIMIT_LENGTH before Rust's 8 MiB row check runs; retry without OVER().
+            let paged = format!(
+                "SELECT * FROM ({sql}\n) LIMIT ?{} OFFSET ?{}",
+                params.len() + 1,
+                params.len() + 2
+            );
+            let items =
+                rows_with_mode(conn, &paged, &bindings, options.limit, mode).map_err(|fb| {
+                    if is_sqlite_too_big(&fb) {
+                        anyhow::anyhow!(QUERY_RESULT_TOO_LARGE)
+                    } else {
+                        fb
+                    }
+                })?;
+            let total = count(conn, &format!("SELECT count(*) FROM ({sql}\n)"), params)?;
+            Ok(value(items, total, options, &generation))
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// Formats standard SQL projection columns for nodes with dictionary path.
