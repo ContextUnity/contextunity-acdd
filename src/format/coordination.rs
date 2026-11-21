@@ -24,7 +24,7 @@ pub(super) fn render_docs(value: &Value, title: &str) -> String {
     let mut output = format!("# {}\n\n", escape_text(title));
     if title == "search_docs" {
         output.push_str("## Search results\n\n");
-        render_section_page(&mut output, "Sections", &value["sections"], true);
+        render_search_section_page(&mut output, &value["sections"]);
     } else {
         render_section_page(&mut output, "Document sections", &value["sections"], false);
         for (field, heading, line_is_coord) in [
@@ -67,6 +67,61 @@ pub(super) fn render_docs(value: &Value, title: &str) -> String {
         }
     }
     output
+}
+
+fn render_search_section_page(output: &mut String, page: &Value) {
+    output.push_str("## Sections\n\n");
+    let total = u64_field(page, "total").unwrap_or(0);
+    let limit = u64_field(page, "limit").unwrap_or(0);
+    let offset = u64_field(page, "offset").unwrap_or(0);
+    let has_more = page.get("has_more").and_then(Value::as_bool).unwrap_or(false);
+    output.push_str(&format!(
+        "- **total**: `{total}` | **limit**: `{limit}` | **offset**: `{offset}` | **has_more**: `{has_more}`"
+    ));
+    if let Some(next_offset) = u64_field(page, "next_offset") {
+        output.push_str(&format!(" | **next_offset**: `{next_offset}`"));
+    }
+    output.push_str("\n\n");
+
+    for section in page_items(page).unwrap_or(&[]) {
+        let title = text_field(section, "section_title")
+            .or_else(|| text_field(section, "path"))
+            .unwrap_or("Document section");
+        let path = text_field(section, "path").unwrap_or_default();
+        let doc_id = text_field(section, "doc_id").unwrap_or_default();
+        let doc_type = text_field(section, "doc_type").unwrap_or_default();
+        let is_inv = u64_field(section, "is_invariant") == Some(1)
+            || section.get("is_invariant").and_then(Value::as_bool) == Some(true);
+        output.push_str(&format!("- **{}** — `{path}`", escape_text(title)));
+        if !doc_id.is_empty() || !doc_type.is_empty() || is_inv {
+            output.push_str(" (");
+            let mut first = true;
+            if !doc_id.is_empty() {
+                output.push_str(&inline_code(doc_id));
+                first = false;
+            }
+            if !doc_type.is_empty() {
+                if !first {
+                    output.push_str(", ");
+                }
+                output.push_str(doc_type);
+                first = false;
+            }
+            if is_inv {
+                if !first {
+                    output.push_str(", ");
+                }
+                output.push_str("invariant");
+            }
+            output.push(')');
+        }
+        output.push('\n');
+        if let Some(excerpt) = text_field(section, "excerpt") {
+            output.push_str("\n  **Match excerpt**\n\n");
+            append_fenced_block(output, "text", excerpt, 2);
+            output.push('\n');
+        }
+    }
 }
 
 fn render_section_page(output: &mut String, heading: &str, page: &Value, excerpts: bool) {

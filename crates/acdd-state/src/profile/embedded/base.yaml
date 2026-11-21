@@ -32,18 +32,17 @@ limits:
 
 guidance:
   core.execution:
-    description: "UNIVERSAL EXECUTION & CLEAN COMPLETION"
+    description: "EXECUTION & COMPLETION"
     criteria:
-      - "Stay strictly within the admitted scope, satisfy all declared acceptance criteria, keep verification proportional to operational risk, and submit immediately once criteria and checks pass without out-of-scope churn."
-      - "If ACDD MCP tools are unavailable in the current harness/runtime, use the equivalent `acdd` CLI commands (`acdd claim`, `verify`, `submit`, `blackboard`, `read`, `query`, `context`, `doc`) following `skills/acdd/SKILL.md`."
-      - "REBUTTAL OVER BLIND REWRITE: If a review finding contradicts an accepted specification, decision, or verified check, record an evidence-backed rebuttal via acdd_blackboard (topic: decisions) with exact citations and resubmit rather than weakening the contract."
+      - "Stay inside `admitted_scope`, satisfy every declared `acceptance_criteria`, keep verification proportional to risk, and submit once green without out-of-scope churn."
+      - "REBUTTAL OVER BLIND REWRITE: If a review finding contradicts an accepted spec, decision, or verified check, post an evidence-backed rebuttal on `acdd_blackboard` (`topic: decisions`) with citations rather than weakening the contract."
   core.review:
     description: "INDEPENDENT EVIDENCE-BASED REVIEW"
     criteria:
-      - "NO EARLY-ABORT REVIEW: Do not stop and reject upon finding the first defect. Complete the full audit across every declared contour and changed path so all findings for the round are reported in one pass."
-      - "DEFECT-CLASS SWEEP: Whenever you uncover a bug pattern (e.g. trimming Git paths, scheduler parity gap, symlink bypass, missing error propagation), search every sibling call site and report all affected locations together."
-      - "BURDEN OF PROOF: Recognize when acceptance criteria and existing safeguards are satisfied; reject only on a concrete contract/invariant violation or reproducible defect (evaluating any cited rebuttal in acdd_blackboard decisions objectively). Record optional ideas or future improvements via acdd_blackboard (topic: deferred) and pass."
-  hitl.pro: "HITL level PRO: allow internal implementation adjustments within admitted scope; escalate public interfaces, schemas, or cross-run contract changes via acdd_blackboard (topic: decisions or blockers)."
+      - "NO EARLY-ABORT: Audit every declared contour and changed file so all findings for the round are reported in one pass."
+      - "DEFECT-CLASS SWEEP: On finding any bug pattern, search every sibling call site and report all affected locations together."
+      - "BURDEN OF PROOF: Reject only on concrete contract/invariant violations or reproducible defects (weighing blackboard rebuttals objectively); log optional ideas in `acdd_blackboard` (`topic: deferred`) and pass."
+  hitl.pro: "HITL PRO: internal changes within `admitted_scope` are autonomous; escalate public interfaces, schemas, or cross-run contract changes via `acdd_blackboard` (`decisions` or `blockers`)."
 
 contours:
   paths:

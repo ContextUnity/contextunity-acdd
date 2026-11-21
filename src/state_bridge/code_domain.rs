@@ -574,7 +574,7 @@ impl CodeDomainProvider {
                 "discovered_edges: {}",
                 discovered_edges
                     .into_iter()
-                    .take(10)
+                    .take(super::CODE_SEAM_DIAGNOSTIC_EDGE_LIMIT)
                     .collect::<Vec<_>>()
                     .join("; ")
             ));
@@ -667,7 +667,7 @@ impl CodeDomainProvider {
 
     fn effective_context_files(&self, req: &DomainContextReq) -> Vec<String> {
         let files = collect_scoped_worktree_files(&req.worktree, &req.admitted_scope, &req.path_policy);
-        if !files.is_empty() || req.gate_id.as_str() != "integration_review" {
+        if !files.is_empty() || !req.admitted_scope.is_empty() || req.baseline_ref.is_none() {
             return files;
         }
         let baseline = effective_baseline_ref(req.baseline_ref.as_deref());
@@ -733,42 +733,89 @@ impl CodeDomainProvider {
 
     fn provide_symbols(&self, req: &DomainContextReq) -> Result<Value> {
         let snapshot = self.scoped_code_snapshot(req);
-        let mut items = Vec::new();
-        for rel in &snapshot.files {
+        let target_text = req.target.as_deref().unwrap_or_default();
+        let mut all_candidates = Vec::new();
+        for (file_idx, rel) in snapshot.files.iter().enumerate() {
             let Some(parsed) = snapshot.parsed.get(rel) else {
                 continue;
             };
-            for node in &parsed.facts.nodes {
-                if node.kind == "module" || node.is_test {
+            let file_nodes: Vec<_> = parsed
+                .facts
+                .nodes
+                .iter()
+                .filter(|n| {
+                    !matches!(
+                        n.kind.as_str(),
+                        "module" | "module_declaration" | "field" | "field_declaration"
+                    ) && !n.is_test
+                })
+                .collect();
+            let keep_private = file_nodes.len() <= super::CODE_SYMBOLS_SMALL_FILE_PRIVATE_THRESHOLD;
+            let mut file_candidates = Vec::new();
+            for node in file_nodes {
+                let raw_sig = node.details["signature"].as_str().unwrap_or_default();
+                let compact_sig = super::truncate_single_line(raw_sig, super::CODE_SYMBOLS_MAX_SIG_CHARS);
+                let is_exported = compact_sig.starts_with("pub")
+                    || compact_sig.starts_with("export ")
+                    || node.kind == "trait"
+                    || node.kind == "interface";
+                let target_hit = !target_text.is_empty()
+                    && (target_text.contains(&node.name) || target_text.contains(&node.qualname));
+                if !keep_private && !is_exported && !target_hit {
                     continue;
                 }
-                items.push(json!({
-                    "path": node.path,
-                    "kind": node.kind,
-                    "name": node.name,
-                    "qualname": node.qualname,
-                    "line": node.line,
-                    "end_line": node.end_line,
-                    "is_test": node.is_test,
-                    "signature": node.details["signature"],
-                }));
+                file_candidates.push((
+                    !target_hit,
+                    !is_exported,
+                    node.line,
+                    json!({
+                        "qualname": node.qualname,
+                        "line": node.line,
+                        "end_line": node.end_line,
+                        "signature": compact_sig,
+                    }),
+                ));
+            }
+            file_candidates.sort_by_key(|c| (c.0, c.1, c.2));
+            for (rank_in_file, (not_target, not_exported, _, val)) in
+                file_candidates.into_iter().enumerate()
+            {
+                all_candidates.push((not_target, rank_in_file, not_exported, file_idx, val));
             }
         }
+        all_candidates.sort_by_key(|a| (a.0, a.1, a.2, a.3));
+        let mut items: Vec<Value> = all_candidates.into_iter().map(|(_, _, _, _, v)| v).collect();
+        items.truncate(super::CODE_SYMBOLS_MAX_ITEMS);
         Ok(budget_items("symbols", items, req.max_bytes))
     }
 
     fn provide_tests(&self, req: &DomainContextReq) -> Result<Value> {
         let snapshot = self.scoped_code_snapshot(req);
         let conn = open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref());
-        let mut items = Vec::new();
+        let mut ranked_items = Vec::new();
         let mut seen = BTreeSet::new();
 
         if let Some(ref conn) = conn {
-            let page = QueryOptions::resolve(&ResponsePolicy::default(), Some(25), 0, None, None)?;
-            for rel in snapshot.files.iter().take(10) {
+            let page = QueryOptions::resolve(
+                &ResponsePolicy::default(),
+                Some(super::CODE_TESTS_LENS_PAGE_SIZE),
+                0,
+                None,
+                None,
+            )?;
+            for (file_idx, rel) in snapshot
+                .files
+                .iter()
+                .take(super::CODE_TESTS_LENS_SCOPED_FILE_LIMIT)
+                .enumerate()
+            {
                 if let Ok(res) = symbols::tests_paged_with_path(conn, rel, None, "inbound", &page) {
                     if let Some(arr) = res.pointer("/nodes/items").and_then(Value::as_array) {
+                        let mut per_file_rank = 0usize;
                         for item in arr {
+                            if per_file_rank >= super::CODE_TESTS_PER_FILE_GRAPH_LIMIT {
+                                break;
+                            }
                             let path = item["path"].as_str().unwrap_or_default().to_owned();
                             if !checked_child(&req.worktree, Path::new(&path))
                                 .is_ok_and(|p| p.is_file())
@@ -777,13 +824,19 @@ impl CodeDomainProvider {
                             }
                             let qualname = item["qualname"].as_str().unwrap_or_default().to_owned();
                             if seen.insert((path.clone(), qualname.clone())) {
-                                items.push(json!({
-                                    "path": path,
-                                    "name": item["name"],
-                                    "qualname": qualname,
-                                    "line": item["line"],
-                                    "discovery": "graph",
-                                }));
+                                ranked_items.push((
+                                    0u8,
+                                    per_file_rank,
+                                    file_idx,
+                                    json!({
+                                        "path": path,
+                                        "name": item["name"],
+                                        "qualname": qualname,
+                                        "line": item["line"],
+                                        "discovery": "graph",
+                                    }),
+                                ));
+                                per_file_rank += 1;
                             }
                         }
                     }
@@ -791,24 +844,36 @@ impl CodeDomainProvider {
             }
         }
 
-        // Also include live test symbols from scoped files.
-        for rel in &snapshot.files {
+        // Also include live test cases (never helper/Drop/module AST nodes) from scoped files.
+        for (file_idx, rel) in snapshot.files.iter().enumerate() {
             let Some(parsed) = snapshot.parsed.get(rel) else {
                 continue;
             };
+            let mut per_file_rank = 0usize;
             for node in &parsed.facts.nodes {
-                if node.is_test && seen.insert((node.path.clone(), node.qualname.clone())) {
-                    items.push(json!({
-                        "path": node.path,
-                        "name": node.name,
-                        "qualname": node.qualname,
-                        "line": node.line,
-                        "discovery": "live_ast",
-                    }));
+                let is_test_case =
+                    node.details.get("test_role").and_then(Value::as_str) == Some("test_case");
+                if is_test_case && seen.insert((node.path.clone(), node.qualname.clone())) {
+                    ranked_items.push((
+                        1u8,
+                        per_file_rank,
+                        file_idx,
+                        json!({
+                            "path": node.path,
+                            "name": node.name,
+                            "qualname": node.qualname,
+                            "line": node.line,
+                            "discovery": "live_ast",
+                        }),
+                    ));
+                    per_file_rank += 1;
                 }
             }
         }
 
+        ranked_items.sort_by_key(|a| (a.0, a.1, a.2));
+        let mut items: Vec<Value> = ranked_items.into_iter().map(|(_, _, _, v)| v).collect();
+        items.truncate(super::CODE_TESTS_MAX_ITEMS);
         Ok(budget_items("tests", items, req.max_bytes))
     }
 
@@ -823,7 +888,7 @@ impl CodeDomainProvider {
             req.admitted_scope.clone()
         };
         let mut scoped_set: BTreeSet<String> = snapshot.files.iter().cloned().collect();
-        let deleted_scope = if req.admitted_scope.is_empty() && req.gate_id.as_str() == "integration_review" {
+        let deleted_scope = if req.admitted_scope.is_empty() && req.baseline_ref.is_some() {
             vec!["**".to_owned()]
         } else {
             req.admitted_scope.clone()
@@ -906,6 +971,7 @@ impl CodeDomainProvider {
             }
         }
 
+        items.truncate(super::CODE_EXTERNAL_CALLERS_MAX_ITEMS);
         Ok(budget_items("external_callers", items, req.max_bytes))
     }
 }
@@ -2220,7 +2286,7 @@ mod tests {
                     worktree: root.to_path_buf(),
                     admitted_scope: vec!["src/deleted_mod.rs".into()],
                     target: None,
-                    max_bytes: 32768,
+                    max_bytes: crate::state_bridge::TEST_LARGE_CONTEXT_MAX_BYTES,
                     path_policy: acdd_core::path_policy::WorkspacePathPolicy::default(),
                     baseline_ref: None,
                 },

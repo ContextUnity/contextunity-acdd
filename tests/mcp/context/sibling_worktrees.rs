@@ -293,7 +293,7 @@ fn mcp_server_keeps_its_linked_worktree_and_resolves_registered_sibling_names() 
             "documentation section",
             "search_docs",
             json!({"query":"linked symbol reference","format":"markdown"}),
-            crate::common::workspace::canonical_file_uri(&linked, "docs/linked symbols.md", None),
+            "— `docs/linked symbols.md`".to_owned(),
         ),
     ];
     let mut uri_failures = Vec::new();

@@ -29,15 +29,17 @@ invariants:
   - 'INV-LOCKFREE-NON-MUTATING-SWARM: repo.lock acquisition and Git TreeOid snapshot checks apply strictly when save != none; save: none parallel branches and dynamic swarm shards execute concurrently under optimistic SQLite BEGIN IMMEDIATE CAS (claim_revision + node_version).'
   - 'INV-DISJOINT-MUTATING-PARALLELISM: Concurrent save != none branches under mode: parallel or mode: swarm enforce disjoint admitted scope globs (failing closed with TASK_SCOPE_CONFLICT) or execute in isolated per-item/per-branch worktrees integrated deterministically via git_ops/integrate.rs.'
   - 'INV-BOUNDED-SWARM-BARRIER: A mode: parallel container opens all admitted child gates[] simultaneously up to max_concurrency, waits for in-flight siblings to settle, and aggregates all branch rejection_findings into one consolidated batch before routing once to GateDef.fail.'
-  - 'INV-MENTION-SCOPED-PEER-WAIT: acdd_blackboard(action: "wait", since_seq, mentions_only) defaults to mentions_only: true so unrelated workers incur zero wakeups or context noise, waking immediately on matching SQLite commit/notify (@<worker_id>, @<node_cursor>, @role:<role>, @all) with thread_id and monotonic seq.'
+  - 'INV-MENTION-SCOPED-PEER-WAIT: acdd_blackboard(action: "wait", since_seq, mentions_only) defaults to mentions_only: true so unrelated workers incur zero wakeups or context noise, waking immediately on matching SQLite commit/notify (@<worker_id>, @<node_cursor>, @agent:<agent>, @all) with thread_id and monotonic seq.'
+  - 'INV-GROUPED-SAVE-AND-AGENT-SCHEMA: GateProfile v2 renames roles/role to agents/agent (with built-in coordinator: { mode: inline }) and replaces scattered SavePolicy booleans + receipt flags with mutually exclusive save variants (none | readonly | snapshot | commit | handoff: { archive, prune, commit_scope, immutable, repack?: none|linear|by_task|squash, report? }), where save: handoff integrates only mutating swarm/parallel worktree branches, atomically commits admitted self.scope alongside archive, and supports fail-closed worktree-only Git repacking (by_task splits final tree T_final across task scopes + 1 handoff tail commit; squash collapses base..T_final into 1 commit).'
+  - 'INV-HIERARCHICAL-GROUP-COORDINATORS: Any linear, parallel, or swarm GateDef acts as a composable group (arbitrarily nested via gates[]) that may bind an optional coordinator: <agent>; each group coordinator binds automatically to thread_id = <container_cursor> and @coordinator/@<group_cursor> mentions, supports bounded hot wait(timeout_seconds) plus persistent session_id handoff, and isolates intra-group chatter from parent or sibling coordinators.'
   - 'INV-CORE-LEAF: Keep pure unified-gate and blackboard DTOs (GateMode, WithSource, NamespaceRoot, BlackboardRecipient, BlackboardWaitReq) in acdd-core free of SQLite, Git, HTTP, or filesystem I/O.'
   - 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: Every AC-005 capability ships in the same milestone with updated ADR-0003, architecture/reference/runbook docs, executable docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml examples, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
 acceptance_criteria:
-  - 'AC-1: TasksBlock (- tasks:) is removed from GateDef (profile/schema.rs, inherit.rs, validate.rs) and embedded profiles (base.yaml, code.yaml, audit.yaml), turning task execution into an ordinary mode: swarm GateDef with uniform hierarchical cursors.'
+  - 'AC-1: TasksBlock (- tasks:) is removed from GateDef (profile/schema.rs, inherit.rs, validate.rs) and embedded profiles (base.yaml, code.yaml, audit.yaml), turning task execution into an ordinary mode: swarm GateDef with uniform hierarchical cursors; roles/role are renamed to agents/agent (adding built-in coordinator inline agent) and SavePolicy + receipt collapse into mutually exclusive save variants including save: handoff { archive, prune, commit_scope, immutable, repack?, report? }.'
   - 'AC-2: Existing GateDef.with resolves single refs, pipe chains, YAML lists, { count: N }, and { items, args } (for leaf swarm call: gates) left-to-right across spec.<field>, input.<field>, and <gate_id>.<field> (flattening sharded mode: swarm proofs in deterministic shard order) and propagates typed gate_artifacts into ClaimResp.inputs.'
   - 'AC-3: Extended native GateDef.when evaluates across root, container, and shard gates over tags, spec.*, input.*, <gate_id>.*, item.*, event.*, and diff.* (e.g. when: "!spec.tasks", when: "!docs", when: "item.is_new & !item.muted").'
   - 'AC-4: mode: parallel opens heterogeneous child gates[] simultaneously and joins at a consolidated barrier, while mode: swarm schedules depends_on items concurrently in topological waves—lock-free under SQLite CAS for save: none and disjoint-scope or worktree-isolated for save != none.'
-  - 'AC-5: acdd_blackboard and acdd blackboard support structured @mentions, thread_id filtering, monotonic seq, and zero-token blocking wait (mentions_only: true default) persisted via SQLite migration v1 -> v2.'
+  - 'AC-5: acdd_blackboard and acdd blackboard support structured @mentions (@<worker_id>, @<node_cursor>, @agent:<name>, @coordinator, @all), thread_id scoping, monotonic seq, and zero-token blocking wait (since_seq, mentions_only: true default, timeout_seconds?) persisted via SQLite migration v1 -> v2, alongside recursive GateDef.coordinator group supervision scoped by hierarchical cursor.'
   - 'AC-6: ADR-0003, docs/architecture/, docs/reference/{profiles,tasks,cli,mcp-tools,configuration}.md, docs/runbooks/, docs/workflows/*.yaml, skills/acdd/references/acdd-profile-examples/*.yaml, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md are updated and pass acdd docs check and acdd validate.'
 required_skills:
   - acdd
@@ -92,22 +94,38 @@ Removing `- tasks:` turns the task lifecycle into an ordinary named `GateDef` (f
 
 While structured pipeline inputs and outputs flow through `gate_artifacts`, concurrent workers in `mode: parallel` or `mode: swarm` runs need direct lateral coordination (resolving interface questions, flagging cross-channel duplicates, or escalating to a peer or coordinator):
 
-- **Structured addressing & threads**: Extend `blackboard` (`crates/acdd-core` DTOs and SQLite migration `v1 -> v2` in `crates/acdd-state/src/store/sqlite/migrations.rs`) with `recipient` / `@mentions` (`@<worker_id>`, `@<node_cursor>`, `@role:<role>`, `@all`), `thread_id`, and monotonic `seq`.
+- **Structured addressing & threads**: Extend `blackboard` (`crates/acdd-core` DTOs and SQLite migration `v1 -> v2` in `crates/acdd-state/src/store/sqlite/migrations.rs`) with `recipient` / `@mentions` (`@<worker_id>`, `@<node_cursor>`, `@agent:<agent>`, `@all`), `thread_id`, and monotonic `seq`.
 - **Zero-token blocking `wait`**: Add `acdd_blackboard(action: "wait", since_seq, mentions_only)` (and CLI `acdd blackboard wait`). The call parks without consuming LLM tokens and wakes immediately on SQLite commit/notify when a matching entry arrives (`mentions_only` defaults to `true`, so unrelated peers incur zero wakeups or context noise).
+
+### 5. Unified `agents:` naming & grouped `save: handoff` policy (`SavePolicy` cleanup)
+
+- **Rename `roles` / `role` -> `agents` / `agent`**: Rename `roles:`/`role:` to `agents:`/`agent:` across `GateProfile` (`AgentDef`, `AgentPatch`, `AgentExecutionMode`, embedded `base.yaml`/`code.yaml`/`audit.yaml`, `.acdd/profile.yaml`, `context.rs`, and `@agent:<name>` blackboard routing), adding built-in `coordinator: { mode: inline }` to `base.yaml`/`code.yaml` so coordinator-owned gates work out of the box without per-repo patches.
+- **Grouped mutually exclusive `save:` variants (`none | readonly | snapshot | commit | handoff`)**: Collapse scattered `SavePolicy` booleans (`post`, `immutable`, `archive`, `prune`, `report`) and `GateDef.receipt` into explicit variants:
+  - `none` (lock-free SQLite CAS, zero Git lock/tree checks) and `readonly` (asserts clean/immutable tree without committing).
+  - `snapshot` (checkpoint ref, no branch commit) and `commit` (scoped branch commit).
+  - `handoff: { archive, prune, commit_scope, immutable, repack?, report? }`: replaces `receipt: true + save: { post: commit, archive: true, prune: true }`, integrates only upstream mutating `mode: swarm`/`parallel` worktrees (never `save: none` shards, replacing `TasksBlock`-bound `is_post_task_root_node`), and when `commit_scope: true` stages `self.scope` (e.g. `docs/memories/**`) in the same terminal archive commit while excluding `self.scope` from upstream `need:` tree drift checks. Optional `repack` (`none` [default] | `linear` | `by_task` | `squash`, permitted strictly under `git.isolation: worktree` after verifying `target_base_commit` is an ancestor of `HEAD`) deterministically rebuilds run history from `target_base_commit` to the verified final `TreeOid` `T_final` via Git plumbing (`commit-tree`): `linear` drops merge bubbles, `by_task` emits one commit per completed task sliced by its `admitted_scope` + one final `handoff` commit containing everything outside task scopes (`spec`/archive, `polish`, cross-cutting docs, `self.scope`), and `squash` folds the whole run into 1 clean commit (ideal for plans/hotfixes), while preserving all SQLite receipts/tombstones.
+
+### 6. Recursive group composition & `GateDef.coordinator:` (Hybrid sleep/wake supervision)
+
+- **Recursive groups without a separate schema type**: Because `GateDef` already nests `gates[]` recursively under `mode: linear | parallel | swarm`, every container IS a composable group (groups inside groups, e.g. `delivery` -> `backend_group` (`api_swarm` + `db_migration`) `||` `frontend_group`).
+- **Per-group `coordinator: <agent>` & automatic tree-scoped routing**: Any container `GateDef` may declare `coordinator: <agent>` (persisting a container `coordinator_session_id` alongside `parent_id`). Each group coordinator is bound automatically to `thread_id = <container_cursor>` and `@<container_cursor>` mentions; child `@coordinator` pings resolve `O(depth)` up `parent_id` to the nearest enclosing coordinator without waking sibling or parent coordinators unless explicitly escalated.
+- **Hybrid hot `wait` + cold `session_id` `resume` model**: During active bursts, a group coordinator (or peer shard) may park inside `acdd_blackboard(action: "wait", thread_id, mentions_only: true, timeout_seconds)` at 0 tokens; on timeout/exit, `session_id` remains persisted so `AC-008` `inbox` wake-on-mention (or `acdd run` re-entry) resumes the exact coordinator or cycle worker at 0 idle RAM. When all children of the container reach terminal states, the engine emits a container-closing sentinel on `<container_cursor>` so the group coordinator wraps up cleanly.
+- **Worker self-claim & atomic unclaimed-shard admission**: Every spawned `mode: subagent` worker calls `acdd_claim` / `acdd claim` itself (binding `session_fingerprint`, `ClaimResp.worktree`, `ClaimResp.inputs`, and lease TTL to the real worker process rather than the parent orchestrator). Support both explicit shard cursors (`implement[t1].build`) and container-scoped pool self-claim (`acdd claim` against a `swarm` container/gate cursor selecting the next unclaimed ready shard atomically under SQLite `BEGIN IMMEDIATE` CAS up to `max_concurrency`), requiring workers to execute all edits and `verify`/`submit` strictly inside `ClaimResp.worktree`.
 
 ## Concise `profile.yaml` examples
 
-### Example 1: Task-driven code milestone (`with: spec.tasks | blueprint.tasks` + extended `when:`, zero `- tasks:`)
+### Example 1: Task-driven code milestone (`with: spec.tasks | blueprint.tasks` + `save: handoff`, zero `- tasks:`)
 
 ```yaml
 version: 2
-roles:
-  architect: { mode: subagent }
-  builder:   { mode: subagent }
-  reviewer:  { mode: subagent }
+agents:
+  coordinator: { mode: inline }
+  architect:   { mode: subagent }
+  builder:     { mode: subagent }
+  reviewer:    { mode: subagent }
 gates:
   - id: blueprint
-    role: architect
+    agent: architect
     when: "!spec.tasks"                   # run blueprint only if spec omits tasks
     pass: implement
   - id: implement
@@ -117,32 +135,40 @@ gates:
     max_concurrency: 4
     save: none
     gates:
-      - { id: build,    role: builder,  proof: command,  pass: review }
-      - { id: review,   role: reviewer, proof: review,   independent_from: [build], pass: deliver, fail: build }
-      - { id: deliver,  role: builder,  save: commit }
+      - { id: build,    agent: builder,  proof: command, save: snapshot, pass: review }
+      - { id: review,   agent: reviewer, proof: review,  save: readonly, independent_from: [build], pass: deliver, fail: build }
+      - { id: deliver,  agent: builder,  save: commit }
     pass: verify
   - id: verify
-    role: builder
+    agent: builder
+    save: readonly
+    pass: handoff
+  - id: handoff
+    agent: coordinator
+    need: [verify]
+    scope: ["docs/memories/**"]
+    save:
+      handoff: { archive: true, prune: true, commit_scope: true, repack: by_task }
 ```
 
 ### Example 2: 10-channel reactive monitor (`with: input.channels` -> `with: poll.items` + `when: "item.is_new & !item.muted"`)
 
 ```yaml
 version: 2
-roles:
+agents:
   watcher:   { mode: subagent }
   triager:   { mode: subagent }
   publisher: { mode: subagent }
 gates:
   - id: poll
-    role: watcher
+    agent: watcher
     mode: swarm
     max_concurrency: 10
     with: input.channels                  # cursors: poll[telegram], poll[github], ...
     save: none                            # lock-free SQLite CAS, zero repo.lock
     pass: triage
   - id: triage
-    role: triager
+    agent: triager
     mode: swarm
     with: poll.items                      # flattens sharded poll proofs in shard order
     when: "item.is_new & !item.muted"     # skip muted/seen items per shard
@@ -152,12 +178,13 @@ gates:
   - id: review
     mode: parallel                        # heterogeneous branches join at barrier
     gates:
-      - { id: dedup_check, role: triager, save: none }
-      - { id: policy_check, role: triager, save: none }
+      - { id: dedup_check, agent: triager, save: none }
+      - { id: policy_check, agent: triager, save: none }
     pass: publish
   - id: publish
-    role: publisher
-    save: commit
+    agent: publisher
+    save:
+      handoff: { archive: false, prune: true, commit_scope: true }
 ```
 
 ## Tasks in this milestone
@@ -173,6 +200,7 @@ tags:
   - default
 scope:
   - docs/milestones/AC-005-unified-swarm-gates-and-peer-board-coordination.md
+  - .acdd/profile.yaml
   - crates/acdd-core/src/
   - crates/acdd-state/src/profile/schema.rs
   - crates/acdd-state/src/profile/inherit.rs
@@ -190,7 +218,9 @@ subtasks:
   - subtask_ref: core-swarm-and-blackboard-dtos
     title: "Add pure GateMode (linear|parallel|swarm), WithSource, NamespaceRoot, BlackboardRecipient, and BlackboardWaitReq DTOs in acdd-core"
   - subtask_ref: replace-tasks-block-and-sqlite-v2
-    title: "Remove TasksBlock (- tasks:) from GateDef and embedded profiles in favor of mode/with/when/max_concurrency, lift root-gate when: restriction, plus SQLite v1->v2 blackboard @mentions/thread_id/seq migration"
+    title: "Remove TasksBlock (- tasks:) from GateDef and embedded profiles in favor of mode/with/when/max_concurrency, add optional GateDef.coordinator for recursive group supervision, rename roles/role -> agents/agent (adding coordinator inline agent), group SavePolicy/receipt into mutually exclusive save variants including save: handoff { archive, prune, commit_scope, immutable, repack?, report? }, lift root-gate when: restriction, plus SQLite v1->v2 blackboard @mentions/thread_id/seq migration"
+  - subtask_ref: align-acdd-profile-and-handoff-scope
+    title: "Update .acdd/profile.yaml to agents:/agent: + grouped save: handoff, generalize verify_tasks_integrated / archive_spec_with_git to integrate only mutating swarm/parallel worktrees and commit self.scope atomically, and implement fail-closed worktree repack modes (none | linear | by_task | squash)"
   - subtask_ref: swarm-seam-registration
     title: "Register tests/acdd/swarm.rs in tests/acdd/mod.rs with compiling seam test matrices"
 ```
@@ -213,7 +243,7 @@ scope:
 status: planned
 subtasks:
   - subtask_ref: parallel-claim-and-barrier-join
-    title: "Expose all admitted child gates up to max_concurrency in acdd_state(next) under mode: parallel and join at container barrier with consolidated rejection_findings"
+    title: "Expose all admitted child gates up to max_concurrency in acdd_state(next) under mode: parallel, support atomic worker self-claim of explicit or next unclaimed ready swarm shards under SQLite CAS, and join at container barrier with consolidated rejection_findings"
   - subtask_ref: lockfree-save-none-and-disjoint-git
     title: "Gate repo.lock and Git TreeOid snapshots strictly on save != none while running save: none branches lock-free under SQLite CAS"
   - subtask_ref: mutating-parallel-worktree-integration
@@ -276,7 +306,31 @@ scope:
 status: planned
 subtasks:
   - subtask_ref: mention-routing-and-blocking-wait
-    title: "Implement @mention recipient indexing, thread_id queries, and zero-token acdd_blackboard wait(since_seq, mentions_only) waking on SQLite commit/notify"
+    title: "Implement @mention recipient indexing (including relative @coordinator -> nearest enclosing GateDef.coordinator and @<container_cursor> scoping), thread_id queries, container completion sentinel, and zero-token acdd_blackboard wait(since_seq, mentions_only, timeout_seconds?) waking on SQLite commit/notify"
   - subtask_ref: adr-docs-skills-and-examples-coevolution
     title: "Update ADR-0003, architecture/reference/runbook pages, executable docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md; pass acdd docs check and acdd validate"
+```
+
+### task: human-guided-gate-proof-and-logic-audit
+
+```yaml
+task_ref: human-guided-gate-proof-and-logic-audit
+target: "Conduct a human-in-the-loop walkthrough verifying every gate interaction, proof handoff, save/repack transition, context tier, and state-machine logic branch end to end with the operator before closing AC-005"
+contract_revision: 1
+depends_on:
+  - peer-blackboard-mentions-and-reactive-wait
+tags:
+  - default
+scope:
+  - crates/acdd-state/src/
+  - src/state_bridge/
+  - src/format/
+  - .acdd/profile.yaml
+  - tests/acdd/swarm.rs
+status: planned
+subtasks:
+  - subtask_ref: gate-and-proof-handoff-walkthrough
+    title: "Walk through every gate transition, proof artifact propagation (predecessor_proofs, blueprints, reviews, receipts), and budget/independence guard interactively with the human operator"
+  - subtask_ref: profile-logic-and-edge-case-signoff
+    title: "Verify every profile logic element (mode, with, when, save/handoff/repack, @mentions, wait, and ClaimResp context tiers) against live rendered outputs and record operator sign-off"
 ```

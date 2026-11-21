@@ -33,6 +33,16 @@ use std::path::{Path, PathBuf};
 const MAX_BLACKBOARD_ITEMS: usize = 15;
 /// Maximum character length per blackboard payload in Tier 5 (`ADR-0006`).
 const MAX_BLACKBOARD_CHARS: usize = 500;
+/// Minimum byte budget floor offered to each Tier 6 context lens when remaining response space permits.
+const MIN_LENS_BUDGET_BYTES: usize = 4_096;
+/// Maximum byte slice of Tier 1 remaining budget allocated to live subtask checklist rows.
+const SUBTASK_PROJECTION_BUDGET_CAP_BYTES: usize = 1_024;
+/// Maximum live subtask rows projected into `contract.subtasks`.
+const MAX_PROJECTED_SUBTASKS: usize = 16;
+/// Maximum byte cap for inline completed/cancelled subtask evidence inside `contract.subtasks`.
+const SUBTASK_EVIDENCE_BUDGET_CAP_BYTES: usize = 512;
+/// Default soft byte ceiling for `ClaimResp` envelopes (`32 KiB`) so claim context stays lean without starving Tier 6 lenses on busy live runs.
+const CLAIM_DEFAULT_MAX_BYTES: usize = 32_768;
 
 /// Input parameters for assembling a budgeted `ClaimResp`.
 #[derive(Debug, Clone)]
@@ -191,7 +201,7 @@ impl GateContextAssembler {
         } else {
             let mut slice = match node.task_ref.as_ref() {
                 Some(tr) => extract_pre_task_slice(snapshot, tr.as_str()),
-                None if !node.node_id.starts_with("root:blueprint_synthesis") => {
+                None if crate::machine::graph::is_post_task_root_node(snapshot, node) => {
                     extract_global_blueprint_slice(snapshot)
                 }
                 None => None,
@@ -262,7 +272,7 @@ impl GateContextAssembler {
             dependency_receipts,
             blackboard_items,
             context_reset_required,
-            response_max_bytes: config.response_policy.max_output_bytes,
+            response_max_bytes: config.response_policy.max_output_bytes.min(CLAIM_DEFAULT_MAX_BYTES),
         })
     }
 
@@ -608,8 +618,8 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
                 );
             }
         } else {
-            let include_full_spec = req.node.node_id.starts_with("root:blueprint_synthesis")
-                || spec.tasks.is_empty();
+            let include_full_spec =
+                is_pre_task_root_in_profile(&req.profile, &req.node) || spec.tasks.is_empty();
             if include_full_spec {
                 if let Some(root_spec) = &spec.spec {
                     obj.insert("spec".to_owned(), json!(root_spec));
@@ -638,15 +648,34 @@ fn build_contract_value(req: &ClaimContextRequest) -> Value {
     Value::Object(obj)
 }
 
+fn is_pre_task_root_in_profile(profile: &ResolvedGateProfile, node: &GateNodeRecord) -> bool {
+    let top_id = node
+        .node_id
+        .strip_prefix("root:")
+        .and_then(|rest| rest.split('.').next())
+        .unwrap_or(&node.gate_id);
+    for g in &profile.gates {
+        if g.tasks.is_some() {
+            return false;
+        }
+        if g.id == top_id {
+            return true;
+        }
+    }
+    false
+}
+
 fn project_live_subtasks(contract: &mut Value, subtasks: &[Subtask], available: usize) {
     let omitted_bytes = ",\"subtasks_omitted\":".len() + estimate_json_bytes(&subtasks.len());
     if subtasks.is_empty() || omitted_bytes > available {
         return;
     }
-    let mut remaining = available.min(1024).saturating_sub(omitted_bytes + ",\"subtasks\":[]".len());
+    let mut remaining = available
+        .min(SUBTASK_PROJECTION_BUDGET_CAP_BYTES)
+        .saturating_sub(omitted_bytes + ",\"subtasks\":[]".len());
     let mut rows = Vec::new();
     for subtask in subtasks {
-        if rows.len() == 16 {
+        if rows.len() == MAX_PROJECTED_SUBTASKS {
             break;
         }
         let row = json!({
@@ -671,7 +700,7 @@ fn project_live_subtasks(contract: &mut Value, subtasks: &[Subtask], available: 
 
 fn add_live_subtask_evidence(contract: &mut Value, subtasks: &[Subtask], remaining: usize) -> usize {
     // Keep short evidence when it fits. The complete records remain available through subtask reads.
-    let budget = remaining.min(512);
+    let budget = remaining.min(SUBTASK_EVIDENCE_BUDGET_CAP_BYTES);
     let Some(items) = contract.get_mut("subtasks").and_then(Value::as_array_mut) else {
         return 0;
     };
@@ -793,6 +822,52 @@ fn apply_tier4_receipts(
     Ok(())
 }
 
+fn is_blackboard_relevant_to_node(item: &BlackboardRecord, node: &GateNodeRecord) -> bool {
+    if node.kind != NodeKind::TaskGate {
+        return true;
+    }
+    let Some(source_node) = item.node_id.as_deref() else {
+        return true;
+    };
+    if source_node.starts_with("root:") {
+        return true;
+    }
+    if source_node == node.node_id || node.parent_id.as_deref() == Some(source_node) {
+        return true;
+    }
+    let matches_task = |candidate: &str| -> bool {
+        node.task_ref.as_ref().is_some_and(|tref| {
+            let prefix = format!("task:{tref}");
+            candidate == prefix
+                || candidate
+                    .strip_prefix(&prefix)
+                    .is_some_and(|rest| rest.starts_with(':'))
+        })
+    };
+    matches_task(source_node)
+        || item
+            .recipient_node_id
+            .as_deref()
+            .is_some_and(|rec| rec == node.node_id || node.parent_id.as_deref() == Some(rec) || matches_task(rec))
+}
+
+fn blackboard_dedup_key(item: &BlackboardRecord) -> (String, String) {
+    let trimmed = item.payload.trim();
+    if item.topic == BlackboardTopic::Decisions && trimmed.starts_with("BUDGET_OVERRIDE:") {
+        let scope_key = match item.node_id.as_deref() {
+            Some(nid) if nid.starts_with("task:") => {
+                let rest = &nid["task:".len()..];
+                let task_part = rest.split(':').next().unwrap_or(rest);
+                format!("task:{task_part}")
+            }
+            Some(nid) => nid.to_owned(),
+            None => String::new(),
+        };
+        return ("decisions:budget_override".to_owned(), scope_key);
+    }
+    (item.topic.to_string(), trimmed.to_owned())
+}
+
 fn apply_tier5_blackboard(
     resp: &mut ClaimResp,
     running_bytes: &mut usize,
@@ -806,6 +881,7 @@ fn apply_tier5_blackboard(
                 item.topic,
                 BlackboardTopic::Deferred | BlackboardTopic::Findings
             )
+            || !is_blackboard_relevant_to_node(item, &req.node)
         {
             continue;
         }
@@ -822,14 +898,36 @@ fn apply_tier5_blackboard(
         return;
     }
 
-    let selected: Vec<&BlackboardRecord> = if priority.len() >= MAX_BLACKBOARD_ITEMS {
-        let start = priority.len().saturating_sub(MAX_BLACKBOARD_ITEMS);
-        priority[start..].to_vec()
+    let mut deduped: Vec<&BlackboardRecord> = Vec::new();
+    let mut seen_keys: BTreeSet<(String, String)> = BTreeSet::new();
+    for item in priority.iter().chain(notes.iter()).rev() {
+        if seen_keys.insert(blackboard_dedup_key(item)) {
+            deduped.push(item);
+        }
+    }
+    deduped.reverse();
+
+    let mut priority_dedup: Vec<&BlackboardRecord> = Vec::new();
+    let mut notes_dedup: Vec<&BlackboardRecord> = Vec::new();
+    for item in deduped {
+        if matches!(
+            item.topic,
+            BlackboardTopic::Decisions | BlackboardTopic::Blockers
+        ) {
+            priority_dedup.push(item);
+        } else {
+            notes_dedup.push(item);
+        }
+    }
+
+    let selected: Vec<&BlackboardRecord> = if priority_dedup.len() >= MAX_BLACKBOARD_ITEMS {
+        let start = priority_dedup.len().saturating_sub(MAX_BLACKBOARD_ITEMS);
+        priority_dedup[start..].to_vec()
     } else {
-        let mut combined = priority;
+        let mut combined = priority_dedup;
         let remaining_slots = MAX_BLACKBOARD_ITEMS - combined.len();
-        let notes_start = notes.len().saturating_sub(remaining_slots);
-        combined.extend(&notes[notes_start..]);
+        let notes_start = notes_dedup.len().saturating_sub(remaining_slots);
+        combined.extend(&notes_dedup[notes_start..]);
         combined
     };
     let mut omitted = false;
@@ -946,9 +1044,9 @@ fn apply_tier6_context_lenses(
         }
 
         let remaining_lenses = req.gate.context.len().saturating_sub(idx).max(1);
-        let lens_budget = (remaining / remaining_lenses).max(remaining.min(4096));
+        let lens_budget = (remaining / remaining_lenses).max(remaining.min(MIN_LENS_BUDGET_BYTES));
         let baseline_ref = if req.node.kind == NodeKind::RootGate
-            && gate_id.as_str() == "integration_review"
+            && !is_pre_task_root_in_profile(&req.profile, &req.node)
         {
             req.run
                 .target_base_commit
@@ -959,13 +1057,20 @@ fn apply_tier6_context_lenses(
         } else {
             baseline_ref_for_node(&req.node)
         };
+        let lens_scope = if matches!(qualified_lens.as_str(), "code.symbols" | "code.tests")
+            && !req.node.scope.is_empty()
+        {
+            req.node.scope.clone()
+        } else {
+            admitted_scope.clone()
+        };
         let ctx_req = DomainContextReq {
             run_id: req.run.run_id.clone(),
             node_cursor: node_cursor.clone(),
             gate_id: gate_id.clone(),
             workspace_root: PathBuf::from(&req.run.workspace),
             worktree: req.worktree.clone(),
-            admitted_scope: admitted_scope.clone(),
+            admitted_scope: lens_scope,
             target: target.clone(),
             max_bytes: lens_budget,
             path_policy: req.path_policy.clone(),
@@ -1081,19 +1186,462 @@ pub fn render_claim_prompt_markdown(claim: &ClaimResp, template: Option<&str>) -
 }
 
 fn render_guidance_lines(guidance: &[Value]) -> String {
-    let mut out = String::new();
+    let mut top_bullets = Vec::new();
+    let mut section_blocks = Vec::new();
     for item in guidance {
-        if let Some(s) = item.as_str() {
-            out.push_str("- ");
-            out.push_str(s);
-            out.push('\n');
+        let text = item.as_str().map(str::to_owned).unwrap_or_else(|| item.to_string());
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("### ") {
+            section_blocks.push(trimmed.to_owned());
         } else {
+            top_bullets.push(trimmed.to_owned());
+        }
+    }
+
+    let mut out = String::new();
+    if !top_bullets.is_empty() {
+        for bullet in top_bullets {
             out.push_str("- ");
-            out.push_str(&item.to_string());
+            out.push_str(&bullet);
+            out.push('\n');
+        }
+        if !section_blocks.is_empty() {
             out.push('\n');
         }
     }
+    for (idx, block) in section_blocks.iter().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        out.push_str(block);
+        out.push('\n');
+    }
     out
+}
+
+fn push_str_list(out: &mut String, label: &str, items: &[Value]) {
+    if items.is_empty() {
+        return;
+    }
+    out.push_str("- **");
+    out.push_str(label);
+    out.push_str("**:\n");
+    for item in items {
+        let s = item.as_str().map(str::to_owned).unwrap_or_else(|| item.to_string());
+        out.push_str("  - ");
+        out.push_str(&s);
+        out.push('\n');
+    }
+}
+
+fn format_cursor_value(val: &Value) -> String {
+    if let Some(s) = val.as_str() {
+        return s.to_owned();
+    }
+    if let Some(root) = val.get("Root").and_then(Value::as_array) {
+        let joined: Vec<&str> = root.iter().filter_map(Value::as_str).collect();
+        if !joined.is_empty() {
+            return joined.join(".");
+        }
+    }
+    if let Some(task_obj) = val.get("Task").and_then(Value::as_object) {
+        if let Some(task) = task_obj.get("task").and_then(Value::as_str) {
+            let gates: Vec<&str> = task_obj
+                .get("gates")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            return if gates.is_empty() {
+                task.to_owned()
+            } else {
+                format!("{task}.{}", gates.join("."))
+            };
+        }
+    }
+    val.to_string()
+}
+
+fn render_contract_markdown(out: &mut String, contract: &Value) {
+    let Some(obj) = contract.as_object() else {
+        out.push_str(&format!("{contract}\n"));
+        return;
+    };
+    for (key, label) in [
+        ("gate_id", "Gate"),
+        ("proof", "Proof"),
+        ("command", "Command"),
+        ("call", "Call"),
+        ("spec_id", "Spec"),
+        ("title", "Title"),
+        ("spec_path", "Spec Path"),
+        ("task_ref", "Task"),
+        ("target", "Target"),
+    ] {
+        if let Some(val) = obj.get(key) {
+            let s = val.as_str().map(str::to_owned).unwrap_or_else(|| val.to_string());
+            if !s.is_empty() {
+                out.push_str(&format!("- **{label}**: {s}\n"));
+            }
+        }
+    }
+    for (key, label) in [
+        ("required_skills", "Required Skills"),
+        ("tools", "Tools"),
+        ("scope", "Scope"),
+        ("owners", "Owners"),
+    ] {
+        if let Some(arr) = obj.get(key).and_then(Value::as_array).filter(|a| !a.is_empty()) {
+            let joined = arr
+                .iter()
+                .map(|v| v.as_str().map(|s| format!("`{s}`")).unwrap_or_else(|| v.to_string()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("- **{label}**: {joined}\n"));
+        }
+    }
+    if let Some(arr) = obj.get("checks").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+        let joined = arr
+            .iter()
+            .filter_map(|v| v.get("check").and_then(Value::as_str))
+            .map(|c| format!("`{c}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !joined.is_empty() {
+            out.push_str(&format!("- **Checks**: {joined}\n"));
+        }
+    }
+    if let Some(arr) = obj.get("extended_scope").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+        out.push_str("- **Extended Scope**:\n");
+        for entry in arr {
+            let path = entry.get("path").and_then(Value::as_str).unwrap_or_default();
+            let reason = entry.get("reason").and_then(Value::as_str).unwrap_or_default();
+            if reason.is_empty() {
+                out.push_str(&format!("  - `{path}`\n"));
+            } else {
+                out.push_str(&format!("  - `{path}` — {reason}\n"));
+            }
+        }
+    }
+    if let Some(inv) = obj.get("invariants").and_then(Value::as_object) {
+        if let Some(app) = inv.get("applicable").and_then(Value::as_array) {
+            push_str_list(out, "Applicable Invariants", app);
+        }
+        if let Some(ver) = inv.get("verified").and_then(Value::as_array) {
+            push_str_list(out, "Verified Invariants", ver);
+        }
+    }
+    for (key, label) in [("spec", "Spec Details"), ("task_spec", "Task Spec")] {
+        if let Some(s) = obj.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+            out.push_str(&format!("\n### {label}\n\n{}\n", s.trim()));
+        }
+    }
+    if let Some(arr) = obj.get("acceptance_criteria").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+        out.push('\n');
+        push_str_list(out, "Acceptance Criteria", arr);
+    }
+    if let Some(arr) = obj.get("subtasks").and_then(Value::as_array).filter(|a| !a.is_empty()) {
+        out.push_str("\n### Subtasks\n\n");
+        for sub in arr {
+            let sref = sub.get("subtask_ref").and_then(Value::as_str).unwrap_or_default();
+            let title = sub.get("title").and_then(Value::as_str).unwrap_or_default();
+            let status = sub.get("status").and_then(Value::as_str).unwrap_or("pending");
+            out.push_str(&format!("- [{status}] `{sref}`: {title}"));
+            if let Some(ev) = sub.get("evidence").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                out.push_str(&format!(" — {ev}"));
+            }
+            out.push('\n');
+        }
+    }
+    if let Some(contours) = obj.get("contours").and_then(Value::as_object).filter(|c| !c.is_empty()) {
+        out.push_str("\n### Contours\n");
+        for (name, def) in contours {
+            let desc = def.get("description").and_then(Value::as_str).unwrap_or_default();
+            out.push_str(&format!("\n#### `{name}`\n"));
+            if !desc.is_empty() {
+                out.push_str(&format!("{desc}\n"));
+            }
+            if let Some(criteria) = def.get("criteria").and_then(Value::as_array) {
+                for c in criteria {
+                    if let Some(cs) = c.as_str() {
+                        out.push_str(&format!("- {cs}\n"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn render_findings_markdown(out: &mut String, payload: &Value) {
+    if let Some(findings) = payload.get("findings").filter(|v| !v.is_null()) {
+        let kind = findings.get("kind").and_then(Value::as_str).unwrap_or("defect");
+        let summary = findings.get("summary").and_then(Value::as_str).unwrap_or_default();
+        out.push_str(&format!("- **Kind**: `{kind}`\n"));
+        if !summary.is_empty() {
+            out.push_str(&format!("- **Summary**: {summary}\n"));
+        }
+        if let Some(bb_id) = findings.get("blackboard_message_id").and_then(Value::as_i64) {
+            out.push_str(&format!("- **Blackboard**: #{bb_id}\n"));
+        }
+        if let Some(items) = findings.get("items").and_then(Value::as_array) {
+            for item in items {
+                let sev = item.get("severity").and_then(Value::as_str).unwrap_or("medium");
+                let path = item.get("path").and_then(Value::as_str).unwrap_or("-");
+                let msg = item.get("message").and_then(Value::as_str).unwrap_or_default();
+                let fix = item.get("remediation").and_then(Value::as_str).unwrap_or_default();
+                out.push_str(&format!("- [{sev}] `{path}`: {msg}"));
+                if !fix.is_empty() {
+                    out.push_str(&format!(" | Remediation: {fix}"));
+                }
+                out.push('\n');
+            }
+        }
+    }
+    if let Some(tail) = payload.get("failed_trace_log_tail").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        out.push_str("\n### Failed Trace Log Tail\n\n```text\n");
+        out.push_str(tail);
+        if !tail.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("```\n");
+    }
+}
+
+fn push_labeled_scalars(out: &mut String, obj: &Map<String, Value>, fields: &[(&str, &str)]) {
+    for (k, label) in fields {
+        if let Some(v) = obj.get(*k).filter(|v| !v.is_null()) {
+            let s = v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string());
+            if !s.is_empty() {
+                out.push_str(&format!("- **{label}**: {s}\n"));
+            }
+        }
+    }
+}
+
+fn push_labeled_lists(out: &mut String, obj: &Map<String, Value>, fields: &[(&str, &str)]) {
+    for (k, label) in fields {
+        if let Some(arr) = obj.get(*k).and_then(Value::as_array) {
+            push_str_list(out, label, arr);
+        }
+    }
+}
+
+fn render_slice_markdown(out: &mut String, slice: &Value) {
+    let Some(obj) = slice.as_object() else {
+        out.push_str(&format!("{slice}\n"));
+        return;
+    };
+    push_labeled_scalars(
+        out,
+        obj,
+        &[
+            ("layer", "Layer"),
+            ("summary", "Summary"),
+            ("max_net_loc", "Max Net LOC"),
+            ("verification_seam", "Verification Seam"),
+        ],
+    );
+    push_labeled_lists(
+        out,
+        obj,
+        &[
+            ("canonical_owners", "Canonical Owners"),
+            ("exported_interfaces", "Exported Interfaces"),
+            ("mechanism_rules", "Mechanism Rules"),
+            ("negative_boundaries", "Negative Boundaries"),
+            ("cited_invariants", "Cited Invariants"),
+            ("global_negative_boundaries", "Global Negative Boundaries"),
+        ],
+    );
+    for (k, label, peer_key) in [
+        ("incoming_seams", "Incoming Seams", "source_task"),
+        ("outgoing_seams", "Outgoing Seams", "target_task"),
+    ] {
+        if let Some(arr) = obj.get(k).and_then(Value::as_array).filter(|a| !a.is_empty()) {
+            out.push_str(&format!("- **{label}**:\n"));
+            for s in arr {
+                let peer = s.get(peer_key).and_then(Value::as_str).unwrap_or("-");
+                let ctype = s.get("contract_type").and_then(Value::as_str).unwrap_or("-");
+                let cref = s.get("contract_ref").and_then(Value::as_str).unwrap_or("-");
+                let spec = s.get("specification").and_then(Value::as_str).unwrap_or_default();
+                out.push_str(&format!("  - `{peer}` ({ctype}) `{cref}`: {spec}\n"));
+            }
+        }
+    }
+    if let Some(preds) = obj.get("predecessor_proofs").and_then(Value::as_object) {
+        render_predecessor_proofs_markdown(out, preds);
+    }
+}
+
+fn render_predecessor_proofs_markdown(out: &mut String, preds: &Map<String, Value>) {
+    for (gate_name, proof_val) in preds {
+        out.push_str(&format!("\n### Predecessor Proof: `{gate_name}`\n\n"));
+        let Some(pobj) = proof_val.as_object() else {
+            out.push_str(&format!("- {proof_val}\n"));
+            continue;
+        };
+        push_labeled_scalars(
+            out,
+            pobj,
+            &[
+                ("blackboard_decision_id", "Blackboard Decision ID"),
+                ("c2_boundary_impact", "C2 Boundary Impact"),
+                ("adr_required", "ADR Required"),
+            ],
+        );
+        push_labeled_lists(
+            out,
+            pobj,
+            &[
+                ("cited_invariants", "Cited Invariants"),
+                ("cited_symbols", "Cited Symbols"),
+                ("global_negative_boundaries", "Global Negative Boundaries"),
+                ("ac_mapping", "AC Mapping"),
+                ("sad_updates", "SAD Updates"),
+            ],
+        );
+        if let Some(tasks) = pobj.get("tasks").and_then(Value::as_object) {
+            for (tref, task_slice) in tasks {
+                out.push_str(&format!("\n#### Task Slice: `{tref}`\n\n"));
+                render_slice_markdown(out, task_slice);
+            }
+        }
+        for (k, v) in pobj {
+            if matches!(
+                k.as_str(),
+                "blackboard_decision_id"
+                    | "c2_boundary_impact"
+                    | "adr_required"
+                    | "cited_invariants"
+                    | "cited_symbols"
+                    | "global_negative_boundaries"
+                    | "ac_mapping"
+                    | "sad_updates"
+                    | "tasks"
+            ) || v.is_null()
+            {
+                continue;
+            }
+            match v.as_array() {
+                Some(arr) => push_str_list(out, k, arr),
+                None => push_labeled_scalars(out, pobj, &[(k.as_str(), k.as_str())]),
+            }
+        }
+    }
+}
+
+fn render_context_lenses_markdown(out: &mut String, lenses: &Map<String, Value>) {
+    for (key, val) in lenses {
+        match key.as_str() {
+            "docs.instructions" => {
+                out.push_str("\n## Repository Instructions - MANDATORY\n\n");
+                let directive = val
+                    .get("directive")
+                    .and_then(Value::as_str)
+                    .unwrap_or("MANDATORY: read repository rules for respective scope.");
+                out.push_str(directive);
+                out.push_str("\n\n");
+                if let Some(items) = val.get("items").and_then(Value::as_array) {
+                    for item in items {
+                        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+                        let headings = item
+                            .get("headings")
+                            .and_then(Value::as_array)
+                            .map(|h| {
+                                h.iter()
+                                    .filter_map(Value::as_str)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .unwrap_or_default();
+                        if headings.is_empty() {
+                            out.push_str(&format!("- `{path}`\n"));
+                        } else {
+                            out.push_str(&format!("- `{path}` — headings: {headings}\n"));
+                        }
+                    }
+                }
+            }
+            "docs.adrs" => {
+                out.push_str("\n## Architectural Decision Records - MANDATORY\n\n");
+                if let Some(items) = val.get("items").and_then(Value::as_array) {
+                    for item in items {
+                        let title = item.get("title").and_then(Value::as_str).unwrap_or_default();
+                        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+                        out.push_str(&format!("- {title}: `{path}`\n"));
+                    }
+                }
+            }
+            "docs.invariants" => {
+                out.push_str("\n## Governing Invariants\n\n");
+                if let Some(items) = val.get("items").and_then(Value::as_array) {
+                    for item in items {
+                        let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+                        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+                        let line = item.get("line").and_then(Value::as_u64).unwrap_or(0);
+                        let loc = if line > 0 {
+                            format!("{path}:{line}")
+                        } else {
+                            path.to_owned()
+                        };
+                        let rule = item.get("rule").and_then(Value::as_str).unwrap_or_default();
+                        if rule.is_empty() {
+                            out.push_str(&format!("- `{id}` (`{loc}`)\n"));
+                        } else {
+                            out.push_str(&format!("- `{id}` (`{loc}`): {rule}\n"));
+                        }
+                    }
+                }
+            }
+            "code.symbols" => {
+                out.push_str("\n## Scoped Symbols\n\n");
+                if let Some(items) = val.get("items").and_then(Value::as_array) {
+                    for item in items {
+                        let qn = item.get("qualname").and_then(Value::as_str).unwrap_or_default();
+                        let line = item.get("line").and_then(Value::as_u64).unwrap_or(0);
+                        let end = item.get("end_line").and_then(Value::as_u64).unwrap_or(line);
+                        let sig = item.get("signature").and_then(Value::as_str).unwrap_or_default();
+                        out.push_str(&format!("- `{qn}` : {line}:{end} : `{sig}`\n"));
+                    }
+                }
+            }
+            "code.tests" => {
+                out.push_str("\n## Scoped Tests\n\n");
+                if let Some(items) = val.get("items").and_then(Value::as_array) {
+                    for item in items {
+                        let qn = item.get("qualname").and_then(Value::as_str).unwrap_or_default();
+                        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+                        let line = item.get("line").and_then(Value::as_u64).unwrap_or(0);
+                        out.push_str(&format!("- `{qn}` (`{path}:{line}`)\n"));
+                    }
+                }
+            }
+            "code.external_callers" => {
+                out.push_str("\n## External Callers\n\n");
+                if let Some(items) = val.get("items").and_then(Value::as_array) {
+                    for item in items {
+                        let sym = item.get("symbol").and_then(Value::as_str).unwrap_or_default();
+                        let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+                        let sig_chg = item.get("signature_changed").and_then(Value::as_bool).unwrap_or(false);
+                        let callers = item
+                            .get("external_callers")
+                            .and_then(Value::as_array)
+                            .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+                            .unwrap_or_default();
+                        let flag = if sig_chg { " [SIG CHANGED]" } else { "" };
+                        out.push_str(&format!("- `{sym}` (`{path}`{flag}) -> {callers}\n"));
+                    }
+                }
+            }
+            other => {
+                out.push_str(&format!("\n### Context: `{other}`\n\n```json\n"));
+                out.push_str(&serde_json::to_string_pretty(val).unwrap_or_default());
+                out.push_str("\n```\n");
+            }
+        }
+    }
 }
 
 fn render_default_markdown(claim: &ClaimResp) -> String {
@@ -1122,37 +1670,47 @@ fn render_default_markdown(claim: &ClaimResp) -> String {
              Discard cached builder assumptions, read the latest `rearchitect` decision on `acdd_blackboard`, and implement cleanly from scratch.\n",
         );
     }
-    out.push_str(&format!(
-        "\n## Contract\n\n```json\n{}\n```\n\n\
-         ## Guidance\n\n{}\n",
-        serde_json::to_string_pretty(&claim.contract).unwrap_or_else(|_| "{}".to_owned()),
-        render_guidance_lines(&claim.guidance),
-    ));
+    out.push_str("\n## Contract\n\n");
+    render_contract_markdown(&mut out, &claim.contract);
+    out.push_str("\n## Guidance\n\n");
+    out.push_str(&render_guidance_lines(&claim.guidance));
 
     if let Some(findings) = &claim.unresolved_findings {
-        out.push_str("\n## Unresolved Findings\n\n```json\n");
-        out.push_str(&serde_json::to_string_pretty(findings).unwrap_or_default());
-        out.push_str("\n```\n");
+        out.push_str("\n## Unresolved Findings\n\n");
+        render_findings_markdown(&mut out, findings);
     }
     if let Some(slice) = &claim.pre_task_slice {
-        out.push_str("\n## Pre-Task Architectural Slice\n\n```json\n");
-        out.push_str(&serde_json::to_string_pretty(slice).unwrap_or_default());
-        out.push_str("\n```\n");
+        out.push_str("\n## Pre-Task Architectural Slice\n\n");
+        render_slice_markdown(&mut out, slice);
     }
     if !claim.dependency_receipts.is_empty() {
-        out.push_str("\n## Dependency Receipts\n\n```json\n");
-        out.push_str(&serde_json::to_string_pretty(&claim.dependency_receipts).unwrap_or_default());
-        out.push_str("\n```\n");
+        out.push_str("\n## Dependency Receipts\n\n");
+        for r in &claim.dependency_receipts {
+            let cursor = r.get("node_cursor").map(format_cursor_value).unwrap_or_default();
+            let tree = r.get("candidate_tree").and_then(Value::as_str).unwrap_or_default();
+            let oid = r
+                .get("committed_oid")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty() && *s != "-");
+            let ts = r.get("accepted_at").and_then(Value::as_str).unwrap_or_default();
+            match oid {
+                Some(oid) => out.push_str(&format!("- `{cursor}` @ `{tree}` (commit `{oid}`, {ts})\n")),
+                None => out.push_str(&format!("- `{cursor}` @ `{tree}` ({ts})\n")),
+            }
+        }
     }
     if !claim.blackboard.is_empty() {
-        out.push_str("\n## Blackboard\n\n```json\n");
-        out.push_str(&serde_json::to_string_pretty(&claim.blackboard).unwrap_or_default());
-        out.push_str("\n```\n");
+        out.push_str("\n## Blackboard\n\n");
+        for item in &claim.blackboard {
+            let id = item.get("id").and_then(Value::as_i64).map(|v| format!("#{v}")).unwrap_or_default();
+            let topic = item.get("topic").and_then(Value::as_str).unwrap_or("notes");
+            let author = item.get("author").and_then(Value::as_str).unwrap_or("-");
+            let payload = item.get("payload").and_then(Value::as_str).unwrap_or_default();
+            out.push_str(&format!("- {id} [{topic} | {author}]: {payload}\n"));
+        }
     }
     if !claim.context_lenses.is_empty() {
-        out.push_str("\n## Context Lenses\n\n```json\n");
-        out.push_str(&serde_json::to_string_pretty(&claim.context_lenses).unwrap_or_default());
-        out.push_str("\n```\n");
+        render_context_lenses_markdown(&mut out, &claim.context_lenses);
     }
     if !claim.omitted_sections.is_empty() {
         out.push_str("\n## Omitted Sections\n\n");
@@ -1481,10 +2039,24 @@ mod tests {
         assert_eq!(err_missing.code, ErrorCode::DomainCapabilityUnavailable);
 
         // Markdown rendering works both with fallback template and custom template.
-        let md_default = render_claim_prompt_markdown(&trimmed, None);
+        let mut grouped_resp = trimmed.clone();
+        grouped_resp.guidance = vec![
+            json!("### SECTION ONE\n\n- step a"),
+            json!("HITL top note"),
+            json!("[role:builder] top role"),
+        ];
+        let md_default = render_claim_prompt_markdown(&grouped_resp, None);
         assert!(md_default.contains("# Gate Claim: `t1.build`"));
         assert!(md_default.contains("## Contract"));
         assert!(md_default.contains("## Guidance"));
+        let hitl_pos = md_default.find("- HITL top note").unwrap();
+        let role_pos = md_default.find("- [role:builder] top role").unwrap();
+        let sec_pos = md_default.find("### SECTION ONE").unwrap();
+        assert!(hitl_pos < sec_pos && role_pos < sec_pos, "{md_default}");
+        assert!(
+            md_default.contains("`t0.deliver`") && !md_default.contains("{\"Task\":"),
+            "dependency receipt cursor must render human-readable in markdown: {md_default}"
+        );
 
         let md_custom = render_claim_prompt_markdown(
             &trimmed,
@@ -1511,5 +2083,185 @@ mod tests {
         let reset_md = render_claim_prompt_markdown(&reset_resp, None);
         assert!(reset_md.contains("CONTEXT RESET REQUIRED"));
         assert!(reset_md.contains("close-review-findings"));
+
+        // Tier 5 Blackboard filters unrelated sibling task notes and keeps only latest BUDGET_OVERRIDE per scope.
+        let mut bb_req = base_request();
+        bb_req.gate.context.clear();
+        let make_bb = |id, node_id: Option<&str>, rec: Option<&str>, topic, payload: &str| BlackboardRecord {
+            id: Some(id),
+            run_id: RunId::new("run-1").unwrap(),
+            node_id: node_id.map(str::to_owned),
+            recipient_node_id: rec.map(str::to_owned),
+            subtask_ref: None,
+            gate: Some("build".to_owned()),
+            author: "arch".to_owned(),
+            topic,
+            status: BlackboardStatus::Open,
+            payload: payload.to_owned(),
+            created_at: "2026-11-20T10:00:00.000Z".to_owned(),
+        };
+        bb_req.blackboard_items = vec![
+            make_bb(1, Some("task:t0:build"), None, BlackboardTopic::Notes, "stale sibling task note"),
+            make_bb(2, Some("task:t0:review"), Some("task:t1:build"), BlackboardTopic::Notes, "directed handoff note"),
+            make_bb(3, Some("root:blueprint_synthesis.synthesize"), None, BlackboardTopic::Decisions, "global arch decision"),
+            make_bb(4, Some("task:t1:build"), None, BlackboardTopic::Decisions, "BUDGET_OVERRIDE: old limit 200"),
+            make_bb(5, Some("task:t1:build"), None, BlackboardTopic::Decisions, "BUDGET_OVERRIDE: latest limit 300"),
+        ];
+        let bb_resp = build_claim_context(&bb_req, &empty_provider).unwrap();
+        let bb_payloads: Vec<&str> = bb_resp
+            .blackboard
+            .iter()
+            .filter_map(|v| v["payload"].as_str())
+            .collect();
+        assert!(!bb_payloads.contains(&"stale sibling task note"));
+        assert!(!bb_payloads.contains(&"BUDGET_OVERRIDE: old limit 200"));
+        assert!(bb_payloads.contains(&"directed handoff note"));
+        assert!(bb_payloads.contains(&"global arch decision"));
+        assert!(bb_payloads.contains(&"BUDGET_OVERRIDE: latest limit 300"));
+
+        // `predecessor_proofs` inside `pre_task_slice` renders blueprint tasks cleanly in Markdown.
+        let mut pred_resp = base_request();
+        pred_resp.gate.context.clear();
+        pred_resp.pre_task_slice = Some(json!({
+            "predecessor_proofs": {
+                "synthesize": {
+                    "blackboard_decision_id": "#1",
+                    "cited_invariants": ["INV-SINGLE-OWNER"],
+                    "tasks": {
+                        "t1": { "layer": "core", "summary": "Batch reader", "max_net_loc": 50 }
+                    }
+                }
+            }
+        }));
+        let pred_built = build_claim_context(&pred_resp, &empty_provider).unwrap();
+        let pred_md = render_claim_prompt_markdown(&pred_built, None);
+        assert!(pred_md.contains("### Predecessor Proof: `synthesize`"), "{pred_md}");
+        assert!(pred_md.contains("#### Task Slice: `t1`"), "{pred_md}");
+        assert!(pred_md.contains("Batch reader"), "{pred_md}");
+    }
+
+    #[test]
+    fn profile_gates_claim_context_window_budget_matrix() {
+        let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..");
+        let profile_dirs = vec![".acdd/profiles".to_owned()];
+        let provider = CompositeDomainProvider::new(vec![
+            Arc::new(LensMockProvider {
+                domain: "docs".to_owned(),
+                lenses: BTreeMap::from([
+                    (
+                        "instructions".to_owned(),
+                        json!({
+                            "directive": "MANDATORY: read repository rules for respective scope.",
+                            "items": [{"path": "AGENTS.md", "headings": ["Instruction Authority", "Routes"]}]
+                        }),
+                    ),
+                    (
+                        "adrs".to_owned(),
+                        json!({"items": [{"title": "ADR-0001", "path": "docs/adr/0001.md"}]}),
+                    ),
+                    (
+                        "invariants".to_owned(),
+                        json!({"items": [{"id": "INV-SINGLE-OWNER", "path": "src/AGENTS.md", "rule": "Keep one canonical owner per subsystem."}]}),
+                    ),
+                ]),
+            }),
+            Arc::new(LensMockProvider {
+                domain: "code".to_owned(),
+                lenses: BTreeMap::from([
+                    (
+                        "symbols".to_owned(),
+                        json!({"items": [{"qualname": "crate::foo", "line": 10, "end_line": 20, "signature": "pub fn foo()"}]}),
+                    ),
+                    (
+                        "tests".to_owned(),
+                        json!({"items": [{"qualname": "crate::tests::foo_works", "path": "src/lib.rs", "line": 42}]}),
+                    ),
+                    (
+                        "external_callers".to_owned(),
+                        json!({"items": [{"symbol": "crate::foo", "path": "src/lib.rs", "caller_files": ["src/main.rs"]}]}),
+                    ),
+                ]),
+            }),
+        ])
+        .unwrap();
+
+        for (label, profile_ref) in [
+            ("default", ".acdd/profile.yaml"),
+            ("hotfix", "hotfix"),
+        ] {
+            let profile = crate::profile::resolve_profile_ref_with_dirs(
+                profile_ref,
+                Some(&workspace_root),
+                None,
+                Some(&profile_dirs),
+            )
+            .unwrap_or_else(|e| panic!("failed to resolve {label} profile: {e}"));
+
+            let mut leaf_gates: Vec<(String, GateDef, bool)> = Vec::new();
+            for g in &profile.gates {
+                if let Some(tb) = &g.tasks {
+                    for sub in &tb.gates {
+                        leaf_gates.push((format!("{}.{}", g.id, sub.id), sub.clone(), true));
+                    }
+                } else if g.gates.is_empty() {
+                    leaf_gates.push((g.id.clone(), g.clone(), false));
+                } else {
+                    for sub in &g.gates {
+                        leaf_gates.push((format!("{}.{}", g.id, sub.id), sub.clone(), false));
+                    }
+                }
+            }
+            assert!(!leaf_gates.is_empty(), "{label} profile must declare leaf gates");
+
+            for (gate_label, gate, is_task) in leaf_gates {
+                let mut req = base_request();
+                req.profile = profile.clone();
+                req.gate = gate;
+                req.node.kind = if is_task { NodeKind::TaskGate } else { NodeKind::RootGate };
+                req.node.node_id = if is_task {
+                    format!("task:t1:{}", req.gate.id)
+                } else {
+                    format!("root:{gate_label}")
+                };
+                req.response_max_bytes = CLAIM_DEFAULT_MAX_BYTES;
+                let resp = build_claim_context(&req, &provider)
+                    .unwrap_or_else(|e| panic!("{label}/{gate_label} failed: {e}"));
+                let md = render_claim_prompt_markdown(&resp, None);
+                assert!(
+                    resp.total_bytes <= CLAIM_DEFAULT_MAX_BYTES,
+                    "{label}/{gate_label} JSON {} > {}",
+                    resp.total_bytes,
+                    CLAIM_DEFAULT_MAX_BYTES
+                );
+                assert!(
+                    md.len() <= CLAIM_DEFAULT_MAX_BYTES,
+                    "{label}/{gate_label} MD {} > {}",
+                    md.len(),
+                    CLAIM_DEFAULT_MAX_BYTES
+                );
+                assert!(
+                    resp.omitted_sections.is_empty(),
+                    "{label}/{gate_label} omitted sections: {:?}",
+                    resp.omitted_sections
+                );
+                assert!(
+                    !md.contains("```json"),
+                    "{label}/{gate_label} must not embed pretty JSON blocks"
+                );
+                if let Some(guidance_md) = md.split("\n## Guidance\n").nth(1) {
+                    let guidance_section = guidance_md.split("\n## ").next().unwrap_or(guidance_md);
+                    if let (Some(hitl_pos), Some(sub_pos)) =
+                        (guidance_section.find("- HITL"), guidance_section.find("\n### "))
+                    {
+                        assert!(
+                            hitl_pos < sub_pos,
+                            "{label}/{gate_label}: ungrouped HITL must precede ### subsections"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

@@ -10,6 +10,7 @@ pub(super) enum TraversalKind {
     Explain,
     Tests,
     DeadTails,
+    Duplicates,
 }
 
 pub(super) fn kind_for(title: &str, value: &Value) -> Option<TraversalKind> {
@@ -20,6 +21,18 @@ pub(super) fn kind_for(title: &str, value: &Value) -> Option<TraversalKind> {
         "code_map_query" if value.get("incoming").is_some() || value.get("outgoing").is_some() => Some(TraversalKind::Explain),
         "code_map_query" if value.get("direction").is_some() && value.get("depth").is_some() && value.get("nodes").is_some() => Some(TraversalKind::Impact),
         "code_map_query" if text_field(value, "operation") == Some("dead_tails") => Some(TraversalKind::DeadTails),
+        "code_map_query"
+            if value
+                .get("items")
+                .and_then(Value::as_array)
+                .is_some_and(|items| {
+                    items.first().is_some_and(|first| {
+                        first.get("duplicate_count").is_some() && first.get("locations").is_some()
+                    })
+                }) =>
+        {
+            Some(TraversalKind::Duplicates)
+        }
         _ => None,
     }
 }
@@ -31,6 +44,7 @@ pub(super) fn render(value: &Value, title: &str, kind: TraversalKind) -> String 
         TraversalKind::Explain => render_explain(&mut out, value),
         TraversalKind::Tests => render_tests(&mut out, value),
         TraversalKind::DeadTails => render_dead_tails(&mut out, value),
+        TraversalKind::Duplicates => render_duplicates(&mut out, value),
     }
     out
 }
@@ -113,6 +127,61 @@ fn render_tests(out: &mut String, value: &Value) {
     render_markdown_fields(out, value, 0, &consumed);
 }
 
+fn format_repo_location(item: &Value) -> Option<String> {
+    let path = text_field(item, "path")?;
+    let line = u64_field(item, "line");
+    let end_line = u64_field(item, "end_line");
+    Some(match (line, end_line) {
+        (Some(l), Some(e)) if e > l => format!("{path}:{l}-{e}"),
+        (Some(l), _) => format!("{path}:{l}"),
+        (None, _) => path.to_owned(),
+    })
+}
+
+fn render_duplicates(out: &mut String, value: &Value) {
+    out.push_str("## Duplicate code blocks\n\n");
+    let items = value.get("items").and_then(Value::as_array);
+    let total = u64_field(value, "total").unwrap_or_else(|| items.map_or(0, |a| a.len() as u64));
+    let has_more = value.get("has_more").and_then(Value::as_bool).unwrap_or(false);
+    out.push_str(&format!("- **total**: `{total}` | **has_more**: `{has_more}`"));
+    if let Some(next_offset) = u64_field(value, "next_offset") {
+        out.push_str(&format!(" | **next_offset**: `{next_offset}`"));
+    }
+    out.push_str("\n\n");
+    for item in items.into_iter().flatten() {
+        let name = text_field(item, "name").unwrap_or("unnamed");
+        let kind = text_field(item, "kind").unwrap_or("block");
+        let match_type = text_field(item, "match_type").unwrap_or("exact");
+        let line_count = u64_field(item, "line_count").unwrap_or(0);
+        let dup_count = u64_field(item, "duplicate_count").unwrap_or(0);
+        let dup_lines = u64_field(item, "duplicated_lines").unwrap_or(0);
+        let locs: Vec<String> = item
+            .get("locations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|loc| format_repo_location(loc).map(|s| inline_code(&s)))
+            .collect();
+        out.push_str(&format!(
+            "- {} ({kind}, {match_type}, {line_count}L x {dup_count} = {dup_lines} dup lines): {}\n",
+            inline_code(name),
+            locs.join(", ")
+        ));
+    }
+}
+
+fn format_dead_tail_symbol(item: &Value) -> String {
+    let qn = text_field(item, "qualname")
+        .or_else(|| text_field(item, "name"))
+        .unwrap_or("symbol");
+    let kind = text_field(item, "kind").unwrap_or("symbol");
+    let lines = u64_field(item, "lines").unwrap_or(0);
+    let loc = format_repo_location(item)
+        .map(|l| format!(" — {}", inline_code(&l)))
+        .unwrap_or_default();
+    format!("{} ({kind}, {lines}L){loc}", inline_code(qn))
+}
+
 fn render_dead_tails(out: &mut String, value: &Value) {
     out.push_str("## Dead tails & phantom-tested code\n\n");
     if let Some(scope) = value.get("scope").filter(|v| !v.is_null()) {
@@ -121,36 +190,73 @@ fn render_dead_tails(out: &mut String, value: &Value) {
         out.push_str(&format!("- **Scope:** {fmt}\n"));
     }
     if let Some(summary) = value.get("summary").filter(|v| v.is_object()) {
-        for (f, lbl) in [("phantom_tested_count", "Phantom tested count"), ("dead_tails_count", "Dead tails count"), ("dangling_calls_count", "Dangling calls count")] {
-            if let Some(v) = summary.get(f) {
-                let s = scalar_text(v);
-                out.push_str(&format!("- **{lbl}:** {}\n", if v.is_string() { s } else { inline_code(&s) }));
-            }
-        }
+        let p = u64_field(summary, "phantom_tested_count").unwrap_or(0);
+        let d = u64_field(summary, "dead_tails_count").unwrap_or(0);
+        let c = u64_field(summary, "dangling_calls_count").unwrap_or(0);
+        out.push_str(&format!(
+            "- **Phantom tested:** `{p}` | **Dead tails:** `{d}` | **Dangling calls:** `{c}`\n"
+        ));
     }
     let mut consumed = vec!["operation", "scope", "summary"];
-    for (field, heading) in [("phantom_tested", "Phantom-tested production code"), ("dead_tails", "Dead tails"), ("dangling_calls", "Dangling internal calls")] {
+    for (field, heading) in [
+        ("phantom_tested", "Phantom-tested production code"),
+        ("dead_tails", "Dead tails"),
+        ("dangling_calls", "Dangling internal calls"),
+    ] {
         if let Some(page) = value.get(field) {
-            render_page(out, heading, page, |o, item| match field {
-                "phantom_tested" => {
-                    render_record(o, item, "symbol", &["test_callers"]);
-                    for c in item.get("test_callers").and_then(Value::as_array).into_iter().flatten() {
-                        let name = text_field(c, "name").or_else(|| text_field(c, "qualname")).unwrap_or("test caller");
-                        o.push_str("  - Test caller: ");
-                        render_name(o, name, text_field(c, "uri"), true);
-                        append_location(o, c, " — ");
-                        o.push('\n');
+            let items = page_items(page);
+            if items.is_none_or(<[Value]>::is_empty)
+                && u64_field(page, "total") == Some(0)
+                && page.get("has_more") != Some(&Value::Bool(true))
+                && page.get("next_offset").is_none_or(Value::is_null)
+                && page.get("omitted") != Some(&Value::Bool(true))
+            {
+                consumed.push(field);
+                continue;
+            }
+            out.push_str(&format!("\n## {}\n\n", escape_text(heading)));
+            let total = u64_field(page, "total").unwrap_or_else(|| items.map_or(0, |a| a.len() as u64));
+            let has_more = page.get("has_more").and_then(Value::as_bool).unwrap_or(false);
+            out.push_str(&format!("- **total**: `{total}` | **has_more**: `{has_more}`"));
+            if let Some(next_offset) = u64_field(page, "next_offset") {
+                out.push_str(&format!(" | **next_offset**: `{next_offset}`"));
+            }
+            out.push_str("\n\n");
+            for item in items.into_iter().flatten() {
+                match field {
+                    "phantom_tested" => {
+                        let base = format_dead_tail_symbol(item);
+                        let callers: Vec<String> = item
+                            .get("test_callers")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .map(|c| {
+                                let name = text_field(c, "name").unwrap_or("test");
+                                match format_repo_location(c) {
+                                    Some(l) => format!("{name} (`{l}`)"),
+                                    None => name.to_owned(),
+                                }
+                            })
+                            .collect();
+                        if callers.is_empty() {
+                            out.push_str(&format!("- {base}\n"));
+                        } else {
+                            out.push_str(&format!("- {base} — tests: {}\n", callers.join(", ")));
+                        }
                     }
-                }
-                "dangling_calls" => {
-                    o.push_str(&format!("- {} ({}, {})", inline_code(text_field(item, "symbol").unwrap_or("unknown symbol")), inline_code(text_field(item, "kind").unwrap_or("unknown")), inline_code(text_field(item, "resolution").unwrap_or("unresolved"))));
-                    if let Some(p) = text_field(item, "path") {
-                        match text_field(item, "uri") { Some(u) => o.push_str(&format!(" — [{}]({u})", inline_code(p))), None => o.push_str(&format!(" — {}", inline_code(p))) }
+                    "dangling_calls" => {
+                        let sym = text_field(item, "symbol").unwrap_or("unknown symbol");
+                        let kind = text_field(item, "kind").unwrap_or("unknown");
+                        let res = text_field(item, "resolution").unwrap_or("unresolved");
+                        let loc = format_repo_location(item)
+                            .map(|l| format!(" — {}", inline_code(&l)))
+                            .unwrap_or_default();
+                        out.push_str(&format!("- {} ({kind}, {res}){loc}\n", inline_code(sym)));
                     }
-                    o.push('\n');
+                    _ => out.push_str(&format!("- {}\n", format_dead_tail_symbol(item))),
                 }
-                _ => render_record(o, item, "symbol", &[]),
-            });
+            }
             consumed.push(field);
         }
     }

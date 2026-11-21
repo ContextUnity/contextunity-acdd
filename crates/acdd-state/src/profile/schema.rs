@@ -556,12 +556,15 @@ pub struct StructuredGuidance {
 }
 
 impl GuidanceEntry {
-    /// Render this guidance entry deterministically into plain text.
+    /// Render this guidance entry deterministically into Markdown (`###` heading + bullets).
     pub fn render(&self) -> String {
         match self {
             Self::Text(text) => text.clone(),
             Self::Structured(s) => {
-                let mut out = s.description.clone();
+                if s.criteria.is_empty() {
+                    return format!("### {}", s.description);
+                }
+                let mut out = format!("### {}\n", s.description);
                 for criterion in &s.criteria {
                     out.push_str("\n- ");
                     out.push_str(criterion);

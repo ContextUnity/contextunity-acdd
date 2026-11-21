@@ -1,5 +1,12 @@
 # ContextUnity ACDD — Agent Router
 
+## Instruction Authority (SSOT)
+
+- **Root [`AGENTS.md`](AGENTS.md)**: workspace routing, tool/script boundaries, worker self-claim, Git/worktree permissions, `BUDGET_OVERRIDE` authority, and handoff workflow.
+- **Domain/Owner `AGENTS.md` + [`TESTS.md`](TESTS.md) + [`docs/AGENTS.md`](docs/AGENTS.md)**: detailed architecture, `INV-SINGLE-OWNER`, test harness/placement rules, and documentation governance (loaded by scope via `docs.instructions`).
+- **Profile `ClaimResp.guidance` (`.acdd/profile.yaml` <- `code` <- `base`)**: concise gate- and role-specific operational checklists injected on `acdd_claim` / `acdd claim`.
+- **Skills (`skills/*/SKILL.md`) & `acdd_guide`**: step-by-step procedures, evidence schemas, and SQLite/AST usage examples on demand.
+
 ## Read before work
 
 - Read [documentation instructions](docs/AGENTS.md) before documentation changes.
@@ -16,7 +23,7 @@
 - Architecture and modularity: [src/AGENTS.md](src/AGENTS.md), [architecture](docs/architecture/README.md), and [decisions](docs/adr/README.md).
 - Interfaces: [configuration and tools](docs/reference/README.md), [task operations](docs/reference/tasks.md), [ACDD navigation](docs/reference/acdd.md), and [CLI commands](docs/reference/cli.md).
 - Operations: [runbooks](docs/runbooks/README.md).
-- Planning & live DAG waves: Use `acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]` or `acdd_state(action: "roadmap")` alongside [roadmap](ROADMAP.md) and [milestones](docs/milestones/README.md).
+- Planning & live DAG waves: Use `acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]` or `acdd_state(action: "roadmap")` alongside [roadmap](ROADMAP.md) and [milestones](docs/milestones/README.md). Update [roadmap](ROADMAP.md) in the same change whenever authoring new milestones or refining milestone scope, sequencing, or release lines with the user.
 - Verification: [required gates](TESTS.md) and [test invariants](tests/AGENTS.md).
 - Canonical ownership (`INV-SINGLE-OWNER`): Keep one owner per subsystem ([canonical helper ownership](src/AGENTS.md#3-canonical-helper-ownership)) — `acdd_state::{validate, usecases::deps}` for workspace/spec/profile/dep validation, `acdd_core::config` for `acdd.yaml` & `0.5` detection, `acdd_core::errors` for `ErrorCode`/`StateError`, `acdd_core::path_policy` for `WorkspacePathPolicy` & brace-aware glob/overlap matching, `acdd_state::profile::when` for `WhenExpr`, and `acdd_core::{fs, lock, git, sys, format, telemetry}` for OS/crypto/time primitives.
 - Reuse-first & complexity escalation: Run `code_map_search` / `ast_grep_search` to reuse existing canonical owners before writing new helpers or pipelines; ban narrow language string/path heuristics where indexed AST/linker graphs exist and ban raw `Command::new("git")` outside `acdd_core::git`. Record justification and escalate via `acdd_blackboard` (`topic: decisions` / `--action escalate`) before adding any new subsystem or exceeding `~80-100` net production LOC for a defect fix.
@@ -31,10 +38,11 @@ Follow any source continuation to obtain the complete digest-verified body. Use
 for AST patterns and graph queries, `acdd_read(mode="search", pattern="...")`
 for regex/substring/config searches, `search_docs` / `get_doc` for documentation
 lookup, and `acdd_read(path="...", start_line=..., end_line=...)` for bounded
-line slices. Do NOT use shell `grep`, `sed`, `cat`, `head`, `tail`, `find`, or
-`read_file` inside ACDD-enabled workspaces; use `rg -n` ONLY as a fallback when
-`acdd_read(mode="search")`, `search_docs`, or `code_map_*` cannot cover an
-unadmitted/gitignored path.
+line slices. Do NOT use shell `grep`, `sed`, `cat`, `head`, `tail`, `find`,
+`read_file`, inline Python (`python -c` / heredocs), or one-off `.py` scripts
+inside ACDD-enabled workspaces; use `rg -n` ONLY as a fallback for
+unadmitted/gitignored paths, and write benchmarks/reproductions as Rust tests or
+`acdd` CLI commands.
 
 Use Blackboard `notes` for non-obvious technical context, not routine gate
 status, passing tests, or SHAs that add no context. Before rejecting a review,
@@ -45,32 +53,22 @@ Use ACDD MCP tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `a
 
 The repository ACDD profile registers `rust-check-and-test` as strict Clippy, scoped tests (`{scope_target}` + `{test_filter}`), and `cargo test --test commitment_integrity`. For automated gates (`build`), run `acdd verify <node_cursor> --test <test_path::test_fn>` (or MCP `acdd_verify`), then submit the stage via `acdd submit <node_cursor> --action pass` (or `acdd_submit`) without manual evidence assembly. Delivery infers proof from the accepted candidate tree. Review and schema-defined gates provide their declared typed evidence payload (`review_evidence` / `custom_evidence`). Write any temporary agent or workflow scratch files (inventories, baselines, scratch JSON/notes) under `.acdd/tmp/` rather than directly in `.acdd/` (except engine-managed files).
 
+- **Hotfix workflow (`.acdd/profiles/hotfix.yaml`)**: For localized bugfixes that do not need a milestone spec, `blueprint_synthesis`, or `integration_review`, start an ephemeral run via `acdd start --goal "<summary>" --profile hotfix [--scope <path> ...]` (add `--worktree` when isolated branch execution is needed) and run `goal.build` -> `goal.review` -> `goal.deliver` -> `run_tests` -> `handoff` (routing to `polish` on `run_tests` or `handoff` failure).
+
 <!-- acdd:agents-verification:start -->
 When authoring contracts or testing capabilities:
-- **Table-driven contract matrices**: Use a single table-driven `#[test]` (`for case in cases`) — sharing one base workspace, cold index snapshot, or harness built once outside the loop — whenever testing homogeneous input, error, alias, spelling, hook, or boundary variants of the same contract or seam. Do NOT clone heavy `#[test]` functions, paste imperative multi-repo/git setup chains sequentially inside one `#[test]` (fake table-driven mega-tests), or call `Workspace::new()` / `.build()` / `InstallerHarness::new` / `McpTestHarness::new` / subprocess spawns per iteration unless each row genuinely tests a distinct cold-build initial filesystem layout.
-- **Dedicated domain tests**: Author a separate `#[test]` in the owning domain module ONLY for a genuinely distinct domain contract, independent workflow, or orthogonal failure seam — never to split a matrix of variations of the same rule, and never by appending unrelated requirements into an existing workflow test.
-- **Shared read-only fixtures (`PersistedSnapshot`)**: NEVER store `Workspace` or `TempDir` inside a `static OnceLock` / `LazyLock` (statics skip `Drop` on process exit and leak `/tmp/contextunity-test-*`). Share read-only indexed state via `std::sync::OnceLock<PersistedSnapshot>` (`tests/common/sqlite.rs`), dropping the builder `Workspace` inside `get_or_init`, or create local `Workspace` instances when disk source files are required.
-- **In-process state vs subprocess harnesses**: Prove pure DAG scheduling, gate ordering, transitions, and blackboard routing in-process (`RunHarness::in_memory()` / `StateEngine`); reserve Git worktrees and child-process runner tests (`tests/acdd/runner_and_waves.rs`) for genuine process, signal, or worktree isolation contracts (`tests/acdd` runs `< 15s`).
-- **Zero new root test binaries & zero tempdir leaks**: Register new integration test modules inside the owning canonical domain binary (`tests/core.rs`, `tests/mcp.rs`, `tests/query_context.rs`, `tests/linker.rs`, `tests/languages.rs`, `tests/acdd.rs`, `tests/commitment_integrity.rs`) or crate-local `crates/acdd-state/tests/state_integration.rs` for `acdd-state` integration suites. Never add new top-level `tests/*.rs` binaries, tautological enum/struct echo checks, brittle manifest/CI YAML substring checks, helper meta-test bloat, or temporary deleted-symbol lists in `commitment_integrity`, and ensure tests leave zero leaked `/tmp/contextunity-test-*` directories.
-- **Zero review-fix test bloat**: Do NOT spawn standalone `#[test]` functions or extra `Workspace` / `McpTestHarness` instances to close P1/P2 review findings. Fix the mechanism via generalization so the defect class disappears; add at most a row to the owning table-driven contract test ONLY if a real external contract boundary was missing (net new `#[test]` budget during review remediation is zero. During review remediation, extend an existing table-driven `for case in cases` matrix or shared local helper instead of authoring imperative multi-setup mega-tests).
+- Follow [`tests/AGENTS.md`](tests/AGENTS.md) and [`TESTS.md`](TESTS.md) for test placement inside existing canonical binaries (`tests/core.rs`, `tests/mcp.rs`, `tests/query_context.rs`, `tests/linker.rs`, `tests/languages.rs`, `tests/acdd.rs`, `tests/commitment_integrity.rs`, `crates/acdd-state/tests/state_integration.rs`), `RunHarness::in_memory()` / `PersistedSnapshot` reuse, table-driven contract matrices, zero review-fix test bloat, and zero `/tmp/contextunity-test-*` leaks (`BEFORE == AFTER`).
 - **Build seam proof**: Author compiling, passing seam tests directly in `build` (`exit_code == 0`, `code.seam` reachability, and `max_net_loc` budgets) without separate runtime-red `contract` steps.
-- **Autonomous scope extension**: Agents should extend scope autonomously via `acdd extend-scope` / `acdd_state(action: "extend_scope")` to include necessary files, fixtures, tests, and documentation within admitted roots to unblock implementation or verification without halting execution or requesting human permission.
+- **Autonomous scope extension**: Extend scope autonomously via `acdd extend-scope` / `acdd_state(action: "extend_scope")` within admitted roots to unblock implementation or verification without halting for human permission.
 <!-- acdd:agents-verification:end -->
 
 <!-- acdd:contract-synthesis:start -->
 ## Architectural Blueprint Synthesis Gate (`blueprint_synthesis`)
 
-The initial container of the workspace profile is `blueprint_synthesis` (`synthesize` (role: `architect`) $\to$ `review` (role: `independent_reviewer`)).
-Load and execute the [`contract-planning`](skills/contract-planning/SKILL.md) skill during spec authoring and blueprint synthesis:
-1. Architectural Viability Audit: Critically evaluate design appropriateness and minimal complexity (Occam's razor).
-2. ADR & Invariant Reconciliation: Reconcile proposals against `docs/adr/`, `docs/architecture/`, and active repository invariants before defining tasks.
-3. Risk & Ambiguity Discovery: Probe for vague completion criteria, operational pitfalls, and failure semantics.
-4. Constructive Improvement: Synthesize simpler, durable designs and leverage existing patterns before implementation begins.
-5. Broad architectural exploration via ACDD MCP (`code_map_*`, `ast_grep_search`, `acdd_read`).
-6. Minimal intervention principle (audit existing canonical owners (`INV-SINGLE-OWNER`) and forbid duplicate registries, parallel pipelines, or shadow schedulers).
-7. Scope integrity (protected files `Cargo.toml`, `crates/*/Cargo.toml`, `.acdd/profile.yaml` are strictly off-limits without explicit authorization).
-8. Recording the architectural decision on `acdd_blackboard` before submission.
-9. Establishing per-task blueprint slices (`proof.tasks[<task_ref>]`), cross-task seam boundaries (`incoming_seams`, `outgoing_seams`), and invariant specifications materialized by the engine and injected automatically on `acdd_claim` / `acdd claim`.
+`blueprint_synthesis` (`synthesize` (role: `architect`) $\to$ `review` (role: `independent_reviewer`)) runs before tasks. Load [`contract-planning`](skills/contract-planning/SKILL.md) and:
+1. Explore canonical owners via ACDD MCP (`code_map_*`, `ast_grep_search`, `acdd_read`), reconcile `docs/adr/`, `docs/architecture/`, and active invariants (`INV-SINGLE-OWNER`), and apply Occam's razor before decomposing tasks.
+2. Keep `protected_paths` (`Cargo.toml`, `crates/*/Cargo.toml`, `.acdd/profile.yaml`) off-limits without explicit authorization.
+3. Post the architectural decision on `acdd_blackboard` (`topic: decisions`) and materialize per-task slices (`proof.tasks[<task_ref>]` with `canonical_owners`, `mechanism_rules`, `max_net_loc`, `verification_seam`, `incoming_seams`, `outgoing_seams`) before submitting.
 <!-- acdd:contract-synthesis:end -->
 
 ## Documentation scan before handoff
@@ -106,14 +104,11 @@ Worktrees live at `.worktrees/<run_name>` for isolated runs and `.worktrees/<run
 
 When every task in the run is completed or cancelled:
 
-1. **Absorb Polish & Verify Repository Gates**:
-   Commit all working-tree polish in the run worktree, run `acdd verify verify` (which executes `.acdd/profile.yaml`'s `check_full_repo`: `commitment_integrity`, workspace strict Clippy, and `cargo test --workspace --lib` across `acdd-core`, `acdd-index`, `acdd-state`, and root `--lib`), then run the remaining [TESTS.md](TESTS.md#milestone-handoff-gate) gates:
-   - `cargo test --workspace --all-targets`
-   - `cargo run -- docs check && cargo run -- validate`
-   - Verify `/tmp/contextunity-test-*` `BEFORE == AFTER`.
+1. **Absorb Polish & Verify Repository Gates (`run_tests`)**:
+   Commit all working-tree polish in the run worktree and run `acdd verify run_tests` (which executes `.acdd/profile.yaml`'s `check_full_repo`: `commitment_integrity`, workspace strict Clippy, `cargo test --workspace --all-targets`, `docs check`, `validate`, and `./scripts/test-macos-ssh.sh` on the configured macOS SSH host). Verify `/tmp/contextunity-test-*` `BEFORE == AFTER` locally (remote macOS leak checks run inside `scripts/test-macos-ssh.sh`). Never assemble manual `ssh`/`rsync` commands for macOS verification; always invoke `acdd verify run_tests` or `./scripts/test-macos-ssh.sh`.
 
-2. **Submit `verify` and Independent `integration_review`**:
-   Submit `acdd submit verify --action pass`, claim and complete `integration_review` with an independent reviewer (`review_evidence` across declared contours), then submit `acdd submit handoff --action pass` (which runs `save.post: commit`, `archive: true`, `prune: true`, moving the completed spec to `archive/` and pruning the active run into `run_tombstones`).
+2. **Submit `run_tests` and Independent `integration_review`**:
+   Submit `acdd submit run_tests --action pass`, claim and complete `integration_review` with an independent reviewer (`review_evidence` across declared contours), then submit `acdd submit handoff --action pass` (which runs `save.post: commit`, `archive: true`, `prune: true`, moving the completed spec to `archive/` and pruning the active run into `run_tombstones`).
 
 3. **Run Landing**:
    In the primary worktree (`main`), fast-forward the run branch, remove the run worktree, and delete the run branch:
@@ -138,5 +133,6 @@ Do not run benchmarks without explicit user approval. Read [benchmark instructio
 
 Execute `mode: subagent` gates via native subagents, swarm workers, or background `codex exec` processes (`run_command` with `WaitMsBeforeAsync: 500`, reactive wakeup without polling):
 
-- **Builder continuity & defect-class remediation**: Reuse the same worker or `codex exec resume <SESSION_ID>` session when routing `review` rejection findings back to `build`. On any rejection, load and follow `close-review-findings`: trace the full owner path across all ingress surfaces (CLI, MCP, internal handlers), unify duplicated validation behind one canonical owner instead of patching one reported example, and record `BUDGET_OVERRIDE: <reason>` rather than line-packing golf if clean shared validation legitimately needs LOC headroom.
-- **Independent review**: Claim and submit `review` / `integration_review` with a distinct `worker_id` (enforced by `independent_from`), verify `code_map_query(operation="duplicates", ...)` and diff-scoped `code_map_query(operation="dead_tails", ...)` are clean of newly introduced clones, `phantom_tested`, `dead_tails`, or `dangling_calls`, verify production-seam non-fallback proofs for any fast path with a silent fallback, and evaluate all criteria defined in `.acdd/profile.yaml` and `acdd_claim` guidance. Route repeated multi-surface validation defects to `architectural_drift` (`rearchitect`) rather than looping incremental patch rounds.
+- **Worker self-claim & thin coordinator prompt (mandatory for `mode: subagent`)**: The parent/coordinator session MUST NOT call `acdd_claim` / `acdd claim` on a subagent's behalf, MUST NOT pre-author code recipes or `review_evidence` JSON payloads, and MUST launch workers with only `(run, node_cursor, worker_id, worktree)`. Instruct the worker to: (1) call `acdd_claim` / `acdd claim` as its very first action, (2) read every path listed under `Repository Instructions - MANDATORY` (`docs.instructions`), `ClaimResp.contract`, `ClaimResp.guidance`, `pre_task_slice`, `unresolved_findings`, and `blackboard`, and (3) execute all edits, `acdd_verify`, and `acdd_submit` strictly inside `ClaimResp.worktree`.
+- **Builder continuity & `BUDGET_OVERRIDE` authority**: Reuse the same worker or `codex exec resume <SESSION_ID>` session when routing `review` rejection findings back to `build`. On any rejection, load `close-review-findings`, trace the full owner path across all ingress surfaces (CLI, MCP, internal handlers), and unify behind one canonical owner. A `builder` MUST NEVER self-approve `BUDGET_OVERRIDE`; escalate to coordinator/architect (`acdd_blackboard` `decisions` or `--action escalate`) when clean shared logic genuinely exceeds `max_net_loc`.
+- **Independent review**: Instruct an independent reviewer (distinct `worker_id`, enforced by `independent_from`) to self-claim and submit `review` / `integration_review`, check every spec `AC` 1:1, verify `BUDGET_OVERRIDE` authority vs measured net LOC, run `code_map_query` (`duplicates` & `dead_tails`; workspace-wide on `integration_review`), verify non-fallback fast-path proofs, and route repeated multi-surface defects to `architectural_drift` (`rearchitect`).

@@ -715,7 +715,8 @@ fn dead_tails_classifies_cross_crate_liveness_chains_phantom_tested_and_dangling
             contextunity_acdd::format::OperationKind::Navigation,
         );
         assert!(md.contains("## Dead tails & phantom-tested code"), "{md}");
-        assert!(md.contains("file:///repo/crates/b/src/lib.rs"), "{md}");
+        assert!(md.contains("`crates/b/src/lib.rs:"), "{md}");
+        assert!(!md.contains("file:///repo/"), "dead_tails markdown must use repo-relative paths: {md}");
         assert!(md.contains("## Dangling internal calls"), "{md}");
         if case.selector == Some("crates/b") && case.offset == 0 {
             assert!(md.contains("crate::missing::deleted_fn"), "{md}");

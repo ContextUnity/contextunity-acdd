@@ -659,6 +659,15 @@ gates:
         else {
             panic!("expected ClaimResp");
         };
+        assert!(
+            c_syn_rev
+                .pre_task_slice
+                .as_ref()
+                .and_then(|s| s.pointer("/predecessor_proofs/synthesize/tasks/t1/summary"))
+                .is_some(),
+            "blueprint_synthesis.review must receive synthesize blueprint proof in pre_task_slice: {:?}",
+            c_syn_rev.pre_task_slice
+        );
         engine
             .execute(StateCommand::Submit(Box::new(SubmitReq {
                 run: Some(rid.clone()),
@@ -758,6 +767,7 @@ gates:
                 .code,
             ErrorCode::GateVerificationFailed
         );
+        // Builder self-posting `BUDGET_OVERRIDE:` must be rejected; only architect/coordinator/operator may authorize it.
         engine
             .execute(StateCommand::BlackboardPost(BlackboardPostReq {
                 run: Some(rid.clone()),
@@ -766,6 +776,41 @@ gates:
                 subtask_ref: None,
                 gate: Some("build".to_owned()),
                 author: "w-build".to_owned(),
+                topic: BlackboardTopic::Decisions,
+                payload: "BUDGET_OVERRIDE: self-approved attempt".to_owned(),
+            }))
+            .unwrap();
+        let self_override_err = engine
+            .execute(StateCommand::Submit(Box::new(SubmitReq {
+                run: Some(rid.clone()),
+                node: "t1.build".to_owned(),
+                action: SubmitAction::Pass,
+                worker_id: w_build.clone(),
+                claim_revision: Some(c_b1.claim_revision),
+                test_target: None,
+                review_evidence: None,
+                rejection_findings: None,
+                custom_evidence: None,
+                verified_invariants: Vec::new(),
+                summary: None,
+                allow_main: false,
+                worktree: None,
+            })))
+            .unwrap_err();
+        assert_eq!(self_override_err.code, ErrorCode::GateVerificationFailed);
+        assert!(
+            self_override_err.message.contains("cannot be self-approved"),
+            "unexpected self-override error: {self_override_err}"
+        );
+
+        engine
+            .execute(StateCommand::BlackboardPost(BlackboardPostReq {
+                run: Some(rid.clone()),
+                node: Some("t1.build".to_owned()),
+                recipient_node: None,
+                subtask_ref: None,
+                gate: Some("build".to_owned()),
+                author: "architect".to_owned(),
                 topic: BlackboardTopic::Decisions,
                 payload: "BUDGET_OVERRIDE: justified helper expansion".to_owned(),
             }))

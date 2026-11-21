@@ -113,47 +113,29 @@ fn document_search_markdown_preserves_page_metadata_excerpts_and_section_identit
         .expect("MCP tool should succeed");
     let section = &json["sections"]["items"][0];
     assert_eq!(markdown.lines().next(), Some("# search_docs"));
-    for field in [
-        "generation",
-        "has_more",
-        "limit",
-        "next_offset",
-        "offset",
-        "total",
-        "doc_id",
-        "doc_type",
-        "is_invariant",
-        "rank",
-        "section_title",
-        "size",
-    ] {
-        assert!(
-            markdown.contains(&format!("**{field}**:")),
-            "{field}: {markdown}"
-        );
-    }
     for token in [
         "Search results",
         "## Sections",
-        "**has_more**: `false`",
-        "**limit**: `30`",
-        "**next_offset**: `null`",
-        "**offset**: `0`",
         "**total**: `1`",
+        "**limit**: `30`",
+        "**offset**: `0`",
+        "**has_more**: `false`",
         "Match excerpt",
         "# [Contract]\n\nThe `target` function preserves the [documented] [contract].",
-        "[README.md](file://",
+        "— `README.md`",
+        section["doc_id"].as_str().unwrap(),
+        section["doc_type"].as_str().unwrap(),
     ] {
         assert!(markdown.contains(token), "{token}: {markdown}");
     }
+    assert!(
+        !markdown.contains("file://"),
+        "search_docs markdown must use repo-relative paths: {markdown}"
+    );
     assert!(markdown.contains(&format!(
-        "### {}",
+        "- **{}**",
         section["section_title"].as_str().unwrap()
     )));
-    for field in ["doc_type", "is_invariant", "section_title"] {
-        let token = format!("**{field}**: `{}`", section.get(field).unwrap());
-        assert!(markdown.contains(&token), "{token}: {markdown}");
-    }
     client.finish().expect("server must finish successfully");
 }
 

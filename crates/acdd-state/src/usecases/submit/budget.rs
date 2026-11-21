@@ -3,6 +3,7 @@
 use acdd_core::git::git_command;
 use crate::store::traits::StateBackend;
 use crate::types::{
+    BlackboardStatus,
     BlackboardTopic,
     GateNodeRecord,
     RunGraphSnapshot,
@@ -22,6 +23,7 @@ pub(super) fn enforce_blueprint_max_net_loc(
     backend: &dyn StateBackend,
     snapshot: &RunGraphSnapshot,
     node: &GateNodeRecord,
+    gate_role: Option<&str>,
     target_worktree: &Path,
     current_tree: &TreeOid,
     admitted_scope: &[String],
@@ -52,14 +54,22 @@ pub(super) fn enforce_blueprint_max_net_loc(
         return Ok(());
     }
 
-    if has_container_budget_decision(config, backend, snapshot, node, net_loc)? {
+    if has_container_budget_decision(
+        config,
+        backend,
+        snapshot,
+        node,
+        gate_role,
+        task_ref.as_str(),
+        net_loc,
+    )? {
         return Ok(());
     }
 
     Err(StateError::new(
         ErrorCode::GateVerificationFailed,
         format!(
-            "task '{task_ref}' production net LOC delta (+{net_loc}) exceeds blueprint budget max_net_loc={max_net_loc}; reuse existing canonical owners or simplify the implementation, or record a `BUDGET_OVERRIDE: <reason>` decision in `acdd_blackboard` (topic: decisions) / submit with `--action escalate`"
+            "task '{task_ref}' production net LOC delta (+{net_loc}) exceeds blueprint budget max_net_loc={max_net_loc}; reuse existing canonical owners or simplify the implementation, or escalate (`submit --action escalate`) for an independent `BUDGET_OVERRIDE: <reason>` decision from architect/coordinator/operator in `acdd_blackboard` (topic: decisions)"
         ),
     ))
 }
@@ -161,6 +171,8 @@ fn has_container_budget_decision(
     backend: &dyn StateBackend,
     snapshot: &RunGraphSnapshot,
     node: &GateNodeRecord,
+    gate_role: Option<&str>,
+    task_ref: &str,
     net_loc: i64,
 ) -> Result<bool, StateError> {
     if !config.modules.is_enabled("blackboard") {
@@ -173,15 +185,47 @@ fn has_container_budget_decision(
         .filter(|n| n.node_id == container_id || n.parent_id.as_deref() == Some(container_id))
         .map(|n| n.node_id.as_str())
         .collect();
+    let mut self_authors: BTreeSet<&str> = BTreeSet::new();
+    if let Some(ref w) = node.worker_id {
+        self_authors.insert(w.as_str());
+    }
+    for claim in &snapshot.claims {
+        if claim.node_id == node.node_id {
+            self_authors.insert(claim.worker_id.as_str());
+        }
+    }
+    let is_self_author = |author: &str| -> bool {
+        gate_role.is_some_and(|role| author.eq_ignore_ascii_case(role))
+            || self_authors.contains(author)
+    };
+
     let items = list_all_blackboard_items(config, backend, &snapshot.run.run_id)?;
-    Ok(items.into_iter().any(|item| {
-        item.topic == BlackboardTopic::Decisions
-            && item
+    let mut saw_self_approved = None;
+    for item in items {
+        if item.status != BlackboardStatus::Open
+            || item.topic != BlackboardTopic::Decisions
+            || !item
                 .node_id
                 .as_deref()
                 .is_some_and(|nid| container_node_ids.contains(nid))
-            && is_explicit_budget_override(&item.payload, net_loc)
-    }))
+            || !is_explicit_budget_override(&item.payload, net_loc)
+        {
+            continue;
+        }
+        if !is_self_author(item.author.trim()) {
+            return Ok(true);
+        }
+        saw_self_approved = Some(item.author);
+    }
+    if let Some(author) = saw_self_approved {
+        return Err(StateError::new(
+            ErrorCode::GateVerificationFailed,
+            format!(
+                "BUDGET_OVERRIDE for task '{task_ref}' (+{net_loc} net LOC) cannot be self-approved by implementer '{author}'; escalate (`submit --action escalate`) and record approval from architect, coordinator, or operator"
+            ),
+        ));
+    }
+    Ok(false)
 }
 
 fn is_explicit_budget_override(payload: &str, net_loc: i64) -> bool {

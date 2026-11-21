@@ -316,12 +316,26 @@ pub(crate) fn submit_holding_repo_lock(
                 &pre_input,
             )?;
 
-            if node.kind == NodeKind::TaskGate && machine_gate.role.as_deref() == Some("builder") {
+            let is_drift_target = effective_machine_profile.gates.iter().any(|item| match item {
+                crate::machine::MachineGraphItem::TasksBlock(tb) => tb
+                    .gates
+                    .iter()
+                    .any(|g| g.fail_drift.as_deref() == Some(machine_gate.id.as_str())),
+                crate::machine::MachineGraphItem::Gate(_) => false,
+            });
+            let is_task_impl_gate = node.kind == NodeKind::TaskGate
+                && !machine_gate.save.immutable
+                && !machine_gate.receipt
+                && machine_gate.independent_from.is_empty()
+                && machine_gate.need.is_empty()
+                && !is_drift_target;
+            if is_task_impl_gate {
                 enforce_blueprint_max_net_loc(
                     config,
                     backend,
                     &snapshot,
                     &node,
+                    machine_gate.role.as_deref(),
                     &target_worktree,
                     &current_tree,
                     &admitted_scope,

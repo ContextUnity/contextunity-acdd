@@ -554,10 +554,11 @@ gates:
     .unwrap();
     let b_loc2 = claim_node(&loc_eng, loc_rid.as_str(), "t1.build", "builder-loc", None, false, false, None).unwrap();
     fs::write(loc_root.join("src/é.rs"), "pub fn u1() {}\npub fn u2() {}\n").unwrap();
-    for (decision_payload, expect_ok) in [
-        ("Budget exception denied.", false),
-        ("{\"approved_max_net_loc\": 2}", false),
-        ("BUDGET_OVERRIDE: expanded error handling", true),
+    for (author, decision_payload, expect_ok) in [
+        ("builder-loc", "Budget exception denied.", false),
+        ("builder-loc", "{\"approved_max_net_loc\": 2}", false),
+        ("builder-loc", "BUDGET_OVERRIDE: self-approved", false),
+        ("architect", "BUDGET_OVERRIDE: expanded error handling", true),
     ] {
         loc_eng
             .execute(StateCommand::BlackboardPost(BlackboardPostReq {
@@ -566,7 +567,7 @@ gates:
                 recipient_node: None,
                 subtask_ref: None,
                 gate: Some("build".to_owned()),
-                author: "builder-loc".to_owned(),
+                author: author.to_owned(),
                 topic: BlackboardTopic::Decisions,
                 payload: decision_payload.to_owned(),
             }))
@@ -578,7 +579,11 @@ gates:
         if expect_ok {
             res.expect(decision_payload);
         } else {
-            assert_eq!(res.unwrap_err().code, ErrorCode::GateVerificationFailed, "payload={decision_payload}");
+            assert_eq!(
+                res.unwrap_err().code,
+                ErrorCode::GateVerificationFailed,
+                "author={author} payload={decision_payload}"
+            );
         }
     }
 

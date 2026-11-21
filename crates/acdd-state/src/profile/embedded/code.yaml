@@ -149,85 +149,68 @@ roles:
   architect:
     mode: subagent
     reuse_on_reject: true
-    guidance: "Lead minimal, grounded architectural synthesis using ACDD MCP navigation (acdd_read, code_map_search, code_map_impact, search_docs) before proposing changes."
+    guidance: "Synthesize minimal grounded architecture using ACDD MCP navigation before proposing changes."
   builder:
     mode: subagent
     reuse_on_reject: true
-    guidance: "Implement the accepted slice with minimal complexity inside admitted scope using ACDD MCP navigation, keeping verification proportional to risk."
+    guidance: "Implement the accepted slice minimally within `admitted_scope`; never self-approve `max_net_loc` overrides (`BUDGET_OVERRIDE` requires architect/coordinator/operator)."
   independent_reviewer:
     mode: subagent
     reuse_on_reject: false
-    guidance: "Review declared contours independently; verify blast radius with code_map_impact and run code_map_query(operation: \"duplicates\", path: <scope>) and code_map_query(operation: \"dead_tails\", path: <scope>) (workspace-wide without path on integration_review), rejecting new clones, phantom_tested dead code, dead_tails, or dangling_calls with structured findings."
+    guidance: "Audit all contours independently with `code_map_impact` and `code_map_query` (`duplicates` & `dead_tails`; workspace-wide on `integration_review`). Reject new clones, `phantom_tested`, `dead_tails`, or `dangling_calls` with structured findings."
 
 guidance:
   code.principles:
-    description: "CODE ENGINEERING & SIMPLICITY PRINCIPLES"
+    description: "ENGINEERING & SIMPLICITY PRINCIPLES"
     criteria:
-      - "Prefer simpler, maintainable solutions and canonical owner reuse (INV-SINGLE-OWNER) over accumulating defensive abstractions, shadow resolvers, or narrow string heuristics."
-      - "Model domain states and variants with strong language-native types (closed enums/sum types, value objects/classes, typed interfaces/traits, and inheritance/polymorphism where appropriate) and one Single Source of Truth (SSOT) instead of parallel magic strings, boolean flag bags, or duplicated copy-pasted logic."
-      - "Extract shared helpers, base types, or dispatch tables whenever two or more consumers share logic (`>= 5` lines or repeated pipelines), while keeping single-caller pipelines cohesive without gratuitous boilerplate."
-      - "Zero production N+1 I/O, DB, parse, or subprocess loops: preload or batch lookups once at the operation boundary (bulk queries, pre-indexed maps, batched object reads) and pass borrowed views into resolvers rather than querying storage, parsing whole files, or spawning child processes per item/edge."
-      - "Trust already-validated internal artifacts within the same request instead of re-checking them, and skip computing or resolving data branches discarded by the caller's active filters."
-      - "Validate untrusted inputs once at external boundaries and trust validated internal types/schemas/locks without duplicating checks."
-      - "Never convert one-time incidents into permanent architectural layers or fence lists; fix the owning mechanism instead."
-      - "Eliminate redundant validations and dead code in touched files; keep tests proportional to actual operational risk."
-      - "Escalate via acdd_blackboard (topic: decisions or blockers) before introducing any new subsystem or exceeding max_net_loc (`BUDGET_OVERRIDE: <reason>`). Reviewers must verify any approved BUDGET_OVERRIDE reason against the measured net production LOC delta before accepting an overage."
-      - "Do NOT invent unrequested architecture, fallback layers, modes, or parallel pipelines outside the accepted spec and pre_task_slice; any contract or scope expansion requires an approved decision in acdd_blackboard (topic: decisions)."
-      - "Keep cohesive pipelines in one module; extract a separate file/submodule only for an independent domain or shared multi-consumer component rather than splitting tight internal state into pub(super) import boilerplate."
-      - "Reuse existing test harnesses when available and enforce strict test runtime budgets: execute pure logic, parser, graph, and state tests in-memory with shared setup hoisted outside loops; reserve disk tempdirs, VCS checkouts, and child processes strictly for genuine isolation contracts."
+      - "Reuse canonical owners (`INV-SINGLE-OWNER`), keep one SSOT with native closed enums/types instead of magic strings or shadow layers, and avoid unrequested fallback architecture."
+      - "Zero production N+1 I/O, DB, parse, or subprocess loops: batch/preload once at the boundary, skip branches discarded by caller filters, and trust validated internal types without re-checking."
+      - "Extract shared helpers for `>= 5`-line repeated pipelines, keep cohesive single-caller code together, and remove clones, `dead_tails`, `phantom_tested`, and `dangling_calls`."
+      - "Escalate new subsystems or `max_net_loc` overages via `acdd_blackboard` (`decisions`/`blockers`) or `submit --action escalate` — never convert one-time incidents into permanent layers."
+      - "Keep logic/state tests in-memory with hoisted setup and table matrices; reserve tempdirs, VCS checkouts, and child processes strictly for isolation contracts."
   code.tools:
-    description: "MANDATORY ACDD GRAPH & SOURCE NAVIGATION PROTOCOL"
+    description: "ACDD NAVIGATION & HYGIENE PROTOCOL"
     criteria:
-      - "Use acdd_read(selector: \"SymbolName\", path: ...) for complete symbol reads, code_map_overview / code_map_search(detail: \"compact\") / ast_grep_search for discovery, and rg strictly for literals/config/error text."
-      - "Run code_map_impact, code_map_tests, code_map_prove_removal, search_docs, and get_doc before editing or deleting declarations to reconcile ADRs and INV-* owners."
-      - "Before submitting build, polish, or review (or workspace-wide on integration_review), run code_map_query(operation: \"duplicates\") and code_map_query(operation: \"dead_tails\") and eliminate or reject clones, phantom_tested dead code, dead_tails, and dangling_calls."
-      - "If ACDD MCP tools are unavailable in the current harness/runtime, use the equivalent `acdd` CLI commands (`acdd claim`, `verify`, `submit`, `blackboard`, `read`, `query`, `context`, `doc`) following `skills/acdd/SKILL.md`."
+      - "Use `code_map_*`, `ast_grep_search`, `acdd_read(selector: ...)`, `search_docs`, `get_doc` (`rg` only for literals/config); if MCP is unavailable, use `acdd` CLI (`skills/acdd/SKILL.md`)."
+      - "Run `code_map_impact`/`tests`/`prove_removal` before deleting/changing public symbols, and `code_map_query(duplicates, dead_tails)` before submit."
+      - "Do NOT run inline Python (`python -c` / heredocs) or write ad-hoc `.py` verification scripts — use native tests or `acdd` CLI."
   milestone.synthesis:
     description: "ARCHITECTURAL BLUEPRINT SYNTHESIS"
     criteria:
-      - "Audit existing canonical owners and extension seams before decomposing tasks; assign minimal layers, exported interfaces, negative boundaries, cross-task seams, mechanism_rules, and realistic max_net_loc in proof.tasks."
-      - "Record the architectural decision via acdd_blackboard and cite its ID in blackboard_decision_id."
+      - "Audit canonical owners first; populate `proof.tasks` with minimal `canonical_owners`, `mechanism_rules`, `max_net_loc`, `verification_seam`, and cross-task seams."
+      - "Post the decision via `acdd_blackboard` and cite its ID in `blackboard_decision_id`."
   milestone.blueprint_review:
     description: "INDEPENDENT BLUEPRINT REVIEW"
     criteria:
-      - "Verify cited invariants, canonical-owner reuse, layer boundaries, and cross-task seams across proof.tasks."
-      - "Confirm every slice defines canonical_owners, mechanism_rules, realistic max_net_loc, proportional verification, and a valid blackboard_decision_id."
+      - "Verify invariants, canonical-owner reuse, layer boundaries, realistic `max_net_loc`, proportional verification, and a valid `blackboard_decision_id` across `proof.tasks`."
   task.code:
-    description: "TASK IMPLEMENTATION & SEAM VERIFICATION"
+    description: "TASK BUILD & SEAM PROOF"
     criteria:
-      - "Follow proof.tasks[task_ref] (`canonical_owners`, `mechanism_rules`, `max_net_loc`), author seam checks directly in build, and verify exit_code == 0."
-      - "If context_reset_required is set after rearchitect, read the latest rearchitect decision from acdd_blackboard (topic: decisions) and rebuild cleanly from scratch."
-      - "Keep functions cohesive; consider decomposing long production functions (>150 LOC) when they mix unrelated responsibilities or obscure control flow, while keeping linear pipelines, tables, or dispatchers intact when splitting adds indirection without clarity; extract repeated logic (>=5 lines) and multi-consumer behavior into shared helpers, classes, enums, or typed interfaces."
-      - "Fix defects across the full pattern class via the canonical owner (check sibling call sites with code_map_search/ast_grep_search) rather than patching one line at a time."
-      - "Avoid N+1 I/O, DB queries, repeated parses, unbatched subprocess spawns, and quadratic fallback scans in production loops; preload shared snapshots at the command boundary and verify hot-path latency/resource usage proportionally."
-      - "Keep tests fast and within runtime budget: test pure logic and state matrices in-memory without disk or VCS I/O, consolidate variants into data-driven table matrices sharing one base setup outside the loop (avoid sequential multi-setup mega-tests inside one test), reuse existing in-process test harnesses, eliminate redundant VCS/subprocess queries in callers, and profile slow tests before submitting."
+      - "Follow `pre_task_slice` (`canonical_owners`, `mechanism_rules`, `max_net_loc`); fix defects across all sibling call sites at the canonical owner."
+      - "Author compiling, passing seam tests directly in `build` (`code.seam`, `exit_code == 0`) and verify hot-path budgets proportionally."
+      - "If `context_reset_required` is set, read the latest `rearchitect` decision from `acdd_blackboard` and rebuild cleanly from scratch."
   task.review:
-    description: "INDEPENDENT TASK IMPLEMENTATION REVIEW"
+    description: "INDEPENDENT TASK REVIEW"
     criteria:
-      - "Verify task contract satisfaction, concurrency safety, and code/graph hygiene across the declared contours."
-      - "Use rejection kind: defect (fail: build) for localized bugs, or kind: architectural_drift (fail_drift: rearchitect) for structural violations requiring builder context reset."
-      - "Complete all contours before rejecting (`NO EARLY-ABORT`) and sweep sibling call sites (`DEFECT-CLASS SWEEP`) so related defects are closed in one round."
-      - "Check long functions (>150 LOC) for genuine entanglement or poor readability and recommend decomposition only when warranted (do not reject cohesive linear/declarative/dispatch functions purely for line count); reject repeated logic (>=5 lines), stringly-typed or duplicated variant branching where enums/SSOT helpers belong, orphan helpers, unapproved net LOC overages (verifying that approved BUDGET_OVERRIDE reasons cover the measured delta), and imperative non-tabular mega-tests."
-      - "Reject production N+1 I/O, DB, full-parse, or subprocess loops, quadratic O(N*M) fallback scans, redundant re-verification of trusted internal artifacts, and wasted computation for filtered-out outputs."
-      - "Audit tests for runtime budget compliance, full coverage parity, and anti-bloat: reject slow tests caused by repeated VCS/subprocess spawns, per-case tempdir/worktree rebuilds, unhoisted fixtures, or disk-backed testing of pure in-memory logic; reject missing assertions or weakened coverage during refactors, verify zero fixture masking, and enforce harness reuse and data-driven table matrices."
+      - "Verify every `AC` 1:1, concurrency/path safety, non-self-approved `BUDGET_OVERRIDE` vs measured net LOC, and graph hygiene across all contours."
+      - "Reject localized bugs as `kind: defect` (`fail: build`); reject structural violations requiring context reset as `kind: architectural_drift` (`fail_drift: rearchitect`)."
+      - "Reject N+1 loops, duplicate `>= 5`-line logic, orphan helpers, missing assertions, or slow disk/subprocess tests for pure logic (recommend >150 LOC splits only when responsibilities are tangled)."
   task.rearchitect:
     description: "ARCHITECTURAL RECOVERY AFTER DRIFT"
     criteria:
-      - "Diagnose the structural cause behind architectural_drift against cited invariants and canonical owners."
-      - "Record the simplest seam correction on acdd_blackboard (topic: decisions) before routing a fresh builder context to build."
+      - "Diagnose the structural drift against invariants/canonical owners and post the simplest seam correction to `acdd_blackboard` (`topic: decisions`) before routing to `build`."
   milestone.polish:
     description: "INTEGRATION POLISH & DOCS RECONCILIATION"
     criteria:
-      - "Resolve integration or review findings strictly inside admitted polish paths without weakening verified contracts."
+      - "Resolve integration/review findings strictly inside admitted polish paths without weakening verified contracts."
   milestone.review:
     description: "INTEGRATION REVIEW"
     criteria:
-      - "Review the integrated diff against target base across all declared contours, verify trace freshness, and reject only concrete contract defects or workspace hygiene regressions."
-      - "Verify touched test suites respect runtime budgets, leave zero leaked temp resources, and pass workspace-wide clone/dead-tail hygiene."
+      - "Audit the integrated diff against `target_base` across all contours, verify trace freshness, runtime test budgets, zero leaked temp resources, and workspace-wide `duplicates`/`dead_tails`."
   milestone.handoff:
     description: "TERMINAL DELIVERY RECEIPT"
     criteria:
-      - "Confirm every non-cancelled task is completed and all required predecessor proofs match the current tree."
+      - "Confirm all non-cancelled tasks are completed and predecessor proofs match the current tree."
 
 contours:
   architecture:
@@ -379,7 +362,7 @@ gates:
           pass: build
           max_attempts: 3
 
-  - id: verify
+  - id: run_tests
     command: verify_all
     proof: command
     max_attempts: 3
@@ -409,7 +392,7 @@ gates:
       - docs.instructions
       - docs.adrs
       - docs.invariants
-    pass: verify
+    pass: run_tests
 
   - id: integration_review
     role: independent_reviewer
@@ -425,7 +408,7 @@ gates:
       - polish
       - "tasks.build"
     need:
-      - verify
+      - run_tests
     guidance:
       - milestone.review
       - core.review
@@ -450,7 +433,7 @@ gates:
       - polish
       - "tasks.build"
     need:
-      - verify
+      - run_tests
       - integration_review
     receipt: true
     guidance:

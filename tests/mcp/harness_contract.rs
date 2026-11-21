@@ -197,26 +197,19 @@ fn mcp_claim_and_next_preserve_worker_independence_and_session_metadata() {
         assert!(bytes <= cap, "claim response used {bytes} bytes");
         assert_eq!(build_claim["context_lenses"].as_object().unwrap().len(), 1);
         let instructions = &build_claim["context_lenses"]["docs.instructions"];
+        assert_eq!(
+            instructions["directive"],
+            "MANDATORY: read repository rules for respective scope."
+        );
         let items = instructions["items"].as_array().unwrap();
         if descendants > 0 {
             assert_eq!(instructions["total"], 11);
-            assert_eq!(instructions["truncated"], true);
             assert!(items.iter().all(|item| item["path"] != "TESTS.md"));
         }
-        for (path, rule, source) in [
-            ("src/AGENTS.md", "Keep domain checks in their owner.", local_source),
-            ("AGENTS.md", "Keep shared interfaces stable.", root_source),
-        ] {
+        for path in ["src/AGENTS.md", "AGENTS.md"] {
             let item = items.iter().find(|item| item["path"] == path).unwrap();
-            let content = item["content"].as_str().unwrap();
-            assert!(
-                content.contains(rule) && source.starts_with(content),
-                "{path}: {content}"
-            );
-            assert!(content.len() <= 1024, "{path}: {} bytes", content.len());
-            if descendants > 0 {
-                assert!(content.len() >= 100, "{path}: {content}");
-            }
+            assert!(item.get("uri").is_none() && item.get("title").is_none() && item.get("content").is_none());
+            assert!(item["headings"].as_array().is_some_and(|h| !h.is_empty()));
         }
         workspace.write("acdd.yaml", &config(4096));
         builder

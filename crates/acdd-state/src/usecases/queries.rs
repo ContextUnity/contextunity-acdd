@@ -657,24 +657,18 @@ pub(crate) fn collect_dependency_receipts(
 }
 
 fn latest_pre_task_proof_value(graph: &RunGraphSnapshot) -> Option<serde_json::Value> {
-    let min_tasks_seq = graph
-        .nodes
-        .iter()
-        .filter(|n| n.kind == NodeKind::Container && n.node_id.starts_with("tasks#"))
-        .map(|n| n.seq_order)
-        .min()?;
-
     let completed_pre_nodes: std::collections::BTreeMap<&str, u32> = graph
         .nodes
         .iter()
         .filter(|n| {
-            n.seq_order < min_tasks_seq
-                && n.status == NodeStatus::Completed
-                && matches!(n.kind, NodeKind::RootGate | NodeKind::Container)
-                && !n.node_id.starts_with("tasks#")
+            n.status == NodeStatus::Completed
+                && crate::machine::graph::is_pre_task_root_node(graph, n)
         })
         .map(|n| (n.node_id.as_str(), n.claim_revision))
         .collect();
+    if completed_pre_nodes.is_empty() {
+        return None;
+    }
 
     let mut best: Option<(u32, &str, serde_json::Value)> = None;
     for art in &graph.artifacts {
@@ -753,6 +747,7 @@ pub(crate) fn extract_predecessor_gate_proofs(
     graph: &RunGraphSnapshot,
     node: &GateNodeRecord,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let node_is_pre_task = crate::machine::graph::is_pre_task_root_node(graph, node);
     let mut predecessors: Vec<&GateNodeRecord> = graph
         .nodes
         .iter()
@@ -761,7 +756,7 @@ pub(crate) fn extract_predecessor_gate_proofs(
                 && n.seq_order < node.seq_order
                 && n.status == NodeStatus::Completed
                 && matches!(n.kind, NodeKind::RootGate | NodeKind::TaskGate)
-                && !n.node_id.starts_with("root:blueprint_synthesis")
+                && crate::machine::graph::is_pre_task_root_node(graph, n) == node_is_pre_task
         })
         .collect();
     predecessors.sort_by_key(|n| n.seq_order);

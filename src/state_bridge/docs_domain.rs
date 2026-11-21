@@ -1,10 +1,9 @@
 //! Host `DocsDomainProvider` (`domain_id = "docs"`) implementation.
 
 use super::{budget_items, combine_file_hashes, open_code_db_readonly};
-use crate::format::file_uri_for_path;
 use acdd_core::config::Adapter;
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::format::{estimate_json_bytes, sha256_hex, utf8_floor_boundary};
+use acdd_core::format::{estimate_json_bytes, sha256_hex};
 use acdd_core::fs::{checked_child, is_doc_path};
 use acdd_core::path_policy::{
     expand_glob_braces, glob_matches, normalize_rel_path, scopes_overlap, WorkspacePathPolicy,
@@ -22,8 +21,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
-
-const MAX_INSTRUCTION_EXCERPT_BYTES: usize = 1_024;
 
 enum LinksScope {
     NoDocsInScope,
@@ -203,6 +200,66 @@ impl DocsDomainProvider {
         }
 
         items.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let docs_root = ["docs/**".to_owned()];
+        let filter_by_scope = !req.admitted_scope.is_empty()
+            && !req.admitted_scope.iter().any(|s| s.trim() == "**")
+            && !scopes_overlap(&req.admitted_scope, &docs_root);
+        if filter_by_scope {
+            if let Some(conn) =
+                open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref())
+            {
+                let mut stmt = conn.prepare(
+                    "SELECT DISTINCT p_src.path, p_dst.path
+                     FROM edges e
+                     JOIN nodes n_src ON n_src.node_hash = e.src_hash
+                     JOIN path_dictionary p_src ON p_src.path_id = n_src.path_id
+                     JOIN nodes n_dst ON n_dst.node_hash = e.dst_hash
+                     JOIN path_dictionary p_dst ON p_dst.path_id = n_dst.path_id
+                     WHERE e.kind IN ('documents','references_doc','cites_doc','governed_by','governs')
+                       AND (p_src.path LIKE 'docs/adr/%' OR p_dst.path LIKE 'docs/adr/%')",
+                )?;
+                let mut workspace_has_adr_links = false;
+                let mut relevant_adrs = BTreeSet::new();
+                let link_rows = stmt.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                for (src_path, dst_path) in link_rows.flatten() {
+                    let (adr_path, code_path) = if src_path.starts_with("docs/adr/") {
+                        (src_path, dst_path)
+                    } else {
+                        (dst_path, src_path)
+                    };
+                    if !code_path.starts_with("docs/") {
+                        workspace_has_adr_links = true;
+                        if req.path_policy.is_scope_admitted(&code_path, &req.admitted_scope) {
+                            relevant_adrs.insert(adr_path);
+                        }
+                    }
+                }
+                if let Some(target_text) = req.target.as_deref() {
+                    for (adr_path, title, _) in &items {
+                        let stem = Path::new(adr_path)
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or_default();
+                        let num_prefix = stem.split('-').next().unwrap_or_default();
+                        if (!stem.is_empty() && target_text.contains(stem))
+                            || (num_prefix.len() >= 4
+                                && num_prefix.bytes().all(|b| b.is_ascii_digit())
+                                && target_text.contains(num_prefix))
+                            || target_text.contains(title.as_str())
+                        {
+                            relevant_adrs.insert(adr_path.clone());
+                        }
+                    }
+                }
+                if workspace_has_adr_links {
+                    items.retain(|(path, _, _)| relevant_adrs.contains(path));
+                }
+            }
+        }
+
         Ok(items)
     }
 
@@ -210,11 +267,10 @@ impl DocsDomainProvider {
         let items = self
             .collect_adr_records(req)?
             .into_iter()
-            .map(|(path, title, doc_type)| {
+            .map(|(path, title, _doc_type)| {
                 json!({
-                    "path": path,
                     "title": title,
-                    "doc_type": doc_type,
+                    "path": path,
                 })
             })
             .collect();
@@ -222,32 +278,23 @@ impl DocsDomainProvider {
     }
 
     fn provide_instructions(&self, req: &DomainContextReq) -> Result<Value> {
-        let mut ordered_paths = vec![("AGENTS.md".to_owned(), "instructions_root", true)];
+        let mut ordered_paths = vec![("AGENTS.md".to_owned(), true)];
 
         let tests_patterns = ["tests/**".to_owned(), "TESTS.md".to_owned()];
         if !req.admitted_scope.is_empty()
             && scopes_overlap(&req.admitted_scope, &tests_patterns)
         {
-            ordered_paths.push(("TESTS.md".to_owned(), "tests_guide", false));
+            ordered_paths.push(("TESTS.md".to_owned(), false));
         }
-        ordered_paths.extend(
-            collect_scoped_agents_md(&req.worktree, &req.admitted_scope, &req.path_policy)
-                .into_iter()
-                .map(|(path, is_owner)| (path, "instructions_subtree", is_owner)),
-        );
-        ordered_paths.sort_by_key(|(_, _, is_owner)| !is_owner);
-
-        // Leave room for transports that serialize the claim as text and escape it again.
-        let max_bytes = req.max_bytes / 2;
-        let owner_count = ordered_paths.iter().filter(|(_, _, is_owner)| *is_owner).count();
-        let owner_share = max_bytes / 2 / owner_count;
-        let descendant_count = ordered_paths.len() - owner_count;
-        let descendant_share = max_bytes / 4 / descendant_count.max(1);
+        ordered_paths.extend(collect_scoped_agents_md(
+            &req.worktree,
+            &req.admitted_scope,
+            &req.path_policy,
+        ));
+        ordered_paths.sort_by_key(|(_, is_owner)| !is_owner);
 
         let mut items = Vec::with_capacity(ordered_paths.len());
-        let mut metadata = Vec::with_capacity(ordered_paths.len());
-        let mut truncated = false;
-        for (rel, kind, is_owner) in ordered_paths {
+        for (rel, _) in ordered_paths {
             let Ok(abs) = checked_child(&req.worktree, Path::new(&rel)) else {
                 continue;
             };
@@ -257,68 +304,29 @@ impl DocsDomainProvider {
             let Ok(text) = fs::read_to_string(&abs) else {
                 continue;
             };
-            let title = frontmatter_field(&text, "title")
-                .or_else(|| first_markdown_heading(&text))
-                .unwrap_or_else(|| rel.clone());
-            let headings = extract_markdown_headings(&text, 10);
-            let uri = abs
-                .canonicalize()
-                .ok()
-                .and_then(|canon| file_uri_for_path(&canon, None));
-            let mut fields = serde_json::Map::new();
-            if let Some(uri) = uri {
-                fields.insert("uri".to_owned(), json!(uri));
-            }
-            fields.insert("title".to_owned(), json!(title));
+            let headings = extract_markdown_headings(&text, super::DOCS_INSTRUCTION_MAX_HEADINGS);
+            let mut item = json!({ "path": rel });
             if !headings.is_empty() {
-                fields.insert("headings".to_owned(), json!(headings));
-            }
-            let mut item = json!({"path": rel, "kind": kind});
-            if kind != "tests_guide" {
-                let text = text.trim();
-                let prefix = utf8_floor_boundary(text, MAX_INSTRUCTION_EXCERPT_BYTES);
-                let share = if is_owner { owner_share } else { descendant_share };
-                let content = instruction_excerpt(&text[..prefix], share);
-                if !content.is_empty() {
-                    item["content"] = json!(content);
-                }
-                truncated |= content.len() < text.len();
+                item["headings"] = json!(headings);
             }
             items.push(item);
-            metadata.push(fields);
         }
 
-        let mut budgeted = budget_items("instructions", items, max_bytes);
-        let Some(mut remaining) = max_bytes.checked_sub(estimate_json_bytes(&budgeted)) else {
-            budgeted["items"] = json!([]);
-            budgeted["truncated"] = json!(true);
-            return Ok(budgeted);
-        };
-        truncated |= budgeted["truncated"] == true;
-        let items = budgeted["items"]
-            .as_array_mut()
-            .expect("budget_items returns an array");
-        for (item, fields) in items.iter_mut().zip(metadata) {
-            for (key, value) in fields {
-                let bytes = estimate_json_bytes(&key) + 2 + estimate_json_bytes(&value);
-                if bytes <= remaining {
-                    item[key] = value;
-                    remaining -= bytes;
-                } else {
-                    truncated = true;
-                }
-            }
+        let directive = super::DOCS_INSTRUCTIONS_DIRECTIVE;
+        let directive_bytes = ",\"directive\":".len() + estimate_json_bytes(&directive);
+        let item_budget = req.max_bytes.saturating_sub(directive_bytes);
+        let mut budgeted = budget_items("instructions", items, item_budget);
+        if let Some(arr) = budgeted.get_mut("items").and_then(Value::as_array_mut) {
+            arr.sort_by(|a, b| {
+                let order = |item: &Value| match item["path"].as_str() {
+                    Some("AGENTS.md") => 0,
+                    Some("TESTS.md") => 1,
+                    _ => 2,
+                };
+                (order(a), a["path"].as_str()).cmp(&(order(b), b["path"].as_str()))
+            });
         }
-        items.sort_by(|a, b| {
-            // Preserve the presentation order independently of admission priority.
-            let order = |item: &Value| match item["kind"].as_str() {
-                Some("instructions_root") => 0,
-                Some("tests_guide") => 1,
-                _ => 2,
-            };
-            (order(a), a["path"].as_str()).cmp(&(order(b), b["path"].as_str()))
-        });
-        budgeted["truncated"] = json!(truncated);
+        budgeted["directive"] = json!(directive);
         Ok(budgeted)
     }
 
@@ -339,15 +347,26 @@ impl DocsDomainProvider {
                                     .as_str()
                                     .unwrap_or_default()
                                     .to_owned();
-                                if path.is_empty() || is_contract_path_or_doc(&conn, &path, &self.config) {
+                                if id.is_empty()
+                                    || path.is_empty()
+                                    || is_contract_path_or_doc(&conn, &path, &self.config)
+                                {
                                     continue;
                                 }
+                                let raw_rule = strip_invariant_prefix(
+                                    entry["rule"].as_str().unwrap_or_default(),
+                                    &id,
+                                );
+                                let rule = super::truncate_single_line(
+                                    raw_rule,
+                                    super::DOCS_INVARIANT_MAX_RULE_CHARS,
+                                );
                                 if seen.insert((path.clone(), id.clone())) {
                                     items.push(json!({
                                         "id": id,
                                         "path": path,
                                         "line": entry["source"]["line"],
-                                        "rule": entry["rule"],
+                                        "rule": rule,
                                         "scope_match": true,
                                     }));
                                 }
@@ -362,7 +381,9 @@ impl DocsDomainProvider {
                     "SELECT path, section_title, invariants
                      FROM doc_sections
                      WHERE is_invariant = 1 AND doc_type != 'contract'
-                     ORDER BY path, section_title
+                     ORDER BY CASE WHEN path LIKE 'docs/adr/%' OR path LIKE 'docs/architecture/%' THEN 0 ELSE 1 END,
+                              path,
+                              section_title
                      LIMIT 64",
                 )?;
                 let rows = stmt.query_map([], |row| {
@@ -373,18 +394,30 @@ impl DocsDomainProvider {
                     ))
                 })?;
                 for row in rows.flatten() {
+                    if items.len() >= super::DOCS_INVARIANT_FALLBACK_ITEM_LIMIT {
+                        break;
+                    }
                     let (path, section_title, inv_raw) = row;
-                    if is_contract_spec_path(&path, &self.config) {
+                    if path.contains("/archive/") || is_contract_spec_path(&path, &self.config) {
                         continue;
                     }
-                    let id = inv_raw.unwrap_or_else(|| section_title.clone());
-                    if seen.insert((path.clone(), id.clone())) {
-                        items.push(json!({
-                            "id": id,
-                            "path": path,
-                            "section_title": section_title,
-                            "scope_match": false,
-                        }));
+                    let parsed_entries = parse_doc_section_invariants(
+                        inv_raw.as_deref(),
+                        &section_title,
+                        super::DOCS_INVARIANT_MAX_RULE_CHARS,
+                    );
+                    for (id, rule) in parsed_entries {
+                        if items.len() >= super::DOCS_INVARIANT_FALLBACK_ITEM_LIMIT {
+                            break;
+                        }
+                        if seen.insert((path.clone(), id.clone())) {
+                            items.push(json!({
+                                "id": id,
+                                "path": path,
+                                "rule": rule,
+                                "scope_match": false,
+                            }));
+                        }
                     }
                 }
             }
@@ -393,7 +426,7 @@ impl DocsDomainProvider {
         if items.is_empty() {
             let docs_dir = req.worktree.join("docs");
             if docs_dir.is_dir() {
-                for entry in WalkDir::new(&docs_dir)
+                'walk: for entry in WalkDir::new(&docs_dir)
                     .max_depth(4)
                     .into_iter()
                     .filter_map(Result::ok)
@@ -426,8 +459,14 @@ impl DocsDomainProvider {
                                     "id": inv_id,
                                     "path": rel,
                                     "line": idx + 1,
-                                    "rule": line.trim(),
+                                    "rule": super::truncate_single_line(
+                                        line.trim(),
+                                        super::DOCS_INVARIANT_MAX_RULE_CHARS,
+                                    ),
                                 }));
+                                if items.len() >= super::DOCS_INVARIANT_FALLBACK_ITEM_LIMIT {
+                                    break 'walk;
+                                }
                             }
                         }
                     }
@@ -606,20 +645,6 @@ fn first_markdown_heading(markdown: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn instruction_excerpt(text: &str, budget: usize) -> &str {
-    let field_bytes = ",\"content\":".len();
-    let mut end = utf8_floor_boundary(text, budget.saturating_sub(field_bytes + 2));
-    while end > 0 {
-        let content = text[..end].trim_end();
-        let bytes = field_bytes + estimate_json_bytes(content);
-        if bytes <= budget {
-            return content;
-        }
-        end = utf8_floor_boundary(text, end.saturating_sub(bytes - budget));
-    }
-    ""
-}
-
 fn collect_scoped_agents_md(
     worktree: &Path,
     admitted_scope: &[String],
@@ -770,6 +795,67 @@ fn extract_invariant_id(line: &str) -> Option<String> {
     (candidate.len() > 4).then(|| candidate.to_owned())
 }
 
+fn strip_invariant_prefix<'a>(text: &'a str, id: &str) -> &'a str {
+    let trimmed = text.trim();
+    let without_id = trimmed
+        .strip_prefix(id)
+        .or_else(|| trimmed.strip_prefix("Invariant"))
+        .unwrap_or(trimmed);
+    without_id
+        .trim_start_matches([':', '-', '—', '`', '*', ' '])
+        .trim()
+}
+
+fn parse_doc_section_invariants(
+    inv_raw: Option<&str>,
+    section_title: &str,
+    max_rule_chars: usize,
+) -> Vec<(String, String)> {
+    let texts: Vec<String> = match inv_raw.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) if raw.starts_with('[') => serde_json::from_str::<Vec<String>>(raw)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| !s.trim().is_empty())
+            .collect(),
+        Some(raw) => vec![raw.to_owned()],
+        None => Vec::new(),
+    };
+    if texts.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for block in texts {
+        let mut cursor = block.as_str();
+        let mut found_id = false;
+        while let Some(idx) = cursor.find("INV-") {
+            if let Some(id) = extract_invariant_id(&cursor[idx..]) {
+                let after_id = &cursor[idx + id.len()..];
+                let next_inv = after_id.find("INV-").unwrap_or(after_id.len());
+                let raw_rule = strip_invariant_prefix(&after_id[..next_inv], &id);
+                let rule = super::truncate_single_line(raw_rule, max_rule_chars);
+                out.push((id, rule));
+                found_id = true;
+                cursor = &after_id[next_inv..];
+            } else {
+                cursor = &cursor[idx + 4..];
+            }
+        }
+        if !found_id {
+            let clean = strip_invariant_prefix(
+                block.trim_start_matches("[!IMPORTANT]").trim(),
+                section_title.trim(),
+            );
+            let id = if section_title.trim().is_empty() {
+                "INV-SECTION".to_owned()
+            } else {
+                section_title.trim().to_owned()
+            };
+            out.push((id, super::truncate_single_line(clean, max_rule_chars)));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::DocsDomainProvider;
@@ -891,7 +977,7 @@ mod tests {
             worktree: root.to_path_buf(),
             admitted_scope: vec!["docs/**".into()],
             target: None,
-            max_bytes: 8192,
+            max_bytes: crate::state_bridge::TEST_DEFAULT_CONTEXT_MAX_BYTES,
             path_policy: acdd_core::path_policy::WorkspacePathPolicy::default(),
             baseline_ref: None,
         };
@@ -921,8 +1007,14 @@ mod tests {
             src_paths,
             vec!["AGENTS.md", "src/AGENTS.md"]
         );
-        assert!(src_inst["items"][0]["uri"].as_str().is_some_and(|u| u.starts_with("file://")));
+        assert!(src_inst["items"][0].get("uri").is_none());
+        assert!(src_inst["items"][0].get("title").is_none());
+        assert!(src_inst["items"][0].get("content").is_none());
         assert_eq!(src_inst["items"][0]["headings"], serde_json::json!(["Root Agent Rules", "Routes"]));
+        assert_eq!(
+            src_inst["directive"],
+            "MANDATORY: read repository rules for respective scope."
+        );
         assert!(src_inst.get("mandatory_directives").is_none());
 
         let tests_ctx = DomainContextReq {
@@ -950,16 +1042,20 @@ mod tests {
             .provide_context(
                 "instructions",
                 &DomainContextReq {
-                    max_bytes: 400,
+                    max_bytes: crate::state_bridge::TEST_TIGHT_INSTRUCTIONS_MAX_BYTES,
                     ..tests_ctx
                 },
             )
             .unwrap();
         assert_eq!(tight_inst["truncated"], true);
-        assert!(acdd_core::format::estimate_json_bytes(&tight_inst) <= 400);
+        assert!(
+            acdd_core::format::estimate_json_bytes(&tight_inst)
+                <= crate::state_bridge::TEST_TIGHT_INSTRUCTIONS_MAX_BYTES
+        );
 
         let adrs = provider.provide_context("adrs", &ctx_req).unwrap();
         assert_eq!(adrs["items"].as_array().map(|a| a.len()), Some(1));
+        assert!(adrs["items"][0].get("doc_type").is_none());
 
         let invs = provider.provide_context("invariants", &ctx_req).unwrap();
         let inv_text = serde_json::to_string(&invs).unwrap();
@@ -1017,6 +1113,13 @@ mod tests {
                 assert!(!paths.contains(&excluded), "{lens} leaked {excluded}: {paths:?}");
             }
         }
+        let indexed_invs = provider.provide_context("invariants", &src_only_ctx).unwrap();
+        let indexed_inv_text = serde_json::to_string(&indexed_invs).unwrap();
+        assert!(indexed_inv_text.contains("INV-TEST-1"), "{indexed_inv_text}");
+        assert!(
+            !indexed_inv_text.contains("\"id\":\"[]\"") && !indexed_inv_text.contains("0000-old.md"),
+            "indexed fallback must skip empty JSON arrays and archived docs: {indexed_inv_text}"
+        );
 
         fs::write(
             root.join("docs/adr/ADR-0001-test.md"),

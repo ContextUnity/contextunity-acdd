@@ -11,8 +11,8 @@ commands:
   build_check: *build_check_cmd
 
   check_full_repo: &verify_all_cmd
-    command: "cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --lib"
-    description: "Run the milestone handoff verification commands from TESTS.md."
+    command: "cargo test --test commitment_integrity && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-targets && cargo run -q -- docs check && cargo run -q -- validate && ./scripts/test-macos-ssh.sh"
+    description: "Run Linux workspace checks/tests, docs/config validation, and macOS SSH verification."
     timeout_seconds: 1800
 
   verify_all: *verify_all_cmd
@@ -44,8 +44,17 @@ roles:
     guidance: "Execute inline as the main coordinator agent: synthesize milestone telemetry, cycle history, code quality assessment, and rule updates into gitignored docs/memories/<spec.name>.md before submitting handoff."
 
 guidance:
-  repo.rust: "Enforce Rust SSOT & zero-copy hot-path standards: (1) model finite variants with closed `enum`s, validated newtypes, `From`/`TryFrom`, trait objects (`&dyn Trait`), and non-generic inner functions instead of magic strings, mirror `Mcp*` structs, or monomorphization bloat; (2) borrow `&str`/`&Path`/`Cow<'_, str>` and intern repeated symbols (`Arc<str>`, `CompactTag`) rather than cloning DTOs/ASTs across pipeline stages, stream hashes via `acdd_core::format::sha256_serde_json`, and bind codecs with `struct_codecs!` / compile-time destructuring; (3) never run per-object `git` (`cat-file -t` + `cat-file blob`, repeated `rev-parse`), `N+1` `rusqlite` SELECTs, or `visit_archived_specs` fallbacks inside loops — batch via `git cat-file --batch`, single `ls-tree`, and preloaded `BTreeMap` snapshots; (4) prove non-fallback fast paths (`Ok(None) => slow_path`) on real production seams and measure CLI/index hot paths (`index`, `query`, `roadmap`, `validate`) on `--release` builds (wall, `sys`, peak RSS)."
-  repo.tests: "Follow `tests/AGENTS.md` and `docs/architecture/test-harness.md`: keep `RunHarness::in_memory()` / unit scenarios `< 5 ms`, focused integration tests `< 1 s`, `tests/acdd < 15 s`, set `commit.gpgsign=false` in fixture Git setups, and verify zero `/tmp/contextunity-test-*` leaks (`BEFORE == AFTER`)."
+  repo.rust:
+    description: "RUST HOT-PATH & CODEC STANDARDS"
+    criteria:
+      - "Model finite variants with closed `enum`s, validated newtypes, `From`/`TryFrom`, `&dyn Trait`, and non-generic inner fns (no mirror `Mcp*` structs or magic strings)."
+      - "Borrow `&str`/`&Path`/`Cow<'_, str>` and intern repeated symbols (`Arc<str>`, `CompactTag`); hash via `acdd_core::format::sha256_serde_json` and bind codecs with `struct_codecs!`."
+      - "Batch Git/SQLite/spec reads (`git cat-file --batch`, single `ls-tree`, preloaded `BTreeMap`); prove `Ok(None) => slow_path` non-fallbacks and benchmark CLI hot paths (`index`, `query`, `roadmap`, `validate`) on `--release`."
+  repo.tests:
+    description: "REPOSITORY TEST BUDGETS"
+    criteria:
+      - "Keep `RunHarness::in_memory()`/unit tests `< 5 ms`, focused integration tests `< 1 s`, `tests/acdd < 15 s` (`tests/AGENTS.md`, `docs/architecture/test-harness.md`)."
+      - "Set `commit.gpgsign=false` in fixture Git setups and verify zero `/tmp/contextunity-test-*` leaks (`BEFORE == AFTER`)."
   repo.memory_synthesis:
     description: "PRE-HANDOFF MILESTONE MEMORY & TELEMETRY SYNTHESIS"
     criteria:
@@ -60,6 +69,8 @@ gates_patch:
     guidance: [task.review, core.review, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
   - id: tasks.rearchitect
     guidance: [task.rearchitect, core.execution, code.principles, code.tools, repo.rust, hitl.pro]
+  - id: run_tests
+    command: check_full_repo
   - id: integration_review
     guidance: [milestone.review, core.review, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
   - id: handoff
