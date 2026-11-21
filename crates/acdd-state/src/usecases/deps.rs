@@ -1,6 +1,6 @@
 //! Single canonical external, cross-spec, and archive dependency resolver (`INV-SINGLE-OWNER`).
 
-use crate::git_ops::snapshot::{list_git_tree_entries, resolve_git_tree_oid};
+use crate::git_ops::snapshot::{list_git_tree_entries_multi, resolve_git_tree_oid};
 use crate::machine::MachineTaskDep;
 use crate::spec::{parse_spec, SpecDocument, SpecStatus};
 use crate::store::sqlite::SqliteStateReader;
@@ -16,8 +16,12 @@ use acdd_core::config::{
     SpecCollectionConfig,
 };
 use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::format::sha256_bytes;
 use acdd_core::fs::{canonical_root, checked_child};
-use acdd_core::git::{list_owned_worktrees, read_git_blob_utf8, read_git_blob_utf8_by_oid};
+use acdd_core::git::{
+    list_owned_worktrees, read_git_blob_utf8, read_git_blobs_at_paths_batch,
+    read_git_blobs_utf8_batch,
+};
 use acdd_core::ids::{CommitOid, RunId, TaskRef};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -157,9 +161,9 @@ pub(crate) fn parse_task_dependency_with_db(
                 linked_workspaces,
                 spec_repos,
             )?;
-            let primary = local_db.map(|(root, _)| root.to_path_buf()).or_else(|| {
-                acdd_core::git::primary_worktree_root(Path::new(current_workspace))
-            });
+            let primary = local_db
+                .map(|(root, _)| root.to_path_buf())
+                .or_else(|| acdd_core::git::primary_worktree_root(Path::new(current_workspace)));
             let scoped = primary.is_some_and(|root| {
                 acdd_core::git::primary_worktree_root(&canon_ws).as_ref() == Some(&root)
             });
@@ -219,7 +223,10 @@ pub(crate) fn load_ws_adapter(ws_root: &Path) -> Result<Adapter, StateError> {
 }
 
 /// Resolve the explicit or owning-primary state database without guessing on invalid configuration.
-pub fn try_resolve_effective_state_db(root: &Path, explicit: Option<&Path>) -> Result<PathBuf, StateError> {
+pub fn try_resolve_effective_state_db(
+    root: &Path,
+    explicit: Option<&Path>,
+) -> Result<PathBuf, StateError> {
     let primary = acdd_core::git::primary_worktree_root(root).unwrap_or_else(|| root.to_path_buf());
     if let Some(path) = acdd_core::config::resolve_custom_db_path(&primary, explicit) {
         return Ok(path);
@@ -305,8 +312,11 @@ fn resolve_observation_context(
     let known_primary = owned
         .filter(|list| list.iter().any(|p| p == ws_path))
         .map(|_| primary_root);
-    let (db_path, collections) =
-        resolve_ws_context_canon_with_primary(ws_path, Some((primary_root, &db_path)), known_primary)?;
+    let (db_path, collections) = resolve_ws_context_canon_with_primary(
+        ws_path,
+        Some((primary_root, &db_path)),
+        known_primary,
+    )?;
     Ok((ws_path.to_path_buf(), db_path, collections))
 }
 
@@ -321,16 +331,17 @@ fn find_latest_matching_tombstone<'a>(
                 || t.run_name.as_str() == sel
                 || t.spec_id.as_deref() == Some(sel)
         })
-        .max_by(|a, b| {
-            a.closed_at
-                .cmp(&b.closed_at)
-                .then_with(|| {
-                    let a_cleared = a.terminal_status == TerminalStatus::Cleared;
-                    let b_cleared = b.terminal_status == TerminalStatus::Cleared;
-                    a_cleared.cmp(&b_cleared)
-                })
-                .then_with(|| a.run_id.as_str().cmp(b.run_id.as_str()))
+        .max_by(|a, b| compare_tombstones(a, b))
+}
+
+fn compare_tombstones(a: &RunTombstoneRecord, b: &RunTombstoneRecord) -> std::cmp::Ordering {
+    a.closed_at
+        .cmp(&b.closed_at)
+        .then_with(|| {
+            (a.terminal_status == TerminalStatus::Cleared)
+                .cmp(&(b.terminal_status == TerminalStatus::Cleared))
         })
+        .then_with(|| a.run_id.as_str().cmp(b.run_id.as_str()))
 }
 
 fn tombstone_superseded_by_cleared(
@@ -382,9 +393,10 @@ fn resolve_external_run_id(
     };
     let reader = SqliteStateReader::new(db_path);
     let runs = list_all_runs(&reader, None)?;
-    if let Some(found) = runs.into_iter().find(|r| {
-        (!scoped || run_in_checkout(r, ws_root)) && run_matches_selector(r, run_sel)
-    }) {
+    if let Some(found) = runs
+        .into_iter()
+        .find(|r| (!scoped || run_in_checkout(r, ws_root)) && run_matches_selector(r, run_sel))
+    {
         return Ok(found.run_id);
     }
     let tombs = list_all_tombstones(&reader)?;
@@ -483,6 +495,18 @@ pub(crate) fn collect_external_satisfied_deps_with_owned(
     graph: &RunGraphSnapshot,
     owned: Option<&[PathBuf]>,
 ) -> Result<Vec<(String, RunId, TaskRef)>, StateError> {
+    collect_external_satisfied_deps_cached(config, graph, owned, &mut BTreeMap::new())
+}
+
+pub(crate) type ExternalDepCache =
+    BTreeMap<(PathBuf, String), (PathBuf, SqliteStateReader, BTreeMap<String, SpecCollectionConfig>, DepSnapshot)>;
+
+pub(crate) fn collect_external_satisfied_deps_cached(
+    config: &StateEngineConfig,
+    graph: &RunGraphSnapshot,
+    owned: Option<&[PathBuf]>,
+    contexts: &mut ExternalDepCache,
+) -> Result<Vec<(String, RunId, TaskRef)>, StateError> {
     let primary = primary_workspace_root(config);
     let owned_buf;
     let owned = match owned {
@@ -494,45 +518,48 @@ pub(crate) fn collect_external_satisfied_deps_with_owned(
     };
     let config = effective_active_run_config(config, &graph.run, &primary, Some(owned))?;
     let mut satisfied = Vec::new();
-    let mut contexts = BTreeMap::new();
 
     for dep in &graph.dependencies {
         let requested = Path::new(&dep.depends_on_workspace);
         let scoped = requested != Path::new(".") && owned.iter().any(|checkout| checkout == requested);
-        if dep.satisfied && !scoped {
-            satisfied.push((
+        let is_satisfied = if dep.satisfied && !scoped {
+            true
+        } else if dep.depends_on_run_id == graph.run.run_id {
+            false
+        } else {
+            let key = (
+                if dep.depends_on_workspace == "." { config.worktree.clone() } else { PathBuf::new() },
                 dep.depends_on_workspace.clone(),
-                dep.depends_on_run_id.clone(),
-                dep.depends_on_ref.clone(),
-            ));
-            continue;
-        }
-        if dep.depends_on_run_id == graph.run.run_id {
-            continue;
-        }
-        if !contexts.contains_key(&dep.depends_on_workspace) {
-            let ws_path = if dep.depends_on_workspace == "." {
-                config.worktree.as_path()
-            } else {
-                Path::new(&dep.depends_on_workspace)
-            };
-            let (checkout, db_path, collections) =
-                resolve_observation_context(ws_path, &primary, &config, Some(owned))?;
-            contexts.insert(
-                dep.depends_on_workspace.clone(),
-                (checkout, SqliteStateReader::new(db_path), collections),
             );
-        }
-        let (checkout, reader, collections) = &contexts[&dep.depends_on_workspace];
+            if !contexts.contains_key(&key) {
+                let ws_path = if dep.depends_on_workspace == "." {
+                    config.worktree.as_path()
+                } else {
+                    Path::new(&dep.depends_on_workspace)
+                };
+                let (checkout, db_path, collections) =
+                    resolve_observation_context(ws_path, &primary, &config, Some(owned))?;
+                let reader = SqliteStateReader::new(db_path);
+                let (snapshot, _) = load_dep_snapshot(&checkout, &collections, &reader)?;
+                contexts.insert(
+                    key.clone(),
+                    (checkout, reader, collections, snapshot),
+                );
+            }
+            let (checkout, reader, collections, snapshot) = &contexts[&key];
+            let preloaded = snapshot.context();
 
-        if is_external_task_satisfied(
-            reader,
-            checkout,
-            collections,
-            &dep.depends_on_run_id,
-            &dep.depends_on_ref,
-            scoped.then_some(checkout.as_path()),
-        )? {
+            is_external_task_satisfied(
+                reader,
+                checkout,
+                collections,
+                &dep.depends_on_run_id,
+                &dep.depends_on_ref,
+                scoped.then_some(checkout.as_path()),
+                &preloaded,
+            )?
+        };
+        if is_satisfied {
             satisfied.push((
                 dep.depends_on_workspace.clone(),
                 dep.depends_on_run_id.clone(),
@@ -580,7 +607,15 @@ fn match_archived_spec_content(
     if parsed.id != run_sel {
         return None;
     }
-    let completed_doc = is_completed_archive_doc(&parsed);
+    Some(archived_resolution(&parsed, rel_posix, task_sel))
+}
+
+fn archived_resolution(
+    parsed: &SpecDocument,
+    rel_posix: String,
+    task_sel: Option<&str>,
+) -> DepTargetResolution {
+    let completed_doc = is_completed_archive_doc(parsed);
     let (task_exists, task_completed) = match task_sel {
         Some(t_ref) => match parsed.tasks.iter().find(|t| t.task_ref.as_str() == t_ref) {
             Some(t) => (true, t.status == SpecStatus::Completed),
@@ -588,12 +623,12 @@ fn match_archived_spec_content(
         },
         None => (true, true),
     };
-    Some(DepTargetResolution::ArchivedSpec {
+    DepTargetResolution::ArchivedSpec {
         rel_path: rel_posix,
         completed_doc,
         task_exists,
         task_completed,
-    })
+    }
 }
 
 fn literal_git_prefix(pat: &str) -> String {
@@ -747,120 +782,116 @@ fn visit_archived_specs<T>(
     ws_path: &Path,
     collections: &BTreeMap<String, SpecCollectionConfig>,
     disk_only: bool,
+    head_oid: Option<&str>,
     warnings: &mut Vec<String>,
     mut visitor: impl FnMut(&str, String, &str) -> Option<T>,
 ) -> Result<Option<T>, StateError> {
-    let in_git = !disk_only && is_git_repo(ws_path);
-    let tree_oid = if in_git {
-        Some(resolve_git_tree_oid(ws_path, "HEAD")?)
-    } else {
-        None
-    };
-    let mut seen_paths = BTreeSet::new();
-    for (col_name, col) in collections {
-        let disk_entries = probe_disk_archive_dirs(ws_path, col, warnings)?;
-        if let Some(ref tree_oid) = tree_oid {
+    let in_git = !disk_only && (head_oid.is_some() || is_git_repo(ws_path));
+    let all_git_entries = if in_git {
+        let tree_oid = match head_oid {
+            Some(oid) => oid.to_owned(),
+            None => resolve_git_tree_oid(ws_path, "HEAD")?,
+        };
+        let mut prefixes = Vec::new();
+        for col in collections.values() {
             for pat in col.patterns() {
-                let is_literal = !pat.contains('*')
-                    && !pat.contains('?')
-                    && !pat.contains('{')
-                    && !pat.contains('[');
+                let is_literal = !pat.contains(['*', '?', '{', '[']);
                 let tree_prefix = if is_literal {
                     pat.to_owned()
                 } else {
                     literal_git_prefix(pat)
                 };
-                for entry in list_git_tree_entries(ws_path, tree_oid, &tree_prefix)? {
-                    let Some(slash_pos) = entry.raw_path.iter().rposition(|&b| b == b'/') else {
-                        continue;
-                    };
-                    let (parent_bytes, file_bytes) =
-                        (&entry.raw_path[..slash_pos], &entry.raw_path[slash_pos + 1..]);
-                    if file_bytes == b"archive" {
-                        if is_admitted_git_collection_root(col, parent_bytes)?
-                            && entry.mode == "120000"
-                        {
-                            let raw_lossy = String::from_utf8_lossy(&entry.raw_path);
-                            return Err(StateError::new(
-                                ErrorCode::ProfileSchemaInvalid,
-                                format!(
-                                    "archive directory '{raw_lossy}' in Git tree must not be a symlink"
-                                ),
-                            ));
-                        }
-                        continue;
+                if !prefixes.contains(&tree_prefix) {
+                    prefixes.push(tree_prefix);
+                }
+            }
+        }
+        let prefix_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
+        Some(list_git_tree_entries_multi(ws_path, &tree_oid, &prefix_refs)?)
+    } else {
+        None
+    };
+    let mut seen_paths = BTreeSet::new();
+    let mut git_entries = Vec::new();
+    for (col_name, col) in collections {
+        let disk_entries = probe_disk_archive_dirs(ws_path, col, warnings)?;
+        if let Some(tree_entries) = all_git_entries.as_deref() {
+            for entry in tree_entries {
+                let Some(slash_pos) = entry.raw_path.iter().rposition(|&b| b == b'/') else {
+                    continue;
+                };
+                let (parent_bytes, file_bytes) = (
+                    &entry.raw_path[..slash_pos],
+                    &entry.raw_path[slash_pos + 1..],
+                );
+                if file_bytes == b"archive" {
+                    if is_admitted_git_collection_root(col, parent_bytes)?
+                        && entry.mode == "120000"
+                    {
+                        let raw_lossy = String::from_utf8_lossy(&entry.raw_path);
+                        return Err(StateError::new(
+                            ErrorCode::ProfileSchemaInvalid,
+                            format!(
+                                "archive directory '{raw_lossy}' in Git tree must not be a symlink"
+                            ),
+                        ));
                     }
-                    if !parent_bytes.ends_with(b"/archive") {
-                        continue;
-                    }
-                    let root_bytes = &parent_bytes[..parent_bytes.len() - b"/archive".len()];
-                    if !is_admitted_git_collection_root(col, root_bytes)? {
-                        continue;
-                    }
-                    let Ok(file_str) = std::str::from_utf8(file_bytes) else {
-                        if file_bytes.ends_with(b".md") || entry.mode == "120000" {
-                            return Err(StateError::new(
-                                ErrorCode::ProfileSchemaInvalid,
-                                format!(
-                                    "committed Git archive entry '{}' is not valid UTF-8",
-                                    String::from_utf8_lossy(&entry.raw_path)
-                                ),
-                            ));
-                        }
-                        continue;
-                    };
-                    let raw_str = std::str::from_utf8(&entry.raw_path).map_err(|_| {
-                        StateError::new(
+                    continue;
+                }
+                if !parent_bytes.ends_with(b"/archive") {
+                    continue;
+                }
+                let root_bytes = &parent_bytes[..parent_bytes.len() - b"/archive".len()];
+                if !is_admitted_git_collection_root(col, root_bytes)? {
+                    continue;
+                }
+                let Ok(file_str) = std::str::from_utf8(file_bytes) else {
+                    if file_bytes.ends_with(b".md") || entry.mode == "120000" {
+                        return Err(StateError::new(
                             ErrorCode::ProfileSchemaInvalid,
                             format!(
                                 "committed Git archive entry '{}' is not valid UTF-8",
                                 String::from_utf8_lossy(&entry.raw_path)
                             ),
-                        )
-                    })?;
-                    if entry.mode == "120000"
-                        && (file_str.trim_end().ends_with(".md")
-                            || (file_str.contains('\\') && file_str.ends_with(".md")))
-                    {
-                        return Err(StateError::new(
-                            ErrorCode::ProfileSchemaInvalid,
-                            format!(
-                                "archive entry '{raw_str}' in Git tree must not be a symlink"
-                            ),
                         ));
                     }
-                    if file_str.contains('\\') && file_str.ends_with(".md") {
-                        return Err(StateError::new(
-                            ErrorCode::ProfileSchemaInvalid,
-                            format!(
-                                "archive entry '{raw_str}' in Git tree has invalid or unsupported path characters"
-                            ),
-                        ));
-                    }
-                    if !col.is_direct_archive_file(raw_str) {
-                        continue;
-                    }
-                    if !seen_paths.insert(raw_str.to_owned()) {
-                        continue;
-                    }
-                    let raw = match read_git_blob_utf8_by_oid(ws_path, &entry.oid) {
-                        Ok(Some(s)) => s,
-                        Ok(None) => {
-                            warnings.push(format!(
-                                "enumerated committed archive '{raw_str}' blob '{}' disappeared from HEAD",
-                                entry.oid
-                            ));
-                            continue;
-                        }
-                        Err(err) => {
-                            warnings.push(format!("{raw_str}: failed reading git blob: {err}"));
-                            continue;
-                        }
-                    };
-                    if let Some(res) = visitor(col_name, raw_str.to_owned(), &raw) {
-                        return Ok(Some(res));
-                    }
+                    continue;
+                };
+                let raw_str = std::str::from_utf8(&entry.raw_path).map_err(|_| {
+                    StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        format!(
+                            "committed Git archive entry '{}' is not valid UTF-8",
+                            String::from_utf8_lossy(&entry.raw_path)
+                        ),
+                    )
+                })?;
+                if entry.mode == "120000"
+                    && (file_str.trim_end().ends_with(".md")
+                        || (file_str.contains('\\') && file_str.ends_with(".md")))
+                {
+                    return Err(StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        format!(
+                            "archive entry '{raw_str}' in Git tree must not be a symlink"
+                        ),
+                    ));
                 }
+                if file_str.contains('\\') && file_str.ends_with(".md") {
+                    return Err(StateError::new(
+                        ErrorCode::ProfileSchemaInvalid,
+                        format!(
+                            "archive entry '{raw_str}' in Git tree has invalid or unsupported path characters"
+                        ),
+                    ));
+                }
+                if !col.is_direct_archive_file(raw_str) {
+                    continue;
+                }
+                if !seen_paths.insert(raw_str.to_owned()) {
+                    continue;
+                }
+                git_entries.push((col_name.clone(), raw_str.to_owned(), entry.oid.clone()));
             }
             continue;
         }
@@ -875,25 +906,223 @@ fn visit_archived_specs<T>(
             }
         }
     }
+    if !git_entries.is_empty() {
+        let oids: Vec<_> = git_entries.iter().map(|(_, _, oid)| oid.as_str()).collect();
+        let blobs = read_git_blobs_utf8_batch(ws_path, &oids)
+            .map_err(|err| StateError::new(ErrorCode::ExternalGitDrift, err.to_string()))?;
+        for ((col, path, oid), blob) in git_entries.into_iter().zip(blobs) {
+            match blob {
+                Ok(Some(raw)) => {
+                    if let Some(res) = visitor(&col, path, &raw) {
+                        return Ok(Some(res));
+                    }
+                }
+                Ok(None) => warnings.push(format!(
+                    "enumerated committed archive '{path}' blob '{oid}' disappeared from HEAD"
+                )),
+                Err(err) => warnings.push(format!("{path}: failed reading git blob: {err}")),
+            }
+        }
+    }
     Ok(None)
 }
 
 pub(crate) type CollectedArchiveScan = (Vec<(String, String, SpecDocument)>, Vec<String>);
 
+pub(crate) enum TombstoneArchiveError {
+    ExternalGitDrift(String),
+    NotInClosedCommit { path: String, commit: CommitOid },
+    Unreadable { path: String, err: String },
+    Invalid { path: String, err: String },
+}
+
+impl TombstoneArchiveError {
+    fn to_state_error(&self, dep_label: &str) -> StateError {
+        match self {
+            Self::ExternalGitDrift(err) => {
+                StateError::new(ErrorCode::ExternalGitDrift, err.clone())
+            }
+            Self::NotInClosedCommit { path, commit } => StateError::new(
+                ErrorCode::GateVerificationFailed,
+                format!(
+                    "spec dependency '{dep_label}' archive '{path}' not found in closed commit '{commit}'"
+                ),
+            ),
+            Self::Unreadable { path, err } => StateError::new(
+                ErrorCode::GateVerificationFailed,
+                format!("spec dependency '{dep_label}' archive '{path}' is unreadable: {err}"),
+            ),
+            Self::Invalid { path, err } => StateError::new(
+                ErrorCode::GateVerificationFailed,
+                format!("spec dependency '{dep_label}' archive '{path}' is invalid: {err}"),
+            ),
+        }
+    }
+}
+
+pub(crate) struct DepSnapshot {
+    pub workspace: PathBuf,
+    pub runs: Vec<RunRecord>,
+    pub task_statuses: BTreeMap<(RunId, String), bool>,
+    pub tombstones: Vec<RunTombstoneRecord>,
+    pub tombstone_archives: BTreeMap<RunId, Result<SpecDocument, TombstoneArchiveError>>,
+    pub archived_specs: BTreeMap<String, (String, SpecDocument)>,
+}
+
+impl DepSnapshot {
+    pub(crate) fn context(&self) -> PreloadedDepContext<'_> {
+        PreloadedDepContext {
+            workspace: &self.workspace,
+            runs: &self.runs,
+            task_statuses: &self.task_statuses,
+            tombstones: &self.tombstones,
+            tombstone_archives: &self.tombstone_archives,
+            archived_specs: &self.archived_specs,
+        }
+    }
+}
+
+pub(crate) struct PreloadedDepContext<'a> {
+    pub workspace: &'a Path,
+    pub runs: &'a [RunRecord],
+    pub task_statuses: &'a BTreeMap<(RunId, String), bool>,
+    pub tombstones: &'a [RunTombstoneRecord],
+    pub tombstone_archives: &'a BTreeMap<RunId, Result<SpecDocument, TombstoneArchiveError>>,
+    pub archived_specs: &'a BTreeMap<String, (String, SpecDocument)>,
+}
+
+pub(crate) fn load_task_status_map(
+    reader: &dyn StateReader,
+) -> Result<BTreeMap<(RunId, String), bool>, StateError> {
+    Ok(reader
+        .load_task_statuses()?
+        .into_iter()
+        .map(|(run, node, status)| ((run, node), status == NodeStatus::Completed))
+        .collect())
+}
+
+pub(crate) fn load_tombstone_archives(
+    ws: &Path,
+    tombs: &[RunTombstoneRecord],
+) -> BTreeMap<RunId, Result<SpecDocument, TombstoneArchiveError>> {
+    let mut out = BTreeMap::new();
+    let archives: Vec<_> = tombs
+        .iter()
+        .filter_map(|t| t.archive_path.as_deref().map(|p| (t, p)))
+        .collect();
+    if archives.is_empty() {
+        return out;
+    }
+    let paths: Vec<_> = archives
+        .iter()
+        .map(|(t, p)| (t.closed_commit.as_ref().map_or("HEAD", |c| c.as_str()), *p))
+        .collect();
+    let mut blobs = if is_git_repo(ws) {
+        match read_git_blobs_at_paths_batch(ws, &paths) {
+            Ok(blobs) => Some(blobs.into_iter()),
+            Err(err) => {
+                for (t, _) in &archives {
+                    out.insert(
+                        t.run_id.clone(),
+                        Err(TombstoneArchiveError::ExternalGitDrift(err.to_string())),
+                    );
+                }
+                return out;
+            }
+        }
+    } else {
+        None
+    };
+    for (tomb, path) in archives {
+        let raw = match blobs
+            .as_mut()
+            .map(|it| it.next().expect("batch preserves input length"))
+        {
+            Some(Err(err)) => Err(TombstoneArchiveError::ExternalGitDrift(err.to_string())),
+            Some(Ok(Some(raw))) => Ok(raw),
+            Some(Ok(None)) if tomb.closed_commit.is_some() => {
+                Err(TombstoneArchiveError::NotInClosedCommit {
+                    path: path.to_owned(),
+                    commit: tomb.closed_commit.clone().unwrap(),
+                })
+            }
+            _ => read_confined_utf8(ws, path).map_err(|err| TombstoneArchiveError::Unreadable {
+                path: path.to_owned(),
+                err: err.to_string(),
+            }),
+        };
+        let parsed = raw.and_then(|raw| {
+            parse_spec(&raw).map_err(|err| TombstoneArchiveError::Invalid {
+                path: path.to_owned(),
+                err: err.to_string(),
+            })
+        });
+        out.insert(tomb.run_id.clone(), parsed);
+    }
+    out
+}
+
+pub(crate) fn load_dep_snapshot(
+    ws: &Path,
+    collections: &BTreeMap<String, SpecCollectionConfig>,
+    reader: &dyn StateReader,
+) -> Result<(DepSnapshot, Vec<String>), StateError> {
+    let (archives, warnings) = collect_archived_specs(ws, collections, false, None)?;
+    let runs = list_all_runs(reader, None)?;
+    let tombstones = list_all_tombstones(reader)?;
+    let task_statuses = load_task_status_map(reader)?;
+    let tombstone_archives = load_tombstone_archives(ws, &tombstones);
+    let archived_specs = archives
+        .into_iter()
+        .map(|(_, path, doc)| (doc.id.clone(), (path, doc)))
+        .collect();
+    Ok((
+        DepSnapshot {
+            workspace: ws.to_path_buf(),
+            runs,
+            task_statuses,
+            tombstones,
+            tombstone_archives,
+            archived_specs,
+        },
+        warnings,
+    ))
+}
+
+fn archived_task_outcome(
+    doc: &SpecDocument,
+    path: &str,
+    task: &str,
+    label: &str,
+) -> Result<(), StateError> {
+    match doc.tasks.iter().find(|t| t.task_ref.as_str() == task) {
+        None => Err(StateError::new(
+            ErrorCode::GateVerificationFailed,
+            format!("spec dependency '{label}' does not contain task '{task}' in '{path}'"),
+        )),
+        Some(t) if t.status != SpecStatus::Completed => Err(StateError::new(
+            ErrorCode::GateVerificationFailed,
+            format!("spec dependency '{label}' task '{task}' is not completed"),
+        )),
+        Some(_) => Ok(()),
+    }
+}
+
 /// Collect all archived spec documents across `collections` (from committed `HEAD` in Git, or disk when `disk_only` / non-Git),
-/// returning `(parsed_specs, parse_warnings)`.
+/// returning `(parsed_specs, io_warnings)` while ignoring unparseable legacy frontmatter in archive files.
 pub(crate) fn collect_archived_specs(
     ws_path: &Path,
     collections: &BTreeMap<String, SpecCollectionConfig>,
     disk_only: bool,
+    head_oid: Option<&str>,
 ) -> Result<CollectedArchiveScan, StateError> {
     let mut out = Vec::new();
-    let mut warnings = Vec::new();
     let mut io_warnings = Vec::new();
     visit_archived_specs(
         ws_path,
         collections,
         disk_only,
+        head_oid,
         &mut io_warnings,
         |col_name, rel_posix, raw| {
             if let Ok(doc) = parse_spec(raw) {
@@ -902,8 +1131,7 @@ pub(crate) fn collect_archived_specs(
             None::<()>
         },
     )?;
-    warnings.extend(io_warnings);
-    Ok((out, warnings))
+    Ok((out, io_warnings))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -916,59 +1144,112 @@ pub(crate) fn resolve_dep_target(
     task_sel: Option<&str>,
     dep_label: &str,
     run_checkout: Option<&Path>,
+    preloaded: Option<&PreloadedDepContext<'_>>,
 ) -> Result<DepTargetResolution, StateError> {
     if let Some(reader) = reader_opt {
-        let runs = list_all_runs(reader, None)?;
-        if let Some(run) = runs.into_iter().find(|r| {
+        let owned_runs;
+        let runs = if let Some(ctx) = preloaded {
+            ctx.runs
+        } else {
+            owned_runs = list_all_runs(reader, None)?;
+            &owned_runs
+        };
+        let run = runs.iter().find(|r| {
             run_checkout.is_none_or(|checkout| run_in_checkout(r, checkout))
                 && run_matches_selector(r, run_sel)
-        }) {
+        });
+        if let Some(run) = run {
             let (task_exists, task_completed) = match task_sel {
-                Some(t_ref) => match reader.load_node(&run.run_id, &format!("task:{t_ref}"))? {
-                    Some(node) => (true, node.status == NodeStatus::Completed),
-                    None => (false, false),
-                },
+                Some(t_ref) => {
+                    if let Some(ctx) = preloaded {
+                        ctx.task_statuses
+                            .get(&(run.run_id.clone(), format!("task:{t_ref}")))
+                            .map_or((false, false), |completed| (true, *completed))
+                    } else {
+                        match reader.load_node(&run.run_id, &format!("task:{t_ref}"))? {
+                            Some(node) => (true, node.status == NodeStatus::Completed),
+                            None => (false, false),
+                        }
+                    }
+                }
                 None => (true, false),
             };
             return Ok(DepTargetResolution::ActiveRun {
-                run_id: run.run_id,
-                spec_id: run.spec_id,
-                worktree: run.worktree,
+                run_id: run.run_id.clone(),
+                spec_id: run.spec_id.clone(),
+                worktree: run.worktree.clone(),
                 task_exists,
                 task_completed,
             });
         }
     }
 
-    if let Some(specs) = active_specs {
-        if let Some(target_doc) = specs.iter().find(|s| s.id == run_sel) {
-            let cancelled = target_doc.status == SpecStatus::Cancelled;
-            let task_exists = task_sel.is_none_or(|t_ref| {
-                target_doc.tasks.iter().any(|t| t.task_ref.as_str() == t_ref)
-            });
-            return Ok(DepTargetResolution::ActiveSpec {
-                cancelled,
-                task_exists,
-            });
-        }
+    if let Some(target_doc) = active_specs.and_then(|specs| specs.iter().find(|s| s.id == run_sel))
+    {
+        let cancelled = target_doc.status == SpecStatus::Cancelled;
+        let task_exists = task_sel.is_none_or(|t_ref| {
+            target_doc
+                .tasks
+                .iter()
+                .any(|t| t.task_ref.as_str() == t_ref)
+        });
+        return Ok(DepTargetResolution::ActiveSpec {
+            cancelled,
+            task_exists,
+        });
     }
 
     if let Some(reader) = reader_opt {
-        let tombs = list_all_tombstones(reader)?;
-        if let Some(latest) = find_latest_matching_tombstone(&tombs, run_sel) {
+        let owned_tombs;
+        let tombs = if let Some(ctx) = preloaded {
+            ctx.tombstones
+        } else {
+            owned_tombs = list_all_tombstones(reader)?;
+            &owned_tombs
+        };
+        if let Some(latest) = find_latest_matching_tombstone(tombs, run_sel) {
             let cleared = latest.terminal_status != TerminalStatus::Completed
-                || tombstone_superseded_by_cleared(&tombs, latest);
+                || tombstone_superseded_by_cleared(tombs, latest);
             let task_outcome = if cleared {
                 Ok(())
             } else if let Some(t_ref) = task_sel {
                 if let Some(ref arch_rel) = latest.archive_path {
-                    verify_archived_task_completed(
-                        ws_path,
-                        arch_rel,
-                        latest.closed_commit.as_ref(),
-                        t_ref,
-                        dep_label,
-                    )
+                    if let Some(ctx) = preloaded {
+                        let checkout_doc = latest.closed_commit.is_none().then(|| {
+                            ctx.archived_specs
+                                .values()
+                                .find(|(rel, _)| rel == arch_rel)
+                                .map(|(_, doc)| doc)
+                        }).flatten();
+                        let preloaded_entry = (ws_path == ctx.workspace
+                            || latest.closed_commit.is_some())
+                            .then(|| ctx.tombstone_archives.get(&latest.run_id))
+                            .flatten();
+                        if let Some(doc) = checkout_doc {
+                            archived_task_outcome(doc, arch_rel, t_ref, dep_label)
+                        } else if let Some(entry) = preloaded_entry {
+                            match entry {
+                                Ok(doc) => archived_task_outcome(doc, arch_rel, t_ref, dep_label),
+                                Err(err) => Err(err.to_state_error(dep_label)),
+                            }
+                        } else {
+                            verify_archived_task_completed(
+                                ws_path,
+                                arch_rel,
+                                latest.closed_commit.as_ref(),
+                                t_ref,
+                                dep_label,
+                            )
+                        }
+                    } else {
+                        verify_archived_task_completed(
+                            ws_path,
+                            arch_rel,
+                            latest.closed_commit.as_ref(),
+                            t_ref,
+                            dep_label,
+                        )
+                    }
                 } else if latest.is_ephemeral && t_ref == "goal" {
                     Ok(())
                 } else {
@@ -989,11 +1270,18 @@ pub(crate) fn resolve_dep_target(
         }
     }
 
+    if let Some(ctx) = preloaded {
+        return Ok(ctx.archived_specs.get(run_sel).map_or(
+            DepTargetResolution::NotFound,
+            |(path, doc)| archived_resolution(doc, path.clone(), task_sel),
+        ));
+    }
     let mut scratch_warnings = Vec::new();
     if let Some(found) = visit_archived_specs(
         ws_path,
         collections,
         false,
+        None,
         &mut scratch_warnings,
         |_, rel_posix, raw| match_archived_spec_content(raw, rel_posix, run_sel, task_sel),
     )? {
@@ -1019,20 +1307,18 @@ fn is_external_task_satisfied(
     target_run_id: &RunId,
     target_task_ref: &TaskRef,
     run_checkout: Option<&Path>,
+    preloaded: &PreloadedDepContext<'_>,
 ) -> Result<bool, StateError> {
     let task_sel = if target_task_ref.is_whole_spec() {
         None
     } else {
         Some(target_task_ref.as_str())
     };
-    let runs = if run_checkout.is_some() {
-        list_all_runs(reader, None)?
-    } else {
-        Vec::new()
-    };
-    let persisted = runs.iter().find(|run| &run.run_id == target_run_id);
-    let target =
-        checkout_scoped_target_selector(persisted, target_run_id.as_str(), run_checkout);
+    let persisted = preloaded
+        .runs
+        .iter()
+        .find(|r| r.run_id == *target_run_id);
+    let target = checkout_scoped_target_selector(persisted, target_run_id.as_str(), run_checkout);
     match resolve_dep_target(
         ws_path,
         collections,
@@ -1042,6 +1328,7 @@ fn is_external_task_satisfied(
         task_sel,
         target_run_id.as_str(),
         run_checkout,
+        Some(preloaded),
     )? {
         DepTargetResolution::ActiveSpec { .. } | DepTargetResolution::NotFound => Ok(false),
         DepTargetResolution::ActiveRun { task_completed, .. } => Ok(task_completed),
@@ -1140,7 +1427,8 @@ pub fn verify_run_level_depends_on(
             trimmed,
             (trimmed.contains('/')
                 && acdd_core::git::primary_worktree_root(&ws_path).as_deref() == Some(&primary))
-                .then_some(ws_path.as_path()),
+            .then_some(ws_path.as_path()),
+            None,
         )? {
             DepTargetResolution::Tombstone {
                 cleared: false,
@@ -1218,6 +1506,16 @@ pub fn validate_spec_dependencies(
         .map(|lw| (lw.name.clone(), lw.path.clone()))
         .collect();
     let spec_repos = resolve_spec_repositories(root, doc);
+    let local_checkout = canonical_root(root).unwrap_or_else(|_| root.to_path_buf());
+    let local_primary = acdd_core::git::primary_worktree_root(&local_checkout)
+        .unwrap_or_else(|| local_checkout.clone());
+    let local_db = resolve_effective_state_db_path(&local_primary, state_db_override, adapter);
+    let mut contexts = ValidationContexts {
+        local_checkout,
+        local_primary,
+        local_db,
+        workspaces: BTreeMap::new(),
+    };
 
     // 1. Validate intra-spec task DAG and external task.depends_on entries.
     let task_refs: BTreeSet<&str> = doc.tasks.iter().map(|t| t.task_ref.as_str()).collect();
@@ -1244,13 +1542,13 @@ pub fn validate_spec_dependencies(
                     root,
                     adapter,
                     local_reader,
-                    state_db_override,
                     &linked_workspaces,
                     &spec_repos,
                     active_specs,
                     &doc.id,
                     trimmed,
                     require_task,
+                    &mut contexts,
                 ) {
                     issues.push(DepValidationIssue::new(err.code, err.to_string()));
                 }
@@ -1275,13 +1573,13 @@ pub fn validate_spec_dependencies(
                     root,
                     adapter,
                     local_reader,
-                    state_db_override,
                     &linked_workspaces,
                     &spec_repos,
                     active_specs,
                     &doc.id,
                     trimmed,
                     false,
+                    &mut contexts,
                 ) {
                     issues.push(DepValidationIssue::new(
                         err.code,
@@ -1338,13 +1636,13 @@ pub fn validate_spec_dependencies(
             root,
             adapter,
             local_reader,
-            state_db_override,
             &linked_workspaces,
             &spec_repos,
             active_specs,
             &doc.id,
             trimmed,
             false,
+            &mut contexts,
         ) {
             issues.push(DepValidationIssue::new(err.code, err.to_string()));
         }
@@ -1632,38 +1930,83 @@ fn has_cross_spec_cycle(
     false
 }
 
+struct ValidationWorkspace {
+    path: PathBuf,
+    db: PathBuf,
+    collections: BTreeMap<String, SpecCollectionConfig>,
+    active: Vec<SpecDocument>,
+    snapshot: DepSnapshot,
+    checkout_scoped: bool,
+}
+
+struct ValidationContexts {
+    local_checkout: PathBuf,
+    local_primary: PathBuf,
+    local_db: PathBuf,
+    workspaces: BTreeMap<String, ValidationWorkspace>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn validate_external_dep_ref(
-    primary_root: &Path,
+    _primary_root: &Path,
     primary_adapter: &Adapter,
     local_reader: Option<&dyn StateReader>,
-    state_db_override: Option<&Path>,
     linked_workspaces: &BTreeMap<String, PathBuf>,
     spec_repos: &BTreeMap<String, PathBuf>,
     primary_active_specs: &[SpecDocument],
     self_spec_id: &str,
     trimmed: &str,
     require_task: bool,
+    contexts: &mut ValidationContexts,
 ) -> Result<(), StateError> {
-    let local_checkout =
-        canonical_root(primary_root).unwrap_or_else(|_| primary_root.to_path_buf());
-    let local_primary = acdd_core::git::primary_worktree_root(&local_checkout)
-        .unwrap_or_else(|| local_checkout.clone());
-    let local_db =
-        resolve_effective_state_db_path(&local_primary, state_db_override, primary_adapter);
-    let (ws_path, run_and_task) = match trimmed.split_once('/') {
-        Some((alias, rest)) => (
-            resolve_linked_workspace_root(alias, trimmed, linked_workspaces, spec_repos)?,
-            rest,
-        ),
-        None => (local_checkout.clone(), trimmed),
-    };
-    let is_primary = ws_path == local_checkout;
-    let (ws_db_path, ws_collections) = if is_primary {
-        (local_db.clone(), primary_adapter.specs.clone())
-    } else {
-        resolve_ws_context_canon(&ws_path, Some((&local_primary, &local_db)))?
-    };
+    let (alias, run_and_task) = trimmed.split_once('/').unwrap_or(("", trimmed));
+    if !contexts.workspaces.contains_key(alias) {
+        let ws_path = if alias.is_empty() {
+            contexts.local_checkout.clone()
+        } else {
+            resolve_linked_workspace_root(alias, trimmed, linked_workspaces, spec_repos)?
+        };
+        let is_primary = ws_path == contexts.local_checkout;
+        let (db, collections) = if is_primary {
+            (contexts.local_db.clone(), primary_adapter.specs.clone())
+        } else {
+            resolve_ws_context_canon(
+                &ws_path,
+                Some((&contexts.local_primary, &contexts.local_db)),
+            )?
+        };
+        let active = if is_primary {
+            primary_active_specs.to_vec()
+        } else {
+            let scan = collect_workspace_specs(&ws_path, &collections);
+            if let Some(first_err) = scan.errors.into_iter().next() {
+                return Err(StateError::new(first_err.code, first_err.message));
+            }
+            scan.specs.into_iter().map(|s| s.doc).collect()
+        };
+        let owned_reader = SqliteStateReader::new(&db);
+        let reader = local_reader
+            .filter(|_| db == contexts.local_db)
+            .unwrap_or(&owned_reader);
+        let (snapshot, _) = load_dep_snapshot(&ws_path, &collections, reader)?;
+        let checkout_scoped = !alias.is_empty()
+            && acdd_core::git::primary_worktree_root(&ws_path).as_deref()
+                == Some(&contexts.local_primary);
+        contexts.workspaces.insert(
+            alias.to_owned(),
+            ValidationWorkspace {
+                path: ws_path,
+                db,
+                collections,
+                active,
+                snapshot,
+                checkout_scoped,
+            },
+        );
+    }
+    let workspace = &contexts.workspaces[alias];
+    let ws_path = &workspace.path;
+    let is_primary = *ws_path == contexts.local_checkout;
 
     let (run_sel, task_sel) = match run_and_task.split_once(':') {
         Some((r, t)) => {
@@ -1694,34 +2037,22 @@ fn validate_external_dep_ref(
         ));
     }
 
-    let active_storage: Vec<SpecDocument>;
-    let active_list: &[SpecDocument] = if is_primary {
-        primary_active_specs
-    } else {
-        let scan = collect_workspace_specs(&ws_path, &ws_collections);
-        if let Some(first_err) = scan.errors.into_iter().next() {
-            return Err(StateError::new(first_err.code, first_err.message));
-        }
-        active_storage = scan.specs.into_iter().map(|s| s.doc).collect();
-        &active_storage
-    };
-
-    let owned_reader = SqliteStateReader::new(&ws_db_path);
+    let owned_reader = SqliteStateReader::new(&workspace.db);
     let reader = local_reader
-        .filter(|_| ws_db_path == local_db)
+        .filter(|_| workspace.db == contexts.local_db)
         .unwrap_or(&owned_reader);
+    let preloaded = workspace.snapshot.context();
 
     match resolve_dep_target(
-        &ws_path,
-        &ws_collections,
+        ws_path,
+        &workspace.collections,
         Some(reader),
-        Some(active_list),
+        Some(&workspace.active),
         run_sel,
         task_sel,
         trimmed,
-        (trimmed.contains('/')
-            && acdd_core::git::primary_worktree_root(&ws_path).as_deref() == Some(&local_primary))
-            .then_some(ws_path.as_path()),
+        workspace.checkout_scoped.then_some(ws_path.as_path()),
+        Some(&preloaded),
     )? {
         DepTargetResolution::ActiveSpec {
             cancelled,
@@ -1837,12 +2168,21 @@ pub(crate) fn collect_workspace_specs(
     root: &Path,
     collections: &BTreeMap<String, SpecCollectionConfig>,
 ) -> WorkspaceSpecScan {
+    collect_workspace_specs_cached(root, collections, &mut BTreeMap::new())
+}
+
+pub(crate) fn collect_workspace_specs_cached(
+    root: &Path,
+    collections: &BTreeMap<String, SpecCollectionConfig>,
+    parsed: &mut BTreeMap<[u8; 32], Result<SpecDocument, StateError>>,
+) -> WorkspaceSpecScan {
     fn walk(
         root: &Path,
         dir: &Path,
         col: &SpecCollectionConfig,
         found: &mut BTreeMap<String, CollectedWorkspaceSpec>,
         errors: &mut Vec<WorkspaceSpecScanError>,
+        parsed: &mut BTreeMap<[u8; 32], Result<SpecDocument, StateError>>,
     ) {
         let entries_iter = match fs::read_dir(dir) {
             Ok(iter) => iter,
@@ -1908,7 +2248,7 @@ pub(crate) fn collect_workspace_specs(
             }
             if ft.is_dir() {
                 if entry.file_name() != "archive" {
-                    walk(root, &path, col, found, errors);
+                    walk(root, &path, col, found, errors, parsed);
                 }
                 continue;
             }
@@ -1922,7 +2262,11 @@ pub(crate) fn collect_workspace_specs(
                 continue;
             }
             match read_confined_utf8(root, &rel_str) {
-                Ok(content) => match parse_spec(&content) {
+                Ok(content) => match parsed
+                    .entry(sha256_bytes(content.as_bytes()))
+                    .or_insert_with(|| parse_spec(&content))
+                    .clone()
+                {
                     Ok(doc) => {
                         found.insert(
                             rel_str.clone(),
@@ -1971,7 +2315,7 @@ pub(crate) fn collect_workspace_specs(
             }
         };
         for dir in dirs {
-            walk(root, &dir, col, &mut found, &mut errors);
+            walk(root, &dir, col, &mut found, &mut errors, parsed);
         }
     }
     WorkspaceSpecScan {

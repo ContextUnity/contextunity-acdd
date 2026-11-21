@@ -636,6 +636,15 @@ pub fn list_git_tree_entries(
     tree_or_commit: &str,
     dir_rel: &str,
 ) -> Result<Vec<GitTreeEntry>, StateError> {
+    list_git_tree_entries_multi(worktree, tree_or_commit, &[dir_rel])
+}
+
+/// List blob entries (`mode`, `path`) under multiple `dir_rels` in `tree_or_commit` in one Git call.
+pub fn list_git_tree_entries_multi(
+    worktree: &Path,
+    tree_or_commit: &str,
+    dir_rels: &[&str],
+) -> Result<Vec<GitTreeEntry>, StateError> {
     let trimmed = tree_or_commit.trim();
     if trimmed.is_empty() || trimmed.starts_with('-') {
         return Err(StateError::new(
@@ -643,9 +652,13 @@ pub fn list_git_tree_entries(
             format!("invalid tree/commit reference '{tree_or_commit}'"),
         ));
     }
-    let dir_prefix = if dir_rel.is_empty() || dir_rel == "." {
-        None
-    } else {
+    let mut dir_prefixes = Vec::with_capacity(dir_rels.len());
+    let mut full_tree = dir_rels.is_empty();
+    for &dir_rel in dir_rels {
+        if dir_rel.is_empty() || dir_rel == "." {
+            full_tree = true;
+            continue;
+        }
         let stripped = dir_rel
             .strip_prefix("./")
             .unwrap_or(dir_rel)
@@ -660,8 +673,8 @@ pub fn list_git_tree_entries(
                 format!("invalid repository-relative directory '{dir_rel}'"),
             ));
         }
-        Some(format!("{stripped}/"))
-    };
+        dir_prefixes.push(format!("{stripped}/"));
+    }
     let is_hex_oid = (trimmed.len() == 40 || trimmed.len() == 64)
         && trimmed.bytes().all(|b| b.is_ascii_hexdigit());
     if !is_hex_oid {
@@ -673,22 +686,12 @@ pub fn list_git_tree_entries(
             ErrorCode::ExternalGitDrift,
         )?;
     }
-    let out = match dir_prefix {
-        Some(ref prefix) => run_git_checked(
-            worktree,
-            &["ls-tree", "-r", "-z", "--full-tree", trimmed, "--", prefix],
-            None,
-            None,
-            ErrorCode::ExternalGitDrift,
-        )?,
-        None => run_git_checked(
-            worktree,
-            &["ls-tree", "-r", "-z", "--full-tree", trimmed],
-            None,
-            None,
-            ErrorCode::ExternalGitDrift,
-        )?,
-    };
+    let mut args = vec!["ls-tree", "-r", "-z", "--full-tree", trimmed];
+    if !full_tree {
+        args.push("--");
+        args.extend(dir_prefixes.iter().map(String::as_str));
+    }
+    let out = run_git_checked(worktree, &args, None, None, ErrorCode::ExternalGitDrift)?;
     let mut entries = Vec::new();
     for record in out.stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
         let Some(tab) = record.iter().position(|b| *b == b'\t') else {
@@ -713,5 +716,6 @@ pub fn list_git_tree_entries(
         });
     }
     entries.sort_by(|a, b| a.raw_path.cmp(&b.raw_path));
+    entries.dedup_by(|a, b| a.raw_path == b.raw_path);
     Ok(entries)
 }

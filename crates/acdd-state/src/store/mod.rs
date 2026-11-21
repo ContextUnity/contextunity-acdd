@@ -31,6 +31,12 @@ macro_rules! impl_state_reader_delegate {
     };
     (@impl $ty:ty, $mode:ident, |$self_ident:ident| $target:expr) => {
         impl $crate::store::traits::StateReader for $ty {
+            fn load_task_statuses(
+                &self,
+            ) -> Result<Vec<(acdd_core::ids::RunId, String, $crate::types::NodeStatus)>, acdd_core::errors::StateError> {
+                $crate::store::impl_state_reader_delegate!(@call self, $self_ident, $mode, $target, load_task_statuses())
+            }
+
             fn load_run_graph(
                 &self,
                 run_id: &acdd_core::ids::RunId,

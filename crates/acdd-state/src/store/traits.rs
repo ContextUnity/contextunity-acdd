@@ -4,7 +4,7 @@ use crate::machine::SyncPlan;
 use crate::types::{
     ArtifactKind, BlackboardListReq, BlackboardPage, BlackboardRecord, BlackboardStatusPatch,
     ClaimInsertInput, GateArtifactRecord, GateClaimRecord, GateNodeRecord, GateTraceRecord,
-    ListRunsPage, ListRunsReq, ObservabilitySnapshot, RunGraphSnapshot, RunRecord,
+    ListRunsPage, ListRunsReq, NodeStatus, ObservabilitySnapshot, RunGraphSnapshot, RunRecord,
     RunTombstoneRecord, StoragePreconditions, SubtaskRecord, TraceFinishInput, TraceStartInput,
     TransitionPlan,
 };
@@ -16,6 +16,9 @@ use acdd_core::ids::RunId;
 /// Implementations on disk MUST open read-only (`SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only = ON`)
 /// and return empty/absent results without creating missing database files.
 pub trait StateReader: Send + Sync {
+    /// Load task-node statuses for all active runs in one read.
+    fn load_task_statuses(&self) -> Result<Vec<(RunId, String, NodeStatus)>, StateError>;
+
     /// Load the complete graph snapshot (`runs`, `gate_nodes`, `task_dependencies`, `subtasks`,
     /// `gate_claims`, `gate_traces`, `gate_artifacts`) for `run_id`.
     fn load_run_graph(&self, run_id: &RunId) -> Result<Option<RunGraphSnapshot>, StateError>;

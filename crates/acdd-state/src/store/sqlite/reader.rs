@@ -1003,6 +1003,31 @@ fn resolve_active_run_by_worktree_inner(
     Ok(matched_run)
 }
 
+pub(crate) fn load_task_statuses(
+    conn: &Connection,
+) -> Result<Vec<(RunId, String, NodeStatus)>, StateError> {
+    let mut stmt = conn
+        .prepare("SELECT run_id, node_id, status FROM gate_nodes WHERE kind = 'task'")
+        .map_err(|err| map_sql_err(err, "prepare task statuses"))?;
+    collect_rows(
+        &mut stmt,
+        [],
+        |row| {
+            let run: String = row.get(0)?;
+            let node: String = row.get(1)?;
+            let status: String = row.get(2)?;
+            Ok((|| {
+                Ok((
+                    parse_id(run, RunId::new, "gate_nodes.run_id")?,
+                    node,
+                    parse_enum(&status, "gate_nodes.status")?,
+                ))
+            })())
+        },
+        "load task statuses",
+    )
+}
+
 pub(crate) fn load_node(
     conn: &Connection,
     run_id: &RunId,

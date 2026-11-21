@@ -301,6 +301,15 @@ impl SqliteStateReader {
 }
 
 impl StateReader for SqliteStateReader {
+    fn load_task_statuses(
+        &self,
+    ) -> Result<Vec<(RunId, String, crate::types::NodeStatus)>, StateError> {
+        let Some((conn, _)) = open_read_only_if_exists(&self.db_path)? else {
+            return Ok(Vec::new());
+        };
+        reader::load_task_statuses(&conn)
+    }
+
     fn load_run_graph(&self, run_id: &RunId) -> Result<Option<RunGraphSnapshot>, StateError> {
         self.with_versioned_conn_or_default(None, |conn, schema_version| {
             reader::load_run_graph_with_version(conn, run_id, schema_version)

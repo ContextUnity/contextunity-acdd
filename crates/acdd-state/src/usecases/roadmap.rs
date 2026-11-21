@@ -8,28 +8,32 @@ use crate::store::sqlite::SqliteStateReader;
 use crate::store::traits::StateReader;
 use crate::types::{
     GateNodeRecord, NodeKind, NodeStatus, RunGraphSnapshot, RunRecord, RunStatus,
-    ValidatedObservations,
+    RunTombstoneRecord, ValidatedObservations,
 };
 use crate::usecases::deps::{
     checkout_scoped_target_selector, collect_archived_specs,
-    collect_external_satisfied_deps_with_owned, collect_workspace_specs,
-    effective_active_run_config, load_ws_adapter, parse_dep_syntax, resolve_dep_target,
-    resolve_linked_workspace_root, resolve_spec_repositories, resolve_ws_context_canon,
-    run_in_checkout, run_matches_selector, CollectedWorkspaceSpec, DepTargetResolution,
-    ParsedDepSyntax,
+    collect_external_satisfied_deps_cached, collect_external_satisfied_deps_with_owned,
+    collect_workspace_specs_cached,
+    effective_active_run_config, load_dep_snapshot, load_task_status_map, load_tombstone_archives,
+    load_ws_adapter, parse_dep_syntax, resolve_dep_target, resolve_linked_workspace_root,
+    resolve_spec_repositories, resolve_ws_context_canon, run_in_checkout, run_matches_selector,
+    CollectedWorkspaceSpec, DepSnapshot, DepTargetResolution, ParsedDepSyntax,
+    PreloadedDepContext, TombstoneArchiveError,
 };
 use crate::usecases::dto::{
     RoadmapActiveGateEntry, RoadmapDepEntry, RoadmapReq, RoadmapResp, RoadmapSpecEntry,
     RoadmapTaskEntry, RoadmapWave, RoadmapWorktreeCopy,
 };
 use crate::usecases::lifecycle::{
-    effective_spec_collections, list_all_runs, primary_workspace_root,
+    effective_spec_collections, list_all_runs, list_all_tombstones, primary_workspace_root,
 };
 use crate::usecases::StateEngineConfig;
 use acdd_core::config::SpecCollectionConfig;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::canonical_root;
-use acdd_core::git::list_owned_worktrees;
+use acdd_core::git::{
+    git_object_ids_at_paths_batch, git_paths_clean_against_head, list_owned_worktrees_with_heads,
+};
 use acdd_core::ids::{RunId, TaskRef};
 use acdd_core::path_policy::scopes_overlap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -38,6 +42,7 @@ use std::path::{Path, PathBuf};
 type ActiveRunMap = BTreeMap<String, Vec<(RunRecord, Option<RunGraphSnapshot>)>>;
 type TaskDepsMap = BTreeMap<(String, String), Vec<(Option<ParsedDepSyntax>, RoadmapDepEntry)>>;
 type SpecWavesOutput = (Vec<(usize, Vec<String>)>, Vec<Vec<String>>);
+type CommittedArchives = Vec<(String, String, SpecDocument)>;
 
 struct SpecInfo {
     spec_id: String,
@@ -72,15 +77,22 @@ struct CheckoutSpecs {
 struct LinkedWsCache {
     workspaces: BTreeMap<PathBuf, (CheckoutSpecs, Option<SqliteStateReader>)>,
     outcomes: BTreeMap<(PathBuf, String, Option<String>), (&'static str, bool)>,
+    aliases: BTreeMap<(PathBuf, String, PathBuf, String), Option<PathBuf>>,
+    runs: Vec<RunRecord>,
+    task_statuses: BTreeMap<(RunId, String), bool>,
+    tombstones: Vec<RunTombstoneRecord>,
+    tombstone_archives: BTreeMap<RunId, Result<SpecDocument, TombstoneArchiveError>>,
+    linked_deps: BTreeMap<PathBuf, DepSnapshot>,
 }
 
 struct DiscoveredWorkspace {
     specs_by_id: BTreeMap<String, SpecInfo>,
     archived_by_id: BTreeMap<String, SpecInfo>,
+    checkout_archives: BTreeMap<PathBuf, BTreeMap<String, (String, SpecDocument)>>,
     specs_by_run: BTreeMap<RunId, SpecInfo>,
     owned_worktrees: Vec<PathBuf>,
     checkout_specs: BTreeMap<PathBuf, CheckoutSpecs>,
-    active_docs: Vec<SpecDocument>,
+    sibling_candidates: BTreeMap<String, Vec<PathBuf>>,
     warnings: Vec<String>,
 }
 
@@ -130,6 +142,11 @@ pub(crate) fn handle_roadmap(
         config,
         reader,
         &active_runs_by_spec,
+        req.archived
+            || req
+                .spec_id
+                .as_ref()
+                .is_some_and(|id| discovered.archived_by_id.contains_key(id)),
         &mut graph_warnings,
     )?;
     discovered.warnings.extend(graph_warnings);
@@ -297,6 +314,19 @@ fn copy_priority_key(
     )
 }
 
+type ArchiveFingerprint = Vec<Option<String>>;
+
+fn literal_archive_dirs(collections: &BTreeMap<String, SpecCollectionConfig>) -> Option<Vec<String>> {
+    let pats: Vec<_> = collections.values().flat_map(|col| col.patterns()).collect();
+    pats.iter()
+        .all(|p| !p.contains(['*', '?', '{', '[']))
+        .then(|| {
+            pats.iter()
+                .map(|p| format!("{}/archive", p.trim_end_matches('/')))
+                .collect()
+        })
+}
+
 fn discover_specs_across_worktrees(
     current_root: &Path,
     primary_canon: &Path,
@@ -304,12 +334,77 @@ fn discover_specs_across_worktrees(
     active_runs_by_spec: &ActiveRunMap,
     current_only: bool,
 ) -> Result<DiscoveredWorkspace, StateError> {
-    let owned_worktrees = list_owned_worktrees(primary_canon).unwrap_or_default();
+    let worktree_heads = list_owned_worktrees_with_heads(primary_canon).unwrap_or_default();
+    let owned_worktrees: Vec<_> = worktree_heads.iter().map(|(path, _)| path.clone()).collect();
+    let literal_dirs = literal_archive_dirs(collections);
+    let mut fingerprint_by_head: BTreeMap<String, Vec<Option<String>>> = BTreeMap::new();
+    if let Some(dirs) = &literal_dirs {
+        let queries: Vec<_> = worktree_heads
+            .iter()
+            .filter_map(|(_, head)| head.as_deref())
+            .flat_map(|head| dirs.iter().map(move |path| (head, path.as_str())))
+            .collect();
+        if let Ok(ids) = git_object_ids_at_paths_batch(primary_canon, &queries) {
+            for ((_, head), chunk) in worktree_heads
+                .iter()
+                .filter(|(_, h)| h.is_some())
+                .zip(ids.chunks(dirs.len().max(1)))
+            {
+                if let Some(h) = head {
+                    fingerprint_by_head.insert(h.clone(), chunk.to_vec());
+                }
+            }
+        }
+    }
     let worktrees =
         enumerate_worktree_roots(current_root, primary_canon, current_only, &owned_worktrees);
+    let collection_patterns = |cols: &BTreeMap<String, SpecCollectionConfig>| -> Vec<String> {
+        cols.iter()
+            .flat_map(|(name, col)| {
+                col.patterns()
+                    .into_iter()
+                    .map(move |pat| format!("{name}:{pat}"))
+            })
+            .collect()
+    };
+    let effective_patterns = collection_patterns(collections);
+    let mut preloaded_clean: BTreeMap<PathBuf, bool> = BTreeMap::new();
+    let archive_key = |head: &str, same_pats: bool| -> ArchiveFingerprint {
+        if same_pats {
+            if let Some(fp) = fingerprint_by_head.get(head) {
+                return fp.clone();
+            }
+        }
+        vec![Some(head.to_owned())]
+    };
+    if let Some(dirs) = literal_dirs.as_ref().filter(|_| worktrees.len() > 1) {
+        let archive_dir_refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        let sibling_wts: Vec<PathBuf> = worktrees
+            .iter()
+            .filter(|(_, wt)| {
+                *wt != *primary_canon
+                    && worktree_heads.iter().any(|(p, h)| p == wt && h.is_some())
+            })
+            .map(|(_, wt)| wt.clone())
+            .collect();
+        let mut clean_results: Vec<Option<(PathBuf, bool)>> = vec![None; sibling_wts.len()];
+        std::thread::scope(|s| {
+            for (wt, slot) in sibling_wts.iter().zip(clean_results.iter_mut()) {
+                let refs = &archive_dir_refs;
+                s.spawn(move || {
+                    *slot = Some((wt.clone(), git_paths_clean_against_head(wt, refs).unwrap_or(false)));
+                });
+            }
+        });
+        preloaded_clean.extend(clean_results.into_iter().flatten());
+    }
     let mut copies_by_id: BTreeMap<String, Vec<DiscoveredCopy>> = BTreeMap::new();
     let mut checkout_specs = BTreeMap::new();
     let mut warnings = Vec::new();
+    let mut spec_cache = BTreeMap::new();
+    let mut checkout_archives = BTreeMap::new();
+    let mut committed_cache: BTreeMap<(ArchiveFingerprint, Vec<String>), CommittedArchives> =
+        BTreeMap::new();
 
     for (wt_label, wt_path) in &worktrees {
         let worktree_adapter = (wt_path != current_root
@@ -321,7 +416,7 @@ fn discover_specs_across_worktrees(
         let collections = worktree_adapter
             .as_ref()
             .map_or(collections, |adapter| &adapter.specs);
-        let specs = scan_checkout_specs(wt_path, wt_label, collections, &mut warnings)?;
+        let specs = scan_checkout_specs(wt_path, wt_label, collections, &mut warnings, &mut spec_cache)?;
         if wt_path == primary_canon || owned_worktrees.contains(wt_path) {
             checkout_specs.insert(wt_path.clone(), checkout_specs_from(collections, &specs));
         }
@@ -347,7 +442,77 @@ fn discover_specs_across_worktrees(
         }
 
         let disk_only = *wt_path != *primary_canon;
-        let (arch, arch_warnings) = collect_archived_specs(wt_path, collections, disk_only)?;
+        let head_entry = worktree_heads.iter().find(|(path, _)| path == wt_path);
+        let unborn_git_head = head_entry.is_some_and(|(_, head)| head.is_none());
+        let head = head_entry.and_then(|(_, head)| head.as_ref());
+        let wt_patterns = collection_patterns(collections);
+        let same_patterns = wt_patterns == effective_patterns;
+        let disk_matches_head = disk_only
+            && head.is_some()
+            && preloaded_clean
+                .get(wt_path)
+                .copied()
+                .filter(|_| same_patterns)
+                .unwrap_or_else(|| {
+                    literal_archive_dirs(collections).is_some_and(|dirs| {
+                        let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+                        git_paths_clean_against_head(wt_path, &refs).unwrap_or(false)
+                    })
+                });
+        let head_key = head.map(|h| archive_key(h, same_patterns));
+        let cached_committed = head_key
+            .as_ref()
+            .and_then(|k| committed_cache.get(&(k.clone(), wt_patterns.clone())).cloned());
+        let (arch, arch_warnings, committed) = if disk_matches_head {
+            if let Some(archived) = cached_committed {
+                (archived.clone(), Vec::new(), archived)
+            } else {
+                let (archived, warn) =
+                    collect_archived_specs(wt_path, collections, false, head.map(String::as_str))?;
+                if let Some(k) = head_key {
+                    committed_cache.insert((k, wt_patterns), archived.clone());
+                }
+                (archived.clone(), warn, archived)
+            }
+        } else {
+            let (arch, arch_warnings) = if unborn_git_head && !disk_only {
+                (Vec::new(), Vec::new())
+            } else {
+                collect_archived_specs(
+                    wt_path,
+                    collections,
+                    disk_only,
+                    head.map(String::as_str),
+                )?
+            };
+            let committed = if unborn_git_head {
+                Vec::new()
+            } else if let Some(archived) = cached_committed {
+                archived
+            } else {
+                let archived = if disk_only {
+                    collect_archived_specs(
+                        wt_path,
+                        collections,
+                        false,
+                        head.map(String::as_str),
+                    )?
+                    .0
+                } else {
+                    arch.clone()
+                };
+                if let Some(k) = head_key {
+                    committed_cache.insert((k, wt_patterns), archived.clone());
+                }
+                archived
+            };
+            (arch, arch_warnings, committed)
+        };
+        let mut checkout_archive = BTreeMap::new();
+        for (_, path, doc) in committed {
+            checkout_archive.entry(doc.id.clone()).or_insert((path, doc));
+        }
+        checkout_archives.insert(wt_path.clone(), checkout_archive);
         for w in arch_warnings {
             warnings.push(format!("{wt_label}: {w}"));
         }
@@ -369,7 +534,6 @@ fn discover_specs_across_worktrees(
     let mut specs_by_id = BTreeMap::new();
     let mut archived_by_id = BTreeMap::new();
     let mut specs_by_run = BTreeMap::new();
-    let mut active_docs = Vec::new();
 
     for (spec_id, mut copies) in copies_by_id {
         if copies.is_empty() {
@@ -392,7 +556,7 @@ fn discover_specs_across_worktrees(
             .unwrap_or(0);
 
         let mut divergence = Vec::new();
-        if !all_identical && !copies.iter().all(|c| c.is_archived) {
+        if !all_identical {
             let canonical_wt = &copies[best_idx].wt_path;
             let mut seen_wt = BTreeSet::new();
             let mut parts = Vec::new();
@@ -451,18 +615,28 @@ fn discover_specs_across_worktrees(
         if info.is_archived {
             archived_by_id.insert(spec_id, info);
         } else {
-            active_docs.push(info.doc.clone());
             specs_by_id.insert(spec_id, info);
         }
     }
 
+    let mut sibling_candidates: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    for (checkout, scoped) in &checkout_specs {
+        let archives = checkout_archives.get(checkout).into_iter().flat_map(|docs| docs.keys());
+        for id in scoped.active_docs.iter().map(|d| &d.id).chain(archives) {
+            let candidates = sibling_candidates.entry(id.clone()).or_default();
+            if candidates.len() < 2 && candidates.last() != Some(checkout) {
+                candidates.push(checkout.clone());
+            }
+        }
+    }
     Ok(DiscoveredWorkspace {
         specs_by_id,
         archived_by_id,
+        checkout_archives,
         specs_by_run,
         owned_worktrees,
         checkout_specs,
-        active_docs,
+        sibling_candidates,
         warnings,
     })
 }
@@ -472,8 +646,9 @@ fn scan_checkout_specs(
     label: &str,
     collections: &BTreeMap<String, SpecCollectionConfig>,
     warnings: &mut Vec<String>,
+    parsed: &mut BTreeMap<[u8; 32], Result<SpecDocument, StateError>>,
 ) -> Result<Vec<CollectedWorkspaceSpec>, StateError> {
-    let scan = collect_workspace_specs(checkout, collections);
+    let scan = collect_workspace_specs_cached(checkout, collections, parsed);
     for err in scan.errors {
         if err.message.contains("confinement") || err.message.contains("symlink") {
             return Err(StateError::new(err.code, err.message));
@@ -644,6 +819,7 @@ fn build_dependency_graph(
     config: &StateEngineConfig,
     reader: &dyn StateReader,
     active_runs_by_spec: &ActiveRunMap,
+    include_archived: bool,
     warnings: &mut Vec<String>,
 ) -> Result<DependencyGraphData, StateError> {
     let mut graph = DependencyGraphData {
@@ -662,14 +838,40 @@ fn build_dependency_graph(
         scoped_task_blocks: BTreeMap::new(),
         active_ext_deps: BTreeMap::new(),
     };
-    let mut linked_cache = LinkedWsCache::default();
+    let mut linked_cache = LinkedWsCache {
+        runs: list_all_runs(reader, None)?,
+        tombstones: list_all_tombstones(reader)?,
+        ..Default::default()
+    };
+    let has_task_deps = discovered
+        .specs_by_id
+        .values()
+        .chain(discovered.archived_by_id.values().filter(|_| include_archived))
+        .chain(discovered.specs_by_run.values())
+        .any(|info| {
+            info.doc.depends_on.iter().any(|d| d.contains(':'))
+                || info
+                    .doc
+                    .tasks
+                    .iter()
+                    .any(|t| t.depends_on.iter().any(|d| d.contains(':')))
+        });
+    linked_cache.task_statuses = load_task_status_map(reader)?;
+    if has_task_deps {
+        linked_cache.tombstone_archives = load_tombstone_archives(root, &linked_cache.tombstones);
+    }
     let empty_refs = BTreeSet::new();
 
     let planned = discovered
         .specs_by_id
         .values()
         .filter(|info| !active_runs_by_spec.contains_key(&info.spec_id))
-        .chain(discovered.archived_by_id.values())
+        .chain(
+            discovered
+                .archived_by_id
+                .values()
+                .filter(|_| include_archived),
+        )
         .map(|info| (info, None));
     let active = active_runs_by_spec.iter().flat_map(|(id, runs)| {
         runs.iter().filter_map(move |(run, _)| {
@@ -768,11 +970,13 @@ fn record_active_blocks(
             })
         })
         .collect();
+    let mut external_cache = BTreeMap::new();
     for (&source_run, &(source_spec, source)) in &snapshots {
-        let ext_deps = collect_external_satisfied_deps_with_owned(
+        let ext_deps = collect_external_satisfied_deps_cached(
             config,
             source,
             Some(&discovered.owned_worktrees),
+            &mut external_cache,
         )?;
         graph
             .active_ext_deps
@@ -1607,18 +1811,31 @@ fn resolve_dep_entry(
             spec_id,
             task_ref,
         } => {
-            let spec_repos = resolve_spec_repositories(&source.checkout, &source.doc);
-            if !config.linked_workspaces.contains_key(ws_alias)
-                && !spec_repos.contains_key(ws_alias)
-            {
-                return Ok((to_entry(("missing", false)), None));
+            let key = (
+                source.checkout.clone(),
+                source.spec_id.clone(),
+                config.worktree.clone(),
+                ws_alias.clone(),
+            );
+            if !linked_cache.aliases.contains_key(&key) {
+                let spec_repos = resolve_spec_repositories(&source.checkout, &source.doc);
+                let checkout = if config.linked_workspaces.contains_key(ws_alias)
+                    || spec_repos.contains_key(ws_alias)
+                {
+                    Some(resolve_linked_workspace_root(
+                        ws_alias,
+                        raw,
+                        &config.linked_workspaces,
+                        &spec_repos,
+                    )?)
+                } else {
+                    None
+                };
+                linked_cache.aliases.insert(key.clone(), checkout);
             }
-            let checkout = resolve_linked_workspace_root(
-                ws_alias,
-                raw,
-                &config.linked_workspaces,
-                &spec_repos,
-            )?;
+            let Some(checkout) = linked_cache.aliases[&key].clone() else {
+                return Ok((to_entry(("missing", false)), None));
+            };
             if checkout != root && !discovered.owned_worktrees.contains(&checkout) {
                 let outcome = resolve_linked_dep(
                     raw,
@@ -1635,23 +1852,42 @@ fn resolve_dep_entry(
             (spec_id, task_ref)
         }
     };
-    let (checkout, target_collections, active_docs) = if let Some((checkout, alias)) = &qualified {
-        let scoped = match discovered.checkout_specs.get(checkout) {
-            Some(scoped) => scoped,
-            None => {
-                &linked_cache
-                    .workspace(
-                        checkout,
-                        alias,
-                        Some((local_checkout, collections)),
-                        warnings,
-                    )?
-                    .0
-            }
+    if let Some((checkout, alias)) = &qualified {
+        if !discovered.checkout_specs.contains_key(checkout) {
+            linked_cache.workspace(
+                checkout,
+                alias,
+                Some((local_checkout, collections)),
+                warnings,
+            )?;
+        }
+    }
+    let (checkout, target_collections, active_docs): (&Path, &BTreeMap<String, SpecCollectionConfig>, &[SpecDocument]) =
+        if let Some((checkout, _)) = &qualified {
+            let scoped = match discovered.checkout_specs.get(checkout) {
+                Some(scoped) => scoped,
+                None => &linked_cache.workspaces[checkout].0,
+            };
+            (checkout.as_path(), &scoped.collections, &scoped.active_docs)
+        } else {
+            (
+                local_checkout,
+                collections,
+                discovered
+                    .checkout_specs
+                    .get(local_checkout)
+                    .map_or(&[][..], |scoped| scoped.active_docs.as_slice()),
+            )
         };
-        (checkout.as_path(), &scoped.collections, &scoped.active_docs)
-    } else {
-        (local_checkout, collections, &discovered.active_docs)
+    let empty_archives = BTreeMap::new();
+    let archived_specs = discovered.checkout_archives.get(checkout).unwrap_or(&empty_archives);
+    let preloaded = PreloadedDepContext {
+        workspace: root,
+        runs: &linked_cache.runs,
+        task_statuses: &linked_cache.task_statuses,
+        tombstones: &linked_cache.tombstones,
+        tombstone_archives: &linked_cache.tombstone_archives,
+        archived_specs,
     };
     let mut resolved = resolve_dep_target(
         checkout,
@@ -1662,25 +1898,21 @@ fn resolve_dep_entry(
         task_ref.as_deref(),
         raw,
         qualified.as_ref().map(|(checkout, _)| checkout.as_path()),
+        Some(&preloaded),
     )?;
     if qualified.is_none() && matches!(resolved, DepTargetResolution::NotFound) {
-        for (sibling, scoped) in &discovered.checkout_specs {
-            if sibling == checkout {
-                continue;
-            }
+        if let Some(sibling) = discovered.sibling_candidates.get(spec_id)
+            .and_then(|paths| paths.iter().find(|path| path.as_path() != checkout))
+        {
+            let scoped = &discovered.checkout_specs[sibling];
+            let sibling_context = PreloadedDepContext {
+                archived_specs: discovered.checkout_archives.get(sibling).unwrap_or(&empty_archives),
+                ..preloaded
+            };
             resolved = resolve_dep_target(
-                sibling,
-                &scoped.collections,
-                None,
-                Some(&scoped.active_docs),
-                spec_id,
-                task_ref.as_deref(),
-                raw,
-                None,
+                sibling, &scoped.collections, None, Some(&scoped.active_docs), spec_id,
+                task_ref.as_deref(), raw, None, Some(&sibling_context),
             )?;
-            if !matches!(resolved, DepTargetResolution::NotFound) {
-                break;
-            }
         }
     }
     let mut active_target = None;
@@ -1688,15 +1920,11 @@ fn resolve_dep_entry(
         DepTargetResolution::ActiveRun {
             run_id,
             spec_id: resolved_spec,
-            worktree,
+            worktree: _,
             task_exists,
             ..
         } => {
-            let matches_checkout = qualified.is_none()
-                || (*task_exists
-                    && worktree.as_deref().map_or(checkout == root, |path| {
-                        canonical_root(Path::new(path)).is_ok_and(|path| path == checkout)
-                    }));
+            let matches_checkout = qualified.is_none() || *task_exists;
             if matches_checkout {
                 active_target = Some(run_id.clone());
             }
@@ -1741,7 +1969,15 @@ fn resolve_linked_dep(
         return Ok(cached);
     }
 
-    let (scoped, ext_reader) = linked_cache.workspace(&ws_path, ws_alias, None, warnings)?;
+    if !linked_cache.linked_deps.contains_key(&ws_path) {
+        let (scoped, ext_reader) = linked_cache.workspace(&ws_path, ws_alias, None, warnings)?;
+        let reader = ext_reader.as_ref().expect("linked workspace has a reader");
+        let (data, archive_warnings) = load_dep_snapshot(&ws_path, &scoped.collections, reader)?;
+        warnings.extend(archive_warnings);
+        linked_cache.linked_deps.insert(ws_path.clone(), data);
+    }
+    let (scoped, ext_reader) = &linked_cache.workspaces[&ws_path];
+    let preloaded = linked_cache.linked_deps[&ws_path].context();
     let outcome = map_dep_resolution(resolve_dep_target(
         &ws_path,
         &scoped.collections,
@@ -1751,6 +1987,7 @@ fn resolve_linked_dep(
         task_ref,
         raw,
         None,
+        Some(&preloaded),
     )?);
     linked_cache.outcomes.insert(cache_key, outcome);
     Ok(outcome)
@@ -1776,7 +2013,7 @@ impl LinkedWsCache {
                         (specs, Some(SqliteStateReader::new(db_path)))
                     }
                 };
-                let scanned = scan_checkout_specs(checkout, alias, &collections, warnings)?;
+                let scanned = scan_checkout_specs(checkout, alias, &collections, warnings, &mut BTreeMap::new())?;
                 Ok(entry.insert((checkout_specs_from(&collections, &scanned), reader)))
             }
         }
@@ -2298,11 +2535,7 @@ mod roadmap_graph_tests {
                     ("SELF", vec!["SELF"]),
                 ],
                 external: Vec::new(),
-                waves: vec![
-                    (0, vec!["A"]),
-                    (1, vec!["MIX-B", "D"]),
-                    (2, vec!["MIX-1"]),
-                ],
+                waves: vec![(0, vec!["A"]), (1, vec!["MIX-B", "D"]), (2, vec!["MIX-1"])],
                 cycles: vec![vec!["C1", "C2"], vec!["SELF"]],
             },
         ];
