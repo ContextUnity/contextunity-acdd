@@ -90,8 +90,12 @@ unsafe extern "C" fn observe_read(
     // SAFETY: SQLite supplies NUL-terminated authorizer arguments and the live
     // connection pointer registered above. These calls neither execute SQL nor panic.
     let domain = match unsafe { CStr::from_ptr(table) }.to_bytes() {
-        b"node_search_commit_vocab" => "node_search_postings",
-        b"doc_search_commit_vocab" => "doc_search_postings",
+        b"node_search_commit_vocab" | b"node_search_data" | b"node_search_idx" => {
+            "node_search_postings"
+        }
+        b"doc_search_commit_vocab" | b"doc_search_data" | b"doc_search_idx" => {
+            "doc_search_postings"
+        }
         b"node_search_config" => "node_search_config",
         b"doc_search_config" => "doc_search_config",
         _ => return ffi::SQLITE_OK,
