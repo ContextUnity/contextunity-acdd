@@ -469,17 +469,25 @@ pub fn scan_reusing_watching(
 pub fn stream_for_build(
     root: &Path,
     adapter: &Adapter,
-    mut visit: impl FnMut(BuildCandidate) -> std::io::Result<()>,
+    visit: impl FnMut(BuildCandidate) -> std::io::Result<()>,
 ) -> std::io::Result<BuildStreamReport> {
+    stream_for_build_with_manifests(root, adapter, visit).map(|(_, report)| report)
+}
+
+fn stream_for_build_with_manifests(
+    root: &Path,
+    adapter: &Adapter,
+    mut visit: impl FnMut(BuildCandidate) -> std::io::Result<()>,
+) -> std::io::Result<(Vec<PathBuf>, BuildStreamReport)> {
     let code_enabled = adapter.modules.is_enabled("code");
     let docs_enabled = adapter.modules.is_enabled("docs");
     if !code_enabled && !docs_enabled {
-        return Ok(BuildStreamReport { files: 0, bytes: 0 });
+        return Ok((Vec::new(), BuildStreamReport { files: 0, bytes: 0 }));
     }
     let mut files = 0usize;
     let mut bytes = 0u64;
-    let _dependency_manifests =
-        walk_candidate_paths(root, adapter, None, |full_path, relative_path| {
+    let dependency_manifests =
+        walk_candidate_paths(root, adapter, None, true, |full_path, relative_path| {
             let metadata = fs::symlink_metadata(&full_path)?;
             if metadata.file_type().is_symlink() || !metadata.is_file() {
                 return Ok(());
@@ -519,7 +527,20 @@ pub fn stream_for_build(
             Ok(())
         })?;
     ensure_bounds(files, bytes, &adapter.limits)?;
-    Ok(BuildStreamReport { files, bytes })
+    Ok((dependency_manifests, BuildStreamReport { files, bytes }))
+}
+
+/// Collects cold-build candidates and dependency manifests in one walk.
+pub fn collect_for_build(
+    root: &Path,
+    adapter: &Adapter,
+) -> std::io::Result<(Vec<BuildCandidate>, Vec<PathBuf>, BuildStreamReport)> {
+    let mut candidates = Vec::new();
+    let (manifests, report) = stream_for_build_with_manifests(root, adapter, |candidate| {
+        candidates.push(candidate);
+        Ok(())
+    })?;
+    Ok((candidates, manifests, report))
 }
 
 /// Discovers dependency manifests without retaining the cold-build candidate list.
@@ -527,7 +548,7 @@ pub fn dependency_manifests_for_build(
     root: &Path,
     adapter: &Adapter,
 ) -> std::io::Result<Vec<PathBuf>> {
-    walk_candidate_paths(root, adapter, None, |_, _| Ok(()))
+    walk_candidate_paths(root, adapter, None, false, |_, _| Ok(()))
 }
 
 type ScanCandidates = (Vec<(PathBuf, String)>, Vec<PathBuf>);
@@ -538,7 +559,7 @@ fn collect_candidates(
     watch: Option<&std::sync::Arc<WatchedEntries>>,
 ) -> std::io::Result<ScanCandidates> {
     let mut candidates = Vec::new();
-    let dependency_manifests = walk_candidate_paths(root, adapter, watch, |full, relative| {
+    let dependency_manifests = walk_candidate_paths(root, adapter, watch, true, |full, relative| {
         candidates.push((full, relative));
         Ok(())
     })?;
@@ -575,6 +596,7 @@ fn walk_candidate_paths(
     root: &Path,
     adapter: &Adapter,
     watch: Option<&std::sync::Arc<WatchedEntries>>,
+    include_sources: bool,
     mut visit: impl FnMut(PathBuf, String) -> std::io::Result<()>,
 ) -> std::io::Result<Vec<PathBuf>> {
     let code_enabled = adapter.modules.is_enabled("code");
@@ -591,7 +613,7 @@ fn walk_candidate_paths(
         .chain(adapter.adapter_path.iter().cloned())
         .collect();
 
-    if docs_enabled {
+    if docs_enabled && include_sources {
         collect_documentation_paths(
             root,
             "",
@@ -644,7 +666,7 @@ fn walk_candidate_paths(
                 .unwrap_or_default();
             let is_manifest = code_enabled
                 && super::languages::dependency_registry::is_dependency_manifest_filename(filename);
-            let file_language = language(&full);
+            let file_language = include_sources.then(|| language(&full)).flatten();
             let is_doc = file_language.is_some_and(|(_, is_doc)| is_doc);
             let is_source =
                 file_language.is_some() && ((is_doc && docs_enabled) || (!is_doc && code_enabled));
@@ -716,7 +738,7 @@ fn walk_candidate_paths(
                     && super::languages::dependency_registry::is_dependency_manifest_filename(
                         filename,
                     );
-                let file_language = language(&full);
+                let file_language = include_sources.then(|| language(&full)).flatten();
                 let is_doc = file_language.is_some_and(|(_, is_doc)| is_doc);
                 let is_source = file_language.is_some()
                     && ((is_doc && docs_enabled) || (!is_doc && code_enabled));
@@ -753,7 +775,7 @@ fn walk_candidate_paths(
                 &mut dependency_manifests,
             )?;
         }
-        if docs_enabled {
+        if docs_enabled && include_sources {
             collect_documentation_paths(
                 &workspace.path,
                 &format!("[{}]/", workspace.name),

@@ -55,7 +55,17 @@ pub struct StagedFilePayload {
     pub storage_rows: Option<StagedPayloadBlob>,
 }
 
-fn read_staged_payload(file: &File, payload: StagedPayloadBlob) -> Result<Vec<u8>> {
+/// RAM-backed payloads indexed by their reserved spool offsets.
+pub type RamStagedPayloads = std::sync::Mutex<BTreeMap<u64, Vec<u8>>>;
+
+fn read_staged_payload(file: &File, payload: StagedPayloadBlob, ram: &RamStagedPayloads, consume: bool) -> Result<Vec<u8>> {
+    if payload.offset & (1 << 63) != 0 {
+        let mut entries = ram.lock().unwrap_or_else(|error| error.into_inner());
+        let bytes = if consume { entries.remove(&payload.offset) } else { entries.get(&payload.offset).cloned() };
+        let bytes = bytes.context("missing staged RAM payload")?;
+        anyhow::ensure!(bytes.len() as u64 == payload.length, "staged RAM payload length mismatch");
+        return Ok(bytes);
+    }
     let length = usize::try_from(payload.length).context("staged payload length overflow")?;
     let mut bytes = Vec::new();
     bytes
@@ -110,16 +120,15 @@ pub fn prepare_catalog_storage_with_facts(
     file: &FileEntry,
     facts: &TypedFacts,
 ) -> Result<Vec<u8>> {
-    use crate::typed_facts::binary::BinaryEncode;
-
-    let prepared = prepare_catalog_rows(file, facts)?;
-    let mut bytes =
-        cache::encode_raw_prepared_catalog_storage_with_borrowed_nodes(|raw| prepared.encode(raw));
+    let (search_texts, reference_keys, leaves) = catalog_metadata(file, facts)?;
+    let mut bytes = cache::encode_prepared_catalog_storage_with_facts(facts, &search_texts, &reference_keys, &leaves);
     bytes.shrink_to_fit();
     Ok(bytes)
 }
 
-fn prepare_catalog_rows(file: &FileEntry, facts: &TypedFacts) -> Result<PreparedCatalogStorage> {
+type CatalogMetadata = (Vec<String>, Vec<String>, BTreeMap<String, BTreeMap<String, String>>);
+
+fn catalog_metadata(file: &FileEntry, facts: &TypedFacts) -> Result<CatalogMetadata> {
     let search_texts = facts
         .nodes
         .iter()
@@ -135,11 +144,11 @@ fn prepare_catalog_rows(file: &FileEntry, facts: &TypedFacts) -> Result<Prepared
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let leaves = seal::file_domain_leaves(file, facts, &reference_keys)?;
-    let nodes = facts
-        .nodes
-        .iter()
-        .map(|node| {
-            let details = match &node.details {
+    Ok((search_texts, reference_keys, leaves.into_iter().map(|(domain, leaves)| (domain.to_owned(), leaves)).collect()))
+}
+
+fn retained_node_details(node: &Node) -> Value {
+            match &node.details {
                 Value::Object(details) if !details.is_empty() => {
                     let has_retained = details.iter().any(|(key, value)| {
                         (key.as_str() == "default_export" && *value == true)
@@ -160,27 +169,20 @@ fn prepare_catalog_rows(file: &FileEntry, facts: &TypedFacts) -> Result<Prepared
                     }
                 }
                 _ => Value::Null,
-            };
-            Node {
-                native_semantic: None,
-                id: node.id.clone(),
-                kind: node.kind.clone(),
-                name: node.name.clone(),
-                qualname: node.qualname.clone(),
-                path: node.path.clone(),
-                line: node.line,
-                end_line: node.end_line,
-                is_test: node.is_test,
-                language: node.language.clone(),
-                generated: node.generated,
-                details,
             }
-        })
-        .collect::<Vec<_>>();
+}
+
+fn prepare_catalog_rows(file: &FileEntry, mut facts: TypedFacts) -> Result<PreparedCatalogStorage> {
+    let (search_texts, reference_keys, leaves) = catalog_metadata(file, &facts)?;
+    let nodes = std::mem::take(&mut facts.facts.nodes).into_iter().map(|mut node| {
+        node.details = retained_node_details(&node);
+        node.native_semantic = None;
+        node
+    }).collect::<Vec<_>>();
     let mut storage_facts = Facts {
         nodes,
-        docs: facts.docs.clone(),
-        errors: facts.errors.clone(),
+        docs: std::mem::take(&mut facts.facts.docs),
+        errors: std::mem::take(&mut facts.facts.errors),
         ..Default::default()
     };
     storage_facts.semantic.mark_complete();
@@ -192,10 +194,7 @@ fn prepare_catalog_rows(file: &FileEntry, facts: &TypedFacts) -> Result<Prepared
         facts: storage,
         search_texts,
         reference_keys,
-        leaves: leaves
-            .into_iter()
-            .map(|(domain, leaves)| (domain.to_owned(), leaves))
-            .collect(),
+        leaves,
     };
     Ok(prepared)
 }
@@ -248,11 +247,28 @@ pub fn populate_owned(
     root: &Path,
     adapter: &Adapter,
     entries: &[FileEntry],
+    facts: BTreeMap<String, TypedFacts>,
+    graph: &CompactGraph,
+    build_inputs: BuildInputs<'_>,
+    staged_payloads: &mut BTreeMap<String, StagedFilePayload>,
+    payload_spool_path: Option<&Path>,
+) -> Result<Value> {
+    populate_owned_with_ram(conn, root, adapter, entries, facts, graph, build_inputs, staged_payloads, payload_spool_path, &RamStagedPayloads::default())
+}
+
+/// Populates an index with optional RAM-backed staged payloads.
+#[allow(clippy::too_many_arguments)]
+pub fn populate_owned_with_ram(
+    conn: &mut Connection,
+    root: &Path,
+    adapter: &Adapter,
+    entries: &[FileEntry],
     mut facts: BTreeMap<String, TypedFacts>,
     graph: &CompactGraph,
     build_inputs: BuildInputs<'_>,
     staged_payloads: &mut BTreeMap<String, StagedFilePayload>,
     payload_spool_path: Option<&Path>,
+    ram: &RamStagedPayloads,
 ) -> Result<Value> {
     let streamed_payloads = !staged_payloads.is_empty();
     let payload_spool = if streamed_payloads {
@@ -367,6 +383,8 @@ pub fn populate_owned(
                         .as_ref()
                         .context("missing staged payload spool")?,
                     staged.encoded_facts,
+                    ram,
+                    false,
                 )?;
                 Ok((path.to_owned(), catalog_payload(path, &encoded_facts)?))
             })
@@ -398,10 +416,10 @@ pub fn populate_owned(
                         .into_par_iter()
                         .map(|(file, lean, staged)| {
                             let restoring = Instant::now();
-                            let encoded_facts = read_staged_payload(spool, staged.encoded_facts)?;
+                            let encoded_facts = read_staged_payload(spool, staged.encoded_facts, ram, true)?;
                             let (storage, encoded) = if let Some(storage_blob) = staged.storage_rows
                             {
-                                let storage_bytes = read_staged_payload(spool, storage_blob)?;
+                                let storage_bytes = read_staged_payload(spool, storage_blob, ram, true)?;
                                 let storage = decode_prepared_storage(&storage_bytes)?;
                                 (storage, encoded_facts)
                             } else {
@@ -412,7 +430,7 @@ pub fn populate_owned(
                                     &composed_sources,
                                 )?;
                                 let encoded = encode_facts(&full)?;
-                                (prepare_catalog_rows(file, &full)?, encoded)
+                                (prepare_catalog_rows(file, full)?, encoded)
                             };
                             let local_facts_leaf = seal::local_facts_leaf(
                                 &file.path,

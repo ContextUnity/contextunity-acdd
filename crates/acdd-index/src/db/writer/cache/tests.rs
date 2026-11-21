@@ -18,6 +18,41 @@ fn binary_bool_decoder_rejects_noncanonical_values() {
 #[test]
 fn invalid_cache_magic_and_collection_lengths_are_misses() {
     assert!(decode_entry(b"invalid cache header", "key", 1024).is_none());
+    let encoded = crate::typed_facts::encode_facts(&TypedFacts::default()).unwrap();
+    let raw_len = zstd::zstd_safe::get_frame_content_size(&encoded[LOCAL_MAGIC.len()..]).unwrap().unwrap();
+    let directory = acdd_core::fs::ScopedTempDir::create("acdd_cache_v5").unwrap();
+    let cache = ExtractionCache::new(Some(directory.path().to_path_buf()));
+    let key = "ab".repeat(32);
+    assert!(cache.store(&key, &TypedFacts::default()));
+    assert!(cache.load_with_encoded(&key, 4096).unwrap().1.is_none());
+    assert!(cache.store_encoded(&key, &encoded, raw_len));
+    assert_eq!(cache.load_with_encoded(&key, 4096).unwrap().1, Some(encoded.clone()));
+    let mut assigned = TypedFacts::default();
+    assigned.facts.edges.push(crate::models::Edge {
+        src: "component:src".into(), dst: "module:src/main.py".into(),
+        kind: "contains".into(), path: "src/main.py".into(), line: 1,
+        evidence: "component ownership".into(), confidence: "exact".into(),
+    });
+    let component_blob = crate::typed_facts::encode_facts(&assigned).unwrap();
+    let length = zstd::zstd_safe::get_frame_content_size(&component_blob[LOCAL_MAGIC.len()..]).unwrap().unwrap();
+    assert!(cache.store_encoded(&key, &component_blob, length));
+    let (clean, cached, components) = cache.load_for_build(&key, 4096).unwrap();
+    assert!(clean.edges.is_empty());
+    assert_eq!(cached, Some(component_blob));
+    assert_eq!(components.unwrap()[0].dst, "module:src/main.py");
+    for (blob, length, limit, expected) in [
+        (encoded.clone(), raw_len, 4096, true),
+        (encoded.clone(), 4097, 4096, false),
+        ({ let mut blob = LOCAL_MAGIC.to_vec(); blob.extend(zstd::stream::encode_all(&vec![0u8; 8192][..], 1).unwrap()); blob }, 1, 4096, false),
+    ] {
+        let mut bytes = MAGIC_V5.to_vec();
+        "key".encode(&mut bytes);
+        (blob.len() as u64).encode(&mut bytes);
+        length.encode(&mut bytes);
+        bytes.extend_from_slice(&sha256_bytes(&blob));
+        bytes.extend_from_slice(&blob);
+        assert_eq!(decode_entry_with_encoded(&bytes, "key", limit).is_some(), expected);
+    }
     let mut prefixes = Vec::new();
     for preceding_collections in 0..5 {
         prefixes.push(vec![0; preceding_collections * 4]);

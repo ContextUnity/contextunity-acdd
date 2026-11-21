@@ -207,6 +207,23 @@ limits:
     }
 
     let report = scanner::scan(workspace.root(), None).unwrap();
+    let adapter = scanner::load_adapter(workspace.root(), None).unwrap();
+    let (mut collected, manifests, collected_report) =
+        scanner::collect_for_build(workspace.root(), &adapter).unwrap();
+    let mut streamed = Vec::new();
+    let stream_report = scanner::stream_for_build(workspace.root(), &adapter, |candidate| {
+        streamed.push(candidate);
+        Ok(())
+    }).unwrap();
+    collected.sort_by(|a, b| a.path.cmp(&b.path));
+    streamed.sort_by(|a, b| a.path.cmp(&b.path));
+    for (left, right) in collected.iter().zip(&streamed) {
+        assert_eq!((&left.path, left.bytes, left.mtime_ns, left.identity, &left.language, left.is_doc),
+                   (&right.path, right.bytes, right.mtime_ns, right.identity, &right.language, right.is_doc));
+    }
+    assert_eq!(collected.len(), streamed.len());
+    assert_eq!((collected_report.files, collected_report.bytes), (stream_report.files, stream_report.bytes));
+    assert_eq!(manifests, scanner::dependency_manifests_for_build(workspace.root(), &adapter).unwrap());
     let paths: Vec<_> = report
         .entries
         .iter()

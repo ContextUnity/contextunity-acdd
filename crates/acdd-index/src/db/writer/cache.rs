@@ -6,6 +6,7 @@ use crate::models::Reference;
 use crate::typed_facts::FlowState;
 use acdd_core::format::{sha256_bytes, sha256_serde_json_hex};
 use crate::typed_facts::TypedFacts;
+use crate::models::Edge;
 use anyhow::Context;
 use serde::Serialize;
 use std::{
@@ -18,6 +19,8 @@ use std::{
 };
 
 const MAGIC_V4: &[u8] = b"ACDD-EXTRACTION-FACTS\0\x04";
+const MAGIC_V5: &[u8] = b"ACDD-EXTRACTION-FACTS\0\x05";
+const LOCAL_MAGIC: &[u8] = b"ACDD-LOCAL-FACTS\0\x03";
 const CHECKSUM_BYTES: usize = 32;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -43,12 +46,37 @@ crate::struct_codecs! {
 
 const RAW_PREPARED_STORAGE_MAGIC: &[u8] = b"ACDD-RAW-STORAGE\0\x01";
 
-pub(super) fn encode_raw_prepared_catalog_storage_with_borrowed_nodes<F: FnOnce(&mut Vec<u8>)>(
-    encode_body: F,
+pub(super) fn encode_prepared_catalog_storage_with_facts(
+    facts: &TypedFacts,
+    search_texts: &[String],
+    reference_keys: &[String],
+    leaves: &BTreeMap<String, BTreeMap<String, String>>,
 ) -> Vec<u8> {
     let mut raw = Vec::with_capacity(512);
     raw.extend_from_slice(RAW_PREPARED_STORAGE_MAGIC);
-    encode_body(&mut raw);
+    (facts.nodes.len() as u32).encode(&mut raw);
+    for node in &facts.nodes {
+        node.id.encode(&mut raw);
+        node.kind.encode(&mut raw);
+        node.name.encode(&mut raw);
+        node.qualname.encode(&mut raw);
+        node.path.encode(&mut raw);
+        node.line.encode(&mut raw);
+        node.end_line.encode(&mut raw);
+        node.is_test.encode(&mut raw);
+        node.language.encode(&mut raw);
+        node.generated.encode(&mut raw);
+        super::retained_node_details(node).encode(&mut raw);
+        Option::<crate::typed_facts::NodeSemanticEntry>::None.encode(&mut raw);
+    }
+    0u32.encode(&mut raw);
+    0u32.encode(&mut raw);
+    facts.docs.encode(&mut raw);
+    facts.errors.encode(&mut raw);
+    for _ in 0..5 { 0u32.encode(&mut raw); }
+    search_texts.encode(&mut raw);
+    reference_keys.encode(&mut raw);
+    leaves.encode(&mut raw);
     raw
 }
 
@@ -135,6 +163,9 @@ pub struct ExtractionCache {
     root: Option<PathBuf>,
 }
 
+/// Decoded extraction facts, encoded bytes, and the prior component edges.
+pub type BuildCacheEntry = (TypedFacts, Option<Vec<u8>>, Option<Vec<Edge>>);
+
 impl ExtractionCache {
     /// Creates a new extraction cache backed by an optional root path.
     pub fn new(root: Option<PathBuf>) -> Self {
@@ -143,6 +174,16 @@ impl ExtractionCache {
 
     /// Loads cached typed facts if valid and within payload byte limit.
     pub fn load(&self, key: &str, max_payload_bytes: u64) -> Option<TypedFacts> {
+        self.load_with_encoded(key, max_payload_bytes).map(|(facts, _)| facts)
+    }
+
+    /// Loads facts and, for V5 entries, their canonical encoded payload.
+    pub fn load_with_encoded(&self, key: &str, max_payload_bytes: u64) -> Option<(TypedFacts, Option<Vec<u8>>)> {
+        self.load_for_build(key, max_payload_bytes).map(|(facts, encoded, _)| (facts, encoded))
+    }
+
+    /// Loads clean facts and the component edges present in the encoded payload.
+    pub fn load_for_build(&self, key: &str, max_payload_bytes: u64) -> Option<BuildCacheEntry> {
         let path = self.entry_path(key)?;
         let file = open_regular_file(&path).ok()?;
         let max_entry_bytes = max_payload_bytes.saturating_add(256);
@@ -158,12 +199,30 @@ impl ExtractionCache {
             if bytes.len() as u64 > max_entry_bytes {
                 return None;
             }
-            decode_entry(&bytes, key, max_payload_bytes)
+            decode_entry_for_build(&bytes, key, max_payload_bytes)
         })
     }
 
     /// Publishes a complete entry atomically. Cache failures never affect extraction.
     pub fn store(&self, key: &str, facts: &TypedFacts) -> bool {
+        self.store_entry(key, |bytes| encode_entry_into(key, facts, bytes).is_ok())
+    }
+
+    /// Publishes a canonical compressed local-facts payload.
+    pub fn store_encoded(&self, key: &str, encoded_facts: &[u8], uncompressed_len: u64) -> bool {
+        self.store_entry(key, |bytes| {
+            bytes.clear();
+            bytes.extend_from_slice(MAGIC_V5);
+            key.encode(bytes);
+            bytes.extend_from_slice(&(encoded_facts.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(&uncompressed_len.to_le_bytes());
+            bytes.extend_from_slice(&sha256_bytes(encoded_facts));
+            bytes.extend_from_slice(encoded_facts);
+            true
+        })
+    }
+
+    fn store_entry(&self, key: &str, encode: impl FnOnce(&mut Vec<u8>) -> bool) -> bool {
         let Some(path) = self.entry_path(key) else {
             return false;
         };
@@ -188,7 +247,7 @@ impl ExtractionCache {
         }
         let result = EXTRACTION_CACHE_BUFFER.with(|buffer| {
             let mut bytes = buffer.borrow_mut();
-            if encode_entry_into(key, facts, &mut bytes).is_err() {
+            if !encode(&mut bytes) {
                 return false;
             }
             options
@@ -284,10 +343,19 @@ fn encode_entry_into(key: &str, facts: &TypedFacts, bytes: &mut Vec<u8>) -> anyh
     Ok(())
 }
 
+#[cfg(test)]
 fn decode_entry(bytes: &[u8], expected_key: &str, max_payload_bytes: u64) -> Option<TypedFacts> {
-    if !bytes.starts_with(MAGIC_V4) {
-        return None;
-    }
+    decode_entry_with_encoded(bytes, expected_key, max_payload_bytes).map(|(facts, _)| facts)
+}
+
+#[cfg(test)]
+fn decode_entry_with_encoded(bytes: &[u8], expected_key: &str, max_payload_bytes: u64) -> Option<(TypedFacts, Option<Vec<u8>>)> {
+    decode_entry_for_build(bytes, expected_key, max_payload_bytes).map(|(facts, encoded, _)| (facts, encoded))
+}
+
+fn decode_entry_for_build(bytes: &[u8], expected_key: &str, max_payload_bytes: u64) -> Option<BuildCacheEntry> {
+    let v5 = bytes.starts_with(MAGIC_V5);
+    if !v5 && !bytes.starts_with(MAGIC_V4) { return None; }
     let mut cursor = MAGIC_V4.len();
     let key_len = usize::try_from(u32::decode(bytes, &mut cursor)?).ok()?;
     let stored_key = bytes.get(cursor..cursor.checked_add(key_len)?)?;
@@ -299,6 +367,11 @@ fn decode_entry(bytes: &[u8], expected_key: &str, max_payload_bytes: u64) -> Opt
     if payload_len > max_payload_bytes {
         return None;
     }
+    let uncompressed_len = if v5 {
+        let length = u64::decode(bytes, &mut cursor)?;
+        if length > max_payload_bytes { return None; }
+        Some(length)
+    } else { None };
     let checksum_end = cursor.checked_add(CHECKSUM_BYTES)?;
     let stored_checksum = bytes.get(cursor..checksum_end)?;
     cursor = checksum_end;
@@ -308,12 +381,26 @@ fn decode_entry(bytes: &[u8], expected_key: &str, max_payload_bytes: u64) -> Opt
     if payload_end != bytes.len() || sha256_bytes(payload).as_slice() != stored_checksum {
         return None;
     }
+    let mut raw = Vec::new();
+    let decoded = if let Some(length) = uncompressed_len {
+        let compressed = payload.strip_prefix(LOCAL_MAGIC)?;
+        let decoder = zstd::stream::read::Decoder::new(compressed).ok()?;
+        decoder.take(max_payload_bytes.saturating_add(1)).read_to_end(&mut raw).ok()?;
+        if raw.len() as u64 > max_payload_bytes || raw.len() as u64 != length { return None; }
+        raw.as_slice()
+    } else { payload };
     let mut payload_cursor = 0;
-    let facts = TypedFacts::decode(payload, &mut payload_cursor)?;
-    if payload_cursor != payload.len() || facts.flows.has_invalid_named_uncertainty_carriers() {
+    let mut facts = if v5 { TypedFacts::decode_with_string_table(decoded, &mut payload_cursor)? } else { TypedFacts::decode(decoded, &mut payload_cursor)? };
+    if payload_cursor != decoded.len() || facts.flows.has_invalid_named_uncertainty_carriers() {
         return None;
     }
-    Some(facts)
+    let mut components = Vec::new();
+    facts.edges.retain(|edge| {
+        if edge.src.starts_with("component:") { components.push(edge.clone()); false } else { true }
+    });
+    let has_component_node = facts.nodes.iter().any(|node| node.kind == "component");
+    facts.facts.retain_nodes(|node| node.kind != "component");
+    Some((facts, v5.then(|| payload.to_vec()), (!has_component_node).then_some(components)))
 }
 
 pub use crate::typed_facts::binary::{decode_references, encode_references};

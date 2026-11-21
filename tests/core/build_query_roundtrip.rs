@@ -83,4 +83,70 @@ See `ServiceClient`.
     assert_eq!(sections[1].2, "[\"ServiceClient\"]");
     assert_eq!(sections[0].3, 0);
     assert_eq!(sections[1].3, 0);
+
+    ws.write("src/many.py", &(0..1500).map(|i| format!("def function_{i}():\n    return {i}\n")).collect::<String>());
+    let mut roots = Vec::new();
+    for (label, budget) in [("default", None), ("spill", Some(1024 * 1024)), ("ram", Some(256 * 1024 * 1024))] {
+        let output = ws.path(format!(".acdd/{label}.sqlite"));
+        let mut hooks = writer::PipelineTestHooks::before_cleanup(|_| {});
+        std::sync::Arc::get_mut(&mut hooks).unwrap().memory_budget_override = budget;
+        std::sync::Arc::get_mut(&mut hooks).unwrap().cache_dir_override = Some(ws.path(".acdd/cache"));
+        let report = writer::build_with_test_hooks(ws.root(), &output, None, hooks).unwrap();
+        if label == "spill" {
+            assert!(report["staged_disk_bytes"].as_u64().unwrap() > 0);
+        } else if label == "ram" {
+            assert_eq!(report["staged_disk_bytes"].as_u64(), Some(0));
+        }
+        roots.push(report["output_root"].clone());
+        let connection = reader::open(&output, ws.root()).unwrap();
+        acdd_index::db::commitments::verify(&connection).unwrap();
+    }
+    assert_eq!(roots[0], roots[1]);
+    assert_eq!(roots[1], roots[2]);
+    let modified = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
+    std::fs::File::options().write(true).open(ws.path("README.md")).unwrap()
+        .set_modified(modified).unwrap();
+    let refreshed_path = ws.path(".acdd/refreshed.sqlite");
+    let refreshed = writer::build_with_cache_dir(ws.root(), &refreshed_path, None, &ws.path(".acdd/cache")).unwrap();
+    assert_eq!(refreshed["pipeline"]["extraction_cache_hits"], refreshed["files"], "every file, including README.md, must hit the seeded V5 cache");
+    let connection = reader::open(&refreshed_path, ws.root()).unwrap();
+    let mtime: f64 = connection.query_row("SELECT mtime FROM doc_sections WHERE path='README.md' LIMIT 1", [], |row| row.get(0)).unwrap();
+    let expected = std::fs::metadata(ws.path("README.md")).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    assert!((mtime - expected).abs() < 0.001);
+    let blob: Vec<u8> = connection.query_row("SELECT facts_blob FROM local_facts WHERE path='README.md'", [], |row| row.get(0)).unwrap();
+    let facts = acdd_index::typed_facts::decode_facts(&blob).unwrap();
+    assert!(!facts.docs.is_empty());
+    assert!(facts.docs.iter().all(|section| (section.mtime - expected).abs() < 0.001));
+    drop(connection);
+    let original = std::fs::read_to_string(ws.path("src/main.py")).unwrap();
+    ws.write("src/main.py", "def changed():\n    return 9\n");
+    writer::delta_with_cache_dir(ws.root(), &refreshed_path, &["src/main.py".into()], &ws.path(".acdd/cache")).unwrap();
+    ws.write("src/main.py", &original);
+    let delta = writer::delta_with_cache_dir(ws.root(), &refreshed_path, &["src/main.py".into()], &ws.path(".acdd/cache")).unwrap();
+    let cold_path = ws.path(".acdd/delta-comparison.sqlite");
+    let cold = writer::build_with_cache_dir(ws.root(), &cold_path, None, &ws.path(".acdd/cache")).unwrap();
+    assert_eq!(delta["output_root"], cold["output_root"]);
+    let corrupt_path = ws.path(".acdd/corrupt.sqlite");
+    std::fs::copy(&cold_path, &corrupt_path).unwrap();
+    use std::io::Write;
+    let mut corrupt = std::fs::OpenOptions::new().write(true).open(&corrupt_path).unwrap();
+    corrupt.write_all(b"broken SQLite header").unwrap();
+    drop(corrupt);
+    assert!(reader::open(&corrupt_path, ws.root()).is_err());
+    let rejected = ws.path(".acdd/rejected.sqlite");
+    let mut hook = writer::PipelineTestHooks::before_cleanup(|_| {});
+    std::sync::Arc::get_mut(&mut hook).unwrap().before_candidate_verify = Some(Box::new(|path| {
+        use std::io::{Seek, SeekFrom};
+        let conn = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let pages: i64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0)).unwrap();
+        assert!(pages > 0);
+        drop(conn);
+        let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.seek(SeekFrom::Start(100)).unwrap();
+        file.write_all(&[0xff]).unwrap();
+    }));
+    let error = writer::build_with_test_hooks(ws.root(), &rejected, None, hook).unwrap_err();
+    assert!(error.to_string().contains("candidate database failed integrity check"), "{error:#}");
+    assert!(!rejected.exists());
+    assert!(!ws.path(".acdd/rejected.sqlite.verified.json").exists());
 }

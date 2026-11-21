@@ -232,6 +232,9 @@ struct ColdPipelineInputs<'a> {
     effective_ruleset_hash: Arc<str>,
     connection: Connection,
     budget_bytes: u64,
+    candidates: Vec<BuildCandidate>,
+    scan: scanner::BuildStreamReport,
+    scan_ms: f64,
     test_hooks: Option<Arc<PipelineTestHooks>>,
 }
 
@@ -240,6 +243,7 @@ struct PipelineConsumerOutput {
     entries: Vec<FileEntry>,
     catalog: SymbolCatalog,
     staged_payloads: BTreeMap<String, StagedFilePayload>,
+    ram_payloads: db_writer::RamStagedPayloads,
 }
 
 #[derive(Clone)]
@@ -262,6 +266,10 @@ type StageCleanupHook = Box<dyn Fn(&Path) + Send + Sync>;
 
 /// Test synchronization and fault-injection hooks for pipeline concurrency.
 pub struct PipelineTestHooks {
+    /// Overrides the resolved memory budget for in-process pipeline tests.
+    pub memory_budget_override: Option<u64>,
+    /// Overrides the extraction cache location for in-process pipeline tests.
+    pub cache_dir_override: Option<PathBuf>,
     /// Forces producer, worker, and consumer synchronization.
     pub overlap: bool,
     /// Simulates SQLite consumer failure.
@@ -272,6 +280,8 @@ pub struct PipelineTestHooks {
     pub overlap_participants: AtomicUsize,
     /// Runs immediately before stage cleanup for filesystem fault injection.
     before_stage_cleanup: Option<StageCleanupHook>,
+    /// Runs a filesystem action before candidate database verification.
+    pub before_candidate_verify: Option<StageCleanupHook>,
     before_delta_persist: Option<StageCleanupHook>,
     after_delta_failure: Option<StageCleanupHook>,
     during_delta_verification: Option<StageCleanupHook>,
@@ -288,6 +298,9 @@ impl PipelineTestHooks {
             overlap_barrier: std::sync::Barrier::new(3),
             overlap_participants: AtomicUsize::new(0),
             before_stage_cleanup: None,
+            before_candidate_verify: None,
+            memory_budget_override: None,
+            cache_dir_override: None,
             before_delta_persist: None,
             after_delta_failure: None,
             during_delta_verification: None,
@@ -304,6 +317,9 @@ impl PipelineTestHooks {
             overlap_barrier: std::sync::Barrier::new(3),
             overlap_participants: AtomicUsize::new(0),
             before_stage_cleanup: None,
+            before_candidate_verify: None,
+            memory_budget_override: None,
+            cache_dir_override: None,
             before_delta_persist: None,
             after_delta_failure: None,
             during_delta_verification: None,
@@ -538,6 +554,8 @@ fn sanitize_extracted_facts(facts: &mut TypedFacts) {
     }
 }
 
+type CandidateExtraction = (FileEntry, TypedFacts, bool, Option<Vec<u8>>, Option<Vec<Edge>>, String);
+
 fn extract_candidate(
     root: &Path,
     candidate: BuildCandidate,
@@ -546,7 +564,7 @@ fn extract_candidate(
     extraction_cache: &ExtractionCache,
     effective_ruleset_hash: &str,
     source: &mut String,
-) -> Result<(FileEntry, TypedFacts, bool)> {
+) -> Result<CandidateExtraction> {
     let path = resolve_file_path(root, adapter, &candidate.path)?;
     let mut options = OpenOptions::new();
     options.read(true);
@@ -600,13 +618,13 @@ fn extract_candidate(
         .saturating_mul(64)
         .max(512 * 1024)
         .min(adapter.limits.max_file_bytes.saturating_mul(16));
-    if let Some(mut facts) = extraction_cache.load(&key, cache_limit) {
+    if let Some((mut facts, encoded, components)) = extraction_cache.load_for_build(&key, cache_limit) {
         let mtime = file.mtime_ns as f64 / 1e9;
         for section in &mut facts.docs {
             section.mtime = mtime;
         }
         sanitize_extracted_facts(&mut facts);
-        return Ok((file, facts, true));
+        return Ok((file, facts, true, encoded, components, key));
     }
     let spec_paths = adapter.spec_paths();
     let facts = extract_typed_source_with_digest(
@@ -616,8 +634,7 @@ fn extract_candidate(
         dependencies,
         &spec_paths,
     )?;
-    extraction_cache.store(&key, &facts);
-    Ok((file, facts, false))
+    Ok((file, facts, false, None, None, key))
 }
 
 fn run_cold_pipeline(
@@ -632,6 +649,9 @@ fn run_cold_pipeline(
         effective_ruleset_hash,
         connection,
         budget_bytes,
+        candidates,
+        scan,
+        scan_ms,
         test_hooks,
     } = inputs;
     let worker_count = rayon::current_num_threads().max(1);
@@ -654,6 +674,7 @@ fn run_cold_pipeline(
                 connection,
                 result_rx,
                 &consumer_payload_spool_path,
+                (budget_bytes / 16).min(128 * 1024 * 1024),
                 consumer_control.as_ref(),
                 consumer_counters.as_ref(),
                 consumer_hooks.as_deref(),
@@ -710,14 +731,11 @@ fn run_cold_pipeline(
     drop(work_rx);
 
     let producer_control = Arc::clone(&control);
-    let producer_adapter = Arc::clone(&adapter);
     let producer_budget = Arc::clone(&byte_budget);
     let producer_hooks = test_hooks.clone();
     let producer = thread::spawn(move || {
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            let started = Instant::now();
-            let mut sequence = 0usize;
-            let scan = scanner::stream_for_build(&root, &producer_adapter, |candidate| {
+            for (current_sequence, candidate) in candidates.into_iter().enumerate() {
                 let estimate = candidate
                     .bytes
                     .saturating_mul(EXTRACTION_MEMORY_MULTIPLIER)
@@ -725,11 +743,6 @@ fn run_cold_pipeline(
                 let permit = producer_budget
                     .acquire(estimate, &producer_control.cancelled)
                     .map_err(|error| std::io::Error::other(error.to_string()))?;
-                let current_sequence = {
-                    let current = sequence;
-                    sequence = sequence.saturating_add(1);
-                    current
-                };
                 work_tx
                     .send(PipelineWork {
                         sequence: current_sequence,
@@ -749,9 +762,8 @@ fn run_cold_pipeline(
                     hooks.overlap_participants.fetch_add(1, Ordering::AcqRel);
                     hooks.overlap_barrier.wait();
                 }
-                Ok(())
-            })?;
-            Ok::<_, std::io::Error>((scan, started.elapsed().as_secs_f64() * 1000.))
+            }
+            Ok::<_, std::io::Error>((scan, scan_ms))
         }));
         match outcome {
             Ok(Ok(report)) => Ok(report),
@@ -870,10 +882,27 @@ fn extraction_worker(context: ExtractionWorkerContext) {
             &effective_ruleset_hash,
             &mut source,
         )
-        .and_then(|(file, mut facts, cache_hit)| {
+        .and_then(|(file, mut facts, cache_hit, cached, components, key)| {
             assign_file_component(&file.path, &mut facts, None);
             let storage_rows = db_writer::prepare_catalog_storage_with_facts(&file, &facts)?;
-            let encoded_facts = acdd_index::typed_facts::encode_facts(&facts)?;
+            let cached = cached.filter(|_| {
+                if file.is_doc || !facts.docs.is_empty() { return false; }
+                let Some(previous) = &components else { return false; };
+                let current = facts.edges.iter().filter(|edge| edge.src.starts_with("component:"));
+                previous.len() == current.clone().count() && previous.iter().zip(current).all(|(a, b)|
+                    (&a.src, &a.dst, &a.kind, &a.path, a.line, &a.evidence, &a.confidence)
+                    == (&b.src, &b.dst, &b.kind, &b.path, b.line, &b.evidence, &b.confidence))
+            });
+            let reused = cached.is_some();
+            let encoded_facts = match cached {
+                Some(encoded) => encoded,
+                None => acdd_index::typed_facts::encode_facts(&facts)?,
+            };
+            if !reused {
+                if let Ok(Some(length)) = zstd::zstd_safe::get_frame_content_size(&encoded_facts[b"ACDD-LOCAL-FACTS\0\x03".len()..]) {
+                    extraction_cache.store_encoded(&key, &encoded_facts, length);
+                }
+            }
             let mut catalog = SymbolCatalog::default();
             catalog.insert_typed(file.path.clone(), facts, false);
             Ok((file, catalog, encoded_facts, storage_rows, cache_hit))
@@ -944,16 +973,29 @@ fn write_all_at(file: &std::fs::File, mut offset: u64, mut bytes: &[u8]) -> std:
 fn spool_payload_blob(
     file: &mut std::fs::File,
     next_offset: &mut u64,
-    bytes: &[u8],
+    mut bytes: Vec<u8>,
+    ram: &mut BTreeMap<u64, Vec<u8>>,
+    ram_bytes: &mut u64,
+    ram_budget: u64,
 ) -> Result<StagedPayloadBlob> {
-    let offset = *next_offset;
     let length = u64::try_from(bytes.len()).context("staged payload length overflow")?;
+    if length <= ram_budget.saturating_sub(*ram_bytes) {
+        bytes.shrink_to_fit();
+        if bytes.capacity() as u64 <= ram_budget.saturating_sub(*ram_bytes) {
+            let offset = (1u64 << 63) | u64::try_from(ram.len())?;
+            *ram_bytes += bytes.capacity() as u64;
+            ram.insert(offset, bytes);
+            return Ok(StagedPayloadBlob { offset, length });
+        }
+    }
+    let offset = *next_offset;
+    anyhow::ensure!(offset < (1u64 << 63) && length < (1u64 << 63) - offset, "staged payload spool offset overflow");
     #[cfg(unix)]
-    write_all_at(file, offset, bytes)?;
+    write_all_at(file, offset, &bytes)?;
     #[cfg(not(unix))]
     {
         file.seek(SeekFrom::Start(offset))?;
-        std::io::Write::write_all(file, bytes)?;
+        std::io::Write::write_all(file, &bytes)?;
     }
     *next_offset = offset
         .checked_add(length)
@@ -965,12 +1007,15 @@ fn consume_pipeline_results(
     mut connection: Connection,
     result_rx: Receiver<std::result::Result<PipelineItem, String>>,
     payload_spool_path: &Path,
+    ram_budget: u64,
     control: &PipelineControl,
     counters: &PipelineCounters,
     test_hooks: Option<&PipelineTestHooks>,
 ) -> Result<PipelineConsumerOutput> {
     let mut payload_spool = OpenOptions::new().write(true).open(payload_spool_path)?;
     let mut next_offset: u64 = 0;
+    let mut ram_payloads = BTreeMap::new();
+    let mut ram_bytes = 0;
     let transaction = connection.transaction()?;
     let mut statement =
         transaction.prepare_cached("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)")?;
@@ -1014,11 +1059,9 @@ fn consume_pipeline_results(
             Ok(_) => {
                 let path = file.path.clone();
                 let encoded_facts_ref =
-                    spool_payload_blob(&mut payload_spool, &mut next_offset, &encoded_facts)?;
+                    spool_payload_blob(&mut payload_spool, &mut next_offset, encoded_facts, &mut ram_payloads, &mut ram_bytes, ram_budget)?;
                 let storage_rows_ref =
-                    spool_payload_blob(&mut payload_spool, &mut next_offset, &storage_rows)?;
-                drop(encoded_facts);
-                drop(storage_rows);
+                    spool_payload_blob(&mut payload_spool, &mut next_offset, storage_rows, &mut ram_payloads, &mut ram_bytes, ram_budget)?;
                 entries.push(file);
                 catalog.extend(file_catalog);
                 staged_payloads.insert(
@@ -1046,6 +1089,7 @@ fn consume_pipeline_results(
         entries,
         catalog,
         staged_payloads,
+        ram_payloads: Mutex::new(ram_payloads),
     })
 }
 
@@ -1323,6 +1367,7 @@ fn ensure_no_publication_sidecars(output: &Path, allow_files: bool) -> Result<()
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn atomic_build(
     root: &Path,
     output: &Path,
@@ -1330,6 +1375,9 @@ fn atomic_build(
     dependencies: Arc<DependencyRegistry>,
     extraction_cache: Arc<ExtractionCache>,
     memory_budget: u64,
+    candidates: Vec<BuildCandidate>,
+    scan: scanner::BuildStreamReport,
+    scan_ms: f64,
     test_hooks: Option<Arc<PipelineTestHooks>>,
 ) -> Result<Value> {
     validate_code_map_target(root, output)?;
@@ -1408,6 +1456,9 @@ fn atomic_build(
             )),
             connection: conn,
             budget_bytes: memory_budget,
+            candidates,
+            scan,
+            scan_ms,
             test_hooks: test_hooks.clone(),
         })?;
         streamed
@@ -1419,7 +1470,9 @@ fn atomic_build(
         changed_paths.extend(components(&mut streamed.catalog.files));
         for path in changed_paths {
             if let Some(payload) = streamed.staged_payloads.get_mut(&path) {
-                payload.storage_rows = None;
+                if let Some(blob) = payload.storage_rows.take() {
+                    streamed.ram_payloads.lock().unwrap_or_else(|error| error.into_inner()).remove(&blob.offset);
+                }
             }
         }
         let components_ms = preparing_components.elapsed().as_secs_f64() * 1000.;
@@ -1439,8 +1492,9 @@ fn atomic_build(
             libc::malloc_trim(0);
         }
         let facts = streamed.catalog.into_files();
+        let staged_disk_bytes = fs::metadata(&payload_spool_path)?.len();
 
-        let mut report = db_writer::populate_owned(
+        let mut report = db_writer::populate_owned_with_ram(
             &mut streamed.connection,
             root,
             adapter,
@@ -1454,8 +1508,10 @@ fn atomic_build(
             },
             &mut streamed.staged_payloads,
             Some(&payload_spool_path),
+            &streamed.ram_payloads,
         )?;
         report["link_ms"] = json!(link_ms);
+        report["staged_disk_bytes"] = json!(staged_disk_bytes);
         report["linking_facts_mode"] = json!("symbol-catalog");
         report["preencoded_facts_ms"] = json!(0.0);
         report["memory_budget_bytes"] = json!(memory_budget);
@@ -1480,14 +1536,6 @@ fn atomic_build(
                 .iter()
                 .map(|file| (file.path.as_str(), file.language.as_str()))
         ));
-        let verifying = Instant::now();
-        let integrity: String = streamed
-            .connection
-            .query_row("PRAGMA quick_check", [], |r| r.get(0))?;
-        if integrity != "ok" {
-            bail!("candidate database failed integrity check: {integrity}");
-        }
-        report["verify_ms"] = json!(verifying.elapsed().as_secs_f64() * 1000.);
         cache::checkpoint(&streamed.connection, true)?;
         let candidate_mode: String = streamed
             .connection
@@ -1497,6 +1545,21 @@ fn atomic_build(
             "candidate database failed to finalize in DELETE journal mode (got '{candidate_mode}')"
         );
         streamed.connection.close().map_err(|(_, e)| e)?;
+        if let Some(action) = test_hooks.as_ref().and_then(|hooks| hooks.before_candidate_verify.as_ref()) {
+            action(&temporary);
+        }
+        let verifying = Instant::now();
+        let candidate = Connection::open_with_flags(&temporary, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW)
+            .context("candidate database failed integrity check")?;
+        let integrity: String = candidate.query_row("PRAGMA integrity_check(sqlite_schema)", [], |r| r.get(0))
+            .context("candidate database failed integrity check")?;
+        let page_count: i64 = candidate.query_row("PRAGMA page_count", [], |r| r.get(0))
+            .context("candidate database failed integrity check")?;
+        if integrity != "ok" || page_count <= 0 {
+            bail!("candidate database failed integrity check: {integrity}");
+        }
+        candidate.close().map_err(|(_, e)| e)?;
+        report["verify_ms"] = json!(verifying.elapsed().as_secs_f64() * 1000.);
         if let Some(action) = test_hooks
             .as_ref()
             .and_then(|hooks| hooks.before_generation_lock.as_ref())
@@ -1636,8 +1699,8 @@ fn build_inner(
         output,
         adapter_path,
         Arc::new(ExtractionCache::new(
-            extraction_cache::default_cache_root()
-                .map(|path| acdd_core::fs::resolve_workspace_path(root, &path)),
+            test_hooks.as_ref().and_then(|hooks| hooks.cache_dir_override.clone()).or_else(||
+                extraction_cache::default_cache_root().map(|path| acdd_core::fs::resolve_workspace_path(root, &path))),
         )),
         test_hooks,
     )
@@ -1685,14 +1748,24 @@ fn build_inner_with_cache(
         .into());
     }
     config::check_root_scope(&root, adapter.limits.allow_broad_root)?;
-    let dependency_manifests = if adapter.modules.is_enabled("code") {
-        scanner::dependency_manifests_for_build(&root, &adapter)?
+    let scanning = Instant::now();
+    let (candidates, dependency_manifests, scan) = if adapter.modules.is_enabled("code") {
+        scanner::collect_for_build(&root, &adapter)?
     } else {
-        Vec::new()
+        let mut candidates = Vec::new();
+        let scan = scanner::stream_for_build(&root, &adapter, |candidate| {
+            candidates.push(candidate);
+            Ok(())
+        })?;
+        (candidates, Vec::new(), scan)
     };
+    let scan_ms = scanning.elapsed().as_secs_f64() * 1000.;
     let dependencies =
         DependencyRegistry::try_collect_with_paths(&root, Some(&adapter), &dependency_manifests)?;
-    let budget = resolve_memory_budget_bytes(&adapter.limits)?;
+    let budget = match test_hooks.as_ref().and_then(|hooks| hooks.memory_budget_override) {
+        Some(budget) => budget,
+        None => resolve_memory_budget_bytes(&adapter.limits)?,
+    };
     let dependencies = Arc::new(dependencies);
     let mut report = atomic_build(
         &root,
@@ -1701,6 +1774,9 @@ fn build_inner_with_cache(
         dependencies,
         extraction_cache,
         budget,
+        candidates,
+        scan,
+        scan_ms,
         test_hooks,
     )?;
     report["elapsed_ms"] = json!(started.elapsed().as_secs_f64() * 1000.0);
