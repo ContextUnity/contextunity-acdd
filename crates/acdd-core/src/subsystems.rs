@@ -2,6 +2,81 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::str::FromStr;
+
+/// Typed identifier for built-in ACDD subsystems.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubsystemId {
+    /// Code indexing, AST, and graph query subsystem (`code`, alias `codemap`).
+    Code,
+    /// Documentation indexing and lookup subsystem (`docs`).
+    Docs,
+    /// Task state machine and run lifecycle subsystem (`state`, alias `acdd`).
+    State,
+    /// Shared run blackboard subsystem (`blackboard`).
+    Blackboard,
+    /// Reserved memory subsystem (`memory`), inactive unless explicitly enabled.
+    Memory,
+}
+
+impl SubsystemId {
+    /// All canonical built-in subsystem identifiers in stable declaration order.
+    pub const ALL: [Self; 5] = [
+        Self::Code,
+        Self::Docs,
+        Self::State,
+        Self::Blackboard,
+        Self::Memory,
+    ];
+
+    /// Canonical lowercase identifier for this subsystem.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Code => "code",
+            Self::Docs => "docs",
+            Self::State => "state",
+            Self::Blackboard => "blackboard",
+            Self::Memory => "memory",
+        }
+    }
+
+    /// Accepted legacy or short aliases that resolve to this subsystem.
+    pub const fn aliases(self) -> &'static [&'static str] {
+        match self {
+            Self::Code => &["codemap"],
+            Self::State => &["acdd"],
+            Self::Docs | Self::Blackboard | Self::Memory => &[],
+        }
+    }
+
+    /// Return `true` for reserved subsystems that stay off unless explicitly enabled.
+    pub const fn is_reserved_default_off(self) -> bool {
+        matches!(self, Self::Memory)
+    }
+}
+
+impl fmt::Display for SubsystemId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SubsystemId {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "code" | "codemap" => Ok(Self::Code),
+            "docs" => Ok(Self::Docs),
+            "state" | "acdd" => Ok(Self::State),
+            "blackboard" => Ok(Self::Blackboard),
+            "memory" => Ok(Self::Memory),
+            other => anyhow::bail!("unknown ACDD subsystem '{other}'"),
+        }
+    }
+}
 
 /// Built-in subsystem presets for the MCP tool surface.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -46,17 +121,8 @@ impl Default for SubsystemRegistry {
     }
 }
 
-fn canonical_and_alias(name: &str) -> (&str, Option<&str>) {
-    match name {
-        "code" | "codemap" => ("code", Some("codemap")),
-        "state" | "acdd" => ("state", Some("acdd")),
-        other => (other, None),
-    }
-}
-
-fn set_contains_subsystem(set: &BTreeSet<String>, name: &str) -> bool {
-    let (canonical, alias) = canonical_and_alias(name);
-    set.contains(canonical) || alias.is_some_and(|a| set.contains(a))
+fn set_contains_subsystem(set: &BTreeSet<String>, id: SubsystemId) -> bool {
+    set.contains(id.as_str()) || id.aliases().iter().any(|alias| set.contains(*alias))
 }
 
 impl SubsystemRegistry {
@@ -68,10 +134,11 @@ impl SubsystemRegistry {
             .chain(&self.disabled)
             .chain(&self.required)
         {
-            anyhow::ensure!(is_known_subsystem(name), "unknown ACDD subsystem '{name}'");
+            let _ = name.parse::<SubsystemId>()?;
         }
         for name in &self.enabled {
-            if set_contains_subsystem(&self.disabled, name) {
+            let id = name.parse::<SubsystemId>()?;
+            if set_contains_subsystem(&self.disabled, id) {
                 anyhow::bail!("ACDD subsystem '{name}' cannot be both enabled and disabled");
             }
         }
@@ -83,24 +150,34 @@ impl SubsystemRegistry {
         Ok(())
     }
 
-    fn is_raw_enabled(&self, name: &str) -> bool {
-        if set_contains_subsystem(&self.disabled, name) {
+    fn is_raw_subsystem_enabled(&self, id: SubsystemId) -> bool {
+        if set_contains_subsystem(&self.disabled, id) {
             return false;
         }
-        if set_contains_subsystem(&self.enabled, name) {
+        if set_contains_subsystem(&self.enabled, id) {
             return true;
         }
-        let (canonical, _) = canonical_and_alias(name);
-        if canonical == "memory" {
+        if id.is_reserved_default_off() {
             // Reserved slot for AC-006; inactive unless explicitly enabled.
             return false;
         }
         match self.profile {
-            SubsystemPreset::Full => is_known_subsystem(name),
-            SubsystemPreset::Navigator => matches!(canonical, "code" | "docs"),
-            SubsystemPreset::Orchestrator => matches!(canonical, "state" | "blackboard"),
+            SubsystemPreset::Full => true,
+            SubsystemPreset::Navigator => matches!(id, SubsystemId::Code | SubsystemId::Docs),
+            SubsystemPreset::Orchestrator => {
+                matches!(id, SubsystemId::State | SubsystemId::Blackboard)
+            }
             SubsystemPreset::Minimal => false,
         }
+    }
+
+    /// Return whether a typed built-in subsystem is enabled by the preset and overrides.
+    pub fn is_subsystem_enabled(&self, id: SubsystemId) -> bool {
+        if id == SubsystemId::Blackboard && !self.is_raw_subsystem_enabled(SubsystemId::State) {
+            // Invariant: blackboard physically disables whenever state is disabled.
+            return false;
+        }
+        self.is_raw_subsystem_enabled(id)
     }
 
     /// Return whether a subsystem (or `domain:<name>`) is enabled by the preset and overrides.
@@ -108,12 +185,8 @@ impl SubsystemRegistry {
         if let Some(domain) = name.strip_prefix("domain:") {
             return self.is_domain_enabled(domain);
         }
-        let (canonical, _) = canonical_and_alias(name);
-        if canonical == "blackboard" && !self.is_raw_enabled("state") {
-            // Invariant: blackboard physically disables whenever state is disabled.
-            return false;
-        }
-        self.is_raw_enabled(canonical)
+        name.parse::<SubsystemId>()
+            .is_ok_and(|id| self.is_subsystem_enabled(id))
     }
 
     /// Return whether an external `DomainProvider` plugin is enabled.
@@ -121,16 +194,25 @@ impl SubsystemRegistry {
         self.domains.get(domain).copied().unwrap_or(false)
     }
 
-    /// Return the subsystem assigned to an MCP tool, if it is registered here.
-    pub fn subsystem_for_tool(tool: &str) -> Option<&'static str> {
+    /// Return the typed subsystem assigned to an MCP tool, if it is registered here.
+    pub fn subsystem_id_for_tool(tool: &str) -> Option<SubsystemId> {
         match tool {
             "acdd_read" | "acdd_guide" => None,
-            "acdd_blackboard" => Some("blackboard"),
-            "get_doc" | "search_docs" => Some("docs"),
-            "acdd_state" | "acdd_claim" | "acdd_verify" | "acdd_submit" => Some("state"),
-            name if name.starts_with("code_map_") || name == "ast_grep_search" => Some("code"),
+            "acdd_blackboard" => Some(SubsystemId::Blackboard),
+            "get_doc" | "search_docs" => Some(SubsystemId::Docs),
+            "acdd_state" | "acdd_claim" | "acdd_verify" | "acdd_submit" => {
+                Some(SubsystemId::State)
+            }
+            name if name.starts_with("code_map_") || name == "ast_grep_search" => {
+                Some(SubsystemId::Code)
+            }
             _ => None,
         }
+    }
+
+    /// Return the subsystem assigned to an MCP tool, if it is registered here.
+    pub fn subsystem_for_tool(tool: &str) -> Option<&'static str> {
+        Self::subsystem_id_for_tool(tool).map(SubsystemId::as_str)
     }
 }
 
@@ -143,16 +225,16 @@ pub fn filter_subsystem_tools<'a>(
     tools
         .into_iter()
         .filter(|tool| {
-            SubsystemRegistry::subsystem_for_tool(tool)
-                .is_none_or(|subsystem| registry.is_enabled(subsystem))
+            SubsystemRegistry::subsystem_id_for_tool(tool)
+                .is_none_or(|subsystem| registry.is_subsystem_enabled(subsystem))
         })
         .collect()
 }
 
 /// Return a stable error when a request names a tool in a disabled subsystem.
 pub fn disabled_tool_error(tool: &str, registry: &SubsystemRegistry) -> Option<String> {
-    let subsystem = SubsystemRegistry::subsystem_for_tool(tool)?;
-    (!registry.is_enabled(subsystem)).then(|| {
+    let subsystem = SubsystemRegistry::subsystem_id_for_tool(tool)?;
+    (!registry.is_subsystem_enabled(subsystem)).then(|| {
         format!("FEATURE_DISABLED: MCP tool '{tool}' belongs to disabled subsystem '{subsystem}'")
     })
 }
@@ -165,28 +247,84 @@ pub fn disabled_read_mode_error(
 ) -> Option<String> {
     use crate::model::ReadMode;
     let subsystem = match mode {
-        ReadMode::Snippet => "code",
-        ReadMode::Outline if markdown => "docs",
-        ReadMode::Outline => "code",
+        ReadMode::Snippet => SubsystemId::Code,
+        ReadMode::Outline if markdown => SubsystemId::Docs,
+        ReadMode::Outline => SubsystemId::Code,
         _ => return None,
     };
-    (!registry.is_enabled(subsystem)).then(|| {
+    (!registry.is_subsystem_enabled(subsystem)).then(|| {
         format!(
             "FEATURE_DISABLED: reader mode '{mode:?}' requires disabled subsystem '{subsystem}'"
         )
     })
 }
 
-fn is_known_subsystem(name: &str) -> bool {
-    matches!(
-        name,
-        "code" | "codemap" | "state" | "acdd" | "blackboard" | "docs" | "memory"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subsystem_id_aliases_parse_and_reject_matrix() {
+        let parse_cases: &[(&str, Option<SubsystemId>)] = &[
+            ("code", Some(SubsystemId::Code)),
+            ("codemap", Some(SubsystemId::Code)),
+            ("docs", Some(SubsystemId::Docs)),
+            ("state", Some(SubsystemId::State)),
+            ("acdd", Some(SubsystemId::State)),
+            ("blackboard", Some(SubsystemId::Blackboard)),
+            ("memory", Some(SubsystemId::Memory)),
+            ("", None),
+            ("CODE", None),
+            ("unknown", None),
+            ("domain:http", None),
+        ];
+        for &(raw, expected) in parse_cases {
+            let parsed = raw.parse::<SubsystemId>().ok();
+            assert_eq!(parsed, expected, "parse({raw:?})");
+        }
+
+        for id in SubsystemId::ALL {
+            assert_eq!(id.to_string(), id.as_str());
+            assert_eq!(id.as_str().parse::<SubsystemId>().unwrap(), id);
+            for &alias in id.aliases() {
+                assert_eq!(alias.parse::<SubsystemId>().unwrap(), id);
+            }
+            assert_eq!(
+                id.is_reserved_default_off(),
+                id == SubsystemId::Memory,
+                "{id:?}"
+            );
+        }
+
+        let mut conflict = SubsystemRegistry::default();
+        conflict.enabled.insert("code".into());
+        conflict.disabled.insert("codemap".into());
+        assert!(conflict.validate().is_err());
+
+        let mut unknown = SubsystemRegistry::default();
+        unknown.enabled.insert("bogus".into());
+        assert!(unknown
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("unknown ACDD subsystem 'bogus'"));
+
+        let tool_cases: &[(&str, Option<SubsystemId>, Option<&str>)] = &[
+            ("acdd_read", None, None),
+            ("acdd_guide", None, None),
+            ("acdd_blackboard", Some(SubsystemId::Blackboard), Some("blackboard")),
+            ("get_doc", Some(SubsystemId::Docs), Some("docs")),
+            ("search_docs", Some(SubsystemId::Docs), Some("docs")),
+            ("acdd_state", Some(SubsystemId::State), Some("state")),
+            ("code_map_search", Some(SubsystemId::Code), Some("code")),
+            ("ast_grep_search", Some(SubsystemId::Code), Some("code")),
+            ("custom_plugin", None, None),
+        ];
+        for &(tool, expected_id, expected_str) in tool_cases {
+            assert_eq!(SubsystemRegistry::subsystem_id_for_tool(tool), expected_id);
+            assert_eq!(SubsystemRegistry::subsystem_for_tool(tool), expected_str);
+        }
+    }
 
     #[test]
     fn subsystem_registry_aliases_memory_domains_and_blackboard_coupling() {

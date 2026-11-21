@@ -517,25 +517,50 @@ impl CompositeDomainProvider {
             .is_some_and(|tool| self.is_domain_enabled(&tool.domain_id))
     }
 
+    fn resolve_provider_capability<'s, 'q, T>(
+        &'s self,
+        qualified: &'q str,
+        kind: &'static str,
+        items: impl FnOnce(&'s DomainCapabilities) -> &'s [T],
+        name_of: impl Fn(&T) -> &str,
+    ) -> std::result::Result<(&'s RegisteredProvider, &'q str, &'s T), StateError> {
+        let (domain, cap_name) = split_qualified(qualified, kind)?;
+        let entry = self.active_provider(domain)?;
+        let cap = items(&entry.capabilities)
+            .iter()
+            .find(|item| name_of(item) == cap_name)
+            .ok_or_else(|| {
+                StateError::new(
+                    ErrorCode::DomainCapabilityUnavailable,
+                    format!("{kind} '{qualified}' is not provided by domain '{domain}'"),
+                )
+            })?;
+        Ok((entry, cap_name, cap))
+    }
+
+    fn resolve_action_capability<'s, 'q>(
+        &'s self,
+        qualified: &'q str,
+    ) -> std::result::Result<(&'s RegisteredProvider, &'q str, &'s ActionCapability), StateError>
+    {
+        self.resolve_provider_capability(qualified, "action", |c| &c.actions, |a| &a.name)
+    }
+
+    fn resolve_check_capability<'s, 'q>(
+        &'s self,
+        qualified: &'q str,
+    ) -> std::result::Result<(&'s RegisteredProvider, &'q str, &'s CheckCapability), StateError>
+    {
+        self.resolve_provider_capability(qualified, "check", |c| &c.checks, |c| &c.name)
+    }
+
     /// Validate a qualified action reference (`<domain>.<action>`) and its `with:` parameters fail-closed.
     pub fn validate_action_ref(
         &self,
         qualified: &str,
         params: &Value,
     ) -> std::result::Result<(), StateError> {
-        let (domain, action_name) = split_qualified(qualified, "action")?;
-        let entry = self.active_provider(domain)?;
-        let cap = entry
-            .capabilities
-            .actions
-            .iter()
-            .find(|a| a.name == action_name)
-            .ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::DomainCapabilityUnavailable,
-                    format!("action '{qualified}' is not provided by domain '{domain}'"),
-                )
-            })?;
+        let (_, _, cap) = self.resolve_action_capability(qualified)?;
         cap.input_schema
             .validate_value(params, &format!("call.{qualified}.with"))
     }
@@ -546,19 +571,7 @@ impl CompositeDomainProvider {
         qualified: &str,
         params: &Value,
     ) -> std::result::Result<(), StateError> {
-        let (domain, check_name) = split_qualified(qualified, "check")?;
-        let entry = self.active_provider(domain)?;
-        let cap = entry
-            .capabilities
-            .checks
-            .iter()
-            .find(|c| c.name == check_name)
-            .ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::DomainCapabilityUnavailable,
-                    format!("check '{qualified}' is not provided by domain '{domain}'"),
-                )
-            })?;
+        let (_, _, cap) = self.resolve_check_capability(qualified)?;
         cap.input_schema
             .validate_value(params, &format!("checks.{qualified}"))
     }
@@ -597,20 +610,12 @@ impl CompositeDomainProvider {
     }
 
     /// Return the `ActionCapability` metadata for a qualified `<domain>.<action>`.
-    pub fn action_capability(&self, qualified: &str) -> std::result::Result<&ActionCapability, StateError> {
-        let (domain, action_name) = split_qualified(qualified, "action")?;
-        let entry = self.active_provider(domain)?;
-        entry
-            .capabilities
-            .actions
-            .iter()
-            .find(|a| a.name == action_name)
-            .ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::DomainCapabilityUnavailable,
-                    format!("action '{qualified}' is not provided by domain '{domain}'"),
-                )
-            })
+    pub fn action_capability(
+        &self,
+        qualified: &str,
+    ) -> std::result::Result<&ActionCapability, StateError> {
+        let (_, _, cap) = self.resolve_action_capability(qualified)?;
+        Ok(cap)
     }
 
     /// Validate and dispatch `call: <domain>.<action>` to the owning enabled provider.
@@ -621,9 +626,9 @@ impl CompositeDomainProvider {
         idempotency_key: &str,
         req: &DomainActionReq,
     ) -> Result<DomainActionResult> {
-        self.validate_action_ref(qualified, params)?;
-        let (domain, action_name) = split_qualified(qualified, "action")?;
-        let entry = self.active_provider(domain)?;
+        let (entry, action_name, cap) = self.resolve_action_capability(qualified)?;
+        cap.input_schema
+            .validate_value(params, &format!("call.{qualified}.with"))?;
         entry
             .provider
             .execute_action(action_name, params, idempotency_key, req)
@@ -635,19 +640,7 @@ impl CompositeDomainProvider {
         qualified: &str,
         idempotency_key: &str,
     ) -> Result<Option<DomainActionResult>> {
-        let (domain, action_name) = split_qualified(qualified, "action")?;
-        let entry = self.active_provider(domain)?;
-        let _cap = entry
-            .capabilities
-            .actions
-            .iter()
-            .find(|a| a.name == action_name)
-            .ok_or_else(|| {
-                StateError::new(
-                    ErrorCode::DomainCapabilityUnavailable,
-                    format!("action '{qualified}' is not provided by domain '{domain}'"),
-                )
-            })?;
+        let (entry, action_name, _cap) = self.resolve_action_capability(qualified)?;
         entry
             .provider
             .lookup_action_result(action_name, idempotency_key)
@@ -660,9 +653,9 @@ impl CompositeDomainProvider {
         params: &Value,
         req: &DomainCheckReq,
     ) -> Result<DomainCheckOutcome> {
-        self.validate_check_ref(qualified, params)?;
-        let (domain, check_name) = split_qualified(qualified, "check")?;
-        let entry = self.active_provider(domain)?;
+        let (entry, check_name, cap) = self.resolve_check_capability(qualified)?;
+        cap.input_schema
+            .validate_value(params, &format!("checks.{qualified}"))?;
         entry.provider.run_check(check_name, params, req)
     }
 
@@ -673,9 +666,9 @@ impl CompositeDomainProvider {
         params: &Value,
         req: &DomainCheckReq,
     ) -> Result<FreshnessObservation> {
-        self.validate_check_ref(qualified, params)?;
-        let (domain, check_name) = split_qualified(qualified, "check")?;
-        let entry = self.active_provider(domain)?;
+        let (entry, check_name, cap) = self.resolve_check_capability(qualified)?;
+        cap.input_schema
+            .validate_value(params, &format!("checks.{qualified}"))?;
         entry.provider.observe_freshness(check_name, params, req)
     }
 
@@ -923,6 +916,33 @@ mod tests {
         })
     }
 
+    fn sample_action_req() -> DomainActionReq {
+        DomainActionReq {
+            run_id: RunId::new("r1").unwrap(),
+            node_cursor: NodeCursor::root(vec![GateId::new("build").unwrap()]).unwrap(),
+            gate_id: GateId::new("build").unwrap(),
+            worker_id: Some(WorkerId::new("w1").unwrap()),
+            workspace_root: PathBuf::from("/repo"),
+            worktree: PathBuf::from("/repo"),
+            admitted_scope: vec!["src/**".to_owned()],
+        }
+    }
+
+    fn sample_check_req() -> DomainCheckReq {
+        DomainCheckReq {
+            run_id: RunId::new("r1").unwrap(),
+            node_cursor: NodeCursor::root(vec![GateId::new("build").unwrap()]).unwrap(),
+            gate_id: GateId::new("build").unwrap(),
+            workspace_root: PathBuf::from("/repo"),
+            worktree: PathBuf::from("/repo"),
+            admitted_scope: vec!["src/**".to_owned()],
+            changed_paths: vec![],
+            test_target: None,
+            path_policy: WorkspacePathPolicy::default(),
+            baseline_ref: None,
+        }
+    }
+
     #[test]
     fn composite_registration_rejects_duplicates_and_builtin_collisions() {
         assert_eq!(BUILTIN_MCP_TOOLS.len(), 19);
@@ -988,27 +1008,8 @@ mod tests {
         assert!(composite.is_domain_enabled("code"));
         assert!(!composite.is_domain_enabled("unlisted"));
 
-        let action_req = DomainActionReq {
-            run_id: RunId::new("r1").unwrap(),
-            node_cursor: NodeCursor::root(vec![GateId::new("build").unwrap()]).unwrap(),
-            gate_id: GateId::new("build").unwrap(),
-            worker_id: Some(WorkerId::new("w1").unwrap()),
-            workspace_root: PathBuf::from("/repo"),
-            worktree: PathBuf::from("/repo"),
-            admitted_scope: vec!["src/**".to_owned()],
-        };
-        let check_req = DomainCheckReq {
-            run_id: RunId::new("r1").unwrap(),
-            node_cursor: NodeCursor::root(vec![GateId::new("build").unwrap()]).unwrap(),
-            gate_id: GateId::new("build").unwrap(),
-            workspace_root: PathBuf::from("/repo"),
-            worktree: PathBuf::from("/repo"),
-            admitted_scope: vec!["src/**".to_owned()],
-            changed_paths: vec![],
-            test_target: None,
-            path_policy: WorkspacePathPolicy::default(),
-            baseline_ref: None,
-        };
+        let action_req = sample_action_req();
+        let check_req = sample_check_req();
         let ctx_req = DomainContextReq {
             run_id: RunId::new("r1").unwrap(),
             node_cursor: NodeCursor::root(vec![GateId::new("build").unwrap()]).unwrap(),
@@ -1155,5 +1156,69 @@ mod tests {
             StateError::from_anyhow(&noop_err).unwrap().code,
             ErrorCode::DomainCapabilityUnavailable
         );
+    }
+
+    #[test]
+    fn resolve_capability_parity_across_validation_inspection_and_dispatch() {
+        let composite = CompositeDomainProvider::new(vec![sample_provider("http", &["request"])])
+            .unwrap();
+        let cap = composite.action_capability("http.probe").unwrap();
+        assert_eq!(cap.name, "probe");
+        assert!(cap.mutating);
+        assert!(cap.supports_result_lookup);
+
+        let action_req = sample_action_req();
+        let check_req = sample_check_req();
+
+        for (qualified, expected) in [
+            ("http.probe", Ok(())),
+            ("http.missing", Err(ErrorCode::DomainCapabilityUnavailable)),
+            ("missing.probe", Err(ErrorCode::DomainCapabilityUnavailable)),
+            ("malformed", Err(ErrorCode::ProfileSchemaInvalid)),
+        ] {
+            let val_res = composite
+                .validate_action_ref(qualified, &json!({"url": "https://example.test"}))
+                .map_err(|e| e.code);
+            let cap_res = composite.action_capability(qualified).map(|_| ()).map_err(|e| e.code);
+            let exec_res = composite
+                .execute_action(
+                    qualified,
+                    &json!({"url": "https://example.test"}),
+                    "k1",
+                    &action_req,
+                )
+                .map(|_| ())
+                .map_err(|e| StateError::from_anyhow(&e).unwrap().code);
+            let lookup_res = composite
+                .lookup_action_result(qualified, "k1")
+                .map(|_| ())
+                .map_err(|e| StateError::from_anyhow(&e).unwrap().code);
+            assert_eq!(val_res, expected, "validate_action_ref({qualified})");
+            assert_eq!(cap_res, expected, "action_capability({qualified})");
+            assert_eq!(exec_res, expected, "execute_action({qualified})");
+            assert_eq!(lookup_res, expected, "lookup_action_result({qualified})");
+        }
+
+        for (qualified, expected) in [
+            ("http.health", Ok(())),
+            ("http.missing", Err(ErrorCode::DomainCapabilityUnavailable)),
+            ("missing.health", Err(ErrorCode::DomainCapabilityUnavailable)),
+            ("malformed", Err(ErrorCode::ProfileSchemaInvalid)),
+        ] {
+            let val_res = composite
+                .validate_check_ref(qualified, &json!({}))
+                .map_err(|e| e.code);
+            let run_res = composite
+                .run_check(qualified, &json!({}), &check_req)
+                .map(|_| ())
+                .map_err(|e| StateError::from_anyhow(&e).unwrap().code);
+            let obs_res = composite
+                .observe_freshness(qualified, &json!({}), &check_req)
+                .map(|_| ())
+                .map_err(|e| StateError::from_anyhow(&e).unwrap().code);
+            assert_eq!(val_res, expected, "validate_check_ref({qualified})");
+            assert_eq!(run_res, expected, "run_check({qualified})");
+            assert_eq!(obs_res, expected, "observe_freshness({qualified})");
+        }
     }
 }

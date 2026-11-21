@@ -17,6 +17,11 @@ pub mod subsystems;
 pub mod sys;
 pub mod telemetry;
 
-pub use config::{Detail, ResponsePolicy, ScannerLimits, SourceContextPolicy};
+pub use config::{
+    Detail, ResponsePolicy, ScannerLimits, SourceContextPolicy, ACDD_CONFIG_FILE, ACDD_DIR,
+    CLAIM_TRAILER_KEY, DEFAULT_CODE_DB, DEFAULT_CODE_DB_REL, DEFAULT_STATE_DB,
+    DEFAULT_STATE_DB_REL, SNAPSHOT_REF_PREFIX, WORKTREES_DIR,
+};
 pub use format::stable_hash64;
 pub use fs::{is_doc_path, is_normalized_relative, safe_relative};
+pub use subsystems::SubsystemId;
