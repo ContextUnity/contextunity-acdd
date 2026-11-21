@@ -506,9 +506,17 @@ pub(super) fn extraction_worker(context: ExtractionWorkerContext) {
                     encoded
                 }
             };
+            let local_facts_leaf = db_writer::local_facts_leaf(&file, &encoded_facts)?;
             let mut catalog = SymbolCatalog::default();
             catalog.insert_typed(file.path.clone(), facts, false);
-            Ok((file, catalog, encoded_facts, storage_rows, cache_hit))
+            Ok((
+                file,
+                catalog,
+                encoded_facts,
+                local_facts_leaf,
+                storage_rows,
+                cache_hit,
+            ))
         });
         counters.extraction_nanos.fetch_add(
             extraction_started
@@ -517,16 +525,17 @@ pub(super) fn extraction_worker(context: ExtractionWorkerContext) {
                 .min(u64::MAX as u128) as u64,
             Ordering::AcqRel,
         );
-        let (file, catalog, encoded_facts, storage_rows, cache_hit) = match extracted {
-            Ok(value) => value,
-            Err(error) => {
-                let message = error.to_string();
-                control.cancel(&message);
-                let _ = result_tx.send(Err(message));
-                drop(permit);
-                continue;
-            }
-        };
+        let (file, catalog, encoded_facts, local_facts_leaf, storage_rows, cache_hit) =
+            match extracted {
+                Ok(value) => value,
+                Err(error) => {
+                    let message = error.to_string();
+                    control.cancel(&message);
+                    let _ = result_tx.send(Err(message));
+                    drop(permit);
+                    continue;
+                }
+            };
         if cache_hit {
             counters
                 .extraction_cache_hits
@@ -537,6 +546,7 @@ pub(super) fn extraction_worker(context: ExtractionWorkerContext) {
             file,
             catalog,
             encoded_facts,
+            local_facts_leaf,
             storage_rows,
             permit,
         };

@@ -9,13 +9,6 @@ pub struct SpoolSlice {
     pub length: u64,
 }
 
-/// An owned memory payload or a location in the spool.
-#[derive(Debug)]
-pub enum StagedPayload {
-    InMemory(Vec<u8>),
-    Spilled(SpoolSlice),
-}
-
 /// Prepared catalog rows held in memory or encoded in the spool.
 #[derive(Debug)]
 pub enum StagedPreparedStorage {
@@ -39,14 +32,6 @@ impl PayloadStore {
             ram_bytes: 0,
             ram_budget,
         }
-    }
-
-    pub fn stage(&mut self, bytes: Vec<u8>) -> Result<StagedPayload> {
-        if bytes.capacity() as u64 <= self.ram_budget.saturating_sub(self.ram_bytes) {
-            self.ram_bytes += bytes.capacity() as u64;
-            return Ok(StagedPayload::InMemory(bytes));
-        }
-        Ok(StagedPayload::Spilled(self.spill(&bytes)?))
     }
 
     pub fn stage_prepared(
@@ -99,20 +84,6 @@ impl PayloadStore {
     pub fn flush(&mut self) -> Result<()> {
         std::io::Write::flush(&mut self.file)?;
         Ok(())
-    }
-}
-
-pub(super) fn take_staged_payload(file: &File, payload: StagedPayload) -> Result<Vec<u8>> {
-    match payload {
-        StagedPayload::InMemory(bytes) => Ok(bytes),
-        StagedPayload::Spilled(slice) => read_spool(file, slice),
-    }
-}
-
-pub(super) fn read_staged_payload(file: &File, payload: &StagedPayload) -> Result<Vec<u8>> {
-    match payload {
-        StagedPayload::InMemory(bytes) => Ok(bytes.clone()),
-        StagedPayload::Spilled(slice) => read_spool(file, *slice),
     }
 }
 

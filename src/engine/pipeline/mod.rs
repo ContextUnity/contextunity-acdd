@@ -170,6 +170,7 @@ struct PipelineItem {
     file: FileEntry,
     catalog: SymbolCatalog,
     encoded_facts: Vec<u8>,
+    local_facts_leaf: (String, String),
     storage_rows: db_writer::cache::PreparedCatalogStorage,
     permit: MemoryPermit,
 }

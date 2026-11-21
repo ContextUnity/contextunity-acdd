@@ -60,7 +60,7 @@ fn cold_build_preserves_extracted_storage_across_full_and_remainder_batches() ->
 
     #[allow(clippy::type_complexity)]
     let local_facts: Vec<(String, String, String, bool, bool, Vec<u8>, String)> = conn
-        .prepare("SELECT path,source_digest,language,is_test,generated,facts_blob,typeof(facts_blob) FROM local_facts ORDER BY rowid")?
+        .prepare("SELECT path,source_digest,language,is_test,generated,facts_blob,typeof(facts_blob) FROM local_facts ORDER BY path")?
         .query_map([], |row| {
             let blob: Vec<u8> = row.get(5)?;
             Ok((

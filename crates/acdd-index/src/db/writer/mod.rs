@@ -33,153 +33,87 @@ use ingest::*;
 pub(crate) const MAX_MULTI_VALUE_BATCH_ROWS: usize = 500;
 
 mod payload_store;
-pub use payload_store::{PayloadStore, SpoolSlice, StagedPayload, StagedPreparedStorage};
+pub use ingest::LocalFactsBatchWriter;
+pub use payload_store::{PayloadStore, SpoolSlice, StagedPreparedStorage};
 
 /// Staged payloads for an indexed file entry.
 #[derive(Debug)]
 pub struct StagedFilePayload {
-    /// Encoded facts payload.
-    pub encoded_facts: StagedPayload,
     /// Prepared storage rows, when available.
     pub storage_rows: Option<StagedPreparedStorage>,
+    /// Commitment leaf entry for the streamed `local_facts` row, when pre-persisted.
+    pub local_facts_leaf: Option<(String, String)>,
+}
+
+/// Computes the deterministic commitment leaf entry for a file's compressed local facts blob.
+pub fn local_facts_leaf(file: &FileEntry, facts_blob: &[u8]) -> Result<(String, String)> {
+    seal::local_facts_leaf(
+        &file.path,
+        &file.digest,
+        &file.language,
+        is_test(&file.path),
+        facts_blob,
+    )
 }
 
 fn decode_prepared_storage(bytes: &[u8]) -> Result<PreparedCatalogStorage> {
     cache::decode_prepared_catalog_storage_payload(bytes)
 }
 
-/// Prepares catalog storage rows for a file using extracted typed facts.
+fn non_empty_detail(value: &Value) -> bool {
+    !value.is_null()
+        && !value.as_str().is_some_and(str::is_empty)
+        && !value.as_array().is_some_and(Vec::is_empty)
+}
+
+/// Prepares delta catalog storage rows for a file using extracted typed facts.
 pub fn prepare_catalog_storage_with_facts(
     file: &FileEntry,
     facts: &TypedFacts,
 ) -> Result<PreparedCatalogStorage> {
-    let metadata = catalog_metadata(file, facts)?;
-    let projected = TypedFacts {
-        facts: Facts {
-            nodes: facts
-                .nodes
-                .iter()
-                .map(|node| Node {
-                    id: node.id.clone(),
-                    kind: node.kind.clone(),
-                    name: node.name.clone(),
-                    qualname: node.qualname.clone(),
-                    path: node.path.clone(),
-                    line: node.line,
-                    end_line: node.end_line,
-                    is_test: node.is_test,
-                    language: node.language.clone(),
-                    generated: node.generated,
-                    details: retained_node_details(node),
-                    native_semantic: None,
-                })
-                .collect(),
-            docs: facts.docs.clone(),
-            errors: facts.errors.clone(),
-            ..Default::default()
-        },
-        flows: Default::default(),
-    };
-    Ok(prepare_catalog_rows_with_metadata(projected, metadata))
-}
-
-struct CatalogMetadata {
-    search_texts: Vec<String>,
-    reference_keys: Vec<String>,
-    leaves: BTreeMap<crate::commitments::CommitmentDomain, BTreeMap<String, String>>,
-}
-
-fn catalog_metadata(file: &FileEntry, facts: &TypedFacts) -> Result<CatalogMetadata> {
-    let search_texts = facts
-        .nodes
+    let mut search_texts = cache::PackedStrings::default();
+    let mut node_docs = Vec::new();
+    for (index, node) in facts.nodes.iter().enumerate() {
+        search_texts.append_with(|buf| append_node_search_text(buf, node, facts))?;
+        if let Some(details) = node.details.as_object() {
+            let doc = details
+                .get("doc")
+                .filter(|value| non_empty_detail(value))
+                .cloned();
+            let docstring = details
+                .get("docstring")
+                .filter(|value| non_empty_detail(value))
+                .cloned();
+            if doc.is_some() || docstring.is_some() {
+                node_docs.push(cache::NodeDocumentation {
+                    index: u32::try_from(index).context("node index exceeds u32")?,
+                    doc,
+                    docstring,
+                });
+            }
+        }
+    }
+    let doc_bodies = facts
+        .docs
         .iter()
-        .map(|node| {
-            let mut text = String::new();
-            write_node_search_text(&mut text, node, facts);
-            text
-        })
-        .collect::<Vec<_>>();
+        .map(|doc| (doc.content.clone(), doc.invariants.clone()))
+        .collect();
     let reference_keys = facts
         .reference_keys()
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let leaves = seal::file_domain_leaves(file, facts, &reference_keys)?;
-    Ok(CatalogMetadata {
+    let leaves = seal::file_domain_leaves(file, facts, &reference_keys)?
+        .into_iter()
+        .map(|(domain, leaves)| (domain.as_str().to_owned(), leaves))
+        .collect();
+    Ok(PreparedCatalogStorage {
+        node_docs,
+        doc_bodies,
         search_texts,
         reference_keys,
         leaves,
     })
-}
-
-fn retained_node_details(node: &Node) -> Value {
-    match &node.details {
-        Value::Object(details) if !details.is_empty() => {
-            let has_retained = details.iter().any(|(key, value)| {
-                (key.as_str() == "default_export" && *value == true)
-                    || matches!(key.as_str(), "doc" | "docstring")
-            });
-            if has_retained {
-                let details = details
-                    .iter()
-                    .filter(|(key, value)| {
-                        (key.as_str() == "default_export" && *value == true)
-                            || matches!(key.as_str(), "doc" | "docstring")
-                    })
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect::<serde_json::Map<_, _>>();
-                Value::Object(details)
-            } else {
-                Value::Null
-            }
-        }
-        _ => Value::Null,
-    }
-}
-
-fn prepare_catalog_rows(file: &FileEntry, facts: TypedFacts) -> Result<PreparedCatalogStorage> {
-    let metadata = catalog_metadata(file, &facts)?;
-    Ok(prepare_catalog_rows_with_metadata(facts, metadata))
-}
-
-fn prepare_catalog_rows_with_metadata(
-    mut facts: TypedFacts,
-    metadata: CatalogMetadata,
-) -> PreparedCatalogStorage {
-    let CatalogMetadata {
-        search_texts,
-        reference_keys,
-        leaves,
-    } = metadata;
-    let leaves = leaves
-        .into_iter()
-        .map(|(domain, leaves)| (domain.as_str().to_owned(), leaves))
-        .collect();
-    let nodes = std::mem::take(&mut facts.facts.nodes)
-        .into_iter()
-        .map(|mut node| {
-            node.details = retained_node_details(&node);
-            node.native_semantic = None;
-            node
-        })
-        .collect::<Vec<_>>();
-    let mut storage_facts = Facts {
-        nodes,
-        docs: std::mem::take(&mut facts.facts.docs),
-        errors: std::mem::take(&mut facts.facts.errors),
-        ..Default::default()
-    };
-    storage_facts.semantic.mark_complete();
-    let storage = TypedFacts {
-        facts: storage_facts,
-        flows: Default::default(),
-    };
-    PreparedCatalogStorage {
-        facts: storage,
-        search_texts,
-        reference_keys,
-        leaves,
-    }
 }
 
 /// Inputs supplied to pipeline index persistence.
@@ -334,97 +268,116 @@ pub fn populate_owned(
         let bulk_paths_ms = t_bulk.elapsed().as_secs_f64() * 1000.;
         let t_files = Instant::now();
         let mut restore_payload_ms = 0.0;
-        let composed_sources = facts
-            .values()
-            .filter(|_| streamed_payloads)
-            .flat_map(|facts| &facts.nodes)
-            .filter(|node| node.details.get("included_from").is_some())
-            .filter_map(|node| node.details["source_path"].as_str())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .map(|path| {
-                let staged = staged_payloads
-                    .get(path)
-                    .context("missing composed source payload")?;
-                let encoded_facts = payload_store::read_staged_payload(
-                    payload_spool
-                        .as_ref()
-                        .context("missing staged payload spool")?,
-                    &staged.encoded_facts,
-                )?;
-                Ok((path.to_owned(), catalog_payload(path, &encoded_facts)?))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?;
+        let composed_sources = if streamed_payloads {
+            let source_paths = facts
+                .values()
+                .flat_map(|facts| &facts.nodes)
+                .filter(|node| node.details.get("included_from").is_some())
+                .filter_map(|node| node.details["source_path"].as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let mut sources = BTreeMap::new();
+            if !source_paths.is_empty() {
+                let mut stmt =
+                    tx.prepare_cached("SELECT facts_blob FROM local_facts WHERE path=?1")?;
+                for path in source_paths {
+                    let encoded_facts: Vec<u8> = stmt
+                        .query_row([path], |row| row.get(0))
+                        .with_context(|| {
+                            format!("missing composed source local_facts for {path}")
+                        })?;
+                    sources.insert(path.to_owned(), catalog_payload(path, &encoded_facts)?);
+                }
+            }
+            sources
+        } else {
+            BTreeMap::new()
+        };
         let graph_ranks = entrypoints::cold_ranks(graph, &facts);
+        if streamed_payloads {
+            for (path, file_facts) in &mut facts {
+                if staged_payloads
+                    .get(path)
+                    .is_some_and(|staged| staged.storage_rows.is_none())
+                {
+                    continue;
+                }
+                prune_facts_for_stage(file_facts, true);
+            }
+        }
         let file_timings = if streamed_payloads {
             persist_catalog_files(
                 &tx,
                 &mut path_cache,
                 entries,
                 &facts,
-                &mut |chunk, facts| {
-                    let staged = chunk
-                        .iter()
-                        .map(|file| {
-                            Ok((
-                                file,
-                                facts.get(&file.path).context("missing catalog file")?,
-                                staged_payloads
-                                    .remove(&file.path)
-                                    .context("missing staged file payload")?,
-                            ))
-                        })
-                        .collect::<Result<Vec<_>>>()?;
+                &mut |chunk_tx, chunk, facts| {
+                    let mut db_blobs = hashbrown::HashMap::new();
+                    let mut staged = Vec::with_capacity(chunk.len());
+                    for file in chunk {
+                        let lean = facts.get(&file.path).context("missing catalog file")?;
+                        let payload = staged_payloads
+                            .remove(&file.path)
+                            .context("missing staged file payload")?;
+                        if payload.storage_rows.is_none() {
+                            let blob: Vec<u8> = chunk_tx
+                                .prepare_cached("SELECT facts_blob FROM local_facts WHERE path=?1")?
+                                .query_row([&file.path], |row| row.get(0))
+                                .with_context(|| {
+                                    format!("missing local_facts blob for {}", file.path)
+                                })?;
+                            db_blobs.insert(file.path.as_str(), blob);
+                        }
+                        staged.push((file, lean, payload));
+                    }
                     let spool = payload_spool
                         .as_ref()
                         .context("missing staged payload spool")?;
                     let prepared = staged
                         .into_par_iter()
                         .map(|(file, lean, staged)| {
-                            let encoded_facts =
-                                payload_store::take_staged_payload(spool, staged.encoded_facts)?;
                             let restoring = Instant::now();
-                            let (storage, encoded, elapsed_ms) =
+                            let (storage, local_facts_leaf, updated_local_facts, elapsed_ms) =
                                 if let Some(storage) = staged.storage_rows {
-                                    match storage {
-                                        StagedPreparedStorage::InMemory(storage) => {
-                                            (*storage, encoded_facts, 0.0)
-                                        }
+                                    let decoded = match storage {
+                                        StagedPreparedStorage::InMemory(storage) => (*storage, 0.0),
                                         StagedPreparedStorage::Spilled(slice) => {
                                             let bytes = payload_store::read_spool(spool, slice)?;
                                             (
                                                 decode_prepared_storage(&bytes)?,
-                                                encoded_facts,
                                                 restoring.elapsed().as_secs_f64() * 1000.,
                                             )
                                         }
-                                    }
+                                    };
+                                    let leaf = staged
+                                        .local_facts_leaf
+                                        .context("missing staged local_facts leaf")?;
+                                    (decoded.0, leaf, None, decoded.1)
                                 } else {
+                                    let encoded_facts = db_blobs
+                                        .get(file.path.as_str())
+                                        .context("missing composed local_facts blob")?;
                                     let full = restore_catalog_file(
                                         file,
                                         lean,
-                                        &encoded_facts,
+                                        encoded_facts,
                                         &composed_sources,
                                     )?;
                                     let encoded = encode_facts(&full)?;
+                                    let leaf = local_facts_leaf(file, &encoded)?;
+                                    let storage = prepare_catalog_storage_with_facts(file, &full)?;
                                     (
-                                        prepare_catalog_rows(file, full)?,
-                                        encoded,
+                                        storage,
+                                        leaf,
+                                        Some(encoded),
                                         restoring.elapsed().as_secs_f64() * 1000.,
                                     )
                                 };
-                            let local_facts_leaf = seal::local_facts_leaf(
-                                &file.path,
-                                &file.digest,
-                                &file.language,
-                                is_test(&file.path),
-                                &encoded,
-                            )?;
                             Ok((
                                 LoadedCatalogFile {
-                                    facts: storage.facts,
-                                    encoded,
+                                    node_docs: storage.node_docs,
+                                    doc_bodies: storage.doc_bodies,
                                     local_facts_leaf,
+                                    updated_local_facts,
                                     search_texts: storage.search_texts,
                                     reference_keys: storage.reference_keys,
                                 },
@@ -480,7 +433,7 @@ pub fn populate_owned(
 
         if streamed_payloads {
             for file_facts in facts.values_mut() {
-                retain_graph_storage_facts(file_facts);
+                prune_facts_for_stage(file_facts, false);
             }
         }
         let coverage = ingest::PreparedCoverage::new(graph, &facts, Some(entries));
@@ -613,50 +566,26 @@ fn catalog_payload(path: &str, encoded: &[u8]) -> Result<CatalogStoragePayload> 
     Ok(crate::semantic::SymbolCatalog::default().insert_typed(path.to_owned(), facts, true))
 }
 
-fn retain_graph_storage_facts(facts: &mut TypedFacts) {
+fn prune_facts_for_stage(facts: &mut TypedFacts, keep_node_navigation_data: bool) {
     let html = facts
         .nodes
         .iter()
         .any(|node| node.kind == "module" && node.language == "html");
-    let mut flows = crate::typed_facts::FlowStore::default();
-    for node in &mut facts.facts.nodes {
-        if let Some(flow) = facts.flows.get_mut(&node.id) {
-            let template_contexts: Vec<_> = flow
-                .framework
-                .take()
-                .into_iter()
-                .flat_map(|framework| framework.facts)
-                .filter_map(|fact| match fact {
-                    crate::semantic::FrameworkFact::TemplateContext(context) => Some(context),
-                    _ => None,
-                })
-                .collect();
-            if !template_contexts.is_empty() {
-                flows.insert(
-                    node.id.clone(),
-                    crate::semantic::ValueFlowFacts {
-                        framework: Some(Box::new(crate::semantic::FrameworkScopeFacts {
-                            facts: template_contexts
-                                .into_iter()
-                                .map(crate::semantic::FrameworkFact::TemplateContext)
-                                .collect(),
-                            ..Default::default()
-                        })),
-                        ..Default::default()
-                    },
-                );
-            }
-        }
-        node.details = Value::Null;
-        node.native_semantic = None;
-        node.name = String::new();
-        node.qualname = String::new();
-    }
-    facts.flows = flows;
+    facts.flows.retain_persistence_facts(keep_node_navigation_data);
     facts.facts.edges = Vec::new();
-    facts.facts.docs = Vec::new();
+    facts.facts.semantic = Default::default();
+    facts.facts.pending_flow_nodes = Vec::new();
     if !html {
         facts.facts.references = Vec::new();
+    }
+    if !keep_node_navigation_data {
+        facts.facts.docs = Vec::new();
+        for node in &mut facts.facts.nodes {
+            node.details = Value::Null;
+            node.native_semantic = None;
+            node.name = String::new();
+            node.qualname = String::new();
+        }
     }
 }
 

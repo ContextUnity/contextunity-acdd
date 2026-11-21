@@ -253,6 +253,41 @@ fn flush_owner_language_counts<'a>(
     }
 }
 
+pub struct LocalFactsBatchWriter<'conn> {
+    rows: MultiValueBatch<'conn, 6, BorrowedSqlValue<'static>>,
+}
+
+impl<'conn> LocalFactsBatchWriter<'conn> {
+    fn with_prefix(conn: &'conn Connection, prefix: &'static str) -> Result<Self> {
+        Ok(Self {
+            rows: MultiValueBatch::new(conn, prefix)?,
+        })
+    }
+
+    pub fn new(conn: &'conn Connection) -> Result<Self> {
+        Self::with_prefix(conn, "INSERT INTO local_facts VALUES")
+    }
+
+    pub(super) fn new_replace(conn: &'conn Connection) -> Result<Self> {
+        Self::with_prefix(conn, "INSERT OR REPLACE INTO local_facts VALUES")
+    }
+
+    pub fn push(&mut self, file: &FileEntry, blob: Vec<u8>) -> Result<()> {
+        self.rows.push([
+            BorrowedSqlValue::OwnedText(file.path.clone()),
+            BorrowedSqlValue::OwnedText(file.digest.clone()),
+            BorrowedSqlValue::OwnedText(file.language.clone()),
+            BorrowedSqlValue::Integer(i64::from(is_test(&file.path))),
+            BorrowedSqlValue::Integer(0),
+            BorrowedSqlValue::OwnedBlob(blob),
+        ])
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        self.rows.flush()
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct FilePersistenceTimings {
     pub(super) node_id: i64,
@@ -320,14 +355,16 @@ pub(super) fn persist_files_with_ranks(
 }
 
 pub(super) struct LoadedCatalogFile {
-    pub(super) facts: TypedFacts,
-    pub(super) encoded: Vec<u8>,
+    pub(super) node_docs: Vec<super::cache::NodeDocumentation>,
+    pub(super) doc_bodies: Vec<(String, Vec<String>)>,
     pub(super) local_facts_leaf: (String, String),
-    pub(super) search_texts: Vec<String>,
+    pub(super) updated_local_facts: Option<Vec<u8>>,
+    pub(super) search_texts: super::cache::PackedStrings,
     pub(super) reference_keys: Vec<String>,
 }
 
 type ChunkLoader<'a> = &'a mut dyn FnMut(
+    &Connection,
     &[FileEntry],
     &BTreeMap<String, TypedFacts>,
 ) -> Result<Vec<LoadedCatalogFile>>;
@@ -400,13 +437,17 @@ fn persist_files_impl(
         })
         .transpose()?;
     let local_facts_batch_rows = multi_value_batch_rows::<6>(tx)?.min(COLD_LOCAL_FACTS_BATCH_ROWS);
+    let mut insert_local_facts_writer = loader
+        .is_none()
+        .then(|| LocalFactsBatchWriter::new(tx))
+        .transpose()?;
+    let mut replace_local_facts_writer: Option<LocalFactsBatchWriter<'_>> = None;
     let mut file_batch =
         MultiValueBatch::<8, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO files VALUES")?;
     let mut owned_search_batch = Vec::<SearchRow>::new();
     let mut fts_insert_ms = 0.0;
     let mut node_row_insert_ms = bulk_search.then_some(0.0);
     let mut reusable_search_buffers = Vec::<String>::new();
-    let mut local_facts_batch = Vec::<(&FileEntry, Vec<u8>)>::new();
     let suffix = if dirty_fts.as_ref().is_some_and(|d| !d.doc_search) {
         " ON CONFLICT(doc_id) DO UPDATE SET path=excluded.path,section_title=excluded.section_title,doc_type=excluded.doc_type,content=excluded.content,invariants=excluded.invariants,referenced_symbols=excluded.referenced_symbols,mtime=excluded.mtime,size=excluded.size,is_invariant=excluded.is_invariant"
     } else {
@@ -425,81 +466,78 @@ fn persist_files_impl(
     for file_chunk in entries.chunks(chunk_rows) {
         let mut loaded = loader
             .as_mut()
-            .map(|loader| loader(file_chunk, facts))
+            .map(|loader| loader(tx, file_chunk, facts))
             .transpose()?;
         let mut node_batch =
             MultiValueBatch::<14, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO nodes VALUES")?;
-        let mut encoded_chunk: Vec<(Vec<u8>, (String, String))> =
-            if let Some(loaded) = loaded.as_mut() {
-                loaded
-                    .iter_mut()
-                    .map(|file| {
-                        (
-                            std::mem::take(&mut file.encoded),
-                            std::mem::take(&mut file.local_facts_leaf),
-                        )
-                    })
-                    .collect()
-            } else {
-                let started = Instant::now();
-                let encode = |file: &FileEntry| {
-                    let facts = facts.get(&file.path).context("missing extracted facts")?;
-                    let blob = encode_facts(facts)?;
-                    let leaf = seal::local_facts_leaf(
-                        &file.path,
-                        &file.digest,
-                        &file.language,
-                        is_test(&file.path),
-                        &blob,
-                    )?;
-                    Ok((blob, leaf))
-                };
-                let encoded = if file_chunk.len() == 1 {
-                    file_chunk.iter().map(encode).collect::<Result<Vec<_>>>()?
-                } else {
-                    file_chunk
-                        .par_iter()
-                        .map(encode)
-                        .collect::<Result<Vec<_>>>()?
-                };
-                encode_facts_ms += started.elapsed().as_secs_f64() * 1000.0;
-                encoded
-            };
-        let mut loaded_search_texts = loaded.as_mut().map(|loaded| {
+        struct EncodedLocalFactsEntry {
+            blob: Option<Vec<u8>>,
+            leaf: (String, String),
+        }
+        let mut encoded_chunk: Vec<EncodedLocalFactsEntry> = if let Some(loaded) = loaded.as_mut() {
             loaded
                 .iter_mut()
-                .map(|file| std::mem::take(&mut file.search_texts))
-                .collect::<Vec<_>>()
-        });
+                .map(|file| EncodedLocalFactsEntry {
+                    blob: std::mem::take(&mut file.updated_local_facts),
+                    leaf: std::mem::take(&mut file.local_facts_leaf),
+                })
+                .collect()
+        } else {
+            let started = Instant::now();
+            let encode = |file: &FileEntry| -> Result<EncodedLocalFactsEntry> {
+                let facts = facts.get(&file.path).context("missing extracted facts")?;
+                let blob = encode_facts(facts)?;
+                let leaf = seal::local_facts_leaf(
+                    &file.path,
+                    &file.digest,
+                    &file.language,
+                    is_test(&file.path),
+                    &blob,
+                )?;
+                Ok(EncodedLocalFactsEntry {
+                    blob: Some(blob),
+                    leaf,
+                })
+            };
+            let encoded = if file_chunk.len() == 1 {
+                file_chunk.iter().map(encode).collect::<Result<Vec<_>>>()?
+            } else {
+                file_chunk
+                    .par_iter()
+                    .map(encode)
+                    .collect::<Result<Vec<_>>>()?
+            };
+            encode_facts_ms += started.elapsed().as_secs_f64() * 1000.0;
+            encoded
+        };
         let mut prepared_node_details = file_chunk
             .par_iter()
             .enumerate()
             .map(|(chunk_index, file)| -> Result<Vec<(usize, Vec<u8>)>> {
-                let f = loaded
-                    .as_ref()
-                    .map(|loaded| &loaded[chunk_index].facts)
-                    .or_else(|| facts.get(&file.path))
-                    .context("missing catalog facts for node details")?;
                 let detail_facts = facts
                     .get(&file.path)
                     .context("missing navigation facts for node details")?;
-                let mut node_order = (0..f.nodes.len()).collect::<Vec<_>>();
+                let node_docs = loaded
+                    .as_deref()
+                    .map(|loaded| loaded[chunk_index].node_docs.as_slice());
+                if let Some(docs) = node_docs {
+                    anyhow::ensure!(
+                        docs.last()
+                            .is_none_or(|last| (last.index as usize) < detail_facts.nodes.len()),
+                        "prepared node documentation index out of bounds"
+                    );
+                }
+                let mut node_order = (0..detail_facts.nodes.len()).collect::<Vec<_>>();
                 node_order.sort_unstable_by(|&left, &right| {
-                    f.nodes[left]
+                    detail_facts.nodes[left]
                         .id
-                        .cmp(&f.nodes[right].id)
+                        .cmp(&detail_facts.nodes[right].id)
                         .then_with(|| left.cmp(&right))
                 });
                 node_order
                     .into_iter()
                     .map(|node_index| -> Result<(usize, Vec<u8>)> {
-                        let n = &f.nodes[node_index];
-                        let navigation_node = detail_facts
-                            .nodes
-                            .get(node_index)
-                            .filter(|node| node.id == n.id)
-                            .or_else(|| detail_facts.nodes.iter().find(|node| node.id == n.id))
-                            .context("staged node is missing matching navigation facts")?;
+                        let navigation_node = &detail_facts.nodes[node_index];
                         let return_type = if matches!(
                             navigation_node.kind.as_str(),
                             "function" | "method" | "constructor"
@@ -513,7 +551,7 @@ fn persist_files_impl(
                             .and_then(Value::as_str)
                             .and_then(super::entrypoints::rank);
                         let graph = graph_ranks
-                            .and_then(|ranks| ranks.get(n.id.as_str()))
+                            .and_then(|ranks| ranks.get(navigation_node.id.as_str()))
                             .copied()
                             .flatten();
                         let category = intrinsic
@@ -529,11 +567,25 @@ fn persist_files_impl(
                         let clear_entrypoint = graph_ranks.is_some()
                             && category.is_none()
                             && (intrinsic_candidate
-                                || graph_ranks
-                                    .is_some_and(|ranks| ranks.contains_key(n.id.as_str())));
-                        let navigation = navigation_node
-                            .navigation_details_with_documentation(&n.details)
-                            .persisted(return_type.as_deref(), category, clear_entrypoint);
+                                || graph_ranks.is_some_and(|ranks| {
+                                    ranks.contains_key(navigation_node.id.as_str())
+                                }));
+                        let navigation = if let Some(docs) = node_docs {
+                            let doc_entry = u32::try_from(node_index)
+                                .ok()
+                                .and_then(|idx| {
+                                    docs.binary_search_by_key(&idx, |entry| entry.index).ok()
+                                })
+                                .map(|position| &docs[position]);
+                            navigation_node.navigation_details_with_doc_fields(
+                                doc_entry.and_then(|entry| entry.doc.as_ref()),
+                                doc_entry.and_then(|entry| entry.docstring.as_ref()),
+                            )
+                        } else {
+                            navigation_node
+                                .navigation_details_with_documentation(&navigation_node.details)
+                        }
+                        .persisted(return_type.as_deref(), category, clear_entrypoint);
                         let details = serde_json::to_vec(&navigation)?;
                         Ok((node_index, details))
                     })
@@ -541,19 +593,36 @@ fn persist_files_impl(
             })
             .collect::<Result<Vec<_>>>()?;
         for (chunk_index, file) in file_chunk.iter().enumerate() {
-            let (f, mut search_texts, prepared_references) = if let Some(loaded) = loaded.as_ref() {
-                let loaded = &loaded[chunk_index];
-                (
-                    &loaded.facts,
-                    loaded_search_texts
-                        .as_mut()
-                        .map(|search_texts| &mut search_texts[chunk_index]),
-                    Some(&loaded.reference_keys),
-                )
-            } else {
-                let extracted = facts.get(&file.path).context("missing extracted facts")?;
-                (extracted, None, None)
-            };
+            let f = facts.get(&file.path).context("missing extracted facts")?;
+            let (search_texts, prepared_references, mut doc_bodies) =
+                if let Some(loaded) = loaded.as_mut() {
+                    let item = &mut loaded[chunk_index];
+                    (
+                        Some(&item.search_texts),
+                        Some(&item.reference_keys),
+                        Some(&mut item.doc_bodies),
+                    )
+                } else {
+                    (None, None, None)
+                };
+            if let Some(search_texts) = search_texts {
+                anyhow::ensure!(
+                    search_texts.len() == f.nodes.len(),
+                    "prepared search text count {} mismatches node count {} for {}",
+                    search_texts.len(),
+                    f.nodes.len(),
+                    file.path
+                );
+            }
+            if let Some(bodies) = doc_bodies.as_ref() {
+                anyhow::ensure!(
+                    bodies.len() == f.docs.len(),
+                    "prepared doc bodies count {} mismatches doc count {} for {}",
+                    bodies.len(),
+                    f.docs.len(),
+                    file.path
+                );
+            }
             let owner_id = path_cache.get_or_insert(tx, &file.path)?;
             if let Some(batch) = source_inventory_batch.as_mut() {
                 batch.push([
@@ -573,23 +642,26 @@ fn persist_files_impl(
                 BorrowedSqlValue::Integer(0),
                 BorrowedSqlValue::Integer(stable_hash64(&file.path)),
             ])?;
-            let (blob, leaf) = &mut encoded_chunk[chunk_index];
+            let EncodedLocalFactsEntry { blob, leaf } = &mut encoded_chunk[chunk_index];
             local_facts_leaves.insert(std::mem::take(&mut leaf.0), std::mem::take(&mut leaf.1));
-            local_facts_batch.push((file, std::mem::take(blob)));
-            if local_facts_batch.len() == local_facts_batch_rows {
-                flush_local_facts_batch(tx, &local_facts_batch)?;
-                local_facts_batch.clear();
+            if let Some(blob) = blob.take() {
+                if let Some(writer) = insert_local_facts_writer.as_mut() {
+                    writer.push(file, blob)?;
+                } else {
+                    if replace_local_facts_writer.is_none() {
+                        replace_local_facts_writer =
+                            Some(LocalFactsBatchWriter::new_replace(tx)?);
+                    }
+                    replace_local_facts_writer
+                        .as_mut()
+                        .expect("initialized replace writer")
+                        .push(file, blob)?;
+                }
             }
             let node_id_start = node_id;
             node_id = node_id
                 .checked_add(i64::try_from(f.nodes.len())?)
                 .context("node ID overflow")?;
-            if search_texts
-                .as_ref()
-                .is_some_and(|search| search.len() != f.nodes.len())
-            {
-                search_texts = None;
-            }
             for (node_index, details_bytes) in
                 std::mem::take(&mut prepared_node_details[chunk_index])
             {
@@ -625,14 +697,16 @@ fn persist_files_impl(
                     *total_ms += started.elapsed().as_secs_f64() * 1000.;
                 }
                 if dirty_fts.as_ref().is_none_or(|d| d.node_search) {
-                    let search = if let Some(prepared) = search_texts.as_mut() {
-                        reusable_search_buffers.pop();
-                        std::mem::take(&mut prepared[node_index])
+                    let mut search = reusable_search_buffers.pop().unwrap_or_default();
+                    if let Some(prepared) = search_texts {
+                        let text = prepared
+                            .get(node_index)
+                            .context("prepared search text index out of bounds")?;
+                        search.clear();
+                        search.push_str(text);
                     } else {
-                        let mut search = reusable_search_buffers.pop().unwrap_or_default();
                         write_node_search_text(&mut search, n, f);
-                        search
-                    };
+                    }
                     owned_search_batch.push(SearchRow {
                         search_id,
                         text: search,
@@ -670,15 +744,21 @@ fn persist_files_impl(
             for row in shared_owner_rows.drain(..) {
                 shared_owner_batch.push(row.map(SqlValue::Integer))?;
             }
-            for d in &f.docs {
+            for (doc_index, d) in f.docs.iter().enumerate() {
                 docs_count += 1;
+                let (content, invariants) = if let Some(bodies) = doc_bodies.as_mut() {
+                    let (content, invariants) = std::mem::take(&mut bodies[doc_index]);
+                    (content, serde_json::to_string(&invariants)?)
+                } else {
+                    (d.content.clone(), serde_json::to_string(&d.invariants)?)
+                };
                 doc_sections_batch.push([
                     BorrowedSqlValue::OwnedText(d.doc_id.clone()),
                     BorrowedSqlValue::OwnedText(d.path.clone()),
                     BorrowedSqlValue::OwnedText(d.section_title.clone()),
                     BorrowedSqlValue::OwnedText(d.doc_type.clone()),
-                    BorrowedSqlValue::OwnedText(d.content.clone()),
-                    BorrowedSqlValue::OwnedText(serde_json::to_string(&d.invariants)?),
+                    BorrowedSqlValue::OwnedText(content),
+                    BorrowedSqlValue::OwnedText(invariants),
                     BorrowedSqlValue::OwnedText(serde_json::to_string(&d.referenced_symbols)?),
                     BorrowedSqlValue::Real(d.mtime),
                     BorrowedSqlValue::Integer(i64::try_from(d.size)?),
@@ -702,11 +782,15 @@ fn persist_files_impl(
             *total_ms += insert_ms;
         }
         drop(node_batch);
-        drop(loaded_search_texts);
         drop(loaded);
     }
 
-    flush_local_facts_batch(tx, &local_facts_batch)?;
+    if let Some(writer) = insert_local_facts_writer.as_mut() {
+        writer.flush()?;
+    }
+    if let Some(writer) = replace_local_facts_writer.as_mut() {
+        writer.flush()?;
+    }
     doc_sections_batch.flush()?;
     let node_leaves = node_domain.finish()?;
     file_batch.flush()?;
@@ -731,24 +815,12 @@ fn persist_files_impl(
     })
 }
 
-fn flush_local_facts_batch(tx: &Connection, batch: &[(&FileEntry, Vec<u8>)]) -> Result<()> {
-    let mut rows =
-        MultiValueBatch::<6, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO local_facts VALUES")?;
-    for (file, blob) in batch {
-        rows.push([
-            BorrowedSqlValue::Text(&file.path),
-            BorrowedSqlValue::Text(&file.digest),
-            BorrowedSqlValue::Text(&file.language),
-            BorrowedSqlValue::Integer(i64::from(is_test(&file.path))),
-            BorrowedSqlValue::Integer(0),
-            BorrowedSqlValue::Blob(blob),
-        ])?;
-    }
-    rows.flush()
-}
-
 pub(super) fn write_node_search_text(search: &mut String, node: &Node, facts: &TypedFacts) {
     search.clear();
+    append_node_search_text(search, node, facts);
+}
+
+pub(super) fn append_node_search_text(search: &mut String, node: &Node, facts: &TypedFacts) {
     let doc = node
         .details
         .get("doc")

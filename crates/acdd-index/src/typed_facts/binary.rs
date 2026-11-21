@@ -95,6 +95,11 @@ impl<T: BinaryEncode> BinaryEncode for [T] {
         }
     }
 }
+impl<T: BinaryEncode> BinaryEncode for Vec<T> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        self.as_slice().encode(buf);
+    }
+}
 fn collection_count(bytes: &[u8], cursor: &mut usize) -> Option<usize> {
     let count = usize::try_from(u32::decode(bytes, cursor)?).ok()?;
     (count <= bytes.len().saturating_sub(*cursor)).then_some(count)

@@ -696,19 +696,50 @@ fn test_catalog_reference_and_prepared_storage_decoding() {
         );
     }
 
+    let mut search_texts = PackedStrings::default();
+    search_texts.append_with(|buf| buf.push_str("hello")).unwrap();
+    search_texts.append_with(|buf| buf.push_str("world")).unwrap();
     let prepared = super::super::PreparedCatalogStorage {
-        facts,
-        search_texts: vec!["hello".into()],
+        node_docs: vec![super::NodeDocumentation {
+            index: 0,
+            doc: Some(json!("hello doc")),
+            docstring: Some(json!("hello docstring")),
+        }],
+        doc_bodies: vec![("section body".into(), vec!["INV-1".into()])],
+        search_texts,
         reference_keys: vec!["callee".into()],
         leaves: Default::default(),
     };
     let encoded = prepared.encode_spill();
     assert!(super::super::decode_prepared_storage(&encoded[..encoded.len() - 1]).is_err());
     let reopened = super::super::decode_prepared_storage(&encoded).unwrap();
-    assert_eq!(
-        serde_json::to_vec(&reopened.facts).unwrap(),
-        serde_json::to_vec(&prepared.facts).unwrap()
-    );
+    assert_eq!(reopened.node_docs, prepared.node_docs);
+    assert_eq!(reopened.doc_bodies, prepared.doc_bodies);
     assert_eq!(reopened.search_texts, prepared.search_texts);
+    assert_eq!(reopened.search_texts.get(0), Some("hello"));
+    assert_eq!(reopened.search_texts.get(1), Some("world"));
     assert_eq!(reopened.reference_keys, prepared.reference_keys);
+
+    let invalid_packed = super::super::PreparedCatalogStorage {
+        node_docs: vec![
+            super::NodeDocumentation {
+                index: 1,
+                doc: Some(json!("a")),
+                docstring: None,
+            },
+            super::NodeDocumentation {
+                index: 1,
+                doc: Some(json!("b")),
+                docstring: None,
+            },
+        ],
+        doc_bodies: Vec::new(),
+        search_texts: PackedStrings {
+            data: "ab".into(),
+            ends: vec![2, 1],
+        },
+        reference_keys: Vec::new(),
+        leaves: Default::default(),
+    };
+    assert!(super::super::decode_prepared_storage(&invalid_packed.encode_spill()).is_err());
 }

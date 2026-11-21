@@ -23,7 +23,7 @@ pub(super) enum BorrowedSqlValue<'a> {
     OwnedText(String),
     OwnedJsonText(Vec<u8>),
     SharedText(Arc<str>),
-    Blob(&'a [u8]),
+    OwnedBlob(Vec<u8>),
     Null,
 }
 
@@ -37,7 +37,7 @@ impl ToSql for BorrowedSqlValue<'_> {
             Self::OwnedText(value) => ValueRef::Text(value.as_bytes()),
             Self::OwnedJsonText(value) => ValueRef::Text(value),
             Self::SharedText(value) => ValueRef::Text(value.as_bytes()),
-            Self::Blob(value) => ValueRef::Blob(value),
+            Self::OwnedBlob(value) => ValueRef::Blob(value),
             Self::Null => ValueRef::Null,
         }))
     }

@@ -61,7 +61,7 @@ pub(super) fn category(rank: i64) -> Option<&'static str> {
 /// Resolve graph categories before cold node insertion, using exact occurrences.
 pub(super) fn cold_ranks<'a>(
     graph: &'a CompactGraph,
-    facts: &'a BTreeMap<String, TypedFacts>,
+    facts: &BTreeMap<String, TypedFacts>,
 ) -> hashbrown::HashMap<&'a str, Option<i64>> {
     let sources: hashbrown::HashMap<&str, &str> = facts
         .values()

@@ -5,7 +5,7 @@ use acdd_core::config::Adapter;
 use acdd_index::{
     db::{
         commitments, reader,
-        writer::{self, BuildInputs, SpoolSlice, StagedFilePayload, StagedPayload},
+        writer::{self, BuildInputs, SpoolSlice, StagedFilePayload, StagedPreparedStorage},
     },
     models::{compact_graph::Graph as CompactGraph, FileEntry},
     typed_facts::{encode_facts, TypedFacts},
@@ -310,11 +310,11 @@ fn cold_and_delta_match_commitments_after_spool_and_parallel_delta() {
     let mut staged_payloads = BTreeMap::from([(
         entry.path.clone(),
         StagedFilePayload {
-            encoded_facts: StagedPayload::Spilled(SpoolSlice {
+            storage_rows: Some(StagedPreparedStorage::Spilled(SpoolSlice {
                 offset: 999_999,
                 length: valid_blob.len() as u64,
-            }),
-            storage_rows: None,
+            })),
+            local_facts_leaf: Some((String::new(), String::new())),
         },
     )]);
     let err = writer::populate_owned(

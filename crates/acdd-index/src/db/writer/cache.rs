@@ -27,24 +27,83 @@ thread_local! {
     static EXTRACTION_CACHE_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Contiguous packed string table backed by one string buffer and end offsets.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PackedStrings {
+    pub(super) data: String,
+    pub(super) ends: Vec<u32>,
+}
+
+impl PackedStrings {
+    pub(super) fn append_with(&mut self, write: impl FnOnce(&mut String)) -> anyhow::Result<()> {
+        write(&mut self.data);
+        let end = u32::try_from(self.data.len()).context("packed string buffer exceeds u32")?;
+        self.ends.push(end);
+        Ok(())
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    pub(super) fn get(&self, index: usize) -> Option<&str> {
+        let end = *self.ends.get(index)? as usize;
+        let start = if index == 0 {
+            0
+        } else {
+            *self.ends.get(index - 1)? as usize
+        };
+        self.data.get(start..end)
+    }
+
+    pub(super) fn is_valid(&self) -> bool {
+        let mut prev = 0usize;
+        for &end in &self.ends {
+            let end = end as usize;
+            if end < prev || end > self.data.len() || !self.data.is_char_boundary(end) {
+                return false;
+            }
+            prev = end;
+        }
+        true
+    }
+
+    pub(super) fn memory_bytes(&self) -> usize {
+        self.data
+            .capacity()
+            .saturating_add(self.ends.capacity().saturating_mul(std::mem::size_of::<u32>()))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct NodeDocumentation {
+    pub(super) index: u32,
+    pub(super) doc: Option<serde_json::Value>,
+    pub(super) docstring: Option<serde_json::Value>,
+}
+
 #[derive(Debug)]
 pub struct PreparedCatalogStorage {
-    pub(super) facts: TypedFacts,
-    pub(super) search_texts: Vec<String>,
+    pub(super) node_docs: Vec<NodeDocumentation>,
+    pub(super) doc_bodies: Vec<(String, Vec<String>)>,
+    pub(super) search_texts: PackedStrings,
     pub(super) reference_keys: Vec<String>,
     pub(super) leaves: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 crate::struct_codecs! {
+    PackedStrings { data, ends };
+    NodeDocumentation { index, doc, docstring };
     PreparedCatalogStorage {
-        facts,
+        node_docs,
+        doc_bodies,
         search_texts,
         reference_keys,
         leaves
     };
 }
 
-const RAW_PREPARED_STORAGE_MAGIC: &[u8] = b"ACDD-RAW-STORAGE\0\x01";
+const RAW_PREPARED_STORAGE_MAGIC: &[u8] = b"ACDD-RAW-STORAGE\0\x02";
 
 impl PreparedCatalogStorage {
     pub(super) fn memory_bytes(&self) -> u64 {
@@ -74,54 +133,27 @@ impl PreparedCatalogStorage {
                 .saturating_mul(std::mem::size_of::<String>())
                 .saturating_add(items.iter().map(String::capacity).sum::<usize>())
         }
-        let facts = &self.facts.facts;
-        let nodes = facts
-            .nodes
+        let node_docs = self
+            .node_docs
             .capacity()
-            .saturating_mul(std::mem::size_of::<crate::models::Node>())
+            .saturating_mul(std::mem::size_of::<NodeDocumentation>())
             .saturating_add(
-                facts
-                    .nodes
+                self.node_docs
                     .iter()
-                    .map(|n| {
-                        n.id.capacity()
-                            + n.kind.capacity()
-                            + n.name.capacity()
-                            + n.qualname.capacity()
-                            + n.path.capacity()
-                            + n.language.capacity()
-                            + value_bytes(&n.details)
+                    .map(|entry| {
+                        entry.doc.as_ref().map_or(0, value_bytes)
+                            + entry.docstring.as_ref().map_or(0, value_bytes)
                     })
                     .sum::<usize>(),
             );
-        let docs = facts
-            .docs
+        let doc_bodies = self
+            .doc_bodies
             .capacity()
-            .saturating_mul(std::mem::size_of::<crate::models::DocSection>())
+            .saturating_mul(std::mem::size_of::<(String, Vec<String>)>())
             .saturating_add(
-                facts
-                    .docs
+                self.doc_bodies
                     .iter()
-                    .map(|d| {
-                        d.doc_id.capacity()
-                            + d.path.capacity()
-                            + d.section_title.capacity()
-                            + d.doc_type.capacity()
-                            + d.content.capacity()
-                            + strings(&d.invariants)
-                            + strings(&d.referenced_symbols)
-                    })
-                    .sum::<usize>(),
-            );
-        let errors = facts
-            .errors
-            .capacity()
-            .saturating_mul(std::mem::size_of::<crate::models::Diagnostic>())
-            .saturating_add(
-                facts
-                    .errors
-                    .iter()
-                    .map(|e| e.path.capacity() + e.message.capacity())
+                    .map(|(content, invariants)| content.capacity() + strings(invariants))
                     .sum::<usize>(),
             );
         let leaves = 1024usize.saturating_add(
@@ -138,10 +170,9 @@ impl PreparedCatalogStorage {
                 .sum::<usize>(),
         );
         let bytes = std::mem::size_of::<Self>()
-            .saturating_add(nodes)
-            .saturating_add(docs)
-            .saturating_add(errors)
-            .saturating_add(strings(&self.search_texts))
+            .saturating_add(node_docs)
+            .saturating_add(doc_bodies)
+            .saturating_add(self.search_texts.memory_bytes())
             .saturating_add(strings(&self.reference_keys))
             .saturating_add(leaves);
         u64::try_from(bytes).unwrap_or(u64::MAX)
@@ -165,7 +196,15 @@ pub(super) fn decode_prepared_catalog_storage_payload(
     let mut cursor = 0;
     let prepared = PreparedCatalogStorage::decode(raw, &mut cursor)
         .context("corrupted prepared catalog storage")?;
-    anyhow::ensure!(cursor == raw.len(), "corrupted prepared catalog storage");
+    anyhow::ensure!(
+        cursor == raw.len()
+            && prepared.search_texts.is_valid()
+            && prepared
+                .node_docs
+                .windows(2)
+                .all(|pair| pair[0].index < pair[1].index),
+        "corrupted prepared catalog storage"
+    );
     Ok(prepared)
 }
 

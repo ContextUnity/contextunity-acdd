@@ -570,4 +570,45 @@ impl FlowStore {
             _ => None,
         }
     }
+
+    /// Drops linker-only flow data, keeping only persistence-needed return types and template contexts.
+    pub fn retain_persistence_facts(&mut self, keep_return_types: bool) {
+        self.uncertainties.clear();
+        self.uncertainty_faults.clear();
+        self.invalid_uncertainty_carriers.clear();
+        self.entries.retain(|_, state| {
+            let FlowState::Valid {
+                facts, original, ..
+            } = state
+            else {
+                return false;
+            };
+            *original = None;
+            facts.bindings = Vec::new();
+            facts.branch_joins = Vec::new();
+            facts.immutable_initializers = Vec::new();
+            facts.fields = Vec::new();
+            if !keep_return_types {
+                facts.return_type = None;
+            }
+            if let Some(framework) = facts.framework.as_mut() {
+                framework.object_ownership = None;
+                framework.fact_limit_exceeded = false;
+                if !keep_return_types {
+                    framework.async_return_type = None;
+                }
+                framework.return_value = None;
+                framework.return_position = None;
+                framework.alias_type = None;
+                framework
+                    .facts
+                    .retain(|fact| matches!(fact, crate::semantic::FrameworkFact::TemplateContext(_)));
+                framework.facts.shrink_to_fit();
+                if framework.async_return_type.is_none() && framework.facts.is_empty() {
+                    facts.framework = None;
+                }
+            }
+            facts.return_type.is_some() || facts.framework.is_some()
+        });
+    }
 }

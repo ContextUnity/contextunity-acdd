@@ -190,9 +190,34 @@ impl Node {
         &'a self,
         documentation: &'a Value,
     ) -> NavigationDetails<'a> {
+        let map = documentation.as_object();
+        self.navigation_details(
+            map.and_then(|map| map.get("doc")),
+            map.and_then(|map| map.get("docstring")),
+            map.is_some(),
+        )
+    }
+
+    pub fn navigation_details_with_doc_fields<'a>(
+        &'a self,
+        doc: Option<&'a Value>,
+        docstring: Option<&'a Value>,
+    ) -> NavigationDetails<'a> {
+        self.navigation_details(doc, docstring, doc.is_some() || docstring.is_some())
+    }
+
+    fn navigation_details<'a>(
+        &'a self,
+        doc: Option<&'a Value>,
+        docstring: Option<&'a Value>,
+        has_doc_object: bool,
+    ) -> NavigationDetails<'a> {
         NavigationDetails {
             node: self,
-            documentation: Some(documentation),
+            doc,
+            docstring,
+            has_doc_object,
+            skip_inline_docs: true,
             return_type: None,
             entrypoint: None,
             persisted: false,
@@ -279,7 +304,10 @@ impl Node {
 
 pub struct NavigationDetails<'a> {
     node: &'a Node,
-    documentation: Option<&'a Value>,
+    doc: Option<&'a Value>,
+    docstring: Option<&'a Value>,
+    has_doc_object: bool,
+    skip_inline_docs: bool,
     return_type: Option<&'a str>,
     entrypoint: Option<&'a str>,
     persisted: bool,
@@ -305,9 +333,8 @@ impl Serialize for NavigationDetails<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let details = self.node.details.as_object();
-        let documentation = self.documentation.and_then(Value::as_object);
         let semantic = self.node.native_semantic.as_deref();
-        if details.is_none() && documentation.is_none() && semantic.is_none() {
+        if details.is_none() && !self.has_doc_object && semantic.is_none() {
             if let Some(entrypoint) = self.entrypoint {
                 if !self.node.details.is_null() || self.return_type.is_none() {
                     let original = serde_json::to_string(&self.node.details)
@@ -332,7 +359,7 @@ impl Serialize for NavigationDetails<'_> {
                 if self.clear_entrypoint && key == "entrypoint" {
                     continue;
                 }
-                if self.documentation.is_some() && matches!(key.as_str(), "doc" | "docstring") {
+                if self.skip_inline_docs && matches!(key.as_str(), "doc" | "docstring") {
                     continue;
                 }
                 if !matches!(key.as_str(), "bindings" | "rebindings" | "param_types")
@@ -372,14 +399,9 @@ impl Serialize for NavigationDetails<'_> {
                 )?;
             }
         }
-        if let Some(documentation) = documentation {
-            for key in ["doc", "docstring"] {
-                if let Some(value) = documentation
-                    .get(key)
-                    .filter(|value| include_navigation_detail(key, value))
-                {
-                    map.serialize_entry(key, value)?;
-                }
+        for (key, value) in [("doc", self.doc), ("docstring", self.docstring)] {
+            if let Some(value) = value.filter(|value| include_navigation_detail(key, value)) {
+                map.serialize_entry(key, value)?;
             }
         }
         if let Some(return_type) = self.return_type.filter(|_| !return_written) {
