@@ -21,6 +21,7 @@ use crate::usecases::lifecycle::{
     resume_pending_tombstone_cleanups_dyn,
 };
 use crate::usecases::StateEngineConfig;
+use acdd_core::config::CLAIM_TRAILER_KEY;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::format::sha256_hex;
 use acdd_core::fs::checked_child;
@@ -193,7 +194,7 @@ pub(super) fn probe_interrupted_archive(
     }
 
     let trailer_needle = format!(
-        "Acdd-Claim: {}/{}/{}",
+        "{CLAIM_TRAILER_KEY}: {}/{}/{}",
         snapshot.run.run_id, node.node_id, node.claim_revision
     );
     let has_claim_commit = find_claim_commit_in_range(

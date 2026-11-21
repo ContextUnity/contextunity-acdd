@@ -12,6 +12,7 @@ use crate::usecases::StateEngineConfig;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::TreeOid;
 use acdd_core::path_policy::{normalize_rel_path, WorkspacePathPolicy};
+use acdd_core::subsystems::SubsystemId;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -175,7 +176,7 @@ fn has_container_budget_decision(
     task_ref: &str,
     net_loc: i64,
 ) -> Result<bool, StateError> {
-    if !config.modules.is_enabled("blackboard") {
+    if !config.modules.is_subsystem_enabled(SubsystemId::Blackboard) {
         return Ok(false);
     }
     let container_id = node.parent_id.as_deref().unwrap_or(&node.node_id);

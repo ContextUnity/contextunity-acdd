@@ -24,10 +24,12 @@ use crate::usecases::lifecycle::{
     with_repo_lock_and_maintenance, with_repo_lock_and_maintenance_unchecked,
 };
 use crate::usecases::StateEngineConfig;
+use acdd_core::config::SNAPSHOT_REF_PREFIX;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::check_ancestors_no_symlinks;
 use acdd_core::ids::RunId;
 use acdd_core::ports::{CompositeDomainProvider, DomainToolReq};
+use acdd_core::subsystems::SubsystemId;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -64,8 +66,8 @@ pub(crate) fn handle_snapshot_dyn(
             }
         } else if let Some(name) = &target_str {
             validate_snapshot_label(name)?;
-            (format!("refs/acdd/snapshots/_adhoc/{name}/"), None, None)
-        } else { ("refs/acdd/snapshots/_adhoc/".into(), None, None) };
+            (format!("{SNAPSHOT_REF_PREFIX}_adhoc/{name}/"), None, None)
+        } else { (format!("{SNAPSHOT_REF_PREFIX}_adhoc/"), None, None) };
         if task_run.is_none() { drop(primary_lock); }
         if (matches!(req.action, Save | Restore) && target_str.is_none()) || (explicit && matches!(req.action, Save | Restore) && picked.is_none())
             || (req.all && (req.action != Clear || target_str.is_some())) || (req.action == Clear && target_str.is_none() && !req.all && req.revision.is_none() && req.older_than.is_none())
@@ -226,7 +228,7 @@ pub(crate) fn handle_reopen_dyn(
         };
 
         if let Some(ref reason) = req.reason {
-            if !reason.trim().is_empty() && config.modules.is_enabled("blackboard") {
+            if !reason.trim().is_empty() && config.modules.is_subsystem_enabled(SubsystemId::Blackboard) {
                 plan.new_blackboard.push(BlackboardRecord {
                     id: None,
                     run_id: loaded.snapshot.run.run_id.clone(),

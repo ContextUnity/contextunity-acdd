@@ -18,9 +18,9 @@ pub use dto::*;
 use self::commands::{handle_start_dyn, handle_sync_dyn};
 use crate::store::sqlite::{SqliteBackendOptions, SqliteStateBackend, SqliteStateReader};
 use crate::store::traits::{StateBackend, StateReader};
-use acdd_core::config::{Adapter, SpecCollectionConfig};
+use acdd_core::config::{Adapter, SpecCollectionConfig, DEFAULT_STATE_DB};
 use acdd_core::response::ResponsePolicy;
-use acdd_core::subsystems::SubsystemRegistry;
+use acdd_core::subsystems::{SubsystemId, SubsystemRegistry};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ports::CompositeDomainProvider;
 use std::collections::BTreeMap;
@@ -61,7 +61,7 @@ impl StateEngineConfig {
             None => {
                 let primary = acdd_core::git::primary_worktree_root(&self.workspace_root)
                     .unwrap_or_else(|| self.workspace_root.clone());
-                (primary.join(".acdd/state.sqlite"), false)
+                (primary.join(DEFAULT_STATE_DB), false)
             }
         }
     }
@@ -124,7 +124,7 @@ impl StateEngine {
         config: StateEngineConfig,
         provider: Arc<CompositeDomainProvider>,
     ) -> Result<Self, StateError> {
-        if !config.modules.is_enabled("state") {
+        if !config.modules.is_subsystem_enabled(SubsystemId::State) {
             return Err(StateError::new(
                 ErrorCode::FeatureDisabled,
                 "state subsystem is disabled in modules:",

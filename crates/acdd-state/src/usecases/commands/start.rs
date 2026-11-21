@@ -29,7 +29,7 @@ use crate::usecases::lifecycle::{
     with_repo_lock_and_maintenance_unchecked,
 };
 use crate::usecases::StateEngineConfig;
-use acdd_core::config::Adapter;
+use acdd_core::config::{Adapter, ACDD_CONFIG_FILE, ACDD_DIR, WORKTREES_DIR};
 use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::telemetry::TraceId;
 use acdd_core::errors::{ErrorCode, StateError};
@@ -199,7 +199,7 @@ fn start_holding_repo_lock(
             &[],
             has_tasks_block,
         )?;
-        let eph_rel = format!(".acdd/run/{}/spec.md", rid);
+        let eph_rel = format!("{ACDD_DIR}/run/{}/spec.md", rid);
         let eph_abs = checked_child(primary, Path::new(&eph_rel)).map_err(|err| {
             StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
@@ -250,7 +250,7 @@ fn start_holding_repo_lock(
             format!("failed to serialize profile.resolved.yaml: {err}"),
         )
     })?;
-    let profile_snapshot_rel = format!(".acdd/run/{}/profile.resolved.yaml", run_id.as_str());
+    let profile_snapshot_rel = format!("{ACDD_DIR}/run/{}/profile.resolved.yaml", run_id.as_str());
     let profile_snapshot_path =
         checked_child(primary, Path::new(&profile_snapshot_rel)).map_err(|err| {
             StateError::new(
@@ -288,7 +288,7 @@ fn start_holding_repo_lock(
             spec_source, &resolved_profile.profile_id, &checkout.profiles_dirs,
         )?);
         if source != primary {
-            worktree.copy_uncommitted_paths.push("acdd.yaml".to_owned());
+            worktree.copy_uncommitted_paths.push(ACDD_CONFIG_FILE.to_owned());
         }
     }
 
@@ -468,7 +468,7 @@ fn plan_start_worktree(
         && explicit != Some(source)
     {
         let wt_path = explicit.map_or_else(
-            || primary.join(".worktrees").join(run_name.as_str()),
+            || primary.join(WORKTREES_DIR).join(run_name.as_str()),
             Path::to_path_buf,
         );
         let canon_wt = canonicalize_macos_var(&wt_path);

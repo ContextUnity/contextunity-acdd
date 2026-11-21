@@ -25,6 +25,7 @@ use crate::usecases::lifecycle::{
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::verify::{find_machine_gate, resolve_commands};
 use crate::usecases::StateEngineConfig;
+use acdd_core::config::CLAIM_TRAILER_KEY;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::checked_child;
 use acdd_core::ids::{GateId, NodeCursor, TreeOid};
@@ -83,7 +84,7 @@ pub(super) fn inspect_submit_preflight(
             let archive_rel =
                 compute_archive_relpath(config, loaded.snapshot.run.collection.as_deref(), spec_rel)?;
             let trailer_needle = format!(
-                "Acdd-Claim: {}/{}/{}",
+                "{CLAIM_TRAILER_KEY}: {}/{}/{}",
                 loaded.snapshot.run.run_id, node.node_id, node.claim_revision
             );
             if checked_child(&target_worktree, Path::new(&archive_rel)).is_ok_and(|p| p.is_file())

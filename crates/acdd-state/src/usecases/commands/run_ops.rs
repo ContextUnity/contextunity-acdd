@@ -28,7 +28,7 @@ use crate::usecases::lifecycle::{
 };
 use crate::usecases::queries::read_spec_readonly;
 use crate::usecases::StateEngineConfig;
-use acdd_core::config::Adapter;
+use acdd_core::config::{Adapter, ACDD_DIR};
 use acdd_core::fs::{atomic_write, checked_child};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ports::CompositeDomainProvider;
@@ -186,7 +186,7 @@ pub(crate) fn handle_sync_dyn(
         let spec_rel = if let Some(ref sp) = snapshot.run.spec_path {
             sp.clone()
         } else {
-            format!(".acdd/run/{}/spec.md", snapshot.run.run_id)
+            format!("{ACDD_DIR}/run/{}/spec.md", snapshot.run.run_id)
         };
         let source = if snapshot.run.is_ephemeral {
             primary.to_path_buf()
@@ -263,7 +263,7 @@ pub(crate) fn handle_sync_dyn(
 
         if let Some(ref rebound) = rebound_resolved {
             if let Ok(resolved_yaml) = serde_yaml::to_string(rebound) {
-                let rel = format!(".acdd/run/{}/profile.resolved.yaml", snapshot.run.run_id);
+                let rel = format!("{ACDD_DIR}/run/{}/profile.resolved.yaml", snapshot.run.run_id);
                 if let Ok(dest) = checked_child(primary, Path::new(&rel)) {
                     let _ = atomic_write(&dest, resolved_yaml.as_bytes(), false);
                 }
@@ -312,7 +312,7 @@ pub(crate) fn handle_clear_dyn(
         if snapshot.run.is_ephemeral {
             cleanup_manifest.push(ArchiveCleanupEntry {
                 kind: "spec_file".to_owned(),
-                path_or_ref: format!(".acdd/run/{}/spec.md", snapshot.run.run_id),
+                path_or_ref: format!("{ACDD_DIR}/run/{}/spec.md", snapshot.run.run_id),
                 workspace: None,
                 force: false,
             });

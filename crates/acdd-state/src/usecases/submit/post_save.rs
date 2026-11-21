@@ -22,6 +22,7 @@ use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::{atomic_write, checked_child, is_normalized_relative};
 use acdd_core::ids::{CommitOid, NodeCursor, RunId, SubtaskRef, TreeOid};
 use acdd_core::path_policy::{has_json_extension, WorkspacePathPolicy};
+use acdd_core::subsystems::SubsystemId;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -493,7 +494,7 @@ pub(super) fn list_all_blackboard_items(
     backend: &dyn StateBackend,
     run_id: &RunId,
 ) -> Result<Vec<BlackboardRecord>, StateError> {
-    if !config.modules.is_enabled("blackboard") {
+    if !config.modules.is_subsystem_enabled(SubsystemId::Blackboard) {
         return Ok(Vec::new());
     }
     let mut items = Vec::new();
@@ -525,7 +526,7 @@ pub(super) fn attach_container_blackboard_cleanup(
     machine_gate: &MachineGateDef,
     plan: &mut TransitionPlan,
 ) -> Result<(), StateError> {
-    if !machine_gate.receipt || !config.modules.is_enabled("blackboard") {
+    if !machine_gate.receipt || !config.modules.is_subsystem_enabled(SubsystemId::Blackboard) {
         return Ok(());
     }
     let Some(ref container_id) = node.parent_id else {

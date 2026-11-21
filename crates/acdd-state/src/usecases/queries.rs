@@ -23,6 +23,7 @@ use crate::usecases::lifecycle::{
     resolve_node_worktree, resolve_run_optional,
 };
 use crate::usecases::StateEngineConfig;
+use acdd_core::config::ACDD_DIR;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{NodeCursor, TreeOid, WorkerId};
 use acdd_core::ports::CompositeDomainProvider;
@@ -595,7 +596,7 @@ pub(crate) fn read_spec_readonly(
     let rel = if let Some(ref sp) = run.spec_path {
         sp.clone()
     } else if run.is_ephemeral {
-        format!(".acdd/run/{}/spec.md", run.run_id)
+        format!("{ACDD_DIR}/run/{}/spec.md", run.run_id)
     } else {
         return None;
     };
@@ -830,112 +831,8 @@ pub(crate) fn extract_predecessor_gate_proofs(
 #[cfg(test)]
 mod tests {
     use super::extract_pre_task_slice;
-    use crate::types::{
-        ArtifactKind, GateArtifactRecord, GateNodeRecord, InvariantsState, IsolationMode, NodeKind,
-        NodeStatus, RunGraphSnapshot, RunRecord, RunStatus,
-    };
-    use acdd_core::ids::{RunId, RunName, TaskRef};
-
-    fn test_snapshot_for_slice(
-        synth_status: NodeStatus,
-        synth_rev: u32,
-        artifacts: Vec<GateArtifactRecord>,
-    ) -> RunGraphSnapshot {
-        let run_id = RunId::new("run-slice").expect("run_id");
-        RunGraphSnapshot {
-            run: RunRecord {
-                run_id: run_id.clone(),
-                run_name: RunName::new("run-slice").expect("run_name"),
-                collection: None,
-                workspace: "/tmp/ws".to_owned(),
-                profile_id: "code".to_owned(),
-                profile_json: "{}".to_owned(),
-                spec_path: None,
-                spec_id: None,
-                spec_digest: "d".to_owned(),
-                is_ephemeral: false,
-                isolation: IsolationMode::InPlace,
-                target_base: None,
-                target_base_commit: None,
-                branch: None,
-                worktree: None,
-                trace_id: "t".to_owned(),
-                status: RunStatus::Active,
-                cancellation_reason: None,
-                root_cycle_count: 0,
-                generation: 1,
-                created_at: "2026-01-01T00:00:00Z".to_owned(),
-                completed_at: None,
-            },
-            nodes: vec![
-                GateNodeRecord {
-                    run_id: run_id.clone(),
-                    node_id: "blueprint_synthesis.synthesize".to_owned(),
-                    parent_id: None,
-                    kind: NodeKind::RootGate,
-                    task_ref: None,
-                    gate_id: "synthesize".to_owned(),
-                    seq_order: 1,
-                    status: synth_status,
-                    node_version: 1,
-                    isolation: IsolationMode::InPlace,
-                    attempt: 1,
-                    cycle_count: 0,
-                    max_attempts: 3,
-                    claim_revision: synth_rev,
-                    contract_revision: 1,
-                    worker_id: None,
-                    session_fingerprint: None,
-                    branch: None,
-                    worktree: None,
-                    baseline_commit: None,
-                    claim_tree: None,
-                    accepted_tree: None,
-                    accepted_definition_digest: None,
-                    tags: vec![],
-                    invariants: InvariantsState::default(),
-                    scope: vec![],
-                    extended_scope: vec![],
-                    active_span_id: None,
-                },
-                GateNodeRecord {
-                    run_id,
-                    node_id: "tasks#1".to_owned(),
-                    parent_id: None,
-                    kind: NodeKind::Container,
-                    task_ref: Some(TaskRef::new("T1").expect("task_ref")),
-                    gate_id: "tasks".to_owned(),
-                    seq_order: 2,
-                    status: NodeStatus::Pending,
-                    node_version: 1,
-                    isolation: IsolationMode::InPlace,
-                    attempt: 0,
-                    cycle_count: 0,
-                    max_attempts: 3,
-                    claim_revision: 0,
-                    contract_revision: 1,
-                    worker_id: None,
-                    session_fingerprint: None,
-                    branch: None,
-                    worktree: None,
-                    baseline_commit: None,
-                    claim_tree: None,
-                    accepted_tree: None,
-                    accepted_definition_digest: None,
-                    tags: vec![],
-                    invariants: InvariantsState::default(),
-                    scope: vec![],
-                    extended_scope: vec![],
-                    active_span_id: None,
-                },
-            ],
-            dependencies: vec![],
-            claims: vec![],
-            traces: vec![],
-            artifacts,
-            subtasks: vec![],
-        }
-    }
+    use crate::types::{ArtifactKind, GateArtifactRecord, NodeKind, NodeStatus};
+    use acdd_core::ids::RunId;
 
     #[test]
     fn extract_pre_task_slice_selects_latest_accepted_revision() {
@@ -950,7 +847,7 @@ mod tests {
             created_at: "2026-01-01T00:01:00Z".to_owned(),
         };
         let rev2 = GateArtifactRecord {
-            run_id,
+            run_id: run_id.clone(),
             node_id: "blueprint_synthesis.synthesize".to_owned(),
             claim_revision: 2,
             kind: ArtifactKind::Proof,
@@ -959,10 +856,25 @@ mod tests {
             created_at: "2026-01-01T00:02:00Z".to_owned(),
         };
 
-        let rejected_snap = test_snapshot_for_slice(NodeStatus::Stale, 1, vec![rev1.clone()]);
+        let mut rejected_snap = crate::usecases::archive_notes::tests::sample_snapshot(&run_id);
+        rejected_snap.nodes[0].node_id = "blueprint_synthesis.synthesize".to_owned();
+        rejected_snap.nodes[0].kind = NodeKind::RootGate;
+        rejected_snap.nodes[0].task_ref = None;
+        rejected_snap.nodes[0].gate_id = "synthesize".to_owned();
+        rejected_snap.nodes[0].status = NodeStatus::Stale;
+        rejected_snap.nodes[0].claim_revision = 1;
+        rejected_snap.nodes[1].node_id = "tasks#1".to_owned();
+        rejected_snap.nodes[1].parent_id = None;
+        rejected_snap.nodes[1].kind = NodeKind::Container;
+        rejected_snap.nodes[1].gate_id = "tasks".to_owned();
+        rejected_snap.nodes[1].status = NodeStatus::Pending;
+        rejected_snap.artifacts = vec![rev1.clone()];
         assert_eq!(extract_pre_task_slice(&rejected_snap, "T1"), None);
 
-        let completed_snap = test_snapshot_for_slice(NodeStatus::Completed, 2, vec![rev1, rev2]);
+        let mut completed_snap = rejected_snap;
+        completed_snap.nodes[0].status = NodeStatus::Completed;
+        completed_snap.nodes[0].claim_revision = 2;
+        completed_snap.artifacts = vec![rev1, rev2];
         let selected = extract_pre_task_slice(&completed_snap, "T1").expect("slice present");
         assert_eq!(selected["ver"], "accepted-rev-2");
     }

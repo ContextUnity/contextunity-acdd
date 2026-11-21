@@ -20,6 +20,7 @@ use crate::machine::{MachineSpecInput, MachineSubtaskInput, MachineTaskSpec};
 use crate::spec::SpecDocument;
 use crate::usecases::deps::{parse_task_dependency_with_db, resolve_spec_repositories};
 use crate::usecases::StateEngineConfig;
+use acdd_core::config::WORKTREES_DIR;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::{RunId, RunName};
 use std::path::Path;
@@ -33,7 +34,7 @@ pub(super) fn ensure_no_managed_worktree_collision(
 ) -> Result<(), StateError> {
     let matches_existing =
         existing_wt.is_some_and(|existing| canonicalize_macos_var(Path::new(existing)) == candidate_wt);
-    let managed_wt_root = canonicalize_macos_var(&primary.join(".worktrees"));
+    let managed_wt_root = canonicalize_macos_var(&primary.join(WORKTREES_DIR));
     let collides_managed_path = candidate_wt.parent() == Some(managed_wt_root.as_path())
         && candidate_wt
             .file_name()

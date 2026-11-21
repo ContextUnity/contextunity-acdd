@@ -27,6 +27,7 @@ use crate::usecases::lifecycle::{
 };
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::StateEngineConfig;
+use acdd_core::config::WORKTREES_DIR;
 use acdd_core::telemetry::SpanId;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::TreeOid;
@@ -382,7 +383,7 @@ fn plan_claim_worktree(
                 {
                     if let Some(ref tref) = parent_task.task_ref {
                         let wt_path = primary
-                            .join(".worktrees")
+                            .join(WORKTREES_DIR)
                             .join(format!("{}-{tref}", snapshot.run.run_name));
                         let canon_wt = canonicalize_macos_var(&wt_path);
                         let branch_name = format!("task/{}-{tref}", snapshot.run.run_name);
