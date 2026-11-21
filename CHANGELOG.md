@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-11-20
+## [0.7.0] - 2026-11-21
 
 ### Added
 
@@ -14,15 +14,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - **Task Git checkpoints (`save.post: snapshot`)**:
   - `acdd snapshot save|restore|clear` and `acdd_state(action: "snapshot")` manage confined per-task refs under `refs/acdd/snapshots/<run_id>/<task_ref>/r<rev>` without moving `HEAD`.
   - Embedded `code` `build` gates auto-save checkpoints on pass; deliver, run `clear`, and `handoff` delete matching refs.
+- **Coordinator Gate Dispatch Plans & Swarm Role Models**:
+  - Added coordinator gate dispatch planning and swarm role model configuration across embedded `code` / `audit` profiles and `acdd-state` execution context.
 
 ### Changed
 
+- **Cold & Delta Indexing Pipeline Acceleration and Memory Reduction (`PF-003`, `PF-004`)**:
+  - Replaced duplicate cold walks and multi-pass encoders with single-walk streaming extraction, `PayloadStore` RAM/spool staging, `LocalFactsBatchWriter` direct SQLite streaming, and delta-only `PreparedCatalogStorage` with contiguous `PackedStrings` search texts.
+  - Unified cold/delta SQLite ingest onto `MultiValueBatch` and shared `PreparedGraph` projections with Rayon-parallel domain hashing, typed `CompactGraph` (`CompactTag`, `NodeDetails`, `Arc<str>` interning pools), and thread-local Zstd graph scratch reuse/release.
+  - Consolidated linker entry onto `link_compact_catalog_with_registry`, parallelized linker prep (`children_by_parent`, `PythonReceivers::build`), pruned persistent `FlowStore` facts early, centralized glibc page trimming in `acdd_core::sys::trim_allocator()`, and restored phase-boundary trims inside the linker.
+  - Reorganized `src/engine/pipeline/` and `crates/acdd-index/src/db/writer/` into focused submodules with `TempTableGuard` lifetime management and early-drop cold FTS/verify fast-paths.
 - **Roadmap & Dependency Resolution Hot-Path Consolidation (`PF-005`)**:
   - Batched multi-blob Git reads through single-subprocess `git cat-file --batch` inspection in `crates/acdd-core/src/git.rs` and removed redundant `git rev-parse` checks in `list_git_tree_entries` and `list_owned_worktrees`.
   - Consolidated `handle_roadmap` and `validate_spec_dependencies` to preload SQLite runs, tombstones, and archive summaries once per invocation instead of rescanning archives per edge across sibling worktrees.
 
 ### Fixed
 
+- **FTS5 Fast-Path Signed Rowid Decoding & Delta Seal Hygiene (`PF-004`, `PF-003`)**:
+  - Fixed signed `i64` rowid decoding and eliminated per-document buffer allocations in `crates/acdd-index/src/db/commitments/fts5_fastpath.rs`, and skipped no-op delta FTS5 mutations when file projections stay clean alongside `delta-seal` GC pruning.
+- **State Checkout Isolation, Handoff Cleanup & `LoadedRunGraph` Unification**:
+  - Isolated checkout path policy boundaries, hardened handoff and snapshot cleanup, and unified `LoadedRunGraph` handling in `crates/acdd-state`.
 - **Roadmap Cross-Worktree and Archive Noise**:
   - Suppressed schema and worktree divergence warnings for archived specs in `acdd roadmap`.
   - Secondary worktrees now overlay onto `main` only for active runs (`status: active` or active run in SQLite), preventing unmerged/draft branch plans from polluting the root roadmap.
