@@ -299,7 +299,6 @@ fn persist_files_impl(
         .then(|| multi_value_batch_rows::<6>(tx).map(|rows| rows.min(COLD_LOCAL_FACTS_BATCH_ROWS)))
         .transpose()?;
     let mut file_batch = Vec::<[SqlValue; 8]>::new();
-    let mut reusable_detail_buffers = Vec::<Vec<u8>>::new();
     let mut owned_search_batch = Vec::<SearchRow>::new();
     let mut fts_insert_ms = 0.0;
     let mut node_row_insert_ms = bulk_search.then_some(0.0);
@@ -577,8 +576,7 @@ fn persist_files_impl(
                     if node_batch.len()
                         == node_batch_rows.context("missing cold node batch size")?
                     {
-                        let insert_ms =
-                            flush_node_batch(tx, &mut node_batch, &mut reusable_detail_buffers)?;
+                        let insert_ms = flush_node_batch(tx, &mut node_batch)?;
                         if let Some(total_ms) = node_row_insert_ms.as_mut() {
                             *total_ms += insert_ms;
                         }
@@ -703,7 +701,7 @@ fn persist_files_impl(
                 stmt_errors.execute(params![e.path, e.line, e.message])?;
             }
         }
-        let insert_ms = flush_node_batch(tx, &mut node_batch, &mut reusable_detail_buffers)?;
+        let insert_ms = flush_node_batch(tx, &mut node_batch)?;
         if let Some(total_ms) = node_row_insert_ms.as_mut() {
             *total_ms += insert_ms;
         }
@@ -759,7 +757,6 @@ fn flush_local_facts_batch(tx: &Connection, batch: &[(&FileEntry, Vec<u8>)]) -> 
 fn flush_node_batch<'a>(
     tx: &Connection,
     batch: &mut Vec<[BorrowedSqlValue<'a>; 14]>,
-    reusable_buffers: &mut Vec<Vec<u8>>,
 ) -> Result<f64> {
     if batch.is_empty() {
         return Ok(0.0);
@@ -767,13 +764,7 @@ fn flush_node_batch<'a>(
     let started = Instant::now();
     insert_multi_value_batch(tx, "INSERT INTO nodes VALUES", batch)?;
     let insert_ms = started.elapsed().as_secs_f64() * 1000.;
-    for row in batch.drain(..) {
-        for value in row {
-            if let BorrowedSqlValue::OwnedJsonText(buffer) = value {
-                reusable_buffers.push(buffer);
-            }
-        }
-    }
+    batch.clear();
     Ok(insert_ms)
 }
 

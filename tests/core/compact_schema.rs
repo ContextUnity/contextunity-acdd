@@ -1,7 +1,7 @@
 use crate::common::Workspace;
-use anyhow::Result;
 use acdd_core::format::stable_hash64;
 use acdd_index::db::{commitments, reader, SCHEMA_DDL};
+use anyhow::Result;
 use contextunity_acdd::engine::pipeline as writer;
 use rusqlite::{params, Connection};
 
@@ -121,7 +121,12 @@ fn canonical_graph_tables_store_numeric_keys_and_first_class_owners() -> Result<
 #[test]
 fn cold_build_populates_node_owner_paths() -> Result<()> {
     let workspace = Workspace::new();
-    workspace.write("source/provider.rs", "pub fn exported() {}\n");
+    workspace.write(
+        "source/provider.rs",
+        "pub fn exported(value: i32) -> i32 { value }\n",
+    );
+    #[cfg(feature = "lang-python")]
+    workspace.write("source/models.py", "class Service:\n    def execute(self, value: int) -> str:\n        result = value\n        result = str(result)\n        return result\n");
     let source = workspace.path("source");
     let db = workspace.path("index.sqlite");
     writer::build(&source, &db, None)?;
@@ -133,6 +138,31 @@ fn cold_build_populates_node_owner_paths() -> Result<()> {
         |row| row.get(0),
     )?;
     assert!(owned > 0);
+    let details: String = conn.query_row(
+        "SELECT details FROM nodes WHERE name='exported'",
+        [],
+        |row| row.get(0),
+    )?;
+    let details: serde_json::Value = serde_json::from_str(&details)?;
+    for key in ["signature", "is_public", "param_types"] {
+        assert!(details.get(key).is_some(), "missing {key}: {details}");
+    }
+    #[cfg(feature = "lang-python")]
+    {
+        let details: String = conn.query_row(
+            "SELECT details FROM nodes WHERE name='execute'",
+            [],
+            |row| row.get(0),
+        )?;
+        let details: serde_json::Value = serde_json::from_str(&details)?;
+        for key in ["bindings", "rebindings", "param_types"] {
+            assert!(details.get(key).is_some(), "missing {key}: {details}");
+        }
+        workspace.write("source/models.py", "class Service:\n    def execute(self, value: int) -> str:\n        result = value\n        result = str(result)\n        return f'{result}'\n");
+        let delta = writer::delta(&source, &db, &["models.py".into()])?;
+        let fresh = writer::build(&source, &workspace.path("fresh.sqlite"), None)?;
+        assert_eq!(delta["output_root"], fresh["output_root"]);
+    }
     commitments::verify(&conn)?;
     Ok(())
 }

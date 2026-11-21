@@ -1,14 +1,14 @@
 pub use self::routes::*;
+pub const PARALLEL_LINKER_PREP_MIN_NODES: usize = 2048;
+
+#[cfg(feature = "lang-html")]
+use crate::languages::ImportPath;
+use crate::languages::{self, module_name, LanguageFamily};
+use crate::linker::traits::{ImportContext, ImportResolution, LanguageLinker, GENERIC_LINKER};
 use crate::models::*;
 use crate::models::{
     compact_graph::{Coverage, Edge, Graph},
     Graph as PublicGraph,
-};
-#[cfg(feature = "lang-html")]
-use crate::languages::ImportPath;
-use crate::languages::{self, module_name, LanguageFamily};
-use crate::linker::traits::{
-    ImportContext, ImportResolution, LanguageLinker, GENERIC_LINKER,
 };
 use hashbrown::{HashMap, HashSet};
 use rayon::prelude::*;
@@ -887,88 +887,120 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
         }
     };
     let (parts, sort_per_file) = {
-        let nodes: Vec<&Node> = all
-            .values_facts()
-            .flat_map(|f| f.nodes.iter())
-            .collect();
+        let nodes: Vec<&Node> = all.values_facts().flat_map(|f| f.nodes.iter()).collect();
         let sort_per_file = nodes.len() >= 8192 && all.len() >= 32;
-        let mut by_name: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(nodes.len());
-        let mut by_qual: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(nodes.len());
-        let mut by_suffix: HashMap<&str, Vec<&Node>> = HashMap::new();
-        let mut by_id: HashMap<interner::SymbolId, &Node> = HashMap::with_capacity(nodes.len());
-        let mut by_module: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(all.len());
-        let needs_discovery = all.iter_facts().any(|(path, facts)| {
-            owners.is_none_or(|o| o.contains(path))
-                && facts
+        let wanted_suffixes: HashSet<String> = all
+            .iter_facts()
+            .filter(|(path, _)| owners.is_none_or(|o| o.contains(*path)))
+            .flat_map(|(_, facts)| {
+                facts
                     .docs
                     .iter()
-                    .any(|doc| !doc.referenced_symbols.is_empty())
-        });
-        let mut node_bindings: NodeBindingIndex = HashMap::new();
-        let mut node_rebindings: NodeBindingIndex = HashMap::new();
-        for n in &nodes {
-            let node_id = interner.lookup_symbol(&n.id).expect("node id is interned");
-            by_name.entry(&n.name).or_default().push(n);
-            by_qual.entry(&n.qualname).or_default().push(n);
-            by_id.insert(node_id, n);
-            by_module.entry(&n.path).or_default().push(n);
-            if needs_discovery {
-                for (i, c) in n.qualname.char_indices() {
-                    if c == '.' {
-                        by_suffix.entry(&n.qualname[i + 1..]).or_default().push(n);
+                    .flat_map(|doc| doc.referenced_symbols.iter().map(String::as_str))
+                    .chain(facts.nodes.iter().flat_map(|node| {
+                        node.details
+                            .get("symbol_claims")
+                            .and_then(|v| v.as_array())
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|claim| claim["name"].as_str())
+                    }))
+            })
+            .map(|name| name.replace("::", "."))
+            .collect();
+        let build_names = || {
+            let mut by_name: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(nodes.len());
+            let mut by_qual: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(nodes.len());
+            for &n in &nodes {
+                by_name.entry(&n.name).or_default().push(n);
+                by_qual.entry(&n.qualname).or_default().push(n);
+            }
+            (by_name, by_qual)
+        };
+        let build_lookup = || {
+            let mut by_suffix: HashMap<&str, Vec<&Node>> = HashMap::new();
+            let mut by_id: HashMap<interner::SymbolId, &Node> = HashMap::with_capacity(nodes.len());
+            let mut by_module: HashMap<&str, Vec<&Node>> = HashMap::with_capacity(all.len());
+            for &n in &nodes {
+                let node_id = interner.lookup_symbol(&n.id).expect("node id is interned");
+                by_id.insert(node_id, n);
+                by_module.entry(&n.path).or_default().push(n);
+                if !wanted_suffixes.is_empty()
+                    && !matches!(n.kind.as_str(), "document" | "invariant" | "component")
+                {
+                    for (i, _) in n.qualname.match_indices('.') {
+                        let suffix = &n.qualname[i + 1..];
+                        if wanted_suffixes.contains(suffix) {
+                            by_suffix.entry(suffix).or_default().push(n);
+                        }
                     }
                 }
             }
-            if n.binding_count() > 0 {
-                node_bindings.insert(
-                    node_id,
-                    n.binding_names()
-                        .map(|name| {
+            (by_id, by_module, by_suffix)
+        };
+        let build_bindings = || {
+            let mut node_bindings: NodeBindingIndex = HashMap::new();
+            let mut node_rebindings: NodeBindingIndex = HashMap::new();
+            for &n in &nodes {
+                let node_id = interner.lookup_symbol(&n.id).expect("node id is interned");
+                if n.binding_count() > 0 {
+                    node_bindings.insert(
+                        node_id,
+                        n.binding_names()
+                            .map(|name| {
+                                interner
+                                    .lookup_symbol(name)
+                                    .expect("binding name is interned")
+                            })
+                            .collect(),
+                    );
+                }
+                if n.rebinding_count() > 0 {
+                    node_rebindings.insert(
+                        node_id,
+                        n.rebinding_names()
+                            .map(|name| {
+                                interner
+                                    .lookup_symbol(name)
+                                    .expect("rebinding name is interned")
+                            })
+                            .collect(),
+                    );
+                }
+                if n.kind == "module" && n.language == "python" {
+                    if let Some(crate::typed_facts::FlowState::Valid { facts, .. }) =
+                        flows.and_then(|states| states.get(&node_id))
+                    {
+                        let rebindings = node_rebindings.entry(node_id).or_default();
+                        rebindings.extend(facts.bindings.iter().map(|binding| {
                             interner
-                                .lookup_symbol(name)
-                                .expect("binding name is interned")
-                        })
-                        .collect(),
-                );
-            }
-            if n.rebinding_count() > 0 {
-                node_rebindings.insert(
-                    node_id,
-                    n.rebinding_names()
-                        .map(|name| {
+                                .lookup_symbol(&binding.name)
+                                .expect("flow binding name is interned")
+                        }));
+                        rebindings.extend(facts.branch_joins.iter().map(|join| {
                             interner
-                                .lookup_symbol(name)
-                                .expect("rebinding name is interned")
-                        })
-                        .collect(),
-                );
-            }
-            if n.kind == "module" && n.language == "python" {
-                if let Some(crate::typed_facts::FlowState::Valid { facts, .. }) =
-                    flows.and_then(|states| states.get(&node_id))
-                {
-                    let rebindings = node_rebindings.entry(node_id).or_default();
-                    rebindings.extend(facts.bindings.iter().map(|binding| {
-                        interner
-                            .lookup_symbol(&binding.name)
-                            .expect("flow binding name is interned")
-                    }));
-                    rebindings.extend(facts.branch_joins.iter().map(|join| {
-                        interner
-                            .lookup_symbol(&join.name)
-                            .expect("branch join name is interned")
-                    }));
+                                .lookup_symbol(&join.name)
+                                .expect("branch join name is interned")
+                        }));
+                    }
                 }
             }
-        }
-        for names in node_bindings.values_mut() {
-            names.sort_unstable();
-            names.dedup();
-        }
-        for names in node_rebindings.values_mut() {
-            names.sort_unstable();
-            names.dedup();
-        }
+            for names in node_bindings.values_mut() {
+                names.sort_unstable();
+                names.dedup();
+            }
+            for names in node_rebindings.values_mut() {
+                names.sort_unstable();
+                names.dedup();
+            }
+            (node_bindings, node_rebindings)
+        };
+        let ((by_name, by_qual), ((by_id, by_module, by_suffix), (node_bindings, node_rebindings))) =
+            if nodes.len() >= PARALLEL_LINKER_PREP_MIN_NODES {
+                rayon::join(build_names, || rayon::join(build_lookup, build_bindings))
+            } else {
+                (build_names(), (build_lookup(), build_bindings()))
+            };
         let mut children_by_parent: HashMap<interner::SymbolId, Vec<&Node>> = HashMap::new();
         for f in all.values_facts() {
             for e in &f.edges {
@@ -990,9 +1022,9 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
         }
         let namespace_indexes =
             indexing::NamespaceIndexes::build(all, &nodes, root, dependency_registry, interner);
-        let borrowed_all = public_all.is_none().then(|| {
-            all.iter_facts().collect::<BTreeMap<_, _>>()
-        });
+        let borrowed_all = public_all
+            .is_none()
+            .then(|| all.iter_facts().collect::<BTreeMap<_, _>>());
         let package_exports = indexing::package_exports(
             &namespace_indexes.profiles,
             &namespace_indexes.modules_by_namespace,

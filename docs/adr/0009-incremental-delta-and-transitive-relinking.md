@@ -35,7 +35,13 @@ Within [`delta_inner`](../../src/engine/pipeline.rs), [`crates/acdd-index/src/db
 - **Batch Zstd hydration**: Persisted `local_facts.facts_blob` rows for transitive frontier neighbors are batch-fetched from SQLite and decoded/hydrated in parallel rather than row-by-row.
 - **Connection-scoped `TEMP TABLE` frontier**: Read-side frontier lookups on the `admitted` snapshot connection in `delta_inner` populate in-memory `TEMP TABLE`s (`delta_modified_paths`, `delta_changed_resolution`, `delta_frontier_text`, `delta_frontier_text_2`, `delta_frontier_int`, toggling `PRAGMA query_only = OFF` strictly during temp-table writes via an RAII guard that unconditionally restores `PRAGMA query_only = ON` before `SELECT`s), while write-side delta persistence in `crates/acdd-index/src/db/delta.rs` uses `changed_edge_keys` and `replaced_nodes` `TEMP TABLE`s without staging full catalog tables or repeating `json_each(?1)` frontier scans.
 
-### 3. Atomic Delta Publication
+### 3. Linker Preparation and Hydration
+
+At `PARALLEL_LINKER_PREP_MIN_NODES` (2,048 nodes), independent linker lookup and binding maps are prepared concurrently while retaining node order; at `PARALLEL_LINKER_PREP_MIN_FILES` (32 files), import normalization runs in parallel alongside namespace indexing. Documentation suffix lookup indexes only names in `wanted_suffixes`, collected from active document references and symbol claims. These thresholds do not change symbol assignment or emitted graph order.
+
+Persisted node details retain bindings, rebindings, parameter types, signatures, and visibility for delta hydration and search. Flushed ingest batches release their detail buffers after insertion.
+
+### 4. Atomic Delta Publication
 
 Delta mutations commit in one fenced SQLite transaction and publish updated graph tables alongside the recomputed `acdd-owner-sha256-v2` Merkle `output_root`. Cached MCP readers observe the updated database identity on post-query verification and refresh automatically.
 
