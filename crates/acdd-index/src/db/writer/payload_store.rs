@@ -16,6 +16,13 @@ pub enum StagedPayload {
     Spilled(SpoolSlice),
 }
 
+/// Prepared catalog rows held in memory or encoded in the spool.
+#[derive(Debug)]
+pub enum StagedPreparedStorage {
+    InMemory(Box<super::cache::PreparedCatalogStorage>),
+    Spilled(SpoolSlice),
+}
+
 /// Tracks the bounded RAM allowance and next spool position.
 pub struct PayloadStore {
     file: File,
@@ -34,15 +41,31 @@ impl PayloadStore {
         }
     }
 
-    pub fn stage(&mut self, mut bytes: Vec<u8>) -> Result<StagedPayload> {
-        let length = u64::try_from(bytes.len()).context("staged payload length overflow")?;
-        if length <= self.ram_budget.saturating_sub(self.ram_bytes) {
-            bytes.shrink_to_fit();
-            if bytes.capacity() as u64 <= self.ram_budget.saturating_sub(self.ram_bytes) {
-                self.ram_bytes += bytes.capacity() as u64;
-                return Ok(StagedPayload::InMemory(bytes));
-            }
+    pub fn stage(&mut self, bytes: Vec<u8>) -> Result<StagedPayload> {
+        if bytes.capacity() as u64 <= self.ram_budget.saturating_sub(self.ram_bytes) {
+            self.ram_bytes += bytes.capacity() as u64;
+            return Ok(StagedPayload::InMemory(bytes));
         }
+        Ok(StagedPayload::Spilled(self.spill(&bytes)?))
+    }
+
+    pub fn stage_prepared(
+        &mut self,
+        storage: super::cache::PreparedCatalogStorage,
+    ) -> Result<StagedPreparedStorage> {
+        let size = storage.memory_bytes();
+        if size <= self.ram_budget.saturating_sub(self.ram_bytes) {
+            self.ram_bytes += size;
+            Ok(StagedPreparedStorage::InMemory(Box::new(storage)))
+        } else {
+            Ok(StagedPreparedStorage::Spilled(
+                self.spill(&storage.encode_spill())?,
+            ))
+        }
+    }
+
+    fn spill(&mut self, bytes: &[u8]) -> Result<SpoolSlice> {
+        let length = u64::try_from(bytes.len()).context("staged payload length overflow")?;
         let offset = self.next_offset;
         self.next_offset = offset
             .checked_add(length)
@@ -51,7 +74,7 @@ impl PayloadStore {
         {
             use std::os::unix::fs::FileExt;
             let mut position = offset;
-            let mut remaining = bytes.as_slice();
+            let mut remaining = bytes;
             while !remaining.is_empty() {
                 match self.file.write_at(remaining, position) {
                     Ok(0) => bail!("failed to write staged payload blob"),
@@ -68,9 +91,9 @@ impl PayloadStore {
         {
             use std::io::{Seek, SeekFrom, Write};
             self.file.seek(SeekFrom::Start(offset))?;
-            self.file.write_all(&bytes)?;
+            self.file.write_all(bytes)?;
         }
-        Ok(StagedPayload::Spilled(SpoolSlice { offset, length }))
+        Ok(SpoolSlice { offset, length })
     }
 
     pub fn flush(&mut self) -> Result<()> {
@@ -93,7 +116,7 @@ pub(super) fn read_staged_payload(file: &File, payload: &StagedPayload) -> Resul
     }
 }
 
-fn read_spool(file: &File, slice: SpoolSlice) -> Result<Vec<u8>> {
+pub(super) fn read_spool(file: &File, slice: SpoolSlice) -> Result<Vec<u8>> {
     let length = usize::try_from(slice.length).context("staged payload length overflow")?;
     let mut bytes = Vec::new();
     bytes

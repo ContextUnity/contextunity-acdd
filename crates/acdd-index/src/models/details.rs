@@ -51,8 +51,18 @@ impl NodeDetailFlags {
         flags
     }
     pub fn from_json(raw: &str) -> Self {
-        if !raw.starts_with('{') || !["\"entrypoint\"", "\"impl_trait\"", "\"trait_default\"", "\"decorators\"", "\"is_stub\"", "\"is_overload\""]
-            .iter().any(|key| raw.contains(key)) {
+        if !raw.starts_with('{')
+            || ![
+                NodeDetailKey::ENTRYPOINT,
+                NodeDetailKey::IMPL_TRAIT,
+                NodeDetailKey::TRAIT_DEFAULT,
+                NodeDetailKey::DECORATORS,
+                NodeDetailKey::IS_STUB,
+                NodeDetailKey::IS_OVERLOAD,
+            ]
+            .iter()
+            .any(|&key| raw.contains(key))
+        {
             return Self::default();
         }
         serde_json::from_str::<Value>(raw)

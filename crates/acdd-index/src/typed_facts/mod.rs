@@ -12,7 +12,11 @@ use super::models::{Facts, Node};
 use rayon::prelude::*;
 use serde_json::Value;
 
-const LOCAL_FACTS_BINARY_MAGIC: &[u8] = b"ACDD-LOCAL-FACTS\0\x03";
+pub(crate) const LOCAL_FACTS_BINARY_MAGIC: &[u8] = b"ACDD-LOCAL-FACTS\0\x03";
+
+pub(crate) fn compressed_facts_payload(blob: &[u8]) -> Option<&[u8]> {
+    blob.strip_prefix(LOCAL_FACTS_BINARY_MAGIC)
+}
 
 thread_local! {
     static LOCAL_FACTS_BUFFER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -23,15 +27,20 @@ thread_local! {
 }
 
 pub fn encode_facts(facts: &TypedFacts) -> anyhow::Result<Vec<u8>> {
+    encode_facts_with_len(facts).map(|(encoded, _)| encoded)
+}
+
+/// Encodes facts and returns their uncompressed binary size.
+pub fn encode_facts_with_len(facts: &TypedFacts) -> anyhow::Result<(Vec<u8>, u64)> {
     anyhow::ensure!(
         !facts.flows.has_invalid_named_uncertainty_carriers(),
         "malformed named-definition uncertainty carrier"
     );
-    LOCAL_FACTS_BUFFER.with(|buffer| -> anyhow::Result<Vec<u8>> {
+    LOCAL_FACTS_BUFFER.with(|buffer| -> anyhow::Result<(Vec<u8>, u64)> {
         let mut raw = buffer.borrow_mut();
         raw.clear();
         facts.encode_with_string_table(&mut raw);
-        LOCAL_FACTS_COMPRESSOR.with(|slot| -> anyhow::Result<Vec<u8>> {
+        LOCAL_FACTS_COMPRESSOR.with(|slot| -> anyhow::Result<(Vec<u8>, u64)> {
             let mut slot = slot.borrow_mut();
             if slot.is_none() {
                 *slot = Some(zstd::bulk::Compressor::new(1)?);
@@ -40,14 +49,13 @@ pub fn encode_facts(facts: &TypedFacts) -> anyhow::Result<Vec<u8>> {
             let mut encoded = compressor.compress(&raw)?;
             encoded.reserve(LOCAL_FACTS_BINARY_MAGIC.len());
             encoded.splice(0..0, LOCAL_FACTS_BINARY_MAGIC.iter().copied());
-            Ok(encoded)
+            Ok((encoded, u64::try_from(raw.len())?))
         })
     })
 }
 
 pub fn decode_facts(blob: &[u8]) -> anyhow::Result<TypedFacts> {
-    let compressed = blob
-        .strip_prefix(LOCAL_FACTS_BINARY_MAGIC)
+    let compressed = compressed_facts_payload(blob)
         .ok_or_else(|| anyhow::anyhow!("unsupported local facts format"))?;
     let facts = LOCAL_FACTS_DECODER.with(|slot| -> anyhow::Result<TypedFacts> {
         let mut slot = slot.borrow_mut();

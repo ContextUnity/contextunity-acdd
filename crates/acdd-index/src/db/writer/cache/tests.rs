@@ -1,5 +1,6 @@
 use super::*;
 use crate::semantic::ValueFlowFacts;
+use crate::typed_facts::LOCAL_FACTS_BINARY_MAGIC as LOCAL_MAGIC;
 use serde_json::json;
 
 #[test]
@@ -19,22 +20,33 @@ fn binary_bool_decoder_rejects_noncanonical_values() {
 fn invalid_cache_magic_and_collection_lengths_are_misses() {
     assert!(decode_entry(b"invalid cache header", "key", 1024).is_none());
     let encoded = crate::typed_facts::encode_facts(&TypedFacts::default()).unwrap();
-    let raw_len = zstd::zstd_safe::get_frame_content_size(&encoded[LOCAL_MAGIC.len()..]).unwrap().unwrap();
+    let raw_len = zstd::zstd_safe::get_frame_content_size(&encoded[LOCAL_MAGIC.len()..])
+        .unwrap()
+        .unwrap();
     let directory = acdd_core::fs::ScopedTempDir::create("acdd_cache_v5").unwrap();
     let cache = ExtractionCache::new(Some(directory.path().to_path_buf()));
     let key = "ab".repeat(32);
     assert!(cache.store(&key, &TypedFacts::default()));
     assert!(cache.load_with_encoded(&key, 4096).unwrap().1.is_none());
     assert!(cache.store_encoded(&key, &encoded, raw_len));
-    assert_eq!(cache.load_with_encoded(&key, 4096).unwrap().1, Some(encoded.clone()));
+    assert_eq!(
+        cache.load_with_encoded(&key, 4096).unwrap().1,
+        Some(encoded.clone())
+    );
     let mut assigned = TypedFacts::default();
     assigned.facts.edges.push(crate::models::Edge {
-        src: "component:src".into(), dst: "module:src/main.py".into(),
-        kind: "contains".into(), path: "src/main.py".into(), line: 1,
-        evidence: "component ownership".into(), confidence: "exact".into(),
+        src: "component:src".into(),
+        dst: "module:src/main.py".into(),
+        kind: "contains".into(),
+        path: "src/main.py".into(),
+        line: 1,
+        evidence: "component ownership".into(),
+        confidence: "exact".into(),
     });
     let component_blob = crate::typed_facts::encode_facts(&assigned).unwrap();
-    let length = zstd::zstd_safe::get_frame_content_size(&component_blob[LOCAL_MAGIC.len()..]).unwrap().unwrap();
+    let length = zstd::zstd_safe::get_frame_content_size(&component_blob[LOCAL_MAGIC.len()..])
+        .unwrap()
+        .unwrap();
     assert!(cache.store_encoded(&key, &component_blob, length));
     let (clean, cached, components) = cache.load_for_build(&key, 4096).unwrap();
     assert!(clean.edges.is_empty());
@@ -43,7 +55,16 @@ fn invalid_cache_magic_and_collection_lengths_are_misses() {
     for (blob, length, limit, expected) in [
         (encoded.clone(), raw_len, 4096, true),
         (encoded.clone(), 4097, 4096, false),
-        ({ let mut blob = LOCAL_MAGIC.to_vec(); blob.extend(zstd::stream::encode_all(&vec![0u8; 8192][..], 1).unwrap()); blob }, 1, 4096, false),
+        (
+            {
+                let mut blob = LOCAL_MAGIC.to_vec();
+                blob.extend(zstd::stream::encode_all(&vec![0u8; 8192][..], 1).unwrap());
+                blob
+            },
+            1,
+            4096,
+            false,
+        ),
     ] {
         let mut bytes = MAGIC_V5.to_vec();
         "key".encode(&mut bytes);
@@ -51,7 +72,10 @@ fn invalid_cache_magic_and_collection_lengths_are_misses() {
         length.encode(&mut bytes);
         bytes.extend_from_slice(&sha256_bytes(&blob));
         bytes.extend_from_slice(&blob);
-        assert_eq!(decode_entry_with_encoded(&bytes, "key", limit).is_some(), expected);
+        assert_eq!(
+            decode_entry_with_encoded(&bytes, "key", limit).is_some(),
+            expected
+        );
     }
     let mut prefixes = Vec::new();
     for preceding_collections in 0..5 {
@@ -429,10 +453,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         let mut public: crate::models::Facts =
             serde_json::from_value(serde_json::to_value(&decoded).unwrap()).unwrap();
         public.nodes[0].details["named_definition_uncertainties"] = bad;
-        assert!(
-            crate::typed_facts::FlowStore::read_named_uncertainties(&public.nodes[0])
-                .is_err()
-        );
+        assert!(crate::typed_facts::FlowStore::read_named_uncertainties(&public.nodes[0]).is_err());
         let invalid = TypedFacts::from_public(public);
         assert!(invalid.flows.has_invalid_named_uncertainty_carriers());
         assert!(invalid
@@ -513,10 +534,9 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         };
         let cache_reopened =
             decode_entry(&encode_entry(&key, &facts).unwrap(), &key, 1024 * 1024).unwrap();
-        let full_reopened = crate::typed_facts::decode_facts(
-            &crate::typed_facts::encode_facts(&facts).unwrap(),
-        )
-        .unwrap();
+        let full_reopened =
+            crate::typed_facts::decode_facts(&crate::typed_facts::encode_facts(&facts).unwrap())
+                .unwrap();
         for reopened in [&cache_reopened, &full_reopened] {
             assert!(reopened.flows.named_uncertainty_fault(&node_id));
             assert!(!reopened.flows.has_invalid_named_uncertainty_carriers());
@@ -527,8 +547,7 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
             let public: crate::models::Facts =
                 serde_json::from_value(serde_json::to_value(reopened).unwrap()).unwrap();
             assert!(
-                crate::typed_facts::FlowStore::read_named_uncertainties(&public.nodes[0])
-                    .is_err(),
+                crate::typed_facts::FlowStore::read_named_uncertainties(&public.nodes[0]).is_err(),
                 "infallible configured named authority remains unavailable"
             );
         }
@@ -671,11 +690,8 @@ fn test_catalog_reference_and_prepared_storage_decoding() {
         .concat(),
     ] {
         assert_eq!(
-            serde_json::to_value(crate::semantic::decode_catalog_references(
-                &encoded,
-                &[]
-            ))
-            .unwrap(),
+            serde_json::to_value(crate::semantic::decode_catalog_references(&encoded, &[]))
+                .unwrap(),
             serde_json::to_value(&facts.references).unwrap()
         );
     }
@@ -686,24 +702,13 @@ fn test_catalog_reference_and_prepared_storage_decoding() {
         reference_keys: vec!["callee".into()],
         leaves: Default::default(),
     };
-    raw.clear();
-    prepared.encode(&mut raw);
-    let encoded = zstd::stream::encode_all(raw.as_slice(), -3).unwrap();
+    let encoded = prepared.encode_spill();
     assert!(super::super::decode_prepared_storage(&encoded[..encoded.len() - 1]).is_err());
-    for encoded in [
-        encoded,
-        [
-            zstd::stream::encode_all(&raw[..2], -3).unwrap(),
-            zstd::stream::encode_all(&raw[2..], -3).unwrap(),
-        ]
-        .concat(),
-    ] {
-        let reopened = super::super::decode_prepared_storage(&encoded).unwrap();
-        assert_eq!(
-            serde_json::to_vec(&reopened.facts).unwrap(),
-            serde_json::to_vec(&prepared.facts).unwrap()
-        );
-        assert_eq!(reopened.search_texts, prepared.search_texts);
-        assert_eq!(reopened.reference_keys, prepared.reference_keys);
-    }
+    let reopened = super::super::decode_prepared_storage(&encoded).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&reopened.facts).unwrap(),
+        serde_json::to_vec(&prepared.facts).unwrap()
+    );
+    assert_eq!(reopened.search_texts, prepared.search_texts);
+    assert_eq!(reopened.reference_keys, prepared.reference_keys);
 }

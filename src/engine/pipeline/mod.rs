@@ -54,8 +54,6 @@ pub enum BuildMode {
     Cold,
     /// Update an existing index from changed paths.
     IncrementalDelta,
-    /// Verify an existing generation without rebuilding it.
-    FastVerifyOnly,
 }
 
 impl BuildMode {
@@ -64,23 +62,7 @@ impl BuildMode {
         match self {
             BuildMode::Cold => "Cold",
             BuildMode::IncrementalDelta => "IncrementalDelta",
-            BuildMode::FastVerifyOnly => "FastVerifyOnly",
         }
-    }
-
-    /// Returns true if the build mode is Cold.
-    pub fn is_cold(&self) -> bool {
-        matches!(self, BuildMode::Cold)
-    }
-
-    /// Returns true if the build mode is IncrementalDelta.
-    pub fn is_delta(&self) -> bool {
-        matches!(self, BuildMode::IncrementalDelta)
-    }
-
-    /// Returns true if the build mode is FastVerifyOnly.
-    pub fn is_fast_verify(&self) -> bool {
-        matches!(self, BuildMode::FastVerifyOnly)
     }
 }
 
@@ -100,26 +82,10 @@ pub fn execute_with_mode(
     cache_dir: Option<&Path>,
 ) -> Result<Value> {
     match mode {
-        BuildMode::Cold => {
-            cold::build_inner(root, output, adapter_path, cache_dir, None)
-        }
+        BuildMode::Cold => cold::build_inner(root, output, adapter_path, cache_dir, None),
         BuildMode::IncrementalDelta => {
             let paths = modified.unwrap_or(&[]);
             delta::delta_inner(root, output, paths, adapter_path, cache_dir, None)
-        }
-        BuildMode::FastVerifyOnly => {
-            let conn = db_reader::open(output, root)?;
-            db_commitments::verify(&conn)?;
-            let root_str: String = conn.query_row(
-                "SELECT value FROM metadata WHERE key='output_root'",
-                [],
-                |row| row.get(0),
-            )?;
-            Ok(json!({
-                "build_mode": BuildMode::FastVerifyOnly.as_str(),
-                "output_root": root_str,
-                "verified": true,
-            }))
         }
     }
 }
@@ -135,12 +101,12 @@ use hydration::extract_typed_with_cache;
 use invalidation::*;
 mod cold;
 mod staging;
-pub use cold::{build, build_with_cache_dir, build_with_test_hooks, extract};
 use cold::*;
+pub use cold::{build, build_with_cache_dir, build_with_test_hooks, extract};
 use staging::consume_pipeline_results;
 mod hooks;
-pub use hooks::PipelineTestHooks;
 use budget::{ByteBudget, MemoryPermit};
+pub use hooks::PipelineTestHooks;
 
 static NONCE: AtomicU64 = AtomicU64::new(0);
 const EXTRACTION_MEMORY_MULTIPLIER: u64 = 8;
@@ -204,7 +170,7 @@ struct PipelineItem {
     file: FileEntry,
     catalog: SymbolCatalog,
     encoded_facts: Vec<u8>,
-    storage_rows: Vec<u8>,
+    storage_rows: db_writer::cache::PreparedCatalogStorage,
     permit: MemoryPermit,
 }
 

@@ -46,6 +46,7 @@ impl ToSql for BorrowedSqlValue<'_> {
 pub(super) struct MultiValueBatch<'conn, const COLUMNS: usize, T: ToSql = SqlValue> {
     conn: &'conn Connection,
     prefix: &'static str,
+    suffix: &'static str,
     rows: Vec<[T; COLUMNS]>,
     max_rows: usize,
     full_statement: rusqlite::Statement<'conn>,
@@ -53,13 +54,23 @@ pub(super) struct MultiValueBatch<'conn, const COLUMNS: usize, T: ToSql = SqlVal
 
 impl<'conn, const COLUMNS: usize, T: ToSql> MultiValueBatch<'conn, COLUMNS, T> {
     pub(super) fn new(conn: &'conn Connection, prefix: &'static str) -> Result<Self> {
+        Self::with_suffix(conn, prefix, "")
+    }
+
+    pub(super) fn with_suffix(
+        conn: &'conn Connection,
+        prefix: &'static str,
+        suffix: &'static str,
+    ) -> Result<Self> {
         let max_rows = multi_value_batch_rows::<COLUMNS>(conn)?;
         Ok(Self {
             conn,
             prefix,
+            suffix,
             rows: Vec::with_capacity(max_rows),
             max_rows,
-            full_statement: conn.prepare(&multi_value_insert_sql::<COLUMNS>(prefix, max_rows))?,
+            full_statement: conn
+                .prepare(&(multi_value_insert_sql::<COLUMNS>(prefix, max_rows) + suffix))?,
         })
     }
 
@@ -76,8 +87,13 @@ impl<'conn, const COLUMNS: usize, T: ToSql> MultiValueBatch<'conn, COLUMNS, T> {
             self.full_statement.execute(params_from_iter(
                 self.rows.iter().flat_map(|row| row.iter()),
             ))?;
-        } else {
+        } else if self.suffix.is_empty() {
             insert_multi_value_batch(self.conn, self.prefix, &self.rows)?;
+        } else if !self.rows.is_empty() {
+            let sql = multi_value_insert_sql::<COLUMNS>(self.prefix, self.rows.len()) + self.suffix;
+            self.conn.prepare_cached(&sql)?.execute(params_from_iter(
+                self.rows.iter().flat_map(|row| row.iter()),
+            ))?;
         }
         self.rows.clear();
         Ok(())

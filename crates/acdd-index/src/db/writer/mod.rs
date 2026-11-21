@@ -33,7 +33,7 @@ use ingest::*;
 pub(crate) const MAX_MULTI_VALUE_BATCH_ROWS: usize = 500;
 
 mod payload_store;
-pub use payload_store::{PayloadStore, SpoolSlice, StagedPayload};
+pub use payload_store::{PayloadStore, SpoolSlice, StagedPayload, StagedPreparedStorage};
 
 /// Staged payloads for an indexed file entry.
 #[derive(Debug)]
@@ -41,25 +41,46 @@ pub struct StagedFilePayload {
     /// Encoded facts payload.
     pub encoded_facts: StagedPayload,
     /// Prepared storage rows, when available.
-    pub storage_rows: Option<StagedPayload>,
+    pub storage_rows: Option<StagedPreparedStorage>,
 }
 
 fn decode_prepared_storage(bytes: &[u8]) -> Result<PreparedCatalogStorage> {
     cache::decode_prepared_catalog_storage_payload(bytes)
 }
 
-/// Prepares encoded catalog storage rows for a file using extracted typed facts.
-pub fn prepare_catalog_storage_with_facts(file: &FileEntry, facts: &TypedFacts) -> Result<Vec<u8>> {
+/// Prepares catalog storage rows for a file using extracted typed facts.
+pub fn prepare_catalog_storage_with_facts(
+    file: &FileEntry,
+    facts: &TypedFacts,
+) -> Result<PreparedCatalogStorage> {
     let metadata = catalog_metadata(file, facts)?;
-    let mut bytes = cache::CatalogStorageView {
-        facts,
-        search_texts: &metadata.search_texts,
-        reference_keys: &metadata.reference_keys,
-        leaves: &metadata.leaves,
-    }
-    .encode();
-    bytes.shrink_to_fit();
-    Ok(bytes)
+    let projected = TypedFacts {
+        facts: Facts {
+            nodes: facts
+                .nodes
+                .iter()
+                .map(|node| Node {
+                    id: node.id.clone(),
+                    kind: node.kind.clone(),
+                    name: node.name.clone(),
+                    qualname: node.qualname.clone(),
+                    path: node.path.clone(),
+                    line: node.line,
+                    end_line: node.end_line,
+                    is_test: node.is_test,
+                    language: node.language.clone(),
+                    generated: node.generated,
+                    details: retained_node_details(node),
+                    native_semantic: None,
+                })
+                .collect(),
+            docs: facts.docs.clone(),
+            errors: facts.errors.clone(),
+            ..Default::default()
+        },
+        flows: Default::default(),
+    };
+    Ok(prepare_catalog_rows_with_metadata(projected, metadata))
 }
 
 struct CatalogMetadata {
@@ -116,8 +137,15 @@ fn retained_node_details(node: &Node) -> Value {
     }
 }
 
-fn prepare_catalog_rows(file: &FileEntry, mut facts: TypedFacts) -> Result<PreparedCatalogStorage> {
+fn prepare_catalog_rows(file: &FileEntry, facts: TypedFacts) -> Result<PreparedCatalogStorage> {
     let metadata = catalog_metadata(file, &facts)?;
+    Ok(prepare_catalog_rows_with_metadata(facts, metadata))
+}
+
+fn prepare_catalog_rows_with_metadata(
+    mut facts: TypedFacts,
+    metadata: CatalogMetadata,
+) -> PreparedCatalogStorage {
     let CatalogMetadata {
         search_texts,
         reference_keys,
@@ -146,13 +174,12 @@ fn prepare_catalog_rows(file: &FileEntry, mut facts: TypedFacts) -> Result<Prepa
         facts: storage_facts,
         flows: Default::default(),
     };
-    let prepared = PreparedCatalogStorage {
+    PreparedCatalogStorage {
         facts: storage,
         search_texts,
         reference_keys,
         leaves,
-    };
-    Ok(prepared)
+    }
 }
 
 /// Inputs supplied to pipeline index persistence.
@@ -196,35 +223,9 @@ pub(crate) fn sqlite_cache_size_kib(memory_budget: u64) -> usize {
     raw.clamp(4_096, 32_768) as usize
 }
 
-/// Populates index database taking ownership of extracted facts and staged payloads.
-#[allow(clippy::too_many_arguments)]
-pub fn populate_owned(
-    conn: &mut Connection,
-    root: &Path,
-    adapter: &Adapter,
-    entries: &[FileEntry],
-    facts: BTreeMap<String, TypedFacts>,
-    graph: &CompactGraph,
-    build_inputs: BuildInputs<'_>,
-    staged_payloads: &mut BTreeMap<String, StagedFilePayload>,
-    payload_spool_path: Option<&Path>,
-) -> Result<Value> {
-    populate_owned_with_store(
-        conn,
-        root,
-        adapter,
-        entries,
-        facts,
-        graph,
-        build_inputs,
-        staged_payloads,
-        payload_spool_path,
-    )
-}
-
 /// Populates an index with staged payloads.
 #[allow(clippy::too_many_arguments)]
-pub fn populate_owned_with_store(
+pub fn populate_owned(
     conn: &mut Connection,
     root: &Path,
     adapter: &Adapter,
@@ -264,25 +265,27 @@ pub fn populate_owned_with_store(
         let mut seal_projection_ms = 0.0;
         let writing = Instant::now();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        cached(
-            &tx,
-            "INSERT INTO node_search(node_search) VALUES('delete-all')",
-            [],
-        )?;
-        cached(
-            &tx,
-            "INSERT INTO doc_search(doc_search) VALUES('delete-all')",
-            [],
-        )
-        .ok();
-        cached(&tx, "DELETE FROM shared_keys", [])?;
-        for table in commitments::DOMAINS {
-            cached(&tx, &format!("DELETE FROM {table}"), [])?;
+        if !build_inputs.schema_ready {
+            cached(
+                &tx,
+                "INSERT INTO node_search(node_search) VALUES('delete-all')",
+                [],
+            )?;
+            cached(
+                &tx,
+                "INSERT INTO doc_search(doc_search) VALUES('delete-all')",
+                [],
+            )
+            .ok();
+            cached(&tx, "DELETE FROM shared_keys", [])?;
+            for table in commitments::DOMAINS {
+                cached(&tx, &format!("DELETE FROM {table}"), [])?;
+            }
+            cached(&tx, "DELETE FROM path_dictionary", [])?;
+            cached(&tx, "DELETE FROM domain_commitments", [])?;
+            cached(&tx, "DELETE FROM coverage_evidence", [])?;
+            cached(&tx, "DELETE FROM coverage_expressions", [])?;
         }
-        cached(&tx, "DELETE FROM path_dictionary", [])?;
-        cached(&tx, "DELETE FROM domain_commitments", [])?;
-        cached(&tx, "DELETE FROM coverage_evidence", [])?;
-        cached(&tx, "DELETE FROM coverage_expressions", [])?;
         for (k, v) in [
             ("schema_version", config::ENGINE_SCHEMA_VERSION.to_owned()),
             (
@@ -378,25 +381,38 @@ pub fn populate_owned_with_store(
                     let prepared = staged
                         .into_par_iter()
                         .map(|(file, lean, staged)| {
-                            let restoring = Instant::now();
                             let encoded_facts =
                                 payload_store::take_staged_payload(spool, staged.encoded_facts)?;
-                            let (storage, encoded) = if let Some(storage_blob) = staged.storage_rows
-                            {
-                                let storage_bytes =
-                                    payload_store::take_staged_payload(spool, storage_blob)?;
-                                let storage = decode_prepared_storage(&storage_bytes)?;
-                                (storage, encoded_facts)
-                            } else {
-                                let full = restore_catalog_file(
-                                    file,
-                                    lean,
-                                    &encoded_facts,
-                                    &composed_sources,
-                                )?;
-                                let encoded = encode_facts(&full)?;
-                                (prepare_catalog_rows(file, full)?, encoded)
-                            };
+                            let restoring = Instant::now();
+                            let (storage, encoded, elapsed_ms) =
+                                if let Some(storage) = staged.storage_rows {
+                                    match storage {
+                                        StagedPreparedStorage::InMemory(storage) => {
+                                            (*storage, encoded_facts, 0.0)
+                                        }
+                                        StagedPreparedStorage::Spilled(slice) => {
+                                            let bytes = payload_store::read_spool(spool, slice)?;
+                                            (
+                                                decode_prepared_storage(&bytes)?,
+                                                encoded_facts,
+                                                restoring.elapsed().as_secs_f64() * 1000.,
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    let full = restore_catalog_file(
+                                        file,
+                                        lean,
+                                        &encoded_facts,
+                                        &composed_sources,
+                                    )?;
+                                    let encoded = encode_facts(&full)?;
+                                    (
+                                        prepare_catalog_rows(file, full)?,
+                                        encoded,
+                                        restoring.elapsed().as_secs_f64() * 1000.,
+                                    )
+                                };
                             let local_facts_leaf = seal::local_facts_leaf(
                                 &file.path,
                                 &file.digest,
@@ -413,7 +429,7 @@ pub fn populate_owned_with_store(
                                     reference_keys: storage.reference_keys,
                                 },
                                 storage.leaves,
-                                restoring.elapsed().as_secs_f64() * 1000.,
+                                elapsed_ms,
                             ))
                         })
                         .collect::<Result<Vec<_>>>()?;
@@ -435,6 +451,7 @@ pub fn populate_owned_with_store(
                     Ok(loaded)
                 },
                 &graph_ranks,
+                build_inputs.schema_ready,
             )?
         } else {
             persist_files_with_ranks(&tx, &mut path_cache, entries, &facts, Some(&graph_ranks))?
@@ -466,12 +483,8 @@ pub fn populate_owned_with_store(
                 retain_graph_storage_facts(file_facts);
             }
         }
-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        unsafe {
-            // SAFETY: glibc synchronizes allocator arenas; no pointers are passed.
-            libc::malloc_trim(0);
-        }
         let coverage = ingest::PreparedCoverage::new(graph, &facts, Some(entries));
+        let prepared = ingest::PreparedGraph::new(graph, &facts)?;
         let (mut domains, graph_timings, persist_graph_ms, graph_projection_ms) =
             std::thread::scope(|scope| -> Result<_> {
                 let projection = scope.spawn(|| {
@@ -481,41 +494,16 @@ pub fn populate_owned_with_store(
                         &facts,
                         graph,
                         &coverage,
+                        &prepared,
                         &mut projection_timings,
                         !streamed_payloads,
                     );
-                    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-                    unsafe {
-                        // SAFETY: projection scratch buffers have dropped; arenas are synchronized.
-                        libc::malloc_trim(0);
-                    }
                     (domains, started.elapsed().as_secs_f64() * 1000.)
                 });
                 let mut node_paths: hashbrown::HashMap<
                     std::borrow::Cow<'_, str>,
                     Option<CachedNodePath>,
-                > = hashbrown::HashMap::with_capacity(
-                    facts
-                        .values()
-                        .map(|file_facts| file_facts.nodes.len())
-                        .sum(),
-                );
-                let mut shared_paths = hashbrown::HashMap::<&str, Arc<str>>::new();
-                for file_facts in facts.values() {
-                    for node in &file_facts.nodes {
-                        let shared_path = shared_paths
-                            .entry(node.path.as_str())
-                            .or_insert_with(|| Arc::<str>::from(node.path.as_str()));
-                        node_paths.insert(
-                            std::borrow::Cow::Borrowed(node.id.as_str()),
-                            Some(CachedNodePath::from_shared(
-                                &node.id,
-                                Arc::clone(shared_path),
-                            )),
-                        );
-                    }
-                }
-                drop(shared_paths);
+                > = hashbrown::HashMap::new();
                 let started = Instant::now();
                 let stored = ingest::persist_graph_prepared(
                     &tx,
@@ -526,6 +514,7 @@ pub fn populate_owned_with_store(
                     &coverage,
                     &mut node_paths,
                     true,
+                    Some(&prepared),
                 );
                 drop(node_paths);
                 let persist_ms = started.elapsed().as_secs_f64() * 1000.;
@@ -535,6 +524,7 @@ pub fn populate_owned_with_store(
                 Ok((domains?, stored?, persist_ms, projection_ms))
             })?;
         drop(coverage);
+        drop(prepared);
         seal_projection_ms += graph_projection_ms;
         if streamed_payloads {
             for (domain, leaves) in logical_commitments {

@@ -1,4 +1,4 @@
-use super::ingest::PreparedCoverage;
+use super::ingest::{PreparedCoverage, PreparedDependency, PreparedGraph};
 use super::{CompactGraph, FileEntry, TypedFacts};
 use crate::{
     commitments::DOMAINS,
@@ -6,7 +6,7 @@ use crate::{
         encode_blob, encode_int as encode_integer, encode_real, encode_text, encode_text_bytes,
         key as leaf_key, new_leaf_hasher,
     },
-    models::{compact_graph::Edge, is_test, stable_hash64, Node},
+    models::{is_test, stable_hash64, Node},
 };
 use anyhow::{ensure, Context, Result};
 use hashbrown::HashMap;
@@ -16,12 +16,7 @@ use std::time::Instant;
 
 type OwnerHashers<'a> = HashMap<&'a str, Sha256>;
 type Leaves = BTreeMap<String, String>;
-type NodePathMap<'a> = HashMap<&'a str, (&'a str, i64)>;
-type NodeLookupMaps<'a> = (
-    NodePathMap<'a>,
-    HashMap<i64, &'a str>,
-    HashMap<&'a str, &'a str>,
-);
+type NodeLookupMaps<'a> = (HashMap<i64, &'a str>, HashMap<&'a str, &'a str>);
 
 pub(super) struct NodeDomain<'a> {
     hashers: OwnerHashers<'a>,
@@ -76,23 +71,6 @@ struct ProjectedNode<'a> {
     owner: &'a str,
     node: &'a Node,
     node_id: i64,
-    node_hash: i64,
-}
-
-struct UniqueEdge<'a> {
-    edge: &'a Edge,
-    src: &'a str,
-    dst: &'a str,
-    count: i64,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
-struct Dependency<'a> {
-    owner: &'a str,
-    target_hash: Option<i64>,
-    kind: &'a str,
-    symbol: &'a str,
-    resolution: &'a str,
 }
 
 struct DependencyLeafRow<'a> {
@@ -107,7 +85,7 @@ struct GraphProjection<'a> {
     graph: &'a CompactGraph,
     coverage: &'a PreparedCoverage<'a>,
     projected_nodes: &'a [ProjectedNode<'a>],
-    node_by_id: &'a NodePathMap<'a>,
+    prepared: &'a PreparedGraph<'a>,
     file_by_hash: &'a HashMap<i64, &'a str>,
     entry_languages: &'a HashMap<&'a str, &'a str>,
 }
@@ -159,7 +137,6 @@ pub(super) fn file_domain_leaves(
             owner: &file.path,
             node,
             node_id,
-            node_hash: stable_hash64(&node.id),
         });
     }
     domains.insert(
@@ -180,6 +157,7 @@ pub(super) fn logical_domain_leaves(
     facts: &BTreeMap<String, TypedFacts>,
     graph: &CompactGraph,
     coverage: &PreparedCoverage<'_>,
+    prepared: &PreparedGraph<'_>,
     timings: &mut ProjectionTimings,
     include_restored_file_domains: bool,
 ) -> Result<BTreeMap<&'static str, Leaves>> {
@@ -189,8 +167,7 @@ pub(super) fn logical_domain_leaves(
         project_file_domains(entries, facts, &mut domains, include_restored_file_domains)?;
     timings.file_domains_ms = started.elapsed().as_secs_f64() * 1000.;
     let started = Instant::now();
-    let (node_by_id, file_by_hash, entry_languages) =
-        node_lookup_maps(entries, facts, &projected_nodes)?;
+    let (file_by_hash, entry_languages) = node_lookup_maps(entries, facts)?;
     timings.node_domain_ms = started.elapsed().as_secs_f64() * 1000.;
     let started = Instant::now();
     project_graph_domains(
@@ -199,7 +176,7 @@ pub(super) fn logical_domain_leaves(
             graph,
             coverage,
             projected_nodes: &projected_nodes,
-            node_by_id: &node_by_id,
+            prepared,
             file_by_hash: &file_by_hash,
             entry_languages: &entry_languages,
         },
@@ -306,7 +283,6 @@ fn project_file_domains<'a>(
                 owner: &file.path,
                 node,
                 node_id,
-                node_hash: stable_hash64(&node.id),
             });
         }
     }
@@ -326,17 +302,7 @@ fn project_file_domains<'a>(
 fn node_lookup_maps<'a>(
     entries: &'a [FileEntry],
     facts: &BTreeMap<String, TypedFacts>,
-    projected_nodes: &[ProjectedNode<'a>],
 ) -> Result<NodeLookupMaps<'a>> {
-    let node_by_id = projected_nodes
-        .iter()
-        .map(|projected| {
-            (
-                projected.node.id.as_str(),
-                (projected.node.path.as_str(), projected.node_hash),
-            )
-        })
-        .collect();
     let mut file_by_hash = HashMap::with_capacity(entries.len());
     let mut entry_languages = HashMap::with_capacity(entries.len());
     for file in entries {
@@ -350,7 +316,7 @@ fn node_lookup_maps<'a>(
             file.path
         );
     }
-    Ok((node_by_id, file_by_hash, entry_languages))
+    Ok((file_by_hash, entry_languages))
 }
 
 fn project_graph_domains<'a>(
@@ -364,37 +330,20 @@ fn project_graph_domains<'a>(
         graph,
         coverage,
         projected_nodes,
-        node_by_id,
+        prepared,
         file_by_hash,
         entry_languages,
     } = projection;
     let mut ordinals = HashMap::<&str, i64>::new();
-    let mut unique_edge_indexes = HashMap::<(i64, &str, i64), usize>::new();
-    let mut unique_edges: Vec<UniqueEdge<'_>> = Vec::with_capacity(graph.edges.len());
+    let mut unique_edges: Vec<_> = prepared.unique_edges.iter().collect();
     let mut occurrence_hashers = OwnerHashers::new();
-    let mut dependencies = Vec::with_capacity(graph.edges.len().saturating_mul(2));
 
     let edges_started = Instant::now();
     for edge in &graph.edges {
         let owner = edge.path.as_ref();
         let ordinal = ordinals.entry(owner).or_default();
-        let (src_path, src_hash) = node_by_id.get(edge.src.as_str()).with_context(|| {
-            format!(
-                "edge {} has missing source endpoint {}",
-                edge.kind.as_str(),
-                edge.src
-            )
-        })?;
-        let (dst_path, dst_hash) = node_by_id.get(edge.dst.as_str()).with_context(|| {
-            format!(
-                "edge {} has missing destination endpoint {}",
-                edge.kind.as_str(),
-                edge.dst
-            )
-        })?;
         let src = edge.src.as_str();
         let dst = edge.dst.as_str();
-        let edge_key = (*src_hash, edge.kind.as_str(), *dst_hash);
         let occurrence_hasher = occurrence_hashers
             .entry(owner)
             .or_insert_with(|| new_leaf_hasher("edge_occurrences", owner));
@@ -414,40 +363,7 @@ fn project_graph_domains<'a>(
         *ordinal = (*ordinal)
             .checked_add(1)
             .context("edge occurrence ordinal overflow")?;
-        if let Some(index) = unique_edge_indexes.get(&edge_key).copied() {
-            let existing = &mut unique_edges[index];
-            existing.count = existing
-                .count
-                .checked_add(1)
-                .context("edge occurrence count overflow")?;
-        } else {
-            unique_edge_indexes.insert(edge_key, unique_edges.len());
-            unique_edges.push(UniqueEdge {
-                edge,
-                src,
-                dst,
-                count: 1,
-            });
-        }
-
-        let mut first_target_hash = None;
-        for target in [*src_path, *dst_path] {
-            if target != edge.path.as_ref() {
-                let target_hash = stable_hash64(target);
-                if first_target_hash != Some(target_hash) {
-                    dependencies.push(Dependency {
-                        owner: edge.path.as_ref(),
-                        target_hash: Some(target_hash),
-                        kind: edge.kind.as_str(),
-                        symbol: edge.evidence.as_str(),
-                        resolution: "resolved",
-                    });
-                    first_target_hash = Some(target_hash);
-                }
-            }
-        }
     }
-    drop(unique_edge_indexes);
     drop(ordinals);
     timings.graph_edges_ms = edges_started.elapsed().as_secs_f64() * 1000.;
 
@@ -458,59 +374,87 @@ fn project_graph_domains<'a>(
     );
     timings.graph_occurrences_ms = occurrences_finished.elapsed().as_secs_f64() * 1000.;
 
-    let unique_edges_started = Instant::now();
-    unique_edges.sort_unstable_by(|left, right| {
-        left.edge
-            .path
-            .cmp(&right.edge.path)
-            .then_with(|| left.src.cmp(right.src))
-            .then_with(|| left.dst.cmp(right.dst))
-            .then_with(|| left.edge.kind.as_str().cmp(right.edge.kind.as_str()))
-    });
-    let mut edge_hashers = OwnerHashers::new();
-    for row in unique_edges {
-        let owner = row.edge.path.as_ref();
-        let hasher = edge_hashers
-            .entry(owner)
-            .or_insert_with(|| new_leaf_hasher("edges", owner));
-        let edge = row.edge;
-        hasher.update([0xff]);
-        encode_text(hasher, row.src);
-        encode_text(hasher, row.dst);
-        encode_text(hasher, edge.kind.as_str());
-        encode_text(hasher, owner);
-        encode_integer(
-            hasher,
-            i64::try_from(edge.line).context("edge line exceeds SQLite range")?,
-        );
-        encode_text(hasher, edge.evidence.as_str());
-        encode_text(hasher, edge.confidence.as_str());
-        encode_integer(hasher, row.count);
+    let (edges_result, (shared_result, (coverage_result, dependency_result))) = rayon::join(
+        || -> Result<_> {
+            let started = Instant::now();
+            unique_edges.sort_unstable_by(|left, right| {
+                left.edge
+                    .path
+                    .cmp(&right.edge.path)
+                    .then_with(|| left.edge.src.cmp(&right.edge.src))
+                    .then_with(|| left.edge.dst.cmp(&right.edge.dst))
+                    .then_with(|| left.edge.kind.as_str().cmp(right.edge.kind.as_str()))
+            });
+            let mut edge_hashers = OwnerHashers::new();
+            for row in unique_edges {
+                let owner = row.edge.path.as_ref();
+                let hasher = edge_hashers
+                    .entry(owner)
+                    .or_insert_with(|| new_leaf_hasher("edges", owner));
+                let edge = row.edge;
+                hasher.update([0xff]);
+                encode_text(hasher, row.edge.src.as_str());
+                encode_text(hasher, row.edge.dst.as_str());
+                encode_text(hasher, edge.kind.as_str());
+                encode_text(hasher, owner);
+                encode_integer(
+                    hasher,
+                    i64::try_from(edge.line).context("edge line exceeds SQLite range")?,
+                );
+                encode_text(hasher, edge.evidence.as_str());
+                encode_text(hasher, edge.confidence.as_str());
+                encode_integer(hasher, row.count);
+            }
+            Ok((
+                finish_hashers("edges", edge_hashers)?,
+                started.elapsed().as_secs_f64() * 1000.,
+            ))
+        },
+        || {
+            rayon::join(
+                || -> Result<_> {
+                    let started = Instant::now();
+                    let leaves = if include_shared_owners {
+                        Some(project_shared_owner_domain(facts, projected_nodes, None)?)
+                    } else {
+                        None
+                    };
+                    Ok((leaves, started.elapsed().as_secs_f64() * 1000.))
+                },
+                || {
+                    rayon::join(
+                        || -> Result<_> {
+                            let started = Instant::now();
+                            let domains = project_coverage_domains(coverage, entry_languages)?;
+                            Ok((domains, started.elapsed().as_secs_f64() * 1000.))
+                        },
+                        || -> Result<_> {
+                            let started = Instant::now();
+                            let leaves =
+                                project_dependency_domain(file_by_hash, &prepared.dependencies)?;
+                            Ok((leaves, started.elapsed().as_secs_f64() * 1000.))
+                        },
+                    )
+                },
+            )
+        },
+    );
+    let (edge_leaves, edge_ms) = edges_result?;
+    domains.insert("edges", edge_leaves);
+    timings.graph_unique_edges_ms = edge_ms;
+    let (shared, shared_ms) = shared_result?;
+    if let Some(shared) = shared {
+        domains.insert("shared_owners", shared);
     }
-    domains.insert("edges", finish_hashers("edges", edge_hashers)?);
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    unsafe {
-        libc::malloc_trim(0);
-    }
-    timings.graph_unique_edges_ms = unique_edges_started.elapsed().as_secs_f64() * 1000.;
-
-    let shared_started = Instant::now();
-    if include_shared_owners {
-        let shared_owners = project_shared_owner_domain(facts, projected_nodes, None)?;
-        domains.insert("shared_owners", shared_owners);
-    }
-    timings.graph_shared_owners_ms = shared_started.elapsed().as_secs_f64() * 1000.;
-    let coverage_started = Instant::now();
-    let (coverage_domains, unresolved) = project_coverage_domains(coverage, entry_languages)?;
+    timings.graph_shared_owners_ms = shared_ms;
+    let (coverage_domains, coverage_ms) = coverage_result?;
     domains.insert("resolution_coverage", coverage_domains.0);
     domains.insert("coverage_owner_language", coverage_domains.1);
     domains.insert("coverage_language_counts", coverage_domains.2);
-    timings.graph_coverage_ms = coverage_started.elapsed().as_secs_f64() * 1000.;
-    let dependency_started = Instant::now();
-    dependencies.extend(unresolved);
-    let dependency_leaves = project_dependency_domain(facts, file_by_hash, dependencies)?;
+    timings.graph_coverage_ms = coverage_ms;
+    let (dependency_leaves, dependency_ms) = dependency_result?;
     domains.insert("dependencies", dependency_leaves);
-    timings.graph_dependencies_ms = dependency_started.elapsed().as_secs_f64() * 1000.;
+    timings.graph_dependencies_ms = dependency_ms;
     Ok(())
 }
 
@@ -674,11 +618,10 @@ type CoverageDomains = (Leaves, Leaves, Leaves);
 fn project_coverage_domains<'a>(
     prepared: &PreparedCoverage<'a>,
     entry_languages: &HashMap<&'a str, &'a str>,
-) -> Result<(CoverageDomains, Vec<Dependency<'a>>)> {
+) -> Result<CoverageDomains> {
     let mut coverage_hashers = OwnerHashers::new();
     let mut owner_language_rows = BTreeMap::<String, Vec<OwnerLanguageLeafRow<'_>>>::new();
     let mut language_counts = BTreeMap::<String, BTreeMap<(String, String), i64>>::new();
-    let mut unresolved_dependencies = Vec::new();
     for &coverage in &prepared.rows {
         let owner = coverage.path.as_ref();
         let line = i64::try_from(coverage.line).context("coverage line exceeds SQLite range")?;
@@ -714,15 +657,6 @@ fn project_coverage_domains<'a>(
                 .entry((language.to_owned(), status.to_owned()))
                 .or_default();
             *count = count.checked_add(1).context("coverage count overflow")?;
-        }
-        if status != "resolved" {
-            unresolved_dependencies.push(Dependency {
-                owner,
-                target_hash: None,
-                kind: "unresolved",
-                symbol: expression,
-                resolution: status,
-            });
         }
     }
 
@@ -769,54 +703,16 @@ fn project_coverage_domains<'a>(
     }
 
     Ok((
-        (
-            finish_hashers("resolution_coverage", coverage_hashers)?,
-            owner_language,
-            language_count_leaves,
-        ),
-        unresolved_dependencies,
+        finish_hashers("resolution_coverage", coverage_hashers)?,
+        owner_language,
+        language_count_leaves,
     ))
 }
 
 fn project_dependency_domain<'a>(
-    facts: &'a BTreeMap<String, TypedFacts>,
     file_by_hash: &'a HashMap<i64, &'a str>,
-    mut dependencies: Vec<Dependency<'a>>,
+    dependencies: &[PreparedDependency<'a>],
 ) -> Result<Leaves> {
-    #[cfg(feature = "lang-html")]
-    for (provider_path, file_facts) in facts {
-        for node in file_facts.nodes.iter().filter(|node| {
-            node.language == "python"
-                && matches!(node.kind.as_str(), "module" | "function" | "method")
-        }) {
-            let Some(flow) = file_facts.flows.get(node) else {
-                continue;
-            };
-            for context in flow.template_contexts() {
-                let Some(target) = context.target_path.as_deref() else {
-                    continue;
-                };
-                if acdd_core::config::workspace_path(provider_path).0
-                    != acdd_core::config::workspace_path(target).0
-                {
-                    continue;
-                }
-                dependencies.push(Dependency {
-                    owner: provider_path,
-                    target_hash: Some(stable_hash64(target)),
-                    kind: "renders",
-                    symbol: &context.target,
-                    resolution: "resolved",
-                });
-            }
-        }
-    }
-    #[cfg(not(feature = "lang-html"))]
-    let _ = facts;
-
-    dependencies.sort_unstable();
-    dependencies.dedup();
-
     let mut leaves = Leaves::new();
     let mut scratch_rows: Vec<DependencyLeafRow<'_>> = Vec::new();
     let mut idx = 0;

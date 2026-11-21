@@ -28,8 +28,8 @@ pub struct PipelineTestHooks {
 }
 
 impl PipelineTestHooks {
-    fn new_base(overlap: bool, fail_consumer: bool) -> Arc<Self> {
-        Arc::new(Self {
+    fn new_base(overlap: bool, fail_consumer: bool) -> Self {
+        Self {
             overlap,
             fail_consumer,
             overlap_barrier: std::sync::Barrier::new(3),
@@ -43,46 +43,40 @@ impl PipelineTestHooks {
             during_delta_verification: None,
             before_delta_receipt_publish: None,
             before_generation_lock: None,
-        })
+        }
     }
 
     /// Creates overlap synchronization hooks.
     pub fn overlap() -> Arc<Self> {
-        Self::new_base(true, false)
+        Arc::new(Self::new_base(true, false))
     }
 
     /// Creates consumer-failure fault injection hooks.
     pub fn fail_consumer() -> Arc<Self> {
-        Self::new_base(false, true)
+        Arc::new(Self::new_base(false, true))
     }
 
     /// Injects a consumer failure and a filesystem action before stage cleanup.
     pub fn fail_consumer_before_cleanup(
         action: impl Fn(&Path) + Send + Sync + 'static,
     ) -> Arc<Self> {
-        let mut hooks = Self::fail_consumer();
-        Arc::get_mut(&mut hooks)
-            .expect("new hook is uniquely owned")
-            .before_stage_cleanup = Some(Box::new(action));
-        hooks
+        let mut hooks = Self::new_base(false, true);
+        hooks.before_stage_cleanup = Some(Box::new(action));
+        Arc::new(hooks)
     }
 
     /// Runs a filesystem action before cleanup after a normal build.
     pub fn before_cleanup(action: impl Fn(&Path) + Send + Sync + 'static) -> Arc<Self> {
-        let mut hooks = Self::fail_consumer_before_cleanup(action);
-        Arc::get_mut(&mut hooks)
-            .expect("new hook is uniquely owned")
-            .fail_consumer = false;
-        hooks
+        let mut hooks = Self::new_base(false, false);
+        hooks.before_stage_cleanup = Some(Box::new(action));
+        Arc::new(hooks)
     }
 
     /// Runs immediately before a cold build acquires the generation lock.
     pub fn before_generation_lock(action: impl Fn(&Path) + Send + Sync + 'static) -> Arc<Self> {
-        let mut hooks = Self::before_cleanup(|_| {});
-        Arc::get_mut(&mut hooks)
-            .expect("new hook is uniquely owned")
-            .before_generation_lock = Some(Box::new(action));
-        hooks
+        let mut hooks = Self::new_base(false, false);
+        hooks.before_generation_lock = Some(Box::new(action));
+        Arc::new(hooks)
     }
 
     /// Runs test actions immediately before delta persistence and after its failure.
@@ -90,12 +84,10 @@ impl PipelineTestHooks {
         before: impl Fn(&Path) + Send + Sync + 'static,
         after: impl Fn(&Path) + Send + Sync + 'static,
     ) -> Arc<Self> {
-        let mut hooks = Self::fail_consumer();
-        let hooks_mut = Arc::get_mut(&mut hooks).expect("new hook is uniquely owned");
-        hooks_mut.fail_consumer = false;
-        hooks_mut.before_delta_persist = Some(Box::new(before));
-        hooks_mut.after_delta_failure = Some(Box::new(after));
-        hooks
+        let mut hooks = Self::new_base(false, false);
+        hooks.before_delta_persist = Some(Box::new(before));
+        hooks.after_delta_failure = Some(Box::new(after));
+        Arc::new(hooks)
     }
 
     /// Adds a filesystem action before rollback receipt publication.
@@ -103,11 +95,11 @@ impl PipelineTestHooks {
         after: impl Fn(&Path) + Send + Sync + 'static,
         before_publication: impl Fn(&Path) + Send + Sync + 'static,
     ) -> Arc<Self> {
-        let mut hooks = Self::delta_failure(|_| {}, after);
-        Arc::get_mut(&mut hooks)
-            .expect("new hook is uniquely owned")
-            .before_delta_receipt_publish = Some(Box::new(before_publication));
-        hooks
+        let mut hooks = Self::new_base(false, false);
+        hooks.before_delta_persist = Some(Box::new(|_| {}));
+        hooks.after_delta_failure = Some(Box::new(after));
+        hooks.before_delta_receipt_publish = Some(Box::new(before_publication));
+        Arc::new(hooks)
     }
 
     /// Injects an identity change between rollback recovery samples.
@@ -115,11 +107,10 @@ impl PipelineTestHooks {
         after: impl Fn(&Path) + Send + Sync + 'static,
         during: impl Fn(&Path) + Send + Sync + 'static,
     ) -> Arc<Self> {
-        let mut hooks = Self::delta_failure(|_| {}, after);
-        Arc::get_mut(&mut hooks)
-            .expect("new hook is uniquely owned")
-            .during_delta_verification = Some(Box::new(during));
-        hooks
+        let mut hooks = Self::new_base(false, false);
+        hooks.before_delta_persist = Some(Box::new(|_| {}));
+        hooks.after_delta_failure = Some(Box::new(after));
+        hooks.during_delta_verification = Some(Box::new(during));
+        Arc::new(hooks)
     }
 }
-

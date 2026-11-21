@@ -32,13 +32,17 @@ unsafe extern "C" fn observe_fts_read(
         // SAFETY: SQLite supplies a NUL-terminated table name during the callback.
         let table = unsafe { std::ffi::CStr::from_ptr(table) }.to_bytes();
         // SAFETY: SQLite supplies a NUL-terminated column name for a read.
-        if unsafe { std::ffi::CStr::from_ptr(column) }.to_bytes() != b"term" {
-            return ffi::SQLITE_OK;
-        }
+        let column = unsafe { std::ffi::CStr::from_ptr(column) }.to_bytes();
         FTS_READS.with(|reads| {
             let (mut nodes, mut docs) = reads.get();
-            nodes += usize::from(table == b"node_search_commit_vocab");
-            docs += usize::from(table == b"doc_search_commit_vocab");
+            nodes |= usize::from(
+                (table == b"node_search_commit_vocab" && column == b"term")
+                    || (table == b"node_search_data" && column == b"block"),
+            );
+            docs |= usize::from(
+                (table == b"doc_search_commit_vocab" && column == b"term")
+                    || (table == b"doc_search_data" && column == b"block"),
+            );
             reads.set((nodes, docs));
         });
     }

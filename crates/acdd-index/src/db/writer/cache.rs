@@ -20,7 +20,6 @@ use std::{
 
 const MAGIC_V4: &[u8] = b"ACDD-EXTRACTION-FACTS\0\x04";
 const MAGIC_V5: &[u8] = b"ACDD-EXTRACTION-FACTS\0\x05";
-const LOCAL_MAGIC: &[u8] = b"ACDD-LOCAL-FACTS\0\x03";
 const CHECKSUM_BYTES: usize = 32;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -28,7 +27,8 @@ thread_local! {
     static EXTRACTION_CACHE_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
-pub(super) struct PreparedCatalogStorage {
+#[derive(Debug)]
+pub struct PreparedCatalogStorage {
     pub(super) facts: TypedFacts,
     pub(super) search_texts: Vec<String>,
     pub(super) reference_keys: Vec<String>,
@@ -46,56 +46,111 @@ crate::struct_codecs! {
 
 const RAW_PREPARED_STORAGE_MAGIC: &[u8] = b"ACDD-RAW-STORAGE\0\x01";
 
-pub(super) struct CatalogStorageView<'a> {
-    pub(super) facts: &'a TypedFacts,
-    pub(super) search_texts: &'a [String],
-    pub(super) reference_keys: &'a [String],
-    pub(super) leaves: &'a BTreeMap<crate::commitments::CommitmentDomain, BTreeMap<String, String>>,
-}
+impl PreparedCatalogStorage {
+    pub(super) fn memory_bytes(&self) -> u64 {
+        fn value_bytes(value: &serde_json::Value) -> usize {
+            match value {
+                serde_json::Value::String(s) => s.capacity(),
+                serde_json::Value::Array(items) => items
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<serde_json::Value>())
+                    .saturating_add(items.iter().map(value_bytes).sum::<usize>()),
+                serde_json::Value::Object(items) => 1024usize.saturating_add(
+                    items
+                        .iter()
+                        .map(|(k, v)| {
+                            256usize
+                                .saturating_add(k.capacity())
+                                .saturating_add(value_bytes(v))
+                        })
+                        .sum::<usize>(),
+                ),
+                _ => 0,
+            }
+        }
+        fn strings(items: &Vec<String>) -> usize {
+            items
+                .capacity()
+                .saturating_mul(std::mem::size_of::<String>())
+                .saturating_add(items.iter().map(String::capacity).sum::<usize>())
+        }
+        let facts = &self.facts.facts;
+        let nodes = facts
+            .nodes
+            .capacity()
+            .saturating_mul(std::mem::size_of::<crate::models::Node>())
+            .saturating_add(
+                facts
+                    .nodes
+                    .iter()
+                    .map(|n| {
+                        n.id.capacity()
+                            + n.kind.capacity()
+                            + n.name.capacity()
+                            + n.qualname.capacity()
+                            + n.path.capacity()
+                            + n.language.capacity()
+                            + value_bytes(&n.details)
+                    })
+                    .sum::<usize>(),
+            );
+        let docs = facts
+            .docs
+            .capacity()
+            .saturating_mul(std::mem::size_of::<crate::models::DocSection>())
+            .saturating_add(
+                facts
+                    .docs
+                    .iter()
+                    .map(|d| {
+                        d.doc_id.capacity()
+                            + d.path.capacity()
+                            + d.section_title.capacity()
+                            + d.doc_type.capacity()
+                            + d.content.capacity()
+                            + strings(&d.invariants)
+                            + strings(&d.referenced_symbols)
+                    })
+                    .sum::<usize>(),
+            );
+        let errors = facts
+            .errors
+            .capacity()
+            .saturating_mul(std::mem::size_of::<crate::models::Diagnostic>())
+            .saturating_add(
+                facts
+                    .errors
+                    .iter()
+                    .map(|e| e.path.capacity() + e.message.capacity())
+                    .sum::<usize>(),
+            );
+        let leaves = 1024usize.saturating_add(
+            self.leaves
+                .iter()
+                .map(|(domain, leaves)| {
+                    1280usize
+                        + domain.capacity()
+                        + leaves
+                            .iter()
+                            .map(|(k, v)| 256usize + k.capacity() + v.capacity())
+                            .sum::<usize>()
+                })
+                .sum::<usize>(),
+        );
+        let bytes = std::mem::size_of::<Self>()
+            .saturating_add(nodes)
+            .saturating_add(docs)
+            .saturating_add(errors)
+            .saturating_add(strings(&self.search_texts))
+            .saturating_add(strings(&self.reference_keys))
+            .saturating_add(leaves);
+        u64::try_from(bytes).unwrap_or(u64::MAX)
+    }
 
-impl CatalogStorageView<'_> {
-    pub(super) fn encode(&self) -> Vec<u8> {
-        let Self {
-            facts,
-            search_texts,
-            reference_keys,
-            leaves,
-        } = self;
+    pub(super) fn encode_spill(&self) -> Vec<u8> {
         let mut raw = Vec::with_capacity(512);
         raw.extend_from_slice(RAW_PREPARED_STORAGE_MAGIC);
-        (facts.nodes.len() as u32).encode(&mut raw);
-        for node in &facts.nodes {
-            node.id.encode(&mut raw);
-            node.kind.encode(&mut raw);
-            node.name.encode(&mut raw);
-            node.qualname.encode(&mut raw);
-            node.path.encode(&mut raw);
-            node.line.encode(&mut raw);
-            node.end_line.encode(&mut raw);
-            node.is_test.encode(&mut raw);
-            node.language.encode(&mut raw);
-            node.generated.encode(&mut raw);
-            super::retained_node_details(node).encode(&mut raw);
-            Option::<crate::typed_facts::NodeSemanticEntry>::None.encode(&mut raw);
-        }
-        0u32.encode(&mut raw);
-        0u32.encode(&mut raw);
-        facts.docs.encode(&mut raw);
-        facts.errors.encode(&mut raw);
-        for _ in 0..5 {
-            0u32.encode(&mut raw);
-        }
-        search_texts.encode(&mut raw);
-        reference_keys.encode(&mut raw);
-        (leaves.len() as u32).encode(&mut raw);
-        let ordered: BTreeMap<_, _> = leaves
-            .iter()
-            .map(|(domain, leaves)| (domain.as_str(), leaves))
-            .collect();
-        for (domain, leaves) in ordered {
-            domain.encode(&mut raw);
-            leaves.encode(&mut raw);
-        }
+        self.encode(&mut raw);
         raw
     }
 }
@@ -104,37 +159,14 @@ pub(super) fn decode_prepared_catalog_storage_payload(
     bytes: &[u8],
 ) -> anyhow::Result<PreparedCatalogStorage> {
     use crate::typed_facts::binary::BinaryDecode;
-    use std::io::Read;
-
-    if let Some(raw) = bytes.strip_prefix(RAW_PREPARED_STORAGE_MAGIC) {
-        let mut cursor = 0;
-        let prepared = PreparedCatalogStorage::decode(raw, &mut cursor)
-            .context("corrupted prepared catalog storage")?;
-        anyhow::ensure!(cursor == raw.len(), "corrupted prepared catalog storage");
-        return Ok(prepared);
-    }
-
-    thread_local! {
-        static DECODER: RefCell<(zstd::zstd_safe::DCtx<'static>, Vec<u8>)> =
-            RefCell::new((zstd::zstd_safe::DCtx::create(), Vec::new()));
-    }
-    DECODER.with(|slot| {
-        let mut scratch = slot.borrow_mut();
-        let (context, decoded) = &mut *scratch;
-        context
-            .init()
-            .map_err(|code| std::io::Error::other(zstd::zstd_safe::get_error_name(code)))?;
-        decoded.clear();
-        zstd::stream::read::Decoder::with_context(bytes, context).read_to_end(decoded)?;
-        let mut cursor = 0;
-        let prepared = PreparedCatalogStorage::decode(decoded, &mut cursor)
-            .context("corrupted prepared catalog storage")?;
-        anyhow::ensure!(
-            cursor == decoded.len(),
-            "corrupted prepared catalog storage"
-        );
-        Ok(prepared)
-    })
+    let raw = bytes
+        .strip_prefix(RAW_PREPARED_STORAGE_MAGIC)
+        .context("unsupported prepared catalog storage")?;
+    let mut cursor = 0;
+    let prepared = PreparedCatalogStorage::decode(raw, &mut cursor)
+        .context("corrupted prepared catalog storage")?;
+    anyhow::ensure!(cursor == raw.len(), "corrupted prepared catalog storage");
+    Ok(prepared)
 }
 
 #[derive(Serialize)]
@@ -421,7 +453,7 @@ fn decode_entry_for_build(
     }
     let mut raw = Vec::new();
     let decoded = if let Some(length) = uncompressed_len {
-        let compressed = payload.strip_prefix(LOCAL_MAGIC)?;
+        let compressed = crate::typed_facts::compressed_facts_payload(payload)?;
         let decoder = zstd::stream::read::Decoder::new(compressed).ok()?;
         decoder
             .take(max_payload_bytes.saturating_add(1))

@@ -132,11 +132,7 @@ pub(super) fn extract_typed_source_with_digest(
 pub(super) fn sanitize_extracted_facts(facts: &mut TypedFacts) {
     for node in &mut facts.facts.nodes {
         if node.details.get("classic_global") == Some(&serde_json::Value::Bool(true)) {
-            if facts.flows.state(node).is_some() {
-                if let Some(details) = node.details.as_object_mut() {
-                    details.remove("value_flow");
-                }
-            } else if let Some(details) = node.details.as_object_mut() {
+            if let Some(details) = node.details.as_object_mut() {
                 details.remove("value_flow");
             }
         }
@@ -502,18 +498,14 @@ pub(super) fn extraction_worker(context: ExtractionWorkerContext) {
                         )
                     })
             });
-            let reused = cached.is_some();
             let encoded_facts = match cached {
                 Some(encoded) => encoded,
-                None => acdd_index::typed_facts::encode_facts(&facts)?,
-            };
-            if !reused {
-                if let Ok(Some(length)) = zstd::zstd_safe::get_frame_content_size(
-                    &encoded_facts[b"ACDD-LOCAL-FACTS\0\x03".len()..],
-                ) {
-                    extraction_cache.store_encoded(&key, &encoded_facts, length);
+                None => {
+                    let (encoded, length) = acdd_index::typed_facts::encode_facts_with_len(&facts)?;
+                    extraction_cache.store_encoded(&key, &encoded, length);
+                    encoded
                 }
-            }
+            };
             let mut catalog = SymbolCatalog::default();
             catalog.insert_typed(file.path.clone(), facts, false);
             Ok((file, catalog, encoded_facts, storage_rows, cache_hit))
@@ -553,7 +545,6 @@ pub(super) fn extraction_worker(context: ExtractionWorkerContext) {
         }
     }
 }
-
 
 #[allow(clippy::too_many_arguments)]
 fn atomic_build(
@@ -671,16 +662,10 @@ fn atomic_build(
         );
         let link_ms = linking.elapsed().as_secs_f64() * 1000.;
 
-        // Linker caches have been dropped before storage payloads are restored.
-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        unsafe {
-            // SAFETY: no pointers are passed; glibc synchronizes allocator arenas.
-            libc::malloc_trim(0);
-        }
         let facts = streamed.catalog.into_files();
         let staged_disk_bytes = fs::metadata(&payload_spool_path)?.len();
 
-        let mut report = db_writer::populate_owned_with_store(
+        let mut report = db_writer::populate_owned(
             &mut streamed.connection,
             root,
             adapter,
@@ -1000,4 +985,3 @@ fn build_inner_with_cache(
     report["output"] = json!(output);
     Ok(report)
 }
-

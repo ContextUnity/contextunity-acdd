@@ -9,7 +9,10 @@ pub(super) fn consume_pipeline_results(
     counters: &PipelineCounters,
     test_hooks: Option<&PipelineTestHooks>,
 ) -> Result<PipelineConsumerOutput> {
-    let mut payload_store = PayloadStore::new(OpenOptions::new().write(true).open(payload_spool_path)?, ram_budget);
+    let mut payload_store = PayloadStore::new(
+        OpenOptions::new().write(true).open(payload_spool_path)?,
+        ram_budget,
+    );
     let transaction = connection.transaction()?;
     let mut statement =
         transaction.prepare_cached("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)")?;
@@ -43,33 +46,30 @@ pub(super) fn consume_pipeline_results(
             storage_rows,
             permit,
         } = item;
-        let inserted =
-            statement.execute(params![file.path, file.digest, i64::try_from(file.bytes)?]);
+        let path = file.path.clone();
+        let encoded_facts_ref = payload_store.stage(encoded_facts)?;
+        let storage_rows_ref = payload_store.stage_prepared(storage_rows)?;
+        entries.push(file);
+        catalog.extend(file_catalog);
+        staged_payloads.insert(
+            path,
+            StagedFilePayload {
+                encoded_facts: encoded_facts_ref,
+                storage_rows: Some(storage_rows_ref),
+            },
+        );
         counters.ingestion_nanos.fetch_add(
             ingestion_started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
             Ordering::AcqRel,
         );
-        match inserted {
-            Ok(_) => {
-                let path = file.path.clone();
-                let encoded_facts_ref = payload_store.stage(encoded_facts)?;
-                let storage_rows_ref = payload_store.stage(storage_rows)?;
-                entries.push(file);
-                catalog.extend(file_catalog);
-                staged_payloads.insert(
-                    path,
-                    StagedFilePayload {
-                        encoded_facts: encoded_facts_ref,
-                        storage_rows: Some(storage_rows_ref),
-                    },
-                );
-                counters.ingested_files.fetch_add(1, Ordering::AcqRel);
-            }
-            Err(error) => control.cancel(error),
-        }
+        counters.ingested_files.fetch_add(1, Ordering::AcqRel);
         drop(permit);
     }
     payload_store.flush()?;
+    entries.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+    for file in &entries {
+        statement.execute(params![file.path, file.digest, i64::try_from(file.bytes)?])?;
+    }
     drop(statement);
     if let Some(failure) = control.failure() {
         transaction.rollback()?;
@@ -83,4 +83,3 @@ pub(super) fn consume_pipeline_results(
         staged_payloads,
     })
 }
-

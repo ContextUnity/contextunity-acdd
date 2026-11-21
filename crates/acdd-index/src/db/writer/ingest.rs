@@ -28,6 +28,92 @@ pub(super) struct PreparedCoverage<'a> {
     html_islands: hashbrown::HashMap<&'a str, Vec<(usize, usize)>>,
 }
 
+/// Graph endpoints and unique edges shared by cold persistence and sealing.
+pub(super) struct PreparedGraph<'a> {
+    pub(super) node_by_id: hashbrown::HashMap<&'a str, (&'a str, i64)>,
+    pub(super) unique_edges: Vec<PreparedEdge<'a>>,
+    pub(super) dependencies: Vec<PreparedDependency<'a>>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+pub(super) struct PreparedDependency<'a> {
+    pub(super) owner: &'a str,
+    pub(super) target_hash: Option<i64>,
+    pub(super) kind: &'a str,
+    pub(super) symbol: &'a str,
+    pub(super) resolution: &'a str,
+}
+
+pub(super) struct PreparedEdge<'a> {
+    pub(super) edge: &'a crate::models::compact_graph::Edge,
+    pub(super) src_hash: i64,
+    pub(super) dst_hash: i64,
+    pub(super) count: i64,
+}
+
+impl<'a> PreparedGraph<'a> {
+    pub(super) fn new(
+        graph: &'a CompactGraph,
+        facts: &'a BTreeMap<String, TypedFacts>,
+    ) -> Result<Self> {
+        let node_by_id: hashbrown::HashMap<_, _> = facts
+            .values()
+            .flat_map(|facts| &facts.nodes)
+            .map(|node| {
+                (
+                    node.id.as_str(),
+                    (node.path.as_str(), stable_hash64(&node.id)),
+                )
+            })
+            .collect();
+        let mut indexes = hashbrown::HashMap::new();
+        let mut unique_edges: Vec<PreparedEdge<'a>> = Vec::with_capacity(graph.edges.len());
+        let mut resolved_edge_paths = Vec::with_capacity(graph.edges.len());
+        for edge in &graph.edges {
+            let &(src_path, src_hash) = node_by_id.get(edge.src.as_str()).with_context(|| {
+                format!(
+                    "edge {} has missing source endpoint {}",
+                    edge.kind.as_str(),
+                    edge.src
+                )
+            })?;
+            let &(dst_path, dst_hash) = node_by_id.get(edge.dst.as_str()).with_context(|| {
+                format!(
+                    "edge {} has missing destination endpoint {}",
+                    edge.kind.as_str(),
+                    edge.dst
+                )
+            })?;
+            resolved_edge_paths.push((
+                (src_path != edge.path.as_ref()).then(|| stable_hash64(src_path)),
+                (dst_path != edge.path.as_ref()).then(|| stable_hash64(dst_path)),
+            ));
+            let key = (src_hash, edge.kind.as_str(), dst_hash);
+            if let Some(&index) = indexes.get(&key) {
+                let row: &mut PreparedEdge<'a> = &mut unique_edges[index];
+                row.count = row
+                    .count
+                    .checked_add(1)
+                    .context("edge occurrence count overflow")?;
+            } else {
+                indexes.insert(key, unique_edges.len());
+                unique_edges.push(PreparedEdge {
+                    edge,
+                    src_hash,
+                    dst_hash,
+                    count: 1,
+                });
+            }
+        }
+        let dependencies = prepare_dependencies(graph, facts, None, &resolved_edge_paths)?;
+        Ok(Self {
+            node_by_id,
+            unique_edges,
+            dependencies,
+        })
+    }
+}
+
 impl<'a> PreparedCoverage<'a> {
     pub(super) fn new(
         graph: &'a CompactGraph,
@@ -187,7 +273,16 @@ pub(super) fn persist_delta_files(
     facts: &BTreeMap<String, TypedFacts>,
     dirty_fts: crate::db::commitments::FtsDirtySet,
 ) -> Result<FilePersistenceTimings> {
-    persist_files_impl(tx, path_cache, entries, facts, None, None, Some(dirty_fts))
+    persist_files_impl(
+        tx,
+        path_cache,
+        entries,
+        facts,
+        None,
+        None,
+        Some(dirty_fts),
+        false,
+    )
 }
 
 #[cfg(test)]
@@ -202,7 +297,7 @@ pub(super) fn persist_files(
         node_search: true,
         doc_search: true,
     });
-    persist_files_impl(tx, path_cache, entries, facts, None, None, dirty)
+    persist_files_impl(tx, path_cache, entries, facts, None, None, dirty, false)
 }
 
 pub(super) fn persist_files_with_ranks(
@@ -212,7 +307,16 @@ pub(super) fn persist_files_with_ranks(
     facts: &BTreeMap<String, TypedFacts>,
     graph_ranks: Option<&hashbrown::HashMap<&str, Option<i64>>>,
 ) -> Result<FilePersistenceTimings> {
-    persist_files_impl(tx, path_cache, entries, facts, None, graph_ranks, None)
+    persist_files_impl(
+        tx,
+        path_cache,
+        entries,
+        facts,
+        None,
+        graph_ranks,
+        None,
+        false,
+    )
 }
 
 pub(super) struct LoadedCatalogFile {
@@ -235,6 +339,7 @@ pub(super) fn persist_catalog_files(
     facts: &BTreeMap<String, TypedFacts>,
     loader: ChunkLoader<'_>,
     graph_ranks: &hashbrown::HashMap<&str, Option<i64>>,
+    inventory_ready: bool,
 ) -> Result<FilePersistenceTimings> {
     persist_files_impl(
         tx,
@@ -244,9 +349,11 @@ pub(super) fn persist_catalog_files(
         Some(loader),
         Some(graph_ranks),
         None,
+        inventory_ready,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn persist_files_impl(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
@@ -255,6 +362,7 @@ fn persist_files_impl(
     mut loader: Option<ChunkLoader<'_>>,
     graph_ranks: Option<&hashbrown::HashMap<&str, Option<i64>>>,
     dirty_fts: Option<crate::db::commitments::FtsDirtySet>,
+    inventory_ready: bool,
 ) -> Result<FilePersistenceTimings> {
     let bulk_search = dirty_fts.is_none();
     let mut node_id: i64 = tx.query_row("SELECT coalesce(max(node_id),0)FROM nodes", [], |r| {
@@ -265,23 +373,6 @@ fn persist_files_impl(
     let mut encode_facts_ms = 0.0;
     let mut local_facts_leaves = std::collections::BTreeMap::new();
 
-    let mut stmt_source_inv = (!bulk_search)
-        .then(|| tx.prepare("INSERT INTO source_inventory VALUES(?1,'indexed',?2,?3)"))
-        .transpose()?;
-    let mut stmt_files = (!bulk_search)
-        .then(|| tx.prepare("INSERT INTO files VALUES(?1,'indexed',?2,?3,?4,?5,0,?6)"))
-        .transpose()?;
-    let mut stmt_local_facts = (!bulk_search)
-        .then(|| tx.prepare("INSERT INTO local_facts VALUES(?1,?2,?3,?4,0,?5)"))
-        .transpose()?;
-    let mut stmt_nodes = (!bulk_search)
-        .then(|| {
-            tx.prepare("INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)")
-        })
-        .transpose()?;
-    let mut stmt_node_search = (!bulk_search && dirty_fts.as_ref().is_none_or(|d| d.node_search))
-        .then(|| tx.prepare("INSERT INTO node_search(rowid,search_text)VALUES(?1,?2)"))
-        .transpose()?;
     let mut shared_owner_batch = MultiValueBatch::<4>::new(
         tx,
         "INSERT OR IGNORE INTO shared_owners(kind_id,key_hash,owner_id,ordinal) VALUES",
@@ -291,13 +382,6 @@ fn persist_files_impl(
     } else {
         SharedKeyCache::new_batched_delta(tx)?
     };
-    let mut stmt_doc_sec = (!bulk_search)
-        .then(|| tx.prepare(if dirty_fts.as_ref().is_some_and(|d| !d.doc_search) {
-            "INSERT INTO doc_sections VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(doc_id) DO UPDATE SET path=excluded.path,section_title=excluded.section_title,doc_type=excluded.doc_type,content=excluded.content,invariants=excluded.invariants,referenced_symbols=excluded.referenced_symbols,mtime=excluded.mtime,size=excluded.size,is_invariant=excluded.is_invariant"
-        } else {
-            "INSERT INTO doc_sections VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
-        }))
-        .transpose()?;
     let mut stmt_doc_search = (!bulk_search && dirty_fts.as_ref().is_none_or(|d| d.doc_search))
         .then(|| {
             tx.prepare(
@@ -307,7 +391,7 @@ fn persist_files_impl(
         .transpose()?;
     let mut stmt_errors = tx.prepare("INSERT INTO errors VALUES(?1,?2,?3)")?;
 
-    let mut source_inventory_batch = bulk_search
+    let mut source_inventory_batch = (!inventory_ready)
         .then(|| {
             MultiValueBatch::<4, BorrowedSqlValue<'_>>::new(
                 tx,
@@ -315,43 +399,36 @@ fn persist_files_impl(
             )
         })
         .transpose()?;
-    let local_facts_batch_rows = bulk_search
-        .then(|| multi_value_batch_rows::<6>(tx).map(|rows| rows.min(COLD_LOCAL_FACTS_BATCH_ROWS)))
-        .transpose()?;
-    let mut file_batch = Vec::<[SqlValue; 8]>::new();
+    let local_facts_batch_rows = multi_value_batch_rows::<6>(tx)?.min(COLD_LOCAL_FACTS_BATCH_ROWS);
+    let mut file_batch =
+        MultiValueBatch::<8, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO files VALUES")?;
     let mut owned_search_batch = Vec::<SearchRow>::new();
     let mut fts_insert_ms = 0.0;
     let mut node_row_insert_ms = bulk_search.then_some(0.0);
     let mut reusable_search_buffers = Vec::<String>::new();
-    let mut incremental_search_buffer = String::new();
     let mut local_facts_batch = Vec::<(&FileEntry, Vec<u8>)>::new();
-    let mut doc_sections_batch = bulk_search
-        .then(|| {
-            MultiValueBatch::<10, BorrowedSqlValue<'static>>::new(
-                tx,
-                "INSERT INTO doc_sections VALUES",
-            )
-        })
-        .transpose()?;
+    let suffix = if dirty_fts.as_ref().is_some_and(|d| !d.doc_search) {
+        " ON CONFLICT(doc_id) DO UPDATE SET path=excluded.path,section_title=excluded.section_title,doc_type=excluded.doc_type,content=excluded.content,invariants=excluded.invariants,referenced_symbols=excluded.referenced_symbols,mtime=excluded.mtime,size=excluded.size,is_invariant=excluded.is_invariant"
+    } else {
+        ""
+    };
+    let mut doc_sections_batch = MultiValueBatch::<10, BorrowedSqlValue<'static>>::with_suffix(
+        tx,
+        "INSERT INTO doc_sections VALUES",
+        suffix,
+    )?;
     let mut shared_owner_rows = Vec::<[i64; 4]>::new();
     let mut node_domain = seal::NodeDomain::new();
-    let (file_batch_rows, node_batch_rows, owned_search_batch_rows) = if bulk_search {
-        (
-            Some(multi_value_batch_rows::<8>(tx)?),
-            Some(multi_value_batch_rows::<14>(tx)?),
-            Some(multi_value_batch_rows::<2>(tx)?),
-        )
-    } else {
-        (None, None, None)
-    };
+    let owned_search_batch_rows = multi_value_batch_rows::<2>(tx)?;
 
-    let chunk_rows = local_facts_batch_rows.unwrap_or(1);
+    let chunk_rows = local_facts_batch_rows;
     for file_chunk in entries.chunks(chunk_rows) {
         let mut loaded = loader
             .as_mut()
             .map(|loader| loader(file_chunk, facts))
             .transpose()?;
-        let mut node_batch = Vec::with_capacity(node_batch_rows.unwrap_or_default());
+        let mut node_batch =
+            MultiValueBatch::<14, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO nodes VALUES")?;
         let mut encoded_chunk: Vec<(Vec<u8>, (String, String))> =
             if let Some(loaded) = loaded.as_mut() {
                 loaded
@@ -363,7 +440,7 @@ fn persist_files_impl(
                         )
                     })
                     .collect()
-            } else if local_facts_batch_rows.is_some() {
+            } else {
                 let started = Instant::now();
                 let encode = |file: &FileEntry| {
                     let facts = facts.get(&file.path).context("missing extracted facts")?;
@@ -387,8 +464,6 @@ fn persist_files_impl(
                 };
                 encode_facts_ms += started.elapsed().as_secs_f64() * 1000.0;
                 encoded
-            } else {
-                Vec::new()
             };
         let mut loaded_search_texts = loaded.as_mut().map(|loaded| {
             loaded
@@ -487,70 +562,23 @@ fn persist_files_impl(
                     BorrowedSqlValue::Text(&file.digest),
                     BorrowedSqlValue::Integer(i64::try_from(file.bytes)?),
                 ])?;
-            } else {
-                stmt_source_inv
-                    .as_mut()
-                    .context("missing incremental source inventory insert")?
-                    .execute(params![file.path, file.digest, file.bytes])?;
             }
-            if bulk_search {
-                file_batch.push([
-                    SqlValue::Text(file.path.clone()),
-                    SqlValue::Text("indexed".into()),
-                    SqlValue::Text(file.digest.clone()),
-                    SqlValue::Integer(i64::try_from(file.bytes)?),
-                    SqlValue::Text(file.language.clone()),
-                    SqlValue::Integer(i64::from(is_test(&file.path))),
-                    SqlValue::Integer(0),
-                    SqlValue::Integer(stable_hash64(&file.path)),
-                ]);
-                if file_batch.len() == file_batch_rows.context("missing cold file batch size")? {
-                    insert_multi_value_batch(tx, "INSERT INTO files VALUES", &file_batch)?;
-                    file_batch.clear();
-                }
-            } else {
-                stmt_files
-                    .as_mut()
-                    .context("missing incremental file insert")?
-                    .execute(params![
-                        file.path,
-                        file.digest,
-                        file.bytes,
-                        file.language,
-                        is_test(&file.path),
-                        stable_hash64(&file.path)
-                    ])?;
-            }
-            if let Some(batch_rows) = local_facts_batch_rows {
-                let (blob, leaf) = &mut encoded_chunk[chunk_index];
-                local_facts_leaves.insert(std::mem::take(&mut leaf.0), std::mem::take(&mut leaf.1));
-                local_facts_batch.push((file, std::mem::take(blob)));
-                if local_facts_batch.len() == batch_rows {
-                    flush_local_facts_batch(tx, &local_facts_batch)?;
-                    local_facts_batch.clear();
-                }
-            } else {
-                let started = Instant::now();
-                let blob = encode_facts(f)?;
-                encode_facts_ms += started.elapsed().as_secs_f64() * 1000.0;
-                let (leaf_key, leaf_hash) = seal::local_facts_leaf(
-                    &file.path,
-                    &file.digest,
-                    &file.language,
-                    is_test(&file.path),
-                    &blob,
-                )?;
-                local_facts_leaves.insert(leaf_key, leaf_hash);
-                stmt_local_facts
-                    .as_mut()
-                    .context("missing incremental local facts insert")?
-                    .execute(params![
-                        file.path,
-                        file.digest,
-                        file.language,
-                        is_test(&file.path),
-                        blob.as_slice()
-                    ])?;
+            file_batch.push([
+                BorrowedSqlValue::Text(&file.path),
+                BorrowedSqlValue::Text("indexed"),
+                BorrowedSqlValue::Text(&file.digest),
+                BorrowedSqlValue::Integer(i64::try_from(file.bytes)?),
+                BorrowedSqlValue::Text(&file.language),
+                BorrowedSqlValue::Integer(i64::from(is_test(&file.path))),
+                BorrowedSqlValue::Integer(0),
+                BorrowedSqlValue::Integer(stable_hash64(&file.path)),
+            ])?;
+            let (blob, leaf) = &mut encoded_chunk[chunk_index];
+            local_facts_leaves.insert(std::mem::take(&mut leaf.0), std::mem::take(&mut leaf.1));
+            local_facts_batch.push((file, std::mem::take(blob)));
+            if local_facts_batch.len() == local_facts_batch_rows {
+                flush_local_facts_batch(tx, &local_facts_batch)?;
+                local_facts_batch.clear();
             }
             let node_id_start = node_id;
             node_id = node_id
@@ -575,57 +603,28 @@ fn persist_files_impl(
                 } else {
                     path_cache.get_or_insert(tx, &n.path)?
                 };
-                if bulk_search {
-                    node_domain.push(&file.path, n, &details_bytes)?;
-                    node_batch.push([
-                        BorrowedSqlValue::Integer(row_node_id),
-                        BorrowedSqlValue::Text(n.id.as_str()),
-                        BorrowedSqlValue::Text(n.kind.as_str()),
-                        BorrowedSqlValue::Text(n.name.as_str()),
-                        BorrowedSqlValue::Text(n.qualname.as_str()),
-                        BorrowedSqlValue::Integer(node_path_id),
-                        BorrowedSqlValue::Integer(i64::try_from(n.line)?),
-                        BorrowedSqlValue::Integer(i64::try_from(n.end_line)?),
-                        BorrowedSqlValue::Integer(i64::from(n.is_test)),
-                        BorrowedSqlValue::Text(n.language.as_str()),
-                        BorrowedSqlValue::Integer(i64::from(n.generated)),
-                        BorrowedSqlValue::OwnedJsonText(details_bytes),
-                        BorrowedSqlValue::Integer(search_id),
-                        BorrowedSqlValue::Integer(owner_id),
-                    ]);
-                    if node_batch.len()
-                        == node_batch_rows.context("missing cold node batch size")?
-                    {
-                        let insert_ms = flush_node_batch(tx, &mut node_batch)?;
-                        if let Some(total_ms) = node_row_insert_ms.as_mut() {
-                            *total_ms += insert_ms;
-                        }
-                    }
-                } else {
-                    node_domain.push(&file.path, n, &details_bytes)?;
-                    let details = std::str::from_utf8(&details_bytes)
-                        .context("serialized node details are not UTF-8")?;
-                    stmt_nodes
-                        .as_mut()
-                        .context("missing incremental node insert")?
-                        .execute(params![
-                            row_node_id,
-                            n.id,
-                            n.kind,
-                            n.name,
-                            n.qualname,
-                            node_path_id,
-                            n.line,
-                            n.end_line,
-                            n.is_test,
-                            n.language,
-                            n.generated,
-                            details,
-                            search_id,
-                            owner_id
-                        ])?;
+                node_domain.push(&file.path, n, &details_bytes)?;
+                let started = Instant::now();
+                node_batch.push([
+                    BorrowedSqlValue::Integer(row_node_id),
+                    BorrowedSqlValue::Text(n.id.as_str()),
+                    BorrowedSqlValue::Text(n.kind.as_str()),
+                    BorrowedSqlValue::Text(n.name.as_str()),
+                    BorrowedSqlValue::Text(n.qualname.as_str()),
+                    BorrowedSqlValue::Integer(node_path_id),
+                    BorrowedSqlValue::Integer(i64::try_from(n.line)?),
+                    BorrowedSqlValue::Integer(i64::try_from(n.end_line)?),
+                    BorrowedSqlValue::Integer(i64::from(n.is_test)),
+                    BorrowedSqlValue::Text(n.language.as_str()),
+                    BorrowedSqlValue::Integer(i64::from(n.generated)),
+                    BorrowedSqlValue::OwnedJsonText(details_bytes),
+                    BorrowedSqlValue::Integer(search_id),
+                    BorrowedSqlValue::Integer(owner_id),
+                ])?;
+                if let Some(total_ms) = node_row_insert_ms.as_mut() {
+                    *total_ms += started.elapsed().as_secs_f64() * 1000.;
                 }
-                if bulk_search {
+                if dirty_fts.as_ref().is_none_or(|d| d.node_search) {
                     let search = if let Some(prepared) = search_texts.as_mut() {
                         reusable_search_buffers.pop();
                         std::mem::take(&mut prepared[node_index])
@@ -638,19 +637,13 @@ fn persist_files_impl(
                         search_id,
                         text: search,
                     });
-                    if owned_search_batch.len()
-                        == owned_search_batch_rows.context("missing cold search batch size")?
-                    {
+                    if owned_search_batch.len() == owned_search_batch_rows {
                         fts_insert_ms += flush_owned_search_batch(
                             tx,
                             &mut owned_search_batch,
                             &mut reusable_search_buffers,
                         )?;
                     }
-                } else if let Some(stmt_node_search) = stmt_node_search.as_mut() {
-                    write_node_search_text(&mut incremental_search_buffer, n, f);
-                    stmt_node_search.execute(params![search_id, &incremental_search_buffer])?;
-                    incremental_search_buffer.clear();
                 }
                 let key_hash = shared_key_cache.get_or_insert_node(&n.qualname, row_node_id)?;
                 shared_owner_rows.push([0, key_hash, owner_id, row_node_id]);
@@ -679,39 +672,22 @@ fn persist_files_impl(
             }
             for d in &f.docs {
                 docs_count += 1;
-                if let Some(batch) = doc_sections_batch.as_mut() {
-                    batch.push([
-                        BorrowedSqlValue::OwnedText(d.doc_id.clone()),
-                        BorrowedSqlValue::OwnedText(d.path.clone()),
-                        BorrowedSqlValue::OwnedText(d.section_title.clone()),
-                        BorrowedSqlValue::OwnedText(d.doc_type.clone()),
-                        BorrowedSqlValue::OwnedText(d.content.clone()),
-                        BorrowedSqlValue::OwnedText(serde_json::to_string(&d.invariants)?),
-                        BorrowedSqlValue::OwnedText(serde_json::to_string(&d.referenced_symbols)?),
-                        BorrowedSqlValue::Real(d.mtime),
-                        BorrowedSqlValue::Integer(i64::try_from(d.size)?),
-                        BorrowedSqlValue::Integer(i64::from(d.is_invariant)),
-                    ])?;
-                } else {
-                    stmt_doc_sec
-                        .as_mut()
-                        .context("missing incremental document section insert")?
-                        .execute(params![
-                            d.doc_id,
-                            d.path,
-                            d.section_title,
-                            d.doc_type,
-                            d.content,
-                            serde_json::to_string(&d.invariants)?,
-                            serde_json::to_string(&d.referenced_symbols)?,
-                            d.mtime,
-                            d.size,
-                            d.is_invariant
-                        ])?;
-                }
+                doc_sections_batch.push([
+                    BorrowedSqlValue::OwnedText(d.doc_id.clone()),
+                    BorrowedSqlValue::OwnedText(d.path.clone()),
+                    BorrowedSqlValue::OwnedText(d.section_title.clone()),
+                    BorrowedSqlValue::OwnedText(d.doc_type.clone()),
+                    BorrowedSqlValue::OwnedText(d.content.clone()),
+                    BorrowedSqlValue::OwnedText(serde_json::to_string(&d.invariants)?),
+                    BorrowedSqlValue::OwnedText(serde_json::to_string(&d.referenced_symbols)?),
+                    BorrowedSqlValue::Real(d.mtime),
+                    BorrowedSqlValue::Integer(i64::try_from(d.size)?),
+                    BorrowedSqlValue::Integer(i64::from(d.is_invariant)),
+                ])?;
             }
             if !f.docs.is_empty() {
                 if let Some(stmt) = stmt_doc_search.as_mut() {
+                    doc_sections_batch.flush()?;
                     stmt.execute([&file.path])?;
                 }
             }
@@ -719,7 +695,9 @@ fn persist_files_impl(
                 stmt_errors.execute(params![e.path, e.line, e.message])?;
             }
         }
-        let insert_ms = flush_node_batch(tx, &mut node_batch)?;
+        let started = Instant::now();
+        node_batch.flush()?;
+        let insert_ms = started.elapsed().as_secs_f64() * 1000.;
         if let Some(total_ms) = node_row_insert_ms.as_mut() {
             *total_ms += insert_ms;
         }
@@ -729,11 +707,9 @@ fn persist_files_impl(
     }
 
     flush_local_facts_batch(tx, &local_facts_batch)?;
-    if let Some(batch) = doc_sections_batch.as_mut() {
-        batch.flush()?;
-    }
+    doc_sections_batch.flush()?;
     let node_leaves = node_domain.finish()?;
-    insert_multi_value_batch(tx, "INSERT INTO files VALUES", &file_batch)?;
+    file_batch.flush()?;
     fts_insert_ms +=
         flush_owned_search_batch(tx, &mut owned_search_batch, &mut reusable_search_buffers)?;
     if let Some(batch) = source_inventory_batch.as_mut() {
@@ -749,41 +725,26 @@ fn persist_files_impl(
         fts_insert_ms,
         node_row_insert_ms,
         encode_facts_ms,
-        local_facts_batch_rows: local_facts_batch_rows.unwrap_or(1),
+        local_facts_batch_rows,
         local_facts_leaves,
         node_leaves,
     })
 }
 
 fn flush_local_facts_batch(tx: &Connection, batch: &[(&FileEntry, Vec<u8>)]) -> Result<()> {
-    let rows: Vec<_> = batch
-        .iter()
-        .map(|(file, blob)| {
-            [
-                BorrowedSqlValue::Text(&file.path),
-                BorrowedSqlValue::Text(&file.digest),
-                BorrowedSqlValue::Text(&file.language),
-                BorrowedSqlValue::Integer(i64::from(is_test(&file.path))),
-                BorrowedSqlValue::Integer(0),
-                BorrowedSqlValue::Blob(blob),
-            ]
-        })
-        .collect();
-    insert_multi_value_batch(tx, "INSERT INTO local_facts VALUES", &rows)
-}
-
-fn flush_node_batch<'a>(
-    tx: &Connection,
-    batch: &mut Vec<[BorrowedSqlValue<'a>; 14]>,
-) -> Result<f64> {
-    if batch.is_empty() {
-        return Ok(0.0);
+    let mut rows =
+        MultiValueBatch::<6, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO local_facts VALUES")?;
+    for (file, blob) in batch {
+        rows.push([
+            BorrowedSqlValue::Text(&file.path),
+            BorrowedSqlValue::Text(&file.digest),
+            BorrowedSqlValue::Text(&file.language),
+            BorrowedSqlValue::Integer(i64::from(is_test(&file.path))),
+            BorrowedSqlValue::Integer(0),
+            BorrowedSqlValue::Blob(blob),
+        ])?;
     }
-    let started = Instant::now();
-    insert_multi_value_batch(tx, "INSERT INTO nodes VALUES", batch)?;
-    let insert_ms = started.elapsed().as_secs_f64() * 1000.;
-    batch.clear();
-    Ok(insert_ms)
+    rows.flush()
 }
 
 pub(super) fn write_node_search_text(search: &mut String, node: &Node, facts: &TypedFacts) {
@@ -926,21 +887,19 @@ fn flush_owned_search_batch(
     reusable_buffers: &mut Vec<String>,
 ) -> Result<f64> {
     batch.sort_unstable_by_key(|row| row.search_id);
-    let rows: Vec<_> = batch
-        .iter()
-        .map(|row| {
-            [
-                BorrowedSqlValue::Integer(row.search_id),
-                BorrowedSqlValue::Text(&row.text),
-            ]
-        })
-        .collect();
     let started = Instant::now();
-    insert_multi_value_batch(
+    let mut rows = MultiValueBatch::<2, BorrowedSqlValue<'_>>::new(
         tx,
         "INSERT INTO node_search(rowid,search_text) VALUES",
-        &rows,
     )?;
+    for row in batch.iter() {
+        rows.push([
+            BorrowedSqlValue::Integer(row.search_id),
+            BorrowedSqlValue::Text(&row.text),
+        ])?;
+    }
+    rows.flush()?;
+    drop(rows);
     let fts_ms = started.elapsed().as_secs_f64() * 1000.;
     for row in batch.drain(..) {
         reusable_buffers.push(row.text);
@@ -1011,19 +970,74 @@ struct StoredEdge<'a> {
     first: usize,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-struct StoredDependency<'a> {
-    owner: i64,
-    target: Option<i64>,
-    kind: &'a str,
-    symbol: &'a str,
-    resolution: &'a str,
-}
-
-#[derive(Default)]
-struct DependencyInput<'a> {
-    edges: Vec<(usize, &'a [crate::models::compact_graph::Edge])>,
-    coverage: Vec<&'a [crate::models::compact_graph::Coverage]>,
+fn prepare_dependencies<'a>(
+    graph: &'a CompactGraph,
+    facts: &'a BTreeMap<String, TypedFacts>,
+    dependency_owners: Option<&std::collections::BTreeSet<String>>,
+    resolved_edge_paths: &[(Option<i64>, Option<i64>)],
+) -> Result<Vec<PreparedDependency<'a>>> {
+    anyhow::ensure!(
+        graph.edges.len() == resolved_edge_paths.len(),
+        "missing resolved edge endpoint paths"
+    );
+    let mut dependencies = Vec::new();
+    for (edge, (src, dst)) in graph.edges.iter().zip(resolved_edge_paths) {
+        for target in [src, dst].into_iter().flatten() {
+            dependencies.push(PreparedDependency {
+                owner: edge.path.as_ref(),
+                target_hash: Some(*target),
+                kind: edge.kind.as_str(),
+                symbol: edge.evidence.as_str(),
+                resolution: "resolved",
+            });
+        }
+    }
+    for row in &graph.coverage {
+        if row.status != "resolved" {
+            dependencies.push(PreparedDependency {
+                owner: row.path.as_ref(),
+                target_hash: None,
+                kind: "unresolved",
+                symbol: &row.expression,
+                resolution: row.status.as_str(),
+            });
+        }
+    }
+    #[cfg(feature = "lang-html")]
+    for (path, file) in facts {
+        if dependency_owners.is_some_and(|owners| !owners.contains(path)) {
+            continue;
+        }
+        for node in file.nodes.iter().filter(|node| {
+            node.language == "python"
+                && matches!(node.kind.as_str(), "module" | "function" | "method")
+        }) {
+            let Some(flow) = file.flows.get(node) else {
+                continue;
+            };
+            for context in flow.template_contexts() {
+                let Some(target) = context.target_path.as_deref() else {
+                    continue;
+                };
+                if acdd_core::config::workspace_path(path).0
+                    == acdd_core::config::workspace_path(target).0
+                {
+                    dependencies.push(PreparedDependency {
+                        owner: path,
+                        target_hash: Some(stable_hash64(target)),
+                        kind: "renders",
+                        symbol: &context.target,
+                        resolution: "resolved",
+                    });
+                }
+            }
+        }
+    }
+    #[cfg(not(feature = "lang-html"))]
+    let _ = (facts, dependency_owners);
+    dependencies.sort_unstable();
+    dependencies.dedup();
+    Ok(dependencies)
 }
 
 fn persist_dependencies(
@@ -1033,109 +1047,30 @@ fn persist_dependencies(
     facts: &BTreeMap<String, TypedFacts>,
     dependency_owners: Option<&std::collections::BTreeSet<String>>,
     resolved_edge_paths: &[(Option<i64>, Option<i64>)],
+    prepared: Option<&PreparedGraph<'_>>,
 ) -> Result<()> {
-    let mut inputs = BTreeMap::<&str, DependencyInput<'_>>::new();
-    for path in facts.keys() {
-        inputs.entry(path).or_default();
-    }
-    let mut edge_offset = 0usize;
-    for edges in graph.edges.chunk_by(|left, right| left.path == right.path) {
-        inputs
-            .entry(&edges[0].path)
-            .or_default()
-            .edges
-            .push((edge_offset, edges));
-        edge_offset = edge_offset
-            .checked_add(edges.len())
-            .context("edge occurrence offset overflow")?;
-    }
-    for rows in graph
-        .coverage
-        .chunk_by(|left, right| left.path == right.path)
-    {
-        inputs.entry(&rows[0].path).or_default().coverage.push(rows);
-    }
+    let generated;
+    let dependencies = if let Some(prepared) = prepared {
+        &prepared.dependencies
+    } else {
+        generated = prepare_dependencies(graph, facts, dependency_owners, resolved_edge_paths)?;
+        &generated
+    };
     let mut batch =
         MultiValueBatch::<6, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO dependencies VALUES")?;
-    for (path, input) in inputs {
-        let owner = path_cache.get_or_insert(tx, path)?;
-        let mut dependencies = Vec::new();
-        #[cfg(feature = "lang-html")]
-        if dependency_owners.is_none_or(|owners| owners.contains(path)) {
-            if let Some(file_facts) = facts.get(path) {
-                for node in file_facts.nodes.iter().filter(|node| {
-                    node.language == "python"
-                        && matches!(node.kind.as_str(), "module" | "function" | "method")
-                }) {
-                    let Some(flow) = file_facts.flows.get(node) else {
-                        continue;
-                    };
-                    for context in flow.template_contexts() {
-                        let Some(target) = context.target_path.as_ref() else {
-                            continue;
-                        };
-                        if acdd_core::config::workspace_path(path).0
-                            != acdd_core::config::workspace_path(target).0
-                        {
-                            continue;
-                        }
-                        dependencies.push(StoredDependency {
-                            owner,
-                            target: Some(stable_hash64(target)),
-                            kind: "renders",
-                            symbol: &context.target,
-                            resolution: "resolved",
-                        });
-                    }
-                }
-            }
-        }
-        #[cfg(not(feature = "lang-html"))]
-        let _ = dependency_owners;
-        for (edge_offset, edges) in input.edges {
-            for (index, edge) in edges.iter().enumerate() {
-                let (src_target, dst_target) = *resolved_edge_paths
-                    .get(edge_offset + index)
-                    .context("missing resolved edge endpoint paths")?;
-                for target in [src_target, dst_target].into_iter().flatten() {
-                    dependencies.push(StoredDependency {
-                        owner,
-                        target: Some(target),
-                        kind: edge.kind.as_str(),
-                        symbol: edge.evidence.as_str(),
-                        resolution: "resolved",
-                    });
-                }
-            }
-        }
-        for row in input
-            .coverage
-            .into_iter()
-            .flatten()
-            .filter(|row| row.status != "resolved")
-        {
-            dependencies.push(StoredDependency {
-                owner,
-                target: None,
-                kind: "unresolved",
-                symbol: &row.expression,
-                resolution: row.status.as_str(),
-            });
-        }
-        dependencies.sort_unstable();
-        dependencies.dedup();
-        for (ordinal, dependency) in dependencies.into_iter().enumerate() {
+    for rows in dependencies.chunk_by(|a, b| a.owner == b.owner) {
+        let owner = path_cache.get_or_insert(tx, rows[0].owner)?;
+        for (ordinal, row) in rows.iter().enumerate() {
             batch.push([
                 BorrowedSqlValue::Integer(owner),
                 BorrowedSqlValue::Integer(
                     i64::try_from(ordinal).context("dependency ordinal overflow")?,
                 ),
-                dependency
-                    .target
+                row.target_hash
                     .map_or(BorrowedSqlValue::Null, BorrowedSqlValue::Integer),
-                BorrowedSqlValue::Text(dependency.kind),
-                BorrowedSqlValue::Text(dependency.symbol),
-                BorrowedSqlValue::Text(dependency.resolution),
+                BorrowedSqlValue::Text(row.kind),
+                BorrowedSqlValue::Text(row.symbol),
+                BorrowedSqlValue::Text(row.resolution),
             ])?;
         }
     }
@@ -1170,6 +1105,7 @@ pub(super) fn persist_graph(
         &coverage,
         node_paths,
         materialize_edges,
+        None,
     )
 }
 
@@ -1183,6 +1119,7 @@ pub(super) fn persist_graph_prepared(
     coverage: &PreparedCoverage<'_>,
     node_paths: &mut hashbrown::HashMap<Cow<'_, str>, Option<CachedNodePath>>,
     materialize_edges: bool,
+    prepared: Option<&PreparedGraph<'_>>,
 ) -> Result<GraphPersistenceTimings> {
     let phase = Instant::now();
     let evidence_ids = CoverageDictionaryCache::prefill_evidence(tx, graph)?;
@@ -1228,20 +1165,41 @@ pub(super) fn persist_graph_prepared(
         let confidence_id = *evidence_ids
             .get(e.confidence.as_str())
             .context("missing edge confidence")?;
-        let (src_hash, src_target) = graph_endpoint_hashes(
-            node_paths,
-            &mut stmt_select_path,
-            &e.src,
-            &e.path,
-            e.kind.as_str(),
-        )?;
-        let (dst_hash, dst_target) = graph_endpoint_hashes(
-            node_paths,
-            &mut stmt_select_path,
-            &e.dst,
-            &e.path,
-            e.kind.as_str(),
-        )?;
+        let resolve = |endpoint: &str| -> Result<(i64, Option<i64>)> {
+            let (path, hash) = prepared
+                .context("missing prepared graph")?
+                .node_by_id
+                .get(endpoint)
+                .with_context(|| {
+                    format!("edge {} has missing endpoint {endpoint}", e.kind.as_str())
+                })?;
+            Ok((
+                *hash,
+                (*path != e.path.as_ref()).then(|| stable_hash64(path)),
+            ))
+        };
+        let (src_hash, src_target) = if prepared.is_some() {
+            resolve(&e.src)?
+        } else {
+            graph_endpoint_hashes(
+                node_paths,
+                &mut stmt_select_path,
+                &e.src,
+                &e.path,
+                e.kind.as_str(),
+            )?
+        };
+        let (dst_hash, dst_target) = if prepared.is_some() {
+            resolve(&e.dst)?
+        } else {
+            graph_endpoint_hashes(
+                node_paths,
+                &mut stmt_select_path,
+                &e.dst,
+                &e.path,
+                e.kind.as_str(),
+            )?
+        };
         resolved_edge_paths.push((src_target, dst_target));
         occurrence_batch.push([
             BorrowedSqlValue::Integer(owner_id),
@@ -1257,7 +1215,7 @@ pub(super) fn persist_graph_prepared(
             .checked_add(1)
             .context("edge occurrence ordinal overflow")?;
 
-        if materialize_edges {
+        if materialize_edges && prepared.is_none() {
             unique_edges.push(StoredEdge {
                 src: src_hash,
                 dst: dst_hash,
@@ -1279,6 +1237,29 @@ pub(super) fn persist_graph_prepared(
             tx,
             "INSERT INTO edges(src_hash,kind,dst_hash,path_id,line,evidence_id,confidence_id,occurrence_count) VALUES",
         )?;
+        if let Some(prepared) = prepared {
+            for row in &prepared.unique_edges {
+                let edge = row.edge;
+                edge_batch.push([
+                    BorrowedSqlValue::Integer(row.src_hash),
+                    BorrowedSqlValue::Text(edge.kind.as_str()),
+                    BorrowedSqlValue::Integer(row.dst_hash),
+                    BorrowedSqlValue::Integer(path_cache.get_or_insert(tx, &edge.path)?),
+                    BorrowedSqlValue::Integer(i64::try_from(edge.line)?),
+                    BorrowedSqlValue::Integer(
+                        *evidence_ids
+                            .get(edge.evidence.as_str())
+                            .context("missing edge evidence")?,
+                    ),
+                    BorrowedSqlValue::Integer(
+                        *evidence_ids
+                            .get(edge.confidence.as_str())
+                            .context("missing edge confidence")?,
+                    ),
+                    BorrowedSqlValue::Integer(row.count),
+                ])?;
+            }
+        }
         if unique_edges.len() >= 8192 {
             unique_edges
                 .par_sort_unstable_by_key(|edge| (edge.src, edge.kind, edge.dst, edge.first));
@@ -1306,11 +1287,6 @@ pub(super) fn persist_graph_prepared(
             ])?;
         }
         edge_batch.flush()?;
-    }
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    unsafe {
-        // SAFETY: unique edge scratch storage has dropped; glibc synchronizes arenas.
-        libc::malloc_trim(0);
     }
     let edges = phase.elapsed().as_secs_f64() * 1000.;
     let phase = Instant::now();
@@ -1437,6 +1413,7 @@ pub(super) fn persist_graph_prepared(
         facts,
         dependency_owners,
         &resolved_edge_paths,
+        prepared,
     )?;
     Ok(GraphPersistenceTimings {
         occurrences,
