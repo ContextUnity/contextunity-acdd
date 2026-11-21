@@ -50,13 +50,24 @@ impl CommitmentDomain {
 
     /// Resolves a stable wire name to its domain.
     pub fn from_name(name: &str) -> Option<Self> {
-        use CommitmentDomain::*;
-        const ALL: &[CommitmentDomain] = &[
-            SourceInventory, Files, Nodes, Edges, LocalFacts, EdgeOccurrences,
-            Dependencies, SharedOwners, Errors, ResolutionCoverage,
-            CoverageOwnerLanguage, CoverageLanguageCounts, DocSections, NodeSearch, DocSearch,
-        ];
-        ALL.iter().copied().find(|domain| domain.as_str() == name)
+        Some(match name {
+            "source_inventory" => Self::SourceInventory,
+            "files" => Self::Files,
+            "nodes" => Self::Nodes,
+            "edges" => Self::Edges,
+            "local_facts" => Self::LocalFacts,
+            "edge_occurrences" => Self::EdgeOccurrences,
+            "dependencies" => Self::Dependencies,
+            "shared_owners" => Self::SharedOwners,
+            "errors" => Self::Errors,
+            "resolution_coverage" => Self::ResolutionCoverage,
+            "coverage_owner_language" => Self::CoverageOwnerLanguage,
+            "coverage_language_counts" => Self::CoverageLanguageCounts,
+            "doc_sections" => Self::DocSections,
+            "node_search" => Self::NodeSearch,
+            "doc_search" => Self::DocSearch,
+            _ => return None,
+        })
     }
 }
 
@@ -75,24 +86,6 @@ impl FtsDomain {
             Self::DocSearch => "doc_search",
         }
     }
-}
-
-/// The SQLite FTS index backing a commitment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FtsCommitmentTable {
-    NodeSearch,
-    DocSearch,
-}
-
-impl FtsCommitmentTable {
-    /// Returns the SQLite index name.
-    pub const fn table_name(&self) -> &'static str {
-        match self {
-            Self::NodeSearch => FtsDomain::NodeSearch.as_str(),
-            Self::DocSearch => FtsDomain::DocSearch.as_str(),
-        }
-    }
-
     pub(crate) fn from_name(name: &str) -> Option<Self> {
         match name {
             "node_search" => Some(Self::NodeSearch),

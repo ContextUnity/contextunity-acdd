@@ -1,7 +1,4 @@
-use super::{
-    aggregate, batch_insert_commitments, ensure_fts_vocab, fts_digest, root, ALGORITHM, DOMAINS,
-    FTS,
-};
+use super::{aggregate, batch_insert_commitments, fts_digest, root, ALGORITHM, DOMAINS, FTS};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::collections::BTreeMap;
@@ -71,9 +68,6 @@ pub(crate) fn fts_commitment_digests(conn: &Connection) -> Result<BTreeMap<&'sta
 }
 
 fn fts_domain_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> {
-    if let Some(index) = table.strip_suffix("_postings") {
-        ensure_fts_vocab(conn, index)?;
-    }
     fts_digest(conn, table, order_by)
 }
 

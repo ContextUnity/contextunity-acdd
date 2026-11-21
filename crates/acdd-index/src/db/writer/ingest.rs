@@ -180,6 +180,17 @@ pub(super) struct FilePersistenceTimings {
     pub(super) node_leaves: std::collections::BTreeMap<String, String>,
 }
 
+pub(super) fn persist_delta_files(
+    tx: &Connection,
+    path_cache: &mut PathDictionaryCache,
+    entries: &[FileEntry],
+    facts: &BTreeMap<String, TypedFacts>,
+    dirty_fts: crate::db::commitments::FtsDirtySet,
+) -> Result<FilePersistenceTimings> {
+    persist_files_impl(tx, path_cache, entries, facts, None, None, Some(dirty_fts))
+}
+
+#[cfg(test)]
 pub(super) fn persist_files(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
@@ -187,7 +198,11 @@ pub(super) fn persist_files(
     facts: &BTreeMap<String, TypedFacts>,
     bulk_search: bool,
 ) -> Result<FilePersistenceTimings> {
-    persist_files_impl(tx, path_cache, entries, facts, bulk_search, None, None)
+    let dirty = (!bulk_search).then_some(crate::db::commitments::FtsDirtySet {
+        node_search: true,
+        doc_search: true,
+    });
+    persist_files_impl(tx, path_cache, entries, facts, None, None, dirty)
 }
 
 pub(super) fn persist_files_with_ranks(
@@ -197,7 +212,7 @@ pub(super) fn persist_files_with_ranks(
     facts: &BTreeMap<String, TypedFacts>,
     graph_ranks: Option<&hashbrown::HashMap<&str, Option<i64>>>,
 ) -> Result<FilePersistenceTimings> {
-    persist_files_impl(tx, path_cache, entries, facts, true, None, graph_ranks)
+    persist_files_impl(tx, path_cache, entries, facts, None, graph_ranks, None)
 }
 
 pub(super) struct LoadedCatalogFile {
@@ -226,9 +241,9 @@ pub(super) fn persist_catalog_files(
         path_cache,
         entries,
         facts,
-        true,
         Some(loader),
         Some(graph_ranks),
+        None,
     )
 }
 
@@ -237,10 +252,11 @@ fn persist_files_impl(
     path_cache: &mut PathDictionaryCache,
     entries: &[FileEntry],
     facts: &BTreeMap<String, TypedFacts>,
-    bulk_search: bool,
     mut loader: Option<ChunkLoader<'_>>,
     graph_ranks: Option<&hashbrown::HashMap<&str, Option<i64>>>,
+    dirty_fts: Option<crate::db::commitments::FtsDirtySet>,
 ) -> Result<FilePersistenceTimings> {
+    let bulk_search = dirty_fts.is_none();
     let mut node_id: i64 = tx.query_row("SELECT coalesce(max(node_id),0)FROM nodes", [], |r| {
         r.get(0)
     })?;
@@ -263,7 +279,7 @@ fn persist_files_impl(
             tx.prepare("INSERT INTO nodes VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)")
         })
         .transpose()?;
-    let mut stmt_node_search = (!bulk_search)
+    let mut stmt_node_search = (!bulk_search && dirty_fts.as_ref().is_none_or(|d| d.node_search))
         .then(|| tx.prepare("INSERT INTO node_search(rowid,search_text)VALUES(?1,?2)"))
         .transpose()?;
     let mut shared_owner_batch = MultiValueBatch::<4>::new(
@@ -276,9 +292,13 @@ fn persist_files_impl(
         SharedKeyCache::new_batched_delta(tx)?
     };
     let mut stmt_doc_sec = (!bulk_search)
-        .then(|| tx.prepare("INSERT INTO doc_sections VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"))
+        .then(|| tx.prepare(if dirty_fts.as_ref().is_some_and(|d| !d.doc_search) {
+            "INSERT INTO doc_sections VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) ON CONFLICT(doc_id) DO UPDATE SET path=excluded.path,section_title=excluded.section_title,doc_type=excluded.doc_type,content=excluded.content,invariants=excluded.invariants,referenced_symbols=excluded.referenced_symbols,mtime=excluded.mtime,size=excluded.size,is_invariant=excluded.is_invariant"
+        } else {
+            "INSERT INTO doc_sections VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
+        }))
         .transpose()?;
-    let mut stmt_doc_search = (!bulk_search)
+    let mut stmt_doc_search = (!bulk_search && dirty_fts.as_ref().is_none_or(|d| d.doc_search))
         .then(|| {
             tx.prepare(
                 "INSERT INTO doc_search(rowid,section_title,content,invariants)SELECT rowid,section_title,content,invariants FROM doc_sections WHERE path=?1",
@@ -627,11 +647,9 @@ fn persist_files_impl(
                             &mut reusable_search_buffers,
                         )?;
                     }
-                } else {
+                } else if let Some(stmt_node_search) = stmt_node_search.as_mut() {
                     write_node_search_text(&mut incremental_search_buffer, n, f);
-                    if let Some(stmt_node_search) = stmt_node_search.as_mut() {
-                        stmt_node_search.execute(params![search_id, &incremental_search_buffer])?;
-                    }
+                    stmt_node_search.execute(params![search_id, &incremental_search_buffer])?;
                     incremental_search_buffer.clear();
                 }
                 let key_hash = shared_key_cache.get_or_insert_node(&n.qualname, row_node_id)?;

@@ -12,11 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) fn leaves_nodes(
     conn: &Connection,
     owners: Option<&BTreeSet<String>>,
+    path_map: &HashMap<i64, String>,
 ) -> Result<BTreeMap<String, String>> {
-    let path_map: HashMap<i64, String> = conn
-        .prepare_cached("SELECT path_id,path FROM path_dictionary")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
     let filter = if owners.is_some() {
         "WHERE owner_path_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
     } else {
@@ -94,12 +91,9 @@ fn graph_evidence<'a>(
 pub(super) fn leaves_edge_occurrences(
     conn: &Connection,
     owners: Option<&BTreeSet<String>>,
+    path_map: &HashMap<i64, String>,
 ) -> Result<BTreeMap<String, String>> {
     let evidence_map = graph_evidence_dictionary(conn)?;
-    let mut stmt_p = conn.prepare_cached("SELECT path_id, path FROM path_dictionary")?;
-    let path_map: HashMap<i64, String> = stmt_p
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
 
     let mut stmt_n = conn.prepare_cached("SELECT node_hash, id FROM nodes")?;
     let node_map: HashMap<i64, String> = stmt_n
@@ -192,12 +186,9 @@ pub(super) fn leaves_edge_occurrences(
 pub(super) fn leaves_edges(
     conn: &Connection,
     owners: Option<&BTreeSet<String>>,
+    path_map: &HashMap<i64, String>,
 ) -> Result<BTreeMap<String, String>> {
     let evidence_map = graph_evidence_dictionary(conn)?;
-    let mut stmt_p = conn.prepare_cached("SELECT path_id, path FROM path_dictionary")?;
-    let path_map: HashMap<i64, String> = stmt_p
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
 
     let mut stmt_n = conn.prepare_cached("SELECT node_hash, id FROM nodes")?;
     let node_map: HashMap<i64, String> = stmt_n
@@ -302,12 +293,8 @@ pub(super) fn leaves_edges(
 pub(super) fn leaves_shared_owners(
     conn: &Connection,
     owners: Option<&BTreeSet<String>>,
+    path_map: &HashMap<i64, String>,
 ) -> Result<BTreeMap<String, String>> {
-    let mut stmt_p = conn.prepare_cached("SELECT path_id, path FROM path_dictionary")?;
-    let path_map: HashMap<i64, String> = stmt_p
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-
     let node_keys: HashMap<i64, (String, String)> = conn
         .prepare_cached("SELECT node_id,qualname,id FROM nodes")?
         .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?
@@ -421,12 +408,8 @@ pub(super) fn leaves_shared_owners(
 pub(super) fn leaves_dependencies(
     conn: &Connection,
     owners: Option<&BTreeSet<String>>,
+    path_map: &HashMap<i64, String>,
 ) -> Result<BTreeMap<String, String>> {
-    let mut stmt_p = conn.prepare_cached("SELECT path_id, path FROM path_dictionary")?;
-    let path_map: HashMap<i64, String> = stmt_p
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-
     let mut stmt_f = conn.prepare_cached("SELECT path_hash, path FROM files")?;
     let file_map: HashMap<i64, String> = stmt_f
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?

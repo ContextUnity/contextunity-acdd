@@ -11,8 +11,8 @@ pub use fts5_fastpath::fts_digest_fastpath;
 mod snapshot;
 
 pub use crate::commitments::{
-    aggregate_domain_digest, compute_merkle_root, hash, CommitmentDomain, FtsCommitmentTable,
-    FtsDomain, ALGORITHM, DOMAINS,
+    aggregate_domain_digest, compute_merkle_root, hash, CommitmentDomain, FtsDomain, ALGORITHM,
+    DOMAINS,
 };
 pub(crate) use snapshot::{fts_commitment_digests, seal_snapshot_from_projection, SnapshotTimings};
 const FTS: &[(&str, &str)] = &[
@@ -160,37 +160,45 @@ fn leaves(
     conn: &Connection,
     table: &str,
     owners: Option<&BTreeSet<String>>,
+    paths: &HashMap<i64, String>,
 ) -> Result<BTreeMap<String, String>> {
     match CommitmentDomain::from_name(table) {
-        Some(CommitmentDomain::Nodes) => return domain_leaves::leaves_nodes(conn, owners),
+        Some(CommitmentDomain::Nodes) => return domain_leaves::leaves_nodes(conn, owners, paths),
         Some(CommitmentDomain::EdgeOccurrences) => {
-            return domain_leaves::leaves_edge_occurrences(conn, owners)
+            return domain_leaves::leaves_edge_occurrences(conn, owners, paths)
         }
-        Some(CommitmentDomain::Edges) => return domain_leaves::leaves_edges(conn, owners),
+        Some(CommitmentDomain::Edges) => return domain_leaves::leaves_edges(conn, owners, paths),
         Some(CommitmentDomain::SharedOwners) => {
-            return domain_leaves::leaves_shared_owners(conn, owners)
+            return domain_leaves::leaves_shared_owners(conn, owners, paths)
         }
         Some(CommitmentDomain::Dependencies) => {
-            return domain_leaves::leaves_dependencies(conn, owners)
+            return domain_leaves::leaves_dependencies(conn, owners, paths)
         }
         Some(CommitmentDomain::ResolutionCoverage) => {
-            if let Some(leaves) = coverage_leaves::canonical_coverage_leaves(conn, owners)? {
+            if let Some(leaves) = coverage_leaves::canonical_coverage_leaves(conn, owners, paths)? {
                 return Ok(leaves);
             }
         }
         Some(CommitmentDomain::CoverageOwnerLanguage) => {
-            let leaves = coverage_leaves::canonical_owner_language_leaves(conn, owners)?
+            let leaves = coverage_leaves::canonical_owner_language_leaves(conn, owners, paths)?
                 .context("coverage_owner_language rows require canonical text")?;
             return Ok(leaves);
         }
         Some(CommitmentDomain::CoverageLanguageCounts) => {
-            let leaves = coverage_leaves::canonical_language_count_leaves(conn, owners)?
+            let leaves = coverage_leaves::canonical_language_count_leaves(conn, owners, paths)?
                 .context("coverage_language_counts rows require canonical text")?;
             return Ok(leaves);
         }
         _ => {}
     }
     domain_leaves::leaves_generic(conn, table, owners)
+}
+
+fn load_paths(conn: &Connection) -> Result<HashMap<i64, String>> {
+    Ok(conn
+        .prepare_cached("SELECT path_id,path FROM path_dictionary")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?)
 }
 
 fn ensure_fts_vocab(conn: &Connection, index: &str) -> Result<&'static str> {
@@ -234,10 +242,10 @@ fn ensure_fts_vocab(conn: &Connection, index: &str) -> Result<&'static str> {
     Ok(table)
 }
 
-fn decode_fts5_size_array(bytes: &[u8], columns: usize) -> Result<Vec<u32>> {
+fn decode_fts5_size_array(bytes: &[u8], columns: usize) -> Result<[u32; 3]> {
     let mut offset = 0;
-    let mut sizes = Vec::with_capacity(columns);
-    for _ in 0..columns {
+    let mut sizes = [0; 3];
+    for size in sizes.iter_mut().take(columns) {
         let mut value = 0u32;
         let mut encoded_bytes = 0;
         loop {
@@ -255,7 +263,7 @@ fn decode_fts5_size_array(bytes: &[u8], columns: usize) -> Result<Vec<u32>> {
                 break;
             }
         }
-        sizes.push(value);
+        *size = value;
     }
     anyhow::ensure!(
         offset == bytes.len(),
@@ -291,7 +299,7 @@ enum FtsRowIdentityRef<'a> {
 
 struct FtsDocument {
     identity_sort_key: Option<i64>,
-    size_blob: Vec<u8>,
+    sizes: [u32; 3],
     token_counts: [u32; 3],
 }
 
@@ -306,9 +314,9 @@ struct FtsPosting {
     offset: i64,
 }
 
-fn fts_commitment_spec(index: FtsCommitmentTable) -> FtsCommitmentSpec {
+fn fts_commitment_spec(index: FtsDomain) -> FtsCommitmentSpec {
     match index {
-        FtsCommitmentTable::NodeSearch => FtsCommitmentSpec {
+        FtsDomain::NodeSearch => FtsCommitmentSpec {
             docsize_table: "node_search_docsize",
             fts_table: "node_search",
             owner_join: "LEFT JOIN nodes AS n ON n.node_hash=d.id",
@@ -316,7 +324,7 @@ fn fts_commitment_spec(index: FtsCommitmentTable) -> FtsCommitmentSpec {
             identity_kind: FtsIdentityKind::NodeHash,
             columns: &["search_text"],
         },
-        FtsCommitmentTable::DocSearch => FtsCommitmentSpec {
+        FtsDomain::DocSearch => FtsCommitmentSpec {
             docsize_table: "doc_search_docsize",
             fts_table: "doc_search",
             owner_join: "LEFT JOIN doc_sections AS s ON s.rowid=d.id",
@@ -353,14 +361,16 @@ fn load_fts_documents(
             (_, ValueRef::Null) => None,
             _ => anyhow::bail!("invalid FTS5 owner identity: {}:{doc}", spec.fts_table),
         };
-        let size_blob: Option<Vec<u8>> = row.get(2)?;
-        let size_blob = size_blob.with_context(|| {
-            format!(
+        let ValueRef::Blob(size_blob) = row.get_ref(2)? else {
+            bail!(
                 "missing active FTS5 docsize row: {}:{doc}",
                 spec.docsize_table
-            )
+            );
+        };
+        let sizes = decode_fts5_size_array(size_blob, spec.columns.len()).with_context(|| {
+            format!("invalid FTS5 document sizes: {}:{doc}", spec.docsize_table)
         })?;
-        documents.push((doc, identity, size_blob));
+        documents.push((doc, identity, sizes));
     }
 
     let mut owner_ids: Vec<Vec<u8>> = documents
@@ -379,7 +389,7 @@ fn load_fts_documents(
         .collect::<Result<_>>()?;
 
     let mut by_doc = HashMap::with_capacity(documents.len());
-    for (doc, identity, size_blob) in documents {
+    for (doc, identity, sizes) in documents {
         let identity_sort_key = match identity.as_ref() {
             Some(FtsRowIdentity::NodeHash(node_hash)) => Some(*node_hash),
             Some(FtsRowIdentity::DocId(doc_id)) => owner_ranks.get(doc_id).copied(),
@@ -389,7 +399,7 @@ fn load_fts_documents(
             doc,
             FtsDocument {
                 identity_sort_key,
-                size_blob,
+                sizes,
                 token_counts: [0; 3],
             },
         );
@@ -402,13 +412,9 @@ fn validate_fts_docsize(
     documents: &HashMap<i64, FtsDocument>,
 ) -> Result<()> {
     for (doc, document) in documents {
-        let actual =
-            decode_fts5_size_array(&document.size_blob, spec.columns.len()).with_context(|| {
-                format!("invalid FTS5 document sizes: {}:{doc}", spec.docsize_table)
-            })?;
         for (column_index, column) in spec.columns.iter().enumerate() {
             anyhow::ensure!(
-                actual[column_index] == document.token_counts[column_index],
+                document.sizes[column_index] == document.token_counts[column_index],
                 "FTS5 document size mismatch: {}:{doc} column {column}",
                 spec.docsize_table
             );
@@ -427,17 +433,7 @@ fn fts_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> 
         None
     };
     let digest = match fts_digest_fastpath(conn, table)? {
-        Some(digest) => {
-            if let Some(index) = table.strip_suffix("_postings") {
-                let vocab = ensure_fts_vocab(conn, index)?;
-                let _: Option<String> = conn
-                    .query_row(&format!("SELECT term FROM {vocab} LIMIT 1"), [], |row| {
-                        row.get(0)
-                    })
-                    .optional()?;
-            }
-            digest
-        }
+        Some(digest) => digest,
         None => fts_digest_vocab(conn, table, order_by)?,
     };
     if let Some(snapshot) = snapshot {
@@ -446,18 +442,18 @@ fn fts_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> 
     Ok(digest)
 }
 
-fn finalize_fts_postings_digest(
+fn finalize_fts_postings_digest<T: AsRef<[u8]> + Ord>(
     h: &mut Sha256,
     spec: &FtsCommitmentSpec,
     documents: &FtsDocumentMap,
     owner_ids: &FtsOwnerIds,
-    terms: Vec<Vec<u8>>,
+    terms: Vec<T>,
     mut postings: Vec<FtsPosting>,
 ) -> Result<()> {
     let terms = if terms.windows(2).all(|w| w[0] < w[1]) {
         terms
     } else {
-        let mut sorted_indexed: Vec<(u32, Vec<u8>)> = terms
+        let mut sorted_indexed: Vec<(u32, T)> = terms
             .into_iter()
             .enumerate()
             .map(|(i, t)| (i as u32, t))
@@ -500,7 +496,8 @@ fn finalize_fts_postings_digest(
             &mut encoded_rows,
             terms
                 .get(posting.term as usize)
-                .context("sorted FTS5 posting lost its term")?,
+                .context("sorted FTS5 posting lost its term")?
+                .as_ref(),
             identity,
             spec.columns[posting.column_index as usize].as_bytes(),
             posting.offset,
@@ -527,7 +524,7 @@ pub fn fts_digest_vocab(conn: &Connection, table: &str, order_by: &str) -> Resul
     if let Some(index) = table.strip_suffix("_postings") {
         let vocab = ensure_fts_vocab(conn, index)?;
         let spec = fts_commitment_spec(
-            FtsCommitmentTable::from_name(index)
+            FtsDomain::from_name(index)
                 .with_context(|| format!("unsupported FTS commitment index: {index}"))?,
         );
         let (mut documents, owner_ids) = load_fts_documents(conn, &spec)?;
@@ -648,6 +645,9 @@ fn batch_insert_commitments(
     table: &str,
     entries: &BTreeMap<String, String>,
 ) -> Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
     let chunk_size =
         (usize::try_from(conn.limit(rusqlite::limits::Limit::SQLITE_LIMIT_VARIABLE_NUMBER))? / 3)
             .min(250);
@@ -834,8 +834,9 @@ pub(crate) fn seal_owners_with_dirty_fts(
                 .insert(key(&domain, &owner), digest);
         }
     }
+    let paths = load_paths(conn)?;
     for table in DOMAINS {
-        let changed = leaves(conn, table, owners)?;
+        let changed = leaves(conn, table, owners, &paths)?;
         if let Some(encoded) = &encoded_owners {
             conn.execute(
                 "DELETE FROM domain_commitments WHERE domain=?1 AND owner_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?2)))",
@@ -937,8 +938,9 @@ pub fn verify_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Re
     if algorithm != ALGORITHM {
         bail!("incompatible commitment algorithm; rebuild index");
     }
+    let paths = load_paths(conn)?;
     for table in DOMAINS {
-        let actual = leaves(conn, table, owners)?;
+        let actual = leaves(conn, table, owners, &paths)?;
         let all = stored(conn, table)?;
         let expected = if let Some(owners) = owners {
             let keys: BTreeSet<_> = owners.iter().map(|o| key(table, o)).collect();

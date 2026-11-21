@@ -11,7 +11,7 @@ use std::{
 use super::{
     batch::BorrowedSqlValue,
     dictionary::PathDictionaryCache,
-    ingest::{persist_files, persist_graph, CachedNodePath},
+    ingest::{persist_delta_files, persist_graph, CachedNodePath},
 };
 use crate::db::commitments;
 use crate::models::{compact_graph::Graph as CompactGraph, stable_hash64, FileEntry};
@@ -89,18 +89,27 @@ fn doc_search_changed(conn: &Connection, path: &str, new: Option<&TypedFacts>) -
     Ok(old != rows)
 }
 
-fn delete_file(tx: &Connection, path_cache: &mut PathDictionaryCache, path: &str) -> Result<()> {
+fn delete_file(
+    tx: &Connection,
+    path_cache: &mut PathDictionaryCache,
+    path: &str,
+    dirty_fts: &commitments::FtsDirtySet,
+) -> Result<()> {
     let owner_id = path_cache.get_or_insert(tx, path)?;
-    cached(
+    if dirty_fts.node_search {
+        cached(
         tx,
         "DELETE FROM node_search WHERE rowid IN(SELECT node_hash FROM nodes WHERE owner_path_id=?1)",
         [owner_id],
     )?;
-    cached(
+    }
+    if dirty_fts.doc_search {
+        cached(
         tx,
         "INSERT INTO doc_search(doc_search,rowid,section_title,content,invariants)SELECT 'delete',rowid,section_title,content,invariants FROM doc_sections WHERE path=?1",
         [path],
     )?;
+    }
     cached(
         tx,
         "UPDATE shared_keys SET key=(SELECT qualname FROM nodes WHERE node_id=shared_keys.key) WHERE typeof(key)='integer' AND key IN(SELECT node_id FROM nodes WHERE owner_path_id=?1)",
@@ -115,6 +124,9 @@ fn delete_file(tx: &Connection, path_cache: &mut PathDictionaryCache, path: &str
         ("errors", "path"),
         ("doc_sections", "path"),
     ] {
+        if table == "doc_sections" && !dirty_fts.doc_search {
+            continue;
+        }
         let value = if column == "owner_id" {
             rusqlite::types::Value::Integer(owner_id)
         } else {
@@ -163,8 +175,6 @@ pub struct DeltaPersistResult {
     pub graph_ms: f64,
     /// Time spent computing aggregate facts in milliseconds.
     pub aggregate_ms: f64,
-    /// Time spent updating commitments in milliseconds.
-    pub commitments_ms: f64,
     /// Time spent sealing the database in milliseconds.
     pub seal_ms: f64,
     /// Time spent verifying the seal in milliseconds.
@@ -327,7 +337,7 @@ pub fn persist_delta(
         }
     }
     for path in replace_files {
-        delete_file(&tx, &mut path_cache, path)?;
+        delete_file(&tx, &mut path_cache, path, &dirty_fts)?;
     }
     let delete_ms = deleting.elapsed().as_secs_f64() * 1000.;
     let changed_entries: Vec<_> = entries
@@ -336,7 +346,7 @@ pub fn persist_delta(
         .cloned()
         .collect();
     let files_writing = Instant::now();
-    persist_files(&tx, &mut path_cache, &changed_entries, facts, false)?;
+    persist_delta_files(&tx, &mut path_cache, &changed_entries, facts, dirty_fts)?;
     let files_ms = files_writing.elapsed().as_secs_f64() * 1000.;
     let mut node_paths: hashbrown::HashMap<std::borrow::Cow<'_, str>, Option<CachedNodePath>> =
         hashbrown::HashMap::with_capacity(
@@ -433,8 +443,6 @@ pub fn persist_delta(
             .collect::<rusqlite::Result<Vec<_>>>()?,
     );
     let aggregate_ms = aggregating.elapsed().as_secs_f64() * 1000.;
-    let commitments_writing = Instant::now();
-    let commitments_ms = commitments_writing.elapsed().as_secs_f64() * 1000.;
     cached(
         &tx,
         "INSERT OR REPLACE INTO metadata VALUES('corpus_hash',?1)",
@@ -458,8 +466,7 @@ pub fn persist_delta(
     commitments::verify_delta_seal(&tx, &seal)?;
 
     let verify_ms = verifying.elapsed().as_secs_f64() * 1000.;
-    let verify_elapsed = verifying.elapsed().as_secs_f64() * 1000.;
-    check_snapshot(persist_ms, seal_ms, verify_ms, verify_elapsed)?;
+    check_snapshot(persist_ms, seal_ms, verify_ms, verify_ms)?;
 
     let committing = Instant::now();
     drop((candidates_table, replaced_table, changed_table));
@@ -500,7 +507,6 @@ pub fn persist_delta(
         files_ms,
         graph_ms,
         aggregate_ms,
-        commitments_ms,
         seal_ms,
         verify_ms,
         commit_ms,

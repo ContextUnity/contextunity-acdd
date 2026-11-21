@@ -199,6 +199,61 @@ fn parallel_owner_sealing_matches_serial_encoding_and_thread_counts() {
     }
     {
         let workspace = crate::common::Workspace::new();
+        let source = workspace.path("source");
+        let code: String = (0..64)
+            .map(|i| format!("pub fn signed_symbol_{i}() {{}}\n"))
+            .collect();
+        workspace.write("source/lib.rs", &code);
+        let path = workspace.path("pipeline.sqlite");
+        contextunity_acdd::engine::pipeline::build_with_cache_dir(
+            &source,
+            &path,
+            None,
+            &workspace.path("cache"),
+        )
+        .unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let (negative, positive): (i64, i64) = conn.query_row(
+            "SELECT count(*) FILTER (WHERE node_hash < 0), count(*) FILTER (WHERE node_hash > 0) FROM nodes",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert!(negative > 0 && positive > 0);
+        let fast = commitments::fts_digest_fastpath(&conn, "node_search_postings").unwrap();
+        assert_eq!(
+            fast,
+            Some(
+                commitments::fts_digest_vocab(&conn, "node_search_postings", "term,doc,col,offset")
+                    .unwrap()
+            )
+        );
+        let fts_data = |conn: &rusqlite::Connection| -> Vec<(i64, Vec<u8>)> {
+            conn.prepare("SELECT id,block FROM node_search_data ORDER BY id")
+                .unwrap()
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let before = fts_data(&conn);
+        drop(conn);
+        workspace.write("source/lib.rs", &format!("{code}\n"));
+        contextunity_acdd::engine::pipeline::delta_with_cache_dir(
+            &source,
+            &path,
+            &["lib.rs".into()],
+            &workspace.path("cache"),
+        )
+        .unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(
+            fts_data(&conn),
+            before,
+            "clean delta must not mutate node FTS"
+        );
+        commitments::verify(&conn).unwrap();
+    }
+    {
+        let workspace = crate::common::Workspace::new();
         let path = workspace.path("fts.sqlite");
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(acdd_index::db::SCHEMA_DDL).unwrap();
@@ -229,10 +284,10 @@ fn parallel_owner_sealing_matches_serial_encoding_and_thread_counts() {
         )
         .unwrap();
         for (domain, expected) in [
-            (commitments::FtsCommitmentTable::NodeSearch, "node_search"),
-            (commitments::FtsCommitmentTable::DocSearch, "doc_search"),
+            (commitments::FtsDomain::NodeSearch, "node_search"),
+            (commitments::FtsDomain::DocSearch, "doc_search"),
         ] {
-            let table = domain.table_name();
+            let table = domain.as_str();
             assert_eq!(table, expected);
             assert_eq!(
                 commitments::fts_digest_fastpath(&conn, table).unwrap(),

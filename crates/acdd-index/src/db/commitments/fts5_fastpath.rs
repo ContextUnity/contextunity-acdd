@@ -7,7 +7,9 @@ const FTS5_STRUCTURE_V2: &[u8; 4] = b"\xff\x00\x00\x01";
 const FTS5_MAX_SEGMENT: u32 = 2000;
 
 fn fts5_segment_rowid(segid: i64, pgno: i64) -> Option<i64> {
-    if !(1..=65535).contains(&segid) || !(0..(1i64 << 31)).contains(&pgno) { return None; }
+    if !(1..=65535).contains(&segid) || !(0..(1i64 << 31)).contains(&pgno) {
+        return None;
+    }
     segid.checked_shl(37)?.checked_add(pgno)
 }
 
@@ -26,7 +28,7 @@ fn decode_fts5_varint(bytes: &[u8]) -> Option<(u64, usize)> {
 
 fn decode_fts5_varint32(bytes: &[u8]) -> Option<(u32, usize)> {
     let (v, n) = decode_fts5_varint(bytes)?;
-    Some((v as u32, n))
+    Some((u32::try_from(v).ok()?, n))
 }
 
 fn next_v32(s: &[u8], i: &mut usize) -> Option<u32> {
@@ -83,7 +85,11 @@ fn decode_fts5_structure_segments(s: &[u8]) -> Option<Vec<(i64, i64, i64)>> {
                 return None;
             }
             if pgno_first > 0 {
-                segments.push((i64::from(segid), i64::from(pgno_first), i64::from(pgno_last)));
+                segments.push((
+                    i64::from(segid),
+                    i64::from(pgno_first),
+                    i64::from(pgno_last),
+                ));
             }
         }
         // Within each level (0 = newest level), later segments are newer (`fts5MultiIterNew`).
@@ -130,16 +136,19 @@ impl Fts5SegCursor<'_> {
             return None;
         }
         let n_new = usize::try_from(next_v32(&p[..sz], &mut self.off)?).ok()?;
-        if n_new == 0 || n_keep > self.term.len() || self.off + n_new > sz {
+        let end = self.off.checked_add(n_new)?;
+        if n_new == 0 || n_keep > self.term.len() || end > sz {
             return None;
         }
         self.term.truncate(n_keep);
-        self.term.extend_from_slice(&p[self.off..self.off + n_new]);
-        self.off += n_new;
+        self.term.extend_from_slice(&p[self.off..end]);
+        self.off = end;
         if self.pgidx >= p.len() {
             self.eod = p.len() + 1;
         } else {
-            self.eod = self.eod.checked_add(usize::try_from(next_v32(p, &mut self.pgidx)?).ok()?)?;
+            self.eod = self
+                .eod
+                .checked_add(usize::try_from(next_v32(p, &mut self.pgidx)?).ok()?)?;
         }
         loop {
             let p = self.pages.get(self.leaf)?;
@@ -168,20 +177,19 @@ impl Fts5SegCursor<'_> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn decode_fts5_segment_pages(
-    pages: &[Vec<u8>],
+struct Fts5DecodeState<'a> {
     multi_segment: bool,
-    seen_term_docs: &mut hashbrown::HashSet<(u32, i64)>,
-    term_map: &mut HashMap<Vec<u8>, u32>,
-    terms: &mut Vec<Vec<u8>>,
-    last_term: &mut Vec<u8>,
-    last_term_id: &mut u32,
-    documents: &mut FtsDocumentMap,
-    column_sort_keys: &[u8],
+    seen_term_docs: hashbrown::HashSet<(u32, i64)>,
+    term_map: HashMap<std::sync::Arc<[u8]>, u32>,
+    terms: Vec<std::sync::Arc<[u8]>>,
+    last_term_id: Option<u32>,
+    documents: &'a mut FtsDocumentMap,
+    column_sort_keys: &'a [u8],
     num_columns: usize,
-    postings: &mut Vec<FtsPosting>,
-) -> Option<()> {
+    postings: Vec<FtsPosting>,
+}
+
+fn decode_fts5_segment_pages(pages: &[Vec<u8>], state: &mut Fts5DecodeState<'_>) -> Option<()> {
     let Some(leaf_idx) = pages.iter().position(|page| page.len() != 4) else {
         return Some(());
     };
@@ -232,32 +240,36 @@ fn decode_fts5_segment_pages(
             }
         }
 
-        if terms.is_empty() || vocab_term != last_term.as_slice() {
-            *last_term_id = match term_map.get(vocab_term) {
+        if state
+            .last_term_id
+            .is_none_or(|id| state.terms[id as usize].as_ref() != vocab_term)
+        {
+            state.last_term_id = Some(match state.term_map.get(vocab_term) {
                 Some(&id) => id,
                 None => {
-                    let id = u32::try_from(terms.len()).ok()?;
-                    let owned = vocab_term.to_vec();
-                    term_map.insert(owned.clone(), id);
-                    terms.push(owned);
+                    let id = u32::try_from(state.terms.len()).ok()?;
+                    let owned = std::sync::Arc::<[u8]>::from(vocab_term);
+                    state.term_map.insert(owned.clone(), id);
+                    state.terms.push(owned);
                     id
                 }
-            };
-            last_term.clear();
-            last_term.extend_from_slice(vocab_term);
+            });
         }
-        let term_id = *last_term_id;
+        let term_id = state.last_term_id?;
 
-        let is_newest_for_term_doc = !multi_segment || seen_term_docs.insert((term_id, cursor.rowid));
+        let is_newest_for_term_doc =
+            !state.multi_segment || state.seen_term_docs.insert((term_id, cursor.rowid));
         if is_newest_for_term_doc && !b_del {
-            let document = documents.get_mut(&cursor.rowid)?;
+            let document = state.documents.get_mut(&cursor.rowid)?;
             let identity_sort_key = document.identity_sort_key?;
 
             let mut pos_off = 0usize;
             let (mut cur_col, mut cur_off) = (0u32, 0u32);
             while pos_off < poslist.len() {
                 let val = next_v32(&poslist, &mut pos_off)?;
-                if val == 0 { return None; }
+                if val == 0 {
+                    return None;
+                }
                 if val == 1 {
                     cur_col = next_v32(&poslist, &mut pos_off)?;
                     cur_off = next_v32(&poslist, &mut pos_off)?.checked_sub(2)?;
@@ -265,14 +277,16 @@ fn decode_fts5_segment_pages(
                     cur_off = cur_off.checked_add(val - 2)?;
                 }
                 let col_idx = usize::try_from(cur_col).ok()?;
-                if col_idx >= num_columns { return None; }
+                if col_idx >= state.num_columns {
+                    return None;
+                }
                 let offset = i64::from(cur_off);
                 document.token_counts[col_idx] = document.token_counts[col_idx].checked_add(1)?;
-                postings.push(FtsPosting {
+                state.postings.push(FtsPosting {
                     term: term_id,
                     identity_sort_key,
                     column_index: u8::try_from(col_idx).ok()?,
-                    column_sort_key: column_sort_keys[col_idx],
+                    column_sort_key: state.column_sort_keys[col_idx],
                     offset,
                 });
             }
@@ -296,22 +310,33 @@ fn decode_fts5_segment_pages(
                 if delta == 0 {
                     return None;
                 }
-                cursor.rowid = cursor.rowid.checked_add(i64::try_from(delta).ok()?)?;
+                let next = cursor.rowid.wrapping_add_unsigned(delta);
+                if next <= cursor.rowid {
+                    return None;
+                }
+                cursor.rowid = next;
                 cursor.off = i_off;
             }
             (n_pos, b_del) = cursor.load_n_pos()?;
         } else {
             let mut rem = i_off - sz_leaf;
             let found_next = loop {
-                if cursor.leaf + 1 >= pages.len() { break false; }
+                if cursor.leaf + 1 >= pages.len() {
+                    break false;
+                }
                 cursor.next_page()?;
                 let np = &pages[cursor.leaf];
                 let sz = Fts5SegCursor::page_sz(np)?;
-                if rem >= sz - 4 { rem -= sz - 4; continue; }
+                if rem >= sz - 4 {
+                    rem -= sz - 4;
+                    continue;
+                }
                 let mut landing = 4 + rem;
                 if landing >= cursor.eod {
                     let (ft_off, _) = decode_fts5_varint32(np.get(sz..)?)?;
-                    let n_keep = if landing == usize::try_from(ft_off).ok()? { 0 } else {
+                    let n_keep = if landing == usize::try_from(ft_off).ok()? {
+                        0
+                    } else {
                         usize::try_from(next_v32(&np[..sz], &mut landing)?).ok()?
                     };
                     cursor.off = landing;
@@ -319,16 +344,26 @@ fn decode_fts5_segment_pages(
                 } else {
                     let first = usize::from(u16::from_be_bytes([np[0], np[1]]));
                     let value = next_v64(&np[..sz], &mut landing)?;
-                    cursor.rowid = if 4 + rem == first { value as i64 } else {
-                        if value == 0 { return None; }
-                        cursor.rowid.checked_add(i64::try_from(value).ok()?)?
+                    cursor.rowid = if 4 + rem == first {
+                        value as i64
+                    } else {
+                        if value == 0 {
+                            return None;
+                        }
+                        let next = cursor.rowid.wrapping_add_unsigned(value);
+                        if next <= cursor.rowid {
+                            return None;
+                        }
+                        next
                     };
                     cursor.off = landing;
                 }
                 break true;
             };
             if !found_next {
-                if rem > 0 { return None; }
+                if rem > 0 {
+                    return None;
+                }
                 break;
             }
             (n_pos, b_del) = cursor.load_n_pos()?;
@@ -361,11 +396,13 @@ pub fn fts_digest_fastpath(conn: &Connection, table: &str) -> Result<Option<Stri
     if has_non_virtual_override {
         return Ok(None);
     }
-    let Some(commitment_table) = FtsCommitmentTable::from_name(index) else {
+    let Some(commitment_table) = FtsDomain::from_name(index) else {
         return Ok(None);
     };
     let spec = fts_commitment_spec(commitment_table);
-    let mut config = conn.prepare(&format!("SELECT k,v FROM {index}_config WHERE k IN ('version','detail')"))?;
+    let mut config = conn.prepare(&format!(
+        "SELECT k,v FROM {index}_config WHERE k IN ('version','detail')"
+    ))?;
     let mut rows = config.query([])?;
     let mut version_ok = false;
     while let Some(row) = rows.next()? {
@@ -375,25 +412,40 @@ pub fn fts_digest_fastpath(conn: &Connection, table: &str) -> Result<Option<Stri
             _ => return Ok(None),
         }
     }
-    if !version_ok { return Ok(None); }
+    if !version_ok {
+        return Ok(None);
+    }
     drop(rows);
     drop(config);
-    let _: Option<i64> = conn.query_row(
-        &format!("SELECT segid FROM {index}_idx LIMIT 1"), [], |row| row.get(0),
-    ).optional()?;
-    let Some(structure_blob) = conn.query_row(
-        &format!("SELECT block FROM {index}_data WHERE id=?1"),
-        [FTS5_STRUCTURE_ROWID],
-        |row| match row.get_ref(0)? {
-            ValueRef::Blob(b) => Ok(Some(b.to_vec())),
-            _ => Ok(None),
-        },
-    ).optional()?.flatten() else { return Ok(None); };
+    let _: Option<i64> = conn
+        .query_row(
+            &format!("SELECT segid FROM {index}_idx LIMIT 1"),
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(structure_blob) = conn
+        .query_row(
+            &format!("SELECT block FROM {index}_data WHERE id=?1"),
+            [FTS5_STRUCTURE_ROWID],
+            |row| match row.get_ref(0)? {
+                ValueRef::Blob(b) => Ok(Some(b.to_vec())),
+                _ => Ok(None),
+            },
+        )
+        .optional()?
+        .flatten()
+    else {
+        return Ok(None);
+    };
     let Some(segments) = decode_fts5_structure_segments(&structure_blob) else {
         return Ok(None);
     };
     let (mut documents, owner_ids) = load_fts_documents(conn, &spec)?;
-    if documents.values().any(|doc| doc.identity_sort_key.is_none()) {
+    if documents
+        .values()
+        .any(|doc| doc.identity_sort_key.is_none())
+    {
         return Ok(None);
     }
     let mut column_order: Vec<usize> = (0..spec.columns.len()).collect();
@@ -403,19 +455,28 @@ pub fn fts_digest_fastpath(conn: &Connection, table: &str) -> Result<Option<Stri
         column_sort_keys[column] = u8::try_from(rank)?;
     }
 
-    let mut term_map: HashMap<Vec<u8>, u32> = HashMap::new();
-    let mut terms: Vec<Vec<u8>> = Vec::new();
-    let mut last_term: Vec<u8> = Vec::new();
-    let mut last_term_id: u32 = 0;
-    let mut postings = Vec::new();
-    let mut seen_term_docs: hashbrown::HashSet<(u32, i64)> = hashbrown::HashSet::new();
-    let multi_segment = segments.len() > 1;
+    let mut state = Fts5DecodeState {
+        multi_segment: segments.len() > 1,
+        seen_term_docs: hashbrown::HashSet::new(),
+        term_map: HashMap::new(),
+        terms: Vec::new(),
+        last_term_id: None,
+        documents: &mut documents,
+        column_sort_keys: &column_sort_keys,
+        num_columns: spec.columns.len(),
+        postings: Vec::new(),
+    };
 
     let mut page_stmt = conn.prepare(&format!(
         "SELECT id, block FROM {index}_data WHERE id >= ?1 AND id <= ?2 ORDER BY id ASC"
     ))?;
     for (segid, pgno_first, pgno_last) in segments {
-        let (Some(first_id), Some(last_id)) = (fts5_segment_rowid(segid, pgno_first), fts5_segment_rowid(segid, pgno_last)) else { return Ok(None); };
+        let (Some(first_id), Some(last_id)) = (
+            fts5_segment_rowid(segid, pgno_first),
+            fts5_segment_rowid(segid, pgno_last),
+        ) else {
+            return Ok(None);
+        };
         let expected_count = match usize::try_from(pgno_last - pgno_first + 1) {
             Ok(c) => c,
             Err(_) => return Ok(None),
@@ -437,26 +498,15 @@ pub fn fts_digest_fastpath(conn: &Connection, table: &str) -> Result<Option<Stri
         if pages.len() != expected_count {
             return Ok(None);
         }
-        if decode_fts5_segment_pages(
-            &pages,
-            multi_segment,
-            &mut seen_term_docs,
-            &mut term_map,
-            &mut terms,
-            &mut last_term,
-            &mut last_term_id,
-            &mut documents,
-            &column_sort_keys,
-            spec.columns.len(),
-            &mut postings,
-        )
-        .is_none()
-        {
+        if decode_fts5_segment_pages(&pages, &mut state).is_none() {
             return Ok(None);
         }
     }
     drop(page_stmt);
 
+    let Fts5DecodeState {
+        terms, postings, ..
+    } = state;
     let mut h = Sha256::new();
     h.update(table);
     if let Err(err) =
@@ -469,4 +519,3 @@ pub fn fts_digest_fastpath(conn: &Connection, table: &str) -> Result<Option<Stri
     }
     Ok(Some(hex::encode(h.finalize())))
 }
-

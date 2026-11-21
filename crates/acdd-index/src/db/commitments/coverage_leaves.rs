@@ -87,6 +87,7 @@ fn owner_language_expression_dictionary(
 pub(super) fn canonical_coverage_leaves(
     conn: &Connection,
     owners: Option<&BTreeSet<String>>,
+    paths: &HashMap<i64, String>,
 ) -> Result<Option<BTreeMap<String, String>>> {
     let encoded = owners.map(serde_json::to_string).transpose()?;
     let encoded = encoded.as_deref();
@@ -94,11 +95,6 @@ pub(super) fn canonical_coverage_leaves(
         "WHERE path_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
     } else {
         ""
-    };
-    let path_sql = if owners.is_some() {
-        "SELECT path_id,path FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1))"
-    } else {
-        "SELECT path_id,path FROM path_dictionary"
     };
     let expression_sql = if owners.is_some() {
         format!("SELECT expression_id,expression FROM coverage_expressions WHERE expression_id IN(SELECT expression_id FROM resolution_coverage {filter})")
@@ -109,9 +105,6 @@ pub(super) fn canonical_coverage_leaves(
         format!("SELECT evidence_id,evidence FROM coverage_evidence WHERE evidence_id IN(SELECT evidence_id FROM resolution_coverage {filter})")
     } else {
         "SELECT evidence_id,evidence FROM coverage_evidence".to_owned()
-    };
-    let Some(paths) = coverage_dictionary(conn, path_sql, encoded)? else {
-        return Ok(None);
     };
     let Some(expressions) = coverage_dictionary(conn, &expression_sql, encoded)? else {
         return Ok(None);
@@ -231,6 +224,7 @@ pub(super) fn canonical_coverage_leaves(
 pub(super) fn canonical_owner_language_leaves(
     conn: &Connection,
     owners: Option<&BTreeSet<String>>,
+    paths: &HashMap<i64, String>,
 ) -> Result<Option<BTreeMap<String, String>>> {
     let encoded = owners.map(serde_json::to_string).transpose()?;
     let encoded = encoded.as_deref();
@@ -239,15 +233,9 @@ pub(super) fn canonical_owner_language_leaves(
     } else {
         ""
     };
-    let path_sql = format!(
-        "SELECT path_id,path FROM path_dictionary WHERE path_id IN(SELECT path_id FROM coverage_owner_language {filter})"
-    );
     let evidence_sql = format!(
         "SELECT evidence_id,evidence FROM coverage_evidence WHERE evidence_id IN(SELECT evidence_id FROM coverage_owner_language {filter})"
     );
-    let Some(paths) = coverage_dictionary(conn, &path_sql, encoded)? else {
-        return Ok(None);
-    };
     let Some(expressions) = owner_language_expression_dictionary(conn, filter, encoded)? else {
         return Ok(None);
     };
@@ -347,6 +335,7 @@ pub(super) fn canonical_owner_language_leaves(
 pub(super) fn canonical_language_count_leaves(
     conn: &Connection,
     owners: Option<&BTreeSet<String>>,
+    paths: &HashMap<i64, String>,
 ) -> Result<Option<BTreeMap<String, String>>> {
     let encoded = owners.map(serde_json::to_string).transpose()?;
     let encoded = encoded.as_deref();
@@ -354,14 +343,6 @@ pub(super) fn canonical_language_count_leaves(
         "WHERE path_id IN(SELECT path_id FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1)))"
     } else {
         ""
-    };
-    let path_sql = if owners.is_some() {
-        "SELECT path_id,path FROM path_dictionary WHERE path IN(SELECT value FROM json_each(?1))"
-    } else {
-        "SELECT path_id,path FROM path_dictionary"
-    };
-    let Some(paths) = coverage_dictionary(conn, path_sql, encoded)? else {
-        return Ok(None);
     };
     let mut statement = conn.prepare(&format!(
         "SELECT path_id,language,status,records FROM coverage_language_counts {filter}"

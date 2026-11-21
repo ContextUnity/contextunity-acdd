@@ -1421,7 +1421,7 @@ fn persist_and_report_delta(
             graph: &graph,
             manifest_digest: dependencies.digest(),
         },
-        |persist_ms, seal_ms, verify_ms, _verify_elapsed| {
+        |persist_ms, seal_ms, verify_ms, _| {
             let latest = scanner::scan_reusing(&root, &adapter, &scan.entries)?;
             if latest.entries != scan.entries {
                 return Err(SourceSnapshotMismatch(format!(
@@ -1520,7 +1520,6 @@ fn persist_and_report_delta(
         "files_ms": persist_result.files_ms,
         "graph_ms": persist_result.graph_ms,
         "aggregate_ms": persist_result.aggregate_ms,
-        "commitments_ms": persist_result.commitments_ms,
         "seal_ms": persist_result.seal_ms,
         "verify_ms": persist_result.verify_ms,
         "commit_ms": persist_result.commit_ms,
