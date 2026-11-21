@@ -235,7 +235,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `src/engine/pipeline.rs` (`run_cold_pipeline`) and `crates/acdd-index/src/semantic.rs` (`SymbolCatalog::insert_typed`), encode full storage facts into compressed `PreparedCatalogStorage` within extraction workers. Pass `retain_storage = false` for cold catalog admission to remove storage-only details and omit duplicate storage payloads. Preserve native binding metadata and typed flows required for linking; retain no additional workspace-wide full-facts copy.
 
-- INV-PERF-CATALOG-FACT-STRIPPING: Remove storage-only details and duplicate storage payloads during cold catalog admission while retaining typed resolution facts. [`run_cold_pipeline`](../../src/engine/pipeline.rs) [`SymbolCatalog`](../../crates/acdd-index/src/semantic.rs).
+- INV-PERF-CATALOG-FACT-STRIPPING: Remove storage-only details and duplicate storage payloads during cold catalog admission while retaining typed resolution facts. [`run_cold_pipeline`](../../src/engine/pipeline/mod.rs) [`SymbolCatalog`](../../crates/acdd-index/src/semantic.rs).
 
 > [!IMPORTANT]
 > Invariant: Bounded Chunk Persistence and Allocator Trimming
@@ -291,7 +291,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `Cargo.toml` (`[profile.release]`), production builds must keep `codegen-units = 1` and `lto = "thin"` enabled so cross-module hot paths in `SinglePassExtractor`, `DependencyRegistry`, and `resolution::resolve` inline fully. Increasing `codegen-units` degrades cold-build indexing throughput and inflates CPU cycles across AST and linker loops.
 
-- INV-PERF-RELEASE-SINGLE-CGU: Keep `codegen-units = 1` and `lto = "thin"` in `[profile.release]` so cross-module AST extraction and linker resolution loops inline in release binaries. [`run_cold_pipeline`](../../src/engine/pipeline.rs) [`resolve`](../../crates/acdd-index/src/linker/resolution/mod.rs).
+- INV-PERF-RELEASE-SINGLE-CGU: Keep `codegen-units = 1` and `lto = "thin"` in `[profile.release]` so cross-module AST extraction and linker resolution loops inline in release binaries. [`run_cold_pipeline`](../../src/engine/pipeline/mod.rs) [`resolve`](../../crates/acdd-index/src/linker/resolution/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: SQLite Ingestion PRAGMAs and WAL Restoration Order
@@ -368,7 +368,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `src/engine/pipeline.rs` (`consume_pipeline_results`) and `crates/acdd-index/src/db/writer.rs` (`populate_owned`), cold-build extraction payloads (`encoded_facts` and `storage_rows`) must be spooled directly to stage-private temporary disk storage (`payloads.bin` under `.acdd-stage-*`) during consumer ingestion rather than accumulated in heap memory as raw byte vectors (`StagedFilePayload`). `StagedFilePayload` retains only lightweight offset/length references (`StagedPayloadBlob`), releasing 50–60 MB of heap memory during the cross-file linker phase. The final persistence pass reads blobs sequentially in bounded 500-file chunks, preserving route composition invalidation, Merkle leaf commitments, and atomic stage cleanup.
 
-- INV-PERF-STAGE-PAYLOAD-SPOOLING: Spool extraction payload blobs to stage-private disk storage during consumer ingestion and read by chunk during persistence to keep heap memory bounded during linking. [`consume_pipeline_results`](../../src/engine/pipeline.rs) [`populate_owned`](../../crates/acdd-index/src/db/writer/mod.rs).
+- INV-PERF-STAGE-PAYLOAD-SPOOLING: Spool extraction payload blobs to stage-private disk storage during consumer ingestion and read by chunk during persistence to keep heap memory bounded during linking. [`consume_pipeline_results`](../../src/engine/pipeline/mod.rs) [`populate_owned`](../../crates/acdd-index/src/db/writer/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Clone Ingestion for Batched Node Attributes

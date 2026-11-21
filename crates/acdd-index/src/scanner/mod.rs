@@ -20,10 +20,10 @@ fn error(message: impl Into<String>) -> std::io::Error {
 }
 
 pub mod discovery;
-pub use acdd_core::config::*;
-pub use acdd_core::config::ENGINE_SCHEMA_VERSION;
-pub use crate::INDEX_SEMANTICS_VERSION;
 pub use crate::models::FileEntry;
+pub use crate::INDEX_SEMANTICS_VERSION;
+pub use acdd_core::config::ENGINE_SCHEMA_VERSION;
+pub use acdd_core::config::*;
 
 #[derive(Debug, Clone, Serialize)]
 /// Represents scan report data.
@@ -81,6 +81,17 @@ impl BuildCandidate {
 pub struct BuildStreamReport {
     pub files: usize,
     pub bytes: u64,
+}
+
+/// Candidates, dependency manifests, and counters from a cold-build walk.
+#[derive(Debug)]
+pub struct ColdScanResult {
+    /// Source and documentation candidates selected for extraction.
+    pub candidates: Vec<BuildCandidate>,
+    /// Dependency manifests discovered during the same walk.
+    pub dependency_manifests: Vec<PathBuf>,
+    /// Counts observed during the walk.
+    pub report: BuildStreamReport,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -531,16 +542,17 @@ fn stream_for_build_with_manifests(
 }
 
 /// Collects cold-build candidates and dependency manifests in one walk.
-pub fn collect_for_build(
-    root: &Path,
-    adapter: &Adapter,
-) -> std::io::Result<(Vec<BuildCandidate>, Vec<PathBuf>, BuildStreamReport)> {
+pub fn collect_for_build(root: &Path, adapter: &Adapter) -> std::io::Result<ColdScanResult> {
     let mut candidates = Vec::new();
     let (manifests, report) = stream_for_build_with_manifests(root, adapter, |candidate| {
         candidates.push(candidate);
         Ok(())
     })?;
-    Ok((candidates, manifests, report))
+    Ok(ColdScanResult {
+        candidates,
+        dependency_manifests: manifests,
+        report,
+    })
 }
 
 /// Discovers dependency manifests without retaining the cold-build candidate list.
@@ -559,10 +571,11 @@ fn collect_candidates(
     watch: Option<&std::sync::Arc<WatchedEntries>>,
 ) -> std::io::Result<ScanCandidates> {
     let mut candidates = Vec::new();
-    let dependency_manifests = walk_candidate_paths(root, adapter, watch, true, |full, relative| {
-        candidates.push((full, relative));
-        Ok(())
-    })?;
+    let dependency_manifests =
+        walk_candidate_paths(root, adapter, watch, true, |full, relative| {
+            candidates.push((full, relative));
+            Ok(())
+        })?;
     Ok((candidates, dependency_manifests))
 }
 
@@ -1325,7 +1338,10 @@ mod tests {
             },
         );
         assert!(is_spec_collection_path("docs/rfcs/helper.py", &adapter));
-        assert!(!is_spec_collection_path("docs/rfcs_extra/helper.py", &adapter));
+        assert!(!is_spec_collection_path(
+            "docs/rfcs_extra/helper.py",
+            &adapter
+        ));
     }
 
     #[test]
@@ -1348,7 +1364,11 @@ mod tests {
             let report = scan_with_adapter(&root, &adapter).unwrap();
             let has_code = report.entries.iter().any(|e| !e.is_doc);
             let has_docs = report.entries.iter().any(|e| e.is_doc);
-            assert_eq!((has_code, has_docs), (expect_code, expect_docs), "{cfg_yaml}");
+            assert_eq!(
+                (has_code, has_docs),
+                (expect_code, expect_docs),
+                "{cfg_yaml}"
+            );
         }
     }
 }

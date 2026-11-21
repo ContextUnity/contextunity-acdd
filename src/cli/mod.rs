@@ -3098,6 +3098,12 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(&legacy).is_err(), "legacy cmd should be removed: {legacy:?}");
         }
+        let snap_legacy = Cli::try_parse_from(["acdd", "snapshot", "snap1", "--run", "m1"]).unwrap();
+        let mut sink = Vec::new();
+        assert!(tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(snap_legacy.run_with_writer(&mut sink))
+            .is_err());
 
         // 3. `acdd init` picks inherit: code vs base and writes canonical .gitignore block
         for (acdd_yaml, expected_inherit) in [

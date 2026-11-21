@@ -32,90 +32,16 @@ use ingest::*;
 
 pub(crate) const MAX_MULTI_VALUE_BATCH_ROWS: usize = 500;
 
-/// Bounded offset and length range for a staged payload blob in an on-disk spool.
-#[derive(Debug, Clone, Copy)]
-pub struct StagedPayloadBlob {
-    /// Byte offset in the spool file.
-    pub offset: u64,
-    /// Byte length in the spool file.
-    pub length: u64,
-}
+mod payload_store;
+pub use payload_store::{PayloadStore, SpoolSlice, StagedPayload};
 
-/// Staged on-disk payload locations for an indexed file entry.
+/// Staged payloads for an indexed file entry.
 #[derive(Debug)]
 pub struct StagedFilePayload {
-    /// Encoded facts payload blob location.
-    pub encoded_facts: StagedPayloadBlob,
-    /// Storage rows payload blob location if prepared.
-    pub storage_rows: Option<StagedPayloadBlob>,
-}
-
-/// RAM-backed payloads indexed by their reserved spool offsets.
-pub type RamStagedPayloads = std::sync::Mutex<BTreeMap<u64, Vec<u8>>>;
-
-fn read_staged_payload(
-    file: &File,
-    payload: StagedPayloadBlob,
-    ram: &RamStagedPayloads,
-    consume: bool,
-) -> Result<Vec<u8>> {
-    if payload.offset & (1 << 63) != 0 {
-        let mut entries = ram.lock().unwrap_or_else(|error| error.into_inner());
-        let bytes = if consume {
-            entries.remove(&payload.offset)
-        } else {
-            entries.get(&payload.offset).cloned()
-        };
-        let bytes = bytes.context("missing staged RAM payload")?;
-        anyhow::ensure!(
-            bytes.len() as u64 == payload.length,
-            "staged RAM payload length mismatch"
-        );
-        return Ok(bytes);
-    }
-    let length = usize::try_from(payload.length).context("staged payload length overflow")?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(length)
-        .context("cannot reserve memory for staged payload")?;
-    bytes.resize(length, 0);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::FileExt;
-        let mut offset = payload.offset;
-        let mut remaining = bytes.as_mut_slice();
-        while !remaining.is_empty() {
-            match file.read_at(remaining, offset) {
-                Ok(0) => {
-                    bail!(
-                        "unexpected EOF reading staged payload at offset {} (remaining {} bytes)",
-                        offset,
-                        remaining.len()
-                    );
-                }
-                Ok(read_bytes) => {
-                    remaining = &mut remaining[read_bytes..];
-                    offset = offset
-                        .checked_add(read_bytes as u64)
-                        .context("staged payload offset overflow")?;
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(err) => return Err(err.into()),
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        use std::io::{Read, Seek, SeekFrom};
-        static SPOOL_READ_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = SPOOL_READ_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let mut reader = file;
-        reader.seek(SeekFrom::Start(payload.offset))?;
-        reader.read_exact(&mut bytes)?;
-    }
-    Ok(bytes)
+    /// Encoded facts payload.
+    pub encoded_facts: StagedPayload,
+    /// Prepared storage rows, when available.
+    pub storage_rows: Option<StagedPayload>,
 }
 
 fn decode_prepared_storage(bytes: &[u8]) -> Result<PreparedCatalogStorage> {
@@ -283,7 +209,7 @@ pub fn populate_owned(
     staged_payloads: &mut BTreeMap<String, StagedFilePayload>,
     payload_spool_path: Option<&Path>,
 ) -> Result<Value> {
-    populate_owned_with_ram(
+    populate_owned_with_store(
         conn,
         root,
         adapter,
@@ -293,13 +219,12 @@ pub fn populate_owned(
         build_inputs,
         staged_payloads,
         payload_spool_path,
-        &RamStagedPayloads::default(),
     )
 }
 
-/// Populates an index with optional RAM-backed staged payloads.
+/// Populates an index with staged payloads.
 #[allow(clippy::too_many_arguments)]
-pub fn populate_owned_with_ram(
+pub fn populate_owned_with_store(
     conn: &mut Connection,
     root: &Path,
     adapter: &Adapter,
@@ -309,7 +234,6 @@ pub fn populate_owned_with_ram(
     build_inputs: BuildInputs<'_>,
     staged_payloads: &mut BTreeMap<String, StagedFilePayload>,
     payload_spool_path: Option<&Path>,
-    ram: &RamStagedPayloads,
 ) -> Result<Value> {
     let streamed_payloads = !staged_payloads.is_empty();
     let payload_spool = if streamed_payloads {
@@ -419,13 +343,11 @@ pub fn populate_owned_with_ram(
                 let staged = staged_payloads
                     .get(path)
                     .context("missing composed source payload")?;
-                let encoded_facts = read_staged_payload(
+                let encoded_facts = payload_store::read_staged_payload(
                     payload_spool
                         .as_ref()
                         .context("missing staged payload spool")?,
-                    staged.encoded_facts,
-                    ram,
-                    false,
+                    &staged.encoded_facts,
                 )?;
                 Ok((path.to_owned(), catalog_payload(path, &encoded_facts)?))
             })
@@ -458,11 +380,11 @@ pub fn populate_owned_with_ram(
                         .map(|(file, lean, staged)| {
                             let restoring = Instant::now();
                             let encoded_facts =
-                                read_staged_payload(spool, staged.encoded_facts, ram, true)?;
+                                payload_store::take_staged_payload(spool, staged.encoded_facts)?;
                             let (storage, encoded) = if let Some(storage_blob) = staged.storage_rows
                             {
                                 let storage_bytes =
-                                    read_staged_payload(spool, storage_blob, ram, true)?;
+                                    payload_store::take_staged_payload(spool, storage_blob)?;
                                 let storage = decode_prepared_storage(&storage_bytes)?;
                                 (storage, encoded_facts)
                             } else {

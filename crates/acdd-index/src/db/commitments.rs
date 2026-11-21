@@ -421,21 +421,23 @@ fn fts_digest(conn: &Connection, table: &str, order_by: &str) -> Result<String> 
     if !matches!(table, "node_search_postings" | "doc_search_postings") {
         return fts_digest_vocab(conn, table, order_by);
     }
-    if let Some(index) = table.strip_suffix("_postings") {
-        let vocab = ensure_fts_vocab(conn, index)?;
-        let _: Option<String> = conn
-            .query_row(&format!("SELECT term FROM {vocab} LIMIT 1"), [], |row| {
-                row.get(0)
-            })
-            .optional()?;
-    }
     let snapshot = if conn.is_autocommit() {
         Some(conn.unchecked_transaction()?)
     } else {
         None
     };
     let digest = match fts_digest_fastpath(conn, table)? {
-        Some(digest) => digest,
+        Some(digest) => {
+            if let Some(index) = table.strip_suffix("_postings") {
+                let vocab = ensure_fts_vocab(conn, index)?;
+                let _: Option<String> = conn
+                    .query_row(&format!("SELECT term FROM {vocab} LIMIT 1"), [], |row| {
+                        row.get(0)
+                    })
+                    .optional()?;
+            }
+            digest
+        }
         None => fts_digest_vocab(conn, table, order_by)?,
     };
     if let Some(snapshot) = snapshot {

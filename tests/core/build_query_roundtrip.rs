@@ -86,6 +86,7 @@ See `ServiceClient`.
 
     ws.write("src/many.py", &(0..1500).map(|i| format!("def function_{i}():\n    return {i}\n")).collect::<String>());
     let mut roots = Vec::new();
+    let mut graph_baseline = None;
     for (label, budget) in [("default", None), ("spill", Some(1024 * 1024)), ("ram", Some(256 * 1024 * 1024))] {
         let output = ws.path(format!(".acdd/{label}.sqlite"));
         let mut hooks = writer::PipelineTestHooks::before_cleanup(|_| {});
@@ -100,6 +101,19 @@ See `ServiceClient`.
         roots.push(report["output_root"].clone());
         let connection = reader::open(&output, ws.root()).unwrap();
         acdd_index::db::commitments::verify(&connection).unwrap();
+        let rows = |sql: &str| -> Vec<String> {
+            connection.prepare(sql).unwrap().query_map([], |row| row.get(0)).unwrap()
+                .collect::<rusqlite::Result<_>>().unwrap()
+        };
+        let graph = (
+            rows("SELECT id FROM nodes ORDER BY id"),
+            rows("SELECT s.id || '|' || e.kind || '|' || d.id FROM edges e JOIN nodes s ON s.node_hash=e.src_hash JOIN nodes d ON d.node_hash=e.dst_hash ORDER BY 1"),
+        );
+        if let Some(baseline) = &graph_baseline {
+            assert_eq!(&graph, baseline, "node and resolved edge parity for {label}");
+        } else {
+            graph_baseline = Some(graph);
+        }
     }
     assert_eq!(roots[0], roots[1]);
     assert_eq!(roots[1], roots[2]);
@@ -149,4 +163,17 @@ See `ServiceClient`.
     assert!(error.to_string().contains("candidate database failed integrity check"), "{error:#}");
     assert!(!rejected.exists());
     assert!(!ws.path(".acdd/rejected.sqlite.verified.json").exists());
+
+    let fast_verify = writer::execute_with_mode(
+        writer::BuildMode::FastVerifyOnly,
+        ws.root(),
+        &cold_path,
+        None,
+        None,
+        None,
+    )
+    .expect("FastVerifyOnly execution succeeds");
+    assert_eq!(fast_verify["build_mode"], "FastVerifyOnly");
+    assert_eq!(fast_verify["verified"], true);
+    assert_eq!(fast_verify["output_root"], cold["output_root"]);
 }

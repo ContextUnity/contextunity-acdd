@@ -26,7 +26,7 @@ ACDD MCP runs across Linux (`x86_64`, `aarch64`) and macOS Darwin/APFS (`x86_64`
 
 > [!IMPORTANT]
 > Invariant: Case-preserving and case-insensitive volumes must use exact case-matched inventory membership and preserve filesystem-reported Unicode spelling rather than rely on raw path `.exists()` probes.
-> - INV-XPLAT-APFS-CASE-INVENTORY: Volume case-sensitivity probing isolates case-folding checks, and delta/rebuild path classifiers must not reject case-only renames based on raw `.exists()` or `symlink_metadata()` hits. [`is_case_insensitive_volume`](../../crates/acdd-core/src/fs.rs) [`delta_inner`](../../src/engine/pipeline.rs)
+> - INV-XPLAT-APFS-CASE-INVENTORY: Volume case-sensitivity probing isolates case-folding checks, and delta/rebuild path classifiers must not reject case-only renames based on raw `.exists()` or `symlink_metadata()` hits. [`is_case_insensitive_volume`](../../crates/acdd-core/src/fs.rs) [`delta_inner`](../../src/engine/pipeline/delta.rs)
 
 ### Rules
 

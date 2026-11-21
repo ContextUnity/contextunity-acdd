@@ -330,14 +330,15 @@ fn cold_disk_build_sealing_matches_serial_and_preserves_previous_generation() {
     commitments::verify(&conn).expect("the preserved previous generation still verifies");
     drop(conn);
 
+    let err_chain = failed_build_result
+        .expect_err("the denied FTS reader must abort the build")
+        .chain()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
     assert_eq!(
-        failed_build_result
-            .expect_err("the denied FTS reader must abort the build")
-            .chain()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
+        err_chain,
         [
-            "authorization denied".to_owned(),
+            "access to node_search_config.k is prohibited".to_owned(),
             "Error code 23: Authorization denied".to_owned()
         ],
         "the exact denied-reader error chain is retained"
