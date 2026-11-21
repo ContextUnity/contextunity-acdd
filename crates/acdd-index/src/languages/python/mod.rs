@@ -1361,60 +1361,64 @@ fn call_to_file(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, rules: &Language
     };
     let alias = text(callee, ctx.source);
     super::manifests::semantic::execute_call_rules(
-        ctx,
-        facts,
-        rules,
-        indices,
-        "python",
-        alias,
-        |module| projections::imported_module_candidate(alias, module),
-        |index| {
-            let arguments = ctx.node.child_by_field_name("arguments")?;
-            let mut cursor = arguments.walk();
-            let mut positional_index = 0;
-            let mut target = None;
-            let mut keyword_seen = false;
-            for argument in arguments.named_children(&mut cursor) {
-                match argument.kind() {
-                    "comment" => continue,
-                    "keyword_argument" => keyword_seen = true,
-                    "list_splat" | "dictionary_splat" => return None,
-                    _ => {
-                        if keyword_seen {
-                            return None;
+        super::manifests::semantic::CallRulesInput {
+            ctx,
+            rules,
+            indices,
+            language: "python",
+            alias,
+        },
+        &super::manifests::semantic::CallRulesResolvers {
+            candidate: &|module| projections::imported_module_candidate(alias, module),
+            argument_value: &|index| {
+                let arguments = ctx.node.child_by_field_name("arguments")?;
+                let mut cursor = arguments.walk();
+                let mut positional_index = 0;
+                let mut target = None;
+                let mut keyword_seen = false;
+                for argument in arguments.named_children(&mut cursor) {
+                    match argument.kind() {
+                        "comment" => continue,
+                        "keyword_argument" => keyword_seen = true,
+                        "list_splat" | "dictionary_splat" => return None,
+                        _ => {
+                            if keyword_seen {
+                                return None;
+                            }
+                            if positional_index == index {
+                                target = Some(argument);
+                            }
+                            positional_index += 1;
                         }
-                        if positional_index == index {
-                            target = Some(argument);
-                        }
-                        positional_index += 1;
                     }
                 }
-            }
-            target.and_then(|node| template_loaders::literal(node, ctx.source))
+                target.and_then(|node| template_loaders::literal(node, ctx.source))
+            },
+            imported: &|module, export| {
+                let Some(scope) = lexical_binding_owner(ctx.node, ctx.source, alias) else {
+                    return false;
+                };
+                let root = match scope.kind() {
+                    "module" => scope,
+                    "function_definition" => {
+                        let Some(body) = scope.child_by_field_name("body") else {
+                            return false;
+                        };
+                        body
+                    }
+                    _ => return false,
+                };
+                template_loaders::imported(
+                    root,
+                    ctx.source,
+                    alias,
+                    module,
+                    export,
+                    ctx.node.start_byte(),
+                )
+            },
         },
-        |module, export| {
-            let Some(scope) = lexical_binding_owner(ctx.node, ctx.source, alias) else {
-                return false;
-            };
-            let root = match scope.kind() {
-                "module" => scope,
-                "function_definition" => {
-                    let Some(body) = scope.child_by_field_name("body") else {
-                        return false;
-                    };
-                    body
-                }
-                _ => return false,
-            };
-            template_loaders::imported(
-                root,
-                ctx.source,
-                alias,
-                module,
-                export,
-                ctx.node.start_byte(),
-            )
-        },
+        facts,
     );
 }
 

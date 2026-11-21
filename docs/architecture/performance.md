@@ -4,7 +4,7 @@ title: "Performance Guidance, Search Architecture, and Storage Compaction"
 doc_type: architecture
 status: active
 owners:
-  - crates/acdd-index/src/semantic.rs
+  - crates/acdd-index/src/semantic/
   - crates/acdd-index/src/typed_facts.rs
   - crates/acdd-index/src/db/writer.rs
   - crates/acdd-index/src/db/writer/cache.rs
@@ -129,7 +129,7 @@ Milestone 031 (`m-cold-indexing-throughput-and-memory-optimization`) addressed c
 - **Byte Accounting**: Ingestion queue bounds operate on dynamic estimated byte budgets derived from `ScannerLimits.memory_budget_mb` (`crates/acdd-core/src/config.rs`) or the `ACDD_MEMORY_BUDGET_MB` environment variable (`MemoryPermit` in `crates/acdd-index/src/db/writer.rs`). Each file's permit accounts for its scanned file size multiplied by the extraction expansion factor. A single oversized item is admitted only when no other item holds an active permit, preventing memory exhaustion on massive generated or bundled files while guaranteeing progress without deadlocks.
 
 ### 2. Lean SymbolCatalog Decomposition and Streaming Storage Payloads
-- **Decoupled Linking State**: Historically, `TypedFacts` retained full AST details (`value_flow`, `bindings`, `rebindings`, `param_types`, and span details) in a workspace-wide map during global cross-file linking. Milestone 031 replaced this with `SymbolCatalog` and `CatalogSymbol` (`crates/acdd-index/src/semantic.rs`, `crates/acdd-index/src/linker/compact.rs`, `crates/acdd-index/src/linker/mod.rs`).
+- **Decoupled Linking State**: Historically, `TypedFacts` retained full AST details (`value_flow`, `bindings`, `rebindings`, `param_types`, and span details) in a workspace-wide map during global cross-file linking. Milestone 031 replaced this with `SymbolCatalog` and `CatalogSymbol` (`crates/acdd-index/src/semantic/catalog.rs`, `crates/acdd-index/src/linker/compact.rs`, `crates/acdd-index/src/linker/mod.rs`).
 - **Catalog Admission**: Workers invoke `SymbolCatalog::insert_typed(..., false)` to omit storage-only detail fields and duplicate storage payloads. The linking catalog retains native binding metadata and typed flows needed for resolution.
 - **Precomputed Staged Storage**: Heavyweight storage rows are precomputed during extraction and Zstd-compressed into `PreparedCatalogStorage` within `StagedFilePayload` (`crates/acdd-index/src/db/writer.rs`).
 - **Bounded Chunk Hydration**: In `populate_owned` (`crates/acdd-index/src/db/writer.rs`, `crates/acdd-index/src/db/ingest.rs`), `LoadedCatalogFile` structures are loaded and persisted in bounded parallel chunks of up to 500 files (`MAX_MULTI_VALUE_BATCH_ROWS = 500`). Each payload chunk is dropped immediately after SQLite insertion, preventing simultaneous coexistence of raw ASTs and database rows.
@@ -181,8 +181,8 @@ better request latency.
 
 ### 7. Single-Pass AST Extraction and Native Typed Sidecar Facts
 - **Incremental Lexical Route Binding**: [`RouteContextBuilder`](../../crates/acdd-index/src/ast/routes.rs) and [`SinglePassExtractor`](../../crates/acdd-index/src/ast/visitor.rs) collect lexical bindings, string/list/dict tables, and Python write assignments directly inside the primary `visitor::walk` pass instead of running a standalone `collect_lexical_bindings` pre-pass or recursive subtree walks per file.
-- **Native Typed Fact Stores**: [`SemanticStore`](../../crates/acdd-index/src/typed_facts/mod.rs) and [`FlowStore`](../../crates/acdd-index/src/typed_facts/mod.rs) hold [`SemanticFact`](../../crates/acdd-index/src/semantic.rs) and [`ValueFlowFacts`](../../crates/acdd-index/src/semantic.rs) in native Rust structs (`TypedFacts`) during extraction and [`SymbolCatalog`](../../crates/acdd-index/src/semantic.rs) linking. The local extraction cache stores typed facts directly in its V4 binary frame; public JSON projection remains a separate storage boundary.
-- **Optional Scope Storage**: [`FrameworkScopeFacts`](../../crates/acdd-index/src/semantic.rs) groups less common framework, template and collection vectors in an optional box. [`NodeSemanticEntry`](../../crates/acdd-index/src/typed_facts/mod.rs) holds admitted bindings, rebindings and parameter types natively. Public JSON remains flat, retains parameter order and preserves malformed raw metadata.
+- **Native Typed Fact Stores**: [`SemanticStore`](../../crates/acdd-index/src/typed_facts/mod.rs) and [`FlowStore`](../../crates/acdd-index/src/typed_facts/mod.rs) hold [`SemanticFact`](../../crates/acdd-index/src/semantic/relations.rs) and [`ValueFlowFacts`](../../crates/acdd-index/src/semantic/types.rs) in native Rust structs (`TypedFacts`) during extraction and [`SymbolCatalog`](../../crates/acdd-index/src/semantic/catalog.rs) linking. The local extraction cache stores typed facts directly in its V4 binary frame; public JSON projection remains a separate storage boundary.
+- **Optional Scope Storage**: [`FrameworkScopeFacts`](../../crates/acdd-index/src/semantic/types.rs) groups less common framework, template and collection vectors in an optional box. [`NodeSemanticEntry`](../../crates/acdd-index/src/typed_facts/mod.rs) holds admitted bindings, rebindings and parameter types natively. Public JSON remains flat, retains parameter order and preserves malformed raw metadata.
 - **Single-Pass Linker Post-Processing**: [`link_compact_with_typed_registry`](../../crates/acdd-index/src/linker/mod.rs) fuses value-flow propagation, uncertainty collection, and fault aggregation into a single pass over `all.values()`.
 
 ### 8. Shared Rule-IR Dispatch and Zero-Allocation Proof Lookups
@@ -233,9 +233,9 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Symbol Catalog Fact Stripping
 >
-> In `src/engine/pipeline.rs` (`run_cold_pipeline`) and `crates/acdd-index/src/semantic.rs` (`SymbolCatalog::insert_typed`), encode full storage facts into compressed `PreparedCatalogStorage` within extraction workers. Pass `retain_storage = false` for cold catalog admission to remove storage-only details and omit duplicate storage payloads. Preserve native binding metadata and typed flows required for linking; retain no additional workspace-wide full-facts copy.
+> In `src/engine/pipeline.rs` (`run_cold_pipeline`) and `crates/acdd-index/src/semantic/catalog.rs` (`SymbolCatalog::insert_typed`), encode full storage facts into compressed `PreparedCatalogStorage` within extraction workers. Pass `retain_storage = false` for cold catalog admission to remove storage-only details and omit duplicate storage payloads. Preserve native binding metadata and typed flows required for linking; retain no additional workspace-wide full-facts copy.
 
-- INV-PERF-CATALOG-FACT-STRIPPING: Remove storage-only details and duplicate storage payloads during cold catalog admission while retaining typed resolution facts. [`run_cold_pipeline`](../../src/engine/pipeline/mod.rs) [`SymbolCatalog`](../../crates/acdd-index/src/semantic.rs).
+- INV-PERF-CATALOG-FACT-STRIPPING: Remove storage-only details and duplicate storage payloads during cold catalog admission while retaining typed resolution facts. [`run_cold_pipeline`](../../src/engine/pipeline/mod.rs) [`SymbolCatalog`](../../crates/acdd-index/src/semantic/catalog.rs).
 
 > [!IMPORTANT]
 > Invariant: Bounded Chunk Persistence and Allocator Trimming
@@ -324,9 +324,9 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Binary Catalog Storage and Reference Occurrences Without JSON Round-Trips
 >
-> In `crates/acdd-index/src/db/writer.rs` (`PreparedCatalogStorage`) and `crates/acdd-index/src/semantic.rs` (`SymbolCatalog::insert_typed`, `decode_catalog_references`), persisted catalog payloads and reference occurrence blobs must use compact binary encoding (`encode_references` / `decode_references`) compressed with Zstd rather than `serde_json::to_vec` / `serde_json::from_slice`.
+> In `crates/acdd-index/src/db/writer.rs` (`PreparedCatalogStorage`) and `crates/acdd-index/src/semantic/catalog.rs` (`SymbolCatalog::insert_typed`, `decode_catalog_references`), persisted catalog payloads and reference occurrence blobs must use compact binary encoding (`encode_references` / `decode_references`) compressed with Zstd rather than `serde_json::to_vec` / `serde_json::from_slice`.
 
-- INV-PERF-BINARY-CATALOG-STORAGE: Encode `PreparedCatalogStorage` and `SymbolCatalog` reference occurrences in binary format before Zstd compression instead of round-tripping through `serde_json`. [`SymbolCatalog`](../../crates/acdd-index/src/semantic.rs) [`encode_references`](../../crates/acdd-index/src/db/writer/cache.rs) [`decode_references`](../../crates/acdd-index/src/db/writer/cache.rs).
+- INV-PERF-BINARY-CATALOG-STORAGE: Encode `PreparedCatalogStorage` and `SymbolCatalog` reference occurrences in binary format before Zstd compression instead of round-tripping through `serde_json`. [`SymbolCatalog`](../../crates/acdd-index/src/semantic/catalog.rs) [`encode_references`](../../crates/acdd-index/src/db/writer/cache.rs) [`decode_references`](../../crates/acdd-index/src/db/writer/cache.rs).
 
 > [!IMPORTANT]
 > Invariant: Bounded Rust Receiver and Module Proof

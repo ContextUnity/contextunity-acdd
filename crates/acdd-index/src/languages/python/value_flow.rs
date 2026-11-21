@@ -402,7 +402,7 @@ fn static_name(node: Node<'_>) -> bool {
                 .is_some_and(|member| member.kind() == "identifier"))
 }
 
-fn split_python_pipe_types(annotation: &str) -> Option<Vec<&str>> {
+pub(crate) fn split_python_pipe_types(annotation: &str) -> Option<Vec<&str>> {
     let mut depth = 0_usize;
     let mut start = 0_usize;
     let mut parts = Vec::new();

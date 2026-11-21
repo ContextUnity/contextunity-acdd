@@ -931,15 +931,17 @@ fn extract_file_impl(
     .context("HTML parse cancelled")?;
     let err_count = facts.errors.len();
     ast::extract_tree_with_language_context(
-        &HTML,
-        tree.root_node(),
-        path,
-        source,
-        module,
-        &format!("module:{path}"),
+        ast::TreeExtractContext {
+            profile: &HTML,
+            root: tree.root_node(),
+            path,
+            source,
+            module,
+            owner: &format!("module:{path}"),
+            language_context: rules,
+        },
         facts,
         flows.as_deref_mut(),
-        rules,
     );
     if has_template_tags {
         facts.errors.truncate(err_count);

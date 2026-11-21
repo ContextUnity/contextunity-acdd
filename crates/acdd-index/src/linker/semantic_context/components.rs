@@ -25,30 +25,24 @@ fn component_rule_key(
     )
 }
 
-fn relative_under_directory<'a>(path: &'a str, project: &str, root: &str) -> Option<&'a str> {
-    if project.is_empty() {
-        path.strip_prefix(root)?.strip_prefix('/')
-    } else {
-        path.strip_prefix(project)?
-            .strip_prefix('/')?
-            .strip_prefix(root)?
-            .strip_prefix('/')
-    }
-}
-
-fn scoped_provider_modules<'a>(
-    path: &str,
+fn scoped_matching_provider_module<'a, 'e>(
+    provider_path: &str,
     facts: &'a Facts,
     scope: &str,
+    exports: &'e [languages::manifests::syntax::ComponentExport],
     dependencies: &languages::dependency_registry::DependencyRegistry,
-) -> impl Iterator<Item = &'a Node> {
-    let same_scope = dependencies
-        .nearest_manifest_scope_for_path(languages::LanguageFamily("javascript"), path)
-        == Some(scope);
-    facts
-        .nodes
-        .iter()
-        .filter(move |node| same_scope && node.kind == "module")
+) -> Option<(&'a Node, &'e languages::manifests::syntax::ComponentExport)> {
+    let selector = exports.iter().find(|selector| {
+        languages::manifests::semantic::component_export_matches_provider(
+            provider_path,
+            scope,
+            &selector.directory,
+            &selector.extension,
+            dependencies,
+        )
+    })?;
+    let module = facts.nodes.iter().find(|node| node.kind == "module")?;
+    Some((module, selector))
 }
 
 pub(super) fn component_names(
@@ -57,7 +51,8 @@ pub(super) fn component_names(
     root: &str,
     extension: &str,
 ) -> Option<(String, String)> {
-    let relative = relative_under_directory(path, project, root)?;
+    let relative =
+        languages::manifests::semantic::relative_under_directory(path, project, root)?;
     let stem = relative.strip_suffix(extension)?;
     if stem.is_empty()
         || !stem
@@ -181,16 +176,17 @@ impl<'a> super::Context<'a> {
                 else {
                     continue;
                 };
-                if !rule
-                    .activation_family()
-                    .is_some_and(|family| dependencies.declares_for_path(family, path, package))
-                {
+                let Some(config_path) =
+                    languages::manifests::semantic::component_environment_config_path(
+                        rule,
+                        path,
+                        scope,
+                        package,
+                        config_file,
+                        dependencies,
+                    )
+                else {
                     continue;
-                }
-                let config_path = if scope.is_empty() {
-                    config_file.clone()
-                } else {
-                    format!("{scope}/{config_file}")
                 };
                 let config = all.get_facts(&config_path).and_then(|facts| {
                     facts
@@ -231,8 +227,11 @@ impl<'a> super::Context<'a> {
                         _ => None,
                     })
                     .into_iter()
-                    .flatten()
-                    .filter(|fact| fact.origin.pack == rule.pack && fact.origin.rule == rule.id)
+                    .flat_map(|items| {
+                        languages::manifests::semantic::matching_component_configurations(
+                            items, rule,
+                        )
+                    })
                     .collect::<Vec<_>>();
                 if let ([configuration], Some(config_node)) = (configuration.as_slice(), config) {
                     if let (Some(descriptor), Some(state)) =
@@ -256,25 +255,13 @@ impl<'a> super::Context<'a> {
                                 incomplete: false,
                             };
                             for (provider_path, file) in all.iter_facts() {
-                                let Some(selector) = descriptor.exports.iter().find(|selector| {
-                                    relative_under_directory(
-                                        provider_path,
-                                        scope,
-                                        &selector.directory,
-                                    )
-                                    .is_some_and(|tail| {
-                                        !tail.contains('/') && tail.ends_with(&selector.extension)
-                                    })
-                                }) else {
-                                    continue;
-                                };
-                                let Some(provider) = scoped_provider_modules(
+                                let Some((provider, selector)) = scoped_matching_provider_module(
                                     provider_path,
                                     file,
                                     scope,
+                                    &descriptor.exports,
                                     dependencies,
-                                )
-                                .next() else {
+                                ) else {
                                     continue;
                                 };
                                 let mut exported =
@@ -340,7 +327,11 @@ impl<'a> super::Context<'a> {
                                 let relative = if scope.is_empty() {
                                     Some(provider_path)
                                 } else {
-                                    relative_under_directory(provider_path, "", scope)
+                                    languages::manifests::semantic::relative_under_directory(
+                                        provider_path,
+                                        "",
+                                        scope,
+                                    )
                                 };
                                 let Some(relative) = relative else {
                                     continue;
@@ -371,14 +362,15 @@ impl<'a> super::Context<'a> {
                             .or_default()
                             .push(callable_catalog[&key].clone());
                     }
-                    for name in &configuration.modules {
-                        let Some(addition) = modules.get(name).filter(|addition| {
-                            rule.activation_family().is_some_and(|family| {
-                                dependencies.declares_for_path(family, path, &addition.package)
-                            })
-                        }) else {
-                            continue;
-                        };
+                    for (name, addition) in
+                        languages::manifests::semantic::active_component_module_additions(
+                            configuration,
+                            modules,
+                            rule,
+                            path,
+                            dependencies,
+                        )
+                    {
                         let module_id = self
                             .interner
                             .lookup_symbol(name)
@@ -391,21 +383,13 @@ impl<'a> super::Context<'a> {
                         {
                             let mut exports = HashMap::<SymbolId, Vec<(&Node, SymbolId)>>::new();
                             for (provider_path, provider) in all.iter_facts() {
-                                if !addition.exports.iter().any(|entry| {
-                                    relative_under_directory(provider_path, scope, &entry.directory)
-                                        .is_some_and(|tail| {
-                                            !tail.contains('/') && tail.ends_with(&entry.extension)
-                                        })
-                                }) {
-                                    continue;
-                                }
-                                let Some(provider) = scoped_provider_modules(
+                                let Some((provider, _)) = scoped_matching_provider_module(
                                     provider_path,
                                     provider,
                                     scope,
+                                    &addition.exports,
                                     dependencies,
-                                )
-                                .next() else {
+                                ) else {
                                     continue;
                                 };
                                 for binding in
@@ -506,28 +490,30 @@ impl<'a> super::Context<'a> {
                 let [config] = configuration.as_slice() else {
                     continue;
                 };
-                for name in &config.modules {
-                    if let Some(addition) = modules.get(name).filter(|addition| {
-                        rule.activation_family().is_some_and(|family| {
-                            dependencies.declares_for_path(family, path, &addition.package)
-                        })
-                    }) {
-                        for component in &addition.components {
-                            builtin.insert(
-                                self.interner
-                                    .lookup_symbol(component)
-                                    .expect("configured component is interned"),
-                                format!(
-                                    "{}:{name}; rule:{}:{}",
-                                    rule.display
-                                        .component
-                                        .as_deref()
-                                        .unwrap_or("builtin:configured_component"),
-                                    rule.pack,
-                                    rule.id
-                                ),
-                            );
-                        }
+                for (name, addition) in
+                    languages::manifests::semantic::active_component_module_additions(
+                        config,
+                        modules,
+                        rule,
+                        path,
+                        dependencies,
+                    )
+                {
+                    for component in &addition.components {
+                        builtin.insert(
+                            self.interner
+                                .lookup_symbol(component)
+                                .expect("configured component is interned"),
+                            format!(
+                                "{}:{name}; rule:{}:{}",
+                                rule.display
+                                    .component
+                                    .as_deref()
+                                    .unwrap_or("builtin:configured_component"),
+                                rule.pack,
+                                rule.id
+                            ),
+                        );
                     }
                 }
                 if !config.enabled {
@@ -567,13 +553,12 @@ impl<'a> super::Context<'a> {
                     else {
                         continue;
                     };
-                    let Some(provider_module) = scoped_provider_modules(
+                    let Some(provider_module) = (dependencies.nearest_manifest_scope_for_path(
+                        languages::LanguageFamily("javascript"),
                         provider_path,
-                        provider,
-                        scope,
-                        dependencies,
-                    )
-                    .next() else {
+                    ) == Some(scope))
+                    .then(|| provider.nodes.iter().find(|node| node.kind == "module"))
+                    .flatten() else {
                         continue;
                     };
                     for name in [pascal, kebab] {

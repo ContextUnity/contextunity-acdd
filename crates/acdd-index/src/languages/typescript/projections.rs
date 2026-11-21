@@ -427,59 +427,64 @@ pub(super) fn extract_projections(ctx: &SyntaxContext<'_, '_>, rules: &LanguageC
         rules.projection_rule_candidates(kind, callee),
     ) {
         let Some(payload) = manifests::semantic::prepare_syntax_rule(
-            rule,
-            kind == "call_expression",
-            callee,
-            ctx.offset,
-            api_shape,
-            || {
-                *outermost_member.get_or_init(|| {
-                    kind != "member_expression"
-                        || !ctx.node.parent().is_some_and(|parent| {
-                            (parent.kind() == "member_expression"
-                                && parent.child_by_field_name("object") == Some(ctx.node))
-                                || (parent.kind() == "call_expression"
-                                    && parent.child_by_field_name("function") == Some(ctx.node))
+            manifests::semantic::SyntaxRuleInput {
+                rule,
+                is_call: kind == "call_expression",
+                callee,
+                offset: ctx.offset,
+            },
+            &manifests::semantic::SyntaxRuleResolvers {
+                api_shape: &api_shape,
+                outermost_member: &|| {
+                    *outermost_member.get_or_init(|| {
+                        kind != "member_expression"
+                            || !ctx.node.parent().is_some_and(|parent| {
+                                (parent.kind() == "member_expression"
+                                    && parent.child_by_field_name("object") == Some(ctx.node))
+                                    || (parent.kind() == "call_expression"
+                                        && parent.child_by_field_name("function") == Some(ctx.node))
+                            })
+                    })
+                },
+                factory: &|index, state, actions| {
+                    factory_members(ctx.node, ctx.source, index, state, actions, &arguments)
+                },
+                setup: &|index| {
+                    let callback =
+                        projection_argument(ctx.node, &Slot::Argument { index }, &arguments);
+                    let binding = ctx
+                        .node
+                        .parent()
+                        .filter(|node| {
+                            node.kind() == "variable_declarator"
+                                && node.child_by_field_name("value") == Some(ctx.node)
                         })
-                })
-            },
-            |index, state, actions| {
-                factory_members(ctx.node, ctx.source, index, state, actions, &arguments)
-            },
-            |index| {
-                let callback = projection_argument(ctx.node, &Slot::Argument { index }, &arguments);
-                let binding = ctx
-                    .node
-                    .parent()
-                    .filter(|node| {
-                        node.kind() == "variable_declarator"
-                            && node.child_by_field_name("value") == Some(ctx.node)
+                        .and_then(|node| node.child_by_field_name("name"))
+                        .filter(|node| node.kind() == "identifier");
+                    callback
+                        .and_then(|callback| setup.get(&callback.id()))
+                        .zip(binding)
+                        .map(|(members, binding)| {
+                            (text(binding, ctx.source).to_owned(), members.clone())
+                        })
+                },
+                argument: &|slot| {
+                    projection_argument(ctx.node, slot, &arguments).map(|node| {
+                        (
+                            SourcePosition {
+                                line: node.start_position().row + ctx.offset + 1,
+                                column: node.start_position().column,
+                            },
+                            static_path(node, ctx.source),
+                        )
                     })
-                    .and_then(|node| node.child_by_field_name("name"))
-                    .filter(|node| node.kind() == "identifier");
-                callback
-                    .and_then(|callback| setup.get(&callback.id()))
-                    .zip(binding)
-                    .map(|(members, binding)| {
-                        (text(binding, ctx.source).to_owned(), members.clone())
-                    })
-            },
-            |slot| {
-                projection_argument(ctx.node, slot, &arguments).map(|node| {
-                    (
-                        SourcePosition {
-                            line: node.start_position().row + ctx.offset + 1,
-                            column: node.start_position().column,
-                        },
-                        static_path(node, ctx.source),
-                    )
-                })
-            },
-            |slot| {
-                Some(literal_key(
-                    projection_argument(ctx.node, slot, &arguments),
-                    ctx.source,
-                ))
+                },
+                literal: &|slot| {
+                    Some(literal_key(
+                        projection_argument(ctx.node, slot, &arguments),
+                        ctx.source,
+                    ))
+                },
             },
         ) else {
             continue;

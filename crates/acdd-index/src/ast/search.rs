@@ -1098,12 +1098,15 @@ fn extract_required_anchors(
     let capabilities = profile.ast_search_capabilities();
     let mut anchors = Vec::new();
 
-    #[allow(clippy::too_many_arguments)]
+    struct AnchorWalkContext<'a> {
+        source: &'a str,
+        language_id: &'a str,
+        capabilities: &'a AstSearchCapabilities,
+    }
+
     fn walk(
+        ctx: &AnchorWalkContext<'_>,
         node: Syntax<'_>,
-        source: &str,
-        language_id: &str,
-        capabilities: &AstSearchCapabilities,
         declaration_root: bool,
         declaration_prefix_end: Option<usize>,
         out: &mut Vec<String>,
@@ -1115,22 +1118,22 @@ fn extract_required_anchors(
         if kind.contains("comment") || is_literal_container_kind(kind) {
             return;
         }
-        let token = text(node, source);
+        let token = text(node, ctx.source);
         if token.starts_with("__ACDD_META_") || token.starts_with("__ACDD_MANY_") {
             return;
         }
         if node.child_count() == 0 {
-            if is_valid_literal_anchor(language_id, token)
+            if is_valid_literal_anchor(ctx.language_id, token)
                 && !out.iter().any(|existing| existing == token)
             {
                 out.push(token.to_owned());
             }
             return;
         }
-        let omit_declaration_body = capabilities.declaration_kinds.contains(&kind)
+        let omit_declaration_body = ctx.capabilities.declaration_kinds.contains(&kind)
             && (declaration_root
                 || node.named_children(&mut node.walk()).any(|child| {
-                    capabilities.declaration_body_kinds.contains(&child.kind())
+                    ctx.capabilities.declaration_body_kinds.contains(&child.kind())
                         && child
                             .named_children(&mut child.walk())
                             .all(|nested| nested.kind().contains("comment"))
@@ -1142,27 +1145,22 @@ fn extract_required_anchors(
             }
             if child.kind().contains("comment")
                 || (omit_declaration_body
-                    && capabilities.declaration_body_kinds.contains(&child.kind()))
+                    && ctx.capabilities.declaration_body_kinds.contains(&child.kind()))
             {
                 continue;
             }
-            walk(
-                child,
-                source,
-                language_id,
-                capabilities,
-                false,
-                None,
-                out,
-            );
+            walk(ctx, child, false, None, out);
         }
     }
 
+    let walk_ctx = AnchorWalkContext {
+        source: &prepared.source,
+        language_id: profile.id(),
+        capabilities: &capabilities,
+    };
     walk(
+        &walk_ctx,
         root,
-        &prepared.source,
-        profile.id(),
-        &capabilities,
         prepared.mode == PatternMode::Declaration,
         prepared.declaration_prefix_end,
         &mut anchors,

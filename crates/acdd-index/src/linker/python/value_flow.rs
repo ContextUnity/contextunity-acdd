@@ -128,7 +128,11 @@ pub(in crate::linker) fn typed_dict_class<'a>(
 
 pub(in crate::linker) fn nullable_type_expr(annotation: &str) -> Option<TypeExpr> {
     let annotation = strip_outer_parentheses(annotation.trim());
-    if let Some(parts) = split_pipe_types(annotation) {
+    #[cfg(feature = "lang-python")]
+    let pipe_parts = crate::languages::python::value_flow::split_python_pipe_types(annotation);
+    #[cfg(not(feature = "lang-python"))]
+    let pipe_parts: Option<Vec<&str>> = None;
+    if let Some(parts) = pipe_parts {
         if parts.len() >= 2 {
             let args = parts.into_iter().map(nullable_argument).collect();
             return Some(TypeExpr::Applied {
@@ -181,34 +185,4 @@ fn nullable_argument(annotation: &str) -> TypeExpr {
     nullable_type_expr(unparenthesized).unwrap_or_else(|| TypeExpr::Named {
         name: unparenthesized.to_owned(),
     })
-}
-
-fn split_pipe_types(annotation: &str) -> Option<Vec<&str>> {
-    let mut depth = 0_usize;
-    let mut start = 0_usize;
-    let mut parts = Vec::new();
-    for (index, character) in annotation.char_indices() {
-        match character {
-            '[' | '(' => depth = depth.checked_add(1)?,
-            ']' | ')' => depth = depth.checked_sub(1)?,
-            '|' if depth == 0 => {
-                let part = annotation[start..index].trim();
-                if part.is_empty() {
-                    return None;
-                }
-                parts.push(part);
-                start = index + character.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    if depth != 0 || parts.is_empty() {
-        return None;
-    }
-    let last = annotation[start..].trim();
-    if last.is_empty() {
-        return None;
-    }
-    parts.push(last);
-    Some(parts)
 }

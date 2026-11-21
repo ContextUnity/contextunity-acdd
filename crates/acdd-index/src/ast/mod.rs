@@ -5,7 +5,11 @@ pub mod route_includes;
 pub mod routes;
 pub mod search;
 use crate::languages::{self, FileContext, LanguageProfile, SyntaxContext};
-use crate::models::*;
+use crate::models::{
+    details::NodeDetailKey,
+    tags::{LanguageId, NodeKind},
+    *,
+};
 use crate::typed_facts::{FlowStore, TypedFacts};
 use anyhow::Result;
 pub use search::{
@@ -223,7 +227,7 @@ fn compact_node_details(facts: &mut Facts, path: &str) {
     for node in facts
         .nodes
         .iter()
-        .filter(|node| node.path == path && node.kind != "module")
+        .filter(|node| node.path == path && node.kind != NodeKind::Module.as_str())
     {
         *declarations_per_line.entry(node.line).or_insert(0usize) += 1;
     }
@@ -234,15 +238,21 @@ fn compact_node_details(facts: &mut Facts, path: &str) {
                 "bindings" | "rebindings" => {
                     !value.as_array().is_some_and(|values| values.is_empty())
                 }
-                "async" | "default_export" | "is_method" | "is_public" => {
+                k if k == NodeDetailKey::ASYNC
+                    || k == NodeDetailKey::DEFAULT_EXPORT
+                    || k == "is_method"
+                    || k == "is_public" =>
+                {
                     value != &serde_json::Value::Bool(false)
                 }
                 "is_static" => value != &serde_json::Value::Bool(false),
                 _ => true,
             });
             let has_other_details = details.keys().any(|key| key != "column");
-            let keep_column = !matches!(node.kind.as_str(), "function" | "method")
-                || has_other_details
+            let keep_column = !matches!(
+                node.kind.as_str(),
+                k if k == NodeKind::Function.as_str() || k == NodeKind::Method.as_str()
+            ) || has_other_details
                 || details
                     .get("column")
                     .and_then(serde_json::Value::as_u64)
@@ -314,14 +324,17 @@ fn manifest_entrypoint_candidates(
             continue;
         };
         let direct_module = callable.is_some_and(|callable| {
-            let Some(module) = facts.nodes.iter().find(|node| node.kind == "module") else {
+            let Some(module) = facts
+                .nodes
+                .iter()
+                .find(|node| node.kind == NodeKind::Module.as_str())
+            else {
                 return false;
             };
             let qualified = format!("{}.{}", module.qualname, callable);
-            let mut targets = facts
-                .nodes
-                .iter()
-                .filter(|node| node.kind == "function" && node.qualname == qualified);
+            let mut targets = facts.nodes.iter().filter(|node| {
+                node.kind == NodeKind::Function.as_str() && node.qualname == qualified
+            });
             let Some(target) = targets.next() else {
                 return false;
             };
@@ -330,13 +343,20 @@ fn manifest_entrypoint_candidates(
         let id = format!("main-registration:{}:{}:{}", entry.origin, entry.name, path);
         facts.nodes.push(Node {
             native_semantic: None,
-            id, kind: "main_registration".into(), name: entry.name.clone(),
-            qualname: entry.target.clone(), path: path.to_owned(), line: 1, end_line: 1,
-            is_test: is_test(path), language: language.into(), generated: false,
+            id,
+            kind: NodeKind::MainRegistration.as_str().into(),
+            name: entry.name.clone(),
+            qualname: entry.target.clone(),
+            path: path.to_owned(),
+            line: 1,
+            end_line: 1,
+            is_test: is_test(path),
+            language: language.into(),
+            generated: false,
             details: serde_json::json!({"manifest_origin": entry.origin, "manifest_name": entry.name, "callable": callable, "direct_module": direct_module}),
         });
     }
-    if language == "python" {
+    if language == LanguageId::Python.as_str() {
         clear_direct_module_markers(facts);
     }
 }
@@ -363,7 +383,7 @@ pub fn extract_typed_with_registry(
     facts.nodes.push(Node {
         native_semantic: None,
         id: format!("module:{path}"),
-        kind: "module".into(),
+        kind: NodeKind::Module.as_str().into(),
         name: path.rsplit('/').next().unwrap_or(path).into(),
         qualname: module.clone(),
         path: path.into(),
@@ -459,15 +479,17 @@ pub(crate) fn extract_tree(
     let registry = languages::dependency_registry::DependencyRegistry::bundled_framework_rules();
     let language_context = registry.language_context_for_path(path);
     extract_tree_with_language_context(
-        profile,
-        root,
-        path,
-        source,
-        module,
-        &format!("module:{path}"),
+        TreeExtractContext {
+            profile,
+            root,
+            path,
+            source,
+            module,
+            owner: &format!("module:{path}"),
+            language_context: &language_context,
+        },
         facts,
         None,
-        &language_context,
     );
     if profile.id() == "python" {
         clear_direct_module_markers(facts);
@@ -498,38 +520,43 @@ pub(crate) fn parse_island(
     Some(tree)
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) struct TreeExtractContext<'a, 'tree> {
+    pub(crate) profile: &'a dyn LanguageProfile,
+    pub(crate) root: Syntax<'tree>,
+    pub(crate) path: &'a str,
+    pub(crate) source: &'a str,
+    pub(crate) module: &'a str,
+    pub(crate) owner: &'a str,
+    pub(crate) language_context: &'a std::sync::Arc<languages::LanguageContext>,
+}
+
 pub(crate) fn extract_tree_with_language_context(
-    profile: &dyn LanguageProfile,
-    root: Syntax<'_>,
-    path: &str,
-    source: &str,
-    module: &str,
-    owner: &str,
+    ctx: TreeExtractContext<'_, '_>,
     facts: &mut Facts,
     flows: Option<&mut FlowStore>,
-    language_context: &std::sync::Arc<languages::LanguageContext>,
 ) -> ScopeBindings {
-    let rule_ir = language_context.bind_rule_ir(&root.language());
-    let route_context = if profile.route_extraction_enabled() {
-        routes::RouteContext::prepare(root, source, language_context)
+    let rule_ir = ctx.language_context.bind_rule_ir(&ctx.root.language());
+    let route_context = if ctx.profile.route_extraction_enabled() {
+        routes::RouteContext::prepare(ctx.root, ctx.source, ctx.language_context)
     } else {
         routes::RouteContext::default()
     };
     let bindings = visitor::SinglePassExtractor {
-        source,
-        path,
-        profile,
-        language_context,
+        source: ctx.source,
+        path: ctx.path,
+        profile: ctx.profile,
+        language_context: ctx.language_context,
         rule_ir,
         route_context,
-        file: profile.prepare_with_context(root, source, language_context),
-        module,
+        file: ctx
+            .profile
+            .prepare_with_context(ctx.root, ctx.source, ctx.language_context),
+        module: ctx.module,
         offset: 0,
         symbols: HashMap::new(),
         ids: facts.nodes.iter().map(|n| n.id.clone()).collect(),
         flows,
     }
-    .visit(root, &mut Vec::new(), owner, facts);
+    .visit(ctx.root, &mut Vec::new(), ctx.owner, facts);
     bindings
 }

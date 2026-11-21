@@ -702,16 +702,15 @@ pub(crate) fn required_configuration_facts(
             else {
                 continue;
             };
-            if !rule
-                .activation_family()
-                .is_some_and(|family| dependencies.declares_for_path(family, path, package))
-            {
+            let Some(config_path) = manifests::semantic::component_environment_config_path(
+                rule,
+                path,
+                scope,
+                package,
+                config_file,
+                dependencies,
+            ) else {
                 continue;
-            }
-            let config_path = if scope.is_empty() {
-                config_file.clone()
-            } else {
-                format!("{scope}/{config_file}")
             };
             if catalog
                 .iter()
@@ -727,11 +726,9 @@ pub(crate) fn required_configuration_facts(
                     .find(|node| node.kind == "module")
                     .and_then(|node| config.flows.get(node))
                     .map(|flow| flow.component_configurations());
-                for configuration in configurations
-                    .into_iter()
-                    .flatten()
-                    .filter(|fact| fact.origin.pack == rule.pack && fact.origin.rule == rule.id)
-                {
+                for configuration in configurations.into_iter().flat_map(|items| {
+                    manifests::semantic::matching_component_configurations(items, rule)
+                }) {
                     if let Some(descriptor) = callable_imports
                         .as_ref()
                         .filter(|_| configuration.callable_imports.is_some())
@@ -743,24 +740,15 @@ pub(crate) fn required_configuration_facts(
                             String::new(),
                         )) {
                             for export in &descriptor.exports {
-                                let directory = if scope.is_empty() {
-                                    export.directory.clone()
-                                } else {
-                                    format!("{scope}/{}", export.directory)
-                                };
                                 for (candidate, language) in catalog {
                                     if *language == "typescript"
-                                        && dependencies.nearest_manifest_scope_for_path(
-                                            LanguageFamily("javascript"),
+                                        && manifests::semantic::component_export_matches_provider(
                                             candidate,
-                                        ) == Some(scope)
-                                        && candidate
-                                            .strip_prefix(&directory)
-                                            .and_then(|tail| tail.strip_prefix('/'))
-                                            .is_some_and(|tail| {
-                                                !tail.contains('/')
-                                                    && tail.ends_with(&export.extension)
-                                            })
+                                            scope,
+                                            &export.directory,
+                                            &export.extension,
+                                            dependencies,
+                                        )
                                     {
                                         required.insert((*candidate).to_owned());
                                     }
@@ -768,36 +756,31 @@ pub(crate) fn required_configuration_facts(
                             }
                         }
                     }
-                    for name in &configuration.modules {
-                        let Some(addition) = modules.get(name).filter(|addition| {
-                            rule.activation_family().is_some_and(|family| {
-                                dependencies.declares_for_path(family, path, &addition.package)
-                            })
-                        }) else {
-                            continue;
-                        };
+                    for (name, addition) in manifests::semantic::active_component_module_additions(
+                        configuration,
+                        modules,
+                        rule,
+                        path,
+                        dependencies,
+                    ) {
                         if !selected.insert((
                             config_path.clone(),
                             rule.pack.clone(),
                             rule.id.clone(),
-                            name.clone(),
+                            name.to_owned(),
                         )) {
                             continue;
                         }
                         for export in &addition.exports {
-                            let directory = if scope.is_empty() {
-                                export.directory.clone()
-                            } else {
-                                format!("{scope}/{}", export.directory)
-                            };
                             for (candidate, language) in catalog {
                                 if *language == "typescript"
-                                    && candidate
-                                        .strip_prefix(&directory)
-                                        .and_then(|tail| tail.strip_prefix('/'))
-                                        .is_some_and(|tail| {
-                                            !tail.contains('/') && tail.ends_with(&export.extension)
-                                        })
+                                    && manifests::semantic::component_export_matches_provider(
+                                        candidate,
+                                        scope,
+                                        &export.directory,
+                                        &export.extension,
+                                        dependencies,
+                                    )
                                 {
                                     required.insert((*candidate).to_owned());
                                 }

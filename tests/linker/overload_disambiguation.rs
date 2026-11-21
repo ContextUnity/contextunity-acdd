@@ -221,7 +221,7 @@ def caller(c: Category):
         None,
     )
     .unwrap();
-    let inspected = reader::inspect_paged(&conn, "Category.move", false, &page)
+    let inspected = reader::inspect_paged_with_path(&conn, "Category.move", None, false, &page)
         .expect("inspect Category.move must succeed");
     assert_eq!(inspected["node"]["id"], node["id"]);
 }

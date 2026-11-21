@@ -1447,15 +1447,17 @@ pub(crate) fn parse_file_typed(
 ) -> Result<()> {
     let tree = parse_tree(profile, path, source)?;
     ast::extract_tree_with_language_context(
-        profile,
-        tree.root_node(),
-        path,
-        source,
-        module,
-        &format!("module:{path}"),
+        ast::TreeExtractContext {
+            profile,
+            root: tree.root_node(),
+            path,
+            source,
+            module,
+            owner: &format!("module:{path}"),
+            language_context,
+        },
         &mut typed.facts,
         Some(&mut typed.flows),
-        language_context,
     );
     typed.project_named_selectors();
     Ok(())

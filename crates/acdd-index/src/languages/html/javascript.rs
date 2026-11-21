@@ -92,15 +92,17 @@ pub(super) fn extract_island(
     }
     let errors = facts.errors.len();
     ast::extract_tree_with_language_context(
-        context.profile,
-        root,
-        context.path,
-        context.source,
-        &scope,
-        &owner,
+        ast::TreeExtractContext {
+            profile: context.profile,
+            root,
+            path: context.path,
+            source: context.source,
+            module: &scope,
+            owner: &owner,
+            language_context: context.rules,
+        },
         facts,
         Some(&mut island_flows),
-        context.rules,
     );
     if matches!(script, std::borrow::Cow::Owned(_)) {
         facts.errors.truncate(errors);

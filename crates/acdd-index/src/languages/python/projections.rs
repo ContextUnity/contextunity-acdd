@@ -803,42 +803,46 @@ pub(super) fn extract_with_frontier(
     for &index in semantic {
         let effective = &rules.semantic_rules[index];
         manifests::semantic::execute_semantic_rule(
-            effective,
-            ctx,
-            "python",
-            kind == "call",
-            &decorated_calls,
-            |call, api| proof.api(call, api),
-            |call, selected| slot(call, ctx.source, selected),
-            |call, name| keyword(call, ctx.source, name),
-            |node| literal(node, ctx.source),
-            |node| operand(node, ctx.source),
-            || {
-                symbols
-                    .get(&ctx.node.id())
-                    .map_or(SymbolOperand::Unknown, |id| SymbolOperand::Node {
-                        id: id.clone(),
-                    })
+            manifests::semantic::SemanticRuleInput {
+                effective,
+                ctx,
+                language: "python",
+                is_call: kind == "call",
+                decorated_calls: &decorated_calls,
             },
-            |call, attachment| {
-                let Some(keyword_node) = call.parent().filter(|node| {
-                    node.kind() == "keyword_argument"
-                        && field(*node, ctx.source, "name") == Some(attachment.keyword.as_str())
-                }) else {
-                    return false;
-                };
-                let Some(parent) = keyword_node
-                    .parent()
-                    .and_then(|arguments| arguments.parent())
-                    .filter(|node| node.kind() == "call")
-                else {
-                    return false;
-                };
-                keyword(parent, ctx.source, &attachment.keyword)
-                    .ok()
-                    .flatten()
-                    == Some(call)
-                    && proof.api(parent, &attachment.callee)
+            &manifests::semantic::SemanticRuleResolvers {
+                api: &|call, api| proof.api(call, api),
+                slot: &|call, selected| slot(call, ctx.source, selected),
+                keyword: &|call, name| keyword(call, ctx.source, name),
+                literal: &|node| literal(node, ctx.source),
+                operand: &|node| operand(node, ctx.source),
+                decorated_source: &|| {
+                    symbols
+                        .get(&ctx.node.id())
+                        .map_or(SymbolOperand::Unknown, |id| SymbolOperand::Node {
+                            id: id.clone(),
+                        })
+                },
+                attached: &|call, attachment| {
+                    let Some(keyword_node) = call.parent().filter(|node| {
+                        node.kind() == "keyword_argument"
+                            && field(*node, ctx.source, "name") == Some(attachment.keyword.as_str())
+                    }) else {
+                        return false;
+                    };
+                    let Some(parent) = keyword_node
+                        .parent()
+                        .and_then(|arguments| arguments.parent())
+                        .filter(|node| node.kind() == "call")
+                    else {
+                        return false;
+                    };
+                    keyword(parent, ctx.source, &attachment.keyword)
+                        .ok()
+                        .flatten()
+                        == Some(call)
+                        && proof.api(parent, &attachment.callee)
+                },
             },
             &mut attachments,
             &mut endpoints,

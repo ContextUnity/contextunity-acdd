@@ -555,28 +555,44 @@ mod tests {
 }
 
 use crate::semantic::{
-    AttachmentRelation, EndpointRequestFact, ExtractionRuleOrigin, FactoryResultFact,
-    NamedBindingFact, NamedBindingRole, NamedTargetKind, ObjectMember, SourcePosition,
-    StaticString, SymbolAttachmentFact, SymbolOperand, TemplateContextFact, ValueFlowFacts,
+    AttachmentRelation, ComponentConfigurationFact, EndpointRequestFact, ExtractionRuleOrigin,
+    FactoryResultFact, NamedBindingFact, NamedBindingRole, NamedTargetKind, ObjectMember,
+    SourcePosition, StaticString, SymbolAttachmentFact, SymbolOperand, TemplateContextFact,
+    ValueFlowFacts,
 };
 use crate::languages::{semantic::EffectiveSemanticRule, SyntaxContext};
-#[allow(clippy::too_many_arguments)]
+
+pub(crate) struct SemanticRuleInput<'rules, 'a, 'tree> {
+    pub(crate) effective: &'rules EffectiveSemanticRule,
+    pub(crate) ctx: &'a SyntaxContext<'a, 'tree>,
+    pub(crate) language: &'a str,
+    pub(crate) is_call: bool,
+    pub(crate) decorated_calls: &'a [tree_sitter::Node<'tree>],
+}
+
+type NodeSlotResolver<'a, 'tree> =
+    &'a dyn Fn(tree_sitter::Node<'tree>, &Slot) -> Result<Option<tree_sitter::Node<'tree>>, ()>;
+type NodeKeywordResolver<'a, 'tree> =
+    &'a dyn Fn(tree_sitter::Node<'tree>, &str) -> Result<Option<tree_sitter::Node<'tree>>, ()>;
+
+pub(crate) struct SemanticRuleResolvers<'a, 'rules, 'tree> {
+    pub(crate) api: &'a dyn Fn(tree_sitter::Node<'tree>, &'rules Api) -> bool,
+    pub(crate) slot: NodeSlotResolver<'a, 'tree>,
+    pub(crate) keyword: NodeKeywordResolver<'a, 'tree>,
+    pub(crate) literal: &'a dyn Fn(Option<tree_sitter::Node<'tree>>) -> StaticString,
+    pub(crate) operand: &'a dyn Fn(Option<tree_sitter::Node<'tree>>) -> SymbolOperand,
+    pub(crate) decorated_source: &'a dyn Fn() -> SymbolOperand,
+    pub(crate) attached: &'a dyn Fn(tree_sitter::Node<'tree>, &'rules EndpointAttachment) -> bool,
+}
+
 pub(crate) fn execute_semantic_rule<'rules, 'tree>(
-    effective: &'rules EffectiveSemanticRule,
-    ctx: &SyntaxContext<'_, 'tree>,
-    language: &str,
-    is_call: bool,
-    decorated_calls: &[tree_sitter::Node<'tree>],
-    api: impl Fn(tree_sitter::Node<'tree>, &'rules Api) -> bool,
-    slot: impl Fn(tree_sitter::Node<'tree>, &Slot) -> Result<Option<tree_sitter::Node<'tree>>, ()>,
-    keyword: impl Fn(tree_sitter::Node<'tree>, &str) -> Result<Option<tree_sitter::Node<'tree>>, ()>,
-    literal: impl Fn(Option<tree_sitter::Node<'tree>>) -> StaticString,
-    operand: impl Fn(Option<tree_sitter::Node<'tree>>) -> SymbolOperand,
-    decorated_source: impl Fn() -> SymbolOperand,
-    attached: impl Fn(tree_sitter::Node<'tree>, &'rules EndpointAttachment) -> bool,
+    input: SemanticRuleInput<'rules, '_, 'tree>,
+    resolvers: &SemanticRuleResolvers<'_, 'rules, 'tree>,
     attachments: &mut Vec<SymbolAttachmentFact>,
     endpoints: &mut Vec<EndpointRequestFact>,
 ) {
+    let effective = input.effective;
+    let ctx = input.ctx;
     let position = |node: tree_sitter::Node<'_>| SourcePosition {
         line: node.start_position().row + ctx.offset + 1,
         column: node.start_position().column,
@@ -588,31 +604,33 @@ pub(crate) fn execute_semantic_rule<'rules, 'tree>(
             source,
             target,
             relation,
-        } if selected == language => {
+        } if selected == input.language => {
             let relation = match relation {
                 SemanticRelation::UsesModel => AttachmentRelation::UsesModel,
                 SemanticRelation::References => AttachmentRelation::References,
                 _ => return,
             };
             let calls = match source {
-                AttachmentSource::DecoratedCallable if !is_call => decorated_calls,
-                AttachmentSource::Argument { .. } if is_call => std::slice::from_ref(&ctx.node),
+                AttachmentSource::DecoratedCallable if !input.is_call => input.decorated_calls,
+                AttachmentSource::Argument { .. } if input.is_call => std::slice::from_ref(&ctx.node),
                 _ => return,
             };
             for &call in calls {
-                if !api(call, callee) {
+                if !(resolvers.api)(call, callee) {
                     continue;
                 }
-                let target = match slot(call, target) {
+                let target = match (resolvers.slot)(call, target) {
                     Ok(None) => continue,
-                    Ok(Some(node)) => operand(Some(node)),
+                    Ok(Some(node)) => (resolvers.operand)(Some(node)),
                     Err(()) => SymbolOperand::Unknown,
                 };
                 let source = match source {
-                    AttachmentSource::DecoratedCallable => decorated_source(),
-                    AttachmentSource::Argument { index } => {
-                        operand(slot(call, &Slot::Argument { index: *index }).ok().flatten())
-                    }
+                    AttachmentSource::DecoratedCallable => (resolvers.decorated_source)(),
+                    AttachmentSource::Argument { index } => (resolvers.operand)(
+                        (resolvers.slot)(call, &Slot::Argument { index: *index })
+                            .ok()
+                            .flatten(),
+                    ),
                 };
                 attachments.push(SymbolAttachmentFact {
                     origin: ExtractionRuleOrigin::new(&effective.pack, &effective.rule.id),
@@ -630,13 +648,13 @@ pub(crate) fn execute_semantic_rule<'rules, 'tree>(
             url_keyword,
             method_keyword,
             default_method,
-        } if selected == language && is_call => {
-            if !api(ctx.node, callee) || !attached(ctx.node, attachment) {
+        } if selected == input.language && input.is_call => {
+            if !(resolvers.api)(ctx.node, callee) || !(resolvers.attached)(ctx.node, attachment) {
                 return;
             }
-            let url = literal(keyword(ctx.node, url_keyword).ok().flatten());
-            let method =
-                keyword(ctx.node, method_keyword).map(|node| node.map(|node| literal(Some(node))));
+            let url = (resolvers.literal)((resolvers.keyword)(ctx.node, url_keyword).ok().flatten());
+            let method = (resolvers.keyword)(ctx.node, method_keyword)
+                .map(|node| node.map(|node| (resolvers.literal)(Some(node))));
             let url = match url {
                 StaticString::Literal { value }
                     if value.starts_with('/') && !value.starts_with("//") =>
@@ -724,29 +742,41 @@ pub(crate) fn bind_receiver_type(
             SyntaxOperation::NamedBinding { domain, binding },
             ProjectionPayload::Named { key, target },
         ) => flow.push_named_binding(emit_named_binding(
-            rule, position, domain, binding, key, target, facts,
+            NamedBindingRequest {
+                rule,
+                position,
+                domain,
+                binding,
+                key,
+                target,
+            },
+            facts,
         )),
         _ => {}
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn emit_named_binding(
-    rule: &super::syntax::SyntaxRule,
+struct NamedBindingRequest<'a> {
+    rule: &'a super::syntax::SyntaxRule,
     position: SourcePosition,
-    domain: &str,
-    binding: &super::projections::NamedBindingForm,
+    domain: &'a str,
+    binding: &'a super::projections::NamedBindingForm,
     key: StaticString,
     target: Option<(SourcePosition, Option<String>)>,
+}
+
+fn emit_named_binding(
+    req: NamedBindingRequest<'_>,
     facts: &crate::models::Facts,
 ) -> NamedBindingFact {
     let role =
-        if let super::projections::NamedBindingForm::CallDefinition { target_kind, .. } = binding {
+        if let super::projections::NamedBindingForm::CallDefinition { target_kind, .. } = req.binding
+        {
             let kind = match target_kind {
                 super::projections::DefinitionKind::Object => NamedTargetKind::Object,
                 super::projections::DefinitionKind::Callable => NamedTargetKind::Callable,
             };
-            let operand = target.map_or(SymbolOperand::Unknown, |(position, name)| {
+            let operand = req.target.map_or(SymbolOperand::Unknown, |(position, name)| {
                 if let Some(expression) = name {
                     return SymbolOperand::Name { expression };
                 }
@@ -780,29 +810,40 @@ fn emit_named_binding(
             NamedBindingRole::Reference
         };
     NamedBindingFact {
-        origin: ExtractionRuleOrigin::new(&rule.pack, &rule.id),
-        position,
-        domain: domain.to_owned(),
-        key,
+        origin: ExtractionRuleOrigin::new(&req.rule.pack, &req.rule.id),
+        position: req.position,
+        domain: req.domain.to_owned(),
+        key: req.key,
         role,
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) struct SyntaxRuleInput<'a> {
+    pub(crate) rule: &'a super::syntax::SyntaxRule,
+    pub(crate) is_call: bool,
+    pub(crate) callee: &'a str,
+    pub(crate) offset: usize,
+}
+
+type FactoryMembersResolver<'a> =
+    &'a dyn Fn(usize, &str, &str) -> Option<(String, Vec<ObjectMember>, Vec<ObjectMember>)>;
+type SlotTargetResolver<'a> = &'a dyn Fn(&Slot) -> Option<(SourcePosition, Option<String>)>;
+
+pub(crate) struct SyntaxRuleResolvers<'a> {
+    pub(crate) api_shape: &'a dyn Fn(&Api, &str) -> bool,
+    pub(crate) outermost_member: &'a dyn Fn() -> bool,
+    pub(crate) factory: FactoryMembersResolver<'a>,
+    pub(crate) setup: &'a dyn Fn(usize) -> Option<(String, Vec<ObjectMember>)>,
+    pub(crate) argument: SlotTargetResolver<'a>,
+    pub(crate) literal: &'a dyn Fn(&Slot) -> Option<StaticString>,
+}
+
 pub(crate) fn prepare_syntax_rule(
-    rule: &super::syntax::SyntaxRule,
-    is_call: bool,
-    callee: &str,
-    offset: usize,
-    api_shape: impl Fn(&Api, &str) -> bool,
-    outermost_member: impl FnOnce() -> bool,
-    factory: impl FnOnce(usize, &str, &str) -> Option<(String, Vec<ObjectMember>, Vec<ObjectMember>)>,
-    setup: impl FnOnce(usize) -> Option<(String, Vec<ObjectMember>)>,
-    argument: impl Fn(&Slot) -> Option<(SourcePosition, Option<String>)>,
-    literal: impl Fn(&Slot) -> Option<StaticString>,
+    input: SyntaxRuleInput<'_>,
+    resolvers: &SyntaxRuleResolvers<'_>,
 ) -> Option<ProjectionPayload> {
     use super::{projections::NamedBindingForm, syntax::SyntaxOperation};
-    match &rule.operation {
+    match &input.rule.operation {
         SyntaxOperation::FactoryMembers {
             callee: api,
             argument,
@@ -810,12 +851,12 @@ pub(crate) fn prepare_syntax_rule(
             actions_member,
             shape,
             ..
-        } if is_call && api_shape(api, callee) => {
+        } if input.is_call && (resolvers.api_shape)(api, input.callee) => {
             let (binding, mut members) = if *shape == super::syntax::FactoryShape::SetupReturn {
-                setup(*argument)?
+                (resolvers.setup)(*argument)?
             } else {
                 let (binding, mut members, methods) =
-                    factory(*argument, state_member, actions_member)?;
+                    (resolvers.factory)(*argument, state_member, actions_member)?;
                 if members.len() + methods.len() > 128
                     || methods
                         .iter()
@@ -827,7 +868,7 @@ pub(crate) fn prepare_syntax_rule(
                 (binding, members)
             };
             for member in &mut members {
-                member.position.line += offset;
+                member.position.line += input.offset;
             }
             Some(ProjectionPayload::Factory { binding, members })
         }
@@ -840,30 +881,39 @@ pub(crate) fn prepare_syntax_rule(
                     ..
                 },
             ..
-        } if is_call && api_shape(api, callee) => Some(ProjectionPayload::Named {
-            key: literal(key)?,
-            target: argument(target),
-        }),
+        } if input.is_call && (resolvers.api_shape)(api, input.callee) => {
+            Some(ProjectionPayload::Named {
+                key: (resolvers.literal)(key)?,
+                target: (resolvers.argument)(target),
+            })
+        }
         SyntaxOperation::NamedBinding {
             binding:
                 NamedBindingForm::CallReference {
                     callee: api, key, ..
                 },
             ..
-        } if is_call && api_shape(api, callee) => Some(ProjectionPayload::Named {
-            key: literal(key)?,
-            target: None,
-        }),
+        } if input.is_call && (resolvers.api_shape)(api, input.callee) => {
+            Some(ProjectionPayload::Named {
+                key: (resolvers.literal)(key)?,
+                target: None,
+            })
+        }
         SyntaxOperation::NamedBinding {
             binding: NamedBindingForm::MemberReference { root },
             ..
-        } if callee.split('.').count() >= 2
-            && callee.split('.').next() == Some(root)
-            && outermost_member() =>
+        } if input.callee.split('.').count() >= 2
+            && input.callee.split('.').next() == Some(root)
+            && (resolvers.outermost_member)() =>
         {
             Some(ProjectionPayload::Named {
                 key: StaticString::Literal {
-                    value: callee.split('.').nth(1).expect("member path").to_owned(),
+                    value: input
+                        .callee
+                        .split('.')
+                        .nth(1)
+                        .expect("member path")
+                        .to_owned(),
                 },
                 target: None,
             })
@@ -900,25 +950,40 @@ pub(crate) fn execute_reference_rule<'rules>(
         Err(()) => StaticString::Unknown,
     };
     Some(emit_named_binding(
-        rule, position, domain, binding, key, None, facts,
+        NamedBindingRequest {
+            rule,
+            position,
+            domain,
+            binding,
+            key,
+            target: None,
+        },
+        facts,
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) struct ContextKeyRequest<'a> {
+    pub(crate) rules: &'a [super::syntax::SyntaxRule],
+    pub(crate) candidates: &'a [usize],
+    pub(crate) argument_count: usize,
+    pub(crate) alias: &'a str,
+    pub(crate) position: SourcePosition,
+}
+
+pub(crate) struct ContextKeyResolvers<'a> {
+    pub(crate) context_shape: &'a dyn Fn(usize) -> bool,
+    pub(crate) literal: &'a dyn Fn(usize) -> Option<String>,
+    pub(crate) imported: &'a dyn Fn(&str, &str) -> bool,
+    pub(crate) context_keys: &'a dyn Fn(usize) -> Option<Vec<String>>,
+}
+
 pub(crate) fn project_context_key(
-    rules: &[super::syntax::SyntaxRule],
-    candidates: &[usize],
-    argument_count: usize,
-    alias: &str,
-    position: SourcePosition,
-    context_shape: impl Fn(usize) -> bool,
-    literal: impl Fn(usize) -> Option<String>,
-    imported: impl Fn(&str, &str) -> bool,
-    context_keys: impl Fn(usize) -> Option<Vec<String>>,
+    req: ContextKeyRequest<'_>,
+    resolvers: &ContextKeyResolvers<'_>,
 ) -> Option<TemplateContextFact> {
     use super::syntax::SyntaxOperation;
-    let (rule, target_index, context_index) = candidates.iter().find_map(|&index| {
-        let rule = &rules[index];
+    let (rule, target_index, context_index) = req.candidates.iter().find_map(|&index| {
+        let rule = &req.rules[index];
         let SyntaxOperation::RenderContext {
             module,
             export,
@@ -930,17 +995,17 @@ pub(crate) fn project_context_key(
         else {
             return None;
         };
-        (argument_count == *expected && imported(module, export)).then_some((
+        (req.argument_count == *expected && (resolvers.imported)(module, export)).then_some((
             rule,
             *target_argument,
             *context_argument,
         ))
     })?;
-    let target = literal(target_index)?;
-    if target.is_empty() || target.len() > 256 || !context_shape(context_index) {
+    let target = (resolvers.literal)(target_index)?;
+    if target.is_empty() || target.len() > 256 || !(resolvers.context_shape)(context_index) {
         return None;
     }
-    let keys = context_keys(context_index)?;
+    let keys = (resolvers.context_keys)(context_index)?;
     if keys.is_empty() || keys.len() > 32 {
         return None;
     }
@@ -962,24 +1027,31 @@ pub(crate) fn project_context_key(
     }
     Some(TemplateContextFact {
         origin: Some(ExtractionRuleOrigin::new(&rule.pack, &rule.id)),
-        import_alias: alias.to_owned(),
+        import_alias: req.alias.to_owned(),
         target,
         target_path: None,
         keys,
-        position,
+        position: req.position,
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) struct ClassAttributeRequest<'a> {
+    pub(crate) effective: &'a EffectiveSemanticRule,
+    pub(crate) language: &'a str,
+    pub(crate) attribute: &'a str,
+    pub(crate) owner: &'a str,
+    pub(crate) position: SourcePosition,
+    pub(crate) expression: &'a str,
+}
+
+pub(crate) struct ClassAttributeResolvers<'a> {
+    pub(crate) literal: &'a dyn Fn() -> Option<String>,
+    pub(crate) symbol: &'a dyn Fn() -> Option<String>,
+}
+
 pub(crate) fn execute_class_attribute_rule(
-    effective: &EffectiveSemanticRule,
-    language: &str,
-    attribute: &str,
-    owner: &str,
-    position: SourcePosition,
-    expression: &str,
-    literal: impl FnOnce() -> Option<String>,
-    symbol: impl FnOnce() -> Option<String>,
+    req: ClassAttributeRequest<'_>,
+    resolvers: &ClassAttributeResolvers<'_>,
     facts: &mut crate::models::Facts,
 ) {
     use crate::semantic::SemanticFactRole;
@@ -988,40 +1060,40 @@ pub(crate) fn execute_class_attribute_rule(
         attribute: expected,
         container,
         ..
-    } = &effective.rule.operation
+    } = &req.effective.rule.operation
     {
-        if selected != language || expected != attribute {
+        if selected != req.language || expected != req.attribute {
             return;
         }
-        let Some(value) = literal().filter(|value| !value.is_empty()) else {
+        let Some(value) = (resolvers.literal)().filter(|value| !value.is_empty()) else {
             return;
         };
         let target_owner = if let Some(container) = container {
             if !facts
                 .nodes
                 .iter()
-                .any(|node| node.id == owner && node.kind == "class" && node.name == *container)
+                .any(|node| node.id == req.owner && node.kind == "class" && node.name == *container)
             {
                 return;
             }
             let Some(parent) = facts
                 .edges
                 .iter()
-                .find(|edge| edge.kind == "contains" && edge.dst == owner)
+                .find(|edge| edge.kind == "contains" && edge.dst == req.owner)
                 .map(|edge| edge.src.clone())
             else {
                 return;
             };
             parent
         } else {
-            owner.to_owned()
+            req.owner.to_owned()
         };
         facts.references.push(crate::models::Reference {
             source: target_owner,
             expression: value,
             kind: "defines_table".into(),
-            line: position.line,
-            column: position.column,
+            line: req.position.line,
+            column: req.position.column,
             alias: None,
             module: None,
             dynamic: false,
@@ -1029,18 +1101,18 @@ pub(crate) fn execute_class_attribute_rule(
         });
         return;
     }
-    let (identity, role, target) = match &effective.rule.operation {
+    let (identity, role, target) = match &req.effective.rule.operation {
         SemanticOperation::ClassAttributeToFile {
             language: selected,
             attribute: expected,
             target,
             relation,
-        } if selected == language && expected == attribute => (
-            literal()
+        } if selected == req.language && expected == req.attribute => (
+            (resolvers.literal)()
                 .filter(|value| normal_relative_path(value))
                 .unwrap_or_default(),
             SemanticFactRole::ClassAttributeToFile {
-                attribute: attribute.to_owned(),
+                attribute: req.attribute.to_owned(),
                 relation: *relation,
             },
             target,
@@ -1050,10 +1122,10 @@ pub(crate) fn execute_class_attribute_rule(
             attribute: expected,
             target,
             relation,
-        } if selected == language && expected == attribute => (
-            symbol().unwrap_or_default(),
+        } if selected == req.language && expected == req.attribute => (
+            (resolvers.symbol)().unwrap_or_default(),
             SemanticFactRole::ClassAttributeToSymbol {
-                attribute: attribute.to_owned(),
+                attribute: req.attribute.to_owned(),
                 relation: *relation,
             },
             target,
@@ -1062,12 +1134,12 @@ pub(crate) fn execute_class_attribute_rule(
     };
     crate::languages::semantic::push(
         facts,
-        effective.fact(
-            owner,
-            position.line,
-            position.column,
+        req.effective.fact(
+            req.owner,
+            req.position.line,
+            req.position.column,
             identity,
-            expression.to_owned(),
+            req.expression.to_owned(),
             target,
             role,
         ),
@@ -1241,18 +1313,26 @@ pub(crate) fn projection_object_matches(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) struct CallRulesInput<'a, 'source, 'tree> {
+    pub(crate) ctx: &'a crate::languages::SyntaxContext<'source, 'tree>,
+    pub(crate) rules: &'a crate::languages::LanguageContext,
+    pub(crate) indices: &'a [usize],
+    pub(crate) language: &'a str,
+    pub(crate) alias: &'a str,
+}
+
+pub(crate) struct CallRulesResolvers<'a, 'source> {
+    pub(crate) candidate: &'a dyn Fn(&str) -> bool,
+    pub(crate) argument_value: &'a dyn Fn(usize) -> Option<&'source str>,
+    pub(crate) imported: &'a dyn Fn(&str, &str) -> bool,
+}
+
 pub(crate) fn execute_call_rules<'source>(
-    ctx: &crate::languages::SyntaxContext<'source, '_>,
+    input: CallRulesInput<'_, 'source, '_>,
+    resolvers: &CallRulesResolvers<'_, 'source>,
     facts: &mut crate::models::Facts,
-    rules: &crate::languages::LanguageContext,
-    indices: &[usize],
-    language: &str,
-    alias: &str,
-    candidate: impl Fn(&str) -> bool,
-    argument_value: impl Fn(usize) -> Option<&'source str>,
-    imported: impl Fn(&str, &str) -> bool,
 ) {
+    let ctx = input.ctx;
     let Some(module_owner) = facts
         .nodes
         .iter()
@@ -1264,8 +1344,8 @@ pub(crate) fn execute_call_rules<'source>(
     let position = ctx.node.start_position();
     let call_line = position.row + ctx.offset + 1;
     let mut visible_local_import_owners = None;
-    for &index in indices {
-        let effective = &rules.semantic_rules[index];
+    for &index in input.indices {
+        let effective = &input.rules.semantic_rules[index];
         let (SemanticOperation::CallToFile {
             language: expected,
             callee,
@@ -1284,11 +1364,11 @@ pub(crate) fn execute_call_rules<'source>(
             continue;
         };
         let SemanticCallee::Imported { module, export } = callee;
-        if expected != language || !candidate(module) {
+        if expected != input.language || !(resolvers.candidate)(module) {
             continue;
         }
         let Some(literal) =
-            argument_value(*argument).filter(|literal| normal_relative_path(literal))
+            (resolvers.argument_value)(*argument).filter(|literal| normal_relative_path(literal))
         else {
             continue;
         };
@@ -1297,7 +1377,7 @@ pub(crate) fn execute_call_rules<'source>(
             .iter()
             .find(|reference| {
                 reference.kind == "imports"
-                    && reference.alias.as_deref().unwrap_or(&reference.expression) == alias
+                    && reference.alias.as_deref().unwrap_or(&reference.expression) == input.alias
                     && reference.module.as_deref() == Some(module)
                     && reference.expression == *export
                     && import_scope_visible_from_call(
@@ -1313,7 +1393,7 @@ pub(crate) fn execute_call_rules<'source>(
         else {
             continue;
         };
-        if !imported(module, export) {
+        if !(resolvers.imported)(module, export) {
             continue;
         }
         crate::languages::semantic::push(
@@ -1327,7 +1407,7 @@ pub(crate) fn execute_call_rules<'source>(
                 target,
                 crate::languages::semantic::SemanticFactRole::CallToFile {
                     import_owner,
-                    alias: alias.to_owned(),
+                    alias: input.alias.to_owned(),
                     module: module.clone(),
                     export: export.clone(),
                     relation: *relation,
@@ -1749,4 +1829,80 @@ pub(crate) fn api_proven(
         }
         Api::ConstructedMember { .. } => false,
     }
+}
+
+pub(crate) fn scoped_relative_path(scope: &str, relative: &str) -> String {
+    if scope.is_empty() {
+        relative.to_owned()
+    } else {
+        format!("{scope}/{relative}")
+    }
+}
+
+pub(crate) fn relative_under_directory<'a>(
+    path: &'a str,
+    project: &str,
+    root: &str,
+) -> Option<&'a str> {
+    if project.is_empty() {
+        path.strip_prefix(root)?.strip_prefix('/')
+    } else {
+        path.strip_prefix(project)?
+            .strip_prefix('/')?
+            .strip_prefix(root)?
+            .strip_prefix('/')
+    }
+}
+
+pub(crate) fn component_environment_config_path(
+    rule: &super::syntax::SyntaxRule,
+    path: &str,
+    scope: &str,
+    package: &str,
+    config_file: &str,
+    dependencies: &crate::languages::dependency_registry::DependencyRegistry,
+) -> Option<String> {
+    rule.activation_family()
+        .is_some_and(|family| dependencies.declares_for_path(family, path, package))
+        .then(|| scoped_relative_path(scope, config_file))
+}
+
+pub(crate) fn matching_component_configurations<'a>(
+    configurations: impl IntoIterator<Item = &'a ComponentConfigurationFact>,
+    rule: &'a super::syntax::SyntaxRule,
+) -> impl Iterator<Item = &'a ComponentConfigurationFact> {
+    configurations
+        .into_iter()
+        .filter(move |fact| fact.origin.pack == rule.pack && fact.origin.rule == rule.id)
+}
+
+pub(crate) fn component_export_matches_provider(
+    provider_path: &str,
+    scope: &str,
+    directory: &str,
+    extension: &str,
+    dependencies: &crate::languages::dependency_registry::DependencyRegistry,
+) -> bool {
+    dependencies.nearest_manifest_scope_for_path(
+        crate::languages::LanguageFamily("javascript"),
+        provider_path,
+    ) == Some(scope)
+        && relative_under_directory(provider_path, scope, directory)
+            .is_some_and(|tail| !tail.contains('/') && tail.ends_with(extension))
+}
+
+pub(crate) fn active_component_module_additions<'a>(
+    configuration: &'a ComponentConfigurationFact,
+    modules: &'a std::collections::BTreeMap<String, super::syntax::ComponentModule>,
+    rule: &'a super::syntax::SyntaxRule,
+    path: &'a str,
+    dependencies: &'a crate::languages::dependency_registry::DependencyRegistry,
+) -> impl Iterator<Item = (&'a str, &'a super::syntax::ComponentModule)> {
+    configuration.modules.iter().filter_map(move |name| {
+        let addition = modules.get(name).filter(|addition| {
+            rule.activation_family()
+                .is_some_and(|family| dependencies.declares_for_path(family, path, &addition.package))
+        })?;
+        Some((name.as_str(), addition))
+    })
 }

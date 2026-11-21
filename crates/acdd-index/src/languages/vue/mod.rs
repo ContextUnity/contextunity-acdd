@@ -196,15 +196,17 @@ fn extract_file_impl(
             );
         }
         let bindings = ast::extract_tree_with_language_context(
-            profile,
-            tree.root_node(),
-            path,
-            source,
-            module,
-            &module_id,
+            ast::TreeExtractContext {
+                profile,
+                root: tree.root_node(),
+                path,
+                source,
+                module,
+                owner: &module_id,
+                language_context: rules,
+            },
             facts,
             flows.as_deref_mut(),
-            rules,
         );
         if setup_script {
             script_setup_bindings.extend(bindings.all);

@@ -698,50 +698,54 @@ fn extract_prepared(
     let candidates = prepared.render_candidates.get(alias)?;
     let root = std::cell::OnceCell::new();
     crate::languages::manifests::semantic::project_context_key(
-        &prepared.language_context.syntax_rules,
-        candidates,
-        arguments.named_child_count(),
-        alias,
-        SourcePosition {
-            line: node.start_position().row + 1,
-            column: node.start_position().column,
+        crate::languages::manifests::semantic::ContextKeyRequest {
+            rules: &prepared.language_context.syntax_rules,
+            candidates,
+            argument_count: arguments.named_child_count(),
+            alias,
+            position: SourcePosition {
+                line: node.start_position().row + 1,
+                column: node.start_position().column,
+            },
         },
-        |index| {
-            arguments.named_child(index).is_some_and(|context| {
-                context.kind() == "dictionary" && context.named_child_count() <= 32
-            })
-        },
-        |index| {
-            arguments
-                .named_child(index)
-                .and_then(|target| super::template_loaders::literal(target, source))
-                .map(str::to_owned)
-        },
-        |module, export| {
-            root.get_or_init(|| lexical_import_owner(node, source, alias))
-                .is_some_and(|root| {
-                    super::template_loaders::imported(
-                        root,
-                        source,
-                        alias,
-                        module,
-                        export,
-                        node.start_byte(),
-                    )
+        &crate::languages::manifests::semantic::ContextKeyResolvers {
+            context_shape: &|index| {
+                arguments.named_child(index).is_some_and(|context| {
+                    context.kind() == "dictionary" && context.named_child_count() <= 32
                 })
-        },
-        |index| {
-            let context = arguments.named_child(index)?;
-            context
-                .named_children(&mut context.walk())
-                .map(|pair| {
-                    if pair.kind() != "pair" {
-                        return None;
-                    }
-                    super::template_loaders::literal(pair.child_by_field_name("key")?, source)
-                        .map(str::to_owned)
-                })
-                .collect()
+            },
+            literal: &|index| {
+                arguments
+                    .named_child(index)
+                    .and_then(|target| super::template_loaders::literal(target, source))
+                    .map(str::to_owned)
+            },
+            imported: &|module, export| {
+                root.get_or_init(|| lexical_import_owner(node, source, alias))
+                    .is_some_and(|root| {
+                        super::template_loaders::imported(
+                            root,
+                            source,
+                            alias,
+                            module,
+                            export,
+                            node.start_byte(),
+                        )
+                    })
+            },
+            context_keys: &|index| {
+                let context = arguments.named_child(index)?;
+                context
+                    .named_children(&mut context.walk())
+                    .map(|pair| {
+                        if pair.kind() != "pair" {
+                            return None;
+                        }
+                        super::template_loaders::literal(pair.child_by_field_name("key")?, source)
+                            .map(str::to_owned)
+                    })
+                    .collect()
+            },
         },
     )
 }
@@ -1123,17 +1127,21 @@ pub(super) fn extract_class_attribute(
             continue;
         }
         super::super::manifests::semantic::execute_class_attribute_rule(
-            effective,
-            "python",
-            attribute,
-            owner,
-            SourcePosition {
-                line: position.row + offset + 1,
-                column: position.column,
+            super::super::manifests::semantic::ClassAttributeRequest {
+                effective,
+                language: "python",
+                attribute,
+                owner,
+                position: SourcePosition {
+                    line: position.row + offset + 1,
+                    column: position.column,
+                },
+                expression: text(value, source),
             },
-            text(value, source),
-            || super::template_loaders::literal(value, source).map(str::to_owned),
-            || static_symbol(value, source),
+            &super::super::manifests::semantic::ClassAttributeResolvers {
+                literal: &|| super::template_loaders::literal(value, source).map(str::to_owned),
+                symbol: &|| static_symbol(value, source),
+            },
             facts,
         );
     }
