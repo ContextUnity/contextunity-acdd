@@ -1,6 +1,6 @@
 use super::{
-    encode_int, encode_null, encode_row, encode_text, key, new_leaf_hasher, shape, TextArena,
-    TextSpan,
+    encode_int, encode_null, encode_row, encode_text, key, new_leaf_hasher, shape,
+    CommitmentDomain, TextArena, TextSpan,
 };
 use anyhow::{bail, Context, Result};
 use hashbrown::HashMap;
@@ -8,6 +8,82 @@ use rayon::prelude::*;
 use rusqlite::{types::ValueRef, Connection};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Discriminant kinds for `shared_owners` rows persisted in SQLite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(i64)]
+pub(crate) enum SharedOwnerKind {
+    Symbol = 0,
+    Reference = 1,
+    DefaultExport = 2,
+}
+
+impl SharedOwnerKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Symbol => "symbol",
+            Self::Reference => "reference",
+            Self::DefaultExport => "default_export",
+        }
+    }
+
+    pub(crate) fn from_id(id: i64) -> Option<Self> {
+        match id {
+            0 => Some(Self::Symbol),
+            1 => Some(Self::Reference),
+            2 => Some(Self::DefaultExport),
+            _ => None,
+        }
+    }
+}
+
+/// Canonical borrowed `shared_owners` row hashed into commitment leaves.
+pub(crate) struct SharedOwnerRow<'a> {
+    pub(crate) kind: SharedOwnerKind,
+    pub(crate) key: &'a str,
+    pub(crate) ordinal: i64,
+    pub(crate) node_id: Option<&'a str>,
+}
+
+fn hash_shared_owner_leaf(owner: &str, shared_rows: &mut [SharedOwnerRow<'_>]) -> (String, String) {
+    // CRITICAL DIGEST INVARIANT (INV-PERF-DETERMINISTIC-MERKLE-SEALING):
+    // Sort lexicographically by wire kind ("default_export" < "reference" < "symbol"),
+    // never by numeric SharedOwnerKind discriminant (0 < 1 < 2).
+    shared_rows.sort_unstable_by(|a, b| {
+        a.kind
+            .as_str()
+            .cmp(b.kind.as_str())
+            .then_with(|| a.key.cmp(b.key))
+            .then_with(|| a.node_id.cmp(&b.node_id))
+            .then_with(|| a.ordinal.cmp(&b.ordinal))
+    });
+    let mut hasher = new_leaf_hasher(CommitmentDomain::SharedOwners.as_str(), owner);
+    for row in shared_rows.iter() {
+        hasher.update([0xff]);
+        encode_text(&mut hasher, row.kind.as_str());
+        encode_text(&mut hasher, row.key);
+        encode_text(&mut hasher, owner);
+        if let Some(node_id) = row.node_id {
+            encode_text(&mut hasher, node_id);
+        } else {
+            encode_int(&mut hasher, row.ordinal);
+        }
+    }
+    (
+        key(CommitmentDomain::SharedOwners.as_str(), owner),
+        hex::encode(hasher.finalize()),
+    )
+}
+
+/// Computes `shared_owners` Merkle leaves grouped by owner path.
+pub(crate) fn hash_shared_owner_leaves<'a>(
+    by_owner: impl IntoIterator<Item = (&'a str, Vec<SharedOwnerRow<'a>>)>,
+) -> BTreeMap<String, String> {
+    by_owner
+        .into_iter()
+        .map(|(owner, mut shared_rows)| hash_shared_owner_leaf(owner, &mut shared_rows))
+        .collect()
+}
 
 pub(super) fn leaves_nodes(
     conn: &Connection,
@@ -330,14 +406,7 @@ pub(super) fn leaves_shared_owners(
         stmt.query([])?
     };
 
-    struct SharedRow<'a> {
-        kind: &'static str,
-        key: &'a str,
-        ordinal: i64,
-        node_id: Option<&'a str>,
-    }
-
-    let mut by_owner: HashMap<&str, Vec<SharedRow<'_>>> = HashMap::new();
+    let mut by_owner: HashMap<&str, Vec<SharedOwnerRow<'_>>> = HashMap::new();
 
     while let Some(row) = rows.next()? {
         let kind_id: i64 = row.get(0)?;
@@ -354,13 +423,9 @@ pub(super) fn leaves_shared_owners(
             .get(&key_hash)
             .with_context(|| format!("shared-owner commitment references missing key {key_hash}"))?
             .as_str();
-        let kind = match kind_id {
-            0 => "symbol",
-            1 => "reference",
-            2 => "default_export",
-            _ => bail!("shared-owner commitment contains invalid kind {kind_id}"),
-        };
-        let node_id = if kind_id == 0 {
+        let kind = SharedOwnerKind::from_id(kind_id)
+            .with_context(|| format!("shared-owner commitment contains invalid kind {kind_id}"))?;
+        let node_id = if kind == SharedOwnerKind::Symbol {
             Some(
                 node_keys
                     .get(&ordinal)
@@ -371,7 +436,7 @@ pub(super) fn leaves_shared_owners(
         } else {
             None
         };
-        by_owner.entry(owner).or_default().push(SharedRow {
+        by_owner.entry(owner).or_default().push(SharedOwnerRow {
             kind,
             key,
             ordinal,
@@ -379,30 +444,7 @@ pub(super) fn leaves_shared_owners(
         });
     }
 
-    let mut result = BTreeMap::new();
-    for (owner, mut shared_rows) in by_owner {
-        shared_rows.sort_unstable_by(|a, b| {
-            a.kind
-                .cmp(b.kind)
-                .then_with(|| a.key.cmp(b.key))
-                .then_with(|| a.node_id.cmp(&b.node_id))
-                .then_with(|| a.ordinal.cmp(&b.ordinal))
-        });
-        let mut hasher = new_leaf_hasher("shared_owners", owner);
-        for s in shared_rows {
-            hasher.update([0xff]);
-            encode_text(&mut hasher, s.kind);
-            encode_text(&mut hasher, s.key);
-            encode_text(&mut hasher, owner);
-            if let Some(node_id) = s.node_id {
-                encode_text(&mut hasher, node_id);
-            } else {
-                encode_int(&mut hasher, s.ordinal);
-            }
-        }
-        result.insert(key("shared_owners", owner), hex::encode(hasher.finalize()));
-    }
-    Ok(result)
+    Ok(hash_shared_owner_leaves(by_owner))
 }
 
 pub(super) fn leaves_dependencies(
@@ -541,4 +583,62 @@ pub(super) fn leaves_generic(
         );
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hash_shared_owner_leaves, SharedOwnerKind, SharedOwnerRow};
+    use crate::db::commitments::{
+        encode_int, encode_text, key, new_leaf_hasher, read_metadata, read_metadata_optional,
+        write_metadata, MetadataKey, MAX_QUERY_RESULT_BYTES, MAX_SQLITE_VALUE_BYTES,
+    };
+    use rusqlite::Connection;
+    use sha2::Digest;
+
+    #[test]
+    fn shared_owner_leaves_sort_by_wire_kind_not_numeric_discriminant() {
+        let owner = "src/lib.rs";
+        let rows = vec![
+            SharedOwnerRow { kind: SharedOwnerKind::Symbol, key: "crate::entry", ordinal: 1, node_id: Some("fn:src/lib.rs:entry") },
+            SharedOwnerRow { kind: SharedOwnerKind::Reference, key: "dep::call", ordinal: 0, node_id: None },
+            SharedOwnerRow { kind: SharedOwnerKind::DefaultExport, key: "fn:src/lib.rs:entry", ordinal: 0, node_id: None },
+        ];
+        let actual = hash_shared_owner_leaves([(owner, rows)]);
+        let expected_hash = |order: [(&str, &str, Option<&str>, i64); 3]| {
+            let mut h = new_leaf_hasher("shared_owners", owner);
+            for (kind, k, node_id, ord) in order {
+                h.update([0xff]);
+                encode_text(&mut h, kind);
+                encode_text(&mut h, k);
+                encode_text(&mut h, owner);
+                if let Some(id) = node_id { encode_text(&mut h, id); } else { encode_int(&mut h, ord); }
+            }
+            hex::encode(h.finalize())
+        };
+        let wire_order = expected_hash([
+            ("default_export", "fn:src/lib.rs:entry", None, 0),
+            ("reference", "dep::call", None, 0),
+            ("symbol", "crate::entry", Some("fn:src/lib.rs:entry"), 1),
+        ]);
+        let numeric_order = expected_hash([
+            ("symbol", "crate::entry", Some("fn:src/lib.rs:entry"), 1),
+            ("reference", "dep::call", None, 0),
+            ("default_export", "fn:src/lib.rs:entry", None, 0),
+        ]);
+        let leaf = &actual[&key("shared_owners", owner)];
+        assert_eq!(leaf, &wire_order);
+        assert_ne!(leaf, &numeric_order);
+    }
+
+    #[test]
+    fn metadata_helpers_roundtrip_and_byte_budget_match_8_mib() {
+        assert_eq!((MAX_SQLITE_VALUE_BYTES, MAX_QUERY_RESULT_BYTES), (8 * 1024 * 1024, 8 * 1024 * 1024));
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT)", []).unwrap();
+        assert_eq!(read_metadata_optional(&conn, MetadataKey::OutputRoot).unwrap(), None);
+        assert!(read_metadata(&conn, MetadataKey::OutputRoot).is_err());
+        write_metadata(&conn, MetadataKey::OutputRoot, "abc123").unwrap();
+        assert_eq!(read_metadata_optional(&conn, MetadataKey::OutputRoot).unwrap().as_deref(), Some("abc123"));
+        assert_eq!(read_metadata(&conn, MetadataKey::OutputRoot).unwrap(), "abc123");
+    }
 }

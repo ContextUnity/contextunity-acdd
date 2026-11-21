@@ -4,9 +4,10 @@ use crate::{
     commitments::DOMAINS,
     db::commitments::{
         encode_blob, encode_int as encode_integer, encode_real, encode_text, encode_text_bytes,
-        key as leaf_key, new_leaf_hasher,
+        hash_shared_owner_leaves, key as leaf_key, new_leaf_hasher, SharedOwnerKind,
+        SharedOwnerRow,
     },
-    models::{is_test, stable_hash64, Node},
+    models::{is_test, stable_hash64, Node, NodeDetailKey},
 };
 use anyhow::{ensure, Context, Result};
 use hashbrown::HashMap;
@@ -507,7 +508,7 @@ fn project_shared_owner_entries<'a>(
     prepared_references: Option<&'a [String]>,
 ) -> Result<Leaves> {
     let mut key_by_hash = HashMap::<i64, &str>::new();
-    let mut owner_rows = Vec::<(&str, i64, i64, i64)>::new();
+    let mut owner_rows = Vec::<(&str, SharedOwnerKind, i64, i64)>::new();
     let mut id_by_node_id = HashMap::<i64, &str>::new();
     let mut nodes_by_owner = BTreeMap::<&str, Vec<&ProjectedNode<'a>>>::new();
     for node in projected_nodes {
@@ -519,7 +520,12 @@ fn project_shared_owner_entries<'a>(
         if let Some(owner_nodes) = nodes_by_owner.get(owner) {
             for projected in owner_nodes {
                 let key_hash = register_shared_key(&mut key_by_hash, &projected.node.qualname)?;
-                owner_rows.push((owner, 0, key_hash, projected.node_id));
+                owner_rows.push((
+                    owner,
+                    SharedOwnerKind::Symbol,
+                    key_hash,
+                    projected.node_id,
+                ));
             }
         }
         let keys = prepared_references.map_or_else(
@@ -528,13 +534,13 @@ fn project_shared_owner_entries<'a>(
         );
         for key in keys {
             let key_hash = register_shared_key(&mut key_by_hash, key)?;
-            owner_rows.push((owner, 1, key_hash, 0));
+            owner_rows.push((owner, SharedOwnerKind::Reference, key_hash, 0));
         }
         if let Some(owner_nodes) = nodes_by_owner.get(owner) {
             for projected in owner_nodes {
-                if projected.node.details["default_export"] == true {
+                if projected.node.details[NodeDetailKey::DEFAULT_EXPORT] == true {
                     let key_hash = register_shared_key(&mut key_by_hash, &projected.node.id)?;
-                    owner_rows.push((owner, 2, key_hash, 0));
+                    owner_rows.push((owner, SharedOwnerKind::DefaultExport, key_hash, 0));
                 }
             }
         }
@@ -543,25 +549,12 @@ fn project_shared_owner_entries<'a>(
     owner_rows.sort_unstable();
     owner_rows.dedup();
 
-    struct SharedRow<'a> {
-        kind: &'static str,
-        key: &'a str,
-        ordinal: i64,
-        node_id: Option<&'a str>,
-    }
-    let mut by_owner = BTreeMap::<&str, Vec<SharedRow<'_>>>::new();
-    for (owner, kind_id, key_hash, ordinal) in owner_rows {
-        let kind = match kind_id {
-            0 => "symbol",
-            1 => "reference",
-            2 => "default_export",
-            _ => anyhow::bail!("invalid projected shared-owner kind {kind_id}"),
-        };
-        let key = key_by_hash
+    let mut by_owner = BTreeMap::<&str, Vec<SharedOwnerRow<'_>>>::new();
+    for (owner, kind, key_hash, ordinal) in owner_rows {
+        let key = *key_by_hash
             .get(&key_hash)
             .with_context(|| format!("missing projected shared key {key_hash}"))?;
-        let key = *key;
-        let node_id = if kind_id == 0 {
+        let node_id = if kind == SharedOwnerKind::Symbol {
             Some(
                 *id_by_node_id
                     .get(&ordinal)
@@ -570,7 +563,7 @@ fn project_shared_owner_entries<'a>(
         } else {
             None
         };
-        by_owner.entry(owner).or_default().push(SharedRow {
+        by_owner.entry(owner).or_default().push(SharedOwnerRow {
             kind,
             key,
             ordinal,
@@ -578,33 +571,7 @@ fn project_shared_owner_entries<'a>(
         });
     }
 
-    let mut leaves = Leaves::new();
-    for (owner, mut rows) in by_owner {
-        rows.sort_unstable_by(|left, right| {
-            left.kind
-                .cmp(right.kind)
-                .then_with(|| left.key.cmp(right.key))
-                .then_with(|| left.node_id.cmp(&right.node_id))
-                .then_with(|| left.ordinal.cmp(&right.ordinal))
-        });
-        let mut hasher = new_leaf_hasher("shared_owners", owner);
-        for row in rows {
-            hasher.update([0xff]);
-            encode_text(&mut hasher, row.kind);
-            encode_text(&mut hasher, row.key);
-            encode_text(&mut hasher, owner);
-            if let Some(node_id) = row.node_id {
-                encode_text(&mut hasher, node_id);
-            } else {
-                encode_integer(&mut hasher, row.ordinal);
-            }
-        }
-        leaves.insert(
-            leaf_key("shared_owners", owner),
-            hex::encode(hasher.finalize()),
-        );
-    }
-    Ok(leaves)
+    Ok(hash_shared_owner_leaves(by_owner))
 }
 
 fn register_shared_key<'a>(keys: &mut HashMap<i64, &'a str>, key: &'a str) -> Result<i64> {

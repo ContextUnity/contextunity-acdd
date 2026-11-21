@@ -319,18 +319,20 @@ fn cold_and_delta_match_commitments_after_spool_and_parallel_delta() {
     )]);
     let err = writer::populate_owned(
         &mut stage_conn,
-        workspace.root(),
-        &Adapter::default(),
-        std::slice::from_ref(&entry),
-        BTreeMap::from([(entry.path.clone(), TypedFacts::default())]),
-        &CompactGraph::default(),
-        BuildInputs {
-            manifest_digest: "test",
-            memory_budget: 8 * 1024 * 1024,
-            schema_ready: false,
+        writer::PopulateOwnedParams {
+            root: workspace.root(),
+            adapter: &Adapter::default(),
+            entries: std::slice::from_ref(&entry),
+            facts: BTreeMap::from([(entry.path.clone(), TypedFacts::default())]),
+            graph: &CompactGraph::default(),
+            build_inputs: BuildInputs {
+                manifest_digest: "test",
+                memory_budget: 8 * 1024 * 1024,
+                schema_ready: false,
+            },
+            staged_payloads: &mut staged_payloads,
+            payload_spool_path: Some(&spool_file),
         },
-        &mut staged_payloads,
-        Some(&spool_file),
     )
     .unwrap_err();
     assert!(

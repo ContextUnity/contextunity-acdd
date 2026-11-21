@@ -89,18 +89,20 @@ impl VirtualWorkspace {
         };
         writer::populate_owned(
             &mut conn,
-            root,
-            &adapter,
-            &entries,
-            facts,
-            &graph,
-            writer::BuildInputs {
-                manifest_digest: registry.digest(),
-                memory_budget: 64 * 1024 * 1024,
-                schema_ready: false,
+            writer::PopulateOwnedParams {
+                root,
+                adapter: &adapter,
+                entries: &entries,
+                facts,
+                graph: &graph,
+                build_inputs: writer::BuildInputs {
+                    manifest_digest: registry.digest(),
+                    memory_budget: 64 * 1024 * 1024,
+                    schema_ready: false,
+                },
+                staged_payloads: &mut BTreeMap::new(),
+                payload_spool_path: None,
             },
-            &mut BTreeMap::new(),
-            None,
         )?;
         Ok(conn)
     }

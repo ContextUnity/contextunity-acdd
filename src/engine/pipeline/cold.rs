@@ -675,18 +675,20 @@ fn atomic_build(
 
         let mut report = db_writer::populate_owned(
             &mut streamed.connection,
-            root,
-            adapter,
-            &streamed.entries,
-            facts,
-            &graph,
-            db_writer::BuildInputs {
-                manifest_digest: dependencies.digest(),
-                memory_budget,
-                schema_ready: true,
+            db_writer::PopulateOwnedParams {
+                root,
+                adapter,
+                entries: &streamed.entries,
+                facts,
+                graph: &graph,
+                build_inputs: db_writer::BuildInputs {
+                    manifest_digest: dependencies.digest(),
+                    memory_budget,
+                    schema_ready: true,
+                },
+                staged_payloads: &mut streamed.staged_payloads,
+                payload_spool_path: Some(&payload_spool_path),
             },
-            &mut streamed.staged_payloads,
-            Some(&payload_spool_path),
         )?;
         report["link_ms"] = json!(link_ms);
         report["staged_disk_bytes"] = json!(staged_disk_bytes);

@@ -473,12 +473,14 @@ mod tests {
             persist_graph(
                 &tx,
                 &mut path_cache,
-                &graph,
-                &facts,
-                None,
-                Some(&entries),
                 &mut node_paths,
-                true,
+                crate::db::writer::ingest::PersistGraphParams {
+                    graph: &graph,
+                    facts: &facts,
+                    dependency_owners: None,
+                    materialize_edges: true,
+                },
+                Some(&entries),
             )
             .unwrap();
             tx.commit().unwrap();

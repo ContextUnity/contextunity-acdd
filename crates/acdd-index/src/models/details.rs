@@ -3,12 +3,29 @@ use serde_json::Value;
 /// Keys used in the persisted node details projection.
 pub struct NodeDetailKey;
 impl NodeDetailKey {
+    pub const SIGNATURE: &'static str = "signature";
+    pub const DOC: &'static str = "doc";
+    pub const DOCSTRING: &'static str = "docstring";
+    pub const VISIBILITY: &'static str = "visibility";
+    pub const PARAMS: &'static str = "params";
+    pub const RETURNS: &'static str = "returns";
+    pub const ASYNC: &'static str = "async";
+    pub const EXPORT: &'static str = "export";
+    pub const STATIC: &'static str = "static";
+    pub const CATEGORY: &'static str = "category";
+    pub const DEFAULT_EXPORT: &'static str = "default_export";
+    pub const RETURN_TYPE: &'static str = "return_type";
+    pub const RULE: &'static str = "rule";
     pub const ENTRYPOINT: &'static str = "entrypoint";
+    pub const ENTRYPOINT_BASE: &'static str = "entrypoint_base";
+    pub const ENTRYPOINT_ORIGINAL_JSON: &'static str = "entrypoint_original_json";
     pub const IMPL_TRAIT: &'static str = "impl_trait";
     pub const TRAIT_DEFAULT: &'static str = "trait_default";
     pub const DECORATORS: &'static str = "decorators";
     pub const IS_STUB: &'static str = "is_stub";
     pub const IS_OVERLOAD: &'static str = "is_overload";
+    pub const INCLUDED_FROM: &'static str = "included_from";
+    pub const SOURCE_PATH: &'static str = "source_path";
 }
 
 /// Boolean properties projected from node details.

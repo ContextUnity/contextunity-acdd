@@ -192,8 +192,8 @@ impl Node {
     ) -> NavigationDetails<'a> {
         let map = documentation.as_object();
         self.navigation_details(
-            map.and_then(|map| map.get("doc")),
-            map.and_then(|map| map.get("docstring")),
+            map.and_then(|map| map.get(NodeDetailKey::DOC)),
+            map.and_then(|map| map.get(NodeDetailKey::DOCSTRING)),
             map.is_some(),
         )
     }
@@ -340,8 +340,8 @@ impl Serialize for NavigationDetails<'_> {
                     let original = serde_json::to_string(&self.node.details)
                         .map_err(serde::ser::Error::custom)?;
                     let mut map = serializer.serialize_map(Some(2))?;
-                    map.serialize_entry("entrypoint_original_json", &original)?;
-                    map.serialize_entry("entrypoint", entrypoint)?;
+                    map.serialize_entry(NodeDetailKey::ENTRYPOINT_ORIGINAL_JSON, &original)?;
+                    map.serialize_entry(NodeDetailKey::ENTRYPOINT, entrypoint)?;
                     return map.end();
                 }
             } else if self.return_type.is_none() || !self.node.details.is_null() {
@@ -353,13 +353,18 @@ impl Serialize for NavigationDetails<'_> {
         let mut entrypoint_written = false;
         if let Some(details) = details {
             for (key, value) in details {
-                if self.persisted && key == "entrypoint_base" {
+                if self.persisted && key == NodeDetailKey::ENTRYPOINT_BASE {
                     continue;
                 }
-                if self.clear_entrypoint && key == "entrypoint" {
+                if self.clear_entrypoint && key == NodeDetailKey::ENTRYPOINT {
                     continue;
                 }
-                if self.skip_inline_docs && matches!(key.as_str(), "doc" | "docstring") {
+                if self.skip_inline_docs
+                    && matches!(
+                        key.as_str(),
+                        NodeDetailKey::DOC | NodeDetailKey::DOCSTRING
+                    )
+                {
                     continue;
                 }
                 if !matches!(key.as_str(), "bindings" | "rebindings" | "param_types")
@@ -367,14 +372,14 @@ impl Serialize for NavigationDetails<'_> {
                 {
                     continue;
                 }
-                if key == "return_type" {
+                if key == NodeDetailKey::RETURN_TYPE {
                     if let Some(return_type) = self.return_type {
                         map.serialize_entry(key, return_type)?;
                         return_written = true;
                         continue;
                     }
                 }
-                if key == "entrypoint" {
+                if key == NodeDetailKey::ENTRYPOINT {
                     if let Some(entrypoint) = self.entrypoint {
                         map.serialize_entry(key, entrypoint)?;
                         entrypoint_written = true;
@@ -399,16 +404,19 @@ impl Serialize for NavigationDetails<'_> {
                 )?;
             }
         }
-        for (key, value) in [("doc", self.doc), ("docstring", self.docstring)] {
+        for (key, value) in [
+            (NodeDetailKey::DOC, self.doc),
+            (NodeDetailKey::DOCSTRING, self.docstring),
+        ] {
             if let Some(value) = value.filter(|value| include_navigation_detail(key, value)) {
                 map.serialize_entry(key, value)?;
             }
         }
         if let Some(return_type) = self.return_type.filter(|_| !return_written) {
-            map.serialize_entry("return_type", return_type)?;
+            map.serialize_entry(NodeDetailKey::RETURN_TYPE, return_type)?;
         }
         if let Some(entrypoint) = self.entrypoint.filter(|_| !entrypoint_written) {
-            map.serialize_entry("entrypoint", entrypoint)?;
+            map.serialize_entry(NodeDetailKey::ENTRYPOINT, entrypoint)?;
         }
         map.end()
     }
@@ -428,7 +436,8 @@ fn include_navigation_detail(key: &str, value: &Value) -> bool {
     ) && !value.is_null()
         && !value.as_str().is_some_and(str::is_empty)
         && !value.as_array().is_some_and(Vec::is_empty)
-        && !(matches!(key, "async" | "default_export") && value == &Value::Bool(false))
+        && !(matches!(key, NodeDetailKey::ASYNC | NodeDetailKey::DEFAULT_EXPORT)
+            && value == &Value::Bool(false))
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Directed relationship between two indexed declarations.
@@ -832,4 +841,32 @@ pub fn is_test(path: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::{EdgeKind, NodeDetailKey};
+
+    #[test]
+    fn wire_tags_and_detail_keys_roundtrip_expected_constants() {
+        for (variant, wire) in [
+            (EdgeKind::Governs, "governs"),
+            (EdgeKind::Documents, "documents"),
+            (EdgeKind::ReferencesDoc, "references_doc"),
+            (EdgeKind::Overrides, "overrides"),
+            (EdgeKind::Extends, "extends"),
+        ] {
+            assert_eq!((variant.as_str(), EdgeKind::parse(wire)), (wire, Some(variant)));
+            assert!(EdgeKind::ALL.contains(&variant) && EdgeKind::WIRE_NAMES.contains(&wire));
+        }
+        assert_eq!(EdgeKind::ALL.len(), EdgeKind::WIRE_NAMES.len());
+        assert_eq!(EdgeKind::parse("nonexistent_edge_kind"), None);
+        for (actual, expected) in [
+            (NodeDetailKey::SIGNATURE, "signature"), (NodeDetailKey::DOC, "doc"),
+            (NodeDetailKey::VISIBILITY, "visibility"), (NodeDetailKey::PARAMS, "params"),
+            (NodeDetailKey::RETURNS, "returns"), (NodeDetailKey::ASYNC, "async"),
+            (NodeDetailKey::EXPORT, "export"), (NodeDetailKey::STATIC, "static"),
+            (NodeDetailKey::CATEGORY, "category"), (NodeDetailKey::DEFAULT_EXPORT, "default_export"),
+            (NodeDetailKey::RETURN_TYPE, "return_type"), (NodeDetailKey::RULE, "rule"),
+        ] {
+            assert_eq!(actual, expected);
+        }
+    }
+}

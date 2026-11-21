@@ -14,7 +14,73 @@ pub use crate::commitments::{
     aggregate_domain_digest, compute_merkle_root, hash, CommitmentDomain, FtsDomain, ALGORITHM,
     DOMAINS,
 };
+pub(crate) use domain_leaves::{hash_shared_owner_leaves, SharedOwnerKind, SharedOwnerRow};
 pub(crate) use snapshot::{fts_commitment_digests, seal_snapshot_from_projection, SnapshotTimings};
+
+/// Maximum byte length of a single SQLite cell or query response payload (8 MiB).
+pub const MAX_SQLITE_VALUE_BYTES: i32 = 8 * 1024 * 1024;
+/// Maximum byte length of serialized query result items (8 MiB).
+pub const MAX_QUERY_RESULT_BYTES: usize = MAX_SQLITE_VALUE_BYTES as usize;
+
+/// Canonical keys stored in the SQLite `metadata` table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MetadataKey {
+    OutputRoot,
+    WorkspaceRoot,
+    Adapter,
+    AdapterVersion,
+    AdapterDigest,
+    AdapterLinkedWorkspaces,
+    SchemaVersion,
+    IndexerEngine,
+    IndexSemanticsVersion,
+    CommitmentAlgorithm,
+    InventorySnapshot,
+    CorpusHash,
+    ManifestDigest,
+}
+
+impl MetadataKey {
+    /// Returns the unchanged SQLite `metadata.key` wire string.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::OutputRoot => "output_root",
+            Self::WorkspaceRoot => "workspace_root",
+            Self::Adapter => "adapter",
+            Self::AdapterVersion => "adapter_version",
+            Self::AdapterDigest => "adapter_digest",
+            Self::AdapterLinkedWorkspaces => "adapter_linked_workspaces",
+            Self::SchemaVersion => "schema_version",
+            Self::IndexerEngine => "indexer_engine",
+            Self::IndexSemanticsVersion => "index_semantics_version",
+            Self::CommitmentAlgorithm => "commitment_algorithm",
+            Self::InventorySnapshot => "inventory_snapshot",
+            Self::CorpusHash => "corpus_hash",
+            Self::ManifestDigest => "manifest_digest",
+        }
+    }
+}
+
+/// Reads a required value from the SQLite `metadata` table by [`MetadataKey`].
+pub fn read_metadata(conn: &Connection, key: MetadataKey) -> Result<String> {
+    read_metadata_optional(conn, key)?
+        .with_context(|| format!("missing metadata key '{}'", key.as_str()))
+}
+
+/// Reads an optional value from the SQLite `metadata` table by [`MetadataKey`].
+pub fn read_metadata_optional(conn: &Connection, key: MetadataKey) -> Result<Option<String>> {
+    Ok(conn
+        .prepare_cached("SELECT value FROM metadata WHERE key=?1")?
+        .query_row([key.as_str()], |row| row.get(0))
+        .optional()?)
+}
+
+/// Inserts or replaces a value in the SQLite `metadata` table by [`MetadataKey`].
+pub fn write_metadata(conn: &Connection, key: MetadataKey, value: &str) -> Result<()> {
+    conn.prepare_cached("INSERT OR REPLACE INTO metadata VALUES(?1,?2)")?
+        .execute(params![key.as_str(), value])?;
+    Ok(())
+}
 const FTS: &[(&str, &str)] = &[
     ("node_search_postings", "term,doc,col,offset"),
     ("node_search_config", "k"),
@@ -618,8 +684,17 @@ fn root(conn: &Connection) -> Result<String> {
         domains.push(row?);
     }
     let mut metadata = Vec::new();
-    let mut stmt = conn.prepare("SELECT key,value FROM metadata WHERE key IN('schema_version','index_semantics_version','indexer_engine','workspace_root','adapter','corpus_hash','commitment_algorithm','inventory_snapshot','manifest_digest')ORDER BY key")?;
-    for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+    let mut stmt = conn.prepare(
+        "SELECT key,value FROM metadata WHERE key IN(?1,?2,?3,?4,?5,?6,?7,?8,?9)ORDER BY key",
+    )?;
+    let merkle_keys = [
+        MetadataKey::SchemaVersion.as_str(), MetadataKey::IndexSemanticsVersion.as_str(),
+        MetadataKey::IndexerEngine.as_str(), MetadataKey::WorkspaceRoot.as_str(),
+        MetadataKey::Adapter.as_str(), MetadataKey::CorpusHash.as_str(),
+        MetadataKey::CommitmentAlgorithm.as_str(), MetadataKey::InventorySnapshot.as_str(),
+        MetadataKey::ManifestDigest.as_str(),
+    ];
+    for row in stmt.query_map(merkle_keys, |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
         metadata.push(row?);
     }
     Ok(compute_merkle_root(&domains, &metadata))
@@ -811,10 +886,7 @@ pub(crate) fn seal_owners_with_dirty_fts(
     owners: Option<&BTreeSet<String>>,
     dirty_fts: FtsDirtySet,
 ) -> Result<String> {
-    conn.execute(
-        "INSERT OR REPLACE INTO metadata VALUES('commitment_algorithm',?1)",
-        [ALGORITHM],
-    )?;
+    write_metadata(conn, MetadataKey::CommitmentAlgorithm, ALGORITHM)?;
     let encoded_owners = owners.map(serde_json::to_string).transpose()?;
     let mut existing = BTreeMap::<String, BTreeMap<String, String>>::new();
     if owners.is_some() {
@@ -878,24 +950,13 @@ pub(crate) fn seal_owners_with_dirty_fts(
         )?;
     }
     let root = root(conn)?;
-    conn.execute(
-        "INSERT OR REPLACE INTO metadata VALUES('output_root',?1)",
-        [&root],
-    )?;
+    write_metadata(conn, MetadataKey::OutputRoot, &root)?;
     Ok(root)
 }
 
 pub(crate) fn verify_delta_seal(conn: &Connection, expected_root: &str) -> Result<()> {
-    let algorithm: String = conn.query_row(
-        "SELECT value FROM metadata WHERE key='commitment_algorithm'",
-        [],
-        |r| r.get(0),
-    )?;
-    let stored_root: String = conn.query_row(
-        "SELECT value FROM metadata WHERE key='output_root'",
-        [],
-        |r| r.get(0),
-    )?;
+    let algorithm = read_metadata(conn, MetadataKey::CommitmentAlgorithm)?;
+    let stored_root = read_metadata(conn, MetadataKey::OutputRoot)?;
     anyhow::ensure!(
         algorithm == ALGORITHM && stored_root == expected_root,
         "delta seal metadata mismatch"
@@ -930,11 +991,7 @@ pub fn verify(conn: &Connection) -> Result<()> {
 ///
 /// Returns a mismatch error when the stored commitment differs from source rows.
 pub fn verify_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Result<()> {
-    let algorithm: String = conn.query_row(
-        "SELECT value FROM metadata WHERE key='commitment_algorithm'",
-        [],
-        |r| r.get(0),
-    )?;
+    let algorithm = read_metadata(conn, MetadataKey::CommitmentAlgorithm)?;
     if algorithm != ALGORITHM {
         bail!("incompatible commitment algorithm; rebuild index");
     }
@@ -973,11 +1030,7 @@ pub fn verify_owners(conn: &Connection, owners: Option<&BTreeSet<String>>) -> Re
             bail!("FTS commitment mismatch: {table}");
         }
     }
-    let stored: String = conn.query_row(
-        "SELECT value FROM metadata WHERE key='output_root'",
-        [],
-        |r| r.get(0),
-    )?;
+    let stored = read_metadata(conn, MetadataKey::OutputRoot)?;
     if root(conn)? != stored {
         bail!("output root mismatch");
     }

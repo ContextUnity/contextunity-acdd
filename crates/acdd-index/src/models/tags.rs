@@ -6,12 +6,17 @@ macro_rules! wire_tags {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         pub enum $name { $(#[serde(rename = $wire)] $variant),+ }
         impl $name {
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+            pub const WIRE_NAMES: &'static [&'static str] = &[$($wire),+];
             pub const fn as_str(&self) -> &'static str { match self { $(Self::$variant => $wire),+ } }
+            pub fn parse(value: &str) -> Option<Self> {
+                match value { $($wire => Some(Self::$variant),)+ _ => None }
+            }
         }
         impl FromStr for $name {
             type Err = ();
             fn from_str(value: &str) -> Result<Self, Self::Err> {
-                match value { $($wire => Ok(Self::$variant),)+ _ => Err(()) }
+                Self::parse(value).ok_or(())
             }
         }
         impl fmt::Display for $name {
@@ -36,6 +41,11 @@ wire_tags!(EdgeKind {
     Handles => "handles",
     Mutates => "mutates",
     Registers => "registers",
+    Governs => "governs",
+    Documents => "documents",
+    ReferencesDoc => "references_doc",
+    Overrides => "overrides",
+    Extends => "extends",
 });
 
 wire_tags!(EdgeConfidence {

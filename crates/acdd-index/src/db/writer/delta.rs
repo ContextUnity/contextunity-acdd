@@ -11,9 +11,9 @@ use std::{
 use super::{
     batch::BorrowedSqlValue,
     dictionary::PathDictionaryCache,
-    ingest::{persist_delta_files, persist_graph, CachedNodePath},
+    ingest::{persist_delta_files, persist_graph, CachedNodePath, PersistGraphParams},
 };
-use crate::db::commitments;
+use crate::db::commitments::{self, MetadataKey};
 use crate::models::{compact_graph::Graph as CompactGraph, stable_hash64, FileEntry};
 use crate::typed_facts::TypedFacts;
 
@@ -228,21 +228,13 @@ pub fn persist_delta(
     conn.execute_batch(
         "PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-64000; PRAGMA mmap_size=268435456;",
     )?;
-    let precheck: String = conn.query_row(
-        "SELECT value FROM metadata WHERE key='output_root'",
-        [],
-        |r| r.get(0),
-    )?;
+    let precheck = commitments::read_metadata(&conn, MetadataKey::OutputRoot)?;
     if precheck != expected {
         bail!("generation changed during delta admission");
     }
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let current: String = tx.query_row(
-        "SELECT value FROM metadata WHERE key='output_root'",
-        [],
-        |r| r.get(0),
-    )?;
+    let current = commitments::read_metadata(&tx, MetadataKey::OutputRoot)?;
     if current != expected {
         bail!("generation changed during delta admission");
     }
@@ -376,12 +368,14 @@ pub fn persist_delta(
     let graph_result = persist_graph(
         &tx,
         &mut path_cache,
-        graph,
-        facts,
-        Some(affected),
-        Some(entries),
         &mut node_paths,
-        false,
+        PersistGraphParams {
+            graph,
+            facts,
+            dependency_owners: Some(affected),
+            materialize_edges: false,
+        },
+        Some(entries),
     );
     drop(node_paths);
     graph_result?;
@@ -444,21 +438,17 @@ pub fn persist_delta(
             .collect::<rusqlite::Result<Vec<_>>>()?,
     );
     let aggregate_ms = aggregating.elapsed().as_secs_f64() * 1000.;
-    cached(
+    commitments::write_metadata(
         &tx,
-        "INSERT OR REPLACE INTO metadata VALUES('corpus_hash',?1)",
-        [acdd_core::format::sha256_serde_json_hex(entries)?],
+        MetadataKey::CorpusHash,
+        &acdd_core::format::sha256_serde_json_hex(entries)?,
     )?;
-    cached(
+    commitments::write_metadata(
         &tx,
-        "INSERT OR REPLACE INTO metadata VALUES('inventory_snapshot',?1)",
-        [serde_json::to_string(entries)?],
+        MetadataKey::InventorySnapshot,
+        &serde_json::to_string(entries)?,
     )?;
-    cached(
-        &tx,
-        "INSERT OR REPLACE INTO metadata VALUES('manifest_digest',?1)",
-        [manifest_digest],
-    )?;
+    commitments::write_metadata(&tx, MetadataKey::ManifestDigest, manifest_digest)?;
     let persist_ms = persisting.elapsed().as_secs_f64() * 1000.;
     let sealing = Instant::now();
     let seal = commitments::seal_owners_with_dirty_fts(&tx, Some(&commitment_owners), dirty_fts)?;

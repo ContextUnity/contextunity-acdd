@@ -305,6 +305,15 @@ pub(super) struct FilePersistenceTimings {
     pub(super) node_leaves: std::collections::BTreeMap<String, String>,
 }
 
+pub(super) struct PersistFilesParams<'a, 'r> {
+    pub(super) entries: &'a [FileEntry],
+    pub(super) facts: &'a BTreeMap<String, TypedFacts>,
+    pub(super) loader: Option<ChunkLoader<'a>>,
+    pub(super) graph_ranks: Option<&'a hashbrown::HashMap<&'r str, Option<i64>>>,
+    pub(super) dirty_fts: Option<crate::db::commitments::FtsDirtySet>,
+    pub(super) inventory_ready: bool,
+}
+
 pub(super) fn persist_delta_files(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
@@ -312,16 +321,9 @@ pub(super) fn persist_delta_files(
     facts: &BTreeMap<String, TypedFacts>,
     dirty_fts: crate::db::commitments::FtsDirtySet,
 ) -> Result<FilePersistenceTimings> {
-    persist_files_impl(
-        tx,
-        path_cache,
-        entries,
-        facts,
-        None,
-        None,
-        Some(dirty_fts),
-        false,
-    )
+    persist_files_impl(tx, path_cache, PersistFilesParams {
+        entries, facts, loader: None, graph_ranks: None, dirty_fts: Some(dirty_fts), inventory_ready: false,
+    })
 }
 
 #[cfg(test)]
@@ -336,7 +338,9 @@ pub(super) fn persist_files(
         node_search: true,
         doc_search: true,
     });
-    persist_files_impl(tx, path_cache, entries, facts, None, None, dirty, false)
+    persist_files_impl(tx, path_cache, PersistFilesParams {
+        entries, facts, loader: None, graph_ranks: None, dirty_fts: dirty, inventory_ready: false,
+    })
 }
 
 pub(super) fn persist_files_with_ranks(
@@ -346,16 +350,9 @@ pub(super) fn persist_files_with_ranks(
     facts: &BTreeMap<String, TypedFacts>,
     graph_ranks: Option<&hashbrown::HashMap<&str, Option<i64>>>,
 ) -> Result<FilePersistenceTimings> {
-    persist_files_impl(
-        tx,
-        path_cache,
-        entries,
-        facts,
-        None,
-        graph_ranks,
-        None,
-        false,
-    )
+    persist_files_impl(tx, path_cache, PersistFilesParams {
+        entries, facts, loader: None, graph_ranks, dirty_fts: None, inventory_ready: false,
+    })
 }
 
 pub(super) struct LoadedCatalogFile {
@@ -382,29 +379,24 @@ pub(super) fn persist_catalog_files(
     graph_ranks: &hashbrown::HashMap<&str, Option<i64>>,
     inventory_ready: bool,
 ) -> Result<FilePersistenceTimings> {
-    persist_files_impl(
-        tx,
-        path_cache,
-        entries,
-        facts,
-        Some(loader),
-        Some(graph_ranks),
-        None,
-        inventory_ready,
-    )
+    persist_files_impl(tx, path_cache, PersistFilesParams {
+        entries, facts, loader: Some(loader), graph_ranks: Some(graph_ranks), dirty_fts: None, inventory_ready,
+    })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn persist_files_impl(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
-    entries: &[FileEntry],
-    facts: &BTreeMap<String, TypedFacts>,
-    mut loader: Option<ChunkLoader<'_>>,
-    graph_ranks: Option<&hashbrown::HashMap<&str, Option<i64>>>,
-    dirty_fts: Option<crate::db::commitments::FtsDirtySet>,
-    inventory_ready: bool,
+    params: PersistFilesParams<'_, '_>,
 ) -> Result<FilePersistenceTimings> {
+    let PersistFilesParams {
+        entries,
+        facts,
+        mut loader,
+        graph_ranks,
+        dirty_fts,
+        inventory_ready,
+    } = params;
     let bulk_search = dirty_fts.is_none();
     let mut node_id: i64 = tx.query_row("SELECT coalesce(max(node_id),0)FROM nodes", [], |r| {
         r.get(0)
@@ -550,7 +542,8 @@ fn persist_files_impl(
                         } else {
                             None
                         };
-                        let entrypoint_base = navigation_node.details.get("entrypoint_base");
+                        let entrypoint_base =
+                            navigation_node.details.get(NodeDetailKey::ENTRYPOINT_BASE);
                         let intrinsic = entrypoint_base
                             .and_then(Value::as_str)
                             .and_then(super::entrypoints::rank);
@@ -724,7 +717,7 @@ fn persist_files_impl(
                     }
                 }
                 let key_hash = shared_key_cache.get_or_insert_node(&n.qualname, row_node_id)?;
-                shared_owner_rows.push([0, key_hash, owner_id, row_node_id]);
+                shared_owner_rows.push([commitments::SharedOwnerKind::Symbol as i64, key_hash, owner_id, row_node_id]);
             }
             let keys = prepared_references.map_or_else(
                 || f.reference_keys(),
@@ -732,12 +725,12 @@ fn persist_files_impl(
             );
             for key in keys {
                 let key_hash = shared_key_cache.get_or_insert(key)?;
-                shared_owner_rows.push([1, key_hash, owner_id, 0]);
+                shared_owner_rows.push([commitments::SharedOwnerKind::Reference as i64, key_hash, owner_id, 0]);
             }
             for n in &f.nodes {
-                if n.details["default_export"] == true {
+                if n.details[NodeDetailKey::DEFAULT_EXPORT] == true {
                     let key_hash = shared_key_cache.get_or_insert(&n.id)?;
-                    shared_owner_rows.push([2, key_hash, owner_id, 0]);
+                    shared_owner_rows.push([commitments::SharedOwnerKind::DefaultExport as i64, key_hash, owner_id, 0]);
                 }
             }
             if shared_owner_rows.len() >= 8192 {
@@ -827,7 +820,7 @@ pub(super) fn write_node_search_text(search: &mut String, node: &Node, facts: &T
 pub(super) fn append_node_search_text(search: &mut String, node: &Node, facts: &TypedFacts) {
     let doc = node
         .details
-        .get("doc")
+        .get(NodeDetailKey::DOC)
         .and_then(Value::as_str)
         .unwrap_or("");
     search.reserve(node.name.len() + node.qualname.len() + node.path.len() + doc.len() + 16);
@@ -856,7 +849,11 @@ pub(super) fn append_node_search_text(search: &mut String, node: &Node, facts: &
             write_type_tokens(search, "acddreturns", &ty);
         }
     }
-    if let Some(decorators) = node.details.get("decorators").and_then(Value::as_array) {
+    if let Some(decorators) = node
+        .details
+        .get(NodeDetailKey::DECORATORS)
+        .and_then(Value::as_array)
+    {
         for decorator in decorators.iter().filter_map(Value::as_str) {
             search.push(' ');
             search.push_str(decorator);
@@ -893,7 +890,11 @@ fn write_type_tokens(search: &mut String, prefix: &str, text: &str) {
 }
 
 fn declared_return_type<'a>(node: &'a Node, facts: &TypedFacts) -> Option<Cow<'a, str>> {
-    if let Some(signature) = node.details.get("signature").and_then(Value::as_str) {
+    if let Some(signature) = node
+        .details
+        .get(NodeDetailKey::SIGNATURE)
+        .and_then(Value::as_str)
+    {
         let mut depth = 0usize;
         for (offset, ch) in signature.char_indices() {
             if ch == '(' {
@@ -1160,43 +1161,38 @@ pub(super) struct GraphPersistenceTimings {
     pub(super) coverage: f64,
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(super) struct PersistGraphParams<'a> {
+    pub(super) graph: &'a CompactGraph,
+    pub(super) facts: &'a BTreeMap<String, TypedFacts>,
+    pub(super) dependency_owners: Option<&'a std::collections::BTreeSet<String>>,
+    pub(super) materialize_edges: bool,
+}
+
 pub(super) fn persist_graph(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
-    graph: &CompactGraph,
-    facts: &BTreeMap<String, TypedFacts>,
-    dependency_owners: Option<&std::collections::BTreeSet<String>>,
-    known_file_entries: Option<&[FileEntry]>,
     node_paths: &mut hashbrown::HashMap<Cow<'_, str>, Option<CachedNodePath>>,
-    materialize_edges: bool,
+    params: PersistGraphParams<'_>,
+    known_file_entries: Option<&[FileEntry]>,
 ) -> Result<GraphPersistenceTimings> {
-    let coverage = PreparedCoverage::new(graph, facts, known_file_entries);
-    persist_graph_prepared(
-        tx,
-        path_cache,
-        graph,
-        facts,
-        dependency_owners,
-        &coverage,
-        node_paths,
-        materialize_edges,
-        None,
-    )
+    let coverage = PreparedCoverage::new(params.graph, params.facts, known_file_entries);
+    persist_graph_prepared(tx, path_cache, node_paths, params, &coverage, None)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn persist_graph_prepared(
     tx: &Connection,
     path_cache: &mut PathDictionaryCache,
-    graph: &CompactGraph,
-    facts: &BTreeMap<String, TypedFacts>,
-    dependency_owners: Option<&std::collections::BTreeSet<String>>,
-    coverage: &PreparedCoverage<'_>,
     node_paths: &mut hashbrown::HashMap<Cow<'_, str>, Option<CachedNodePath>>,
-    materialize_edges: bool,
+    params: PersistGraphParams<'_>,
+    coverage: &PreparedCoverage<'_>,
     prepared: Option<&PreparedGraph<'_>>,
 ) -> Result<GraphPersistenceTimings> {
+    let PersistGraphParams {
+        graph,
+        facts,
+        dependency_owners,
+        materialize_edges,
+    } = params;
     let phase = Instant::now();
     let evidence_ids = CoverageDictionaryCache::prefill_evidence(tx, graph)?;
     let evidence_dictionary_ms = phase.elapsed().as_secs_f64() * 1000.;

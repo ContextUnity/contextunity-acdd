@@ -77,11 +77,11 @@ pub fn prepare_catalog_storage_with_facts(
         search_texts.append_with(|buf| append_node_search_text(buf, node, facts))?;
         if let Some(details) = node.details.as_object() {
             let doc = details
-                .get("doc")
+                .get(NodeDetailKey::DOC)
                 .filter(|value| non_empty_detail(value))
                 .cloned();
             let docstring = details
-                .get("docstring")
+                .get(NodeDetailKey::DOCSTRING)
                 .filter(|value| non_empty_detail(value))
                 .cloned();
             if doc.is_some() || docstring.is_some() {
@@ -157,19 +157,30 @@ pub(crate) fn sqlite_cache_size_kib(memory_budget: u64) -> usize {
     raw.clamp(4_096, 32_768) as usize
 }
 
+/// Inputs and mutable staging state for [`populate_owned`].
+pub struct PopulateOwnedParams<'a> {
+    pub root: &'a Path,
+    pub adapter: &'a Adapter,
+    pub entries: &'a [FileEntry],
+    pub facts: BTreeMap<String, TypedFacts>,
+    pub graph: &'a CompactGraph,
+    pub build_inputs: BuildInputs<'a>,
+    pub staged_payloads: &'a mut BTreeMap<String, StagedFilePayload>,
+    pub payload_spool_path: Option<&'a Path>,
+}
+
 /// Populates an index with staged payloads.
-#[allow(clippy::too_many_arguments)]
-pub fn populate_owned(
-    conn: &mut Connection,
-    root: &Path,
-    adapter: &Adapter,
-    entries: &[FileEntry],
-    mut facts: BTreeMap<String, TypedFacts>,
-    graph: &CompactGraph,
-    build_inputs: BuildInputs<'_>,
-    staged_payloads: &mut BTreeMap<String, StagedFilePayload>,
-    payload_spool_path: Option<&Path>,
-) -> Result<Value> {
+pub fn populate_owned(conn: &mut Connection, params: PopulateOwnedParams<'_>) -> Result<Value> {
+    let PopulateOwnedParams {
+        root,
+        adapter,
+        entries,
+        mut facts,
+        graph,
+        build_inputs,
+        staged_payloads,
+        payload_spool_path,
+    } = params;
     let streamed_payloads = !staged_payloads.is_empty();
     let payload_spool = if streamed_payloads {
         Some(File::open(
@@ -220,36 +231,21 @@ pub fn populate_owned(
             cached(&tx, "DELETE FROM coverage_evidence", [])?;
             cached(&tx, "DELETE FROM coverage_expressions", [])?;
         }
+        use commitments::MetadataKey;
         for (k, v) in [
-            ("schema_version", config::ENGINE_SCHEMA_VERSION.to_owned()),
-            (
-                "index_semantics_version",
-                crate::INDEX_SEMANTICS_VERSION.to_owned(),
-            ),
-            ("indexer_engine", "contextunity-acdd-rust".to_owned()),
-            ("workspace_root", root.to_string_lossy().into_owned()),
-            ("adapter", config::policy(root, adapter).to_string()),
-            (
-                "adapter_version",
-                adapter.adapter_version.clone().unwrap_or_default(),
-            ),
-            ("adapter_digest", adapter.digest.clone()),
-            ("manifest_digest", build_inputs.manifest_digest.to_owned()),
-            (
-                "adapter_linked_workspaces",
-                serde_json::to_string(&adapter.linked_workspaces)?,
-            ),
-            ("inventory_snapshot", serde_json::to_string(entries)?),
-            (
-                "corpus_hash",
-                acdd_core::format::sha256_serde_json_hex(entries)?,
-            ),
+            (MetadataKey::SchemaVersion, config::ENGINE_SCHEMA_VERSION.to_owned()),
+            (MetadataKey::IndexSemanticsVersion, crate::INDEX_SEMANTICS_VERSION.to_owned()),
+            (MetadataKey::IndexerEngine, "contextunity-acdd-rust".to_owned()),
+            (MetadataKey::WorkspaceRoot, root.to_string_lossy().into_owned()),
+            (MetadataKey::Adapter, config::policy(root, adapter).to_string()),
+            (MetadataKey::AdapterVersion, adapter.adapter_version.clone().unwrap_or_default()),
+            (MetadataKey::AdapterDigest, adapter.digest.clone()),
+            (MetadataKey::ManifestDigest, build_inputs.manifest_digest.to_owned()),
+            (MetadataKey::AdapterLinkedWorkspaces, serde_json::to_string(&adapter.linked_workspaces)?),
+            (MetadataKey::InventorySnapshot, serde_json::to_string(entries)?),
+            (MetadataKey::CorpusHash, acdd_core::format::sha256_serde_json_hex(entries)?),
         ] {
-            cached(
-                &tx,
-                "INSERT OR REPLACE INTO metadata VALUES(?1,?2)",
-                params![k, v],
-            )?;
+            commitments::write_metadata(&tx, k, &v)?;
         }
         let mut path_cache = PathDictionaryCache::new();
         let all_paths = entries
@@ -272,8 +268,8 @@ pub fn populate_owned(
             let source_paths = facts
                 .values()
                 .flat_map(|facts| &facts.nodes)
-                .filter(|node| node.details.get("included_from").is_some())
-                .filter_map(|node| node.details["source_path"].as_str())
+                .filter(|node| node.details.get(NodeDetailKey::INCLUDED_FROM).is_some())
+                .filter_map(|node| node.details[NodeDetailKey::SOURCE_PATH].as_str())
                 .collect::<std::collections::BTreeSet<_>>();
             let mut sources = BTreeMap::new();
             if !source_paths.is_empty() {
@@ -461,12 +457,14 @@ pub fn populate_owned(
                 let stored = ingest::persist_graph_prepared(
                     &tx,
                     &mut path_cache,
-                    graph,
-                    &facts,
-                    None,
-                    &coverage,
                     &mut node_paths,
-                    true,
+                    ingest::PersistGraphParams {
+                        graph,
+                        facts: &facts,
+                        dependency_owners: None,
+                        materialize_edges: true,
+                    },
+                    &coverage,
                     Some(&prepared),
                 );
                 drop(node_paths);
@@ -545,8 +543,8 @@ fn restore_catalog_file(
     let mut full = lean.clone();
     catalog_payload(&file.path, encoded)?.restore(&mut full);
     for node in &mut full.nodes {
-        if node.details.get("included_from").is_some() {
-            if let Some(source) = node.details["source_path"].as_str() {
+        if node.details.get(NodeDetailKey::INCLUDED_FROM).is_some() {
+            if let Some(source) = node.details[NodeDetailKey::SOURCE_PATH].as_str() {
                 let payload = composed_sources
                     .get(source)
                     .context("missing composed source")?;

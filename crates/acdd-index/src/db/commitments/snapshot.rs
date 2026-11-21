@@ -141,10 +141,7 @@ fn install_snapshot(conn: &Connection, snapshot: SnapshotCommitments) -> Result<
         "snapshot installation requires committed indexes"
     );
     let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "INSERT OR REPLACE INTO metadata VALUES('commitment_algorithm',?1)",
-        [ALGORITHM],
-    )?;
+    super::write_metadata(&tx, super::MetadataKey::CommitmentAlgorithm, ALGORITHM)?;
     tx.execute("DELETE FROM domain_commitments", [])?;
     for DomainCommitment {
         table,
@@ -161,10 +158,7 @@ fn install_snapshot(conn: &Connection, snapshot: SnapshotCommitments) -> Result<
         )?;
     }
     let root = root(&tx)?;
-    tx.execute(
-        "INSERT OR REPLACE INTO metadata VALUES('output_root',?1)",
-        [&root],
-    )?;
+    super::write_metadata(&tx, super::MetadataKey::OutputRoot, &root)?;
     tx.commit()?;
     Ok(root)
 }
