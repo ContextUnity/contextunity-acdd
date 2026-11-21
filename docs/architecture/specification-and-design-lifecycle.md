@@ -60,4 +60,4 @@ flowchart LR
 > Invariant: Live source indexes (`acdd-index`) remain the sole authority for C4 Level 3–4 component and code dependency graphs; static architecture documents declare C1–C2 boundaries and `INV-*` rules without duplicating mutable symbol catalogs. [`extract_with_details`](../../crates/acdd-index/src/docs.rs)
 
 > [!IMPORTANT]
-> Invariant: Pre-task `blueprint_synthesis` gates persist per-task architectural slices (`proof.tasks[<task_ref>]`) in `gate_artifacts` / `ClaimResp.pre_task_slice` before task claims unlock, isolating each task's context to its own contract slice. [`build_claim_context`](../../crates/acdd-state/src/context.rs)
+> Invariant: Pre-task `blueprint_synthesis` gates persist per-task architectural slices (`proof.tasks[<task_ref>]`) in `gate_artifacts` / `ClaimResp.pre_task_slice` before task claims unlock, isolating each task's context to its own contract slice. [`build_claim_context`](../../crates/acdd-state/src/context/mod.rs)

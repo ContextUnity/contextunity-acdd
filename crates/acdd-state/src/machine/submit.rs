@@ -51,28 +51,12 @@ pub fn evaluate_submit(
     obs: &ValidatedObservations,
     input: &SubmitInput,
 ) -> Result<SubmitEvaluation, StateError> {
-    if snapshot.run.status != RunStatus::Active {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!(
-                "cannot submit gate in non-active run '{}' (status: {})",
-                snapshot.run.run_id, snapshot.run.status
-            ),
-        ));
-    }
-
-    let node_id = input.node_cursor.to_node_id()?;
-    let node = find_node(snapshot, &node_id)?;
-
-    if !matches!(node.kind, NodeKind::RootGate | NodeKind::TaskGate) {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!(
-                "cannot submit structural node '{}' (kind: {})",
-                node_id, node.kind
-            ),
-        ));
-    }
+    let node = crate::machine::require_active_claimable_node(
+        snapshot,
+        &input.node_cursor,
+        "submit gate",
+    )?;
+    let node_id = node.node_id.as_str();
 
     if node.status != NodeStatus::InProgress || node.claim_revision == 0 {
         return Err(StateError::new(
@@ -106,7 +90,7 @@ pub fn evaluate_submit(
         ));
     }
 
-    let active_claim = active_claim_for_node(snapshot, &node_id).ok_or_else(|| {
+    let active_claim = active_claim_for_node(snapshot, node_id).ok_or_else(|| {
         StateError::new(
             ErrorCode::BackendConflict,
             format!("node '{node_id}' has no active gate_claims record"),

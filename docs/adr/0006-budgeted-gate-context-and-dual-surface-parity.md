@@ -19,7 +19,7 @@ AI coding assistants and human/CI terminal operators must observe identical sema
 
 ### 1. Dual-Surface Parity and Markdown-First Presentation
 
-- **Shared Engine & Formatter**: `src/cli/` and `src/mcp/` are thin protocol adapters over `acdd-index`, `acdd-state`, `src/engine/`, and `src/state_bridge/`. Presentation is owned by `src/format/` ([`mod.rs`](../../src/format/mod.rs), [`lifecycle.rs`](../../src/format/lifecycle.rs) delegating `ClaimResp` prompt rendering to [`render_claim_prompt_markdown`](../../crates/acdd-state/src/context.rs), [`coordination.rs`](../../src/format/coordination.rs)), defaulting to GitHub-flavored Markdown on both surfaces with explicit `--format json` / `format: "json"` parity.
+- **Shared Engine & Formatter**: `src/cli/` and `src/mcp/` are thin protocol adapters over `acdd-index`, `acdd-state`, `src/engine/`, and `src/state_bridge/`. Presentation is owned by `src/format/` ([`mod.rs`](../../src/format/mod.rs), [`lifecycle.rs`](../../src/format/lifecycle.rs) delegating `ClaimResp` prompt rendering to [`render_claim_prompt_markdown`](../../crates/acdd-state/src/context/markdown.rs), [`coordination.rs`](../../src/format/coordination.rs)), defaulting to GitHub-flavored Markdown on both surfaces with explicit `--format json` / `format: "json"` parity.
 - **Coordinates & Diagnostics**: File, symbol, and document coordinates render as workspace-confined `file:///` links with line fragments where known. Errors and notices render as `[!CAUTION]`, `[!WARNING]`, or `[!NOTE]` callouts preserving `ErrorCode`, cause, and recovery steps without mutating JSON semantics.
 - **Scoped Compaction**: Omit inactive presentation metadata while preserving every continuation token, `ErrorCode`, candidate/content hash, receipt, and meaningful zero/false field.
 
@@ -31,7 +31,7 @@ AI coding assistants and human/CI terminal operators must observe identical sema
 
 ### 3. Six-Tier `ClaimResp` Context Budget Reservation
 
-[`GateContextAssembler`](../../crates/acdd-state/src/context.rs) (backing `build_claim_context` across `claim`, `show`, and `run`) constructs `ClaimResp` within `ResponsePolicy.max_output_bytes` in strict priority order:
+[`GateContextAssembler`](../../crates/acdd-state/src/context/mod.rs) (backing `build_claim_context` across `claim`, `show`, and `run`) constructs `ClaimResp` within `ResponsePolicy.max_output_bytes` in strict priority order:
 
 1. **Tier 1 (`contract` + `guidance`)**: Mandatory claimed contract (omitting empty `invariants` and default `tools` equal to `profile.default_tools`; sending full spec content on `blueprint_synthesis` or taskless specs and `spec_path` on post-task root gates) and resolved gate guidance entries (reserved inside `max_guidance_bytes`, never silently truncated; fails closed with `GUIDANCE_BUDGET_EXCEEDED` on overflow).
 2. **Tier 2 (`unresolved_findings` + failed trace tail)**: Container-sibling (`parent_id == node.parent_id`) structured `RejectionFindings` and tail of the latest failed trace log across reject/fail rewinds, cleared automatically once the rejecting gate passes or the container's newest trace runs/passes.

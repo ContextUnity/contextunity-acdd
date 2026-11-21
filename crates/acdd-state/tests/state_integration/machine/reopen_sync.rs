@@ -9,7 +9,7 @@ use acdd_state::types::{
 
 #[test]
 fn extend_scope_reopen_cascade_and_sync_matrices() {
-    let (profile, mut snap) = build_sample_graph(IsolationMode::Worktree, true);
+    let (profile, mut snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
     let t_a = tree('a');
     let obs = obs_with_tree(t_a.clone());
 
@@ -347,7 +347,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
     ));
 
     // 5. #19: Transitive A -> B -> C cascade reopen clears B -> C satisfaction and schedule blocks C until B completes.
-    let (_, mut chain_snap) = build_sample_graph(IsolationMode::Worktree, false);
+    let (_, mut chain_snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
     let t4 = t("T4");
     chain_snap.nodes.push(GateNodeRecord {
         run_id: chain_snap.run.run_id.clone(),
@@ -477,7 +477,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
 
     // 6. #9: `rebind_profile` inserting a new gate ahead of an unclaimed `Ready` sibling gate
     // demotes that unclaimed sibling back to `Pending` and activates the newly inserted gate first.
-    let (p9_base_profile, mut p9_snap) = build_sample_graph(IsolationMode::Worktree, false);
+    let (p9_base_profile, mut p9_snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
     if let Some(b) = p9_snap.nodes.iter_mut().find(|n| n.node_id == "task:T1:build") {
         b.status = NodeStatus::Completed;
     }
@@ -524,7 +524,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
     );
 
     // #5: Root gate demotion when `rebind_profile` inserts an earlier root sibling gate ahead of unclaimed `Ready` sibling.
-    let (r_base, mut r_snap) = build_sample_graph(IsolationMode::Worktree, true);
+    let (r_base, mut r_snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
     let mut r_rebound = r_base.clone();
     if let Some(MachineGraphItem::Gate(ref mut bp)) = r_rebound.gates.first_mut() {
         bp.children.insert(0, MachineGateDef::minimal(g("early")));
@@ -571,7 +571,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
 
     // Prepending a top-level root gate before unclaimed `blueprint_synthesis` container must
     // demote BOTH the container and its unclaimed `Ready` child gate, making the prepended root gate Ready.
-    let (rc_base, mut rc_snap) = build_sample_graph(IsolationMode::Worktree, true);
+    let (rc_base, mut rc_snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
     let mut rc_rebound = rc_base.clone();
     rc_rebound
         .gates
@@ -675,7 +675,7 @@ fn extend_scope_reopen_cascade_and_sync_matrices() {
 
 #[test]
 fn unified_evaluate_transition_routes_all_variants() {
-    let (profile, snap) = build_sample_graph(IsolationMode::Worktree, false);
+    let (profile, snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
     let obs = obs_with_tree(tree('a'));
     let out = evaluate_transition(
         &snap,

@@ -8,8 +8,7 @@ use crate::machine::graph::{
 use crate::machine::inputs::ReopenInput;
 use crate::types::{
     ClaimOutcome, ClaimOutcomePatch, DependencySatisfiedPatch, GateNodeRecord, NodeKind,
-    NodeStatus, NodeStatusPatch, RunGraphSnapshot, RunStatus, TransitionPlan,
-    ValidatedObservations,
+    NodeStatus, NodeStatusPatch, RunGraphSnapshot, TransitionPlan, ValidatedObservations,
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ids::TaskRef;
@@ -21,18 +20,12 @@ pub fn plan_reopen(
     obs: &ValidatedObservations,
     input: &ReopenInput,
 ) -> Result<TransitionPlan, StateError> {
-    if snapshot.run.status != RunStatus::Active {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!(
-                "cannot reopen node in non-active run '{}' (status: {})",
-                snapshot.run.run_id, snapshot.run.status
-            ),
-        ));
-    }
-
-    let target_id = input.node_cursor.to_node_id()?;
-    let target = find_node(snapshot, &target_id)?;
+    let target = crate::machine::require_active_node(
+        snapshot,
+        &input.node_cursor,
+        "reopen node",
+    )?;
+    let target_id = target.node_id.as_str();
 
     if target.kind == NodeKind::Container && target.node_id.starts_with("tasks#") {
         return Err(StateError::new(

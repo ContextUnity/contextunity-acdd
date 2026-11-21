@@ -1,16 +1,24 @@
 //! In-memory and disk test harness for state transitions and storage invariants.
 
+use crate::machine::graph::build_initial_run_graph;
+use crate::machine::inputs::{
+    BuildGraphInput, MachineGateDef, MachineGitPolicy, MachineGraphItem, MachineProfileInput,
+    MachineProofKind, MachineSavePolicy, MachineSpecInput, MachineSubtaskInput, MachineTaskDep,
+    MachineTaskSpec, MachineTasksBlockDef,
+};
 use crate::store::memory::MemoryStateBackend;
 use crate::store::sqlite::migrations::SqliteMeta;
 use crate::store::sqlite::{SqliteBackendOptions, SqliteStateBackend};
 use crate::store::traits::{StateBackend, StateReader, StateTx};
 use crate::types::{
     GateNodeRecord, InvariantsState, IsolationMode, NodeKind, NodeStatus, RunGraphSnapshot,
-    RunRecord, RunStatus, TaskDependencyRecord,
+    RunRecord, RunStatus, SaveAction, SubtaskStatus, TaskDependencyRecord,
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::fs::ScopedTempDir;
-use acdd_core::ids::{CommitOid, RunId, RunName, TaskRef, TreeOid};
+use acdd_core::ids::{CommitOid, GateId, GateSelector, RunId, RunName, SubtaskRef, TaskRef, TreeOid};
+use acdd_core::schema::SchemaDef;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 enum HarnessBackend {
@@ -65,24 +73,13 @@ impl RunHarness {
         })?;
 
         let db_path = workspace_root.join(".acdd/state.sqlite");
-        let reconciler_ws = workspace_root.clone();
-        let reconciler_cols = spec_collection_paths.clone();
-        let backend = SqliteStateBackend::open_with_reconciler(
-            SqliteBackendOptions {
-                db_path,
-                backup_dir: Some(backup_dir.clone()),
-                workspace_root: Some(workspace_root.clone()),
-                spec_collection_paths,
-                is_custom_db: false,
-            },
-            |runs| {
-                crate::usecases::lifecycle::reconcile_restored_runs_with_archives(
-                    runs,
-                    Some(&reconciler_ws),
-                    &reconciler_cols,
-                )
-            },
-        )?;
+        let backend = Self::open_sqlite_with_archive_reconciler(SqliteBackendOptions {
+            db_path,
+            backup_dir: Some(backup_dir.clone()),
+            workspace_root: Some(workspace_root.clone()),
+            spec_collection_paths,
+            is_custom_db: false,
+        })?;
 
         Ok(Self {
             inner: HarnessBackend::Disk {
@@ -134,9 +131,60 @@ impl RunHarness {
         }
     }
 
+    /// Open a [`SqliteStateBackend`] wired with archive restore reconciliation for `options`.
+    pub fn open_sqlite_with_archive_reconciler(
+        options: SqliteBackendOptions,
+    ) -> Result<SqliteStateBackend, StateError> {
+        let workspace_root = options.workspace_root.clone();
+        let spec_collection_paths = options.spec_collection_paths.clone();
+        SqliteStateBackend::open_with_reconciler(options, |runs| {
+            crate::usecases::lifecycle::reconcile_restored_runs_with_archives(
+                runs,
+                workspace_root.as_deref(),
+                &spec_collection_paths,
+            )
+        })
+    }
+
     /// Seed a run graph atomically via `StateTx::insert_run_graph`.
     pub fn seed_run(&self, graph: &RunGraphSnapshot) -> Result<(), StateError> {
         self.exec_tx(|tx| tx.insert_run_graph(graph))
+    }
+
+    fn sample_run_record(
+        run_id: RunId,
+        run_name: RunName,
+        workspace: &str,
+        isolation: IsolationMode,
+        worktree: Option<&str>,
+    ) -> Result<RunRecord, StateError> {
+        let dummy_commit = CommitOid::new("0123456789abcdef0123456789abcdef01234567")?;
+        let spec_path = format!("docs/milestones/{run_name}.md");
+        let branch = format!("milestone/{run_name}");
+        Ok(RunRecord {
+            run_id,
+            run_name,
+            collection: Some("milestones".to_owned()),
+            workspace: workspace.to_owned(),
+            profile_id: "code".to_owned(),
+            profile_json: r#"{"version":2}"#.to_owned(),
+            spec_path: Some(spec_path),
+            spec_id: None,
+            spec_digest: "deadbeef".repeat(8),
+            is_ephemeral: false,
+            isolation,
+            target_base: Some("main".to_owned()),
+            target_base_commit: Some(dummy_commit),
+            branch: Some(branch),
+            worktree: worktree.map(str::to_owned),
+            trace_id: "0123456789abcdef0123456789abcdef".to_owned(),
+            status: RunStatus::Active,
+            cancellation_reason: None,
+            root_cycle_count: 0,
+            generation: 1,
+            created_at: "2026-11-17T10:00:00.000Z".to_owned(),
+            completed_at: None,
+        })
     }
 
     /// Build a minimal valid [`RunGraphSnapshot`] with `task_refs` (`task:<ref>` + `build` gate).
@@ -149,33 +197,14 @@ impl RunHarness {
     ) -> Result<RunGraphSnapshot, StateError> {
         let rid = RunId::new(run_id)?;
         let rname = RunName::new(run_name)?;
-        let dummy_commit = CommitOid::new("0123456789abcdef0123456789abcdef01234567")?;
         let dummy_tree = TreeOid::new("fedcba9876543210fedcba9876543210fedcba98")?;
-
-        let run = RunRecord {
-            run_id: rid.clone(),
-            run_name: rname,
-            collection: Some("milestones".to_owned()),
-            workspace: workspace.to_owned(),
-            profile_id: "code".to_owned(),
-            profile_json: r#"{"version":2}"#.to_owned(),
-            spec_path: Some(format!("docs/milestones/{run_name}.md")),
-            spec_id: None,
-            spec_digest: "deadbeef".repeat(8),
-            is_ephemeral: false,
-            isolation: IsolationMode::Worktree,
-            target_base: Some("main".to_owned()),
-            target_base_commit: Some(dummy_commit),
-            branch: Some(format!("milestone/{run_name}")),
-            worktree: worktree.map(str::to_owned),
-            trace_id: "0123456789abcdef0123456789abcdef".to_owned(),
-            status: RunStatus::Active,
-            cancellation_reason: None,
-            root_cycle_count: 0,
-            generation: 1,
-            created_at: "2026-11-17T10:00:00.000Z".to_owned(),
-            completed_at: None,
-        };
+        let run = Self::sample_run_record(
+            rid.clone(),
+            rname.clone(),
+            workspace,
+            IsolationMode::Worktree,
+            worktree,
+        )?;
 
         let mut nodes = vec![GateNodeRecord {
             run_id: rid.clone(),
@@ -286,6 +315,236 @@ impl RunHarness {
             traces: Vec::new(),
             artifacts: Vec::new(),
         })
+    }
+
+    /// Construct a canonical [`MachineTaskSpec`] fixture for state-machine tests.
+    pub fn make_sample_task(
+        name: &str,
+        tags: &[&str],
+        scope: &[&str],
+        deps: &[&str],
+        run_id: &RunId,
+    ) -> MachineTaskSpec {
+        MachineTaskSpec {
+            task_ref: TaskRef::new(name).expect("valid task_ref"),
+            tags: tags.iter().map(|s| (*s).to_owned()).collect(),
+            scope: scope.iter().map(|s| (*s).to_owned()).collect(),
+            extended_scope: Vec::new(),
+            invariants: vec!["INV-1".to_owned()],
+            depends_on: deps
+                .iter()
+                .map(|d| MachineTaskDep {
+                    depends_on_workspace: "/repo".to_owned(),
+                    depends_on_run_id: run_id.clone(),
+                    depends_on_ref: TaskRef::new(*d).expect("valid dep task_ref"),
+                })
+                .collect(),
+            subtasks: vec![MachineSubtaskInput {
+                subtask_ref: SubtaskRef::new("S1").expect("valid subtask_ref"),
+                title: "Implement core".to_owned(),
+                status: SubtaskStatus::Completed,
+                evidence: Some("implemented and tested".to_owned()),
+            }],
+        }
+    }
+
+    /// Build the canonical [`MachineProfileInput`] fixture used by state-machine integration tests.
+    pub fn canonical_machine_profile(isolation: IsolationMode) -> MachineProfileInput {
+        let gate_id = |s: &str| GateId::new(s).expect("valid gate_id");
+        let selector = |s: &str| s.parse::<GateSelector>().expect("valid selector");
+        let mut bp_schema = SchemaDef::object();
+        bp_schema
+            .properties
+            .insert("tasks".to_owned(), SchemaDef::object());
+        bp_schema.required = vec!["tasks".to_owned()];
+
+        let synthesize = MachineGateDef {
+            role: Some("architect".to_owned()),
+            proof: MachineProofKind::CustomSchema("blueprint".to_owned()),
+            pass: Some("review".to_owned()),
+            ..MachineGateDef::minimal(gate_id("synthesize"))
+        };
+        let bp_review = MachineGateDef {
+            role: Some("independent_reviewer".to_owned()),
+            proof: MachineProofKind::Review,
+            contours: vec![
+                "claims".to_owned(),
+                "project_isolation".to_owned(),
+                "administration".to_owned(),
+            ],
+            independent_from: vec![selector("synthesize")],
+            fail: Some("synthesize".to_owned()),
+            save: MachineSavePolicy {
+                immutable: true,
+                ..Default::default()
+            },
+            ..MachineGateDef::minimal(gate_id("review"))
+        };
+        let blueprint_synthesis = MachineGateDef {
+            children: vec![synthesize, bp_review],
+            ..MachineGateDef::minimal(gate_id("blueprint_synthesis"))
+        };
+
+        let build = MachineGateDef {
+            role: Some("builder".to_owned()),
+            proof: MachineProofKind::Command,
+            command: Some("build_check".to_owned()),
+            pass: Some("review".to_owned()),
+            save: MachineSavePolicy {
+                post: SaveAction::None,
+                ..Default::default()
+            },
+            ..MachineGateDef::minimal(gate_id("build"))
+        };
+        let task_review = MachineGateDef {
+            role: Some("independent_reviewer".to_owned()),
+            proof: MachineProofKind::Review,
+            contours: vec!["paths".to_owned(), "claims".to_owned()],
+            independent_from: vec![selector("build")],
+            need: vec![selector("build")],
+            pass: Some("deliver".to_owned()),
+            fail: Some("build".to_owned()),
+            save: MachineSavePolicy {
+                immutable: true,
+                ..Default::default()
+            },
+            ..MachineGateDef::minimal(gate_id("review"))
+        };
+        let post_action = if isolation == IsolationMode::InPlace {
+            SaveAction::None
+        } else {
+            SaveAction::Commit
+        };
+        let deliver = MachineGateDef {
+            role: Some("independent_reviewer".to_owned()),
+            independent_from: vec![selector("build")],
+            need: vec![selector("build"), selector("review")],
+            receipt: true,
+            fail: Some("build".to_owned()),
+            save: MachineSavePolicy {
+                immutable: true,
+                post: post_action,
+                ..Default::default()
+            },
+            ..MachineGateDef::minimal(gate_id("deliver"))
+        };
+
+        let verify_root = MachineGateDef {
+            proof: MachineProofKind::Command,
+            command: Some("verify_all".to_owned()),
+            pass: Some("integration_review".to_owned()),
+            fail: Some("polish".to_owned()),
+            max_attempts: 3,
+            ..MachineGateDef::minimal(gate_id("verify"))
+        };
+        let polish = MachineGateDef {
+            role: Some("builder".to_owned()),
+            proof: MachineProofKind::Command,
+            command: Some("verify_all".to_owned()),
+            scope: vec!["docs/**".to_owned(), ".acdd/profile.yaml".to_owned()],
+            pass: Some("verify".to_owned()),
+            max_attempts: 3,
+            ..MachineGateDef::minimal(gate_id("polish"))
+        };
+        let integration_review = MachineGateDef {
+            role: Some("independent_reviewer".to_owned()),
+            proof: MachineProofKind::Review,
+            contours: vec!["paths".to_owned(), "claims".to_owned()],
+            independent_from: vec![selector("polish"), selector("tasks.build")],
+            need: vec![selector("verify")],
+            pass: Some("handoff".to_owned()),
+            fail: Some("polish".to_owned()),
+            save: MachineSavePolicy {
+                immutable: true,
+                ..Default::default()
+            },
+            ..MachineGateDef::minimal(gate_id("integration_review"))
+        };
+        let handoff = MachineGateDef {
+            role: Some("independent_reviewer".to_owned()),
+            independent_from: vec![selector("polish"), selector("tasks.build")],
+            need: vec![selector("verify"), selector("integration_review")],
+            receipt: true,
+            fail: Some("polish".to_owned()),
+            save: MachineSavePolicy {
+                immutable: true,
+                archive: true,
+                prune: true,
+                post: post_action,
+                ..Default::default()
+            },
+            ..MachineGateDef::minimal(gate_id("handoff"))
+        };
+
+        MachineProfileInput {
+            profile_id: "default".to_owned(),
+            profile_json: "{}".to_owned(),
+            git: MachineGitPolicy {
+                isolation,
+                ..Default::default()
+            },
+            default_save: SaveAction::Commit,
+            protected_paths: vec!["Cargo.toml".to_owned(), "build.rs".to_owned()],
+            tags: BTreeSet::from(["code".to_owned(), "docs".to_owned(), "urgent".to_owned()]),
+            proof_schemas: BTreeMap::from([("blueprint".to_owned(), bp_schema)]),
+            gates: vec![
+                MachineGraphItem::Gate(Box::new(blueprint_synthesis)),
+                MachineGraphItem::TasksBlock(MachineTasksBlockDef {
+                    when: None,
+                    gates: vec![build, task_review, deliver],
+                }),
+                MachineGraphItem::Gate(Box::new(verify_root)),
+                MachineGraphItem::Gate(Box::new(polish)),
+                MachineGraphItem::Gate(Box::new(integration_review)),
+                MachineGraphItem::Gate(Box::new(handoff)),
+            ],
+        }
+    }
+
+    /// Build a full profile-driven [`RunGraphSnapshot`] (`T1`, `T2 -> T1`, `T3`) for machine tests.
+    pub fn build_machine_sample_graph(
+        isolation: IsolationMode,
+        with_pre_task: bool,
+    ) -> (MachineProfileInput, RunGraphSnapshot) {
+        let mut profile = Self::canonical_machine_profile(isolation);
+        if !with_pre_task {
+            profile.gates.remove(0);
+        }
+
+        let run_id = RunId::new("run-1").expect("valid run_id");
+        let run_name = RunName::new("AC-100").expect("valid run_name");
+        let base_run = Self::sample_run_record(
+            run_id.clone(),
+            run_name.clone(),
+            "/repo",
+            isolation,
+            Some("/repo/.worktrees/AC-100"),
+        )
+        .expect("valid sample run record");
+        let input = BuildGraphInput {
+            run_id: run_id.clone(),
+            run_name,
+            collection: base_run.collection,
+            workspace: base_run.workspace,
+            spec_path: base_run.spec_path,
+            is_ephemeral: base_run.is_ephemeral,
+            target_base: base_run.target_base,
+            target_base_commit: base_run.target_base_commit,
+            branch: base_run.branch,
+            worktree: base_run.worktree,
+            trace_id: base_run.trace_id,
+            created_at: "2026-11-17T09:00:00.000Z".to_owned(),
+            spec: MachineSpecInput {
+                tasks: vec![
+                    Self::make_sample_task("T1", &["code"], &["crates/a/**"], &[], &run_id),
+                    Self::make_sample_task("T2", &["code"], &["crates/b/**"], &["T1"], &run_id),
+                    Self::make_sample_task("T3", &["docs"], &["docs/guide/**"], &[], &run_id),
+                ],
+                spec_digest: "spec-sha".to_owned(),
+            },
+        };
+        let snap = build_initial_run_graph(&profile, &input).expect("valid machine sample graph");
+        (profile, snap)
     }
 }
 
@@ -1136,14 +1395,7 @@ mod tests {
             let _ = fs::remove_file(ws.join(".acdd/state.sqlite-wal"));
             let _ = fs::remove_file(ws.join(".acdd/state.sqlite-shm"));
 
-            let restored = SqliteStateBackend::open_with_reconciler(opts, |runs| {
-                crate::usecases::lifecycle::reconcile_restored_runs_with_archives(
-                    runs,
-                    Some(&ws),
-                    &["docs/milestones".to_owned()],
-                )
-            })
-            .unwrap();
+            let restored = RunHarness::open_sqlite_with_archive_reconciler(opts).unwrap();
             let done_id = RunId::new("run-010").unwrap();
             let live_id = RunId::new("run-011").unwrap();
             assert!(restored.load_run_graph(&done_id).unwrap().is_none());

@@ -768,69 +768,47 @@ impl StateTx for SqliteTx<'_> {
             .expected_node_versions
             .iter()
             .find(|e| e.node_id == claim.node_id)
-            .map(|e| e.expected_version);
+            .map(|e| {
+                i64::try_from(e.expected_version).map_err(|_| {
+                    StateError::new(
+                        ErrorCode::BackendConflict,
+                        format!("expected_version overflow for '{}'", claim.node_id),
+                    )
+                })
+            })
+            .transpose()?;
 
-        let mut node_sql = String::from(
-            "UPDATE gate_nodes SET
-                status = ?1,
-                node_version = node_version + 1,
-                claim_revision = ?2,
-                worker_id = ?3,
-                session_fingerprint = ?4,
-                worktree = ?5,
-                branch = COALESCE(?6, branch),
-                baseline_commit = COALESCE(?7, baseline_commit),
-                claim_tree = ?8,
-                active_span_id = ?9
-             WHERE run_id = ?10 AND node_id = ?11",
-        );
-        let node_changed = if let Some(exp_ver) = expected_node_version {
-            node_sql.push_str(" AND node_version = ?12");
-            let exp_ver_i64 = i64::try_from(exp_ver).map_err(|_| {
-                StateError::new(
-                    ErrorCode::BackendConflict,
-                    format!("expected_version overflow for '{}'", claim.node_id),
-                )
-            })?;
-            self.conn
-                .execute(
-                    &node_sql,
-                    params![
-                        NodeStatus::InProgress.as_str(),
-                        i64::from(claim.claim_revision),
-                        claim.worker_id.as_str(),
-                        claim.session_fingerprint,
-                        claim.worktree,
-                        claim.branch,
-                        claim.baseline_commit.as_ref().map(|c| c.as_str()),
-                        claim.claim_tree.as_str(),
-                        claim.span_id,
-                        run_id.as_str(),
-                        claim.node_id,
-                        exp_ver_i64,
-                    ],
-                )
-                .map_err(|err| map_write_err(err, "admit_claim update gate_nodes"))?
-        } else {
-            self.conn
-                .execute(
-                    &node_sql,
-                    params![
-                        NodeStatus::InProgress.as_str(),
-                        i64::from(claim.claim_revision),
-                        claim.worker_id.as_str(),
-                        claim.session_fingerprint,
-                        claim.worktree,
-                        claim.branch,
-                        claim.baseline_commit.as_ref().map(|c| c.as_str()),
-                        claim.claim_tree.as_str(),
-                        claim.span_id,
-                        run_id.as_str(),
-                        claim.node_id,
-                    ],
-                )
-                .map_err(|err| map_write_err(err, "admit_claim update gate_nodes"))?
-        };
+        let node_changed = self
+            .conn
+            .execute(
+                "UPDATE gate_nodes SET
+                    status = ?1,
+                    node_version = node_version + 1,
+                    claim_revision = ?2,
+                    worker_id = ?3,
+                    session_fingerprint = ?4,
+                    worktree = ?5,
+                    branch = COALESCE(?6, branch),
+                    baseline_commit = COALESCE(?7, baseline_commit),
+                    claim_tree = ?8,
+                    active_span_id = ?9
+                 WHERE run_id = ?10 AND node_id = ?11 AND (?12 IS NULL OR node_version = ?12)",
+                params![
+                    NodeStatus::InProgress.as_str(),
+                    i64::from(claim.claim_revision),
+                    claim.worker_id.as_str(),
+                    claim.session_fingerprint,
+                    claim.worktree,
+                    claim.branch,
+                    claim.baseline_commit.as_ref().map(|c| c.as_str()),
+                    claim.claim_tree.as_str(),
+                    claim.span_id,
+                    run_id.as_str(),
+                    claim.node_id,
+                    expected_node_version,
+                ],
+            )
+            .map_err(|err| map_write_err(err, "admit_claim update gate_nodes"))?;
         if node_changed != 1 {
             return Err(StateError::new(
                 ErrorCode::BackendConflict,

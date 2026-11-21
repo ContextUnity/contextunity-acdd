@@ -38,7 +38,7 @@ ACDD separates *what* must be built from *how* work is governed and verified:
 
 ### Stage-Tailored Context Injection (`ClaimResp`)
 
-Claiming a gate returns the budgeted `ClaimResp` bundle ([ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md), [`crates/acdd-state/src/context.rs`](../../crates/acdd-state/src/context.rs))
+Claiming a gate returns the budgeted `ClaimResp` bundle ([ADR 0006](../adr/0006-budgeted-gate-context-and-dual-surface-parity.md), [`crates/acdd-state/src/context/mod.rs`](../../crates/acdd-state/src/context/mod.rs))
 ordered across 6 priority tiers inside `ResponsePolicy.max_output_bytes`:
 
 1. **Tier 1 (`contract` + `guidance`)**: Mandatory claimed task/gate specification
@@ -60,7 +60,7 @@ ordered across 6 priority tiers inside `ResponsePolicy.max_output_bytes`:
 
 MCP state tools and flat CLI commands share `src/format/lifecycle.rs` Markdown
 rendering (delegating `ClaimResp` prompt formatting to
-[`render_claim_prompt_markdown`](../../crates/acdd-state/src/context.rs)) by
+[`render_claim_prompt_markdown`](../../crates/acdd-state/src/context/markdown.rs)) by
 default, or structured JSON via `format: "json"` / `--format json`;
 see the [task lifecycle Markdown contract](mcp-markdown-contracts.md#task-lifecycle).
 

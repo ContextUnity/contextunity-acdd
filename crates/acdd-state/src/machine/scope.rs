@@ -5,8 +5,8 @@ use crate::machine::graph::{build_preconditions, container_scope, find_node};
 use crate::machine::inputs::{ExtendScopeInput, MachineProfileInput};
 use crate::machine::schedule::{is_task_claimed_unfinished, scopes_overlap};
 use crate::types::{
-    ExtendedScopeEntry, NodeKind, NodeStatus, NodeStatusPatch, RunGraphSnapshot, RunStatus,
-    TransitionPlan, ValidatedObservations,
+    ExtendedScopeEntry, NodeKind, NodeStatus, NodeStatusPatch, RunGraphSnapshot, TransitionPlan,
+    ValidatedObservations,
 };
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::path_policy::{is_valid_scope_glob, normalize_rel_path};
@@ -27,15 +27,12 @@ pub(crate) fn plan_extend_scope_with_obs(
     obs: &ValidatedObservations,
     input: &ExtendScopeInput,
 ) -> Result<TransitionPlan, StateError> {
-    if snapshot.run.status != RunStatus::Active {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!(
-                "cannot extend_scope in non-active run '{}' (status: {})",
-                snapshot.run.run_id, snapshot.run.status
-            ),
-        ));
-    }
+    let target_node = crate::machine::require_active_node(
+        snapshot,
+        &input.node_cursor,
+        "extend_scope",
+    )?;
+    let target_id = target_node.node_id.as_str();
 
     if input.reason.trim().is_empty() {
         return Err(StateError::new(
@@ -49,9 +46,6 @@ pub(crate) fn plan_extend_scope_with_obs(
             "extend_scope requires at least one path or glob pattern",
         ));
     }
-
-    let target_id = input.node_cursor.to_node_id()?;
-    let target_node = find_node(snapshot, &target_id)?;
 
     if let Some(ref worker) = input.worker_id {
         if target_node.kind == NodeKind::TaskGate

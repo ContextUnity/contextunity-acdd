@@ -32,6 +32,69 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tempfile::TempDir;
 
+/// Lightweight [`DomainProvider`] stub parameterized by domain id and capabilities.
+pub struct StubDomainProvider {
+    id: String,
+    caps: DomainCapabilities,
+}
+
+impl StubDomainProvider {
+    pub fn new(id: impl Into<String>, caps: DomainCapabilities) -> Self {
+        Self {
+            id: id.into(),
+            caps,
+        }
+    }
+}
+
+impl DomainProvider for StubDomainProvider {
+    fn domain_id(&self) -> &str {
+        &self.id
+    }
+
+    fn capabilities(&self) -> DomainCapabilities {
+        self.caps.clone()
+    }
+
+    fn execute_action(
+        &self,
+        _action: &str,
+        _params: &Value,
+        _idempotency_key: &str,
+        _req: &DomainActionReq,
+    ) -> anyhow::Result<DomainActionResult> {
+        Ok(DomainActionResult {
+            summary: "ok".to_owned(),
+            output: json!({}),
+        })
+    }
+
+    fn run_check(
+        &self,
+        _check: &str,
+        _params: &Value,
+        _req: &DomainCheckReq,
+    ) -> anyhow::Result<DomainCheckOutcome> {
+        Ok(DomainCheckOutcome::Passed {
+            summary: "ok".to_owned(),
+            execution_digest_salt: None,
+        })
+    }
+
+    fn provide_context(&self, _lens: &str, _req: &DomainContextReq) -> anyhow::Result<Value> {
+        Ok(json!({}))
+    }
+
+    fn call_tool(
+        &self,
+        _tool: &str,
+        _args: &Value,
+        _req: &DomainToolReq,
+    ) -> anyhow::Result<DomainToolOutput> {
+        Ok(DomainToolOutput::Json(json!({"ok": true})))
+    }
+}
+
 pub struct MockHttpProvider {
     tool_calls: AtomicUsize,
     action_calls: AtomicUsize,

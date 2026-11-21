@@ -129,7 +129,7 @@ Every gate transition is mediated by `claim -> (verify) -> submit` inside
 
 ### 6-Tier Claim Context Budget (`ClaimResp`)
 
-[`GateContextAssembler`](../../crates/acdd-state/src/context.rs) (exposed via
+[`GateContextAssembler`](../../crates/acdd-state/src/context/mod.rs) (exposed via
 `build_claim_context`) builds `ClaimResp` identically for `claim`, `show`, and
 `run` within `ResponsePolicy.max_output_bytes` across six ordered tiers:
 

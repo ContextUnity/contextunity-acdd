@@ -22,7 +22,7 @@ fn evaluate_submit_plan(
 
 #[test]
 fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closure() {
-    let (profile, mut snap) = build_sample_graph(IsolationMode::Worktree, false);
+    let (profile, mut snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
     let t_a = tree('a');
     let t_b = tree('b');
     let obs_a = obs_with_tree(t_a.clone());
@@ -556,7 +556,7 @@ fn submit_independence_immutable_need_drift_reject_escalation_and_receipt_closur
 
     // Verify `architectural_drift -> rearchitect -> build` resets stale `build`/`review` and
     // unused `rearchitect` becomes `Cancelled` when `deliver` completes the task.
-    let mut drift_profile = canonical_profile(IsolationMode::Worktree);
+    let mut drift_profile = RunHarness::canonical_machine_profile(IsolationMode::Worktree);
     drift_profile.gates.remove(0);
     if let MachineGraphItem::TasksBlock(ref mut tb) = drift_profile.gates[0] {
         tb.gates[1].fail_drift = Some("rearchitect".to_owned());

@@ -12,7 +12,7 @@ use crate::machine::schedule::{
 };
 use crate::types::{
     ClaimInsertInput, ClaimOutcome, ClaimOutcomePatch, IsolationMode, NodeKind, NodeStatus,
-    NodeStatusPatch, RunGraphSnapshot, RunStatus, TransitionPlan, ValidatedObservations,
+    NodeStatusPatch, RunGraphSnapshot, TransitionPlan, ValidatedObservations,
 };
 use acdd_core::errors::{ErrorCode, StateError};
 
@@ -23,28 +23,12 @@ pub fn admit_claim(
     obs: &ValidatedObservations,
     input: &ClaimInput,
 ) -> Result<ClaimDecision, StateError> {
-    if snapshot.run.status != RunStatus::Active {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!(
-                "cannot claim node in non-active run '{}' (status: {})",
-                snapshot.run.run_id, snapshot.run.status
-            ),
-        ));
-    }
-
-    let node_id = input.node_cursor.to_node_id()?;
-    let node = find_node(snapshot, &node_id)?;
-
-    if !matches!(node.kind, NodeKind::RootGate | NodeKind::TaskGate) {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!(
-                "cannot claim structural container node '{}' (kind: {})",
-                node_id, node.kind
-            ),
-        ));
-    }
+    let node = crate::machine::require_active_claimable_node(
+        snapshot,
+        &input.node_cursor,
+        "claim node",
+    )?;
+    let node_id = node.node_id.clone();
 
     // Active claim path: idempotent re-claim vs TASK_ALREADY_CLAIMED vs --force takeover.
     if node.status == NodeStatus::InProgress {

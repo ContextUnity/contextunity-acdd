@@ -83,7 +83,7 @@ metadata. Run and gate state payloads retain all data admitted by their operatio
 `src/format/coordination.rs` Markdown formatting:
 
 - **Claims (`ClaimResp`)**: `render_claim_markdown` delegates directly to
-  [`render_claim_prompt_markdown`](../../crates/acdd-state/src/context.rs) so
+  [`render_claim_prompt_markdown`](../../crates/acdd-state/src/context/markdown.rs) so
   MCP responses, CLI `claim`, and role-runner stdin share one canonical prompt
   renderer across all 6 budgeted tiers (`contract` + `guidance`,
   `unresolved_findings`, `pre_task_slice`, `dependency_receipts`, `blackboard`,

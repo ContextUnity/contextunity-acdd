@@ -2,7 +2,7 @@
 //! universal `proof: command` exit-code validation, and mechanical `fail:` routing.
 
 use crate::machine::graph::{
-    active_claim_for_node, build_preconditions, container_scope, find_node, resolve_gate_def,
+    active_claim_for_node, build_preconditions, container_scope, resolve_gate_def,
 };
 use crate::machine::inputs::{
     ActionExecutionOutcome, MachineGateDef, MachineProfileInput, MachineProofKind, VerifyEvaluation,
@@ -10,7 +10,7 @@ use crate::machine::inputs::{
 };
 use crate::types::{
     ClaimOutcome, ClaimOutcomePatch, GateNodeRecord, NodeStatus, NodeStatusPatch,
-    RunGraphSnapshot, RunStatus, TraceFinishInput, TraceStartInput, TraceStatus, TransitionPlan,
+    RunGraphSnapshot, TraceFinishInput, TraceStartInput, TraceStatus, TransitionPlan,
     ValidatedObservations,
 };
 use acdd_core::errors::{ErrorCode, StateError};
@@ -65,18 +65,12 @@ pub fn evaluate_verify(
     obs: &ValidatedObservations,
     input: &VerifyInput,
 ) -> Result<VerifyEvaluation, StateError> {
-    if snapshot.run.status != RunStatus::Active {
-        return Err(StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!(
-                "cannot verify node in non-active run '{}' (status: {})",
-                snapshot.run.run_id, snapshot.run.status
-            ),
-        ));
-    }
-
-    let node_id = input.node_cursor.to_node_id()?;
-    let node = find_node(snapshot, &node_id)?;
+    let node = crate::machine::require_active_claimable_node(
+        snapshot,
+        &input.node_cursor,
+        "verify node",
+    )?;
+    let node_id = node.node_id.as_str();
 
     if node.status != NodeStatus::InProgress || node.claim_revision == 0 {
         return Err(StateError::new(

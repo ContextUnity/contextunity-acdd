@@ -15,7 +15,7 @@ fn graph_construction_node_ids_and_when_filtering() {
         effective_task_tags(&["nope".to_owned()], &allowed).unwrap_err().code,
         ErrorCode::ProfileSchemaInvalid
     );
-    let (mut profile, _) = build_sample_graph(IsolationMode::Worktree, true);
+    let (mut profile, _) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
     // Add `when: "code"` to `build` gate so `T3` (`docs`) skips `build`.
     if let MachineGraphItem::TasksBlock(ref mut block) = profile.gates[1] {
         block.gates[0].when = Some("code".to_owned());
@@ -113,7 +113,7 @@ fn schedule_waves_scope_overlap_and_in_place_constraints() {
     }
 
     // 2. Worktree wave schedule vs overlapping tasks.
-    let (_, mut wt_snap) = build_sample_graph(IsolationMode::Worktree, false);
+    let (_, mut wt_snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
     // Make T3 overlap T1's scope so T1 and T3 split across wave 0 and wave 1!
     wt_snap
         .nodes
@@ -129,7 +129,7 @@ fn schedule_waves_scope_overlap_and_in_place_constraints() {
     assert_eq!(wt_sched.waves[1], vec![t("T2"), t("T3")]);
 
     // 3. In-place isolation caps every wave at 1 task.
-    let (_, ip_snap) = build_sample_graph(IsolationMode::InPlace, false);
+    let (_, ip_snap) = RunHarness::build_machine_sample_graph(IsolationMode::InPlace, false);
     let ip_sched = compute_schedule(&ip_snap, &obs).unwrap();
     assert!(ip_sched.waves.iter().all(|w| w.len() == 1));
     assert_eq!(ip_sched.waves.len(), 3);
@@ -157,7 +157,7 @@ fn schedule_waves_scope_overlap_and_in_place_constraints() {
 
 #[test]
 fn claim_idempotency_force_takeover_in_place_and_scope_conflict_matrix() {
-    let (profile, mut snap) = build_sample_graph(IsolationMode::Worktree, false);
+    let (profile, mut snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
     let obs = obs_with_tree(tree('a'));
 
     let claim_t1 = ClaimInput {
@@ -254,7 +254,7 @@ fn claim_idempotency_force_takeover_in_place_and_scope_conflict_matrix() {
     );
 
     // `in_place` single-active constraint rejects claiming T3 while T1 is InProgress.
-    let (ip_profile, mut ip_snap) = build_sample_graph(IsolationMode::InPlace, false);
+    let (ip_profile, mut ip_snap) = RunHarness::build_machine_sample_graph(IsolationMode::InPlace, false);
     let ip_claim_t1 = ClaimInput {
         worktree: "/repo".to_owned(),
         branch: None,
@@ -275,7 +275,7 @@ fn claim_idempotency_force_takeover_in_place_and_scope_conflict_matrix() {
     );
 
     // Pre-task barrier error names the exact pending pre-task gate cursor and suggests claiming it next.
-    let (pre_profile, pre_snap) = build_sample_graph(IsolationMode::Worktree, true);
+    let (pre_profile, pre_snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, true);
     let pre_err = admit_claim(
         &pre_snap,
         &pre_profile,
@@ -313,7 +313,7 @@ fn claim_idempotency_force_takeover_in_place_and_scope_conflict_matrix() {
 
 #[test]
 fn verify_command_scope_and_mechanical_cycle_guard_matrix() {
-    let (profile, mut snap) = build_sample_graph(IsolationMode::Worktree, false);
+    let (profile, mut snap) = RunHarness::build_machine_sample_graph(IsolationMode::Worktree, false);
     let t_a = tree('a');
     let obs = obs_with_tree(t_a.clone());
 
