@@ -222,14 +222,16 @@ fn handle_show(
     })
 }
 
-fn build_show_context_preview(
+#[allow(clippy::too_many_arguments)]
+fn build_node_context_request(
     config: &StateEngineConfig,
     reader: &dyn StateReader,
-    provider: &CompositeDomainProvider,
     graph: &RunGraphSnapshot,
     node: &GateNodeRecord,
     cursor: &NodeCursor,
-) -> Result<Option<serde_json::Value>, StateError> {
+    claim_revision: u32,
+    worker_id: WorkerId,
+) -> Result<Option<crate::context::ClaimContextRequest>, StateError> {
     let profile = parse_profile_from_run(&graph.run)?;
     let Some(gate_def) = find_profile_gate_def(&profile, cursor) else {
         return Ok(None);
@@ -240,26 +242,54 @@ fn build_show_context_preview(
         .clone()
         .or_else(|| node.accepted_tree.clone())
         .unwrap_or_else(|| TreeOid::new("0".repeat(40)).expect("40 zeros valid"));
-    let worker_id = node
-        .worker_id
-        .clone()
-        .unwrap_or_else(|| WorkerId::new("preview").expect("valid WorkerId"));
     let primary = primary_workspace_root(config);
-    let path_policy = build_path_policy(config, reader, &[])?;
-    let ctx_req = GateContextAssembler::build_request_from_snapshot(SnapshotContextInput {
+    let path_policy = build_path_policy(
+        config,
+        reader,
+        &[],
+        Some(&graph.run),
+        Some(&worktree),
+    )?;
+    GateContextAssembler::build_request_from_snapshot(SnapshotContextInput {
         config,
         reader,
         snapshot: graph,
         node,
         gate: gate_def,
         profile,
-        claim_revision: node.claim_revision.max(1),
+        claim_revision,
         worker_id,
         worktree,
         candidate_tree,
         path_policy,
         primary: &primary,
-    })?;
+    })
+    .map(Some)
+}
+
+fn build_show_context_preview(
+    config: &StateEngineConfig,
+    reader: &dyn StateReader,
+    provider: &CompositeDomainProvider,
+    graph: &RunGraphSnapshot,
+    node: &GateNodeRecord,
+    cursor: &NodeCursor,
+) -> Result<Option<serde_json::Value>, StateError> {
+    let worker_id = node
+        .worker_id
+        .clone()
+        .unwrap_or_else(|| WorkerId::new("preview").expect("valid WorkerId"));
+    let Some(ctx_req) = build_node_context_request(
+        config,
+        reader,
+        graph,
+        node,
+        cursor,
+        node.claim_revision.max(1),
+        worker_id,
+    )? else {
+        return Ok(None);
+    };
 
     match GateContextAssembler::assemble(&ctx_req, provider) {
         Ok(resp) => Ok(Some(serde_json::to_value(resp).map_err(|err| {
@@ -465,40 +495,26 @@ fn handle_context(
         }
     }
 
-    let profile = parse_profile_from_run(&graph.run)?;
-    let gate_def = find_profile_gate_def(&profile, &cursor).ok_or_else(|| {
-        StateError::new(
-            ErrorCode::ProfileSchemaInvalid,
-            format!("no gate definition found for '{cursor}'"),
-        )
-    })?;
-    let worktree = resolve_node_worktree(config, &graph.run, node, None);
-    let candidate_tree = node
-        .claim_tree
-        .clone()
-        .or_else(|| node.accepted_tree.clone())
-        .unwrap_or_else(|| TreeOid::new("0".repeat(40)).expect("40 zeros valid"));
     let claim_revision = node.claim_revision;
     let worker_id = req
         .worker_id
         .clone()
         .or_else(|| node.worker_id.clone())
         .unwrap_or_else(|| WorkerId::new("context").expect("valid WorkerId"));
-    let primary = primary_workspace_root(config);
-    let path_policy = build_path_policy(config, reader, &[])?;
-    let ctx_req = GateContextAssembler::build_request_from_snapshot(SnapshotContextInput {
+    let ctx_req = build_node_context_request(
         config,
         reader,
-        snapshot: &graph,
+        &graph,
         node,
-        gate: gate_def,
-        profile,
+        &cursor,
         claim_revision,
         worker_id,
-        worktree,
-        candidate_tree,
-        path_policy,
-        primary: &primary,
+    )?
+    .ok_or_else(|| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("no gate definition found for '{cursor}'"),
+        )
     })?;
     let resp = GateContextAssembler::assemble(&ctx_req, provider)?;
 

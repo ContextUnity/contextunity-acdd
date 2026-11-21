@@ -369,11 +369,16 @@ pub(crate) fn restore_task_snapshot(
         }
         let path = checked_child(worktree, Path::new(raw)).map_err(|err| snapshot_path_error(raw, err))?;
         guard_candidate_path(worktree, raw, None)?;
-        if path.exists() && !path.is_file() {
+        let dest_meta = match fs::symlink_metadata(&path) {
+            Ok(meta) => Some(meta),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => return Err(snapshot_path_error(raw, err)),
+        };
+        if dest_meta.as_ref().is_some_and(|m| !m.is_file()) {
             return Err(StateError::new(code, format!("snapshot destination '{raw}' is not a regular file")));
         }
         match header.split(|b| *b == b' ').nth(1) {
-            Some(b"000000") if path.exists() => removals.push(path.clone()),
+            Some(b"000000") if dest_meta.is_some() => removals.push(raw.to_owned()),
             Some(b"000000") => continue,
             Some(b"100644" | b"100755") => {
                 writes.extend_from_slice(raw.as_bytes());
@@ -381,7 +386,7 @@ pub(crate) fn restore_task_snapshot(
             }
             _ => return Err(StateError::new(code, format!("snapshot entry '{raw}' is not a regular file"))),
         }
-        let backup = if path.exists() {
+        let backup = if dest_meta.is_some() {
             let backup = backup_dir.path().join(originals.len().to_string());
             fs::copy(&path, &backup).map_err(|err| snapshot_path_error(raw, err))?;
             Some(backup)
@@ -391,11 +396,17 @@ pub(crate) fn restore_task_snapshot(
         };
         originals.push((raw, backup));
     }
-    let args = ["checkout-index", "--force", "-z", "--stdin"];
-    let result = run_git_checked(worktree, &args, Some(&index.index_path), Some(&writes), code)
-        .and_then(|_| removals.iter().try_for_each(|path| {
-            fs::remove_file(path).map_err(|err| snapshot_path_error(path.display(), err))
-        }));
+    let result = if writes.is_empty() {
+        Ok(())
+    } else {
+        let args = ["checkout-index", "--force", "-z", "--stdin"];
+        run_git_checked(worktree, &args, Some(&index.index_path), Some(&writes), code).map(|_| ())
+    }
+    .and_then(|()| {
+        removals
+            .iter()
+            .try_for_each(|rel| remove_confined_file(worktree, rel))
+    });
     if let Err(mut error) = result {
         for (raw, backup) in originals {
             if let Err(err) = rollback_snapshot_path(worktree, raw, backup.as_deref()) {
@@ -415,6 +426,9 @@ pub(crate) fn restore_task_snapshot(
 fn rollback_snapshot_path(worktree: &Path, raw: &str, backup: Option<&Path>) -> anyhow::Result<()> {
     let path = checked_child(worktree, Path::new(raw))?;
     if let Some(backup) = backup {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         let bytes = fs::read(backup)?;
         let permissions = fs::metadata(backup)?.permissions();
         if !fs::read(&path).is_ok_and(|actual| actual == bytes) {

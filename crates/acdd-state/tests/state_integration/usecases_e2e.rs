@@ -264,6 +264,7 @@ gates:
     let closed_oid = h_sub.committed_oid.expect("handoff committed_oid");
     assert!(!PathBuf::from(start_resp.run.worktree.as_deref().unwrap()).exists());
     assert!(!repo.join("docs/milestones/archive/AC-020-e2e.md").exists());
+    assert!(!repo.join("docs/milestones/AC-020-e2e.md").exists());
     assert_eq!(git_ok(repo, &["rev-parse", "--verify", "refs/heads/run/AC-020"]), closed_oid.as_str());
     assert!(git_ok(repo, &["show", &format!("{}:docs/milestones/archive/AC-020-e2e.md", closed_oid.as_str())]).contains("id: AC-020"));
 
@@ -271,6 +272,7 @@ gates:
     acdd_state::usecases::deps::verify_run_level_depends_on(engine.config(), engine.backend(), &pre_land_doc).expect("closed_commit archive satisfies depends_on before landing");
     git_ok(repo, &["merge", "--ff-only", "refs/heads/run/AC-020"]);
     assert!(repo.join("docs/milestones/archive/AC-020-e2e.md").is_file());
+    assert!(!repo.join("docs/milestones/AC-020-e2e.md").exists());
     match engine.query(StateQuery::List(ListReq { include_tombstones: true, ..ListReq::default() })).unwrap() {
         StateQueryOutput::List(l) => {
             assert_eq!((l.page.total_runs, l.page.total_tombstones), (0, 1));

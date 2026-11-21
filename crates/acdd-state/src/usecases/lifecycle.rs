@@ -18,7 +18,7 @@ use crate::spec::{parse_spec, SpecDocument, SpecStatus};
 use crate::store::sqlite::backup::RestoredActiveRun;
 use crate::store::traits::{exec_tx_with, StateBackend, StateReader};
 use crate::types::{
-    ArchiveCleanupEntry, GateNodeRecord, ListRunsReq, NodeKind, NodeStatus,
+    ArchiveCleanupEntry, GateNodeRecord, IsolationMode, ListRunsReq, NodeKind, NodeStatus,
     RunGraphSnapshot, RunRecord, RunStatus, RunTombstoneRecord, SaveAction, TerminalStatus,
     ValidatedObservations, WorktreeLifecycle,
 };
@@ -298,41 +298,75 @@ fn relativize_db_path(
         .unwrap_or_else(|| default_rel.to_owned())
 }
 
-/// Build [`WorkspacePathPolicy`] incorporating `spec_path` and derived `archive_path` of all
-/// active runs plus `extra_managed`.
+fn push_run_managed_paths(
+    config: &StateEngineConfig,
+    run: &RunRecord,
+    managed: &mut Vec<String>,
+) {
+    if let Some(ref sp) = run.spec_path {
+        managed.push(sp.clone());
+        if let Ok(archive_rel) =
+            compute_archive_relpath(config, run.collection.as_deref(), sp)
+        {
+            managed.push(archive_rel);
+        }
+    }
+}
+
+/// Build [`WorkspacePathPolicy`] scoped to `current_run` and `target_worktree`.
+///
+/// When `current_run` has [`IsolationMode::Worktree`] and `target_worktree` is not the primary
+/// checkout, `managed` is computed directly from `current_run` with zero SQLite `list_runs`
+/// queries. Shared checkouts (`in_place`, `target_worktree == primary`, or `current_run == None`)
+/// scan active runs so sibling specs on the same checkout stay excluded from `candidate_tree`.
 pub fn build_path_policy(
     config: &StateEngineConfig,
     reader: &dyn StateReader,
     extra_managed: &[String],
+    current_run: Option<&RunRecord>,
+    target_worktree: Option<&Path>,
 ) -> Result<WorkspacePathPolicy, StateError> {
+    let primary = primary_workspace_root(config);
+    let target_canon = target_worktree.map(canonicalize_macos_var);
     let mut managed: Vec<String> = extra_managed.to_vec();
-    let mut offset = 0usize;
-    loop {
-        let page = reader.list_runs(&ListRunsReq {
-            workspace: None,
-            status: Some(RunStatus::Active),
-            include_tombstones: false,
-            limit: 100,
-            offset,
-            generation: None,
-        })?;
-        for run in &page.runs {
-            if let Some(ref sp) = run.spec_path {
-                managed.push(sp.clone());
-                if let Ok(archive_rel) =
-                    compute_archive_relpath(config, run.collection.as_deref(), sp)
-                {
-                    managed.push(archive_rel);
+    let fast_isolated = current_run.filter(|run| {
+        run.isolation == IsolationMode::Worktree
+            && target_canon.as_ref().is_some_and(|target| *target != primary)
+    });
+    if let Some(run) = fast_isolated {
+        push_run_managed_paths(config, run, &mut managed);
+    } else {
+        let mut offset = 0usize;
+        loop {
+            let page = reader.list_runs(&ListRunsReq {
+                workspace: None,
+                status: Some(RunStatus::Active),
+                include_tombstones: false,
+                limit: 100,
+                offset,
+                generation: None,
+            })?;
+            for run in &page.runs {
+                let same_run = current_run.is_some_and(|cur| cur.run_id == run.run_id);
+                let same_checkout = match &target_canon {
+                    None => true,
+                    Some(target) => {
+                        let run_checkout = run.worktree.as_deref().unwrap_or(&run.workspace);
+                        canonicalize_macos_var(Path::new(run_checkout)) == *target
+                    }
+                };
+                if !(same_run || same_checkout) {
+                    continue;
                 }
+                push_run_managed_paths(config, run, &mut managed);
             }
-        }
-        offset += page.runs.len();
-        if offset >= page.total_runs || page.runs.is_empty() {
-            break;
+            offset += page.runs.len();
+            if offset >= page.total_runs || page.runs.is_empty() {
+                break;
+            }
         }
     }
 
-    let primary = primary_workspace_root(config);
     let (state_db_abs, _) = config.resolved_state_db_path();
     let state_db_rel =
         relativize_db_path(&state_db_abs, &primary, &config.workspace_root, ".acdd/state.sqlite");
@@ -344,6 +378,49 @@ pub fn build_path_policy(
         .unwrap_or_else(|| ".acdd/code-map.sqlite".to_owned());
 
     Ok(WorkspacePathPolicy::new(managed, state_db_rel, code_db_rel))
+}
+
+/// Active run graph snapshot paired with its parsed resolved and machine profiles.
+pub struct LoadedRunGraph {
+    /// Loaded run record and full graph snapshot (`nodes`, `dependencies`, `subtasks`, `claims`, `traces`, `artifacts`).
+    pub snapshot: RunGraphSnapshot,
+    /// Parsed resolved gate profile from `runs.profile_json`.
+    pub profile: ResolvedGateProfile,
+    /// Pure state-machine representation of `profile`.
+    pub machine_profile: MachineProfileInput,
+}
+
+impl LoadedRunGraph {
+    /// Resolve a checkout-scoped [`WorkspacePathPolicy`] for `target_worktree` using
+    /// the already-loaded run record.
+    pub fn path_policy(
+        &self,
+        config: &StateEngineConfig,
+        reader: &dyn StateReader,
+        target_worktree: Option<&Path>,
+    ) -> Result<WorkspacePathPolicy, StateError> {
+        build_path_policy(config, reader, &[], Some(&self.snapshot.run), target_worktree)
+    }
+}
+
+/// Resolve an active run, load its graph snapshot, and parse its resolved and machine profiles.
+pub fn load_active_run_graph(
+    config: &StateEngineConfig,
+    reader: &dyn StateReader,
+    run_selector: Option<&str>,
+    worktree_override: Option<&Path>,
+) -> Result<LoadedRunGraph, StateError> {
+    let run = resolve_active_run(config, reader, run_selector, worktree_override)?;
+    let snapshot = reader
+        .load_run_graph(&run.run_id)?
+        .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run graph missing"))?;
+    let profile = parse_profile_from_run(&snapshot.run)?;
+    let machine_profile = to_machine_profile(&profile)?;
+    Ok(LoadedRunGraph {
+        snapshot,
+        profile,
+        machine_profile,
+    })
 }
 
 /// Resolve an active `RunRecord` using `--run <id|name>` -> worktree -> single active run in primary worktree.
@@ -1787,11 +1864,118 @@ mod tests {
             retain_traces: 10,
         };
 
-        // 1. build_path_policy marks BOTH active spec_path and derived archive_path as engine-managed.
-        let policy = build_path_policy(&cfg, &harness, &[]).expect("build_path_policy");
+        // 1. build_path_policy marks active spec_path and derived archive_path as engine-managed,
+        //    isolates sibling worktree runs via zero-SQLite fast path, and scans shared checkouts.
+        let policy = build_path_policy(&cfg, &harness, &[], None, None).expect("build_path_policy");
         assert!(!policy.is_candidate_included("docs/milestones/AC-001.md"));
         assert!(!policy.is_candidate_included("docs/milestones/archive/AC-001.md"));
         assert!(policy.is_candidate_included("src/lib.rs"));
+
+        let mut sibling_graph = RunHarness::build_sample_graph(
+            "run-life-2",
+            "AC-002",
+            root.to_str().unwrap(),
+            None,
+            &["t1"],
+        )
+        .expect("build sibling graph");
+        sibling_graph.run.collection = Some("milestones".to_owned());
+        sibling_graph.run.spec_path = Some("docs/milestones/AC-002.md".to_owned());
+        let wt1 = root.join(".worktrees/AC-001");
+        let wt2 = root.join(".worktrees/AC-002");
+        fs::create_dir_all(&wt1).expect("mkdir wt1");
+        fs::create_dir_all(&wt2).expect("mkdir wt2");
+        sibling_graph.run.worktree = Some(wt2.to_string_lossy().into_owned());
+        harness
+            .exec_tx(|tx| tx.insert_run_graph(&sibling_graph))
+            .expect("insert sibling graph");
+
+        let scoped_wt1 = build_path_policy(
+            &cfg,
+            &harness,
+            &[],
+            Some(&graph.run),
+            Some(&wt1),
+        )
+        .expect("scoped policy wt1");
+        assert!(!scoped_wt1.is_candidate_included("docs/milestones/AC-001.md"));
+        assert!(!scoped_wt1.is_candidate_included("docs/milestones/archive/AC-001.md"));
+        assert!(
+            scoped_wt1.is_candidate_included("docs/milestones/AC-002.md"),
+            "sibling run in another worktree must not alter candidate_tree inclusion"
+        );
+
+        let corrupt_db = root.join("not-sqlite.db");
+        fs::write(&corrupt_db, b"not a sqlite database").expect("write corrupt db");
+        let bad_reader = crate::store::sqlite::SqliteStateReader::new(corrupt_db);
+        let fast_wt1 = build_path_policy(
+            &cfg,
+            &bad_reader,
+            &[],
+            Some(&graph.run),
+            Some(&wt1),
+        )
+        .expect("isolated worktree fast path must bypass SQLite list_runs");
+        assert!(!fast_wt1.is_candidate_included("docs/milestones/AC-001.md"));
+        assert!(!fast_wt1.is_candidate_included("docs/milestones/archive/AC-001.md"));
+        assert!(fast_wt1.is_candidate_included("docs/milestones/AC-002.md"));
+
+        let scoped_shared = build_path_policy(
+            &cfg,
+            &harness,
+            &[],
+            Some(&sibling_graph.run),
+            Some(root),
+        )
+        .expect("scoped policy shared root");
+        assert!(!scoped_shared.is_candidate_included("docs/milestones/AC-001.md"));
+        assert!(!scoped_shared.is_candidate_included("docs/milestones/AC-002.md"));
+
+        let mut in_place_a = RunHarness::build_sample_graph(
+            "run-life-3",
+            "AC-003",
+            root.to_str().unwrap(),
+            None,
+            &["t1"],
+        )
+        .expect("build in_place_a");
+        in_place_a.run.isolation = IsolationMode::InPlace;
+        in_place_a.run.collection = Some("milestones".to_owned());
+        in_place_a.run.spec_path = Some("docs/milestones/AC-003.md".to_owned());
+        in_place_a.run.worktree = Some(wt1.to_string_lossy().into_owned());
+        let mut in_place_b = RunHarness::build_sample_graph(
+            "run-life-4",
+            "AC-004",
+            root.to_str().unwrap(),
+            None,
+            &["t1"],
+        )
+        .expect("build in_place_b");
+        in_place_b.run.isolation = IsolationMode::InPlace;
+        in_place_b.run.collection = Some("milestones".to_owned());
+        in_place_b.run.spec_path = Some("docs/milestones/AC-004.md".to_owned());
+        harness
+            .exec_tx(|tx| {
+                tx.insert_run_graph(&in_place_a)?;
+                tx.insert_run_graph(&in_place_b)
+            })
+            .expect("insert in_place runs");
+        assert!(
+            build_path_policy(&cfg, &bad_reader, &[], Some(&in_place_a.run), Some(&wt1)).is_err(),
+            "in_place runs must not skip SQLite list_runs fast path"
+        );
+        let in_place_policy = build_path_policy(
+            &cfg,
+            &harness,
+            &[],
+            Some(&in_place_b.run),
+            Some(root),
+        )
+        .expect("shared in_place checkout policy");
+        assert!(!in_place_policy.is_candidate_included("docs/milestones/AC-001.md"));
+        assert!(!in_place_policy.is_candidate_included("docs/milestones/AC-004.md"));
+        assert!(in_place_policy.is_candidate_included("docs/milestones/AC-003.md"));
+        assert!(in_place_policy.is_candidate_included("docs/milestones/AC-002.md"));
 
         // 2. Manual worktrees profile never populates worktrees/branches into cleanup_manifest.
         fs::create_dir_all(root.join("docs/milestones")).expect("mkdir");

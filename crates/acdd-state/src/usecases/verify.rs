@@ -17,10 +17,9 @@ use crate::types::{
 };
 use crate::usecases::dto::{VerifyReq, VerifyResp};
 use crate::usecases::lifecycle::{
-    acquire_repo_lock, append_trace_event, build_path_policy, combine_check_observations,
-    ensure_state_enabled, parse_cursor_for_snapshot, parse_profile_from_run,
-    primary_workspace_root, resolve_active_run, resolve_node_worktree,
-    resolve_repo_layout_optional, to_machine_profile,
+    acquire_repo_lock, append_trace_event, combine_check_observations,
+    ensure_state_enabled, load_active_run_graph, parse_cursor_for_snapshot,
+    primary_workspace_root, resolve_node_worktree, resolve_repo_layout_optional,
 };
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::StateEngineConfig;
@@ -132,21 +131,16 @@ pub(crate) fn handle_verify_with_failure_return(
 
     // Phase 1 (short `repo.lock`): resolve node, verify claim ownership, and run pre-execution scope barrier.
     let pre_lock = acquire_repo_lock(layout.as_ref())?;
-    let run = resolve_active_run(
+    let loaded = load_active_run_graph(
         config,
         backend,
         req.run.as_deref(),
         req.worktree.as_deref(),
     )?;
-    let snapshot = backend
-        .load_run_graph(&run.run_id)?
-        .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run graph missing"))?;
-    let resolved_profile = parse_profile_from_run(&snapshot.run)?;
-    let machine_profile = to_machine_profile(&resolved_profile)?;
-
-    let cursor = parse_cursor_for_snapshot(&snapshot, &req.node)?;
+    let run_id = &loaded.snapshot.run.run_id;
+    let cursor = parse_cursor_for_snapshot(&loaded.snapshot, &req.node)?;
     let node_id = cursor.to_node_id()?;
-    let node = verify_active_node_cas(&snapshot, &node_id, &req, None)?;
+    let node = verify_active_node_cas(&loaded.snapshot, &node_id, &req, None)?;
     let captured = CapturedVerifyClaim {
         claim_revision: node.claim_revision,
         contract_revision: node.contract_revision,
@@ -154,23 +148,23 @@ pub(crate) fn handle_verify_with_failure_return(
         node_version: node.node_version,
     };
 
-    let gate_def = find_profile_gate_def(&resolved_profile, &cursor).ok_or_else(|| {
+    let gate_def = find_profile_gate_def(&loaded.profile, &cursor).ok_or_else(|| {
         StateError::new(
             ErrorCode::ProfileSchemaInvalid,
             format!("no gate definition found for '{cursor}'"),
         )
     })?;
     let gate_id = GateId::new(&gate_def.id)?;
-    let machine_gate = find_machine_gate(&machine_profile, &node)?;
+    let machine_gate = find_machine_gate(&loaded.machine_profile, &node)?;
 
     let target_worktree =
-        resolve_node_worktree(config, &snapshot.run, &node, req.worktree.as_deref());
-    let policy = build_path_policy(config, backend, &[])?;
-    let admitted_scope = container_scope(&snapshot, &node);
+        resolve_node_worktree(config, &loaded.snapshot.run, &node, req.worktree.as_deref());
+    let policy = loaded.path_policy(config, backend, Some(&target_worktree))?;
+    let admitted_scope = container_scope(&loaded.snapshot, &node);
     let is_unscoped_root = node.kind == NodeKind::RootGate && admitted_scope.is_empty();
 
     let resolved_commands = resolve_commands(
-        &resolved_profile,
+        &loaded.profile,
         &gate_def,
         &admitted_scope,
         req.test_target.as_deref(),
@@ -198,7 +192,7 @@ pub(crate) fn handle_verify_with_failure_return(
     let has_running_mutating_trace = if let Some(ref call_ref) = gate_def.call {
         provider.action_capability(call_ref).is_ok_and(|c| c.mutating)
             && backend
-                .latest_trace(&run.run_id, &node_id, node.claim_revision)?
+                .latest_trace(run_id, &node_id, node.claim_revision)?
                 .is_some_and(|t| {
                     t.status == TraceStatus::Running
                         && t.action_id.as_deref() == Some(call_ref.as_str())
@@ -208,8 +202,8 @@ pub(crate) fn handle_verify_with_failure_return(
     };
 
     let pre_violations = detect_scope_violations(
-        &snapshot,
-        &machine_profile,
+        &loaded.snapshot,
+        &loaded.machine_profile,
         &pre_obs,
         &admitted_scope,
         is_unscoped_root,
@@ -244,8 +238,8 @@ pub(crate) fn handle_verify_with_failure_return(
             backend,
             layout.as_ref(),
             &primary,
-            &snapshot,
-            &machine_profile,
+            &loaded.snapshot,
+            &loaded.machine_profile,
             &pre_obs,
             &verify_input,
             None,
@@ -262,7 +256,7 @@ pub(crate) fn handle_verify_with_failure_return(
     // Phase 2 (no `repo.lock`): run domain `checks:`, optional `call:`, and optional `command:`.
     let (check_results, index_generation, live_files_digest) = run_gate_checks(
         provider,
-        &snapshot,
+        &loaded.snapshot,
         &node,
         &cursor,
         &gate_id,
@@ -298,7 +292,7 @@ pub(crate) fn handle_verify_with_failure_return(
         backend,
         provider,
         layout.as_ref(),
-        &run.run_id,
+        run_id,
         &node_id,
         &req,
         &captured,
@@ -323,7 +317,8 @@ pub(crate) fn handle_verify_with_failure_return(
     );
     let cmd_outcome = if !action_failed && !recovery_only {
         if let Some(ref cmd_id) = gate_def.command {
-            let cmd_def = resolved_profile
+            let cmd_def = loaded
+                .profile
                 .commands
                 .get(cmd_id)
                 .ok_or_else(|| {
@@ -334,7 +329,7 @@ pub(crate) fn handle_verify_with_failure_return(
                 })?
                 .clone();
             Some(execute_gate_commands(&CommandExecReq {
-                run_id: snapshot.run.run_id.clone(),
+                run_id: run_id.clone(),
                 node_cursor: cursor.clone(),
                 claim_revision: node.claim_revision,
                 worktree: target_worktree.clone(),
@@ -342,9 +337,9 @@ pub(crate) fn handle_verify_with_failure_return(
                 command_id: cmd_id.clone(),
                 command: cmd_def,
                 scope: admitted_scope.clone(),
-                profile_scope_args: resolved_profile.scope_args_by_pattern.clone(),
+                profile_scope_args: loaded.profile.scope_args_by_pattern.clone(),
                 test_target: req.test_target.clone(),
-                limits: resolved_profile.limits.clone(),
+                limits: loaded.profile.limits.clone(),
             })?)
         } else {
             None
@@ -356,7 +351,7 @@ pub(crate) fn handle_verify_with_failure_return(
     // Phase 3 (re-acquire `repo.lock`): CAS-check node state, re-capture post-execution tree, persist trace.
     let post_lock = acquire_repo_lock(layout.as_ref())?;
     let latest_snapshot = backend
-        .load_run_graph(&run.run_id)?
+        .load_run_graph(run_id)?
         .ok_or_else(|| StateError::new(ErrorCode::BackendConflict, "run disappeared during verify"))?;
     let latest_node = verify_active_node_cas(&latest_snapshot, &node_id, &req, Some(&captured))?;
 
@@ -432,7 +427,7 @@ pub(crate) fn handle_verify_with_failure_return(
         layout.as_ref(),
         &primary,
         &latest_snapshot,
-        &machine_profile,
+        &loaded.machine_profile,
         &post_obs,
         &verify_input,
         existing_running_trace_id,

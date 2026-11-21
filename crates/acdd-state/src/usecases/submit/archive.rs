@@ -376,6 +376,11 @@ fn load_spec_for_tombstone(
     None
 }
 
+fn is_git_tracked(worktree: &Path, rel_path: &str) -> bool {
+    acdd_core::git::git_command(worktree, &["ls-files", "--cached", "--error-unmatch", "--", rel_path])
+        .is_ok_and(|out| out.status.success())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn finalize_with_prune(
     config: &StateEngineConfig,
@@ -393,22 +398,30 @@ pub(super) fn finalize_with_prune(
     if archive_path.is_none() {
         cleanup_manifest.retain(|e| e.kind != "spec_file");
     } else if let Some(ref spec_rel) = snapshot.run.spec_path {
-        // Remove archived `spec_rel` copies from managed worktrees BEFORE removing those worktrees
-        // so non-force `git worktree remove` succeeds without destroying any user dirty files.
+        let canon_primary = acdd_core::fs::canonicalize_macos_var(primary);
+        let canon_target = acdd_core::fs::canonicalize_macos_var(target_worktree);
+        // When an isolated worktree run archived via a commit (`closed_commit`), never delete a
+        // Git-tracked `spec_rel` from `primary` before the run branch is merged — doing so leaves
+        // `main` dirty with an unstaged deletion (`D <spec_rel>`).
+        if closed_commit.is_some() && canon_target != canon_primary && is_git_tracked(primary, spec_rel) {
+            cleanup_manifest.retain(|e| !(e.kind == "spec_file" && e.workspace.is_none()));
+        }
+        // Only remove UNTRACKED `spec_rel` copies from managed worktrees before `git worktree remove`.
+        // Deleting a Git-tracked file inside a task worktree makes it dirty (`D <spec_rel>`) and
+        // causes non-force `git worktree remove` to fail.
         let mut extra_spec_entries: Vec<crate::types::ArchiveCleanupEntry> = Vec::new();
         let mut candidate_wts: Vec<std::path::PathBuf> = cleanup_manifest
             .iter()
             .filter(|e| e.kind == "worktree")
             .map(|e| std::path::PathBuf::from(&e.path_or_ref))
             .collect();
-        if closed_commit.is_none() {
-            let canon_target = acdd_core::fs::canonicalize_macos_var(target_worktree);
-            if canon_target != acdd_core::fs::canonicalize_macos_var(primary) {
-                candidate_wts.push(canon_target);
-            }
+        if closed_commit.is_none() && canon_target != canon_primary {
+            candidate_wts.push(canon_target);
         }
         for wt_path in candidate_wts {
-            if checked_child(&wt_path, Path::new(spec_rel)).is_ok_and(|p| p.exists()) {
+            let should_remove = checked_child(&wt_path, Path::new(spec_rel)).is_ok_and(|p| p.exists())
+                && (closed_commit.is_none() || !is_git_tracked(&wt_path, spec_rel));
+            if should_remove {
                 let canon_ws = acdd_core::fs::canonicalize_macos_var(&wt_path)
                     .to_string_lossy()
                     .into_owned();

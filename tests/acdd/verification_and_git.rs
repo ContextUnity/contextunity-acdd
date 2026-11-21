@@ -493,8 +493,13 @@ scope: [src/lib.rs]
         !ws.path("docs/milestones/archive/AC-010-e2e.md").exists(),
         "committed archive must stay in run/AC-010 until --ff-only landing"
     );
+    assert!(
+        ws.path("docs/milestones/AC-010-e2e.md").is_file(),
+        "worktree handoff must not delete Git-tracked spec from primary checkout before --ff-only landing"
+    );
     git_cmd(ws.root(), &["merge", "--ff-only", "run/AC-010"]);
     assert!(ws.path("docs/milestones/archive/AC-010-e2e.md").is_file());
+    assert!(!ws.path("docs/milestones/AC-010-e2e.md").exists());
 
     let StateQueryOutput::List(listed) = engine
         .query(StateQuery::List(ListReq {

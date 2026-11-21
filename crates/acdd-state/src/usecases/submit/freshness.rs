@@ -19,9 +19,8 @@ use crate::types::{
 };
 use crate::usecases::dto::SubmitReq;
 use crate::usecases::lifecycle::{
-    build_path_policy, compute_archive_relpath,
-    parse_cursor_for_snapshot, parse_profile_from_run,
-    resolve_active_run, resolve_node_worktree, to_machine_profile,
+    compute_archive_relpath, load_active_run_graph,
+    parse_cursor_for_snapshot, resolve_node_worktree,
 };
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::verify::{find_machine_gate, resolve_commands};
@@ -55,20 +54,15 @@ pub(super) fn inspect_submit_preflight(
     primary: &Path,
     req: &SubmitReq,
 ) -> Result<Option<SubmitPreflight>, StateError> {
-    let run = resolve_active_run(
+    let loaded = load_active_run_graph(
         config,
         backend,
         req.run.as_deref(),
         req.worktree.as_deref(),
     )?;
-    let snapshot = backend
-        .load_run_graph(&run.run_id)?
-        .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run graph missing"))?;
-    let resolved_profile = parse_profile_from_run(&snapshot.run)?;
-    let machine_profile = to_machine_profile(&resolved_profile)?;
-    let cursor = parse_cursor_for_snapshot(&snapshot, &req.node)?;
+    let cursor = parse_cursor_for_snapshot(&loaded.snapshot, &req.node)?;
     let node_id = cursor.to_node_id()?;
-    let Some(node) = snapshot.nodes.iter().find(|n| n.node_id == node_id).cloned() else {
+    let Some(node) = loaded.snapshot.nodes.iter().find(|n| n.node_id == node_id).cloned() else {
         return Ok(None);
     };
     if node.status != NodeStatus::InProgress
@@ -80,22 +74,22 @@ pub(super) fn inspect_submit_preflight(
     {
         return Ok(None);
     }
-    let machine_gate = find_machine_gate(&machine_profile, &node)?.clone();
+    let machine_gate = find_machine_gate(&loaded.machine_profile, &node)?.clone();
     let target_worktree =
-        resolve_node_worktree(config, &snapshot.run, &node, req.worktree.as_deref());
+        resolve_node_worktree(config, &loaded.snapshot.run, &node, req.worktree.as_deref());
 
-    if machine_gate.save.archive && !snapshot.run.is_ephemeral && machine_gate.save.post == SaveAction::Commit {
-        if let Some(ref spec_rel) = snapshot.run.spec_path {
+    if machine_gate.save.archive && !loaded.snapshot.run.is_ephemeral && machine_gate.save.post == SaveAction::Commit {
+        if let Some(ref spec_rel) = loaded.snapshot.run.spec_path {
             let archive_rel =
-                compute_archive_relpath(config, snapshot.run.collection.as_deref(), spec_rel)?;
+                compute_archive_relpath(config, loaded.snapshot.run.collection.as_deref(), spec_rel)?;
             let trailer_needle = format!(
                 "Acdd-Claim: {}/{}/{}",
-                snapshot.run.run_id, node.node_id, node.claim_revision
+                loaded.snapshot.run.run_id, node.node_id, node.claim_revision
             );
             if checked_child(&target_worktree, Path::new(&archive_rel)).is_ok_and(|p| p.is_file())
                 && find_claim_commit_in_range(
                     &target_worktree,
-                    snapshot.run.target_base_commit.as_ref(),
+                    loaded.snapshot.run.target_base_commit.as_ref(),
                     &trailer_needle,
                 )?
                 .is_some()
@@ -115,13 +109,13 @@ pub(super) fn inspect_submit_preflight(
         return Ok(None);
     }
 
-    let policy = build_path_policy(config, backend, &[])?;
+    let policy = loaded.path_policy(config, backend, Some(&target_worktree))?;
     let current_tree = current_scope_tree(&target_worktree, None, &policy)?;
     if machine_gate.save.immutable && node.claim_tree.as_ref() != Some(&current_tree) {
         return Ok(None);
     }
 
-    let admitted_scope = container_scope(&snapshot, &node);
+    let admitted_scope = container_scope(&loaded.snapshot, &node);
     let is_unscoped_root = node.kind == NodeKind::RootGate && admitted_scope.is_empty();
     let changed_paths = diff_scope_changed_paths(
         &target_worktree,
@@ -138,8 +132,8 @@ pub(super) fn inspect_submit_preflight(
         ..ValidatedObservations::default()
     };
     if !detect_scope_violations(
-        &snapshot,
-        &machine_profile,
+        &loaded.snapshot,
+        &loaded.machine_profile,
         &pre_obs,
         &admitted_scope,
         is_unscoped_root,
@@ -150,7 +144,7 @@ pub(super) fn inspect_submit_preflight(
     }
 
     let existing_fresh = select_fresh_candidate_trace(
-        &snapshot,
+        &loaded.snapshot,
         &node,
         TraceStatus::Passed,
         &current_tree,
@@ -159,8 +153,8 @@ pub(super) fn inspect_submit_preflight(
     Ok(Some(SubmitPreflight {
         primary: primary.to_path_buf(),
         target_worktree,
-        snapshot,
-        resolved_profile,
+        snapshot: loaded.snapshot,
+        resolved_profile: loaded.profile,
         node,
         machine_gate,
         cursor,

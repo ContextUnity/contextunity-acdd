@@ -320,8 +320,14 @@ fn active_node_context(
         retain_traces: adapter.retain_traces,
     };
     let reader = acdd_state::store::sqlite::SqliteStateReader::new(state_db);
-    let path_policy = acdd_state::usecases::lifecycle::build_path_policy(&engine_cfg, &reader, &[])
-        .unwrap_or_default();
+    let path_policy = acdd_state::usecases::lifecycle::build_path_policy(
+        &engine_cfg,
+        &reader,
+        &[],
+        Some(&run),
+        Some(&engine_cfg.worktree),
+    )
+    .unwrap_or_default();
 
     Ok(Some(ActiveNodeContext {
         run_id: run.run_id,

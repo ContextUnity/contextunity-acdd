@@ -18,9 +18,9 @@ use crate::usecases::dto::{
     ReopenResp, SnapshotAction, SnapshotReq, SnapshotResp, SubtaskReq, SubtaskResp,
 };
 use crate::usecases::lifecycle::{
-    acquire_repo_lock, build_path_policy, ensure_blackboard_enabled, ensure_state_enabled, parse_cursor_for_snapshot,
-    snapshot_worktree_layout, parse_profile_from_run, primary_workspace_root, resolve_active_run,
-    resolve_node_worktree, resolve_repo_layout_optional, resolve_run_optional, to_machine_profile,
+    acquire_repo_lock, build_path_policy, ensure_blackboard_enabled, ensure_state_enabled,
+    load_active_run_graph, parse_cursor_for_snapshot, snapshot_worktree_layout,
+    primary_workspace_root, resolve_active_run, resolve_node_worktree, resolve_repo_layout_optional, resolve_run_optional,
     with_repo_lock_and_maintenance, with_repo_lock_and_maintenance_unchecked,
 };
 use crate::usecases::StateEngineConfig;
@@ -109,7 +109,13 @@ pub(crate) fn handle_snapshot_dyn(
             let repos = if task_run.is_none() { lock_cleanup_repos(None, std::iter::once(&wt))? } else { lock_cleanup_repos(layout.as_ref(), config.linked_workspaces.values())? };
             return Ok(SnapshotResp { refs: cleanup_locked_refs(&repos, &RunId::new("adhoc").expect("id"), Some(prefix), exact.as_deref(), suffix.as_deref(), cutoff)? });
         }
-        let policy = build_path_policy(config, reader, &[])?;
+        let policy = build_path_policy(
+            config,
+            reader,
+            &[],
+            task_run.as_ref(),
+            Some(&wt),
+        )?;
         let reference = if req.action == Save {
             let rev = if task_node.is_none() && req.revision.is_none() {
                 list_snapshot_refs(&wt, &prefix)?.iter().filter_map(|(n, _)| parse_canonical_revision(n, &prefix)).max().map(|n| n.checked_add(1).ok_or_else(|| bad("snapshot revision overflow"))).transpose()?.unwrap_or(1)
@@ -127,14 +133,16 @@ pub(crate) fn handle_extend_scope_dyn(
     req: ExtendScopeReq,
 ) -> Result<ExtendScopeResp, StateError> {
     with_repo_lock_and_maintenance(config, backend, |_primary, _layout| {
-        let run = resolve_active_run(config, backend, req.run.as_deref(), None)?;
-        let snapshot = backend
-            .load_run_graph(&run.run_id)?
-            .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
-        let profile = parse_profile_from_run(&snapshot.run)?;
-        let machine_profile = to_machine_profile(&profile)?;
-        let cursor = parse_cursor_for_snapshot(&snapshot, &req.node)?;
-        let policy = build_path_policy(config, backend, &[])?;
+        let loaded = load_active_run_graph(config, backend, req.run.as_deref(), None)?;
+        let cursor = parse_cursor_for_snapshot(&loaded.snapshot, &req.node)?;
+        let run_wt = loaded
+            .snapshot
+            .run
+            .worktree
+            .as_deref()
+            .map(Path::new)
+            .unwrap_or(&config.worktree);
+        let policy = loaded.path_policy(config, backend, Some(run_wt))?;
         let obs = ValidatedObservations {
             path_policy: Some(policy),
             now_utc: acdd_core::telemetry::now_utc_iso_ms(),
@@ -142,8 +150,8 @@ pub(crate) fn handle_extend_scope_dyn(
         };
 
         let outcome = evaluate_transition(
-            &snapshot,
-            &machine_profile,
+            &loaded.snapshot,
+            &loaded.machine_profile,
             &obs,
             &TransitionInput::ExtendScope(ExtendScopeInput {
                 node_cursor: cursor.clone(),
@@ -163,8 +171,8 @@ pub(crate) fn handle_extend_scope_dyn(
             .unwrap_or(1);
         let mut admitted_scope = Vec::new();
         let node_id = cursor.to_node_id()?;
-        if let Some(orig) = snapshot.nodes.iter().find(|n| n.node_id == node_id) {
-            let mut merged = container_scope(&snapshot, orig);
+        if let Some(orig) = loaded.snapshot.nodes.iter().find(|n| n.node_id == node_id) {
+            let mut merged = container_scope(&loaded.snapshot, orig);
             if let Some(ext) = plan
                 .node_patches
                 .first()
@@ -179,10 +187,10 @@ pub(crate) fn handle_extend_scope_dyn(
             admitted_scope = merged;
         }
 
-        exec_tx_with(backend, |tx| tx.apply_transition_plan(&snapshot.run.run_id, &plan))?;
+        exec_tx_with(backend, |tx| tx.apply_transition_plan(&loaded.snapshot.run.run_id, &plan))?;
 
         Ok(ExtendScopeResp {
-            run_id: snapshot.run.run_id,
+            run_id: loaded.snapshot.run.run_id,
             node_cursor: cursor,
             contract_revision,
             admitted_scope,
@@ -196,21 +204,16 @@ pub(crate) fn handle_reopen_dyn(
     req: ReopenReq,
 ) -> Result<ReopenResp, StateError> {
     with_repo_lock_and_maintenance(config, backend, |_primary, _layout| {
-        let run = resolve_active_run(config, backend, req.run.as_deref(), None)?;
-        let snapshot = backend
-            .load_run_graph(&run.run_id)?
-            .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
-        let profile = parse_profile_from_run(&snapshot.run)?;
-        let machine_profile = to_machine_profile(&profile)?;
-        let cursor = parse_cursor_for_snapshot(&snapshot, &req.node)?;
+        let loaded = load_active_run_graph(config, backend, req.run.as_deref(), None)?;
+        let cursor = parse_cursor_for_snapshot(&loaded.snapshot, &req.node)?;
         let obs = ValidatedObservations {
             now_utc: acdd_core::telemetry::now_utc_iso_ms(),
             ..ValidatedObservations::default()
         };
 
         let outcome = evaluate_transition(
-            &snapshot,
-            &machine_profile,
+            &loaded.snapshot,
+            &loaded.machine_profile,
             &obs,
             &TransitionInput::Reopen(ReopenInput {
                 node_cursor: cursor.clone(),
@@ -226,7 +229,7 @@ pub(crate) fn handle_reopen_dyn(
             if !reason.trim().is_empty() && config.modules.is_enabled("blackboard") {
                 plan.new_blackboard.push(BlackboardRecord {
                     id: None,
-                    run_id: snapshot.run.run_id.clone(),
+                    run_id: loaded.snapshot.run.run_id.clone(),
                     node_id: Some(cursor.to_node_id()?),
                     recipient_node_id: None,
                     subtask_ref: None,
@@ -245,10 +248,10 @@ pub(crate) fn handle_reopen_dyn(
             .iter()
             .map(|p| p.node_id.clone())
             .collect();
-        exec_tx_with(backend, |tx| tx.apply_transition_plan(&snapshot.run.run_id, &plan))?;
+        exec_tx_with(backend, |tx| tx.apply_transition_plan(&loaded.snapshot.run.run_id, &plan))?;
 
         Ok(ReopenResp {
-            run_id: snapshot.run.run_id,
+            run_id: loaded.snapshot.run.run_id,
             node_cursor: cursor,
             affected_nodes,
         })

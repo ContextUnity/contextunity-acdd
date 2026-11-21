@@ -27,10 +27,10 @@ use crate::types::{
 };
 use crate::usecases::dto::{SubmitReq, SubmitResp, VerifyReq};
 use crate::usecases::lifecycle::{
-    acquire_repo_lock, append_trace_event, build_path_policy, collect_external_satisfied_deps,
+    acquire_repo_lock, append_trace_event, collect_external_satisfied_deps,
     collect_integration_inputs, ensure_state_enabled,
-    parse_cursor_for_snapshot, parse_profile_from_run, primary_workspace_root,
-    resolve_active_run, resolve_node_worktree, resolve_repo_layout_optional, to_machine_profile, with_repo_lock_and_maintenance,
+    load_active_run_graph, parse_cursor_for_snapshot, primary_workspace_root,
+    resolve_node_worktree, resolve_repo_layout_optional, with_repo_lock_and_maintenance,
 };
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::verify::{find_machine_gate, handle_verify_dyn};
@@ -131,17 +131,15 @@ pub(crate) fn submit_holding_repo_lock(
     req: SubmitReq,
     verified_hint: Option<&(TreeOid, String)>,
 ) -> Result<SubmitResp, StateError> {
-    let run = resolve_active_run(
+    let loaded = load_active_run_graph(
         config,
         backend,
         req.run.as_deref(),
         req.worktree.as_deref(),
     )?;
-    let snapshot = backend
-        .load_run_graph(&run.run_id)?
-        .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run graph missing"))?;
-    let resolved_profile = parse_profile_from_run(&snapshot.run)?;
-    let machine_profile = to_machine_profile(&resolved_profile)?;
+    let snapshot = loaded.snapshot;
+    let resolved_profile = loaded.profile;
+    let machine_profile = loaded.machine_profile;
     let cursor = parse_cursor_for_snapshot(&snapshot, &req.node)?;
     let node_id = cursor.to_node_id()?;
 
@@ -165,7 +163,7 @@ pub(crate) fn submit_holding_repo_lock(
         .ok_or_else(|| {
             StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
-                format!("node '{node_id}' not found in run '{}'", run.run_id),
+                format!("node '{node_id}' not found in run '{}'", snapshot.run.run_id),
             )
         })?
         .clone();
@@ -180,7 +178,13 @@ pub(crate) fn submit_holding_repo_lock(
     let primary = primary_workspace_root(config);
     let target_worktree =
         resolve_node_worktree(config, &snapshot.run, &node, req.worktree.as_deref());
-    let policy = build_path_policy(config, backend, &[])?;
+    let policy = crate::usecases::lifecycle::build_path_policy(
+        config,
+        backend,
+        &[],
+        Some(&snapshot.run),
+        Some(&target_worktree),
+    )?;
 
     // Check stateless archive retry probe before trace/need checks when archive already landed before crash.
     let recovered = probe_interrupted_archive(

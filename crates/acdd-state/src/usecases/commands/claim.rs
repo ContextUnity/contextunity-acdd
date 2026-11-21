@@ -21,9 +21,9 @@ use crate::types::{
 };
 use crate::usecases::dto::ClaimReq;
 use crate::usecases::lifecycle::{
-    append_trace_event, auto_select_ready_cursor, build_path_policy, collect_external_satisfied_deps,
-    compute_unintegrated_tasks, current_session_fingerprint, is_local_pid_alive, parse_cursor_for_snapshot,
-    parse_profile_from_run, resolve_active_run, resolve_node_worktree, to_machine_profile, with_repo_lock_and_maintenance,
+    append_trace_event, auto_select_ready_cursor, collect_external_satisfied_deps,
+    compute_unintegrated_tasks, current_session_fingerprint, is_local_pid_alive,
+    load_active_run_graph, parse_cursor_for_snapshot, resolve_node_worktree, with_repo_lock_and_maintenance,
 };
 use crate::usecases::queries::find_profile_gate_def;
 use crate::usecases::StateEngineConfig;
@@ -54,20 +54,15 @@ fn claim_holding_repo_lock(
     primary: &Path,
     req: ClaimReq,
 ) -> Result<crate::context::ClaimResp, StateError> {
-    let run = resolve_active_run(
+    let loaded = load_active_run_graph(
         config,
         backend,
         req.run.as_deref(),
         req.worktree.as_deref(),
     )?;
-    let snapshot = backend
-        .load_run_graph(&run.run_id)?
-        .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run graph missing"))?;
-    let resolved_profile = parse_profile_from_run(&snapshot.run)?;
-    let machine_profile = to_machine_profile(&resolved_profile)?;
-    let ext_deps =
-        collect_external_satisfied_deps(config, &snapshot)?;
-    let unintegrated_tasks = compute_unintegrated_tasks(config, &snapshot)?;
+    let run_id = loaded.snapshot.run.run_id.clone();
+    let ext_deps = collect_external_satisfied_deps(config, &loaded.snapshot)?;
+    let unintegrated_tasks = compute_unintegrated_tasks(config, &loaded.snapshot)?;
     let now_utc = acdd_core::telemetry::now_utc_iso_ms();
 
     let sched_obs = ValidatedObservations {
@@ -79,21 +74,23 @@ fn claim_holding_repo_lock(
     };
 
     let cursor = match req.node {
-        Some(ref raw) => parse_cursor_for_snapshot(&snapshot, raw)?,
-        None => auto_select_ready_cursor(&snapshot, &sched_obs)?,
+        Some(ref raw) => parse_cursor_for_snapshot(&loaded.snapshot, raw)?,
+        None => auto_select_ready_cursor(&loaded.snapshot, &sched_obs)?,
     };
     let node_id = cursor.to_node_id()?;
-    let node = snapshot
+    let node = loaded
+        .snapshot
         .nodes
         .iter()
         .find(|n| n.node_id == node_id)
+        .cloned()
         .ok_or_else(|| {
             StateError::new(
                 ErrorCode::ProfileSchemaInvalid,
-                format!("node '{cursor}' does not exist in run '{}'", run.run_id),
+                format!("node '{cursor}' does not exist in run '{run_id}'"),
             )
         })?;
-    let gate_def = find_profile_gate_def(&resolved_profile, &cursor).ok_or_else(|| {
+    let gate_def = find_profile_gate_def(&loaded.profile, &cursor).ok_or_else(|| {
         StateError::new(
             ErrorCode::ProfileSchemaInvalid,
             format!("no gate definition found for '{cursor}'"),
@@ -115,9 +112,9 @@ fn claim_holding_repo_lock(
         config,
         primary,
         layout.is_some(),
-        &snapshot,
-        &resolved_profile,
-        node,
+        &loaded.snapshot,
+        &loaded.profile,
+        &node,
         req.worktree.as_deref(),
     )?;
 
@@ -138,8 +135,8 @@ fn claim_holding_repo_lock(
             previous_local_pid_alive,
         };
         let _ = evaluate_transition(
-            &snapshot,
-            &machine_profile,
+            &loaded.snapshot,
+            &loaded.machine_profile,
             &sched_obs,
             &TransitionInput::Claim(precheck_input),
         )?;
@@ -158,7 +155,7 @@ fn claim_holding_repo_lock(
     };
 
     let result = (|| -> Result<crate::context::ClaimResp, StateError> {
-        let policy = build_path_policy(config, backend, &[])?;
+        let policy = loaded.path_policy(config, backend, Some(&target_worktree))?;
         let claim_tree = current_scope_tree(&target_worktree, None, &policy)?;
         let baseline_commit = if layout.is_some() {
             current_head_commit(&target_worktree).ok()
@@ -181,8 +178,8 @@ fn claim_holding_repo_lock(
         };
 
         let decision = evaluate_transition(
-            &snapshot,
-            &machine_profile,
+            &loaded.snapshot,
+            &loaded.machine_profile,
             &sched_obs,
             &TransitionInput::Claim(claim_input),
         )?;
@@ -196,10 +193,10 @@ fn claim_holding_repo_lock(
                     SnapshotContextInput {
                         config,
                         reader: backend,
-                        snapshot: &snapshot,
-                        node,
+                        snapshot: &loaded.snapshot,
+                        node: &node,
                         gate: gate_def,
-                        profile: resolved_profile,
+                        profile: loaded.profile,
                         claim_revision: existing.claim_revision,
                         worker_id: req.worker_id,
                         worktree: target_worktree,
@@ -228,10 +225,10 @@ fn claim_holding_repo_lock(
                     SnapshotContextInput {
                         config,
                         reader: backend,
-                        snapshot: &snapshot,
+                        snapshot: &loaded.snapshot,
                         node: &candidate_node,
                         gate: gate_def,
-                        profile: resolved_profile,
+                        profile: loaded.profile,
                         claim_revision: claim.claim_revision,
                         worker_id: req.worker_id,
                         worktree: target_worktree,
@@ -250,12 +247,13 @@ fn claim_holding_repo_lock(
                     .collect();
 
                 exec_tx_with(backend, |tx| {
-                    tx.admit_claim(&snapshot.run.run_id, &transition.preconditions, &claim)?;
+                    tx.admit_claim(&loaded.snapshot.run.run_id, &transition.preconditions, &claim)?;
                     if !parent_patches.is_empty() {
                         let parent_versions: Vec<NodeVersionExpectation> = parent_patches
                             .iter()
                             .filter_map(|p| {
-                                snapshot
+                                loaded
+                                    .snapshot
                                     .nodes
                                     .iter()
                                     .find(|n| n.node_id == p.node_id)
@@ -267,7 +265,7 @@ fn claim_holding_repo_lock(
                             .collect();
                         let parent_plan = TransitionPlan {
                             preconditions: StoragePreconditions {
-                                expected_run_generation: snapshot.run.generation + 1,
+                                expected_run_generation: loaded.snapshot.run.generation + 1,
                                 expected_node_versions: parent_versions,
                                 expected_claim_revision: None,
                                 expected_contract_revision: None,
@@ -287,7 +285,7 @@ fn claim_holding_repo_lock(
                             new_subtasks: Vec::new(),
                             significant_transition: true,
                         };
-                        tx.apply_transition_plan(&snapshot.run.run_id, &parent_plan)?;
+                        tx.apply_transition_plan(&loaded.snapshot.run.run_id, &parent_plan)?;
                     }
                     Ok(())
                 })?;
@@ -310,10 +308,10 @@ fn claim_holding_repo_lock(
     let _ = append_trace_event(
         layout,
         primary,
-        &snapshot.run.run_id,
+        &run_id,
         &json!({
             "kind": "gate_claim",
-            "run_id": snapshot.run.run_id.as_str(),
+            "run_id": run_id.as_str(),
             "node_cursor": claim_resp.node_cursor.to_string(),
             "claim_revision": claim_resp.claim_revision,
             "worker_id": claim_resp.worker_id.as_str(),

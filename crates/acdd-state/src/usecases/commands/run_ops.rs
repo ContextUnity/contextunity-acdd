@@ -21,7 +21,7 @@ use crate::usecases::dto::{
 use crate::usecases::lifecycle::{
     apply_effective_isolation, build_tombstone_cleanup_manifest_from_snapshot, checkout_config,
     cleanup_tombstone, collect_external_satisfied_deps, effective_spec_collections,
-    ensure_state_enabled, is_managed_run_branch, parse_profile_from_run, primary_workspace_root,
+    ensure_state_enabled, is_managed_run_branch, load_active_run_graph, primary_workspace_root,
     read_confined_utf8, resolve_active_run, resolve_source_checkout,
     sorted_dir_paths,
     to_machine_profile, validate_profile_fail_closed, with_repo_lock_and_maintenance,
@@ -178,12 +178,10 @@ pub(crate) fn handle_sync_dyn(
 ) -> Result<SyncResp, StateError> {
     with_repo_lock_and_maintenance(config, backend, |primary, layout| {
         let caller = resolve_source_checkout(primary, layout, &config.worktree, false)?;
-        let run = resolve_active_run(config, backend, req.run.as_deref(), None)?;
-        let snapshot = backend
-            .load_run_graph(&run.run_id)?
-            .ok_or_else(|| StateError::new(ErrorCode::RunSelectorAmbiguous, "run missing"))?;
-        let current_resolved = parse_profile_from_run(&snapshot.run)?;
-        let current_machine = to_machine_profile(&current_resolved)?;
+        let loaded = load_active_run_graph(config, backend, req.run.as_deref(), None)?;
+        let snapshot = loaded.snapshot;
+        let current_resolved = loaded.profile;
+        let current_machine = loaded.machine_profile;
 
         let spec_rel = if let Some(ref sp) = snapshot.run.spec_path {
             sp.clone()
