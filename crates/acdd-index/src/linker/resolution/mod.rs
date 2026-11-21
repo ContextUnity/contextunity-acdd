@@ -228,32 +228,27 @@ where
         linker: &'file LinkerContext<'a>,
     ) -> Self {
         let path_arc = std::sync::Arc::<str>::from(path);
-        let edges = facts
-            .edges
-            .iter()
-            .map(|edge| {
-                if edge.path == path {
-                    Edge::with_path(edge, &path_arc)
-                } else {
-                    Edge::from(edge)
-                }
-            })
-            .collect();
+        let mut graph = Graph {
+            edges: Vec::with_capacity(facts.edges.len()),
+            coverage: Vec::with_capacity(references.len()),
+            path_arc: Some(std::sync::Arc::clone(&path_arc)),
+            path_pool: HashSet::new(),
+            node_id_pool: HashSet::new(),
+            evidence_pool: HashSet::new(),
+        };
+        for edge in &facts.edges {
+            graph.push_public_edge(edge);
+        }
         Self {
             input,
             linker,
             path,
-            path_arc: std::sync::Arc::clone(&path_arc),
+            path_arc,
             facts,
             references,
             file_module,
             language_context,
-            graph: Graph {
-                edges,
-                coverage: Vec::with_capacity(references.len()),
-                path_arc: Some(path_arc),
-                path_pool: HashMap::new(),
-            },
+            graph,
             aliases: HashMap::new(),
             external_aliases: HashMap::new(),
             type_only_aliases: HashMap::new(),

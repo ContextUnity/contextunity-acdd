@@ -109,10 +109,75 @@ impl PartialEq<&str> for CompactTag {
     }
 }
 
+pub trait SharedStr {
+    fn as_str(&self) -> &str;
+    fn into_arc(self) -> Arc<str>;
+}
+
+impl SharedStr for &str {
+    fn as_str(&self) -> &str {
+        self
+    }
+
+    fn into_arc(self) -> Arc<str> {
+        Arc::from(self)
+    }
+}
+
+impl SharedStr for String {
+    fn as_str(&self) -> &str {
+        self
+    }
+
+    fn into_arc(self) -> Arc<str> {
+        Arc::from(self.as_str())
+    }
+}
+
+impl SharedStr for &String {
+    fn as_str(&self) -> &str {
+        self
+    }
+
+    fn into_arc(self) -> Arc<str> {
+        Arc::from(self.as_str())
+    }
+}
+
+impl SharedStr for Arc<str> {
+    fn as_str(&self) -> &str {
+        self
+    }
+
+    fn into_arc(self) -> Arc<str> {
+        self
+    }
+}
+
+impl SharedStr for &Arc<str> {
+    fn as_str(&self) -> &str {
+        self
+    }
+
+    fn into_arc(self) -> Arc<str> {
+        Arc::clone(self)
+    }
+}
+
+impl SharedStr for Cow<'_, str> {
+    fn as_str(&self) -> &str {
+        self.as_ref()
+    }
+
+    fn into_arc(self) -> Arc<str> {
+        Arc::from(self.as_ref())
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Edge {
-    pub src: String,
-    pub dst: String,
+    pub src: Arc<str>,
+    pub dst: Arc<str>,
     pub kind: CompactTag,
     pub path: Arc<str>,
     pub line: usize,
@@ -130,8 +195,8 @@ impl From<&PublicEdge> for Edge {
 impl Edge {
     pub fn with_path(edge: &PublicEdge, path: &Arc<str>) -> Self {
         Self {
-            src: edge.src.clone(),
-            dst: edge.dst.clone(),
+            src: Arc::from(edge.src.as_str()),
+            dst: Arc::from(edge.dst.as_str()),
             kind: edge.kind.as_str().into(),
             path: Arc::clone(path),
             line: edge.line,
@@ -144,8 +209,8 @@ impl Edge {
 impl From<Edge> for PublicEdge {
     fn from(edge: Edge) -> Self {
         Self {
-            src: edge.src,
-            dst: edge.dst,
+            src: edge.src.as_ref().to_owned(),
+            dst: edge.dst.as_ref().to_owned(),
             kind: edge.kind.into_string(),
             path: edge.path.as_ref().to_owned(),
             line: edge.line,
@@ -161,7 +226,7 @@ pub struct Coverage {
     pub line: usize,
     pub expression: String,
     pub status: CompactTag,
-    pub evidence: Cow<'static, str>,
+    pub evidence: Arc<str>,
 }
 
 impl From<Coverage> for PublicCoverage {
@@ -171,7 +236,7 @@ impl From<Coverage> for PublicCoverage {
             line: coverage.line,
             expression: coverage.expression,
             status: coverage.status.into_string(),
-            evidence: coverage.evidence.into_owned(),
+            evidence: coverage.evidence.as_ref().to_owned(),
         }
     }
 }
@@ -181,10 +246,32 @@ pub struct Graph {
     pub edges: Vec<Edge>,
     pub coverage: Vec<Coverage>,
     pub path_arc: Option<Arc<str>>,
-    pub path_pool: hashbrown::HashMap<String, Arc<str>>,
+    pub path_pool: hashbrown::HashSet<Arc<str>>,
+    pub node_id_pool: hashbrown::HashSet<Arc<str>>,
+    pub evidence_pool: hashbrown::HashSet<Arc<str>>,
 }
 
 impl Graph {
+    pub fn intern_arc(pool: &mut hashbrown::HashSet<Arc<str>>, value: Arc<str>) -> Arc<str> {
+        if let Some(existing) = pool.get(value.as_ref()) {
+            return Arc::clone(existing);
+        }
+        pool.insert(Arc::clone(&value));
+        value
+    }
+
+    fn shared_from_pool<S: SharedStr>(
+        pool: &mut hashbrown::HashSet<Arc<str>>,
+        value: S,
+    ) -> Arc<str> {
+        if let Some(shared) = pool.get(value.as_str()) {
+            return Arc::clone(shared);
+        }
+        let shared = value.into_arc();
+        pool.insert(Arc::clone(&shared));
+        shared
+    }
+
     fn shared_path(&mut self, path: &str) -> Arc<str> {
         if let Some(shared) = self
             .path_arc
@@ -193,12 +280,45 @@ impl Graph {
         {
             return Arc::clone(shared);
         }
-        if let Some(shared) = self.path_pool.get(path) {
-            return Arc::clone(shared);
+        Self::shared_from_pool(&mut self.path_pool, path)
+    }
+
+    pub fn push_public_edge(&mut self, edge: &PublicEdge) {
+        let path = self.shared_path(&edge.path);
+        let src = Self::shared_from_pool(&mut self.node_id_pool, edge.src.as_str());
+        let dst = Self::shared_from_pool(&mut self.node_id_pool, edge.dst.as_str());
+        self.edges.push(Edge {
+            src,
+            dst,
+            kind: edge.kind.as_str().into(),
+            path,
+            line: edge.line,
+            evidence: edge.evidence.as_str().into(),
+            confidence: edge.confidence.as_str().into(),
+        });
+    }
+
+    pub fn merge(&mut self, other: Graph) {
+        self.edges.reserve(other.edges.len());
+        for mut edge in other.edges {
+            edge.src = Self::intern_arc(&mut self.node_id_pool, edge.src);
+            edge.dst = Self::intern_arc(&mut self.node_id_pool, edge.dst);
+            edge.path = Self::intern_arc(&mut self.path_pool, edge.path);
+            self.edges.push(edge);
         }
-        let shared = Arc::from(path);
-        self.path_pool.insert(path.to_owned(), Arc::clone(&shared));
-        shared
+        self.coverage.reserve(other.coverage.len());
+        for mut coverage in other.coverage {
+            coverage.path = Self::intern_arc(&mut self.path_pool, coverage.path);
+            coverage.evidence = Self::intern_arc(&mut self.evidence_pool, coverage.evidence);
+            self.coverage.push(coverage);
+        }
+    }
+
+    pub fn clear_pools(&mut self) {
+        self.path_arc = None;
+        self.path_pool = hashbrown::HashSet::new();
+        self.node_id_pool = hashbrown::HashSet::new();
+        self.evidence_pool = hashbrown::HashSet::new();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -212,16 +332,18 @@ impl Graph {
         evidence: E,
         confidence: C,
     ) where
-        S: Into<String>,
-        D: Into<String>,
+        S: SharedStr,
+        D: SharedStr,
         K: Into<CompactTag>,
         E: Into<CompactTag>,
         C: Into<CompactTag>,
     {
         let path = self.shared_path(path);
+        let src = Self::shared_from_pool(&mut self.node_id_pool, src);
+        let dst = Self::shared_from_pool(&mut self.node_id_pool, dst);
         self.edges.push(Edge {
-            src: src.into(),
-            dst: dst.into(),
+            src,
+            dst,
             kind: kind.into(),
             path,
             line,
@@ -240,29 +362,30 @@ impl Graph {
     ) where
         P: Into<String>,
         S: Into<CompactTag>,
-        E: Into<Cow<'static, str>>,
+        E: SharedStr,
     {
         let path = self.shared_path(path);
+        let evidence = Self::shared_from_pool(&mut self.evidence_pool, evidence);
         self.coverage.push(Coverage {
             path,
             line,
             expression: expression.into(),
             status: status.into(),
-            evidence: evidence.into(),
+            evidence,
         });
     }
 
-    pub fn reference_edge<K: Into<CompactTag>, C: Into<CompactTag>>(
+    pub fn reference_edge<D: SharedStr, K: Into<CompactTag>, C: Into<CompactTag>>(
         &mut self,
         path: &str,
         reference: &super::Reference,
-        target: String,
+        target: D,
         kind: K,
         confidence: C,
     ) {
         self.push_edge(
             path,
-            reference.source.clone(),
+            reference.source.as_str(),
             target,
             kind,
             reference.line,

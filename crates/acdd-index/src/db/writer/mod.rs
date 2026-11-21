@@ -498,11 +498,7 @@ pub fn populate_owned(
         // Rows and their logical commitment leaves are now independent of the
         // extracted facts. Release those facts before index and FTS construction.
         drop(facts);
-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        unsafe {
-            // SAFETY: glibc synchronizes allocator arenas; no pointers are passed.
-            libc::malloc_trim(0);
-        }
+        acdd_core::sys::trim_allocator();
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let index_and_seal = Instant::now();
         let index_sql = format!("CREATE INDEX{indexes}");

@@ -951,21 +951,20 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             } else {
                 (build_names(), (build_lookup(), build_bindings()))
             };
-        let edges: Vec<_> = all.values_facts().flat_map(|f| &f.edges).collect();
-        let children: Vec<_> = edges
-            .par_iter()
-            .filter_map(|e| {
-                if e.kind != "contains" {
-                    return None;
-                }
-                let source = interner.lookup_symbol(&e.src)?;
-                let target = interner.lookup_symbol(&e.dst)?;
-                Some((source, *by_id.get(&target)?))
-            })
-            .collect();
         let mut children_by_parent: HashMap<interner::SymbolId, Vec<&Node>> = HashMap::new();
-        for (source, child) in children {
-            children_by_parent.entry(source).or_default().push(child);
+        for file in all.values_facts() {
+            for e in &file.edges {
+                if e.kind != "contains" {
+                    continue;
+                }
+                if let (Some(source), Some(target)) =
+                    (interner.lookup_symbol(&e.src), interner.lookup_symbol(&e.dst))
+                {
+                    if let Some(&child) = by_id.get(&target) {
+                        children_by_parent.entry(source).or_default().push(child);
+                    }
+                }
+            }
         }
         let namespace_indexes =
             indexing::NamespaceIndexes::build(all, &nodes, root, dependency_registry, interner);
@@ -1041,6 +1040,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             &by_id,
             &semantic_context,
         );
+        acdd_core::sys::trim_allocator();
         mark("value flow");
         let prepared_semantic_facts =
             framework_relations::PreparedSemanticFacts::build(all, interner);
@@ -1073,6 +1073,8 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             value_flow: &value_flow,
         });
         drop(value_flow);
+        compact::release_pack_scratch(occurrences.is_some());
+        acdd_core::sys::trim_allocator();
         mark("reference linking");
         parts.extend(
             framework_relations::compose(
@@ -1094,11 +1096,14 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
         mark("framework relation composition");
         (parts, sort_per_file)
     };
+    acdd_core::sys::trim_allocator();
     let mut result = Graph {
         edges: Vec::with_capacity(parts.iter().map(|g| g.counts().0).sum()),
         coverage: Vec::with_capacity(parts.iter().map(|g| g.counts().1).sum()),
         path_arc: None,
-        path_pool: HashMap::new(),
+        path_pool: HashSet::new(),
+        node_id_pool: HashSet::new(),
+        evidence_pool: HashSet::new(),
     };
     let mut remaining = parts.into_iter();
     loop {
@@ -1121,10 +1126,10 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
             batch.into_iter().map(GraphPart::into_graph).collect()
         };
         for graph in graphs {
-            result.edges.extend(graph.edges);
-            result.coverage.extend(graph.coverage);
+            result.merge(graph);
         }
     }
+    compact::release_unpack_scratch(occurrences.is_some());
     manifest_entrypoint_edges(all, owners, &mut result);
     if !sort_per_file
         || !result
@@ -1138,6 +1143,7 @@ fn link_compact_impl<'a, 'maps, 'uncertainties>(
     {
         sort_graph(&mut result);
     }
+    result.clear_pools();
     mark("graph merge and sort");
     result
 }
@@ -1166,7 +1172,10 @@ fn manifest_entrypoint_edges(
     let mut exact_calls: HashMap<&str, HashSet<&str>> = HashMap::new();
     for edge in &graph.edges {
         if edge.kind.as_str() == "calls" && edge.confidence.as_str() == "exact" {
-            exact_calls.entry(&edge.src).or_default().insert(&edge.dst);
+            exact_calls
+                .entry(edge.src.as_ref())
+                .or_default()
+                .insert(edge.dst.as_ref());
         }
     }
     let mut resolved = Vec::new();
@@ -1218,18 +1227,24 @@ fn manifest_entrypoint_edges(
         if targets.len() != 1 {
             continue;
         }
-        resolved.push(Edge {
-            src: registration.id.clone(),
-            dst: targets[0].id.clone(),
-            kind: "handles".into(),
-            path: std::sync::Arc::from(registration.path.as_str()),
-            line: 1,
-            evidence: "manifest entrypoint".into(),
-            confidence: "exact".into(),
-        });
+        resolved.push((
+            registration.path.as_str(),
+            registration.id.as_str(),
+            targets[0].id.as_str(),
+        ));
     }
     drop(exact_calls);
-    graph.edges.extend(resolved);
+    for (path, src, dst) in resolved {
+        graph.push_edge(
+            path,
+            src,
+            dst,
+            "handles",
+            1,
+            "manifest entrypoint",
+            "exact",
+        );
+    }
 }
 
 fn compare_edges(a: &Edge, b: &Edge) -> std::cmp::Ordering {

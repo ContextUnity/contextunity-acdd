@@ -22,13 +22,14 @@ fn cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> rusqli
 }
 
 fn node_search_rows(facts: Option<&TypedFacts>) -> Vec<(i64, String)> {
-    let mut rows = Vec::new();
-    if let Some(facts) = facts {
+    let Some(facts) = facts else {
+        return Vec::new();
+    };
+    let mut rows = Vec::with_capacity(facts.nodes.len());
+    for node in &facts.nodes {
         let mut text = String::new();
-        for node in &facts.nodes {
-            super::ingest::write_node_search_text(&mut text, node, facts);
-            rows.push((stable_hash64(&node.id), text.clone()));
-        }
+        super::ingest::append_node_search_text(&mut text, node, facts);
+        rows.push((stable_hash64(&node.id), text));
     }
     rows.sort_unstable();
     rows

@@ -427,8 +427,8 @@ mod tests {
                 receiver_hint: None,
             });
             graph.edges.push(Edge {
-                src: f.nodes[0].id.clone(),
-                dst: format!("function:{}", entries[(index + 1) % entries.len()].path),
+                src: f.nodes[0].id.as_str().into(),
+                dst: format!("function:{}", entries[(index + 1) % entries.len()].path).into(),
                 kind: "calls".into(),
                 path: file.path.clone().into(),
                 line: 2,

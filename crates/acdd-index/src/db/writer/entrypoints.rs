@@ -86,14 +86,14 @@ pub(super) fn cold_ranks<'a>(
         ) {
             continue;
         }
-        let current = ranks.entry(edge.dst.as_str()).or_insert(None);
+        let current = ranks.entry(edge.dst.as_ref()).or_insert(None);
         if edge.confidence.as_str() != "exact" {
             continue;
         }
         let rank = match edge.kind.as_str() {
             "routes_to" => Some(2),
             "dispatches" | "listens_to" => Some(5),
-            "handles" => sources.get(edge.src.as_str()).and_then(|kind| match *kind {
+            "handles" => sources.get(edge.src.as_ref()).and_then(|kind| match *kind {
                 "main_registration" => Some(1),
                 "route" => Some(2),
                 "tool_registration" => Some(3),

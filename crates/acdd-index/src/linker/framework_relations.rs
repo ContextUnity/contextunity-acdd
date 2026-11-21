@@ -368,7 +368,9 @@ pub(super) fn compose<'a>(
                 edges: Vec::new(),
                 coverage: Vec::new(),
                 path_arc: Some(std::sync::Arc::clone(&path_arc)),
-                path_pool: HashMap::new(),
+                path_pool: hashbrown::HashSet::new(),
+                node_id_pool: hashbrown::HashSet::new(),
+                evidence_pool: hashbrown::HashSet::new(),
             };
             let has_type_queries = facts.references.iter().any(|reference| reference.kind == "sql_type_queries_table");
             let macro_rules = has_type_queries.then(|| dependencies.language_context_for_path(path));

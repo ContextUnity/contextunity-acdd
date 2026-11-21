@@ -184,6 +184,16 @@ pub fn memory_budget_bytes() -> u64 {
     memory_budget_from_available(available_memory_bytes())
 }
 
+/// Attempts to return freed heap pages to the OS allocator on Linux/glibc.
+#[inline]
+pub fn trim_allocator() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        // SAFETY: no pointers are passed; glibc synchronizes allocator arenas.
+        libc::malloc_trim(0);
+    }
+}
+
 /// Read the OS process start-time token for `pid` to distinguish reused PIDs across sessions.
 ///
 /// - On Linux, parses field 22 (`starttime` in clock ticks) after the final `')'` of `/proc/{pid}/stat`.

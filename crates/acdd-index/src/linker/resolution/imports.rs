@@ -444,7 +444,7 @@ where
             graph.push_edge(
                 path,
                 import_owner,
-                modules[0].id.clone(),
+                &modules[0].id,
                 "imports",
                 r.line,
                 r.expression.as_str(),
@@ -458,7 +458,7 @@ where
                         graph.push_edge(
                             path,
                             import_owner,
-                            declaration.id.clone(),
+                            &declaration.id,
                             "imports",
                             r.line,
                             r.expression.as_str(),
@@ -471,7 +471,7 @@ where
                 graph.push_edge(
                     path,
                     import_owner,
-                    candidates[0].id.clone(),
+                    &candidates[0].id,
                     "imports",
                     r.line,
                     r.expression.as_str(),
@@ -483,7 +483,7 @@ where
                     graph.push_edge(
                         path,
                         import_owner,
-                        stub.id.clone(),
+                        &stub.id,
                         "imports",
                         r.line,
                         r.expression.as_str(),
@@ -495,7 +495,7 @@ where
                 graph.push_edge(
                     path,
                     import_owner,
-                    candidates[0].id.clone(),
+                    &candidates[0].id,
                     "imports",
                     r.line,
                     r.expression.as_str(),
@@ -509,7 +509,7 @@ where
                 graph.push_edge(
                     path,
                     import_owner,
-                    imported_targets[0].id.clone(),
+                    &imported_targets[0].id,
                     "imports",
                     r.line,
                     r.expression.as_str(),

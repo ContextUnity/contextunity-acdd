@@ -386,11 +386,7 @@ pub(super) fn run_cold_pipeline(
         }
     };
     // Extraction threads have exited and released their parser/source buffers.
-    // SAFETY: glibc's allocator entry point is thread-safe and takes no pointers.
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    unsafe {
-        libc::malloc_trim(0);
-    }
+    acdd_core::sys::trim_allocator();
     if let Some(failure) = control.failure() {
         bail!("{failure}");
     }
@@ -671,6 +667,8 @@ fn atomic_build(
             &dependencies,
         );
         let link_ms = linking.elapsed().as_secs_f64() * 1000.;
+        // Linker worker caches have been dropped; reclaim glibc arenas before SQLite persistence.
+        acdd_core::sys::trim_allocator();
 
         let facts = streamed.catalog.into_files();
         let staged_disk_bytes = fs::metadata(&payload_spool_path)?.len();

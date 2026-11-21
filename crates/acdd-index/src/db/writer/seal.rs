@@ -226,11 +226,15 @@ fn project_file_domains<'a>(
     domains: &mut BTreeMap<&'static str, Leaves>,
     include_documents: bool,
 ) -> Result<Vec<ProjectedNode<'a>>> {
-    let mut inventory = OwnerHashers::new();
-    let mut files = OwnerHashers::new();
+    let mut inventory = OwnerHashers::with_capacity(entries.len());
+    let mut files = OwnerHashers::with_capacity(entries.len());
     let mut errors = OwnerHashers::new();
     let mut docs = OwnerHashers::new();
-    let mut projected_nodes = Vec::new();
+    let mut projected_nodes = if include_documents {
+        Vec::with_capacity(facts.values().map(|f| f.nodes.len()).sum())
+    } else {
+        Vec::new()
+    };
     let mut node_id = 0i64;
 
     for file in entries {
@@ -275,15 +279,14 @@ fn project_file_domains<'a>(
 
         if include_documents {
             hash_doc_sections(&file_facts.docs, &mut docs)?;
-        }
-
-        for node in &file_facts.nodes {
-            node_id = node_id.checked_add(1).context("node ID overflow")?;
-            projected_nodes.push(ProjectedNode {
-                owner: &file.path,
-                node,
-                node_id,
-            });
+            for node in &file_facts.nodes {
+                node_id = node_id.checked_add(1).context("node ID overflow")?;
+                projected_nodes.push(ProjectedNode {
+                    owner: &file.path,
+                    node,
+                    node_id,
+                });
+            }
         }
     }
 
@@ -334,16 +337,16 @@ fn project_graph_domains<'a>(
         file_by_hash,
         entry_languages,
     } = projection;
-    let mut ordinals = HashMap::<&str, i64>::new();
+    let mut ordinals = HashMap::<&str, i64>::with_capacity(file_by_hash.len());
     let mut unique_edges: Vec<_> = prepared.unique_edges.iter().collect();
-    let mut occurrence_hashers = OwnerHashers::new();
+    let mut occurrence_hashers = OwnerHashers::with_capacity(file_by_hash.len());
 
     let edges_started = Instant::now();
     for edge in &graph.edges {
         let owner = edge.path.as_ref();
         let ordinal = ordinals.entry(owner).or_default();
-        let src = edge.src.as_str();
-        let dst = edge.dst.as_str();
+        let src = edge.src.as_ref();
+        let dst = edge.dst.as_ref();
         let occurrence_hasher = occurrence_hashers
             .entry(owner)
             .or_insert_with(|| new_leaf_hasher("edge_occurrences", owner));
@@ -385,7 +388,7 @@ fn project_graph_domains<'a>(
                     .then_with(|| left.edge.dst.cmp(&right.edge.dst))
                     .then_with(|| left.edge.kind.as_str().cmp(right.edge.kind.as_str()))
             });
-            let mut edge_hashers = OwnerHashers::new();
+            let mut edge_hashers = OwnerHashers::with_capacity(file_by_hash.len());
             for row in unique_edges {
                 let owner = row.edge.path.as_ref();
                 let hasher = edge_hashers
@@ -393,8 +396,8 @@ fn project_graph_domains<'a>(
                     .or_insert_with(|| new_leaf_hasher("edges", owner));
                 let edge = row.edge;
                 hasher.update([0xff]);
-                encode_text(hasher, row.edge.src.as_str());
-                encode_text(hasher, row.edge.dst.as_str());
+                encode_text(hasher, row.edge.src.as_ref());
+                encode_text(hasher, row.edge.dst.as_ref());
                 encode_text(hasher, edge.kind.as_str());
                 encode_text(hasher, owner);
                 encode_integer(
@@ -616,12 +619,12 @@ fn register_shared_key<'a>(keys: &mut HashMap<i64, &'a str>, key: &'a str) -> Re
 
 type CoverageDomains = (Leaves, Leaves, Leaves);
 fn project_coverage_domains<'a>(
-    prepared: &PreparedCoverage<'a>,
+    prepared: &'a PreparedCoverage<'a>,
     entry_languages: &HashMap<&'a str, &'a str>,
 ) -> Result<CoverageDomains> {
-    let mut coverage_hashers = OwnerHashers::new();
-    let mut owner_language_rows = BTreeMap::<String, Vec<OwnerLanguageLeafRow<'_>>>::new();
-    let mut language_counts = BTreeMap::<String, BTreeMap<(String, String), i64>>::new();
+    let mut coverage_hashers = OwnerHashers::with_capacity(entry_languages.len());
+    let mut owner_language_rows = BTreeMap::<&'a str, Vec<OwnerLanguageLeafRow<'a>>>::new();
+    let mut language_counts = BTreeMap::<&'a str, BTreeMap<(&'a str, &'a str), i64>>::new();
     for &coverage in &prepared.rows {
         let owner = coverage.path.as_ref();
         let line = i64::try_from(coverage.line).context("coverage line exceeds SQLite range")?;
@@ -638,7 +641,7 @@ fn project_coverage_domains<'a>(
         let html_language = prepared.owner_language(coverage);
         if let Some(language) = html_language {
             owner_language_rows
-                .entry(owner.to_owned())
+                .entry(owner)
                 .or_default()
                 .push(OwnerLanguageLeafRow {
                     line,
@@ -652,9 +655,9 @@ fn project_coverage_domains<'a>(
         let language = prepared.language(coverage, entry_languages.get(owner).copied());
         if let Some(language) = language {
             let count = language_counts
-                .entry(owner.to_owned())
+                .entry(owner)
                 .or_default()
-                .entry((language.to_owned(), status.to_owned()))
+                .entry((language, status))
                 .or_default();
             *count = count.checked_add(1).context("coverage count overflow")?;
         }
@@ -670,10 +673,10 @@ fn project_coverage_domains<'a>(
                 .then_with(|| left.evidence.as_bytes().cmp(right.evidence.as_bytes()))
                 .then_with(|| left.language.as_bytes().cmp(right.language.as_bytes()))
         });
-        let mut hasher = new_leaf_hasher("coverage_owner_language", &owner);
+        let mut hasher = new_leaf_hasher("coverage_owner_language", owner);
         for row in rows {
             hasher.update([0xff]);
-            encode_text(&mut hasher, &owner);
+            encode_text(&mut hasher, owner);
             encode_integer(&mut hasher, row.line);
             encode_text(&mut hasher, row.expression);
             encode_text(&mut hasher, row.status);
@@ -681,23 +684,23 @@ fn project_coverage_domains<'a>(
             encode_text(&mut hasher, row.language);
         }
         owner_language.insert(
-            leaf_key("coverage_owner_language", &owner),
+            leaf_key("coverage_owner_language", owner),
             hex::encode(hasher.finalize()),
         );
     }
 
     let mut language_count_leaves = Leaves::new();
     for (owner, counts) in language_counts {
-        let mut hasher = new_leaf_hasher("coverage_language_counts", &owner);
+        let mut hasher = new_leaf_hasher("coverage_language_counts", owner);
         for ((language, status), count) in counts {
             hasher.update([0xff]);
-            encode_text(&mut hasher, &owner);
-            encode_text(&mut hasher, &language);
-            encode_text(&mut hasher, &status);
+            encode_text(&mut hasher, owner);
+            encode_text(&mut hasher, language);
+            encode_text(&mut hasher, status);
             encode_integer(&mut hasher, count);
         }
         language_count_leaves.insert(
-            leaf_key("coverage_language_counts", &owner),
+            leaf_key("coverage_language_counts", owner),
             hex::encode(hasher.finalize()),
         );
     }

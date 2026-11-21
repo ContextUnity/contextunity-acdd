@@ -30,7 +30,7 @@ pub(super) struct PreparedCoverage<'a> {
 
 /// Graph endpoints and unique edges shared by cold persistence and sealing.
 pub(super) struct PreparedGraph<'a> {
-    pub(super) node_by_id: hashbrown::HashMap<&'a str, (&'a str, i64)>,
+    pub(super) edge_hashes: Vec<(i64, i64)>,
     pub(super) unique_edges: Vec<PreparedEdge<'a>>,
     pub(super) dependencies: Vec<PreparedDependency<'a>>,
 }
@@ -56,34 +56,36 @@ impl<'a> PreparedGraph<'a> {
         graph: &'a CompactGraph,
         facts: &'a BTreeMap<String, TypedFacts>,
     ) -> Result<Self> {
-        let node_by_id: hashbrown::HashMap<_, _> = facts
-            .values()
-            .flat_map(|facts| &facts.nodes)
-            .map(|node| {
-                (
+        let total_nodes: usize = facts.values().map(|file_facts| file_facts.nodes.len()).sum();
+        let mut node_by_id = hashbrown::HashMap::with_capacity(total_nodes);
+        for file_facts in facts.values() {
+            for node in &file_facts.nodes {
+                node_by_id.insert(
                     node.id.as_str(),
                     (node.path.as_str(), stable_hash64(&node.id)),
-                )
-            })
-            .collect();
-        let mut indexes = hashbrown::HashMap::new();
+                );
+            }
+        }
+        let mut indexes = hashbrown::HashMap::with_capacity(graph.edges.len());
+        let mut edge_hashes = Vec::with_capacity(graph.edges.len());
         let mut unique_edges: Vec<PreparedEdge<'a>> = Vec::with_capacity(graph.edges.len());
         let mut resolved_edge_paths = Vec::with_capacity(graph.edges.len());
         for edge in &graph.edges {
-            let &(src_path, src_hash) = node_by_id.get(edge.src.as_str()).with_context(|| {
+            let &(src_path, src_hash) = node_by_id.get(edge.src.as_ref()).with_context(|| {
                 format!(
                     "edge {} has missing source endpoint {}",
                     edge.kind.as_str(),
                     edge.src
                 )
             })?;
-            let &(dst_path, dst_hash) = node_by_id.get(edge.dst.as_str()).with_context(|| {
+            let &(dst_path, dst_hash) = node_by_id.get(edge.dst.as_ref()).with_context(|| {
                 format!(
                     "edge {} has missing destination endpoint {}",
                     edge.kind.as_str(),
                     edge.dst
                 )
             })?;
+            edge_hashes.push((src_hash, dst_hash));
             resolved_edge_paths.push((
                 (src_path != edge.path.as_ref()).then(|| stable_hash64(src_path)),
                 (dst_path != edge.path.as_ref()).then(|| stable_hash64(dst_path)),
@@ -105,9 +107,11 @@ impl<'a> PreparedGraph<'a> {
                 });
             }
         }
+        drop(node_by_id);
+        drop(indexes);
         let dependencies = prepare_dependencies(graph, facts, None, &resolved_edge_paths)?;
         Ok(Self {
-            node_by_id,
+            edge_hashes,
             unique_edges,
             dependencies,
         })
@@ -1197,21 +1201,33 @@ pub(super) fn persist_graph_prepared(
     let evidence_ids = CoverageDictionaryCache::prefill_evidence(tx, graph)?;
     let evidence_dictionary_ms = phase.elapsed().as_secs_f64() * 1000.;
     let phase = Instant::now();
-    let mut ordinals: hashbrown::HashMap<&str, usize> = hashbrown::HashMap::new();
+    let mut ordinals: hashbrown::HashMap<&str, usize> =
+        hashbrown::HashMap::with_capacity(facts.len());
     let mut current_path: Option<&str> = None;
     let mut current_path_id = None;
     let mut current_ordinal = 0usize;
     let mut occurrence_batch =
         MultiValueBatch::<8, BorrowedSqlValue<'_>>::new(tx, "INSERT INTO edge_occurrences VALUES")?;
-    let mut unique_edges = Vec::<StoredEdge<'_>>::with_capacity(if materialize_edges {
+    let mut unique_edges = Vec::<StoredEdge<'_>>::with_capacity(
+        if materialize_edges && prepared.is_none() {
+            graph.edges.len()
+        } else {
+            0
+        },
+    );
+    let mut stmt_select_path = prepared
+        .is_none()
+        .then(|| {
+            tx.prepare_cached(
+                "SELECT p.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id=?1",
+            )
+        })
+        .transpose()?;
+    let mut resolved_edge_paths = Vec::with_capacity(if prepared.is_none() {
         graph.edges.len()
     } else {
         0
     });
-    let mut stmt_select_path = tx.prepare_cached(
-        "SELECT p.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.id=?1",
-    )?;
-    let mut resolved_edge_paths = Vec::with_capacity(graph.edges.len());
     let mut coverage_batch = MultiValueBatch::<5, BorrowedSqlValue<'_>>::new(
         tx,
         "INSERT OR IGNORE INTO resolution_coverage(path_id,line,expression_id,status,evidence_id) VALUES",
@@ -1237,42 +1253,19 @@ pub(super) fn persist_graph_prepared(
         let confidence_id = *evidence_ids
             .get(e.confidence.as_str())
             .context("missing edge confidence")?;
-        let resolve = |endpoint: &str| -> Result<(i64, Option<i64>)> {
-            let (path, hash) = prepared
-                .context("missing prepared graph")?
-                .node_by_id
-                .get(endpoint)
-                .with_context(|| {
-                    format!("edge {} has missing endpoint {endpoint}", e.kind.as_str())
-                })?;
-            Ok((
-                *hash,
-                (*path != e.path.as_ref()).then(|| stable_hash64(path)),
-            ))
-        };
-        let (src_hash, src_target) = if prepared.is_some() {
-            resolve(&e.src)?
+        let (src_hash, dst_hash) = if let Some(prepared) = prepared {
+            prepared.edge_hashes[first]
         } else {
-            graph_endpoint_hashes(
-                node_paths,
-                &mut stmt_select_path,
-                &e.src,
-                &e.path,
-                e.kind.as_str(),
-            )?
+            let stmt = stmt_select_path
+                .as_mut()
+                .context("missing edge endpoint path lookup statement")?;
+            let (src_hash, src_target) =
+                graph_endpoint_hashes(node_paths, stmt, &e.src, &e.path, e.kind.as_str())?;
+            let (dst_hash, dst_target) =
+                graph_endpoint_hashes(node_paths, stmt, &e.dst, &e.path, e.kind.as_str())?;
+            resolved_edge_paths.push((src_target, dst_target));
+            (src_hash, dst_hash)
         };
-        let (dst_hash, dst_target) = if prepared.is_some() {
-            resolve(&e.dst)?
-        } else {
-            graph_endpoint_hashes(
-                node_paths,
-                &mut stmt_select_path,
-                &e.dst,
-                &e.path,
-                e.kind.as_str(),
-            )?
-        };
-        resolved_edge_paths.push((src_target, dst_target));
         occurrence_batch.push([
             BorrowedSqlValue::Integer(owner_id),
             BorrowedSqlValue::Integer(i64::try_from(ordinal)?),
@@ -1331,32 +1324,34 @@ pub(super) fn persist_graph_prepared(
                     BorrowedSqlValue::Integer(row.count),
                 ])?;
             }
-        }
-        if unique_edges.len() >= 8192 {
-            unique_edges
-                .par_sort_unstable_by_key(|edge| (edge.src, edge.kind, edge.dst, edge.first));
         } else {
-            unique_edges.sort_unstable_by_key(|edge| (edge.src, edge.kind, edge.dst, edge.first));
-        }
-        unique_edges.dedup_by(|later, first| {
-            if (later.src, later.kind, later.dst) == (first.src, first.kind, first.dst) {
-                first.count += later.count;
-                true
+            if unique_edges.len() >= 8192 {
+                unique_edges
+                    .par_sort_unstable_by_key(|edge| (edge.src, edge.kind, edge.dst, edge.first));
             } else {
-                false
+                unique_edges
+                    .sort_unstable_by_key(|edge| (edge.src, edge.kind, edge.dst, edge.first));
             }
-        });
-        for edge in unique_edges {
-            edge_batch.push([
-                BorrowedSqlValue::Integer(edge.src),
-                BorrowedSqlValue::Text(edge.kind),
-                BorrowedSqlValue::Integer(edge.dst),
-                BorrowedSqlValue::Integer(edge.path_id),
-                BorrowedSqlValue::Integer(i64::try_from(edge.line)?),
-                BorrowedSqlValue::Integer(edge.evidence),
-                BorrowedSqlValue::Integer(edge.confidence),
-                BorrowedSqlValue::Integer(edge.count),
-            ])?;
+            unique_edges.dedup_by(|later, first| {
+                if (later.src, later.kind, later.dst) == (first.src, first.kind, first.dst) {
+                    first.count += later.count;
+                    true
+                } else {
+                    false
+                }
+            });
+            for edge in unique_edges {
+                edge_batch.push([
+                    BorrowedSqlValue::Integer(edge.src),
+                    BorrowedSqlValue::Text(edge.kind),
+                    BorrowedSqlValue::Integer(edge.dst),
+                    BorrowedSqlValue::Integer(edge.path_id),
+                    BorrowedSqlValue::Integer(i64::try_from(edge.line)?),
+                    BorrowedSqlValue::Integer(edge.evidence),
+                    BorrowedSqlValue::Integer(edge.confidence),
+                    BorrowedSqlValue::Integer(edge.count),
+                ])?;
+            }
         }
         edge_batch.flush()?;
     }

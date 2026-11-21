@@ -1940,11 +1940,11 @@ where
                         Some(receivers::Member::Local(member))
                             if matches!(member.kind.as_str(), "field" | "class")
                     );
-                let target = candidate.id.clone();
+                let target = candidate.id.as_str();
                 let (src, dst) = if r.kind == "decorates" {
-                    (target, source)
+                    (target, source.as_str())
                 } else {
-                    (source, target)
+                    (source.as_str(), target)
                 };
                 let kind_str = if r.kind == "bases" || r.kind == "inherits" {
                     let is_interface = candidate.kind == "interface"
@@ -1959,8 +1959,8 @@ where
                 };
                 graph.push_edge(
                     path,
-                    src.clone(),
-                    dst.clone(),
+                    src,
+                    dst,
                     kind_str,
                     r.line,
                     r.expression.as_str(),
@@ -1978,7 +1978,7 @@ where
                     let source_container_id = if owner.is_some_and(|n| n.kind == "impl") {
                         r.source.as_str()
                     } else {
-                        src.as_str()
+                        src
                     };
                     relation_edges::emit_inherited_method_edges(
                         input,

@@ -42,7 +42,11 @@ line slices. Do NOT use shell `grep`, `sed`, `cat`, `head`, `tail`, `find`,
 `read_file`, inline Python (`python -c` / heredocs), or one-off `.py` scripts
 inside ACDD-enabled workspaces; use `rg -n` ONLY as a fallback for
 unadmitted/gitignored paths, and write benchmarks/reproductions as Rust tests or
-`acdd` CLI commands.
+`acdd` CLI commands. Run heavy or long-running shell tasks (`cargo build`,
+`cargo test`, `cargo clippy`, `acdd verify run_tests`, `./scripts/test-macos-ssh.sh`,
+and benchmark runs) ONLY in the built-in shell (`run_command` with
+`WaitMsBeforeAsync: 500` so reactive completion wakeup notifies you without
+polling or manual timers); reserve `ctx_shell` for lightweight commands.
 
 Use Blackboard `notes` for non-obvious technical context, not routine gate
 status, passing tests, or SHAs that add no context. Before rejecting a review,
