@@ -85,7 +85,7 @@ By default, ACDD verifies workspace freshness before executing tool requests. Fu
 - **Documentation and grouping**: Code search excludes Markdown by default. `include_docs` admits documentation; `group_by_file` places each file path once around its returned symbols.
 
 ### AST and test discovery
-`tests_paged` bounds graph traversal at depth four and uses lexical test-name matching when the graph has no inbound tests. `ast_grep_search` parses declaration names through the extraction language profile and selects matching symbols through the name index and `files`. Other structural patterns scan the bounded set of indexed files for the requested language and path; `node_search` omits arbitrary function-body literals, so it cannot safely exclude files from general AST searches. The matcher verifies each source digest before matching with tree-sitter and reports its computation limit explicitly.
+`tests_paged_with_path` bounds graph traversal at depth four and uses lexical test-name matching when the graph has no inbound tests. `ast_grep_search` parses declaration names through the extraction language profile and selects matching symbols through the name index and `files`. Other structural patterns scan the bounded set of indexed files for the requested language and path; `node_search` omits arbitrary function-body literals, so it cannot safely exclude files from general AST searches. The matcher verifies each source digest before matching with tree-sitter and reports its computation limit explicitly.
 
 ### 3. Localized Removal Proof
 `code_map_prove_removal` evaluates safety strictly within the target's dependency subgraph:

@@ -3432,9 +3432,11 @@ pub fn query_with_path_options(
             conn,
             selector.unwrap_or(""),
             path,
-            None,
-            true,
-            options,
+            &reader::ExplainOptions {
+                direction: reader::ExplainDirection::Both,
+                show_doc: true,
+                page: options,
+            },
             coverage,
         ),
         "impact" => traverse_with_path_options(

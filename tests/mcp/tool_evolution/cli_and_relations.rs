@@ -262,10 +262,11 @@ fn linked_source_is_exact_and_rejects_symlinks_and_traversal() {
     let page = QueryOptions::resolve(&policy, Some(100), 0, None, None).unwrap();
     let source_options = SourceOptions::resolve(&policy, Some(true), None, None, 0).unwrap();
     let inspect = || {
-        symbols::inspect_with_options(
+        symbols::inspect_with_path_options(
             &c,
             w.root(),
             "linked_fn",
+            None,
             &symbols::InspectOptions {
                 show_doc: false,
                 source: &source_options,
@@ -322,7 +323,7 @@ fn queries_bound_results_and_indexes_cover_edge_predicates() {
     }
     assert!(search("Order*", None, 0).is_err());
     let page = QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
-    assert!(symbols::tests_paged(&c, "OrderOne", "invalid", &page).is_err());
+    assert!(symbols::tests_paged_with_path(&c, "OrderOne", None, "invalid", &page).is_err());
     for (column, index) in [
         ("src_hash", "PRIMARY KEY"),
         ("dst_hash", "idx_edges_dst_kind"),

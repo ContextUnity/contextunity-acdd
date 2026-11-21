@@ -2717,13 +2717,15 @@ impl Cli {
                                 &selector,
                                 path.as_deref(),
                                 &symbols::ExplainOptions {
-                                    direction: None,
-                                    show_doc: true,
+                                    explain: reader::ExplainOptions {
+                                        direction: reader::ExplainDirection::Both,
+                                        show_doc: true,
+                                        page: &cli_page(100)?,
+                                    },
                                     source: &cli_source(false)?,
                                     coverage: CoverageOptions {
                                         include_coverage: true,
                                     },
-                                    page: &cli_page(100)?,
                                 },
                             )?
                         }

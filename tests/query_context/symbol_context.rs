@@ -17,7 +17,7 @@ fn compact_inspect_and_explain_omit_repeated_empty_data_without_losing_edges() {
         "target",
         None,
         &reader::ExplainOptions {
-            direction: Some("incoming"),
+            direction: reader::ExplainDirection::Incoming,
             show_doc: true,
             page: &options(10),
         },
@@ -39,7 +39,7 @@ fn compact_inspect_and_explain_omit_repeated_empty_data_without_losing_edges() {
         "target",
         None,
         &reader::ExplainOptions {
-            direction: Some("incoming"),
+            direction: reader::ExplainDirection::Incoming,
             show_doc: true,
             page: &full,
         },
@@ -229,10 +229,11 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
     }
     assert_eq!(paged_citations, citation_identities);
 
-    let inspected = symbols::inspect_with_options(
+    let inspected = symbols::inspect_with_path_options(
         &conn,
         workspace.root(),
         "target",
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &source,
@@ -273,16 +274,19 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
     );
     assert!(inspected.get("coverage").is_none());
 
-    let explained = symbols::explain_with_options(
+    let explained = symbols::explain_with_path_options(
         &conn,
         workspace.root(),
         "target",
+        None,
         &symbols::ExplainOptions {
-            direction: None,
-            show_doc: true,
+            explain: reader::ExplainOptions {
+                direction: reader::ExplainDirection::Both,
+                show_doc: true,
+                page: &options(20),
+            },
             source: &source,
             coverage: CoverageOptions::default(),
-            page: &options(20),
         },
     )
     .unwrap();
@@ -291,10 +295,11 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
     assert_eq!(explained["documents"]["total"], 2);
     assert!(explained.get("documented_in").is_none());
 
-    let with_coverage = symbols::inspect_with_options(
+    let with_coverage = symbols::inspect_with_path_options(
         &conn,
         workspace.root(),
         "target",
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &source,
@@ -311,10 +316,11 @@ fn compact_symbol_summary_and_coverage_are_bounded_and_opt_in() {
     for operation in ["code_map_inspect", "code_map_query"] {
         let mut page = options(1);
         let inspect = |page: &QueryOptions| match operation {
-            "code_map_inspect" => symbols::inspect_with_options(
+            "code_map_inspect" => symbols::inspect_with_path_options(
                 &conn,
                 workspace.root(),
                 "target",
+                None,
                 &symbols::InspectOptions {
                     show_doc: true,
                     source: &source,
@@ -457,10 +463,11 @@ fn compact_summary_preserves_the_exact_nested_python_container() {
     assert_eq!(expected_qualname, "nested.B.Item");
 
     let source = SourceOptions::resolve(&ResponsePolicy::default(), None, None, None, 0).unwrap();
-    let inspected = symbols::inspect_with_options(
+    let inspected = symbols::inspect_with_path_options(
         &conn,
         std::path::Path::new("."),
         &method_id,
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &source,
@@ -519,10 +526,11 @@ fn compact_summary_call_counts_obey_vm_budget_and_reset_connection() {
     let source =
         SourceOptions::resolve(&ResponsePolicy::default(), Some(false), None, None, 0).unwrap();
     let started = std::time::Instant::now();
-    let error = symbols::inspect_with_options(
+    let error = symbols::inspect_with_path_options(
         &conn,
         workspace.root(),
         &target_id,
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &source,
@@ -950,16 +958,19 @@ fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
     let source = SourceOptions::resolve(&ResponsePolicy::default(), None, None, None, 0).unwrap();
     let mut page = options(20);
     page.detail = Detail::Full;
-    let explained = symbols::explain_with_options(
+    let explained = symbols::explain_with_path_options(
         &conn,
         workspace.root(),
         "caller",
+        None,
         &symbols::ExplainOptions {
-            direction: Some("outgoing"),
-            show_doc: false,
+            explain: reader::ExplainOptions {
+                direction: reader::ExplainDirection::Outgoing,
+                show_doc: false,
+                page: &page,
+            },
             source: &source,
             coverage: CoverageOptions::default(),
-            page: &page,
         },
     )
     .unwrap();
@@ -1012,16 +1023,19 @@ fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
     );
 
     let mut gap_page_options = options(1);
-    let first_gap_page = symbols::explain_with_options(
+    let first_gap_page = symbols::explain_with_path_options(
         &conn,
         workspace.root(),
         "caller",
+        None,
         &symbols::ExplainOptions {
-            direction: Some("outgoing"),
-            show_doc: false,
+            explain: reader::ExplainOptions {
+                direction: reader::ExplainDirection::Outgoing,
+                show_doc: false,
+                page: &gap_page_options,
+            },
             source: &source,
             coverage: CoverageOptions::default(),
-            page: &gap_page_options,
         },
     )
     .unwrap();
@@ -1037,16 +1051,19 @@ fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
         &mut gap_page_options,
         &first_gap_page["analysis_gaps"]
     ));
-    let second_gap_page = symbols::explain_with_options(
+    let second_gap_page = symbols::explain_with_path_options(
         &conn,
         workspace.root(),
         "caller",
+        None,
         &symbols::ExplainOptions {
-            direction: Some("outgoing"),
-            show_doc: false,
+            explain: reader::ExplainOptions {
+                direction: reader::ExplainDirection::Outgoing,
+                show_doc: false,
+                page: &gap_page_options,
+            },
             source: &source,
             coverage: CoverageOptions::default(),
-            page: &gap_page_options,
         },
     )
     .unwrap();
@@ -1056,10 +1073,11 @@ fn rust_trait_object_and_macro_dispatch_expose_scoped_analysis_gaps() {
         "macro_expansion_not_analyzed"
     );
 
-    let inspected = symbols::inspect_with_options(
+    let inspected = symbols::inspect_with_path_options(
         &conn,
         workspace.root(),
         "caller",
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &source,
@@ -1084,16 +1102,19 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
     let source = SourceOptions::resolve(&ResponsePolicy::default(), None, None, None, 0).unwrap();
     let mut page_options = options(1);
 
-    let first = symbols::explain_with_options(
+    let first = symbols::explain_with_path_options(
         &conn,
         workspace.root(),
         "run",
+        None,
         &symbols::ExplainOptions {
-            direction: Some("outgoing"),
-            show_doc: false,
+            explain: reader::ExplainOptions {
+                direction: reader::ExplainDirection::Outgoing,
+                show_doc: false,
+                page: &page_options,
+            },
             source: &source,
             coverage: CoverageOptions::default(),
-            page: &page_options,
         },
     )
     .unwrap();
@@ -1102,16 +1123,19 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
     let mut pages = vec![first["outgoing"]["items"][0].clone()];
     let mut current = first;
     while continue_page(&mut page_options, &current["outgoing"]) {
-        current = symbols::explain_with_options(
+        current = symbols::explain_with_path_options(
             &conn,
             workspace.root(),
             "run",
+            None,
             &symbols::ExplainOptions {
-                direction: Some("outgoing"),
-                show_doc: false,
+                explain: reader::ExplainOptions {
+                    direction: reader::ExplainDirection::Outgoing,
+                    show_doc: false,
+                    page: &page_options,
+                },
                 source: &source,
                 coverage: CoverageOptions::default(),
-                page: &page_options,
             },
         )
         .unwrap();
@@ -1137,16 +1161,19 @@ fn explain_pages_possible_calls_as_distinct_navigation_edges() {
     assert_eq!(possible.len(), 2);
     assert!(possible.iter().all(|edge| edge["confidence"] == "possible"));
     assert_ne!(possible[0]["dst_public_id"], possible[1]["dst_public_id"]);
-    let all = symbols::explain_with_options(
+    let all = symbols::explain_with_path_options(
         &conn,
         workspace.root(),
         "run",
+        None,
         &symbols::ExplainOptions {
-            direction: Some("outgoing"),
-            show_doc: false,
+            explain: reader::ExplainOptions {
+                direction: reader::ExplainDirection::Outgoing,
+                show_doc: false,
+                page: &options(100),
+            },
             source: &source,
             coverage: CoverageOptions::default(),
-            page: &options(100),
         },
     )
     .unwrap();

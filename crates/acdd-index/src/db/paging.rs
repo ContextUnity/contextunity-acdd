@@ -200,20 +200,19 @@ pub(crate) fn populate_edge_relations(
     conn: &Connection,
     result: &mut Value,
     node_hash: i64,
-    direction: Option<&str>,
+    direction: ExplainDirection,
     options: &QueryOptions,
 ) -> Result<()> {
-    let parsed_dir = ExplainDirection::parse_optional(direction)?;
     for (include, key, filter_col, order_col, dir_label) in [
         (
-            parsed_dir.includes_incoming(),
+            direction.includes_incoming(),
             "incoming",
             "dst_hash",
             "src_hash",
             "inbound",
         ),
         (
-            parsed_dir.includes_outgoing(),
+            direction.includes_outgoing(),
             "outgoing",
             "src_hash",
             "dst_hash",
@@ -269,6 +268,6 @@ pub(crate) fn populate_edge_relations(
             result[key] = json!(items);
         }
     }
-    result["direction"] = json!(parsed_dir.as_str());
+    result["direction"] = json!(direction.as_str());
     Ok(())
 }

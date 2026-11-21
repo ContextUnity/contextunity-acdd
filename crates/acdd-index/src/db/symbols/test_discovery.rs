@@ -1,7 +1,10 @@
 use super::{paging, reader};
-use crate::models::stable_hash64;
-use acdd_core::response::QueryOptions;
 use crate::db::traversal;
+use crate::models::{
+    stable_hash64,
+    tags::{EdgeKind, NodeKind},
+};
+use acdd_core::response::{Detail, QueryOptions};
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -116,7 +119,8 @@ fn call_paths(
             ("e.dst_hash", "e.src_hash")
         };
         let sql = format!(
-            "SELECT {next_hash} AS hash,{current_hash} AS parent_hash,min(e.line) AS edge_line,ep.path AS edge_path,n.id,n.name,p.path,n.line,n.is_test,json_extract(n.details,'$.test_role') AS test_role FROM edges e JOIN json_each(?1) frontier ON {current_hash}=CAST(frontier.value AS INTEGER) JOIN nodes n ON n.node_hash={next_hash} JOIN path_dictionary p ON p.path_id=n.path_id JOIN path_dictionary ep ON ep.path_id=e.path_id WHERE e.kind='calls' GROUP BY {next_hash},{current_hash},ep.path ORDER BY p.path,n.line,n.id,edge_line,edge_path LIMIT {}",
+            "SELECT {next_hash} AS hash,{current_hash} AS parent_hash,min(e.line) AS edge_line,ep.path AS edge_path,n.id,n.name,p.path,n.line,n.is_test,json_extract(n.details,'$.test_role') AS test_role FROM edges e JOIN json_each(?1) frontier ON {current_hash}=CAST(frontier.value AS INTEGER) JOIN nodes n ON n.node_hash={next_hash} JOIN path_dictionary p ON p.path_id=n.path_id JOIN path_dictionary ep ON ep.path_id=e.path_id WHERE e.kind='{}' GROUP BY {next_hash},{current_hash},ep.path ORDER BY p.path,n.line,n.id,edge_line,edge_path LIMIT {}",
+            EdgeKind::Calls.as_str(),
             MAX_CALL_GRAPH_EDGES_PER_FRONTIER + 1
         );
         let expanded = reader::rows(
@@ -151,33 +155,28 @@ fn call_paths(
                     .as_i64()
                     .context("invalid call edge line")?,
             );
-            let candidate = if inbound {
-                let mut hashes = Vec::with_capacity(parent_path.hashes.len() + 1);
+            let mut hashes = Vec::with_capacity(parent_path.hashes.len() + 1);
+            let mut node_keys = Vec::with_capacity(parent_path.nodes.len() + 1);
+            let mut edges = Vec::with_capacity(parent_path.edges.len() + 1);
+            if inbound {
                 hashes.push(candidate_node.hash);
                 hashes.extend(parent_path.hashes.iter().copied());
-                let mut node_keys = Vec::with_capacity(parent_path.nodes.len() + 1);
                 node_keys.push(candidate_node.key());
                 node_keys.extend(parent_path.nodes.iter().cloned());
-                let mut edges = Vec::with_capacity(parent_path.edges.len() + 1);
                 edges.push(edge);
                 edges.extend(parent_path.edges.iter().cloned());
-                CallPath {
-                    hashes,
-                    nodes: node_keys,
-                    edges,
-                }
             } else {
-                let mut hashes = parent_path.hashes.clone();
+                hashes.extend(parent_path.hashes.iter().copied());
                 hashes.push(candidate_node.hash);
-                let mut node_keys = parent_path.nodes.clone();
+                node_keys.extend(parent_path.nodes.iter().cloned());
                 node_keys.push(candidate_node.key());
-                let mut edges = parent_path.edges.clone();
+                edges.extend(parent_path.edges.iter().cloned());
                 edges.push(edge);
-                CallPath {
-                    hashes,
-                    nodes: node_keys,
-                    edges,
-                }
+            }
+            let candidate = CallPath {
+                hashes,
+                nodes: node_keys,
+                edges,
             };
             let entry = next_paths.entry(candidate_node.hash);
             match entry {
@@ -293,7 +292,10 @@ fn page_call_nodes(
 fn admit_test_mapping(conn: &Connection, id: &str, inbound: bool) -> Result<()> {
     let seeds = paging::count(
         conn,
-        "SELECT count(*) FROM edges WHERE src_hash=?1 AND kind='contains'",
+        &format!(
+            "SELECT count(*) FROM edges WHERE src_hash=?1 AND kind='{}'",
+            EdgeKind::Contains.as_str(),
+        ),
         &[&stable_hash64(id)],
     )?;
     let dependencies = traversal::immediate_links(conn, id, inbound, false)?;
@@ -304,16 +306,6 @@ fn admit_test_mapping(conn: &Connection, id: &str, inbound: bool) -> Result<()> 
         );
     }
     Ok(())
-}
-
-/// Performs tests paged.
-pub fn tests_paged(
-    conn: &Connection,
-    selector: &str,
-    direction: &str,
-    options: &QueryOptions,
-) -> Result<Value> {
-    tests_paged_with_path(conn, selector, None, direction, options)
 }
 
 /// Discovers test cases covering or covered by symbols matching selector.
@@ -374,7 +366,7 @@ pub fn tests_paged_with_path(
         options,
         &generation,
         path,
-        options.detail == acdd_core::response::Detail::Compact,
+        options.detail == Detail::Compact,
     )?;
     let mut discovery_method = "graph";
     if inbound && nodes["total"].as_u64() == Some(0) {
@@ -412,8 +404,12 @@ pub fn tests_paged_with_path(
             nodes = paging::query(
                 conn,
                 &format!(
-                    "SELECT {},json_extract(n.details,'$.test_role') AS test_role FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary p ON p.path_id=n.path_id JOIN files f ON f.path=p.path WHERE node_search MATCH ?1 AND n.is_test=1 AND json_extract(n.details,'$.test_role')='test_case' AND f.is_test=1 AND n.kind IN('function','method','class','struct') AND n.id!=?2 AND (n.name=?3 COLLATE NOCASE OR n.name=('test_'||?3) COLLATE NOCASE OR n.name LIKE ('%'||?4||'%') OR f.path LIKE ('%'||?4||'%')) ORDER BY bm25(node_search),p.path,n.line,n.id",
-                    paging::nodes_with_path("n", options.detail, "p.path")
+                    "SELECT {},json_extract(n.details,'$.test_role') AS test_role FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary p ON p.path_id=n.path_id JOIN files f ON f.path=p.path WHERE node_search MATCH ?1 AND n.is_test=1 AND json_extract(n.details,'$.test_role')='test_case' AND f.is_test=1 AND n.kind IN('{}','{}','{}','{}') AND n.id!=?2 AND (n.name=?3 COLLATE NOCASE OR n.name=('test_'||?3) COLLATE NOCASE OR n.name LIKE ('%'||?4||'%') OR f.path LIKE ('%'||?4||'%')) ORDER BY bm25(node_search),p.path,n.line,n.id",
+                    paging::nodes_with_path("n", options.detail, "p.path"),
+                    NodeKind::Function.as_str(),
+                    NodeKind::Method.as_str(),
+                    NodeKind::Class.as_str(),
+                    NodeKind::Struct.as_str(),
                 ),
                 &[&lexical_query, &id, &name, &snake],
                 options,

@@ -28,7 +28,6 @@ pub use open::{
 pub use search::{documentation_hubs, overview_with_options};
 pub use selectors::{directory_path, indexed_path_suggestions, path_bounds};
 pub(crate) use selectors::{select_detail, select_detail_with_path};
-#[allow(unused_imports)]
 pub(crate) use selectors::strip_selector_uri_prefix;
 pub use sql::rows;
 pub(crate) use sql::{rows_with_window_total, QueryBudget, RowMode};
@@ -269,7 +268,7 @@ pub struct OverviewOptions<'a> {
 /// Selects explanation direction, linked documentation, and paging.
 pub struct ExplainOptions<'a> {
     /// Incoming, outgoing, or both directions.
-    pub direction: Option<&'a str>,
+    pub direction: ExplainDirection,
     /// Whether linked documentation is included.
     pub show_doc: bool,
     /// Bounded page and generation contract.

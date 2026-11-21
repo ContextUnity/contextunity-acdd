@@ -1078,17 +1078,20 @@ impl Server {
                     include_coverage: p.include_coverage,
                 };
                 server.read_with_adapter(adapter, |c| {
+                    let direction = reader::ExplainDirection::parse_optional(p.direction.as_deref())?;
                     let result = symbols::explain_with_path_options(
                         c,
                         &server.root,
                         &p.selector,
                         p.path.as_deref(),
                         &symbols::ExplainOptions {
-                            direction: p.direction.as_deref(),
-                            show_doc: p.show_doc,
+                            explain: reader::ExplainOptions {
+                                direction,
+                                show_doc: p.show_doc,
+                                page: &page,
+                            },
                             source: &source,
                             coverage,
-                            page: &page,
                         },
                     )?;
                     Ok(result)

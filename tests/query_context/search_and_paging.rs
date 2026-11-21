@@ -423,7 +423,7 @@ fn broad_slice_is_rejected_before_recursive_pagination() {
     .unwrap();
     assert_eq!(direct["nodes"]["total"], 1002);
     for (selector, direction) in [("module:graph.py", "inbound"), ("entry", "outbound")] {
-        let error = symbols::tests_paged(&conn, selector, direction, &options(10))
+        let error = symbols::tests_paged_with_path(&conn, selector, None, direction, &options(10))
             .unwrap_err()
             .to_string();
         assert!(

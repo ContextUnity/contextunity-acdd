@@ -1,7 +1,7 @@
 use super::super::paging;
 use super::selectors::select_detail_with_path;
 use super::sql::rows;
-use super::{select_detail, ExplainDirection, ExplainOptions};
+use super::{select_detail, ExplainOptions};
 use crate::models::details::NodeDetailKey;
 use crate::models::tags::EdgeKind;
 use acdd_core::response::{Detail, QueryOptions};
@@ -78,7 +78,6 @@ pub fn explain_with_path_options(
     path: Option<&str>,
     request: &ExplainOptions<'_>,
 ) -> Result<Value> {
-    let parsed_dir = ExplainDirection::parse_optional(request.direction)?;
     let show_doc = request.show_doc;
     let options = request.page;
     let mut result = inspect_paged_with_path(conn, selector, path, show_doc, options)?;
@@ -87,7 +86,7 @@ pub fn explain_with_path_options(
         .context("invalid node id")?
         .to_owned();
     let node_hash = crate::models::stable_hash64(&id);
-    paging::populate_edge_relations(conn, &mut result, node_hash, Some(parsed_dir.as_str()), options)?;
+    paging::populate_edge_relations(conn, &mut result, node_hash, request.direction, options)?;
     if let Some(gen) = result.as_object_mut().and_then(|m| m.remove("generation")) {
         if let Some(m) = result.as_object_mut() {
             m.insert("generation".into(), gen);

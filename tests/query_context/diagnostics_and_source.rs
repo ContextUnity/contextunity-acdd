@@ -212,10 +212,11 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     let conn = workspace.open();
     let policy = ResponsePolicy::default();
     let disabled = SourceOptions::resolve(&policy, None, None, None, 0).unwrap();
-    assert!(symbols::inspect_with_options(
+    assert!(symbols::inspect_with_path_options(
         &conn,
         workspace.root(),
         "selected",
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &disabled,
@@ -227,10 +228,11 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     .get("source")
     .is_none());
     let preview = SourceOptions::resolve(&policy, Some(true), None, Some(35), 0).unwrap();
-    let first = symbols::inspect_with_options(
+    let first = symbols::inspect_with_path_options(
         &conn,
         workspace.root(),
         "selected",
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &preview,
@@ -248,10 +250,11 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     let mut query = options(30);
     query.generation = Some(first["generation"].as_str().unwrap().to_owned());
     let next = SourceOptions::resolve(&policy, Some(true), None, Some(35), 35).unwrap();
-    let last = symbols::inspect_with_options(
+    let last = symbols::inspect_with_path_options(
         &conn,
         workspace.root(),
         "selected",
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &next,
@@ -274,16 +277,19 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         body
     );
     let finished = SourceOptions::resolve(&policy, Some(true), None, Some(35), 62).unwrap();
-    let empty = symbols::explain_with_options(
+    let empty = symbols::explain_with_path_options(
         &conn,
         workspace.root(),
         "selected",
+        None,
         &symbols::ExplainOptions {
-            direction: None,
-            show_doc: true,
+            explain: reader::ExplainOptions {
+                direction: reader::ExplainDirection::Both,
+                show_doc: true,
+                page: &query,
+            },
             source: &finished,
             coverage: CoverageOptions::default(),
-            page: &query,
         },
     )
     .unwrap();
@@ -328,10 +334,11 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
     common::assertions::assert_command_succeeded(&cli_valid);
     let cli_valid: Value = serde_json::from_slice(&cli_valid.stdout).unwrap();
     assert_eq!(cli_valid["source_preview"]["body_offset"], cli_offset);
-    assert!(symbols::inspect_with_options(
+    assert!(symbols::inspect_with_path_options(
         &conn,
         workspace.root(),
         "selected",
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &next,
@@ -551,23 +558,27 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
                         SourceOptions::resolve(&policy, Some(true), Some(0), requested, offset)
                             .unwrap();
                     let result = if explain {
-                        symbols::explain_with_options(
+                        symbols::explain_with_path_options(
                             &conn,
                             workspace.root(),
                             &name,
+                            None,
                             &symbols::ExplainOptions {
-                                direction: None,
-                                show_doc: true,
+                                explain: reader::ExplainOptions {
+                                    direction: reader::ExplainDirection::Both,
+                                    show_doc: true,
+                                    page: &query,
+                                },
                                 source: &source,
                                 coverage: CoverageOptions::default(),
-                                page: &query,
                             },
                         )
                     } else {
-                        symbols::inspect_with_options(
+                        symbols::inspect_with_path_options(
                             &conn,
                             workspace.root(),
                             &name,
+                            None,
                             &symbols::InspectOptions {
                                 show_doc: false,
                                 source: &source,
@@ -615,10 +626,11 @@ fn source_preview_preserves_utf8_crlf_boundaries_and_line_continuation() {
         }
     }
     workspace.write("code.py", "def selected(): return 99\n");
-    assert!(symbols::inspect_with_options(
+    assert!(symbols::inspect_with_path_options(
         &conn,
         workspace.root(),
         "selected",
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &preview,
@@ -668,10 +680,11 @@ fn oversized_source_lines_fail_without_partial_code() {
     let conn = workspace.open();
     let source =
         SourceOptions::resolve(&ResponsePolicy::default(), Some(true), None, None, 0).unwrap();
-    let error = symbols::inspect_with_options(
+    let error = symbols::inspect_with_path_options(
         &conn,
         workspace.root(),
         "huge",
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &source,
@@ -757,10 +770,11 @@ fn source_preview_does_not_include_neighboring_symbols_on_the_same_line() {
     let conn = workspace.open();
     let source =
         SourceOptions::resolve(&ResponsePolicy::default(), Some(true), None, None, 0).unwrap();
-    let result = symbols::inspect_with_options(
+    let result = symbols::inspect_with_path_options(
         &conn,
         workspace.root(),
         "selected",
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &source,
@@ -784,10 +798,11 @@ fn source_preview_does_not_include_neighboring_symbols_on_the_same_line() {
             |row| row.get(0),
         )
         .unwrap();
-    let result = symbols::inspect_with_options(
+    let result = symbols::inspect_with_path_options(
         &conn,
         workspace.root(),
         &anonymous,
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &source,
@@ -808,10 +823,11 @@ fn source_preview_resolves_vue_script_boundaries() {
     let conn = workspace.open();
     let source =
         SourceOptions::resolve(&ResponsePolicy::default(), Some(true), None, None, 0).unwrap();
-    let result = symbols::inspect_with_options(
+    let result = symbols::inspect_with_path_options(
         &conn,
         workspace.root(),
         "selected",
+        None,
         &symbols::InspectOptions {
             show_doc: false,
             source: &source,

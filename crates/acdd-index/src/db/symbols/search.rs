@@ -1,8 +1,122 @@
+use super::inspect::direct_call_summary;
+use super::preview::{first_docstring_sentence, resolve_indexed_text_match, source_preview};
+use super::source::VerifiedSourceCache;
+use super::test_discovery::tests_paged_with_path;
 use super::{paging, reader, SearchOptions};
-use acdd_core::response::QueryOptions;
+use crate::models::{
+    details::NodeDetailKey,
+    stable_hash64,
+    tags::{EdgeKind, LanguageId, NodeKind},
+};
+use acdd_core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions};
 use anyhow::{bail, Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, ToSql};
 use serde_json::{json, Value};
+use std::{collections::HashMap, path::Path};
+
+fn fts_tokens(pattern: &str) -> Vec<&str> {
+    pattern
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+fn quoted_fts_terms(tokens: &[&str]) -> Vec<String> {
+    tokens.iter().map(|part| format!("\"{part}\"")).collect()
+}
+
+fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+fn scope_filter_sql(kind_idx: usize, path_idx: usize, include_docs_idx: usize) -> String {
+    let function = NodeKind::Function.as_str();
+    let method = NodeKind::Method.as_str();
+    let markdown = LanguageId::Markdown.as_str();
+    let p_start = path_idx + 1;
+    let p_end = path_idx + 2;
+    format!(
+        "(?{kind_idx}='' OR n.kind=?{kind_idx} OR (?{kind_idx}='{method}' AND n.kind='{function}') OR (?{kind_idx}='{function}' AND n.kind='{method}')) \
+         AND (?{path_idx}='' OR pd.path=?{path_idx} OR (pd.path>=?{p_start} AND pd.path<?{p_end})) \
+         AND (?{include_docs_idx}=1 OR n.language!='{markdown}')"
+    )
+}
+
+struct ExactSearchContext<'a> {
+    columns: &'a str,
+    graph_boost: &'a str,
+    pattern: &'a str,
+    kind: &'a str,
+    path: &'a str,
+    path_start: &'a str,
+    path_end: &'a str,
+    include_docs: bool,
+    options: &'a QueryOptions,
+}
+
+fn run_exact_search_query(
+    conn: &Connection,
+    ctx: &ExactSearchContext<'_>,
+    ranked: bool,
+) -> Result<Value> {
+    let ExactSearchContext {
+        columns,
+        graph_boost,
+        pattern,
+        kind,
+        path,
+        path_start,
+        path_end,
+        include_docs,
+        options,
+    } = *ctx;
+    let fts_query = quoted_fts_terms(&fts_tokens(pattern)).join(" AND ");
+    let (from, match_pred, match_rank_expr, scope_filter) = if fts_query.is_empty() {
+        (
+            "(SELECT node_id FROM nodes WHERE name=?1 UNION SELECT node_id FROM nodes WHERE qualname=?1) exact JOIN nodes n ON n.node_id=exact.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id",
+            String::new(),
+            "CASE WHEN n.name=?1 THEN 0 ELSE 2 END",
+            scope_filter_sql(2, 3, 6),
+        )
+    } else {
+        (
+            "node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id",
+            "node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND ".to_owned(),
+            "CASE WHEN n.name=?2 COLLATE NOCASE THEN 0 ELSE 2 END",
+            scope_filter_sql(3, 4, 7),
+        )
+    };
+    let where_clause = format!("{match_pred}{scope_filter}");
+    let sql = if ranked {
+        format!(
+            "WITH exact_probe AS MATERIALIZED (SELECT n.node_id,{match_rank_expr} AS match_rank,pd.path,n.line,n.id FROM {from} WHERE {where_clause} ORDER BY match_rank,pd.path,n.line,n.id LIMIT 1001), result_total AS (SELECT CASE WHEN count(*)>=1001 THEN NULL ELSE count(*) END AS search_total FROM exact_probe), graph_window AS MATERIALIZED (SELECT node_id,match_rank,path,line,id FROM exact_probe ORDER BY match_rank,path,line,id LIMIT 50), boosted AS MATERIALIZED (SELECT p.node_id,{graph_boost} AS graph_boost FROM graph_window p JOIN nodes n ON n.node_id=p.node_id) SELECT {columns},{match_rank_expr} AS match_rank,COALESCE(b.graph_boost,0) AS graph_boost,r.search_total FROM {from} CROSS JOIN result_total r LEFT JOIN boosted b ON b.node_id=n.node_id WHERE {where_clause} ORDER BY match_rank,CASE WHEN b.node_id IS NULL THEN 1 ELSE 0 END,COALESCE(b.graph_boost,0) DESC,pd.path,n.line,n.id"
+        )
+    } else {
+        format!(
+            "SELECT {columns},0 AS match_rank,0.0 AS bm25_rank,0 AS graph_boost FROM {from} WHERE {where_clause} ORDER BY pd.path,n.line,n.id"
+        )
+    };
+    let mut params: Vec<&dyn ToSql> = Vec::with_capacity(7);
+    if !fts_query.is_empty() {
+        params.push(&fts_query);
+    }
+    params.extend([
+        &pattern as &dyn ToSql,
+        &kind,
+        &path,
+        &path_start,
+        &path_end,
+        &include_docs,
+    ]);
+    if ranked {
+        ranked_search_page(conn, &sql, &params, options)
+    } else {
+        paging::query(conn, &sql, &params, options)
+    }
+}
 
 /// Search indexed symbols using one bounded options contract.
 pub fn search_with_options(
@@ -26,11 +140,7 @@ pub fn search_with_options(
     }
     let kind = kind.unwrap_or("");
     let path = path.map(|value| {
-        value
-            .trim()
-            .strip_prefix("file://")
-            .or_else(|| value.trim().strip_prefix("file:"))
-            .unwrap_or(value.trim())
+        reader::strip_selector_uri_prefix(value.trim())
             .trim_start_matches("./")
             .trim_end_matches('/')
     });
@@ -51,7 +161,12 @@ pub fn search_with_options(
     }
     let (path_start, path_end) = reader::path_bounds(path);
     let columns = paging::nodes_with_path("n", options.detail, "pd.path");
-    let graph_boost = "CASE WHEN EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind NOT IN('contains','documents','references_doc')) THEN 50 ELSE 0 END";
+    let graph_boost = format!(
+        "CASE WHEN EXISTS(SELECT 1 FROM edges e WHERE e.dst_hash=n.node_hash AND e.kind NOT IN('{}','{}','{}')) THEN 50 ELSE 0 END",
+        EdgeKind::Contains.as_str(),
+        EdgeKind::Documents.as_str(),
+        EdgeKind::ReferencesDoc.as_str(),
+    );
     if let Some((field, value)) = pattern
         .strip_prefix("returns:")
         .map(|value| ("return", value))
@@ -65,17 +180,18 @@ pub fn search_with_options(
         if value.is_empty() || value.contains('*') || value.contains('\0') {
             bail!("type filter must contain a type fragment without wildcards");
         }
-        let escaped = value
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        let query = format!("%{escaped}%");
+        let query = format!("%{}%", escape_like(value));
         let predicate = if field == "return" {
-            "json_extract(n.details,'$.return_type') LIKE ?1 ESCAPE '\\'"
+            format!("json_extract(n.details,'$.{}') LIKE ?1 ESCAPE '\\'", NodeDetailKey::RETURN_TYPE)
         } else {
-            "EXISTS (SELECT 1 FROM json_each(n.details,'$.param_types') p WHERE p.type='text' AND p.value LIKE ?1 ESCAPE '\\')"
+            "EXISTS (SELECT 1 FROM json_each(n.details,'$.param_types') p WHERE p.type='text' AND p.value LIKE ?1 ESCAPE '\\')".to_owned()
         };
-        let sql = format!("SELECT {columns} FROM nodes n JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE {predicate} AND n.kind IN ('function','method') AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY pd.path,n.line,n.id");
+        let scope_filter = scope_filter_sql(2, 3, 6);
+        let sql = format!(
+            "SELECT {columns} FROM nodes n JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE {predicate} AND n.kind IN ('{}','{}') AND {scope_filter} ORDER BY pd.path,n.line,n.id",
+            NodeKind::Function.as_str(),
+            NodeKind::Method.as_str(),
+        );
         let nodes = paging::query(
             conn,
             &sql,
@@ -84,53 +200,20 @@ pub fn search_with_options(
         )?;
         return Ok(json!({"pattern":pattern,"nodes":nodes}));
     }
+    let exact_ctx = ExactSearchContext {
+        columns: &columns,
+        graph_boost: &graph_boost,
+        pattern,
+        kind,
+        path,
+        path_start: &path_start,
+        path_end: &path_end,
+        include_docs,
+        options,
+    };
     let default_exact = if !exact && !pattern.contains('*') {
-        let fts_query = pattern
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|part| !part.is_empty())
-            .map(|part| format!("\"{part}\""))
-            .collect::<Vec<_>>()
-            .join(" AND ");
-        let candidates = if fts_query.is_empty() {
-            let sql = format!(
-                "WITH exact_probe AS MATERIALIZED (SELECT n.node_id,CASE WHEN n.name=?1 THEN 0 ELSE 2 END AS match_rank,pd.path,n.line,n.id FROM (SELECT node_id FROM nodes WHERE name=?1 UNION SELECT node_id FROM nodes WHERE qualname=?1) exact JOIN nodes n ON n.node_id=exact.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY match_rank,pd.path,n.line,n.id LIMIT 1001), result_total AS (SELECT CASE WHEN count(*)>=1001 THEN NULL ELSE count(*) END AS search_total FROM exact_probe), graph_window AS MATERIALIZED (SELECT node_id,match_rank,path,line,id FROM exact_probe ORDER BY match_rank,path,line,id LIMIT 50), boosted AS MATERIALIZED (SELECT p.node_id,{graph_boost} AS graph_boost FROM graph_window p JOIN nodes n ON n.node_id=p.node_id) SELECT {columns},CASE WHEN n.name=?1 THEN 0 ELSE 2 END AS match_rank,COALESCE(b.graph_boost,0) AS graph_boost,r.search_total FROM (SELECT node_id FROM nodes WHERE name=?1 UNION SELECT node_id FROM nodes WHERE qualname=?1) exact JOIN nodes n ON n.node_id=exact.node_id JOIN path_dictionary pd ON pd.path_id=n.path_id CROSS JOIN result_total r LEFT JOIN boosted b ON b.node_id=n.node_id WHERE (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY match_rank,CASE WHEN b.node_id IS NULL THEN 1 ELSE 0 END,COALESCE(b.graph_boost,0) DESC,pd.path,n.line,n.id"
-            );
-            ranked_search_page(
-                conn,
-                &sql,
-                &[
-                    &pattern,
-                    &kind,
-                    &path,
-                    &path_start,
-                    &path_end,
-                    &include_docs,
-                ],
-                options,
-            )?
-        } else {
-            let sql = format!(
-                "WITH exact_probe AS MATERIALIZED (SELECT n.node_id,CASE WHEN n.name=?2 COLLATE NOCASE THEN 0 ELSE 2 END AS match_rank,pd.path,n.line,n.id FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND (?3='' OR n.kind=?3 OR (?3='method' AND n.kind='function') OR (?3='function' AND n.kind='method')) AND (?4='' OR pd.path=?4 OR (pd.path>=?5 AND pd.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY match_rank,pd.path,n.line,n.id LIMIT 1001), result_total AS (SELECT CASE WHEN count(*)>=1001 THEN NULL ELSE count(*) END AS search_total FROM exact_probe), graph_window AS MATERIALIZED (SELECT node_id,match_rank,path,line,id FROM exact_probe ORDER BY match_rank,path,line,id LIMIT 50), boosted AS MATERIALIZED (SELECT p.node_id,{graph_boost} AS graph_boost FROM graph_window p JOIN nodes n ON n.node_id=p.node_id) SELECT {columns},CASE WHEN n.name=?2 COLLATE NOCASE THEN 0 ELSE 2 END AS match_rank,COALESCE(b.graph_boost,0) AS graph_boost,r.search_total FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id CROSS JOIN result_total r LEFT JOIN boosted b ON b.node_id=n.node_id WHERE node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND (?3='' OR n.kind=?3 OR (?3='method' AND n.kind='function') OR (?3='function' AND n.kind='method')) AND (?4='' OR pd.path=?4 OR (pd.path>=?5 AND pd.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY match_rank,CASE WHEN b.node_id IS NULL THEN 1 ELSE 0 END,COALESCE(b.graph_boost,0) DESC,pd.path,n.line,n.id"
-            );
-            ranked_search_page(
-                conn,
-                &sql,
-                &[
-                    &fts_query,
-                    &pattern,
-                    &kind,
-                    &path,
-                    &path_start,
-                    &path_end,
-                    &include_docs,
-                ],
-                options,
-            )?
-        };
-        let tokens = pattern
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>();
+        let candidates = run_exact_search_query(conn, &exact_ctx, true)?;
+        let tokens = fts_tokens(pattern);
         let has_type_match = if !tokens.is_empty() && candidates["total"].as_u64() != Some(0) {
             let term = |prefix| {
                 tokens
@@ -141,8 +224,11 @@ pub fn search_with_options(
             };
             let query = format!("({}) OR ({})", term("acddtakes"), term("acddreturns"));
             let budget = reader::QueryBudget::new(conn);
+            let scope_filter = scope_filter_sql(2, 3, 6);
             let matched = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?1 AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?6=1 OR n.language!='markdown'))",
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?1 AND {scope_filter})"
+                ),
                 rusqlite::params![query, kind, path, path_start, path_end, include_docs],
                 |row| row.get::<_, bool>(0),
             )?;
@@ -158,60 +244,18 @@ pub fn search_with_options(
     let mut nodes = if let Some(candidates) = default_exact {
         candidates
     } else if exact && pattern != "*" {
-        let fts_query = pattern
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|part| !part.is_empty())
-            .map(|part| format!("\"{part}\""))
-            .collect::<Vec<_>>()
-            .join(" AND ");
-        if fts_query.is_empty() {
-            let sql = format!(
-                "SELECT {columns},0 AS match_rank,0.0 AS bm25_rank,0 AS graph_boost FROM nodes n JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE (n.name=?1 OR n.qualname=?1) AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY pd.path,n.line,n.id"
-            );
-            paging::query(
-                conn,
-                &sql,
-                &[
-                    &pattern,
-                    &kind,
-                    &path,
-                    &path_start,
-                    &path_end,
-                    &include_docs,
-                ],
-                options,
-            )?
-        } else {
-            let sql = format!(
-                "SELECT {columns},0 AS match_rank,0.0 AS bm25_rank,0 AS graph_boost FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?1 AND (n.name=?2 COLLATE NOCASE OR n.qualname=?2 COLLATE NOCASE) AND (?3='' OR n.kind=?3 OR (?3='method' AND n.kind='function') OR (?3='function' AND n.kind='method')) AND (?4='' OR pd.path=?4 OR (pd.path>=?5 AND pd.path<?6)) AND (?7=1 OR n.language!='markdown') ORDER BY pd.path,n.line,n.id"
-            );
-            paging::query(
-                conn,
-                &sql,
-                &[
-                    &fts_query,
-                    &pattern,
-                    &kind,
-                    &path,
-                    &path_start,
-                    &path_end,
-                    &include_docs,
-                ],
-                options,
-            )?
-        }
+        run_exact_search_query(conn, &exact_ctx, false)?
     } else if pattern.contains('*') {
-        let like = pattern
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-            .replace('*', "%");
+        let like = escape_like(pattern).replace('*', "%");
         if let Some(prefix) = pattern
             .strip_suffix('*')
             .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_alphanumeric() || c == '_'))
         {
             let query = format!("\"{prefix}\"*");
-            let from = "FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\' OR n.qualname LIKE '%::' || ?1 ESCAPE '\\' OR n.qualname LIKE '%.' || ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?4='' OR pd.path=?4 OR (pd.path>=?5 AND pd.path<?6)) AND (?7=1 OR n.language!='markdown')";
+            let scope_filter = scope_filter_sql(2, 4, 7);
+            let from = format!(
+                "FROM node_search JOIN nodes n ON n.node_hash=node_search.rowid JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE node_search MATCH ?3 AND (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\' OR n.qualname LIKE '%::' || ?1 ESCAPE '\\' OR n.qualname LIKE '%.' || ?1 ESCAPE '\\') AND {scope_filter}"
+            );
             let probe = format!("SELECT n.node_id {from} LIMIT 1001");
             let sql = format!(
                 "WITH fts_scored AS MATERIALIZED (
@@ -249,29 +293,22 @@ pub fn search_with_options(
                 options,
             )?
         } else {
+            let scope_filter = scope_filter_sql(2, 3, 6);
             paging::query(
                 conn,
                 &format!(
-                    "SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND (?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?6=1 OR n.language!='markdown') ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 500 ELSE 0 END DESC,pd.path,n.line,n.id"
+                    "SELECT {columns},CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 'name_pattern' ELSE 'qualified_pattern' END match_reason FROM nodes n JOIN path_dictionary pd ON pd.path_id=n.path_id WHERE (n.name LIKE ?1 ESCAPE '\\' OR n.qualname LIKE ?1 ESCAPE '\\') AND {scope_filter} ORDER BY CASE WHEN n.name LIKE ?1 ESCAPE '\\' THEN 500 ELSE 0 END DESC,pd.path,n.line,n.id"
                 ),
                 &[&like, &kind, &path, &path_start, &path_end, &include_docs],
                 options,
             )?
         }
     } else {
-        let terms = pattern
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("\"{s}\""))
-            .collect::<Vec<_>>();
+        let terms = quoted_fts_terms(&fts_tokens(pattern));
         if terms.is_empty() {
             bail!("pattern must contain a symbol fragment");
         }
-        let escaped = pattern
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        let prefix = format!("{escaped}%");
+        let prefix = format!("{}%", escape_like(pattern));
         let candidate_limit = i64::try_from(
             options
                 .offset
@@ -281,7 +318,7 @@ pub fn search_with_options(
         )
         .context("search offset exceeds SQLite integer range")?;
         let structural_candidates = "SELECT node_id FROM nodes WHERE name LIKE ?7 ESCAPE '\\' UNION SELECT node_id FROM nodes WHERE qualname=?6 COLLATE NOCASE";
-        let filters = "(?2='' OR n.kind=?2 OR (?2='method' AND n.kind='function') OR (?2='function' AND n.kind='method')) AND (?3='' OR pd.path=?3 OR (pd.path>=?4 AND pd.path<?5)) AND (?8=1 OR n.language!='markdown')";
+        let filters = scope_filter_sql(2, 3, 8);
         let structural_score = "CASE WHEN n.name=?6 COLLATE NOCASE OR n.qualname=?6 COLLATE NOCASE THEN 1000 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 500 ELSE 0 END";
         let fts_score = "CASE WHEN n.name=?6 COLLATE NOCASE OR n.qualname=?6 COLLATE NOCASE THEN 1000 WHEN n.name LIKE ?7 ESCAPE '\\' THEN 500 ELSE 0 END + CASE WHEN ?11=1 AND n.node_hash IN (SELECT node_hash FROM fts_and_matches) THEN 250 ELSE 0 END - bm25(node_search)";
         let sql = format!(
@@ -371,9 +408,7 @@ pub fn search_with_options(
     };
     if let Some(items) = nodes["items"].as_array_mut() {
         for item in items {
-            if options.detail == acdd_core::response::Detail::Compact
-                && item["match_reason"] == "name_pattern"
-            {
+            if options.detail == Detail::Compact && item["match_reason"] == "name_pattern" {
                 item.as_object_mut()
                     .context("invalid search result")?
                     .remove("match_reason");
@@ -389,9 +424,7 @@ pub fn search_with_options(
                     Some(3) => "name_fragment",
                     _ => "indexed_text",
                 };
-                if options.detail == acdd_core::response::Detail::Full
-                    || !matches!(rank.as_u64(), Some(0..=1 | 3))
-                {
+                if options.detail == Detail::Full || !matches!(rank.as_u64(), Some(0..=1 | 3)) {
                     item["match_reason"] = json!(reason);
                 }
                 item.as_object_mut()
@@ -409,7 +442,7 @@ pub fn search_with_options(
 fn ranked_search_page(
     conn: &Connection,
     sql: &str,
-    params: &[&dyn rusqlite::ToSql],
+    params: &[&dyn ToSql],
     options: &QueryOptions,
 ) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
@@ -417,7 +450,7 @@ fn ranked_search_page(
         .context("search limit exceeds SQLite integer range")?;
     let offset = options.offset as i64;
     let mut bindings = params.to_vec();
-    bindings.extend([&limit as &dyn rusqlite::ToSql, &offset]);
+    bindings.extend([&limit as &dyn ToSql, &offset]);
     let limit_param = params.len() + 1;
     let mut items = reader::rows(
         conn,
@@ -434,8 +467,8 @@ fn ranked_search_page(
         let first_offset = 0_i64;
         let mut first_page_bindings = params.to_vec();
         first_page_bindings.extend([
-            &first_limit as &dyn rusqlite::ToSql,
-            &first_offset as &dyn rusqlite::ToSql,
+            &first_limit as &dyn ToSql,
+            &first_offset as &dyn ToSql,
         ]);
         let first_page = reader::rows(
             conn,
@@ -469,4 +502,262 @@ fn ranked_search_page(
         "items": items,
         "generation": generation
     }))
+}
+
+/// Adds indexed signatures and bounded navigation previews to one search page.
+pub fn search_results_with_navigation(
+    conn: &Connection,
+    root: &Path,
+    mut result: Value,
+    include_preview: bool,
+) -> Result<Value> {
+    const SIGNATURE_CHAR_LIMIT: usize = 512;
+    const PREVIEW_HIT_LIMIT: usize = 3;
+    const PREVIEW_BYTES_PER_HIT: usize = 4096;
+
+    let pattern = result["pattern"].as_str().unwrap_or("").to_owned();
+    let has_small_total = result["nodes"]["total"]
+        .as_u64()
+        .is_some_and(|total| total <= PREVIEW_HIT_LIMIT as u64);
+    let Some(items) = result["nodes"]["items"].as_array_mut() else {
+        return Ok(result);
+    };
+    if items.is_empty() {
+        return Ok(result);
+    }
+
+    let mut source_cache: HashMap<String, Option<String>> = HashMap::new();
+    let mut source_loader = VerifiedSourceCache::new();
+
+    let ids = items
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect::<Vec<_>>();
+    let serialized_ids = serde_json::to_string(&ids)?;
+    let metadata_rows = reader::rows(
+        conn,
+        &format!(
+            "SELECT n.id,json_extract(n.details,'$.{}') AS signature,CASE WHEN n.is_test THEN 1 ELSE 0 END AS is_test,json_extract(n.details,'$.{}') AS docstring FROM nodes n JOIN json_each(?1) requested ON requested.value=n.id",
+            NodeDetailKey::SIGNATURE,
+            NodeDetailKey::DOC,
+        ),
+        &[&serialized_ids],
+        ids.len(),
+    )?;
+    let metadata = metadata_rows
+        .into_iter()
+        .filter_map(|row| {
+            Some((
+                row["id"].as_str()?.to_owned(),
+                (
+                    row["signature"].as_str().map(str::to_owned),
+                    row["is_test"].as_i64().map(|value| value != 0),
+                    row["docstring"].as_str().map(str::to_owned),
+                ),
+            ))
+        })
+        .collect::<HashMap<_, _>>();
+
+    let previews_enabled = include_preview || has_small_total;
+    let markdown = LanguageId::Markdown.as_str();
+    for (index, item) in items.iter_mut().enumerate() {
+        let Some(object) = item.as_object_mut() else {
+            continue;
+        };
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .context("search result has no symbol id")?
+            .to_owned();
+        let (signature, is_test, docstring) =
+            metadata.get(&id).cloned().unwrap_or((None, None, None));
+        object.insert(
+            "signature".into(),
+            signature
+                .map(|value| {
+                    let mut bounded = value.chars().take(SIGNATURE_CHAR_LIMIT).collect::<String>();
+                    if value.chars().count() > SIGNATURE_CHAR_LIMIT {
+                        bounded.push('…');
+                    }
+                    json!(bounded)
+                })
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "inspect_selector".into(),
+            json!({"selector":id,"show_source":true}),
+        );
+
+        if let Some(is_test) = is_test {
+            object.insert("is_test".into(), json!(is_test));
+            let classification =
+                if object.get("language").and_then(Value::as_str) == Some(markdown) {
+                    "documentation"
+                } else if is_test {
+                    "test"
+                } else {
+                    "production"
+                };
+            object.insert("classification".into(), json!(classification));
+        }
+        if let Some(docstring) = docstring.as_deref().and_then(first_docstring_sentence) {
+            object.insert("docstring_first_sentence".into(), json!(docstring));
+        }
+
+        let is_indexed_text =
+            object.get("match_reason").and_then(Value::as_str) == Some("indexed_text");
+        let is_markdown = object.get("language").and_then(Value::as_str) == Some(markdown);
+        let mut matched_window: Option<(String, Value)> = None;
+        if is_indexed_text && !is_markdown && !pattern.trim().is_empty() {
+            if let (Some(path), Some(start), Some(end)) = (
+                object
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                object
+                    .get("line")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| usize::try_from(v).ok()),
+                object
+                    .get("end_line")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| usize::try_from(v).ok()),
+            ) {
+                let cached = source_cache
+                    .entry(path.clone())
+                    .or_insert_with(|| source_loader.read(conn, root, &path).ok());
+                if let Some(text) = cached.as_deref() {
+                    if let Some(matched) = resolve_indexed_text_match(
+                        text,
+                        start,
+                        end,
+                        &pattern,
+                        PREVIEW_BYTES_PER_HIT,
+                    ) {
+                        object.insert("line".into(), json!(matched.line));
+                        object.insert("match_snippet".into(), json!(matched.snippet));
+                        if previews_enabled && index < PREVIEW_HIT_LIMIT {
+                            if let Some((preview_src, win_start, win_end)) = matched.preview {
+                                matched_window = Some((
+                                    preview_src,
+                                    json!({
+                                        "start_line": win_start,
+                                        "end_line": win_end,
+                                        "body_lines": win_end.saturating_sub(win_start) + 1,
+                                        "has_more": false,
+                                    }),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if index == 0 {
+            object.insert("graph_pulse".into(), search_graph_pulse(conn, &id));
+        }
+        if !previews_enabled || index >= PREVIEW_HIT_LIMIT {
+            continue;
+        }
+        if let Some((preview_src, preview_meta)) = matched_window {
+            object.insert("source".into(), json!(preview_src));
+            object.insert("source_preview".into(), preview_meta);
+            continue;
+        }
+        if object.get("kind").and_then(Value::as_str) == Some("file") {
+            // File rows span the whole file and their start line already resolves to line 1;
+            // skip symbol_range AST recovery rather than falling back to line 1 of an enclosing module container.
+            continue;
+        }
+        let path = object
+            .get("path")
+            .and_then(Value::as_str)
+            .context("search result has no path")?;
+        let Some(text) = source_cache
+            .entry(path.to_owned())
+            .or_insert_with(|| source_loader.read(conn, root, path).ok())
+            .clone()
+        else {
+            continue;
+        };
+        let node = json!({
+            "id": id,
+            "kind": object.get("kind"),
+            "name": object.get("name"),
+            "qualname": object.get("qualname"),
+            "path": path,
+            "line": object.get("line"),
+            "end_line": object.get("end_line"),
+            "language": object.get("language")
+        });
+        let options = SourceOptions {
+            enabled: true,
+            leading_lines: 5,
+            max_body_lines: 15,
+            offset: 0,
+        };
+        if let Ok((source, preview)) =
+            source_preview(conn, &node, &text, &options, PREVIEW_BYTES_PER_HIT)
+        {
+            object.insert("source".into(), json!(source));
+            object.insert("source_preview".into(), preview);
+        }
+    }
+    Ok(result)
+}
+
+fn search_graph_pulse(conn: &Connection, id: &str) -> Value {
+    let callers = match direct_call_summary(conn, id, true, 3) {
+        Ok(summary) => summary,
+        Err(_) => {
+            json!({"availability":"unavailable","cause":"caller relationships exceeded the indexed query budget"})
+        }
+    };
+    let implementations = (|| -> Result<usize> {
+        let budget = reader::QueryBudget::new(conn);
+        let count = conn.query_row(
+            &format!(
+                "SELECT count(*) FROM edges WHERE kind='{}' AND (src_hash=?1 OR dst_hash=?1)",
+                EdgeKind::Implements.as_str(),
+            ),
+            [stable_hash64(id)],
+            |row| row.get::<_, usize>(0),
+        )?;
+        budget.check()?;
+        Ok(count)
+    })()
+    .map(|count| json!({"availability":"available","count":count}))
+    .unwrap_or_else(|_| json!({"availability":"unavailable","cause":"implementation relationships are unavailable within the indexed query budget"}));
+
+    let covering_tests = QueryOptions::resolve(
+        &ResponsePolicy::default(),
+        Some(3),
+        0,
+        Some(Detail::Compact),
+        None,
+    )
+    .and_then(|page| tests_paged_with_path(conn, id, None, "inbound", &page))
+    .map(|result| {
+        let method = result["discovery_method"]
+            .as_str()
+            .unwrap_or("unavailable")
+            .to_owned();
+        let total = result["nodes"]["total"].clone();
+        json!({
+            "availability":"available",
+            "discovery_method":method,
+            "total":total,
+            "items":result["nodes"]["items"],
+            "unresolved_references":result["unresolved_references"]
+        })
+    })
+    .unwrap_or_else(|_| json!({"availability":"unavailable","cause":"test relationships are unavailable within the indexed query budget"}));
+
+    json!({
+        "availability":"available",
+        "callers":callers,
+        "implementations":implementations,
+        "covering_tests":covering_tests
+    })
 }
