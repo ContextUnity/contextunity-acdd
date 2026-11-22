@@ -10,6 +10,7 @@ use super::{
     DEFAULT_RETAIN_TRACES, DEFAULT_STATE_DB, LEGACY_05_KEYS,
 };
 use crate::errors::{ErrorCode, StateError};
+use crate::lint::ArchitectureConfig;
 use crate::response::ResponsePolicy;
 use crate::subsystems::{SubsystemId, SubsystemRegistry};
 use anyhow::{Context, Result};
@@ -118,6 +119,9 @@ fn load_adapter_inner(
         }
     };
     raw.response
+        .validate()
+        .map_err(|e| schema_error(e.to_string()))?;
+    raw.architecture
         .validate()
         .map_err(|e| schema_error(e.to_string()))?;
     if let Some(limits) = &raw.limits {
@@ -273,6 +277,7 @@ fn load_adapter_inner(
             profiles_dirs,
             state_db,
             retain_traces,
+            architecture: raw.architecture,
             debug: raw.debug
                 || std::env::var("ACDD_DEBUG")
                     .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -315,6 +320,7 @@ pub fn policy(root: &Path, adapter: &Adapter) -> Value {
         "profiles_dirs": adapter.profiles_dirs,
         "state_db": adapter.state_db,
         "retain_traces": adapter.retain_traces,
+        "architecture": &adapter.architecture,
     })
 }
 
@@ -407,6 +413,9 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
         parse_persisted_or(value, "retain_traces", || DEFAULT_RETAIN_TRACES)?;
     anyhow::ensure!(retain_traces > 0, "invalid persisted retain_traces");
     let sensitive: Vec<String> = parse_persisted_or(value, "sensitive", Vec::new)?;
+    let architecture: ArchitectureConfig =
+        parse_persisted_or(value, "architecture", ArchitectureConfig::default)?;
+    architecture.validate()?;
     Ok(Adapter {
         adapter_path,
         response: ResponsePolicy::default(),
@@ -426,6 +435,7 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
         profiles_dirs,
         state_db,
         retain_traces,
+        architecture,
         debug: false,
     })
 }
@@ -538,6 +548,7 @@ roots: [.]
             "roots: [.]\nmodules:\n  code: false\n  docs: true\n",
             "roots: [.]\nmodules:\n  code: true\n  docs: false\n",
             "roots: [.]\nspecs:\n  milestones:\n    path: docs/contracts\n  plans:\n    path: docs/plans\n",
+            "roots: [.]\narchitecture:\n  zones:\n    core: [\"crates/acdd-core/src/**\"]\n  rules:\n    - id: r1\n      kind: doc_integrity\n",
         ] {
             std::fs::write(dir.join(ACDD_CONFIG_FILE), changed_yaml).unwrap();
             let changed = load_adapter(&dir, None).unwrap();
@@ -576,11 +587,13 @@ roots: [.]
         let _cleanup = crate::fs::ScopedTempDir::create("acdd_strict_cfg").unwrap();
         let dir = _cleanup.path().to_path_buf();
 
-        // 1. deny_unknown_fields on AdapterFile, LinkedWorkspaceConfig, ScannerLimits -> ProfileSchemaInvalid.
+        // 1. deny_unknown_fields on AdapterFile, LinkedWorkspaceConfig, ScannerLimits, ArchitectureConfig -> ProfileSchemaInvalid.
         for bad_yaml in [
             "unknown_top_level: true\n",
             "limits:\n  unknown_limit: 5\n",
             "linked_workspaces:\n  - name: dep\n    path: .\n    unknown_lw: 1\n",
+            "architecture:\n  unknown_arch: 1\n",
+            "architecture:\n  zones:\n    core: [\"crates/acdd-core/**\"]\n  rules:\n    - id: r1\n      kind: forbid_dependency\n      from:\n        zones: [\"missing\"]\n      to:\n        zones: [\"core\"]\n",
             "not: [valid: yaml\n",
         ] {
             std::fs::write(dir.join(ACDD_CONFIG_FILE), bad_yaml).unwrap();
@@ -703,9 +716,14 @@ linked_workspaces:
             dir.join("custom/code.sqlite")
         );
 
-        // 5. read_policy_from_value fails closed on malformed non-null fields & handles external adapter_path.
+        // 5. read_policy_from_value fails closed on malformed non-null fields, preserves architecture, & handles external adapter_path.
+        let arch_cfg = serde_yaml::from_str::<ArchitectureConfig>(
+            "zones:\n  core: [\"crates/acdd-core/src/**\"]\nrules:\n  - id: r1\n    kind: doc_integrity\n",
+        )
+        .unwrap();
         let mut base_adapter = Adapter {
             roots: vec![dir.clone()],
+            architecture: arch_cfg.clone(),
             ..Default::default()
         };
         let external_cfg = outside_dir.join("external-adapter.yaml");
@@ -717,6 +735,7 @@ linked_workspaces:
             roundtripped.adapter_path.as_deref(),
             Some(crate::fs::normalize_path(&external_cfg).as_path())
         );
+        assert_eq!(roundtripped.architecture, arch_cfg);
 
         for (field, bad_value) in [
             ("linked_workspaces", json!("not-an-array")),
@@ -735,6 +754,19 @@ linked_workspaces:
             ("digest", json!(12345)),
             ("adapter_path", json!("")),
             ("adapter_path", json!("../escape.yaml")),
+            ("architecture", json!("not-an-object")),
+            ("architecture", json!({"zones": {"bad": ["../escape"]}})),
+            (
+                "architecture",
+                json!({
+                    "rules": [{
+                        "id": "r1",
+                        "kind": "forbid_dependency",
+                        "from": {"zones": ["missing"]},
+                        "to": {"paths": ["src/**"]}
+                    }]
+                }),
+            ),
         ] {
             let mut tampered = valid_policy.clone();
             tampered[field] = bad_value;

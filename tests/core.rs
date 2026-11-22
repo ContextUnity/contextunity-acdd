@@ -3,6 +3,8 @@ pub mod common;
 
 #[path = "core/adapters.rs"]
 mod adapters;
+#[path = "core/arch_lint.rs"]
+mod arch_lint;
 #[path = "core/build_query_roundtrip.rs"]
 mod build_query_roundtrip;
 #[path = "core/compact_schema.rs"]

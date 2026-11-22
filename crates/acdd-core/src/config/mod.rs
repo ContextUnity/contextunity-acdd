@@ -21,10 +21,13 @@ pub use paths::{
     resolve_custom_db_path, resolve_effective_state_db_path, resolve_file_path,
     resolve_memory_budget_bytes, resolve_state_db_path, workspace_path,
 };
+pub use crate::lint::ArchitectureConfig;
 pub use schema::{
     default_specs, Adapter, AdapterFile, LinkedWorkspace, LinkedWorkspaceConfig, ScannerLimits,
     SpecCollectionConfig, StrictAdapterReport,
 };
+/// Canonical alias for [`Adapter`].
+pub type AcddConfig = Adapter;
 
 /// Canonical workspace adapter configuration filename.
 pub const ACDD_CONFIG_FILE: &str = "acdd.yaml";

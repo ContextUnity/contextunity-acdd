@@ -5,6 +5,7 @@ use super::{
     DEFAULT_MAX_TOTAL_BYTES, DEFAULT_RETAIN_TRACES, DEFAULT_SPEC_DIGITS, DEFAULT_STATE_DB,
     MAX_METADATA_BYTES,
 };
+use crate::lint::ArchitectureConfig;
 use crate::response::ResponsePolicy;
 use crate::subsystems::SubsystemRegistry;
 use anyhow::Result;
@@ -437,6 +438,9 @@ pub struct AdapterFile {
     pub owners: Option<BTreeMap<String, String>>,
     /// Optional aliases map.
     pub aliases: Option<BTreeMap<String, String>>,
+    /// Optional architectural zones and lint rules (`architecture:`).
+    #[serde(default)]
+    pub architecture: ArchitectureConfig,
     #[serde(default, rename = "DEBUG", alias = "debug")]
     /// Debug mode flag.
     pub debug: bool,
@@ -564,6 +568,8 @@ pub struct Adapter {
     pub state_db: String,
     /// Number of retained run trace files.
     pub retain_traces: usize,
+    /// Configured architectural zones and static lint rules.
+    pub architecture: ArchitectureConfig,
     /// Whether debug applies.
     pub debug: bool,
 }
@@ -609,6 +615,7 @@ impl Default for Adapter {
             profiles_dirs: default_profiles_dirs(),
             state_db: DEFAULT_STATE_DB.into(),
             retain_traces: DEFAULT_RETAIN_TRACES,
+            architecture: ArchitectureConfig::default(),
             debug: false,
         }
     }

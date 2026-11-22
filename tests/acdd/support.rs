@@ -66,6 +66,10 @@ impl TestProvider {
                         name: "signature_scope".to_owned(),
                         input_schema: SchemaDef::object(),
                     },
+                    CheckCapability {
+                        name: "lint".to_owned(),
+                        input_schema: acdd_core::lint::lint_check_input_schema(),
+                    },
                 ],
                 context_lenses: BTreeSet::from([
                     "symbols".to_owned(),

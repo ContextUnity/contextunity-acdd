@@ -39,6 +39,8 @@ mod harness_contract;
 #[cfg(unix)]
 #[path = "mcp/installer.rs"]
 mod installer;
+#[path = "mcp/lint_surface.rs"]
+mod lint_surface;
 #[path = "mcp/lint_tools.rs"]
 mod lint_tools;
 #[path = "mcp/query_ranking.rs"]

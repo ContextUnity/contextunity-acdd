@@ -1,6 +1,7 @@
 mod blackboard;
 mod fixtures_matrix;
 mod lifecycle_and_state;
+mod lint_gate_and_docs_profile;
 mod profiles_and_inheritance;
 mod roadmap_cli;
 mod runner_and_waves;

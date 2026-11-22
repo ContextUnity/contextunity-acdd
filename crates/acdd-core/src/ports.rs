@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Canonical list of the 19 built-in static MCP tools that plugin tools must never collide with.
-pub const BUILTIN_MCP_TOOLS: [&str; 19] = [
-    // 10 code tools
+/// Canonical list of the 20 built-in static MCP tools that plugin tools must never collide with.
+pub const BUILTIN_MCP_TOOLS: [&str; 20] = [
+    // 11 code tools
     "code_map_overview",
     "code_map_search",
     "code_map_inspect",
@@ -21,6 +21,7 @@ pub const BUILTIN_MCP_TOOLS: [&str; 19] = [
     "code_map_tests",
     "code_map_prove_removal",
     "code_map_query",
+    "code_map_lint",
     "ast_grep_search",
     // 2 docs tools
     "get_doc",
@@ -36,7 +37,7 @@ pub const BUILTIN_MCP_TOOLS: [&str; 19] = [
     "acdd_blackboard",
 ];
 
-/// Return `true` if `name` matches one of the 19 built-in static MCP tools.
+/// Return `true` if `name` matches one of the 20 built-in static MCP tools.
 pub fn is_builtin_mcp_tool(name: &str) -> bool {
     BUILTIN_MCP_TOOLS.contains(&name)
 }
@@ -410,7 +411,7 @@ struct RegisteredPluginTool {
 /// Fail-closed registry and dispatcher composing host and external `DomainProvider`s.
 ///
 /// Rejects duplicate `domain_id`, duplicate `<domain>_<name>` plugin tool names, invalid capability schemas,
-/// and collisions with the 19 built-in MCP tools at construction time.
+/// and collisions with the 20 built-in MCP tools at construction time.
 #[derive(Default)]
 pub struct CompositeDomainProvider {
     providers: BTreeMap<String, RegisteredProvider>,
@@ -945,9 +946,10 @@ mod tests {
 
     #[test]
     fn composite_registration_rejects_duplicates_and_builtin_collisions() {
-        assert_eq!(BUILTIN_MCP_TOOLS.len(), 19);
+        assert_eq!(BUILTIN_MCP_TOOLS.len(), 20);
 
         let collision_provider = sample_provider("acdd", &["read"]);
+        let lint_collision_provider = sample_provider("code", &["map_lint"]);
         let dup_domain_a = sample_provider("http", &["request"]);
         let dup_domain_b = sample_provider("http", &["inspect"]);
         let cross_tool_a = sample_provider("foo", &["bar_baz"]);
@@ -966,6 +968,11 @@ mod tests {
             (
                 "collides_with_builtin_acdd_read",
                 vec![collision_provider],
+                Some(ErrorCode::ProfileSchemaInvalid),
+            ),
+            (
+                "collides_with_builtin_code_map_lint",
+                vec![lint_collision_provider],
                 Some(ErrorCode::ProfileSchemaInvalid),
             ),
             (

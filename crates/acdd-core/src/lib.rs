@@ -7,6 +7,7 @@ pub mod format;
 pub mod fs;
 pub mod git;
 pub mod ids;
+pub mod lint;
 pub mod lock;
 pub mod model;
 pub mod path_policy;
