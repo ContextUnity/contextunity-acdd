@@ -235,10 +235,22 @@ impl<'a> Context<'a> {
     ) -> Option<&'static str> {
         let receiver =
             super::rust::semantic_context::reference_target(receiver).unwrap_or(receiver);
+        let rayon_container_base = |name: &str| -> Option<&'static str> {
+            match name {
+                "HashMap" => Some("HashMap"),
+                "BTreeMap" => Some("BTreeMap"),
+                "HashSet" => Some("HashSet"),
+                "BTreeSet" => Some("BTreeSet"),
+                _ => None,
+            }
+        };
         let base = match receiver {
             TypeTarget::RustCollection { .. } => "Vec",
             TypeTarget::RustSlice { .. } => "Slice",
+            TypeTarget::RustTypedContainer { base, .. } => rayon_container_base(base)?,
+            TypeTarget::RustDeref { wrapper, .. } => rayon_container_base(wrapper)?,
             TypeTarget::Builtin(name) if name == "Vec" => "Vec",
+            TypeTarget::Builtin(name) => rayon_container_base(name.as_str())?,
             _ => return None,
         };
         if !self.dependencies.declares_for_path(
@@ -271,9 +283,14 @@ impl<'a> Context<'a> {
         if !imported {
             return None;
         }
+        let lookup_base = if matches!(base, "HashMap" | "BTreeMap" | "HashSet" | "BTreeSet") {
+            "Vec"
+        } else {
+            base
+        };
         let (_, rule) = self.dependencies.class_hierarchy_authority_for_path(
             &caller.path,
-            base,
+            lookup_base,
             Some("rust-cargo"),
         )?;
         (rule.provider == "rayon" && rule.members.iter().any(|allowed| allowed == member))
@@ -1236,10 +1253,12 @@ impl<'a> Context<'a> {
                             && node.kind == "function"
                             && node.details["prototype_constructor"] == true)
                 }
-                SymbolRole::Callable => matches!(
-                    node.kind.as_str(),
-                    "function" | "method" | "class" | "struct" | "enum"
-                ),
+                SymbolRole::Callable => {
+                    matches!(
+                        node.kind.as_str(),
+                        "function" | "method" | "class" | "struct" | "enum"
+                    ) || (node.language == "rust" && node.kind == "constant")
+                }
             })
             .collect();
         crate::linker::traits::filter_stubs_and_overloads(&mut candidates);
@@ -1250,7 +1269,8 @@ impl<'a> Context<'a> {
             return Symbol::Ambiguous;
         }
         let node = candidates[0];
-        if matches!(node.kind.as_str(), "function" | "method")
+        if (matches!(node.kind.as_str(), "function" | "method")
+            || (node.language == "rust" && node.kind == "constant"))
             && !matches!(role, SymbolRole::Constructor)
         {
             Symbol::Callable(node)
@@ -1360,28 +1380,36 @@ impl<'a> Context<'a> {
         match receiver {
             #[cfg(feature = "lang-rust")]
             TypeTarget::Local(class) if class.language == "rust" => {
-                let mut key = String::new();
-                let mut fields = self
-                    .by_qual
-                    .get(super::qualified(&mut key, &class.qualname, member))
-                    .into_iter()
-                    .flatten()
-                    .copied()
-                    .filter(|field| {
-                        field.kind == "field"
-                            && field.details["rust_declared_field"] == true
-                            && field.path == class.path
-                            && languages::rust::linker::field_visible(
-                                field,
-                                class,
-                                &caller.qualname,
-                            )
-                    });
-                match (fields.next(), fields.next()) {
-                    (Some(field), None) => Member::Local(field),
-                    (Some(_), Some(_)) => Member::Ambiguous,
-                    _ => Member::Unknown,
+                let mut current = *class;
+                for _ in 0..8 {
+                    let mut key = String::new();
+                    let mut fields = self
+                        .by_qual
+                        .get(super::qualified(&mut key, &current.qualname, member))
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .filter(|field| {
+                            field.kind == "field"
+                                && field.details["rust_declared_field"] == true
+                                && field.path == current.path
+                                && languages::rust::linker::field_visible(
+                                    field,
+                                    current,
+                                    &caller.qualname,
+                                )
+                        });
+                    match (fields.next(), fields.next()) {
+                        (Some(field), None) => return Member::Local(field),
+                        (Some(_), Some(_)) => return Member::Ambiguous,
+                        _ => {}
+                    }
+                    let Some(next) = self.rust.and_then(|rust| rust.deref_target(current)) else {
+                        break;
+                    };
+                    current = next;
                 }
+                Member::Unknown
             }
             TypeTarget::RustReference { target, .. } | TypeTarget::RustDeref { target, .. } => {
                 self.lookup_property(target, member, caller)
@@ -1531,6 +1559,24 @@ impl<'a> Context<'a> {
                 }
             }
             #[cfg(feature = "lang-rust")]
+            TypeTarget::RustTypedContainer { base, .. } if caller.language == "rust" => {
+                if !associated
+                    && self
+                        .rayon_extension_base(receiver, member, caller)
+                        .is_some()
+                {
+                    return Member::External("rayon", 0, None);
+                }
+                if !associated
+                    && languages::by_id("rust")
+                        .is_some_and(|profile| profile.builtin_member(base, member))
+                {
+                    Member::Builtin
+                } else {
+                    Member::Unknown
+                }
+            }
+            #[cfg(feature = "lang-rust")]
             TypeTarget::RustIterator { .. } if caller.language == "rust" => {
                 let standard = !associated
                     && languages::by_id("rust")
@@ -1585,6 +1631,12 @@ impl<'a> Context<'a> {
                 if associated {
                     return Member::Unknown;
                 }
+                if self
+                    .rayon_extension_base(receiver, member, caller)
+                    .is_some()
+                {
+                    return Member::External("rayon", 0, None);
+                }
                 if super::rust::semantic_context::wrapper_value_member(wrapper, member) {
                     return Member::Builtin;
                 }
@@ -1593,7 +1645,7 @@ impl<'a> Context<'a> {
                         if super::rust::semantic_context::standard_member(module, member) {
                             Member::Builtin
                         } else {
-                            Member::Unknown
+                            self.lookup_member_mode(target, member, caller, associated)
                         }
                     }
                     _ => self.lookup_member_mode(target, member, caller, associated),
@@ -1607,6 +1659,12 @@ impl<'a> Context<'a> {
                 {
                     Some([node]) => Member::Local(node),
                     Some(nodes) if nodes.len() > 1 => Member::Ambiguous,
+                    _ if !associated
+                        && member == "to_string"
+                        && self.rust.is_some_and(|index| index.has_display(receiver)) =>
+                    {
+                        Member::Builtin
+                    }
                     _ => Member::Unknown,
                 }
             }

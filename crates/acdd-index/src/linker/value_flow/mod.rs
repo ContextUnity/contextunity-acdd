@@ -155,6 +155,13 @@ pub enum TypeTarget<'a> {
         /// Element type.
         item: Box<TypeTarget<'a>>,
     },
+    /// Typed Rust container (`VecDeque`, `HashSet`, `BTreeSet`) retaining its base & element type.
+    RustTypedContainer {
+        /// Canonical standard container base name.
+        base: &'static str,
+        /// Element type.
+        item: Box<TypeTarget<'a>>,
+    },
     /// Rust slice retaining its element type.
     RustSlice {
         /// Element type.
@@ -643,13 +650,28 @@ fn initialize_scope<'a>(
     }
     let returned = if invalid {
         TypeTarget::Unknown
-    } else {
-        facts
-            .return_type
-            .as_ref()
-            .map_or(TypeTarget::Unknown, |ty| {
-                resolve_type(node, ty, node_position(node), resolver, limits)
+    } else if node.language == "rust"
+        && node.kind == "constant"
+        && node.details["rust_enum_variant"] == true
+    {
+        node.qualname
+            .rsplit_once('.')
+            .and_then(|(enum_qual, _)| by_name.get(&(node.path.as_str(), enum_qual)))
+            .and_then(|nodes| {
+                let mut enums = nodes.iter().copied().filter(|cand| cand.kind == "enum");
+                let first = enums.next()?;
+                enums.next().is_none().then_some(TypeTarget::Local(first))
             })
+            .unwrap_or(TypeTarget::Unknown)
+    } else {
+        let ty = if node.kind == "constant" {
+            facts.alias_type.as_ref()
+        } else {
+            facts.return_type.as_ref()
+        };
+        ty.map_or(TypeTarget::Unknown, |ty| {
+            resolve_type(node, ty, node_position(node), resolver, limits)
+        })
     };
     (
         node,
@@ -1062,6 +1084,12 @@ impl<'a> ValueFlowIndex<'a> {
         )
     }
 
+    pub(in crate::linker) fn constant_type(&self, node: &Node) -> Option<&TypeTarget<'a>> {
+        (node.kind == "constant")
+            .then(|| self.returns.get(node.id.as_str()))
+            .flatten()
+    }
+
     fn borrow_symbol(
         &self,
         symbol: Symbol<'a>,
@@ -1129,6 +1157,9 @@ impl<'a> ValueFlowIndex<'a> {
                 .cloned()
                 .unwrap_or_else(|| {
                     match resolver.resolve_symbol(owner, name, at, SymbolRole::Callable) {
+                        Symbol::Callable(node) if node.kind == "constant" => {
+                            self.returns.get(node.id.as_str()).cloned().unwrap_or(TypeTarget::Unknown)
+                        }
                         Symbol::Callable(node) => TypeTarget::Callable(node),
                         _ => TypeTarget::Unknown,
                     }
@@ -1341,7 +1372,7 @@ impl<'a> ValueFlowIndex<'a> {
                             self.evaluate_tracked(owner, call, at, resolver, definitions, trace)
                         });
                     }
-                    if matches!(member.as_str(), "__rust_array" | "__rust_tuple") {
+                    if matches!(member.as_str(), "__rust_array" | "__rust_tuple" | "__rust_if_join") {
                         let ValueExpr::BranchJoin { alternatives } = value.as_ref() else {
                             return TypeTarget::Unknown;
                         };
@@ -1371,6 +1402,9 @@ impl<'a> ValueFlowIndex<'a> {
                         } else {
                             TypeTarget::Unknown
                         };
+                        if member == "__rust_if_join" {
+                            return item;
+                        }
                         return TypeTarget::RustCollection {
                             item: Box::new(item),
                         };
@@ -1388,18 +1422,6 @@ impl<'a> ValueFlowIndex<'a> {
                             mutable: member == "__rust_ref_mut",
                         };
                     }
-                    if member == "__rust_index" {
-                        let receiver =
-                            self.evaluate_tracked(owner, value, at, resolver, definitions, trace);
-                        return match &receiver {
-                            TypeTarget::External { module, .. }
-                                if module.replace("::", ".") == "serde_json.Value" =>
-                            {
-                                receiver
-                            }
-                            _ => TypeTarget::Unknown,
-                        };
-                    }
                     if let Some(field) = member.strip_prefix("__rust_field:") {
                         let source = if matches!(value.as_ref(), ValueExpr::Alias { name } if name == "self")
                             && owner.details["receiver_name"].as_str() == Some("self")
@@ -1413,7 +1435,7 @@ impl<'a> ValueFlowIndex<'a> {
                         } else {
                             self.evaluate_tracked(owner, value, at, resolver, definitions, trace)
                         };
-                        if let TypeTarget::RustTuple(items) = &source {
+                        if let TypeTarget::RustTuple(items) = super::rust::value_flow::referent(&source).0 {
                             return field
                                 .parse::<usize>()
                                 .ok()
@@ -1465,11 +1487,19 @@ impl<'a> ValueFlowIndex<'a> {
                             if let Some(trace) = trace {
                                 trace.returned(callable.id.as_str());
                             }
-                            return self
+                            if let Some(target) = self
                                 .returns
                                 .get(callable.id.as_str())
-                                .cloned()
-                                .unwrap_or(TypeTarget::Unknown);
+                                .filter(|t| !matches!(t, TypeTarget::Unknown))
+                            {
+                                return target.clone();
+                            }
+                            if let Some(target) = super::rust::value_flow::declared_adapter_result(
+                                &receiver, member, owner, at, resolver,
+                            ) {
+                                return target;
+                            }
+                            return TypeTarget::Unknown;
                         }
                     }
                     if let Some(result) = super::rust::value_flow::declared_adapter_result(
@@ -1948,6 +1978,7 @@ fn merge<'a>(left: &TypeTarget<'a>, right: &TypeTarget<'a>) -> TypeTarget<'a> {
             | TypeTarget::RustWrapper { .. }
             | TypeTarget::RustIterator { .. }
             | TypeTarget::RustCollection { .. }
+            | TypeTarget::RustTypedContainer { .. }
             | TypeTarget::RustSlice { .. }
             | TypeTarget::CallableReturn(_)
             | TypeTarget::ClassType(_)
@@ -2009,7 +2040,7 @@ fn same_fields(
         })
 }
 
-fn same_target(left: &TypeTarget<'_>, right: &TypeTarget<'_>) -> bool {
+pub(super) fn same_target(left: &TypeTarget<'_>, right: &TypeTarget<'_>) -> bool {
     match (left, right) {
         (
             TypeTarget::ConfiguredReceiver {
@@ -2114,6 +2145,10 @@ fn same_target(left: &TypeTarget<'_>, right: &TypeTarget<'_>) -> bool {
         | (TypeTarget::RustSlice { item: a }, TypeTarget::RustSlice { item: b }) => {
             same_target(a, b)
         }
+        (
+            TypeTarget::RustTypedContainer { base: ab, item: ai },
+            TypeTarget::RustTypedContainer { base: bb, item: bi },
+        ) => ab == bb && same_target(ai, bi),
         (
             TypeTarget::Candidates {
                 targets: a,

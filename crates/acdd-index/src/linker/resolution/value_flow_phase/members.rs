@@ -60,7 +60,7 @@ pub(super) fn resolve_computed_call(
                 } else {
                     result
                 };
-                if owner.language == "rust" {
+                if owner.language == "rust" && reference.dynamic {
                     if let semantic_context::Member::Local(node) = &result {
                         if !input.semantic_context.is_rust_inherent_member(node) {
                             return false;

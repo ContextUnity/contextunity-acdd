@@ -276,6 +276,7 @@ impl<'a> InheritanceIndexes<'a> {
                 interner,
                 flows,
                 &namespaces.rust_forwarding,
+                dependency_registry,
             )
         });
         #[cfg(not(feature = "lang-rust"))]

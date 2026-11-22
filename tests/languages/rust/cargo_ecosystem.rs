@@ -446,3 +446,35 @@ fn rayon_authority_follows_dependency_prelude_and_module_scope() {
         }
     }
 }
+
+#[test]
+fn stdlib_process_utf8_and_map_rayon_extensions_preserve_receivers() {
+    let workspace = crate::languages::PersistedWorkspaceHarness::new();
+    workspace.write(
+        "Cargo.toml",
+        "[package]\nname = 'std-probe'\nversion = '0.1.0'\n[dependencies]\nrayon = '1'\n",
+    );
+    let source = "use rayon::prelude::*;\nuse std::collections::{BTreeMap, HashMap};\nuse std::process::Command;\nfn probe(mut text: String, ch: char, num: u32, mut map: BTreeMap<String, Vec<u8>>, hmap: HashMap<String, u32>) {\n    let out = Command::new(\"echo\").output().unwrap();\n    let _ = String::from_utf8(out.stdout).unwrap().trim();\n    let _ = ch.is_ascii_lowercase();\n    let _ = num.to_ne_bytes();\n    let _ = text.split_inclusive(' ').count();\n    text.extend([\"!\"]);\n    map.retain(|_, _| true);\n    let _ = hmap.into_par_iter().count();\n}\n";
+    workspace.write("src/lib.rs", source);
+    let catalog = ExtractorHarness::linked_with_root(
+        "rust",
+        &[("src/lib.rs", source)],
+        Some(workspace.root()),
+    );
+    for expr in [
+        "String::from_utf8(out.stdout).unwrap().trim",
+        "ch.is_ascii_lowercase",
+        "num.to_ne_bytes",
+        "text.split_inclusive",
+        "text.extend",
+        "map.retain",
+        "hmap.into_par_iter",
+    ] {
+        assert_eq!(
+            catalog.coverage_status("src/lib.rs", expr),
+            "external",
+            "expected external for {expr}: {:#?}",
+            catalog.graph.coverage
+        );
+    }
+}

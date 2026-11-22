@@ -135,8 +135,19 @@ impl<'source, 'tree> ScopeAnalysis<'source, 'tree> {
     }
     fn enter_suspended(&mut self, node: Syntax<'tree>) {
         match self.state.as_mut() {
+            #[cfg(feature = "lang-rust")]
+            Some(LanguageAnalysis::Rust(state)) => state.enter(node),
             #[cfg(feature = "lang-typescript")]
             Some(LanguageAnalysis::TypeScript(state)) => state.enter_suspended(node),
+            _ => {
+                let _ = node;
+            }
+        }
+    }
+    fn exit_suspended(&mut self, node: Syntax<'tree>) {
+        match self.state.as_mut() {
+            #[cfg(feature = "lang-rust")]
+            Some(LanguageAnalysis::Rust(state)) => state.exit(node),
             _ => {
                 let _ = node;
             }
@@ -636,6 +647,7 @@ fn callable_scope_kind(kind: &str) -> bool {
             | "lambda"
             | "function_declaration"
             | "function_item"
+            | "function_signature_item"
             | "arrow_function"
             | "function_expression"
             | "method_definition"
@@ -1606,6 +1618,9 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
     fn exit(&mut self, node: Syntax<'tree>) {
         if let Some(suspended_at) = self.suspended_at {
             if suspended_at != node.id() {
+                if let Some(analysis) = &mut self.analysis {
+                    analysis.exit_suspended(node);
+                }
                 return;
             }
             self.suspended_at = None;
@@ -2033,7 +2048,12 @@ fn scope_boundary_kind(language: &str, kind: &str) -> bool {
         "python" => matches!(kind, "function_definition" | "class_definition" | "lambda"),
         "rust" => matches!(
             kind,
-            "function_item" | "closure_expression" | "impl_item" | "trait_item" | "mod_item"
+            "function_item"
+                | "function_signature_item"
+                | "closure_expression"
+                | "impl_item"
+                | "trait_item"
+                | "mod_item"
         ),
         "javascript" | "typescript" | "vue" => matches!(
             kind,

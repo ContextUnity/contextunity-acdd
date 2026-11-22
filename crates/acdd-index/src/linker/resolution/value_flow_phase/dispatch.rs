@@ -707,12 +707,15 @@ where
         {
             break;
         }
+        let is_rust = ctx
+            .profile
+            .is_some_and(|p| p.id() == LanguageId::Rust.as_str());
         if q.tail.is_empty() {
             candidates.extend(
                 ctx.lookup(qualified(lookup_key, scope, q.expression))
                     .iter()
                     .copied()
-                    .filter(|n| n.path == *ctx.path),
+                    .filter(|n| n.path == *ctx.path && (!is_rust || n.kind != NodeKind::Impl.as_str())),
             );
             lexical_head_declared |= !candidates.is_empty();
             if !candidates.is_empty() {
@@ -722,7 +725,7 @@ where
             lexical_head_declared |= ctx
                 .lookup(qualified(lookup_key, scope, q.first))
                 .iter()
-                .any(|n| n.path == *ctx.path);
+                .any(|n| n.path == *ctx.path && (!is_rust || n.kind != NodeKind::Impl.as_str()));
         }
         scope = scope.rsplit_once('.').map_or("", |(p, _)| p);
     }

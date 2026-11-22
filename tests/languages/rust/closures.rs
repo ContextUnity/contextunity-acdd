@@ -454,6 +454,115 @@ fn tuple_and_lexical_receiver_scope() {
         iterator_sites: false,
         companion: true,
     });
+    cases.push(Case {
+        case_id: "trait_method_boxed_iterator_propagates_item_fields",
+        path: "src/trait_iter.rs",
+        source: r#"
+            pub struct Node { pub id: String }
+            pub struct Facts { pub nodes: Vec<Node> }
+            pub trait FactsLookup {
+                fn values_facts<'a>(&'a self) -> Box<dyn Iterator<Item = &'a Facts> + 'a>;
+            }
+            fn scan(all: &dyn FactsLookup) {
+                for node in all.values_facts().flat_map(|facts| &facts.nodes) {
+                    let _ = node.id.as_str();
+                }
+                for facts in all.values_facts() {
+                    let _ = facts.nodes.iter();
+                }
+            }
+        "#,
+        expected: &[
+            ("facts.nodes.iter", 0, "external", true, "", ""),
+            ("node.id.as_str", 0, "external", true, "", ""),
+        ],
+        iterator_sites: false,
+        companion: false,
+    });
+    cases.push(Case {
+        case_id: "wave_coverage_stdlib_serializer_display_const_and_chains",
+        path: "src/wave_contract.rs",
+        source: r#"
+            use std::cell::RefCell;
+            use std::process::Output;
+            use serde::Serializer;
+            use serde_json::Value;
+            use toml::Value as TomlValue;
+            use walkdir::WalkDir;
+
+            const CONST_STR: &str = "a,b";
+            thread_local! {
+                static TLS_CELL: RefCell<String> = RefCell::new(String::new());
+            }
+
+            #[derive(Clone)]
+            struct LocalDisplay(String);
+            impl std::fmt::Display for LocalDisplay {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str(&self.0)
+                }
+            }
+
+            fn ser_fn<S: Serializer>(serializer: S) {
+                let mut state = serializer.serialize_struct("S", 1).unwrap();
+                state.serialize_field("k", &1);
+            }
+
+            fn exercise(
+                cond: bool,
+                id: LocalDisplay,
+                out: Output,
+                json_opt: Option<Value>,
+                toml_src: &str,
+            ) {
+                let _ = CONST_STR.replace(",", ".");
+                let _ = id.to_string();
+                let _ = id.clone();
+                let _ = out.stdout.split(|&b| b == 0);
+                let joined = if cond { "a" } else { "b" };
+                let _ = joined.trim();
+                let pairs = [("x", 1usize)];
+                for &(k, _) in &pairs {
+                    let _ = k.trim();
+                }
+                let _ = ("raw" as &str).trim();
+                for n in 0..3usize {
+                    let _ = n.checked_add(1);
+                }
+                let _ = json_opt.and_then(Value::as_str);
+                TLS_CELL.with(|cell| {
+                    let _ = cell.borrow().len();
+                });
+                let parsed_toml = toml::from_str::<TomlValue>(toml_src).ok();
+                let _ = parsed_toml.and_then(|v| v.as_table()).and_then(|t| t.get("k"));
+                let items = vec!["a"];
+                let _ = items.iter().map(|s| (*s).to_owned());
+                for entry in WalkDir::new(".").into_iter().filter_entry(|e| e.depth() == 0) {
+                    if let Ok(e) = entry {
+                        let _ = e.into_path().exists();
+                    }
+                }
+            }
+        "#,
+        expected: &[
+            ("CONST_STR.replace", 0, "external", true, "", ""),
+            ("id.to_string", 0, "external", true, "", ""),
+            ("id.clone", 0, "resolved", true, "", ""),
+            ("out.stdout.split", 0, "external", true, "", ""),
+            ("joined.trim", 0, "external", true, "", ""),
+            ("k.trim", 0, "external", true, "", ""),
+            ("n.checked_add", 0, "external", true, "", ""),
+            ("json_opt.and_then", 0, "external", true, "", ""),
+            ("TLS_CELL.with", 0, "external", true, "", ""),
+            ("cell.borrow", 0, "external", true, "", ""),
+            ("(*s).to_owned", 0, "external", true, "", ""),
+            ("e.depth", 0, "external", true, "", ""),
+            ("e.into_path", 0, "external", true, "", ""),
+            ("state.serialize_field", 0, "external", true, "", ""),
+        ],
+        iterator_sites: false,
+        companion: false,
+    });
     for case in cases {
         let mut sources = vec![(case.path, case.source)];
         if case.companion {
@@ -509,5 +618,64 @@ fn tuple_and_lexical_receiver_scope() {
                 2
             );
         }
+    }
+}
+
+#[test]
+fn range_and_closure_map_fail_closed_boundaries() {
+    let source = r#"
+        use std::path::PathBuf;
+        struct Foo;
+        impl Foo { fn new() -> Self { Self } }
+        struct Bar;
+        impl Bar {
+            fn new(_: Foo) -> Self { Self }
+            fn bar_only(&self) {}
+        }
+        fn unknown_fn(_: Foo) -> UnknownType { panic!() }
+        fn probe(opt: Option<Foo>, opt_s: Option<&str>, start: usize, end: usize, n: usize) {
+            for c in 'a'..='z' {
+                c.is_ascii_lowercase();
+                c.checked_add(1);
+            }
+            for i in 0..n {
+                i.checked_add(1);
+            }
+            for x in start..end {
+                x.checked_add(1);
+            }
+            opt.map(Bar::new).unwrap().bar_only();
+            opt_s.map(PathBuf::from).unwrap().as_path();
+            opt_s.map(str::trim).unwrap().is_empty();
+            opt.map(unknown_fn).unwrap().bar_only();
+        }
+    "#;
+    let facts = acdd_index::ast::extract("src/range_closure_bounds.rs", "rust", source).unwrap();
+    let graph = acdd_index::linker::link(&std::collections::BTreeMap::from([(
+        "src/range_closure_bounds.rs".to_owned(),
+        facts,
+    )]));
+    let cov = |expr: &str| {
+        graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == expr)
+            .unwrap_or_else(|| panic!("missing coverage for {expr}: {graph:#?}"))
+    };
+    for (expr, expected) in [
+        ("c.is_ascii_lowercase", "external"),
+        ("c.checked_add", "unresolved"),
+        ("i.checked_add", "external"),
+        ("x.checked_add", "unresolved"),
+        ("opt.map(Bar::new).unwrap().bar_only", "resolved"),
+        ("opt_s.map(PathBuf::from).unwrap().as_path", "external"),
+        ("opt_s.map(str::trim).unwrap().is_empty", "external"),
+        ("opt.map(unknown_fn).unwrap().bar_only", "unresolved"),
+    ] {
+        let entry = cov(expr);
+        assert_eq!(
+            entry.status, expected,
+            "expression {expr} expected status {expected}: {entry:#?}"
+        );
     }
 }

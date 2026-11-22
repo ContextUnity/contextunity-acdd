@@ -101,7 +101,25 @@ where
     } else {
         None
     };
-    let inferred = implicit_receiver.as_ref().or_else(|| {
+    let constant_receiver = (implicit_receiver.is_none()
+        && owner.language == LanguageId::Rust.as_str()
+        && !q.tail.is_empty()
+        && ctx.profile.is_none_or(|p| p.value_binding_applies(q.r))
+        && ctx.input.value_flow.lookup(owner, q.first, at).is_none())
+    .then(|| {
+        use crate::linker::value_flow::{SemanticResolver, Symbol, SymbolRole};
+        if let Symbol::Callable(node) = ctx
+            .input
+            .semantic_context
+            .resolve_symbol(owner, q.first, at, SymbolRole::Callable)
+        {
+            ctx.input.value_flow.constant_type(node)
+        } else {
+            None
+        }
+    })
+    .flatten();
+    let inferred = implicit_receiver.as_ref().or(constant_receiver).or_else(|| {
         if !ctx.profile.is_none_or(|p| p.value_binding_applies(q.r)) {
             return None;
         }
@@ -147,6 +165,9 @@ where
             return true;
         }
         if let value_flow::TypeTarget::Callable(callable) = receiver {
+            if callable.kind == NodeKind::Constant.as_str() {
+                return false;
+            }
             emit_inferred(
                 graph,
                 ctx.path,

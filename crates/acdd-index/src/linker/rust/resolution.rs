@@ -93,9 +93,45 @@ fn fallback_receiver_value(
         return None;
     }
     let mut value = None;
-    for (index, segment) in expression.split('.').enumerate() {
+    for (index, raw_segment) in expression.split('.').enumerate() {
         if index > 6 {
             return None;
+        }
+        let mut segment = raw_segment;
+        let mut unary_ops = [0u8; 4];
+        let mut unary_len = 0usize;
+        if index == 0 {
+            loop {
+                let trimmed = segment.trim();
+                if let Some(inner) = trimmed
+                    .strip_prefix('(')
+                    .and_then(|s| s.strip_suffix(')'))
+                    .filter(|inner| !inner.contains('(') && !inner.contains(')'))
+                {
+                    segment = inner.trim();
+                    continue;
+                }
+                if let Some(inner) = trimmed.strip_prefix("*").filter(|_| unary_len < 4) {
+                    unary_ops[unary_len] = b'*';
+                    unary_len += 1;
+                    segment = inner.trim_start();
+                    continue;
+                }
+                if let Some(inner) = trimmed.strip_prefix("&mut ").filter(|_| unary_len < 4) {
+                    unary_ops[unary_len] = b'm';
+                    unary_len += 1;
+                    segment = inner.trim_start();
+                    continue;
+                }
+                if let Some(inner) = trimmed.strip_prefix('&').filter(|_| unary_len < 4) {
+                    unary_ops[unary_len] = b'&';
+                    unary_len += 1;
+                    segment = inner.trim_start();
+                    continue;
+                }
+                segment = trimmed;
+                break;
+            }
         }
         let (segment, try_result) = segment
             .strip_suffix('?')
@@ -112,7 +148,7 @@ fn fallback_receiver_value(
         {
             return None;
         }
-        let next = match value {
+        let mut next = match value {
             None if is_str_literal => ValueExpr::Annotated {
                 type_expr: TypeExpr::Named {
                     name: "str".to_owned(),
@@ -142,6 +178,17 @@ fn fallback_receiver_value(
                 member: format!("__rust_field:{name}"),
             },
         };
+        for &op in unary_ops[..unary_len].iter().rev() {
+            let member = match op {
+                b'*' => "__rust_deref",
+                b'm' => "__rust_ref_mut",
+                _ => "__rust_ref",
+            };
+            next = ValueExpr::Project {
+                value: Box::new(next),
+                member: member.to_owned(),
+            };
+        }
         value = Some(if try_result {
             ValueExpr::Project {
                 value: Box::new(next),
@@ -194,6 +241,19 @@ pub fn is_registered_cargo_crate(crate_name: &str) -> bool {
             | "rmcp"
             | "zstd"
             | "cc"
+            | "bstr"
+            | "futures"
+            | "syn"
+            | "quote"
+            | "proc_macro2"
+            | "proc-macro2"
+            | "base64"
+            | "bytes"
+            | "http"
+            | "tower"
+            | "axum"
+            | "hyper"
+            | "url"
     )
 }
 
@@ -289,6 +349,20 @@ pub(in crate::linker) fn rust_explicit_module_target(
                 });
             }
         }
+        if let Some((namespace, workspace)) =
+            crate::languages::rust::linker::resolve_workspace_crate_namespace(
+                input.profiles.keys().copied(),
+                input.dependency_registry,
+                path,
+                first,
+                tail,
+            )
+        {
+            return Some(RustExplicitTarget {
+                namespace,
+                workspace,
+            });
+        }
         let root_crate = input.dependency_registry.root_rust_crate_for_path(path)?;
         if first != root_crate {
             return None;
@@ -360,6 +434,29 @@ pub(in crate::linker) fn explicit_reexport_targets<'a>(
     out
 }
 
+fn emit_self_unresolved(graph: &mut Graph, path: &str, reference: &Reference) -> bool {
+    graph.reference_coverage(
+        path,
+        reference,
+        "unresolved",
+        "Self has no indexed impl receiver".into(),
+    );
+    true
+}
+
+fn emit_self_target(
+    graph: &mut Graph,
+    path: &str,
+    reference: &Reference,
+    receiver: &Node,
+    kind: &str,
+    evidence: String,
+) -> bool {
+    graph.reference_edge(path, reference, receiver.id.clone(), kind, "inferred");
+    graph.reference_coverage(path, reference, "resolved", evidence.into());
+    true
+}
+
 pub(in crate::linker) fn resolve_self_reference<'a>(
     profile: Option<&dyn LanguageProfile>,
     reference: &Reference,
@@ -390,22 +487,39 @@ pub(in crate::linker) fn resolve_self_reference<'a>(
         return false;
     }
     let Some(owner) = owner else {
-        graph.reference_coverage(
-            path,
-            reference,
-            "unresolved",
-            "Self has no indexed impl receiver".into(),
-        );
-        return true;
+        return emit_self_unresolved(graph, path, reference);
     };
     let Some(receiver) = member_lookup.rust_receiver(owner) else {
-        graph.reference_coverage(
-            path,
-            reference,
-            "unresolved",
-            "Self has no indexed impl receiver".into(),
-        );
-        return true;
+        if let Some(recv_ty) = owner
+            .details
+            .get("receiver_type")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|ty| profile.is_some_and(|p| p.builtin_type(ty)))
+        {
+            let member = reference
+                .expression
+                .strip_prefix("Self::")
+                .or_else(|| reference.expression.strip_prefix("Self."));
+            let valid = member.is_none_or(|member| {
+                profile.is_some_and(|p| p.builtin_member(recv_ty, member))
+                    || matches!(member, "try_from" | "from" | "default")
+            });
+            if valid {
+                graph.reference_coverage(
+                    path,
+                    reference,
+                    "external",
+                    format!(
+                        "Rust standard library built-in: {} on {recv_ty}",
+                        reference.expression
+                    )
+                    .into(),
+                );
+                return true;
+            }
+        }
+        return emit_self_unresolved(graph, path, reference);
     };
     let member = reference
         .expression
@@ -456,21 +570,182 @@ pub(in crate::linker) fn resolve_self_reference<'a>(
         }
         return true;
     }
+    if reference.kind == "calls" && matches!(receiver.kind.as_str(), "struct" | "enum") {
+        return emit_self_target(
+            graph,
+            path,
+            reference,
+            receiver,
+            "calls",
+            format!("Self calls indexed constructor {}", receiver.qualname),
+        );
+    }
     if reference.kind == "references" {
+        return emit_self_target(
+            graph,
+            path,
+            reference,
+            receiver,
+            "references",
+            format!("Self refers to indexed receiver type {}", receiver.qualname),
+        );
+    }
+    false
+}
+
+fn resolve_rust_constant<'a>(
+    reference: &Reference,
+    owner: Option<&'a Node>,
+    path: &str,
+    value_flow: &crate::linker::value_flow::ValueFlowIndex<'a>,
+    semantic_context: &super::super::semantic_context::Context<'a>,
+    graph: &mut Graph,
+) -> bool {
+    if !matches!(reference.kind.as_str(), "calls" | "references")
+        || reference.expression.contains('.')
+    {
+        return false;
+    }
+    let Some(owner) = owner else {
+        return false;
+    };
+    let emit_const = |graph: &mut Graph, target: &Node, reason: String| {
         graph.reference_edge(
             path,
             reference,
-            receiver.id.clone(),
-            "references",
-            "inferred",
+            target.id.clone(),
+            reference.kind.as_str(),
+            "exact",
         );
-        graph.reference_coverage(
-            path,
-            reference,
-            "resolved",
-            format!("Self refers to indexed receiver type {}", receiver.qualname).into(),
-        );
-        return true;
+        graph.reference_coverage(path, reference, "resolved", reason.into());
+        true
+    };
+    let expr = reference.expression.as_str();
+    if let Some((head, member)) = expr.rsplit_once("::") {
+        if let crate::linker::value_flow::Symbol::Type(
+            crate::linker::value_flow::TypeTarget::Local(type_node),
+        ) = semantic_context.resolve_symbol(
+            owner,
+            head,
+            reference.position(),
+            crate::linker::value_flow::SymbolRole::Type,
+        ) {
+            if reference.kind == "references" || type_node.kind == "enum" {
+                let qualified = format!("{}.{}", type_node.qualname, member);
+                if let Some(target) = semantic_context
+                    .nodes_in_path(&qualified, &type_node.path)
+                    .find(|node| node.kind == "constant")
+                {
+                    return emit_const(
+                        graph,
+                        target,
+                        format!("Rust associated constant/variant {}", target.qualname),
+                    );
+                }
+            }
+        }
+        if reference.kind == "references" {
+            let mut segments = expr.split("::");
+            if let Some(first) = segments.next() {
+                let mut cur_scope = owner.qualname.as_str();
+                while !cur_scope.is_empty() {
+                    if let Some(mod_node) = semantic_context
+                        .nodes_in_path(cur_scope, path)
+                        .find(|n| matches!(n.kind.as_str(), "module" | "module_declaration"))
+                    {
+                        if let Some(super::super::semantic_context::Imported::Nodes(
+                            targets,
+                            _,
+                            _,
+                        )) = semantic_context.imported_alias(mod_node, first)
+                        {
+                            let mut current: Vec<&Node> = targets.clone();
+                            let rest: Vec<&str> = segments.collect();
+                            for (idx, seg) in rest.iter().enumerate() {
+                                if idx + 1 == rest.len() {
+                                    for parent in &current {
+                                        let q = format!("{}.{seg}", parent.qualname);
+                                        if let Some(target) = semantic_context
+                                            .nodes_in_path(&q, &parent.path)
+                                            .find(|n| n.kind == "constant")
+                                        {
+                                            return emit_const(
+                                                graph,
+                                                target,
+                                                format!("Rust module constant {}", target.qualname),
+                                            );
+                                        }
+                                    }
+                                    break;
+                                }
+                                let mut next = Vec::new();
+                                for parent in &current {
+                                    if matches!(
+                                        parent.kind.as_str(),
+                                        "module" | "module_declaration"
+                                    ) {
+                                        if let Some(
+                                            super::super::semantic_context::Imported::Nodes(
+                                                sub,
+                                                _,
+                                                _,
+                                            ),
+                                        ) = semantic_context.imported_alias(parent, seg)
+                                        {
+                                            next.extend(sub.iter().copied());
+                                        }
+                                    }
+                                }
+                                current = next;
+                            }
+                        }
+                        break;
+                    }
+                    cur_scope = cur_scope.rsplit_once('.').map_or("", |(p, _)| p);
+                }
+            }
+        }
+        return false;
+    }
+    if reference.kind != "references"
+        || value_flow
+            .lookup(owner, expr, reference.position())
+            .is_some()
+    {
+        return false;
+    }
+    let mut cur_scope = owner.qualname.as_str();
+    while !cur_scope.is_empty() {
+        let q = format!("{cur_scope}.{expr}");
+        if let Some(target) = semantic_context
+            .nodes_in_path(&q, path)
+            .find(|node| node.kind == "constant")
+        {
+            return emit_const(
+                graph,
+                target,
+                format!("Rust lexical constant {}", target.qualname),
+            );
+        }
+        if let Some(mod_node) = semantic_context
+            .nodes_in_path(cur_scope, path)
+            .find(|n| matches!(n.kind.as_str(), "module" | "module_declaration"))
+        {
+            if let Some(super::super::semantic_context::Imported::Nodes(targets, pos, _)) =
+                semantic_context.imported_alias(mod_node, expr)
+            {
+                if *pos <= reference.position() {
+                    if let Some(target) = targets.iter().copied().find(|n| n.kind == "constant") {
+                        return emit_const(
+                            graph,
+                            target,
+                            format!("Rust imported constant {}", target.qualname),
+                        );
+                    }
+                }
+            }
+        }
+        cur_scope = cur_scope.rsplit_once('.').map_or("", |(p, _)| p);
     }
     false
 }
@@ -484,7 +759,13 @@ pub(in crate::linker) fn trait_object_call<'a>(
     semantic_context: &super::super::semantic_context::Context<'a>,
     graph: &mut Graph,
 ) -> bool {
-    if reference.kind != "calls" || !profile.is_some_and(|profile| profile.id() == "rust") {
+    if !profile.is_some_and(|profile| profile.id() == "rust") {
+        return false;
+    }
+    if resolve_rust_constant(reference, owner, path, value_flow, semantic_context, graph) {
+        return true;
+    }
+    if reference.kind != "calls" {
         return false;
     }
     if let Some(ReceiverHint::CallResult { callee, .. }) = &reference.receiver_hint {
@@ -771,9 +1052,23 @@ pub(in crate::linker) fn trait_object_call<'a>(
     let Some((receiver, member)) = reference.expression.split_once('.') else {
         return false;
     };
+    fn trait_object<'a>(
+        target: &crate::linker::value_flow::TypeTarget<'a>,
+    ) -> Option<&'a Node> {
+        match target {
+            crate::linker::value_flow::TypeTarget::Local(node) if node.kind == "trait" => {
+                Some(*node)
+            }
+            crate::linker::value_flow::TypeTarget::RustReference { target, .. }
+            | crate::linker::value_flow::TypeTarget::RustDeref { target, .. } => {
+                trait_object(target)
+            }
+            _ => None,
+        }
+    }
     let flow_trait_object = value_flow
         .lookup(owner, receiver, reference.position())
-        .and_then(super::value_flow::trait_object);
+        .and_then(|target| trait_object(target));
     let param_dyn_trait = owner
         .parameter_type(receiver)
         .and_then(extract_dyn_trait_name);
@@ -894,6 +1189,9 @@ pub(in crate::linker) fn macro_analysis_gap(
     if reference.kind != "calls"
         || !profile.is_some_and(|profile| profile.id() == "rust")
         || !candidates.iter().any(|candidate| candidate.kind == "macro")
+        || candidates
+            .iter()
+            .any(|candidate| candidate.kind == "macro" && candidate.details["rust_macro_projected"] == true)
     {
         return;
     }

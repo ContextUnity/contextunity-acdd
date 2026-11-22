@@ -79,6 +79,56 @@ fn restricted_exports(module: &Node) -> Vec<RestrictedExport> {
         .unwrap_or_default()
 }
 
+pub(crate) fn resolve_workspace_crate_namespace<'a>(
+    profile_paths: impl Iterator<Item = &'a str>,
+    dependencies: &DependencyRegistry,
+    requester_path: &str,
+    crate_name: &str,
+    tail: &str,
+) -> Option<(String, String)> {
+    let declared = dependencies.declares_for_path(
+        LanguageFamily(LanguageId::Rust.as_str()),
+        requester_path,
+        crate_name,
+    );
+    let sibling_scope = (!declared
+        && dependencies.sibling_rust_library_for_path(requester_path) == Some(crate_name))
+    .then(|| {
+        dependencies
+            .rust_package_for_path(requester_path)
+            .map(|(scope, _)| scope)
+    })
+    .flatten();
+    if !declared && sibling_scope.is_none() {
+        return None;
+    }
+    let mut matches = profile_paths.filter_map(|candidate_path| {
+        if !candidate_path.ends_with("/src/lib.rs") && candidate_path != "src/lib.rs" {
+            return None;
+        }
+        let (pkg_scope, lib_name) = dependencies.rust_package_for_path(candidate_path)?;
+        (lib_name == crate_name && (declared || sibling_scope == Some(pkg_scope))).then_some((
+            pkg_scope,
+            super::workspace_path(candidate_path).0,
+        ))
+    });
+    let (pkg_scope, workspace) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    let base_namespace = if pkg_scope.is_empty() {
+        "src".to_owned()
+    } else {
+        format!("{}.src", pkg_scope.replace('/', "."))
+    };
+    let namespace = if tail.is_empty() || tail == "*" {
+        base_namespace
+    } else {
+        format!("{base_namespace}.{}", tail.replace("::", "."))
+    };
+    Some((namespace, workspace.to_owned()))
+}
+
 fn canonical_namespace<'n>(name: &'n str, crate_root: &str) -> std::borrow::Cow<'n, str> {
     if let Some(tail) = name.strip_prefix(crate_root) {
         for entry in [".lib", ".main"] {
@@ -308,6 +358,30 @@ struct AliasResolver<'a, 'lookup> {
     module_visibility: &'lookup ModuleVisibility,
 }
 
+fn merge_restricted_targets<'a>(
+    mut targets: AliasTargets<'a>,
+    module_qualname: &str,
+    extra_scope: Option<&str>,
+    scope: &mut Option<String>,
+    candidates: &mut Vec<&'a Node>,
+) {
+    if !targets
+        .scope
+        .as_deref()
+        .is_none_or(|s| within(module_qualname, s))
+    {
+        return;
+    }
+    targets.restrict(extra_scope);
+    let mut combined = AliasTargets {
+        nodes: targets.nodes,
+        scope: scope.clone(),
+    };
+    combined.restrict(targets.scope.as_deref());
+    *scope = combined.scope;
+    candidates.extend(combined.nodes);
+}
+
 impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
     fn resolve(
         &mut self,
@@ -434,25 +508,18 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
                             continue;
                         }
                         match self.resolve(target_module, name, require_public, depth + 1) {
-                            Some(mut targets) => {
-                                if targets
-                                    .scope
-                                    .as_deref()
-                                    .is_none_or(|scope| within(&module.qualname, scope))
-                                {
-                                    let export_scope = restricted
-                                        .iter()
-                                        .find(|export| export.module.as_deref() == Some(raw))
-                                        .map(|export| export.scope.as_str());
-                                    targets.restrict(export_scope);
-                                    let mut combined = AliasTargets {
-                                        nodes: targets.nodes,
-                                        scope: scope.clone(),
-                                    };
-                                    combined.restrict(targets.scope.as_deref());
-                                    scope = combined.scope;
-                                    candidates.extend(combined.nodes);
-                                }
+                            Some(targets) => {
+                                let export_scope = restricted
+                                    .iter()
+                                    .find(|export| export.module.as_deref() == Some(raw))
+                                    .map(|export| export.scope.as_str());
+                                merge_restricted_targets(
+                                    targets,
+                                    &module.qualname,
+                                    export_scope,
+                                    &mut scope,
+                                    &mut candidates,
+                                );
                             }
                             None => complete = false,
                         }
@@ -482,21 +549,14 @@ impl<'a, 'lookup> AliasResolver<'a, 'lookup> {
                         candidates.extend(direct);
                     } else {
                         match self.resolve(target_module, &tail, require_public, depth + 1) {
-                            Some(mut targets) if !targets.nodes.is_empty() => {
-                                if targets
-                                    .scope
-                                    .as_deref()
-                                    .is_none_or(|scope| within(&module.qualname, scope))
-                                {
-                                    targets.restrict(named_scope);
-                                    let mut combined = AliasTargets {
-                                        nodes: targets.nodes,
-                                        scope: scope.clone(),
-                                    };
-                                    combined.restrict(targets.scope.as_deref());
-                                    scope = combined.scope;
-                                    candidates.extend(combined.nodes);
-                                }
+                            Some(targets) if !targets.nodes.is_empty() => {
+                                merge_restricted_targets(
+                                    targets,
+                                    &module.qualname,
+                                    named_scope,
+                                    &mut scope,
+                                    &mut candidates,
+                                );
                             }
                             _ => complete = false,
                         }
@@ -544,6 +604,7 @@ pub(crate) struct RustForwarding<'a> {
     restricted: HashMap<&'a str, HashMap<&'a str, AliasTargets<'a>>>,
     exports: PackageExports<'a>,
     module_visibility: ModuleVisibility,
+    lib_modules: Vec<&'a Node>,
 }
 
 impl<'a> RustForwarding<'a> {
@@ -553,6 +614,9 @@ impl<'a> RustForwarding<'a> {
         normalized_imports: &HashMap<(&'a str, &'a str), Option<ImportPath>>,
         interner: &mut LinkerInterner<'a>,
     ) -> Self {
+        interner.intern_symbol("crate");
+        interner.intern_symbol("self");
+        interner.intern_symbol("super");
         let module_visibility = ModuleVisibility::build(all);
         let mut resolver = AliasResolver {
             all,
@@ -707,13 +771,43 @@ impl<'a> RustForwarding<'a> {
             }
         }
 
+        let lib_modules = modules
+            .iter()
+            .copied()
+            .filter(|node| {
+                node.kind == "module"
+                    && (node.path == "src/lib.rs" || node.path.ends_with("/src/lib.rs"))
+            })
+            .collect();
+
         Self {
             private,
             public,
             restricted: restricted_bindings,
             exports,
             module_visibility,
+            lib_modules,
         }
+    }
+
+    pub(crate) fn workspace_crate_root(
+        &self,
+        dependencies: &DependencyRegistry,
+        requester_path: &str,
+        crate_name: &str,
+    ) -> Option<&'a Node> {
+        let (ns, _) = resolve_workspace_crate_namespace(
+            self.lib_modules.iter().map(|node| node.path.as_str()),
+            dependencies,
+            requester_path,
+            crate_name,
+            "",
+        )?;
+        let lib_qual = format!("{ns}.lib");
+        self.lib_modules
+            .iter()
+            .copied()
+            .find(|node| node.qualname == lib_qual)
     }
 
     pub(crate) fn package_exports(&self) -> &PackageExports<'a> {
@@ -830,6 +924,22 @@ fn declared_exports<'a>(
     exports
 }
 
+fn relative_import(namespace: String) -> Option<ImportPath> {
+    Some(ImportPath {
+        namespace,
+        relative: true,
+        symbol_path: true,
+    })
+}
+
+fn format_namespace(base: &str, tail: &str) -> String {
+    if tail.is_empty() || tail == "*" {
+        base.to_owned()
+    } else {
+        format!("{base}.{}", tail.replace("::", "."))
+    }
+}
+
 pub(crate) struct RustLinker;
 pub(crate) static RUST_LINKER: RustLinker = RustLinker;
 impl LanguageLinker for RustLinker {
@@ -902,11 +1012,7 @@ impl LanguageLinker for RustLinker {
                                 namespace.push('.');
                                 namespace.push_str(&tail.replace("::", "."));
                             }
-                            return Some(ImportPath {
-                                namespace,
-                                relative: true,
-                                symbol_path: true,
-                            });
+                            return relative_import(namespace);
                         }
                     }
                 }
@@ -927,16 +1033,7 @@ impl LanguageLinker for RustLinker {
                             } else {
                                 format!("{}.src", pkg_scope.replace('/', "."))
                             };
-                            let namespace = if tail.is_empty() || tail == "*" {
-                                base_namespace
-                            } else {
-                                format!("{base_namespace}.{}", tail.replace("::", "."))
-                            };
-                            return Some(ImportPath {
-                                namespace,
-                                relative: true,
-                                symbol_path: true,
-                            });
+                            return relative_import(format_namespace(&base_namespace, tail));
                         }
                     }
                 }
@@ -948,12 +1045,12 @@ impl LanguageLinker for RustLinker {
                     if targets.next().is_some() {
                         return None;
                     }
-                    if ctx.dependencies.sibling_rust_library_for_path(path) != Some(*library)
-                        && !ctx.dependencies.declares_for_path(
-                            LanguageFamily(LanguageId::Rust.as_str()),
-                            path,
-                            first,
-                        )
+                    if !ctx.dependencies.declares_for_path(
+                        LanguageFamily(LanguageId::Rust.as_str()),
+                        path,
+                        first,
+                    ) && (ctx.dependencies.sibling_rust_library_for_path(path) != Some(*library)
+                        || *target_workspace != super::workspace_path(path).0)
                     {
                         return None;
                     }
@@ -962,16 +1059,16 @@ impl LanguageLinker for RustLinker {
                     } else {
                         format!("{}.src", target_workspace.replace('/', "."))
                     };
-                    let namespace = if tail.is_empty() || tail == "*" {
-                        base_namespace
-                    } else {
-                        format!("{base_namespace}.{}", tail.replace("::", "."))
-                    };
-                    return Some(ImportPath {
-                        namespace,
-                        relative: true,
-                        symbol_path: true,
-                    });
+                    return relative_import(format_namespace(&base_namespace, tail));
+                }
+                if let Some((namespace, _)) = resolve_workspace_crate_namespace(
+                    ctx.profiles.keys().copied(),
+                    ctx.dependencies,
+                    path,
+                    first,
+                    tail,
+                ) {
+                    return relative_import(namespace);
                 }
                 if ctx
                     .dependencies
@@ -1154,7 +1251,7 @@ impl LanguageLinker for RustLinker {
         module: &'a Node,
         member: &str,
         by_module: &HashMap<&'a str, Vec<&'a Node>>,
-        _by_qual: &HashMap<&'a str, Vec<&'a Node>>,
+        by_qual: &HashMap<&'a str, Vec<&'a Node>>,
         exports: &PackageExports<'a>,
         lookup_key: &mut String,
     ) -> Vec<&'a Node> {
@@ -1175,6 +1272,44 @@ impl LanguageLinker for RustLinker {
             .collect();
         if !direct.is_empty() {
             return direct;
+        }
+        if member.contains('.') {
+            let is_visible_imported = |node: &Node| {
+                node.language == "rust"
+                    && !matches!(node.kind.as_str(), "module" | "impl")
+                    && (node.details["is_public"] == true
+                        || (crate_namespace(&module.path) == crate_namespace(&node.path)
+                            && node.details["signature"]
+                                .as_str()
+                                .is_some_and(|sig| sig.starts_with("pub("))))
+            };
+            let mut targets: Vec<&'a Node> = by_qual
+                .get(lookup_key.as_str())
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|node| is_visible_imported(node))
+                .collect();
+            if targets.is_empty() {
+                let ns = module_namespace(&module.qualname);
+                if ns != module.qualname {
+                    lookup_key.clear();
+                    lookup_key.push_str(ns);
+                    lookup_key.push('.');
+                    lookup_key.push_str(member);
+                    targets.extend(
+                        by_qual
+                            .get(lookup_key.as_str())
+                            .into_iter()
+                            .flatten()
+                            .copied()
+                            .filter(|node| is_visible_imported(node)),
+                    );
+                }
+            }
+            if !targets.is_empty() {
+                return targets;
+            }
         }
         let prefix = format!("{}.", module.qualname);
         let items: Vec<&'a Node> = by_module
@@ -1250,6 +1385,7 @@ pub(crate) struct RustMembers<'a> {
     receivers_by_method: HashMap<&'a str, &'a Node>,
     dynamic_declarations: HashMap<(&'a str, &'a str), &'a Node>,
     dynamic_implementors: HashMap<(&'a str, &'a str), Vec<&'a Node>>,
+    display_impls: HashSet<&'a str>,
 }
 
 fn namespace(path: &str, module: &str, name: &str) -> String {
@@ -1274,11 +1410,161 @@ fn namespace(path: &str, module: &str, name: &str) -> String {
     }
 }
 
+fn resolve_qualified_path(
+    scope_path: &str,
+    module_qual: &str,
+    target: &str,
+    dependencies: &DependencyRegistry,
+    profile_paths: &[&str],
+) -> String {
+    if !target.starts_with("crate::")
+        && !target.starts_with("self::")
+        && !target.starts_with("super::")
+    {
+        let clean = target.trim_end_matches("::");
+        let (head, tail) = clean.split_once("::").unwrap_or((clean, ""));
+        if let Some((ns, _)) = resolve_workspace_crate_namespace(
+            profile_paths.iter().copied(),
+            dependencies,
+            scope_path,
+            head,
+            tail,
+        ) {
+            return ns;
+        }
+    }
+    let mut resolved = namespace(scope_path, module_qual, target);
+    while resolved.ends_with('.') {
+        resolved.pop();
+    }
+    resolved
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_visible_macro<'a>(
+    facts: &'a Facts,
+    owner_mod: &'a Node,
+    macro_raw: &str,
+    by_qual: &HashMap<&str, Vec<&'a Node>>,
+    modules_by_ns: &HashMap<&str, Vec<&'a Node>>,
+    forwarding: &RustForwarding<'a>,
+    crate_exported_macros: &HashMap<(&str, &str), Vec<&'a Node>>,
+    dependencies: &DependencyRegistry,
+    profile_paths: &[&str],
+) -> Option<&'a Node> {
+    let normalized_macro = macro_raw
+        .strip_prefix("$crate::")
+        .map(|tail| format!("crate::{tail}"))
+        .unwrap_or_else(|| macro_raw.to_owned());
+    let mut candidates: Vec<&'a Node> = Vec::new();
+    let owner_crate_root = owner_mod
+        .path
+        .split_once("/src/")
+        .map_or("", |(prefix, _)| prefix);
+    let collect_forwarded = |mod_qual: &str, mac_name: &str, out: &mut Vec<&'a Node>| {
+        for provider in modules_by_ns.get(mod_qual).into_iter().flatten() {
+            for (name, targets) in forwarding.visible_bindings(provider, &owner_mod.qualname) {
+                if name == mac_name {
+                    out.extend(targets.iter().filter(|n| n.kind == "macro"));
+                }
+            }
+        }
+    };
+    let collect_path = |scope_qual: &str, target_expr: &str, out: &mut Vec<&'a Node>| {
+        let qual = resolve_qualified_path(
+            &owner_mod.path,
+            scope_qual,
+            target_expr,
+            dependencies,
+            profile_paths,
+        );
+        for cand in by_qual
+            .get(qual.as_str())
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|n| n.kind == "macro")
+        {
+            if cand.path == owner_mod.path || is_crate_visible(cand, &owner_mod.qualname) {
+                out.push(cand);
+            }
+        }
+        if let Some((mod_expr, mac_name)) = target_expr.rsplit_once("::") {
+            let mod_qual = resolve_qualified_path(
+                &owner_mod.path,
+                scope_qual,
+                mod_expr,
+                dependencies,
+                profile_paths,
+            );
+            collect_forwarded(mod_qual.as_str(), mac_name, out);
+            if mod_expr == "crate" {
+                out.extend(
+                    crate_exported_macros
+                        .get(&(owner_crate_root, mac_name))
+                        .into_iter()
+                        .flatten()
+                        .copied(),
+                );
+            }
+        }
+    };
+    if normalized_macro.contains("::") {
+        collect_path(&owner_mod.qualname, &normalized_macro, &mut candidates);
+    } else {
+        let mut scope = owner_mod.qualname.as_str();
+        while !scope.is_empty() {
+            let qual = format!("{scope}.{normalized_macro}");
+            candidates.extend(
+                by_qual
+                    .get(qual.as_str())
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|n| n.kind == "macro" && n.path == owner_mod.path),
+            );
+            scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+        }
+        for import in facts.references.iter().filter(|reference| {
+            reference.kind == "imports"
+                && (reference.source == owner_mod.id
+                    || owner_mod
+                        .qualname
+                        .starts_with(reference.source.as_str()))
+        }) {
+            let import_scope = facts
+                .nodes
+                .iter()
+                .find(|n| n.id == import.source)
+                .unwrap_or(owner_mod);
+            if import.alias.as_deref() == Some(normalized_macro.as_str()) {
+                let target_expr = import.module.as_deref().unwrap_or(&import.expression);
+                collect_path(&import_scope.qualname, target_expr, &mut candidates);
+            } else if import.alias.as_deref() == Some("*") {
+                let target_expr = import.module.as_deref().unwrap_or(&import.expression);
+                let target_ns = resolve_qualified_path(
+                    &owner_mod.path,
+                    &import_scope.qualname,
+                    target_expr.strip_suffix('*').unwrap_or(target_expr),
+                    dependencies,
+                    profile_paths,
+                );
+                collect_forwarded(target_ns.as_str(), &normalized_macro, &mut candidates);
+            }
+        }
+    }
+    candidates.sort_by_key(|node| node.id.as_str());
+    candidates.dedup_by_key(|node| node.id.as_str());
+    (candidates.len() == 1).then(|| candidates[0])
+}
+
 fn resolve_type<'a>(
     facts: &'a Facts,
     scope: &Node,
     name: &str,
     by_qual: &HashMap<&str, Vec<&'a Node>>,
+    dependencies: &DependencyRegistry,
+    profile_paths: &[&str],
 ) -> Option<&'a Node> {
     if name.is_empty() || name.contains(['<', '>', '&', '[', '(', '!']) {
         return None;
@@ -1314,7 +1600,13 @@ fn resolve_type<'a>(
         })
         .collect();
     let qualified = match imports.as_slice() {
-        [] => namespace(&scope.path, &module.qualname, name),
+        [] => resolve_qualified_path(
+            &scope.path,
+            &module.qualname,
+            name,
+            dependencies,
+            profile_paths,
+        ),
         [import] => {
             let target = import.module.as_deref()?;
             let target = if tail.is_empty() {
@@ -1322,7 +1614,13 @@ fn resolve_type<'a>(
             } else {
                 format!("{target}::{tail}")
             };
-            namespace(&scope.path, &module.qualname, &target)
+            resolve_qualified_path(
+                &scope.path,
+                &module.qualname,
+                &target,
+                dependencies,
+                profile_paths,
+            )
         }
         _ => return None,
     };
@@ -1340,6 +1638,18 @@ fn resolve_type<'a>(
         return Some(found);
     }
     if imports.is_empty() && !name.contains("::") {
+        let mut ancestor = scope.qualname.as_str();
+        while let Some((parent, _)) = ancestor.rsplit_once('.') {
+            if parent.len() <= module.qualname.len() {
+                break;
+            }
+            if let Some(found) = pick_unique(&format!("{parent}.{name}")) {
+                return Some(found);
+            }
+            ancestor = parent;
+        }
+    }
+    if imports.is_empty() && !name.contains("::") {
         let mut wildcard_matches = Vec::new();
         for import in facts.references.iter().filter(|reference| {
             reference.kind == "imports"
@@ -1355,7 +1665,13 @@ fn resolve_type<'a>(
             else {
                 continue;
             };
-            let wc_qual = namespace(&scope.path, &module.qualname, &format!("{target}::{name}"));
+            let wc_qual = resolve_qualified_path(
+                &scope.path,
+                &module.qualname,
+                &format!("{target}::{name}"),
+                dependencies,
+                profile_paths,
+            );
             if let Some(found) = pick_unique(&wc_qual) {
                 if !wildcard_matches
                     .iter()
@@ -1378,9 +1694,13 @@ impl<'a> RustMembers<'a> {
         interner: &LinkerInterner<'a>,
         flows: Option<&HashMap<SymbolId, &crate::typed_facts::FlowState>>,
         forwarding: &RustForwarding<'a>,
+        dependencies: &DependencyRegistry,
     ) -> Self {
+        let profile_paths: Vec<&str> = all.iter_facts().map(|(path, _)| path).collect();
         let mut by_qual = HashMap::<&str, Vec<&Node>>::new();
         let mut by_id = HashMap::<&str, &Node>::new();
+        let mut modules_by_ns = HashMap::<&str, Vec<&Node>>::new();
+        let mut traits_by_parent_qual = HashMap::<&str, Vec<&Node>>::new();
         for node in all
             .values_facts()
             .flat_map(|facts| &facts.nodes)
@@ -1388,6 +1708,24 @@ impl<'a> RustMembers<'a> {
         {
             by_qual.entry(&node.qualname).or_default().push(node);
             by_id.insert(node.id.as_str(), node);
+            if node.kind == "module" {
+                modules_by_ns.entry(&node.qualname).or_default().push(node);
+                let stripped = node
+                    .qualname
+                    .strip_suffix(".lib")
+                    .or_else(|| node.qualname.strip_suffix(".main"))
+                    .or_else(|| node.qualname.strip_suffix(".mod"));
+                if let Some(stripped) = stripped {
+                    modules_by_ns.entry(stripped).or_default().push(node);
+                }
+            } else if node.kind == "trait" {
+                if let Some((parent_qual, _)) = node.qualname.rsplit_once('.') {
+                    traits_by_parent_qual
+                        .entry(parent_qual)
+                        .or_default()
+                        .push(node);
+                }
+            }
         }
         let mut index = Self {
             deref_targets: HashMap::new(),
@@ -1396,10 +1734,55 @@ impl<'a> RustMembers<'a> {
             receivers_by_method: HashMap::new(),
             dynamic_declarations: HashMap::new(),
             dynamic_implementors: HashMap::new(),
+            display_impls: HashSet::new(),
         };
         let mut traits: TraitImplMap<'a> = HashMap::new();
         let mut visible_traits: HashMap<&'a str, HashSet<&'a str>> = HashMap::new();
         let mut trait_defaults = HashMap::<&str, Vec<&Node>>::new();
+        let mut trait_methods = HashMap::<&str, Vec<&Node>>::new();
+        let mut macro_traits = HashMap::<&str, Vec<&Node>>::new();
+        let mut crate_exported_macros = HashMap::<(&str, &str), Vec<&Node>>::new();
+        for node in all
+            .values_facts()
+            .flat_map(|facts| &facts.nodes)
+            .filter(|node| node.language == "rust" && node.kind == "macro")
+        {
+            if node.details["is_public"] == true {
+                let crate_root = node
+                    .path
+                    .split_once("/src/")
+                    .map_or("", |(prefix, _)| prefix);
+                crate_exported_macros
+                    .entry((crate_root, node.name.as_str()))
+                    .or_default()
+                    .push(node);
+            }
+            let Some(impl_traits) = node.details["rust_macro_impl_traits"].as_array() else {
+                continue;
+            };
+            let mod_qual = node.qualname.rsplit_once('.').map_or("", |(q, _)| q);
+            for trait_val in impl_traits {
+                let Some(clean) = trait_val.as_str() else {
+                    continue;
+                };
+                let normalized_expr = clean
+                    .strip_prefix("$crate::")
+                    .map(|tail| format!("crate::{tail}"))
+                    .unwrap_or_else(|| clean.to_owned());
+                let qual = resolve_qualified_path(
+                    &node.path,
+                    mod_qual,
+                    &normalized_expr,
+                    dependencies,
+                    &profile_paths,
+                );
+                if let Some(candidates) = by_qual.get(qual.as_str()) {
+                    for cand in candidates.iter().copied().filter(|n| n.kind == "trait") {
+                        macro_traits.entry(node.id.as_str()).or_default().push(cand);
+                    }
+                }
+            }
+        }
         for facts in all.values_facts() {
             for edge in facts
                 .edges
@@ -1415,6 +1798,10 @@ impl<'a> RustMembers<'a> {
                     && method.kind == "method"
                     && method.details["unproven_bounds"] != true
                 {
+                    trait_methods
+                        .entry(owner.id.as_str())
+                        .or_default()
+                        .push(method);
                     if method.details["trait_default"] == true {
                         trait_defaults
                             .entry(owner.id.as_str())
@@ -1480,7 +1867,16 @@ impl<'a> RustMembers<'a> {
                 };
                 let Some(receiver) = owner.details["receiver_type"]
                     .as_str()
-                    .and_then(|name| resolve_type(facts, owner, name, &by_qual))
+                    .and_then(|name| {
+                        resolve_type(
+                            facts,
+                            owner,
+                            name,
+                            &by_qual,
+                            dependencies,
+                            &profile_paths,
+                        )
+                    })
                     .filter(|node| node.kind == "struct" && node.details["deref_unproven"] != true)
                 else {
                     continue;
@@ -1532,7 +1928,15 @@ impl<'a> RustMembers<'a> {
                         };
                         match alias {
                             Some(crate::semantic::TypeExpr::Named { name }) => {
-                                resolve_type(facts, target, &name, &by_qual).filter(|node| {
+                                resolve_type(
+                                    facts,
+                                    target,
+                                    &name,
+                                    &by_qual,
+                                    dependencies,
+                                    &profile_paths,
+                                )
+                                .filter(|node| {
                                     node.kind == "struct" && node.details["deref_unproven"] != true
                                 })
                             }
@@ -1589,17 +1993,37 @@ impl<'a> RustMembers<'a> {
                 .iter()
                 .filter(|reference| reference.kind == "imports")
             {
+                let import_scope = by_id
+                    .get(import.source.as_str())
+                    .copied()
+                    .unwrap_or(module);
                 if import.alias.as_deref() == Some("*") {
                     let target_expr = import.module.as_deref().unwrap_or(&import.expression);
-                    if let Some(normalized) =
-                        super::RUST.normalize_import(&module.path, target_expr)
-                    {
-                        for target in by_qual
-                            .get(normalized.namespace.as_str())
-                            .into_iter()
-                            .flatten()
-                        {
-                            if target.kind == "trait" {
+                    let target_ns = resolve_qualified_path(
+                        &module.path,
+                        &import_scope.qualname,
+                        target_expr.strip_suffix('*').unwrap_or(target_expr),
+                        dependencies,
+                        &profile_paths,
+                    );
+                    if let Some(providers) = modules_by_ns.get(target_ns.as_str()) {
+                        for provider in providers {
+                            for (_, targets) in
+                                forwarding.visible_bindings(provider, &module.qualname)
+                            {
+                                for target in targets {
+                                    if target.kind == "trait" {
+                                        visible_traits
+                                            .entry(&module.path)
+                                            .or_default()
+                                            .insert(&target.id);
+                                    }
+                                }
+                            }
+                        }
+                    } else if let Some(traits_in_ns) = traits_by_parent_qual.get(target_ns.as_str()) {
+                        for target in traits_in_ns {
+                            if target.path == module.path || target.details["is_public"] == true {
                                 visible_traits
                                     .entry(&module.path)
                                     .or_default()
@@ -1608,8 +2032,15 @@ impl<'a> RustMembers<'a> {
                         }
                     }
                 } else if let Some(name) = import.alias.as_deref() {
-                    if let Some(target) = resolve_type(facts, module, name, &by_qual)
-                        .filter(|node| node.kind == "trait")
+                    if let Some(target) = resolve_type(
+                        facts,
+                        import_scope,
+                        name,
+                        &by_qual,
+                        dependencies,
+                        &profile_paths,
+                    )
+                    .filter(|node| node.kind == "trait")
                     {
                         visible_traits
                             .entry(&module.path)
@@ -1645,16 +2076,47 @@ impl<'a> RustMembers<'a> {
                         } else {
                             name
                         };
-                        resolve_type(facts, owner, nominal, &by_qual)
+                        resolve_type(
+                            facts,
+                            owner,
+                            nominal,
+                            &by_qual,
+                            dependencies,
+                            &profile_paths,
+                        )
                     })
                     .filter(|node| matches!(node.kind.as_str(), "struct" | "enum"))
                 else {
                     continue;
                 };
                 let impl_trait = owner.details["impl_trait"].as_str();
-                let has_impl_trait = impl_trait.is_some();
+                if impl_trait.is_some_and(|name| {
+                    let base = name.split('<').next().unwrap_or(name).trim();
+                    base == "Display"
+                        || base.ends_with("::Display")
+                        || base == "ToString"
+                        || base.ends_with("::ToString")
+                }) {
+                    index.display_impls.insert(receiver.id.as_str());
+                }
+                let prelude_default = impl_trait.is_some_and(|name| {
+                    matches!(
+                        name.split('<').next().unwrap_or(name).trim(),
+                        "Default" | "std::default::Default" | "core::default::Default"
+                    )
+                });
+                let has_impl_trait = impl_trait.is_some() && !prelude_default;
                 let trait_node = impl_trait.and_then(|name| {
-                    resolve_type(facts, owner, name, &by_qual).filter(|node| node.kind == "trait")
+                    let clean_trait = name.split('<').next().unwrap_or(name).trim();
+                    resolve_type(
+                        facts,
+                        owner,
+                        clean_trait,
+                        &by_qual,
+                        dependencies,
+                        &profile_paths,
+                    )
+                    .filter(|node| node.kind == "trait")
                 });
                 impl_receivers.insert(owner.id.as_str(), (receiver, has_impl_trait, trait_node));
             }
@@ -1665,38 +2127,57 @@ impl<'a> RustMembers<'a> {
                 else {
                     continue;
                 };
-                if owner.kind != "impl" || method.kind != "method" {
+                if !((owner.kind == "impl"
+                    && matches!(method.kind.as_str(), "method" | "constant" | "type"))
+                    || (matches!(owner.kind.as_str(), "struct" | "enum")
+                        && matches!(method.kind.as_str(), "method" | "constant"))
+                    || (owner.kind == "trait" && method.kind == "method"))
+                {
                     continue;
                 }
-                let Some((receiver, has_impl_trait, trait_node)) =
-                    impl_receivers.get(owner.id.as_str())
-                else {
+                if owner.kind == "trait" {
+                    index.receivers_by_method.insert(&method.id, *owner);
                     continue;
+                }
+                let (receiver, has_impl_trait, trait_node) = if owner.kind == "impl" {
+                    let Some(&(receiver, has_impl_trait, trait_node)) =
+                        impl_receivers.get(owner.id.as_str())
+                    else {
+                        continue;
+                    };
+                    (receiver, has_impl_trait, trait_node)
+                } else {
+                    (*owner, false, None)
                 };
                 index.receivers_by_method.insert(&method.id, receiver);
+                let associated = matches!(method.kind.as_str(), "constant" | "type")
+                    || method.details["is_static"] == true;
                 if method.details["unproven_bounds"] == true {
-                    if index.deref_targets.contains_key(receiver.id.as_str()) {
-                        let associated = method.details["is_static"] == true;
-                        if let Some(trait_node) = trait_node {
-                            unproven_deref_members.push((
-                                *receiver,
-                                *method,
-                                *trait_node,
-                                associated,
-                            ));
-                        } else if !*has_impl_trait {
-                            index
-                                .inherent
-                                .entry((receiver.id.as_str(), method.name.as_str(), associated))
-                                .or_default();
+                    let deref_wrapper = index.deref_targets.contains_key(receiver.id.as_str());
+                    if !deref_wrapper && method.details["conversion_bounds_only"] == true {
+                        // Conversion-only stdlib bounds (Into/AsRef/Borrow/ToString/Display/Debug) on non-Deref receivers do not shadow Deref targets.
+                    } else {
+                        if deref_wrapper {
+                            if let Some(trait_node) = trait_node {
+                                unproven_deref_members.push((
+                                    receiver,
+                                    method,
+                                    trait_node,
+                                    associated,
+                                ));
+                            } else if !has_impl_trait {
+                                index
+                                    .inherent
+                                    .entry((receiver.id.as_str(), method.name.as_str(), associated))
+                                    .or_default();
+                            }
                         }
+                        continue;
                     }
+                }
+                if has_impl_trait && trait_node.is_none() {
                     continue;
                 }
-                if *has_impl_trait && trait_node.is_none() {
-                    continue;
-                }
-                let associated = method.details["is_static"] == true;
                 implemented
                     .entry(owner.id.as_str())
                     .or_default()
@@ -1730,9 +2211,71 @@ impl<'a> RustMembers<'a> {
                 }
             }
         }
+        for facts in all.values_facts() {
+            for owner_mod in facts
+                .nodes
+                .iter()
+                .filter(|node| matches!(node.kind.as_str(), "module" | "module_declaration"))
+            {
+                let Some(invocations) = owner_mod.details["rust_macro_type_invocations"].as_array()
+                else {
+                    continue;
+                };
+                for pair in invocations {
+                    let Some([macro_raw, target_name]) = pair.as_array().and_then(|arr| {
+                        Some([arr.first()?.as_str()?, arr.get(1)?.as_str()?])
+                    }) else {
+                        continue;
+                    };
+                    let Some(macro_node) = resolve_visible_macro(
+                        facts,
+                        owner_mod,
+                        macro_raw,
+                        &by_qual,
+                        &modules_by_ns,
+                        forwarding,
+                        &crate_exported_macros,
+                        dependencies,
+                        &profile_paths,
+                    ) else {
+                        continue;
+                    };
+                    let Some(trait_nodes) = macro_traits.get(macro_node.id.as_str()) else {
+                        continue;
+                    };
+                    let Some(receiver) = resolve_type(
+                        facts,
+                        owner_mod,
+                        target_name,
+                        &by_qual,
+                        dependencies,
+                        &profile_paths,
+                    )
+                    .filter(|node| matches!(node.kind.as_str(), "struct" | "enum")) else {
+                        continue;
+                    };
+                    for &trait_node in trait_nodes {
+                        for &method in trait_methods
+                            .get(trait_node.id.as_str())
+                            .into_iter()
+                            .flatten()
+                        {
+                            let associated = method.details["is_static"] == true;
+                            traits
+                                .entry((receiver.id.as_str(), method.name.as_str(), associated))
+                                .or_default()
+                                .push((method, trait_node));
+                        }
+                    }
+                }
+            }
+        }
         for methods in index.inherent.values_mut() {
             methods.sort_by_key(|method| &method.id);
             methods.dedup_by_key(|method| method.id.as_str());
+            if methods.iter().any(|method| method.details["synthesized"] != true) {
+                methods.retain(|method| method.details["synthesized"] != true);
+            }
             crate::linker::traits::disambiguate_rust_cfg_siblings(methods);
         }
         for methods in traits.values_mut() {
@@ -1858,6 +2401,10 @@ impl<'a> RustMembers<'a> {
         self.inherent
             .values()
             .any(|methods| methods.iter().any(|m| m.id == method.id))
+    }
+
+    pub(crate) fn has_display(&self, receiver: &Node) -> bool {
+        self.display_impls.contains(receiver.id.as_str())
     }
     pub(crate) fn dynamic_dispatch<'s>(
         &'s self,

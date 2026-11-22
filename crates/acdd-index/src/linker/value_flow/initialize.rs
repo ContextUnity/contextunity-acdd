@@ -210,18 +210,34 @@ impl<'a> ValueFlowIndex<'a> {
             for binding in bindings {
                 let loop_element = matches!(binding.value, ValueExpr::LoopElement { .. });
                 let lexical_scoped = matches!(binding.value, ValueExpr::Scoped { .. });
-                let target = if (binding.conditional && !loop_element && !lexical_scoped)
-                    || index.scopes[owner.id.as_str()].invalid
+                let prev_target = (binding.conditional && !loop_element && !lexical_scoped)
+                    .then(|| index.lookup(owner, binding.name, binding.position).cloned())
+                    .flatten()
+                    .filter(|prev| !matches!(prev, TypeTarget::Unknown));
+                let target = if index.scopes[owner.id.as_str()].invalid
+                    || (binding.conditional
+                        && !loop_element
+                        && !lexical_scoped
+                        && prev_target.is_none())
                 {
                     TypeTarget::Unknown
                 } else {
-                    index.evaluate(
+                    let evaluated = index.evaluate(
                         owner,
                         binding.value,
                         binding.position,
                         resolver,
                         Some(&definitions),
-                    )
+                    );
+                    if let Some(prev) = prev_target {
+                        if super::same_target(&prev, &evaluated) {
+                            prev
+                        } else {
+                            TypeTarget::Unknown
+                        }
+                    } else {
+                        evaluated
+                    }
                 };
                 if owner.language == "python"
                     && matches!(

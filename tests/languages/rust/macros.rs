@@ -292,3 +292,100 @@ fn run_over_eight_chain() {
         }
     }
 }
+
+#[test]
+fn declarative_macro_item_projection_and_opaque_fail_closed() {
+    let source = r#"
+        #[macro_export]
+        macro_rules! define_id {
+            ($name:ident) => {
+                #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+                pub struct $name(pub String);
+                impl $name {
+                    pub fn new(raw: impl Into<String>) -> Self { Self(raw.into()) }
+                    pub fn as_str(&self) -> &str { &self.0 }
+                }
+            };
+        }
+        #[macro_export]
+        macro_rules! define_string_enum {
+            ($name:ident { $($variant:ident => $str:expr),* $(,)? }) => {
+                #[derive(Default, Clone, Debug, Serialize, Deserialize)]
+                pub enum $name {
+                    $($variant),*
+                }
+                impl std::str::FromStr for $name {
+                    type Err = String;
+                    fn from_str(s: &str) -> Result<Self, Self::Err> {
+                        Err(s.to_owned())
+                    }
+                }
+            };
+        }
+        macro_rules! recursive_gen {
+            ($name:ident) => {
+                recursive_gen!(@inner $name);
+            };
+            (@inner $name:ident) => {
+                pub struct $name;
+            };
+        }
+        define_id!(NodeId);
+        define_string_enum!(Status {
+            Active => "active",
+            Paused => "paused",
+        });
+        recursive_gen!(PhantomOpaque);
+        fn probe() {
+            let id = NodeId::new("n1");
+            id.as_str();
+            id.clone().as_str();
+            let st = Status::default();
+            st.clone();
+            let active = Status::Active;
+            active.clone();
+            let _ = Status::from_str("active");
+        }
+    "#;
+    let facts = acdd_index::ast::extract("src/macros_proj.rs", "rust", source).unwrap();
+    for (kind, name) in [
+        ("struct", "NodeId"),
+        ("enum", "Status"),
+        ("constant", "Active"),
+        ("constant", "Paused"),
+    ] {
+        assert!(
+            facts.nodes.iter().any(|n| n.kind == kind && n.name == name),
+            "expected synthesized {kind} {name}: {facts:#?}"
+        );
+    }
+    assert!(
+        !facts.nodes.iter().any(|n| n.name == "PhantomOpaque"),
+        "recursive macro must fail closed without phantom node synthesis: {facts:#?}"
+    );
+    assert!(
+        !facts
+            .nodes
+            .iter()
+            .any(|n| n.qualname.ends_with(".NodeId.default")),
+        "NodeId did not derive Default and must not synthesize NodeId::default: {facts:#?}"
+    );
+    let graph = acdd_index::linker::link(&std::collections::BTreeMap::from([(
+        "src/macros_proj.rs".to_owned(),
+        facts,
+    )]));
+    for expr in [
+        "id.as_str",
+        "id.clone().as_str",
+        "Status::default",
+        "st.clone",
+        "active.clone",
+        "Status::from_str",
+    ] {
+        let cov = coverage(&graph, expr);
+        assert_eq!(
+            cov.status, "resolved",
+            "expected resolved macro-synthesized call {expr}: {cov:#?}"
+        );
+    }
+}

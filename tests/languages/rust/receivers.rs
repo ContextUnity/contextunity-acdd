@@ -1,15 +1,15 @@
 use super::{coverage, linked};
 
-const PAYLOAD_CASES: &[(&str, &str, bool)] = &[
-    ("filter", "filter(|_| true)", true),
-    ("take", "take(1)", true),
-    ("skip", "skip(1)", true),
-    ("step_by", "step_by(1)", true),
-    ("collect_into_iter", "collect::<Vec<_>>().into_iter()", true),
-    ("map_constant", "map(|_| B)", false),
-    ("map_conversion", "map(convert)", false),
-    ("enumerate", "enumerate()", false),
-    ("map_identity", "map(|item| item)", false),
+const PAYLOAD_CASES: &[(&str, &str, bool, &str)] = &[
+    ("filter", "filter(|_| true)", true, "resolved"),
+    ("take", "take(1)", true, "resolved"),
+    ("skip", "skip(1)", true, "resolved"),
+    ("step_by", "step_by(1)", true, "resolved"),
+    ("collect_into_iter", "collect::<Vec<_>>().into_iter()", true, "resolved"),
+    ("map_constant", "map(|_| B)", false, "unresolved"),
+    ("map_conversion", "map(convert)", false, "resolved"),
+    ("enumerate", "enumerate()", false, "unresolved"),
+    ("map_identity", "map(|item| item)", false, "unresolved"),
 ];
 
 const ITERATOR_MEMBERS: &[(&str, &str)] = &[
@@ -62,7 +62,7 @@ fn computed_iterator_receiver_identity() {
     for (index, (member, arguments)) in ITERATOR_MEMBERS.iter().enumerate() {
         source.push_str(&format!("fn probe_{index}(items: Vec<Item>) {{ let stream = items.into_iter(); stream.{member}({arguments}); }}\n"));
     }
-    for (index, (_, adapter, _)) in PAYLOAD_CASES.iter().enumerate() {
+    for (index, (_, adapter, _, _)) in PAYLOAD_CASES.iter().enumerate() {
         source.push_str(&format!(
             "fn payload_{index}(items: Vec<A>) {{ let mut adapted = items.into_iter().{adapter}; let item_{index} = adapted.next().unwrap(); item_{index}.finish(); }}\n"
         ));
@@ -147,7 +147,7 @@ fn computed_iterator_receiver_identity() {
         .iter()
         .find(|node| node.name == "finish" && node.details["receiver_type"] == "A")
         .unwrap();
-    for (index, (label, adapter, preserves_item)) in PAYLOAD_CASES.iter().enumerate() {
+    for (index, (label, adapter, preserves_item, expected_status)) in PAYLOAD_CASES.iter().enumerate() {
         let source = format!(
             "struct A; impl A {{ fn finish(&self) {{}} }}\n\
              struct B; impl B {{ fn finish(&self) {{}} }}\n\
@@ -165,13 +165,15 @@ fn computed_iterator_receiver_identity() {
         let observed = coverage(&owned, &expression);
         assert_eq!(
             observed.status,
-            if *preserves_item {
-                "resolved"
-            } else {
-                "unresolved"
-            },
+            *expected_status,
             "{label}: {observed:#?}"
         );
+        if *label == "map_conversion" {
+            assert!(
+                observed.evidence.contains("B.finish"),
+                "{label}: expected B.finish evidence: {observed:#?}"
+            );
+        }
         let calls_a_target = owned.edges.iter().any(|edge| {
             edge.kind == "calls" && edge.evidence == expression && edge.dst == target.id
         });
@@ -186,6 +188,95 @@ fn computed_iterator_receiver_identity() {
     assert_eq!(counts.len(), 3, "{owned:#?}");
     for row in counts {
         assert_eq!(row.status, "external", "{row:#?}");
+    }
+}
+
+#[test]
+fn static_variants_associated_type_derives_slices_and_field_chains_matrix() {
+    let source = r#"
+        struct Reference { line: usize }
+        struct Facts { references: Vec<Reference> }
+        struct Config { port: u16 }
+        impl Config { fn port(&self) -> u16 { self.port } }
+        static GLOBAL_CFG: Config = Config { port: 8080 };
+        trait Container { type Item; }
+        #[derive(Default, Clone, Debug, Serialize, Deserialize)]
+        struct DerivedModel { label: String }
+        impl DerivedModel { fn ping(&self) {} }
+        struct NoClone;
+        impl NoClone { fn ping(&self) {} }
+        struct Target;
+        impl Target { fn target_only(&self) {} }
+        struct CustomClone;
+        impl CustomClone { fn clone(&self) -> Target { Target } }
+        enum Format { Json, JSON, A }
+        impl Format { fn tag(&self) {} }
+        fn probe(
+            facts: &mut Facts,
+            slice: &[&str],
+            k: usize,
+            nc: &NoClone,
+            cc: &CustomClone,
+        ) {
+            GLOBAL_CFG.port();
+            facts.references.last_mut();
+            let joined = slice[..k].join(",");
+            joined.is_empty();
+            let d = DerivedModel::default();
+            d.clone().ping();
+            Format::Json.tag();
+            Format::JSON.tag();
+            Format::A.tag();
+            let bad = Format::NonExistentVariant();
+            bad.tag();
+            nc.clone().ping();
+            cc.clone().target_only();
+        }
+    "#;
+    let facts = acdd_index::ast::extract("src/ac1_ac2.rs", "rust", source).unwrap();
+    assert!(
+        facts
+            .nodes
+            .iter()
+            .any(|n| n.kind == "constant" && n.name == "GLOBAL_CFG"),
+        "{facts:#?}"
+    );
+    assert!(
+        facts
+            .nodes
+            .iter()
+            .any(|n| n.kind == "type" && n.name == "Item"),
+        "expected associated_type indexed as NodeKind::Type: {facts:#?}"
+    );
+    assert!(
+        facts
+            .references
+            .iter()
+            .any(|r| r.expression.ends_with(".join") && !r.dynamic),
+        "expected slice[..k].join with dynamic: false: {facts:#?}"
+    );
+    let graph = acdd_index::linker::link(&std::collections::BTreeMap::from([(
+        "src/ac1_ac2.rs".to_owned(),
+        facts,
+    )]));
+    for (expr, expected) in [
+        ("GLOBAL_CFG.port", "resolved"),
+        ("facts.references.last_mut", "external"),
+        ("joined.is_empty", "external"),
+        ("DerivedModel::default", "resolved"),
+        ("d.clone().ping", "resolved"),
+        ("Format::Json.tag", "resolved"),
+        ("Format::JSON.tag", "resolved"),
+        ("Format::A.tag", "resolved"),
+        ("cc.clone().target_only", "resolved"),
+        ("bad.tag", "unresolved"),
+        ("nc.clone().ping", "unresolved"),
+    ] {
+        let cov = coverage(&graph, expr);
+        assert_eq!(
+            cov.status, expected,
+            "expression {expr} expected status {expected}: {cov:#?}"
+        );
     }
 }
 

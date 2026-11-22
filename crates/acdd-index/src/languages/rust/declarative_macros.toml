@@ -149,3 +149,88 @@ pack = "Rust standard library"
 name = "unreachable"
 provider = "Rust standard library"
 pack = "Rust standard library"
+
+[[macros]]
+name = "format_args"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "debug_assert"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "debug_assert_eq"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "debug_assert_ne"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "stringify"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "concat"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "env"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "option_env"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "include_str"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "include_bytes"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "cfg"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "compile_error"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "file"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "line"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "column"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "module_path"
+provider = "Rust standard library"
+pack = "Rust standard library"
+
+[[macros]]
+name = "thread_local"
+provider = "Rust standard library"
+pack = "Rust standard library"
