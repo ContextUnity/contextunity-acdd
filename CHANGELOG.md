@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- **Unified Architectural & Graph Linter (`acdd lint`, `code_map_lint`, `code.lint`)**:
+  - Added pure leaf lint types (`LintCategory`, `LintSeverity`, `ArchRuleKind`, `ArchRuleSpec`, `ZoneSelector`, `ArchitectureConfig`), segment-normalized external symbol prefix matching, and optional `acdd.yaml` `architecture.{zones,rules}` in `crates/acdd-core/src/lint.rs`, registering `code_map_lint` as the 20th built-in static MCP tool (`BUILTIN_MCP_TOOLS`).
+  - Added fenced ` ```acdd-rule ` YAML extraction in `crates/acdd-index/src/docs.rs` persisted on section `Node.details["arch_rules"]` (failing closed into `errors` under existing Merkle commitments while skipping fenced code blocks during `INV-*` scanning).
+  - Unified `arch` (all 8 `ArchRuleKind` primitives), `duplicates`, `dead_tails`, `cycles`, `syntax`, and `docs` verification behind `crates/acdd-index/src/db/lint/`, delegating `db::traversal`, `db::cycles`, and `db::reader::diagnostics` callers without duplicate logic.
+  - Exposed dual-surface `acdd lint` CLI, `code_map_lint` MCP tool, shared Markdown/JSON formatting in `src/format/lint.rs`, freshness-bound `CodeDomainProvider` check `code.lint`, and `[ENFORCED]` invariant badges in `DocsDomainProvider` + `ClaimResp`.
+- **Embedded `documentation` GateProfile (`--profile documentation`)**:
+  - Added `crates/acdd-state/src/profile/embedded/documentation.yaml` as the 4th embedded profile (`base`, `code`, `audit`, `documentation`) for compiler-free living documentation and `acdd-rule` governance gated on `docs.links` and `code.lint` (`[arch, docs]`), and wired `code_map_lint` + `code.lint` into `code.yaml`, `audit.yaml`, and `.acdd/profile.yaml`.
+
+### Changed
+
+- **Canonical Invariant Consolidation (`**/AGENTS.md` $\to$ `docs/adr/` & `docs/architecture/`)**:
+  - Consolidated architectural `INV-*` definitions and live self-hosting `acdd-rule` blocks (`INV-CORE-LEAF`, `INV-STATE-NO-INDEX`, `INV-STATE-BRIDGE-BOUNDARY`, `INV-STATE-PURE-MACHINE`, `INV-STATE-SQLITE-CONFINED`, `INV-GIT-SINGLE-OWNER`) into `docs/adr/{0001,0003}.md` and `docs/architecture/{modularity,test-harness}.md`, leaving root and subtree `AGENTS.md` files as concise routers.
+
 ## [0.7.0] - 2026-11-21
 
 ### Added

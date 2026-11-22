@@ -27,7 +27,7 @@ These are protective ceilings, not latency promises. A query may finish earlier,
 
 ## Keeping the index current
 
-All 19 built-in static MCP tools (and any registered `<domain>_<name>` plugin tools) support the optional `worktree` selector. Omission retains the stable server root. Explicit selection uses that worktree's adapter and `.acdd/code-map.sqlite`, while Git-linked worktrees resolve the primary worktree's shared `.acdd/state.sqlite` via `git rev-parse --path-format=absolute --git-common-dir`.
+All 20 built-in static MCP tools (and any registered `<domain>_<name>` plugin tools) support the optional `worktree` selector. Omission retains the stable server root. Explicit selection uses that worktree's adapter and `.acdd/code-map.sqlite`, while Git-linked worktrees resolve the primary worktree's shared `.acdd/state.sqlite` via `git rev-parse --path-format=absolute --git-common-dir`.
 
 The default code index is `<root>/.acdd/code-map.sqlite`; override it with `--db` or `ACDD_DB`. The default state database is `<primary_worktree>/.acdd/state.sqlite`; override it with `--state-db`, `ACDD_STATE_DB`, or `state_db` in `acdd.yaml`. The default workspace is `.`; use `--root` or `ACDD_WORKSPACE_ROOT` for another root. `build` creates a full index. `delta` updates changed and deleted files. The MCP server validates workspace identity and adapter configuration on each request, then updates or rebuilds stale data. It reuses a successful source-inventory check for up to five seconds when the adapter digest and database identity remain valid, so an external source edit can remain unreflected during that interval. CLI indexed queries use the existing index, so refresh it with `build` or `delta` after source edits.
 
