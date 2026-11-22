@@ -27,7 +27,7 @@ acceptance_criteria:
   - 'AC-3: Language-agnostic ValueExpr::CallbackParam, unified struct/tuple/enum-variant destructuring in ValueFlowCollectorCore, generalized lookup_builtin_member, two-tier polymorphic trait/interface declaration linking (Calls/References to Trait::method + bounded PossibleCalls), and Tier-1 SyntaxGrammarSpec adoption lift multi-language and Rust resolution while eliminating the 2,669-edge Rust false-shadowing bucket.'
   - 'AC-4: Rust-specific deterministic gaps — #[derive(clap::Parser)] associated Self constructors (Cli::parse().run() in src/cli/mod.rs), pub(crate) use module re-export aliases, impl Trait for $ty declarative macros (enum_codec!, target_decoder!), #[cfg] impl disambiguation, and intra-crate helper calls — resolve cleanly with zero false-positive heuristic edges.'
   - 'AC-5: AST-statement clone detection in crates/acdd-index/src/db/lint/duplicates.rs extracts normalized statement fingerprints via src/ast/, skips pure delimiter/comment trivia, collapses multi-line wrapped calls into single statement units, and merges overlapping adjacent windows into maximal clone spans.'
-  - 'AC-6: crates/acdd-index/src/db/lint/cycles.rs separates multi-node module import SCCs (kind = imports, len >= 2) from single-node and local mutually recursive function calls; dead_tails.dangling_call is promoted to LintSeverity::Error; syntax.rs enforces configurable ArchitectureConfig.complexity limits (syntax.cognitive_complexity, syntax.max_nesting_depth, syntax.high_fanout, syntax.fact_budget_exceeded, and syntax.intra_crate_type_homonym) wired into enforced_invariant_ids for INV-BOUNDED-STRUCTURAL-COMPLEXITY without penalizing flat match/lookup tables; and validate_workspace emits UNUSED_ARCH_ZONE when any acdd.yaml zone has zero referencing rules.'
+  - 'AC-6: crates/acdd-index/src/db/lint/cycles.rs separates multi-node module import SCCs (kind = imports, len >= 2) from single-node and local mutually recursive function calls; dead_tails.dangling_call is promoted to LintSeverity::Error; syntax.rs enforces configurable ArchitectureConfig.complexity limits (syntax.cognitive_complexity, syntax.max_nesting_depth, syntax.high_fanout, syntax.fact_budget_exceeded, and syntax.intra_crate_type_homonym) wired into enforced_invariant_ids for INV-BOUNDED-STRUCTURAL-COMPLEXITY without penalizing flat match/lookup tables; and crates/acdd-index/src/db/lint/rules.rs emits docs.unused_arch_zone (LintSeverity::Warn) when any acdd.yaml zone has zero referencing rules across acdd.yaml and indexed acdd-rule blocks.'
   - 'AC-7: Executable acdd-rule blocks and INV-BOUNDED-STRUCTURAL-COMPLEXITY in docs/architecture/modularity.md, docs/architecture/indexing.md, docs/adr/0010-static-value-flow-and-receiver-resolution.md, docs/adr/0011-language-linkers-and-framework-manifests.md, and acdd.yaml enforce Layer 2 linker/extractor boundaries, ManifestParser must_implement, hot-path Regex::new / shrink_to_fit / raw node.details[key] bans, index_db and host_telemetry zone confinement, structural complexity bounds, and forbid_cycles.'
   - 'AC-8: All intra-crate module import SCCs (including the 88-node acdd-index SCC and 5-node acdd-core/src/config SCC) are broken into acyclic DAGs, intra-crate Graph/Edge homonyms are disambiguated (CompactGraph/CompactEdge), all deeply nested / high-complexity production monoliths violating INV-BOUNDED-STRUCTURAL-COMPLEXITY (such as enter, value_depth, project, RustMembers::build, build_initialized, syntax::validate, evaluate_tracked, and evaluate_pass, while preserving clean flat routers/lookup tables like is_combining_mark) are decomposed into cohesive submodules, and all verified AST clones and proven dead_tails/phantom_tested items are eliminated.'
   - 'AC-9: Live acdd serve / MCP processes detect executable binary replacement (build/digest mismatch against on-disk binary) and reload or fail-safe cleanly without index-rebuild ping-pong against updated CLI binaries.'
@@ -94,8 +94,8 @@ The following zero-heuristic Rust extensions are already implemented and verifie
 
 ```yaml
 task_ref: upfront-contracts-ast-fingerprints-and-binary-guard
-target: "Freeze ComplexityLimits on ArchitectureConfig, language-agnostic CallbackParam/CallableSignature and CompactGraph leaf contracts, single-pass AST statement fingerprinting + cognitive/nesting metrics in src/ast/, UNUSED_ARCH_ZONE validation in acdd-state, and canonical seam test registrations"
-contract_revision: 1
+target: "Freeze ComplexityLimits on ArchitectureConfig, language-agnostic CallbackParam/CallableSignature and CompactGraph/CompactEdge leaf contracts across callers, single-pass AST statement fingerprinting + cognitive/nesting metrics in src/ast/, and canonical seam test registrations"
+contract_revision: 2
 depends_on: []
 tags:
   - default
@@ -106,27 +106,41 @@ scope:
   - crates/acdd-index/src/semantic/
   - crates/acdd-index/src/typed_facts/
   - crates/acdd-index/src/ast/
-  - crates/acdd-state/src/validate.rs
-  - crates/acdd-state/tests/state_integration/
+  - crates/acdd-index/src/linker/mod.rs
+  - crates/acdd-index/src/linker/traits.rs
+  - crates/acdd-index/src/linker/projections.rs
+  - crates/acdd-index/src/linker/rust/resolution.rs
+  - crates/acdd-index/src/linker/python/semantic_relations.rs
+  - crates/acdd-index/src/linker/typescript/resolution.rs
+  - crates/acdd-index/src/linker/javascript/resolution.rs
+  - crates/acdd-index/src/linker/vue/resolution.rs
+  - crates/acdd-index/src/db/writer/mod.rs
+  - crates/acdd-index/src/db/writer/ingest.rs
+  - crates/acdd-index/src/db/writer/delta.rs
+  - crates/acdd-index/src/db/writer/batch.rs
+  - src/engine/pipeline/delta.rs
   - tests/core.rs
+  - tests/core/
+  - tests/incremental/
   - tests/linker.rs
+  - tests/linker/
   - tests/languages.rs
   - tests/mcp.rs
 invariants:
   - 'INV-AR004-LEAF-MODELS-SEMANTIC: crates/acdd-core/src/lint.rs exposes ComplexityLimits on ArchitectureConfig (preserving ArchRuleKind::ALL.len() == 8), and crates/acdd-index/src/{models,semantic} expose typed CallbackParam, CallableSignature, structural complexity NodeDetailKey slots, and disambiguated CompactGraph/CompactEdge DTOs with zero upward imports from languages or linker.'
   - 'INV-AR004-TREE-SITTER-CONFINED-FINGERPRINTS: Single-pass AST statement fingerprinting and cognitive_complexity / max_nesting_depth computation live in crates/acdd-index/src/ast/ without leaking tree_sitter into src/db/, scoring flat exhaustive match/switch tables as +1 rather than per-arm line penalties.'
 acceptance_criteria:
-  - 'AC-1: ArchitectureConfig.complexity (max_cognitive_complexity, max_nesting_depth, max_fanout, optional invariant binding), ValueExpr::CallbackParam, typed callable parameter metadata on TypedFacts, typed NodeDetailKey slots (including cognitive_complexity, max_nesting_depth, and fact_limit_exceeded), and CompactGraph / CompactEdge renames compile cleanly across workspace callers.'
+  - 'AC-1: ArchitectureConfig.complexity (max_cognitive_complexity, max_nesting_depth, max_fanout, optional invariant binding), ValueExpr::CallbackParam, typed callable parameter metadata on TypedFacts, typed NodeDetailKey slots (including cognitive_complexity, max_nesting_depth, and fact_limit_exceeded), and CompactGraph / CompactEdge renames compile cleanly across all admitted workspace callers.'
   - 'AC-2: crates/acdd-index/src/ast/ extracts language-agnostic AST statement sequences (skipping pure delimiter/comment trivia and collapsing multi-line formatting within a statement) alongside per-callable AST cognitive complexity and control-flow nesting depth.'
-  - 'AC-3: validate_workspace in crates/acdd-state/src/validate.rs detects unreferenced architecture.zones entries (UNUSED_ARCH_ZONE) across acdd.yaml and indexed acdd-rule blocks.'
+  - 'AC-3: Pre-registered seam test modules compile cleanly in canonical test binaries with zero test-harness leaks.'
 status: planned
 subtasks:
   - subtask_ref: leaf-complexity-policy-value-expr-and-compact-graph
-    title: "Add ComplexityLimits to ArchitectureConfig in crates/acdd-core/src/lint.rs, ValueExpr::CallbackParam and typed callable signatures in semantic/ and typed_facts/, structural complexity/fact-budget NodeDetailKey fields, and rename compact_graph::{Graph,Edge} to CompactGraph/CompactEdge"
+    title: "Add ComplexityLimits to ArchitectureConfig in crates/acdd-core/src/lint.rs, ValueExpr::CallbackParam and typed callable signatures in semantic/ and typed_facts/, structural complexity/fact-budget NodeDetailKey fields, and rename compact_graph::{Graph,Edge} to CompactGraph/CompactEdge across all callers"
   - subtask_ref: ast-statement-fingerprints-and-cognitive-metrics
     title: "Implement language-agnostic Tree-sitter AST statement normalizer plus AST cognitive_complexity (flat match = +1, nested control flow = +1 + depth) and max_nesting_depth extraction in crates/acdd-index/src/ast/"
-  - subtask_ref: validate-unused-arch-zones-and-test-seams
-    title: "Add UNUSED_ARCH_ZONE check in crates/acdd-state/src/validate.rs and pre-register seam test modules in canonical test binaries"
+  - subtask_ref: pre-register-seam-tests
+    title: "Pre-register seam test modules in canonical test binaries and verify compilation with cargo clippy and focused tests"
 ```
 
 ### task: declarative-returns-and-agnostic-value-flow
@@ -172,9 +186,9 @@ subtasks:
 ```yaml
 task_ref: rust-linker-precision-and-god-module-split
 target: "Migrate Rust onto ValueExpr::CallbackParam and SyntaxGrammarSpec, close remaining zero-heuristic Rust gaps (#[derive(Parser)] Self, destructuring false-shadowing, re-export aliases, impl macros, intra-crate helper calls), delete duplicated constructor matches! tables, and decompose high-complexity Rust monoliths"
-contract_revision: 1
+contract_revision: 2
 depends_on:
-  - upfront-contracts-ast-fingerprints-and-binary-guard
+  - declarative-returns-and-agnostic-value-flow
 tags:
   - default
 scope:
@@ -202,8 +216,8 @@ subtasks:
 
 ```yaml
 task_ref: lint-engine-ast-clones-cycles-and-rules
-target: "Upgrade duplicates.rs to AST-statement clone windows, separate module import SCCs from call recursion in cycles.rs, promote dangling_call to error, enforce INV-BOUNDED-STRUCTURAL-COMPLEXITY (cognitive_complexity, max_nesting_depth, high_fanout, fact_budget_exceeded, intra_crate_type_homonym) in syntax.rs, and author executable LS-003/AR-004 invariants across docs and acdd.yaml"
-contract_revision: 1
+target: "Upgrade duplicates.rs to AST-statement clone windows, separate module import SCCs from call recursion in cycles.rs, promote dangling_call to error, add docs.unused_arch_zone in rules.rs without breaking INV-STATE-NO-INDEX or enforced_invariant_ids signature, enforce INV-BOUNDED-STRUCTURAL-COMPLEXITY in syntax.rs, and author executable LS-003/AR-004 invariants across docs and acdd.yaml"
+contract_revision: 2
 depends_on:
   - upfront-contracts-ast-fingerprints-and-binary-guard
 tags:
@@ -215,18 +229,18 @@ scope:
   - docs/adr/
   - tests/core.rs
 invariants:
-  - 'INV-AR004-LOCKED-ARCH-RULE-ENUM: ArchRuleKind::ALL.len() == 8 remains unchanged; structural complexity, nesting, fanout, fact-budget, and homonym checks evaluate in LintCategory::Syntax (DEFAULT_VERIFY) backed by ArchitectureConfig.complexity and wired into enforced_invariant_ids so INV-BOUNDED-STRUCTURAL-COMPLEXITY renders [ENFORCED].'
+  - 'INV-AR004-LOCKED-ARCH-RULE-ENUM: ArchRuleKind::ALL.len() == 8 remains unchanged; structural complexity, nesting, fanout, fact-budget, and homonym checks evaluate in LintCategory::Syntax (DEFAULT_VERIFY) backed by ArchitectureConfig.complexity and wired into enforced_invariant_ids(conn, config_rules) via resolve_architecture(conn, None) while preserving its public signature.'
   - 'INV-AR004-ZERO-NOISE-CLONES-AND-CYCLES: Closing-brace blocks and wrapped single-statement calls produce 0 duplicate warnings, adjacent AST-statement clone windows coalesce into maximal spans, flat lookup/router match tables incur no per-arm complexity penalty, and 1-node self-recursive functions produce 0 cycles.scc warnings.'
 acceptance_criteria:
   - 'AC-1: collect_symbol_duplicates in duplicates.rs compares K-statement AST fingerprint sequences from src/ast/ and merges overlapping adjacent matches into single maximal clone groups.'
-  - 'AC-2: cycles.rs emits cycles.scc warnings strictly on multi-node module/file import SCCs (kind = imports, len >= 2); dead_tails.dangling_call emits LintSeverity::Error; and syntax.rs evaluates syntax.cognitive_complexity, syntax.max_nesting_depth, syntax.high_fanout, syntax.fact_budget_exceeded, and syntax.intra_crate_type_homonym bound to INV-BOUNDED-STRUCTURAL-COMPLEXITY in enforced_invariant_ids.'
-  - 'AC-3: Canonical INV-BOUNDED-STRUCTURAL-COMPLEXITY in docs/architecture/modularity.md plus executable acdd-rule blocks in docs/architecture/indexing.md, ADR 0010, ADR 0011, and acdd.yaml enforce Layer 2 linker/extractor boundaries (boundary_entry + forbid_dependency), ManifestParser must_implement, hot-path Regex::new / shrink_to_fit / raw node.details[key] ast_pattern bans, index_db and host_telemetry zone rules (0 UNUSED_ARCH_ZONE warnings), and forbid_cycles on acyclic zones.'
+  - 'AC-2: cycles.rs emits cycles.scc warnings strictly on multi-node module/file import SCCs (kind = imports, len >= 2); dead_tails.dangling_call emits LintSeverity::Error; syntax.rs evaluates syntax.cognitive_complexity, syntax.max_nesting_depth, syntax.high_fanout, syntax.fact_budget_exceeded, and syntax.intra_crate_type_homonym bound to INV-BOUNDED-STRUCTURAL-COMPLEXITY while preserving enforced_invariant_ids signature; and rules.rs emits docs.unused_arch_zone (LintSeverity::Warn) whenever declared architecture.zones are unreferenced.'
+  - 'AC-3: Canonical INV-BOUNDED-STRUCTURAL-COMPLEXITY in docs/architecture/modularity.md plus executable acdd-rule blocks in docs/architecture/indexing.md, ADR 0010, ADR 0011, and acdd.yaml enforce Layer 2 linker/extractor boundaries (boundary_entry + forbid_dependency), ManifestParser must_implement, hot-path Regex::new / shrink_to_fit / raw node.details[key] ast_pattern bans, index_db and host_telemetry zone rules (0 docs.unused_arch_zone warnings), and forbid_cycles on acyclic zones.'
 status: planned
 subtasks:
   - subtask_ref: ast-clone-windows-and-cycle-separation
     title: "Switch duplicates.rs to AST-statement fingerprint windows with maximal-span coalescing, separate imports module SCCs from calls recursion in cycles.rs, and promote dead_tails.dangling_call to Error"
   - subtask_ref: syntax-structural-complexity-and-homonym-lints
-    title: "Implement syntax.cognitive_complexity, syntax.max_nesting_depth, syntax.high_fanout, syntax.fact_budget_exceeded, and syntax.intra_crate_type_homonym in crates/acdd-index/src/db/lint/syntax.rs and wire ArchitectureConfig.complexity into rules.rs::enforced_invariant_ids"
+    title: "Implement syntax.cognitive_complexity, syntax.max_nesting_depth, syntax.high_fanout, syntax.fact_budget_exceeded, syntax.intra_crate_type_homonym in syntax.rs, add docs.unused_arch_zone in rules.rs, and wire ArchitectureConfig.complexity into enforced_invariant_ids via resolve_architecture without signature changes"
   - subtask_ref: executable-ls003-complexity-and-zone-rules
     title: "Declare INV-BOUNDED-STRUCTURAL-COMPLEXITY in docs/architecture/modularity.md and acdd.yaml, and author executable acdd-rule blocks across docs/architecture/indexing.md, ADR 0010, ADR 0011, and acdd.yaml, backed by contract matrices in tests/core.rs"
 ```
@@ -236,9 +250,8 @@ subtasks:
 ```yaml
 task_ref: workspace-cycle-breaking-dedup-and-gate-ratchet
 target: "Break all remaining intra-crate module import SCCs (enabling workspace-wide forbid_cycles: error), refactor remaining INV-BOUNDED-STRUCTURAL-COMPLEXITY violations across acdd-state/acdd-index/src/, eliminate all verified AST clones and proven dead_tails, add acdd serve binary-drift reload guard, and ratchet .acdd/profile.yaml check_full_repo to enforce all 6 lint categories"
-contract_revision: 1
+contract_revision: 2
 depends_on:
-  - declarative-returns-and-agnostic-value-flow
   - rust-linker-precision-and-god-module-split
   - lint-engine-ast-clones-cycles-and-rules
 tags:
