@@ -179,7 +179,6 @@ pub(crate) fn collect_external_satisfied_deps_cached(
     Ok(satisfied)
 }
 
-#[allow(dead_code)]
 pub(crate) enum DepTargetResolution {
     ActiveSpec {
         cancelled: bool,
@@ -188,7 +187,6 @@ pub(crate) enum DepTargetResolution {
     ActiveRun {
         run_id: RunId,
         spec_id: Option<String>,
-        worktree: Option<String>,
         task_exists: bool,
         task_completed: bool,
     },
@@ -301,7 +299,6 @@ pub(crate) fn resolve_dep_target(
             return Ok(DepTargetResolution::ActiveRun {
                 run_id: run.run_id.clone(),
                 spec_id: run.spec_id.clone(),
-                worktree: run.worktree.clone(),
                 task_exists,
                 task_completed,
             });

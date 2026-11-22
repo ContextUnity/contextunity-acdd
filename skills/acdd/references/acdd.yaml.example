@@ -30,7 +30,6 @@ specs:
 
 profiles_dirs:
   - .acdd/profiles
-  - docs/workflows
 state_db: ".acdd/state.sqlite"
 retain_traces: 20
 

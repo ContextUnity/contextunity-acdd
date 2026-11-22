@@ -9,7 +9,7 @@ mod workspace;
 pub use crate::usecases::deps::{
     collect_external_satisfied_deps, parse_task_dependency, verify_run_level_depends_on,
 };
-pub(crate) use io::{combine_check_observations, sorted_dir_paths};
+pub(crate) use io::combine_check_observations;
 pub use io::{
     append_trace_event, current_session_fingerprint, is_local_pid_alive, prune_old_run_trace_dirs,
     read_confined_utf8,
@@ -27,7 +27,8 @@ pub use runs::{
 pub(crate) use specs::{compute_archive_relpath, reconcile_restored_runs_with_archives};
 pub use specs::{
     auto_select_context_cursor, auto_select_ready_cursor, effective_spec_collections,
-    match_spec_collection, parse_cursor_for_snapshot, parse_profile_from_run, to_machine_profile,
+    match_spec_collection, next_spec_id_for_prefix, parse_cursor_for_snapshot,
+    parse_profile_from_run, to_machine_profile,
 };
 pub(super) use workspace::snapshot_worktree_layout;
 pub(crate) use workspace::{

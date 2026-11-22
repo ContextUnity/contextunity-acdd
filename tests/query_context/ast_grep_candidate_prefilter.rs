@@ -4,7 +4,7 @@ use crate::common::Workspace;
 use acdd_core::response::{Detail, QueryOptions, ResponsePolicy};
 use acdd_index::ast::search::{search_page, PreparedAstMatcher};
 use acdd_index::db::reader;
-use contextunity_acdd::cli::ast as cli_ast;
+use contextunity_acdd::engine::ast as cli_ast;
 use serde_json::Value;
 use std::time::Instant;
 

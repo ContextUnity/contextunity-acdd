@@ -676,6 +676,13 @@ pub fn same_filesystem_path(left: &Path, right: &Path) -> bool {
     false
 }
 
+/// Returns the canonical workspace temporary root directory (`std::env::temp_dir()`).
+pub fn temp_dir_root() -> PathBuf {
+    std::env::temp_dir()
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::temp_dir())
+}
+
 /// RAII temporary directory created under `std::env::temp_dir()` with mode `0o700` on Unix.
 pub struct ScopedTempDir {
     path: PathBuf,
@@ -691,9 +698,7 @@ impl ScopedTempDir {
         {
             return Err(path_error("invalid temporary directory prefix"));
         }
-        let base = std::env::temp_dir()
-            .canonicalize()
-            .unwrap_or_else(|_| std::env::temp_dir());
+        let base = temp_dir_root();
         for _ in 0..128 {
             let seq = NONCE.fetch_add(1, Ordering::Relaxed);
             let candidate = base.join(format!("{prefix}-{}-{seq}", std::process::id()));

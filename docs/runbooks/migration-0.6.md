@@ -34,7 +34,6 @@ specs:
     digits: 3
 profiles_dirs:
   - .acdd/profiles
-  - docs/workflows
 state_db: .acdd/state.sqlite
 retain_traces: 20
 modules:
@@ -70,7 +69,7 @@ Ensure `.acdd/profile.yaml`, `.acdd/profiles/**`, and `.acdd/frameworks/**` rema
 
 ## 4. Upgrade `.acdd/profile.yaml` and Custom Workflows to `version: 2`
 
-Convert every profile under `.acdd/profile.yaml`, `.acdd/profiles/`, and `docs/workflows/` to the strict `GateProfile` (`version: 2`) schema (see [ACDD Profiles Reference](../reference/profiles.md)):
+Convert every profile under `.acdd/profile.yaml` and `.acdd/profiles/` to the strict `GateProfile` (`version: 2`) schema (see [ACDD Profiles Reference](../reference/profiles.md)):
 
 1. Add `version: 2` at the top of the file (and `inherit: code` for standard software repositories, `inherit: audit` for read-only review/security scans, or `inherit: base` with explicit `gates:` for non-code workflows; use `gates_patch:` when patching specific inherited gates).
 2. Rename legacy gate keys:

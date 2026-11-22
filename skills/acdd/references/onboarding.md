@@ -61,7 +61,7 @@ migration guide.
   patterns for confidential paths that readers must block.
 - Configure `specs:` collections (`milestones` with `path: docs/milestones`,
   `prefixes: [AC]`; `plans` with `path: docs/plans`,
-  `prefixes: [PLAN]`), `profiles_dirs` (`[.acdd/profiles, docs/workflows]`),
+  `prefixes: [PLAN]`), `profiles_dirs` (`[.acdd/profiles]`),
   `state_db: .acdd/state.sqlite`, `retain_traces: 20`, and `modules:` (`code`, `docs`, `state`, `blackboard`).
 - Retain the default relative `state_db` unless the repository requires another
   location. Git-linked worktrees resolve `<primary_worktree>/.acdd/state.sqlite`

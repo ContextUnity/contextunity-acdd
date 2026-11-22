@@ -131,8 +131,10 @@ fn document_symbol_candidates<'a>(
     {
         let mut candidates: Option<Vec<&'a Node>> = None;
         for node in tier.iter().copied().filter(|node| {
-            !matches!(node.kind.as_str(), "document" | "invariant" | "component")
-                && target_path.map_or_else(
+            !matches!(
+                node.kind.as_str(),
+                "document" | "invariant" | "component" | "impl"
+            ) && target_path.map_or_else(
                     || {
                         acdd_core::config::workspace_path(&node.path).0
                             == acdd_core::config::workspace_path(source_path).0

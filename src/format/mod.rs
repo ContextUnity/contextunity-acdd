@@ -5,8 +5,9 @@ use serde_json::{Map, Value};
 
 mod coordination;
 mod discovery;
-pub(crate) mod lifecycle;
+mod lifecycle;
 mod lint;
+mod presentation;
 mod roadmap;
 mod traversal;
 pub use coordination::{render_blackboard_markdown, render_plugin_tool_markdown};
@@ -14,6 +15,11 @@ pub use discovery::{file_uri_for_path, DiscoveryKind};
 pub use lifecycle::{
     render_claim_markdown, render_state_command_markdown, render_state_query_markdown,
     render_submit_markdown, render_verify_markdown,
+};
+pub(crate) use presentation::{
+    attach_document_presentation_uris, attach_lint_presentation_uris, attach_presentation_uris,
+    attach_traversal_presentation_uris, present_value_bounded, BoundedPresentation,
+    PresentationOptions,
 };
 
 /// Selects the wire presentation without changing the semantic response value.

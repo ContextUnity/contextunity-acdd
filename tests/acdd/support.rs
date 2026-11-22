@@ -20,7 +20,7 @@ pub(crate) fn base_engine_config(workspace_root: &Path) -> StateEngineConfig {
         state_db_override: None,
         code_db_path: None,
         spec_collections: default_specs(),
-        profiles_dirs: vec![".acdd/profiles".to_owned(), "docs/workflows".to_owned()],
+        profiles_dirs: vec![".acdd/profiles".to_owned()],
         linked_workspaces: BTreeMap::new(),
         modules: SubsystemRegistry::default(),
         response_policy: ResponsePolicy::default(),
@@ -83,14 +83,21 @@ impl TestProvider {
             id: "docs".to_owned(),
             caps: DomainCapabilities {
                 actions: vec![],
-                checks: vec![CheckCapability {
-                    name: "links".to_owned(),
-                    input_schema: SchemaDef::object(),
-                }],
+                checks: vec![
+                    CheckCapability {
+                        name: "links".to_owned(),
+                        input_schema: SchemaDef::object(),
+                    },
+                    CheckCapability {
+                        name: "specs".to_owned(),
+                        input_schema: SchemaDef::object(),
+                    },
+                ],
                 context_lenses: BTreeSet::from([
                     "adrs".to_owned(),
                     "invariants".to_owned(),
                     "instructions".to_owned(),
+                    "workspace_config".to_owned(),
                 ]),
                 tools: vec![],
             },
@@ -166,7 +173,15 @@ impl DomainProvider for TestProvider {
     }
 
     fn provide_context(&self, lens: &str, _req: &DomainContextReq) -> anyhow::Result<Value> {
-        Ok(json!({"lens": lens, "items": []}))
+        if lens == "workspace_config" {
+            Ok(json!({
+                "lens": lens,
+                "docs_roots": ["docs"],
+                "available_profiles": ["spec_planning"],
+            }))
+        } else {
+            Ok(json!({"lens": lens, "items": []}))
+        }
     }
 
     fn call_tool(

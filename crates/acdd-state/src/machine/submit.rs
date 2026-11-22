@@ -34,9 +34,6 @@ pub(crate) struct StoredFindingsArtifact {
     pub(crate) reset_worker_context: bool,
     #[serde(default)]
     pub(crate) reset_gate_id: Option<String>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    pub(crate) trace_row_id: Option<i64>,
 }
 
 /// Deserialize a persisted [`ArtifactKind::Findings`] JSON payload.

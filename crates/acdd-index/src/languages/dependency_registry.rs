@@ -922,10 +922,10 @@ impl DependencyRegistry {
                 if metadata.len() > 4 * 1024 * 1024 {
                     continue;
                 }
-                let Ok(content) = std::fs::read_to_string(&path) else {
+                let Some(relative_path) = path.strip_prefix(&root).ok() else {
                     continue;
                 };
-                let Some(relative_path) = path.strip_prefix(&root).ok() else {
+                let Ok(content) = read_confined_manifest_string(&root, relative_path) else {
                     continue;
                 };
                 record_dependency_manifest(
@@ -1834,8 +1834,6 @@ fn load_framework_manifests(
                 path.display()
             );
         }
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read framework manifest {}", path.display()))?;
         let relative_path = path.strip_prefix(root).with_context(|| {
             format!(
                 "framework manifest {} escaped its workspace root {}",
@@ -1843,6 +1841,8 @@ fn load_framework_manifests(
                 root.display()
             )
         })?;
+        let content = read_confined_manifest_string(root, relative_path)
+            .with_context(|| format!("failed to read framework manifest {}", path.display()))?;
         record_framework_manifest(
             workspace,
             origin_prefix,
@@ -1854,6 +1854,23 @@ fn load_framework_manifests(
         .with_context(|| format!("failed to load framework manifest {}", path.display()))?;
     }
     Ok(())
+}
+
+fn read_confined_manifest_string(root: &Path, relative: &Path) -> Result<String> {
+    use std::io::Read;
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true);
+    let mut file = acdd_core::fs::open_confined(root, relative, &mut opts)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        bail!("manifest is not a regular file");
+    }
+    if meta.len() > 4 * 1024 * 1024 {
+        bail!("manifest exceeds the 4 MiB limit");
+    }
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    Ok(content)
 }
 
 fn preferred_manifest(candidate: &str, recorded: &str) -> bool {

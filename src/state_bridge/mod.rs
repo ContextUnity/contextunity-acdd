@@ -2,9 +2,11 @@
 
 pub mod code_domain;
 pub mod docs_domain;
+mod overview;
 
 pub use code_domain::CodeDomainProvider;
 pub use docs_domain::DocsDomainProvider;
+pub(crate) use overview::overview;
 
 /// Mandatory instruction banner emitted in `docs.instructions` to direct workers to scoped `AGENTS.md` files.
 pub(super) const DOCS_INSTRUCTIONS_DIRECTIVE: &str =

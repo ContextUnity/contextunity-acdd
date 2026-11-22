@@ -376,7 +376,7 @@ pub fn default_cache_root() -> Option<PathBuf> {
         return Some(PathBuf::from(path));
     }
     #[cfg(test)]
-    return Some(std::env::temp_dir().join(format!(
+    return Some(acdd_core::fs::temp_dir_root().join(format!(
         "contextunity-acdd-cache-tests-{}",
         std::process::id()
     )));

@@ -360,7 +360,7 @@ fn collect_doc_findings(
              FROM nodes n
              JOIN path_dictionary p ON p.path_id = n.path_id
              WHERE p.path IN (SELECT value FROM json_each(?1))
-               AND n.kind NOT IN ('{doc_kind}','{inv_kind}','{mod_kind}','file')
+               AND n.kind NOT IN ('{doc_kind}','{inv_kind}','{mod_kind}','file','impl')
              ORDER BY p.path, n.line, n.id"
         ))?;
         let mut rows = stmt.query([&paths_json])?;

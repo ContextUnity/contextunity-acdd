@@ -19,7 +19,7 @@ owners:
   - docs/architecture/
   - docs/reference/
   - docs/runbooks/
-  - docs/workflows/
+  - .acdd/profiles/
   - skills/acdd/
   - ROADMAP.md
   - CHANGELOG.md
@@ -30,13 +30,13 @@ invariants:
   - 'INV-SECRET-ISOLATION: Agent runner subprocesses never inherit unapproved host secret variables; sensitive environment credentials (*_KEY, *_TOKEN, *_SECRET, *_PASSWORD) are scrubbed unless explicitly admitted via AgentDef.env_allowlist or external proxy.'
   - 'INV-OUTBOX-IDEMPOTENCY-AND-RESTRAINT: Outgoing notifications fire only from durable outbox rows tied to discrete state transitions (approval_needed, escalated, run_completed), deduplicated per (run_id, node_id, claim_revision, event_kind) and paced by digest windows.'
   - 'INV-CORE-LEAF: Keep pure reactive DTOs (InboxMessage, TimerSpec, OutboxMessage, ApprovalDecision, TickSummary) in acdd-core free of filesystem, SQLite, HTTP, or process I/O.'
-  - 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: AC-008 ships in the same milestone with updated ADR-0003 and ADR-0005 (zero-daemon AgentDef.mode: manual, wake-on-mention coordinator/worker session resume, lease TTLs, SQLite timers, one-shot acdd tick, inbox -> concurrent swarm dispatch, outbox, secret scrubbing), architecture/reference/runbook docs (including systemd.timer / launchd / cron acdd tick setup), executable docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
+  - 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: AC-008 ships in the same milestone with updated ADR-0003 and ADR-0005 (zero-daemon AgentDef.mode: manual, wake-on-mention coordinator/worker session resume, lease TTLs, SQLite timers, one-shot acdd tick, inbox -> concurrent swarm dispatch, outbox, secret scrubbing), architecture/reference/runbook docs (including systemd.timer / launchd / cron acdd tick setup), executable .acdd/profiles/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
 acceptance_criteria:
   - 'AC-1: AgentDef.mode: manual and escalated gates park runs cleanly with exit code 0 at zero tokens and resume via CLI/MCP approve/reject, while spawner.rs scrubs secret env vars unless allowed by env_allowlist.'
   - 'AC-2: gate_claims.lease_expires_at auto-expires hung remote claims, renews on verify and AC-005 blackboard wait activity, and SQLite v2 -> v3 timers schedule recurring cron (e.g. AC-006 memory-dream) and one-shot snooze wake-ups.'
   - 'AC-3: One-shot acdd tick checks due timers, expired claim leases, queued inbox items, and pending outbox deliveries in milliseconds and exits cleanly with 0 idle RAM for systemd.timer, launchd, cron, or CI scheduling.'
   - 'AC-4: CLI/timer enqueue persists deduplicated/coalesced inbox triggers bound to input.<field> (with: input.events | event.*) and dispatches through AC-005 concurrent CAS swarm execution without blocking save: none channels, while durable outbox delivers deduplicated digest-paced notifications strictly on approval_needed, escalated, and run_completed transitions.'
-  - 'AC-5: ADR-0003, ADR-0005, docs/architecture/, docs/reference/{profiles,tasks,cli,mcp-tools,configuration}.md, docs/runbooks/ (including systemd.timer / launchd acdd tick setup), docs/workflows/*.yaml, skills/acdd/references/acdd-profile-examples/*.yaml, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md are updated and pass acdd docs check and acdd validate.'
+  - 'AC-5: ADR-0003, ADR-0005, docs/architecture/, docs/reference/{profiles,tasks,cli,mcp-tools,configuration}.md, docs/runbooks/ (including systemd.timer / launchd acdd tick setup), .acdd/profiles/*.yaml, skills/acdd/references/acdd-profile-examples/*.yaml, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md are updated and pass acdd docs check and acdd validate.'
 required_skills:
   - acdd
   - contract-planning
@@ -173,7 +173,7 @@ subtasks:
 - subtask_ref: state-transition-outbox-and-backoff
   title: Enqueue outbox items transactionally with state transitions, deduplicate by (run_id, node_id, claim_revision, event_kind), and deliver via acdd tick with bounded retry backoff and digest pacing
 - subtask_ref: always-on-adr-docs-skills-and-examples
-  title: Update ADR-0003, ADR-0005, architecture/reference pages (profiles, tasks, cli, mcp-tools, configuration), runbooks (incl. systemd.timer / launchd / cron acdd tick setup), executable docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md; pass acdd docs check and acdd validate
+  title: Update ADR-0003, ADR-0005, architecture/reference pages (profiles, tasks, cli, mcp-tools, configuration), runbooks (incl. systemd.timer / launchd / cron acdd tick setup), executable .acdd/profiles/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md; pass acdd docs check and acdd validate
 contract_revision: 1
 tags:
 - docs
@@ -193,7 +193,7 @@ scope:
 - docs/reference/mcp-tools.md
 - docs/reference/configuration.md
 - docs/runbooks/
-- docs/workflows/
+- .acdd/profiles/
 - skills/acdd/SKILL.md
 - skills/acdd/references/acdd-profile-examples/
 - ROADMAP.md

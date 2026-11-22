@@ -19,7 +19,7 @@ fn default_spec_digits() -> usize {
 }
 
 pub(super) fn default_profiles_dirs() -> Vec<String> {
-    vec![".acdd/profiles".into(), "docs/workflows".into()]
+    vec![".acdd/profiles".into()]
 }
 
 /// Configuration for a spec collection under `specs:` in `acdd.yaml`.
@@ -544,6 +544,8 @@ pub struct Adapter {
     pub limits: ScannerLimits,
     /// The roots value.
     pub roots: Vec<PathBuf>,
+    /// Configured documentation root patterns/files (`docs:`).
+    pub docs: Vec<String>,
     /// The ignored names value.
     pub ignored_names: BTreeSet<String>,
     /// Optional adapter version value.
@@ -603,6 +605,7 @@ impl Default for Adapter {
             modules: SubsystemRegistry::default(),
             limits: ScannerLimits::default(),
             roots: Vec::new(),
+            docs: Vec::new(),
             ignored_names: BTreeSet::new(),
             adapter_version: None,
             digest: String::new(),

@@ -439,6 +439,27 @@ fn profile_gates_claim_context_window_budget_matrix() {
                     }),
                 ),
                 (
+                    "workspace_config".to_owned(),
+                    json!({
+                        "specs": {
+                            "milestones": {
+                                "patterns": ["docs/milestones"],
+                                "default_draft_dir": "docs/milestones",
+                                "prefixes": ["AC"],
+                                "digits": 3,
+                                "profile": "code",
+                                "next_ids": {"AC": "AC-010"}
+                            }
+                        },
+                        "docs_roots": ["docs"],
+                        "profiles_dirs": [".acdd/profiles"],
+                        "available_profiles": ["code", "documentation", "spec_planning"],
+                        "architecture_zones": {"core": ["crates/core/**"]},
+                        "limits": {"max_metadata_bytes": 2048},
+                        "modules": {"profile": null, "enabled": [], "disabled": [], "domains": {}}
+                    }),
+                ),
+                (
                     "adrs".to_owned(),
                     json!({"items": [{"title": "ADR-0001", "path": "docs/adr/0001.md"}]}),
                 ),
@@ -477,6 +498,7 @@ fn profile_gates_claim_context_window_budget_matrix() {
         ("default", ".acdd/profile.yaml"),
         ("hotfix", "hotfix"),
         ("documentation", "documentation"),
+        ("spec_planning", "spec_planning"),
     ] {
         let profile = resolve_profile_ref_with_dirs(
             profile_ref,
@@ -537,6 +559,17 @@ fn profile_gates_claim_context_window_budget_matrix() {
                 !md.contains("```json"),
                 "{label}/{gate_label} must not embed pretty JSON blocks"
             );
+            if md.contains("## Workspace Configuration") {
+                assert!(
+                    md.contains("- spec `milestones`: `docs/milestones` (prefixes: [AC], digits: 3, profile: `code`, next: AC=AC-010)"),
+                    "{label}/{gate_label}: unexpected spec rendering:\n{md}"
+                );
+                assert!(
+                    md.contains("- zone `core`: [crates/core/**]"),
+                    "{label}/{gate_label}: missing zone rendering:\n{md}"
+                );
+                assert!(!md.contains("``"), "{label}/{gate_label}: empty backticks:\n{md}");
+            }
             if md.contains("## Governing Invariants") {
                 assert!(
                     md.contains("- `INV-SINGLE-OWNER` (`src/AGENTS.md`): Keep one canonical owner per subsystem."),

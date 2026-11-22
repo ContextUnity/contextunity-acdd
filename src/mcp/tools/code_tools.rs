@@ -4,8 +4,13 @@ use super::inputs::{
     SearchSymbols, Selector, Snippet, Tests,
 };
 use crate::{
-    cli,
-    format::{DiscoveryKind, OperationKind, OutputFormat},
+    engine::{ast, guide},
+    format::{
+        attach_document_presentation_uris, attach_lint_presentation_uris,
+        attach_presentation_uris, attach_traversal_presentation_uris, DiscoveryKind, OperationKind,
+        OutputFormat,
+    },
+    state_bridge,
 };
 use acdd_core::response::{CoverageOptions, Detail, ResponsePolicy};
 use acdd_core::subsystems::SubsystemId;
@@ -73,10 +78,10 @@ fn responding_with_presentation(
             let mut value = run(&adapter, &adapter.response);
             if output_format == OutputFormat::Markdown {
                 if let (Some(kind), Ok(value)) = (discovery, &mut value) {
-                    cli::discovery::attach_presentation_uris(&server.root, &adapter, value, kind);
+                    attach_presentation_uris(&server.root, &adapter, value, kind);
                 } else if matches!(title, "search_docs" | "get_doc") {
                     if let Ok(value) = &mut value {
-                        cli::discovery::attach_document_presentation_uris(
+                        attach_document_presentation_uris(
                             &server.root,
                             &adapter,
                             value,
@@ -85,7 +90,7 @@ fn responding_with_presentation(
                     }
                 } else if title == "code_map_lint" {
                     if let Ok(value) = &mut value {
-                        cli::discovery::attach_lint_presentation_uris(&server.root, &adapter, value);
+                        attach_lint_presentation_uris(&server.root, &adapter, value);
                     }
                 }
                 if operation == OperationKind::Navigation
@@ -100,7 +105,7 @@ fn responding_with_presentation(
                     )
                 {
                     if let Ok(value) = &mut value {
-                        cli::discovery::attach_traversal_presentation_uris(
+                        attach_traversal_presentation_uris(
                             &server.root,
                             &adapter,
                             value,
@@ -142,7 +147,7 @@ pub(super) async fn code_map_overview(server: &Server, p: OverviewInput) -> Call
         move |server, adapter, policy| {
             let page = p.page.resolve(policy)?;
             let mut result = server.read_with_adapter(adapter, |c| {
-                cli::discovery::overview(c, &server.root, Some(adapter), p.aspects.as_deref(), &page)
+                state_bridge::overview(c, &server.root, Some(adapter), p.aspects.as_deref(), &page)
             })?;
             if format == OutputFormat::Markdown {
                 result["request_scope"] = serde_json::json!({
@@ -607,14 +612,14 @@ pub(super) async fn ast_grep_search(server: &Server, p: Ast) -> CallToolResult {
         move |server, adapter, policy| {
             server.read_with_adapter(adapter, |conn| {
                 let pattern = p.pattern()?;
-                let language = cli::ast::resolve_ast_language(
+                let language = ast::resolve_ast_language(
                     conn,
                     &server.root,
                     adapter,
                     p.language.as_deref(),
                     p.path.as_deref(),
                 )?;
-                let mut result = cli::ast::search_paged_with_adapter(
+                let mut result = ast::search_paged_with_adapter(
                     conn,
                     &server.root,
                     adapter,
@@ -701,7 +706,7 @@ pub(super) async fn acdd_guide(server: &Server, p: Guide) -> CallToolResult {
     if topic == "init" {
         let root = server.root.clone();
         let force = p.force;
-        return match tokio::task::spawn_blocking(move || cli::guide::run(&root, &topic, force)).await
+        return match tokio::task::spawn_blocking(move || guide::run(&root, &topic, force)).await
         {
             Ok(result) => response::result_for(
                 result,
@@ -729,7 +734,7 @@ pub(super) async fn acdd_guide(server: &Server, p: Guide) -> CallToolResult {
         None,
         None,
         move |server, adapter, _| {
-            cli::guide::run_with_adapter(&server.root, &topic, p.force, adapter)
+            guide::run_with_adapter(&server.root, &topic, p.force, adapter)
         },
     )
     .await

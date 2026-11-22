@@ -117,6 +117,48 @@ ast_pattern: 'Command::new("git")'
 include_tests: false
 ```
 
+```acdd-rule
+id: INV-GIT-SINGLE-OWNER-QUALIFIED
+invariant: INV-GIT-SINGLE-OWNER
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/**"]
+  exclude_paths: ["crates/acdd-core/src/git.rs"]
+  languages: ["rust"]
+ast_pattern: 'std::process::Command::new("git")'
+include_tests: false
+```
+
+```acdd-rule
+id: INV-NO-DEAD-CODE-SHIMS
+invariant: INV-NO-DEAD-CODE-SHIMS
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/**"]
+  languages: ["rust"]
+ast_pattern: "#[allow(dead_code)]"
+include_tests: false
+```
+
+```acdd-rule
+id: ARCH-LANGUAGE-PROFILE-MUST-IMPLEMENT
+severity: error
+kind: must_implement
+from:
+  paths: ["crates/acdd-index/src/languages/*.rs"]
+  exclude_paths:
+    - "crates/acdd-index/src/languages/mod.rs"
+    - "crates/acdd-index/src/languages/dependency_registry.rs"
+    - "crates/acdd-index/src/languages/semantic.rs"
+    - "crates/acdd-index/src/languages/template.rs"
+    - "crates/acdd-index/src/languages/toml_manifest.rs"
+to:
+  paths: ["crates/acdd-index/src/languages/mod.rs"]
+  symbols: ["LanguageProfile"]
+```
+
 Keep framework API identities, receiver families, keyword and attribute names,
 directory conventions, activation conditions, and graph-relation mappings in
 manifests. The generated bundle inventory binds filename-derived pack identities

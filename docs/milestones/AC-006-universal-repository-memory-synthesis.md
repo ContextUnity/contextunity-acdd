@@ -21,7 +21,7 @@ owners:
 - docs/architecture/
 - docs/reference/
 - docs/runbooks/
-- docs/workflows/
+- .acdd/profiles/
 - skills/acdd/
 - ROADMAP.md
 - CHANGELOG.md
@@ -36,7 +36,7 @@ invariants:
 - 'INV-MINIMAL-INTERVENTION: Reuse docs extraction, SQLite document nodes (doc_search FTS5/BM25), existing gate traces/blackboard evidence, gate graphs, confinement, and response budgets; introduce no dependency, embedded memory corpus, model client, vector DB, second BM25 engine, or parallel run registry.'
 - 'INV-SCOPE-INTEGRITY: Cargo.toml, all member Cargo.toml files, build.rs, and .acdd/** are excluded from every task write scope.'
 - 'INV-MEMORY-SEAM-HYGIENE: Register every new seam under tests/acdd/ in Task 0; use table-driven production seams, zero new root test binaries, and zero leaked temporary workspaces.'
-- 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: AC-006 ships in the same milestone with updated ADR-0004 and ADR-0006 (memory context lens, docs/memories/*.md authority, acdd_memory BM25 reuse), architecture/reference/runbook docs, executable docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
+- 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: AC-006 ships in the same milestone with updated ADR-0004 and ADR-0006 (memory context lens, docs/memories/*.md authority, acdd_memory BM25 reuse), architecture/reference/runbook docs, executable .acdd/profiles/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
 acceptance_criteria:
 - 'AC-01: Strict, bounded Markdown memory documents (docs/memories/*.md) parse cleanly while ordinary docs retain their existing contract.'
 - 'AC-02: Cold, cache, and delta builds yield identical canonical memory projections and doc_search FTS5 entries; deletion removes obsolete advice.'
@@ -44,7 +44,7 @@ acceptance_criteria:
 - 'AC-04: Identical scope/symbol/gate inputs deliver stable K=5, <=4096-byte memory context via DomainProvider across linear, parallel, and swarm gates.'
 - 'AC-05: Moved, deleted, or ambiguous anchors suppress advice cleanly without mutating tracked Markdown on read.'
 - 'AC-06: acdd memory CLI and acdd_memory MCP share backend semantics, with query implemented as a thin façade over doc_search BM25 filtering stale/superseded by default.'
-- 'AC-07: ADR-0004, ADR-0006, docs/architecture/, docs/reference/{profiles,tasks,cli,mcp-tools,configuration}.md, docs/runbooks/, docs/workflows/*.yaml, skills/acdd/references/acdd-profile-examples/*.yaml, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md are updated and pass acdd docs check and acdd validate.'
+- 'AC-07: ADR-0004, ADR-0006, docs/architecture/, docs/reference/{profiles,tasks,cli,mcp-tools,configuration}.md, docs/runbooks/, .acdd/profiles/*.yaml, skills/acdd/references/acdd-profile-examples/*.yaml, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md are updated and pass acdd docs check and acdd validate.'
 required_skills:
 - acdd
 - contract-planning
@@ -617,7 +617,7 @@ subtasks:
 - subtask_ref: scan-and-anchor-diagnostics
   title: Invoke the same read-only check from scan, report incomplete coverage explicitly and preserve ordinary scan and document retrieval behavior
 - subtask_ref: external-closure-profiles-and-skills
-  title: Add validated v2 GateProfile examples (docs/workflows/*.yaml, skills/acdd/references/acdd-profile-examples/*.yaml) for pre-integration milestone synthesis, in_place closure, ephemeral synthesis after docs_sync, and batch memory-dream consolidation, and update ADR-0004/ADR-0006, architecture/reference/runbooks docs, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md
+  title: Add validated v2 GateProfile examples (.acdd/profiles/*.yaml, skills/acdd/references/acdd-profile-examples/*.yaml) for pre-integration milestone synthesis, in_place closure, ephemeral synthesis after docs_sync, and batch memory-dream consolidation, and update ADR-0004/ADR-0006, architecture/reference/runbooks docs, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md
 contract_revision: 1
 depends_on:
 - universal-gate-context-and-closure-evidence
@@ -643,7 +643,7 @@ scope:
 - docs/reference/README.md
 - docs/reference/repository-memory.md
 - docs/runbooks/
-- docs/workflows/
+- .acdd/profiles/
 - skills/acdd/SKILL.md
 - skills/acdd/references/tool-catalog.md
 - skills/acdd/references/acdd_profile.yaml.example
@@ -718,7 +718,7 @@ this verification-only scope.
 | AC-07 | `docs_sync` remains live documentation; per-run synthesis precedes final integration and batch `--dream` consolidates `run_tombstones` off the hot path while retaining subject persistence and review/proof | Consumption, integration |
 | AC-08 | Supersession/retry and index rebuild preserve source authority; `clear`/`integrate` preserve curated files | Resolver, integration |
 | AC-09 | No new dependencies, protected infrastructure edits, duplicate registries, second BM25/vector engine, root test binaries or leaked test tempdirs | Task 0 and final diff review |
-| AC-10 | `ADR-0004`, `ADR-0006`, `docs/architecture/`, `docs/reference/{profiles,tasks,cli,mcp-tools,configuration}.md`, `docs/runbooks/`, `docs/workflows/*.yaml`, `skills/acdd/references/acdd-profile-examples/*.yaml`, `skills/acdd/SKILL.md`, `ROADMAP.md`, and `CHANGELOG.md` pass `acdd docs check` and `acdd validate` | Surfaces, integration |
+| AC-10 | `ADR-0004`, `ADR-0006`, `docs/architecture/`, `docs/reference/{profiles,tasks,cli,mcp-tools,configuration}.md`, `docs/runbooks/`, `.acdd/profiles/*.yaml`, `skills/acdd/references/acdd-profile-examples/*.yaml`, `skills/acdd/SKILL.md`, `ROADMAP.md`, and `CHANGELOG.md` pass `acdd docs check` and `acdd validate` | Surfaces, integration |
 
 Each task's blueprint slice records implementation steps, exact signatures,
 incoming/outgoing seams, test seam and negative boundaries. Task 0 posts the

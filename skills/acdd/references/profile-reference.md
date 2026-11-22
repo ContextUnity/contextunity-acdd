@@ -4,8 +4,7 @@
 
 Every `GateProfile` YAML document uses strict `deny_unknown_fields` validation
 and compiles via `acdd validate`. Repository defaults live in `.acdd/profile.yaml`
-(or fallback to embedded `code`); custom workflows live in `.acdd/profiles/` or
-`docs/workflows/`.
+(or fallback to embedded `code`); custom profiles live in `.acdd/profiles/`.
 
 ## 1. Inheritance & Execution Modes
 
@@ -15,6 +14,7 @@ and compiles via `acdd validate`. Repository defaults live in `.acdd/profile.yam
   - `code`: inherits `base`, adds full software lifecycle (`blueprint_synthesis` -> `tasks:` -> `run_tests` -> `polish` -> `integration_review` -> `handoff`), `tags: [default, docs]`, all 20 tools, `architecture`/`concurrency`/`project_isolation` contours, `code.seam` + `code.lint` checks, and automatic stripping of disabled `code.*`/`docs.*` hooks when `modules.code: false` or `modules.docs: false`.
   - `audit`: inherits `base`, sets `git.isolation: in_place`, `save: none`, roles `auditor` / `independent_reviewer`, and read-only gates `recon -> analyze -> triage` (`save.report: ".acdd/reports/{run_name}.md"`).
   - `documentation`: inherits `base`, sets `modules: { required: [docs, code] }`, and provides a compiler-free documentation/invariant lifecycle (`blueprint_synthesis` -> per-task `build`/`review`/`deliver` -> `verify_docs` -> `polish` -> `integration_review` -> `handoff`) gated on `docs.links` and `code.lint` (`[arch, docs]`).
+  - `spec_planning`: inherits `base`, sets `git.isolation: in_place`, `save: none`, and runs `synthesize -> review` (`proof: spec_plan`, `checks: [docs.specs, docs.links, code.lint]`, `docs.workspace_config` context lens, automatic `acdd.yaml` `specs.*`/`docs` planning scope derivation, and `save.report: ".acdd/reports/{run_name}.md"`).
   - `none`: standalone graph with zero inherited settings.
   - `<relpath>[:<sha256_prefix>]`: inherit from a repo-confined YAML file (optional min-7-hex SHA-256 content pin).
 

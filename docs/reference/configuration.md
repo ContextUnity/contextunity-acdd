@@ -28,7 +28,6 @@ specs:
     digits: 3
 profiles_dirs:
   - .acdd/profiles
-  - docs/workflows
 state_db: .acdd/state.sqlite
 retain_traces: 20
 ignore:
@@ -232,13 +231,12 @@ using **v2 `GateProfile` YAML** files (`version: 2`).
    or `acdd start --profile ...`
 2. Spec frontmatter `profile: <name|path[:sha256_prefix]>` (optional `sha256` pin)
 3. Collection override `specs.<collection>.profile` in `acdd.yaml` (if set)
-4. Custom profile files searched under `profiles_dirs` (`.acdd/profiles/`,
-   `docs/workflows/`)
+4. Custom profile files searched under `profiles_dirs` (default `[".acdd/profiles"]`)
 5. Repository default `.acdd/profile.yaml` when present in the workspace root,
    automatically falling back to embedded `"code"` when absent (domain hooks
    unavailable under `modules.code: false` / `modules.docs: false` are stripped
    automatically)
-6. Embedded built-in profiles (`base`, `code`, `audit`, `documentation`)
+6. Embedded built-in profiles (`base`, `code`, `audit`, `documentation`, `spec_planning`)
 
 Profiles in linked workspaces are strictly **ignored**; only the active
 workspace root defines the ACDD profile.

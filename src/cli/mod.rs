@@ -1,12 +1,7 @@
 mod args;
-/// Implements ast support.
-pub mod ast;
-pub(crate) mod discovery;
 mod dispatch_code;
 mod dispatch_state;
-pub(crate) mod docs_check;
-/// Implements guide support.
-pub mod guide;
+mod docs_check;
 mod paths;
 /// Sends a reload signal to running MCP servers.
 pub mod reload;
@@ -16,7 +11,7 @@ pub mod validate;
 pub use args::{AstCommand, Cli, CliOutputFormat, Command, DocsCommand, QueryCommand};
 
 use crate::{
-    engine::pipeline as writer,
+    engine::{guide, pipeline as writer},
     format::{self, OperationKind, OutputFormat},
     state_bridge::InvocationSettings,
 };
@@ -237,6 +232,12 @@ fn write_output(output: &mut dyn io::Write, text: &str) -> Result<()> {
         return Err(e.into());
     }
     Ok(())
+}
+
+/// Parses CLI arguments from the process environment and executes the selected command.
+pub async fn run_from_env() -> Result<()> {
+    use clap::Parser;
+    Cli::parse().run().await
 }
 
 impl Cli {
@@ -574,13 +575,13 @@ impl Cli {
 
         if output_format == OutputFormat::Markdown {
             if let Some(kind) = discovery {
-                discovery::attach_presentation_uris(&root, &adapter, &mut result, kind);
+                format::attach_presentation_uris(&root, &adapter, &mut result, kind);
             }
             if matches!(title, "search_docs" | "get_doc") {
-                discovery::attach_document_presentation_uris(&root, &adapter, &mut result, title);
+                format::attach_document_presentation_uris(&root, &adapter, &mut result, title);
             }
             if title == "code_map_lint" {
-                discovery::attach_lint_presentation_uris(&root, &adapter, &mut result);
+                format::attach_lint_presentation_uris(&root, &adapter, &mut result);
             }
             if operation == OperationKind::Navigation
                 && discovery.is_none()
@@ -593,7 +594,7 @@ impl Cli {
                         | "code_map_query"
                 )
             {
-                discovery::attach_traversal_presentation_uris(&root, &adapter, &mut result);
+                format::attach_traversal_presentation_uris(&root, &adapter, &mut result);
             }
         }
         let lint_errors = (title == "code_map_lint")
@@ -602,28 +603,31 @@ impl Cli {
             .filter(|&e| e > 0);
         let formatted = if title == "acdd_read" {
             let debug_snapshot = adapter.debug.then(|| result.clone());
-            let bounded = crate::mcp::response::result_for_presented(
-                Ok(result),
-                &adapter.response,
-                output_format,
-                operation,
-                title,
-                explain,
-                discovery,
-            );
-            let text = bounded
-                .content
-                .first()
-                .and_then(rmcp::model::ContentBlock::as_text)
-                .map(|block| block.text.as_str())
-                .ok_or_else(|| anyhow::anyhow!("acdd_read response has no text content"))?;
-            if bounded.is_error == Some(true) {
-                bail!("{text}");
-            }
+            let budget = adapter
+                .response
+                .max_output_bytes
+                .clamp(1024, acdd_core::response::MAX_OUTPUT_BYTES)
+                .saturating_sub(256);
+            let text = match format::present_value_bounded(
+                result,
+                budget,
+                format::PresentationOptions {
+                    output_format,
+                    operation,
+                    title,
+                    explain,
+                    discovery,
+                },
+                &str::len,
+            ) {
+                format::BoundedPresentation::Ok(text) => text,
+                format::BoundedPresentation::AstDiagnostic(err)
+                | format::BoundedPresentation::Oversized(err) => bail!("{err}"),
+            };
             if let Some(debug_result) = debug_snapshot {
                 crate::telemetry::log_cli(&root, &cli_command_line(), None, &debug_result);
             }
-            text.to_owned()
+            text
         } else {
             format::compact(&mut result, operation, explain);
             let formatted =
@@ -909,7 +913,7 @@ mod tests {
         assert_eq!(tool_state_err.code, ErrorCode::DomainCapabilityUnavailable);
         assert!(!troot.join(".acdd/state.sqlite").exists());
 
-        // 8. `resolve_cli_adapter_path` and `discovery::includes_discovery` contracts.
+        // 8. `resolve_cli_adapter_path` contracts.
         let adir = ScopedTempDir::create("acdd-ut-cli-adapter").unwrap();
         let aroot = adir.path().canonicalize().unwrap();
         let cfg_a = aroot.join("a.yaml");
@@ -937,9 +941,5 @@ mod tests {
             super::dispatch_code::resolve_cli_adapter_path(&aroot, None, false, Some(&cfg_a), true).unwrap(),
             Some(cfg_a)
         );
-        assert!(super::discovery::includes_discovery(None));
-        assert!(super::discovery::includes_discovery(Some(&["COMPONENTS".into()])));
-        assert!(super::discovery::includes_discovery(Some(&["milestones".into()])));
-        assert!(!super::discovery::includes_discovery(Some(&["counts".into(), "cycles".into()])));
     }
 }

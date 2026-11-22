@@ -495,4 +495,73 @@ fn in_memory_run_lifecycle_claims_subtasks_scope_reopen_sync_and_clear_matrix() 
     )
     .unwrap_err();
     assert_eq!(sync_stale.code, ErrorCode::PreTaskArtifactStale);
+
+    // 4. `spec_planning` `--goal` run without explicit scope derives `docs/**` + specs + profiles scope
+    //    (excluding `src/**`) and injects `docs.workspace_config` on `synthesize` claim.
+    execute_on(
+        &cfg,
+        &harness,
+        &providers,
+        StateCommand::Clear(acdd_state::usecases::ClearReq {
+            run: Some(rid),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    ws.write(
+        "acdd.yaml",
+        "docs:\n  - docs\n  - ARCHITECTURE.md\nmodules:\n  code: true\n  docs: true\n  state: true\nspecs:\n  milestones:\n    path: docs/milestones\n    prefixes: [AC]\n    digits: 3\n",
+    );
+    ws.write("ARCHITECTURE.md", "# Architecture\n");
+    ws.write("ROADMAP.md", "# Roadmap\n");
+    let StateCommandOutput::Start(sp_started) = execute_on(
+        &cfg,
+        &harness,
+        &providers,
+        StateCommand::Start(StartReq {
+            goal: Some("Plan new milestone".to_owned()),
+            profile: Some("spec_planning".to_owned()),
+            scope: Vec::new(),
+            ..StartReq::default()
+        }),
+    )
+    .unwrap()
+    else {
+        panic!("expected StartResp");
+    };
+    let StateCommandOutput::Claim(sp_claim) = execute_on(
+        &cfg,
+        &harness,
+        &providers,
+        StateCommand::Claim(ClaimReq {
+            run: Some(sp_started.run.run_id.to_string()),
+            node: Some("synthesize".to_owned()),
+            worker_id: w1,
+            session_fingerprint: Some("sp-1".to_owned()),
+            force: false,
+            steal_remote: false,
+            worktree: None,
+        }),
+    )
+    .unwrap()
+    else {
+        panic!("expected ClaimResp");
+    };
+    let scope_vals: Vec<&str> = sp_claim.contract["scope"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(scope_vals.contains(&"docs/**"), "{scope_vals:?}");
+    assert!(scope_vals.contains(&"docs/milestones/**"), "{scope_vals:?}");
+    assert!(scope_vals.contains(&"ARCHITECTURE.md"), "{scope_vals:?}");
+    assert!(scope_vals.contains(&"ROADMAP.md"), "{scope_vals:?}");
+    assert!(scope_vals.contains(&".acdd/profiles/**"), "{scope_vals:?}");
+    assert!(!scope_vals.iter().any(|p| p.starts_with("src")), "{scope_vals:?}");
+    assert!(
+        sp_claim.context_lenses.contains_key("docs.workspace_config"),
+        "expected docs.workspace_config lens: {:?}",
+        sp_claim.context_lenses.keys().collect::<Vec<_>>()
+    );
 }

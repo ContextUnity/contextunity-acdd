@@ -51,10 +51,21 @@ fn full_providers() -> CompositeDomainProvider {
     let docs = StubDomainProvider::new(
         "docs",
         DomainCapabilities {
+            checks: vec![
+                CheckCapability {
+                    name: "links".to_owned(),
+                    input_schema: SchemaDef::object(),
+                },
+                CheckCapability {
+                    name: "specs".to_owned(),
+                    input_schema: SchemaDef::object(),
+                },
+            ],
             context_lenses: BTreeSet::from([
                 "instructions".to_owned(),
                 "adrs".to_owned(),
                 "invariants".to_owned(),
+                "workspace_config".to_owned(),
             ]),
             ..DomainCapabilities::default()
         },
@@ -196,6 +207,42 @@ fn validate_workspace_config_profile_and_spec_matrix() {
     let ok_res = validate_workspace(root, None, None, &providers).unwrap();
     assert!(ok_res.valid, "{ok_res:?}");
     assert!(!ok_res.warnings.is_empty(), "expected case advisory warning");
+
+    // 6b. `Adapter.limits.max_metadata_bytes` validates `1..=2048` in `validate_workspace` while valid large specs (> 2048 bytes) pass.
+    for bad_limit in [0usize, 2049usize] {
+        fs::write(
+            root.join("acdd.yaml"),
+            format!(
+                "modules:\n  code: true\n  docs: true\n  state: true\nlimits:\n  max_metadata_bytes: {bad_limit}\n"
+            ),
+        )
+        .unwrap();
+        let bad_lim_res = validate_workspace(root, None, None, &providers).unwrap();
+        assert!(!bad_lim_res.valid, "limits.max_metadata_bytes={bad_limit} must fail: {bad_lim_res:?}");
+        assert_eq!(
+            bad_lim_res.diagnostics[0].code,
+            ErrorCode::ProfileSchemaInvalid.as_str()
+        );
+    }
+    fs::write(
+        root.join("acdd.yaml"),
+        "modules:\n  code: true\n  docs: true\n  state: true\nlimits:\n  max_metadata_bytes: 1024\nspecs:\n  milestones:\n    path: docs/milestones\n    prefixes: [AC]\n    digits: 3\n  plans:\n    path: docs/plans\n    prefixes: [PLAN]\n    digits: 3\n",
+    )
+    .unwrap();
+    let large_spec_rel = "docs/milestones/AC-011-large-metadata.md";
+    let large_padding = "x".repeat(2500);
+    let large_spec_doc = format!(
+        "---\nid: AC-011-large-metadata\ntitle: \"Large milestone {large_padding}\"\nstatus: planned\n---\n### task: t1\n```yaml\ntarget: \"Task {large_padding}\"\nscope: [src/lib.rs]\n```\n"
+    );
+    fs::write(root.join(large_spec_rel), large_spec_doc).unwrap();
+    let large_res = validate_document(root, Path::new(large_spec_rel), None, None, &providers).unwrap();
+    assert!(large_res.valid, "spec frontmatter/task metadata > 2048 bytes must remain valid: {large_res:?}");
+    fs::remove_file(root.join(large_spec_rel)).unwrap();
+    fs::write(
+        root.join("acdd.yaml"),
+        "modules:\n  code: true\n  docs: true\n  state: true\nspecs:\n  milestones:\n    path: docs/milestones\n    prefixes: [AC]\n    digits: 3\n  plans:\n    path: docs/plans\n    prefixes: [PLAN]\n    digits: 3\n",
+    )
+    .unwrap();
 
     // 7. Reconciled planned spec with completed task in state.sqlite + legacy 0.5 archive + tombstone precedence + validate_spec_for_run.
     let archived_05_dir = root.join("docs/milestones/archive");

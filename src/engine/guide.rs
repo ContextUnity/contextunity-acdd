@@ -28,7 +28,6 @@ specs:
     digits: 3
 profiles_dirs:
   - .acdd/profiles
-  - docs/workflows
 state_db: .acdd/state.sqlite
 retain_traces: 20
 ";
@@ -369,9 +368,9 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
         "acdd" => Ok(json!({
             "purpose": "Execute specs, plans, workflows, or ephemeral `--goal` runs under one unified `0.6.2` GateProfile engine (`gates_patch:`, `save.report`, `predecessor_proofs`) and 20 static + external DomainProvider plugin tools.",
             "steps": [
-                "Initialize with `acdd init` (selects `inherit: code | base | audit`, writes canonical `.gitignore`).",
+                "Initialize with `acdd init` (selects `inherit: code | base | audit | spec_planning`, writes canonical `.gitignore`).",
                 "Validate workspace config, active profile, `DomainProvider` capabilities, and active specs with `acdd validate`.",
-                "Start a run via `acdd start <spec_path>` or `acdd start --goal \"...\"`, then claim/verify/submit with flat CLI commands (`claim`, `verify`, `submit`, `next`, `status`, `show`, `clear`, `run`, `tool`) or the 5 MCP state tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`)."
+                "Start a run via `acdd start <spec_path>` or `acdd start --goal \"...\" [--profile spec_planning]`, then claim/verify/submit with flat CLI commands (`claim`, `verify`, `submit`, `next`, `status`, `show`, `clear`, `run`, `tool`) or the 5 MCP state tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`, `acdd_blackboard`)."
             ],
             "mcp_tools": {
                 "code": ["code_map_overview", "code_map_search", "code_map_inspect", "code_map_impact", "code_map_analyze", "code_map_explain", "code_map_tests", "code_map_prove_removal", "code_map_query", "ast_grep_search"],

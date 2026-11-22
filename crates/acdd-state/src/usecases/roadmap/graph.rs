@@ -758,7 +758,6 @@ fn resolve_dep_entry(
         DepTargetResolution::ActiveRun {
             run_id,
             spec_id: resolved_spec,
-            worktree: _,
             task_exists,
             ..
         } => {

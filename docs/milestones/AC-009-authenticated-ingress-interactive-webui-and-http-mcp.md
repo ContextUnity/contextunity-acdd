@@ -18,7 +18,7 @@ owners:
   - docs/architecture/
   - docs/reference/
   - docs/runbooks/
-  - docs/workflows/
+  - .acdd/profiles/
   - skills/acdd/
   - ROADMAP.md
   - CHANGELOG.md
@@ -30,13 +30,13 @@ invariants:
   - 'INV-UNIX-SOCKET-UID-CONFINEMENT: Local IPC socket .acdd/acdd.sock is created strictly with 0600 permissions inside the confined .acdd directory and validates peer OS UID credentials before enqueuing triggers into AC-008 inbox.'
   - 'INV-WORKER-IDENTITY-BINDING: Streamable HTTP MCP (POST/GET /mcp) enforces per-session Mcp-Session-Id binding against the authenticated Bearer token scope (worker:<role>), rejecting worker_id impersonation on acdd_claim, acdd_submit, and acdd_blackboard.'
   - 'INV-CORE-LEAF: Keep pure transport security policy and auth DTOs (TokenScope, WebhookSourcePolicy, IngressAuthError, ServeCapabilities) in acdd-core free of network, SQLite, or filesystem I/O.'
-  - 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: AC-009 ships in the same milestone with ADR-0013, updated ADR-0003 and ADR-0006, architecture/reference/runbook docs, executable docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, skills/acdd/references/adapters.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
+  - 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: AC-009 ships in the same milestone with ADR-0013, updated ADR-0003 and ADR-0006, architecture/reference/runbook docs, executable .acdd/profiles/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, skills/acdd/references/adapters.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
 acceptance_criteria:
   - 'AC-1: ADR-0013 is recorded and unified security middleware enforces strict Host/Origin validation, constant-time scoped Bearer tokens (read, approve, worker:<role>, ingest), per-source HMAC-SHA256 X-Hub-Signature-256 with timestamp replay window, body byte caps, and rate limiting.'
   - 'AC-2: Confined .acdd/acdd.sock (0600, OS-UID auth) and acdd serve --incoming (POST /events, standalone headless or combined with --webui) ingest authenticated, deduplicated triggers into AC-008 inbox.'
   - 'AC-3: acdd serve --interactive exposes authenticated Web UI mutation routes for human Approve/Reject of RoleDef.mode: manual / escalated gates and @mention steering on acdd_blackboard without relaxing default read-only acdd serve.'
   - 'AC-4: acdd mcp --http exposes Streamable HTTP MCP (POST/GET /mcp) enforcing Mcp-Session-Id and token-bound worker_id identity, and acdd up composes the workspace-configured combination of webui, telemetry, socket, incoming, mcp_http, and sleep_until(next_timer) timer loop.'
-  - 'AC-5: ADR-0013, ADR-0003, ADR-0006, docs/architecture/, docs/reference/{profiles,tasks,cli,mcp-tools,mcp-setup,configuration}.md, docs/runbooks/, docs/workflows/*.yaml, skills/acdd/references/acdd-profile-examples/*.yaml, skills/acdd/references/adapters.md, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md are updated and pass acdd docs check and acdd validate.'
+  - 'AC-5: ADR-0013, ADR-0003, ADR-0006, docs/architecture/, docs/reference/{profiles,tasks,cli,mcp-tools,mcp-setup,configuration}.md, docs/runbooks/, .acdd/profiles/*.yaml, skills/acdd/references/acdd-profile-examples/*.yaml, skills/acdd/references/adapters.md, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md are updated and pass acdd docs check and acdd validate.'
 required_skills:
   - acdd
   - contract-planning
@@ -170,7 +170,7 @@ subtasks:
 - subtask_ref: acdd-up-supervisor-and-serve-flags
   title: Wire --interactive and --incoming into src/cli/serve.rs, --http into src/cli/mcp.rs, and add acdd up launching configured webui, telemetry, socket, incoming, mcp_http, and sleep_until(next_timer) loop
 - subtask_ref: transport-docs-skills-and-examples
-  title: Update ADR-0003, ADR-0006, architecture/reference/runbook docs, executable docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, adapters.md, ROADMAP.md, and CHANGELOG.md; pass acdd docs check and acdd validate
+  title: Update ADR-0003, ADR-0006, architecture/reference/runbook docs, executable .acdd/profiles/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, adapters.md, ROADMAP.md, and CHANGELOG.md; pass acdd docs check and acdd validate
 contract_revision: 1
 tags:
 - docs
@@ -197,7 +197,7 @@ scope:
 - docs/runbooks/observability.md
 - docs/runbooks/always-on.md
 - docs/runbooks/README.md
-- docs/workflows/
+- .acdd/profiles/
 - skills/acdd/SKILL.md
 - skills/acdd/references/
 - ROADMAP.md

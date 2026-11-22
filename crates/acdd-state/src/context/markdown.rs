@@ -446,6 +446,96 @@ fn render_context_lenses_markdown(out: &mut String, lenses: &Map<String, Value>)
                     }
                 }
             }
+            "docs.workspace_config" => {
+                out.push_str("\n## Workspace Configuration\n\n");
+                let join_str_list = |arr: Option<&Value>| -> String {
+                    arr.and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default()
+                };
+                for key in ["docs_roots", "profiles_dirs", "available_profiles"] {
+                    if let Some(arr) = val.get(key) {
+                        out.push_str(&format!("- {key}: [{}]\n", join_str_list(Some(arr))));
+                    }
+                }
+                if let Some(max_meta) = val
+                    .pointer("/limits/max_metadata_bytes")
+                    .and_then(Value::as_u64)
+                {
+                    out.push_str(&format!("- limits.max_metadata_bytes: {max_meta}\n"));
+                }
+                if let Some(zones) = val.get("architecture_zones").and_then(Value::as_object) {
+                    for (zone, globs) in zones {
+                        out.push_str(&format!(
+                            "- zone `{zone}`: [{}]\n",
+                            join_str_list(Some(globs))
+                        ));
+                    }
+                }
+                if let Some(specs) = val.get("specs").and_then(Value::as_object) {
+                    for (name, spec) in specs {
+                        let next_ids = spec
+                            .get("next_ids")
+                            .and_then(Value::as_object)
+                            .map(|m| {
+                                m.iter()
+                                    .filter_map(|(k, v)| v.as_str().map(|s| format!("{k}={s}")))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .unwrap_or_default();
+                        let location = spec
+                            .get("default_draft_dir")
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                            .or_else(|| {
+                                let pats = join_str_list(spec.get("patterns"));
+                                (!pats.is_empty()).then_some(pats)
+                            })
+                            .or_else(|| {
+                                spec.get("path")
+                                    .and_then(Value::as_str)
+                                    .filter(|s| !s.is_empty())
+                                    .map(str::to_owned)
+                            })
+                            .unwrap_or_default();
+                        let prefixes = join_str_list(spec.get("prefixes"));
+                        let digits = spec.get("digits").and_then(Value::as_u64);
+                        let profile = spec
+                            .get("profile")
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.is_empty());
+                        let mut meta = Vec::new();
+                        if !prefixes.is_empty() {
+                            meta.push(format!("prefixes: [{prefixes}]"));
+                        }
+                        if let Some(d) = digits {
+                            meta.push(format!("digits: {d}"));
+                        }
+                        if let Some(p) = profile {
+                            meta.push(format!("profile: `{p}`"));
+                        }
+                        if !next_ids.is_empty() {
+                            meta.push(format!("next: {next_ids}"));
+                        }
+                        if meta.is_empty() {
+                            out.push_str(&format!("- spec `{name}`: `{location}`\n"));
+                        } else {
+                            out.push_str(&format!(
+                                "- spec `{name}`: `{location}` ({})\n",
+                                meta.join(", ")
+                            ));
+                        }
+                    }
+                }
+            }
             "docs.invariants" => {
                 out.push_str("\n## Governing Invariants\n\n");
                 if let Some(items) = val.get("items").and_then(Value::as_array) {

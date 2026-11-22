@@ -256,6 +256,7 @@ doc_type: architecture
 - INV-SINGLE-GIT: [`run_git`](../src/core/git_owner.rs#L2)
 - INV-BOUNDARY-CORE: [`core_api`](../src/core/mod.rs#L3)
 - INV-MUST-IMPL-RS: [`DomainTrait`](../src/providers/impls.rs#L1)
+- INV-IMPL-FILTER: [`GoodProvider`](../src/providers/impls.rs)
 - INV-MUST-IMPL-PY: [`BaseProvider`](../py/providers/all.py#L1)
 - INV-MUST-IMPL-TS: [`ProviderContract`](../ts/providers/all.ts#L1)
 - INV-PY-EXT: `py_domain` forbids `pandas` and `py_infra`.
@@ -428,6 +429,23 @@ doc_type: architecture
     assert!(!items.iter().any(|it| {
         it["rule_id"] == "docs.orphan_invariant" && it["invariant"] == "INV-CORE-LEAF"
     }));
+    // INV-IMPL-FILTER links [GoodProvider](src/providers/impls.rs) without line range; impl exclusion resolves uniquely to struct GoodProvider.
+    assert!(!items.iter().any(|it| {
+        it["invariant"].as_str() == Some("INV-IMPL-FILTER")
+            || it["symbol"].as_str().is_some_and(|s| s.contains("GoodProvider"))
+                && matches!(
+                    it["rule_id"].as_str(),
+                    Some("docs.orphan_invariant" | "docs.ambiguous_symbol_link" | "docs.broken_symbol_link")
+                )
+    }), "INV-IMPL-FILTER should resolve cleanly without impl ambiguity: {items:?}");
+    let governs_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges e JOIN coverage_evidence v ON v.evidence_id = e.evidence_id WHERE e.kind = 'governs' AND v.evidence = 'GoodProvider'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(governs_count, 1, "expected unique governs edge for GoodProvider");
     // Every arch violation carries invariant + rule_source { path, line }.
     for item in items.iter().filter(|it| it["category"] == "arch") {
         assert!(item["rule_source"]["path"].as_str().is_some(), "{item}");

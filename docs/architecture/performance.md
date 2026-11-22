@@ -256,14 +256,14 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `crates/acdd-index/src/ast/visitor.rs` (`SinglePassExtractor`) and `crates/acdd-index/src/ast/routes.rs` (`RouteContextBuilder`, `RouteContext`), lexical route bindings, string/list/dict tables, and local write targets must be accumulated incrementally during the primary `visitor::walk` pass and finalized on exit via `RouteContextBuilder::finish`. Agents must never introduce standalone full-file AST pre-passes or recursive subtree walks per file or per node.
 
-- INV-PERF-SINGLE-PASS-AST-EXTRACTION: Accumulate lexical route bindings and local write targets incrementally inside `SinglePassExtractor` via `RouteContextBuilder` rather than running separate full-tree AST pre-passes. [`SinglePassExtractor`](../../crates/acdd-index/src/ast/visitor.rs) [`RouteContextBuilder`](../../crates/acdd-index/src/ast/routes.rs) [`RouteContext`](../../crates/acdd-index/src/ast/routes.rs).
+- INV-PERF-SINGLE-PASS-AST-EXTRACTION: Accumulate lexical route bindings and local write targets incrementally inside `SinglePassExtractor` via `RouteContextBuilder` rather than running separate full-tree AST pre-passes. [`walk`](../../crates/acdd-index/src/ast/visitor.rs) [`SinglePassExtractor`](../../crates/acdd-index/src/ast/visitor.rs) [`RouteContextBuilder`](../../crates/acdd-index/src/ast/routes.rs) [`RouteContext`](../../crates/acdd-index/src/ast/routes.rs).
 
 > [!IMPORTANT]
 > Invariant: Native Typed Sidecar Facts Without Intermediate JSON
 >
 > In `crates/acdd-index/src/typed_facts/mod.rs` (`SemanticStore`, `FlowStore`, `TypedFacts`), keep semantic and value-flow facts in native typed stores during extraction and linking. Preserve the existing V3 JSON-value overlays at the binary cache boundary in `crates/acdd-index/src/db/writer/cache.rs` and hydrate typed stores when loading. Public and legacy compatibility views retain their existing serialization and malformed-evidence behavior.
 
-- INV-PERF-TYPED-SIDECAR-FACTS: Use native typed stores for in-memory extraction and linking, preserving the V3 cache and public compatibility boundaries. [`SemanticStore`](../../crates/acdd-index/src/typed_facts/semantic_store.rs) [`FlowStore`](../../crates/acdd-index/src/typed_facts/flow_store.rs) [`TypedFacts`](../../crates/acdd-index/src/typed_facts/mod.rs).
+- INV-PERF-TYPED-SIDECAR-FACTS: Use native typed stores for in-memory extraction and linking, preserving the V3 cache and public compatibility boundaries. [`encode_facts`](../../crates/acdd-index/src/typed_facts/mod.rs) [`decode_facts`](../../crates/acdd-index/src/typed_facts/mod.rs) [`SemanticStore`](../../crates/acdd-index/src/typed_facts/semantic_store.rs) [`FlowStore`](../../crates/acdd-index/src/typed_facts/flow_store.rs) [`TypedFacts`](../../crates/acdd-index/src/typed_facts/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Shared Workspace Rule-IR Context and Indexed AST Dispatch
@@ -312,14 +312,14 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `crates/acdd-index/src/db/writer/cache.rs` (`ExtractionCache`) and `crates/acdd-index/src/languages/dependency_registry.rs`, cache keys must strictly bind source SHA-256 digest, normalized relative path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash` (which incorporates bundled framework manifests via `build.rs`). Agents must never omit the ruleset hash or grammar identity from the cache key, as doing so leads to stale, invalid extraction across manifest or grammar upgrades.
 
-- INV-PERF-CACHE-KEY-BINDING: Bind `ExtractionCache` keys to source SHA-256, normalized path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash`. [`ExtractionCache`](../../crates/acdd-index/src/db/writer/cache.rs) [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry.rs).
+- INV-PERF-CACHE-KEY-BINDING: Bind `ExtractionCache` keys to source SHA-256, normalized path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash`. [`key`](../../crates/acdd-index/src/db/writer/cache.rs) [`effective_ruleset_hash`](../../crates/acdd-index/src/db/writer/cache.rs) [`ExtractionCache`](../../crates/acdd-index/src/db/writer/cache.rs) [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry.rs).
 
 > [!IMPORTANT]
 > Invariant: Interned Linker Keys Preserve Semantic Proof
 >
 > Build one borrowed `LinkerInterner` per linking pass. Use its `SymbolId` and `PathId` keys in prepared semantic tables and restore canonical strings when emitting graph results. Preserve declared-package activation and lexical import proof; file-import presence does not replace dependency activation.
 
-- INV-PERF-INTERNER-KEYS: Preserve canonical graph identities and semantic proof while interning prepared linker keys. [`LinkerInterner`](../../crates/acdd-index/src/interner.rs).
+- INV-PERF-INTERNER-KEYS: Preserve canonical graph identities and semantic proof while interning prepared linker keys. [`intern_symbol`](../../crates/acdd-index/src/interner.rs) [`lookup_symbol_prehashed`](../../crates/acdd-index/src/interner.rs) [`LinkerInterner`](../../crates/acdd-index/src/interner.rs).
 
 > [!IMPORTANT]
 > Invariant: Binary Catalog Storage and Reference Occurrences Without JSON Round-Trips
@@ -354,14 +354,14 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `crates/acdd-index/src/interner.rs` (`LinkerInterner`) and `crates/acdd-index/src/linker/mod.rs`, declarative framework manifest rules must be interned once per language context rather than re-evaluating or cloning rules on every file path in the workspace.
 
-- INV-PERF-MANIFEST-SYNTAX-INTERNING: Intern manifest syntax rules at language context scope instead of re-evaluating or allocating rules per file. [`LinkerInterner`](../../crates/acdd-index/src/interner.rs).
+- INV-PERF-MANIFEST-SYNTAX-INTERNING: Intern manifest syntax rules at language context scope instead of re-evaluating or allocating rules per file. [`intern_owned_symbol`](../../crates/acdd-index/src/interner.rs) [`LinkerInterner`](../../crates/acdd-index/src/interner.rs).
 
 > [!IMPORTANT]
 > Invariant: Host Performance Profile and Governor Precondition
 >
 > Benchmarks and cold-build latency measurements reflect real algorithmic performance only when the host OS operates in `performance` platform profile (`powerprofilesctl set performance`, `energy_performance_preference: performance`). Running benchmarks under `power-saver` caps CPU clocks to low base frequencies (e.g. 400 MHz – 1.9 GHz instead of 4.5 GHz boost) and artificially inflates wall-clock and persistence timings by 1.8x–2.0x.
 
-- INV-PERF-HOST-POWER-GOVERNOR-FOR-BENCHMARKS: Benchmark runs require verification that the host platform profile is not set to `power-saver` before attributing measured wall-clock regressions to code changes. [benchmarks/README.md](../../benchmarks/README.md).
+- INV-PERF-HOST-POWER-GOVERNOR-FOR-BENCHMARKS: Benchmark runs require verification that the host platform profile is not set to `power-saver` before attributing measured wall-clock regressions to code changes. [benchmarks/README.md](../../benchmarks/README.md) [`available_memory_bytes`](../../crates/acdd-core/src/sys.rs).
 
 > [!IMPORTANT]
 > Invariant: Stage Payload Disk Spooling
@@ -446,3 +446,20 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > Splitting the codebase into three independent Cargo workspace library crates (`crates/acdd-core`, `crates/acdd-index`, and `crates/acdd-state`) plus the root host crate `contextunity-acdd` enforces unidirectional dependency boundaries, isolates parser, storage, and state-engine internals from the strict leaf crate, and reduces incremental compilation overhead.
 
 - INV-WORKSPACE-BOUNDARIES: Splitting the repository into `acdd-core`, `acdd-index`, `acdd-state`, and root host `contextunity-acdd` enforces strict unidirectional dependency boundaries with zero circular crate dependencies. [Cargo.toml](../../Cargo.toml).
+
+```acdd-rule
+id: INV-WORKSPACE-BOUNDARIES
+invariant: INV-WORKSPACE-BOUNDARIES
+severity: error
+kind: forbid_cycles
+zones:
+  - core
+  - index
+  - state
+  - host_format
+  - host_engine
+  - host_state_bridge
+  - host_telemetry
+  - host_cli
+  - host_mcp
+```

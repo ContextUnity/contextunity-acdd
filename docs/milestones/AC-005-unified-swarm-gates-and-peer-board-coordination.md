@@ -19,7 +19,7 @@ owners:
   - docs/architecture/
   - docs/reference/
   - docs/runbooks/
-  - docs/workflows/
+  - .acdd/profiles/
   - skills/acdd/
   - ROADMAP.md
   - CHANGELOG.md
@@ -35,14 +35,14 @@ invariants:
   - 'INV-GROUPED-SAVE-AND-AGENT-SCHEMA: GateProfile v2 renames roles/role to agents/agent (with built-in coordinator: { mode: inline }) and replaces scattered SavePolicy booleans + receipt flags with mutually exclusive save variants (none | readonly | snapshot | commit | handoff: { archive, prune, commit_scope, immutable, scope_mode?: lazy|strict|off, repack?: none|linear|by_task|last|squash, report? }), where save: handoff integrates only mutating swarm/parallel worktree branches, atomically commits admitted self.scope alongside archive, defaults to scope_mode: lazy (non-blocking ancestry/no-revert checks across extend_scope overlaps and accumulated pre-handoff polish absorbed at handoff with Acdd-Integrated trailers vs strict blob equality or off), and supports fail-closed worktree-only Git repacking (by_task splits final tree T_final across task scopes + 1 handoff tail commit; last folds archive, self.scope, and accumulated polish into the last delivered task commit; squash collapses base..T_final into 1 commit).'
   - 'INV-HIERARCHICAL-GROUP-COORDINATORS: Any linear, parallel, or swarm GateDef acts as a composable group (arbitrarily nested via gates[]) that may bind an optional coordinator: <agent>; each group coordinator binds automatically to thread_id = <container_cursor> and @coordinator/@<group_cursor> mentions, supports bounded hot wait(timeout_seconds) plus persistent session_id handoff, and isolates intra-group chatter from parent or sibling coordinators.'
   - 'INV-CORE-LEAF: Keep pure unified-gate and blackboard DTOs (GateMode, WithSource, NamespaceRoot, BlackboardRecipient, BlackboardWaitReq) in acdd-core free of SQLite, Git, HTTP, or filesystem I/O.'
-  - 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: Every AC-005 capability ships in the same milestone with updated ADR-0003, architecture/reference/runbook docs, executable docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml examples, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
+  - 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: Every AC-005 capability ships in the same milestone with updated ADR-0003, architecture/reference/runbook docs, executable .acdd/profiles/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml examples, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
 acceptance_criteria:
   - 'AC-1: TasksBlock (- tasks:) is removed from GateDef (profile/schema.rs, inherit.rs, validate.rs) and embedded profiles (base.yaml, code.yaml, audit.yaml), turning task execution into an ordinary mode: swarm GateDef with uniform hierarchical cursors; roles/role are renamed to agents/agent (adding built-in coordinator inline agent) and SavePolicy + receipt collapse into mutually exclusive save variants including save: handoff { archive, prune, commit_scope, immutable, scope_mode?, repack?, report? } with simplified non-blocking pre-handoff polish under default scope_mode: lazy.'
   - 'AC-2: Existing GateDef.with resolves single refs, pipe chains, YAML lists, { count: N }, and { items, args } (for leaf swarm call: gates) left-to-right across spec.<field>, input.<field>, and <gate_id>.<field> (flattening sharded mode: swarm proofs in deterministic shard order) and propagates typed gate_artifacts into ClaimResp.inputs.'
   - 'AC-3: Extended native GateDef.when evaluates across root, container, and shard gates over tags, spec.*, input.*, <gate_id>.*, item.*, event.*, and diff.* (e.g. when: "!spec.tasks", when: "!docs", when: "item.is_new & !item.muted").'
   - 'AC-4: mode: parallel opens heterogeneous child gates[] simultaneously and joins at a consolidated barrier, while mode: swarm schedules depends_on items concurrently in topological waves—lock-free under SQLite CAS for save: none and disjoint-scope or worktree-isolated for save != none.'
   - 'AC-5: acdd_blackboard and acdd blackboard support structured @mentions (@<worker_id>, @<node_cursor>, @agent:<name>, @coordinator, @all), thread_id scoping, monotonic seq, and zero-token blocking wait (since_seq, mentions_only: true default, timeout_seconds?) persisted via SQLite migration v1 -> v2, alongside recursive GateDef.coordinator group supervision scoped by hierarchical cursor.'
-  - 'AC-6: ADR-0003, docs/architecture/, docs/reference/{profiles,tasks,cli,mcp-tools,configuration}.md, docs/runbooks/, docs/workflows/*.yaml, skills/acdd/references/acdd-profile-examples/*.yaml, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md are updated and pass acdd docs check and acdd validate.'
+  - 'AC-6: ADR-0003, docs/architecture/, docs/reference/{profiles,tasks,cli,mcp-tools,configuration}.md, docs/runbooks/, .acdd/profiles/*.yaml, skills/acdd/references/acdd-profile-examples/*.yaml, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md are updated and pass acdd docs check and acdd validate.'
 required_skills:
   - acdd
   - contract-planning
@@ -299,7 +299,7 @@ scope:
   - docs/reference/mcp-tools.md
   - docs/reference/configuration.md
   - docs/runbooks/
-  - docs/workflows/
+  - .acdd/profiles/
   - skills/acdd/SKILL.md
   - skills/acdd/references/acdd-profile-examples/
   - ROADMAP.md
@@ -310,7 +310,7 @@ subtasks:
   - subtask_ref: mention-routing-and-blocking-wait
     title: "Implement @mention recipient indexing (including relative @coordinator -> nearest enclosing GateDef.coordinator and @<container_cursor> scoping), thread_id queries, container completion sentinel, and zero-token acdd_blackboard wait(since_seq, mentions_only, timeout_seconds?) waking on SQLite commit/notify"
   - subtask_ref: adr-docs-skills-and-examples-coevolution
-    title: "Update ADR-0003, architecture/reference/runbook pages, executable docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md; pass acdd docs check and acdd validate"
+    title: "Update ADR-0003, architecture/reference/runbook pages, executable .acdd/profiles/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md; pass acdd docs check and acdd validate"
 ```
 
 ### task: human-guided-gate-proof-and-logic-audit

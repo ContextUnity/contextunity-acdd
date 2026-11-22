@@ -166,7 +166,7 @@ fn start_holding_repo_lock(
         )
     } else {
         let goal_text = req.goal.as_deref().unwrap_or("");
-        let resolved = resolve_optional_profile_ref_with_dirs(
+        let mut resolved = resolve_optional_profile_ref_with_dirs(
             req.profile.as_deref(),
             Some(primary),
             Some(&config.modules),
@@ -180,7 +180,7 @@ fn start_holding_repo_lock(
             None => RunName::new(rid.as_str())?,
         };
         let has_tasks_block = resolved.gates.iter().any(|g| g.tasks.is_some());
-        if !has_tasks_block {
+        let effective_scope = if !has_tasks_block {
             for pat in &req.scope {
                 if !acdd_core::path_policy::is_valid_scope_glob(pat) {
                     return Err(StateError::new(
@@ -189,13 +189,34 @@ fn start_holding_repo_lock(
                     ));
                 }
             }
+            if req.scope.is_empty() && resolved.profile_id == "spec_planning" {
+                let docs_roots = source_override
+                    .map(|a| a.docs.clone())
+                    .unwrap_or_else(|| {
+                        if primary.join(ACDD_CONFIG_FILE).is_file() {
+                            acdd_core::config::load_adapter(primary, None)
+                                .map(|a| a.docs)
+                                .unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        }
+                    });
+                derive_spec_planning_scope(primary, &checkout, &docs_roots)
+            } else {
+                req.scope.clone()
+            }
+        } else {
+            req.scope.clone()
+        };
+        if !has_tasks_block && !effective_scope.is_empty() {
+            assign_root_gate_scopes(&mut resolved.gates, &effective_scope);
         }
         let rendered_spec = materialize_ephemeral_goal_spec_with_options(
             &rid,
             &rname,
             goal_text,
             &resolved.profile_id,
-            &req.scope,
+            &effective_scope,
             &[],
             has_tasks_block,
         )?;
@@ -554,4 +575,74 @@ fn apply_initial_external_dep_satisfaction(
             }
         }
     }
+}
+
+fn assign_root_gate_scopes(gates: &mut [crate::profile::GateDef], scope: &[String]) {
+    for gate in gates {
+        if gate.tasks.is_none() && gate.scope.is_empty() {
+            gate.scope = scope.to_vec();
+        }
+        if !gate.gates.is_empty() {
+            assign_root_gate_scopes(&mut gate.gates, scope);
+        }
+    }
+}
+
+fn normalize_scope_entry(raw: &str) -> String {
+    raw.trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_end_matches('/')
+        .to_owned()
+}
+
+fn derive_spec_planning_scope(
+    primary: &Path,
+    checkout: &StateEngineConfig,
+    docs_roots: &[String],
+) -> Vec<String> {
+    let mut scope = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut push_entry = |raw: &str, check_file: bool| {
+        let norm = normalize_scope_entry(raw);
+        if norm.is_empty() {
+            return;
+        }
+        let pat = if norm.contains(['*', '?', '[', '{'])
+            || (check_file
+                && (checked_child(primary, Path::new(&norm)).is_ok_and(|p| p.is_file())
+                    || Path::new(&norm).extension().is_some()))
+        {
+            norm
+        } else {
+            format!("{norm}/**")
+        };
+        if acdd_core::path_policy::is_valid_scope_glob(&pat) && seen.insert(pat.clone()) {
+            scope.push(pat);
+        }
+    };
+
+    for col in effective_spec_collections(checkout).values() {
+        for raw in col.patterns() {
+            push_entry(raw, false);
+        }
+    }
+
+    if docs_roots.is_empty() {
+        push_entry("docs/**", false);
+        push_entry("ROADMAP.md", true);
+    } else {
+        for raw in docs_roots {
+            push_entry(raw, true);
+        }
+        if primary.join("ROADMAP.md").is_file() {
+            push_entry("ROADMAP.md", true);
+        }
+    }
+
+    for dir in &checkout.profiles_dirs {
+        push_entry(dir, false);
+    }
+    push_entry(&format!("{ACDD_DIR}/profiles/**"), false);
+    scope
 }

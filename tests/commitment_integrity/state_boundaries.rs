@@ -508,4 +508,26 @@ fn inv_single_owner_architectural_fences() {
         Some(".acdd/reports/{run_name}.md"),
         "audit.yaml triage gate must declare explicit save.report"
     );
+
+    // 6. Embedded `spec_planning.yaml` inherits `base`, isolates `in_place`, defaults `save: none`, and has no hardcoded runners/models.
+    let sp_raw = std::fs::read_to_string(
+        manifest_dir.join("crates/acdd-state/src/profile/embedded/spec_planning.yaml"),
+    )
+    .unwrap();
+    let sp_yaml: serde_yaml::Value = serde_yaml::from_str(&sp_raw).unwrap();
+    assert_eq!(sp_yaml["inherit"].as_str(), Some("base"));
+    assert_eq!(sp_yaml["git"]["isolation"].as_str(), Some("in_place"));
+    assert_eq!(sp_yaml["save"].as_str(), Some("none"));
+    assert!(sp_yaml["roles"]["architect"]["runner"].is_null());
+    assert!(sp_yaml["roles"]["architect"]["models"].is_null());
+    let sp_review = sp_yaml["gates"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|g| g["id"].as_str() == Some("review"))
+        .expect("spec_planning.yaml must declare review gate");
+    assert_eq!(
+        sp_review["save"]["report"].as_str(),
+        Some(".acdd/reports/{run_name}.md")
+    );
 }

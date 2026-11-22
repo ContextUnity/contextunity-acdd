@@ -1,12 +1,15 @@
 //! Spec collections, archive relpaths, profile-to-machine conversion, cursor resolution, and archive reconciliation.
 
+use super::io::{read_confined_utf8, sorted_dir_paths};
 use super::runs::{build_tombstone_cleanup_manifest, CleanupManifestInput};
 use crate::machine::{
     compute_schedule, MachineCheckDef, MachineGateDef, MachineGitPolicy, MachineGraphItem,
     MachineProfileInput, MachineProofKind, MachineSavePolicy, MachineTasksBlockDef,
 };
 use crate::profile::{GateDef, ProofDef, ProofKind, ResolvedGateProfile};
-use crate::spec::{parse_spec, SpecDocument, SpecStatus};
+use crate::spec::{
+    extract_spec_number, format_next_spec_id, parse_spec, SpecDocument, SpecStatus,
+};
 use crate::store::sqlite::backup::RestoredActiveRun;
 use crate::types::{
     GateNodeRecord, NodeKind, NodeStatus, RunGraphSnapshot, RunRecord, RunTombstoneRecord,
@@ -599,4 +602,48 @@ pub(crate) fn reconcile_restored_runs_with_archives(
         });
     }
     Ok(tombstones)
+}
+
+/// Compute the next collision-free sequential spec ID (`<PREFIX>-<NNN>`) across `db_max` and active + `archive/` files.
+pub fn next_spec_id_for_prefix(
+    primary: &Path,
+    collection: &str,
+    col: &SpecCollectionConfig,
+    prefix: &str,
+    db_max: Option<u32>,
+) -> Result<String, StateError> {
+    let mut max_num = db_max;
+    let resolved_dirs = col.resolve_dirs(primary).map_err(|err| {
+        StateError::new(
+            ErrorCode::ProfileSchemaInvalid,
+            format!("failed to resolve directories for '{collection}': {err}"),
+        )
+    })?;
+    for dir_abs in resolved_dirs {
+        for scan_dir in [dir_abs.clone(), dir_abs.join("archive")] {
+            if fs::symlink_metadata(&scan_dir).is_ok_and(|m| m.file_type().is_symlink()) {
+                continue;
+            }
+            for p in sorted_dir_paths(&scan_dir) {
+                if p.extension().and_then(|e| e.to_str()) != Some("md") {
+                    continue;
+                }
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                    if let Some(num) = extract_spec_number(stem, prefix) {
+                        max_num = Some(max_num.map_or(num, |cur| cur.max(num)));
+                    }
+                }
+                if let Ok(rel) = p.strip_prefix(primary) {
+                    if let Ok(raw) = read_confined_utf8(primary, &rel.to_string_lossy()) {
+                        if let Ok(doc) = parse_spec(&raw) {
+                            if let Some(num) = extract_spec_number(&doc.id, prefix) {
+                                max_num = Some(max_num.map_or(num, |cur| cur.max(num)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(format_next_spec_id(prefix, col.digits, max_num))
 }

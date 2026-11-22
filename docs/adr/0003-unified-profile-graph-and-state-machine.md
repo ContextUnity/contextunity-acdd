@@ -21,7 +21,7 @@ Maintaining separate execution engines, storage tables, and CLI/MCP surfaces for
 
 All lifecycle execution collapses onto two orthogonal primitives in `crates/acdd-state`:
 
-1. **`GateProfile` (`version: 2`)**: Declarative YAML graph (`inherit`, `git:`, `save:`, `tags:`, `protected_paths:`, `default_tools:`, `modules:`, `limits:`, `roles:`, `commands:`, `scope_args_by_pattern:`, `proofs:`, `guidance:`, `contours:`, `gate_templates:`, `gates:` or mutually exclusive `gates_patch:`). Embedded baselines are strictly four profiles: `base`, `code`, `audit`, and `documentation`; `.acdd/profile.yaml` automatically becomes the workspace default when present, while `in_place` is an execution mode (`--in-place` or `git.isolation: in_place` in a profile) that neutralizes `save.post: commit` to `none`. Strict `deny_unknown_fields` parsing rejects un-migrated `0.5` syntax (`ACDD_PROFILE_SCHEMA_INVALID`), and gate `save.report` materializes reports strictly under `.acdd/reports/*.{md,json}` on pass (`SubmitResp.report_path`).
+1. **`GateProfile` (`version: 2`)**: Declarative YAML graph (`inherit`, `git:`, `save:`, `tags:`, `protected_paths:`, `default_tools:`, `modules:`, `limits:`, `roles:`, `commands:`, `scope_args_by_pattern:`, `proofs:`, `guidance:`, `contours:`, `gate_templates:`, `gates:` or mutually exclusive `gates_patch:`). Embedded baselines are strictly five profiles: `base`, `code`, `audit`, `documentation`, and `spec_planning`; `.acdd/profile.yaml` automatically becomes the workspace default when present, while `in_place` is an execution mode (`--in-place` or `git.isolation: in_place` in a profile) that neutralizes `save.post: commit` to `none`. Strict `deny_unknown_fields` parsing rejects un-migrated `0.5` syntax (`ACDD_PROFILE_SCHEMA_INVALID`), and gate `save.report` materializes reports strictly under `.acdd/reports/*.{md,json}` on pass (`SubmitResp.report_path`).
 2. **`Run`**: One active or completed execution instance bound to a `SpecDocument` (`docs/milestones/*.md`, `docs/plans/*.md`) or an ephemeral `--goal` specification (`.acdd/run/<run_id>/spec.md`) and materialized into a `gate_nodes` DAG addressed by validated [`NodeCursor`](../../crates/acdd-core/src/ids.rs) and `GateSelector` identifiers.
 
 ### 2. Node Hierarchy, `SpecDocument`, and `blueprint_synthesis`
@@ -46,9 +46,18 @@ invariant: INV-STATE-PURE-MACHINE
 severity: error
 kind: forbid_dependency
 from:
-  paths: ["crates/acdd-state/src/machine/**"]
+  zones: [state_machine]
 to:
-  external_symbols: ["std::fs", "std::process", "std::net", "rusqlite"]
+  paths:
+    - "crates/acdd-state/src/store/**"
+    - "crates/acdd-state/src/git_ops/**"
+    - "crates/acdd-state/src/runner/**"
+    - "crates/acdd-state/src/usecases/**"
+    - "crates/acdd-core/src/fs.rs"
+    - "crates/acdd-core/src/git.rs"
+    - "crates/acdd-core/src/lock.rs"
+    - "crates/acdd-core/src/sys.rs"
+  external_symbols: ["std::fs", "std::process", "std::net", "std::env", "std::time::SystemTime", "std::time::Instant", "rusqlite"]
 include_tests: false
 ```
 
@@ -58,10 +67,26 @@ invariant: INV-STATE-SQLITE-CONFINED
 severity: error
 kind: single_owner
 from:
-  paths: ["crates/acdd-state/src/**"]
+  zones: [state]
 to:
   external_symbols: ["rusqlite"]
 owner_paths: ["crates/acdd-state/src/store/sqlite/**"]
+include_tests: false
+```
+
+```acdd-rule
+id: INV-STATE-SQLITE-LEAF
+invariant: INV-STATE-SQLITE-CONFINED
+severity: error
+kind: forbid_dependency
+from:
+  zones: [state_sqlite]
+to:
+  paths:
+    - "crates/acdd-state/src/git_ops/**"
+    - "crates/acdd-state/src/usecases/**"
+    - "crates/acdd-state/src/runner/**"
+    - "crates/acdd-core/src/git.rs"
 include_tests: false
 ```
 

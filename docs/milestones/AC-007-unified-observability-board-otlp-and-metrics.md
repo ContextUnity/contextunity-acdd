@@ -22,7 +22,7 @@ owners:
   - docs/architecture/
   - docs/reference/
   - docs/runbooks/
-  - docs/workflows/
+  - .acdd/profiles/
   - skills/acdd/
   - ROADMAP.md
   - CHANGELOG.md
@@ -34,12 +34,12 @@ invariants:
   - 'INV-PROMETHEUS-BOUNDED-CARDINALITY: Prometheus labels admit only bounded low-cardinality dimensions (workspace, collection, profile, gate, kind, tool, status); high-cardinality values (run_id, task_ref, commit_sha, file paths) are forbidden in /metrics labels.'
   - 'INV-SECURITY-LOOPBACK-AND-REDACTION: Bind acdd serve to 127.0.0.1 by default unless --bind is explicitly supplied, and never expose raw source snippets, environment secrets, or sensitive-matched paths in /metrics, /api/*, or OTLP span payloads.'
   - 'INV-CORE-LEAF: Keep pure wire DTOs and text/JSON serializers in acdd-core free of filesystem, SQLite, and network I/O; keep pure snapshot/Prometheus aggregation in crates/acdd-state/src/observability/ and host HTTP/SSE/OTLP transport in src/observability/.'
-  - 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: AC-007 ships in the same milestone with updated ADR-0003 and ADR-0006 (explicit acdd mcp stdio command, read-only loopback acdd serve [--webui] [--telemetry] Live Gate Board UI, SSE, bounded Prometheus, OTLP relay), architecture/reference/runbook docs (including docs/reference/mcp-setup.md), executable docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, skills/acdd/references/adapters.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
+  - 'INV-DOCS-AND-EXAMPLES-COEVOLUTION: AC-007 ships in the same milestone with updated ADR-0003 and ADR-0006 (explicit acdd mcp stdio command, read-only loopback acdd serve [--webui] [--telemetry] Live Gate Board UI, SSE, bounded Prometheus, OTLP relay), architecture/reference/runbook docs (including docs/reference/mcp-setup.md), executable .acdd/profiles/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml profiles, skills/acdd/SKILL.md, skills/acdd/references/adapters.md, ROADMAP.md, and CHANGELOG.md passing acdd docs check and acdd validate.'
 acceptance_criteria:
   - 'AC-1: Read-only multi-source snapshot aggregator reads .acdd/state.sqlite, .acdd/code-map.sqlite, and traces.jsonl under SQLITE_OPEN_READ_ONLY and renders valid Prometheus 0.0.4 /metrics with bounded low-cardinality labels.'
   - 'AC-2: Incremental OTLP/HTTP JSON trace shipper tails traces.jsonl with persisted byte-offset cursors, sensitive redaction, and bounded retry backoff.'
   - 'AC-3: Explicit acdd mcp serves session-scoped stdio MCP (with install.sh and adapter templates updated and safe transition handling for existing configurations), while acdd serve [--webui] [--telemetry] binds 127.0.0.1 strictly read-only: --webui serves GET /, GET /api/*, and GET /events SSE rendering linear | parallel | swarm hierarchies and @mention threads; --telemetry serves headless GET /metrics and background OTLP/HTTP JSON relay; and default acdd serve (neither flag) launches both together with zero inbound state mutations.'
-  - 'AC-4: ADR-0003, ADR-0006, docs/architecture/, docs/reference/{profiles,tasks,cli,mcp-tools,mcp-setup,configuration}.md, docs/runbooks/, docs/workflows/*.yaml, skills/acdd/references/acdd-profile-examples/*.yaml, skills/acdd/references/adapters.md, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md are updated and pass acdd docs check and acdd validate.'
+  - 'AC-4: ADR-0003, ADR-0006, docs/architecture/, docs/reference/{profiles,tasks,cli,mcp-tools,mcp-setup,configuration}.md, docs/runbooks/, .acdd/profiles/*.yaml, skills/acdd/references/acdd-profile-examples/*.yaml, skills/acdd/references/adapters.md, skills/acdd/SKILL.md, ROADMAP.md, and CHANGELOG.md are updated and pass acdd docs check and acdd validate.'
 required_skills:
   - acdd
   - contract-planning
@@ -168,7 +168,7 @@ subtasks:
 - subtask_ref: cli-and-config-reference
   title: Update ADR-0003, ADR-0006, architecture/reference pages (profiles, tasks, cli, mcp-tools, mcp-setup, configuration), skills/acdd/references/adapters.md, and skills/acdd/SKILL.md for acdd mcp and acdd serve [--webui] [--telemetry]
 - subtask_ref: prometheus-otlp-quickstart-and-examples
-  title: Add Prometheus + Jaeger/Grafana runbook, update docs/workflows/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml examples, update ROADMAP.md and CHANGELOG.md, and pass acdd docs check and acdd validate
+  title: Add Prometheus + Jaeger/Grafana runbook, update .acdd/profiles/*.yaml and skills/acdd/references/acdd-profile-examples/*.yaml examples, update ROADMAP.md and CHANGELOG.md, and pass acdd docs check and acdd validate
 contract_revision: 1
 tags:
 - docs
@@ -186,7 +186,7 @@ scope:
 - docs/reference/configuration.md
 - docs/runbooks/observability.md
 - docs/runbooks/README.md
-- docs/workflows/
+- .acdd/profiles/
 - skills/acdd/SKILL.md
 - skills/acdd/references/adapters.md
 - skills/acdd/references/acdd-profile-examples/

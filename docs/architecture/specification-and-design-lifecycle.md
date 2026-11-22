@@ -8,7 +8,7 @@ doc_type: architecture
 ContextUnity ACDD separates problem definition (**Specify / Clarify**), architectural framing (**Design**), and automated proof (**Execution & Verification**), sizing ceremony to the scope of change (**S / M / L**) while keeping low-level component and code diagrams grounded in the live indexed AST graph.
 
 > [!NOTE]
-> Runtime boundaries are documented in the [architecture index](README.md) and [ACDD execution reference](../reference/acdd.md). The `base`, `code`, `audit`, and `documentation` embedded profiles, blueprint properties `ac_mapping` and `c2_boundary_impact`, optional `spec` and `acceptance_criteria` projection, and unified `crates/acdd-state` `Run` execution support this lifecycle.
+> Runtime boundaries are documented in the [architecture index](README.md) and [ACDD execution reference](../reference/acdd.md). The `base`, `code`, `audit`, `documentation`, and `spec_planning` embedded profiles, blueprint properties `ac_mapping` and `c2_boundary_impact`, optional `spec` and `acceptance_criteria` projection, and unified `crates/acdd-state` `Run` execution support this lifecycle.
 
 ## Specify / Clarify before implementation
 
@@ -50,7 +50,7 @@ flowchart LR
   Verify --> C34["Live C3/C4 Graph & Traceability<br/>(acdd-index + governs/cites_doc)"]
 ```
 
-- **Small (`S`) -> Ephemeral / Root-Only Run**: Single-purpose runs (`acdd start --goal ...` with `--profile audit` or root-gate workflow profiles) using `inherit: audit`, `inherit: base`, or `inherit: none` and `save: none` (and explicit `save.report` paths under `.acdd/reports/*.{md,json}` when emitting reports).
+- **Small (`S`) -> Ephemeral / Root-Only Run**: Single-purpose runs (`acdd start --goal ...` with `--profile audit`, `--profile spec_planning`, or custom root-gate profiles in `.acdd/profiles/`) using `inherit: audit`, `inherit: base`, or `inherit: none` and `save: none` (and explicit `save.report` paths under `.acdd/reports/*.{md,json}` when emitting reports).
 - **Medium (`M`) -> In-Place Plan Run (`--in-place` or `git.isolation: in_place` profile)**: Coherent multi-step changes on the active working tree (`docs/plans/*.md`) with clear `AC-*` targets, ordered tasks and subtasks, `save: none` (zero auto-commits), and independent review.
 - **Large (`L`) -> Worktree Milestone Run (`.acdd/profile.yaml` default / `code`)**: Architectural or concurrent multi-task changes (`docs/milestones/*.md`) requiring pre-task `blueprint_synthesis` (`synthesize` -> `review`, mapping `AC-*` criteria, `C2` boundary impact, `ADR` requirements, and `SAD` updates into per-task slices), isolated Git worktrees, build seam tests with `code.seam` reachability, and bound `handoff` archival.
 

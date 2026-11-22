@@ -29,7 +29,7 @@ enum LinksScope {
     Scoped(Vec<String>),
 }
 
-/// Host `docs` domain provider exposing `docs.links`, `docs.adrs`, `docs.instructions`, and `docs.invariants`.
+/// Host `docs` domain provider exposing `docs.links`, `docs.specs`, `docs.adrs`, `docs.instructions`, `docs.invariants`, and `docs.workspace_config`.
 pub struct DocsDomainProvider {
     root: PathBuf,
     config: Adapter,
@@ -99,8 +99,8 @@ impl DocsDomainProvider {
                     execution_digest_salt: Some(format!("docs_live={live_digest}")),
                 });
             }
-            LinksScope::FullRepo => crate::cli::docs_check::collect_link_errors(&req.worktree, None)?,
-            LinksScope::Scoped(patterns) => crate::cli::docs_check::collect_link_errors(
+            LinksScope::FullRepo => crate::engine::docs_check::collect_link_errors(&req.worktree, None)?,
+            LinksScope::Scoped(patterns) => crate::engine::docs_check::collect_link_errors(
                 &req.worktree,
                 Some(patterns.as_slice()),
             )?,
@@ -115,6 +115,43 @@ impl DocsDomainProvider {
             Ok(DomainCheckOutcome::Failed {
                 summary: format!("docs.links found {} broken link/anchor(s)", errors.len()),
                 diagnostics: errors,
+            })
+        }
+    }
+
+    fn run_specs_check(&self, req: &DomainCheckReq) -> Result<DomainCheckOutcome> {
+        let worktree_adapter =
+            super::resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
+        let live_digest = compute_specs_digest(&req.worktree, &worktree_adapter);
+        let providers = super::build_domain_providers(
+            &req.worktree,
+            &worktree_adapter,
+            self.code_db.as_deref(),
+            Vec::new(),
+        )?;
+        let resp =
+            acdd_state::validate::validate_workspace(&req.worktree, None, None, &providers)?;
+        if resp.valid {
+            Ok(DomainCheckOutcome::Passed {
+                summary: format!(
+                    "docs.specs validated {} document(s)",
+                    resp.summary.documents_validated
+                ),
+                execution_digest_salt: Some(format!("specs_live={live_digest}")),
+            })
+        } else {
+            let diagnostics: Vec<String> = resp
+                .diagnostics
+                .iter()
+                .filter(|d| d.status == "fail")
+                .map(|d| format!("[{}] {}:{} {}", d.code, d.path, d.line, d.message))
+                .collect();
+            Ok(DomainCheckOutcome::Failed {
+                summary: format!(
+                    "docs.specs found {} validation failure(s)",
+                    diagnostics.len()
+                ),
+                diagnostics,
             })
         }
     }
@@ -505,6 +542,83 @@ impl DocsDomainProvider {
 
         Ok(budget_items("invariants", items, req.max_bytes))
     }
+
+    fn provide_workspace_config(&self, req: &DomainContextReq) -> Result<Value> {
+        use acdd_state::store::sqlite::SqliteStateReader;
+        use acdd_state::store::traits::StateReader;
+        use acdd_state::usecases::lifecycle::next_spec_id_for_prefix;
+
+        let worktree_adapter =
+            super::resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
+        let state_db_path =
+            acdd_state::usecases::deps::try_resolve_effective_state_db(&req.worktree, None)
+                .ok()
+                .filter(|p| p.is_file());
+        let reader = state_db_path.as_deref().map(SqliteStateReader::new);
+
+        let mut specs_json = serde_json::Map::new();
+        for (col_name, col_cfg) in &worktree_adapter.specs {
+            let mut next_ids = serde_json::Map::new();
+            for prefix in &col_cfg.prefixes {
+                let db_max = reader
+                    .as_ref()
+                    .and_then(|r| r.max_spec_number(col_name, prefix).ok().flatten());
+                if let Ok(next_id) =
+                    next_spec_id_for_prefix(&req.worktree, col_name, col_cfg, prefix, db_max)
+                {
+                    next_ids.insert(prefix.clone(), json!(next_id));
+                }
+            }
+            specs_json.insert(
+                col_name.clone(),
+                json!({
+                    "patterns": col_cfg.patterns(),
+                    "default_draft_dir": col_cfg.default_draft_dir(),
+                    "prefixes": col_cfg.prefixes,
+                    "digits": col_cfg.digits,
+                    "profile": col_cfg.profile,
+                    "next_ids": next_ids,
+                }),
+            );
+        }
+
+        let mut available_profiles: BTreeSet<String> =
+            ["base", "code", "audit", "documentation", "spec_planning"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+        for p in collect_profile_dir_files(&req.worktree, &worktree_adapter.profiles_dirs, 2) {
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if matches!(ext, "yaml" | "yml") {
+                if let Ok(rel) = p.strip_prefix(&req.worktree) {
+                    available_profiles.insert(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+
+        let mut payload = json!({
+            "specs": specs_json,
+            "docs_roots": worktree_adapter.docs,
+            "profiles_dirs": worktree_adapter.profiles_dirs,
+            "available_profiles": available_profiles,
+            "architecture_zones": worktree_adapter.architecture.zones,
+            "limits": {
+                "max_metadata_bytes": worktree_adapter.limits.max_metadata_bytes,
+            },
+            "modules": {
+                "profile": worktree_adapter.modules.profile,
+                "enabled": worktree_adapter.modules.enabled,
+                "disabled": worktree_adapter.modules.disabled,
+                "domains": worktree_adapter.modules.domains,
+            },
+        });
+        if estimate_json_bytes(&payload) > req.max_bytes {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.remove("architecture_zones");
+            }
+        }
+        Ok(payload)
+    }
 }
 
 impl DomainProvider for DocsDomainProvider {
@@ -515,14 +629,21 @@ impl DomainProvider for DocsDomainProvider {
     fn capabilities(&self) -> DomainCapabilities {
         DomainCapabilities {
             actions: Vec::new(),
-            checks: vec![CheckCapability {
-                name: "links".to_owned(),
-                input_schema: SchemaDef::object(),
-            }],
+            checks: vec![
+                CheckCapability {
+                    name: "links".to_owned(),
+                    input_schema: SchemaDef::object(),
+                },
+                CheckCapability {
+                    name: "specs".to_owned(),
+                    input_schema: SchemaDef::object(),
+                },
+            ],
             context_lenses: BTreeSet::from([
                 "adrs".to_owned(),
                 "instructions".to_owned(),
                 "invariants".to_owned(),
+                "workspace_config".to_owned(),
             ]),
             tools: Vec::new(),
         }
@@ -546,11 +667,8 @@ impl DomainProvider for DocsDomainProvider {
     ) -> Result<DomainCheckOutcome> {
         match check {
             "links" => self.run_links_check(req),
-            _ => Err(StateError::new(
-                ErrorCode::DomainCapabilityUnavailable,
-                format!("unknown docs check 'docs.{check}'"),
-            )
-            .into()),
+            "specs" => self.run_specs_check(req),
+            _ => Err(unknown_docs_check(check)),
         }
     }
 
@@ -569,11 +687,16 @@ impl DomainProvider for DocsDomainProvider {
                     execution_digest_salt: Some(format!("docs_live={docs_digest}")),
                 })
             }
-            _ => Err(StateError::new(
-                ErrorCode::DomainCapabilityUnavailable,
-                format!("unknown docs check 'docs.{check}'"),
-            )
-            .into()),
+            "specs" => {
+                let worktree_adapter =
+                    super::resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
+                let digest = compute_specs_digest(&req.worktree, &worktree_adapter);
+                Ok(FreshnessObservation::Passed {
+                    index_generation: None,
+                    execution_digest_salt: Some(format!("specs_live={digest}")),
+                })
+            }
+            _ => Err(unknown_docs_check(check)),
         }
     }
 
@@ -582,6 +705,7 @@ impl DomainProvider for DocsDomainProvider {
             "adrs" => self.provide_adrs(req),
             "instructions" => self.provide_instructions(req),
             "invariants" => self.provide_invariants(req),
+            "workspace_config" => self.provide_workspace_config(req),
             _ => Err(StateError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("unknown docs context lens 'docs.{lens}'"),
@@ -589,6 +713,83 @@ impl DomainProvider for DocsDomainProvider {
             .into()),
         }
     }
+}
+
+fn unknown_docs_check(check: &str) -> anyhow::Error {
+    StateError::new(
+        ErrorCode::DomainCapabilityUnavailable,
+        format!("unknown docs check 'docs.{check}'"),
+    )
+    .into()
+}
+
+fn collect_profile_dir_files(
+    worktree: &Path,
+    profiles_dirs: &[String],
+    max_depth: usize,
+) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for dir in profiles_dirs {
+        let Ok(abs_dir) = checked_child(worktree, Path::new(dir)) else {
+            continue;
+        };
+        if !abs_dir.is_dir() {
+            continue;
+        }
+        for entry in WalkDir::new(&abs_dir)
+            .max_depth(max_depth)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            if entry.file_type().is_file() {
+                out.push(entry.into_path());
+            }
+        }
+    }
+    out
+}
+
+fn compute_specs_digest(worktree: &Path, adapter: &Adapter) -> String {
+    let mut digests: BTreeMap<String, String> = BTreeMap::new();
+    let mut record_file = |rel: &str| {
+        if let Ok(abs) = checked_child(worktree, Path::new(rel)) {
+            if fs::symlink_metadata(&abs).is_ok_and(|m| m.is_file()) {
+                if let Ok(bytes) = fs::read(&abs) {
+                    digests.insert(rel.to_owned(), sha256_hex(&bytes));
+                }
+            }
+        }
+    };
+    record_file(acdd_core::config::ACDD_CONFIG_FILE);
+    record_file(".acdd/profile.yaml");
+    for path in collect_profile_dir_files(worktree, &adapter.profiles_dirs, 3) {
+        if let Ok(rel) = path.strip_prefix(worktree) {
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            record_file(&rel_str);
+        }
+    }
+    for col in adapter.specs.values() {
+        let Ok(dirs) = col.resolve_dirs(worktree) else {
+            continue;
+        };
+        for dir in dirs {
+            for entry in WalkDir::new(&dir)
+                .max_depth(2)
+                .into_iter()
+                .filter_map(Result::ok)
+            {
+                if entry.file_type().is_file()
+                    && entry.path().extension().and_then(|e| e.to_str()) == Some("md")
+                {
+                    if let Ok(rel) = entry.path().strip_prefix(worktree) {
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        record_file(&rel_str);
+                    }
+                }
+            }
+        }
+    }
+    combine_file_hashes(&digests)
 }
 
 fn compute_docs_digest(
@@ -920,6 +1121,38 @@ mod tests {
     };
     use std::fs;
 
+    fn assert_check_matches_freshness(
+        provider: &DocsDomainProvider,
+        check_name: &str,
+        expected_prefix: &str,
+        req: &DomainCheckReq,
+    ) {
+        let check = provider
+            .run_check(check_name, &serde_json::Value::Null, req)
+            .unwrap();
+        let observed = provider
+            .observe_freshness(check_name, &serde_json::Value::Null, req)
+            .unwrap();
+        match check {
+            DomainCheckOutcome::Passed {
+                execution_digest_salt,
+                ..
+            } => {
+                assert!(execution_digest_salt
+                    .as_deref()
+                    .is_some_and(|s| s.starts_with(expected_prefix)));
+                assert_eq!(
+                    observed,
+                    FreshnessObservation::Passed {
+                        index_generation: None,
+                        execution_digest_salt,
+                    }
+                );
+            }
+            other => panic!("expected docs.{check_name} pass, got {other:?}"),
+        }
+    }
+
     #[test]
     fn docs_domain_checks_links_and_filters_contracts_from_lenses() {
         let dir = ScopedTempDir::create("acdd-ut-docs-domain").unwrap();
@@ -956,30 +1189,7 @@ mod tests {
             path_policy: acdd_core::path_policy::WorkspacePathPolicy::default(),
             baseline_ref: None,
         };
-        let check = provider
-            .run_check("links", &serde_json::Value::Null, &check_req)
-            .unwrap();
-        let observed = provider
-            .observe_freshness("links", &serde_json::Value::Null, &check_req)
-            .unwrap();
-        match check {
-            DomainCheckOutcome::Passed {
-                execution_digest_salt,
-                ..
-            } => {
-                assert!(execution_digest_salt
-                    .as_deref()
-                    .is_some_and(|s| s.starts_with("docs_live=")));
-                assert_eq!(
-                    observed,
-                    FreshnessObservation::Passed {
-                        index_generation: None,
-                        execution_digest_salt,
-                    }
-                );
-            }
-            other => panic!("expected docs.links pass, got {other:?}"),
-        }
+        assert_check_matches_freshness(&provider, "links", "docs_live=", &check_req);
 
         // Non-empty non-markdown scope must pass without scanning unrelated broken docs in the repo.
         fs::write(root.join("docs/unrelated_broken.md"), "[missing](./missing.md)\n").unwrap();
@@ -1183,5 +1393,91 @@ mod tests {
             .run_check("links", &serde_json::Value::Null, &check_req)
             .unwrap();
         assert!(matches!(failed, DomainCheckOutcome::Failed { .. }));
+
+        // `docs.workspace_config` context lens and `docs.specs` validation + freshness check.
+        fs::create_dir_all(root.join(".acdd")).unwrap();
+        fs::write(
+            root.join(".acdd/profile.yaml"),
+            "version: 2\ninherit: spec_planning\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("acdd.yaml"),
+            "docs:\n  - docs\nprofiles_dirs:\n  - .acdd/profiles\nlimits:\n  max_metadata_bytes: 1024\nmodules:\n  code: true\n  docs: true\n  state: true\nspecs:\n  milestones:\n    path: docs/milestones\n    prefixes: [AC]\n    digits: 3\narchitecture:\n  zones:\n    core:\n      - \"crates/core/**\"\n",
+        )
+        .unwrap();
+        let adapter_cfg = acdd_core::config::load_adapter_report(root, None)
+            .unwrap()
+            .adapter;
+        let cfg_provider = DocsDomainProvider::new(root.to_path_buf(), adapter_cfg);
+        let ws_cfg_lens = cfg_provider
+            .provide_context("workspace_config", &ctx_req)
+            .unwrap();
+        assert_eq!(ws_cfg_lens["specs"]["milestones"]["next_ids"]["AC"], "AC-001");
+        assert_eq!(ws_cfg_lens["docs_roots"], serde_json::json!(["docs"]));
+        assert_eq!(
+            ws_cfg_lens["profiles_dirs"],
+            serde_json::json!([".acdd/profiles"])
+        );
+        let avail_profiles = ws_cfg_lens["available_profiles"].as_array().unwrap();
+        assert!(
+            avail_profiles.iter().any(|p| p == "spec_planning"),
+            "available_profiles should include embedded spec_planning: {ws_cfg_lens}"
+        );
+        assert_eq!(ws_cfg_lens["limits"]["max_metadata_bytes"], 1024);
+        assert!(ws_cfg_lens["architecture_zones"].get("core").is_some());
+        let mut lenses = serde_json::Map::new();
+        lenses.insert("docs.workspace_config".to_owned(), ws_cfg_lens);
+        let claim = acdd_state::context::ClaimResp {
+            run_id: RunId::new("r1").unwrap(),
+            node_cursor: "synthesize".parse().unwrap(),
+            claim_revision: 1,
+            contract_revision: 1,
+            worker_id: "w1".parse().unwrap(),
+            worktree: ".".to_owned(),
+            candidate_tree: acdd_core::ids::TreeOid::new("0".repeat(40)).unwrap(),
+            inspect_cmd: "acdd show synthesize --run r1".to_owned(),
+            context_reset_required: false,
+            contract: serde_json::json!({}),
+            guidance: Vec::new(),
+            unresolved_findings: None,
+            pre_task_slice: None,
+            dependency_receipts: Vec::new(),
+            blackboard: Vec::new(),
+            context_lenses: lenses,
+            omitted_sections: Vec::new(),
+            total_bytes: 0,
+        };
+        let rendered_cfg = acdd_state::context::render_claim_prompt_markdown(&claim, None);
+        assert!(
+            rendered_cfg.contains("- spec `milestones`: `docs/milestones` (prefixes: [AC], digits: 3, next: AC=AC-001)"),
+            "expected live spec rendering in Markdown:\n{rendered_cfg}"
+        );
+        assert!(
+            rendered_cfg.contains("- zone `core`: [crates/core/**]"),
+            "expected live zone rendering in Markdown:\n{rendered_cfg}"
+        );
+        assert!(!rendered_cfg.contains("``"), "{rendered_cfg}");
+
+        // Valid planned spec passes `docs.specs` and matches `observe_freshness("specs", ...)`.
+        fs::write(
+            root.join("docs/milestones/m1.md"),
+            "---\nid: AC-001\ntitle: Valid Spec\nstatus: planned\n---\n### task: t1\n```yaml\ntarget: build thing\nscope: [src/lib.rs]\n```\n",
+        )
+        .unwrap();
+        assert_check_matches_freshness(&cfg_provider, "specs", "specs_live=", &check_req);
+        // Invalid spec fails `docs.specs`.
+        fs::write(
+            root.join("docs/milestones/BAD-999.md"),
+            "---\nid: BAD-999\ntitle: Invalid prefix\nstatus: planned\n---\n",
+        )
+        .unwrap();
+        let specs_fail = cfg_provider
+            .run_check("specs", &serde_json::Value::Null, &check_req)
+            .unwrap();
+        assert!(
+            matches!(specs_fail, DomainCheckOutcome::Failed { .. }),
+            "invalid spec should fail docs.specs: {specs_fail:?}"
+        );
     }
 }

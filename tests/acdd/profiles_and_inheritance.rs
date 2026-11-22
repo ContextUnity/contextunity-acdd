@@ -43,6 +43,10 @@ fn embedded_profiles_inheritance_pinning_and_patch_merge_matrix() {
         ("documentation", None, false, Ok(())),
         ("documentation", Some(&code_disabled), false, Err(ErrorCode::DomainCapabilityUnavailable)),
         ("documentation", Some(&docs_disabled), false, Err(ErrorCode::DomainCapabilityUnavailable)),
+        ("spec_planning", None, true, Ok(())),
+        ("spec_planning", None, false, Ok(())),
+        ("spec_planning", Some(&code_disabled), false, Ok(())),
+        ("spec_planning", Some(&docs_disabled), false, Ok(())),
     ];
     for &(name, mods, require_bound, expected) in embedded_cases {
         assert!(embedded_profile(name).is_some());

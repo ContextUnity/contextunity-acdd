@@ -58,22 +58,33 @@ invariant: INV-CORE-LEAF
 severity: error
 kind: forbid_dependency
 from:
-  paths: ["crates/acdd-core/src/**"]
+  zones: [core]
 to:
-  paths: ["crates/acdd-index/**", "crates/acdd-state/**", "src/**"]
-  external_symbols: ["acdd_index", "acdd_state", "rusqlite", "tree_sitter", "tokio", "rmcp", "clap", "rayon", "zstd", "hashbrown"]
+  zones: [index, state, host_format, host_engine, host_state_bridge, host_telemetry, host_cli, host_mcp]
+  external_symbols: ["acdd_index", "acdd_state", "rusqlite", "tree_sitter", "tokio", "rmcp", "clap", "rayon", "zstd", "hashbrown", "petgraph", "chrono"]
+include_tests: true
 ```
 
 ```acdd-rule
 id: INV-STATE-NO-INDEX
 invariant: INV-STATE-NO-INDEX
 severity: error
+kind: allow_only_dependencies
+from:
+  zones: [state]
+to:
+  zones: [core]
+```
+
+```acdd-rule
+id: INV-STATE-NO-INDEX-EXTERNALS
+invariant: INV-STATE-NO-INDEX
+severity: error
 kind: forbid_dependency
 from:
-  paths: ["crates/acdd-state/src/**"]
+  zones: [state]
 to:
-  paths: ["crates/acdd-index/**", "src/**"]
-  external_symbols: ["acdd_index", "tree_sitter", "tokio", "rmcp", "clap"]
+  external_symbols: ["acdd_index", "tree_sitter", "tokio", "rmcp", "clap", "rayon", "zstd", "hashbrown", "petgraph"]
 ```
 
 ```acdd-rule
@@ -82,9 +93,9 @@ invariant: INV-STATE-BRIDGE-BOUNDARY
 severity: error
 kind: forbid_dependency
 from:
-  paths: ["src/engine/**", "crates/**"]
+  zones: [core, index, state, host_engine, host_format]
 to:
-  paths: ["src/state_bridge/**"]
+  zones: [host_state_bridge]
 ```
 
 - Inside `crates/acdd-state`, `machine/` is a 100% pure functional core (`INV-STATE-PURE-MACHINE`), and direct `rusqlite` imports are confined to `crates/acdd-state/src/store/sqlite/` (`INV-STATE-SQLITE-CONFINED`); see [ADR 0003](0003-unified-profile-graph-and-state-machine.md).

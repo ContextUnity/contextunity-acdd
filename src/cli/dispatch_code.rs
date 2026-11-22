@@ -1,5 +1,8 @@
-use super::{ast, discovery, paths, AstCommand, Command, DocsCommand, QueryCommand};
-use crate::{engine::pipeline as writer, format::OutputFormat};
+use super::{paths, AstCommand, Command, DocsCommand, QueryCommand};
+use crate::{
+    engine::{ast, pipeline as writer},
+    format::OutputFormat,
+};
 use acdd_core::config::Adapter;
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::lint::{LintCategory, LintSeverity};
@@ -471,7 +474,7 @@ fn dispatch_query(
                 None,
                 generation,
             )?;
-            discovery::overview(conn, ctx.root, Some(ctx.adapter), aspects.as_deref(), &page)
+            crate::state_bridge::overview(conn, ctx.root, Some(ctx.adapter), aspects.as_deref(), &page)
         }
         QueryCommand::Inspect {
             selector,

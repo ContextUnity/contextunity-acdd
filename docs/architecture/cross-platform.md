@@ -53,8 +53,21 @@ This boundary refines [Concurrency and Isolation](concurrency.md) and [ADR 0007]
 
 > [!IMPORTANT]
 > Invariant: Networking fixtures, OS process reload discovery, and installer shell scripts enforce POSIX-portable contracts instead of relying on Linux-specific kernel or GNU userland behavior.
-> - INV-XPLAT-BSD-SOCKET-MODE: Accepted sockets from non-blocking listeners explicitly force blocking mode (`set_nonblocking(false)`), configure timeouts, flush writes, and fail loudly on unexpected short writes.
-> - INV-XPLAT-PLATFORM-RELOAD-ISOLATION: OS-specific server enumeration is confined behind `#[cfg(target_os = ...)]` boundaries and shares the CLI server grammar. [`run`](../../src/cli/reload.rs)
+> - INV-XPLAT-BSD-SOCKET-MODE: Accepted sockets from non-blocking listeners explicitly force blocking mode (`set_nonblocking(false)`), configure timeouts, flush writes, and fail loudly on unexpected short writes. [`serve_with_state_config`](../../src/mcp/server.rs) [installer.rs](../../tests/mcp/installer.rs)
+> - INV-XPLAT-PLATFORM-RELOAD-ISOLATION: OS-specific server enumeration is confined behind `#[cfg(target_os = ...)]` boundaries and shares the CLI server grammar. [`server_invocation`](../../src/cli/reload.rs)
+
+```acdd-rule
+id: INV-XPLAT-PLATFORM-RELOAD-ISOLATION
+invariant: INV-XPLAT-PLATFORM-RELOAD-ISOLATION
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/**"]
+  exclude_paths: ["src/cli/reload.rs", "crates/acdd-core/src/sys.rs"]
+  languages: ["rust"]
+ast_pattern: 'std::process::Command::new("ps")'
+include_tests: false
+```
 
 ### Rules
 

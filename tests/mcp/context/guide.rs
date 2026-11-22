@@ -4,7 +4,8 @@ use crate::{
 };
 use clap::Parser;
 use acdd_core::response::MAX_OUTPUT_BYTES;
-use contextunity_acdd::cli::{guide, Cli};
+use contextunity_acdd::cli::Cli;
+use contextunity_acdd::engine::guide;
 use serde_json::{json, Value};
 
 const GUIDANCE_TOPICS: [&str; 6] = ["lifecycle", "acdd", "gates", "subtasks", "code", "docs"];

@@ -221,11 +221,12 @@ fn load_adapter_inner(
         Ok(values)
     })?;
     let mut roots = roots;
-    for item in raw.docs.unwrap_or_default() {
+    let raw_docs = raw.docs.unwrap_or_default();
+    for item in &raw_docs {
         if item.contains('*') || item.contains('?') {
             continue;
         }
-        let relative = Path::new(&item);
+        let relative = Path::new(item);
         if !safe_relative(relative) {
             return Err(error("adapter document roots must be relative plain paths"));
         }
@@ -258,6 +259,7 @@ fn load_adapter_inner(
             modules,
             limits: raw.limits.unwrap_or_default(),
             roots,
+            docs: raw_docs,
             ignored_names: raw
                 .ignore
                 .unwrap_or_default()
@@ -306,6 +308,7 @@ pub fn policy(root: &Path, adapter: &Adapter) -> Value {
     json!({
         "adapter_path": adapter.adapter_path.as_ref().map(|path| strip(path)),
         "roots": adapter.roots.iter().map(|p| strip(p)).collect::<Vec<_>>(),
+        "docs": adapter.docs,
         "sensitive": adapter.sensitive,
         "limits": &adapter.limits,
         "ignored_names": adapter.ignored_names,
@@ -416,6 +419,7 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
     let architecture: ArchitectureConfig =
         parse_persisted_or(value, "architecture", ArchitectureConfig::default)?;
     architecture.validate()?;
+    let docs: Vec<String> = parse_persisted_or(value, "docs", Vec::new)?;
     Ok(Adapter {
         adapter_path,
         response: ResponsePolicy::default(),
@@ -423,6 +427,7 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
         sensitive,
         limits,
         roots,
+        docs,
         ignored_names,
         adapter_version,
         digest,
@@ -465,7 +470,7 @@ mod tests {
         assert_eq!(defaults.specs["plans"].path.as_deref(), Some("docs/plans"));
         assert_eq!(defaults.specs["plans"].profile, None);
         assert!(defaults.specs["plans"].prefixes.is_empty());
-        assert_eq!(defaults.profiles_dirs, [".acdd/profiles", "docs/workflows"]);
+        assert_eq!(defaults.profiles_dirs, [".acdd/profiles"]);
         assert_eq!(defaults.state_db, ".acdd/state.sqlite");
         assert_eq!(defaults.retain_traces, 20);
         assert_eq!(defaults.digest, "");

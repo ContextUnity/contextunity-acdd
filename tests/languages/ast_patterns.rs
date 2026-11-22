@@ -1,6 +1,6 @@
 use acdd_index::{ast, languages};
 use acdd_core::response::{Detail, QueryOptions, ResponsePolicy};
-use contextunity_acdd::cli;
+use contextunity_acdd::engine;
 
 #[cfg(feature = "lang-rust")]
 #[test]
@@ -55,7 +55,7 @@ fn public_rust_candidate_selection() {
         ),
     ] {
         let result =
-            cli::ast::search_paged(&conn, workspace.root(), pattern, "rust", None, &options)
+            engine::ast::search_paged(&conn, workspace.root(), pattern, "rust", None, &options)
                 .unwrap();
         assert_eq!(
             result["matches"]["total"], expected,
@@ -126,7 +126,7 @@ fn public_pattern_diagnostics() {
         ));
         for (case_id, language, path, pattern, valid) in cases {
             let result =
-                cli::ast::search_paged(&conn, workspace.root(), pattern, language, None, &options)
+                engine::ast::search_paged(&conn, workspace.root(), pattern, language, None, &options)
                     .unwrap();
             let diagnostic = &result["diagnostic"];
             assert_eq!(
@@ -149,7 +149,7 @@ fn public_pattern_diagnostics() {
             assert!(!diagnostic["hint"].as_str().unwrap().is_empty());
             assert!(!diagnostic["examples"].as_array().unwrap().is_empty());
             if let Some(valid) = valid {
-                let result = cli::ast::search_paged(
+                let result = engine::ast::search_paged(
                     &conn,
                     workspace.root(),
                     valid,
@@ -174,7 +174,7 @@ fn upfront_ast_validation_accepts_tsx_grammar_patterns() {
     let options =
         QueryOptions::resolve(&ResponsePolicy::default(), Some(10), 0, None, None).unwrap();
     for path in [None, Some("src/view.tsx")] {
-        let result = cli::ast::search_paged(
+        let result = engine::ast::search_paged(
             &conn,
             workspace.root(),
             "<Widget value={$VALUE} />",
@@ -186,7 +186,7 @@ fn upfront_ast_validation_accepts_tsx_grammar_patterns() {
         assert_eq!(result["matches"]["total"], 1, "{result}");
         assert_eq!(result["matches"]["items"][0]["captures"]["VALUE"], "value");
     }
-    let invalid = cli::ast::search_paged(
+    let invalid = engine::ast::search_paged(
         &conn,
         workspace.root(),
         "function (",

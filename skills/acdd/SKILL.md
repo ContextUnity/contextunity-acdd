@@ -72,14 +72,14 @@ and shared locks automatically. CLI `--worktree` takes an explicit directory pat
 
 ## ACDD profiles and task operations
 
-Embedded profiles (`base`, `code`, `audit`, `documentation`) or repository `.acdd/profile.yaml`
+Embedded profiles (`base`, `code`, `audit`, `documentation`, `spec_planning`) or repository `.acdd/profile.yaml`
 (`version: 2`, validated via `acdd validate`) govern gates, proof schemas,
 contours, isolation (`--in-place` overrides to `git.isolation: in_place`, `save: none`,
 preserving `save.immutable: true`), and `save.report` (written strictly under
 `.acdd/reports/*.{md,json}` on pass). Do not assume a hardcoded gate sequence:
 
 1. Inspect cross-worktree specs, dependency waves, critical paths, and scope-overlap markers with `acdd_state(action="roadmap")` (`acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]`), then start a run with `acdd start <spec_path>` or `acdd start --goal "..."`
-   (defaults to `code`; select `inherit: audit` for read-only SAST/PR/hygiene audits,
+   (defaults to `code`; select `--profile spec_planning` to synthesize/review specs, milestones, or plans using live `acdd.yaml` collection rules and `docs.specs`, `inherit: audit` for read-only SAST/PR/hygiene audits,
    `inherit: documentation` / `--profile documentation` for compiler-free doc/invariant authoring,
    or `inherit: base` for non-code workflows).
 2. Inspect ready cursors (`acdd_state(action="next")` / `acdd next`). For `mode: subagent` gates, the coordinator dispatches `(run, node_cursor, worker_id)` and the **worker itself** calls `acdd_claim` / `acdd claim` first before editing files (omitting `worktree` under `git.worktrees: managed` so `claim` creates/reuses `.worktrees/<run_name>-<task_ref>`, because passing an explicit `worktree` overrides auto-creation; `session_fingerprint` and full `ClaimResp` bind to the real worker process, which then works strictly inside `ClaimResp.worktree`); the coordinator calls `acdd_claim` directly only for `mode: inline` gates or dead-worker recovery.

@@ -334,16 +334,16 @@ relation headings unless the page is an intentional compact omission stub.
 | Format and compaction | Shared `src/format/` | `src/mcp/response.rs`, CLI stdout |
 | Request validation | `src/mcp/tools/inputs.rs`, `src/mcp/tools/`, `src/cli/` | All existing shared operations |
 | Symbols and source | `crates/acdd-index/src/db/symbols/` | Inspect/search/snippet Markdown and JSON |
-| Overview | `crates/acdd-index/src/db/reader/`, scanner/config roots and `src/cli/discovery.rs` (`active_runs`) | Overview Markdown and JSON |
+| Overview | `crates/acdd-index/src/db/reader/`, scanner/config roots, `src/state_bridge/overview.rs` (`active_runs`), and `src/format/presentation.rs` | Overview Markdown and JSON |
 | Resolution reasons | `crates/acdd-index/src/db/reader/diagnostics.rs` canonical `diagnostic_reason`; discovery supplies same-scope bounded aggregate counts | Overview reason breakdown, with external reference counts separate |
 | Ecosystem manifests | Discovery component producer | Overview component entries |
-| AST | `src/cli/ast.rs`, `crates/acdd-index/src/ast/`, `crates/acdd-index/src/languages/` | AST results and language-specific alerts |
+| AST | `src/engine/ast.rs`, `crates/acdd-index/src/ast/`, `crates/acdd-index/src/languages/` | AST results and language-specific alerts |
 | Relations / Git impact | `crates/acdd-index/src/db/traversal/`, `crates/acdd-index/src/db/symbols/test_discovery.rs` | Explain/impact/tests/query/removal |
 | Test breadcrumbs | `crates/acdd-index/src/db/symbols/test_discovery.rs` hydrates only returned `connection.call_path` IDs; `src/format/traversal.rs` renders them | Linked ordered test -> helper -> target breadcrumb |
 | Diagnostics / docs | `crates/acdd-index/src/db/reader/`, `crates/acdd-index/src/docs.rs` | Analyze/search-doc/get-doc |
 | State & Lifecycle | `crates/acdd-state/src/`, `src/state_bridge/`, `src/format/lifecycle.rs` | `acdd_state`/`acdd_claim`/`acdd_verify`/`acdd_submit`/`acdd_blackboard`, flat CLI, `acdd run` |
 | Blocker alerts | Canonical `blockers` topic, stored blackboard rows and existing claim summaries | Standalone blackboard and embedded `ClaimResp` callouts |
-| Guide & Init | `src/cli/guide.rs` | `acdd_guide` and `acdd guide` / `acdd init` |
+| Guide & Init | `src/engine/guide.rs` | `acdd_guide` and `acdd guide` / `acdd init` |
 | Test intent | Deferred (no baseline producer) | No inferred badges |
 
 ## Presentation examples

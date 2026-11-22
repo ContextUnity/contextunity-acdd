@@ -221,7 +221,6 @@ specs:
 # Directories searched for standalone/named GateProfile YAML files
 profiles_dirs:
   - .acdd/profiles
-  - docs/workflows
 
 # State database path and run trace retention
 state_db: ".acdd/state.sqlite"
@@ -335,8 +334,8 @@ Profiles (`GateProfile`, `version: 2`) govern lifecycle stages, `git:` isolation
 ### Profile Resolution Order
 
 When starting a run (`acdd start`) or validating (`acdd validate`), ACDD resolves the active profile in the following priority:
-1. **CLI `--profile` flag**: Explicit built-in name (`base`, `code`, `audit`, `documentation`), `profiles_dirs` entry, or workspace-relative path.
-2. **Spec frontmatter `profile:`**: Profile declared in the specification Markdown frontmatter (e.g. `profile: audit` or a custom `.workflow.yaml`).
+1. **CLI `--profile` flag**: Explicit built-in name (`base`, `code`, `audit`, `documentation`, `spec_planning`), `profiles_dirs` entry, or workspace-relative path.
+2. **Spec frontmatter `profile:`**: Profile declared in the specification Markdown frontmatter (e.g. `profile: audit` or a custom `.acdd/profiles/*.yaml`).
 3. **Collection override**: Optional `specs.<collection>.profile` configured in `acdd.yaml`.
 4. **Repository default**: `.acdd/profile.yaml` if present.
 5. **Compiled built-in fallback**: Embedded `code` (automatically stripping disabled `code`/`docs` domain hooks).
@@ -345,11 +344,12 @@ If an `inherit:` reference includes a SHA-256 prefix (`<path>:<sha256_prefix>`),
 
 ### Built-in Profiles
 
-ACDD embeds four `version: 2` profiles (`crates/acdd-state/src/profile/embedded/`):
+ACDD embeds five `version: 2` profiles (`crates/acdd-state/src/profile/embedded/`):
 - **`base`**: Domain-pure worktree baseline (`gates: []`, 7 core tools, universal guidance, 3 core contours) with `git.isolation: worktree` and `save: commit`.
 - **`code`**: Built-in code-delivery baseline inheriting `base`, adding the three-phase milestone lifecycle (`blueprint_synthesis` -> per-task `build`, `review`, `deliver`, `rearchitect` -> `run_tests`, `polish`, `integration_review`, `handoff`), 20 built-in tools, `code.seam` + `code.lint` verification checks, and `docs.*`/`code.*` context lenses.
 - **`audit`**: Read-only code review and security/taint scanning pipeline (`recon -> analyze -> triage`) inheriting `base` with `git.isolation: in_place`, `save: none`, structured `recon_map`/`candidate_findings`/`audit_report` schemas, adversarial false-positive disproof in `triage`, and `save.report: ".acdd/reports/{run_name}.md"`.
 - **`documentation`**: Compiler-free living documentation and invariant authoring pipeline inheriting `base` (`modules: { required: [docs, code] }`), running `blueprint_synthesis`, per-task `build -> review -> deliver`, `verify_docs`, `polish`, `integration_review`, and `handoff` gated on `docs.links` and `code.lint` (`[arch, docs]`).
+- **`spec_planning`**: Embedded specification, milestone, and implementation plan authoring pipeline (`synthesize -> review`) inheriting `base` with `git.isolation: in_place`, `save: none`, automatic `acdd.yaml` `specs.*`/`docs` planning scope derivation, `docs.workspace_config` context lens, and in-process `docs.specs`, `docs.links`, and `code.lint` (`[arch, docs]`) checks.
 
 Single-checkout in-place execution is selected via `--in-place` or `git.isolation: in_place` in a profile (`--in-place` sets `isolation: in_place`, `worktrees: manual`, `save: none`, and neutralizes `save.post: commit` to `none` while keeping `save.immutable: true`).
 
@@ -604,5 +604,5 @@ acdd submit handoff --action pass
 ### In-Place Plans, Standalone Workflows, and Plugin Tools
 
 - **In-Place Plans (`docs/plans/*.md`)**: Start with `acdd start docs/plans/migration-plan.md --in-place` (or select a `git.isolation: in_place` profile via `profile:` / `specs.plans.profile`). `--in-place` neutralizes `save: commit` to `none` so work runs cleanly in the current checkout.
-- **Audit & Standalone Workflows (`audit`, `docs/workflows/*.workflow.yaml`)**: Start read-only audits via `acdd start --goal "Audit auth paths" --profile audit` (writing reports to `.acdd/reports/<run_name>.md` on `triage` pass), or run custom workflow files with `--profile <name>`.
+- **Audit, Spec Planning & Custom Profiles (`audit`, `spec_planning`, `.acdd/profiles/*.yaml`)**: Start read-only audits via `acdd start --goal "Audit auth paths" --profile audit` (writing reports to `.acdd/reports/<run_name>.md` on `triage` pass), draft/review specs or plans via `acdd start --goal "Plan <feature>" --profile spec_planning`, or run custom profile files with `--profile <name>`.
 - **External `DomainProvider` Plugin Tools**: Invoke registered plugin tools from CLI via `acdd tool <domain>_<name> --args '{"key":"value"}'` or directly over MCP.

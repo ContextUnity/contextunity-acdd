@@ -32,7 +32,7 @@ fail closed with `ACDD_PROFILE_SCHEMA_INVALID`; upgrade `0.5.x` workspaces per t
 ACDD resolves the active profile reference (`--profile`, `ACDD_PROFILE`, spec
 `profile:`, `specs.<collection>.profile`, or the workspace default) as follows:
 
-1. **Built-in embedded baselines** (4 embedded profiles):
+1. **Built-in embedded baselines** (5 embedded profiles):
    - `base` ([`base.yaml`](../../crates/acdd-state/src/profile/embedded/base.yaml)):
      domain-pure worktree-isolated baseline (`gates: []`) with `save: commit`,
      `git.isolation: worktree`, 7 core MCP tools (`acdd_read`, `acdd_guide`,
@@ -69,6 +69,13 @@ ACDD resolves the active profile reference (`--profile`, `ACDD_PROFILE`, spec
      `build -> review -> deliver` -> `verify_docs -> polish -> integration_review -> handoff`,
      enforcing `docs.links` and `code.lint` (`with: { categories: [arch, docs] }`)
      without code-compilation commands.
+   - `spec_planning` ([`spec_planning.yaml`](../../crates/acdd-state/src/profile/embedded/spec_planning.yaml)):
+     embedded specification, milestone, and implementation plan synthesis
+     pipeline inheriting `base` with `git.isolation: in_place`,
+     `git.worktrees: manual`, `save: none`, `synthesize -> review` (`proof: spec_plan`,
+     `checks: [docs.specs, docs.links, code.lint]`, `docs.workspace_config` context
+     lens, automatic `acdd.yaml` `specs.*`/`docs` planning scope derivation, and
+     `save.report: ".acdd/reports/{run_name}.md"` on `review`).
 2. **Automatic workspace default**: When no explicit profile is specified (`--profile`,
    `ACDD_PROFILE`, spec `profile:`, or `specs.<collection>.profile`), ACDD uses
    `.acdd/profile.yaml` automatically if present in the workspace root, and
@@ -78,7 +85,7 @@ ACDD resolves the active profile reference (`--profile`, `ACDD_PROFILE`, spec
 3. **Explicit repository paths & `profiles_dirs`**: Any relative path confined to
    the workspace (optionally pinned with `:<sha256_prefix>`, min 7 lowercase hex
    chars) or named profile discovered in `acdd.yaml` `profiles_dirs`
-   (default `[".acdd/profiles", "docs/workflows"]`).
+   (default `[".acdd/profiles"]`).
 
 > [!NOTE]
 > Linked workspaces (`linked_workspaces`) do not override the parent ACDD
@@ -92,7 +99,7 @@ Every `v2` profile requires `version: 2` and supports these top-level fields:
 
 ```yaml
 version: 2
-inherit: code                  # Optional: base | code | audit | documentation | none | <rel-path>[:<sha256_prefix>]
+inherit: code                  # Optional: base | code | audit | documentation | spec_planning | none | <rel-path>[:<sha256_prefix>]
 git:
   isolation: worktree          # worktree | in_place
   worktrees: manual            # manual | managed

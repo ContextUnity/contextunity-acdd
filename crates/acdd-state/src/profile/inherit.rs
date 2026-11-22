@@ -21,14 +21,16 @@ const BASE_YAML: &str = include_str!("embedded/base.yaml");
 const CODE_YAML: &str = include_str!("embedded/code.yaml");
 const AUDIT_YAML: &str = include_str!("embedded/audit.yaml");
 const DOCUMENTATION_YAML: &str = include_str!("embedded/documentation.yaml");
+const SPEC_PLANNING_YAML: &str = include_str!("embedded/spec_planning.yaml");
 
-/// Return the raw embedded YAML for a built-in profile (`"base"`, `"code"`, `"audit"`, or `"documentation"`).
+/// Return the raw embedded YAML for a built-in profile (`"base"`, `"code"`, `"audit"`, `"documentation"`, or `"spec_planning"`).
 pub fn embedded_profile(name: &str) -> Option<&'static str> {
     match name {
         "base" => Some(BASE_YAML),
         "code" => Some(CODE_YAML),
         "audit" => Some(AUDIT_YAML),
         "documentation" => Some(DOCUMENTATION_YAML),
+        "spec_planning" => Some(SPEC_PLANNING_YAML),
         _ => None,
     }
 }

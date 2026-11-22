@@ -823,7 +823,7 @@ impl Server {
         } else if let Some(settings) = &self.invocation {
             rebase_invocation_settings(settings, &target).code_db
         } else {
-            crate::cli::default_db(&target)
+            acdd_core::config::resolve_code_db_path(&target, None)
         };
         Ok((target, db))
     }

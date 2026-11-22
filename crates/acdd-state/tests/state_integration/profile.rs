@@ -59,14 +59,21 @@ fn code_and_docs_providers() -> CompositeDomainProvider {
         "docs",
         DomainCapabilities {
             actions: vec![],
-            checks: vec![CheckCapability {
-                name: "links".to_owned(),
-                input_schema: SchemaDef::object(),
-            }],
+            checks: vec![
+                CheckCapability {
+                    name: "links".to_owned(),
+                    input_schema: SchemaDef::object(),
+                },
+                CheckCapability {
+                    name: "specs".to_owned(),
+                    input_schema: SchemaDef::object(),
+                },
+            ],
             context_lenses: BTreeSet::from([
                 "instructions".to_owned(),
                 "adrs".to_owned(),
                 "invariants".to_owned(),
+                "workspace_config".to_owned(),
             ]),
             tools: vec![],
         },
@@ -170,6 +177,11 @@ fn embedded_profiles_resolve_and_validate_matrix() {
             false,
             Err(ErrorCode::DomainCapabilityUnavailable),
         ),
+        ("spec_planning", None, false, Ok(())),
+        ("spec_planning", None, true, Ok(())),
+        ("spec_planning", Some(&docs_disabled), false, Ok(())),
+        ("spec_planning", Some(&code_disabled), false, Ok(())),
+        ("spec_planning", Some(&code_docs_disabled), false, Ok(())),
     ];
 
     for &(name, mods, require_bound, expected) in cases {
@@ -402,6 +414,73 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     )
     .unwrap();
     assert_eq!(doc_child.modules.required, doc_p.modules.required);
+
+    let sp_p = resolve_profile_ref_with_dirs("spec_planning", None, None, None).unwrap();
+    assert!(sp_p.tags.contains("docs"));
+    assert!(sp_p.tags.contains("planning"));
+    assert_eq!(sp_p.git.isolation, IsolationMode::InPlace);
+    assert_eq!(sp_p.save, SaveAction::None);
+    assert_eq!(
+        sp_p.gates.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(),
+        vec!["synthesize", "review"]
+    );
+    let sp_synth = sp_p.gates.iter().find(|g| g.id == "synthesize").unwrap();
+    assert_eq!(
+        sp_synth
+            .checks
+            .iter()
+            .map(|c| c.check.as_str())
+            .collect::<Vec<_>>(),
+        vec!["docs.specs", "docs.links", "code.lint"]
+    );
+    assert_eq!(
+        sp_synth.context,
+        vec![
+            "docs.workspace_config",
+            "docs.instructions",
+            "docs.adrs",
+            "docs.invariants",
+        ]
+    );
+    let sp_review = sp_p.gates.iter().find(|g| g.id == "review").unwrap();
+    assert!(sp_review.receipt);
+    assert_eq!(
+        sp_review.save.report.as_deref(),
+        Some(".acdd/reports/{run_name}.md")
+    );
+
+    let sp_code_off =
+        resolve_profile_ref_with_dirs("spec_planning", None, Some(&code_disabled), None).unwrap();
+    let sp_code_off_synth = sp_code_off.gates.iter().find(|g| g.id == "synthesize").unwrap();
+    assert_eq!(
+        sp_code_off_synth
+            .checks
+            .iter()
+            .map(|c| c.check.as_str())
+            .collect::<Vec<_>>(),
+        vec!["docs.specs", "docs.links"]
+    );
+    assert!(!sp_code_off.default_tools.iter().any(|t| t.starts_with("code_map_") || t == "ast_grep_search"));
+
+    let sp_docs_off =
+        resolve_profile_ref_with_dirs("spec_planning", None, Some(&docs_disabled), None).unwrap();
+    let sp_docs_off_synth = sp_docs_off.gates.iter().find(|g| g.id == "synthesize").unwrap();
+    assert_eq!(
+        sp_docs_off_synth
+            .checks
+            .iter()
+            .map(|c| c.check.as_str())
+            .collect::<Vec<_>>(),
+        vec!["code.lint"]
+    );
+    assert!(sp_docs_off_synth.context.is_empty());
+    assert!(!sp_docs_off.default_tools.iter().any(|t| t == "get_doc" || t == "search_docs"));
+
+    let sp_both_off =
+        resolve_profile_ref_with_dirs("spec_planning", None, Some(&code_docs_disabled), None).unwrap();
+    let sp_both_off_synth = sp_both_off.gates.iter().find(|g| g.id == "synthesize").unwrap();
+    assert!(sp_both_off_synth.checks.is_empty());
+    assert!(sp_both_off_synth.context.is_empty());
 }
 
 #[test]
