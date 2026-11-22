@@ -65,6 +65,9 @@ impl SymbolCatalog {
         let mut payload = CatalogStoragePayload::default();
         if retain_storage {
             payload.flows = facts.flows.clone();
+            payload.statement_fingerprints = std::mem::take(&mut facts.facts.statement_fingerprints);
+        } else {
+            facts.facts.statement_fingerprints.clear();
         }
         if facts.nodes.iter().any(|node| {
             node.kind == NodeKind::Module.as_str() && node.language == LanguageId::Python.as_str()
@@ -163,6 +166,7 @@ pub struct CatalogStoragePayload {
     docs: Vec<(usize, String, Vec<String>)>,
     flows: FlowStore,
     references: Option<Vec<crate::models::Reference>>,
+    statement_fingerprints: Vec<crate::models::CallableFingerprints>,
 }
 
 impl CatalogStoragePayload {
@@ -203,6 +207,9 @@ impl CatalogStoragePayload {
             facts.docs[index].invariants = invariants;
         }
         facts.flows.append(&mut self.flows);
+        if facts.facts.statement_fingerprints.is_empty() {
+            facts.facts.statement_fingerprints = self.statement_fingerprints;
+        }
     }
 }
 

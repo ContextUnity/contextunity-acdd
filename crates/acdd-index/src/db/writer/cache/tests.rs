@@ -365,10 +365,11 @@ fn cache_round_trip_preserves_flow_without_details_placeholder() {
         expected_flow
     );
     let blob = crate::typed_facts::encode_facts(&facts).unwrap();
-    assert!(blob.starts_with(b"ACDD-LOCAL-FACTS\0\x04"));
+    assert!(blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"));
     assert!(crate::typed_facts::decode_facts(b"ACDD-LOCAL-FACTS\0\x01").is_err());
     assert!(crate::typed_facts::decode_facts(b"ACDD-LOCAL-FACTS\0\x02").is_err());
     assert!(crate::typed_facts::decode_facts(b"ACDD-LOCAL-FACTS\0\x03").is_err());
+    assert!(crate::typed_facts::decode_facts(b"ACDD-LOCAL-FACTS\0\x04").is_err());
     let reopened = crate::typed_facts::decode_facts(&blob).unwrap();
     assert_eq!(
         reopened.flows.named_uncertainties(&node_id),

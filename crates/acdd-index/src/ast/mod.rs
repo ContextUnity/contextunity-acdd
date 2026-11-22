@@ -1,3 +1,4 @@
+pub(crate) mod fingerprints;
 pub mod visitor;
 pub use visitor::ScopeAnalysis;
 pub mod relations;

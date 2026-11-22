@@ -309,11 +309,11 @@ fn file_activation_signals_persist_binary_v4_and_gate_link_time_implicit_receive
         .at_path("inactive.js")
         .extract(js_source);
 
-    // Round-trip both files through binary v4 encode_facts / decode_facts before linking.
+    // Round-trip both files through binary v5 encode_facts / decode_facts before linking.
     let active_blob = encode_facts(&TypedFacts::from_public(active_facts)).unwrap();
     let inactive_blob = encode_facts(&TypedFacts::from_public(inactive_facts)).unwrap();
-    assert!(active_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x04"));
-    assert!(inactive_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x04"));
+    assert!(active_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"));
+    assert!(inactive_blob.starts_with(b"ACDD-LOCAL-FACTS\0\x05"));
 
     let mut facts_map: BTreeMap<String, Facts> = BTreeMap::new();
     facts_map.insert(

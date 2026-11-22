@@ -4,7 +4,7 @@ use super::{
 };
 use crate::languages::dependency_registry::DependencyRegistry;
 use crate::{
-    models::{compact_graph::Graph, Node},
+    models::{compact_graph::CompactGraph, Node},
     semantic::{NamedBindingRole, StaticString, SymbolOperand, ValueFlowFacts},
 };
 use hashbrown::HashMap;
@@ -42,7 +42,7 @@ fn operand<'a>(
 }
 
 fn emit(
-    graph: &mut Graph,
+    graph: &mut CompactGraph,
     owner: &Node,
     target: Result<Option<&Node>, ()>,
     kind: &str,
@@ -75,7 +75,7 @@ fn emit(
 }
 
 pub(super) fn compose<'a>(
-    graph: &mut Graph,
+    graph: &mut CompactGraph,
     owner: &'a Node,
     flow: &ValueFlowFacts,
     context: &semantic_context::Context<'a>,

@@ -555,7 +555,7 @@ fn storage_lock_and_confined_wal_seam_matrix() -> anyhow::Result<()> {
                 affected: &std::collections::BTreeSet::new(),
                 replace_files: &std::collections::BTreeSet::new(),
                 facts: &std::collections::BTreeMap::new(),
-                graph: &acdd_index::models::compact_graph::Graph::default(),
+                graph: &acdd_index::models::compact_graph::CompactGraph::default(),
                 manifest_digest: "",
             },
             |_, _, _, _| Ok(()),

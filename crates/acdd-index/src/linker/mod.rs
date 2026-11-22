@@ -7,7 +7,7 @@ use crate::languages::{self, module_name, LanguageFamily};
 use crate::linker::traits::{ImportContext, ImportResolution, LanguageLinker, GENERIC_LINKER};
 use crate::models::*;
 use crate::models::{
-    compact_graph::{Coverage, Edge, Graph},
+    compact_graph::{CompactEdge as Edge, CompactGraph as Graph, Coverage},
     Graph as PublicGraph,
 };
 use hashbrown::{HashMap, HashSet};
@@ -576,7 +576,9 @@ fn intern_call_site_symbols<'a>(
                 intern_call_site_symbols(interner, alternative);
             }
         }
-        ValueExpr::Project { value, .. } => intern_call_site_symbols(interner, value),
+        ValueExpr::Project { value, .. } | ValueExpr::CallbackParam { callee: value, .. } => {
+            intern_call_site_symbols(interner, value)
+        }
         ValueExpr::Annotated { .. }
         | ValueExpr::Construct { .. }
         | ValueExpr::Alias { .. }

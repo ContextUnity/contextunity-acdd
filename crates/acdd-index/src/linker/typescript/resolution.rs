@@ -2,7 +2,7 @@ use crate::interner::{LinkerInterner, SymbolId};
 use super::super::resolution::ResolutionInput;
 use super::super::semantic_context::{Context, LanguageMemberLookup, Member};
 use super::super::value_flow::{self, Symbol, SymbolRole, TypeTarget};
-use crate::models::compact_graph::Graph;
+use crate::models::compact_graph::CompactGraph;
 use crate::models::{Facts, Node, Reference};
 use crate::semantic::ObjectOwnershipFact;
 use crate::typed_facts::FlowState;
@@ -179,7 +179,7 @@ pub(in crate::linker) fn lexical_this_member<'a>(
     expression: &str,
     lexical_this_calls: &HashSet<(&str, usize, usize, &str)>,
     lookup_key: &mut String,
-    graph: &mut Graph,
+    graph: &mut CompactGraph,
 ) -> bool {
     if !matches!(reference.kind.as_str(), "calls" | "references" | "mutates") {
         return false;

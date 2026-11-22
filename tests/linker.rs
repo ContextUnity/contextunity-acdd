@@ -1,5 +1,7 @@
 #[path = "common/mod.rs"]
 pub mod common;
+#[path = "linker/callback_contracts.rs"]
+mod callback_contracts;
 #[path = "linker/early_interning_and_compact_facts.rs"]
 mod early_interning_and_compact_facts;
 #[path = "linker/receivers/inherited.rs"]

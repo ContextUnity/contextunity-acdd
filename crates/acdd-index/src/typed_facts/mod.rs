@@ -12,7 +12,7 @@ use super::models::{Facts, Node};
 use rayon::prelude::*;
 use serde_json::Value;
 
-pub(crate) const LOCAL_FACTS_BINARY_MAGIC: &[u8] = b"ACDD-LOCAL-FACTS\0\x04";
+pub(crate) const LOCAL_FACTS_BINARY_MAGIC: &[u8] = b"ACDD-LOCAL-FACTS\0\x05";
 
 pub(crate) fn compressed_facts_payload(blob: &[u8]) -> Option<&[u8]> {
     blob.strip_prefix(LOCAL_FACTS_BINARY_MAGIC)

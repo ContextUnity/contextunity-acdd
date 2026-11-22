@@ -423,7 +423,7 @@ pub struct FileRelationContext<'ctx, 'a> {
     /// Prepared framework semantic facts.
     pub prepared_semantic_facts: &'ctx super::framework_relations::PreparedSemanticFacts<'a>,
     /// Mutable per-file output graph.
-    pub graph: &'ctx mut crate::models::compact_graph::Graph,
+    pub graph: &'ctx mut crate::models::compact_graph::CompactGraph,
 }
 
 /// Owns language-specific import, receiver, and incremental-linking rules.

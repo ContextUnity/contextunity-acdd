@@ -110,7 +110,7 @@ serde_dto!(ClassicFlowRestDto<'a> {
     #[serde(skip_serializing_if = "Option::is_none")] object_ownership: Option<&'a crate::semantic::ObjectOwnershipFact>,
     #[serde(skip_serializing_if = "Option::is_none")] return_type: Option<&'a crate::semantic::TypeExpr>, #[serde(skip_serializing_if = "Option::is_none")] async_return_type: Option<&'a crate::semantic::TypeExpr>,
     #[serde(skip_serializing_if = "Option::is_none")] return_value: Option<&'a crate::semantic::ValueExpr>, #[serde(skip_serializing_if = "Option::is_none")] return_position: Option<&'a crate::semantic::SourcePosition>,
-    #[serde(skip_serializing_if = "Option::is_none")] alias_type: Option<&'a crate::semantic::TypeExpr>, #[serde(skip_serializing_if = "Option::is_none")] fact_limit_exceeded: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")] alias_type: Option<&'a crate::semantic::TypeExpr>, #[serde(skip_serializing_if = "Option::is_none")] callable_signature: Option<&'a crate::semantic::CallableSignature>, #[serde(skip_serializing_if = "Option::is_none")] fact_limit_exceeded: Option<bool>,
 });
 
 impl<'a> From<&'a ValueFlowFacts> for ClassicFlowRestDto<'a> {
@@ -127,6 +127,7 @@ impl<'a> From<&'a ValueFlowFacts> for ClassicFlowRestDto<'a> {
             return_value: framework.and_then(|scope| scope.return_value.as_ref()),
             return_position: framework.and_then(|scope| scope.return_position.as_ref()),
             alias_type: framework.and_then(|scope| scope.alias_type.as_ref()),
+            callable_signature: framework.and_then(|scope| scope.callable_signature.as_ref()),
             fact_limit_exceeded: framework
                 .filter(|scope| scope.fact_limit_exceeded)
                 .map(|_| true),
@@ -323,12 +324,21 @@ impl<'node, 'flow> PublicNodesView<'node, 'flow> {
 
 impl Serialize for TypedFacts {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("Facts", 5)?;
+        let field_count = 5
+            + usize::from(!self.facts.activation_signals.is_empty())
+            + usize::from(!self.facts.statement_fingerprints.is_empty());
+        let mut state = serializer.serialize_struct("Facts", field_count)?;
         state.serialize_field("nodes", &self.nodes_view())?;
         state.serialize_field("edges", &self.facts.edges)?;
         state.serialize_field("references", &self.facts.references)?;
         state.serialize_field("docs", &self.facts.docs)?;
         state.serialize_field("errors", &self.facts.errors)?;
+        if !self.facts.activation_signals.is_empty() {
+            state.serialize_field("activation_signals", &self.facts.activation_signals)?;
+        }
+        if !self.facts.statement_fingerprints.is_empty() {
+            state.serialize_field("statement_fingerprints", &self.facts.statement_fingerprints)?;
+        }
         state.end()
     }
 }

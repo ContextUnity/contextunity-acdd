@@ -92,9 +92,10 @@ impl ValueExpr {
                         .as_deref()
                         .is_none_or(|value| value.valid_call_sites(depth + 1))
             }
-            Self::Await { value } | Self::Scoped { value, .. } | Self::Project { value, .. } => {
-                value.valid_call_sites(depth + 1)
-            }
+            Self::Await { value }
+            | Self::Scoped { value, .. }
+            | Self::Project { value, .. }
+            | Self::CallbackParam { callee: value, .. } => value.valid_call_sites(depth + 1),
             Self::BranchJoin { alternatives } => alternatives
                 .iter()
                 .all(|value| value.valid_call_sites(depth + 1)),
@@ -201,6 +202,15 @@ pub enum ValueExpr {
         value: Box<ValueExpr>,
         /// Object pattern member name.
         member: String,
+    },
+    /// Closure or callback parameter typed from a higher-order callee signature.
+    CallbackParam {
+        /// Higher-order callee expression whose signature supplies the callback parameter type.
+        callee: Box<ValueExpr>,
+        /// Zero-based argument index of the callback in the call.
+        arg_index: usize,
+        /// Zero-based parameter index inside the callback parameter list.
+        param_index: usize,
     },
     /// Object value with known members.
     Object {
@@ -778,6 +788,60 @@ pub struct ValueFlowFacts {
     pub fields: Vec<FieldFact>,
 }
 
+fn default_unknown_type() -> TypeExpr {
+    TypeExpr::Unknown
+}
+
+fn is_unknown_type(ty: &TypeExpr) -> bool {
+    matches!(ty, TypeExpr::Unknown)
+}
+
+/// Typed positional parameter in a [`CallableSignature`].
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallableParameter {
+    /// Parameter identifier when statically named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Annotated parameter type (`TypeExpr::Unknown` when unannotated).
+    #[serde(default = "default_unknown_type", skip_serializing_if = "is_unknown_type")]
+    pub type_expr: TypeExpr,
+    /// Typed callback argument types when this parameter accepts a higher-order callable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub callback_params: Vec<TypeExpr>,
+}
+
+/// Language-agnostic typed signature metadata for a callable declaration.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallableSignature {
+    /// Whether the callable declares a receiver parameter (`self`, `cls`, `this`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_receiver: bool,
+    /// Non-receiver positional parameters in declaration order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<CallableParameter>,
+    /// Declared return type, when explicitly annotated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_type: Option<TypeExpr>,
+}
+
+impl CallableSignature {
+    /// Returns `true` when the signature carries no receiver, parameter, or return metadata.
+    pub fn is_empty(&self) -> bool {
+        !self.has_receiver && self.params.is_empty() && self.return_type.is_none()
+    }
+
+    /// Returns `true` when parameter and callback arity stay within cache safety bounds.
+    pub fn valid(&self) -> bool {
+        self.params.len() <= 128
+            && self
+                .params
+                .iter()
+                .all(|param| param.callback_params.len() <= 32)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 /// Less common scope facts, stored only when a scope needs them.
 pub struct FrameworkScopeFacts {
@@ -793,6 +857,8 @@ pub struct FrameworkScopeFacts {
     pub return_position: Option<SourcePosition>,
     /// Optional alias type value.
     pub alias_type: Option<TypeExpr>,
+    /// Typed callable signature metadata (parameters, callbacks, return type).
+    pub callable_signature: Option<CallableSignature>,
     /// Tagged storage for infrequent framework and projection facts.
     pub facts: Vec<FrameworkFact>,
 }
@@ -936,6 +1002,7 @@ struct FrameworkScopeFactsInput {
     return_value: Option<ValueExpr>,
     return_position: Option<SourcePosition>,
     alias_type: Option<TypeExpr>,
+    callable_signature: Option<CallableSignature>,
     #[serde(deserialize_with = "bounded_projection_vector")]
     symbol_attachments: Vec<SymbolAttachmentFact>,
     #[serde(deserialize_with = "bounded_projection_vector")]
@@ -1046,6 +1113,7 @@ impl<'de> Deserialize<'de> for FrameworkScopeFacts {
             return_value: input.return_value,
             return_position: input.return_position,
             alias_type: input.alias_type,
+            callable_signature: input.callable_signature,
             facts,
         })
     }
@@ -1155,6 +1223,8 @@ struct FrameworkScopeFactsDto<'a> {
     return_position: Option<&'a SourcePosition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     alias_type: Option<&'a TypeExpr>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    callable_signature: Option<&'a CallableSignature>,
     #[serde(flatten)]
     facts: FrameworkFactCollectionsDto<'a>,
 }
@@ -1168,6 +1238,7 @@ impl<'a> From<&'a FrameworkScopeFacts> for FrameworkScopeFactsDto<'a> {
             return_value: facts.return_value.as_ref(),
             return_position: facts.return_position.as_ref(),
             alias_type: facts.alias_type.as_ref(),
+            callable_signature: facts.callable_signature.as_ref(),
             facts: FrameworkFactCollectionsDto::from(facts),
         }
     }
@@ -1187,6 +1258,7 @@ impl FrameworkScopeFacts {
             && self.return_value.is_none()
             && self.return_position.is_none()
             && self.alias_type.is_none()
+            && self.callable_signature.as_ref().is_none_or(CallableSignature::is_empty)
             && self.facts.is_empty()
     }
 
@@ -1344,6 +1416,7 @@ impl PartialEq for FrameworkScopeFacts {
             && self.return_value == other.return_value
             && self.return_position == other.return_position
             && self.alias_type == other.alias_type
+            && self.callable_signature == other.callable_signature
             && self.symbol_attachments().eq(other.symbol_attachments())
             && self.factory_results().eq(other.factory_results())
             && self.named_bindings().eq(other.named_bindings())
@@ -1391,6 +1464,10 @@ impl ValueFlowFacts {
                 && framework.named_bindings().all(ProjectionFact::valid)
                 && framework.endpoint_requests().all(ProjectionFact::valid)
                 && framework
+                    .callable_signature
+                    .as_ref()
+                    .is_none_or(CallableSignature::valid)
+                && framework
                     .factory_results()
                     .all(|fact| fact.members.len() <= 128)
         })
@@ -1415,6 +1492,7 @@ impl std::ops::Deref for ValueFlowFacts {
             return_value: None,
             return_position: None,
             alias_type: None,
+            callable_signature: None,
             facts: Vec::new(),
         };
         self.framework.as_deref().unwrap_or(&EMPTY)
@@ -1511,6 +1589,9 @@ impl ValueFlowFacts {
                     value_keys(value, visit, depth + 1);
                     visit(member);
                 }
+                ValueExpr::CallbackParam { callee, .. } => {
+                    value_keys(callee, visit, depth + 1);
+                }
                 ValueExpr::Object { .. } | ValueExpr::Unknown => {}
             }
         }
@@ -1519,6 +1600,11 @@ impl ValueFlowFacts {
             .iter()
             .chain(self.async_return_type.iter())
             .chain(self.alias_type.iter())
+            .chain(self.callable_signature.iter().flat_map(|sig| {
+                sig.return_type.iter().chain(sig.params.iter().flat_map(|param| {
+                    std::iter::once(&param.type_expr).chain(param.callback_params.iter())
+                }))
+            }))
         {
             type_keys(ty, &mut visit, 0);
         }
@@ -1640,6 +1726,12 @@ impl ValueFlowFacts {
                 }
                 return;
             }
+            if value.get("kind").and_then(serde_json::Value::as_str) == Some("callback_param") {
+                if let Some(callee) = value.get("callee") {
+                    value_keys(callee, visit, depth + 1);
+                }
+                return;
+            }
             if value.get("kind").and_then(serde_json::Value::as_str) == Some("branch_join") {
                 if let Some(alternatives) = value
                     .get("alternatives")
@@ -1681,6 +1773,14 @@ impl ValueFlowFacts {
         for key in [NodeDetailKey::RETURN_TYPE, "async_return_type", "alias_type"] {
             if let Some(ty) = flow.get(key) {
                 type_key(ty, &mut visit);
+            }
+        }
+        if let Some(sig) = flow.get("callable_signature") {
+            if let Some(ty) = sig.get("return_type") { type_key(ty, &mut visit); }
+            for param in sig.get("params").and_then(serde_json::Value::as_array).into_iter().flatten() {
+                for ty in param.get("type_expr").into_iter().chain(param.get("callback_params").and_then(serde_json::Value::as_array).into_iter().flatten()) {
+                    type_key(ty, &mut visit);
+                }
             }
         }
         if let Some(facts) = flow
@@ -1821,7 +1921,9 @@ impl ValueFlowFacts {
                         member.position.line = member.position.line.saturating_add(offset);
                     }
                 }
-                ValueExpr::Scoped { value, .. } | ValueExpr::Project { value, .. } => {
+                ValueExpr::Scoped { value, .. }
+                | ValueExpr::Project { value, .. }
+                | ValueExpr::CallbackParam { callee: value, .. } => {
                     offset_members(value, offset);
                 }
                 ValueExpr::BranchJoin { alternatives } => {

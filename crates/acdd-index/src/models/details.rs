@@ -27,6 +27,9 @@ impl NodeDetailKey {
     pub const INCLUDED_FROM: &'static str = "included_from";
     pub const SOURCE_PATH: &'static str = "source_path";
     pub const ARCH_RULES: &'static str = "arch_rules";
+    pub const COGNITIVE_COMPLEXITY: &'static str = "cognitive_complexity";
+    pub const MAX_NESTING_DEPTH: &'static str = "max_nesting_depth";
+    pub const FACT_LIMIT_EXCEEDED: &'static str = "fact_limit_exceeded";
 }
 
 /// Boolean properties projected from node details.

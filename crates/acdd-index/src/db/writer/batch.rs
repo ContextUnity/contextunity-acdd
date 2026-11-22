@@ -144,7 +144,7 @@ mod tests {
     use super::super::{dictionary::*, ingest::*, MAX_MULTI_VALUE_BATCH_ROWS};
     use super::{insert_multi_value_batch, multi_value_batch_rows, BorrowedSqlValue};
     use crate::db::schema::SCHEMA_DDL;
-    use crate::models::compact_graph::{Coverage, Edge, Graph};
+    use crate::models::compact_graph::{CompactEdge, CompactGraph, Coverage};
     use crate::models::{Facts, Node, Reference};
     use crate::scanner::FileEntry;
     use crate::typed_facts::TypedFacts;
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn graph_owner_and_commitment_batches_preserve_rows_across_variable_limits() {
         let (entries, mut facts) = entries_and_facts(251);
-        let mut graph = Graph::default();
+        let mut graph = CompactGraph::default();
         for (index, file) in entries.iter().enumerate() {
             let f = facts.get_mut(&file.path).unwrap();
             f.nodes[0].details = json!({"default_export":true});
@@ -426,7 +426,7 @@ mod tests {
                 dynamic: false,
                 receiver_hint: None,
             });
-            graph.edges.push(Edge {
+            graph.edges.push(CompactEdge {
                 src: f.nodes[0].id.as_str().into(),
                 dst: format!("function:{}", entries[(index + 1) % entries.len()].path).into(),
                 kind: "calls".into(),

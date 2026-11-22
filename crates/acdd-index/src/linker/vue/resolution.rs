@@ -1,6 +1,6 @@
 use super::super::resolution::ResolutionInput;
 use super::super::semantic_context::Member;
-use crate::models::{compact_graph::Graph, Node, ReceiverHint, Reference};
+use crate::models::{compact_graph::CompactGraph, Node, ReceiverHint, Reference};
 use crate::semantic::ComponentMacroRole;
 use crate::languages::LanguageContext;
 
@@ -142,7 +142,7 @@ pub(in crate::linker) fn resolve_component_tag<'a>(
     path: &str,
     reference: &Reference,
     owner: Option<&Node>,
-    graph: &mut Graph,
+    graph: &mut CompactGraph,
 ) -> bool {
     if reference.kind != "references"
         || !owner.is_some_and(|owner| owner.kind == "template_scope")

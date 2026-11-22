@@ -4,7 +4,7 @@ use crate::interner::SymbolId;
 use super::super::semantic_context::Context;
 use super::super::traits::{LanguageLinker, PackageExports};
 #[cfg(feature = "lang-typescript")]
-use crate::models::compact_graph::Graph;
+use crate::models::compact_graph::CompactGraph;
 use crate::models::{Facts, Node, Reference};
 #[cfg(feature = "lang-typescript")]
 use crate::semantic::ObjectOwnershipFact;
@@ -114,7 +114,7 @@ pub(in crate::linker) fn object_factory_this_member<'a>(
     lexical_this_calls: &HashSet<(&str, usize, usize, &str)>,
     language_context: &crate::languages::LanguageContext,
     activation_signals: &crate::languages::manifests::semantic::FileActivationSignals,
-    graph: &mut Graph,
+    graph: &mut CompactGraph,
 ) -> bool {
     if !matches!(reference.kind.as_str(), "calls" | "references" | "mutates") {
         return false;

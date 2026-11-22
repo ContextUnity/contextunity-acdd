@@ -175,7 +175,7 @@ impl SharedStr for Cow<'_, str> {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct Edge {
+pub struct CompactEdge {
     pub src: Arc<str>,
     pub dst: Arc<str>,
     pub kind: CompactTag,
@@ -185,14 +185,14 @@ pub struct Edge {
     pub confidence: CompactTag,
 }
 
-impl From<&PublicEdge> for Edge {
+impl From<&PublicEdge> for CompactEdge {
     fn from(edge: &PublicEdge) -> Self {
         let path = Arc::from(edge.path.as_str());
         Self::with_path(edge, &path)
     }
 }
 
-impl Edge {
+impl CompactEdge {
     pub fn with_path(edge: &PublicEdge, path: &Arc<str>) -> Self {
         Self {
             src: Arc::from(edge.src.as_str()),
@@ -206,8 +206,8 @@ impl Edge {
     }
 }
 
-impl From<Edge> for PublicEdge {
-    fn from(edge: Edge) -> Self {
+impl From<CompactEdge> for PublicEdge {
+    fn from(edge: CompactEdge) -> Self {
         Self {
             src: edge.src.as_ref().to_owned(),
             dst: edge.dst.as_ref().to_owned(),
@@ -242,8 +242,8 @@ impl From<Coverage> for PublicCoverage {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Graph {
-    pub edges: Vec<Edge>,
+pub struct CompactGraph {
+    pub edges: Vec<CompactEdge>,
     pub coverage: Vec<Coverage>,
     pub path_arc: Option<Arc<str>>,
     pub path_pool: hashbrown::HashSet<Arc<str>>,
@@ -251,7 +251,7 @@ pub struct Graph {
     pub evidence_pool: hashbrown::HashSet<Arc<str>>,
 }
 
-impl Graph {
+impl CompactGraph {
     pub fn intern_arc(pool: &mut hashbrown::HashSet<Arc<str>>, value: Arc<str>) -> Arc<str> {
         if let Some(existing) = pool.get(value.as_ref()) {
             return Arc::clone(existing);
@@ -287,7 +287,7 @@ impl Graph {
         let path = self.shared_path(&edge.path);
         let src = Self::shared_from_pool(&mut self.node_id_pool, edge.src.as_str());
         let dst = Self::shared_from_pool(&mut self.node_id_pool, edge.dst.as_str());
-        self.edges.push(Edge {
+        self.edges.push(CompactEdge {
             src,
             dst,
             kind: edge.kind.as_str().into(),
@@ -298,7 +298,7 @@ impl Graph {
         });
     }
 
-    pub fn merge(&mut self, other: Graph) {
+    pub fn merge(&mut self, other: CompactGraph) {
         self.edges.reserve(other.edges.len());
         for mut edge in other.edges {
             edge.src = Self::intern_arc(&mut self.node_id_pool, edge.src);
@@ -341,7 +341,7 @@ impl Graph {
         let path = self.shared_path(path);
         let src = Self::shared_from_pool(&mut self.node_id_pool, src);
         let dst = Self::shared_from_pool(&mut self.node_id_pool, dst);
-        self.edges.push(Edge {
+        self.edges.push(CompactEdge {
             src,
             dst,
             kind: kind.into(),
@@ -411,8 +411,8 @@ impl Graph {
     }
 }
 
-impl From<Graph> for PublicGraph {
-    fn from(graph: Graph) -> Self {
+impl From<CompactGraph> for PublicGraph {
+    fn from(graph: CompactGraph) -> Self {
         Self {
             edges: graph.edges.into_iter().map(Into::into).collect(),
             coverage: graph.coverage.into_iter().map(Into::into).collect(),

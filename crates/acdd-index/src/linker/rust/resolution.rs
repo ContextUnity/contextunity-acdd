@@ -1,7 +1,7 @@
 use super::super::semantic_context::LanguageMemberLookup;
 use super::super::value_flow::SemanticResolver;
 use crate::languages::LanguageProfile;
-use crate::models::{compact_graph::Graph, Node, ReceiverHint, Reference};
+use crate::models::{compact_graph::CompactGraph, Node, ReceiverHint, Reference};
 use hashbrown::HashMap;
 
 pub use crate::languages::rust::declarative_macro_classification;
@@ -11,7 +11,7 @@ pub(in crate::linker) fn dynamic_receiver_member<'a>(
     path: &str,
     reference: &Reference,
     owner: Option<&'a Node>,
-    graph: &mut Graph,
+    graph: &mut CompactGraph,
 ) -> bool {
     use super::super::{semantic_context::Member, value_flow::TypeTarget};
 
@@ -434,7 +434,7 @@ pub(in crate::linker) fn explicit_reexport_targets<'a>(
     out
 }
 
-fn emit_self_unresolved(graph: &mut Graph, path: &str, reference: &Reference) -> bool {
+fn emit_self_unresolved(graph: &mut CompactGraph, path: &str, reference: &Reference) -> bool {
     graph.reference_coverage(
         path,
         reference,
@@ -445,7 +445,7 @@ fn emit_self_unresolved(graph: &mut Graph, path: &str, reference: &Reference) ->
 }
 
 fn emit_self_target(
-    graph: &mut Graph,
+    graph: &mut CompactGraph,
     path: &str,
     reference: &Reference,
     receiver: &Node,
@@ -463,7 +463,7 @@ pub(in crate::linker) fn resolve_self_reference<'a>(
     owner: Option<&'a Node>,
     path: &str,
     member_lookup: &LanguageMemberLookup<'_, 'a>,
-    graph: &mut Graph,
+    graph: &mut CompactGraph,
 ) -> bool {
     if profile.is_some_and(|profile| profile.id() == "rust") && reference.kind == "calls" {
         if let Some(crate::linker::value_flow::Symbol::Callable(target)) =
@@ -599,7 +599,7 @@ fn resolve_rust_constant<'a>(
     path: &str,
     value_flow: &crate::linker::value_flow::ValueFlowIndex<'a>,
     semantic_context: &super::super::semantic_context::Context<'a>,
-    graph: &mut Graph,
+    graph: &mut CompactGraph,
 ) -> bool {
     if !matches!(reference.kind.as_str(), "calls" | "references")
         || reference.expression.contains('.')
@@ -609,7 +609,7 @@ fn resolve_rust_constant<'a>(
     let Some(owner) = owner else {
         return false;
     };
-    let emit_const = |graph: &mut Graph, target: &Node, reason: String| {
+    let emit_const = |graph: &mut CompactGraph, target: &Node, reason: String| {
         graph.reference_edge(
             path,
             reference,
@@ -757,7 +757,7 @@ pub(in crate::linker) fn trait_object_call<'a>(
     path: &str,
     value_flow: &crate::linker::value_flow::ValueFlowIndex<'a>,
     semantic_context: &super::super::semantic_context::Context<'a>,
-    graph: &mut Graph,
+    graph: &mut CompactGraph,
 ) -> bool {
     if !profile.is_some_and(|profile| profile.id() == "rust") {
         return false;
@@ -1184,7 +1184,7 @@ pub(in crate::linker) fn macro_analysis_gap(
     reference: &Reference,
     candidates: &[&Node],
     path: &str,
-    graph: &mut Graph,
+    graph: &mut CompactGraph,
 ) {
     if reference.kind != "calls"
         || !profile.is_some_and(|profile| profile.id() == "rust")

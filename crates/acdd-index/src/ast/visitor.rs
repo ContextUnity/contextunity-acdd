@@ -991,6 +991,8 @@ impl SinglePassExtractor<'_> {
                 if named_scope {
                     traversal.scopes.pop();
                 }
+            } else if let Some(last) = traversal.frames.last_mut() {
+                last.exit_metrics(node);
             }
             return;
         }
@@ -1036,6 +1038,7 @@ impl SinglePassExtractor<'_> {
                 std::sync::Arc::from(owner),
                 None,
                 state.prepared_root_bindings.is_none(),
+                false,
                 context,
                 prepared_bindings,
             );
@@ -1166,11 +1169,13 @@ impl SinglePassExtractor<'_> {
             let shared_id: std::sync::Arc<str> = std::sync::Arc::from(id.as_str());
             let shared_name: std::sync::Arc<str> = std::sync::Arc::from(name.as_str());
             let prepared_bindings = state.prepared_scope_bindings.remove(&node.id());
+            let is_callable = matches!(kind, "function" | "method" | "constructor");
             let mut frame = ScopeFrame::new(
                 node,
                 std::sync::Arc::clone(&shared_id),
                 Some(shared_name),
                 true,
+                is_callable,
                 context,
                 prepared_bindings,
             );
@@ -1345,6 +1350,10 @@ impl SinglePassExtractor<'_> {
             frame.enter(node, node_kind, is_boundary);
             traversal.frames.push(frame);
             traversal.scopes.push(name);
+        } else if !module_root {
+            if let Some(last) = traversal.frames.last_mut() {
+                last.enter_metrics(node, source, offset);
+            }
         }
         let node_owner = traversal
             .frames
@@ -1546,6 +1555,7 @@ struct ScopeFrame<'source, 'tree> {
     prepared_bindings: Option<ScopeBindings>,
     analysis: Option<ScopeAnalysis<'source, 'tree>>,
     legacy_flow: Option<crate::semantic::ValueFlowFacts>,
+    metrics: Option<super::fingerprints::CallableMetricsTracker>,
     reserved_flow_slot: bool,
     suspended_at: Option<usize>,
 }
@@ -1555,6 +1565,7 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
         owner: std::sync::Arc<str>,
         name: Option<std::sync::Arc<str>>,
         collect_bindings: bool,
+        is_callable: bool,
         context: &VisitContext<'source>,
         prepared_bindings: Option<ScopeBindings>,
     ) -> Self {
@@ -1588,8 +1599,19 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
                         })
                 }),
             legacy_flow: None,
+            metrics: is_callable.then(super::fingerprints::CallableMetricsTracker::default),
             reserved_flow_slot: false,
             suspended_at: None,
+        }
+    }
+    fn enter_metrics(&mut self, node: Syntax<'tree>, source: &str, offset: usize) {
+        if let Some(metrics) = &mut self.metrics {
+            super::fingerprints::CallableMetricsTracker::enter(metrics, node, self.root.id(), source, offset);
+        }
+    }
+    fn exit_metrics(&mut self, node: Syntax<'tree>) {
+        if let Some(metrics) = &mut self.metrics {
+            super::fingerprints::CallableMetricsTracker::exit(metrics, node, self.root.id());
         }
     }
     fn enter(&mut self, node: Syntax<'tree>, node_kind: &str, is_boundary: bool) {
@@ -1700,6 +1722,9 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
                 );
             }
         }
+        let metrics = self
+            .metrics
+            .map(|m| (m.cognitive_complexity, m.max_nesting_depth, m.statements));
         ScopePublication {
             root: self.root,
             owner: self.owner,
@@ -1708,6 +1733,7 @@ impl<'source, 'tree> ScopeFrame<'source, 'tree> {
             reserved_flow_slot: self.reserved_flow_slot,
             flow: (!(flow.is_empty() && flow.return_position.is_none())).then(|| Box::new(flow)),
             bindings,
+            metrics,
             module_outputs,
         }
     }
@@ -1731,6 +1757,7 @@ struct ScopePublication<'tree> {
     reserved_flow_slot: bool,
     flow: Option<Box<crate::semantic::ValueFlowFacts>>,
     bindings: ScopeBindings,
+    metrics: Option<(usize, usize, Vec<StatementFingerprint>)>,
     module_outputs: Option<(Vec<crate::semantic::ExportBinding>, serde_json::Value)>,
 }
 
@@ -1985,22 +2012,21 @@ impl ScopePublication<'_> {
                 node.details["rebindings"] = json!(bindings.rebindings);
             }
         }
-        // Keep opaque prior evidence; a later island cannot restore exact facts.
+        let is_overflow = |state: Option<&crate::typed_facts::FlowState>| {
+            matches!(state, Some(crate::typed_facts::FlowState::Invalid(v)) if v["fact_limit_exceeded"] == true)
+        };
+        let mut fact_limit_exceeded = flow.fact_limit_exceeded;
         if !preserve_invalid && !flow.is_empty() {
             if let Some(flows) = state.flows.as_mut() {
                 if let Some(details) = node.details.as_object_mut() {
                     details.shift_remove("value_flow");
                 }
-                flows.insert_boxed(
-                    node.id.clone(),
-                    prepared_flow.unwrap_or_else(|| Box::new(empty_flow)),
-                );
+                flows.insert_boxed(node.id.clone(), prepared_flow.unwrap_or_else(|| Box::new(empty_flow)));
+                fact_limit_exceeded |= is_overflow(flows.state(node));
             } else if context.profile.typed_scope_projections() {
                 let mut validated = FlowStore::default();
-                validated.insert_boxed(
-                    node.id.clone(),
-                    prepared_flow.unwrap_or_else(|| Box::new(empty_flow)),
-                );
+                validated.insert_boxed(node.id.clone(), prepared_flow.unwrap_or_else(|| Box::new(empty_flow)));
+                fact_limit_exceeded |= is_overflow(validated.state(node));
                 node.details["value_flow"] =
                     json!(validated.state(node).expect("published scope flow").view());
             } else {
@@ -2010,6 +2036,31 @@ impl ScopePublication<'_> {
             if let Some(details) = node.details.as_object_mut() {
                 details.shift_remove("value_flow");
             }
+        }
+        let mut set_detail = |key: &str, value: serde_json::Value| {
+            if !node.details.is_object() {
+                node.details = json!({});
+            }
+            if let Some(details) = node.details.as_object_mut() {
+                details.insert(key.into(), value);
+            }
+        };
+        if let Some((cognitive_complexity, max_nesting_depth, statements)) = self.metrics {
+            if cognitive_complexity > 0 {
+                set_detail(NodeDetailKey::COGNITIVE_COMPLEXITY, json!(cognitive_complexity));
+            }
+            if max_nesting_depth > 0 {
+                set_detail(NodeDetailKey::MAX_NESTING_DEPTH, json!(max_nesting_depth));
+            }
+            if !statements.is_empty() {
+                facts.statement_fingerprints.push(CallableFingerprints {
+                    node_id: node.id.clone(),
+                    statements,
+                });
+            }
+        }
+        if fact_limit_exceeded {
+            set_detail(NodeDetailKey::FACT_LIMIT_EXCEEDED, json!(true));
         }
         if let Some(exports) = visibility_exports.as_deref() {
             context

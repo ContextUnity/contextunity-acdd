@@ -1,4 +1,4 @@
-use crate::models::{compact_graph::Graph, Facts, Node, ReceiverHint, Reference};
+use crate::models::{compact_graph::CompactGraph, Facts, Node, ReceiverHint, Reference};
 use crate::semantic::SourcePosition;
 use crate::languages::{self, dependency_registry::DependencyRegistry};
 use crate::interner::{LinkerInterner, SymbolId};
@@ -19,7 +19,7 @@ pub(in crate::linker) fn compose_file_relations<'a>(
     semantic_context: &semantic_context::Context<'a>,
     prepared: &PreparedSemanticFacts<'_>,
     semantic_targets: &BTreeMap<languages::semantic::SemanticIdentity, BTreeSet<SymbolId>>,
-    graph: &mut Graph,
+    graph: &mut CompactGraph,
 ) {
     use languages::semantic::{SemanticFactRole, SemanticRelation, SemanticTarget};
 
@@ -392,7 +392,7 @@ pub(crate) fn compose_symbol_relations<'a>(
     by_module: &HashMap<&'a str, Vec<&'a Node>>,
     by_id: &HashMap<SymbolId, &'a Node>,
     prepared: &PreparedSemanticFacts<'_>,
-    graph: &mut Graph,
+    graph: &mut CompactGraph,
 ) {
     use languages::{
         manifests::{SemanticCallee, SemanticOperation, SemanticTarget},

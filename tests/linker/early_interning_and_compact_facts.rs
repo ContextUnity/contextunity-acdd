@@ -6,7 +6,7 @@ use acdd_index::{
     languages::dependency_registry::DependencyRegistry,
     linker,
     models::{
-        compact_graph::{CompactTag, Graph as CompactGraph},
+        compact_graph::{CompactGraph, CompactTag},
         Facts,
     },
     typed_facts::{decode_facts, encode_facts, TypedFacts},
@@ -146,7 +146,7 @@ fn interned_extraction_and_linker_preserve_exact_graph_parity() {
         let extracted =
             ast::extract_typed_with_registry(path, language, source, &registry).unwrap();
         let encoded = encode_facts(&extracted).unwrap();
-        assert!(encoded.starts_with(b"ACDD-LOCAL-FACTS\0\x04"));
+        assert!(encoded.starts_with(b"ACDD-LOCAL-FACTS\0\x05"));
         let decoded = decode_facts(&encoded).unwrap();
         assert_eq!(
             serde_json::to_value(&extracted.facts).unwrap(),

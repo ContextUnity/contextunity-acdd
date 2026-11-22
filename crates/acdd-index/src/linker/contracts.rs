@@ -378,7 +378,9 @@ impl<'a> Contracts<'a> {
         }
         match value {
             ValueExpr::Unknown => json!({"kind": "unknown"}),
-            ValueExpr::LoopElement { .. } => json!({"opaque_value": value}),
+            ValueExpr::LoopElement { .. } | ValueExpr::CallbackParam { .. } => {
+                json!({"opaque_value": value})
+            }
             ValueExpr::Scoped { value, body_end } => {
                 if at < *body_end {
                     self.value_contract(owner, flow, value, at, stack, depth + 1)

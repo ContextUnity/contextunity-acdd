@@ -294,6 +294,54 @@ impl ArchRuleSpec {
     }
 }
 
+/// Configurable structural complexity thresholds evaluated under `LintCategory::Syntax`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ComplexityLimits {
+    /// Maximum AST cognitive complexity per callable before emitting `syntax.cognitive_complexity`.
+    pub max_cognitive_complexity: usize,
+    /// Maximum AST control-flow nesting depth per callable before emitting `syntax.max_nesting_depth`.
+    pub max_nesting_depth: usize,
+    /// Maximum outgoing call/reference fanout per callable before emitting `syntax.high_fanout`.
+    pub max_fanout: usize,
+    /// Diagnostic severity emitted when a structural complexity threshold is exceeded.
+    #[serde(default)]
+    pub severity: LintSeverity,
+    /// Optional invariant ID bound to structural complexity checks in `enforced_invariant_ids`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invariant: Option<String>,
+}
+
+impl Default for ComplexityLimits {
+    fn default() -> Self {
+        Self { max_cognitive_complexity: 50, max_nesting_depth: 6, max_fanout: 40, severity: LintSeverity::Warn, invariant: None }
+    }
+}
+
+impl ComplexityLimits {
+    /// Return `true` when every field matches [`ComplexityLimits::default`].
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Validate that all complexity limits are strictly positive and any invariant binding is non-empty.
+    pub fn validate(&self) -> Result<(), StateError> {
+        for (field, value) in [
+            ("max_cognitive_complexity", self.max_cognitive_complexity),
+            ("max_nesting_depth", self.max_nesting_depth),
+            ("max_fanout", self.max_fanout),
+        ] {
+            if value == 0 {
+                return Err(schema_invalid(format!("architecture.complexity.{field} must be at least 1")));
+            }
+        }
+        if self.invariant.as_deref().is_some_and(|v| v.trim().is_empty()) {
+            return Err(schema_invalid("architecture.complexity.invariant must not be empty when specified"));
+        }
+        Ok(())
+    }
+}
+
 /// Optional `architecture:` configuration block in `acdd.yaml`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -304,12 +352,15 @@ pub struct ArchitectureConfig {
     /// Static architectural rules declared directly in `acdd.yaml`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<ArchRuleSpec>,
+    /// Structural complexity thresholds evaluated under `LintCategory::Syntax`.
+    #[serde(default, skip_serializing_if = "ComplexityLimits::is_default")]
+    pub complexity: ComplexityLimits,
 }
 
 impl ArchitectureConfig {
-    /// Return `true` when neither zones nor rules are configured.
+    /// Return `true` when no zones, rules, or custom complexity thresholds are configured.
     pub fn is_empty(&self) -> bool {
-        self.zones.is_empty() && self.rules.is_empty()
+        self.zones.is_empty() && self.rules.is_empty() && self.complexity.is_default()
     }
 
     /// Return the deterministic set of declared zone names.
@@ -317,8 +368,9 @@ impl ArchitectureConfig {
         self.zones.keys().cloned().collect()
     }
 
-    /// Validate all declared zones, glob patterns, rule ID uniqueness, and zone references.
+    /// Validate all declared zones, glob patterns, complexity limits, rule ID uniqueness, and zone references.
     pub fn validate(&self) -> Result<(), StateError> {
+        self.complexity.validate()?;
         for (zone_name, globs) in &self.zones {
             if zone_name.trim().is_empty() {
                 return Err(schema_invalid("architecture.zones name must not be empty"));

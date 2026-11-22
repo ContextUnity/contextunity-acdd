@@ -379,6 +379,7 @@ enum_codec!(crate::models::ReceiverHint, validate_receiver_hint {
 });
 
 struct_codecs! {
+    crate::semantic::CallableParameter { name, type_expr, callback_params };
     crate::semantic::SourcePosition { line, column }; crate::semantic::CallSiteEvidence { position, receiver, arguments };
     crate::semantic::ObjectMember { name, position, target }; crate::semantic::BindingFact { name, position, value, conditional };
     crate::semantic::BranchJoinFact { name, position, value, conditional }; crate::semantic::FieldFact { name, position, value, conditional };
@@ -415,9 +416,18 @@ struct_codecs! {
         return_value,
         return_position,
         alias_type,
+        callable_signature,
         facts
     };
+    crate::models::CallableFingerprints { node_id, statements };
 }
+
+validated_struct_codec!(crate::models::StatementFingerprint {
+    hash, line, end_line, token_count
+} => validate_statement_fingerprint);
+validated_struct_codec!(crate::semantic::CallableSignature {
+    has_receiver, params, return_type
+} => validate_callable_signature);
 
 enum_codec!(crate::semantic::TypeExpr { 0 => Named { name }, 1 => Applied { base, args }, 2 => Unknown });
 enum_codec!(crate::semantic::StaticArgument { 0 => String { value }, 1 => Unknown });
@@ -426,6 +436,7 @@ enum_codec!(crate::semantic::ValueExpr, validate_value_expr {
     4 => Await { value }, 5 => LoopElement { iterable, body_end }, 6 => Scoped { value, body_end },
     7 => BranchJoin { alternatives }, 8 => Field { receiver, member }, 9 => Project { value, member },
     10 => Object { members, builtin_guard }, 11 => Unknown,
+    12 => CallbackParam { callee, arg_index, param_index },
 });
 enum_codec!(crate::semantic::ObjectMemberTarget { 0 => SameName, 1 => Alias { name } });
 enum_codec!(crate::semantic::ComponentMacroRole { 0 => Props, 1 => Emits, 2 => Slots, 3 => Marker });
@@ -451,6 +462,18 @@ validated_struct_codec!(crate::semantic::NamedDefinitionUncertainty {
 fn validate_named_uncertainty(
     value: crate::semantic::NamedDefinitionUncertainty,
 ) -> Option<crate::semantic::NamedDefinitionUncertainty> {
+    value.valid().then_some(value)
+}
+
+fn validate_statement_fingerprint(
+    value: crate::models::StatementFingerprint,
+) -> Option<crate::models::StatementFingerprint> {
+    (value.line > 0 && value.end_line >= value.line && value.token_count > 0).then_some(value)
+}
+
+fn validate_callable_signature(
+    value: crate::semantic::CallableSignature,
+) -> Option<crate::semantic::CallableSignature> {
     value.valid().then_some(value)
 }
 
@@ -539,6 +562,7 @@ impl BinaryEncode for TypedFacts {
         encode_items(self.facts.errors.iter(), buf);
         encode_items(self.facts.pending_flow_nodes.iter(), buf);
         self.facts.activation_signals.encode(buf);
+        encode_items(self.facts.statement_fingerprints.iter(), buf);
         encode_items(self.flows.cache_entries(), buf);
         encode_items(self.flows.named_uncertainty_entries(), buf);
         encode_items(self.flows.named_uncertainty_faults(), buf);
@@ -557,6 +581,7 @@ impl BinaryDecode for TypedFacts {
             activation_signals: crate::languages::manifests::semantic::FileActivationSignals::decode(
                 bytes, cursor,
             )?,
+            statement_fingerprints: Vec::decode(bytes, cursor)?,
             ..Default::default()
         };
         let mut flows = crate::typed_facts::FlowStore::default();
@@ -735,6 +760,12 @@ impl TypedFacts {
             table.intern(attribute, &mut body);
         }
 
+        (self.facts.statement_fingerprints.len() as u32).encode(&mut body);
+        for entry in &self.facts.statement_fingerprints {
+            table.intern(&entry.node_id, &mut body);
+            entry.statements.encode(&mut body);
+        }
+
         let flow_entries = self.flows.cache_entries();
         (flow_entries.len() as u32).encode(&mut body);
         for (owner, state) in flow_entries {
@@ -872,6 +903,14 @@ impl TypedFacts {
         for _ in 0..signal_count {
             syntax_attributes.insert(decode_string_from_table(&table, bytes, cursor)?);
         }
+        let fp_count = collection_count(bytes, cursor)?;
+        let mut statement_fingerprints = Vec::with_capacity(fp_count);
+        for _ in 0..fp_count {
+            statement_fingerprints.push(crate::models::CallableFingerprints {
+                node_id: decode_string_from_table(&table, bytes, cursor)?,
+                statements: Vec::decode(bytes, cursor)?,
+            });
+        }
         let mut facts = crate::models::Facts {
             nodes,
             edges,
@@ -882,6 +921,7 @@ impl TypedFacts {
             activation_signals: crate::languages::manifests::semantic::FileActivationSignals {
                 syntax_attributes,
             },
+            statement_fingerprints,
             ..Default::default()
         };
 
@@ -950,7 +990,7 @@ mod tests {
         let decoded_raw = TypedFacts::decode(&raw, &mut raw_cursor).expect("decode untabled");
         assert_eq!(decoded_raw.facts.activation_signals, expected);
 
-        // String-tabled encode_facts / decode_facts codec (ACDD-LOCAL-FACTS\0\x04).
+        // String-tabled encode_facts / decode_facts codec (ACDD-LOCAL-FACTS\0\x05).
         let encoded = encode_facts(&typed).expect("encode_facts");
         let decoded_tabled = decode_facts(&encoded).expect("decode_facts");
         assert_eq!(decoded_tabled.facts.activation_signals, expected);

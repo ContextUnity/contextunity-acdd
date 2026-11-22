@@ -521,7 +521,7 @@ impl FlowStore {
                         let framework = facts.framework.get_or_insert_with(Default::default);
                         framework.fact_limit_exceeded |= incoming_framework.fact_limit_exceeded;
                         merge_optional_fields!(framework, incoming_framework;
-                            object_ownership, async_return_type, return_value, return_position, alias_type,
+                            object_ownership, async_return_type, return_value, return_position, alias_type, callable_signature,
                         );
                         framework.facts.append(&mut incoming_framework.facts);
                     }
@@ -600,6 +600,7 @@ impl FlowStore {
                 framework.return_value = None;
                 framework.return_position = None;
                 framework.alias_type = None;
+                framework.callable_signature = None;
                 framework
                     .facts
                     .retain(|fact| matches!(fact, crate::semantic::FrameworkFact::TemplateContext(_)));

@@ -5,6 +5,8 @@ pub mod common;
 mod adapters;
 #[path = "core/arch_lint.rs"]
 mod arch_lint;
+#[path = "core/ast_contracts.rs"]
+mod ast_contracts;
 #[path = "core/build_query_roundtrip.rs"]
 mod build_query_roundtrip;
 #[path = "core/compact_schema.rs"]

@@ -2,7 +2,7 @@
 
 use crate::db::commitments;
 use crate::db::schema::SCHEMA_DDL;
-use crate::models::compact_graph::Graph as CompactGraph;
+use crate::models::compact_graph::CompactGraph;
 use crate::models::*;
 use crate::semantic::CatalogStoragePayload;
 use crate::typed_facts::{encode_facts, TypedFacts};

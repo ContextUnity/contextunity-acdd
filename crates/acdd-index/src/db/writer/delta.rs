@@ -14,7 +14,7 @@ use super::{
     ingest::{persist_delta_files, persist_graph, CachedNodePath, PersistGraphParams},
 };
 use crate::db::commitments::{self, MetadataKey};
-use crate::models::{compact_graph::Graph as CompactGraph, stable_hash64, FileEntry};
+use crate::models::{compact_graph::CompactGraph, stable_hash64, FileEntry};
 use crate::typed_facts::TypedFacts;
 
 fn cached(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> rusqlite::Result<usize> {

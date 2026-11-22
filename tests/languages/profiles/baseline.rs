@@ -31,6 +31,8 @@ fn compacted_details(details: &Value, kind: &str, remove_column: bool) -> Value 
                 && value.as_array().is_some_and(Vec::is_empty))
             || ((key == "doc" || key == "receiver" || key == "receiver_name")
                 && value.as_str().is_some_and(str::is_empty))
+            || key == "cognitive_complexity"
+            || key == "max_nesting_depth"
             || (key == "param_types" && value.as_object().is_some_and(serde_json::Map::is_empty)))
     });
     if details.is_empty() {
@@ -44,6 +46,9 @@ fn compacted_public_facts(facts: &Value) -> Value {
     let mut facts = facts.clone();
     if let Some(files) = facts.as_object_mut() {
         for facts in files.values_mut() {
+            if let Some(obj) = facts.as_object_mut() {
+                obj.remove("statement_fingerprints");
+            }
             let Some(nodes) = facts["nodes"].as_array_mut() else {
                 continue;
             };

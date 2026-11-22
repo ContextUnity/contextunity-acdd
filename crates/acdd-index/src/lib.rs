@@ -22,7 +22,7 @@ pub use typed_facts::{NodeSemanticEntry, SemanticStore};
 
 /// Current index semantics version combining the contract epoch and language profile digest.
 pub const INDEX_SEMANTICS_VERSION: &str = concat!(
-    "14:specs-contract-v1:",
+    "15:specs-contract-v1:",
     env!("ACDD_LANGUAGE_PROFILE_DIGEST")
 );
 

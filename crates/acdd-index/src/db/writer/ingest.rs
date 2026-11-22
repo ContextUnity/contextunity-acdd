@@ -45,7 +45,7 @@ pub(super) struct PreparedDependency<'a> {
 }
 
 pub(super) struct PreparedEdge<'a> {
-    pub(super) edge: &'a crate::models::compact_graph::Edge,
+    pub(super) edge: &'a crate::models::compact_graph::CompactEdge,
     pub(super) src_hash: i64,
     pub(super) dst_hash: i64,
     pub(super) count: i64,

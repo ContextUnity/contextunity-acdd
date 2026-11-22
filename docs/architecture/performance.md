@@ -401,9 +401,9 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Compact Edge and Coverage Models with Shared Paths and Tags
 >
-> In `crates/acdd-index/src/models/compact_graph.rs`, internal `Edge` and `Coverage` graph models must store file paths as shared `Arc<str>` handles and evidence as `CompactTag` (with static strings for recurring diagnostics such as `"exact"`, `"inferred"`, `"references"`). Graph construction must share a single `path_arc` across all edges and coverage generated within each file resolver to eliminate millions of redundant heap string allocations while preserving public model representations, sort ordering, and bit-for-bit Merkle commitments.
+> In `crates/acdd-index/src/models/compact_graph.rs`, internal `CompactEdge` and `Coverage` graph models must store file paths as shared `Arc<str>` handles and evidence as `CompactTag` (with static strings for recurring diagnostics such as `"exact"`, `"inferred"`, `"references"`). Graph construction must share a single `path_arc` across all edges and coverage generated within each file resolver to eliminate millions of redundant heap string allocations while preserving public model representations, sort ordering, and bit-for-bit Merkle commitments.
 
-- INV-PERF-COMPACT-EDGE-COVERAGE-MODELS: Compact internal edge and coverage models with shared `Arc<str>` paths and `CompactTag` evidence. [`Edge`](../../crates/acdd-index/src/models/compact_graph.rs) [`Coverage`](../../crates/acdd-index/src/models/compact_graph.rs).
+- INV-PERF-COMPACT-EDGE-COVERAGE-MODELS: Compact internal edge and coverage models with shared `Arc<str>` paths and `CompactTag` evidence. [`CompactEdge`](../../crates/acdd-index/src/models/compact_graph.rs) [`Coverage`](../../crates/acdd-index/src/models/compact_graph.rs).
 
 > [!IMPORTANT]
 > Invariant: Content-Keyed Path Pooling during Compact Graph Restoration

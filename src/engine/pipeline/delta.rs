@@ -1208,7 +1208,7 @@ fn expand_template_and_named_frontiers(
 
 struct DeltaHydrationAndLink {
     facts: BTreeMap<String, TypedFacts>,
-    graph: acdd_index::models::compact_graph::Graph,
+    graph: acdd_index::models::compact_graph::CompactGraph,
     affected: BTreeSet<String>,
     replace_files: BTreeSet<String>,
     loaded_fact_files: usize,

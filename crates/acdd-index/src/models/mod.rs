@@ -605,6 +605,28 @@ pub struct DocSection {
     /// Whether the section expresses an invariant.
     pub is_invariant: bool,
 }
+/// Normalized AST statement unit extracted inside a callable body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatementFingerprint {
+    /// Deterministic 64-bit hash of the normalized AST token sequence (excluding comments/trivia).
+    pub hash: u64,
+    /// One-based starting source line of the statement.
+    pub line: usize,
+    /// One-based ending source line of the statement.
+    pub end_line: usize,
+    /// Number of non-trivia AST tokens in the normalized statement.
+    pub token_count: usize,
+}
+
+/// Ordered AST statement fingerprints belonging to one indexed callable declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallableFingerprints {
+    /// Stable symbol ID of the owning callable (`Node.id`).
+    pub node_id: String,
+    /// Normalized statements in source order.
+    pub statements: Vec<StatementFingerprint>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 /// Extracted per-file facts before cross-file linking and persistence.
 pub struct Facts {
@@ -630,11 +652,16 @@ pub struct Facts {
         skip_serializing_if = "crate::languages::manifests::semantic::FileActivationSignals::is_empty"
     )]
     pub activation_signals: crate::languages::manifests::semantic::FileActivationSignals,
+    /// Per-callable normalized AST statement fingerprints for structural clone detection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub statement_fingerprints: Vec<CallableFingerprints>,
 }
 impl Serialize for Facts {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let field_count = 5 + usize::from(!self.activation_signals.is_empty());
+        let field_count = 5
+            + usize::from(!self.activation_signals.is_empty())
+            + usize::from(!self.statement_fingerprints.is_empty());
         let mut state = serializer.serialize_struct("Facts", field_count)?;
         state.serialize_field(
             "nodes",
@@ -646,6 +673,9 @@ impl Serialize for Facts {
         state.serialize_field("errors", &self.errors)?;
         if !self.activation_signals.is_empty() {
             state.serialize_field("activation_signals", &self.activation_signals)?;
+        }
+        if !self.statement_fingerprints.is_empty() {
+            state.serialize_field("statement_fingerprints", &self.statement_fingerprints)?;
         }
         state.end()
     }
@@ -661,7 +691,10 @@ impl Facts {
             .collect();
         if tracked.is_empty() {
             self.nodes.retain(keep);
-            let ids = self.nodes.iter().map(|node| node.id.clone()).collect();
+            let ids: std::collections::HashSet<String> =
+                self.nodes.iter().map(|node| node.id.clone()).collect();
+            self.statement_fingerprints
+                .retain(|entry| ids.contains(&entry.node_id));
             self.semantic.flows.retain_nodes(&ids);
             return;
         }
@@ -687,7 +720,10 @@ impl Facts {
             }
         });
         self.semantic.retain_remapped(&mapping);
-        let ids = self.nodes.iter().map(|node| node.id.clone()).collect();
+        let ids: std::collections::HashSet<String> =
+            self.nodes.iter().map(|node| node.id.clone()).collect();
+        self.statement_fingerprints
+            .retain(|entry| ids.contains(&entry.node_id));
         self.semantic.flows.retain_nodes(&ids);
     }
     pub fn remap_deferred_nodes(&mut self, base: usize, batches: &[(usize, usize)]) {

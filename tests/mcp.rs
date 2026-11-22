@@ -55,3 +55,14 @@ mod transport;
 #[cfg(unix)]
 #[path = "mcp/harness/transport.rs"]
 mod transport_fixture;
+
+mod binary_identity_guard {
+    #[test]
+    fn executable_identity_digest_seam_baseline() {
+        let exe = std::env::current_exe().expect("current test executable path");
+        let bytes = std::fs::read(&exe).expect("read current executable bytes");
+        let digest = acdd_core::format::sha256_bytes(&bytes);
+        assert_eq!(digest.len(), 32);
+        assert_eq!(digest, acdd_core::format::sha256_bytes(&bytes));
+    }
+}

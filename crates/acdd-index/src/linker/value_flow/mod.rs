@@ -1644,7 +1644,7 @@ impl<'a> ValueFlowIndex<'a> {
                 }
                 TypeTarget::Object(Arc::new(resolved))
             }
-            ValueExpr::Unknown => TypeTarget::Unknown,
+            ValueExpr::CallbackParam { .. } | ValueExpr::Unknown => TypeTarget::Unknown,
         }
     }
 
@@ -2311,6 +2311,7 @@ fn valid_value(expr: &ValueExpr, limits: SemanticLimits, depth: usize) -> bool {
             value: inner,
             member,
         } => text(member) && valid_value(inner, limits, depth + 1),
+        ValueExpr::CallbackParam { callee, .. } => valid_value(callee, limits, depth + 1),
         ValueExpr::Object { members, .. } => {
             members.len() <= limits.facts_per_scope
                 && members.iter().all(|member| {
