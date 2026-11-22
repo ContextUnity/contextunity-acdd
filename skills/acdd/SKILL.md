@@ -53,13 +53,17 @@ and shared locks automatically. CLI `--worktree` takes an explicit directory pat
   `get_doc(path=..., detail="compact")` for outlines and `get_doc(path=..., section="...")`
   for full sections. Archived files under `*/archive/` are excluded from default
   search and emit no `governs` / `documents` graph edges.
-- **Graph hygiene (`duplicates` & `dead_tails`)**: Before submitting `build`,
-  `polish`, or any code review, run `code_map_query(operation="duplicates", level="symbol", min_lines=5, path=...)`
-  and `code_map_query(operation="dead_tails", path=...)` (workspace-wide without
-  `path`/`target` on integration reviews). `dead_tails` computes workspace-wide
+- **Graph hygiene & unified lint (`duplicates`, `dead_tails`, `code_map_lint`)**: Before submitting `build`,
+  `polish`, or any code review, run `code_map_query(operation="duplicates", level="symbol", min_lines=5, path=...)`,
+  `code_map_query(operation="dead_tails", path=...)` (workspace-wide without
+  `path`/`target` on integration reviews), and `code_map_lint` (`acdd lint`; defaults to
+  `[arch, syntax, docs]`, or `categories: ["arch","duplicates","dead_tails","cycles","syntax","docs"]` / `--categories all`). `dead_tails` computes workspace-wide
   production liveness first, then reports `phantom_tested`, `dead_tails`, and
   `dangling_calls` (`crate::*`/`super::*`/`self::*`). Eliminate or reject new
-  clones, phantom-tested dead code, dead tails, and dangling calls.
+  clones, phantom-tested dead code, dead tails, dangling calls, and `acdd-rule` / doc-integrity lint errors.
+- **Executable `acdd-rule` blocks**: Pair machine-enforceable `INV-*` invariants in
+  docs with fenced `acdd-rule` YAML blocks (or `acdd.yaml` `architecture.{zones,rules}`)
+  so `code_map_lint` / `code.lint` enforces boundaries and `docs.invariants` surfaces `[ENFORCED]`.
 - **SQL & bounds**: Supply one alias per parameter (`sql` or `query` for read-only
   `SELECT`/`WITH` joins over `path_dictionary` and `node_hash`; see
   [tool catalog](references/tool-catalog.md#sql-columns-and-joins-code-mapsqlite)).
@@ -68,7 +72,7 @@ and shared locks automatically. CLI `--worktree` takes an explicit directory pat
 
 ## ACDD profiles and task operations
 
-Embedded profiles (`base`, `code`, `audit`) or repository `.acdd/profile.yaml`
+Embedded profiles (`base`, `code`, `audit`, `documentation`) or repository `.acdd/profile.yaml`
 (`version: 2`, validated via `acdd validate`) govern gates, proof schemas,
 contours, isolation (`--in-place` overrides to `git.isolation: in_place`, `save: none`,
 preserving `save.immutable: true`), and `save.report` (written strictly under
@@ -76,6 +80,7 @@ preserving `save.immutable: true`), and `save.report` (written strictly under
 
 1. Inspect cross-worktree specs, dependency waves, critical paths, and scope-overlap markers with `acdd_state(action="roadmap")` (`acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]`), then start a run with `acdd start <spec_path>` or `acdd start --goal "..."`
    (defaults to `code`; select `inherit: audit` for read-only SAST/PR/hygiene audits,
+   `inherit: documentation` / `--profile documentation` for compiler-free doc/invariant authoring,
    or `inherit: base` for non-code workflows).
 2. Inspect ready cursors (`acdd_state(action="next")` / `acdd next`). For `mode: subagent` gates, the coordinator dispatches `(run, node_cursor, worker_id)` and the **worker itself** calls `acdd_claim` / `acdd claim` first before editing files (omitting `worktree` under `git.worktrees: managed` so `claim` creates/reuses `.worktrees/<run_name>-<task_ref>`, because passing an explicit `worktree` overrides auto-creation; `session_fingerprint` and full `ClaimResp` bind to the real worker process, which then works strictly inside `ClaimResp.worktree`); the coordinator calls `acdd_claim` directly only for `mode: inline` gates or dead-worker recovery.
 3. Follow `ClaimResp` (`contract`, `guidance`, `unresolved_findings`, `pre_task_slice`

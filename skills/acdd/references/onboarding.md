@@ -76,9 +76,10 @@ template-rendering code to ACDD.
 ## Synthesize a project profile
 
 For ACDD setup, write a compact overlay in `.acdd/profile.yaml` (`version: 2`,
-`inherit: code` when `modules.code: true` or `inherit: base` / `inherit: audit`;
-when present, `.acdd/profile.yaml` automatically becomes the workspace default;
-use `gates:` to replace inherited gates or `gates_patch:` to patch them), using the
+`inherit: code` when `modules.code: true` or `inherit: base` / `inherit: audit` /
+`inherit: documentation`; when present, `.acdd/profile.yaml` automatically becomes
+the workspace default; use `gates:` to replace inherited gates or `gates_patch:` to
+patch them), using the
 [starter profile overlay](acdd_profile.yaml.example) and the complete
 [profile reference](profile-reference.md) for all `GateProfile v2` fields. Use the
 [audit examples catalog](acdd-profile-examples/README.md) when specializing
@@ -159,9 +160,10 @@ Validate each proposed spec with `acdd validate <repository-relative-spec.md>`
 and inspect diagnostics rather than accepting example YAML on appearance alone.
 
 After indexing, inspect `code_map_overview` for the correct root, roots/coverage,
-languages, and linked workspaces. Check a representative source symbol and
-documentation page. Review the diff for preserved settings, valid links, and
-scope; run `git diff --check`. Adapt the [ignore example](gitignore.example) so
+languages, and linked workspaces. Run `acdd lint` (or `code_map_lint`) when
+`architecture:` zones/rules or `acdd-rule` blocks are configured, and check a
+representative source symbol and documentation page. Review the diff for preserved
+settings, valid links, and scope; run `git diff --check`. Adapt the [ignore example](gitignore.example) so
 runtime state under `.acdd/` and `/.worktrees/` stays excluded while
 `.acdd/profile.yaml`, `.acdd/profiles/**`, and `.acdd/frameworks/**` remain tracked.
 

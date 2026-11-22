@@ -21,7 +21,7 @@ Maintaining separate execution engines, storage tables, and CLI/MCP surfaces for
 
 All lifecycle execution collapses onto two orthogonal primitives in `crates/acdd-state`:
 
-1. **`GateProfile` (`version: 2`)**: Declarative YAML graph (`inherit`, `git:`, `save:`, `tags:`, `protected_paths:`, `default_tools:`, `modules:`, `limits:`, `roles:`, `commands:`, `scope_args_by_pattern:`, `proofs:`, `guidance:`, `contours:`, `gate_templates:`, `gates:` or mutually exclusive `gates_patch:`). Embedded baselines are strictly three profiles: `base`, `code`, and `audit`; `.acdd/profile.yaml` automatically becomes the workspace default when present, while `in_place` is an execution mode (`--in-place` or `git.isolation: in_place` in a profile) that neutralizes `save.post: commit` to `none`. Strict `deny_unknown_fields` parsing rejects un-migrated `0.5` syntax (`ACDD_PROFILE_SCHEMA_INVALID`), and gate `save.report` materializes reports strictly under `.acdd/reports/*.{md,json}` on pass (`SubmitResp.report_path`).
+1. **`GateProfile` (`version: 2`)**: Declarative YAML graph (`inherit`, `git:`, `save:`, `tags:`, `protected_paths:`, `default_tools:`, `modules:`, `limits:`, `roles:`, `commands:`, `scope_args_by_pattern:`, `proofs:`, `guidance:`, `contours:`, `gate_templates:`, `gates:` or mutually exclusive `gates_patch:`). Embedded baselines are strictly four profiles: `base`, `code`, `audit`, and `documentation`; `.acdd/profile.yaml` automatically becomes the workspace default when present, while `in_place` is an execution mode (`--in-place` or `git.isolation: in_place` in a profile) that neutralizes `save.post: commit` to `none`. Strict `deny_unknown_fields` parsing rejects un-migrated `0.5` syntax (`ACDD_PROFILE_SCHEMA_INVALID`), and gate `save.report` materializes reports strictly under `.acdd/reports/*.{md,json}` on pass (`SubmitResp.report_path`).
 2. **`Run`**: One active or completed execution instance bound to a `SpecDocument` (`docs/milestones/*.md`, `docs/plans/*.md`) or an ephemeral `--goal` specification (`.acdd/run/<run_id>/spec.md`) and materialized into a `gate_nodes` DAG addressed by validated [`NodeCursor`](../../crates/acdd-core/src/ids.rs) and `GateSelector` identifiers.
 
 ### 2. Node Hierarchy, `SpecDocument`, and `blueprint_synthesis`
@@ -34,7 +34,37 @@ All lifecycle execution collapses onto two orthogonal primitives in `crates/acdd
 
 ### 3. Pure Functional Core and `StateBackend` CAS Boundary
 
-- **`crates/acdd-state/src/machine/`**: Pure functional transition planner (`(RunGraphSnapshot, ResolvedGateProfile, ValidatedObservations, TransitionInput) -> TransitionPlan + StoragePreconditions`) with zero disk, process, network, or SQLite I/O.
+> [!IMPORTANT]
+> Invariant: The state machine reducer stays 100% pure and SQLite imports stay confined to `crates/acdd-state/src/store/sqlite/`.
+> - INV-STATE-PURE-MACHINE: `crates/acdd-state/src/machine/` is a pure functional transition planner with zero `std::fs`, `std::process`, `std::net`, or `rusqlite` calls. [`evaluate_transition`](../../crates/acdd-state/src/machine/mod.rs)
+> - INV-STATE-SQLITE-CONFINED: Direct `rusqlite` usage in `crates/acdd-state/src/` is confined exclusively to `crates/acdd-state/src/store/sqlite/`, while `usecases/` routes persistence through `&dyn StateBackend` (`exec_tx_dyn`). [`open_read_only_if_exists`](../../crates/acdd-state/src/store/sqlite/mod.rs)
+> - INV-STATE-SINGLE-VALIDATOR: All workspace, spec, profile, and dependency validation routes through `acdd_state::validate` and `acdd_state::usecases::deps`, and all `when:` parsing/evaluation routes through `WhenExpr`. [`validate_workspace`](../../crates/acdd-state/src/validate.rs) [`normalize_optional_when`](../../crates/acdd-state/src/profile/when.rs)
+
+```acdd-rule
+id: INV-STATE-PURE-MACHINE
+invariant: INV-STATE-PURE-MACHINE
+severity: error
+kind: forbid_dependency
+from:
+  paths: ["crates/acdd-state/src/machine/**"]
+to:
+  external_symbols: ["std::fs", "std::process", "std::net", "rusqlite"]
+include_tests: false
+```
+
+```acdd-rule
+id: INV-STATE-SQLITE-CONFINED
+invariant: INV-STATE-SQLITE-CONFINED
+severity: error
+kind: single_owner
+from:
+  paths: ["crates/acdd-state/src/**"]
+to:
+  external_symbols: ["rusqlite"]
+owner_paths: ["crates/acdd-state/src/store/sqlite/**"]
+include_tests: false
+```
+
 - **`StateBackend` (`StateReader` / `StateTx`)**: Short optimistic-CAS transactions verify `node_version` and `runs.generation`, returning `ErrorCode::BackendConflict` on concurrent drift.
 - **SQLite schema**: [`crates/acdd-state/src/store/sqlite/schema.rs`](../../crates/acdd-state/src/store/sqlite/schema.rs) defines `_sqlite_meta` (`schema_version`, `write_seq`, `last_backup_seq`) and 9 domain tables: `runs`, `gate_nodes`, `task_dependencies`, `subtasks`, `gate_claims`, `gate_traces`, `gate_artifacts`, `blackboard`, and `run_tombstones`.
 

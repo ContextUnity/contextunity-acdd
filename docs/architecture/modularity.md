@@ -92,6 +92,30 @@ The shared body traversal replaces recursive declaration-body binding, value-flo
 
 > [!IMPORTANT]
 > Invariant: Framework semantics belong to validated manifest data. Production code has no framework-specific branches keyed by framework IDs, package names, namespaces, API spellings, constructors, decorators, keywords, attributes, or directory names. The registry discovers pack identity from manifest files; generic operations apply the selectors and activation configured in typed rules.
+> - INV-FRAMEWORK-DATA-BOUNDARY: Keep framework API identities, receiver families, keyword and attribute names, directory conventions, and activation rules in typed `FrameworkManifest` tables rather than hardcoded Rust parser/linker branches. [`named_kind`](../../crates/acdd-index/src/languages/manifests/mod.rs)
+
+## Single-Owner and Modularity Invariants
+
+> [!IMPORTANT]
+> Invariant: Shared infrastructure, validation, Git execution, surface compatibility, and graph hygiene have canonical single owners across the workspace.
+> - INV-SINGLE-OWNER: Shared workspace configuration (`acdd_core::config`), error taxonomy (`acdd_core::errors`), path confinement and brace-aware glob matching (`acdd_core::{fs, path_policy}`), advisory locking (`acdd_core::lock`), system/telemetry primitives (`acdd_core::{sys, format, telemetry}`), and `validate`/`WhenExpr` (`acdd_state`) have one canonical owner with zero downstream duplicates. [`glob_matches`](../../crates/acdd-core/src/path_policy.rs) [`load_adapter`](../../crates/acdd-core/src/config/loader.rs)
+> - INV-GIT-SINGLE-OWNER: Raw `std::process::Command::new("git")` invocations are strictly confined to `crates/acdd-core/src/git.rs` (`acdd_core::git`); all downstream Git workflows in `acdd-state` and host `src/` route through `acdd_core::git`. [`git_command`](../../crates/acdd-core/src/git.rs)
+> - INV-SURFACE-COMPATIBILITY: Preserve public crate signatures, DTO contracts, and `ErrorCode` semantics without mirror `Mcp*` clone structs or duplicate `ClaimResp` Markdown renderers. [`render_claim_prompt_markdown`](../../crates/acdd-state/src/context/markdown.rs)
+> - INV-NO-DEAD-CODE-SHIMS: Ban `#![allow(dead_code, unused_imports)]`, legacy re-export shims (`src/core/*`, `src/db/*`), `>= 5`-line clones, `phantom_tested` dead code, `dead_tails`, and `dangling_calls`. [`collect_dead_tails`](../../crates/acdd-index/src/db/lint/dead_tails.rs)
+> - INV-AR003-CANONICAL-INVARIANT-AUTHORITY: Every architectural invariant has one canonical `INV-*` declaration in `docs/architecture/*.md` or `docs/adr/*.md` with verified symbol links (and `acdd-rule` blocks for machine-enforceable boundaries), while `**/AGENTS.md` files stay concise operational routers. [`enforced_invariant_ids`](../../crates/acdd-index/src/db/lint/rules.rs)
+
+```acdd-rule
+id: INV-GIT-SINGLE-OWNER
+invariant: INV-GIT-SINGLE-OWNER
+severity: error
+kind: ast_pattern
+from:
+  paths: ["src/**", "crates/**"]
+  exclude_paths: ["crates/acdd-core/src/git.rs"]
+  languages: ["rust"]
+ast_pattern: 'Command::new("git")'
+include_tests: false
+```
 
 Keep framework API identities, receiver families, keyword and attribute names,
 directory conventions, activation conditions, and graph-relation mappings in

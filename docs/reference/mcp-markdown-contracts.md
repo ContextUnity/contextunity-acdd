@@ -29,7 +29,7 @@ through the same formatter. Compare Markdown content exactly and JSON after
 parsing. Normalize only transport framing, trailing newline, transport-specific
 worker identity, and values that actually changed between requests.
 MCP graph operations may append a top-level server-owned `freshness` envelope
-after the callback in [`read_with_adapter`](../../src/mcp/server.rs#L442-L479).
+after the callback in [`read_with_adapter`](../../src/mcp/server.rs#L700-L770).
 Dedicated discovery Markdown may omit inactive matched freshness display metadata
 while JSON retains the actual envelope under the existing compaction policy.
 Meaningful freshness notices remain visible. Parity checks separately assert the
@@ -387,18 +387,17 @@ and has no fabricated breadcrumb. A node without a verified role has no role bad
 
 This repository example uses the verified rule for
 [`document_symbol_candidates`](../../crates/acdd-index/src/linker/resolution/mod.rs)
-and its actual rule source:
+declared canonically in [docs/AGENTS.md](../AGENTS.md#acdd-mcp-indexing-rules):
 
 ```markdown
 > [!IMPORTANT] Governing Invariants
-> - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [Source](file:///home/oleksii/ContextUnity/projects/acdd/docs/AGENTS.md#L92)
+> - Candidate resolution returns the first non-empty eligible declaration tier. [Source](../AGENTS.md#L92)
 ```
 
-For the live exact call to `diagnostic_reason`, the edge coordinate differs from
-the caller's declaration coordinate:
+For a live exact call, the edge coordinate differs from the caller's declaration coordinate:
 
 ```markdown
-- [annotate_diagnostic_page](file:///home/oleksii/ContextUnity/projects/acdd/src/db/reader.rs#L2135) [proven call] — calls diagnostic_reason at [src/db/reader.rs:2145](file:///home/oleksii/ContextUnity/projects/acdd/src/db/reader.rs#L2145)
+- [caller_symbol](src/example.rs#L10) [proven call] — calls callee_symbol at [src/example.rs:20](src/example.rs#L20)
 ```
 
 A `possible_calls` fixture renders `[heuristic / candidate]` and its actual

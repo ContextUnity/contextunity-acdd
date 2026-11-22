@@ -22,11 +22,12 @@ Placement rules live in `tests/AGENTS.md`. This page states only durable boundar
 > Invariant: Tests prove observable production behavior. Helpers must not replace
 > the production pipeline with mockist doubles, and must not swallow contract
 > assertions.
-> - INV-TEST-SEAM-PRESERVING-DECOMPOSITION: Split scenarios without replacing
->   production collaborators with fakes inside the claimed boundary.
-> - INV-TEST-HARNESS-BOUNDARY: The test states preconditions, triggers, and
->   assertions. Shared Git, SQLite, workspace, transport, and default evidence
->   construction live in harness or `tests/common` code with at least two callers.
+> - INV-TEST-SEAM-PRESERVING-DECOMPOSITION: Split scenarios without replacing production collaborators with fakes inside the claimed boundary, and author compiling passing seam tests directly in `build`. [`validate_workspace`](../../crates/acdd-state/src/validate.rs)
+> - INV-TEST-HARNESS-BOUNDARY: Keep shared Git, SQLite, workspace, transport, and default evidence construction in harness or `tests/common` code (`>= 2` callers) while the `#[test]` states preconditions, triggers, and assertions. [`execute_on`](../../crates/acdd-state/src/usecases/mod.rs)
+> - INV-TEST-IN-MEMORY-FIRST: Drive pure DAG scheduling, dependency readiness, gate transitions, AST extraction, and blackboard routing in-memory (`RunHarness::in_memory()`, `ExtractorHarness`) without tempdirs, Git worktrees, or child processes unless physical isolation is under test. [`execute_snapshot_readonly`](../../crates/acdd-state/src/usecases/mod.rs)
+> - INV-TEST-BINARY-BUDGET: Register test suites inside the canonical domain binaries (`tests/{acdd,core,languages,linker,mcp,query_context,commitment_integrity}.rs`) or `crates/acdd-state/tests/state_integration.rs` without adding new top-level `tests/<name>.rs` binaries. [`execute_on_dyn`](../../crates/acdd-state/src/usecases/mod.rs)
+> - INV-TEST-ZERO-LEAK-TEARDOWN: Clean up temporary test workspaces and `.acdd/cold-*` artifacts (`BEFORE == AFTER` for `/tmp/contextunity-test-*`), and never store `Workspace` or `TempDir` in `OnceLock`/`LazyLock` statics. [`count_contextunity_temp_dirs`](../../crates/acdd-state/src/harness.rs)
+> - INV-TEST-PROFILE-DRIVEN-LIFECYCLE: Drive task lifecycle tests dynamically from the active `GateProfile` rather than hardcoding private gate lists, and enforce `TASK_REVIEW_NOT_INDEPENDENT` across independent review gates. [`validate_tasks_against_profile`](../../crates/acdd-state/src/validate.rs)
 
 ## Layers
 

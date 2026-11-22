@@ -15,7 +15,7 @@ title: CLI reference
 | `--db <PATH>` | Code-index path, relative to the selected root. Defaults to `<root>/.acdd/code-map.sqlite`; `ACDD_DB` can set it. Does not select the state store. |
 | `--state-db <PATH>` | State SQLite database path override (`ACDD_STATE_DB`). Defaults to `state_db` in `acdd.yaml` (`.acdd/state.sqlite` under the primary Git worktree). |
 | `--config <PATH>` | Root-confined ACDD YAML configuration; `ACDD_CONFIG` can set it. Explicit missing files fail. Defaults to `<root>/acdd.yaml` when present. |
-| `--profile <REF>` | Explicit gate profile name (`base \| code \| audit`) or root-confined YAML path (`[:<sha256_prefix>]`); `ACDD_PROFILE` can set it. |
+| `--profile <REF>` | Explicit gate profile name (`base \| code \| audit \| documentation`) or root-confined YAML path (`[:<sha256_prefix>]`); `ACDD_PROFILE` can set it. |
 | `--format markdown|json` | Output format for command results. Defaults to `markdown`; invalid values fail before a command runs. |
 
 `build`, `scan`, and `delta` also accept a positional workspace path. Either form selects the workspace; when both are supplied, they must resolve to the same directory.
@@ -24,9 +24,10 @@ Selections resolve once per invocation. Flags override their environment variabl
 Profile resolution checks `--profile` / `ACDD_PROFILE`, spec frontmatter `profile:`,
 `specs.<collection>.profile` in `acdd.yaml`, `profiles_dirs`, `.acdd/profile.yaml`
 (automatic workspace default when present, else embedded `code`), and embedded
-baselines (`base`, `code`, `audit`). Use `--in-place` (or `git.isolation: in_place` in a profile)
+baselines (`base`, `code`, `audit`, `documentation`). Use `--in-place` (or `git.isolation: in_place` in a profile)
 for single-checkout execution; use `--profile audit` with `--goal` for read-only
-code review and security scanning.
+code review and security scanning, and `--profile documentation` for compiler-free
+living documentation and `acdd-rule` updates.
 State-store resolution uses `--state-db`, `state_db` in `acdd.yaml`, and
 `<primary_worktree>/.acdd/state.sqlite` discovered via `git rev-parse --path-format=absolute --git-common-dir`.
 Owned runner children (agent sessions claiming gates) receive selected paths and
@@ -136,6 +137,22 @@ acdd ast grep 'print($VALUE)' --lang python --path src
 
 `docs` reads indexed documents. `ast grep` reads admitted file paths from the index, narrows them with FTS terms, and parses matching source after checking its indexed digest. Both can trigger the missing or incompatible-index rebuild described above; `ast grep` also requires a compiled language profile. `docs search` accepts `--component` and `--limit`; `ast grep` accepts `--limit`.
 
+### Unified architectural and documentation lint (`acdd lint`)
+
+```sh
+acdd lint
+acdd lint crates/acdd-state --categories arch,docs --severity warn
+acdd lint --rule INV-CORE-LEAF --format json
+acdd lint --categories all --limit 50 --offset 0
+```
+
+`acdd lint [TARGET]` runs the unified language-agnostic lint engine over `.acdd/code-map.sqlite` (matching MCP `code_map_lint`):
+- `--categories`: comma-separated `arch`, `duplicates`, `dead_tails`, `cycles`, `syntax`, `docs`, or `all` (omitted defaults to `arch,syntax,docs`).
+- `--rule <ID>`: repeat or pass comma-separated rule/invariant IDs to filter evaluated diagnostics.
+- `--severity <warn|error>`: minimum diagnostic severity threshold.
+- `--limit`, `--offset`, `--generation`, `--detail <compact|full>`: standard generational paging matching `code_map_lint`.
+- Exits non-zero when `summary.errors > 0`.
+
 For `ast grep`, a `--limit` from 1 through 100 (default 100) returns the same
 JSON `matches` page object as MCP AST search, including applicable continuation
 and total-status fields. CLI limits 101..10000 retain the aggregate `matches`
@@ -242,7 +259,7 @@ acdd guide docs
 acdd tool <domain>_<name> [--args JSON] [--run RUN] [--node CURSOR] [--worktree PATH]
 ```
 
-- `serve` / `reload`: Starts the stdio MCP server (19 built-in tools + active `DomainProvider` `<domain>_<name>` plugin tools) or reloads running MCP server processes via `SIGHUP`.
+- `serve` / `reload`: Starts the stdio MCP server (20 built-in tools + active `DomainProvider` `<domain>_<name>` plugin tools) or reloads running MCP server processes via `SIGHUP`.
 - `guide`: Returns capability-filtered guidance across the 11 topics (`query`, `init`, `adapter`, `validate`, `code`, `ast`, `docs`, `lifecycle`, `acdd`, `gates`, `subtasks`).
 - `tool`: Invokes a `<domain>_<name>` plugin tool exposed by an active `DomainProvider` with JSON arguments validated against `DomainToolDef.input_schema`.
 

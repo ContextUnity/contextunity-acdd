@@ -126,7 +126,7 @@ For clients without a `cwd` setting, pass the repository root to ACDD:
 
 ## First request and subsequent reads
 
-All 19 built-in MCP tools (plus any registered `<domain>_<name>` plugin tools)
+All 20 built-in MCP tools (plus any registered `<domain>_<name>` plugin tools)
 support the same optional `worktree` selector. See
 [worktree selection](mcp-tools.md#worktree-selection) for exact-name, prefix,
 zero-normalized number, suffix, substring, and path precedence. Omitting the
@@ -144,7 +144,7 @@ Reconnect the client and call `code_map_overview`. The first database-backed cal
 
 Before later database reads, ACDD checks the adapter and admitted source inventory. Changed files trigger an incremental update or full rebuild as needed. A changed response policy affects output without reindexing. `ast_grep_search` scans admitted source directly, so use `code_map_overview` when you want to initialize or verify the SQLite index.
 
-For a first exploration, use `code_map_search` with `{"pattern":"parse*"}`, inspect an ID returned by search, then ask `code_map_impact` with `depth=1`. The [tool reference](mcp-tools.md) lists all 19 built-in tools, plugin tools, and their fields.
+For a first exploration, use `code_map_search` with `{"pattern":"parse*"}`, inspect an ID returned by search, then ask `code_map_impact` with `depth=1`. The [tool reference](mcp-tools.md) lists all 20 built-in tools, plugin tools, and their fields.
 
 ## If the server does not appear
 

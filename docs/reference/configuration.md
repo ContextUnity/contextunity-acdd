@@ -81,9 +81,34 @@ explicitly excludes:
 - `specs` (and non-path spec metadata such as `profile`, `prefixes`, `digits`)
 
 Only source/docs indexing inputs (`roots`, `docs`, `ignore`, `sensitive`,
-`limits`, `linked_workspaces`, `owners`, `aliases`, `adapter_version`) affect
-`adapter.digest`. Changing `state_db`, `retain_traces`, `profiles_dirs`,
-`modules`, `response`, or `specs` never triggers a cold code-map rebuild.
+`limits`, `linked_workspaces`, `owners`, `aliases`, `architecture`,
+`adapter_version`) affect `adapter.digest`. Changing `state_db`, `retain_traces`,
+`profiles_dirs`, `modules`, `response`, or `specs` never triggers a cold
+code-map rebuild.
+
+### Architectural zones and rules (`architecture:`)
+
+`acdd.yaml` accepts an optional `architecture:` block (`#[serde(deny_unknown_fields)]`)
+declaring named workspace-relative glob zones and static `ArchRuleSpec` rules
+evaluated by `acdd lint`, `code_map_lint`, and `code.lint`:
+
+```yaml
+architecture:
+  zones:
+    core: ["crates/acdd-core/src/**"]
+    state: ["crates/acdd-state/src/**"]
+  rules:
+    - id: INV-CORE-LEAF
+      invariant: INV-CORE-LEAF
+      severity: error
+      kind: forbid_dependency
+      from: { zones: ["core"] }
+      to: { zones: ["state"], external_symbols: ["rusqlite"] }
+```
+
+Zone names referenced by `acdd-rule` blocks inside `docs/**` are validated against
+`architecture.zones` during indexing and lint; omitting `architecture:` preserves
+existing `adapter.digest` values.
 
 The default basename exclusions cover `.git`, `.acdd`, `target`, `node_modules`, `.venv`, `__pycache__`, `build`, `dist`, `coverage`, `.cache`, `.next`, `.nuxt`, `.svelte-kit`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, and `.gradle`. The scanner also honors `.gitignore` and skips symbolic links. Add project-specific generated directories with `ignore`; authored source under an excluded basename can be scoped explicitly with a different directory name.
 
@@ -213,7 +238,7 @@ using **v2 `GateProfile` YAML** files (`version: 2`).
    automatically falling back to embedded `"code"` when absent (domain hooks
    unavailable under `modules.code: false` / `modules.docs: false` are stripped
    automatically)
-6. Embedded built-in profiles (`base`, `code`, `audit`)
+6. Embedded built-in profiles (`base`, `code`, `audit`, `documentation`)
 
 Profiles in linked workspaces are strictly **ignored**; only the active
 workspace root defines the ACDD profile.

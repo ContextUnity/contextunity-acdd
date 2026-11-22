@@ -638,7 +638,7 @@ fn dead_helper() -> i32 {
     ws.write("src/broken.rs", "pub fn broken_syntax( {\n");
     ws.write(
         "docs/notes.md",
-        "# Notes\nSee [`MissingSym`](../src/lib.rs#L1-L2).\n",
+        "# Notes\nSee [`lib.rs`](../src/lib.rs), [`notes.md`](notes.md), and [`MissingSym`](../src/lib.rs#L1-L2).\n",
     );
 
     ws.build();

@@ -176,20 +176,20 @@ better request latency.
 ### 6. Cross-Worktree Content-Addressed Binary Extraction Cache
 - **Extraction Cache v3**: `crates/acdd-index/src/db/writer/cache.rs` provides cross-worktree AST and typed-facts reuse for unmodified files.
 - **Cache Key Identity**: Keys are strictly derived from source SHA-256 digest, relative path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash` (including bundled framework manifests via `build.rs` and `crates/acdd-index/src/languages/dependency_registry.rs`).
-- **Direct Binary Codecs**: [`BinaryEncode`](../../crates/acdd-index/src/db/writer/cache.rs) and [`BinaryDecode`](../../crates/acdd-index/src/db/writer/cache.rs) encode borrowed record fields without intermediate cloned DTOs. V4 cache frames carry the extraction key, payload length, checksum, and typed facts; non-V4 or corrupt entries are cache misses and are re-extracted.
+- **Direct Binary Codecs**: [`BinaryEncode`](../../crates/acdd-index/src/typed_facts/binary.rs) and [`BinaryDecode`](../../crates/acdd-index/src/typed_facts/binary.rs) encode borrowed record fields without intermediate cloned DTOs. V4 cache frames carry the extraction key, payload length, checksum, and typed facts; non-V4 or corrupt entries are cache misses and are re-extracted.
 - **Empirical Impact**: On warm re-indexing of 3,990 files, user CPU drops by **63%** (`44.49s` $\to$ `16.34s`, CPU load `374%` $\to$ `215%`) and wall-clock time drops to **`8.57s`** at `746 MB` Peak RSS.
 
 ### 7. Single-Pass AST Extraction and Native Typed Sidecar Facts
 - **Incremental Lexical Route Binding**: [`RouteContextBuilder`](../../crates/acdd-index/src/ast/routes.rs) and [`SinglePassExtractor`](../../crates/acdd-index/src/ast/visitor.rs) collect lexical bindings, string/list/dict tables, and Python write assignments directly inside the primary `visitor::walk` pass instead of running a standalone `collect_lexical_bindings` pre-pass or recursive subtree walks per file.
-- **Native Typed Fact Stores**: [`SemanticStore`](../../crates/acdd-index/src/typed_facts/mod.rs) and [`FlowStore`](../../crates/acdd-index/src/typed_facts/mod.rs) hold [`SemanticFact`](../../crates/acdd-index/src/semantic/relations.rs) and [`ValueFlowFacts`](../../crates/acdd-index/src/semantic/types.rs) in native Rust structs (`TypedFacts`) during extraction and [`SymbolCatalog`](../../crates/acdd-index/src/semantic/catalog.rs) linking. The local extraction cache stores typed facts directly in its V4 binary frame; public JSON projection remains a separate storage boundary.
-- **Optional Scope Storage**: [`FrameworkScopeFacts`](../../crates/acdd-index/src/semantic/types.rs) groups less common framework, template and collection vectors in an optional box. [`NodeSemanticEntry`](../../crates/acdd-index/src/typed_facts/mod.rs) holds admitted bindings, rebindings and parameter types natively. Public JSON remains flat, retains parameter order and preserves malformed raw metadata.
+- **Native Typed Fact Stores**: [`SemanticStore`](../../crates/acdd-index/src/typed_facts/semantic_store.rs) and [`FlowStore`](../../crates/acdd-index/src/typed_facts/flow_store.rs) hold [`SemanticFact`](../../crates/acdd-index/src/semantic/relations.rs) and [`ValueFlowFacts`](../../crates/acdd-index/src/semantic/types.rs) in native Rust structs (`TypedFacts`) during extraction and [`SymbolCatalog`](../../crates/acdd-index/src/semantic/catalog.rs) linking. The local extraction cache stores typed facts directly in its V4 binary frame; public JSON projection remains a separate storage boundary.
+- **Optional Scope Storage**: [`FrameworkScopeFacts`](../../crates/acdd-index/src/semantic/types.rs) groups less common framework, template and collection vectors in an optional box. [`NodeSemanticEntry`](../../crates/acdd-index/src/typed_facts/semantic_store.rs) holds admitted bindings, rebindings and parameter types natively. Public JSON remains flat, retains parameter order and preserves malformed raw metadata.
 - **Single-Pass Linker Post-Processing**: [`link_compact_with_typed_registry`](../../crates/acdd-index/src/linker/mod.rs) fuses value-flow propagation, uncertainty collection, and fault aggregation into a single pass over `all.values()`.
 
 ### 8. Shared Rule-IR Dispatch and Zero-Allocation Proof Lookups
 - **Workspace-Scoped `Arc<LanguageContext>`**: [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry.rs) builds [`LanguageContext`](../../crates/acdd-index/src/languages/mod.rs) per effective workspace/manifest scope and shares it via `Arc` across files without cloning `Vec<SyntaxRule>` per file. Python [`prepare_file`](../../crates/acdd-index/src/languages/python/syntax_operations.rs) prepares per-file render/import candidates while borrowing that shared context.
 - **Grammar-Sized Tables**: [`CompiledSyntaxGrammar`](../../crates/acdd-index/src/languages/mod.rs) and [`CompiledRuleIR`](../../crates/acdd-index/src/languages/manifests/mod.rs) dispatch by numeric kind ID through vectors sized by the actual grammar's node-kind count. Warm parser reuse also covers Vue script islands and HTML JavaScript fragment import scans through [`with_warm_parser`](../../crates/acdd-index/src/languages/mod.rs).
-- **Indexed AST Kind & Callee Dispatch**: [`extract_projections`](../../crates/acdd-index/src/languages/typescript/projections.rs) and [`prepare`](../../crates/acdd-index/src/languages/python/projections.rs) pre-index declarative projection rules by AST node `kind` (`call_expression`, `jsx_Element`, `pair`, `decorator`) and callee/member name instead of scanning all rules linearly on every AST node.
-- **Zero-Allocation Proof Maps**: Python projection proofs in [`observe_import`](../../crates/acdd-index/src/languages/python/projections.rs) and [`prepare`](../../crates/acdd-index/src/languages/python/projections.rs) store imported statement lines as `HashMap<String, HashSet<usize>>` and constructors as `HashMap<usize, HashMap<String, Constructor>>` so per-call and per-attribute `Proof::imported` / `Proof::api` checks query borrowed `&str` keys without allocating `String`s on the heap.
+- **Indexed AST Kind & Callee Dispatch**: [`extract_projections`](../../crates/acdd-index/src/languages/typescript/projections.rs) and [`extract_with_frontier`](../../crates/acdd-index/src/languages/python/projections.rs) pre-index declarative projection rules by AST node `kind` (`call_expression`, `jsx_Element`, `pair`, `decorator`) and callee/member name instead of scanning all rules linearly on every AST node.
+- **Zero-Allocation Proof Maps**: Python projection proofs in [`observe_import`](../../crates/acdd-index/src/languages/python/projections.rs) and [`Proof`](../../crates/acdd-index/src/languages/python/projections.rs) store imported statement lines and constructors in borrowed-key memo maps (`ImportProofMemo`) so per-call and per-attribute `Proof::imported` / `Proof::api` checks query borrowed `&str` keys without allocating `String`s on the heap.
 
 ### 9. Language-Gated Linker Resolution and Semantic Context Memoization
 - **Per-File Language Context Binding**: [`resolve`](../../crates/acdd-index/src/linker/resolution/mod.rs) binds `file_language_context = dependency_registry.language_context_for_path(path)` once at the top of the per-file `all.par_iter()` closure and reuses it across all candidate resolutions in that file.
@@ -235,7 +235,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `src/engine/pipeline/mod.rs` (`run_cold_pipeline`) and `crates/acdd-index/src/semantic/catalog.rs` (`SymbolCatalog::insert_typed`), encode full storage facts into compressed `PreparedCatalogStorage` within extraction workers. Pass `retain_storage = false` for cold catalog admission to remove storage-only details and omit duplicate storage payloads. Preserve native binding metadata and typed flows required for linking; retain no additional workspace-wide full-facts copy.
 
-- INV-PERF-CATALOG-FACT-STRIPPING: Remove storage-only details and duplicate storage payloads during cold catalog admission while retaining typed resolution facts. [`run_cold_pipeline`](../../src/engine/pipeline/mod.rs) [`SymbolCatalog`](../../crates/acdd-index/src/semantic/catalog.rs).
+- INV-PERF-CATALOG-FACT-STRIPPING: Remove storage-only details and duplicate storage payloads during cold catalog admission while retaining typed resolution facts. [`run_cold_pipeline`](../../src/engine/pipeline/cold.rs) [`SymbolCatalog`](../../crates/acdd-index/src/semantic/catalog.rs).
 
 > [!IMPORTANT]
 > Invariant: Bounded Chunk Persistence and Allocator Trimming
@@ -263,7 +263,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `crates/acdd-index/src/typed_facts/mod.rs` (`SemanticStore`, `FlowStore`, `TypedFacts`), keep semantic and value-flow facts in native typed stores during extraction and linking. Preserve the existing V3 JSON-value overlays at the binary cache boundary in `crates/acdd-index/src/db/writer/cache.rs` and hydrate typed stores when loading. Public and legacy compatibility views retain their existing serialization and malformed-evidence behavior.
 
-- INV-PERF-TYPED-SIDECAR-FACTS: Use native typed stores for in-memory extraction and linking, preserving the V3 cache and public compatibility boundaries. [`SemanticStore`](../../crates/acdd-index/src/typed_facts/mod.rs) [`FlowStore`](../../crates/acdd-index/src/typed_facts/mod.rs) [`TypedFacts`](../../crates/acdd-index/src/typed_facts/mod.rs).
+- INV-PERF-TYPED-SIDECAR-FACTS: Use native typed stores for in-memory extraction and linking, preserving the V3 cache and public compatibility boundaries. [`SemanticStore`](../../crates/acdd-index/src/typed_facts/semantic_store.rs) [`FlowStore`](../../crates/acdd-index/src/typed_facts/flow_store.rs) [`TypedFacts`](../../crates/acdd-index/src/typed_facts/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Shared Workspace Rule-IR Context and Indexed AST Dispatch
@@ -275,9 +275,9 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Zero-Allocation Projection Proof Lookups
 >
-> In `crates/acdd-index/src/languages/python/projections.rs` (`observe_import`, `prepare`), per-call and per-attribute projection proofs (`Proof::imported`, `Proof::api`) must query two-level borrowed-key maps (`HashMap<String, HashSet<usize>>` for statement lines and `HashMap<usize, HashMap<String, Constructor>>` for constructors) and pre-indexed import heads. Agents must never allocate temporary owned `String` keys (`to_owned()`, `format!`) inside per-node or per-reference proof predicates.
+> In `crates/acdd-index/src/languages/python/projections.rs` (`observe_import`, `Proof`), per-call and per-attribute projection proofs (`Proof::imported`, `Proof::api`) must query borrowed-key memo maps (`ImportProofMemo`) and pre-indexed import heads without allocating owned `String` keys inside per-node or per-reference proof predicates.
 
-- INV-PERF-ZERO-ALLOC-PROJECTION-PROOFS: Query two-level borrowed-key maps (`HashMap<String, HashSet<usize>>` and `HashMap<usize, HashMap<String, Constructor>>`) in extractor proof predicates without allocating owned `String` keys per call or reference. [`observe_import`](../../crates/acdd-index/src/languages/python/projections.rs) [`prepare`](../../crates/acdd-index/src/languages/python/projections.rs).
+- INV-PERF-ZERO-ALLOC-PROJECTION-PROOFS: Query borrowed-key memo maps in extractor proof predicates without allocating owned `String` keys per call or reference. [`observe_import`](../../crates/acdd-index/src/languages/python/projections.rs) [`Proof`](../../crates/acdd-index/src/languages/python/projections.rs).
 
 > [!IMPORTANT]
 > Invariant: Language-Gated Linker Resolution and Memoized Semantic Context
@@ -291,7 +291,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `Cargo.toml` (`[profile.release]`), production builds must keep `codegen-units = 1` and `lto = "thin"` enabled so cross-module hot paths in `SinglePassExtractor`, `DependencyRegistry`, and `resolution::resolve` inline fully. Increasing `codegen-units` degrades cold-build indexing throughput and inflates CPU cycles across AST and linker loops.
 
-- INV-PERF-RELEASE-SINGLE-CGU: Keep `codegen-units = 1` and `lto = "thin"` in `[profile.release]` so cross-module AST extraction and linker resolution loops inline in release binaries. [`run_cold_pipeline`](../../src/engine/pipeline/mod.rs) [`resolve`](../../crates/acdd-index/src/linker/resolution/mod.rs).
+- INV-PERF-RELEASE-SINGLE-CGU: Keep `codegen-units = 1` and `lto = "thin"` in `[profile.release]` so cross-module AST extraction and linker resolution loops inline in release binaries. [`run_cold_pipeline`](../../src/engine/pipeline/cold.rs) [`resolve`](../../crates/acdd-index/src/linker/resolution/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: SQLite Ingestion PRAGMAs and WAL Restoration Order
@@ -326,7 +326,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `crates/acdd-index/src/db/writer/` (`PreparedCatalogStorage`) and `crates/acdd-index/src/semantic/catalog.rs` (`SymbolCatalog::insert_typed`, `decode_catalog_references`), persisted catalog payloads and reference occurrence blobs must use compact binary encoding (`encode_references` / `decode_references`) compressed with Zstd rather than `serde_json::to_vec` / `serde_json::from_slice`.
 
-- INV-PERF-BINARY-CATALOG-STORAGE: Encode `PreparedCatalogStorage` and `SymbolCatalog` reference occurrences in binary format before Zstd compression instead of round-tripping through `serde_json`. [`SymbolCatalog`](../../crates/acdd-index/src/semantic/catalog.rs) [`encode_references`](../../crates/acdd-index/src/db/writer/cache.rs) [`decode_references`](../../crates/acdd-index/src/db/writer/cache.rs).
+- INV-PERF-BINARY-CATALOG-STORAGE: Encode `PreparedCatalogStorage` and `SymbolCatalog` reference occurrences in binary format before Zstd compression instead of round-tripping through `serde_json`. [`SymbolCatalog`](../../crates/acdd-index/src/semantic/catalog.rs) [`encode_references`](../../crates/acdd-index/src/typed_facts/binary.rs) [`decode_references`](../../crates/acdd-index/src/typed_facts/binary.rs).
 
 > [!IMPORTANT]
 > Invariant: Bounded Rust Receiver and Module Proof
@@ -340,14 +340,14 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `crates/acdd-index/src/db/writer/mod.rs` (`prepare_catalog_rows`), file chunks are already dispatched across Rayon worker threads. Agents must never nest Rayon parallel iterators (`.par_iter()`) inside individual chunk workers. Inner loops must use standard sequential iteration (`.iter()`) to avoid thread pool starvation, thread parking, futex contention, and massive system CPU spikes.
 
-- INV-PERF-NO-NESTED-PAR-ITER: Never nest Rayon `.par_iter()` inside already parallelized pipeline chunks; use sequential `.iter()` within worker tasks. [`prepare_catalog_rows`](../../crates/acdd-index/src/db/writer/mod.rs) [`persist_catalog_files`](../../crates/acdd-index/src/db/writer/ingest.rs).
+- INV-PERF-NO-NESTED-PAR-ITER: Never nest Rayon `.par_iter()` inside already parallelized pipeline chunks; use sequential `.iter()` within worker tasks. [`prepare_catalog_storage_with_facts`](../../crates/acdd-index/src/db/writer/mod.rs) [`persist_catalog_files`](../../crates/acdd-index/src/db/writer/ingest.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Clone Ingestion for Navigation Details
 >
-> In `crates/acdd-index/src/db/writer/ingest.rs` (`flush_node_batch`), database batch writes must never clone `Node` instances or allocate intermediate JSON maps to strip transient fields (`"doc"`, `"docstring"`). Filter fields on-the-fly during serialization through borrowed adapters (`NavigationDetails`) directly referencing source nodes.
+> In `crates/acdd-index/src/db/writer/ingest.rs` (`persist_files_impl`), database batch writes must never clone `Node` instances or allocate intermediate JSON maps to strip transient fields (`"doc"`, `"docstring"`). Filter fields on-the-fly during serialization through borrowed adapters (`NavigationDetails`) directly referencing source nodes.
 
-- INV-PERF-ZERO-NODE-CLONES-ON-INGEST: Filter navigation details during serialization through borrowed wrappers without cloning `Node` instances in batch write loops. [`flush_node_batch`](../../crates/acdd-index/src/db/writer/ingest.rs) [`NavigationDetails`](../../crates/acdd-index/src/models/mod.rs).
+- INV-PERF-ZERO-NODE-CLONES-ON-INGEST: Filter navigation details during serialization through borrowed wrappers without cloning `Node` instances in batch write loops. [`persist_files_impl`](../../crates/acdd-index/src/db/writer/ingest.rs) [`NavigationDetails`](../../crates/acdd-index/src/models/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Manifest Syntax Rule Interning
@@ -368,7 +368,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `src/engine/pipeline/mod.rs` (`consume_pipeline_results`) and `crates/acdd-index/src/db/writer/mod.rs` (`populate_owned`), cold-build extraction payloads (`encoded_facts` and `storage_rows`) must be spooled directly to stage-private temporary disk storage (`payloads.bin` under `.acdd-stage-*`) during consumer ingestion rather than accumulated in heap memory as raw byte vectors (`StagedFilePayload`). `StagedFilePayload` retains only lightweight offset/length references (`StagedPayloadBlob`), releasing 50–60 MB of heap memory during the cross-file linker phase. The final persistence pass reads blobs sequentially in bounded 500-file chunks, preserving route composition invalidation, Merkle leaf commitments, and atomic stage cleanup.
 
-- INV-PERF-STAGE-PAYLOAD-SPOOLING: Spool extraction payload blobs to stage-private disk storage during consumer ingestion and read by chunk during persistence to keep heap memory bounded during linking. [`consume_pipeline_results`](../../src/engine/pipeline/mod.rs) [`populate_owned`](../../crates/acdd-index/src/db/writer/mod.rs).
+- INV-PERF-STAGE-PAYLOAD-SPOOLING: Spool extraction payload blobs to stage-private disk storage during consumer ingestion and read by chunk during persistence to keep heap memory bounded during linking. [`consume_pipeline_results`](../../src/engine/pipeline/staging.rs) [`populate_owned`](../../crates/acdd-index/src/db/writer/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Clone Ingestion for Batched Node Attributes
@@ -424,7 +424,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > In `crates/acdd-index/src/linker/traits.rs` (`LanguageLinker::package_exports_borrowed`) and `crates/acdd-index/src/linker/indexing.rs`, package export indexing across language linkers must accept borrowed map references (`&BTreeMap<&'a str, &'a Facts>`), eliminating redundant cloning of all workspace file paths into temporary maps.
 
-- INV-PERF-BORROWED-MAP-KEY-EXPORT-INDEXING: Accept borrowed map keys in borrowed package export indexing to avoid workspace path string cloning. [`LanguageLinker::package_exports_borrowed`](../../crates/acdd-index/src/linker/traits.rs) [`package_exports`](../../crates/acdd-index/src/linker/indexing.rs).
+- INV-PERF-BORROWED-MAP-KEY-EXPORT-INDEXING: Accept borrowed map keys in borrowed package export indexing to avoid workspace path string cloning. [`LanguageLinker::package_exports`](../../crates/acdd-index/src/linker/traits.rs) [`package_exports`](../../crates/acdd-index/src/linker/indexing.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Clone Parallel File Module Resolution

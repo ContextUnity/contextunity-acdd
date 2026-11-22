@@ -31,18 +31,18 @@ Hardcoding AST seam checks, documentation link checks, or language-specific heur
 ### 2. Fail-Closed Capability Dispatch (`CompositeDomainProvider`)
 
 - [`CompositeDomainProvider`](../../crates/acdd-core/src/ports.rs) registers all providers at startup (honoring `modules.domains.<id>` flags via `with_module_flags`).
-- Registration fails closed (`ProfileSchemaInvalid`) on invalid component names, duplicate `domain_id`, duplicate `<domain>_<name>` plugin tool names, invalid `SchemaDef` capability schemas, or any collision with the **19 built-in static MCP tools** (`BUILTIN_MCP_TOOLS`).
+- Registration fails closed (`ProfileSchemaInvalid`) on invalid component names, duplicate `domain_id`, duplicate `<domain>_<name>` plugin tool names, invalid `SchemaDef` capability schemas, or any collision with the **20 built-in static MCP tools** (`BUILTIN_MCP_TOOLS`).
 - **`run_check` has zero `NotApplicable` fallback**: `DomainCheckOutcome` admits strictly `Passed { summary, execution_digest_salt }` or `Failed { summary, diagnostics }`. Optional `execution_digest_salt` (such as code-map generation + live file digests) binds check freshness into `execution_digest`.
 - Referencing an unregistered or disabled `call:`, `checks:`, `context:`, or `<domain>_<name>` tool fails closed with `ErrorCode::DomainCapabilityUnavailable`.
 
 ### 3. Host Providers and Thin Shim-Crate Extensions
 
-- **Host providers ([`src/state_bridge/mod.rs`](../../src/state_bridge/mod.rs))**: `build_domain_providers` registers `CodeDomainProvider` (`domain_id = "code"`: `code.seam`, `code.signature_scope`, `code.symbols`, `code.tests`, `code.external_callers`) and `DocsDomainProvider` (`domain_id = "docs"`: `docs.links`, `docs.instructions`, `docs.adrs`, `docs.invariants`), both with `tools: []`.
+- **Host providers ([`src/state_bridge/mod.rs`](../../src/state_bridge/mod.rs))**: `build_domain_providers` registers `CodeDomainProvider` (`domain_id = "code"`: `code.seam`, `code.lint`, `code.signature_scope`, `code.symbols`, `code.tests`, `code.external_callers`) and `DocsDomainProvider` (`domain_id = "docs"`: `docs.links`, `docs.instructions`, `docs.adrs`, `docs.invariants`), both with `tools: []`.
   - Replacing legacy default-blocking signature-scope heuristics, `code.external_callers` surfaces modified-signature callers non-blockingly via `ClaimResp.context_lenses`, while `code.signature_scope` remains available as an opt-in `checks:` rule.
 - **External thin shim-crates (`crates/acdd-domain-<name>`)**: New verification domains live in thin shim-crates depending solely on `acdd-core` plus an existing Rust ecosystem library (never `acdd-state` or `acdd-index`), wired once in `src/state_bridge/mod.rs` and gated by `modules.domains.<name>` in `acdd.yaml`. See the practical [domain extensions guide](../architecture/domain-extensions.md).
 
 ## Consequences
 
 - `acdd-state` remains 100% domain-agnostic with zero dependency on `acdd-index` or external domain libraries.
-- The 19 static MCP tools retain compile-time `#[tool]` schemas while `<domain>_<name>` plugin tools scale cleanly through `acdd tool <domain>_<name>` and MCP `list_tools` / `call_tool`.
+- The 20 static MCP tools retain compile-time `#[tool]` schemas while `<domain>_<name>` plugin tools scale cleanly through `acdd tool <domain>_<name>` and MCP `list_tools` / `call_tool`.
 - Every profile reference to `call:`, `checks:`, `context:`, and plugin tools is verified fail-closed by `acdd validate`.

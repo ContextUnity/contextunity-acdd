@@ -5,8 +5,8 @@ title: MCP tool reference
 
 # MCP tool reference
 
-The server exposes **19 built-in static tools** over standard input and output
-(10 code tools, 2 docs tools, 2 core tools, 5 state tools), plus any dynamic
+The server exposes **20 built-in static tools** over standard input and output
+(11 code tools, 2 docs tools, 2 core tools, 5 state tools), plus any dynamic
 `<domain>_<name>` plugin tools registered by active `DomainProvider`
 implementations. Start with `code_map_overview` to identify the indexed
 workspace. Search for a symbol, inspect its exact identifier, then use graph
@@ -173,6 +173,7 @@ absent signals produce no hints. CLI flags use hyphens, for example
 | `code_map_tests` | Find test relationships for a narrow `selector`; `direction` accepts `inbound` or `outbound`. Inbound results identify verified test cases and shortest exact `calls` paths, with a bounded lexical fallback when no call path exists. Markdown links graph-backed paths in producer order and shows only producer-supplied test roles. Outbound results follow exact `calls` edges. Results classify test cases, helpers, and fixtures; `possible_calls` do not establish coverage. |
 | `code_map_prove_removal` | Estimate what a `selector` removal could affect; structural evidence, not a proof of runtime safety. |
 | `code_map_query` | Route an `operation` to graph queries, clone detection (`operation="duplicates"`), dead-tail / phantom-test / dangling-call analysis (`operation="dead_tails"`), or paged read-only SQL (`operation="sql"`). |
+| `code_map_lint` | Run unified architectural (`acdd-rule` / `acdd.yaml`), graph hygiene (`duplicates`, `dead_tails`, `cycles`), syntax, and documentation (`docs`) lint rules across the workspace or a scoped `target`. Default categories: `["arch", "syntax", "docs"]`; filter with `categories`, `rules`, `severity`, and standard paging (`limit`, `offset`, `generation`). |
 | `code_map_analyze` | Read workspace or path diagnostics and paged declared-public production symbols not reached from an indexed test case through exact `calls`; exact-file diagnostic rows include a source snippet and a reason when persisted evidence identifies one. Exact Markdown paths can also return paged `doc_diagnostics` for broken links, stale source ranges, and dead symbol claims. Request stored syntax diagnostics with `lint:true` or opt into cycle analysis with `include_cycles`. |
 | `ast_grep_search` | Match a language-specific AST `pattern` in admitted source. Indexed file lists and FTS terms narrow candidate files before Tree-sitter parses their contents. |
 | `search_docs` | Search indexed Markdown by `query` and optional `doc_type`; `include_excerpt=true` adds a bounded match excerpt. |
@@ -184,7 +185,7 @@ absent signals produce no hints. CLI flags use hyphens, for example
 | `acdd_submit` | Submit `pass` or `reject` for a claimed node (`claim_revision`-bound), supporting `review_evidence`, `rejection_findings` (with optional `kind`: `defect \| architectural_drift`), `custom_evidence`, `verified_invariants`, `summary`, `test_target`, and `allow_main`. |
 | `acdd_blackboard` | Read (`action: "read"`) or post (`action: "post"`) scoped blackboard messages (`draft \| notes \| findings \| blockers \| decisions \| deferred`) with status filters (`open \| acknowledged \| resolved \| carried_over`) and `runs.generation` paging. |
 
-In addition to the 19 built-in static tools above, active `DomainProvider` plugins
+In addition to the 20 built-in static tools above, active `DomainProvider` plugins
 can register domain-scoped tools as `<domain>_<name>` (dispatched dynamically by
 `src/mcp/tools/dispatch.rs` when `modules.domains.<domain>` is enabled). See
 [state, tasks & lifecycle](tasks.md) for action schemas, receipts, and recovery,
@@ -219,7 +220,7 @@ See [headless execution](cli.md#headless-run-execution) and
 
 ## Worktree selection
 
-All 19 built-in MCP tools (plus registered `<domain>_<name>` plugin tools)
+All 20 built-in MCP tools (plus registered `<domain>_<name>` plugin tools)
 accept an optional `worktree` selector — no tool requires it unconditionally.
 When supplied, the same resolver selects a request-local root, adapter, and index
 before dispatch.
@@ -415,7 +416,15 @@ Call `code_map_analyze` with `lint:true` and an indexed file or directory in `ta
 
 Results include a rule ID, severity, language, path, line, and message, with pagination and generation checks. Coverage describes indexed sources and language-specific limits; excluded or unsupported files are not checked. An empty diagnostics page does not certify semantic correctness or compliance with style rules. Vue coverage is limited to its embedded scripts; HTML template expressions and styles are not validated.
 
-Syntax lint mode does not execute cycle analysis. Use `code_map_query` for custom SQL or a separate `code_map_analyze` request for cycles. Ruff, Clippy, application-specific rules, and automatic fixes are outside this mode.
+Syntax lint mode does not execute cycle analysis. Use `code_map_query` for custom SQL, a separate `code_map_analyze` request for cycles, or `code_map_lint` for unified architectural and hygiene checks. Ruff, Clippy, application-specific rules, and automatic fixes are outside `code_map_analyze(lint=true)`.
+
+## Unified lint and executable `acdd-rule` blocks (`code_map_lint`)
+
+`code_map_lint` (CLI: `acdd lint`) evaluates up to six categories (`arch`, `duplicates`, `dead_tails`, `cycles`, `syntax`, `docs`), defaulting to `["arch", "syntax", "docs"]`:
+
+- **`acdd-rule` blocks**: Fenced ` ```acdd-rule ` YAML blocks inside non-archive Markdown docs declare machine-enforced rules (`id`, `invariant?`, `severity?`, `kind`, `from?`, `to?`, `owner_paths?`, `entrypoints?`, `zones?`, `depth?`, `edge_kinds?`, `confidences?`, `include_tests?`, `ast_pattern?`, `message?`) validated against `acdd.yaml` `architecture.zones`.
+- **Eight `ArchRuleKind` primitives**: `forbid_dependency`, `allow_only_dependencies`, `single_owner`, `forbid_cycles`, `boundary_entry`, `must_implement`, `doc_integrity`, and `ast_pattern`.
+- **`docs` checks**: Surfaces stored Markdown/frontmatter/rule errors, broken doc links, broken symbol claims on indexed code files, duplicate non-contract `INV-*` declarations, and orphan invariants lacking a verified `governs` link or `acdd-rule`. Archived paths (`*/archive/*`) are excluded.
 
 ## Documentation queries
 

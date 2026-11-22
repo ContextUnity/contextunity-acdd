@@ -5,7 +5,7 @@ doc_type: guide
 
 # Installation, Workspace Setup, and Operational Guide
 
-ContextUnity ACDD (`0.7.0`) is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and a unified `GateProfile` state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (19 built-in tools plus optional `DomainProvider` plugin tools) and as a command-line interface (CLI).
+ContextUnity ACDD (`0.7.0`) is a local-first, zero-daemon Rust engine for AI coding agents. It provides deep code graph navigation, documentation indexing, and a unified `GateProfile` state machine — a system that injects tailored context into verified gates. The same binary serves both as a standard stdio [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server (20 built-in tools plus optional `DomainProvider` plugin tools) and as a command-line interface (CLI).
 
 This guide walks you through installing ACDD MCP, configuring your workspace, selecting profiles, installing companion skills globally, establishing repository rules, authoring indexed documentation, and running milestones, plans, and workflows.
 
@@ -297,8 +297,9 @@ acdd build .
 # 4. Query the graph overview to confirm language coverage and symbol counts
 acdd query overview
 
-# 5. Verify documentation indexing
+# 5. Verify documentation indexing and unified architectural/doc lint
 acdd docs search "setup"
+acdd lint
 ```
 
 When connected to an AI agent via MCP, calling `code_map_overview` returns the same indexed workspace status, generation token, language breakdown, and document counts.
@@ -334,7 +335,7 @@ Profiles (`GateProfile`, `version: 2`) govern lifecycle stages, `git:` isolation
 ### Profile Resolution Order
 
 When starting a run (`acdd start`) or validating (`acdd validate`), ACDD resolves the active profile in the following priority:
-1. **CLI `--profile` flag**: Explicit built-in name (`base`, `code`, `audit`), `profiles_dirs` entry, or workspace-relative path.
+1. **CLI `--profile` flag**: Explicit built-in name (`base`, `code`, `audit`, `documentation`), `profiles_dirs` entry, or workspace-relative path.
 2. **Spec frontmatter `profile:`**: Profile declared in the specification Markdown frontmatter (e.g. `profile: audit` or a custom `.workflow.yaml`).
 3. **Collection override**: Optional `specs.<collection>.profile` configured in `acdd.yaml`.
 4. **Repository default**: `.acdd/profile.yaml` if present.
@@ -344,10 +345,11 @@ If an `inherit:` reference includes a SHA-256 prefix (`<path>:<sha256_prefix>`),
 
 ### Built-in Profiles
 
-ACDD embeds three `version: 2` profiles (`crates/acdd-state/src/profile/embedded/`):
+ACDD embeds four `version: 2` profiles (`crates/acdd-state/src/profile/embedded/`):
 - **`base`**: Domain-pure worktree baseline (`gates: []`, 7 core tools, universal guidance, 3 core contours) with `git.isolation: worktree` and `save: commit`.
-- **`code`**: Built-in code-delivery baseline inheriting `base`, adding the three-phase milestone lifecycle (`blueprint_synthesis` -> per-task `build`, `review`, `deliver`, `rearchitect` -> `run_tests`, `polish`, `integration_review`, `handoff`), 19 built-in tools, `code.seam` verification checks, and `docs.*`/`code.*` context lenses.
+- **`code`**: Built-in code-delivery baseline inheriting `base`, adding the three-phase milestone lifecycle (`blueprint_synthesis` -> per-task `build`, `review`, `deliver`, `rearchitect` -> `run_tests`, `polish`, `integration_review`, `handoff`), 20 built-in tools, `code.seam` + `code.lint` verification checks, and `docs.*`/`code.*` context lenses.
 - **`audit`**: Read-only code review and security/taint scanning pipeline (`recon -> analyze -> triage`) inheriting `base` with `git.isolation: in_place`, `save: none`, structured `recon_map`/`candidate_findings`/`audit_report` schemas, adversarial false-positive disproof in `triage`, and `save.report: ".acdd/reports/{run_name}.md"`.
+- **`documentation`**: Compiler-free living documentation and invariant authoring pipeline inheriting `base` (`modules: { required: [docs, code] }`), running `blueprint_synthesis`, per-task `build -> review -> deliver`, `verify_docs`, `polish`, `integration_review`, and `handoff` gated on `docs.links` and `code.lint` (`[arch, docs]`).
 
 Single-checkout in-place execution is selected via `--in-place` or `git.isolation: in_place` in a profile (`--in-place` sets `isolation: in_place`, `worktrees: manual`, `save: none`, and neutralizes `save.post: commit` to `none` while keeping `save.immutable: true`).
 

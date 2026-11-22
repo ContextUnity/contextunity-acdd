@@ -225,7 +225,8 @@ fn collect_doc_findings(
                 .and_then(Value::as_str)
                 .unwrap_or("guide");
 
-            if let Some(claims) = details.get("symbol_claims").and_then(Value::as_array) {
+            if single_doc_path.is_some() || doc_type != "contract" {
+                if let Some(claims) = details.get("symbol_claims").and_then(Value::as_array) {
                 for claim in claims {
                     if claim
                         .get("label_count")
@@ -250,6 +251,16 @@ fn collect_doc_findings(
                     if target_path.split('/').any(|part| part == "..") {
                         continue;
                     }
+                    // Plain document links (`[`AGENTS.md`](AGENTS.md)`) and filename links
+                    // (`[`fs.rs`](.../fs.rs)`) are file navigation links, not symbol claims.
+                    if is_document_link_target(target_path)
+                        || Path::new(target_path)
+                            .file_name()
+                            .and_then(|file| file.to_str())
+                            == Some(name)
+                    {
+                        continue;
+                    }
                     let line = claim.get("line").and_then(Value::as_u64).unwrap_or(section_line.max(1) as u64) as usize;
                     symbol_claims.push(SymbolClaimRef {
                         doc_path: path.clone(),
@@ -259,6 +270,7 @@ fn collect_doc_findings(
                         start_line: claim.get("start_line").and_then(Value::as_u64).map(|v| v as usize),
                         end_line: claim.get("end_line").and_then(Value::as_u64).map(|v| v as usize),
                     });
+                }
                 }
             }
 
@@ -327,8 +339,20 @@ fn collect_doc_findings(
         .map(|c| c.target_path.as_str())
         .collect();
     let mut candidates_by_path: HashMap<String, Vec<TargetCandidateNode>> = HashMap::new();
+    let mut indexed_code_paths: HashSet<String> = HashSet::new();
     if !target_paths.is_empty() {
         let paths_json = serde_json::to_string(&target_paths)?;
+        {
+            let mut stmt = conn.prepare(
+                "SELECT path FROM files
+                 WHERE path IN (SELECT value FROM json_each(?1))
+                   AND COALESCE(language, '') != 'markdown'",
+            )?;
+            let mut rows = stmt.query([&paths_json])?;
+            while let Some(row) = rows.next()? {
+                indexed_code_paths.insert(row.get(0)?);
+            }
+        }
         let inv_kind = NodeKind::Invariant.as_str();
         let mod_kind = NodeKind::Module.as_str();
         let mut stmt = conn.prepare(&format!(
@@ -339,7 +363,7 @@ fn collect_doc_findings(
                AND n.kind NOT IN ('{doc_kind}','{inv_kind}','{mod_kind}','file')
              ORDER BY p.path, n.line, n.id"
         ))?;
-        let mut rows = stmt.query([paths_json])?;
+        let mut rows = stmt.query([&paths_json])?;
         while let Some(row) = rows.next()? {
             let p: String = row.get(0)?;
             candidates_by_path
@@ -391,6 +415,17 @@ fn collect_doc_findings(
             .unwrap_or(&[]);
         let (matched, suggestion) = match_symbol_claim(path_cands, &claim.name);
         if matched.is_empty() {
+            // Existing files outside indexed `roots` (e.g. `tests/`, scripts, YAML) have no symbol
+            // nodes in `code-map.sqlite`; skip them while still failing closed on missing targets.
+            if !indexed_code_paths.contains(&claim.target_path)
+                && !claim.target_path.starts_with('[')
+                && resolved_root.as_deref().is_some_and(|root| {
+                    acdd_core::fs::checked_child(root, Path::new(&claim.target_path))
+                        .is_ok_and(|path| path.is_file())
+                })
+            {
+                continue;
+            }
             let mut raw = json!({
                 "kind": "dead_doc_symbol",
                 "path": claim.doc_path,

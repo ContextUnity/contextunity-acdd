@@ -1,23 +1,13 @@
-# `acdd-core` — Leaf Contracts & Shared Primitives
+# `acdd-core` — Crate Router
 
-Read the [root instructions](../../AGENTS.md) and [source architecture](../../src/AGENTS.md) before editing this crate.
+Read [root instructions](../../AGENTS.md), [source router](../../src/AGENTS.md), [ADR 0001](../../docs/adr/0001-crate-dag-and-layer-boundaries.md), and [modularity](../../docs/architecture/modularity.md) before editing this crate.
 
-## Boundaries (`INV-CORE-LEAF`)
+## Local Rules & Ownership
 
-- Keep `crates/acdd-core` a strict leaf crate: zero dependencies on `acdd-index`, `acdd-state`, `rusqlite`, `tree-sitter`, `chrono`, `rayon`, `zstd`, `hashbrown`, `clap`, `rmcp`, or `tokio`.
-- Preserve all existing public signatures and DTO contracts (`INV-SURFACE-COMPATIBILITY`).
-- Keep thin generic wrappers (`impl AsRef<Path>`, `impl serde::Serialize`) delegating immediately to non-generic inner functions (`fn inner(path: &Path)`) to prevent monomorphization bloat.
-
-## Single-Source Workspace Ownership (`INV-SINGLE-OWNER`)
-
-- **Configuration & Errors (`config`, `errors`)**: `config` (`config/{mod,schema,loader,linked,paths}.rs`) is the sole `acdd.yaml` loader (`load_adapter`, `load_adapter_strict`, `load_adapter_report`), linked-workspace root collector, DB/memory path resolver (`resolve_state_db_path`, `resolve_code_db_path`), canonical workspace layout constant owner (`ACDD_CONFIG_FILE`, `ACDD_DIR`, `WORKTREES_DIR`, `DEFAULT_STATE_DB` / `DEFAULT_STATE_DB_REL`, `DEFAULT_CODE_DB` / `DEFAULT_CODE_DB_REL`, `SNAPSHOT_REF_PREFIX`, `CLAIM_TRAILER_KEY`), and legacy `0.5` key guard (`ConfigMigrationRequired`); `errors` is the sole owner of `ErrorCode` (`30` canonical variants) and `StateError`.
-- **Path Policy & Glob Engine (`path_policy`)**: `WorkspacePathPolicy` (`from_workspace_config`, scope/candidate predicates) and brace-aware glob/overlap matching (`expand_glob_braces`, `glob_matches`, `patterns_overlap`, `scopes_overlap`). Never duplicate glob engines downstream.
-- **Contracts & Policy**: `ports::DomainProvider` (`CompositeDomainProvider` capability resolution), `ids`, `schema`, `subsystems` (`SubsystemId` with `Code`/`Docs`/`State`/`Blackboard`/`Memory` and aliases `codemap`/`acdd`, `SubsystemPreset`, `SubsystemRegistry`), and `response`. Derive `schemars::JsonSchema` (with `#[schemars(transparent)]` on transparent string newtypes) on wire ID and cursor types in `ids.rs` so MCP schemas reuse canonical types directly without downstream `Mcp*` mirrors.
-- **Filesystem (`fs`)**: `atomic_write` (`0o600`/`0o755`), `atomic_replace`, `confined_database_open_path` / `confined_database_create_path`, `canonicalize_macos_var`, `ensure_confined_dir_all`, `check_ancestors_no_symlinks`, `checked_child`, and `open_confined`.
-- **Advisory Locks (`lock`)**: bounded-retry and blocking shared/exclusive OS file locks via `std::fs::File::try_lock*` / `lock*` with `O_NOFOLLOW` regular-file opening (`0o600`). Do not introduce `unsafe` or `libc::flock`.
-- **Git (`git`)**: `scrub_git_env` (`STRIPPED_GIT_ENV_VARS`) and `run_git_*` / `git_*` subprocess helpers. `crates/acdd-core/src/git.rs` is the sole permitted owner of raw `Command::new("git")` invocations across production code. Ban two-step per-object `cat-file -t` + `cat-file blob` loops when callers enumerate trees — expose and use `git cat-file --batch` / `-z` streaming (`run_git_*` with stdin) and avoid redundant per-worktree `rev-parse` spawns in `list_owned_worktrees`.
-- **Reuse-first & Complexity Escalation**: Run `code_map_search` / `ast_grep_search` before adding primitives so shared utilities stay consolidated; escalate via `acdd_blackboard` (`topic: decisions` / `--action escalate`) before introducing a new subsystem, expanding public `acdd-core` surfaces, or exceeding `~80-100` net production LOC for a defect fix.
-- **System, Format & Telemetry (`sys`, `format`, `telemetry`)**: `sys` owns cgroup memory parsing and cross-platform `read_process_start_time`; `format` owns `stable_hash64`, `sha256_hex` / `sha256_bytes`, streaming `sha256_serde_json` / `sha256_serde_json_hex` (zero `Vec<u8>`), `canonical_json_sha256` / `canonical_json_string`, `JsonByteCounter` / `estimate_json_bytes`, and `utf8_floor_boundary` / `utf8_tail`; `telemetry` owns `TraceId`, `SpanId`, `TraceParent`, `now_utc_iso_ms`, and `unix_epoch_ms`.
+- Enforce `INV-CORE-LEAF`: keep `crates/acdd-core` a strict leaf crate with zero workspace or heavy runtime dependencies (`acdd-index`, `acdd-state`, `rusqlite`, `tree-sitter`, `chrono`, `rayon`, `zstd`, `hashbrown`, `clap`, `rmcp`, `tokio`).
+- Route shared workspace primitives through their single owners here: `config/`, `errors`, `path_policy`, `lint`, `ports`, `ids`, `schema`, `subsystems`, `response`, `fs`, `lock`, `git` (sole permitted `Command::new("git")` owner), `sys`, `format`, and `telemetry`.
+- Keep thin generic wrappers (`impl AsRef<Path>`, `impl Serialize`) delegating immediately to non-generic inner functions, derive `schemars::JsonSchema` on wire DTOs, and preserve public signatures (`INV-SURFACE-COMPATIBILITY`).
+- Escalate via `acdd_blackboard` (`topic: decisions` / `--action escalate`) before adding new subsystems, expanding public `acdd-core` surfaces, or exceeding `~80-100` net production LOC for a defect fix.
 
 ## Verification
 

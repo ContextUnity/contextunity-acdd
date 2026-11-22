@@ -8,7 +8,7 @@ Use the active server registry and schemas as the final authority. This catalog 
 
 ## State lifecycle (5 MCP tools + flat CLI)
 
-The server exports **19 built-in static MCP tools** (`10 code + 2 docs + 2 core + 5 state`) plus any optional `<domain>_<name>` plugin tools exported by external `DomainProvider` crates:
+The server exports **20 built-in static MCP tools** (`11 code + 2 docs + 2 core + 5 state`) plus any optional `<domain>_<name>` plugin tools exported by external `DomainProvider` crates:
 
 - `acdd_state(action, ...)` dispatches lifecycle commands (`start`, `draft`, `extend_scope`, `reopen`, `sync`, `subtask`, `snapshot`, `clear`, `run`) and read-only queries (`status`, `list`, `show`, `next`, `observability`). CLI parity: flat top-level commands (`acdd start`, `acdd draft`, `acdd status`, `acdd list`, `acdd show`, `acdd next`, `acdd extend-scope`, `acdd reopen`, `acdd sync`, `acdd subtask`, `acdd snapshot`, `acdd clear`, `acdd run`, `acdd tool <domain>_<name>`, `acdd validate`).
 - `acdd_claim(node?, worktree?, worker_id?, force?, steal_remote?)` claims the active gate and returns its 6-tier budgeted context (`contract + guidance`, `unresolved_findings`, `pre_task_slice`, `dependency_receipts`, `blackboard`, `context` lenses, plus `context_reset_required` after `rearchitect`).
@@ -45,6 +45,7 @@ For efficient navigation, confirm workspace and coverage with overview, reuse su
 ## Verification and utility
 
 - `code_map_prove_removal(selector, worktree?)` considers static references and blocks removal for candidate callers (`possible_calls`).
+- `code_map_lint(target?, categories?, rules?, severity?, worktree?, detail?, limit?, offset?, generation?, format?)` runs unified architectural (`acdd-rule` / `acdd.yaml` `architecture`), graph hygiene (`duplicates`, `dead_tails`, `cycles`), `syntax`, and `docs` lint rules (default categories `[arch, syntax, docs]`). CLI: `acdd lint [TARGET] [--categories ...] [--rule ...] [--severity ...]`.
 - `code_map_analyze(target, worktree?, lint?, include_cycles?)`: empty target means workspace diagnostics; a path means scoped diagnostics with digest-verified snippets/reasons where known.
 - `code_map_query(operation, selector?, target?, level?, min_lines?, worktree?, include_coverage?, depth?, limit?, offset?, generation?)` returns graph slices, unwired nodes, implementations, untested symbols, code clones/duplicates (`operation="duplicates"`), dead-code/phantom-test analysis (`operation="dead_tails"`, returning workspace-liveness-checked `phantom_tested`, `dead_tails`, and `dangling_calls` scoped by `path` or `target`), or read-only SQL (`operation="sql"`).
   - Mandatory quality checks: builders and independent reviewers run `code_map_query(operation="duplicates", path=<scope>)` and `code_map_query(operation="dead_tails", path=<scope>)` (omitting `path`/`target` for workspace-wide `integration_review`) and eliminate or reject new clones, `phantom_tested` dead code, `dead_tails`, and `dangling_calls`.

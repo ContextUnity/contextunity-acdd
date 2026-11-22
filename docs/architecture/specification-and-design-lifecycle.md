@@ -8,7 +8,7 @@ doc_type: architecture
 ContextUnity ACDD separates problem definition (**Specify / Clarify**), architectural framing (**Design**), and automated proof (**Execution & Verification**), sizing ceremony to the scope of change (**S / M / L**) while keeping low-level component and code diagrams grounded in the live indexed AST graph.
 
 > [!NOTE]
-> Runtime boundaries are documented in the [architecture index](README.md) and [ACDD execution reference](../reference/acdd.md). The `base`, `code`, and `audit` embedded profiles, blueprint properties `ac_mapping` and `c2_boundary_impact`, optional `spec` and `acceptance_criteria` projection, and unified `crates/acdd-state` `Run` execution support this lifecycle.
+> Runtime boundaries are documented in the [architecture index](README.md) and [ACDD execution reference](../reference/acdd.md). The `base`, `code`, `audit`, and `documentation` embedded profiles, blueprint properties `ac_mapping` and `c2_boundary_impact`, optional `spec` and `acceptance_criteria` projection, and unified `crates/acdd-state` `Run` execution support this lifecycle.
 
 ## Specify / Clarify before implementation
 

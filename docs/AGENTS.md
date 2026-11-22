@@ -91,7 +91,11 @@ to code symbols in the SQLite code map. Follow these structural standards:
    priority rule:
    - INV-DOC-FIRST-MATCH-TIER: Candidate resolution returns the first non-empty eligible declaration tier. [`document_symbol_candidates`](../crates/acdd-index/src/linker/resolution/mod.rs).
    The identifier remains documentation authority; the code link identifies
-   the governed declaration. See [documentation queries](reference/mcp-tools.md#documentation-queries)
+   the governed declaration. Pair machine-enforceable architectural invariants
+   with fenced `acdd-rule` YAML blocks (`arch_rules`) referencing `acdd.yaml`
+   `architecture.zones` or path globs, and keep illustrative `INV-*` examples
+   inside fenced code blocks (skipped by `docs.rs` `declared_invariants`). Verify
+   with `acdd lint` (`code_map_lint`) and `acdd docs check`. See [documentation queries](reference/mcp-tools.md#documentation-queries)
    for the distinction between invariant discovery and verified governance.
 
 5. **Relative links**:

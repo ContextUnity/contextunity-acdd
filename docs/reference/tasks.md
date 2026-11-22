@@ -77,9 +77,15 @@ MCP tools (`acdd_state`, `acdd_claim`, `acdd_verify`, `acdd_submit`,
 | Snapshot | `acdd_state(action: "snapshot", snapshot_action: "save \| restore \| clear \| list")` | `acdd snapshot save\|restore\|list\|clear` | Save, restore, list, or delete task and standalone Git checkpoints |
 | Blackboard | `acdd_blackboard(action: "read \| post")` | `acdd blackboard --action read\|post` | Scoped coordination messages (`draft`, `notes`, `findings`, `blockers`, `decisions`, `deferred`) |
 
-All 19 built-in MCP tools (plus `<domain>_<name>` plugin tools) accept an
+All 20 built-in MCP tools (plus `<domain>_<name>` plugin tools) accept an
 optional `worktree` selector. See [CLI reference](cli.md) and
 [MCP tools](mcp-tools.md) for exact flags and schemas.
+
+In Tier 6 `ClaimResp.context_lenses`, `docs.invariants` stamps `"enforced": true`
+and renders `[ENFORCED]` in Markdown prompts on invariants backed by `acdd.yaml`
+`architecture.rules` or indexed `acdd-rule` blocks. Gate `checks:` entries such
+as `code.lint` run scoped lint on task gates (workspace-wide on root gates) and
+bind `index_generation` + `live_files_digest` into `execution_digest` freshness.
 
 ---
 

@@ -11,7 +11,7 @@ ACDD MCP runs across Linux (`x86_64`, `aarch64`) and macOS Darwin/APFS (`x86_64`
 
 > [!IMPORTANT]
 > Invariant: Production MCP adapters resolve workspace roots to canonical paths, validate filesystem confinement without bypassing internal symlinks, and emit percent-encoded `file://` URIs strictly from canonical coordinates.
-> - INV-XPLAT-CANONICAL-ROOT: Tool and query handlers canonicalize workspace and database containment boundaries before admitting paths or formatting coordinates. [`resolve_target_root_and_db`](../../src/mcp/server.rs)
+> - INV-XPLAT-CANONICAL-ROOT: Tool and query handlers canonicalize workspace and database containment boundaries before admitting paths or formatting coordinates. [`resolve_target_root_and_db_with_adapter`](../../src/mcp/server.rs)
 > - INV-XPLAT-SYSTEM-ROOT-SYMLINK: Filesystem confinement exempts only declared OS root aliases (`/var`, `/tmp`, `/etc` on macOS) and rejects all other ancestor or leaf symlinks. [`is_system_root_symlink`](../../crates/acdd-core/src/fs.rs) [`confined_database_open_path`](../../crates/acdd-core/src/fs.rs)
 > - INV-XPLAT-TEST-URI-CONTRACT: Test workspaces keep uncanonicalized OS temp directories to exercise system-symlink confinement while filesystem-derived expected coordinates use canonical paths and production percent-encoding rules. [`file_uri_for_path`](../../src/format/discovery.rs)
 

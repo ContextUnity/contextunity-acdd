@@ -32,7 +32,7 @@ fail closed with `ACDD_PROFILE_SCHEMA_INVALID`; upgrade `0.5.x` workspaces per t
 ACDD resolves the active profile reference (`--profile`, `ACDD_PROFILE`, spec
 `profile:`, `specs.<collection>.profile`, or the workspace default) as follows:
 
-1. **Built-in embedded baselines** (3 embedded profiles):
+1. **Built-in embedded baselines** (4 embedded profiles):
    - `base` ([`base.yaml`](../../crates/acdd-state/src/profile/embedded/base.yaml)):
      domain-pure worktree-isolated baseline (`gates: []`) with `save: commit`,
      `git.isolation: worktree`, 7 core MCP tools (`acdd_read`, `acdd_guide`,
@@ -43,16 +43,17 @@ ACDD resolves the active profile reference (`--profile`, `ACDD_PROFILE`, spec
      built-in code-delivery baseline inheriting `base`, adding the three-phase
      milestone lifecycle (`blueprint_synthesis` -> `tasks:` -> `run_tests` ->
      `polish` -> `integration_review` -> `handoff`), `tags: [default, docs]` so
-     `docs`-tagged tasks skip `code.seam`, all 19 `default_tools`, additional
-     contours (`architecture`, `concurrency`, `project_isolation`), 4-layer
-     clean guidance (`milestone.*` / `task.*`, `core.*`, `code.principles`,
-     `code.tools`, `hitl.pro`), `code.seam` checks, `docs.*` / `code.*`
-     context lenses, and automatic stripping of disabled `code.*` / `docs.*`
-     hooks when `modules.code: false` or `modules.docs: false`.
+     `docs`-tagged tasks skip `code.seam`, all 20 `default_tools` (including
+     `code_map_lint`), additional contours (`architecture`, `concurrency`,
+     `project_isolation`), 4-layer clean guidance (`milestone.*` / `task.*`,
+     `core.*`, `code.principles`, `code.tools`, `hitl.pro`), `code.seam` +
+     `code.lint` checks, `docs.*` / `code.*` context lenses, and automatic
+     stripping of disabled `code.*` / `docs.*` hooks when `modules.code: false`
+     or `modules.docs: false`.
    - `audit` ([`audit.yaml`](../../crates/acdd-state/src/profile/embedded/audit.yaml)):
      built-in read-only code review and security/taint scanning pipeline
      inheriting `base` with `git.isolation: in_place`, `git.worktrees: manual`,
-     `save: none`, all 19 `default_tools` (automatically stripped when
+     `save: none`, all 20 `default_tools` (automatically stripped when
      `modules.code: false` or `modules.docs: false`), roles (`auditor`,
      `independent_reviewer`), structured schemas (`recon_map`,
      `candidate_findings`, `audit_report`), review contours (`correctness`,
@@ -60,6 +61,14 @@ ACDD resolves the active profile reference (`--profile`, `ACDD_PROFILE`, spec
      `recon -> analyze -> triage` (adversarial false-positive disproof in
      `triage` with `receipt: true`, `save.immutable: true`, and
      `save.report: ".acdd/reports/{run_name}.md"`).
+   - `documentation` ([`documentation.yaml`](../../crates/acdd-state/src/profile/embedded/documentation.yaml)):
+     compiler-free living-documentation and invariant authoring pipeline
+     inheriting `base` with `modules: { required: [docs, code] }`,
+     `tags: [default, docs]`, roles (`architect`, `builder`,
+     `independent_reviewer`), `blueprint_synthesis` -> per-task
+     `build -> review -> deliver` -> `verify_docs -> polish -> integration_review -> handoff`,
+     enforcing `docs.links` and `code.lint` (`with: { categories: [arch, docs] }`)
+     without code-compilation commands.
 2. **Automatic workspace default**: When no explicit profile is specified (`--profile`,
    `ACDD_PROFILE`, spec `profile:`, or `specs.<collection>.profile`), ACDD uses
    `.acdd/profile.yaml` automatically if present in the workspace root, and
@@ -83,7 +92,7 @@ Every `v2` profile requires `version: 2` and supports these top-level fields:
 
 ```yaml
 version: 2
-inherit: code                  # Optional: base | code | audit | none | <rel-path>[:<sha256_prefix>]
+inherit: code                  # Optional: base | code | audit | documentation | none | <rel-path>[:<sha256_prefix>]
 git:
   isolation: worktree          # worktree | in_place
   worktrees: manual            # manual | managed
@@ -110,7 +119,7 @@ gates_patch: []                # Patch inherited gates by id/cursor/after/before
 
 - `inherit: none` (or omitted): Compiles a standalone profile from scratch with no
   inherited roles, commands, proofs, guidance, contours, or gates.
-- `inherit: base | code | audit | <path>[:<sha256_prefix>]`:
+- `inherit: base | code | audit | documentation | <path>[:<sha256_prefix>]`:
   - `roles`, `commands`, `scope_args_by_pattern`, `proofs`, `guidance`, `contours`,
     `gate_templates`, `limits`, and `modules` merge field-wise / by key
     (supporting `PatchField` null-clearing on nullable fields).
@@ -221,7 +230,7 @@ Built-in `ProofKind` values are:
 ### `DomainProvider` Extensions (`call`, `checks`, `context`, `tools_add`, `tools_remove`)
 Domain-agnostic `acdd-state` delegates domain behavior via `DomainProvider` (`crates/acdd-core/src/ports.rs`; see the [domain extensions guide](../architecture/domain-extensions.md)):
 - **`call: <domain>.<action>`** (`with: { ... }`): Executes a registered domain action (with `lookup_action_result` recovery for mutating actions).
-- **`checks: [<domain>.<check>]`** (or `{ check, with? }`): Automated domain verifiers executed during `acdd verify` / `acdd submit` (e.g., `code.seam`, `code.signature_scope`, `docs.links`).
+- **`checks: [<domain>.<check>]`** (or `{ check, with? }`): Automated domain verifiers executed during `acdd verify` / `acdd submit` (e.g., `code.seam`, `code.lint`, `code.signature_scope`, `docs.links`).
 - **`context: [<domain>.<lens>]`**: Domain context lenses assembled into `ClaimResp` tiers (`docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`).
 - **`tools` / `tools_add` / `tools_remove`**: Per-gate MCP tool allowlists layered over `default_tools` (including built-in tools and `<domain>_<name>` plugin tools).
 
@@ -230,5 +239,5 @@ Domain-agnostic `acdd-state` delegates domain behavior via `DomainProvider` (`cr
 ## Reference Examples
 
 - See the starter overlay template in [`acdd_profile.yaml.example`](acdd_profile.yaml.example) (symlink into `skills/acdd/references/`) and the complete field guide in [`skills/acdd/references/profile-reference.md`](../../skills/acdd/references/profile-reference.md).
-- Embedded profiles: [`base.yaml`](../../crates/acdd-state/src/profile/embedded/base.yaml), [`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml), and [`audit.yaml`](../../crates/acdd-state/src/profile/embedded/audit.yaml).
+- Embedded profiles: [`base.yaml`](../../crates/acdd-state/src/profile/embedded/base.yaml), [`code.yaml`](../../crates/acdd-state/src/profile/embedded/code.yaml), [`audit.yaml`](../../crates/acdd-state/src/profile/embedded/audit.yaml), and [`documentation.yaml`](../../crates/acdd-state/src/profile/embedded/documentation.yaml).
 - See [Workspace configuration](configuration.md#declarative-acdd-profile-and-role-configuration) for loading precedence and `acdd.yaml` adapter settings.

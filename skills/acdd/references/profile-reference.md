@@ -12,8 +12,9 @@ and compiles via `acdd validate`. Repository defaults live in `.acdd/profile.yam
 - **`version: 2`** (required).
 - **`inherit`**:
   - `base`: domain-pure worktree-isolated baseline (`gates: []`, `save: commit`, `contours: [paths, claims, administration]`, 7 core tools).
-  - `code`: inherits `base`, adds full software lifecycle (`blueprint_synthesis` -> `tasks:` -> `run_tests` -> `polish` -> `integration_review` -> `handoff`), `tags: [default, docs]`, all 19 tools, `architecture`/`concurrency`/`project_isolation` contours, `code.seam` check, and automatic stripping of disabled `code.*`/`docs.*` hooks when `modules.code: false` or `modules.docs: false`.
+  - `code`: inherits `base`, adds full software lifecycle (`blueprint_synthesis` -> `tasks:` -> `run_tests` -> `polish` -> `integration_review` -> `handoff`), `tags: [default, docs]`, all 20 tools, `architecture`/`concurrency`/`project_isolation` contours, `code.seam` + `code.lint` checks, and automatic stripping of disabled `code.*`/`docs.*` hooks when `modules.code: false` or `modules.docs: false`.
   - `audit`: inherits `base`, sets `git.isolation: in_place`, `save: none`, roles `auditor` / `independent_reviewer`, and read-only gates `recon -> analyze -> triage` (`save.report: ".acdd/reports/{run_name}.md"`).
+  - `documentation`: inherits `base`, sets `modules: { required: [docs, code] }`, and provides a compiler-free documentation/invariant lifecycle (`blueprint_synthesis` -> per-task `build`/`review`/`deliver` -> `verify_docs` -> `polish` -> `integration_review` -> `handoff`) gated on `docs.links` and `code.lint` (`[arch, docs]`).
   - `none`: standalone graph with zero inherited settings.
   - `<relpath>[:<sha256_prefix>]`: inherit from a repo-confined YAML file (optional min-7-hex SHA-256 content pin).
 
@@ -80,7 +81,7 @@ Inside `gates_patch`:
 - `when`: boolean expression over task tags (`tag`, `!tag`, `&`/`+`, `|`, parentheses; allowed on `- tasks:` and task gates, forbidden on root gates).
 - `use`: expand named template from `gate_templates`.
 - `role`, `command`, `call` (`"<domain>.<action>"`), `with` (JSON arguments for `call`).
-- `checks`: list of `"<domain>.<check>"` or `{ check, with? }` (e.g. `code.seam`, `code.signature_scope`, `docs.links`).
+- `checks`: list of `"<domain>.<check>"` or `{ check, with? }` (e.g. `code.seam`, `code.lint`, `code.signature_scope`, `docs.links`).
 - `context`: list of domain context lenses (e.g. `docs.instructions`, `docs.adrs`, `docs.invariants`, `code.symbols`, `code.tests`, `code.external_callers`).
 - `proof`: `none` (default) | `command` | `call` | `review` (requires `role` + non-empty `contours`) | `<catalog_id>` | `{ scheme: <JSON Schema> }`.
 - `tools` / `tools_add` / `tools_remove`: replace or adjust `default_tools` (validated fail-closed against static + registered `DomainProvider` plugin tools).

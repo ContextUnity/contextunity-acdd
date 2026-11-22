@@ -23,7 +23,7 @@ The workspace is structured as **three library crates** plus **one root host bin
 
 ```text
   src/cli (clap) ─────────┐
-  src/mcp (19 static      ├──► src/state_bridge/ (CodeDomainProvider, DocsDomainProvider)
+  src/mcp (20 static      ├──► src/state_bridge/ (CodeDomainProvider, DocsDomainProvider)
        + plugin tools)    │        │                          │
   src/format/ (Markdown)  │        ▼                          ▼
                           └──► crates/acdd-state          crates/acdd-index
@@ -47,12 +47,48 @@ The workspace is structured as **three library crates** plus **one root host bin
 ### Core Leaf Isolation
 
 > [!IMPORTANT]
-> Invariant: `crates/acdd-core` is a strict leaf crate. It never depends on `acdd-index`, `acdd-state`, `rusqlite`, `tree-sitter`, `zstd`, `rayon`, `hashbrown`, `clap`, `rmcp`, or `tokio`. `crates/acdd-state` never depends on `acdd-index`, `tree-sitter`, `clap`, `rmcp`, or `tokio`.
+> Invariant: `crates/acdd-core` is a strict leaf crate and `crates/acdd-state` remains isolated from `crates/acdd-index` and host `src/`.
+> - INV-CORE-LEAF: `crates/acdd-core` never depends on `acdd-index`, `acdd-state`, `rusqlite`, `tree-sitter`, `zstd`, `rayon`, `hashbrown`, `clap`, `rmcp`, or `tokio`. [`filter_subsystem_tools`](../../crates/acdd-core/src/subsystems.rs)
+> - INV-STATE-NO-INDEX: `crates/acdd-state` never depends on `acdd-index`, `src/`, `tree-sitter`, `clap`, `rmcp`, or `tokio`. [`execute_on_dyn`](../../crates/acdd-state/src/usecases/mod.rs)
+> - INV-STATE-BRIDGE-BOUNDARY: `src/state_bridge/` is imported by `src/cli/` and `src/mcp/`, and never by `src/engine/` or any workspace library crate (`crates/*`); proxy re-export modules (`src/core/*`, `src/db/*`) are banned. [`build_domain_providers`](../../src/state_bridge/mod.rs)
 
-- Inside `crates/acdd-state`, `machine/` is a 100% pure functional core: zero imports or references to `std::fs`, `std::process`, `std::net`, or `rusqlite`.
-- Direct `rusqlite` imports inside `crates/acdd-state` are confined exclusively to `crates/acdd-state/src/store/sqlite/`.
-- `src/state_bridge/` is imported by `src/cli/` and `src/mcp/`, and never by `src/engine/` or any workspace library crate (`crates/*`). Proxy re-export modules (`src/core/*`, `src/db/*`) are banned.
-- These dependency fences are verified automatically by [`state_boundaries.rs`](../../tests/commitment_integrity/state_boundaries.rs).
+```acdd-rule
+id: INV-CORE-LEAF
+invariant: INV-CORE-LEAF
+severity: error
+kind: forbid_dependency
+from:
+  paths: ["crates/acdd-core/src/**"]
+to:
+  paths: ["crates/acdd-index/**", "crates/acdd-state/**", "src/**"]
+  external_symbols: ["acdd_index", "acdd_state", "rusqlite", "tree_sitter", "tokio", "rmcp", "clap", "rayon", "zstd", "hashbrown"]
+```
+
+```acdd-rule
+id: INV-STATE-NO-INDEX
+invariant: INV-STATE-NO-INDEX
+severity: error
+kind: forbid_dependency
+from:
+  paths: ["crates/acdd-state/src/**"]
+to:
+  paths: ["crates/acdd-index/**", "src/**"]
+  external_symbols: ["acdd_index", "tree_sitter", "tokio", "rmcp", "clap"]
+```
+
+```acdd-rule
+id: INV-STATE-BRIDGE-BOUNDARY
+invariant: INV-STATE-BRIDGE-BOUNDARY
+severity: error
+kind: forbid_dependency
+from:
+  paths: ["src/engine/**", "crates/**"]
+to:
+  paths: ["src/state_bridge/**"]
+```
+
+- Inside `crates/acdd-state`, `machine/` is a 100% pure functional core (`INV-STATE-PURE-MACHINE`), and direct `rusqlite` imports are confined to `crates/acdd-state/src/store/sqlite/` (`INV-STATE-SQLITE-CONFINED`); see [ADR 0003](0003-unified-profile-graph-and-state-machine.md).
+- These dependency fences are also verified by [`state_boundaries.rs`](../../tests/commitment_integrity/state_boundaries.rs).
 
 ### 2. Subsystem Disablement (`modules:`)
 

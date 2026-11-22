@@ -82,6 +82,7 @@ by `GateProfile` `git:` and `save:` policies:
 | **`base`** | Any spec or `--goal` | `git.isolation: worktree`, `save: commit` | Domain-pure baseline (`gates: []`) for custom overlays |
 | **`code`** (default) | `docs/milestones/*.md` or custom spec | `git.isolation: worktree`, `save: commit` | Multi-task milestones with `blueprint_synthesis`, task worktrees, and verified `handoff` |
 | **`audit`** | Any spec or `--goal` | `git.isolation: in_place`, `save: none` | Read-only `recon -> analyze -> triage` review and taint scanning with `.acdd/reports/{run_name}.md` |
+| **`documentation`** | Any spec or `--goal` | `git.isolation: worktree`, `save: commit` | Compiler-free documentation and `acdd-rule` authoring gated on `docs.links` and `code.lint` (`[arch, docs]`) |
 | **In-place / `--goal`** | Materialized `.acdd/run/<run_id>/spec.md` + `--scope` | Defaults to `code` (`worktree`) unless `--in-place` (`save: none`) or `--profile audit` | Taskless goal sweeps, autonomous QA, and single-branch runs |
 
 ---
@@ -101,8 +102,11 @@ gate uses one primary proof/execution contract:
   exit code `0` (plus any attached `checks:` such as `code.seam`).
 - **Domain action / check gate** (`call: <domain>.<action>`, `checks: [<domain>.<check>]`):
   Invokes `DomainProvider` capabilities registered in `src/state_bridge/` (such
-  as `code.seam` reachability and `code.signature_scope` in `src/state_bridge/code_domain/`,
-  or `docs.links` in `src/state_bridge/docs_domain.rs`).
+  as `code.seam` reachability, `code.lint` architectural/doc lint, and
+  `code.signature_scope` in `src/state_bridge/code_domain/`, or `docs.links` in
+  `src/state_bridge/docs_domain.rs`).
+  (`docs.invariants` stamps `"enforced": true` / `[ENFORCED]` on invariants backed
+  by `acdd-rule` or `acdd.yaml` `architecture.rules`.)
 - **Container gate** (`gates: [...]`): Groups sequential child gates under dotted
   hierarchical cursors (e.g., `blueprint_synthesis.synthesize` -> `blueprint_synthesis.review`).
 - **Task container** (`- tasks: { when?, gates: [...] }`): Expands its child gate
@@ -186,7 +190,7 @@ commands:
 
 ---
 
-## Built-in Default Profile Walkthrough (`base.yaml`, `code.yaml`, & `audit.yaml`)
+## Built-in Default Profile Walkthrough (`base.yaml`, `code.yaml`, `audit.yaml`, & `documentation.yaml`)
 
 [`crates/acdd-state/src/profile/embedded/base.yaml`](../../crates/acdd-state/src/profile/embedded/base.yaml)
 defines the domain-pure baseline (`gates: []`, 7 core `default_tools`,
@@ -196,7 +200,7 @@ core contours `paths`, `claims`, and `administration`). Embedded
 built-in code-delivery fallback when `.acdd/profile.yaml` is absent) inherits `base`, adds the three-phase
 milestone lifecycle (`commands: build_check` and `verify_all` are marked
 `unbound: true`), sets `tags: [default, docs]` (`docs`-tagged tasks skip
-`code.seam`), binds the 19 `default_tools`, attaches `code.seam` checks and
+`code.seam`), binds the 20 `default_tools`, attaches `code.seam` and `code.lint` checks and
 `docs.*` / `code.*` context lenses, adds `code.principles` and `code.tools`, and
 automatically strips disabled `code.*` / `docs.*` tools, checks, and lenses when
 `modules.code: false` or `modules.docs: false`. Embedded
@@ -204,6 +208,11 @@ automatically strips disabled `code.*` / `docs.*` tools, checks, and lenses when
 with `git.isolation: in_place` and `save: none`, defining a read-only `recon -> analyze -> triage`
 review and security/taint scanning pipeline that propagates upstream stage proofs via
 `predecessor_proofs` and writes Markdown reports via `save.report: ".acdd/reports/{run_name}.md"`.
+Embedded [`documentation.yaml`](../../crates/acdd-state/src/profile/embedded/documentation.yaml)
+inherits `base` with `modules: { required: [docs, code] }`, providing a
+compiler-free lifecycle (`blueprint_synthesis` -> tasks `build`/`review`/`deliver`
+-> `verify_docs` -> `polish` -> `integration_review` -> `handoff`) gated by
+`docs.links` and `code.lint` (`[arch, docs]`).
 
 ```text
 Phase 1: Pre-Task Root Container (`blueprint_synthesis`)
