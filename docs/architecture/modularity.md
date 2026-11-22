@@ -13,10 +13,11 @@ ContextUnity ACDD separates code parsing, AST fact extraction, cross-file symbol
 crates/acdd-index/src/
 ├── ast/                    # Tree-sitter extraction and relation facts
 ├── languages/
-│   ├── mod.rs              # LanguageProfile contract and linker registry
-│   ├── support/            # Shared syntax extraction helpers
+│   ├── mod.rs              # Layer 2 facade: LanguageProfile, LanguageFileState, SyntaxGrammarSpec
+│   ├── support/            # Shared syntax extraction & value-flow helpers
 │   │   ├── mod.rs
-│   │   └── c_family.rs
+│   │   ├── c_family.rs
+│   │   └── value_flow_core.rs # ScopeFrameFlags, ScopeState, ValueFlowCollectorCore, GenericScopeAnalysis
 │   ├── template.rs         # Shared byte-preserving template masker
 │   ├── html/               # HTML extraction and configured request attributes
 │   │   ├── mod.rs
@@ -28,12 +29,20 @@ crates/acdd-index/src/
 │   │   └── template.rs
 │   ├── python/             # Python profile extraction
 │   │   ├── mod.rs
-│   │   └── dependencies.rs # Python package dependency extraction
-│   ├── manifests/          # Typed framework rule data
-│   ├── dependency_registry.rs # Workspace dependencies and framework rules
+│   │   ├── dependencies.rs # Python package dependency extraction
+│   │   ├── logging_factories.rs # Finite logging.getLogger factory eligibility
+│   │   └── value_flow.rs
+│   ├── manifests/          # Typed framework rule data & ActivationCondition
+│   ├── dependency_registry/ # Modular ManifestParser plugins, Ecosystem, & framework rules
+│   │   ├── mod.rs
+│   │   ├── parser.rs       # ManifestParser trait, MANIFEST_PARSERS, ModulePrefix
+│   │   ├── framework_packs.rs
+│   │   └── parsers/        # Per-ecosystem parsers (cargo, npm, python, go, jvm, php, csharp, ruby, c_cpp)
 │   ├── registries/         # JavaScript package and TypeScript path registries
-│   ├── rust/               # Rust profile extraction
+│   ├── rust/               # Rust profile extraction, value_flow.rs, macros.rs
 │   ├── typescript/         # TypeScript/JavaScript profile extraction
+│   ├── bash.rs, css.rs, json.rs # Default shell/style/JSON profiles on SyntaxGrammarSpec
+│   ├── go.rs, java.rs, kotlin.rs, csharp.rs, php.rs, ruby.rs, c.rs, cpp.rs # Tier-2 declarative profiles
 │   └── toml_manifest.rs    # TOML traversal for package dependency metadata
 └── linker/                 # Shared graph construction and dispatch (`mod.rs`)
     ├── traits.rs
@@ -78,12 +87,12 @@ Decouples language-specific import and receiver resolutions from the core SQLite
 - Receiver inference (method binding on class instances, struct instances, or prototypes).
 - Standard library and external package classification, ensuring third-party symbols are properly marked `external_origin` rather than leaking into `unresolved`.
 - Framework semantics come from typed `FrameworkManifest` data consumed by finite operations. Bundled tables live under `crates/acdd-index/src/languages/manifests/` and are embedded in the binary. Workspace manifests load from `.acdd/frameworks/` and are available in their workspace. They merge project rules before bundled rules by default or with `extend: true`; `replace: true` selects the project table alone. Unknown top-level fields are rejected, so manifests cannot add opaque legacy string sections. Typed AST rules compile into grammar-specific `RuleIR` candidates; class receivers retain their borrowed linker rule lookup, and `semantic_rules` facts join through the shared linker. See [Framework manifests](../reference/framework-manifests.md) for authoring and language-extension guidance.
-- `DependencyRegistry` owns workspace dependency discovery and framework-manifest loading. JavaScript package metadata and TypeScript path mappings live in `languages/registries/`; Python dependency declarations are extracted in `python/dependencies.rs`. `LanguageProfile::manifest_filenames` continues to describe external package metadata inputs.
+- `DependencyRegistry` (`crates/acdd-index/src/languages/dependency_registry/`) owns workspace dependency discovery via `ManifestParser` (`MANIFEST_PARSERS`), `ModulePrefix` extraction, and framework-manifest loading. JavaScript package metadata and TypeScript path mappings live in `languages/registries/`; Python dependency declarations are extracted in `python/dependencies.rs`. `LanguageProfile::manifest_filenames` continues to describe external package metadata inputs. `LanguageProfile::linker(&self)` binds each profile to its `LanguageLinker` (defaulting to `GENERIC_LINKER`), and `FileContext.state` stores typed `LanguageFileState`.
 
 ### 4. Three-Tier Language Architecture
 Languages and extensions decompose into three explicit tiers:
-- **Tier 1 (Declarative SyntaxGrammarSpec)**: Kind mappings for declarations, references, scopes, imports, member access and comments supply structural language support. Explicit unknown selectors fail through the parser error result; they never dispatch as kind zero.
-- **Tier 2 (Single-Pass AST Extractor)**: `SinglePassExtractor` creates declaration identities on entry, accumulates body bindings and value flow during a shared DFS, and finalizes each owner on exit through a `ScopeFrame` stack. Nested owner frames retain their own summaries.
+- **Tier 1 (Declarative `SyntaxGrammarSpec`)**: Typed mappings (`DeclarationRole`, `ImportKind`, `CallForm`, `Visibility`) alongside `typed_bindings`, `constructors`, `member_calls`, `heritage`, and `conditionals` selectors compiled once into `CompiledSyntaxGrammar` supply structural language support. Explicit unknown selectors fail through the parser error result; they never dispatch as kind zero.
+- **Tier 2 (Single-Pass AST Extractor & `ValueFlowCollectorCore`)**: `SinglePassExtractor` creates declaration identities on entry, accumulates body bindings and value flow during a shared DFS via `ValueFlowCollectorCore` / `GenericScopeAnalysis` (`ScopeState` / `ScopeFrameFlags`), and finalizes each owner on exit through a `ScopeFrame` stack. Nested owner frames retain their own summaries.
 - **Tier 3 (Polyglot Semantic Linker)**: Deep language-specific member index construction, C3 inheritance resolution, and cross-layer framework relation composition.
 
 The shared body traversal replaces recursive declaration-body binding, value-flow and final-return collectors. Occurrence-local conservative import and template-loader proofs may revisit lexical syntax. TypeScript's returned-object proof may inspect its enclosing function to establish same-object receiver metadata. These queries do not produce body summaries or replace scope-exit analysis. TypeScript module-alias preparation and DOM processing remain separate. This boundary does not claim that every parser operation visits every node only once. Tree-sitter query experiments remain opt-in research outside default indexing.
@@ -150,7 +159,7 @@ from:
   paths: ["crates/acdd-index/src/languages/*.rs"]
   exclude_paths:
     - "crates/acdd-index/src/languages/mod.rs"
-    - "crates/acdd-index/src/languages/dependency_registry.rs"
+    - "crates/acdd-index/src/languages/build_manifest.rs"
     - "crates/acdd-index/src/languages/semantic.rs"
     - "crates/acdd-index/src/languages/template.rs"
     - "crates/acdd-index/src/languages/toml_manifest.rs"

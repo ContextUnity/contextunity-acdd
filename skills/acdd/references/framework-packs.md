@@ -11,8 +11,10 @@ data; new grammar or semantics require their owning code and production-seam pro
 
 1. Choose the filename stem as the pack ID. Embedded manifests are inventoried
    automatically from the package manifest directory; project files are discovered
-   under each workspace's `.acdd/frameworks/`. Keep `receivers`, `builtins`,
-   `filters` and `routes` in every complete manifest.
+   under each workspace's `.acdd/frameworks/`. Use only the supported typed
+   sections (`class_hierarchy_receivers`, `route_decorators`, `route_calls`,
+   `di_calls`, `semantic_rules`, `syntax_rules`); unknown top-level fields fail
+   validation.
 2. Start with the equivalent [TOML](frameworks/declarative-rules.toml.example) or
    [YAML](frameworks/declarative-rules.yaml.example) example. Use the existing
    typed operation and actual API identities. Default merging gives local rules

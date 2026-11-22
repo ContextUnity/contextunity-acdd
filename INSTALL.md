@@ -102,7 +102,7 @@ Clone the repository and install the binary into your Cargo binary directory (`~
 git clone https://github.com/ContextUnity/contextunity-acdd.git
 cd contextunity-acdd
 
-# Standard build with default languages (Python, Rust, TypeScript, JavaScript, Vue, HTML, Protobuf, YAML, TOML)
+# Standard build with default languages (Python, Rust, TypeScript, JavaScript, Vue, HTML, Bash, CSS, JSON, Protobuf, YAML, TOML, SQL)
 cargo install --path . --locked
 
 # Extended build with all supported languages (+ Go, Java, C#, Kotlin, PHP, Ruby, C, C++)

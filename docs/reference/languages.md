@@ -5,7 +5,7 @@ title: Language support
 
 # Language support
 
-Language profiles are selected at compile time. A default build includes Python, Rust, TypeScript, JavaScript, Vue, Protocol Buffers, HTML, YAML, and TOML. Markdown and MDX documentation is indexed separately from code profiles.
+Language profiles are selected at compile time (with built-in `sql` always available). A default build includes Python, Rust, TypeScript, JavaScript, Vue, Protocol Buffers, HTML (including `.j2`), Bash/Shell, CSS, JSON, YAML, TOML, and SQL. Markdown and MDX documentation is indexed separately from code profiles.
 
 ```sh
 cargo build --release --locked
@@ -19,15 +19,19 @@ Use `acdd --help` to inspect the installed binary. Enabling a profile changes wh
 
 | Cargo feature | Language | Extensions |
 | --- | --- | --- |
-| `lang-python` | Python | `.py`, `.pyi` |
-| `lang-rust` | Rust | `.rs` |
-| `lang-typescript` | TypeScript | `.ts`, `.tsx`, `.mts`, `.cts` |
-| `lang-typescript` | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |
-| `lang-vue` | Vue | `.vue` |
-| `lang-proto` | Protocol Buffers | `.proto` |
-| `lang-html` | HTML | `.html`, `.htm` |
-| `lang-yaml` | YAML | `.yaml`, `.yml` |
-| `lang-toml` | TOML | `.toml` |
+| `lang-python` (default) | Python | `.py`, `.pyi` |
+| `lang-rust` (default) | Rust | `.rs` |
+| `lang-typescript` (default) | TypeScript | `.ts`, `.tsx`, `.mts`, `.cts` |
+| `lang-typescript` (default) | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |
+| `lang-vue` (default) | Vue | `.vue` |
+| `lang-proto` (default) | Protocol Buffers | `.proto` |
+| `lang-html` (default) | HTML / Jinja2 | `.html`, `.htm`, `.j2` |
+| `lang-bash` (default) | Bash / Shell | `.sh`, `.bash`, `.zsh` |
+| `lang-css` (default) | CSS | `.css` |
+| `lang-json` (default) | JSON | `.json` |
+| `lang-yaml` (default) | YAML | `.yaml`, `.yml` |
+| `lang-toml` (default) | TOML | `.toml` |
+| *(always enabled)* | SQL | `.sql` |
 | `lang-go` | Go | `.go` |
 | `lang-java` | Java | `.java` |
 | `lang-csharp` | C# | `.cs` |
@@ -37,7 +41,7 @@ Use `acdd --help` to inspect the installed binary. Enabling a profile changes wh
 | `lang-c` | C | `.c`, `.h` |
 | `lang-cpp` | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.hxx` |
 
-`all-languages` enables every listed profile. Files outside the enabled profiles are excluded from code extraction. The scanner still admits Markdown and MDX in configured roots.
+`all-languages` enables every listed profile. Files outside the enabled profiles are excluded from code extraction. The scanner still admits Markdown and MDX in configured roots. Default Bash, CSS, and JSON profiles as well as optional Tier-2 profiles (`go`, `java`, `csharp`, `kotlin`, `php`, `ruby`, `c`, `cpp`) run on the shared declarative `SyntaxGrammarSpec` + `GenericScopeAnalysis` + `GENERIC_LINKER` engine.
 
 ## What the graph means
 
@@ -54,8 +58,8 @@ For Python, a complete local `if`/`elif`/`else` join can expose method targets t
 | Rust | Macros, conditional compilation, generated code, and `include!` can change the compiled program. |
 | Go | Build tags, generated code, CGo, and package selection affect the final build. |
 | Protocol Buffers | Generated language bindings and import resolution depend on the compiler and include paths. |
-| HTML and HTMX | Files are modules; individual tags are not graph symbols. Each HTMX request is an indexed source node contained by its HTML module. Local JavaScript/TypeScript script and link targets contribute references. Inline JavaScript analysis requires `lang-typescript`. Confirm runtime route ownership in server code. |
-| YAML and TOML | Mapping keys and TOML tables are syntax symbols. Application-specific configuration meaning, YAML alias expansion, and schema validation are outside the graph. |
+| HTML and HTMX | Files are modules; individual tags are not graph symbols. `.html`, `.htm`, and `.j2` templates use the HTML profile. Each HTMX request is an indexed source node contained by its HTML module. Local JavaScript/TypeScript script and link targets contribute references. Inline JavaScript analysis requires `lang-typescript`. Confirm runtime route ownership in server code. |
+| Bash, CSS, JSON, YAML, and TOML | Bash indexes top-level/exported functions, variables, and `source`/`.` links; CSS indexes rule sets, `@keyframes`, declarations, `@import`, and `var(--*)`; JSON indexes top-level/$defs keys and `$ref` targets; YAML and TOML index mapping keys and tables. Application configuration meaning and runtime shell/schema evaluation are outside the graph. |
 | Java, C#, Kotlin, and PHP | Classpath, reflection, dependency injection, autoloading, and generated code may add relationships. |
 | C and C++ | Preprocessing, conditional compilation, templates, and linker configuration determine compiled relationships. |
 
@@ -67,7 +71,7 @@ Python indexes module-level PEP 695 aliases, `TypeAlias` and `TypeAliasType` ann
 
 ## Dependencies and typed receivers
 
-ACDD collects declared dependencies from workspace manifests before linking: Python `pyproject.toml`, `requirements*.txt`, `setup.cfg`, and `Pipfile`; JavaScript/TypeScript `package.json`; Rust `Cargo.toml`; Go `go.mod`; and Java/Kotlin `pom.xml`, `build.gradle`, and `build.gradle.kts`. Linked workspaces use the admitted adapter configuration. Standard-library imports and declared dependencies have distinct evidence. An absolute import with no indexed provider is classified as external even when no manifest declares it; relative imports and missing symbols in indexed modules retain their local resolution evidence.
+ACDD collects declared dependencies and `ModulePrefix` records from workspace manifests via modular `ManifestParser` plugins before linking: Python `pyproject.toml`, `requirements*.txt`, `setup.cfg`, and `Pipfile`; JavaScript/TypeScript `package.json`, lockfiles, `pnpm-workspace.yaml`, and `tsconfig*.json`; Rust `Cargo.toml`; Go `go.mod`; JVM `pom.xml`, `build.gradle`, and `build.gradle.kts`; PHP `composer.json` (PSR-4); C# `*.csproj` (`RootNamespace`); Ruby `Gemfile` and `*.gemspec`; and C/C++ `CMakeLists.txt` and `meson.build`. Linked workspaces use the admitted adapter configuration. Standard-library imports (including `google/protobuf/*` in Protocol Buffers and stdlib modules across Tier-2 languages) and declared dependencies have distinct evidence. An absolute import with no indexed provider is classified as external even when no manifest declares it; relative imports and missing symbols in indexed modules retain their local resolution evidence.
 
 The committed manifest digest covers scanner-admitted manifests and supported
 files directly in primary and linked workspace roots, including those root files
@@ -79,9 +83,9 @@ directories and symlinks and reads manifests up to 4 MiB.
 
 JavaScript and TypeScript recognize CommonJS `require` bindings, including destructuring, as import aliases. A locally bound `require` is treated as an ordinary callable.
 
-Python functions retain explicit parameter annotations in `details.param_types`. Calls through an unmodified parameter can resolve to methods of an indexed receiver class with `inferred` confidence, or to external evidence when the receiver type comes from an external import. Inherited member lookup uses a cached Python C3 order and respects local overrides. Known unittest assertions, Django command output, and Django model manager operations receive external evidence only when their framework ancestry is established.
+Python functions retain explicit parameter annotations in `details.param_types` (including `Callable`/`Protocol`, `type[T]`, generic subscripts, and PEP 604 `A | B` union parameters via bounded `possible_calls`). Calls through an unmodified parameter can resolve to methods of an indexed receiver class with `inferred` confidence, or to external evidence when the receiver type comes from an external import or proven `logging.getLogger` factory (`logging_factories.rs`). Inherited member lookup uses a cached Python C3 order and respects local overrides. Known unittest assertions, Django `BaseCommand`/`Model.objects`/`QuerySet` operations receive external evidence only when their framework ancestry is established.
 
-Python records receiver hints for string literals, constructor calls, and zero-argument `super()`. Known string methods and verified class members can resolve without interpreting arbitrary expressions. Ambiguous types, reassigned parameters, unknown return values, and unsupported computed receivers retain uncertainty.
+Python records receiver hints for string literals, f-strings, string slices, `Path /` expressions, `with ... as` bindings, constructor calls, chained calls, and zero-argument `super()`. Known string methods and verified class members can resolve without interpreting arbitrary expressions. Ambiguous types, reassigned parameters, unknown return values, and unsupported computed receivers retain uncertainty.
 
 Declared Python hierarchy-member return policies also support assigned and direct chains after canonical receiver/member proof. An absent policy supplies no result; finite explicit results never become unrestricted external types. The bundled Django QuerySet policies include `all`, `filter`, `exclude`, `order_by`, `select_related` and `prefetch_related`, with explicit QuerySet results on the corresponding Manager and Model members. JavaScript and TypeScript share a bounded AST call constructor for assigned and direct literal-argument factory receivers. Only manifest-declared global/member and literal combinations select a subtype; shadowing, writes, wrong properties and ambiguous mappings preserve uncertainty. Read references can use declared properties, including direct `document.createElement('input').value` and assigned `script.src`; property lookup does not admit `value()` or `src()` as calls. Existing local members take precedence, and independently proven generic DOM evidence remains available. Vue and HTML retain their current inference. See [framework manifests](framework-manifests.md#typed-extraction-rules) for schema and bounds.
 
@@ -95,11 +99,11 @@ Milestone 046 admits bounded possible targets when the enabled profile can enume
 
 TypeScript/JavaScript imports use explicit ESM and supported CommonJS exports, including transitive re-exports. Private declarations and type-only exports do not become callable targets. Class and interface member lookup respects inheritance and static versus instance methods. Rust indexes cross-file inherent implementations and explicitly visible trait implementations. Trait-object calls retain an explicit unresolved dispatch gap, with inferred navigation to the trait method and separate possible edges to at most eight indexed concrete implementations. Python abstract methods (`abc.ABC`) and interface methods similarly link to the base declaration with inferred confidence and emit up to eight `possible_calls` edges to concrete subclass overrides in the workspace. More than eight implementations emit no concrete candidates. Macro bodies supply macro-owned references to statically named call and type tokens; invocation retains declaration navigation and an unresolved expansion gap without expanding the macro.
 
-Rust extracts ordinary paths and field-chain callees structurally, including turbofish and multiline syntax. Canonical names retain original call coordinates and use at most eight segments and 512 bytes. Initializer calls use the same extraction and existing nominal return contracts. Unsupported computed receivers and qualified trait dispatch retain uncertainty; `impl` blocks supply method scopes without declaring lexical type names.
+Rust extracts ordinary paths, chained receivers, string/slice receivers, struct-field propagation, `&T` parameters, and field-chain callees structurally, including turbofish and multiline syntax. Canonical names retain original call coordinates and use at most eight segments and 512 bytes. Initializer calls use the same extraction and existing nominal return contracts (`rust-std.toml`, `rust-cargo.toml`, `declarative_macros.toml`). Rust also indexes `const_item`, `static_item`, `enum_variant`, and `associated_type`, synthesizes standard `#[derive(...)]` implementations, and indexes bounded declarative struct/enum `macro_rules!` exports (`rust/macros.rs`). Unsupported computed receivers and qualified trait dispatch retain uncertainty; `impl` blocks supply method scopes without declaring lexical type names.
 
 Rust module calls, `Self` associated calls and transitive module glob imports resolve through unique indexed declarations with visibility and alias-depth limits. Conflicting, cyclic, inaccessible or missing providers retain uncertainty. Proven standard `Deref` implementations with a unique nominal `Target` can supply inherited field and member lookup; custom traits with the same name supply no standard dereference proof. Standard `Option`/`Result` `.as_ref()` and `.as_mut()` retain wrapper identity, and `Result::ok()` changes it to `Option`; a subsequent explicit payload projection is still required. Custom methods keep their declared return contracts.
 
-Vue templates use HTML element boundaries and JavaScript expression parsing. Component imports, event handlers, qualified members, iteration bindings, slot bindings, and arrow parameters retain lexical ownership and original coordinates. HTML classic scripts share verified document declarations; modules and inline event handlers retain separate lexical owners and ordinary JavaScript AST facts. Encoded handler expressions that require HTML entity decoding remain diagnostic evidence rather than guessed calls.
+Vue templates use HTML element boundaries and JavaScript expression parsing. Component imports, event handlers, qualified members, `v-for` iteration bindings, Pinia `defineStore` auto-imports (`nuxt.toml`), slot bindings, and arrow parameters retain lexical ownership and original coordinates. TypeScript/JavaScript parses IIFEs as lexical scopes, includes bundled DOM/WebIDL (`web.toml`) and Playwright (`playwright.toml`) receiver packs, and HTML supports syntax-activated Alpine.js rules (`ActivationCondition` / `FileActivationSignals`) alongside `.j2` template indexing. HTML classic scripts share verified document declarations; modules and inline event handlers retain separate lexical owners and ordinary JavaScript AST facts. Encoded handler expressions that require HTML entity decoding remain diagnostic evidence rather than guessed calls.
 
 ## Python registrations
 

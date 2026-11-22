@@ -172,8 +172,6 @@ pub(super) fn load_framework_manifests(
                 path.display()
             );
         }
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read framework manifest {}", path.display()))?;
         let relative_path = path.strip_prefix(root).with_context(|| {
             format!(
                 "framework manifest {} escaped its workspace root {}",
@@ -181,6 +179,8 @@ pub(super) fn load_framework_manifests(
                 root.display()
             )
         })?;
+        let content = super::read_confined_manifest_string(root, relative_path)
+            .with_context(|| format!("failed to read framework manifest {}", path.display()))?;
         record_framework_manifest(
             workspace,
             origin_prefix,

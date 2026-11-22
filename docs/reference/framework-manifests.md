@@ -35,7 +35,8 @@ The Django pack also supplies verified Form/ModelForm inheritance members; it
 does not infer an arbitrary object's type from a method such as `save`.
 
 Bundled manifests ship directly inside the compiled binary for Starlette,
-FastAPI, Nuxt, Vue/Pinia, HTMX, Django, Alpine, and GridViewSpec (see the
+FastAPI, Nuxt, Vue/Pinia, HTMX, Django, Alpine, Playwright, WebIDL/DOM,
+Rust stdlib/Cargo, unittest, and GridViewSpec (see the
 [bundled manifests directory on GitHub](https://github.com/ContextUnity/contextunity-acdd/tree/main/crates/acdd-index/src/languages/manifests)
 and the [workspace verification runbook](../runbooks/framework-packs.md) for
 partial project overrides under `.acdd/frameworks/`). The generic TOML/YAML
@@ -91,8 +92,14 @@ collect the following metadata inputs:
 | Python | `pyproject.toml`, `requirements*.txt`, `setup.cfg`, `Pipfile` | None in this input list. |
 | JavaScript/TypeScript | `package.json`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock` | `pnpm-workspace.yaml` and `package.json` workspace/export metadata; `tsconfig*.json` path aliases. |
 | Rust | `Cargo.toml` | Own-library identity remains manifest scoped. |
-| Go | `go.mod` | Enabled profile required. |
+| Go | `go.mod` | `ModulePrefix` extraction; enabled profile required. |
 | Java/Kotlin | `pom.xml`, `build.gradle`, `build.gradle.kts` | Enabled profile required. |
+| PHP | `composer.json` | PSR-4 `ModulePrefix` extraction; enabled profile required. |
+| C# | `*.csproj` | `RootNamespace` `ModulePrefix` extraction; enabled profile required. |
+| Ruby | `Gemfile`, `*.gemspec` | Enabled profile required. |
+| C/C++ | `CMakeLists.txt`, `meson.build` | Enabled profile required. |
+
+Rules may also gate on typed `ActivationCondition` variants (`package`, `syntax_attribute`, `syntax_attribute_prefix`, `file_extension`, and `any`) evaluated against workspace declarations and per-file `FileActivationSignals`.
 
 Vue delegates metadata discovery to TypeScript; HTML delegates to JavaScript.
 Workspace patterns and TypeScript alias files do not themselves declare a
@@ -169,7 +176,7 @@ SQL uses an always-available scanner profile without a Tree-sitter grammar or a 
 
 ## Language registry boundaries
 
-`DependencyRegistry` lives in `src/engine/languages/dependency_registry.rs` and collects workspace dependencies together with framework rules. JavaScript package metadata and TypeScript path mappings use separate registries under `src/engine/languages/registries/`; Python package declarations are extracted in `src/engine/languages/python/dependencies.rs`. `LanguageProfile::manifest_filenames` names external package metadata inputs such as `package.json`, `pyproject.toml`, and `Cargo.toml`; it does not name framework rule files.
+`DependencyRegistry` lives in `crates/acdd-index/src/languages/dependency_registry/` (with ecosystem parsers implementing `ManifestParser` in `parsers/` and `MANIFEST_PARSERS`) and collects workspace dependencies together with framework rules. JavaScript package metadata and TypeScript path mappings use separate registries under `crates/acdd-index/src/languages/registries/`; Python package declarations are extracted in `crates/acdd-index/src/languages/python/dependencies.rs`. `LanguageProfile::manifest_filenames` names external package metadata inputs such as `package.json`, `pyproject.toml`, and `Cargo.toml`; it does not name framework rule files.
 
 See [ADR 0011](../adr/0011-language-linkers-and-framework-manifests.md) for the linker and grammar boundaries, accepted file formats, and parser contract.
 

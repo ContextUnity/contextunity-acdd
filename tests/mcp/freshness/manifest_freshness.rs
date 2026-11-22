@@ -281,8 +281,8 @@ fn same_server_refreshes_non_source_manifests_outside_source_roots() {
     let (_bounded, bounded_client) = McpTestHarness::with_files(&[
         ("acdd.yaml", "roots: [src]\nlimits:\n  max_files: 1\n"),
         ("src/app.py", "def app(): pass\n"),
-        ("src/a/package.json", "{\"name\":\"bounded-a\"}"),
-        ("src/b/package.json", "{\"name\":\"bounded-b\"}"),
+        ("src/a/requirements.txt", "bounded-a>=1.0\n"),
+        ("src/b/requirements.txt", "bounded-b>=1.0\n"),
     ]);
     let mut bounded_client = bounded_client.expect("MCP initialize");
     let bounded_overview = bounded_client

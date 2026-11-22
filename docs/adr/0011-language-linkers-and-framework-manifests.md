@@ -25,7 +25,7 @@ Supporting multi-language imports, third-party package classification, template 
 
 ### 2. Dependency Manifest Discovery & 4-Tier Reference Classification
 
-- `DependencyRegistry` parses root and nearest ecosystem manifests across supported toolchains: Rust (`Cargo.toml`), Python (`pyproject.toml`, `requirements.txt`, `Pipfile`, `setup.cfg`), JS/TS (`package.json`), Go (`go.mod`), and Java (`build.gradle`, `pom.xml`).
+- `DependencyRegistry` parses root and nearest ecosystem manifests across supported toolchains: Rust (`Cargo.toml`), Python (`pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg`), JS/TS (`package.json`, lockfiles, `pnpm-workspace.yaml`, `tsconfig*.json`), Go (`go.mod`), JVM (`pom.xml`, `build.gradle`, `build.gradle.kts`), PHP (`composer.json`), C# (`*.csproj`), Ruby (`Gemfile`, `*.gemspec`), and C/C++ (`CMakeLists.txt`, `meson.build`).
 - Every symbol reference resolves into one of four discrete statuses:
   - `resolved`: Target declaration exists in indexed workspace code.
   - `external`: Target belongs to a manifest-declared package or standard library (`external_origin`), preventing false unresolved noise.

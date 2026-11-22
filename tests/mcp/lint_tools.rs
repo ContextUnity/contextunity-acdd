@@ -25,6 +25,9 @@ fn populate(workspace: &Workspace) -> BTreeSet<String> {
             "php" => "<?php function broken( {\n",
             "ruby" => "def broken(\n",
             "c" | "cpp" => "void broken( {\n",
+            "bash" => "case $x in ) ;;\n",
+            "css" => "body { color: ;\n",
+            "json" => "{ invalid json\n",
             "sql" => "CREATE TABLE accounts (id INTEGER);\n",
             language => panic!("add a syntax fixture for compiled language {language}"),
         };

@@ -54,7 +54,7 @@ ContextUnity ACDD parses repository source code into an incremental, queryable S
     - `code_map_query(operation="untested")`: Page production functions/methods lacking direct indexed test `calls` edges.
     - `code_map_prove_removal`: Statically evaluate incoming references and target-scoped diagnostics before removing symbols.
 - **Syntactic Pattern Search (`ast_grep_search`)**: Match structural AST patterns (e.g. `fn $NAME($ARGS) -> Result<$T> { $$$ }`) across admitted source files.
-- **Multi-Language & Multi-Repo Federation**: Built-in support for Python, Rust, TypeScript, JavaScript, Vue, HTML, Protocol Buffers, YAML, and TOML (extended with `--features all-languages` for Go, Java, C#, Kotlin, PHP, Ruby, C, C++).
+- **Multi-Language & Multi-Repo Federation**: Built-in default support for Python, Rust, TypeScript, JavaScript, Vue, HTML (including `.j2` Jinja2 templates), Bash/Shell, CSS, JSON, Protocol Buffers, YAML, TOML, and SQL (extended with `--features all-languages` for Go, Java, C#, Kotlin, PHP, Ruby, C, and C++), backed by single-pass Tree-sitter extraction, static value-flow analysis, and declarative framework manifests.
 - **Linked Workspaces & Cross-Repository Indexing**: ACDD natively supports multi-repository architectures through `linked_workspaces` in `acdd.yaml`. Sibling repositories are integrated into the unified code graph for cross-workspace symbol resolution, import linking, and cross-repo impact analysis:
   ```yaml
   # acdd.yaml: federate external repositories into the code map
@@ -217,7 +217,7 @@ Companion skills teach AI agents how to leverage ContextUnity ACDD MCP tools, st
 We welcome contributions, bug fixes, documentation improvements, language profiles, and framework manifests.
 
 > [!NOTE]
-> - **Extended Language Scope**: While default languages are fully stable, the extended language profiles (`--features all-languages` covering Go, Java, C#, Kotlin, PHP, Ruby, C, C++) need further refinement and community contributions to improve language linkers and AST extractions.
+> - **Extended Language Scope**: Default profiles (including Bash, CSS, and JSON) and extended Tier-2 profiles (`--features all-languages` covering Go, Java, C#, Kotlin, PHP, Ruby, C, and C++) share the declarative `SyntaxGrammarSpec` + `GenericScopeAnalysis` + `GENERIC_LINKER` engine; community contributions expanding framework packs and ecosystem stdlib tables are welcome.
 
 Before submitting changes, ensure all verification gates pass:
 

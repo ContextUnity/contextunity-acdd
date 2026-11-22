@@ -841,17 +841,17 @@ impl CompiledSyntaxKind {
         self.declaration_role
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn import_kind(self) -> Option<ImportKind> {
         self.import_kind
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn call_form(self) -> Option<CallForm> {
         self.call_form
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn visibility(self) -> Option<Visibility> {
         self.visibility
     }
@@ -892,7 +892,7 @@ impl CompiledSyntaxKind {
         self.has(Self::MEMBER_CALL)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn is_heritage(self) -> bool {
         self.has(Self::HERITAGE)
     }
