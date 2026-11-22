@@ -458,11 +458,16 @@ fn render_context_lenses_markdown(out: &mut String, lenses: &Map<String, Value>)
                         } else {
                             path.to_owned()
                         };
+                        let enforced = if item.get("enforced").and_then(Value::as_bool) == Some(true) {
+                            " [ENFORCED]"
+                        } else {
+                            ""
+                        };
                         let rule = item.get("rule").and_then(Value::as_str).unwrap_or_default();
                         if rule.is_empty() {
-                            out.push_str(&format!("- `{id}` (`{loc}`)\n"));
+                            out.push_str(&format!("- `{id}`{enforced} (`{loc}`)\n"));
                         } else {
-                            out.push_str(&format!("- `{id}` (`{loc}`): {rule}\n"));
+                            out.push_str(&format!("- `{id}`{enforced} (`{loc}`): {rule}\n"));
                         }
                     }
                 }

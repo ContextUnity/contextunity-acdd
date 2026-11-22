@@ -20,13 +20,15 @@ use std::path::Path;
 const BASE_YAML: &str = include_str!("embedded/base.yaml");
 const CODE_YAML: &str = include_str!("embedded/code.yaml");
 const AUDIT_YAML: &str = include_str!("embedded/audit.yaml");
+const DOCUMENTATION_YAML: &str = include_str!("embedded/documentation.yaml");
 
-/// Return the raw embedded YAML for a built-in profile (`"base"`, `"code"`, or `"audit"`).
+/// Return the raw embedded YAML for a built-in profile (`"base"`, `"code"`, `"audit"`, or `"documentation"`).
 pub fn embedded_profile(name: &str) -> Option<&'static str> {
     match name {
         "base" => Some(BASE_YAML),
         "code" => Some(CODE_YAML),
         "audit" => Some(AUDIT_YAML),
+        "documentation" => Some(DOCUMENTATION_YAML),
         _ => None,
     }
 }
@@ -392,8 +394,7 @@ fn resolve_recursive(
                 "inherit field cannot be an empty string",
             ));
         }
-        Some("base") | Some("code") | Some("audit") => {
-            let builtin = parsed.inherit.as_deref().unwrap_or("base");
+        Some(builtin) if embedded_profile(builtin).is_some() => {
             let identity = format!("builtin:{builtin}");
             if stack.contains(&identity) {
                 return Err(StateError::new(

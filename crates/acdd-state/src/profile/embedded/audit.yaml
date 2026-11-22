@@ -21,6 +21,7 @@ default_tools:
   - code_map_tests
   - code_map_prove_removal
   - code_map_query
+  - code_map_lint
   - ast_grep_search
   - get_doc
   - search_docs
@@ -155,7 +156,7 @@ guidance:
   code.tools:
     description: "MANDATORY ACDD GRAPH & SOURCE NAVIGATION PROTOCOL"
     criteria:
-      - "Use code_map_overview / code_map_search(detail: \"compact\") / ast_grep_search for discovery, code_map_impact (calls/data-flow) for trace proof, code_map_query (duplicates/dead_tails/untested) for hygiene, and acdd_read(selector: ...) for complete symbol inspection."
+      - "Use code_map_overview / code_map_search(detail: \"compact\") / ast_grep_search for discovery, code_map_impact (calls/data-flow) for trace proof, code_map_lint for arch/docs/syntax rules, code_map_query (duplicates/dead_tails/untested) for hygiene, and acdd_read(selector: ...) for complete symbol inspection."
       - "Consult docs.invariants and search_docs/get_doc to bind findings to active repository invariants and ADRs."
   audit.recon:
     description: "PHASE 1: RECONNAISSANCE & SURFACE MAPPING"

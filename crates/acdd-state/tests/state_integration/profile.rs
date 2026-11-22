@@ -1,11 +1,27 @@
 use acdd_core::errors::ErrorCode;
+use acdd_core::ids::{CommitOid, GateId, NodeCursor, RunId, RunName, TreeOid, WorkerId};
 use acdd_core::ports::{
     ActionCapability, CheckCapability, CompositeDomainProvider, DomainCapabilities, DomainToolDef,
 };
 use acdd_core::schema::{AdditionalPropertiesDef, SchemaDef};
 use acdd_core::subsystems::SubsystemRegistry;
+use acdd_state::harness::RunHarness;
+use acdd_state::machine::{
+    admit_claim, build_initial_run_graph, evaluate_submit, evaluate_verify, BuildGraphInput,
+    ClaimDecision, ClaimInput, MachineSpecInput, MachineTaskSpec, SubmitEvaluation, SubmitInput,
+    VerifyExecutionObservation, VerifyInput,
+};
 use acdd_state::profile::*;
-use acdd_state::types::{IsolationMode, SaveAction, WorktreeLifecycle};
+use acdd_state::spec::materialize_ephemeral_goal_spec_with_options;
+use acdd_state::store::StateBackend;
+use acdd_state::types::{
+    CheckResultRecord, FindingItem, FindingSeverity, IsolationMode, NodeStatus,
+    NodeVersionExpectation, RejectionFindings, RejectionKind, ReviewContourResult, ReviewEvidence,
+    RunStatus, SaveAction, StoragePreconditions, SubmitAction, TransitionPlan,
+    ValidatedObservations, WorktreeLifecycle,
+};
+use acdd_state::usecases::lifecycle::to_machine_profile;
+use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::sync::Arc;
@@ -25,6 +41,10 @@ fn code_and_docs_providers() -> CompositeDomainProvider {
                 CheckCapability {
                     name: "signature_scope".to_owned(),
                     input_schema: SchemaDef::object(),
+                },
+                CheckCapability {
+                    name: "lint".to_owned(),
+                    input_schema: acdd_core::lint::lint_check_input_schema(),
                 },
             ],
             context_lenses: BTreeSet::from([
@@ -95,8 +115,16 @@ fn disabled_code_and_docs_modules() -> SubsystemRegistry {
 fn embedded_profiles_resolve_and_validate_matrix() {
     let providers = code_and_docs_providers();
     let code_docs_disabled = disabled_code_and_docs_modules();
+    let docs_disabled = SubsystemRegistry {
+        disabled: BTreeSet::from(["docs".to_owned()]),
+        ..SubsystemRegistry::default()
+    };
+    let code_disabled = SubsystemRegistry {
+        disabled: BTreeSet::from(["code".to_owned()]),
+        ..SubsystemRegistry::default()
+    };
 
-    // 1. Embedded profiles matrix (`base`, `code`, `audit`; `"workspace"` & `"in_place"` removed).
+    // 1. Embedded profiles matrix (`base`, `code`, `audit`, `documentation`; `"workspace"` & `"in_place"` removed).
     for removed in ["workspace", "in_place"] {
         assert!(
             embedded_profile(removed).is_none(),
@@ -122,6 +150,26 @@ fn embedded_profiles_resolve_and_validate_matrix() {
         ("audit", None, false, Ok(())),
         ("audit", None, true, Ok(())),
         ("audit", Some(&code_docs_disabled), false, Ok(())),
+        ("documentation", None, false, Ok(())),
+        ("documentation", None, true, Ok(())),
+        (
+            "documentation",
+            Some(&docs_disabled),
+            false,
+            Err(ErrorCode::DomainCapabilityUnavailable),
+        ),
+        (
+            "documentation",
+            Some(&code_disabled),
+            false,
+            Err(ErrorCode::DomainCapabilityUnavailable),
+        ),
+        (
+            "documentation",
+            Some(&code_docs_disabled),
+            false,
+            Err(ErrorCode::DomainCapabilityUnavailable),
+        ),
     ];
 
     for &(name, mods, require_bound, expected) in cases {
@@ -149,7 +197,8 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     let code_p = resolve_profile_ref_with_dirs("code", None, None, None).unwrap();
     assert!(!code_p.roles["independent_reviewer"].reuse_on_reject);
     assert!(code_p.roles["builder"].reuse_on_reject);
-    assert_eq!(code_p.default_tools.len(), 19);
+    assert_eq!(code_p.default_tools.len(), 20);
+    assert!(code_p.default_tools.contains(&"code_map_lint".to_owned()));
     assert!(code_p.tags.contains("docs"));
     assert!(code_p.roles["independent_reviewer"].guidance.as_deref().is_some_and(|g| g.contains("fresh") && g.contains("distinct")));
     assert!(match &code_p.guidance["task.review"] {
@@ -168,10 +217,22 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert_eq!(code_build.pass.as_ref().map(|g| g.as_str()), Some("review"));
     assert_eq!(code_review.pass.as_ref().map(|g| g.as_str()), Some("deliver"));
     assert_eq!(code_review.fail_drift.as_ref().map(|g| g.as_str()), Some("rearchitect"));
-    assert_eq!(code_build.checks.len(), 1);
+    assert_eq!(code_build.checks.len(), 2);
     assert_eq!(code_build.checks[0].check, "code.seam");
+    assert_eq!(code_build.checks[1].check, "code.lint");
+    assert_eq!(
+        code_build.checks[1].with,
+        json!({ "categories": ["arch", "syntax", "docs"] })
+    );
+    let code_run_tests = code_p.gates.iter().find(|g| g.id == "run_tests").unwrap();
+    assert_eq!(code_run_tests.checks.len(), 1);
+    assert_eq!(code_run_tests.checks[0].check, "code.lint");
+    assert_eq!(
+        code_run_tests.checks[0].with,
+        json!({ "categories": ["arch", "syntax", "docs"] })
+    );
     assert!(code_build.tools.is_none(), "inherited tools must stay deduplicated as None");
-    assert_eq!(code_p.effective_tools(code_build).len(), 19);
+    assert_eq!(code_p.effective_tools(code_build).len(), 20);
     assert_eq!(code_build.context.first().map(String::as_str), Some("docs.instructions"));
     let code_rearch = code_tasks.gates.iter().find(|g| g.id == "rearchitect").unwrap();
     assert_eq!(code_rearch.pass.as_ref().map(|g| g.as_str()), Some("build"));
@@ -237,7 +298,8 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert_eq!(audit_p.git.isolation, IsolationMode::InPlace);
     assert_eq!(audit_p.git.worktrees, WorktreeLifecycle::Manual);
     assert_eq!(audit_p.save, SaveAction::None);
-    assert_eq!(audit_p.default_tools.len(), 19);
+    assert_eq!(audit_p.default_tools.len(), 20);
+    assert!(audit_p.default_tools.contains(&"code_map_lint".to_owned()));
     let audit_gate_ids: Vec<&str> = audit_p.gates.iter().map(|g| g.id.as_str()).collect();
     assert_eq!(audit_gate_ids, vec!["recon", "analyze", "triage"]);
     let triage = audit_p.gates.iter().find(|g| g.id == "triage").unwrap();
@@ -255,6 +317,91 @@ fn embedded_profiles_resolve_and_validate_matrix() {
     assert!(code_handoff.save.immutable);
     assert!(code_handoff.save.archive);
     assert!(code_handoff.save.prune);
+
+    let doc_p = resolve_profile_ref_with_dirs("documentation", None, None, None).unwrap();
+    assert!(doc_p.tags.contains("docs"));
+    assert_eq!(
+        doc_p.modules.required,
+        BTreeSet::from(["code".to_owned(), "docs".to_owned()])
+    );
+    for expected_tool in [
+        "code_map_lint",
+        "get_doc",
+        "search_docs",
+        "acdd_read",
+        "acdd_guide",
+        "code_map_overview",
+        "code_map_search",
+        "code_map_inspect",
+    ] {
+        assert!(
+            doc_p.default_tools.contains(&expected_tool.to_owned()),
+            "documentation profile missing tool '{expected_tool}'"
+        );
+    }
+    let doc_plan_cursors: Vec<String> = doc_p
+        .dispatch_plan()
+        .into_iter()
+        .map(|g| g.cursor)
+        .collect();
+    assert_eq!(
+        doc_plan_cursors,
+        vec![
+            "blueprint_synthesis.synthesize",
+            "blueprint_synthesis.review",
+            "tasks.build",
+            "tasks.review",
+            "tasks.deliver",
+            "tasks.rearchitect",
+            "verify_docs",
+            "polish",
+            "integration_review",
+            "handoff",
+        ]
+    );
+    let doc_tasks = doc_p
+        .gates
+        .iter()
+        .find_map(|g| g.tasks.as_ref())
+        .expect("documentation tasks block");
+    let doc_build = doc_tasks.gates.iter().find(|g| g.id == "build").unwrap();
+    assert!(doc_build.command.is_none());
+    assert_eq!(
+        doc_build.context,
+        vec!["docs.instructions", "docs.adrs", "docs.invariants", "code.symbols"]
+    );
+    assert_eq!(doc_build.checks.len(), 2);
+    assert_eq!(doc_build.checks[0].check, "docs.links");
+    assert_eq!(doc_build.checks[1].check, "code.lint");
+    assert_eq!(
+        doc_build.checks[1].with,
+        json!({ "categories": ["arch", "docs"] })
+    );
+    let doc_verify = doc_p.gates.iter().find(|g| g.id == "verify_docs").unwrap();
+    assert!(doc_verify.command.is_none());
+    assert_eq!(doc_verify.checks.len(), 2);
+    assert_eq!(doc_verify.checks[0].check, "docs.links");
+    assert_eq!(doc_verify.checks[1].check, "code.lint");
+
+    let doc_child = resolve_profile_from_str_with_dirs(
+        "version: 2\ninherit: documentation\n",
+        "doc-child",
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    validate_profile(
+        &doc_child,
+        &ProfileValidationOptions {
+            domain_providers: Some(&providers),
+            acdd_modules: None,
+            require_bound_commands: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(doc_child.modules.required, doc_p.modules.required);
 }
 
 #[test]
@@ -1173,7 +1320,7 @@ fn v061_profile_purity_docs_strip_patches_and_scope_args_matrix() {
     .unwrap();
     assert_eq!(default_no_ws.profile_id, "code");
     assert_eq!(default_no_ws.git.isolation, IsolationMode::Worktree);
-    assert_eq!(default_no_ws.default_tools.len(), 19);
+    assert_eq!(default_no_ws.default_tools.len(), 20);
 
     let default_no_domains = resolve_optional_profile_ref_with_dirs(
         None,
@@ -1447,4 +1594,375 @@ gates_patch:
         other => panic!("expected Detailed, got {other:?}"),
     }
     assert!(matches!(patched.commands.get("plain_cmd"), Some(CommandDef::Script(s)) if s == "echo ok"));
+}
+
+#[test]
+fn embedded_documentation_profile_in_memory_lifecycle_and_routing() {
+    let doc_profile = resolve_profile_ref_with_dirs("documentation", None, None, None).unwrap();
+    let tree_a = TreeOid::new("a".repeat(40)).unwrap();
+    let obs = ValidatedObservations {
+        current_tree: Some(tree_a.clone()),
+        container_tree: Some(tree_a.clone()),
+        now_utc: "2026-11-22T00:00:00.000Z".to_owned(),
+        ..ValidatedObservations::default()
+    };
+    let blueprint_proof = json!({
+        "cited_invariants": ["INV-CORE-LEAF"],
+        "cited_symbols": ["acdd_core::lint"],
+        "global_negative_boundaries": ["zero raw git"],
+        "blackboard_decision_id": "#1",
+        "tasks": {}
+    });
+    let doc_review_ev = ReviewEvidence {
+        decision: SubmitAction::Pass,
+        contours: BTreeMap::from([
+            ("paths".to_owned(), ReviewContourResult { applicable: true, evidence: "in scope".to_owned() }),
+            ("claims".to_owned(), ReviewContourResult { applicable: true, evidence: "all ACs met".to_owned() }),
+            ("architecture".to_owned(), ReviewContourResult { applicable: true, evidence: "SSOT valid".to_owned() }),
+            ("administration".to_owned(), ReviewContourResult { applicable: true, evidence: "clean".to_owned() }),
+        ]),
+        summary: "approved".to_owned(),
+        notes: None,
+    };
+    let lint_checks = |lint_ok: bool| {
+        vec![
+            CheckResultRecord {
+                domain: "docs".to_owned(),
+                check: "links".to_owned(),
+                passed: true,
+                summary: "links ok".to_owned(),
+                diagnostics: Vec::new(),
+                execution_digest_salt: None,
+            },
+            CheckResultRecord {
+                domain: "code".to_owned(),
+                check: "lint".to_owned(),
+                passed: lint_ok,
+                summary: if lint_ok { "0 violations" } else { "1 doc violation" }.to_owned(),
+                diagnostics: if lint_ok { Vec::new() } else { vec!["broken rule".to_owned()] },
+                execution_digest_salt: Some("gen1".to_owned()),
+            },
+        ]
+    };
+
+    let claim_step = |harness: &RunHarness,
+                      rid: &RunId,
+                      mprof: &acdd_state::machine::MachineProfileInput,
+                      cursor: NodeCursor,
+                      worker: &str| {
+        let snap = harness.reader().load_run_graph(rid).unwrap().unwrap();
+        let dec = admit_claim(
+            &snap,
+            mprof,
+            &obs,
+            &ClaimInput {
+                node_cursor: cursor,
+                worker_id: WorkerId::new(worker).unwrap(),
+                session_fingerprint: None,
+                worktree: "/repo".to_owned(),
+                branch: None,
+                baseline_commit: Some(CommitOid::new("1".repeat(40)).unwrap()),
+                claim_tree: tree_a.clone(),
+                span_id: "0123456789abcdef".to_owned(),
+                force: false,
+                steal_remote: false,
+                previous_local_pid_alive: None,
+            },
+        )
+        .unwrap();
+        if let ClaimDecision::Admit { claim, transition } = dec {
+            let parent_patches: Vec<_> = transition
+                .node_patches
+                .iter()
+                .filter(|p| p.node_id != claim.node_id)
+                .cloned()
+                .collect();
+            let parent_versions: Vec<_> = parent_patches
+                .iter()
+                .filter_map(|p| {
+                    snap.nodes
+                        .iter()
+                        .find(|n| n.node_id == p.node_id)
+                        .map(|n| NodeVersionExpectation {
+                            node_id: n.node_id.clone(),
+                            expected_version: n.node_version,
+                        })
+                })
+                .collect();
+            harness
+                .exec_tx(|tx| {
+                    tx.admit_claim(rid, &transition.preconditions, &claim)?;
+                    if !parent_patches.is_empty() {
+                        tx.apply_transition_plan(
+                            rid,
+                            &TransitionPlan {
+                                preconditions: StoragePreconditions {
+                                    expected_run_generation: transition.preconditions.expected_run_generation + 1,
+                                    expected_node_versions: parent_versions,
+                                    expected_claim_revision: None,
+                                    expected_contract_revision: None,
+                                    expected_worker_id: None,
+                                    required_predecessor_trees: Vec::new(),
+                                },
+                                bump_run_generation: false,
+                                new_run_status: None,
+                                new_root_cycle_count: None,
+                                completed_at: None,
+                                node_patches: parent_patches,
+                                dependency_patches: Vec::new(),
+                                claim_patches: Vec::new(),
+                                new_artifacts: Vec::new(),
+                                new_blackboard: Vec::new(),
+                                blackboard_patches: Vec::new(),
+                                new_subtasks: Vec::new(),
+                                significant_transition: true,
+                            },
+                        )?;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            claim.claim_revision
+        } else {
+            panic!("expected Admit, got {dec:?}");
+        }
+    };
+
+    let verify_step = |harness: &RunHarness,
+                       rid: &RunId,
+                       mprof: &acdd_state::machine::MachineProfileInput,
+                       cursor: NodeCursor,
+                       worker: Option<&str>,
+                       rev: u32,
+                       lint_ok: bool|
+     -> String {
+        let snap = harness.reader().load_run_graph(rid).unwrap().unwrap();
+        let eval = evaluate_verify(
+            &snap,
+            mprof,
+            &obs,
+            &VerifyInput {
+                node_cursor: cursor,
+                worker_id: worker.map(|w| WorkerId::new(w).unwrap()),
+                claim_revision: Some(rev),
+                test_target: None,
+                command_id: None,
+                command_line: None,
+                resolved_commands: Vec::new(),
+                action_id: None,
+                index_generation: None,
+                live_files_digest: None,
+                log_relpath: "logs/check.log".to_owned(),
+                started_at: obs.now_utc.clone(),
+                exec_obs: VerifyExecutionObservation {
+                    timed_out: false,
+                    aborted: false,
+                    exit_code: None,
+                    stderr_tail: String::new(),
+                    check_results: lint_checks(lint_ok),
+                    action_outcome: None,
+                    candidate_tree_before: tree_a.clone(),
+                    candidate_tree_after: Some(tree_a.clone()),
+                },
+            },
+        )
+        .unwrap();
+        let digest = eval.execution_digest.clone();
+        harness
+            .exec_tx(|tx| {
+                let row = tx.start_trace(&eval.preconditions, &eval.trace_start)?;
+                let mut fin = eval.trace_finish.clone();
+                fin.trace_row_id = row.trace_row_id.unwrap();
+                tx.finish_trace(&fin)?;
+                if let Some(ref plan) = eval.failure_transition {
+                    tx.apply_transition_plan(rid, plan)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        digest
+    };
+
+    let submit_step = |harness: &RunHarness,
+                       rid: &RunId,
+                       mprof: &acdd_state::machine::MachineProfileInput,
+                       cursor: NodeCursor,
+                       worker: &str,
+                       rev: u32,
+                       action: SubmitAction,
+                       expected_execution_digest: Option<String>,
+                       review_evidence: Option<ReviewEvidence>,
+                       rejection_findings: Option<RejectionFindings>,
+                       custom_evidence: Option<serde_json::Value>| {
+        let input = SubmitInput {
+            node_cursor: cursor,
+            action,
+            worker_id: WorkerId::new(worker).unwrap(),
+            claim_revision: Some(rev),
+            expected_execution_digest,
+            review_evidence,
+            rejection_findings,
+            custom_evidence,
+            verified_invariants: Vec::new(),
+            snapshot_commit: None,
+            summary: None,
+        };
+        let snap = harness.reader().load_run_graph(rid).unwrap().unwrap();
+        let plan = match evaluate_submit(&snap, mprof, &obs, &input).unwrap() {
+            SubmitEvaluation::Apply(p) => p,
+            SubmitEvaluation::MarkStaleAndReject { error, .. } => panic!("unexpected stale: {error}"),
+        };
+        harness
+            .exec_tx(|tx| tx.apply_transition_plan(rid, &plan))
+            .unwrap();
+    };
+    let reject = |kind: RejectionKind, summary: &str, path: &str| RejectionFindings {
+        kind,
+        summary: summary.to_owned(),
+        blackboard_message_id: None,
+        items: vec![FindingItem {
+            severity: FindingSeverity::High,
+            path: Some(path.to_owned()),
+            message: summary.to_owned(),
+            remediation: "Fix finding".to_owned(),
+        }],
+    };
+    let root_cur = |parts: &[&str]| {
+        NodeCursor::root(parts.iter().map(|s| GateId::new(*s).unwrap()).collect()).unwrap()
+    };
+
+    // Exercise `--goal` + `--in-place` (`IsolationMode::InPlace`, `save: none`, zero Git commits)
+    // and full review / drift / polish routing across all gates in `RunHarness::in_memory()`.
+    for mode in [IsolationMode::InPlace, IsolationMode::Worktree] {
+        let mut prof = doc_profile.clone();
+        if mode == IsolationMode::InPlace {
+            prof.git.isolation = IsolationMode::InPlace;
+            prof.git.worktrees = WorktreeLifecycle::Manual;
+            prof.save = SaveAction::None;
+        }
+        let mprof = to_machine_profile(&prof).unwrap();
+        let rid = RunId::new(format!("run-doc-{mode}")).unwrap();
+        let rname = RunName::new(format!("doc-{mode}")).unwrap();
+        let goal_md = materialize_ephemeral_goal_spec_with_options(
+            &rid,
+            &rname,
+            "Consolidate AGENTS.md invariants",
+            &prof.profile_id,
+            &["docs/**".to_owned(), "AGENTS.md".to_owned()],
+            &[],
+            true,
+        )
+        .unwrap();
+        let parsed = acdd_state::spec::parse_spec(&goal_md).unwrap();
+        assert_eq!(parsed.tasks.len(), 1);
+        let t_ref = parsed.tasks[0].task_ref.clone();
+
+        let snap = build_initial_run_graph(
+            &mprof,
+            &BuildGraphInput {
+                run_id: rid.clone(),
+                run_name: rname,
+                collection: None,
+                workspace: "/repo".to_owned(),
+                spec_path: None,
+                is_ephemeral: true,
+                target_base: None,
+                target_base_commit: None,
+                branch: None,
+                worktree: None,
+                trace_id: "0123456789abcdef0123456789abcdef".to_owned(),
+                created_at: obs.now_utc.clone(),
+                spec: MachineSpecInput {
+                    tasks: vec![MachineTaskSpec {
+                        task_ref: t_ref.clone(),
+                        scope: parsed.tasks[0].scope.clone(),
+                        extended_scope: Vec::new(),
+                        depends_on: Vec::new(),
+                        tags: parsed.tasks[0].tags.clone(),
+                        invariants: Vec::new(),
+                        subtasks: Vec::new(),
+                    }],
+                    spec_digest: parsed.digest.clone(),
+                },
+            },
+        )
+        .unwrap();
+
+        let harness = RunHarness::in_memory().unwrap();
+        harness.seed_run(&snap).unwrap();
+
+        // 1. blueprint_synthesis.synthesize -> blueprint_synthesis.review
+        let syn_cur = root_cur(&["blueprint_synthesis", "synthesize"]);
+        let brev_cur = root_cur(&["blueprint_synthesis", "review"]);
+        let c_syn = claim_step(&harness, &rid, &mprof, syn_cur.clone(), "arch-1");
+        submit_step(&harness, &rid, &mprof, syn_cur, "arch-1", c_syn, SubmitAction::Pass, None, None, None, Some(blueprint_proof.clone()));
+        let c_brev = claim_step(&harness, &rid, &mprof, brev_cur.clone(), "rev-1");
+        submit_step(&harness, &rid, &mprof, brev_cur, "rev-1", c_brev, SubmitAction::Pass, None, Some(doc_review_ev.clone()), None, None);
+
+        // 2. tasks.build -> review (reject defect) -> build -> review (reject drift) -> rearchitect -> build -> review -> deliver
+        let build_cur = NodeCursor::task(t_ref.clone(), vec![GateId::new("build").unwrap()]);
+        let rev_cur = NodeCursor::task(t_ref.clone(), vec![GateId::new("review").unwrap()]);
+        let del_cur = NodeCursor::task(t_ref.clone(), vec![GateId::new("deliver").unwrap()]);
+        let rearch_cur = NodeCursor::task(t_ref.clone(), vec![GateId::new("rearchitect").unwrap()]);
+
+        let c_b1 = claim_step(&harness, &rid, &mprof, build_cur.clone(), "doc-builder");
+        let d_b1 = verify_step(&harness, &rid, &mprof, build_cur.clone(), Some("doc-builder"), c_b1, true);
+        submit_step(&harness, &rid, &mprof, build_cur.clone(), "doc-builder", c_b1, SubmitAction::Pass, Some(d_b1), None, None, None);
+        let c_r1 = claim_step(&harness, &rid, &mprof, rev_cur.clone(), "doc-rev");
+        submit_step(&harness, &rid, &mprof, rev_cur.clone(), "doc-rev", c_r1, SubmitAction::Reject, None, None, Some(reject(RejectionKind::Defect, "Missing anchor", "docs/AGENTS.md")), None);
+        assert_eq!(harness.reader().load_node(&rid, &format!("task:{t_ref}:build")).unwrap().unwrap().status, NodeStatus::Ready);
+
+        let c_b2 = claim_step(&harness, &rid, &mprof, build_cur.clone(), "doc-builder");
+        let d_b2 = verify_step(&harness, &rid, &mprof, build_cur.clone(), Some("doc-builder"), c_b2, true);
+        submit_step(&harness, &rid, &mprof, build_cur.clone(), "doc-builder", c_b2, SubmitAction::Pass, Some(d_b2), None, None, None);
+        let c_r2 = claim_step(&harness, &rid, &mprof, rev_cur.clone(), "doc-rev");
+        submit_step(&harness, &rid, &mprof, rev_cur.clone(), "doc-rev", c_r2, SubmitAction::Reject, None, None, Some(reject(RejectionKind::ArchitecturalDrift, "Duplicate INV-*", "docs/AGENTS.md")), None);
+        assert_eq!(harness.reader().load_node(&rid, &format!("task:{t_ref}:rearchitect")).unwrap().unwrap().status, NodeStatus::Ready);
+
+        let c_ra = claim_step(&harness, &rid, &mprof, rearch_cur.clone(), "arch-1");
+        submit_step(&harness, &rid, &mprof, rearch_cur, "arch-1", c_ra, SubmitAction::Pass, None, None, None, None);
+        let c_b3 = claim_step(&harness, &rid, &mprof, build_cur.clone(), "doc-builder");
+        let d_b3 = verify_step(&harness, &rid, &mprof, build_cur.clone(), Some("doc-builder"), c_b3, true);
+        submit_step(&harness, &rid, &mprof, build_cur, "doc-builder", c_b3, SubmitAction::Pass, Some(d_b3), None, None, None);
+        let c_r3 = claim_step(&harness, &rid, &mprof, rev_cur.clone(), "doc-rev");
+        submit_step(&harness, &rid, &mprof, rev_cur, "doc-rev", c_r3, SubmitAction::Pass, None, Some(doc_review_ev.clone()), None, None);
+        let c_del = claim_step(&harness, &rid, &mprof, del_cur.clone(), "doc-rev");
+        submit_step(&harness, &rid, &mprof, del_cur, "doc-rev", c_del, SubmitAction::Pass, None, None, None, None);
+
+        // 3. verify_docs failure -> polish -> verify_docs -> integration_review reject -> polish -> verify_docs -> integration_review -> handoff
+        let vd_cur = root_cur(&["verify_docs"]);
+        let pol_cur = root_cur(&["polish"]);
+        let irev_cur = root_cur(&["integration_review"]);
+        let handoff_cur = root_cur(&["handoff"]);
+
+        let c_vd1 = claim_step(&harness, &rid, &mprof, vd_cur.clone(), "mech");
+        verify_step(&harness, &rid, &mprof, vd_cur.clone(), Some("mech"), c_vd1, false);
+        assert_eq!(harness.reader().load_node(&rid, "root:polish").unwrap().unwrap().status, NodeStatus::Ready);
+
+        let c_pol1 = claim_step(&harness, &rid, &mprof, pol_cur.clone(), "doc-builder");
+        let d_pol1 = verify_step(&harness, &rid, &mprof, pol_cur.clone(), Some("doc-builder"), c_pol1, true);
+        submit_step(&harness, &rid, &mprof, pol_cur.clone(), "doc-builder", c_pol1, SubmitAction::Pass, Some(d_pol1), None, None, None);
+        let c_vd2 = claim_step(&harness, &rid, &mprof, vd_cur.clone(), "mech");
+        let d_vd2 = verify_step(&harness, &rid, &mprof, vd_cur.clone(), Some("mech"), c_vd2, true);
+        submit_step(&harness, &rid, &mprof, vd_cur.clone(), "mech", c_vd2, SubmitAction::Pass, Some(d_vd2), None, None, None);
+
+        let c_ir1 = claim_step(&harness, &rid, &mprof, irev_cur.clone(), "int-rev");
+        submit_step(&harness, &rid, &mprof, irev_cur.clone(), "int-rev", c_ir1, SubmitAction::Reject, None, None, Some(reject(RejectionKind::Defect, "Polish cross-link", "README.md")), None);
+        assert_eq!(harness.reader().load_node(&rid, "root:polish").unwrap().unwrap().status, NodeStatus::Ready);
+
+        let c_pol2 = claim_step(&harness, &rid, &mprof, pol_cur.clone(), "doc-builder");
+        let d_pol2 = verify_step(&harness, &rid, &mprof, pol_cur.clone(), Some("doc-builder"), c_pol2, true);
+        submit_step(&harness, &rid, &mprof, pol_cur, "doc-builder", c_pol2, SubmitAction::Pass, Some(d_pol2), None, None, None);
+        let c_vd3 = claim_step(&harness, &rid, &mprof, vd_cur.clone(), "mech");
+        let d_vd3 = verify_step(&harness, &rid, &mprof, vd_cur.clone(), Some("mech"), c_vd3, true);
+        submit_step(&harness, &rid, &mprof, vd_cur, "mech", c_vd3, SubmitAction::Pass, Some(d_vd3), None, None, None);
+        let c_ir2 = claim_step(&harness, &rid, &mprof, irev_cur.clone(), "int-rev");
+        submit_step(&harness, &rid, &mprof, irev_cur, "int-rev", c_ir2, SubmitAction::Pass, None, Some(doc_review_ev.clone()), None, None);
+        let c_ho = claim_step(&harness, &rid, &mprof, handoff_cur.clone(), "int-rev");
+        submit_step(&harness, &rid, &mprof, handoff_cur, "int-rev", c_ho, SubmitAction::Pass, None, None, None, None);
+
+        let final_snap = harness.reader().load_run_graph(&rid).unwrap().unwrap();
+        assert_eq!(final_snap.run.status, RunStatus::Completed);
+        assert!(final_snap.artifacts.iter().any(|a| a.kind == acdd_state::types::ArtifactKind::Receipt));
+    }
 }

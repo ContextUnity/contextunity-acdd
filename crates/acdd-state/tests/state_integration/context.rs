@@ -444,7 +444,12 @@ fn profile_gates_claim_context_window_budget_matrix() {
                 ),
                 (
                     "invariants".to_owned(),
-                    json!({"items": [{"id": "INV-SINGLE-OWNER", "path": "src/AGENTS.md", "rule": "Keep one canonical owner per subsystem."}]}),
+                    json!({
+                        "items": [
+                            {"id": "INV-SINGLE-OWNER", "path": "src/AGENTS.md", "rule": "Keep one canonical owner per subsystem."},
+                            {"id": "INV-ENFORCED-RULE", "path": "docs/adr/0001.md", "line": 12, "rule": "Core stays leaf.", "enforced": true}
+                        ]
+                    }),
                 ),
             ]),
         }),
@@ -471,6 +476,7 @@ fn profile_gates_claim_context_window_budget_matrix() {
     for (label, profile_ref) in [
         ("default", ".acdd/profile.yaml"),
         ("hotfix", "hotfix"),
+        ("documentation", "documentation"),
     ] {
         let profile = resolve_profile_ref_with_dirs(
             profile_ref,
@@ -531,6 +537,16 @@ fn profile_gates_claim_context_window_budget_matrix() {
                 !md.contains("```json"),
                 "{label}/{gate_label} must not embed pretty JSON blocks"
             );
+            if md.contains("## Governing Invariants") {
+                assert!(
+                    md.contains("- `INV-SINGLE-OWNER` (`src/AGENTS.md`): Keep one canonical owner per subsystem."),
+                    "{label}/{gate_label}: missing plain invariant rendering:\n{md}"
+                );
+                assert!(
+                    md.contains("- `INV-ENFORCED-RULE` [ENFORCED] (`docs/adr/0001.md:12`): Core stays leaf."),
+                    "{label}/{gate_label}: missing [ENFORCED] invariant rendering:\n{md}"
+                );
+            }
             if let Some(guidance_md) = md.split("\n## Guidance\n").nth(1) {
                 let guidance_section = guidance_md.split("\n## ").next().unwrap_or(guidance_md);
                 if let (Some(hitl_pos), Some(sub_pos)) =

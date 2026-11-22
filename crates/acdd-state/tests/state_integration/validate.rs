@@ -30,10 +30,16 @@ fn full_providers() -> CompositeDomainProvider {
     let code = StubDomainProvider::new(
         "code",
         DomainCapabilities {
-            checks: vec![CheckCapability {
-                name: "seam".to_owned(),
-                input_schema: SchemaDef::object(),
-            }],
+            checks: vec![
+                CheckCapability {
+                    name: "seam".to_owned(),
+                    input_schema: SchemaDef::object(),
+                },
+                CheckCapability {
+                    name: "lint".to_owned(),
+                    input_schema: acdd_core::lint::lint_check_input_schema(),
+                },
+            ],
             context_lenses: BTreeSet::from([
                 "symbols".to_owned(),
                 "tests".to_owned(),
