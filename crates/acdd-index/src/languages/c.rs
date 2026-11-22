@@ -3,9 +3,43 @@ use super::*;
 pub struct CProfile;
 /// Shared c language profile.
 pub static C: CProfile = CProfile;
+
+static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+    declaration_roles: &[
+        ("function_definition", DeclarationRole::Function),
+        ("struct_specifier", DeclarationRole::Struct),
+        ("union_specifier", DeclarationRole::Struct),
+        ("enum_specifier", DeclarationRole::Enum),
+        ("type_definition", DeclarationRole::Type),
+    ],
+    references: &["call_expression"],
+    call_forms: &[("call_expression", CallForm::Direct)],
+    scopes: &["translation_unit", "function_definition"],
+    imports: &["preproc_include"],
+    comments: &["comment"],
+    typed_bindings: &[
+        "parameter_declaration",
+        "init_declarator",
+        "declaration",
+    ],
+    assignments: &["assignment_expression"],
+    member_calls: &["call_expression"],
+    conditionals: &[
+        "if_statement",
+        "for_statement",
+        "while_statement",
+        "do_statement",
+        "switch_statement",
+    ],
+    ..SyntaxGrammarSpec::DEFAULT
+};
+
 impl LanguageProfile for CProfile {
     fn id(&self) -> &'static str {
         "c"
+    }
+    fn is_stdlib(&self, module: &str) -> bool {
+        c_family::is_c_stdlib(module)
     }
     fn family(&self) -> LanguageFamily {
         LanguageFamily("c")
@@ -21,6 +55,9 @@ impl LanguageProfile for CProfile {
     }
     fn symbol(&self, node: Syntax<'_>) -> Option<&'static str> {
         c_family::symbol(node)
+    }
+    fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+        Some(&SPEC)
     }
     fn symbol_name<'a>(&self, node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
         c_family::symbol_name(node, source)

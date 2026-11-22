@@ -33,6 +33,27 @@ const FIXTURES: &[Fixture] = &[
         source: "marker = true\n",
     },
     Fixture {
+        id: "bash",
+        feature: "lang-bash",
+        enabled: cfg!(feature = "lang-bash"),
+        path: "sample.sh",
+        source: "marker() { :; }\n",
+    },
+    Fixture {
+        id: "css",
+        feature: "lang-css",
+        enabled: cfg!(feature = "lang-css"),
+        path: "sample.css",
+        source: "marker { color: red; }\n",
+    },
+    Fixture {
+        id: "json",
+        feature: "lang-json",
+        enabled: cfg!(feature = "lang-json"),
+        path: "sample.json",
+        source: "{\"marker\": 1}\n",
+    },
+    Fixture {
         id: "python",
         feature: "lang-python",
         enabled: cfg!(feature = "lang-python"),

@@ -3,6 +3,51 @@ use super::*;
 pub struct Kotlin;
 /// Shared kotlin language profile.
 pub static KOTLIN: Kotlin = Kotlin;
+
+static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+    declaration_roles: &[
+        ("class_declaration", DeclarationRole::Class),
+        ("object_declaration", DeclarationRole::Class),
+        ("function_declaration", DeclarationRole::Function),
+        ("type_alias", DeclarationRole::Type),
+    ],
+    references: &[
+        "constructor_invocation",
+        "constructor_delegation_call",
+        "call_expression",
+    ],
+    call_forms: &[
+        ("constructor_invocation", CallForm::Constructor),
+        ("constructor_delegation_call", CallForm::Constructor),
+        ("call_expression", CallForm::Direct),
+    ],
+    scopes: &[
+        "source_file",
+        "class_declaration",
+        "object_declaration",
+        "function_declaration",
+    ],
+    imports: &["import_header"],
+    comments: &["line_comment", "multiline_comment"],
+    typed_bindings: &[
+        "parameter",
+        "class_parameter",
+        "variable_declaration",
+        "property_declaration",
+    ],
+    assignments: &["assignment"],
+    member_calls: &["call_expression"],
+    heritage: &["delegation_specifier"],
+    conditionals: &[
+        "if_expression",
+        "when_expression",
+        "for_statement",
+        "while_statement",
+        "try_expression",
+    ],
+    ..SyntaxGrammarSpec::DEFAULT
+};
+
 impl LanguageProfile for Kotlin {
     fn id(&self) -> &'static str {
         "kotlin"
@@ -49,7 +94,20 @@ impl LanguageProfile for Kotlin {
                 return Some("interface");
             }
         }
+        if node.kind() == "function_declaration"
+            && node
+                .parent()
+                .is_some_and(|p| matches!(p.kind(), "class_body" | "enum_class_body"))
+        {
+            return Some("method");
+        }
         self.symbol_kind(node.kind())
+    }
+    fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+        Some(&SPEC)
+    }
+    fn sibling_accessible(&self, _path_a: &str, _path_b: &str) -> bool {
+        true
     }
     fn symbol_name<'a>(&self, node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
         syntax::named(node, source, &["simple_identifier", "type_identifier"])
@@ -95,19 +153,26 @@ impl LanguageProfile for Kotlin {
     fn extract_imports(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if ctx.node.kind() == "import_header" {
             if let Some(module) = syntax::named(ctx.node, ctx.source, &["identifier"]) {
-                let alias = syntax::child(ctx.node, &["import_alias"])
-                    .and_then(|n| syntax::named(n, ctx.source, &["type_identifier"]))
-                    .or_else(|| module.rsplit('.').next());
-                syntax::import(ctx, facts, module, alias.map(str::to_owned));
+                if syntax::child(ctx.node, &["wildcard_import"]).is_some() {
+                    let target = format!("{module}.*");
+                    syntax::import(ctx, facts, &target, Some("*".to_owned()));
+                } else {
+                    let alias = syntax::child(ctx.node, &["import_alias"])
+                        .and_then(|n| syntax::named(n, ctx.source, &["type_identifier"]))
+                        .or_else(|| module.rsplit('.').next());
+                    syntax::import(ctx, facts, module, alias.map(str::to_owned));
+                }
             }
         }
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        if matches!(
-            ctx.node.kind(),
-            "constructor_invocation" | "constructor_delegation_call"
-        ) {
-            syntax::call_reference(ctx, facts, text(ctx.node, ctx.source), true);
+        if ctx.node.kind() == "constructor_invocation" {
+            if let Some(ty) = syntax::child(ctx.node, &["user_type"]) {
+                syntax::constructor_call_reference(ctx, facts, ty);
+            }
+        } else if ctx.node.kind() == "constructor_delegation_call" {
+            let target = ctx.node.named_child(0).unwrap_or(ctx.node);
+            syntax::call_reference(ctx, facts, text(target, ctx.source), false);
         }
         if ctx.node.kind() == "call_expression" {
             if let Some(callee) = ctx.node.named_child(0) {

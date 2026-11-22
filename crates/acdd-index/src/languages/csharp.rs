@@ -3,9 +3,73 @@ use super::*;
 pub struct CSharp;
 /// Shared csharp language profile.
 pub static CSHARP: CSharp = CSharp;
+
+static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+    declaration_roles: &[
+        ("class_declaration", DeclarationRole::Class),
+        ("record_declaration", DeclarationRole::Class),
+        ("interface_declaration", DeclarationRole::Interface),
+        ("struct_declaration", DeclarationRole::Struct),
+        ("enum_declaration", DeclarationRole::Enum),
+        ("method_declaration", DeclarationRole::Method),
+        ("constructor_declaration", DeclarationRole::Method),
+        ("local_function_statement", DeclarationRole::Function),
+    ],
+    references: &[
+        "object_creation_expression",
+        "implicit_object_creation_expression",
+        "constructor_initializer",
+        "invocation_expression",
+    ],
+    call_forms: &[
+        ("object_creation_expression", CallForm::Constructor),
+        ("implicit_object_creation_expression", CallForm::Constructor),
+        ("constructor_initializer", CallForm::Constructor),
+        ("invocation_expression", CallForm::Member),
+    ],
+    scopes: &[
+        "compilation_unit",
+        "namespace_declaration",
+        "file_scoped_namespace_declaration",
+        "class_declaration",
+        "record_declaration",
+        "struct_declaration",
+        "method_declaration",
+        "constructor_declaration",
+        "local_function_statement",
+    ],
+    imports: &["using_directive"],
+    comments: &["comment"],
+    typed_bindings: &["parameter", "variable_declarator"],
+    assignments: &["assignment_expression"],
+    constructors: &["object_creation_expression"],
+    member_calls: &["invocation_expression"],
+    heritage: &["base_list"],
+    conditionals: &[
+        "if_statement",
+        "for_statement",
+        "foreach_statement",
+        "while_statement",
+        "switch_statement",
+        "switch_expression",
+        "try_statement",
+        "catch_clause",
+    ],
+    ..SyntaxGrammarSpec::DEFAULT
+};
+
 impl LanguageProfile for CSharp {
     fn id(&self) -> &'static str {
         "csharp"
+    }
+    fn manifest_filenames(&self) -> &'static [&'static str] {
+        &["*.csproj"]
+    }
+    fn is_stdlib(&self, module: &str) -> bool {
+        module == "System"
+            || module.starts_with("System.")
+            || module == "Microsoft"
+            || module.starts_with("Microsoft.")
     }
     fn family(&self) -> LanguageFamily {
         LanguageFamily("csharp")
@@ -24,15 +88,30 @@ impl LanguageProfile for CSharp {
             "enum_declaration" => Some("enum"),
             "method_declaration" | "constructor_declaration" => Some("method"),
             "local_function_statement" => Some("function"),
-            "namespace_declaration" | "file_scoped_namespace_declaration" => Some("namespace"),
             _ => None,
         }
+    }
+    fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+        Some(&SPEC)
+    }
+    fn module_name_for_source(&self, path: &str, source: &str) -> String {
+        support::parse_namespace_line(source)
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.module_name(path))
+    }
+    fn sibling_accessible(&self, _path_a: &str, _path_b: &str) -> bool {
+        true
     }
     fn node_prefix(&self, _kind: &str) -> &'static str {
         "cs"
     }
-    fn normalize_import(&self, _owner: &str, _module: &str) -> Option<ImportPath> {
-        None
+    fn normalize_import(&self, _owner: &str, module: &str) -> Option<ImportPath> {
+        let trimmed = module.trim();
+        (!trimmed.is_empty()).then(|| ImportPath {
+            namespace: trimmed.to_owned(),
+            relative: false,
+            symbol_path: true,
+        })
     }
     fn class_scope(&self) -> bool {
         true
@@ -62,19 +141,25 @@ impl LanguageProfile for CSharp {
                     ctx,
                     facts,
                     text(target, ctx.source),
-                    field(ctx.node, ctx.source, "name").map(str::to_owned),
+                    Some(
+                        field(ctx.node, ctx.source, "name")
+                            .unwrap_or("*")
+                            .to_owned(),
+                    ),
                 );
             };
         }
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        if matches!(
-            ctx.node.kind(),
-            "object_creation_expression"
-                | "implicit_object_creation_expression"
-                | "constructor_initializer"
-        ) {
-            syntax::call_reference(ctx, facts, text(ctx.node, ctx.source), true);
+        if ctx.node.kind() == "object_creation_expression" {
+            if let Some(ty) = ctx.node.child_by_field_name("type") {
+                syntax::constructor_call_reference(ctx, facts, ty);
+            }
+        } else if ctx.node.kind() == "implicit_object_creation_expression" {
+            syntax::call_reference(ctx, facts, "new", false);
+        } else if ctx.node.kind() == "constructor_initializer" {
+            let target = ctx.node.child(1).unwrap_or(ctx.node);
+            syntax::call_reference(ctx, facts, text(target, ctx.source).trim(), false);
         }
         if ctx.node.kind() == "invocation_expression" {
             call(ctx, facts, false);

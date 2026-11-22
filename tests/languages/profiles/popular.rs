@@ -150,8 +150,8 @@ fn expected_coverage(language: &str) -> Vec<CoverageRow> {
             (
                 1,
                 "Missing.Library",
-                "unresolved",
-                "import Missing.Library: 0 modules, 0 alias targets",
+                "external",
+                "external dependency; no indexed provider for Missing.Library",
             ),
             (4, "Base", "resolved", resolved),
             (4, "Face", "resolved", resolved),
@@ -167,7 +167,6 @@ fn expected_coverage(language: &str) -> Vec<CoverageRow> {
                 "external dependency; no indexed provider for missing.Library",
             ),
             (4, "Base", "resolved", resolved),
-            (4, "Base()", "unresolved", dynamic),
             (4, "Face", "resolved", resolved),
             (7, "helper", "resolved", resolved),
             (8, "client.run", "unresolved", shadowed),
@@ -177,35 +176,33 @@ fn expected_coverage(language: &str) -> Vec<CoverageRow> {
             (
                 2,
                 "Missing\\Library",
-                "unresolved",
-                "import Missing\\Library: 0 modules, 0 alias targets",
+                "external",
+                "external dependency; no indexed provider for Missing.Library",
             ),
             (5, "Base", "resolved", resolved),
             (5, "Face", "resolved", resolved),
             (8, "helper", "resolved", resolved),
-            (9, "$client.run", "unresolved", dynamic),
+            (9, "$client.run", "unresolved", shadowed),
             (10, "$helper", "unresolved", dynamic),
         ],
         "ruby" => vec![
             (
                 1,
-                "'missing/library'",
-                "unresolved",
-                "import 'missing/library': 0 modules, 0 alias targets",
+                "missing/library",
+                "external",
+                "external dependency; no indexed provider for missing.library",
             ),
             (4, "Base", "resolved", resolved),
             (10, "helper", "resolved", resolved),
-            (13, "client", "unresolved", dynamic),
             (13, "client.run", "unresolved", shadowed),
-            (16, "helper", "unresolved", dynamic),
             (16, "helper.call", "unresolved", shadowed),
         ],
         "c" => vec![
             (
                 1,
                 "<missing.h>",
-                "unresolved",
-                "import <missing.h>: 0 modules, 0 alias targets",
+                "external",
+                "external dependency; no indexed provider for missing.h",
             ),
             (4, "helper", "resolved", resolved),
             (5, "client->run", "unresolved", dynamic),
@@ -215,8 +212,8 @@ fn expected_coverage(language: &str) -> Vec<CoverageRow> {
             (
                 1,
                 "<missing.hpp>",
-                "unresolved",
-                "import <missing.hpp>: 0 modules, 0 alias targets",
+                "external",
+                "external dependency; no indexed provider for missing.hpp",
             ),
             (3, "Base", "resolved", resolved),
             (6, "helper", "resolved", resolved),
@@ -265,7 +262,9 @@ fn popular_languages_preserve_calls_coverage_deltas_and_diagnostics() {
             .unwrap();
         drop(st);
         let mut expected = vec![("caller".into(), "helper".into())];
-        if language == "java" {
+        if language == "kotlin" {
+            expected.insert(0, ("Worker".into(), "Base".into()));
+        } else if language == "java" {
             expected.push(("shadow".into(), "helper".into()));
         }
         assert_eq!(calls, expected, "{language}");

@@ -3,9 +3,108 @@ use super::*;
 pub struct Cpp;
 /// Shared cpp language profile.
 pub static CPP: Cpp = Cpp;
+
+static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+    declaration_roles: &[
+        ("class_specifier", DeclarationRole::Class),
+        ("struct_specifier", DeclarationRole::Struct),
+        ("union_specifier", DeclarationRole::Struct),
+        ("enum_specifier", DeclarationRole::Enum),
+        ("namespace_definition", DeclarationRole::Namespace),
+        ("type_definition", DeclarationRole::Type),
+        ("function_definition", DeclarationRole::Function),
+        ("field_declaration", DeclarationRole::Method),
+    ],
+    references: &["call_expression", "new_expression"],
+    call_forms: &[
+        ("call_expression", CallForm::Direct),
+        ("new_expression", CallForm::Constructor),
+    ],
+    scopes: &[
+        "translation_unit",
+        "namespace_definition",
+        "class_specifier",
+        "struct_specifier",
+        "function_definition",
+    ],
+    imports: &["preproc_include"],
+    comments: &["comment"],
+    typed_bindings: &[
+        "parameter_declaration",
+        "optional_parameter_declaration",
+        "init_declarator",
+        "declaration",
+    ],
+    assignments: &["assignment_expression"],
+    constructors: &["new_expression"],
+    member_calls: &["call_expression"],
+    heritage: &["base_class_clause"],
+    conditionals: &[
+        "if_statement",
+        "for_statement",
+        "for_range_loop",
+        "while_statement",
+        "do_statement",
+        "switch_statement",
+        "try_statement",
+        "catch_clause",
+    ],
+    ..SyntaxGrammarSpec::DEFAULT
+};
+
+fn has_function_declarator(mut node: Syntax<'_>) -> bool {
+    while let Some(inner) = node.child_by_field_name("declarator") {
+        if inner.kind() == "function_declarator" {
+            return true;
+        }
+        node = inner;
+    }
+    false
+}
+
+fn is_out_of_line_method(node: Syntax<'_>) -> bool {
+    node.kind() == "function_definition"
+        && !node
+            .parent()
+            .is_some_and(|p| p.kind() == "field_declaration_list")
+        && node
+            .child_by_field_name("declarator")
+            .is_some_and(|declarator| syntax::declarator(declarator).kind() == "qualified_identifier")
+}
+
+fn out_of_line_method_parts<'a>(node: Syntax<'_>, source: &'a str) -> Option<(&'a str, &'a str)> {
+    if !is_out_of_line_method(node) {
+        return None;
+    }
+    let inner = syntax::declarator(node.child_by_field_name("declarator")?);
+    let scope = inner.child_by_field_name("scope")?;
+    let name = inner.child_by_field_name("name")?;
+    let class_name = text(scope, source).trim().rsplit("::").next()?.trim();
+    let method_name = text(name, source).trim();
+    (!class_name.is_empty() && !method_name.is_empty()).then_some((class_name, method_name))
+}
+
+fn enclosing_class_name<'a>(node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
+    let class_node = node
+        .parent()
+        .filter(|p| p.kind() == "field_declaration_list")
+        .and_then(|list| list.parent())
+        .filter(|owner| matches!(owner.kind(), "class_specifier" | "struct_specifier"))?;
+    class_node
+        .child_by_field_name("name")
+        .map(|n| text(n, source).trim())
+        .filter(|name| !name.is_empty())
+}
+
 impl LanguageProfile for Cpp {
     fn id(&self) -> &'static str {
         "cpp"
+    }
+    fn manifest_filenames(&self) -> &'static [&'static str] {
+        &["CMakeLists.txt", "meson.build"]
+    }
+    fn is_stdlib(&self, module: &str) -> bool {
+        c_family::is_cpp_stdlib(module)
     }
     fn family(&self) -> LanguageFamily {
         LanguageFamily("cpp")
@@ -20,18 +119,50 @@ impl LanguageProfile for Cpp {
         match kind {
             "class_specifier" => Some("class"),
             "namespace_definition" => Some("namespace"),
+            "field_declaration" => Some("method"),
             _ => c_family::symbol_kind(kind),
         }
     }
     fn symbol_name<'a>(&self, node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
-        c_family::symbol_name(node, source)
+        out_of_line_method_parts(node, source)
+            .map(|(_, method)| method)
+            .or_else(|| c_family::symbol_name(node, source))
     }
     fn symbol(&self, node: Syntax<'_>) -> Option<&'static str> {
-        if matches!(node.kind(), "class_specifier" | "namespace_definition") {
-            self.symbol_kind(node.kind())
-        } else {
-            c_family::symbol(node)
+        match node.kind() {
+            "class_specifier" => {
+                if node.child_by_field_name("body").is_none()
+                    && !node.parent().is_some_and(|p| {
+                        p.kind() == "declaration" && p.child_by_field_name("declarator").is_none()
+                    })
+                {
+                    None
+                } else {
+                    Some("class")
+                }
+            }
+            "namespace_definition" => Some("namespace"),
+            "function_definition" => {
+                if node
+                    .parent()
+                    .is_some_and(|p| p.kind() == "field_declaration_list")
+                    || is_out_of_line_method(node)
+                {
+                    Some("method")
+                } else {
+                    Some("function")
+                }
+            }
+            "field_declaration" => (node
+                .parent()
+                .is_some_and(|p| p.kind() == "field_declaration_list")
+                && has_function_declarator(node))
+            .then_some("method"),
+            _ => c_family::symbol(node),
         }
+    }
+    fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+        Some(&SPEC)
     }
     fn node_prefix(&self, _kind: &str) -> &'static str {
         "cpp"
@@ -75,29 +206,19 @@ impl LanguageProfile for Cpp {
         c_family::include(ctx, facts);
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        let class_initialization = ctx.node.kind() == "declaration"
-            && ctx.node.child_by_field_name("type").is_some_and(|n| {
-                matches!(
-                    n.kind(),
-                    "type_identifier" | "qualified_identifier" | "template_type"
-                )
-            });
-        if class_initialization
-            || matches!(
-                ctx.node.kind(),
-                "compound_literal_expression" | "subscript_expression"
-            )
-        {
-            syntax::call_reference(ctx, facts, text(ctx.node, ctx.source), true);
-        }
         if ctx.node.kind() == "new_expression" {
-            syntax::call_reference(ctx, facts, text(ctx.node, ctx.source), true);
+            if let Some(ty) = ctx.node.child_by_field_name("type") {
+                syntax::constructor_call_reference(ctx, facts, ty);
+            }
         }
         if ctx.node.kind() == "call_expression" {
             call(ctx, facts, false);
         }
     }
     fn extract_relations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+        if let Some((class_name, _)) = out_of_line_method_parts(ctx.node, ctx.source) {
+            crate::ast::relations::reference(facts, ctx.owner, class_name, "references", ctx.line());
+        }
         if let Some(bases) = syntax::child(ctx.node, &["base_class_clause"]) {
             syntax::types(
                 ctx,
@@ -107,6 +228,36 @@ impl LanguageProfile for Cpp {
                 &["access_specifier", "virtual"],
             );
         }
+    }
+    fn metadata(
+        &self,
+        node: Syntax<'_>,
+        source: &str,
+        _name: &str,
+        _file: &FileContext,
+    ) -> SymbolMetadata {
+        if let Some((class_name, _)) = out_of_line_method_parts(node, source) {
+            return SymbolMetadata {
+                receiver_name: Some("this".into()),
+                receiver_type: Some(class_name.to_owned()),
+                is_method: Some(true),
+                ..Default::default()
+            };
+        }
+        if node.kind() == "function_definition"
+            || (node.kind() == "field_declaration" && has_function_declarator(node))
+        {
+            if let Some(class_name) = enclosing_class_name(node, source) {
+                return SymbolMetadata {
+                    receiver_name: Some("this".into()),
+                    receiver_type: Some(class_name.to_owned()),
+                    is_method: Some(true),
+                    is_stub: node.kind() == "field_declaration",
+                    ..Default::default()
+                };
+            }
+        }
+        SymbolMetadata::default()
     }
 }
 

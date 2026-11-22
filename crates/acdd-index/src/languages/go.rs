@@ -33,16 +33,45 @@ fn parse_package_name(source: &str) -> Option<&str> {
     None
 }
 
-fn dependency_path(line: &str) -> Option<String> {
-    let candidate = line.split_whitespace().next()?;
-    let path = candidate.trim_matches(['\'', '"']);
-    (path.contains('.') || path.contains('/')).then(|| path.to_owned())
-}
-
 /// Language profile for go source files.
 pub struct Go;
 /// Shared go language profile.
 pub static GO: Go = Go;
+
+static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+    declaration_roles: &[
+        ("function_declaration", DeclarationRole::Function),
+        ("method_declaration", DeclarationRole::Method),
+        ("type_spec", DeclarationRole::Type),
+    ],
+    references: &["call_expression"],
+    call_forms: &[("call_expression", CallForm::Direct)],
+    scopes: &[
+        "source_file",
+        "function_declaration",
+        "method_declaration",
+        "func_literal",
+    ],
+    imports: &["import_spec"],
+    comments: &["comment"],
+    typed_bindings: &[
+        "parameter_declaration",
+        "variadic_parameter_declaration",
+        "var_spec",
+        "const_spec",
+    ],
+    assignments: &["short_var_declaration", "assignment_statement"],
+    constructors: &["composite_literal"],
+    member_calls: &["call_expression"],
+    conditionals: &[
+        "if_statement",
+        "for_statement",
+        "expression_switch_statement",
+        "type_switch_statement",
+    ],
+    ..SyntaxGrammarSpec::DEFAULT
+};
+
 impl LanguageProfile for Go {
     fn id(&self) -> &'static str {
         "go"
@@ -51,43 +80,13 @@ impl LanguageProfile for Go {
         &["go.mod"]
     }
     fn extract_manifest_dependencies(&self, filename: &str, content: &str) -> Vec<String> {
+        use super::dependency_registry::parser::ManifestParser;
         if filename != "go.mod" {
             return Vec::new();
         }
-        let mut dependencies = Vec::new();
-        let mut in_require_block = false;
-        for line in content.lines() {
-            let line = line.split_once("//").map_or(line, |(before, _)| before).trim();
-            if line.is_empty() {
-                continue;
-            }
-            if in_require_block {
-                if line.starts_with(')') {
-                    in_require_block = false;
-                } else if let Some(module) = dependency_path(line) {
-                    dependencies.push(module);
-                }
-                continue;
-            }
-            if let Some(rest) = line.strip_prefix("require") {
-                if !rest
-                    .chars()
-                    .next()
-                    .is_some_and(|character| character.is_whitespace() || character == '(')
-                {
-                    continue;
-                }
-                let rest = rest.trim();
-                if rest.starts_with('(') {
-                    in_require_block = true;
-                } else if let Some(module) = dependency_path(rest) {
-                    dependencies.push(module);
-                }
-            }
-        }
-        dependencies.sort();
-        dependencies.dedup();
-        dependencies
+        super::dependency_registry::parsers::go::GO_PARSER
+            .parse(filename, content)
+            .dependencies
     }
     fn is_stdlib(&self, module: &str) -> bool {
         const STANDARD_PACKAGES: &[&str] = &[
@@ -112,6 +111,19 @@ impl LanguageProfile for Go {
     }
     fn symbol_kind(&self, k: &str) -> Option<&'static str> {
         kind(k)
+    }
+    fn symbol(&self, node: Syntax<'_>) -> Option<&'static str> {
+        if node.kind() == "type_spec" {
+            return match node.child_by_field_name("type").map(|t| t.kind()) {
+                Some("struct_type") => Some("struct"),
+                Some("interface_type") => Some("interface"),
+                _ => Some("type"),
+            };
+        }
+        self.symbol_kind(node.kind())
+    }
+    fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+        Some(&SPEC)
     }
     fn node_prefix(&self, _kind: &str) -> &'static str {
         "go"

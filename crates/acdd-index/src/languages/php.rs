@@ -3,9 +3,109 @@ use super::*;
 pub struct Php;
 /// Shared php language profile.
 pub static PHP: Php = Php;
+
+static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+    declaration_roles: &[
+        ("class_declaration", DeclarationRole::Class),
+        ("interface_declaration", DeclarationRole::Interface),
+        ("trait_declaration", DeclarationRole::Trait),
+        ("enum_declaration", DeclarationRole::Enum),
+        ("function_definition", DeclarationRole::Function),
+        ("method_declaration", DeclarationRole::Method),
+    ],
+    references: &[
+        "function_call_expression",
+        "member_call_expression",
+        "nullsafe_member_call_expression",
+        "scoped_call_expression",
+        "object_creation_expression",
+    ],
+    call_forms: &[
+        ("function_call_expression", CallForm::Direct),
+        ("member_call_expression", CallForm::Member),
+        ("nullsafe_member_call_expression", CallForm::Member),
+        ("scoped_call_expression", CallForm::Scoped),
+        ("object_creation_expression", CallForm::Constructor),
+    ],
+    scopes: &[
+        "program",
+        "class_declaration",
+        "interface_declaration",
+        "trait_declaration",
+        "enum_declaration",
+        "function_definition",
+        "method_declaration",
+    ],
+    imports: &[
+        "namespace_use_clause",
+        "namespace_use_group_clause",
+        "include_expression",
+        "include_once_expression",
+        "require_expression",
+        "require_once_expression",
+    ],
+    comments: &["comment"],
+    typed_bindings: &[
+        "simple_parameter",
+        "variadic_parameter",
+        "property_promotion_parameter",
+    ],
+    assignments: &["assignment_expression"],
+    constructors: &["object_creation_expression"],
+    member_calls: &[
+        "member_call_expression",
+        "nullsafe_member_call_expression",
+    ],
+    heritage: &["base_clause", "class_interface_clause"],
+    conditionals: &[
+        "if_statement",
+        "for_statement",
+        "foreach_statement",
+        "while_statement",
+        "switch_statement",
+        "match_expression",
+        "try_statement",
+        "catch_clause",
+    ],
+    ..SyntaxGrammarSpec::DEFAULT
+};
+
 impl LanguageProfile for Php {
     fn id(&self) -> &'static str {
         "php"
+    }
+    fn manifest_filenames(&self) -> &'static [&'static str] {
+        &["composer.json"]
+    }
+    fn is_stdlib(&self, module: &str) -> bool {
+        let root = module.trim_start_matches('\\');
+        matches!(
+            root,
+            "DateTime"
+                | "DateTimeImmutable"
+                | "DateTimeInterface"
+                | "DateInterval"
+                | "Exception"
+                | "RuntimeException"
+                | "InvalidArgumentException"
+                | "LogicException"
+                | "Throwable"
+                | "Error"
+                | "PDO"
+                | "PDOStatement"
+                | "stdClass"
+                | "Closure"
+                | "Generator"
+                | "Iterator"
+                | "Countable"
+                | "ArrayAccess"
+                | "JsonSerializable"
+                | "Stringable"
+                | "SplFileInfo"
+                | "SplFileObject"
+                | "DirectoryIterator"
+                | "RecursiveDirectoryIterator"
+        )
     }
     fn family(&self) -> LanguageFamily {
         LanguageFamily("php")
@@ -24,15 +124,43 @@ impl LanguageProfile for Php {
             "enum_declaration" => Some("enum"),
             "function_definition" => Some("function"),
             "method_declaration" => Some("method"),
-            "namespace_definition" => Some("namespace"),
             _ => None,
         }
+    }
+    fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+        Some(&SPEC)
     }
     fn node_prefix(&self, _kind: &str) -> &'static str {
         "php"
     }
-    fn normalize_import(&self, _owner: &str, _module: &str) -> Option<ImportPath> {
-        None
+    fn module_name_for_source(&self, path: &str, source: &str) -> String {
+        if let Some(raw) = support::parse_namespace_line(source) {
+            let ns = raw.trim_start_matches('\\').replace('\\', ".");
+            if !ns.is_empty() {
+                return ns;
+            }
+        }
+        self.module_name(path)
+    }
+    fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath> {
+        let trimmed = module.trim().trim_matches(['"', '\'']);
+        if trimmed.is_empty() {
+            return None;
+        }
+        if trimmed.ends_with(".php") || trimmed.starts_with("./") || trimmed.starts_with("../") {
+            let namespace = relative_namespace(owner, module_stem(trimmed))?;
+            return Some(ImportPath {
+                namespace,
+                relative: true,
+                symbol_path: false,
+            });
+        }
+        let namespace = trimmed.trim_start_matches('\\').replace('\\', ".");
+        (!namespace.is_empty()).then_some(ImportPath {
+            namespace,
+            relative: false,
+            symbol_path: true,
+        })
     }
     fn receiver(&self, name: &str, owner: &Node) -> bool {
         name == "this" && owner.details["receiver_name"] == "this"
@@ -99,7 +227,19 @@ impl LanguageProfile for Php {
                 | "require_expression"
                 | "require_once_expression"
         ) {
-            syntax::import(ctx, facts, text(ctx.node, ctx.source), None);
+            let mut cursor = ctx.node.walk();
+            let target = ctx
+                .node
+                .named_children(&mut cursor)
+                .find_map(|mut child| {
+                    while child.kind() == "parenthesized_expression" {
+                        child = child.named_child(0)?;
+                    }
+                    matches!(child.kind(), "string" | "encapsed_string")
+                        .then(|| text(child, ctx.source).trim().trim_matches(['"', '\'']))
+                })
+                .unwrap_or_else(|| text(ctx.node, ctx.source));
+            syntax::import(ctx, facts, target, Some("*".to_owned()));
         }
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
@@ -141,8 +281,7 @@ impl LanguageProfile for Php {
                         ctx,
                         facts,
                         &expression,
-                        name.kind() == "variable_name"
-                            || (receiver.kind() == "variable_name" && !proven_this),
+                        name.kind() == "variable_name",
                     );
                 }
             }

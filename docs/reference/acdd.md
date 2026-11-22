@@ -272,3 +272,10 @@ DAG waves using `crates/acdd-state/src/runner/`:
 ## 5. Documentation and instructions co-evolution
 
 A task that changes observable behavior, public interfaces, workflows, configuration, or operational assumptions updates matching documentation and agent instructions during its `build` stage (and includes those paths in its initial `scope`). Follow the [shared skill's task guidance](../../skills/acdd/SKILL.md#acdd-profiles-and-task-operations).
+
+## Compiled language profiles
+
+`acdd-index` selects tree-sitter language grammars at compile time through Cargo features (with built-in `sql` always enabled):
+
+- **Default build (`default` feature set)**: `lang-html` (`html`), `lang-yaml` (`yaml`), `lang-toml` (`toml`), `lang-bash` (`bash` for `.sh`, `.bash`, `.zsh`), `lang-css` (`css` for `.css`), `lang-json` (`json` for `.json`), `lang-python` (`python`), `lang-rust` (`rust`), `lang-typescript` (`typescript`, `javascript`, `tsx`, `jsx`), `lang-vue` (`vue`), `lang-proto` (`proto`), plus built-in `sql`.
+- **Optional Tier-2 profiles (`all-languages` or individual `lang-*` features)**: `lang-go` (`go`), `lang-java` (`java`), `lang-csharp` (`csharp`), `lang-kotlin` (`kotlin`), `lang-php` (`php`), `lang-ruby` (`ruby`), `lang-c` (`c`), `lang-cpp` (`cpp`). Build with `--features all-languages` or `--features lang-<id>` to index repositories using those languages.

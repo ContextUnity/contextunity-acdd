@@ -14,7 +14,8 @@ fn declarative_framework_rules_reach_persisted_receivers_routes_and_dependencies
         &conn,
         "SELECT CAST(COUNT(*) AS TEXT) FROM edges e JOIN nodes s ON s.node_hash=e.src_hash WHERE s.kind='component' AND e.kind='contains'",
     );
-    assert_eq!(component_contains_count, ["39"]);
+    // `package.json` in `cross_pack_sources()` is indexed as a `.json` source file under default features.
+    assert_eq!(component_contains_count, ["40"]);
     let routes = route_names(&conn);
     for expected in [
         "POST /custom",

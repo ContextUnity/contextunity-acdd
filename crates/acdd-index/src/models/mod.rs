@@ -852,10 +852,19 @@ pub fn is_test(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::tags::LanguageId;
     use super::{EdgeKind, NodeDetailKey};
 
     #[test]
     fn wire_tags_and_detail_keys_roundtrip_expected_constants() {
+        for (variant, wire) in [
+            (LanguageId::Bash, "bash"),
+            (LanguageId::Css, "css"),
+            (LanguageId::Json, "json"),
+        ] {
+            assert_eq!((variant.as_str(), LanguageId::parse(wire)), (wire, Some(variant)));
+            assert!(LanguageId::ALL.contains(&variant) && LanguageId::WIRE_NAMES.contains(&wire));
+        }
         for (variant, wire) in [
             (EdgeKind::Governs, "governs"),
             (EdgeKind::Documents, "documents"),

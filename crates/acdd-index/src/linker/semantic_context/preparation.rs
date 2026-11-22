@@ -412,7 +412,8 @@ impl<'a> Context<'a> {
                 .flatten()
                 .copied()
                 .filter(|class| {
-                    class.path == node.path && matches!(class.kind.as_str(), "class" | "interface")
+                    class.path == node.path
+                        && matches!(class.kind.as_str(), "class" | "struct" | "interface")
                 });
             let Some(class) = classes.next() else {
                 continue;

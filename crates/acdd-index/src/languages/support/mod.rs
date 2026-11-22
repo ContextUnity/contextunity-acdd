@@ -26,6 +26,86 @@ pub(super) fn symbol_import_path(module: &str) -> Option<ImportPath> {
     })
 }
 
+#[cfg(any(feature = "lang-bash", feature = "lang-css", feature = "lang-json"))]
+pub(super) fn relative_file_import(owner: &str, target: &str) -> Option<ImportPath> {
+    let namespace = relative_namespace(owner, module_stem(target))?;
+    Some(ImportPath {
+        namespace,
+        relative: true,
+        symbol_path: false,
+    })
+}
+
+#[cfg(any(
+    feature = "lang-bash",
+    feature = "lang-cpp",
+    feature = "lang-csharp",
+    feature = "lang-css",
+    feature = "lang-java",
+    feature = "lang-json",
+    feature = "lang-kotlin",
+    feature = "lang-php",
+    feature = "lang-ruby"
+))]
+fn push_reference(
+    ctx: &SyntaxContext<'_, '_>,
+    facts: &mut Facts,
+    kind: &str,
+    expression: String,
+    dynamic: bool,
+) {
+    facts.references.push(Reference {
+        source: ctx.owner.into(),
+        expression,
+        kind: kind.into(),
+        line: ctx.line(),
+        column: ctx.node.start_position().column,
+        alias: None,
+        module: None,
+        dynamic,
+        receiver_hint: None,
+    });
+}
+
+#[cfg(any(feature = "lang-css", feature = "lang-json"))]
+pub(super) fn push_static_reference(
+    ctx: &SyntaxContext<'_, '_>,
+    facts: &mut Facts,
+    expression: &str,
+) {
+    push_reference(ctx, facts, "references", expression.to_owned(), false);
+}
+
+#[cfg(any(feature = "lang-csharp", feature = "lang-php"))]
+pub(in crate::languages) fn parse_namespace_line(source: &str) -> Option<&str> {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed
+            .strip_prefix("namespace")
+            .filter(|rest| rest.chars().next().is_some_and(char::is_whitespace))
+        {
+            let ns = rest.trim().trim_end_matches([';', '{']).trim();
+            if !ns.is_empty() && !ns.chars().any(char::is_whitespace) {
+                return Some(ns);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(any(
+    feature = "lang-bash",
+    feature = "lang-cpp",
+    feature = "lang-csharp",
+    feature = "lang-java",
+    feature = "lang-kotlin",
+    feature = "lang-php",
+    feature = "lang-ruby"
+))]
+pub(in crate::languages) fn push_call_reference(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, expression: &str, dynamic: bool) {
+    push_reference(ctx, facts, "calls", ast::bounded_expression(expression), dynamic);
+}
+
 #[cfg(any(feature = "lang-toml", feature = "lang-yaml"))]
 pub(super) fn empty_bindings() -> ast::ScopeBindings {
     ast::ScopeBindings {
@@ -92,20 +172,41 @@ mod shared {
         expression: &str,
         dynamic: bool,
     ) {
-        facts.references.push(Reference {
-            source: ctx.owner.into(),
-            expression: ast::bounded_expression(expression),
-            kind: "calls".into(),
-            line: ctx.line(),
-            column: ctx.node.start_position().column,
-            alias: None,
-            module: None,
-            dynamic: dynamic
-                || !expression
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || "_.:".contains(c)),
-            receiver_hint: None,
-        });
+        let is_dynamic = dynamic
+            || !expression
+                .chars()
+                .all(|c| c.is_alphanumeric() || "_.:$".contains(c));
+        super::push_call_reference(ctx, facts, expression, is_dynamic);
+    }
+
+    #[cfg(any(
+        feature = "lang-cpp",
+        feature = "lang-csharp",
+        feature = "lang-java",
+        feature = "lang-kotlin"
+    ))]
+    pub(in crate::languages) fn base_constructor_target(raw: &str) -> &str {
+        let trimmed = raw.trim();
+        trimmed
+            .split(['<', '(', ';'])
+            .next()
+            .map(str::trim)
+            .filter(|head| !head.is_empty())
+            .unwrap_or(trimmed)
+    }
+
+    #[cfg(any(
+        feature = "lang-cpp",
+        feature = "lang-csharp",
+        feature = "lang-java",
+        feature = "lang-kotlin"
+    ))]
+    pub(in crate::languages) fn constructor_call_reference(
+        ctx: &SyntaxContext<'_, '_>,
+        facts: &mut Facts,
+        ty: Syntax<'_>,
+    ) {
+        call_reference(ctx, facts, base_constructor_target(text(ty, ctx.source)), false);
     }
 
     #[cfg(any(feature = "lang-java", feature = "lang-ruby"))]

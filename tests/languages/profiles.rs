@@ -27,6 +27,7 @@ fn persisted_graph(w: &PersistedWorkspaceHarness) -> Vec<Vec<String>> {
 }
 
 mod workspaces;
+mod tier2_parity;
 
 #[cfg(feature = "lang-rust")]
 mod forwarding;

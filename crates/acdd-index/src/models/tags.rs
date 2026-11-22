@@ -131,6 +131,9 @@ wire_tags!(LanguageId {
     Proto => "proto",
     Yaml => "yaml",
     Toml => "toml",
+    Bash => "bash",
+    Css => "css",
+    Json => "json",
     Markdown => "markdown",
     Workspace => "workspace",
 });

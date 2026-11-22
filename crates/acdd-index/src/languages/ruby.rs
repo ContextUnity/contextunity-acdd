@@ -3,9 +3,132 @@ use super::*;
 pub struct Ruby;
 /// Shared ruby language profile.
 pub static RUBY: Ruby = Ruby;
+
+static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+    declaration_roles: &[
+        ("class", DeclarationRole::Class),
+        ("module", DeclarationRole::Namespace),
+        ("method", DeclarationRole::Method),
+        ("singleton_method", DeclarationRole::Method),
+        ("lambda", DeclarationRole::Function),
+    ],
+    references: &["call"],
+    call_forms: &[("call", CallForm::Member)],
+    scopes: &[
+        "program",
+        "class",
+        "module",
+        "method",
+        "singleton_method",
+        "lambda",
+        "block",
+        "do_block",
+    ],
+    imports: &["call"],
+    comments: &["comment"],
+    typed_bindings: &[
+        "optional_parameter",
+        "keyword_parameter",
+        "splat_parameter",
+        "hash_splat_parameter",
+        "block_parameter",
+    ],
+    assignments: &["assignment"],
+    member_calls: &["call"],
+    heritage: &["superclass"],
+    conditionals: &["if", "unless", "while", "until", "for", "case", "when", "rescue"],
+    ..SyntaxGrammarSpec::DEFAULT
+};
+
 impl LanguageProfile for Ruby {
     fn id(&self) -> &'static str {
         "ruby"
+    }
+    fn manifest_filenames(&self) -> &'static [&'static str] {
+        &["Gemfile", "*.gemspec"]
+    }
+    fn is_stdlib(&self, module: &str) -> bool {
+        let root = module
+            .trim()
+            .trim_matches(['\'', '"'])
+            .split('/')
+            .next()
+            .unwrap_or("");
+        matches!(
+            root,
+            "abbrev"
+                | "base64"
+                | "benchmark"
+                | "bigdecimal"
+                | "cgi"
+                | "csv"
+                | "date"
+                | "digest"
+                | "drb"
+                | "English"
+                | "erb"
+                | "etc"
+                | "expect"
+                | "fcntl"
+                | "fiddle"
+                | "fileutils"
+                | "find"
+                | "forwardable"
+                | "getoptlong"
+                | "io"
+                | "ipaddr"
+                | "irb"
+                | "json"
+                | "logger"
+                | "matrix"
+                | "minitest"
+                | "monitor"
+                | "mutex_m"
+                | "net"
+                | "nkf"
+                | "objspace"
+                | "observer"
+                | "open-uri"
+                | "open3"
+                | "openssl"
+                | "optparse"
+                | "ostruct"
+                | "pathname"
+                | "pp"
+                | "prettyprint"
+                | "prime"
+                | "pstore"
+                | "psych"
+                | "racc"
+                | "rdoc"
+                | "readline"
+                | "reline"
+                | "resolv"
+                | "rexml"
+                | "rinda"
+                | "ripper"
+                | "rss"
+                | "rubygems"
+                | "securerandom"
+                | "set"
+                | "shellwords"
+                | "singleton"
+                | "socket"
+                | "stringio"
+                | "strscan"
+                | "syslog"
+                | "tempfile"
+                | "time"
+                | "timeout"
+                | "tmpdir"
+                | "tsort"
+                | "unicode_normalize"
+                | "uri"
+                | "weakref"
+                | "webrick"
+                | "yaml"
+                | "zlib"
+        )
     }
     fn family(&self) -> LanguageFamily {
         LanguageFamily("ruby")
@@ -25,18 +148,30 @@ impl LanguageProfile for Ruby {
             _ => None,
         }
     }
+    fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+        Some(&SPEC)
+    }
     fn node_prefix(&self, _kind: &str) -> &'static str {
         "rb"
     }
     fn normalize_import(&self, owner: &str, module: &str) -> Option<ImportPath> {
-        module
-            .strip_prefix("./")
-            .and_then(|module| relative_namespace(owner, module.trim_end_matches(".rb")))
-            .map(|namespace| ImportPath {
+        let trimmed = module.trim().trim_matches(['\'', '"']);
+        if trimmed.is_empty() {
+            return None;
+        }
+        if trimmed.starts_with("./") || trimmed.starts_with("../") {
+            let stripped = module_stem(trimmed.trim_end_matches(".rb"));
+            return relative_namespace(owner, stripped).map(|namespace| ImportPath {
                 namespace,
                 relative: true,
                 symbol_path: false,
-            })
+            });
+        }
+        let normalized = trimmed
+            .trim_end_matches(".rb")
+            .replace(['/', '\\'], ".")
+            .replace("::", ".");
+        (!normalized.is_empty()).then(|| ImportPath::absolute(normalized))
     }
     fn class_scope(&self) -> bool {
         true
@@ -82,34 +217,36 @@ impl LanguageProfile for Ruby {
                 let literal = value
                     .is_some_and(|n| n.kind() == "string" && !text(n, ctx.source).contains("#{"));
                 let path = raw.trim_matches(['\'', '"']);
-                let module = if method == Some("require_relative") && literal {
-                    format!("./{path}")
+                let module = if literal {
+                    if method == Some("require_relative") {
+                        if path.starts_with("./") || path.starts_with("../") {
+                            path.to_owned()
+                        } else {
+                            format!("./{path}")
+                        }
+                    } else {
+                        path.to_owned()
+                    }
                 } else {
                     raw.into()
                 };
-                syntax::import(ctx, facts, &module, None);
+                syntax::import(ctx, facts, &module, Some("*".to_owned()));
             }
         }
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        if matches!(
-            ctx.node.kind(),
-            "yield" | "super" | "element_reference" | "binary" | "unary"
-        ) || (ctx.node.kind() == "identifier" && bare_value_expression(ctx.node))
-        {
-            syntax::call_reference(ctx, facts, text(ctx.node, ctx.source), true);
-        }
         if ctx.node.kind() == "call" {
             if let Some(name) = ctx.node.child_by_field_name("method") {
-                if ctx.node.child_by_field_name("receiver").is_none()
-                    && matches!(
-                        text(name, ctx.source),
-                        "require" | "require_relative" | "load"
-                    )
-                {
+                let receiver = ctx.node.child_by_field_name("receiver");
+                let method = text(name, ctx.source);
+                if receiver.is_none() && matches!(method, "require" | "require_relative" | "load") {
                     return;
                 }
-                syntax::member_call(ctx, facts, name, ctx.node.child_by_field_name("receiver"));
+                if let Some(recv) = receiver.filter(|r| r.kind() == "constant" && method == "new") {
+                    syntax::call_reference(ctx, facts, text(recv, ctx.source), false);
+                    return;
+                }
+                syntax::member_call(ctx, facts, name, receiver);
             }
         }
     }
@@ -118,41 +255,6 @@ impl LanguageProfile for Ruby {
             syntax::types(ctx, facts, base, "inherits", &[]);
         }
     }
-}
-
-fn bare_value_expression(mut node: Syntax<'_>) -> bool {
-    while let Some(parent) = node.parent() {
-        match parent.kind() {
-            "call" if parent.child_by_field_name("method") == Some(node) => return false,
-            "method" | "singleton_method" if parent.child_by_field_name("name") == Some(node) => {
-                return false
-            }
-            "method_parameters"
-            | "lambda_parameters"
-            | "block_parameters"
-            | "destructured_parameter"
-            | "splat_parameter"
-            | "hash_splat_parameter"
-            | "block_parameter"
-            | "exception_variable"
-            | "left_assignment_list"
-            | "destructured_left_assignment"
-            | "rest_assignment"
-            | "alias"
-            | "undef" => return false,
-            "optional_parameter" | "keyword_parameter" => {
-                return parent.child_by_field_name("value") == Some(node)
-            }
-            "assignment" | "operator_assignment" => {
-                return parent.child_by_field_name("right") == Some(node)
-            }
-            "for" if parent.child_by_field_name("pattern") == Some(node) => return false,
-            "rescue" if parent.child_by_field_name("variable") == Some(node) => return false,
-            _ => {}
-        }
-        node = parent;
-    }
-    true
 }
 
 /// Language profiles provided by this module.

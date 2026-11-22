@@ -3,6 +3,59 @@ use super::*;
 pub struct Java;
 /// Shared java language profile.
 pub static JAVA: Java = Java;
+
+static SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+    declaration_roles: &[
+        ("class_declaration", DeclarationRole::Class),
+        ("record_declaration", DeclarationRole::Class),
+        ("interface_declaration", DeclarationRole::Interface),
+        ("enum_declaration", DeclarationRole::Enum),
+        ("method_declaration", DeclarationRole::Method),
+        ("constructor_declaration", DeclarationRole::Method),
+    ],
+    references: &[
+        "explicit_constructor_invocation",
+        "method_invocation",
+        "object_creation_expression",
+    ],
+    call_forms: &[
+        ("explicit_constructor_invocation", CallForm::Constructor),
+        ("method_invocation", CallForm::Member),
+        ("object_creation_expression", CallForm::Constructor),
+    ],
+    scopes: &[
+        "program",
+        "class_declaration",
+        "record_declaration",
+        "interface_declaration",
+        "enum_declaration",
+        "method_declaration",
+        "constructor_declaration",
+    ],
+    imports: &["import_declaration"],
+    comments: &["line_comment", "block_comment"],
+    typed_bindings: &[
+        "formal_parameter",
+        "spread_parameter",
+        "catch_formal_parameter",
+        "variable_declarator",
+    ],
+    assignments: &["assignment_expression"],
+    constructors: &["object_creation_expression"],
+    member_calls: &["method_invocation"],
+    heritage: &["superclass", "super_interfaces", "extends_interfaces"],
+    conditionals: &[
+        "if_statement",
+        "for_statement",
+        "enhanced_for_statement",
+        "while_statement",
+        "switch_expression",
+        "try_statement",
+        "catch_clause",
+    ],
+    ..SyntaxGrammarSpec::DEFAULT
+};
+
 impl LanguageProfile for Java {
     fn id(&self) -> &'static str {
         "java"
@@ -35,6 +88,12 @@ impl LanguageProfile for Java {
             "method_declaration" | "constructor_declaration" => Some("method"),
             _ => None,
         }
+    }
+    fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+        Some(&SPEC)
+    }
+    fn sibling_accessible(&self, _path_a: &str, _path_b: &str) -> bool {
+        true
     }
     fn node_prefix(&self, _kind: &str) -> &'static str {
         "java"
@@ -81,18 +140,29 @@ impl LanguageProfile for Java {
             if let Some(module) =
                 syntax::named(ctx.node, ctx.source, &["scoped_identifier", "identifier"])
             {
-                syntax::import(
-                    ctx,
-                    facts,
-                    module,
-                    module.rsplit('.').next().map(str::to_owned),
-                );
+                let has_wildcard = syntax::child(ctx.node, &["asterisk"]).is_some();
+                if has_wildcard {
+                    let target = format!("{module}.*");
+                    syntax::import(ctx, facts, &target, Some("*".to_owned()));
+                } else {
+                    syntax::import(
+                        ctx,
+                        facts,
+                        module,
+                        module.rsplit('.').next().map(str::to_owned),
+                    );
+                }
             }
         }
     }
     fn extract_calls(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
         if ctx.node.kind() == "explicit_constructor_invocation" {
-            syntax::call_reference(ctx, facts, text(ctx.node, ctx.source), true);
+            let target = ctx
+                .node
+                .child_by_field_name("constructor")
+                .map(|n| text(n, ctx.source))
+                .unwrap_or_else(|| syntax::base_constructor_target(text(ctx.node, ctx.source)));
+            syntax::call_reference(ctx, facts, target, false);
         }
         if ctx.node.kind() == "method_invocation" {
             if let Some(name) = ctx.node.child_by_field_name("name") {
@@ -101,7 +171,7 @@ impl LanguageProfile for Java {
         }
         if ctx.node.kind() == "object_creation_expression" {
             if let Some(name) = ctx.node.child_by_field_name("type") {
-                syntax::call_reference(ctx, facts, text(name, ctx.source), false);
+                syntax::constructor_call_reference(ctx, facts, name);
             }
         }
     }

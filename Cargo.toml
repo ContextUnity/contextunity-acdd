@@ -28,11 +28,14 @@ path = "src/main.rs"
 
 
 [features]
-default = ["lang-python", "lang-rust", "lang-typescript", "lang-vue", "lang-proto", "lang-html", "lang-yaml", "lang-toml"]
-all-languages = ["lang-python", "lang-rust", "lang-typescript", "lang-vue", "lang-proto", "lang-html", "lang-yaml", "lang-toml", "lang-go", "lang-java", "lang-csharp", "lang-kotlin", "lang-php", "lang-ruby", "lang-c", "lang-cpp"]
+default = ["lang-python", "lang-rust", "lang-typescript", "lang-vue", "lang-proto", "lang-html", "lang-yaml", "lang-toml", "lang-bash", "lang-css", "lang-json"]
+all-languages = ["lang-python", "lang-rust", "lang-typescript", "lang-vue", "lang-proto", "lang-html", "lang-yaml", "lang-toml", "lang-bash", "lang-css", "lang-json", "lang-go", "lang-java", "lang-csharp", "lang-kotlin", "lang-php", "lang-ruby", "lang-c", "lang-cpp"]
 lang-html = ["acdd-index/lang-html"]
 lang-yaml = ["acdd-index/lang-yaml"]
 lang-toml = ["acdd-index/lang-toml"]
+lang-bash = ["acdd-index/lang-bash"]
+lang-css = ["acdd-index/lang-css"]
+lang-json = ["acdd-index/lang-json"]
 lang-python = ["acdd-index/lang-python", "acdd-index/lang-toml"]
 lang-rust = ["acdd-index/lang-rust", "acdd-index/lang-toml"]
 lang-typescript = ["acdd-index/lang-typescript"]

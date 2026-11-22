@@ -348,24 +348,119 @@ impl<'source, 'tree> GenericScopeAnalysis<'source, 'tree> {
     }
 
     fn record_typed_binding(&mut self, node: Syntax<'tree>, conditional: bool) {
-        let Some(name_node) = binding_target(node) else {
+        if node.kind() == "property_declaration" {
+            let mut cursor = node.walk();
+            let mut var_decl = None;
+            let mut initializer = None;
+            for child in node.named_children(&mut cursor) {
+                match child.kind() {
+                    "variable_declaration" => var_decl = Some(child),
+                    "modifiers" | "binding_pattern_kind" | "type_constraints" | "getter"
+                    | "setter" => {}
+                    _ => initializer = Some(child),
+                }
+            }
+            if let Some(decl) = var_decl {
+                self.record_kotlin_decl(decl, initializer, conditional);
+            }
             return;
-        };
-        let Some(name) = identifier_name(name_node, self.source) else {
+        }
+        if node.kind() == "variable_declaration"
+            && node
+                .parent()
+                .is_some_and(|p| p.kind() == "property_declaration")
+        {
+            return;
+        }
+        if node.kind() == "declaration"
+            && node
+                .child_by_field_name("declarator")
+                .is_some_and(|d| d.kind() == "init_declarator")
+        {
+            return;
+        }
+        if matches!(node.kind(), "parameter" | "variable_declaration")
+            && node.child_by_field_name("name").is_none()
+            && node.child_by_field_name("type").is_none()
+        {
+            self.record_kotlin_decl(node, None, conditional);
+            return;
+        }
+        let Some(name_node) = binding_target(node).map(unwrap_declarator) else {
             return;
         };
         let explicit_type = node
             .child_by_field_name("type")
+            .or_else(|| {
+                matches!(node.kind(), "variable_declarator" | "init_declarator")
+                    .then(|| node.parent().and_then(|p| p.child_by_field_name("type")))
+                    .flatten()
+            })
+            .filter(|ty| !matches!(ty.kind(), "implicit_type") && text(*ty, self.source).trim() != "var")
             .and_then(|ty| parse_type_expr(ty, self.source, 0));
         let inferred_value = node
             .child_by_field_name("value")
             .or_else(|| node.child_by_field_name("initializer"))
             .or_else(|| node.child_by_field_name("right"))
+            .or_else(|| {
+                let mut cursor = node.walk();
+                let found = node
+                    .named_children(&mut cursor)
+                    .find(|c| c.kind() == "equals_value_clause")
+                    .and_then(|c| c.named_child(0));
+                found
+            })
+            .or_else(|| {
+                find_variable_declarator_child(node, |child| {
+                    child != name_node && child.kind() != "argument_list"
+                })
+            })
             .and_then(|value| self.value_expr(value));
-        let value = explicit_type
+        self.push_typed_binding(name_node, explicit_type, inferred_value, conditional);
+    }
+
+    fn record_kotlin_decl(
+        &mut self,
+        decl: Syntax<'tree>,
+        initializer: Option<Syntax<'tree>>,
+        conditional: bool,
+    ) {
+        let mut cursor = decl.walk();
+        let mut name_node = None;
+        let mut type_node = None;
+        for child in decl.named_children(&mut cursor) {
+            if matches!(child.kind(), "simple_identifier" | "identifier") && name_node.is_none() {
+                name_node = Some(child);
+            } else if matches!(
+                child.kind(),
+                "user_type" | "nullable_type" | "function_type" | "parenthesized_type"
+            ) && type_node.is_none()
+            {
+                type_node = Some(child);
+            }
+        }
+        let Some(name_node) = name_node else {
+            return;
+        };
+        let explicit_type = type_node.and_then(|ty| parse_type_expr(ty, self.source, 0));
+        let inferred_value = initializer.and_then(|value| self.value_expr(value));
+        self.push_typed_binding(name_node, explicit_type, inferred_value, conditional);
+    }
+
+    fn push_typed_binding(
+        &mut self,
+        name_node: Syntax<'tree>,
+        explicit_type: Option<TypeExpr>,
+        inferred_value: Option<ValueExpr>,
+        conditional: bool,
+    ) {
+        let Some(name) = identifier_name(name_node, self.source) else {
+            return;
+        };
+        if let Some(value) = explicit_type
             .map(|type_expr| ValueExpr::Annotated { type_expr })
-            .or(inferred_value);
-        if let Some(value) = value {
+            .or(inferred_value)
+        {
             self.core
                 .push_binding(name.to_owned(), position(name_node), value, conditional);
         }
@@ -380,6 +475,8 @@ impl<'source, 'tree> GenericScopeAnalysis<'source, 'tree> {
             .child_by_field_name("right")
             .or_else(|| node.child_by_field_name("value"))
             .or_else(|| node.child_by_field_name("initializer"))?;
+        let target = unwrap_single_expression_list(unwrap_declarator(target));
+        let value = unwrap_single_expression_list(value);
         Some((target, value))
     }
 
@@ -408,25 +505,57 @@ impl<'source, 'tree> GenericScopeAnalysis<'source, 'tree> {
             return Some(ValueExpr::Construct { callee });
         }
         if classified.is_some_and(CompiledSyntaxKind::is_member_call) {
-            let member_target = node.child_by_field_name("function").unwrap_or(node);
-            let receiver = member_target
-                .child_by_field_name("object")
-                .or_else(|| member_target.child_by_field_name("receiver"))
-                .or_else(|| member_target.child_by_field_name("operand"))
-                .or_else(|| member_target.child_by_field_name("value"))?;
-            let member = member_target
-                .child_by_field_name("name")
-                .or_else(|| member_target.child_by_field_name("field"))
-                .or_else(|| member_target.child_by_field_name("property"))?;
-            let inner = self.value_expr(receiver)?;
-            return Some(ValueExpr::Call {
-                callee: text(member, self.source).trim().to_owned(),
-                site: Some(CallSiteEvidence {
-                    position: position(node),
-                    receiver: Some(Box::new(inner)),
-                    arguments: Vec::new(),
-                }),
-            });
+            let member_target = node
+                .child_by_field_name("function")
+                .or_else(|| {
+                    (node.kind() == "call_expression")
+                        .then(|| node.named_child(0))
+                        .flatten()
+                        .filter(|c| c.kind() == "navigation_expression")
+                })
+                .unwrap_or(node);
+            if member_target.kind() == "navigation_expression" {
+                let receiver = member_target.named_child(0)?;
+                let member = member_target
+                    .named_child(1)
+                    .filter(|s| s.kind() == "navigation_suffix")
+                    .and_then(|s| s.named_child(0))
+                    .or_else(|| member_target.named_child(1))?;
+                return self.member_call_expr(node, receiver, text(member, self.source).trim());
+            }
+            if let (Some(receiver), Some(member)) = (
+                member_target
+                    .child_by_field_name("object")
+                    .or_else(|| member_target.child_by_field_name("receiver"))
+                    .or_else(|| member_target.child_by_field_name("operand"))
+                    .or_else(|| member_target.child_by_field_name("expression"))
+                    .or_else(|| member_target.child_by_field_name("argument"))
+                    .or_else(|| member_target.child_by_field_name("value")),
+                member_target
+                    .child_by_field_name("name")
+                    .or_else(|| member_target.child_by_field_name("field"))
+                    .or_else(|| member_target.child_by_field_name("property"))
+                    .or_else(|| member_target.child_by_field_name("method")),
+            ) {
+                let member_name = text(member, self.source).trim();
+                if receiver.kind() == "constant" && member_name == "new" {
+                    if let Some(callee) = clean_type_name(text(receiver, self.source)) {
+                        return Some(ValueExpr::Construct { callee });
+                    }
+                }
+                return self.member_call_expr(node, receiver, member_name);
+            }
+            if let Some(callee) = node
+                .child_by_field_name("function")
+                .or_else(|| node.named_child(0))
+                .and_then(|n| identifier_name(n, self.source))
+            {
+                return Some(ValueExpr::Call {
+                    callee: callee.to_owned(),
+                    site: None,
+                });
+            }
+            return None;
         }
         if let Some(name) = identifier_name(node, self.source) {
             return Some(ValueExpr::Alias {
@@ -435,6 +564,35 @@ impl<'source, 'tree> GenericScopeAnalysis<'source, 'tree> {
         }
         None
     }
+
+    fn member_call_expr(
+        &self,
+        call_node: Syntax<'tree>,
+        receiver: Syntax<'tree>,
+        member_name: &str,
+    ) -> Option<ValueExpr> {
+        let inner = self.value_expr(receiver)?;
+        Some(ValueExpr::Call {
+            callee: member_name.to_owned(),
+            site: Some(CallSiteEvidence {
+                position: position(call_node),
+                receiver: Some(Box::new(inner)),
+                arguments: Vec::new(),
+            }),
+        })
+    }
+}
+
+fn find_variable_declarator_child<'tree>(
+    node: Syntax<'tree>,
+    mut pred: impl FnMut(Syntax<'tree>) -> bool,
+) -> Option<Syntax<'tree>> {
+    if node.kind() != "variable_declarator" {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let found = node.named_children(&mut cursor).find(|child| pred(*child));
+    found
 }
 
 fn position(node: Syntax<'_>) -> SourcePosition {
@@ -446,6 +604,41 @@ fn binding_target(node: Syntax<'_>) -> Option<Syntax<'_>> {
         .or_else(|| node.child_by_field_name("pattern"))
         .or_else(|| node.child_by_field_name("left"))
         .or_else(|| node.child_by_field_name("declarator"))
+        .or_else(|| {
+            find_variable_declarator_child(node, |child| {
+                matches!(
+                    child.kind(),
+                    "identifier" | "simple_identifier" | "variable_name"
+                )
+            })
+        })
+}
+
+fn unwrap_declarator(mut node: Syntax<'_>) -> Syntax<'_> {
+    while matches!(
+        node.kind(),
+        "pointer_declarator"
+            | "reference_declarator"
+            | "array_declarator"
+            | "parenthesized_declarator"
+            | "function_declarator"
+    ) {
+        let Some(inner) = node
+            .child_by_field_name("declarator")
+            .or_else(|| node.named_child(0))
+        else {
+            break;
+        };
+        node = inner;
+    }
+    node
+}
+
+fn unwrap_single_expression_list(node: Syntax<'_>) -> Syntax<'_> {
+    if node.kind() == "expression_list" && node.named_child_count() == 1 {
+        return node.named_child(0).unwrap_or(node);
+    }
+    node
 }
 
 fn identifier_name<'a>(node: Syntax<'_>, source: &'a str) -> Option<&'a str> {
@@ -478,6 +671,14 @@ fn parse_type_expr(node: Syntax<'_>, source: &str, depth: usize) -> Option<TypeE
         return None;
     }
     let mut cursor = node.walk();
+    if matches!(
+        node.kind(),
+        "struct_specifier" | "class_specifier" | "enum_specifier" | "union_specifier"
+    ) {
+        if let Some(name) = node.child_by_field_name("name") {
+            return parse_type_expr(name, source, depth + 1);
+        }
+    }
     if node.kind().ends_with("pointer_type")
         || node.kind().ends_with("reference_type")
         || node.kind() == "type_annotation"

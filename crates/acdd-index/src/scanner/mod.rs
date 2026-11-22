@@ -251,6 +251,15 @@ fn is_spec_collection_path(rel_str: &str, adapter: &Adapter) -> bool {
 
 /// Performs language.
 pub fn language(path: &Path) -> Option<(&'static str, bool)> {
+    // ACDD verification receipt sidecars (`<db>.verified.json`) live next to caches
+    // (sometimes inside test or workspace roots) and must never be indexed as JSON source.
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".verified.json"))
+    {
+        return None;
+    }
     if matches!(
         path.extension().and_then(|e| e.to_str()),
         Some("md" | "mdx")

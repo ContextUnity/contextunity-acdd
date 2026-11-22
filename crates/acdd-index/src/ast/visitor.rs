@@ -377,7 +377,7 @@ fn binding_names<'a>(node: Syntax<'_>, source: &'a str, out: &mut HashSet<&'a st
                 out.insert(text(binding, source));
             });
         }
-        "identifier" | "shorthand_property_identifier_pattern" => {
+        "identifier" | "shorthand_property_identifier_pattern" | "simple_identifier" | "variable_name" => {
             out.insert(text(node, source));
         }
         "default_parameter"
@@ -385,13 +385,53 @@ fn binding_names<'a>(node: Syntax<'_>, source: &'a str, out: &mut HashSet<&'a st
         | "required_parameter"
         | "optional_parameter"
         | "parameter"
+        | "formal_parameter"
+        | "spread_parameter"
+        | "catch_formal_parameter"
+        | "class_parameter"
+        | "simple_parameter"
+        | "variadic_parameter"
+        | "property_promotion_parameter"
+        | "keyword_parameter"
+        | "splat_parameter"
+        | "hash_splat_parameter"
+        | "block_parameter"
         | "parameter_declaration"
+        | "optional_parameter_declaration"
         | "variadic_parameter_declaration" => {
-            for field in ["name", "pattern"] {
+            let mut found = false;
+            for field in ["name", "pattern", "declarator"] {
                 let mut c = node.walk();
                 for child in node.children_by_field_name(field, &mut c) {
+                    found = true;
                     binding_names(child, source, out);
                 }
+            }
+            if !found {
+                let mut c = node.walk();
+                for child in node.named_children(&mut c) {
+                    if matches!(
+                        child.kind(),
+                        "identifier" | "simple_identifier" | "variable_name"
+                    ) {
+                        out.insert(text(child, source));
+                        break;
+                    }
+                }
+            }
+        }
+        "pointer_declarator"
+        | "reference_declarator"
+        | "array_declarator"
+        | "function_declarator"
+        | "init_declarator" => {
+            if let Some(inner) = node.child_by_field_name("declarator") {
+                binding_names(inner, source, out);
+            }
+        }
+        "parenthesized_declarator" => {
+            if let Some(inner) = node.named_child(0) {
+                binding_names(inner, source, out);
             }
         }
         "assignment_pattern" | "object_assignment_pattern" => {
@@ -412,6 +452,9 @@ fn binding_names<'a>(node: Syntax<'_>, source: &'a str, out: &mut HashSet<&'a st
             }
         }
         "parameters"
+        | "method_parameters"
+        | "block_parameters"
+        | "function_value_parameters"
         | "lambda_parameters"
         | "as_pattern_target"
         | "formal_parameters"
@@ -442,22 +485,10 @@ impl<'source, 'tree> BindingCollector<'source, 'tree> {
         Self::new_with_kind(node, source, node.kind())
     }
     pub(super) fn new_with_kind(node: Syntax<'tree>, source: &'source str, kind: &str) -> Self {
-        let is_callable = matches!(
-            kind,
-            "function_definition"
-                | "function_declaration"
-                | "function_item"
-                | "method_definition"
-                | "method_declaration"
-                | "arrow_function"
-                | "function_expression"
-                | "lambda"
-                | "closure_expression"
-                | "func_literal"
-        );
+        let is_callable = callable_scope_kind(kind);
         let is_module = matches!(
             kind,
-            "module" | "program" | "source_file" | "class_definition"
+            "module" | "program" | "source_file" | "class_definition" | "document" | "stylesheet"
         );
         if !is_callable && !is_module {
             return Self {
@@ -473,6 +504,27 @@ impl<'source, 'tree> BindingCollector<'source, 'tree> {
             for field in ["parameters", "parameter"] {
                 if let Some(parameters) = node.child_by_field_name(field) {
                     binding_names(parameters, source, &mut param_names);
+                }
+            }
+            if let Some(mut decl) = node.child_by_field_name("declarator") {
+                loop {
+                    if let Some(parameters) = decl.child_by_field_name("parameters") {
+                        binding_names(parameters, source, &mut param_names);
+                        break;
+                    }
+                    let Some(inner) = decl.child_by_field_name("declarator") else {
+                        break;
+                    };
+                    decl = inner;
+                }
+            }
+            if kind == "function_declaration" {
+                let mut c = node.walk();
+                for child in node
+                    .named_children(&mut c)
+                    .filter(|n| n.kind() == "function_value_parameters")
+                {
+                    binding_names(child, source, &mut param_names);
                 }
             }
         }
@@ -503,14 +555,36 @@ impl<'source, 'tree> BindingCollector<'source, 'tree> {
             | "augmented_assignment"
             | "assignment_expression"
             | "augmented_assignment_expression"
+            | "assignment_statement"
             | "for_statement"
             | "for_in_statement"
             | "for_in_clause"
             | "short_var_declaration" => n.child_by_field_name("left"),
             "as_pattern" => n.child_by_field_name("alias"),
-            "variable_declarator" | "let_declaration" | "named_expression" => n
+            "variable_declarator" | "let_declaration" | "named_expression" | "init_declarator" => n
                 .child_by_field_name("name")
-                .or_else(|| n.child_by_field_name("pattern")),
+                .or_else(|| n.child_by_field_name("pattern"))
+                .or_else(|| n.child_by_field_name("declarator"))
+                .or_else(|| {
+                    if kind != "variable_declarator" {
+                        return None;
+                    }
+                    let mut c = n.walk();
+                    let found = n.named_children(&mut c).find(|child| {
+                        matches!(
+                            child.kind(),
+                            "identifier" | "simple_identifier" | "variable_name"
+                        )
+                    });
+                    found
+                }),
+            "variable_declaration" => {
+                let mut c = n.walk();
+                let found = n
+                    .named_children(&mut c)
+                    .find(|child| matches!(child.kind(), "simple_identifier" | "identifier"));
+                found
+            }
             _ => None,
         };
         if let Some(lhs) = lhs {
@@ -555,21 +629,27 @@ impl<'source, 'tree> BindingCollector<'source, 'tree> {
 pub(super) fn binding_scope(n: Syntax<'_>) -> bool {
     binding_scope_kind(n.kind())
 }
-pub(super) fn binding_scope_kind(kind: &str) -> bool {
+fn callable_scope_kind(kind: &str) -> bool {
     matches!(
         kind,
         "function_definition"
             | "lambda"
-            | "class_definition"
             | "function_declaration"
             | "function_item"
             | "arrow_function"
             | "function_expression"
             | "method_definition"
             | "method_declaration"
+            | "method"
+            | "singleton_method"
+            | "constructor_declaration"
+            | "local_function_statement"
             | "closure_expression"
             | "func_literal"
     )
+}
+pub(super) fn binding_scope_kind(kind: &str) -> bool {
+    kind == "class_definition" || callable_scope_kind(kind)
 }
 pub(super) fn bindings(node: Syntax<'_>, source: &str) -> ScopeBindings {
     let mut collector = BindingCollector::new(node, source);
@@ -1032,7 +1112,17 @@ impl SinglePassExtractor<'_> {
             .last()
             .map_or(owner, |frame| frame.owner.as_ref());
         let kind = match context.syntax.as_ref() {
-            Some(_) => syntax_kind.and_then(languages::CompiledSyntaxKind::declaration),
+            Some(_) => syntax_kind
+                .and_then(languages::CompiledSyntaxKind::declaration)
+                .and_then(|decl| {
+                    if context.profile.symbol_kind(node_kind).is_some() {
+                        context
+                            .profile
+                            .symbol_with_context(node, source, context.file)
+                    } else {
+                        Some(decl)
+                    }
+                }),
             None => context
                 .profile
                 .symbol_with_context(node, source, context.file),
@@ -1088,7 +1178,20 @@ impl SinglePassExtractor<'_> {
                 && metadata.is_method == Some(true))
             .then(|| metadata.receiver_type.clone())
             .flatten();
-            let qualname = if let Some(receiver) = prototype_owner.as_deref() {
+            let out_of_line_owner = (matches!(
+                (language, node.kind()),
+                ("cpp", "function_definition") | ("go", "method_declaration")
+            ) && metadata.is_method == Some(true))
+            .then(|| {
+                metadata
+                    .receiver_type
+                    .as_deref()
+                    .filter(|owner| traversal.scopes.last().map(String::as_str) != Some(*owner))
+            })
+            .flatten();
+            let qualname = if let Some(receiver) =
+                prototype_owner.as_deref().or(out_of_line_owner)
+            {
                 qualified(module, traversal.scopes, &format!("{receiver}.{name}"))
             } else {
                 qualified(module, traversal.scopes, &name)
