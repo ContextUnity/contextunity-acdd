@@ -12,7 +12,7 @@ owners:
   - crates/acdd-index/src/ast/mod.rs
   - crates/acdd-index/src/ast/routes.rs
   - crates/acdd-index/src/ast/visitor.rs
-  - crates/acdd-index/src/languages/dependency_registry.rs
+  - crates/acdd-index/src/languages/dependency_registry/mod.rs
   - crates/acdd-index/src/languages/mod.rs
   - crates/acdd-index/src/languages/python/projections.rs
   - crates/acdd-index/src/languages/python/syntax_operations.rs
@@ -175,7 +175,7 @@ better request latency.
 
 ### 6. Cross-Worktree Content-Addressed Binary Extraction Cache
 - **Extraction Cache v3**: `crates/acdd-index/src/db/writer/cache.rs` provides cross-worktree AST and typed-facts reuse for unmodified files.
-- **Cache Key Identity**: Keys are strictly derived from source SHA-256 digest, relative path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash` (including bundled framework manifests via `build.rs` and `crates/acdd-index/src/languages/dependency_registry.rs`).
+- **Cache Key Identity**: Keys are strictly derived from source SHA-256 digest, relative path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash` (including bundled framework manifests via `build.rs` and `crates/acdd-index/src/languages/dependency_registry/mod.rs`).
 - **Direct Binary Codecs**: [`BinaryEncode`](../../crates/acdd-index/src/typed_facts/binary.rs) and [`BinaryDecode`](../../crates/acdd-index/src/typed_facts/binary.rs) encode borrowed record fields without intermediate cloned DTOs. V4 cache frames carry the extraction key, payload length, checksum, and typed facts; non-V4 or corrupt entries are cache misses and are re-extracted.
 - **Empirical Impact**: On warm re-indexing of 3,990 files, user CPU drops by **63%** (`44.49s` $\to$ `16.34s`, CPU load `374%` $\to$ `215%`) and wall-clock time drops to **`8.57s`** at `746 MB` Peak RSS.
 
@@ -186,7 +186,7 @@ better request latency.
 - **Single-Pass Linker Post-Processing**: [`link_compact_with_typed_registry`](../../crates/acdd-index/src/linker/mod.rs) fuses value-flow propagation, uncertainty collection, and fault aggregation into a single pass over `all.values()`.
 
 ### 8. Shared Rule-IR Dispatch and Zero-Allocation Proof Lookups
-- **Workspace-Scoped `Arc<LanguageContext>`**: [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry.rs) builds [`LanguageContext`](../../crates/acdd-index/src/languages/mod.rs) per effective workspace/manifest scope and shares it via `Arc` across files without cloning `Vec<SyntaxRule>` per file. Python [`prepare_file`](../../crates/acdd-index/src/languages/python/syntax_operations.rs) prepares per-file render/import candidates while borrowing that shared context.
+- **Workspace-Scoped `Arc<LanguageContext>`**: [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry/mod.rs) builds [`LanguageContext`](../../crates/acdd-index/src/languages/mod.rs) per effective workspace/manifest scope and shares it via `Arc` across files without cloning `Vec<SyntaxRule>` per file. Python [`prepare_file`](../../crates/acdd-index/src/languages/python/syntax_operations.rs) prepares per-file render/import candidates while borrowing that shared context.
 - **Grammar-Sized Tables**: [`CompiledSyntaxGrammar`](../../crates/acdd-index/src/languages/mod.rs) and [`CompiledRuleIR`](../../crates/acdd-index/src/languages/manifests/mod.rs) dispatch by numeric kind ID through vectors sized by the actual grammar's node-kind count. Warm parser reuse also covers Vue script islands and HTML JavaScript fragment import scans through [`with_warm_parser`](../../crates/acdd-index/src/languages/mod.rs).
 - **Indexed AST Kind & Callee Dispatch**: [`extract_projections`](../../crates/acdd-index/src/languages/typescript/projections.rs) and [`extract_with_frontier`](../../crates/acdd-index/src/languages/python/projections.rs) pre-index declarative projection rules by AST node `kind` (`call_expression`, `jsx_Element`, `pair`, `decorator`) and callee/member name instead of scanning all rules linearly on every AST node.
 - **Zero-Allocation Proof Maps**: Python projection proofs in [`observe_import`](../../crates/acdd-index/src/languages/python/projections.rs) and [`Proof`](../../crates/acdd-index/src/languages/python/projections.rs) store imported statement lines and constructors in borrowed-key memo maps (`ImportProofMemo`) so per-call and per-attribute `Proof::imported` / `Proof::api` checks query borrowed `&str` keys without allocating `String`s on the heap.
@@ -270,7 +270,7 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 >
 > Share effective rule tables through `Arc<LanguageContext>` per workspace/manifest scope and index declarative candidates by AST kind and callee/member name. Keep source-dependent render/import preparation per file through `prepare_file`. Reuse the shared rule vectors rather than cloning `Vec<SyntaxRule>` per file or scanning all rules on every AST node.
 
-- INV-PERF-SHARED-RULE-CONTEXT-AND-DISPATCH: Share compiled rule tables via `Arc<LanguageContext>` per workspace scope and index declarative projection rules by AST node kind and callee/member name instead of scanning all rules per node. [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry.rs) [`LanguageContext`](../../crates/acdd-index/src/languages/mod.rs) [`extract_projections`](../../crates/acdd-index/src/languages/typescript/projections.rs).
+- INV-PERF-SHARED-RULE-CONTEXT-AND-DISPATCH: Share compiled rule tables via `Arc<LanguageContext>` per workspace scope and index declarative projection rules by AST node kind and callee/member name instead of scanning all rules per node. [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry/mod.rs) [`LanguageContext`](../../crates/acdd-index/src/languages/mod.rs) [`extract_projections`](../../crates/acdd-index/src/languages/typescript/projections.rs).
 
 > [!IMPORTANT]
 > Invariant: Zero-Allocation Projection Proof Lookups
@@ -282,9 +282,9 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Language-Gated Linker Resolution and Memoized Semantic Context
 >
-> In `crates/acdd-index/src/linker/resolution/mod.rs` (`resolve`) and `resolution/value_flow_phase/` (`phase_value_flow`), `crates/acdd-index/src/languages/dependency_registry.rs` (`language_context_for_path`), `crates/acdd-index/src/linker/semantic_context/` (`Context`), and `crates/acdd-index/src/linker/mod.rs` (`link_compact_with_typed_registry`), the registry and linker must memoize `language_context_for_path` per directory scope, bind contexts once per file, avoid reconstructing package-scope keys per reference, gate language-specific template rules and evidence builders behind the active language profile, memoize `ReceiverTypes`, `ArgumentFactories`, and `implicit_builtins` per shared `Arc<LanguageContext>` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime), and fuse post-resolution `all.values()` passes.
+> In `crates/acdd-index/src/linker/resolution/mod.rs` (`resolve`) and `resolution/value_flow_phase/` (`phase_value_flow`), `crates/acdd-index/src/languages/dependency_registry/framework_packs.rs` (`language_context_for_path`), `crates/acdd-index/src/linker/semantic_context/` (`Context`), and `crates/acdd-index/src/linker/mod.rs` (`link_compact_with_typed_registry`), the registry and linker must memoize `language_context_for_path` per directory scope, bind contexts once per file, avoid reconstructing package-scope keys per reference, gate language-specific template rules and evidence builders behind the active language profile, memoize `ReceiverTypes`, `ArgumentFactories`, and `implicit_builtins` per shared `Arc<LanguageContext>` (retaining pinned `Arc<LanguageContext>` clones for the pass lifetime), and fuse post-resolution `all.values()` passes.
 
-- INV-PERF-LANGUAGE-GATED-LINKER-RESOLUTION: Memoize `language_context_for_path` per directory scope in `DependencyRegistry`, bind contexts once per file in `resolve`, gate HTML template rule vectors and `template_evidence` behind active HTML guards, memoize `Context` rule tables per pinned `Arc<LanguageContext>`, and fuse post-resolution `all.values()` passes in `link_compact_with_typed_registry`. [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry.rs) [`resolve`](../../crates/acdd-index/src/linker/resolution/mod.rs) [`phase_value_flow`](../../crates/acdd-index/src/linker/resolution/value_flow_phase/mod.rs) [`Context`](../../crates/acdd-index/src/linker/semantic_context/mod.rs) [`link_compact_with_typed_registry`](../../crates/acdd-index/src/linker/mod.rs).
+- INV-PERF-LANGUAGE-GATED-LINKER-RESOLUTION: Memoize `language_context_for_path` per directory scope in `DependencyRegistry`, bind contexts once per file in `resolve`, gate HTML template rule vectors and `template_evidence` behind active HTML guards, memoize `Context` rule tables per pinned `Arc<LanguageContext>`, and fuse post-resolution `all.values()` passes in `link_compact_with_typed_registry`. [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry/mod.rs) [`resolve`](../../crates/acdd-index/src/linker/resolution/mod.rs) [`phase_value_flow`](../../crates/acdd-index/src/linker/resolution/value_flow_phase/mod.rs) [`Context`](../../crates/acdd-index/src/linker/semantic_context/mod.rs) [`link_compact_with_typed_registry`](../../crates/acdd-index/src/linker/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Single Codegen Unit Release Optimization
@@ -310,9 +310,9 @@ Autonomous agents, builders, and language models modifying ACDD indexing or stor
 > [!IMPORTANT]
 > Invariant: Strict Extraction Cache Key Binding
 >
-> In `crates/acdd-index/src/db/writer/cache.rs` (`ExtractionCache`) and `crates/acdd-index/src/languages/dependency_registry.rs`, cache keys must strictly bind source SHA-256 digest, normalized relative path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash` (which incorporates bundled framework manifests via `build.rs`). Agents must never omit the ruleset hash or grammar identity from the cache key, as doing so leads to stale, invalid extraction across manifest or grammar upgrades.
+> In `crates/acdd-index/src/db/writer/cache.rs` (`ExtractionCache`) and `crates/acdd-index/src/languages/dependency_registry/mod.rs`, cache keys must strictly bind source SHA-256 digest, normalized relative path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash` (which incorporates bundled framework manifests via `build.rs`). Agents must never omit the ruleset hash or grammar identity from the cache key, as doing so leads to stale, invalid extraction across manifest or grammar upgrades.
 
-- INV-PERF-CACHE-KEY-BINDING: Bind `ExtractionCache` keys to source SHA-256, normalized path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash`. [`key`](../../crates/acdd-index/src/db/writer/cache.rs) [`effective_ruleset_hash`](../../crates/acdd-index/src/db/writer/cache.rs) [`ExtractionCache`](../../crates/acdd-index/src/db/writer/cache.rs) [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry.rs).
+- INV-PERF-CACHE-KEY-BINDING: Bind `ExtractionCache` keys to source SHA-256, normalized path, Tree-sitter grammar ID, `INDEX_SEMANTICS_VERSION`, and `effective_ruleset_hash`. [`key`](../../crates/acdd-index/src/db/writer/cache.rs) [`effective_ruleset_hash`](../../crates/acdd-index/src/db/writer/cache.rs) [`ExtractionCache`](../../crates/acdd-index/src/db/writer/cache.rs) [`DependencyRegistry`](../../crates/acdd-index/src/languages/dependency_registry/mod.rs).
 
 > [!IMPORTANT]
 > Invariant: Interned Linker Keys Preserve Semantic Proof

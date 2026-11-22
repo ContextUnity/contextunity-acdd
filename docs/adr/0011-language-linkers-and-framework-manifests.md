@@ -39,6 +39,12 @@ Supporting multi-language imports, third-party package classification, template 
 - Default or `extend: true` merges project rules before bundled rules; `replace: true` uses only project rules (setting both `true` fails closed). Any invalid manifest fails the index build before publication.
 - Rules with package activation require a matching dependency in `DependencyRegistry`. Manifest migrations preserve `(src, dst, kind)` edge triples and resolution status multisets on the reference corpus.
 
+### 4. Modular `ManifestParser` Plugins and Two-Tier `ActivationCondition`
+
+- `crates/acdd-index/src/languages/dependency_registry/` replaces the monolithic registry with trait-isolated `ManifestParser` plugins (`parsers/{cargo,npm,python,go,jvm,php,csharp,ruby,c_cpp}.rs`) keyed by a closed `Ecosystem` enum (`Rust`, `JavaScript`, `Python`, `Go`, `Jvm`, `Php`, `CSharp`, `Ruby`, `CCpp`) returning typed `ParsedManifest` and workspace-relative `ModulePrefix` records (`go.mod`, `composer.json` PSR-4, `.csproj` `RootNamespace`).
+- `ActivationCondition` in `manifests/semantic.rs` replaces single-variant `Activation` with `Package`, `SyntaxAttribute`, `SyntaxAttributePrefix`, `FileExtension`, and `Any` (bounded nesting depth `<= 4`), preserving `{ kind = "package", name = "..." }` wire compatibility.
+- Workspace-level package checks and file-level extension/syntax checks split into two tiers via `ActivationMatch` (`Active`, `Inactive`, `Deferred`): `LanguageContext` precomputes `SyntaxActivationKeys` once per scope and evaluates `is_syntax_rule_active(rule, path, signals)` against `FileActivationSignals` in $O(1)$ without per-AST-node I/O or regex compilation.
+
 ## Consequences
 
 - Adding or overriding framework conventions (Django, HTMX, Nuxt, GridViewSpec, custom internal packs) requires zero Rust code changes in extractors or linkers.

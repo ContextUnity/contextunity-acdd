@@ -37,7 +37,7 @@ use crate::linker::traits::{LanguageLinker, GENERIC_LINKER};
 use anyhow::{Context, Result};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::Path,
     sync::Arc,
 };
@@ -54,7 +54,6 @@ pub(crate) use support as syntax;
 #[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
 pub(crate) use support::c_family;
 use tree_sitter::{Node as Syntax, Parser};
-#[cfg(any(feature = "lang-java", feature = "lang-kotlin"))]
 pub(crate) mod build_manifest;
 /// Workspace dependency discovery and classification.
 pub mod dependency_registry;
@@ -270,6 +269,9 @@ pub struct LanguageContext {
     projection_rules: Option<ProjectionRuleIndex>,
     prepared_projections: HashMap<String, manifests::semantic::PreparedRules>,
     file_provider_rules: Option<HashMap<String, Vec<usize>>>,
+    syntax_activation_keys: manifests::semantic::SyntaxActivationKeys,
+    has_syntax_gated_rules: bool,
+    pub(crate) workspace_activated_rules: BTreeMap<String, BTreeSet<String>>,
     pub(crate) rule_ir: manifests::RuleIRHandle,
 }
 
@@ -311,13 +313,33 @@ impl Iterator for ProjectionRuleCandidates<'_> {
 }
 
 impl LanguageContext {
+    fn is_workspace_activated(&self, rule: &manifests::syntax::SyntaxRule) -> bool {
+        self.workspace_activated_rules
+            .get(&rule.pack)
+            .is_some_and(|ids| ids.contains(&rule.id))
+    }
+
     pub(crate) fn prepare_named_member_rules(&mut self) {
         use manifests::{projections::NamedBindingForm, syntax::SyntaxOperation};
         self.named_member_rules.clear();
         self.has_factory_members = false;
         self.has_object_call_definitions = false;
+        self.syntax_activation_keys = manifests::semantic::SyntaxActivationKeys::default();
+        self.has_syntax_gated_rules = false;
         let mut projections = ProjectionRuleIndex::default();
         for (index, rule) in self.syntax_rules.iter().enumerate() {
+            if !rule.activation.is_empty()
+                && !self.is_workspace_activated(rule)
+                && rule
+                    .activation
+                    .iter()
+                    .any(manifests::semantic::ActivationCondition::is_file_scoped)
+            {
+                self.has_syntax_gated_rules = true;
+                for condition in &rule.activation {
+                    condition.collect_syntax_keys(&mut self.syntax_activation_keys);
+                }
+            }
             self.has_factory_members |=
                 matches!(&rule.operation, SyntaxOperation::FactoryMembers { .. });
             self.has_object_call_definitions |= matches!(
@@ -391,6 +413,47 @@ impl LanguageContext {
         language: &str,
     ) -> Option<&manifests::semantic::PreparedRules> {
         self.prepared_projections.get(language)
+    }
+
+    /// Returns manifest-declared syntax attribute names and prefixes collected for deferred rules.
+    pub fn syntax_activation_keys(&self) -> &manifests::semantic::SyntaxActivationKeys {
+        &self.syntax_activation_keys
+    }
+
+    /// Reports whether any retained syntax rule requires per-file extension or syntax signal checks.
+    pub fn has_syntax_gated_rules(&self) -> bool {
+        self.has_syntax_gated_rules
+    }
+
+    /// Evaluates whether `rule` is active for `path` and its observed `signals` in O(1) fast-path.
+    pub fn is_syntax_rule_active(
+        &self,
+        rule: &manifests::syntax::SyntaxRule,
+        path: &str,
+        signals: &manifests::semantic::FileActivationSignals,
+    ) -> bool {
+        if !self.has_syntax_gated_rules
+            || rule.activation.is_empty()
+            || self.is_workspace_activated(rule)
+            || !rule
+                .activation
+                .iter()
+                .any(manifests::semantic::ActivationCondition::is_file_scoped)
+        {
+            return true;
+        }
+        manifests::semantic::ActivationCondition::matches_file_slice(&rule.activation, path, signals)
+    }
+
+    /// Iterates over syntax rules active for `path` and `signals`.
+    pub fn syntax_rules_for_signals<'a>(
+        &'a self,
+        path: &'a str,
+        signals: &'a manifests::semantic::FileActivationSignals,
+    ) -> impl Iterator<Item = &'a manifests::syntax::SyntaxRule> + 'a {
+        self.syntax_rules
+            .iter()
+            .filter(move |rule| self.is_syntax_rule_active(rule, path, signals))
     }
 
     pub(crate) fn named_member_rules(&self, root: &str) -> &[usize] {

@@ -337,3 +337,197 @@ fn invalid_user_framework_manifest_fails_before_index_publication() {
         failures.join("\n")
     );
 }
+
+#[test]
+fn activation_condition_and_language_context_matrix() {
+    use languages::dependency_registry::{ManifestSource, WorkspaceManifestSources};
+    use languages::manifests::semantic::{ActivationCondition, FileActivationSignals};
+    use std::collections::BTreeSet;
+
+    let legacy_toml = r#"
+[[syntax_rules]]
+id = "legacy-package"
+language = "html"
+package_family = "python"
+activation = [{ kind = "package", name = "django" }]
+operation = { kind = "template_symbols", requires_loader = false, tags = ["csrf_token"], filters = [], libraries = [], library_routes = {} }
+"#;
+    let legacy_registry = DependencyRegistry::try_collect_from_sources([WorkspaceManifestSources {
+        name: "",
+        manifests: &[
+            ManifestSource {
+                path: "requirements.txt",
+                source: "django>=5\n",
+            },
+            ManifestSource {
+                path: ".acdd/frameworks/legacy.toml",
+                source: legacy_toml,
+            },
+        ],
+    }])
+    .unwrap();
+    let legacy_ctx = legacy_registry.language_context_for_path("index.html");
+    let legacy_rule = legacy_ctx
+        .syntax_rules
+        .iter()
+        .find(|rule| rule.pack == "legacy" && rule.id == "legacy-package")
+        .expect("legacy package activation rule must load");
+    assert_eq!(
+        legacy_rule.activation,
+        vec![ActivationCondition::Package {
+            name: "django".into()
+        }]
+    );
+
+    let syntax_pack = r#"
+[[syntax_rules]]
+id = "syntax-magic"
+language = "html"
+package_family = "javascript"
+activation = [{ kind = "any", conditions = [{ kind = "package", name = "alpinejs" }, { kind = "syntax_attribute", name = "x-data" }, { kind = "syntax_attribute_prefix", prefix = "x-on:" }, { kind = "file_extension", extension = "j2" }] }]
+operation = { kind = "template_symbols", requires_loader = false, tags = ["alpha"], filters = [], libraries = [], library_routes = {} }
+"#;
+    let invalid_cases = [
+        ("unknown activation kind", r#"[[syntax_rules]]
+id = "bad"
+language = "html"
+activation = [{ kind = "header", name = "x" }]
+operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
+"#),
+        ("unknown activation field", r#"[[syntax_rules]]
+id = "bad"
+language = "html"
+activation = [{ kind = "syntax_attribute", name = "x-data", extra = true }]
+operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
+"#),
+        ("empty syntax attribute", r#"[[syntax_rules]]
+id = "bad"
+language = "html"
+activation = [{ kind = "syntax_attribute", name = "  " }]
+operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
+"#),
+        ("empty syntax prefix", r#"[[syntax_rules]]
+id = "bad"
+language = "html"
+activation = [{ kind = "syntax_attribute_prefix", prefix = "" }]
+operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
+"#),
+        ("leading dot file extension", r#"[[syntax_rules]]
+id = "bad"
+language = "html"
+activation = [{ kind = "file_extension", extension = ".j2" }]
+operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
+"#),
+        ("empty any conditions", r#"[[syntax_rules]]
+id = "bad"
+language = "html"
+activation = [{ kind = "any", conditions = [] }]
+operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
+"#),
+        ("deeply nested any (>4)", r#"[[syntax_rules]]
+id = "bad"
+language = "html"
+activation = [{ kind = "any", conditions = [{ kind = "any", conditions = [{ kind = "any", conditions = [{ kind = "any", conditions = [{ kind = "any", conditions = [{ kind = "package", name = "django" }] }] }] }] }] }]
+operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
+"#),
+        ("unsupported language id", r#"[[syntax_rules]]
+id = "bad"
+language = "elixir"
+operation = { kind = "implicit_builtins", names = ["foo"] }
+"#),
+        ("unknown package family", r#"[[syntax_rules]]
+id = "bad"
+language = "html"
+package_family = "unknown_family"
+operation = { kind = "implicit_builtins", names = ["foo"] }
+"#),
+    ];
+    for (label, source) in invalid_cases {
+        assert!(
+            FrameworkHarness::from_manifests(&[(".acdd/frameworks/invalid.toml", source)]).is_err(),
+            "expected fail-closed rejection for {label}"
+        );
+    }
+
+    let max_depth_ok = r#"[[syntax_rules]]
+id = "depth4"
+language = "html"
+activation = [{ kind = "any", conditions = [{ kind = "any", conditions = [{ kind = "any", conditions = [{ kind = "any", conditions = [{ kind = "file_extension", extension = "j2" }] }] }] }] }]
+operation = { kind = "template_symbols", requires_loader = false, tags = ["a"], filters = [], libraries = [], library_routes = {} }
+"#;
+    assert!(
+        FrameworkHarness::from_manifests(&[(".acdd/frameworks/depth4.toml", max_depth_ok)]).is_ok()
+    );
+
+    #[cfg(feature = "lang-html")]
+    {
+        let deferred_registry = DependencyRegistry::try_collect_from_sources([WorkspaceManifestSources {
+            name: "",
+            manifests: &[ManifestSource {
+                path: ".acdd/frameworks/custom.toml",
+                source: syntax_pack,
+            }],
+        }])
+        .unwrap();
+        let ctx = deferred_registry.language_context_for_path("templates/page.html");
+        assert!(ctx.has_syntax_gated_rules());
+        assert_eq!(
+            ctx.syntax_activation_keys().exact_attributes,
+            BTreeSet::from(["x-data".to_owned()])
+        );
+        assert_eq!(
+            ctx.syntax_activation_keys().attribute_prefixes,
+            BTreeSet::from(["x-on:".to_owned()])
+        );
+        assert!(ctx.syntax_activation_keys().matches_attribute("x-data"));
+        assert!(ctx.syntax_activation_keys().matches_attribute("x-on:click"));
+        assert!(!ctx.syntax_activation_keys().matches_attribute("class"));
+
+        let empty_signals = FileActivationSignals::default();
+        let x_data_signals = FileActivationSignals {
+            syntax_attributes: BTreeSet::from(["x-data".to_owned()]),
+        };
+        let x_on_signals = FileActivationSignals {
+            syntax_attributes: BTreeSet::from(["x-on:click".to_owned()]),
+        };
+
+        let rule = ctx
+            .syntax_rules
+            .iter()
+            .find(|rule| rule.pack == "custom" && rule.id == "syntax-magic")
+            .expect("deferred syntax-gated rule must remain retained in LanguageContext");
+        assert!(!ctx.is_syntax_rule_active(rule, "templates/page.html", &empty_signals));
+        assert!(ctx.is_syntax_rule_active(rule, "templates/page.html", &x_data_signals));
+        assert!(ctx.is_syntax_rule_active(rule, "templates/page.html", &x_on_signals));
+        assert!(ctx.is_syntax_rule_active(rule, "templates/page.j2", &empty_signals));
+        assert!(ctx
+            .syntax_rules_for_signals("templates/page.html", &x_on_signals)
+            .any(|active| active.pack == "custom" && active.id == "syntax-magic"));
+
+        #[cfg(feature = "lang-typescript")]
+        {
+            let pkg_registry =
+                DependencyRegistry::try_collect_from_sources([WorkspaceManifestSources {
+                    name: "",
+                    manifests: &[
+                        ManifestSource {
+                            path: "package.json",
+                            source: r#"{"dependencies":{"alpinejs":"^3.13"}}"#,
+                        },
+                        ManifestSource {
+                            path: ".acdd/frameworks/custom.toml",
+                            source: syntax_pack,
+                        },
+                    ],
+                }])
+                .unwrap();
+            let pkg_ctx = pkg_registry.language_context_for_path("app.js");
+            let pkg_rule = pkg_ctx
+                .syntax_rules
+                .iter()
+                .find(|rule| rule.pack == "custom" && rule.id == "syntax-magic")
+                .expect("package-activated rule retained in LanguageContext");
+            assert!(pkg_ctx.is_syntax_rule_active(pkg_rule, "app.js", &empty_signals));
+        }
+    }
+}

@@ -12,9 +12,10 @@ pub mod projections;
 pub mod semantic;
 /// Manifest syntax operations and AST rules.
 pub mod syntax;
-pub(crate) use semantic::{
-    Activation, SemanticCallee, SemanticOperation, SemanticRule, SemanticTarget,
+pub use semantic::{
+    ActivationCondition, ActivationMatch, FileActivationSignals, SyntaxActivationKeys,
 };
+pub(crate) use semantic::{SemanticCallee, SemanticOperation, SemanticRule, SemanticTarget};
 
 use std::{collections::HashMap, sync::Arc};
 

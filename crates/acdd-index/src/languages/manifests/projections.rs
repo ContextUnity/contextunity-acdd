@@ -1,3 +1,4 @@
+use crate::models::tags::LanguageId;
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
@@ -183,8 +184,8 @@ pub(crate) fn method(value: &str) -> bool {
 }
 
 impl Api {
-    pub(crate) fn validate(&self, language: &str) -> Result<()> {
-        let js = matches!(language, "javascript" | "typescript");
+    pub(crate) fn validate(&self, language: LanguageId) -> Result<()> {
+        let js = matches!(language, LanguageId::Javascript | LanguageId::Typescript);
         match self {
             Self::Imported { module, export } => {
                 ensure!(
@@ -194,7 +195,7 @@ impl Api {
                     "invalid API module"
                 );
                 ensure!(identifier(export, js), "invalid API export");
-                if language == "python" {
+                if language == LanguageId::Python {
                     ensure!(
                         module.split('.').all(|s| identifier(s, false)),
                         "invalid Python module"
@@ -207,7 +208,7 @@ impl Api {
                 member,
             } => {
                 ensure!(
-                    language == "python"
+                    language == LanguageId::Python
                         && module.len() <= 128
                         && module.split('.').all(|s| identifier(s, false)),
                     "invalid constructed API module"
@@ -235,15 +236,17 @@ impl Api {
 }
 
 impl Slot {
-    pub(crate) fn validate(&self, language: &str) -> Result<()> {
+    pub(crate) fn validate(&self, language: LanguageId) -> Result<()> {
         match self {
             Self::Argument { index } => ensure!(*index < 32, "argument index exceeds bound"),
             Self::Keyword { name } => ensure!(
-                language == "python" && identifier(name, false),
+                language == LanguageId::Python && identifier(name, false),
                 "invalid keyword slot"
             ),
             Self::KeywordMember { name, member } => ensure!(
-                language == "python" && identifier(name, false) && identifier(member, false),
+                language == LanguageId::Python
+                    && identifier(name, false)
+                    && identifier(member, false),
                 "invalid keyword member slot"
             ),
         }
@@ -252,7 +255,7 @@ impl Slot {
 }
 
 impl NamedBindingForm {
-    pub(crate) fn validate(&self, language: &str) -> Result<()> {
+    pub(crate) fn validate(&self, language: LanguageId) -> Result<()> {
         match self {
             Self::CallDefinition {
                 callee,
@@ -261,7 +264,7 @@ impl NamedBindingForm {
                 ..
             } => {
                 ensure!(
-                    matches!(language, "javascript" | "typescript"),
+                    matches!(language, LanguageId::Javascript | LanguageId::Typescript),
                     "invalid named call language"
                 );
                 callee.validate(language)?;
@@ -275,7 +278,10 @@ impl NamedBindingForm {
                 provider_scopes,
             } => {
                 ensure!(
-                    matches!(language, "python" | "javascript" | "typescript"),
+                    matches!(
+                        language,
+                        LanguageId::Python | LanguageId::Javascript | LanguageId::Typescript
+                    ),
                     "invalid named call language"
                 );
                 callee.validate(language)?;
@@ -308,7 +314,10 @@ impl NamedBindingForm {
                 member,
                 template_root,
             } => {
-                ensure!(language == "python", "invalid registry assignment language");
+                ensure!(
+                    language == LanguageId::Python,
+                    "invalid registry assignment language"
+                );
                 Api::Imported {
                     module: receiver_type.module.clone(),
                     export: receiver_type.export.clone(),
@@ -322,14 +331,18 @@ impl NamedBindingForm {
                 );
             }
             Self::TemplateReference { .. } => {
-                ensure!(language == "html", "invalid template reference language")
+                ensure!(
+                    language == LanguageId::Html,
+                    "invalid template reference language"
+                )
             }
             Self::MemberReference { root } => ensure!(
-                matches!(language, "javascript" | "typescript") && identifier(root, true),
+                matches!(language, LanguageId::Javascript | LanguageId::Typescript)
+                    && identifier(root, true),
                 "invalid named member root"
             ),
             Self::AttributeDefinition { prefix, scope } => ensure!(
-                language == "html"
+                language == LanguageId::Html
                     && !prefix.is_empty()
                     && prefix.len() <= 128
                     && !prefix.chars().any(char::is_control)

@@ -2,7 +2,8 @@ use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
 use super::projections::{Api, NamedBindingForm};
-use super::semantic::Activation;
+use super::semantic::{parse_language, ActivationCondition};
+use crate::models::tags::LanguageId;
 
 /// Bounded extraction operations; every API and keyword choice is input data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,7 +16,7 @@ pub struct SyntaxRule {
     #[serde(default)]
     pub package_family: Option<String>,
     #[serde(default)]
-    pub activation: Vec<Activation>,
+    pub activation: Vec<ActivationCondition>,
     /// Compatibility labels only; admission and provenance use pack and rule identity.
     #[serde(default)]
     pub display: SyntaxDisplay,
@@ -457,9 +458,9 @@ pub struct ReceiverArgumentFactory {
 }
 
 impl ReceiverArgumentFactory {
-    fn validate(&self, language: &str) -> Result<()> {
+    fn validate(&self, language: LanguageId) -> Result<()> {
         ensure!(
-            matches!(language, "javascript" | "typescript"),
+            matches!(language, LanguageId::Javascript | LanguageId::Typescript),
             "argument factories require JavaScript or TypeScript"
         );
         let super::projections::Api::GlobalMember {
@@ -526,9 +527,8 @@ impl SyntaxRule {
     }
     pub(crate) fn activation_family(&self) -> Option<crate::languages::LanguageFamily> {
         match self.package_family.as_deref() {
-            Some(family) => crate::languages::profiles()
-                .map(|profile| profile.family())
-                .find(|known| known.0 == family),
+            Some(family) => crate::languages::dependency_registry::Ecosystem::from_family(family)
+                .map(crate::languages::dependency_registry::Ecosystem::family),
             None => crate::languages::by_id(&self.language).map(|profile| profile.family()),
         }
     }
@@ -569,23 +569,21 @@ impl SyntaxRule {
             "library display requires template symbols"
         );
         ensure!(
-            self.package_family.as_deref().is_none_or(key_identifier),
+            self.package_family.as_deref().is_none_or(|family| {
+                crate::languages::dependency_registry::Ecosystem::from_family(family).is_some()
+            }),
             "invalid syntax package family"
         );
         ensure!(
             !self.id.trim().is_empty(),
             "syntax rule id must be nonempty"
         );
+        let lang = parse_language(&self.language)?;
         ensure!(
-            crate::languages::profile_available(&self.language),
+            crate::languages::profile_available(lang.as_str()),
             "unsupported syntax language"
         );
-        for Activation::Package { name } in &self.activation {
-            ensure!(
-                !name.trim().is_empty(),
-                "syntax activation package must be nonempty"
-            );
-        }
+        ActivationCondition::validate_slice(&self.activation)?;
         let strings: Vec<&str> = match &self.operation {
             SyntaxOperation::FileRoute {
                 directory,
@@ -594,7 +592,7 @@ impl SyntaxRule {
                 method,
             } => {
                 ensure!(
-                    self.language == "vue"
+                    lang == LanguageId::Vue
                         && directory
                             .strip_suffix('/')
                             .is_some_and(super::semantic::normal_relative_path)
@@ -616,7 +614,7 @@ impl SyntaxRule {
                 actions_member,
             } => {
                 ensure!(
-                    matches!(self.language.as_str(), "javascript" | "typescript")
+                    matches!(lang, LanguageId::Javascript | LanguageId::Typescript)
                         && (matches!(callee, Api::Imported { .. })
                             || (matches!(callee, Api::Global { .. })
                                 && configured_module.is_some()))
@@ -636,12 +634,12 @@ impl SyntaxRule {
                                 && !name.chars().any(char::is_whitespace)),
                     "invalid factory members projection"
                 );
-                callee.validate(&self.language)?;
+                callee.validate(lang)?;
                 vec![]
             }
             SyntaxOperation::NamedBinding { domain, binding } => {
                 ensure!(key_identifier(domain), "invalid named binding domain");
-                binding.validate(&self.language)?;
+                binding.validate(lang)?;
                 vec![]
             }
             SyntaxOperation::RenderContext {
@@ -653,7 +651,7 @@ impl SyntaxRule {
                 argument_count,
             } => {
                 ensure!(
-                    self.language == "python"
+                    lang == LanguageId::Python
                         && *argument_count <= 32
                         && target_argument < argument_count
                         && context_argument < argument_count
@@ -669,7 +667,7 @@ impl SyntaxRule {
                 expression_prefix,
             } => {
                 ensure!(
-                    self.language == "python" && *argument < 32,
+                    lang == LanguageId::Python && *argument < 32,
                     "invalid named route operation"
                 );
                 vec![module, export, expression_prefix]
@@ -683,7 +681,7 @@ impl SyntaxRule {
                 name_keyword,
             } => {
                 ensure!(
-                    self.language == "python"
+                    lang == LanguageId::Python
                         && !constructors.is_empty()
                         && *path_argument < 32
                         && *handler_argument < 32
@@ -704,7 +702,7 @@ impl SyntaxRule {
                 ..
             } => {
                 ensure!(
-                    self.language == "python" && !modules.is_empty(),
+                    lang == LanguageId::Python && !modules.is_empty(),
                     "invalid decorated registration operation"
                 );
                 modules
@@ -725,14 +723,14 @@ impl SyntaxRule {
                 provider,
             } => {
                 ensure!(
-                    self.language == "python" && key_identifier(base) && key_identifier(member),
+                    lang == LanguageId::Python && key_identifier(base) && key_identifier(member),
                     "invalid class method registration"
                 );
                 vec![module, base, member, provider]
             }
             SyntaxOperation::TestRunner { modules, members } => {
                 ensure!(
-                    matches!(self.language.as_str(), "javascript" | "typescript")
+                    matches!(lang, LanguageId::Javascript | LanguageId::Typescript)
                         && !modules.is_empty()
                         && modules.len() <= 128
                         && !members.is_empty()
@@ -751,7 +749,7 @@ impl SyntaxRule {
                 parse_method,
             } => {
                 ensure!(
-                    self.language == "rust"
+                    lang == LanguageId::Rust
                         && [
                             module,
                             field_attribute,
@@ -781,7 +779,7 @@ impl SyntaxRule {
                 loader_keyword,
             } => {
                 ensure!(
-                    self.language == "python",
+                    lang == LanguageId::Python,
                     "invalid template loader language"
                 );
                 vec![package, module, environment, loader, loader_keyword]
@@ -794,7 +792,7 @@ impl SyntaxRule {
                 name_keyword,
             } => {
                 ensure!(
-                    self.language == "python"
+                    lang == LanguageId::Python
                         && !members.is_empty()
                         && members
                             .values()
@@ -816,12 +814,15 @@ impl SyntaxRule {
                     "receiver permits one argument factory"
                 );
                 for factory in &receiver.argument_factories {
-                    factory.validate(&self.language)?;
+                    factory.validate(lang)?;
                 }
                 ensure!(
                     matches!(
-                        self.language.as_str(),
-                        "python" | "typescript" | "javascript" | "vue"
+                        lang,
+                        LanguageId::Python
+                            | LanguageId::Typescript
+                            | LanguageId::Javascript
+                            | LanguageId::Vue
                     ) && receiver.module.is_some() == receiver.export.is_some(),
                     "invalid receiver type operation"
                 );
@@ -845,7 +846,7 @@ impl SyntaxRule {
             }
             SyntaxOperation::ImplicitReceivers { names } => {
                 ensure!(
-                    matches!(self.language.as_str(), "javascript" | "typescript")
+                    matches!(lang, LanguageId::Javascript | LanguageId::Typescript)
                         && !names.is_empty()
                         && names.iter().all(|name| {
                             !name.is_empty()
@@ -866,7 +867,7 @@ impl SyntaxRule {
                 unshadowed_globals,
             } => {
                 ensure!(
-                    self.language == "javascript" && !callees.is_empty(),
+                    lang == LanguageId::Javascript && !callees.is_empty(),
                     "invalid object factory operation"
                 );
                 callees
@@ -890,7 +891,7 @@ impl SyntaxRule {
                 callable_imports,
             } => {
                 ensure!(
-                    matches!(self.language.as_str(), "typescript" | "javascript"),
+                    matches!(lang, LanguageId::Typescript | LanguageId::Javascript),
                     "invalid component environment language"
                 );
                 ensure!(
@@ -934,7 +935,7 @@ impl SyntaxRule {
                 method,
             } => {
                 ensure!(
-                    matches!(self.language.as_str(), "javascript" | "typescript"),
+                    matches!(lang, LanguageId::Javascript | LanguageId::Typescript),
                     "invalid route object language"
                 );
                 vec![collection, path_key, handler_key, method]
@@ -967,8 +968,8 @@ impl SyntaxRule {
                 );
                 ensure!(
                     matches!(
-                        self.language.as_str(),
-                        "python" | "typescript" | "javascript"
+                        lang,
+                        LanguageId::Python | LanguageId::Typescript | LanguageId::Javascript
                     ) && !relative_prefixes.is_empty(),
                     "invalid HTTP client language or URL prefixes"
                 );
@@ -987,7 +988,7 @@ impl SyntaxRule {
                 slots,
                 markers,
             } => {
-                ensure!(self.language == "vue", "invalid component macros language");
+                ensure!(lang == LanguageId::Vue, "invalid component macros language");
                 let names: Vec<_> = [props, emits, slots].into_iter().chain(markers).collect();
                 ensure!(
                     names.iter().all(|name| !name.is_empty()
@@ -1008,18 +1009,18 @@ impl SyntaxRule {
                 export,
                 components_key,
             } => {
-                ensure!(self.language == "vue", "invalid component options language");
+                ensure!(lang == LanguageId::Vue, "invalid component options language");
                 vec![module, export, components_key]
             }
             SyntaxOperation::TemplateNamedRoute {
                 tag,
                 expression_prefix,
             } => {
-                ensure!(self.language == "html", "invalid template tag language");
+                ensure!(lang == LanguageId::Html, "invalid template tag language");
                 vec![tag, expression_prefix]
             }
             SyntaxOperation::TemplateDialect { dialect } => {
-                ensure!(self.language == "html", "invalid template dialect language");
+                ensure!(lang == LanguageId::Html, "invalid template dialect language");
                 ensure!(
                     normal_relative_dir(&dialect.directory),
                     "invalid template root directory"
@@ -1048,7 +1049,7 @@ impl SyntaxRule {
                 library_routes,
                 ..
             } => {
-                ensure!(self.language == "html", "invalid template symbols language");
+                ensure!(lang == LanguageId::Html, "invalid template symbols language");
                 let valid_names = tags
                     .iter()
                     .chain(filters)
@@ -1093,7 +1094,7 @@ impl SyntaxRule {
                 object_scope,
             } => {
                 ensure!(
-                    self.language == "html" && !event_prefixes.is_empty(),
+                    lang == LanguageId::Html && !event_prefixes.is_empty(),
                     "invalid HTML script attributes"
                 );
                 event_prefixes
@@ -1118,7 +1119,7 @@ impl SyntaxRule {
                 value_dynamic_prefixes,
             } => {
                 ensure!(
-                    self.language == "html" && !prefixes.is_empty() && !methods.is_empty(),
+                    lang == LanguageId::Html && !prefixes.is_empty() && !methods.is_empty(),
                     "invalid HTML request operation"
                 );
                 ensure!(

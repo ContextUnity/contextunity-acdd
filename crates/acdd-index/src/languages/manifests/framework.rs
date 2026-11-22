@@ -512,12 +512,11 @@ impl FrameworkManifest {
     /// Returns an error for unsupported extensions, malformed input, invalid
     /// typed rules, or unknown sections.
     pub(crate) fn parse(name: String, extension: &str, source: &str) -> Result<Self> {
-        let mut manifest = match extension {
-            "toml" => toml::from_str::<Self>(source)
+        let mut manifest = match ManifestFormat::from_extension(extension)? {
+            ManifestFormat::Toml => toml::from_str::<Self>(source)
                 .with_context(|| format!("invalid TOML framework manifest {name}"))?,
-            "yaml" | "yml" => serde_yaml::from_str::<Self>(source)
+            ManifestFormat::Yaml => serde_yaml::from_str::<Self>(source)
                 .with_context(|| format!("invalid YAML framework manifest {name}"))?,
-            other => bail!("unsupported framework manifest extension .{other}"),
         };
         if manifest.extend && manifest.replace {
             bail!("framework manifest cannot set both extend and replace to true");
@@ -587,6 +586,22 @@ fn validate_method(method: &str) -> Result<()> {
         "framework route method must be uppercase"
     );
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ManifestFormat {
+    Toml,
+    Yaml,
+}
+
+impl ManifestFormat {
+    fn from_extension(extension: &str) -> Result<Self> {
+        match extension {
+            "toml" => Ok(Self::Toml),
+            "yaml" | "yml" => Ok(Self::Yaml),
+            other => bail!("unsupported framework manifest extension .{other}"),
+        }
+    }
 }
 
 fn validate_receiver_names(names: &[String]) -> Result<()> {
