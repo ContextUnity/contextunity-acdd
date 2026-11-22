@@ -422,6 +422,84 @@ impl<'a> Context<'a> {
         }
         super::typescript::semantic_context::typed_dom_property(receiver, member).map(str::to_owned)
     }
+    pub(super) fn receiver_types_for_path(
+        &self,
+        path: &str,
+    ) -> Option<impl Iterator<Item = &languages::manifests::syntax::ReceiverTypeRule>> {
+        let path = self.path_id(path)?;
+        self.receiver_types.get(&path).map(|rules| rules.iter())
+    }
+    pub(super) fn hierarchy_authority_for_base(
+        &self,
+        path: &str,
+        base: &str,
+    ) -> Option<(
+        String,
+        std::sync::Arc<super::value_flow::ConfiguredReceiverAuthority>,
+    )> {
+        let (pack, rule) = self
+            .dependencies
+            .class_hierarchy_authority_for_path(path, base, None)?;
+        if let Some(authority) = self
+            .path_id(path)
+            .zip(self.symbol_id(pack))
+            .zip(self.symbol_id(base))
+            .and_then(|((path_id, pack_id), base_id)| {
+                self.hierarchy_results
+                    .get(&path_id)
+                    .and_then(|map| map.get(&(pack_id, base_id)))
+            })
+        {
+            return Some((pack.to_owned(), authority.clone()));
+        }
+        Some((
+            pack.to_owned(),
+            std::sync::Arc::new(
+                super::value_flow::ConfiguredReceiverAuthority::Hierarchy {
+                    pack: pack.to_owned(),
+                    rule: std::sync::Arc::new(rule.clone()),
+                },
+            ),
+        ))
+    }
+    pub(super) fn dependencies_digest(&self) -> String {
+        self.dependencies.digest().to_string()
+    }
+    pub(super) fn python_super_member(&self, owner: &'a Node, member: &str) -> Symbol<'a> {
+        if owner.language != "python"
+            || !owner
+                .details
+                .get("receiver_name")
+                .and_then(|value| value.as_str())
+                .is_some_and(|name| matches!(name, "self" | "cls"))
+        {
+            return Symbol::Unknown;
+        }
+        let Some((class_qual, _)) = owner.qualname.rsplit_once('.') else {
+            return Symbol::Unknown;
+        };
+        let Some(class) = self
+            .nodes_in_path(class_qual, &owner.path)
+            .find(|node| node.kind == "class")
+        else {
+            return Symbol::Unknown;
+        };
+        let mut scope = owner.qualname.as_str();
+        while !scope.is_empty() {
+            if self.nodes_in_path(scope, &owner.path).any(|node| {
+                node.binding_names().any(|name| name == "super")
+                    || self.node_has_rebinding(node, "super")
+                    || self.imported_alias(node, "super").is_some()
+            }) {
+                return Symbol::Unknown;
+            }
+            scope = scope.rsplit_once('.').map_or("", |(parent, _)| parent);
+        }
+        match self.python.map(|index| index.lookup(class, member, true)) {
+            Some(super::receivers::Member::Local(node)) => Symbol::Callable(node),
+            _ => Symbol::Unknown,
+        }
+    }
     fn receiver_type(
         &self,
         path: &str,
@@ -1422,10 +1500,7 @@ impl<'a> Context<'a> {
             TypeTarget::Local(receiver)
                 if receiver.language == "python" && receiver.kind == "class" =>
             {
-                match self
-                    .python
-                    .map(|index| index.lookup(receiver, member, false))
-                {
+                match self.python.map(|index| index.lookup(receiver, member, false)) {
                     Some(super::receivers::Member::Local(node)) => Member::Local(node),
                     Some(super::receivers::Member::External(module, line, provider, _)) => {
                         Member::External(module, line, provider)
@@ -1433,6 +1508,9 @@ impl<'a> Context<'a> {
                     Some(super::receivers::Member::Ambiguous) => Member::Ambiguous,
                     _ => Member::Unknown,
                 }
+            }
+            TypeTarget::ClassType(inner) if caller.language == "python" => {
+                self.lookup_member_mode(inner, member, caller, true)
             }
             #[cfg(feature = "lang-rust")]
             TypeTarget::RustCollection { .. } if caller.language == "rust" => {

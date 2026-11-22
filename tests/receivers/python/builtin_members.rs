@@ -27,6 +27,9 @@ fn builtin_member_provenance_matrix() {
 let profile = acdd_index::languages::by_id("python").unwrap();
     for (receiver, member) in [
         ("str", "strip"),
+        ("bytes", "decode"),
+        ("bytearray", "append"),
+        ("bytearray", "decode"),
         ("list", "append"),
         ("dict", "get"),
         ("set", "add"),
@@ -34,15 +37,17 @@ let profile = acdd_index::languages::by_id("python").unwrap();
         ("int", "bit_length"),
         ("float", "hex"),
     ] {
-        assert!(profile.builtin_member(receiver, member));
+        assert!(profile.builtin_member(receiver, member), "{receiver}.{member}");
     }
     for (receiver, member) in [
         ("str", "append"),
+        ("bytes", "encode"),
+        ("bytearray", "encode"),
         ("dict", "add"),
         ("Unknown", "strip"),
         ("list", "invented_method"),
     ] {
-        assert!(!profile.builtin_member(receiver, member));
+        assert!(!profile.builtin_member(receiver, member), "{receiver}.{member}");
     }
         }
         let graph = linker::link(&BTreeMap::from([(row.path.to_owned(), facts)]));

@@ -1,5 +1,8 @@
 use super::super::semantic_context::{Context, Imported};
-use super::super::value_flow::{SemanticResolver, Symbol, SymbolRole, TypeTarget};
+use super::super::value_flow::{
+    resolve_type, SemanticLimits, SemanticResolver, Symbol, SymbolRole, TypeTarget,
+    MAX_CANDIDATE_BRANCH_JOINS,
+};
 use crate::models::{Facts, Node, Reference};
 use crate::semantic::{SourcePosition, TypeExpr};
 use crate::languages::{
@@ -7,6 +10,19 @@ use crate::languages::{
 };
 use crate::interner::LinkerInterner;
 use crate::linker::traits::ModulesByNamespace;
+use std::collections::BTreeMap;
+
+pub(in crate::linker) fn canonical_pathlib_class(class: &str) -> Option<&'static str> {
+    match class {
+        "Path" => Some("pathlib.Path"),
+        "PosixPath" => Some("pathlib.PosixPath"),
+        "WindowsPath" => Some("pathlib.WindowsPath"),
+        "PurePath" => Some("pathlib.PurePath"),
+        "PurePosixPath" => Some("pathlib.PurePosixPath"),
+        "PureWindowsPath" => Some("pathlib.PureWindowsPath"),
+        _ => None,
+    }
+}
 
 pub(in crate::linker) fn receiver_access(owner: &Node, head: &str) -> Option<(bool, bool)> {
     (owner.language == "python"
@@ -34,37 +50,82 @@ pub(in crate::linker) fn external_factory_result<'a>(
         return None;
     }
     let (head, member) = callee.split_once('.').unwrap_or((callee, ""));
-    if !matches!(member, "" | "getLogger" | "LoggerAdapter" | "connect") {
-        return None;
-    }
     let mut scope = owner.qualname.as_str();
     loop {
         for node in context.nodes_in_path(scope, &owner.path) {
             if let Some(import) = context.imported_alias(node, head) {
-                let Imported::External(imported_module, position, reference, true) = import else {
+                let Imported::External(imported_module, position, reference, safe) = import else {
                     return None;
                 };
-                if !matches!(imported_module.as_str(), "logging" | "sqlite3") || *position > at {
+                if *position > at {
                     return None;
                 }
-                let canonical = match (reference.expression.as_str(), member) {
-                    ("logging", "getLogger") | ("getLogger", "") => "logging.Logger",
-                    ("logging", "LoggerAdapter") | ("LoggerAdapter", "") => "logging.LoggerAdapter",
-                    ("sqlite3", "connect") | ("connect", "") => "sqlite3.Connection",
-                    _ => return None,
-                };
-                let Symbol::Type(TypeTarget::External {
-                    module,
-                    import_line,
-                }) = context.resolve_symbol(owner, callee, at, SymbolRole::Callable)
-                else {
-                    return None;
-                };
-                if !matches!(module.as_str(), "logging" | "sqlite3") || position.line != import_line
-                {
-                    return None;
+                let stdlib_safe =
+                    imported_module == "pathlib" || (*safe && matches!(imported_module.as_str(), "logging" | "sqlite3"));
+                if stdlib_safe {
+                    let canonical = match (imported_module.as_str(), reference.expression.as_str(), member) {
+                        ("logging", "logging", "getLogger") | ("logging", "getLogger", "") => {
+                            "logging.Logger"
+                        }
+                        ("logging", "logging", "LoggerAdapter")
+                        | ("logging", "LoggerAdapter", "") => "logging.LoggerAdapter",
+                        ("sqlite3", "sqlite3", "connect") | ("sqlite3", "connect", "") => {
+                            "sqlite3.Connection"
+                        }
+                        ("pathlib", "pathlib", cls) => canonical_pathlib_class(cls)?,
+                        ("pathlib", cls, "") => canonical_pathlib_class(cls)?,
+                        _ => return None,
+                    };
+                    let Symbol::Type(TypeTarget::External {
+                        module,
+                        import_line,
+                    }) = context.resolve_symbol(owner, callee, at, SymbolRole::Callable)
+                    else {
+                        return None;
+                    };
+                    if (!matches!(module.as_str(), "logging" | "sqlite3" | "pathlib")
+                        && !module.starts_with("pathlib."))
+                        || position.line != import_line
+                    {
+                        return None;
+                    }
+                    return Some(TypeTarget::Builtin(canonical.to_owned()));
                 }
-                return Some(TypeTarget::Builtin(canonical.to_owned()));
+                let exported = if reference.expression == *imported_module {
+                    member
+                } else if member.is_empty() {
+                    reference.expression.as_str()
+                } else {
+                    return None;
+                };
+                if let Some(mut receivers) = context.receiver_types_for_path(&owner.path) {
+                    if let Some(receiver) = receivers.find(|receiver| {
+                        receiver.module.as_deref() == Some(imported_module.as_str())
+                            && receiver.export.as_deref() == Some(exported)
+                            && receiver.callback_callees.iter().any(|allowed| {
+                                allowed == callee || allowed.rsplit('.').next() == Some(exported)
+                            })
+                    }) {
+                        let (pack, authority) =
+                            context.hierarchy_authority_for_base(&owner.path, &receiver.name)?;
+                        return Some(TypeTarget::ConfiguredReceiver {
+                            authority,
+                            origin: Box::new(TypeTarget::External {
+                                module: imported_module.clone(),
+                                import_line: position.line,
+                            }),
+                            fallback: None,
+                            evidence: format!(
+                                "{}:{}:{}:{}",
+                                context.dependencies_digest(),
+                                owner.path,
+                                pack,
+                                receiver.name
+                            ),
+                        });
+                    }
+                }
+                return None;
             }
         }
         scope = scope.rsplit_once('.')?.0;
@@ -87,7 +148,9 @@ pub(in crate::linker) fn external_member(
 
     let origin = match module {
         "sqlite3.Cursor" | "sqlite3.Connection" => "builtin:sqlite3",
+        "logging.Logger" => "builtin:logging.Logger",
         "logging.LoggerAdapter" => "builtin:logging.LoggerAdapter",
+        _ if module.starts_with("pathlib.") => "builtin:pathlib",
         _ => return None,
     };
 
@@ -151,45 +214,65 @@ pub(in crate::linker) fn external_import_type<'a>(
     }
 
     let nullable = typing_nullable_generic(module, reference, member);
+    let typing_callable = (reference.expression == "Callable" && member.is_empty())
+        || (reference.expression == module && member == "Callable");
     if matches!(module, "typing" | "typing_extensions" | "collections.abc")
         && (nullable.is_some()
+            || typing_callable
             || crate::languages::by_id("python").is_some_and(|profile| {
                 profile.builtin_generic(head) || profile.builtin_member(head, "get")
             }))
     {
         return Some(Symbol::Type(TypeTarget::Builtin(
-            nullable.unwrap_or(head).to_owned(),
+            nullable
+                .unwrap_or(if typing_callable { "Callable" } else { head })
+                .to_owned(),
         )));
     }
 
-    if module == "logging"
-        && (matches!(member, "Logger" | "LoggerAdapter")
-            || matches!(head, "Logger" | "LoggerAdapter"))
-    {
-        let class = if matches!(member, "Logger" | "LoggerAdapter") {
-            member
-        } else {
-            head
-        };
+    let external_module = match module {
+        "logging" => {
+            if matches!(member, "Logger" | "LoggerAdapter") {
+                Some(format!("logging.{member}"))
+            } else if matches!(reference.expression.as_str(), "Logger" | "LoggerAdapter")
+                && member.is_empty()
+            {
+                Some(format!("logging.{}", reference.expression))
+            } else if matches!(head, "Logger" | "LoggerAdapter") {
+                Some(format!("logging.{head}"))
+            } else {
+                None
+            }
+        }
+        "pathlib" => {
+            let class = if reference.expression == "pathlib" {
+                member
+            } else if member.is_empty() {
+                reference.expression.as_str()
+            } else {
+                ""
+            };
+            canonical_pathlib_class(class).map(str::to_owned)
+        }
+        "sqlite3"
+            if matches!(role, SymbolRole::Type)
+                && ((reference.expression == "sqlite3"
+                    && matches!(member, "Cursor" | "Connection"))
+                    || (matches!(reference.expression.as_str(), "Cursor" | "Connection")
+                        && member.is_empty())) =>
+        {
+            let class = if reference.expression == "sqlite3" {
+                member
+            } else {
+                reference.expression.as_str()
+            };
+            Some(format!("sqlite3.{class}"))
+        }
+        _ => None,
+    };
+    if let Some(module) = external_module {
         return Some(Symbol::Type(TypeTarget::External {
-            module: format!("logging.{class}"),
-            import_line,
-        }));
-    }
-
-    if matches!(role, SymbolRole::Type)
-        && module == "sqlite3"
-        && ((reference.expression == "sqlite3" && matches!(member, "Cursor" | "Connection"))
-            || (matches!(reference.expression.as_str(), "Cursor" | "Connection")
-                && member.is_empty()))
-    {
-        let class = if reference.expression == "sqlite3" {
-            member
-        } else {
-            reference.expression.as_str()
-        };
-        return Some(Symbol::Type(TypeTarget::External {
-            module: format!("sqlite3.{class}"),
+            module,
             import_line,
         }));
     }
@@ -197,16 +280,173 @@ pub(in crate::linker) fn external_import_type<'a>(
     None
 }
 
-pub(in crate::linker) fn nullable_payload<'a>(
-    wrapper: &str,
-    args: &'a [TypeExpr],
-) -> Option<&'a TypeExpr> {
-    match (wrapper, args) {
-        ("Optional", [payload]) => Some(payload),
-        ("Union", [TypeExpr::Named { name }, payload]) if name == "None" => Some(payload),
-        ("Union", [payload, TypeExpr::Named { name }]) if name == "None" => Some(payload),
-        _ => None,
+pub(in crate::linker) fn collect_union_members<'a>(
+    expr: &'a TypeExpr,
+    out: &mut Vec<&'a TypeExpr>,
+    depth: usize,
+) {
+    if depth >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+        return;
     }
+    match expr {
+        TypeExpr::Named { name } if name == "None" => {}
+        TypeExpr::Applied { base, args } => {
+            let clean = base.rsplit_once('.').map_or(base.as_str(), |(_, n)| n);
+            if matches!(clean, "Union" | "Optional") {
+                for arg in args {
+                    collect_union_members(arg, out, depth + 1);
+                }
+            } else {
+                out.push(expr);
+            }
+        }
+        _ => out.push(expr),
+    }
+}
+
+pub(in crate::linker) fn collect_candidate_join<'a>(
+    targets_iter: impl IntoIterator<Item = TypeTarget<'a>>,
+) -> TypeTarget<'a> {
+    let mut targets = BTreeMap::<String, &'a Node>::new();
+    let mut complete = true;
+    let mut exhausted = false;
+    for target in targets_iter {
+        match target {
+            TypeTarget::Local(node)
+                if matches!(
+                    node.kind.as_str(),
+                    "class" | "struct" | "interface" | "enum"
+                ) =>
+            {
+                targets.insert(node.id.clone(), node);
+            }
+            TypeTarget::Candidates {
+                targets: nested,
+                complete: nested_complete,
+                exhausted: nested_exhausted,
+            } => {
+                complete &= nested_complete;
+                exhausted |= nested_exhausted;
+                for node in nested {
+                    targets.insert(node.id.clone(), node);
+                }
+            }
+            _ => complete = false,
+        }
+        if targets.len() > MAX_CANDIDATE_BRANCH_JOINS {
+            exhausted = true;
+            complete = false;
+            targets.clear();
+            break;
+        }
+    }
+    if exhausted {
+        TypeTarget::Candidates {
+            targets: Vec::new(),
+            complete: false,
+            exhausted: true,
+        }
+    } else {
+        TypeTarget::Candidates {
+            targets: targets.into_values().collect(),
+            complete,
+            exhausted: false,
+        }
+    }
+}
+
+pub(in crate::linker) fn resolve_applied<'a>(
+    context: &Context<'a>,
+    owner: &'a Node,
+    base: &str,
+    args: &[TypeExpr],
+    nominal: &Symbol<'a>,
+    at: SourcePosition,
+) -> Option<TypeTarget<'a>> {
+    if owner.language != "python" {
+        return None;
+    }
+    let clean_base = base.rsplit_once('.').map_or(base, |(_, name)| name);
+    if is_nullable_generic(owner, clean_base, nominal) {
+        if owner.kind == "type" {
+            return Some(TypeTarget::Unknown);
+        }
+        if clean_base == "Optional" && args.len() != 1 {
+            return Some(TypeTarget::Unknown);
+        }
+        let mut members = Vec::new();
+        for arg in args {
+            collect_union_members(arg, &mut members, 0);
+        }
+        return Some(match members.as_slice() {
+            [] => TypeTarget::Unknown,
+            [single] => resolve_type(owner, single, at, context, SemanticLimits::default()),
+            many => match collect_candidate_join(
+                many.iter()
+                    .map(|member| resolve_type(owner, member, at, context, SemanticLimits::default())),
+            ) {
+                TypeTarget::Candidates {
+                    exhausted: true, ..
+                } => TypeTarget::Candidates {
+                    targets: Vec::new(),
+                    complete: false,
+                    exhausted: true,
+                },
+                TypeTarget::Candidates {
+                    targets,
+                    complete: true,
+                    exhausted: false,
+                } if targets.len() >= 2 => TypeTarget::Candidates {
+                    targets,
+                    complete: true,
+                    exhausted: false,
+                },
+                _ => TypeTarget::Unknown,
+            },
+        });
+    }
+    let typing_symbol = matches!(
+        nominal,
+        Symbol::Type(TypeTarget::Builtin(name)) if name == clean_base
+    ) || matches!(
+        nominal,
+        Symbol::Type(TypeTarget::External { module, .. })
+            if matches!(module.as_str(), "typing" | "typing_extensions" | "collections.abc")
+    );
+    if clean_base == "Callable" && typing_symbol {
+        if let [_, ret] = args {
+            let ret_target = resolve_type(owner, ret, at, context, SemanticLimits::default());
+            let inner = if matches!(ret_target, TypeTarget::Ambiguous) {
+                TypeTarget::Unknown
+            } else {
+                ret_target
+            };
+            return Some(TypeTarget::CallableReturn(Box::new(inner)));
+        }
+        return Some(TypeTarget::Unknown);
+    }
+    if matches!(clean_base, "type" | "Type")
+        && (typing_symbol || (clean_base == "type" && matches!(nominal, Symbol::Unknown)))
+    {
+        if let [inner] = args {
+            let inner_target = resolve_type(owner, inner, at, context, SemanticLimits::default());
+            if !matches!(inner_target, TypeTarget::Unknown | TypeTarget::Ambiguous) {
+                return Some(TypeTarget::ClassType(Box::new(inner_target)));
+            }
+        }
+        return Some(TypeTarget::Unknown);
+    }
+    if let Symbol::Type(TypeTarget::Local(node)) = nominal {
+        let is_generic = node.kind == "class"
+            && node.details["bases"].as_str().is_some_and(|bases| {
+                bases.contains("Generic") || bases.contains("Protocol") || bases.contains('[')
+            });
+        if is_generic {
+            return Some(TypeTarget::Local(node));
+        }
+        return Some(TypeTarget::Unknown);
+    }
+    None
 }
 
 pub(in crate::linker) fn has_proven_type_checking(

@@ -388,23 +388,10 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
     ) -> TypeTarget<'a> {
         let clean_base = base.rsplit_once('.').map_or(base, |(_, name)| name);
         let nominal = self.resolve_symbol(owner, base, at, SymbolRole::Type);
-        if super::super::python::semantic_context::is_nullable_generic(owner, clean_base, &nominal)
-        {
-            if owner.kind == "type" {
-                return TypeTarget::Unknown;
-            }
-            let Some(payload) =
-                super::super::python::semantic_context::nullable_payload(clean_base, args)
-            else {
-                return TypeTarget::Unknown;
-            };
-            return super::super::value_flow::resolve_type(
-                owner,
-                payload,
-                at,
-                self,
-                super::super::value_flow::SemanticLimits::default(),
-            );
+        if let Some(target) = super::super::python::semantic_context::resolve_applied(
+            self, owner, base, args, &nominal, at,
+        ) {
+            return target;
         }
         if let Some(target) =
             super::super::rust::semantic_context::nominal_application(owner, &nominal)
@@ -508,6 +495,11 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                         return Symbol::Type(TypeTarget::Builtin(name.clone()));
                     }
                 }
+                if let Some(target) =
+                    super::super::python::value_flow::synthetic_property_result(owner, receiver, member)
+                {
+                    return Symbol::Type(target);
+                }
                 fallback.as_deref().map_or(Symbol::Unknown, |fallback| {
                     self.resolve_member(fallback, member, owner, _at)
                 })
@@ -534,8 +526,14 @@ impl<'a> SemanticResolver<'a> for Context<'a> {
                 Some(node) => Symbol::Callable(node),
                 None => Symbol::Unknown,
             },
+            TypeTarget::ClassType(inner) if owner.language == "python" => {
+                self.resolve_member(inner, member, owner, _at)
+            }
             _ => Symbol::Unknown,
         }
+    }
+    fn resolve_python_super_member(&self, owner: &'a Node, member: &str) -> Symbol<'a> {
+        self.python_super_member(owner, member)
     }
     fn resolve_symbol(
         &self,

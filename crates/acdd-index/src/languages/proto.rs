@@ -155,6 +155,22 @@ impl LanguageProfile for Proto {
         name
     }
     fn extract_relations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+        let push_type_ref = |node: Syntax<'_>, facts: &mut Facts| {
+            let expression = text(node, ctx.source).trim();
+            if !expression.is_empty() && !is_proto_primitive(expression) {
+                facts.references.push(Reference {
+                    source: ctx.owner.into(),
+                    dynamic: false,
+                    expression: expression.into(),
+                    kind: "references".into(),
+                    line: node.start_position().row + 1,
+                    column: node.start_position().column,
+                    alias: None,
+                    module: expression.rsplit_once('.').map(|(m, _)| m.into()),
+                    receiver_hint: None,
+                });
+            }
+        };
         if ctx.node.kind() == "rpc" {
             let mut c = ctx.node.walk();
             for ch in ctx
@@ -162,42 +178,90 @@ impl LanguageProfile for Proto {
                 .named_children(&mut c)
                 .filter(|ch| ch.kind() == "message_or_enum_type")
             {
-                let expression = text(ch, ctx.source).trim();
-                if !expression.is_empty() {
-                    facts.references.push(Reference {
-                        source: ctx.owner.into(),
-                        dynamic: false,
-                        expression: expression.into(),
-                        kind: "references".into(),
-                        line: ctx.line(),
-                        column: ctx.node.start_position().column,
-                        alias: None,
-                        module: expression.rsplit_once('.').map(|(m, _)| m.into()),
-                        receiver_hint: None,
-                    });
-                }
+                push_type_ref(ch, facts);
             }
-        } else if ctx.node.kind() == "field" {
-            let mut c = ctx.node.walk();
-            for ch in ctx.node.named_children(&mut c) {
-                if matches!(ch.kind(), "type" | "message_or_enum_type") {
-                    let expression = text(ch, ctx.source).trim();
-                    if !expression.is_empty() && !is_proto_primitive(expression) {
-                        facts.references.push(Reference {
-                            source: ctx.owner.into(),
-                            dynamic: false,
-                            expression: expression.into(),
-                            kind: "references".into(),
-                            line: ctx.line(),
-                            column: ctx.node.start_position().column,
-                            alias: None,
-                            module: expression.rsplit_once('.').map(|(m, _)| m.into()),
-                            receiver_hint: None,
-                        });
-                    }
+        } else if ctx.node.kind() == "message" {
+            let mut stack = Vec::new();
+            let mut body_cursor = ctx.node.walk();
+            for ch in ctx
+                .node
+                .named_children(&mut body_cursor)
+                .filter(|ch| ch.kind() == "message_body")
+            {
+                stack.push(ch);
+            }
+            while let Some(curr) = stack.pop() {
+                if matches!(curr.kind(), "message" | "enum") {
+                    continue;
+                }
+                if curr.kind() == "type" {
+                    push_type_ref(curr, facts);
+                    continue;
+                }
+                let mut walk = curr.walk();
+                for child in curr.named_children(&mut walk) {
+                    stack.push(child);
                 }
             }
         }
+    }
+
+    fn is_stdlib(&self, module: &str) -> bool {
+        (module.starts_with("google/protobuf/") && module.ends_with(".proto"))
+            || module.trim_start_matches('.').starts_with("google.protobuf.")
+    }
+
+    fn external_import(&self, module: &str) -> Option<&'static str> {
+        self.is_stdlib(module)
+            .then_some("Protobuf standard library")
+    }
+
+    fn builtin(&self, symbol: &str) -> bool {
+        let Some(name) = symbol.trim_start_matches('.').strip_prefix("google.protobuf.") else {
+            return false;
+        };
+        matches!(
+            name,
+            "Any"
+                | "Api"
+                | "BoolValue"
+                | "BytesValue"
+                | "DescriptorProto"
+                | "DoubleValue"
+                | "Duration"
+                | "Empty"
+                | "Enum"
+                | "EnumOptions"
+                | "EnumValue"
+                | "EnumValueOptions"
+                | "Field"
+                | "FieldMask"
+                | "FieldOptions"
+                | "FileDescriptorProto"
+                | "FileDescriptorSet"
+                | "FileOptions"
+                | "FloatValue"
+                | "Int32Value"
+                | "Int64Value"
+                | "ListValue"
+                | "MessageOptions"
+                | "Method"
+                | "MethodOptions"
+                | "Mixin"
+                | "NullValue"
+                | "OneofOptions"
+                | "Option"
+                | "ServiceOptions"
+                | "SourceContext"
+                | "StringValue"
+                | "Struct"
+                | "Syntax"
+                | "Timestamp"
+                | "Type"
+                | "UInt32Value"
+                | "UInt64Value"
+                | "Value"
+        )
     }
 }
 

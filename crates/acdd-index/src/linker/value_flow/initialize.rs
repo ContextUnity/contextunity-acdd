@@ -548,7 +548,9 @@ impl<'a> ValueFlowIndex<'a> {
             let at = reference.position();
             let target = match reference.receiver_hint.as_ref() {
                 Some(ReceiverHint::TypedCallResult { value, .. }) => {
-                    if matches!(value, ValueExpr::Call { .. }) && valid_value(value, limits, 0) {
+                    if matches!(value, ValueExpr::Call { .. })
+                        && valid_value(value, limits, 0)
+                    {
                         index.evaluate(owner, value, at, resolver, None)
                     } else {
                         TypeTarget::Unknown
@@ -592,9 +594,10 @@ impl<'a> ValueFlowIndex<'a> {
                     {
                         index
                             .type_of_expression(owner, inner, at, resolver)
-                            .and_then(|target| match target {
-                                TypeTarget::Callable(callable) => index.return_type(callable),
-                                _ => None,
+                            .and_then(|target| {
+                                super::super::python::value_flow::callable_target_return(
+                                    &index, target, owner, at, resolver, None,
+                                )
                             })
                             .cloned()
                             .unwrap_or(TypeTarget::Unknown)

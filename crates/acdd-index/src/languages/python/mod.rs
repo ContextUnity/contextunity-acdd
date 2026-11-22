@@ -621,6 +621,8 @@ impl LanguageProfile for Python {
                 | "MutableMapping"
                 | "Sequence"
                 | "Iterable"
+                | "type"
+                | "Type"
         )
     }
     fn id(&self) -> &'static str {
@@ -958,7 +960,16 @@ impl LanguageProfile for Python {
     fn builtin_type(&self, name: &str) -> bool {
         matches!(
             name,
-            "str" | "int" | "float" | "bool" | "bytes" | "dict" | "list" | "set" | "tuple"
+            "str"
+                | "int"
+                | "float"
+                | "bool"
+                | "bytes"
+                | "bytearray"
+                | "dict"
+                | "list"
+                | "set"
+                | "tuple"
         )
     }
 
@@ -1429,58 +1440,99 @@ fn call_to_file(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts, rules: &Language
     );
 }
 
+fn is_text_bytes_common_member(member: &str) -> bool {
+    matches!(
+        member,
+        "capitalize"
+            | "center"
+            | "count"
+            | "endswith"
+            | "expandtabs"
+            | "find"
+            | "index"
+            | "isalnum"
+            | "isalpha"
+            | "isascii"
+            | "isdigit"
+            | "islower"
+            | "isspace"
+            | "istitle"
+            | "isupper"
+            | "join"
+            | "ljust"
+            | "lower"
+            | "lstrip"
+            | "maketrans"
+            | "partition"
+            | "removeprefix"
+            | "removesuffix"
+            | "replace"
+            | "rfind"
+            | "rindex"
+            | "rjust"
+            | "rpartition"
+            | "rsplit"
+            | "rstrip"
+            | "split"
+            | "splitlines"
+            | "startswith"
+            | "strip"
+            | "swapcase"
+            | "title"
+            | "translate"
+            | "upper"
+            | "zfill"
+    )
+}
+
+fn is_logger_member(member: &str) -> bool {
+    matches!(
+        member,
+        "info"
+            | "warning"
+            | "warn"
+            | "error"
+            | "debug"
+            | "critical"
+            | "fatal"
+            | "exception"
+            | "log"
+            | "isEnabledFor"
+            | "getEffectiveLevel"
+            | "hasHandlers"
+            | "getChild"
+            | "setLevel"
+            | "addHandler"
+            | "removeHandler"
+    )
+}
+
 pub(crate) fn builtin_member(receiver: &str, member: &str) -> bool {
     match receiver {
-        "str" => matches!(
-            member,
-            "capitalize"
-                | "casefold"
-                | "center"
-                | "count"
-                | "encode"
-                | "endswith"
-                | "expandtabs"
-                | "find"
-                | "format"
-                | "format_map"
-                | "index"
-                | "isalnum"
-                | "isalpha"
-                | "isascii"
-                | "isdecimal"
-                | "isdigit"
-                | "isidentifier"
-                | "islower"
-                | "isnumeric"
-                | "isprintable"
-                | "isspace"
-                | "istitle"
-                | "isupper"
-                | "join"
-                | "ljust"
-                | "lower"
-                | "lstrip"
-                | "maketrans"
-                | "partition"
-                | "removeprefix"
-                | "removesuffix"
-                | "replace"
-                | "rfind"
-                | "rindex"
-                | "rjust"
-                | "rpartition"
-                | "rsplit"
-                | "rstrip"
-                | "split"
-                | "splitlines"
-                | "startswith"
-                | "strip"
-                | "swapcase"
-                | "title"
-                | "translate"
-                | "upper"
-                | "zfill"
-        ),
+        "str" => {
+            is_text_bytes_common_member(member)
+                || matches!(
+                    member,
+                    "casefold"
+                        | "encode"
+                        | "format"
+                        | "format_map"
+                        | "isdecimal"
+                        | "isidentifier"
+                        | "isnumeric"
+                        | "isprintable"
+                )
+        }
+        "bytes" => {
+            is_text_bytes_common_member(member) || matches!(member, "decode" | "fromhex" | "hex")
+        }
+        "bytearray" => {
+            builtin_member("bytes", member)
+                || matches!(
+                    member,
+                    "append" | "clear" | "copy" | "extend" | "insert" | "pop" | "remove" | "reverse"
+                )
+        }
         "list" => matches!(
             member,
             "append"
@@ -1563,35 +1615,10 @@ pub(crate) fn builtin_member(receiver: &str, member: &str) -> bool {
                         | "write_text"
                 )
         }
-        "Logger" | "logging.Logger" => matches!(
-            member,
-            "info"
-                | "warning"
-                | "error"
-                | "debug"
-                | "critical"
-                | "exception"
-                | "log"
-                | "isEnabledFor"
-                | "setLevel"
-                | "addHandler"
-                | "removeHandler"
-        ),
-        "LoggerAdapter" | "logging.LoggerAdapter" => matches!(
-            member,
-            "info"
-                | "warning"
-                | "error"
-                | "debug"
-                | "critical"
-                | "exception"
-                | "log"
-                | "isEnabledFor"
-                | "setLevel"
-                | "addHandler"
-                | "removeHandler"
-                | "process"
-        ),
+        "Logger" | "logging.Logger" => is_logger_member(member),
+        "LoggerAdapter" | "logging.LoggerAdapter" => {
+            is_logger_member(member) || member == "process"
+        }
         "sqlite3.Connection" => matches!(
             member,
             "execute"

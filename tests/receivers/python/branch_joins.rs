@@ -269,3 +269,66 @@ fn complete_python_branch_join_emits_possible_targets_without_exact_calls() {
         "branch_join.Beta.execute"
     ));
 }
+
+#[test]
+fn union_parameter_types_emit_possible_calls_and_widen_beyond_bound() {
+    let too_many_classes: String = (1..=9)
+        .map(|i| format!("class C{i}:\n    def execute(self): pass\n"))
+        .collect();
+    let too_many_union = (1..=9).map(|i| format!("C{i}")).collect::<Vec<_>>().join(" | ");
+    let source = format!(
+        "from typing import Union\n\
+         class Alpha:\n    def execute(self): pass\n\
+         class Beta:\n    def execute(self): pass\n\
+         {too_many_classes}\
+         def use_pipe(x: Alpha | Beta):\n    x.execute()\n\
+         def use_union(y: Union[Alpha, Beta]):\n    y.execute()\n\
+         def use_wide(z: {too_many_union}):\n    z.execute()\n"
+    );
+    let facts = ast::extract("unions.py", "python", &source).unwrap();
+    let graph = linker::link(&BTreeMap::from([("unions.py".to_owned(), facts)]));
+    for (expr, expected_status, expected_possible) in [
+        ("x.execute", "ambiguous", vec!["unions.Alpha.execute", "unions.Beta.execute"]),
+        ("y.execute", "ambiguous", vec!["unions.Alpha.execute", "unions.Beta.execute"]),
+        ("z.execute", "unresolved", vec![]),
+    ] {
+        let cov = graph
+            .coverage
+            .iter()
+            .find(|c| c.expression == expr)
+            .unwrap_or_else(|| panic!("missing coverage for {expr}"));
+        assert_eq!(cov.status, expected_status, "{expr}: {cov:#?}");
+        assert!(
+            !graph
+                .edges
+                .iter()
+                .any(|e| e.kind == "calls" && e.evidence == expr),
+            "union receiver must not emit exact calls: {expr}"
+        );
+        let mut actual_possible: Vec<_> = graph
+            .edges
+            .iter()
+            .filter(|e| e.kind == "possible_calls" && e.evidence == expr)
+            .map(|e| e.dst.as_str())
+            .collect();
+        actual_possible.sort();
+        let mut expected_ids: Vec<String> = expected_possible
+            .iter()
+            .map(|q| {
+                facts_nodes_id(&source, q)
+            })
+            .collect();
+        expected_ids.sort();
+        assert_eq!(actual_possible, expected_ids, "{expr}");
+    }
+}
+
+fn facts_nodes_id(source: &str, qualname: &str) -> String {
+    ast::extract("unions.py", "python", source)
+        .unwrap()
+        .nodes
+        .into_iter()
+        .find(|n| n.qualname == qualname)
+        .unwrap_or_else(|| panic!("missing node {qualname}"))
+        .id
+}

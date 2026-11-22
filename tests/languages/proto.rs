@@ -174,3 +174,69 @@ service RouterService {
         facts.errors
     );
 }
+
+#[test]
+fn proto_well_known_stdlib_imports_and_types_are_external_and_resolved() {
+    let w = crate::languages::PersistedWorkspaceHarness::new();
+    w.write(
+        "protos/events.proto",
+        r#"syntax = "proto3";
+
+package mycompany.events;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "custom/missing.proto";
+
+message Event {
+    google.protobuf.Timestamp occurred_at = 1;
+    custom.Missing extra = 2;
+}
+
+service EventService {
+    rpc Record(Event) returns (google.protobuf.Empty);
+}
+"#,
+    );
+    w.build();
+    let conn = w.open();
+    let rows: Vec<(String, String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT x.expression, c.status, COALESCE(v.evidence, '') FROM resolution_coverage c \
+                 JOIN coverage_expressions x ON x.expression_id = c.expression_id \
+                 LEFT JOIN coverage_evidence v ON v.evidence_id = c.evidence_id \
+                 JOIN path_dictionary p ON p.path_id = c.path_id \
+                 WHERE p.path = 'protos/events.proto'",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    for (expr, expected_status, evidence_needle) in [
+        ("google/protobuf/timestamp.proto", "external", "standard library"),
+        ("google/protobuf/empty.proto", "external", "standard library"),
+        ("custom/missing.proto", "external", "external dependency"),
+        ("google.protobuf.Timestamp", "resolved", "standard library or built-in"),
+        ("google.protobuf.Empty", "resolved", "standard library or built-in"),
+        ("custom.Missing", "unresolved", ""),
+    ] {
+        let found = rows
+            .iter()
+            .find(|(e, _, _)| e == expr)
+            .unwrap_or_else(|| panic!("missing coverage row for {expr}: {rows:?}"));
+        assert_eq!(found.1, expected_status, "{expr}: {found:?}");
+        assert!(
+            found.2.contains(evidence_needle),
+            "{expr}: expected evidence containing {evidence_needle:?}, got {:?}",
+            found.2
+        );
+    }
+    let proto = acdd_index::languages::require("proto").unwrap();
+    assert!(proto.is_stdlib("google/protobuf/timestamp.proto"));
+    assert!(proto.is_stdlib("google.protobuf.Timestamp"));
+    assert!(!proto.is_stdlib("custom/missing.proto"));
+    assert!(!proto.is_stdlib("custom.Missing"));
+}

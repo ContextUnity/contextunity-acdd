@@ -13,8 +13,12 @@ pub(in crate::linker) fn literal_type<'a>(
     if owner.language != "python" {
         return None;
     }
-    crate::semantic::python_literal_type(expression)
-        .map(|name| TypeTarget::Builtin(name.to_owned()))
+    match expression {
+        "\"\"" => Some(TypeTarget::Builtin("str".to_owned())),
+        "b\"\"" => Some(TypeTarget::Builtin("bytes".to_owned())),
+        _ => crate::semantic::python_literal_type(expression)
+            .map(|name| TypeTarget::Builtin(name.to_owned())),
+    }
 }
 
 pub(in crate::linker) fn constructor_result<'a>(
@@ -126,7 +130,7 @@ pub(in crate::linker) fn typed_dict_class<'a>(
     )
 }
 
-pub(in crate::linker) fn nullable_type_expr(annotation: &str) -> Option<TypeExpr> {
+pub(in crate::linker) fn stored_type_expr(annotation: &str) -> Option<TypeExpr> {
     let annotation = strip_outer_parentheses(annotation.trim());
     #[cfg(feature = "lang-python")]
     let pipe_parts = crate::languages::python::value_flow::split_python_pipe_types(annotation);
@@ -134,7 +138,7 @@ pub(in crate::linker) fn nullable_type_expr(annotation: &str) -> Option<TypeExpr
     let pipe_parts: Option<Vec<&str>> = None;
     if let Some(parts) = pipe_parts {
         if parts.len() >= 2 {
-            let args = parts.into_iter().map(nullable_argument).collect();
+            let args = parts.into_iter().map(stored_type_argument).collect();
             return Some(TypeExpr::Applied {
                 base: "Union".to_owned(),
                 args,
@@ -143,11 +147,10 @@ pub(in crate::linker) fn nullable_type_expr(annotation: &str) -> Option<TypeExpr
     }
     let (base, rest) = annotation.split_once('[')?;
     let base = base.trim();
-    let wrapper = base.rsplit('.').next()?;
-    if !matches!(wrapper, "Optional" | "Union") {
-        return None;
-    }
     let arguments = rest.strip_suffix(']')?;
+    if base.is_empty() {
+        return Some(TypeExpr::Unknown);
+    }
     let mut depth = 0_usize;
     let mut start = 0_usize;
     let mut args = Vec::new();
@@ -160,7 +163,7 @@ pub(in crate::linker) fn nullable_type_expr(annotation: &str) -> Option<TypeExpr
                 if argument.is_empty() {
                     return None;
                 }
-                args.push(nullable_argument(argument));
+                args.push(stored_type_argument(argument));
                 start = index + character.len_utf8();
             }
             _ => {}
@@ -173,16 +176,165 @@ pub(in crate::linker) fn nullable_type_expr(annotation: &str) -> Option<TypeExpr
     if argument.is_empty() {
         return None;
     }
-    args.push(nullable_argument(argument));
+    args.push(stored_type_argument(argument));
     Some(TypeExpr::Applied {
         base: base.to_owned(),
         args,
     })
 }
 
-fn nullable_argument(annotation: &str) -> TypeExpr {
-    let unparenthesized = strip_outer_parentheses(annotation);
-    nullable_type_expr(unparenthesized).unwrap_or_else(|| TypeExpr::Named {
+fn stored_type_argument(annotation: &str) -> TypeExpr {
+    let unparenthesized = strip_outer_parentheses(annotation.trim());
+    if unparenthesized.is_empty() {
+        return TypeExpr::Unknown;
+    }
+    stored_type_expr(unparenthesized).unwrap_or_else(|| TypeExpr::Named {
         name: unparenthesized.to_owned(),
     })
+}
+
+fn is_pathlib_target(target: &TypeTarget<'_>) -> bool {
+    match target {
+        TypeTarget::Builtin(name) | TypeTarget::External { module: name, .. } => {
+            name.starts_with("pathlib.")
+        }
+        _ => false,
+    }
+}
+
+pub(in crate::linker) fn callable_target_return<'s, 'a>(
+    index: &'s ValueFlowIndex<'a>,
+    target: &'s TypeTarget<'a>,
+    owner: &'a Node,
+    at: SourcePosition,
+    resolver: &impl SemanticResolver<'a>,
+    trace: Option<&ReadTrace<'a, '_>>,
+) -> Option<&'s TypeTarget<'a>> {
+    match target {
+        TypeTarget::Callable(callable) => index.return_type_tracked(callable, trace),
+        TypeTarget::CallableReturn(ret) => Some(ret.as_ref()),
+        TypeTarget::ClassType(inner) => Some(inner.as_ref()),
+        TypeTarget::Local(class) if owner.language == "python" && class.kind == "class" => {
+            match resolver.resolve_member(target, "__call__", owner, at) {
+                Symbol::Callable(call_fn) => index.return_type_tracked(call_fn, trace),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+pub(in crate::linker) fn synthetic_property_result<'a>(
+    owner: &'a Node,
+    receiver: &TypeTarget<'a>,
+    member: &str,
+) -> Option<TypeTarget<'a>> {
+    if owner.language != "python" {
+        return None;
+    }
+    if is_pathlib_target(receiver) && member == "parent" {
+        return Some(receiver.clone());
+    }
+    if let TypeTarget::ConfiguredReceiver {
+        authority,
+        origin,
+        fallback,
+        evidence,
+    } = receiver
+    {
+        if let super::super::value_flow::ConfiguredReceiverAuthority::Hierarchy { pack, rule } =
+            authority.as_ref()
+        {
+            let prefix = format!("{member}.");
+            let members: Vec<String> = rule
+                .members
+                .iter()
+                .filter_map(|m| m.strip_prefix(&prefix).map(str::to_owned))
+                .collect();
+            if !members.is_empty() {
+                let returns = rule
+                    .returns
+                    .iter()
+                    .filter_map(|(k, v)| k.strip_prefix(&prefix).map(|rest| (rest.to_owned(), v.clone())))
+                    .collect();
+                let sub_rule = crate::languages::manifests::ClassHierarchyReceiverRule {
+                    bases: rule.bases.clone(),
+                    provider: rule.provider.clone(),
+                    members,
+                    returns,
+                };
+                return Some(TypeTarget::ConfiguredReceiver {
+                    authority: std::sync::Arc::new(
+                        super::super::value_flow::ConfiguredReceiverAuthority::Hierarchy {
+                            pack: pack.clone(),
+                            rule: std::sync::Arc::new(sub_rule),
+                        },
+                    ),
+                    origin: origin.clone(),
+                    fallback: fallback.clone(),
+                    evidence: evidence.clone(),
+                });
+            }
+        }
+    }
+    None
+}
+
+pub(in crate::linker) fn synthetic_member_result<'a>(
+    index: &ValueFlowIndex<'a>,
+    owner: &'a Node,
+    receiver: &TypeTarget<'a>,
+    callee: &str,
+    at: SourcePosition,
+    resolver: &impl SemanticResolver<'a>,
+    trace: Option<&ReadTrace<'a, '_>>,
+) -> Option<TypeTarget<'a>> {
+    if owner.language != "python" {
+        return None;
+    }
+    if callee == "__truediv__" && is_pathlib_target(receiver) {
+        return Some(receiver.clone());
+    }
+    if callee == "__slice__"
+        && matches!(
+            receiver,
+            TypeTarget::Builtin(name)
+                if matches!(name.as_str(), "str" | "bytes" | "bytearray" | "list" | "tuple")
+        )
+    {
+        return Some(receiver.clone());
+    }
+    if callee == "__call__" {
+        return callable_target_return(index, receiver, owner, at, resolver, trace).cloned();
+    }
+    if matches!(callee, "__enter__" | "__aenter__")
+        && !matches!(receiver, TypeTarget::Unknown | TypeTarget::Ambiguous)
+    {
+        if let Symbol::Callable(enter_fn) = resolver.resolve_member(receiver, callee, owner, at) {
+            return Some(
+                if callee == "__aenter__" {
+                    index.async_return_type(enter_fn)
+                } else {
+                    index.return_type_tracked(enter_fn, trace)
+                }
+                .cloned()
+                .unwrap_or(TypeTarget::Unknown),
+            );
+        }
+        return Some(receiver.clone());
+    }
+    if is_pathlib_target(receiver) {
+        let mut method = callee;
+        while let Some(rest) = method.strip_prefix("parent.") {
+            method = rest;
+        }
+        return match method {
+            "parent" | "resolve" | "absolute" | "expanduser" | "joinpath" | "with_name"
+            | "with_stem" | "with_suffix" => Some(receiver.clone()),
+            "read_text" | "as_posix" | "as_uri" => Some(TypeTarget::Builtin("str".to_owned())),
+            "read_bytes" => Some(TypeTarget::Builtin("bytes".to_owned())),
+            _ => None,
+        };
+    }
+    synthetic_property_result(owner, receiver, callee)
 }

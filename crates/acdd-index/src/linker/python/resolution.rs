@@ -165,15 +165,7 @@ pub(in crate::linker) fn pathlib_member(
     } else {
         return None;
     };
-    let canonical = match class {
-        "Path" => "pathlib.Path",
-        "PosixPath" => "pathlib.PosixPath",
-        "WindowsPath" => "pathlib.WindowsPath",
-        "PurePath" => "pathlib.PurePath",
-        "PurePosixPath" => "pathlib.PurePosixPath",
-        "PureWindowsPath" => "pathlib.PureWindowsPath",
-        _ => return None,
-    };
+    let canonical = super::semantic_context::canonical_pathlib_class(class)?;
     profile
         .filter(|profile| profile.id() == "python")
         .is_some_and(|profile| profile.builtin_member(canonical, member))

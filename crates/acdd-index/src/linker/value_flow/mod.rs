@@ -188,6 +188,10 @@ pub enum TypeTarget<'a> {
         /// Whether more than the supported candidate bound was observed.
         exhausted: bool,
     },
+    /// Return type carried by an explicitly typed callable (`Callable[[...], R]`).
+    CallableReturn(Box<TypeTarget<'a>>),
+    /// Class object type (`type[T]` / `typing.Type[T]`) instantiating `T`.
+    ClassType(Box<TypeTarget<'a>>),
     /// Represents the ambiguous case.
     Ambiguous,
     /// Represents the unknown case.
@@ -340,6 +344,10 @@ pub trait SemanticResolver<'a> {
         _at: SourcePosition,
     ) -> Option<&'a Node> {
         None
+    }
+    /// Resolves a Python `super().member` lookup for `owner`'s enclosing class.
+    fn resolve_python_super_member(&self, _owner: &'a Node, _member: &str) -> Symbol<'a> {
+        Symbol::Unknown
     }
 }
 
@@ -733,6 +741,10 @@ impl<'a> ValueFlowIndex<'a> {
         self.lookup_tracked(owner, name, at, None)
     }
 
+    pub(in crate::linker) fn async_return_type(&self, node: &Node) -> Option<&TypeTarget<'a>> {
+        self.async_returns.get(node.id.as_str())
+    }
+
     pub(in crate::linker) fn lookup_tracked(
         &self,
         owner: &Node,
@@ -951,10 +963,12 @@ impl<'a> ValueFlowIndex<'a> {
         {
             return Some(&self.unknown);
         }
-        if let Some(TypeTarget::Callable(callable)) =
-            self.lookup_tracked(owner, expression, at, trace)
-        {
-            return self.return_type_tracked(callable, trace);
+        if let Some(target) = self.lookup_tracked(owner, expression, at, trace) {
+            if let Some(returned) = super::python::value_flow::callable_target_return(
+                self, target, owner, at, resolver, trace,
+            ) {
+                return Some(returned);
+            }
         }
         if let Some(constructor) =
             super::python::value_flow::constructor_symbol(owner, expression, at, resolver)
@@ -1139,65 +1153,11 @@ impl<'a> ValueFlowIndex<'a> {
                 self.evaluate_tracked(owner, value, at, resolver, definitions, trace)
             }
             ValueExpr::BranchJoin { alternatives } => {
-                let mut targets = BTreeMap::<String, &'a Node>::new();
-                let mut complete = true;
-                let mut exhausted = false;
-                for alternative in alternatives {
-                    let result =
-                        self.evaluate_tracked(owner, alternative, at, resolver, definitions, trace);
-                    match result {
-                        TypeTarget::Local(node)
-                            if matches!(
-                                node.kind.as_str(),
-                                "class" | "struct" | "interface" | "enum"
-                            ) =>
-                        {
-                            targets.insert(node.id.clone(), node);
-                        }
-                        TypeTarget::Candidates {
-                            targets: nested,
-                            complete: nested_complete,
-                            exhausted: nested_exhausted,
-                        } => {
-                            complete &= nested_complete;
-                            exhausted |= nested_exhausted;
-                            for node in nested {
-                                targets.insert(node.id.clone(), node);
-                            }
-                        }
-                        TypeTarget::Unknown | TypeTarget::Ambiguous => {
-                            complete = false;
-                        }
-                        _ => {
-                            complete = false;
-                        }
-                    }
-                    if targets.len() > MAX_CANDIDATE_BRANCH_JOINS {
-                        exhausted = true;
-                        complete = false;
-                        targets.clear();
-                    }
-                }
-                if exhausted {
-                    return TypeTarget::Candidates {
-                        targets: Vec::new(),
-                        complete: false,
-                        exhausted: true,
-                    };
-                }
-                if targets.is_empty() {
-                    TypeTarget::Candidates {
-                        targets: Vec::new(),
-                        complete: false,
-                        exhausted: false,
-                    }
-                } else {
-                    TypeTarget::Candidates {
-                        targets: targets.into_values().collect(),
-                        complete,
-                        exhausted: false,
-                    }
-                }
+                super::python::semantic_context::collect_candidate_join(
+                    alternatives.iter().map(|alternative| {
+                        self.evaluate_tracked(owner, alternative, at, resolver, definitions, trace)
+                    }),
+                )
             }
             ValueExpr::Call { callee, site } => {
                 if owner.language == "rust"
@@ -1206,14 +1166,35 @@ impl<'a> ValueFlowIndex<'a> {
                     return TypeTarget::Unknown;
                 }
                 let at = site.as_ref().map_or(at, |site| site.position);
-                if let Some(receiver) = site.as_ref().and_then(|site| site.receiver.as_deref()) {
+                if let Some(receiver_expr) = site.as_ref().and_then(|site| site.receiver.as_deref())
+                {
+                    if owner.language == "python"
+                        && matches!(
+                            receiver_expr,
+                            ValueExpr::Call { callee: super_name, site: None } if super_name == "super"
+                        )
+                    {
+                        if let Symbol::Callable(callable) =
+                            resolver.resolve_python_super_member(owner, callee)
+                        {
+                            if let Some(result) = self.return_type_tracked(callable, trace) {
+                                return result.clone();
+                            }
+                        }
+                        return TypeTarget::Unknown;
+                    }
                     let receiver =
-                        self.evaluate_tracked(owner, receiver, at, resolver, definitions, trace);
+                        self.evaluate_tracked(owner, receiver_expr, at, resolver, definitions, trace);
                     if let Symbol::Callable(callable) =
                         resolver.resolve_member(&receiver, callee, owner, at)
                     {
                         if let Some(result) = self.return_type_tracked(callable, trace) {
-                            return result.clone();
+                            if !(owner.language == "python"
+                                && callee == "__aenter__"
+                                && matches!(result, TypeTarget::Unknown))
+                            {
+                                return result.clone();
+                            }
                         }
                     }
                     if let Some(target) = if owner.language == "rust" {
@@ -1227,6 +1208,11 @@ impl<'a> ValueFlowIndex<'a> {
                     }
                     if let Some(target) = super::javascript::value_flow::platform_member_return(
                         owner, &receiver, callee,
+                    ) {
+                        return target;
+                    }
+                    if let Some(target) = super::python::value_flow::synthetic_member_result(
+                        self, owner, &receiver, callee, at, resolver, trace,
                     ) {
                         return target;
                     }
@@ -1521,6 +1507,13 @@ impl<'a> ValueFlowIndex<'a> {
                         .and_then(|class| self.field_type_tracked(class, member, trace))
                     {
                         return target.clone();
+                    }
+                }
+                if owner.language == "python" {
+                    if let Some(target) =
+                        super::python::value_flow::synthetic_property_result(owner, &source, member)
+                    {
+                        return target;
                     }
                 }
                 match source {
@@ -1873,7 +1866,7 @@ fn stored_type_expr(annotation: &str, language: &str) -> TypeExpr {
         }
     }
     if language == "python" {
-        if let Some(expression) = super::python::value_flow::nullable_type_expr(annotation) {
+        if let Some(expression) = super::python::value_flow::stored_type_expr(annotation) {
             return expression;
         }
     }
@@ -1956,6 +1949,8 @@ fn merge<'a>(left: &TypeTarget<'a>, right: &TypeTarget<'a>) -> TypeTarget<'a> {
             | TypeTarget::RustIterator { .. }
             | TypeTarget::RustCollection { .. }
             | TypeTarget::RustSlice { .. }
+            | TypeTarget::CallableReturn(_)
+            | TypeTarget::ClassType(_)
     ) && same_target(left, right)
     {
         return left.clone();
@@ -2113,6 +2108,8 @@ fn same_target(left: &TypeTarget<'_>, right: &TypeTarget<'_>) -> bool {
         (TypeTarget::RustIterator { item: a }, TypeTarget::RustIterator { item: b }) => {
             same_target(a, b)
         }
+        (TypeTarget::CallableReturn(a), TypeTarget::CallableReturn(b))
+        | (TypeTarget::ClassType(a), TypeTarget::ClassType(b)) => same_target(a, b),
         (TypeTarget::RustCollection { item: a }, TypeTarget::RustCollection { item: b })
         | (TypeTarget::RustSlice { item: a }, TypeTarget::RustSlice { item: b }) => {
             same_target(a, b)

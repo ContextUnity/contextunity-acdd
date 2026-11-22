@@ -29,6 +29,19 @@ pub(super) struct ReferenceState<'res> {
     pub(super) scope: &'res str,
 }
 
+fn emit_resolved_member<'a, 'file, 'res>(
+    graph: &mut Graph,
+    ctx: &'res PhaseContext<'a, 'file, 'res>,
+    q: &RefQuery<'a, '_>,
+    result: semantic_context::Member<'a>,
+) -> bool {
+    if matches!(result, semantic_context::Member::Unknown) {
+        return false;
+    }
+    emit_inferred(graph, ctx.path, q.r, result, q.builtin_origin);
+    true
+}
+
 pub(super) fn resolve_inferred_receiver_member<'a, 'file, 'res>(
     ctx: &'res PhaseContext<'a, 'file, 'res>,
     graph: &mut Graph,
@@ -143,6 +156,57 @@ where
             );
             return true;
         }
+        if owner.language == LanguageId::Python.as_str() && q.r.kind == EdgeKind::Calls.as_str() {
+            match receiver {
+                value_flow::TypeTarget::CallableReturn(_) => {
+                    graph.reference_coverage(
+                        ctx.path,
+                        q.r,
+                        CoverageStatus::Resolved.as_str(),
+                        "invocation of a typed Python Callable binding".into(),
+                    );
+                    return true;
+                }
+                value_flow::TypeTarget::ClassType(inner) => {
+                    let result = match inner.as_ref() {
+                        value_flow::TypeTarget::Local(class) => {
+                            match ctx.input.semantic_context.lookup_member_mode(
+                                inner.as_ref(),
+                                "__init__",
+                                owner,
+                                false,
+                            ) {
+                                semantic_context::Member::Unknown => {
+                                    semantic_context::Member::Local(class)
+                                }
+                                init => init,
+                            }
+                        }
+                        value_flow::TypeTarget::External {
+                            module,
+                            import_line,
+                        } => semantic_context::Member::External(module, *import_line, None),
+                        value_flow::TypeTarget::Builtin(_) => semantic_context::Member::Builtin,
+                        _ => semantic_context::Member::Unknown,
+                    };
+                    if emit_resolved_member(graph, ctx, q, result) {
+                        return true;
+                    }
+                }
+                value_flow::TypeTarget::Local(class) if class.kind == NodeKind::Class.as_str() => {
+                    let result = ctx.input.semantic_context.lookup_member_mode(
+                        receiver,
+                        "__call__",
+                        owner,
+                        false,
+                    );
+                    if emit_resolved_member(graph, ctx, q, result) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
         return false;
     }
     let (fields, member) = q.tail.rsplit_once('.').unwrap_or(("", q.tail));
@@ -155,6 +219,15 @@ where
         ctx.input,
         ctx.profile,
     ) else {
+        if owner.language == LanguageId::Python.as_str() && !fields.is_empty() {
+            let result = ctx
+                .input
+                .semantic_context
+                .lookup_member_mode(receiver, q.tail, owner, false);
+            if emit_resolved_member(graph, ctx, q, result) {
+                return true;
+            }
+        }
         return false;
     };
     let resolved_receiver = nested_receiver.as_ref();

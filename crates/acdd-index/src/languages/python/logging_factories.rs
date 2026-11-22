@@ -66,7 +66,42 @@ pub(super) fn collect(root: Syntax<'_>, source: &str, offset: usize) -> serde_js
                     && value.parent().is_some_and(|parent| {
                         matches!(parent.kind(), "argument_list" | "keyword_argument")
                     });
+                let type_annotation = value.kind() == "attribute"
+                    && matches!(
+                        field(value, source, "attribute"),
+                        Some("Logger" | "LoggerAdapter")
+                    )
+                    && {
+                        let mut anc = value.parent();
+                        let mut in_type = false;
+                        while let Some(parent) = anc {
+                            if parent.kind() == "type" {
+                                in_type = true;
+                                break;
+                            }
+                            if matches!(
+                                parent.kind(),
+                                "function_definition"
+                                    | "class_definition"
+                                    | "lambda"
+                                    | "block"
+                                    | "module"
+                                    | "expression_statement"
+                                    | "assignment"
+                                    | "augmented_assignment"
+                                    | "default_parameter"
+                                    | "typed_default_parameter"
+                                    | "typed_parameter"
+                                    | "return_statement"
+                            ) {
+                                break;
+                            }
+                            anc = parent.parent();
+                        }
+                        in_type
+                    };
                 let escaped = !level_constant
+                    && !type_annotation
                     && !value.parent().is_some_and(|parent| {
                         matches!(
                             parent.kind(),

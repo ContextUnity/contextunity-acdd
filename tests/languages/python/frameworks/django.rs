@@ -207,10 +207,14 @@ const RETURNS: &[(&str, &str)] = &[
     ("first.exclude", "unresolved"),
 ];
 
-fn statuses(conn: &Connection, expression: &str) -> Vec<(String, String)> {
-    conn.prepare("SELECT c.status,v.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE p.path='app/models.py' AND x.expression=?1 ORDER BY c.line")
-        .unwrap().query_map([expression], |row| Ok((row.get(0)?, row.get(1)?)))
+fn statuses_in(conn: &Connection, path: &str, expression: &str) -> Vec<(String, String)> {
+    conn.prepare("SELECT c.status,v.evidence FROM resolution_coverage c JOIN path_dictionary p ON p.path_id=c.path_id JOIN coverage_expressions x ON x.expression_id=c.expression_id JOIN coverage_evidence v ON v.evidence_id=c.evidence_id WHERE p.path=?1 AND x.expression=?2 ORDER BY c.line")
+        .unwrap().query_map([path, expression], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap().map(Result::unwrap).collect()
+}
+
+fn statuses(conn: &Connection, expression: &str) -> Vec<(String, String)> {
+    statuses_in(conn, "app/models.py", expression)
 }
 
 #[test]
@@ -320,4 +324,82 @@ fn only_unique_literal_viewset_registrations_create_route_handlers() {
         route_count, 1,
         "dynamic and duplicate registrations do not create route handler facts"
     );
+}
+
+#[test]
+fn django_commands_models_auth_and_unittest_framework_members() {
+    let workspace = fixture_workspace(&[]);
+    workspace.write(
+        "pyproject.toml",
+        "[project]\nname='django-expanded'\ndependencies=['django']\n",
+    );
+    workspace.write(
+        "app/commands.py",
+        concat!(
+            "from django.core.management.base import BaseCommand\n",
+            "class SyncCommand(BaseCommand):\n",
+            "    def handle(self):\n",
+            "        self.stdout.write(self.style.SUCCESS('ok'))\n",
+            "        self.style.INVENTED('bad')\n",
+        ),
+    );
+    workspace.write(
+        "app/users.py",
+        concat!(
+            "from django.db.models import Model\n",
+            "from django.contrib.auth import get_user_model\n",
+            "class Item(Model):\n",
+            "    pass\n",
+            "def sync(item: Item):\n",
+            "    item.save()\n",
+            "    item.refresh_from_db()\n",
+            "    item.missing()\n",
+            "    Item.objects.only('id').distinct().filter(active=True)\n",
+            "    User = get_user_model()\n",
+            "    User.objects.filter(is_active=True)\n",
+            "    get_user_model().objects.filter(is_active=True)\n",
+            "    User.objects.invented()\n",
+        ),
+    );
+    workspace.write(
+        "tests/test_app.py",
+        concat!(
+            "import unittest\n",
+            "from django.test import TestCase\n",
+            "class DjangoSuite(TestCase):\n",
+            "    def test_view(self):\n",
+            "        res = self.client.get('/')\n",
+            "        self.assertContains(res, 'ok')\n",
+            "        self.assertInvented(res)\n",
+            "class UnitSuite(unittest.TestCase):\n",
+            "    def test_unit(self):\n",
+            "        self.assertMultiLineEqual('a', 'a')\n",
+            "        self.assertBogus()\n",
+        ),
+    );
+    workspace.build();
+    let conn = workspace.open();
+    for (path, expression, expected) in [
+        ("app/commands.py", "self.stdout.write", "external"),
+        ("app/commands.py", "self.style.SUCCESS", "external"),
+        ("app/commands.py", "self.style.INVENTED", "unresolved"),
+        ("app/users.py", "item.save", "external"),
+        ("app/users.py", "item.refresh_from_db", "external"),
+        ("app/users.py", "item.missing", "unresolved"),
+        ("app/users.py", "Item.objects.only('id').distinct().filter", "external"),
+        ("app/users.py", "User.objects.filter", "external"),
+        ("app/users.py", "get_user_model().objects.filter", "external"),
+        ("app/users.py", "User.objects.invented", "unresolved"),
+        ("tests/test_app.py", "self.client.get", "external"),
+        ("tests/test_app.py", "self.assertContains", "external"),
+        ("tests/test_app.py", "self.assertInvented", "unresolved"),
+        ("tests/test_app.py", "self.assertMultiLineEqual", "external"),
+        ("tests/test_app.py", "self.assertBogus", "unresolved"),
+    ] {
+        let actual = statuses_in(&conn, path, expression);
+        assert!(
+            !actual.is_empty() && actual.iter().all(|row| row.0 == expected),
+            "{path} {expression}: expected {expected}, observed {actual:?}"
+        );
+    }
 }

@@ -16,6 +16,11 @@ fn static_callee(node: Node<'_>) -> bool {
     }
 }
 
+fn typed_call_hint(value: crate::semantic::ValueExpr, member: String) -> Option<ReceiverHint> {
+    matches!(value, crate::semantic::ValueExpr::Call { .. })
+        .then_some(ReceiverHint::TypedCallResult { value, member })
+}
+
 pub(super) fn receiver_hint(call: Node<'_>, source: &str) -> Option<ReceiverHint> {
     let function = call.child_by_field_name("function")?;
     if function.kind() != "attribute" {
@@ -46,12 +51,11 @@ pub(super) fn receiver_hint(call: Node<'_>, source: &str) -> Option<ReceiverHint
         "call" => {
             let callee = receiver.child_by_field_name("function")?;
             if !(callee.kind() == "identifier" && text(callee, source) == "super") {
-                let value = super::value_flow::call_value(receiver, source);
-                if matches!(value, crate::semantic::ValueExpr::Call { .. }) {
-                    return Some(ReceiverHint::TypedCallResult {
-                        value,
-                        member: text(member, source).to_owned(),
-                    });
+                if let Some(hint) = typed_call_hint(
+                    super::value_flow::call_value(receiver, source),
+                    text(member, source).to_owned(),
+                ) {
+                    return Some(hint);
                 }
             }
             if callee.kind() == "call" {
@@ -82,6 +86,33 @@ pub(super) fn receiver_hint(call: Node<'_>, source: &str) -> Option<ReceiverHint
                     member: text(member, source).to_owned(),
                 })
             }
+        }
+        "attribute" => {
+            let mut parts = vec![text(member, source)];
+            let mut cur = receiver;
+            while cur.kind() == "attribute" {
+                if parts.len() >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+                    return None;
+                }
+                let attr = cur
+                    .child_by_field_name("attribute")
+                    .filter(|n| n.kind() == "identifier")?;
+                parts.push(text(attr, source));
+                cur = cur.child_by_field_name("object")?;
+            }
+            let value = match cur.kind() {
+                "call" => super::value_flow::call_value(cur, source),
+                "binary_operator" | "subscript" | "parenthesized_expression" => {
+                    super::value_flow::computed_receiver_value(cur, source)?
+                }
+                _ => return None,
+            };
+            parts.reverse();
+            typed_call_hint(value, parts.join("."))
+        }
+        "binary_operator" | "subscript" | "parenthesized_expression" => {
+            let value = super::value_flow::computed_receiver_value(receiver, source)?;
+            typed_call_hint(value, text(member, source).to_owned())
         }
         _ => None,
     }

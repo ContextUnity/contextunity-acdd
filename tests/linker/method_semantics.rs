@@ -1274,6 +1274,24 @@ fn python_optional_and_single_none_union_project_one_payload_on_index_readback()
             unresolved(expression, line),
             "{caller}: unsupported nullable type lost unresolved coverage for {expression}"
         );
+        if caller == "bad_optional_arity" {
+            let possible_calls: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM edge_occurrences e \
+                     JOIN nodes s ON s.node_hash=e.src_hash \
+                     JOIN path_dictionary p ON p.path_id=e.owner_id \
+                     JOIN coverage_evidence v ON v.evidence_id=e.evidence_id \
+                     WHERE p.path='nullable.py' AND s.name=?1 AND e.kind='possible_calls' \
+                     AND v.evidence=?2 AND e.line=?3",
+                    rusqlite::params![caller, expression, line],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                possible_calls, 0,
+                "{caller}: invalid Optional arity unexpectedly emitted possible_calls for {expression}"
+            );
+        }
     }
 }
 
@@ -1327,9 +1345,46 @@ fn python_pep604_without_union_imports_and_nested_invariants_survive_readback() 
         );
     }
 
+    // Complete 2-member PEP 604 union (Service | NoneType) projects bounded possible_calls
+    assert!(
+        !has_call("clean_nonetype", "nt.work", 25),
+        "clean_nonetype: 2-member union must not fabricate an exact calls edge"
+    );
+    let nt_ambiguous: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM resolution_coverage r \
+             JOIN coverage_expressions x ON x.expression_id=r.expression_id \
+             JOIN path_dictionary p ON p.path_id=r.path_id \
+             WHERE p.path='clean_pep604.py' AND x.expression='nt.work' AND r.line=25 \
+             AND r.status='ambiguous')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        nt_ambiguous,
+        "clean_nonetype: Service | NoneType must record ambiguous coverage"
+    );
+    let nt_possible: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edge_occurrences e \
+             JOIN nodes s ON s.node_hash=e.src_hash \
+             JOIN nodes d ON d.node_hash=e.dst_hash \
+             JOIN path_dictionary p ON p.path_id=e.owner_id \
+             JOIN coverage_evidence v ON v.evidence_id=e.evidence_id \
+             WHERE p.path='clean_pep604.py' AND s.name='clean_nonetype' AND d.name='work' \
+             AND e.kind='possible_calls' AND v.evidence='nt.work' AND e.line=25",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        nt_possible, 2,
+        "clean_nonetype: Service | NoneType must emit 2 possible_calls targets"
+    );
+
     // Negative / fail-closed cases: must not resolve and must remain unresolved
     for (caller, expression, line) in [
-        ("clean_nonetype", "nt.work", 25),
         ("clean_nested_list", "lst.work", 28),
         ("clean_bad_pipe", "bad.work", 31),
         ("custom_union", "cu.work", 40),

@@ -40,6 +40,18 @@ fn prefer_live_declaration(candidates: &mut Vec<&Node>) -> bool {
 }
 
 impl LanguageLinker for PythonLinker {
+    #[allow(private_interfaces)]
+    fn resolve_builtin_property<'a>(
+        &self,
+        _path: &str,
+        receiver_name: &str,
+        field: &str,
+        _semantic_context: &crate::linker::semantic_context::Context<'a>,
+    ) -> Option<TypeTarget<'a>> {
+        (receiver_name.starts_with("pathlib.") && field == "parent")
+            .then(|| TypeTarget::Builtin(receiver_name.to_owned()))
+    }
+
     fn builtin_member_origin(
         &self,
         receiver: &TypeTarget<'_>,

@@ -1,8 +1,9 @@
-use crate::semantic::{
-        AnnotationReferenceFact, BindingFact, BranchJoinFact, CollectionElementFact, FieldFact,
-        GuardImportFact, SourcePosition, TypeExpr, TypeOnlyImportFact, ValueExpr, ValueFlowFacts,
-    };
 use crate::ast::{field, strip_outer_parentheses, text};
+use crate::languages::support::value_flow_core::{ScopeFrameFlags, ValueFlowCollectorCore};
+use crate::semantic::{
+    AnnotationReferenceFact, CollectionElementFact, GuardImportFact, SourcePosition, TypeExpr,
+    TypeOnlyImportFact, ValueExpr, ValueFlowFacts,
+};
 use std::collections::{HashMap, HashSet};
 use tree_sitter::Node;
 
@@ -579,7 +580,17 @@ fn annotation(node: Node<'_>, source: &str) -> TypeExpr {
     parse(node, source, 0, &mut 32)
 }
 
-fn literal_value(node: Node<'_>) -> Option<ValueExpr> {
+fn literal_value(node: Node<'_>, source: &str) -> Option<ValueExpr> {
+    if node.kind() == "string" {
+        let bytes = node
+            .named_child(0)
+            .filter(|start| start.kind() == "string_start")
+            .and_then(|start| text(start, source).split(['\'', '"']).next())
+            .is_some_and(|prefix| prefix.bytes().any(|b| matches!(b, b'b' | b'B')));
+        return Some(ValueExpr::Construct {
+            callee: if bytes { "b\"\"" } else { "\"\"" }.to_owned(),
+        });
+    }
     let kind = if node.kind() == "dictionary" {
         "dict"
     } else {
@@ -590,8 +601,60 @@ fn literal_value(node: Node<'_>) -> Option<ValueExpr> {
     })
 }
 
+pub(super) fn valid_super_arguments(arguments: Node<'_>, source: &str) -> bool {
+    let mut cursor = arguments.walk();
+    let mut args = arguments.named_children(&mut cursor);
+    let Some(first) = args.next() else {
+        return true;
+    };
+    let Some(second) = args.next() else {
+        return false;
+    };
+    args.next().is_none()
+        && static_name(first)
+        && second.kind() == "identifier"
+        && matches!(text(second, source), "self" | "cls")
+}
+
+fn attribute_chain<'tree>(mut node: Node<'tree>, source: &str) -> Option<(Node<'tree>, String)> {
+    let mut members = Vec::new();
+    while node.kind() == "attribute" {
+        if members.len() >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+            return None;
+        }
+        let member = node
+            .child_by_field_name("attribute")
+            .filter(|member| member.kind() == "identifier")?;
+        members.push(text(member, source));
+        node = node.child_by_field_name("object")?;
+    }
+    (!members.is_empty()).then(|| {
+        members.reverse();
+        (node, members.join("."))
+    })
+}
+
 pub(super) fn call_value(node: Node<'_>, source: &str) -> ValueExpr {
     call_value_depth(node, source, 0)
+}
+
+pub(super) fn computed_receiver_value(node: Node<'_>, source: &str) -> Option<ValueExpr> {
+    let expr = value_depth(node, source, 0);
+    (!matches!(expr, ValueExpr::Unknown)).then_some(expr)
+}
+
+fn receiver_call(receiver: ValueExpr, callee: impl Into<String>, node: Node<'_>) -> ValueExpr {
+    if matches!(receiver, ValueExpr::Unknown) {
+        return ValueExpr::Unknown;
+    }
+    ValueExpr::Call {
+        callee: callee.into(),
+        site: Some(crate::semantic::CallSiteEvidence {
+            position: crate::languages::source_start(node),
+            receiver: Some(Box::new(receiver)),
+            arguments: Vec::new(),
+        }),
+    }
 }
 
 fn call_value_depth(node: Node<'_>, source: &str, depth: usize) -> ValueExpr {
@@ -602,66 +665,103 @@ fn call_value_depth(node: Node<'_>, source: &str, depth: usize) -> ValueExpr {
         return ValueExpr::Unknown;
     };
     if static_name(callee) {
+        let name = text(callee, source);
+        if name == "super"
+            && !node
+                .child_by_field_name("arguments")
+                .is_some_and(|args| valid_super_arguments(args, source))
+        {
+            return ValueExpr::Unknown;
+        }
         return ValueExpr::Call {
-            callee: text(callee, source).to_owned(),
+            callee: name.to_owned(),
             site: None,
         };
+    }
+    if callee.kind() == "call" {
+        return receiver_call(
+            call_value_depth(callee, source, depth + 1),
+            "__call__",
+            node,
+        );
     }
     if callee.kind() != "attribute" {
         return ValueExpr::Unknown;
     }
-    let Some(receiver) = callee
-        .child_by_field_name("object")
-        .filter(|receiver| receiver.kind() == "call")
-    else {
+    let Some((base, member_chain)) = attribute_chain(callee, source) else {
         return ValueExpr::Unknown;
     };
-    let Some(member) = callee
-        .child_by_field_name("attribute")
-        .filter(|member| member.kind() == "identifier")
-    else {
-        return ValueExpr::Unknown;
-    };
-    let receiver = call_value_depth(receiver, source, depth + 1);
-    if matches!(receiver, ValueExpr::Unknown) {
-        return ValueExpr::Unknown;
-    }
-    ValueExpr::Call {
-        callee: text(member, source).to_owned(),
-        site: Some(crate::semantic::CallSiteEvidence {
-            position: crate::languages::source_start(node),
-            receiver: Some(Box::new(receiver)),
-            arguments: Vec::new(),
-        }),
-    }
+    receiver_call(value_depth(base, source, depth + 1), member_chain, node)
 }
 
 fn value(node: Node<'_>, source: &str) -> ValueExpr {
-    if let Some(literal) = literal_value(node) {
+    value_depth(node, source, 0)
+}
+
+fn value_depth(node: Node<'_>, source: &str, depth: usize) -> ValueExpr {
+    if depth >= crate::languages::MAX_VALUE_FLOW_TYPE_DEPTH {
+        return ValueExpr::Unknown;
+    }
+    if let Some(literal) = literal_value(node, source) {
         return literal;
     }
     match node.kind() {
+        "parenthesized_expression" => node
+            .named_child(0)
+            .map_or(ValueExpr::Unknown, |inner| value_depth(inner, source, depth + 1)),
         "identifier" => ValueExpr::Alias {
             name: text(node, source).to_owned(),
         },
         "await" => node
             .named_child(0)
             .map_or(ValueExpr::Unknown, |expression| ValueExpr::Await {
-                value: Box::new(value(expression, source)),
+                value: Box::new(value_depth(expression, source, depth + 1)),
             }),
-        "call" => call_value(node, source),
+        "call" => call_value_depth(node, source, depth + 1),
+        "binary_operator" => {
+            let Some(op) = node.child_by_field_name("operator") else {
+                return ValueExpr::Unknown;
+            };
+            if text(op, source) != "/" {
+                return ValueExpr::Unknown;
+            }
+            let Some(left) = node.child_by_field_name("left") else {
+                return ValueExpr::Unknown;
+            };
+            receiver_call(value_depth(left, source, depth + 1), "__truediv__", node)
+        }
+        "subscript" => {
+            let mut cursor = node.walk();
+            let has_slice = node
+                .children_by_field_name("subscript", &mut cursor)
+                .any(|child| child.kind() == "slice");
+            if !has_slice {
+                return ValueExpr::Unknown;
+            }
+            let Some(object) = node.child_by_field_name("value") else {
+                return ValueExpr::Unknown;
+            };
+            receiver_call(value_depth(object, source, depth + 1), "__slice__", node)
+        }
         "attribute" => {
-            let Some(receiver) = node
-                .child_by_field_name("object")
-                .filter(|receiver| static_name(*receiver))
-            else {
+            let Some(object) = node.child_by_field_name("object") else {
                 return ValueExpr::Unknown;
             };
             let Some(member) = field(node, source, "attribute") else {
                 return ValueExpr::Unknown;
             };
-            ValueExpr::Field {
-                receiver: text(receiver, source).to_owned(),
+            if static_name(object) {
+                return ValueExpr::Field {
+                    receiver: text(object, source).to_owned(),
+                    member: member.to_owned(),
+                };
+            }
+            let receiver = value_depth(object, source, depth + 1);
+            if matches!(receiver, ValueExpr::Unknown) {
+                return ValueExpr::Unknown;
+            }
+            ValueExpr::Project {
+                value: Box::new(receiver),
                 member: member.to_owned(),
             }
         }
@@ -727,7 +827,7 @@ pub(crate) struct Collector<'a, 'tree> {
     module_export_facts: Option<super::module_exports::Collector<'tree>>,
     body: Option<Node<'tree>>,
     body_depth: Option<usize>,
-    states: Vec<(bool, bool, bool, bool)>,
+    core: ValueFlowCollectorCore,
     return_last: Option<Node<'tree>>,
     return_prefix_valid: bool,
     aliases: Option<AliasWrites>,
@@ -740,7 +840,6 @@ pub(crate) struct Collector<'a, 'tree> {
     collect_summary: bool,
     collect_return_summary: bool,
     summary: BodySummary,
-    facts: ValueFlowFacts,
 }
 
 impl<'a, 'tree> Collector<'a, 'tree> {
@@ -748,19 +847,9 @@ impl<'a, 'tree> Collector<'a, 'tree> {
         if target.kind() == "identifier" {
             let name = text(target, self.source).to_owned();
             if self.class_scope {
-                self.facts.fields.push(FieldFact {
-                    name,
-                    value,
-                    position: at,
-                    conditional,
-                });
+                self.core.push_field(name, at, value, conditional);
             } else {
-                self.facts.bindings.push(BindingFact {
-                    name,
-                    value,
-                    position: at,
-                    conditional,
-                });
+                self.core.push_binding(name, at, value, conditional);
             }
         } else if target.kind() == "attribute" {
             if target
@@ -771,16 +860,13 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                 })
             {
                 if let Some(member) = field(target, self.source, "attribute") {
-                    self.facts.fields.push(FieldFact {
-                        name: member.to_owned(),
-                        value: if self.init && !self.uncertain_callable {
-                            value
-                        } else {
-                            ValueExpr::Unknown
-                        },
-                        position: at,
-                        conditional,
-                    });
+                    let stored = if self.init && !self.uncertain_callable {
+                        value
+                    } else {
+                        ValueExpr::Unknown
+                    };
+                    self.core
+                        .push_field(member.to_owned(), at, stored, conditional);
                 }
             }
         } else if matches!(
@@ -823,7 +909,8 @@ impl<'a, 'tree> Collector<'a, 'tree> {
 
         let start = node.start_position();
         let prior_binding = self
-            .facts
+            .core
+            .facts()
             .bindings
             .iter()
             .filter(|binding| {
@@ -834,7 +921,8 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             })
             .map(|binding| (binding.position, &binding.value));
         let prior_join = self
-            .facts
+            .core
+            .facts()
             .branch_joins
             .iter()
             .filter(|join| {
@@ -854,7 +942,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             .map(|assignment| match assignment {
                 Some((_, statement)) => {
                     let right = statement.child_by_field_name("right");
-                    let literal = right.and_then(literal_value);
+                    let literal = right.and_then(|right| literal_value(right, self.source));
                     if let Some(literal) = literal {
                         literal
                     } else {
@@ -880,36 +968,41 @@ impl<'a, 'tree> Collector<'a, 'tree> {
         }
         let mut at = position(node);
         at.column = at.column.saturating_add(1);
-        self.facts.branch_joins.push(BranchJoinFact {
-            name,
-            value: joined,
-            position: at,
-            conditional: inherited_conditional,
-        });
+        self.core
+            .facts_mut()
+            .branch_joins
+            .push(crate::semantic::BranchJoinFact {
+                name,
+                value: joined,
+                position: at,
+                conditional: inherited_conditional,
+            });
     }
 
     pub(crate) fn enter(&mut self, node: Node<'tree>) {
         if let Some(aliases) = &mut self.aliases {
             aliases.enter(node, self.source);
         }
-        let (parent_active, inherited, inherited_facts, inherited_lexical) =
-            self.states.last().copied().unwrap_or_default();
-        let active = self.body == Some(node) || parent_active;
-        let conditional = if self.body == Some(node) {
+        let prev = self.core.scope_state().current_or_default();
+        let is_body = self.body == Some(node);
+        let active = is_body || prev.is_active();
+        let conditional = if is_body {
             false
         } else {
-            inherited
+            prev.is_branch_conditional()
         };
-        let collect_facts = self.body == Some(node) || inherited_facts;
-        let lexical_scope = self.body == Some(node) || inherited_lexical;
+        let collect_facts = is_body || prev.collects_facts();
+        let lexical_scope = is_body || prev.is_lexical_scope();
         if !active {
-            self.states.push((false, false, false, false));
+            self.core.scope_state_mut().push(ScopeFrameFlags::new());
             return;
         }
-        if self.body == Some(node) {
-            self.body_depth = Some(self.states.len());
+        if is_body {
+            self.body_depth = Some(self.core.scope_state().len());
         }
-        let is_direct_child = self.body_depth.is_some_and(|d| self.states.len() == d + 1);
+        let is_direct_child = self
+            .body_depth
+            .is_some_and(|d| self.core.scope_state().len() == d + 1);
         if is_direct_child && node.kind() != "comment" {
             if let Some(previous) = self.return_last {
                 self.return_prefix_valid &= valid_return_prefix(previous);
@@ -950,7 +1043,9 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             "function_definition" | "class_definition" | "lambda"
         );
         if !self.local_scope && !self.class_scope && super::type_alias(node, self.source) {
-            self.states.push((false, conditional, false, false));
+            self.core.scope_state_mut().push(
+                ScopeFrameFlags::new().with_branch_conditional(conditional),
+            );
             return;
         }
         if collect_facts
@@ -961,17 +1056,12 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                 self.bind(name, ValueExpr::Unknown, position(node), conditional);
             }
         }
-        if collect_facts && nested_scope {
-            self.states.push((
-                self.collect_summary && self.collect_return_summary,
-                conditional,
-                false,
-                false,
-            ));
-            return;
-        }
-        if !collect_facts && !self.collect_summary {
-            self.states.push((false, conditional, false, false));
+        if (collect_facts && nested_scope) || (!collect_facts && !self.collect_summary) {
+            self.core.scope_state_mut().push(
+                ScopeFrameFlags::new()
+                    .with_active(collect_facts && self.collect_summary && self.collect_return_summary)
+                    .with_branch_conditional(conditional),
+            );
             return;
         }
         let conditional = conditional
@@ -993,7 +1083,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             match node.kind() {
                 "call" => {
                     if let Some(context) = super::syntax_operations::extract(node, self.source) {
-                        self.facts.push_template_context(context);
+                        self.core.facts_mut().push_template_context(context);
                     }
                 }
                 "assignment" => {
@@ -1009,15 +1099,17 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                                     "list" | "List" | "Sequence" | "Iterable"
                                 ) && args.len() == 1
                                 {
-                                    self.facts.push_collection_element(CollectionElementFact {
-                                        name: text(left, self.source).to_owned(),
-                                        position: position(node),
-                                        element_type: args[0].clone(),
-                                    });
+                                    self.core.facts_mut().push_collection_element(
+                                        CollectionElementFact {
+                                            name: text(left, self.source).to_owned(),
+                                            position: position(node),
+                                            element_type: args[0].clone(),
+                                        },
+                                    );
                                 }
                             }
                         }
-                        let literal = right.and_then(literal_value);
+                        let literal = right.and_then(|right| literal_value(right, self.source));
                         let assigned = if let Some(literal) = literal {
                             literal
                         } else if self.class_scope && node.child_by_field_name("type").is_some() {
@@ -1102,11 +1194,31 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                         let in_with = node
                             .parent()
                             .is_some_and(|parent| parent.kind() == "with_item");
+                        let async_with = in_with && {
+                            let mut cur = node.parent();
+                            let mut is_async = false;
+                            for _ in 0..3 {
+                                let Some(parent) = cur else { break };
+                                if parent.kind() == "with_statement" {
+                                    is_async = text(parent, self.source)
+                                        .trim_start()
+                                        .starts_with("async ");
+                                    break;
+                                }
+                                cur = parent.parent();
+                            }
+                            is_async
+                        };
                         let bound = if in_with {
                             node.named_child(0)
                                 .filter(|child| child.id() != alias.id())
-                                .map(|expr| value(expr, self.source))
-                                .unwrap_or(ValueExpr::Unknown)
+                                .map_or(ValueExpr::Unknown, |expr| {
+                                    receiver_call(
+                                        value(expr, self.source),
+                                        if async_with { "__aenter__" } else { "__enter__" },
+                                        expr,
+                                    )
+                                })
                         } else {
                             ValueExpr::Unknown
                         };
@@ -1122,20 +1234,25 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                 _ => {}
             }
         }
-        self.states.push((
-            true,
-            conditional,
-            collect_facts && !nested_scope,
-            lexical_scope && !nested_scope,
-        ));
+        self.core.scope_state_mut().push(
+            ScopeFrameFlags::new()
+                .with_active(true)
+                .with_branch_conditional(conditional)
+                .with_collect_facts(collect_facts && !nested_scope)
+                .with_lexical_scope(lexical_scope && !nested_scope),
+        );
     }
 
     pub(crate) fn exit(&mut self, node: Node<'tree>) {
         if self.body == Some(node) {
             self.body_depth = None;
         }
-        let (_, _, collect_facts, _) = self.states.pop().unwrap_or_default();
-        let inherited_conditional = self.states.last().is_some_and(|state| state.1);
+        let collect_facts = self
+            .core
+            .scope_state_mut()
+            .pop()
+            .is_some_and(|flags| flags.collects_facts());
+        let inherited_conditional = self.core.scope_state().is_conditional();
         if collect_facts && self.local_scope && !self.class_scope && node.kind() == "if_statement" {
             self.bind_if_join(node, inherited_conditional);
         }
@@ -1182,13 +1299,15 @@ impl<'a, 'tree> Collector<'a, 'tree> {
         collect_aliases: bool,
         facts: ValueFlowFacts,
     ) -> Self {
+        let mut core = ValueFlowCollectorCore::with_scope_capacity(32);
+        *core.facts_mut() = facts;
         Self {
             root: node,
             module_export_facts: (node.kind() == "module")
                 .then(|| super::module_exports::Collector::new(node)),
             body: None,
             body_depth: None,
-            states: Vec::with_capacity(32),
+            core,
             return_last: None,
             return_prefix_valid: true,
             aliases: collect_aliases.then(AliasWrites::new),
@@ -1201,7 +1320,6 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             collect_summary: false,
             collect_return_summary: false,
             summary: BodySummary::default(),
-            facts,
         }
     }
     pub(crate) fn new(node: Node<'tree>, source: &'a str, collect_aliases: bool) -> Self {
@@ -1281,7 +1399,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                 .then(|| super::module_exports::Collector::new(node)),
             body,
             body_depth: None,
-            states: Vec::with_capacity(32),
+            core: ValueFlowCollectorCore::with_scope_capacity(32),
             return_last: None,
             return_prefix_valid: true,
             aliases: collect_aliases.then(AliasWrites::new),
@@ -1294,14 +1412,13 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             collect_summary: callable,
             collect_return_summary,
             summary: BodySummary::default(),
-            facts: ValueFlowFacts::default(),
         };
         if callable {
             if let Some(parameters) = node.child_by_field_name("parameters") {
                 let mut cursor = parameters.walk();
                 for parameter in parameters.named_children(&mut cursor) {
                     if let Some(ty) = parameter.child_by_field_name("type") {
-                        annotation_reference_positions(ty, source, &mut collector.facts);
+                        annotation_reference_positions(ty, source, collector.core.facts_mut());
                         let param_name = if parameter.kind() == "identifier" {
                             Some(text(parameter, source))
                         } else {
@@ -1320,7 +1437,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                                     "list" | "List" | "Sequence" | "Iterable"
                                 ) && args.len() == 1
                                 {
-                                    collector.facts.push_collection_element(
+                                    collector.core.facts_mut().push_collection_element(
                                         CollectionElementFact {
                                             name: name.to_owned(),
                                             position: crate::languages::source_start(node),
@@ -1334,7 +1451,7 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                 }
             }
             if let Some(ret) = node.child_by_field_name("return_type") {
-                annotation_reference_positions(ret, source, &mut collector.facts);
+                annotation_reference_positions(ret, source, collector.core.facts_mut());
             }
         }
         collector
@@ -1372,12 +1489,12 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             .filter(|last| self.return_prefix_valid && last.kind() == "return_statement");
         self.uncertain_callable |= callable && self.summary.has_yield;
         if self.uncertain_callable && self.init {
-            for field in &mut self.facts.fields {
+            for field in &mut self.core.facts_mut().fields {
                 field.value = ValueExpr::Unknown;
             }
         }
         for name in &self.summary.nonlocal_names {
-            for binding in &mut self.facts.bindings {
+            for binding in &mut self.core.facts_mut().bindings {
                 if binding.name == *name {
                     binding.value = ValueExpr::Unknown;
                 }
@@ -1387,15 +1504,15 @@ impl<'a, 'tree> Collector<'a, 'tree> {
         scoped_names.sort_unstable();
         for name in scoped_names {
             let start = node.start_position();
-            self.facts.bindings.push(BindingFact {
-                name: name.clone(),
-                position: SourcePosition {
+            self.core.push_binding(
+                name.clone(),
+                SourcePosition {
                     line: start.row + 1,
                     column: start.column,
                 },
-                value: ValueExpr::Unknown,
-                conditional: false,
-            });
+                ValueExpr::Unknown,
+                false,
+            );
         }
         if callable {
             let async_callable = text(node, source).trim_start().starts_with("async ");
@@ -1403,14 +1520,15 @@ impl<'a, 'tree> Collector<'a, 'tree> {
                 if !decorated && !self.summary.has_yield {
                     // An async function's declared type describes the awaited
                     // result, not the ordinary call result (a coroutine).
-                    self.facts.async_return_type = node
+                    self.core.facts_mut().async_return_type = node
                         .child_by_field_name("return_type")
                         .map(|ty| annotation(ty, source));
                 }
             } else if !self.uncertain_callable {
-                self.facts.return_type = node
+                let return_type = node
                     .child_by_field_name("return_type")
                     .map(|ty| annotation(ty, source));
+                self.core.set_return_type_if_none(return_type);
             }
         }
         if callable
@@ -1422,19 +1540,17 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             if let Some((returned, at)) =
                 return_statement.and_then(|statement| returned_value(statement, source))
             {
-                self.facts.return_value = Some(returned);
-                self.facts.return_position = Some(at);
+                self.core.facts_mut().return_value = Some(returned);
+                self.core.set_return_position(at);
             }
         }
         if node.kind() == "module" {
             let imports = type_only_imports(node, source);
             for import in imports {
-                self.facts.push_type_only_import(import);
+                self.core.facts_mut().push_type_only_import(import);
             }
         }
-        self.facts.bindings.sort_by_key(|a| a.position);
-        self.facts.fields.sort_by_key(|a| a.position);
-        self.facts
+        self.core.finish()
     }
 }
 
