@@ -15,25 +15,42 @@ enum MacroItemKind {
     Enum,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MacroVisibility {
+    Public,
+    Private,
+    VisParam,
+}
+
+impl MacroVisibility {
+    fn resolve(self, invocation_public: bool) -> bool {
+        match self {
+            Self::Public => true,
+            Self::Private => false,
+            Self::VisParam => invocation_public,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct MacroMethodSpec {
     name: String,
     is_static: bool,
-    is_public: bool,
+    visibility: MacroVisibility,
     synth_return: Option<&'static str>,
 }
 
 #[derive(Clone)]
 struct MacroConstSpec {
     name: String,
-    is_public: bool,
+    visibility: MacroVisibility,
 }
 
 #[derive(Clone)]
 struct MacroTemplate {
     name: String,
     kind: MacroItemKind,
-    is_public: bool,
+    visibility: MacroVisibility,
     has_variant_repetition: bool,
     derives: Vec<&'static str>,
     methods: Vec<MacroMethodSpec>,
@@ -386,13 +403,14 @@ fn parse_macro_definition(node: TsNode<'_>, source: &str) -> Option<MacroTemplat
     None
 }
 
-fn collect_ident_metavars(
+fn collect_rule_metavars(
     node: TsNode<'_>,
     source: &str,
     depth: usize,
     in_rep: bool,
     top_idents: &mut Vec<String>,
     rep_idents: &mut Vec<String>,
+    vis_params: &mut Vec<String>,
 ) {
     if depth > MAX_TREE_DEPTH {
         return;
@@ -402,16 +420,20 @@ fn collect_ident_metavars(
             node.child_by_field_name("name"),
             node.child_by_field_name("type"),
         ) {
-            if text(type_n, source).trim() == "ident" {
-                let var = text(name_n, source)
-                    .trim()
-                    .trim_start_matches('$')
-                    .to_owned();
-                if in_rep {
-                    rep_idents.push(var);
-                } else {
-                    top_idents.push(var);
+            let var = text(name_n, source)
+                .trim()
+                .trim_start_matches('$')
+                .to_owned();
+            match text(type_n, source).trim() {
+                "ident" => {
+                    if in_rep {
+                        rep_idents.push(var);
+                    } else {
+                        top_idents.push(var);
+                    }
                 }
+                "vis" if !in_rep => vis_params.push(var),
+                _ => {}
             }
         }
         return;
@@ -419,7 +441,9 @@ fn collect_ident_metavars(
     let next_rep = in_rep || node.kind() == "token_repetition_pattern";
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_ident_metavars(child, source, depth + 1, next_rep, top_idents, rep_idents);
+        collect_rule_metavars(
+            child, source, depth + 1, next_rep, top_idents, rep_idents, vis_params,
+        );
     }
 }
 
@@ -427,6 +451,31 @@ fn token_at_child_is<'a>(children: &[TsNode<'a>], idx: usize, source: &'a str) -
     children
         .get(idx)
         .map_or("", |node| text(*node, source).trim())
+}
+
+fn visibility_before(
+    children: &[TsNode<'_>],
+    kw_idx: usize,
+    source: &str,
+    vis_params: &[String],
+) -> MacroVisibility {
+    if kw_idx > 0 {
+        let prev = token_at_child_is(children, kw_idx - 1, source);
+        if prev == "pub" {
+            return MacroVisibility::Public;
+        }
+        if let Some(var) = prev.strip_prefix('$') {
+            if vis_params.iter().any(|p| p == var) {
+                return MacroVisibility::VisParam;
+            }
+        } else if kw_idx > 1
+            && token_at_child_is(children, kw_idx - 2, source) == "$"
+            && vis_params.iter().any(|p| p == prev)
+        {
+            return MacroVisibility::VisParam;
+        }
+    }
+    MacroVisibility::Private
 }
 
 fn parse_macro_rule(
@@ -437,7 +486,16 @@ fn parse_macro_rule(
 ) -> Option<MacroTemplate> {
     let mut top_idents = Vec::new();
     let mut rep_idents = Vec::new();
-    collect_ident_metavars(left, source, 0, false, &mut top_idents, &mut rep_idents);
+    let mut vis_params = Vec::new();
+    collect_rule_metavars(
+        left,
+        source,
+        0,
+        false,
+        &mut top_idents,
+        &mut rep_idents,
+        &mut vis_params,
+    );
     if top_idents.is_empty() {
         return None;
     }
@@ -447,7 +505,7 @@ fn parse_macro_rule(
 
     let mut item_kind = None;
     let mut type_param = None;
-    let mut item_public = false;
+    let mut visibility = MacroVisibility::Private;
     let mut has_variant_repetition = false;
     let mut derives = Vec::new();
     let mut methods = Vec::new();
@@ -475,7 +533,7 @@ fn parse_macro_rule(
             MacroItemKind::Enum
         });
         type_param = Some(token_at_child_is(&children, idx + 1, source).to_owned());
-        item_public = idx > 0 && token_at_child_is(&children, idx - 1, source) == "pub";
+        visibility = visibility_before(&children, idx, source, &vis_params);
         if tok == "enum" {
             has_variant_repetition = children
                 .get(idx + 2)
@@ -515,7 +573,7 @@ fn parse_macro_rule(
                     methods.push(MacroMethodSpec {
                         name: "to_string".to_owned(),
                         is_static: false,
-                        is_public: item_public,
+                        visibility,
                         synth_return: Some("String"),
                     });
                 }
@@ -525,7 +583,7 @@ fn parse_macro_rule(
                 {
                     let body_text = text(*body, source).trim();
                     if body_text.starts_with('{') {
-                        extract_impl_members(*body, source, &mut methods, &mut consts);
+                        extract_impl_members(*body, source, &vis_params, &mut methods, &mut consts);
                     }
                 }
                 break;
@@ -555,7 +613,7 @@ fn parse_macro_rule(
     Some(MacroTemplate {
         name: macro_name.to_owned(),
         kind: item_kind,
-        is_public: item_public,
+        visibility,
         has_variant_repetition,
         derives,
         methods,
@@ -589,6 +647,7 @@ fn contains_rep_ident(
 fn extract_impl_members(
     body: TsNode<'_>,
     source: &str,
+    vis_params: &[String],
     methods: &mut Vec<MacroMethodSpec>,
     consts: &mut Vec<MacroConstSpec>,
 ) {
@@ -600,24 +659,24 @@ fn extract_impl_members(
         if tok == "const" {
             let next_tok = token_at_child_is(&children, idx + 1, source);
             if next_tok != "fn" && is_plain_ident(next_tok) {
-                let is_public =
-                    idx > 0 && token_at_child_is(&children, idx - 1, source) == "pub";
                 consts.push(MacroConstSpec {
                     name: next_tok.to_owned(),
-                    is_public,
+                    visibility: visibility_before(&children, idx, source, vis_params),
                 });
             }
         } else if tok == "fn" {
             let fn_name = token_at_child_is(&children, idx + 1, source);
             if is_plain_ident(fn_name) {
-                let is_public = (idx > 0
-                    && token_at_child_is(&children, idx - 1, source) == "pub")
-                    || (idx > 1
-                        && matches!(
-                            token_at_child_is(&children, idx - 1, source),
-                            "const" | "async"
-                        )
-                        && token_at_child_is(&children, idx - 2, source) == "pub");
+                let qualifier_idx = if idx > 0
+                    && matches!(
+                        token_at_child_is(&children, idx - 1, source),
+                        "const" | "async"
+                    ) {
+                    idx - 1
+                } else {
+                    idx
+                };
+                let visibility = visibility_before(&children, qualifier_idx, source, vis_params);
                 let mut scan = idx + 2;
                 let mut params_node = None;
                 while scan < children.len() && scan < idx + 6 {
@@ -654,7 +713,7 @@ fn extract_impl_members(
                     methods.push(MacroMethodSpec {
                         name: fn_name.to_owned(),
                         is_static,
-                        is_public,
+                        visibility,
                         synth_return,
                     });
                 }
@@ -722,10 +781,11 @@ fn extract_invocation_name_and_variants(
     args_tree: TsNode<'_>,
     source: &str,
     extract_variants: bool,
-) -> Option<(String, Vec<String>)> {
+) -> Option<(String, bool, Vec<String>)> {
     let mut cursor = args_tree.walk();
     let children: Vec<_> = args_tree.children(&mut cursor).collect();
     let mut item_name = None;
+    let mut invocation_public = false;
     let mut idx = 0;
     while idx < children.len() {
         let child = children[idx];
@@ -736,6 +796,14 @@ fn extract_invocation_name_and_variants(
         }
         let tok = text(child, source).trim();
         if skip_attr_token(&children, tok, &mut idx) {
+            continue;
+        }
+        if tok == "pub" {
+            let scoped = children
+                .get(idx + 1)
+                .is_some_and(|next| next.kind() == "token_tree" && text(*next, source).trim().starts_with('('));
+            invocation_public = !scoped;
+            idx += 1;
             continue;
         }
         if is_plain_ident(tok) {
@@ -755,7 +823,7 @@ fn extract_invocation_name_and_variants(
             }
         }
     }
-    Some((item_name, variants))
+    Some((item_name, invocation_public, variants))
 }
 
 fn skip_attr_token(children: &[TsNode<'_>], tok: &str, idx: &mut usize) -> bool {
@@ -921,7 +989,7 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
         return;
     };
     let Some(template) = template else {
-        if let Some((target_name, _)) =
+        if let Some((target_name, _, _)) =
             extract_invocation_name_and_variants(args_tree, ctx.source, false)
         {
             if target_name.starts_with(|ch: char| ch.is_ascii_uppercase()) {
@@ -938,13 +1006,14 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
         }
         return;
     };
-    let Some((item_name, variants)) = extract_invocation_name_and_variants(
+    let Some((item_name, invocation_public, variants)) = extract_invocation_name_and_variants(
         args_tree,
         ctx.source,
         template.kind == MacroItemKind::Enum && template.has_variant_repetition,
     ) else {
         return;
     };
+    let item_public = template.visibility.resolve(invocation_public);
 
     let item_qualname = format!("{}.{item_name}", owner.qualname);
     if facts
@@ -978,7 +1047,7 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
         language: "rust".into(),
         generated: true,
         details: json!({
-            "is_public": template.is_public,
+            "is_public": item_public,
             "rust_macro_generated": true,
         }),
     });
@@ -999,15 +1068,21 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
         path: &owner.path,
         line,
         end_line,
-        is_public: template.is_public,
+        is_public: item_public,
         is_test: owner.is_test,
     };
     for variant in variants {
-        push_synthetic_constant(facts, &synth_owner, variant, template.is_public, true);
+        push_synthetic_constant(facts, &synth_owner, variant, item_public, true);
     }
 
     for c in &template.consts {
-        push_synthetic_constant(facts, &synth_owner, &c.name, c.is_public, false);
+        push_synthetic_constant(
+            facts,
+            &synth_owner,
+            &c.name,
+            c.visibility.resolve(invocation_public),
+            false,
+        );
     }
 
     for method in &template.methods {
@@ -1016,7 +1091,7 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
             &synth_owner,
             &method.name,
             method.is_static,
-            method.is_public,
+            method.visibility.resolve(invocation_public),
             method.synth_return,
             None,
         );
@@ -1027,7 +1102,7 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
             &synth_owner,
             "from_str",
             true,
-            template.is_public,
+            item_public,
             Some("Result<Self>"),
             None,
         );

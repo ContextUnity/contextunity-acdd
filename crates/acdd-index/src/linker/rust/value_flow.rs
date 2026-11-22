@@ -221,158 +221,33 @@ pub(in crate::linker) fn constructor_result<'a>(
                 }
             }
         }
-        TypeTarget::External { module, .. } => {
-            let module_ref = import_path(module.trim_start_matches("::"));
-            if matches!(module_ref.as_ref(), "std.str" | "core.str") {
-                if let Some(res) = string_utf8_result(member, false) {
-                    return Some(res);
-                }
-            }
-            if matches!(module_ref.as_ref(), "std.string.String" | "alloc.string.String") {
-                if let Some(res) = string_utf8_result(member, true) {
-                    return Some(res);
-                }
-            }
-            if matches!(module_ref.as_ref(), "serde_json" | "serde_yaml")
-                && matches!(
-                    member,
-                    "from_str" | "from_slice" | "from_reader" | "from_value"
-                )
+        TypeTarget::External { ref module, .. } => {
+            if let Some(res) =
+                external_constructor_result(module, &target, member, owner, at, resolver)
             {
-                return Some(TypeTarget::RustWrapper {
-                    wrapper: RustWrapperKind::Result,
-                    ok: Box::new(TypeTarget::Unknown),
-                    err: Some(Box::new(TypeTarget::External {
-                        module: format!("{module_ref}::Error"),
-                        import_line: 0,
-                    })),
-                });
+                return res;
             }
-            let crate_name = module_ref.split('.').next()?;
-            if matches!(crate_name, "std" | "alloc" | "core") {
-                if matches!(member, "new" | "from" | "with_capacity" | "default") {
-                    return Some(target.clone());
-                }
-            } else if !super::resolution::is_registered_cargo_crate(crate_name)
-                && crate_name != "serde_json"
-            {
-                return None;
-            }
-            if let Some(target_type) = resolver.resolve_member_result(&target, member, owner, at) {
-                let is_option = matches!(
-                    member,
-                    "child"
-                        | "child_by_field_name"
-                        | "parent"
-                        | "next_sibling"
-                        | "prev_sibling"
-                        | "next_named_sibling"
-                        | "prev_named_sibling"
-                        | "parse"
-                        | "parse_with"
-                );
-                let is_io_result = matches!(
-                    (module_ref.as_ref(), member),
-                    (
-                        "std.fs",
-                        "read"
-                            | "read_to_string"
-                            | "write"
-                            | "create_dir_all"
-                            | "remove_file"
-                            | "remove_dir_all"
-                            | "read_dir"
-                            | "metadata"
-                            | "symlink_metadata"
-                            | "canonicalize"
-                            | "copy"
-                            | "rename"
-                    ) | ("std.fs.File", "open" | "create" | "metadata")
-                        | ("std.fs.OpenOptions", "open")
-                        | ("std.env", "current_dir")
-                        | ("tempfile", "tempdir" | "tempdir_in" | "tempfile" | "tempfile_in")
-                ) || (matches!(member, "new" | "new_in")
-                    && (module_ref.ends_with("NamedTempFile")
-                        || module_ref.ends_with("TempDir")));
-                let is_result = is_io_result
-                    || matches!(
-                        member,
-                        "open" | "open_in_memory" | "open_with_flags" | "prepare" | "prepare_cached"
-                    )
-                    || (matches!(module_ref.as_ref(), "serde_json" | "serde_yaml" | "toml")
-                        && matches!(
-                            member,
-                            "from_str" | "from_slice" | "from_reader" | "from_value"
-                        ))
-                    || (module_ref == "git2.Repository" && matches!(member, "init" | "discover"))
-                    || (matches!(member, "new" | "new_in") && module_ref.ends_with("Regex"));
-
-                if matches!(
-                    (module_ref.as_ref(), member),
-                    (
-                        "std.iter" | "core.iter",
-                        "once"
-                            | "empty"
-                            | "repeat"
-                            | "once_with"
-                            | "repeat_with"
-                            | "from_fn"
-                            | "successors"
-                    )
-                ) {
-                    return Some(TypeTarget::RustIterator {
-                        item: Box::new(TypeTarget::Unknown),
-                    });
-                }
-                if module_ref == "ignore.WalkBuilder" && member == "build" {
-                    return Some(TypeTarget::RustIterator {
-                        item: Box::new(TypeTarget::RustWrapper {
-                            wrapper: RustWrapperKind::Result,
-                            ok: Box::new(target_type),
-                            err: Some(Box::new(TypeTarget::External {
-                                module: "ignore::Error".to_owned(),
-                                import_line: 0,
-                            })),
-                        }),
-                    });
-                }
-                if module_ref == "serde.Serializer"
-                    && matches!(
-                        member,
-                        "serialize_struct"
-                            | "serialize_map"
-                            | "serialize_seq"
-                            | "serialize_tuple"
-                    )
+        }
+        TypeTarget::ConfiguredReceiver {
+            ref authority,
+            ref origin,
+            ..
+        } => {
+            let module = match origin.as_ref() {
+                TypeTarget::External { module, .. } => Some(module.as_str()),
+                _ => match authority.as_ref() {
+                    crate::linker::value_flow::ConfiguredReceiverAuthority::Hierarchy {
+                        rule,
+                        ..
+                    } => rule.bases.first().map(String::as_str),
+                    _ => None,
+                },
+            };
+            if let Some(module) = module {
+                if let Some(res) =
+                    external_constructor_result(module, &target, member, owner, at, resolver)
                 {
-                    return Some(TypeTarget::RustWrapper {
-                        wrapper: RustWrapperKind::Result,
-                        ok: Box::new(target_type),
-                        err: Some(Box::new(TypeTarget::External {
-                            module: "serde::ser::Error".to_owned(),
-                            import_line: 0,
-                        })),
-                    });
-                }
-                if is_option {
-                    return Some(TypeTarget::RustWrapper {
-                        wrapper: RustWrapperKind::Option,
-                        ok: Box::new(target_type),
-                        err: None,
-                    });
-                } else if is_result {
-                    return Some(TypeTarget::RustWrapper {
-                        wrapper: RustWrapperKind::Result,
-                        ok: Box::new(target_type),
-                        err: is_io_result.then(|| {
-                            Box::new(TypeTarget::External {
-                                module: "std::io::Error".to_owned(),
-                                import_line: 0,
-                            })
-                        }),
-                    });
-                } else {
-                    return Some(target_type);
+                    return res;
                 }
             }
         }
@@ -388,6 +263,177 @@ pub(in crate::linker) fn constructor_result<'a>(
         "new" | "default" | "create" | "current" | "none" => Some(target),
         _ => None,
     }
+}
+
+/// Returns `Some(res)` to short-circuit `constructor_result`, or `None` to fall back
+/// to generic Rust constructor suffixes for workspace/registered external types.
+fn external_constructor_result<'a>(
+    module: &str,
+    target: &TypeTarget<'a>,
+    member: &str,
+    owner: &'a Node,
+    at: SourcePosition,
+    resolver: &impl SemanticResolver<'a>,
+) -> Option<Option<TypeTarget<'a>>> {
+    let module_ref = import_path(module.trim_start_matches("::"));
+    if matches!(module_ref.as_ref(), "std.str" | "core.str") {
+        if let Some(res) = string_utf8_result(member, false) {
+            return Some(Some(res));
+        }
+    }
+    if matches!(
+        module_ref.as_ref(),
+        "std.string.String" | "alloc.string.String"
+    ) {
+        if let Some(res) = string_utf8_result(member, true) {
+            return Some(Some(res));
+        }
+    }
+    if matches!(module_ref.as_ref(), "serde_json" | "serde_yaml")
+        && matches!(
+            member,
+            "from_str" | "from_slice" | "from_reader" | "from_value"
+        )
+    {
+        return Some(Some(TypeTarget::RustWrapper {
+            wrapper: RustWrapperKind::Result,
+            ok: Box::new(TypeTarget::Unknown),
+            err: Some(Box::new(TypeTarget::External {
+                module: format!("{module_ref}::Error"),
+                import_line: 0,
+            })),
+        }));
+    }
+    let Some(crate_name) = module_ref.split('.').next().filter(|s| !s.is_empty()) else {
+        return Some(None);
+    };
+    if matches!(crate_name, "std" | "alloc" | "core") {
+        if matches!(member, "new" | "from" | "with_capacity" | "default") {
+            return Some(Some(target.clone()));
+        }
+    } else if !super::resolution::is_registered_cargo_crate(crate_name)
+        && crate_name != "serde_json"
+    {
+        return Some(None);
+    }
+    let target_type = resolver.resolve_member_result(target, member, owner, at)?;
+    let is_option = matches!(
+        member,
+        "child"
+            | "child_by_field_name"
+            | "parent"
+            | "next_sibling"
+            | "prev_sibling"
+            | "next_named_sibling"
+            | "prev_named_sibling"
+            | "parse"
+            | "parse_with"
+    );
+    let is_io_result = matches!(
+        (module_ref.as_ref(), member),
+        (
+            "std.fs",
+            "read"
+                | "read_to_string"
+                | "write"
+                | "create_dir_all"
+                | "remove_file"
+                | "remove_dir_all"
+                | "read_dir"
+                | "metadata"
+                | "symlink_metadata"
+                | "canonicalize"
+                | "copy"
+                | "rename"
+        ) | ("std.fs.File", "open" | "create" | "metadata")
+            | ("std.fs.OpenOptions", "open")
+            | ("std.env", "current_dir")
+            | ("tempfile", "tempdir" | "tempdir_in" | "tempfile" | "tempfile_in")
+    ) || (matches!(member, "new" | "new_in")
+        && (module_ref.ends_with("NamedTempFile") || module_ref.ends_with("TempDir")));
+    let is_result = is_io_result
+        || matches!(
+            member,
+            "open"
+                | "open_in_memory"
+                | "open_with_flags"
+                | "prepare"
+                | "prepare_cached"
+                | "transaction"
+                | "unchecked_transaction"
+                | "transaction_with_behavior"
+        )
+        || (matches!(module_ref.as_ref(), "serde_json" | "serde_yaml" | "toml")
+            && matches!(
+                member,
+                "from_str" | "from_slice" | "from_reader" | "from_value"
+            ))
+        || (module_ref == "git2.Repository" && matches!(member, "init" | "discover"))
+        || (matches!(member, "new" | "new_in") && module_ref.ends_with("Regex"));
+
+    if matches!(
+        (module_ref.as_ref(), member),
+        (
+            "std.iter" | "core.iter",
+            "once"
+                | "empty"
+                | "repeat"
+                | "once_with"
+                | "repeat_with"
+                | "from_fn"
+                | "successors"
+        )
+    ) {
+        return Some(Some(TypeTarget::RustIterator {
+            item: Box::new(TypeTarget::Unknown),
+        }));
+    }
+    if module_ref == "ignore.WalkBuilder" && member == "build" {
+        return Some(Some(TypeTarget::RustIterator {
+            item: Box::new(TypeTarget::RustWrapper {
+                wrapper: RustWrapperKind::Result,
+                ok: Box::new(target_type),
+                err: Some(Box::new(TypeTarget::External {
+                    module: "ignore::Error".to_owned(),
+                    import_line: 0,
+                })),
+            }),
+        }));
+    }
+    if module_ref == "serde.Serializer"
+        && matches!(
+            member,
+            "serialize_struct" | "serialize_map" | "serialize_seq" | "serialize_tuple"
+        )
+    {
+        return Some(Some(TypeTarget::RustWrapper {
+            wrapper: RustWrapperKind::Result,
+            ok: Box::new(target_type),
+            err: Some(Box::new(TypeTarget::External {
+                module: "serde::ser::Error".to_owned(),
+                import_line: 0,
+            })),
+        }));
+    }
+    if is_option {
+        return Some(Some(TypeTarget::RustWrapper {
+            wrapper: RustWrapperKind::Option,
+            ok: Box::new(target_type),
+            err: None,
+        }));
+    } else if is_result {
+        return Some(Some(TypeTarget::RustWrapper {
+            wrapper: RustWrapperKind::Result,
+            ok: Box::new(target_type),
+            err: is_io_result.then(|| {
+                Box::new(TypeTarget::External {
+                    module: "std::io::Error".to_owned(),
+                    import_line: 0,
+                })
+            }),
+        }));
+    }
+    Some(Some(target_type))
 }
 
 fn is_str_slice_method(member: &str) -> bool {
@@ -431,6 +477,7 @@ fn iter_of<'a>(item: TypeTarget<'a>) -> TypeTarget<'a> {
 pub(in crate::linker) fn is_adapter(member: &str) -> bool {
     is_str_slice_method(member)
         || is_closure_projection_member(member)
+        || member.starts_with("__rust_fn_param:")
         || matches!(
             member,
             "?" | "unwrap"
@@ -555,6 +602,9 @@ pub(in crate::linker) fn is_adapter(member: &str) -> bool {
             | "__rust_identity_some"
             | "prepare"
             | "prepare_cached"
+            | "transaction"
+            | "unchecked_transaction"
+            | "transaction_with_behavior"
             | "query"
             | "parse"
             | "parse_with"
@@ -1095,10 +1145,15 @@ pub(in crate::linker) fn resolve_applied<'a>(
             | "std::iter::DoubleEndedIterator"
             | "ExactSizeIterator"
             | "std::iter::ExactSizeIterator"
-            | "__rust_range"
     ) && args.len() == 1
     {
         return Some(iter_of(*resolve_item(&args[0])));
+    }
+    if base == "__rust_range" && args.len() == 1 {
+        return Some(TypeTarget::RustDeref {
+            wrapper: "Range",
+            target: Box::new(iter_of(*resolve_item(&args[0]))),
+        });
     }
     let single_arg = |build: &dyn Fn(Box<TypeTarget<'a>>) -> TypeTarget<'a>| {
         Some(match args {
@@ -1824,6 +1879,14 @@ pub(in crate::linker) fn project<'a>(
     member: &str,
     resolver: &impl SemanticResolver<'a>,
 ) -> Option<TypeTarget<'a>> {
+    if let Some(rest) = member.strip_prefix("__rust_fn_param:") {
+        if let TypeTarget::Callable(fn_node) = receiver {
+            if let Some(resolved) = project_fn_trait_param(fn_node, rest, resolver) {
+                return Some(resolved);
+            }
+        }
+        return Some(TypeTarget::Unknown);
+    }
     if member == "__rust_identity_some" {
         return None;
     }
@@ -2603,6 +2666,10 @@ fn project_closure_tuple<'a>(items: &[TypeTarget<'a>], member: &str) -> Option<T
         TypeTarget::RustIterator { .. }
             | TypeTarget::RustCollection { .. }
             | TypeTarget::RustSlice { .. }
+            | TypeTarget::RustDeref {
+                wrapper: "Range",
+                ..
+            }
     ) || matches!(recv, TypeTarget::External { module, .. } if import_path(module).as_ref() == "std.fs.ReadDir");
     match member {
         "__rust_closure_map" => match recv {
@@ -2740,6 +2807,14 @@ fn project_deref_wrapper<'a>(
         };
     }
     match wrapper {
+        "Range" => match member {
+            "contains" | "is_empty" => Some(TypeTarget::Builtin("bool".to_owned())),
+            "start" | "end" => match target {
+                TypeTarget::RustIterator { item } => Some((**item).clone()),
+                _ => None,
+            },
+            _ => project(target, member, resolver),
+        },
         "HashMap" | "BTreeMap" | "IndexMap" => {
             let TypeTarget::RustTuple(pair) = target else {
                 return None;
@@ -2903,6 +2978,154 @@ fn project_deref_wrapper<'a>(
         }
         _ => None,
     }
+}
+
+fn split_balanced_commas(input: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let (mut start, mut paren, mut angle, mut bracket) = (0usize, 0usize, 0usize, 0usize);
+    let bytes = input.as_bytes();
+    for (idx, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => paren += 1,
+            b')' => paren = paren.saturating_sub(1),
+            b'<' => angle += 1,
+            b'>' if idx == 0 || bytes[idx - 1] != b'-' => angle = angle.saturating_sub(1),
+            b'[' => bracket += 1,
+            b']' => bracket = bracket.saturating_sub(1),
+            b',' if paren == 0 && angle == 0 && bracket == 0 => {
+                let slice = input[start..idx].trim();
+                if !slice.is_empty() {
+                    parts.push(slice);
+                }
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = input[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail);
+    }
+    parts
+}
+
+fn extract_balanced_parens(text: &str, open_idx: usize) -> Option<&str> {
+    let bytes = text.as_bytes();
+    if bytes.get(open_idx) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (idx, &b) in bytes[open_idx..].iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(&text[open_idx + 1..open_idx + idx]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn extract_fn_trait_args(ty_text: &str) -> Option<&str> {
+    for marker in ["FnOnce(", "FnMut(", "Fn("] {
+        let Some(pos) = ty_text.find(marker) else {
+            continue;
+        };
+        if pos > 0 {
+            let prev = ty_text.as_bytes()[pos - 1];
+            if prev.is_ascii_alphanumeric() || prev == b'_' {
+                continue;
+            }
+        }
+        return extract_balanced_parens(ty_text, pos + marker.len() - 1);
+    }
+    None
+}
+
+fn fn_signature_param_list(sig: &str) -> Option<(&str, &str)> {
+    let mut angle = 0usize;
+    for (idx, ch) in sig.char_indices() {
+        match ch {
+            '<' => angle += 1,
+            '>' => angle = angle.saturating_sub(1),
+            '(' if angle == 0 => {
+                let params = extract_balanced_parens(sig, idx)?;
+                let rest = &sig[idx + params.len() + 2..];
+                return Some((params, rest));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn project_fn_trait_param<'a>(
+    fn_node: &'a Node,
+    rest: &str,
+    resolver: &impl SemanticResolver<'a>,
+) -> Option<TypeTarget<'a>> {
+    let (arg_str, param_str) = rest.split_once(':')?;
+    let arg_idx: usize = arg_str.parse().ok()?;
+    let param_idx: usize = param_str.parse().ok()?;
+    let sig = fn_node.details["signature"].as_str()?;
+    let (params_inner, sig_tail) = fn_signature_param_list(sig)?;
+    let mut params = split_balanced_commas(params_inner);
+    if params.first().is_some_and(|first| {
+        let trimmed = first.trim_start_matches('&').trim_start();
+        trimmed == "self"
+            || trimmed.starts_with("self ")
+            || trimmed.starts_with("mut self")
+            || trimmed.starts_with('\'')
+                && trimmed
+                    .split_once(char::is_whitespace)
+                    .is_some_and(|(_, r)| matches!(r.trim_start(), "self" | "mut self"))
+    }) {
+        params.remove(0);
+    }
+    let param = *params.get(arg_idx)?;
+    let (_, raw_ty) = param.split_once(':')?;
+    let raw_ty = raw_ty.trim();
+    let fn_args_str = extract_fn_trait_args(raw_ty).or_else(|| {
+        let generic = raw_ty
+            .trim_start_matches('&')
+            .trim_start()
+            .strip_prefix("mut ")
+            .unwrap_or(raw_ty)
+            .trim();
+        if !generic.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return None;
+        }
+        let (_, where_body) = sig_tail.split_once("where")?;
+        for clause in split_balanced_commas(where_body) {
+            let Some((lhs, rhs)) = clause.split_once(':') else {
+                continue;
+            };
+            if lhs.trim() == generic {
+                if let Some(found) = extract_fn_trait_args(rhs) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    })?;
+    let fn_args = split_balanced_commas(fn_args_str);
+    let arg_ty = *fn_args.get(param_idx)?;
+    let parsed = crate::languages::rust::value_flow::parse_rust_type_text(arg_ty, 0);
+    if matches!(parsed, TypeExpr::Unknown) {
+        return None;
+    }
+    let resolved = resolve_type(
+        fn_node,
+        &parsed,
+        crate::linker::value_flow::node_position(fn_node),
+        resolver,
+        crate::linker::value_flow::SemanticLimits::default(),
+    );
+    (!matches!(resolved, TypeTarget::Unknown)).then_some(resolved)
 }
 
 pub(in crate::linker) fn local_class<'a>(mut target: &TypeTarget<'a>) -> Option<&'a Node> {

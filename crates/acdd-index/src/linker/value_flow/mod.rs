@@ -1560,6 +1560,12 @@ impl<'a> ValueFlowIndex<'a> {
                             _ => TypeTarget::Unknown,
                         }
                     }
+                    TypeTarget::External { .. } if owner.language == "rust" => {
+                        match resolver.resolve_member(&source, member, owner, at) {
+                            Symbol::Type(target) => target,
+                            _ => TypeTarget::Unknown,
+                        }
+                    }
                     TypeTarget::ResultObject(result)
                         if resolver.configured_result_member(&result, member) =>
                     {

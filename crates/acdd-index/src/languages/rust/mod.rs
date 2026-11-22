@@ -652,6 +652,8 @@ fn rust_std_members(
                         | "Iterator"
                         | "Drop"
                         | "Slice"
+                        | "Tuple"
+                        | "Range"
                         | "str"
                         | "Path"
                         | "PathBuf"

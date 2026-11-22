@@ -426,6 +426,21 @@ members = ["new", "borrow", "borrow_mut", "try_borrow", "try_borrow_mut", "repla
 new = { kind = "self" }
 
 [[class_hierarchy_receivers]]
+bases = ["Tuple"]
+provider = "Rust standard library"
+members = ["clone", "clone_from", "eq", "ne", "cmp", "partial_cmp", "fmt"]
+[class_hierarchy_receivers.returns]
+clone = { kind = "self" }
+cmp = { kind = "receiver", base = "std::cmp::Ordering" }
+
+[[class_hierarchy_receivers]]
+bases = ["std::ops::Range", "std::ops::RangeInclusive", "Range"]
+provider = "Rust standard library"
+members = ["contains", "is_empty", "start", "end", "start_bound", "end_bound", "clone", "eq", "ne", "fmt"]
+[class_hierarchy_receivers.returns]
+clone = { kind = "self" }
+
+[[class_hierarchy_receivers]]
 bases = ["std::thread::LocalKey", "LocalKey"]
 provider = "Rust standard library"
 members = ["with", "try_with"]

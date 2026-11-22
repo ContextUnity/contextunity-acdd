@@ -1549,14 +1549,10 @@ impl<'a> Context<'a> {
                 {
                     return Member::External("rayon", 0, None);
                 }
-                if !associated
+                let standard = !associated
                     && languages::by_id("rust")
-                        .is_some_and(|profile| profile.builtin_member("Vec", member))
-                {
-                    Member::Builtin
-                } else {
-                    Member::Unknown
-                }
+                        .is_some_and(|profile| profile.builtin_member("Vec", member));
+                self.lookup_rust_builtin_member("Vec", standard, member, associated, caller)
             }
             #[cfg(feature = "lang-rust")]
             TypeTarget::RustTypedContainer { base, .. } if caller.language == "rust" => {
@@ -1567,14 +1563,10 @@ impl<'a> Context<'a> {
                 {
                     return Member::External("rayon", 0, None);
                 }
-                if !associated
+                let standard = !associated
                     && languages::by_id("rust")
-                        .is_some_and(|profile| profile.builtin_member(base, member))
-                {
-                    Member::Builtin
-                } else {
-                    Member::Unknown
-                }
+                        .is_some_and(|profile| profile.builtin_member(base, member));
+                self.lookup_rust_builtin_member(base, standard, member, associated, caller)
             }
             #[cfg(feature = "lang-rust")]
             TypeTarget::RustIterator { .. } if caller.language == "rust" => {
@@ -1596,14 +1588,17 @@ impl<'a> Context<'a> {
                 {
                     return Member::External("rayon", 0, None);
                 }
-                if !associated
+                let standard = !associated
                     && languages::by_id("rust")
-                        .is_some_and(|profile| profile.builtin_member("Slice", member))
-                {
-                    Member::Builtin
-                } else {
-                    Member::Unknown
-                }
+                        .is_some_and(|profile| profile.builtin_member("Slice", member));
+                self.lookup_rust_builtin_member("Slice", standard, member, associated, caller)
+            }
+            #[cfg(feature = "lang-rust")]
+            TypeTarget::RustTuple(_) if caller.language == "rust" => {
+                let standard = !associated
+                    && languages::by_id("rust")
+                        .is_some_and(|profile| profile.builtin_member("Tuple", member));
+                self.lookup_rust_builtin_member("Tuple", standard, member, associated, caller)
             }
             #[cfg(feature = "lang-rust")]
             TypeTarget::RustWrapper { wrapper, ok, .. } if caller.language == "rust" => {
@@ -1618,11 +1613,13 @@ impl<'a> Context<'a> {
                         ok.as_ref(),
                         TypeTarget::RustReference { mutable: false, .. }
                     );
-                if !associated && standard && adapter_shape {
-                    Member::Builtin
-                } else {
-                    Member::Unknown
-                }
+                self.lookup_rust_builtin_member(
+                    name,
+                    !associated && standard && adapter_shape,
+                    member,
+                    associated,
+                    caller,
+                )
             }
             #[cfg(feature = "lang-rust")]
             TypeTarget::RustDeref {
@@ -1757,20 +1754,48 @@ impl<'a> Context<'a> {
                 {
                     return Member::External("rayon", 0, None);
                 }
-                if self
+                let standard = self
                     .receiver_type(&caller.path, name)
                     .is_some_and(|receiver| {
                         receiver.members.iter().any(|allowed| allowed == member)
                     })
                     || languages::by_id(&caller.language)
-                        .is_some_and(|profile| profile.builtin_member(name, member))
-                {
+                        .is_some_and(|profile| profile.builtin_member(name, member));
+                #[cfg(feature = "lang-rust")]
+                if caller.language == "rust" {
+                    return self.lookup_rust_builtin_member(
+                        name, standard, member, associated, caller,
+                    );
+                }
+                if standard {
                     Member::Builtin
                 } else {
                     Member::Unknown
                 }
             }
             TypeTarget::Ambiguous => Member::Ambiguous,
+            _ => Member::Unknown,
+        }
+    }
+
+    #[cfg(feature = "lang-rust")]
+    fn lookup_rust_builtin_member<'s>(
+        &'s self,
+        receiver_key: &str,
+        standard: bool,
+        member: &str,
+        associated: bool,
+        caller: &Node,
+    ) -> Member<'s> {
+        if standard {
+            return Member::Builtin;
+        }
+        match self
+            .rust
+            .map(|index| index.lookup_builtin(receiver_key, member, associated, caller))
+        {
+            Some([node]) => Member::Local(node),
+            Some(nodes) if nodes.len() > 1 => Member::Ambiguous,
             _ => Member::Unknown,
         }
     }

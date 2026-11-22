@@ -1378,14 +1378,81 @@ impl hashbrown::Equivalent<(&str, &str)> for DynamicLookup<'_> {
 
 type TraitImplMap<'a> = HashMap<(&'a str, &'a str, bool), Vec<(&'a Node, &'a Node)>>;
 
+type BuiltinTraitLookup<'a> = (&'static str, &'a str, bool, &'a str);
+type BuiltinTraitImplMap<'a> = HashMap<(&'static str, &'a str, bool), Vec<(&'a Node, &'a Node)>>;
+
 pub(crate) struct RustMembers<'a> {
     deref_targets: HashMap<&'a str, &'a Node>,
     inherent: HashMap<(&'a str, &'a str, bool), Vec<&'a Node>>,
     trait_members: HashMap<(&'a str, &'a str, bool, &'a str), Vec<&'a Node>>,
+    builtin_trait_members: HashMap<BuiltinTraitLookup<'a>, Vec<&'a Node>>,
     receivers_by_method: HashMap<&'a str, &'a Node>,
     dynamic_declarations: HashMap<(&'a str, &'a str), &'a Node>,
     dynamic_implementors: HashMap<(&'a str, &'a str), Vec<&'a Node>>,
     display_impls: HashSet<&'a str>,
+}
+
+fn builtin_receiver_key(raw: &str) -> Option<&'static str> {
+    let mut name = raw.trim();
+    while let Some(rest) = name.strip_prefix('&') {
+        name = rest.trim_start();
+        if name.starts_with('\'') {
+            name = name.split_once(char::is_whitespace)?.1.trim_start();
+        }
+        name = name.strip_prefix("mut ").unwrap_or(name).trim_start();
+    }
+    if name.starts_with('[') && name.ends_with(']') {
+        return Some("Slice");
+    }
+    let base = name
+        .split_once('<')
+        .map_or(name, |(b, _)| b)
+        .trim()
+        .rsplit("::")
+        .next()
+        .unwrap_or(name)
+        .trim();
+    match base {
+        "str" => Some("str"),
+        "bool" => Some("bool"),
+        "char" => Some("char"),
+        "u8" => Some("u8"),
+        "u16" => Some("u16"),
+        "u32" => Some("u32"),
+        "u64" => Some("u64"),
+        "u128" => Some("u128"),
+        "usize" => Some("usize"),
+        "i8" => Some("i8"),
+        "i16" => Some("i16"),
+        "i32" => Some("i32"),
+        "i64" => Some("i64"),
+        "i128" => Some("i128"),
+        "isize" => Some("isize"),
+        "f32" => Some("f32"),
+        "f64" => Some("f64"),
+        "Vec" => Some("Vec"),
+        "String" => Some("String"),
+        "Option" => Some("Option"),
+        "Result" => Some("Result"),
+        "Box" => Some("Box"),
+        "Arc" => Some("Arc"),
+        "Rc" => Some("Rc"),
+        "Cow" => Some("Cow"),
+        "HashMap" => Some("HashMap"),
+        "HashSet" => Some("HashSet"),
+        "BTreeMap" => Some("BTreeMap"),
+        "BTreeSet" => Some("BTreeSet"),
+        "VecDeque" => Some("VecDeque"),
+        "Path" => Some("Path"),
+        "PathBuf" => Some("PathBuf"),
+        _ => None,
+    }
+}
+
+fn finalize_member_list(methods: &mut Vec<&Node>) {
+    methods.sort_by_key(|method| &method.id);
+    methods.dedup_by_key(|method| method.id.as_str());
+    crate::linker::traits::disambiguate_rust_cfg_siblings(methods);
 }
 
 fn namespace(path: &str, module: &str, name: &str) -> String {
@@ -1731,12 +1798,14 @@ impl<'a> RustMembers<'a> {
             deref_targets: HashMap::new(),
             inherent: HashMap::new(),
             trait_members: HashMap::new(),
+            builtin_trait_members: HashMap::new(),
             receivers_by_method: HashMap::new(),
             dynamic_declarations: HashMap::new(),
             dynamic_implementors: HashMap::new(),
             display_impls: HashSet::new(),
         };
         let mut traits: TraitImplMap<'a> = HashMap::new();
+        let mut builtin_traits: BuiltinTraitImplMap<'a> = HashMap::new();
         let mut visible_traits: HashMap<&'a str, HashSet<&'a str>> = HashMap::new();
         let mut trait_defaults = HashMap::<&str, Vec<&Node>>::new();
         let mut trait_methods = HashMap::<&str, Vec<&Node>>::new();
@@ -2063,13 +2132,14 @@ impl<'a> RustMembers<'a> {
                 }
             }
             let mut impl_receivers = HashMap::new();
+            let mut builtin_impl_receivers = HashMap::new();
             for owner in facts.nodes.iter().filter(|node| {
                 node.kind == "impl"
                     && (node.details["generic_impl"] != true
                         || node.details["uniform_generic_impl"] == true)
             }) {
-                let Some(receiver) = owner.details["receiver_type"]
-                    .as_str()
+                let raw_receiver = owner.details["receiver_type"].as_str();
+                let local_receiver = raw_receiver
                     .and_then(|name| {
                         let nominal = if owner.details["uniform_generic_impl"] == true {
                             name.split_once('<').map_or(name, |(base, _)| base)
@@ -2085,11 +2155,28 @@ impl<'a> RustMembers<'a> {
                             &profile_paths,
                         )
                     })
-                    .filter(|node| matches!(node.kind.as_str(), "struct" | "enum"))
-                else {
+                    .filter(|node| matches!(node.kind.as_str(), "struct" | "enum"));
+                let impl_trait = owner.details["impl_trait"].as_str();
+                let trait_node = impl_trait.and_then(|name| {
+                    let clean_trait = name.split('<').next().unwrap_or(name).trim();
+                    resolve_type(
+                        facts,
+                        owner,
+                        clean_trait,
+                        &by_qual,
+                        dependencies,
+                        &profile_paths,
+                    )
+                    .filter(|node| node.kind == "trait")
+                });
+                let Some(receiver) = local_receiver else {
+                    if let (Some(builtin_key), Some(trait_node)) =
+                        (raw_receiver.and_then(builtin_receiver_key), trait_node)
+                    {
+                        builtin_impl_receivers.insert(owner.id.as_str(), (builtin_key, trait_node));
+                    }
                     continue;
                 };
-                let impl_trait = owner.details["impl_trait"].as_str();
                 if impl_trait.is_some_and(|name| {
                     let base = name.split('<').next().unwrap_or(name).trim();
                     base == "Display"
@@ -2106,18 +2193,6 @@ impl<'a> RustMembers<'a> {
                     )
                 });
                 let has_impl_trait = impl_trait.is_some() && !prelude_default;
-                let trait_node = impl_trait.and_then(|name| {
-                    let clean_trait = name.split('<').next().unwrap_or(name).trim();
-                    resolve_type(
-                        facts,
-                        owner,
-                        clean_trait,
-                        &by_qual,
-                        dependencies,
-                        &profile_paths,
-                    )
-                    .filter(|node| node.kind == "trait")
-                });
                 impl_receivers.insert(owner.id.as_str(), (receiver, has_impl_trait, trait_node));
             }
             let mut implemented = HashMap::<&str, HashSet<(&str, bool)>>::new();
@@ -2138,6 +2213,19 @@ impl<'a> RustMembers<'a> {
                 if owner.kind == "trait" {
                     index.receivers_by_method.insert(&method.id, *owner);
                     continue;
+                }
+                if owner.kind == "impl" {
+                    if let Some(&(builtin_key, trait_node)) =
+                        builtin_impl_receivers.get(owner.id.as_str())
+                    {
+                        let associated = matches!(method.kind.as_str(), "constant" | "type")
+                            || method.details["is_static"] == true;
+                        builtin_traits
+                            .entry((builtin_key, method.name.as_str(), associated))
+                            .or_default()
+                            .push((method, trait_node));
+                        continue;
+                    }
                 }
                 let (receiver, has_impl_trait, trait_node) = if owner.kind == "impl" {
                     let Some(&(receiver, has_impl_trait, trait_node)) =
@@ -2282,6 +2370,10 @@ impl<'a> RustMembers<'a> {
             methods.sort_by_key(|(method, _)| &method.id);
             methods.dedup_by_key(|(method, _)| method.id.as_str());
         }
+        for methods in builtin_traits.values_mut() {
+            methods.sort_by_key(|(method, _)| &method.id);
+            methods.dedup_by_key(|(method, _)| method.id.as_str());
+        }
         let mut trait_consumers = HashMap::<&str, Vec<&str>>::new();
         for (path, trait_ids) in &visible_traits {
             for trait_id in trait_ids {
@@ -2303,6 +2395,21 @@ impl<'a> RustMembers<'a> {
                 }
             }
         }
+        for ((receiver_key, member, associated), methods) in &builtin_traits {
+            for (method, trait_node) in methods {
+                for path in trait_consumers
+                    .get(trait_node.id.as_str())
+                    .into_iter()
+                    .flatten()
+                {
+                    index
+                        .builtin_trait_members
+                        .entry((*receiver_key, *member, *associated, path))
+                        .or_default()
+                        .push(method);
+                }
+            }
+        }
         for (receiver, method, trait_node, associated) in unproven_deref_members {
             for path in trait_consumers
                 .get(trait_node.id.as_str())
@@ -2316,9 +2423,10 @@ impl<'a> RustMembers<'a> {
             }
         }
         for methods in index.trait_members.values_mut() {
-            methods.sort_by_key(|method| &method.id);
-            methods.dedup_by_key(|method| method.id.as_str());
-            crate::linker::traits::disambiguate_rust_cfg_siblings(methods);
+            finalize_member_list(methods);
+        }
+        for methods in index.builtin_trait_members.values_mut() {
+            finalize_member_list(methods);
         }
         for ((_, member, associated), methods) in &traits {
             if *associated {
@@ -2387,6 +2495,23 @@ impl<'a> RustMembers<'a> {
             receiver_id = target.id.as_str();
         }
         &[]
+    }
+
+    pub(crate) fn lookup_builtin(
+        &self,
+        receiver_key: &str,
+        member: &str,
+        associated: bool,
+        caller: &Node,
+    ) -> &[&'a Node] {
+        self.builtin_trait_members
+            .get(&TraitLookup(
+                receiver_key,
+                member,
+                associated,
+                caller.path.as_str(),
+            ))
+            .map_or(&[], Vec::as_slice)
     }
 
     pub(crate) fn deref_target(&self, receiver: &Node) -> Option<&'a Node> {

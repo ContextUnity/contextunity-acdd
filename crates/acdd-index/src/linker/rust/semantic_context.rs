@@ -781,7 +781,7 @@ pub(in crate::linker) fn wrapper_value_member(wrapper: &str, member: &str) -> bo
         "Box" => matches!(member, "as_ref" | "as_mut"),
         "Arc" | "Rc" => matches!(member, "clone" | "as_ref"),
         "Cow" => matches!(member, "into_owned" | "as_ref" | "to_mut" | "clone"),
-        "HashMap" | "BTreeMap" => {
+        "HashMap" | "BTreeMap" | "Range" => {
             languages::by_id("rust").is_some_and(|profile| profile.builtin_member(wrapper, member))
         }
         "IndexMap" => {

@@ -1615,3 +1615,108 @@ fn exercise<'a>(
     );
     assert_eq!(writer_rows[0].expression, "trait_object_dispatch");
 }
+
+#[test]
+fn rust_zero_heuristic_resolution_extensions_matrix() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "Cargo.toml",
+        "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\nrusqlite = \"0.32\"\ntree-sitter = \"0.24\"\n",
+    );
+    workspace.write(
+        "src/enums.rs",
+        r#"
+macro_rules! closed_enum {
+    ($vis:vis enum $name:ident { $($variant:ident),+ $(,)? }) => {
+        $vis enum $name { $($variant),+ }
+        impl $name { pub fn tag(&self) -> u8 { 1 } }
+    };
+}
+closed_enum! { pub enum PublicKind { Alpha, Beta } }
+closed_enum! { enum HiddenKind { Gamma } }
+"#,
+    );
+    workspace.write(
+        "src/codec.rs",
+        r#"
+pub trait WireEncode { fn encode(&self, out: &mut Vec<u8>); }
+impl WireEncode for &str { fn encode(&self, _out: &mut Vec<u8>) {} }
+impl WireEncode for u64 { fn encode(&self, _out: &mut Vec<u8>) {} }
+pub struct Store;
+impl Store { pub fn ping(&self) {} }
+pub fn with_store(f: impl FnOnce(&Store)) { let s = Store; f(&s); }
+pub fn visit_tree<'a>(root: tree_sitter::Node<'a>, mut cb: impl FnMut(tree_sitter::Node<'a>, bool)) {
+    cb(root, true);
+}
+"#,
+    );
+    workspace.write(
+        "src/lib.rs",
+        r#"
+mod codec;
+mod enums;
+use std::time::Instant;
+use crate::enums::PublicKind;
+use crate::enums::HiddenKind;
+use crate::codec::{with_store, visit_tree, Store, WireEncode};
+
+fn check(
+    a: &str,
+    b: &str,
+    n: u64,
+    out: &mut Vec<u8>,
+    root: tree_sitter::Node<'_>,
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<()> {
+    let _k = PublicKind::Alpha;
+    let _h = HiddenKind::Gamma;
+    "lit".encode(out);
+    n.encode(out);
+    let _in_range = (1..=16).contains(&n);
+    let _ord = (a, n).cmp(&(b, n));
+    let started = Instant::now();
+    let _secs = started.elapsed().as_secs_f64();
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM t", [])?;
+    tx.commit()?;
+    with_store(|s| s.ping());
+    visit_tree(root, |node, _| { let _ = node.kind(); });
+    Ok(())
+}
+"#,
+    );
+    workspace.build();
+    let conn = workspace.open();
+
+    let row_status = |expr: &str| -> (String, String) {
+        conn.query_row(
+            "SELECT r.status, e.evidence FROM resolution_coverage r
+             JOIN path_dictionary p ON p.path_id = r.path_id
+             JOIN coverage_expressions x ON x.expression_id = r.expression_id
+             JOIN coverage_evidence e ON e.evidence_id = r.evidence_id
+             WHERE p.path = 'src/lib.rs' AND x.expression = ?1
+             LIMIT 1",
+            [expr],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .unwrap_or_else(|e| panic!("missing coverage row for {expr}: {e}"))
+    };
+
+    for (expr, expected_status) in [
+        ("crate::enums::PublicKind", "resolved"),
+        ("crate::enums::HiddenKind", "unresolved"),
+        ("\"lit\".encode", "resolved"),
+        ("n.encode", "resolved"),
+        ("(1..=16).contains", "external"),
+        ("(a, n).cmp", "external"),
+        ("started.elapsed", "external"),
+        ("started.elapsed().as_secs_f64", "external"),
+        ("tx.execute", "external"),
+        ("tx.commit", "external"),
+        ("s.ping", "resolved"),
+        ("node.kind", "external"),
+    ] {
+        let (status, ev) = row_status(expr);
+        assert_eq!(status, expected_status, "expr={expr} evidence={ev}");
+    }
+}

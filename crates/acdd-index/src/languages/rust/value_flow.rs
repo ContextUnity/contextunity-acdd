@@ -2336,131 +2336,122 @@ impl<'source, 'tree> Collector<'source, 'tree> {
                 column: body_end_pos.column,
             };
 
-            let mut inferred_param_types: Vec<Option<TypeExpr>> = Vec::new();
             let mut inferred_param_values: Vec<Option<ValueExpr>> = Vec::new();
-            if let Some(parent) = current.parent() {
-                if parent.kind() == "arguments" {
-                    if let Some(call) = parent.parent() {
-                        if call.kind() == "call_expression" {
-                            if let Some(func) = call.child_by_field_name("function") {
-                                let func = if func.kind() == "generic_function" {
-                                    func.child_by_field_name("function").unwrap_or(func)
-                                } else {
-                                    func
-                                };
-                                if func.kind() == "field_expression" {
-                                    let recv_opt = func.child_by_field_name("value");
-                                    if let Some(field) = func.child_by_field_name("field") {
-                                        let method_name = text(field, source);
-                                        let recv_projection = |member: &str| -> Option<ValueExpr> {
-                                            let recv = recv_opt?;
-                                            let shadows = self.current_shadows();
-                                            let recv_val = value_depth(recv, source, 0, &shadows);
-                                            (!matches!(recv_val, ValueExpr::Unknown)).then(|| {
-                                                ValueExpr::Project {
-                                                    value: Box::new(recv_val),
-                                                    member: member.to_string(),
-                                                }
-                                            })
-                                        };
-                                        let simple_proj = match method_name {
-                                            "query_map"
-                                            | "query_row"
-                                            | "query_and_then"
-                                            | "query_row_and_then" => Some("__rust_closure_row"),
-                                            "map"
-                                            | "filter"
-                                            | "find"
-                                            | "position"
-                                            | "rposition"
-                                            | "any"
-                                            | "all"
-                                            | "for_each"
-                                            | "flat_map"
-                                            | "filter_map"
-                                            | "inspect"
-                                            | "is_some_and"
-                                            | "is_none_or"
-                                            | "is_ok_and"
-                                            | "is_err_and"
-                                            | "and_then"
-                                            | "find_map"
-                                            | "try_for_each"
-                                            | "skip_while"
-                                            | "take_while"
-                                            | "partition"
-                                            | "max_by_key"
-                                            | "min_by_key"
-                                            | "sort_by_key" => Some("__rust_iter_item"),
-                                            "map_or" | "map_or_else"
-                                                if parent.named_child(1) == Some(current) =>
-                                            {
-                                                Some("__rust_iter_item")
-                                            }
-                                            "filter_entry" => Some("__rust_filter_entry_item"),
-                                            "with" | "try_with" => Some("__rust_local_key"),
-                                            "map_err"
-                                            | "inspect_err"
-                                            | "unwrap_or_else"
-                                            | "ok_or_else"
-                                            | "or_else" => Some("__rust_err"),
-                                            _ => None,
-                                        };
-                                        if let Some(member) = simple_proj {
-                                            if let Some(proj) = recv_projection(member) {
-                                                inferred_param_values.push(Some(proj));
-                                            }
-                                        } else if method_name == "retain" {
-                                            if let Some(item) = recv_projection("__rust_iter_item")
-                                            {
-                                                let param_count = current
-                                                    .child_by_field_name("parameters")
-                                                    .map_or(1, |p| p.named_child_count());
-                                                if param_count >= 2 {
-                                                    inferred_param_values.push(Some(
-                                                        ValueExpr::Project {
-                                                            value: Box::new(item.clone()),
-                                                            member: "__rust_field:0".to_string(),
-                                                        },
-                                                    ));
-                                                    inferred_param_values.push(Some(
-                                                        ValueExpr::Project {
-                                                            value: Box::new(item),
-                                                            member: "__rust_field:1".to_string(),
-                                                        },
-                                                    ));
-                                                } else {
-                                                    inferred_param_values.push(Some(item));
-                                                }
-                                            }
-                                        } else if matches!(
-                                            method_name,
-                                            "sort_by" | "max_by" | "min_by" | "reduce"
-                                        ) {
-                                            if let Some(item) = recv_projection("__rust_iter_item")
-                                            {
-                                                inferred_param_values.push(Some(item.clone()));
-                                                inferred_param_values.push(Some(item));
-                                            }
-                                        } else if matches!(method_name, "fold" | "try_fold") {
-                                            if let Some(item) = recv_projection("__rust_iter_item")
-                                            {
-                                                inferred_param_values.push(None);
-                                                inferred_param_values.push(Some(item));
-                                            }
-                                        }
+            if let Some((parent, arg_node, arg_idx, call)) = enclosing_call_argument(current) {
+                if let Some(func) = call.child_by_field_name("function") {
+                    let func = if func.kind() == "generic_function" {
+                        func.child_by_field_name("function").unwrap_or(func)
+                    } else {
+                        func
+                    };
+                    if func.kind() == "field_expression" {
+                        let recv_opt = func.child_by_field_name("value");
+                        if let Some(field) = func.child_by_field_name("field") {
+                            let method_name = text(field, source);
+                            let recv_projection = |member: &str| -> Option<ValueExpr> {
+                                let recv = recv_opt?;
+                                let shadows = self.current_shadows();
+                                let recv_val = value_depth(recv, source, 0, &shadows);
+                                (!matches!(recv_val, ValueExpr::Unknown)).then(|| {
+                                    ValueExpr::Project {
+                                        value: Box::new(recv_val),
+                                        member: member.to_string(),
                                     }
-                                } else if func.kind() == "identifier"
-                                    || func.kind() == "scoped_identifier"
+                                })
+                            };
+                            let simple_proj = match method_name {
+                                "query_map"
+                                | "query_row"
+                                | "query_and_then"
+                                | "query_row_and_then" => Some("__rust_closure_row"),
+                                "map"
+                                | "filter"
+                                | "find"
+                                | "position"
+                                | "rposition"
+                                | "any"
+                                | "all"
+                                | "for_each"
+                                | "flat_map"
+                                | "filter_map"
+                                | "inspect"
+                                | "is_some_and"
+                                | "is_none_or"
+                                | "is_ok_and"
+                                | "is_err_and"
+                                | "and_then"
+                                | "find_map"
+                                | "try_for_each"
+                                | "skip_while"
+                                | "take_while"
+                                | "partition"
+                                | "max_by_key"
+                                | "min_by_key"
+                                | "sort_by_key"
+                                | "sort_unstable_by_key" => Some("__rust_iter_item"),
+                                "map_or" | "map_or_else"
+                                    if parent.named_child(1) == Some(arg_node) =>
                                 {
-                                    let callee = text(func, source);
-                                    if callee.ends_with("walk") || callee.ends_with("visit") {
-                                        inferred_param_types.push(Some(TypeExpr::Named {
-                                            name: "tree_sitter::Node".to_string(),
+                                    Some("__rust_iter_item")
+                                }
+                                "filter_entry" => Some("__rust_filter_entry_item"),
+                                "with" | "try_with" => Some("__rust_local_key"),
+                                "map_err"
+                                | "inspect_err"
+                                | "unwrap_or_else"
+                                | "ok_or_else"
+                                | "or_else" => Some("__rust_err"),
+                                _ => None,
+                            };
+                            if let Some(member) = simple_proj {
+                                if let Some(proj) = recv_projection(member) {
+                                    inferred_param_values.push(Some(proj));
+                                }
+                            } else if method_name == "retain" {
+                                if let Some(item) = recv_projection("__rust_iter_item") {
+                                    let param_count = current
+                                        .child_by_field_name("parameters")
+                                        .map_or(1, |p| p.named_child_count());
+                                    if param_count >= 2 {
+                                        inferred_param_values.push(Some(ValueExpr::Project {
+                                            value: Box::new(item.clone()),
+                                            member: "__rust_field:0".to_string(),
                                         }));
+                                        inferred_param_values.push(Some(ValueExpr::Project {
+                                            value: Box::new(item),
+                                            member: "__rust_field:1".to_string(),
+                                        }));
+                                    } else {
+                                        inferred_param_values.push(Some(item));
                                     }
                                 }
+                            } else if matches!(
+                                method_name,
+                                "sort_by" | "max_by" | "min_by" | "reduce"
+                            ) {
+                                if let Some(item) = recv_projection("__rust_iter_item") {
+                                    inferred_param_values.push(Some(item.clone()));
+                                    inferred_param_values.push(Some(item));
+                                }
+                            } else if matches!(method_name, "fold" | "try_fold") {
+                                if let Some(item) = recv_projection("__rust_iter_item") {
+                                    inferred_param_values.push(None);
+                                    inferred_param_values.push(Some(item));
+                                }
                             }
+                        }
+                    } else if matches!(func.kind(), "identifier" | "scoped_identifier") {
+                        let callee = text(func, source);
+                        let param_count = current
+                            .child_by_field_name("parameters")
+                            .map_or(0, |p| p.named_child_count());
+                        for param_idx in 0..param_count {
+                            inferred_param_values.push(Some(ValueExpr::Project {
+                                value: Box::new(ValueExpr::Alias {
+                                    name: callee.to_owned(),
+                                }),
+                                member: format!("__rust_fn_param:{arg_idx}:{param_idx}"),
+                            }));
                         }
                     }
                 }
@@ -2499,10 +2490,6 @@ impl<'source, 'tree> Collector<'source, 'tree> {
 
                         let val_expr = if let Some(ty) = explicit_type {
                             ValueExpr::Annotated { type_expr: ty }
-                        } else if let Some(Some(inferred_ty)) = inferred_param_types.get(idx) {
-                            ValueExpr::Annotated {
-                                type_expr: inferred_ty.clone(),
-                            }
                         } else if let Some(Some(inferred_val)) = inferred_param_values.get(idx) {
                             inferred_val.clone()
                         } else {
@@ -3215,7 +3202,21 @@ fn parse_thread_local_statics(tree: Node<'_>, source: &str) -> Vec<(String, Sour
     out
 }
 
-fn parse_rust_type_text(raw: &str, depth: usize) -> TypeExpr {
+fn enclosing_call_argument(closure: Node<'_>) -> Option<(Node<'_>, Node<'_>, usize, Node<'_>)> {
+    let mut arg = closure;
+    if let Some(parent) = arg.parent().filter(|p| p.kind() == "reference_expression") {
+        arg = parent;
+    }
+    let args = arg.parent().filter(|p| p.kind() == "arguments")?;
+    let call = args.parent().filter(|p| p.kind() == "call_expression")?;
+    let mut cursor = args.walk();
+    let idx = args
+        .named_children(&mut cursor)
+        .position(|child| child.id() == arg.id())?;
+    Some((args, arg, idx, call))
+}
+
+pub(crate) fn parse_rust_type_text(raw: &str, depth: usize) -> TypeExpr {
     if depth >= 6 {
         return TypeExpr::Unknown;
     }
@@ -3224,10 +3225,18 @@ fn parse_rust_type_text(raw: &str, depth: usize) -> TypeExpr {
         return TypeExpr::Unknown;
     }
     if let Some(inner) = s.strip_prefix('&') {
-        let inner = inner.trim_start();
+        let mut inner = inner.trim_start();
+        let is_mut = if let Some(rest) = inner.strip_prefix('\'') {
+            inner = rest.split_once(char::is_whitespace).map_or("", |(_, tail)| tail).trim_start();
+            false
+        } else {
+            false
+        };
+        let _ = is_mut;
+        let mutable = inner.starts_with("mut ");
         let inner = inner.strip_prefix("mut ").unwrap_or(inner).trim_start();
         return TypeExpr::Applied {
-            base: "&".to_owned(),
+            base: if mutable { "&mut" } else { "&" }.to_owned(),
             args: vec![parse_rust_type_text(inner, depth + 1)],
         };
     }
@@ -3258,7 +3267,12 @@ fn parse_rust_type_text(raw: &str, depth: usize) -> TypeExpr {
             if !last.is_empty() && !last.starts_with('\'') {
                 args.push(parse_rust_type_text(last, depth + 1));
             }
-            if !base.is_empty() && !args.is_empty() {
+            if !base.is_empty() {
+                if args.is_empty() {
+                    return TypeExpr::Named {
+                        name: base.to_owned(),
+                    };
+                }
                 return TypeExpr::Applied {
                     base: base.to_owned(),
                     args,
@@ -3266,6 +3280,7 @@ fn parse_rust_type_text(raw: &str, depth: usize) -> TypeExpr {
             }
         }
     }
+    let s = s.strip_prefix("dyn ").map_or(s, str::trim_start);
     if s.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | ':')) {
         TypeExpr::Named { name: s.to_owned() }
     } else {
