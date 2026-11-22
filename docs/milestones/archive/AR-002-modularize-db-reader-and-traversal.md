@@ -342,7 +342,7 @@ closure:
 
 ## Goal & Repository-Wide Audit Findings
 
-Before executing feature milestones [`LS-003`](../LS-003-universal-parser-tier1-coverage-and-shell-css-json.md) and [`AC-005`](../AC-005-unified-swarm-gates-and-peer-board-coordination.md), a full workspace audit across `crates/acdd-core`, `crates/acdd-index`, `crates/acdd-state`, and root `src/` identified six cross-cutting optimization pillars that are consolidated into this single, parallel-wave foundation milestone:
+Before executing feature milestones [`LS-003`](LS-003-universal-parser-tier1-coverage-and-shell-css-json.md) and [`AC-005`](../AC-005-unified-swarm-gates-and-peer-board-coordination.md), a full workspace audit across `crates/acdd-core`, `crates/acdd-index`, `crates/acdd-state`, and root `src/` identified six cross-cutting optimization pillars that are consolidated into this single, parallel-wave foundation milestone:
 
 1. **Unfinished Constant & Wire-Tag Unification (`INV-AR002-UNIFIED-CONSTANTS-AND-WIRE-TAGS`):**
    - [`models/tags.rs`](../../crates/acdd-index/src/models/tags.rs) (`EdgeKind`, `EdgeConfidence`, `CoverageStatus`, `NodeKind`, `ReferenceKind`, `LanguageId`) has only **1 caller** (`models/compact_graph.rs:26-33`), and [`models/details.rs`](../../crates/acdd-index/src/models/details.rs) (`NodeDetailKey`) has **0 external callers** outside `details.rs` while missing common detail keys (`"signature"`, `"doc"`, `"visibility"`, `"params"`, `"returns"`, `"async"`, `"export"`, `"static"`).

@@ -557,6 +557,12 @@ pub fn active_node_context(
         modules: adapter.modules.clone(),
         response_policy: adapter.response.clone(),
         retain_traces: adapter.retain_traces,
+        max_snapshot_file_bytes: adapter.limits.max_snapshot_file_bytes,
+        allowed_binary_extensions: adapter
+            .limits
+            .normalized_allowed_binary_extensions()
+            .ok()
+            .flatten(),
     };
     let reader = acdd_state::store::sqlite::SqliteStateReader::new(state_db);
     let path_policy = acdd_state::usecases::lifecycle::build_path_policy(
