@@ -334,8 +334,16 @@ impl DocsDomainProvider {
     fn provide_invariants(&self, req: &DomainContextReq) -> Result<Value> {
         let mut items: Vec<Value> = Vec::new();
         let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+        let worktree_adapter =
+            super::resolve_worktree_adapter(&self.root, &req.worktree, &self.config)?;
+        let mut enforced_ids: BTreeSet<String> = BTreeSet::new();
 
         if let Some(conn) = open_code_db_readonly(&self.root, &req.worktree, self.code_db.as_deref()) {
+            enforced_ids = acdd_index::db::lint::enforced_invariant_ids(
+                &conn,
+                &worktree_adapter.architecture.rules,
+            )
+            .unwrap_or_default();
             if !req.admitted_scope.is_empty() {
                 if let Ok(scoped) =
                     reader::governing_invariants_for_scope(&conn, &req.admitted_scope)
@@ -350,7 +358,7 @@ impl DocsDomainProvider {
                                     .to_owned();
                                 if id.is_empty()
                                     || path.is_empty()
-                                    || is_contract_path_or_doc(&conn, &path, &self.config)
+                                    || is_contract_path_or_doc(&conn, &path, &worktree_adapter)
                                 {
                                     continue;
                                 }
@@ -363,13 +371,15 @@ impl DocsDomainProvider {
                                     super::DOCS_INVARIANT_MAX_RULE_CHARS,
                                 );
                                 if seen.insert((path.clone(), id.clone())) {
-                                    items.push(json!({
-                                        "id": id,
-                                        "path": path,
-                                        "line": entry["source"]["line"],
-                                        "rule": rule,
-                                        "scope_match": true,
-                                    }));
+                                    let enforced = enforced_ids.contains(&id);
+                                    items.push(build_invariant_item(
+                                        id,
+                                        path,
+                                        Some(entry["source"]["line"].clone()),
+                                        rule,
+                                        Some(true),
+                                        enforced,
+                                    ));
                                 }
                             }
                         }
@@ -399,7 +409,7 @@ impl DocsDomainProvider {
                         break;
                     }
                     let (path, section_title, inv_raw) = row;
-                    if path.contains("/archive/") || is_contract_spec_path(&path, &self.config) {
+                    if path.contains("/archive/") || is_contract_spec_path(&path, &worktree_adapter) {
                         continue;
                     }
                     let parsed_entries = parse_doc_section_invariants(
@@ -412,14 +422,29 @@ impl DocsDomainProvider {
                             break;
                         }
                         if seen.insert((path.clone(), id.clone())) {
-                            items.push(json!({
-                                "id": id,
-                                "path": path,
-                                "rule": rule,
-                                "scope_match": false,
-                            }));
+                            let enforced = enforced_ids.contains(&id);
+                            items.push(build_invariant_item(
+                                id,
+                                path.clone(),
+                                None,
+                                rule,
+                                Some(false),
+                                enforced,
+                            ));
                         }
                     }
+                }
+            }
+        } else {
+            for spec in &worktree_adapter.architecture.rules {
+                if let Some(inv) = spec
+                    .invariant
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| spec.id.starts_with("INV-").then_some(spec.id.as_str()))
+                {
+                    enforced_ids.insert(inv.to_owned());
                 }
             }
         }
@@ -444,7 +469,7 @@ impl DocsDomainProvider {
                         .unwrap_or(path)
                         .to_string_lossy()
                         .replace('\\', "/");
-                    if rel.contains("/archive/") || is_contract_spec_path(&rel, &self.config) {
+                    if rel.contains("/archive/") || is_contract_spec_path(&rel, &worktree_adapter) {
                         continue;
                     }
                     let Ok(text) = fs::read_to_string(path) else {
@@ -456,15 +481,18 @@ impl DocsDomainProvider {
                     for (idx, line) in text.lines().enumerate() {
                         if let Some(inv_id) = extract_invariant_id(line) {
                             if seen.insert((rel.clone(), inv_id.clone())) {
-                                items.push(json!({
-                                    "id": inv_id,
-                                    "path": rel,
-                                    "line": idx + 1,
-                                    "rule": super::truncate_single_line(
+                                let enforced = enforced_ids.contains(&inv_id);
+                                items.push(build_invariant_item(
+                                    inv_id,
+                                    rel.clone(),
+                                    Some(json!(idx + 1)),
+                                    super::truncate_single_line(
                                         line.trim(),
                                         super::DOCS_INVARIANT_MAX_RULE_CHARS,
                                     ),
-                                }));
+                                    None,
+                                    enforced,
+                                ));
                                 if items.len() >= super::DOCS_INVARIANT_FALLBACK_ITEM_LIMIT {
                                     break 'walk;
                                 }
@@ -603,6 +631,30 @@ fn compute_docs_digest(
         }
     }
     Ok(combine_file_hashes(&digests))
+}
+
+fn build_invariant_item(
+    id: String,
+    path: String,
+    line: Option<Value>,
+    rule: String,
+    scope_match: Option<bool>,
+    enforced: bool,
+) -> Value {
+    let mut item = serde_json::Map::new();
+    item.insert("id".to_owned(), json!(id));
+    item.insert("path".to_owned(), json!(path));
+    if let Some(line) = line.filter(|v| !v.is_null()) {
+        item.insert("line".to_owned(), line);
+    }
+    item.insert("rule".to_owned(), json!(rule));
+    if let Some(scope_match) = scope_match {
+        item.insert("scope_match".to_owned(), json!(scope_match));
+    }
+    if enforced {
+        item.insert("enforced".to_owned(), json!(true));
+    }
+    Value::Object(item)
 }
 
 fn is_contract_spec_path(rel_path: &str, config: &Adapter) -> bool {

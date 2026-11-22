@@ -58,6 +58,7 @@ fn command_presentation(command: &Command) -> (OperationKind, &'static str, Opti
         Command::Read { .. } => (OperationKind::Navigation, "acdd_read", None),
         Command::Guide { .. } => (OperationKind::Guide, "acdd_guide", None),
         Command::Ast { .. } => (OperationKind::Navigation, "ast_grep_search", None),
+        Command::Lint { .. } => (OperationKind::Navigation, "code_map_lint", None),
         Command::Query {
             command: QueryCommand::Sql { .. },
         } => (OperationKind::Sql, "code_map_query", None),
@@ -535,6 +536,7 @@ impl Cli {
                 | Command::Scan { .. }
                 | Command::Delta { .. }
                 | Command::Ast { .. }
+                | Command::Lint { .. }
                 | Command::Query { .. }
                 | Command::Docs { .. }) => dispatch_code::dispatch(&code_ctx, cmd),
                 cmd => dispatch_state::dispatch(
@@ -577,6 +579,9 @@ impl Cli {
             if matches!(title, "search_docs" | "get_doc") {
                 discovery::attach_document_presentation_uris(&root, &adapter, &mut result, title);
             }
+            if title == "code_map_lint" {
+                discovery::attach_lint_presentation_uris(&root, &adapter, &mut result);
+            }
             if operation == OperationKind::Navigation
                 && discovery.is_none()
                 && matches!(
@@ -591,6 +596,10 @@ impl Cli {
                 discovery::attach_traversal_presentation_uris(&root, &adapter, &mut result);
             }
         }
+        let lint_errors = (title == "code_map_lint")
+            .then(|| result.pointer("/summary/errors").and_then(Value::as_u64))
+            .flatten()
+            .filter(|&e| e > 0);
         let formatted = if title == "acdd_read" {
             let debug_snapshot = adapter.debug.then(|| result.clone());
             let bounded = crate::mcp::response::result_for_presented(
@@ -624,7 +633,11 @@ impl Cli {
             }
             formatted
         };
-        write_output(output, &formatted)
+        write_output(output, &formatted)?;
+        if let Some(errors) = lint_errors {
+            bail!("lint found {errors} error(s)");
+        }
+        Ok(())
     }
 }
 

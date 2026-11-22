@@ -261,11 +261,11 @@ pub fn execute_state_query(
     engine.query(query)
 }
 
-pub(super) fn open_code_db_readonly(
+pub(super) fn worktree_code_db_candidate(
     root: &Path,
     worktree: &Path,
     code_db: Option<&Path>,
-) -> Option<Connection> {
+) -> (PathBuf, PathBuf) {
     let primary = primary_worktree_root(worktree)
         .or_else(|| primary_worktree_root(root))
         .unwrap_or_else(|| root.to_path_buf());
@@ -282,6 +282,15 @@ pub(super) fn open_code_db_readonly(
         wt_override.as_deref().or(code_db),
     );
     let primary_candidate = acdd_core::config::resolve_code_db_path(&primary, code_db);
+    (wt_candidate, primary_candidate)
+}
+
+pub(super) fn open_code_db_readonly(
+    root: &Path,
+    worktree: &Path,
+    code_db: Option<&Path>,
+) -> Option<Connection> {
+    let (wt_candidate, primary_candidate) = worktree_code_db_candidate(root, worktree, code_db);
     for candidate in [wt_candidate, primary_candidate] {
         if candidate.is_file() {
             if let Ok(conn) = open_raw_confined_readonly(&candidate) {
@@ -290,6 +299,56 @@ pub(super) fn open_code_db_readonly(
         }
     }
     None
+}
+
+pub(super) fn local_adapter_path_for_worktree(
+    root: &Path,
+    worktree: &Path,
+    fallback: &Adapter,
+) -> Option<PathBuf> {
+    let abs = fallback.adapter_path.as_deref()?;
+    let canon = acdd_core::fs::canonicalize_macos_var(abs);
+    let primary = primary_worktree_root(worktree).or_else(|| primary_worktree_root(root));
+    let rel = canon
+        .strip_prefix(acdd_core::fs::canonicalize_macos_var(worktree))
+        .ok()
+        .or_else(|| {
+            canon
+                .strip_prefix(acdd_core::fs::canonicalize_macos_var(root))
+                .ok()
+        })
+        .or_else(|| {
+            primary.as_deref().and_then(|p| {
+                canon
+                    .strip_prefix(acdd_core::fs::canonicalize_macos_var(p))
+                    .ok()
+            })
+        })?;
+    acdd_core::fs::checked_child(worktree, rel)
+        .ok()
+        .filter(|p| p.is_file())
+}
+
+pub(super) fn resolve_worktree_adapter(
+    root: &Path,
+    worktree: &Path,
+    fallback: &Adapter,
+) -> anyhow::Result<Adapter> {
+    let local_path = local_adapter_path_for_worktree(root, worktree, fallback);
+    let has_default = acdd_core::fs::checked_child(
+        worktree,
+        Path::new(acdd_core::config::ACDD_CONFIG_FILE),
+    )
+    .is_ok_and(|p| p.is_file());
+    if local_path.is_some() || has_default {
+        return acdd_core::config::load_adapter(worktree, local_path.as_deref()).map_err(|err| {
+            anyhow::anyhow!(StateError::new(
+                ErrorCode::ProfileSchemaInvalid,
+                format!("failed to load worktree adapter: {err}"),
+            ))
+        });
+    }
+    Ok(fallback.clone())
 }
 
 pub(super) fn combine_file_hashes(file_hashes: &BTreeMap<String, String>) -> String {

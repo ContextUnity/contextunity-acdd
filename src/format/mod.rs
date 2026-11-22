@@ -6,6 +6,7 @@ use serde_json::{Map, Value};
 mod coordination;
 mod discovery;
 pub(crate) mod lifecycle;
+mod lint;
 mod roadmap;
 mod traversal;
 pub use coordination::{render_blackboard_markdown, render_plugin_tool_markdown};
@@ -63,6 +64,7 @@ pub fn render(value: &Value, format: OutputFormat, title: &str) -> String {
         "code_map_inspect" => discovery::render(value, title, DiscoveryKind::Inspect),
         "code_map_search" => discovery::render(value, title, DiscoveryKind::Search),
         "ast_grep_search" => discovery::render(value, title, DiscoveryKind::Ast),
+        "code_map_lint" => lint::render(value, title),
         "search_docs" | "get_doc" => coordination::render_docs(value, title),
         "acdd_read" => render_acdd_read(value),
         _ => render_markdown(value, title),

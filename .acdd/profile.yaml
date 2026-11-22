@@ -75,6 +75,14 @@ guidance:
 
 gates_patch:
   - id: tasks.build
+    checks:
+      - code.seam
+      - check: code.lint
+        with:
+          categories:
+            - arch
+            - syntax
+            - docs
     guidance: [task.code, core.execution, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
   - id: tasks.review
     guidance: [task.review, core.review, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
@@ -82,6 +90,13 @@ gates_patch:
     guidance: [task.rearchitect, core.execution, code.principles, code.tools, repo.rust, hitl.pro]
   - id: run_tests
     command: check_full_repo
+    checks:
+      - check: code.lint
+        with:
+          categories:
+            - arch
+            - syntax
+            - docs
   - id: integration_review
     guidance: [milestone.review, core.review, code.principles, code.tools, repo.rust, repo.tests, hitl.pro]
   - id: handoff

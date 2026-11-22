@@ -36,7 +36,7 @@ impl ResolvedPaths {
                     }
                     _ => (raw.as_ref(), None),
                 };
-                if matches!(target_str, "base" | "code" | "audit")
+                if acdd_state::profile::embedded_profile(target_str).is_some()
                     || (!target_str.contains(['/', '\\']) && !root.join(target_str).is_file())
                 {
                     Some(raw.into_owned())

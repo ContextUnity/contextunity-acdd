@@ -2,11 +2,12 @@ use super::{ast, discovery, paths, AstCommand, Command, DocsCommand, QueryComman
 use crate::{engine::pipeline as writer, format::OutputFormat};
 use acdd_core::config::Adapter;
 use acdd_core::errors::{ErrorCode, StateError};
+use acdd_core::lint::{LintCategory, LintSeverity};
 use acdd_core::response::{
     CoverageOptions, Detail, QueryOptions, ResponsePolicy, SourceOptions, MAX_PAGE_SIZE,
 };
 use acdd_core::subsystems::SubsystemId;
-use acdd_index::db::{reader, symbols, traversal};
+use acdd_index::db::{lint as db_lint, reader, symbols, traversal};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -53,6 +54,25 @@ pub(super) fn resolve_cli_adapter_path(
             None
         }),
     }
+}
+
+fn parse_cli_lint_categories(categories: Option<Vec<String>>) -> Result<Option<Vec<LintCategory>>> {
+    let Some(raw) = categories else {
+        return Ok(None);
+    };
+    let mut out = Vec::new();
+    for item in raw {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed == "all" {
+            out.extend_from_slice(LintCategory::ALL);
+        } else {
+            out.push(trimmed.parse::<LintCategory>()?);
+        }
+    }
+    Ok((!out.is_empty()).then_some(out))
 }
 
 fn cli_page(limit: usize) -> Result<QueryOptions> {
@@ -359,6 +379,73 @@ pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value,
                     reader::get_doc_paged(&conn, &path_or_id, section.as_deref(), &options)?
                 }
             }
+        }
+        Command::Lint {
+            target,
+            categories,
+            rule,
+            severity,
+            limit,
+            offset,
+            detail,
+            generation,
+        } => {
+            require_subsystem(ctx.adapter, SubsystemId::Code)?;
+            let parsed_categories = parse_cli_lint_categories(categories)?;
+            let minimum_severity = severity
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::parse::<LintSeverity>)
+                .transpose()?;
+            let parsed_detail = detail
+                .as_deref()
+                .map(|raw| match raw.trim() {
+                    "compact" => Ok(Detail::Compact),
+                    "full" => Ok(Detail::Full),
+                    other => Err(anyhow::anyhow!(
+                        "invalid --detail '{other}'; expected 'compact' or 'full'"
+                    )),
+                })
+                .transpose()?;
+            let page = QueryOptions::resolve(
+                &ctx.adapter.response,
+                Some(limit),
+                offset,
+                parsed_detail,
+                generation,
+            )?;
+            let rule_ids: Option<Vec<String>> = rule.map(|list| {
+                list.into_iter()
+                    .map(|r| r.trim().to_owned())
+                    .filter(|r| !r.is_empty())
+                    .collect()
+            });
+            crate::state_bridge::code_domain::ensure_fresh_worktree_index(
+                ctx.root,
+                ctx.db,
+                ctx.adapter,
+                ctx.explicit_config,
+                ctx.cache_dir,
+                None,
+            )?;
+            let conn = reader::open_locked(ctx.db, ctx.root)?;
+            db_lint::run_lint(
+                &conn,
+                &db_lint::LintRequest {
+                    target: target
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty()),
+                    paths: None,
+                    categories: parsed_categories.as_deref(),
+                    rule_ids: rule_ids.as_deref().filter(|r| !r.is_empty()),
+                    minimum_severity,
+                    architecture: Some(&ctx.adapter.architecture),
+                    workspace_root: Some(ctx.root),
+                    page: &page,
+                },
+            )?
         }
         _ => unreachable!("non-code command routed to dispatch_code"),
     };

@@ -18,8 +18,12 @@ fn embedded_profiles_inheritance_pinning_and_patch_merge_matrix() {
         disabled: BTreeSet::from(["code".to_owned()]),
         ..SubsystemRegistry::default()
     };
+    let docs_disabled = SubsystemRegistry {
+        disabled: BTreeSet::from(["docs".to_owned()]),
+        ..SubsystemRegistry::default()
+    };
 
-    // 1. Embedded profiles matrix (`base`, `code`, `audit`; removed `"workspace"` / `"in_place"` rejected).
+    // 1. Embedded profiles matrix (`base`, `code`, `audit`, `documentation`; removed `"workspace"` / `"in_place"` rejected).
     for removed in ["workspace", "in_place"] {
         assert!(embedded_profile(removed).is_none());
         let err = resolve_profile_ref_with_dirs(removed, None, None, None).unwrap_err();
@@ -35,6 +39,10 @@ fn embedded_profiles_inheritance_pinning_and_patch_merge_matrix() {
         ("code", Some(&code_disabled), false, Err(ErrorCode::DomainCapabilityUnavailable)),
         ("audit", None, true, Ok(())),
         ("audit", Some(&code_disabled), false, Ok(())),
+        ("documentation", None, true, Ok(())),
+        ("documentation", None, false, Ok(())),
+        ("documentation", Some(&code_disabled), false, Err(ErrorCode::DomainCapabilityUnavailable)),
+        ("documentation", Some(&docs_disabled), false, Err(ErrorCode::DomainCapabilityUnavailable)),
     ];
     for &(name, mods, require_bound, expected) in embedded_cases {
         assert!(embedded_profile(name).is_some());

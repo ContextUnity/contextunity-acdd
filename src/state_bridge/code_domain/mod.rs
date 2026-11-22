@@ -1,8 +1,11 @@
 //! Host `CodeDomainProvider` (`domain_id = "code"`) implementation.
 
 mod context;
+mod lint;
 mod seam;
 mod signature_scope;
+
+pub(crate) use lint::ensure_fresh_worktree_index;
 
 use acdd_core::config::Adapter;
 use acdd_core::errors::{ErrorCode, StateError};
@@ -40,9 +43,10 @@ struct ScopedCodeSnapshot {
     parsed: BTreeMap<String, ParsedScopedFile>,
 }
 
-/// Host `code` domain provider exposing `code.seam`, `code.signature_scope`, and `code.*` context lenses.
+/// Host `code` domain provider exposing `code.seam`, `code.signature_scope`, `code.lint`, and `code.*` context lenses.
 pub struct CodeDomainProvider {
     root: PathBuf,
+    config: Adapter,
     code_db: Option<PathBuf>,
     snapshot_cache: Mutex<Option<Arc<ScopedCodeSnapshot>>>,
 }
@@ -54,9 +58,10 @@ impl CodeDomainProvider {
     }
 
     /// Construct a `CodeDomainProvider` bound to `root`, workspace `config`, and an optional explicit `code_db` path.
-    pub fn with_code_db(root: PathBuf, _config: Adapter, code_db: Option<PathBuf>) -> Self {
+    pub fn with_code_db(root: PathBuf, config: Adapter, code_db: Option<PathBuf>) -> Self {
         Self {
             root,
+            config,
             code_db,
             snapshot_cache: Mutex::new(None),
         }
@@ -93,6 +98,10 @@ impl DomainProvider for CodeDomainProvider {
                     name: "signature_scope".to_owned(),
                     input_schema: SchemaDef::object(),
                 },
+                CheckCapability {
+                    name: "lint".to_owned(),
+                    input_schema: acdd_core::lint::lint_check_input_schema(),
+                },
             ],
             context_lenses: BTreeSet::from([
                 "symbols".to_owned(),
@@ -122,6 +131,7 @@ impl DomainProvider for CodeDomainProvider {
         match check {
             "seam" => self.run_seam_check(params, req),
             "signature_scope" => self.run_signature_scope_check(req),
+            "lint" => self.run_lint_check(params, req),
             _ => Err(StateError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("unknown code check 'code.{check}'"),
@@ -133,7 +143,7 @@ impl DomainProvider for CodeDomainProvider {
     fn observe_freshness(
         &self,
         check: &str,
-        _params: &Value,
+        params: &Value,
         req: &DomainCheckReq,
     ) -> Result<FreshnessObservation> {
         match check {
@@ -153,6 +163,7 @@ impl DomainProvider for CodeDomainProvider {
                     execution_digest_salt: Some(salt),
                 })
             }
+            "lint" => self.observe_lint_freshness(params, req),
             _ => Err(StateError::new(
                 ErrorCode::DomainCapabilityUnavailable,
                 format!("unknown code check 'code.{check}'"),
@@ -224,11 +235,29 @@ fn collect_scoped_worktree_files(
     if !needs_walk {
         return found.into_iter().collect();
     }
+    for_each_candidate_file(worktree, policy, false, |_, rel_str| {
+        if policy.is_scope_admitted(&rel_str, scope) {
+            found.insert(rel_str);
+        }
+    });
+    found.into_iter().collect()
+}
+
+pub(super) fn for_each_candidate_file(
+    worktree: &Path,
+    policy: &WorkspacePathPolicy,
+    skip_internal_artifacts: bool,
+    mut f: impl FnMut(&Path, String),
+) {
     let walker = ignore::WalkBuilder::new(worktree)
         .follow_links(false)
         .standard_filters(true)
         .hidden(false)
-        .filter_entry(|e| !matches!(e.file_name().to_str(), Some(".git" | ".worktrees")))
+        .filter_entry(move |e| {
+            !matches!(e.file_name().to_str(), Some(".git" | ".worktrees"))
+                && (!skip_internal_artifacts
+                    || !matches!(e.file_name().to_str(), Some("target" | ".acdd")))
+        })
         .build();
     for entry in walker.flatten() {
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
@@ -238,11 +267,10 @@ fn collect_scoped_worktree_files(
             continue;
         };
         let rel_str = rel.to_string_lossy().replace('\\', "/");
-        if policy.is_candidate_included(&rel_str) && policy.is_scope_admitted(&rel_str, scope) {
-            found.insert(rel_str);
+        if policy.is_candidate_included(&rel_str) {
+            f(entry.path(), rel_str);
         }
     }
-    found.into_iter().collect()
 }
 
 fn collect_deleted_scoped_files(

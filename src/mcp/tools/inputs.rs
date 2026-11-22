@@ -1,5 +1,6 @@
 use crate::format::OutputFormat;
 use acdd_core::ids::{RunName, SubtaskRef, TaskRef, WorkerId};
+use acdd_core::lint::{LintCategory, LintSeverity};
 use acdd_core::response::{Detail, QueryOptions, ResponsePolicy, SourceOptions};
 use acdd_state::types::{RejectionFindings, ReviewEvidence, SubmitAction};
 use schemars::JsonSchema;
@@ -589,6 +590,21 @@ impl GetDoc {
             "path_or_id",
         )
     }
+}
+#[derive(Default, Deserialize, JsonSchema)]
+/// Unified architectural, graph hygiene, syntax, and documentation lint query.
+pub struct Lint {
+    /// Optional workspace-relative file, directory, or glob target; omit for full workspace.
+    pub target: Option<String>,
+    /// Optional lint categories (`arch`, `duplicates`, `dead_tails`, `cycles`, `syntax`, `docs`); omit for default `[arch, syntax, docs]`.
+    pub categories: Option<Vec<LintCategory>>,
+    /// Optional rule or invariant ID filters.
+    pub rules: Option<Vec<String>>,
+    /// Optional minimum severity threshold (`warn` or `error`).
+    pub severity: Option<LintSeverity>,
+    #[serde(flatten)]
+    /// The page value.
+    pub page: PageInput,
 }
 #[derive(Deserialize, JsonSchema)]
 /// Represents guide data.

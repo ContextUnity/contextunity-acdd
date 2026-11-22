@@ -4,7 +4,7 @@ mod inputs;
 mod state_tools;
 
 pub use inputs::{
-    Analyze, Ast, BlackboardInput, ClaimInput, Explain, GetDoc, Guide, Impact, Inspect,
+    Analyze, Ast, BlackboardInput, ClaimInput, Explain, GetDoc, Guide, Impact, Inspect, Lint,
     McpBlackboardAction, McpStateAction, OverviewInput, PageInput, Query, SearchDocs,
     SearchSymbols, Selector, Snippet, StateInput, SubmitInput, Tests, VerifyInput, WorktreeInput,
 };
@@ -120,6 +120,13 @@ impl Server {
     )]
     async fn code_map_prove_removal(&self, Parameters(p): Parameters<Selector>) -> CallToolResult {
         code_tools::code_map_prove_removal(self, p).await
+    }
+
+    #[tool(
+        description = "Run unified architectural, graph hygiene, syntax, and documentation lint rules across the workspace or a target path/glob. Default categories: arch, syntax, docs."
+    )]
+    async fn code_map_lint(&self, Parameters(p): Parameters<Lint>) -> CallToolResult {
+        code_tools::code_map_lint(self, p).await
     }
 
     #[tool(
@@ -288,8 +295,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_19_builtin_tools_and_plugin_tool_contract() {
-        let ws = acdd_core::fs::ScopedTempDir::create("acdd-mcp-tools-19tools").unwrap();
+    async fn mcp_20_builtin_tools_and_plugin_tool_contract() {
+        let ws = acdd_core::fs::ScopedTempDir::create("acdd-mcp-tools-20tools").unwrap();
         std::fs::write(
             ws.path().join("acdd.yaml"),
             "roots: [.]\nmodules:\n  domains:\n    http: true\n",
@@ -305,8 +312,8 @@ mod tests {
         assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
         let instructions = info.instructions.as_deref().unwrap_or("");
         assert!(
-            instructions.contains("20 tools"),
-            "expected dynamic 19+1=20 tools in instructions: {instructions}"
+            instructions.contains("21 tools"),
+            "expected dynamic 20+1=21 tools in instructions: {instructions}"
         );
 
         let (_running, _client, ctx) = make_peer_ctx(1).await;

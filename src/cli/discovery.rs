@@ -313,6 +313,19 @@ pub(crate) fn attach_presentation_uris(
     }
 }
 
+/// Adds workspace-resolved URIs to lint violation coordinates before Markdown rendering.
+pub(crate) fn attach_lint_presentation_uris(root: &Path, adapter: &Adapter, value: &mut Value) {
+    let Some(items) = value.get_mut("items").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for item in items {
+        attach_uri_from_fields(root, adapter, item, "path", "line");
+        if let Some(rule_source) = item.get_mut("rule_source") {
+            attach_uri_from_fields(root, adapter, rule_source, "path", "line");
+        }
+    }
+}
+
 /// Adds guarded file links for supplied traversal coordinates in Markdown output.
 pub(crate) fn attach_traversal_presentation_uris(
     root: &Path,

@@ -1,6 +1,6 @@
 use super::super::{response, server::Server};
 use super::inputs::{
-    Analyze, Ast, Explain, GetDoc, Guide, Impact, Inspect, OverviewInput, Query, SearchDocs,
+    Analyze, Ast, Explain, GetDoc, Guide, Impact, Inspect, Lint, OverviewInput, Query, SearchDocs,
     SearchSymbols, Selector, Snippet, Tests,
 };
 use crate::{
@@ -82,6 +82,10 @@ fn responding_with_presentation(
                             value,
                             title,
                         );
+                    }
+                } else if title == "code_map_lint" {
+                    if let Ok(value) = &mut value {
+                        cli::discovery::attach_lint_presentation_uris(&server.root, &adapter, value);
                     }
                 }
                 if operation == OperationKind::Navigation
@@ -546,6 +550,45 @@ pub(super) async fn code_map_prove_removal(server: &Server, p: Selector) -> Call
                     p.path.as_deref(),
                     &p.page.resolve(policy)?,
                 )
+            })
+        },
+    )
+    .await
+}
+
+pub(super) async fn code_map_lint(server: &Server, p: Lint) -> CallToolResult {
+    let format = p.page.output_format();
+    responding_blocking(
+        server,
+        format,
+        OperationKind::Navigation,
+        "code_map_lint",
+        None,
+        None,
+        move |server, adapter, policy| {
+            let page = p.page.resolve(policy)?;
+            server.read_with_adapter(adapter, |c| {
+                let rule_ids: Option<Vec<String>> = p.rules.as_ref().map(|list| {
+                    list.iter()
+                        .map(|r| r.trim().to_owned())
+                        .filter(|r| !r.is_empty())
+                        .collect()
+                });
+                let req = acdd_index::db::lint::LintRequest {
+                    target: p
+                        .target
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty()),
+                    paths: None,
+                    categories: p.categories.as_deref(),
+                    rule_ids: rule_ids.as_deref().filter(|r| !r.is_empty()),
+                    minimum_severity: p.severity,
+                    architecture: Some(&adapter.architecture),
+                    workspace_root: Some(&server.root),
+                    page: &page,
+                };
+                acdd_index::db::lint::run_lint(c, &req)
             })
         },
     )

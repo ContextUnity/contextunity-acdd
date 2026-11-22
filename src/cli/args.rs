@@ -531,6 +531,32 @@ pub enum Command {
         /// Selected AST operation.
         command: AstCommand,
     },
+    /// Run unified architectural, graph hygiene, syntax, and documentation lint rules.
+    Lint {
+        /// Optional workspace-relative file, directory, or glob target (omit for full workspace).
+        target: Option<String>,
+        /// Lint categories (`arch`, `duplicates`, `dead_tails`, `cycles`, `syntax`, `docs`, or `all`).
+        #[arg(long, value_delimiter = ',')]
+        categories: Option<Vec<String>>,
+        /// Filter diagnostics to specific rule or invariant IDs.
+        #[arg(long = "rule", alias = "rules", value_delimiter = ',')]
+        rule: Option<Vec<String>>,
+        /// Minimum diagnostic severity (`warn` or `error`).
+        #[arg(long)]
+        severity: Option<String>,
+        /// Maximum violations per page (1..=100).
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        /// Result page offset.
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        /// Response detail (`compact` or `full`).
+        #[arg(long)]
+        detail: Option<String>,
+        /// Continuation generation from the preceding result page.
+        #[arg(long)]
+        generation: Option<String>,
+    },
     /// Display built-in ACDD guidance topics (`init | adapter | docs | acdd | query | ast | validate | lifecycle | gates | subtasks | code`).
     Guide {
         /// Topic name.

@@ -278,7 +278,7 @@ fn guide_content_and_surfaces_matrix() {
             }
             "acdd" => {
                 let text = value.to_string().to_lowercase();
-                for term in ["gateprofile", "19 static", "domainprovider", "acdd start"] {
+                for term in ["gateprofile", "20 static", "domainprovider", "acdd start"] {
                     assert!(text.contains(term), "acdd guide must explain {term}: {text}");
                 }
                 assert!(value["mcp_tools"].is_object());

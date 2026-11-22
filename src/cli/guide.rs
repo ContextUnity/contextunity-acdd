@@ -367,7 +367,7 @@ fn topic_value(root: &Path, topic: &str, adapter: &scanner::Adapter) -> Result<V
             "references": ["docs/AGENTS.md", "docs/reference/mcp-tools.md", "docs/reference/cli.md"]
         })),
         "acdd" => Ok(json!({
-            "purpose": "Execute specs, plans, workflows, or ephemeral `--goal` runs under one unified `0.6.2` GateProfile engine (`gates_patch:`, `save.report`, `predecessor_proofs`) and 19 static + external DomainProvider plugin tools.",
+            "purpose": "Execute specs, plans, workflows, or ephemeral `--goal` runs under one unified `0.6.2` GateProfile engine (`gates_patch:`, `save.report`, `predecessor_proofs`) and 20 static + external DomainProvider plugin tools.",
             "steps": [
                 "Initialize with `acdd init` (selects `inherit: code | base | audit`, writes canonical `.gitignore`).",
                 "Validate workspace config, active profile, `DomainProvider` capabilities, and active specs with `acdd validate`.",
