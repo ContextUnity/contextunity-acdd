@@ -20,7 +20,6 @@ impl ScopeFrameFlags {
     const COLLECT_FACTS: u8 = 1 << 3;
     const LEXICAL_SCOPE: u8 = 1 << 4;
     const ANNOTATION_OWNER: u8 = 1 << 5;
-    const SUSPENDED: u8 = 1 << 6;
 
     /// Returns a cleared frame flag set.
     pub const fn new() -> Self {
@@ -66,11 +65,6 @@ impl ScopeFrameFlags {
         self.set_bit(Self::ANNOTATION_OWNER, enabled)
     }
 
-    /// Sets or clears the suspended-collection flag.
-    pub const fn with_suspended(self, enabled: bool) -> Self {
-        self.set_bit(Self::SUSPENDED, enabled)
-    }
-
     /// Reports whether this frame belongs to the active analyzed body.
     pub const fn is_active(self) -> bool {
         self.bits & Self::ACTIVE != 0
@@ -104,11 +98,6 @@ impl ScopeFrameFlags {
     /// Reports whether annotations here belong to the enclosing declaration.
     pub const fn is_annotation_owner(self) -> bool {
         self.bits & Self::ANNOTATION_OWNER != 0
-    }
-
-    /// Reports whether collection is temporarily suspended in this frame.
-    pub const fn is_suspended(self) -> bool {
-        self.bits & Self::SUSPENDED != 0
     }
 }
 
@@ -147,13 +136,8 @@ impl ScopeState {
     }
 
     /// Returns the number of frames currently on the scope stack.
-    pub fn len(&self) -> usize {
+    pub fn depth(&self) -> usize {
         self.frames.len()
-    }
-
-    /// Reports whether the scope stack is empty.
-    pub fn is_empty(&self) -> bool {
-        self.frames.is_empty()
     }
 
     /// Reports whether the active top frame is conditional.
@@ -206,17 +190,6 @@ impl ValueFlowCollectorCore {
     /// Appends a field assignment fact.
     pub fn push_field(&mut self, name: String, position: SourcePosition, value: ValueExpr, conditional: bool) {
         self.facts.fields.push(FieldFact { name, position, value, conditional });
-    }
-
-    /// Appends a bounded branch-join binding fact across enumerated `alternatives`.
-    pub fn push_branch_join(
-        &mut self,
-        name: String,
-        position: SourcePosition,
-        alternatives: Vec<ValueExpr>,
-        conditional: bool,
-    ) {
-        self.push_binding(name, position, ValueExpr::BranchJoin { alternatives }, conditional);
     }
 
     /// Sets the declared return type if not already recorded.
@@ -723,8 +696,8 @@ mod tests {
     #[test]
     fn scope_state_and_collector_core_sort_and_track_conditionality() {
         let mut core = ValueFlowCollectorCore::with_scope_capacity(4);
-        assert!(core.scope_state().is_empty());
-        assert_eq!(core.scope_state().len(), 0);
+        assert!(core.scope_state().current().is_none());
+        assert_eq!(core.scope_state().depth(), 0);
         assert!(!core.scope_state().is_conditional());
 
         let root_flags = ScopeFrameFlags::new()
@@ -736,11 +709,9 @@ mod tests {
         assert!(root_flags.collects_facts());
         assert!(root_flags.is_lexical_scope());
         assert!(root_flags.is_annotation_owner());
-        assert!(!root_flags.is_suspended());
         assert!(!root_flags.is_conditional());
         core.scope_state_mut().push(root_flags);
-        assert!(!core.scope_state().is_empty());
-        assert_eq!(core.scope_state().len(), 1);
+        assert!(core.scope_state().current().is_some());
 
         let branch_flags = ScopeFrameFlags::new()
             .with_active(true)
@@ -751,11 +722,9 @@ mod tests {
 
         let try_flags = ScopeFrameFlags::new()
             .with_active(true)
-            .with_try_conditional(true)
-            .with_suspended(true);
+            .with_try_conditional(true);
         assert!(try_flags.is_try_conditional());
         assert!(try_flags.is_conditional());
-        assert!(try_flags.is_suspended());
 
         core.push_binding(
             "later".into(),
@@ -769,19 +738,13 @@ mod tests {
             ValueExpr::Construct { callee: "Svc".into() },
             false,
         );
-        core.push_branch_join(
-            "joined".into(),
-            SourcePosition { line: 4, column: 6 },
-            vec![ValueExpr::Alias { name: "a".into() }],
-            true,
-        );
         core.push_field(
             "client".into(),
             SourcePosition { line: 3, column: 2 },
             ValueExpr::Construct { callee: "Client".into() },
             false,
         );
-        assert_eq!(core.facts().bindings.len(), 3);
+        assert_eq!(core.facts().bindings.len(), 2);
         core.facts_mut().bindings.reserve(1);
         core.set_return_type_if_none(Some(TypeExpr::Named { name: "Svc".into() }));
         core.set_alias_type_if_none(Some(TypeExpr::Named { name: "Alias".into() }));
@@ -793,7 +756,6 @@ mod tests {
         assert_eq!(facts.bindings[0].name, "earlier");
         assert_eq!(facts.bindings[1].name, "later");
         assert!(facts.bindings[1].conditional);
-        assert_eq!(facts.bindings[2].name, "joined");
         assert_eq!(facts.fields.len(), 1);
         assert_eq!(
             facts.return_type,

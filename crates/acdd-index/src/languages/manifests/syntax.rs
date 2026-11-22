@@ -528,7 +528,7 @@ impl SyntaxRule {
     pub(crate) fn activation_family(&self) -> Option<crate::languages::LanguageFamily> {
         match self.package_family.as_deref() {
             Some(family) => crate::languages::dependency_registry::Ecosystem::from_family(family)
-                .map(crate::languages::dependency_registry::Ecosystem::family),
+                .and_then(|ecosystem| ecosystem.families().first().copied()),
             None => crate::languages::by_id(&self.language).map(|profile| profile.family()),
         }
     }

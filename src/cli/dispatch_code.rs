@@ -207,6 +207,14 @@ pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value,
             let mut page =
                 QueryOptions::resolve(&ctx.adapter.response, None, 0, None, generation)?;
             page.detail = Detail::Full;
+            let node_ctx = crate::state_bridge::active_node_context(
+                ctx.root,
+                ctx.adapter,
+                ctx.state_db,
+                Some(ctx.db),
+            )
+            .ok()
+            .flatten();
             let run_read = |conn: Option<&rusqlite::Connection>| {
                 crate::engine::reader::acdd_read_tool(
                     ctx.root,
@@ -215,8 +223,7 @@ pub(super) fn dispatch(ctx: &CliCodeCtx<'_>, command: Command) -> Result<(Value,
                     &page,
                     &source,
                     conn,
-                    ctx.state_db,
-                    Some(ctx.db),
+                    node_ctx.as_ref(),
                 )
             };
             if request.requires_index(ctx.adapter)? {

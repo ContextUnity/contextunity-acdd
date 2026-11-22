@@ -1717,6 +1717,45 @@ pub(crate) fn profile_available(id: &str) -> bool {
 pub fn by_id(id: &str) -> Option<&'static dyn LanguageProfile> {
     profiles().find(|p| p.id() == id)
 }
+/// Locates sorted UTF-8 byte ranges for syntax nodes matching `kind`, `start` (1-based line), and `name`.
+pub(crate) fn find_symbol_byte_ranges(
+    profile: &dyn LanguageProfile,
+    path: &str,
+    text: &str,
+    kind: &str,
+    start: usize,
+    name: &str,
+) -> Result<Vec<std::ops::Range<usize>>> {
+    let mut parser = profile.create_parser(path)?;
+    parser.set_timeout_micros(2_000_000);
+    let tree = parser
+        .parse(text, None)
+        .context("source preview parse exceeds time budget")?;
+    let mut stack = vec![tree.root_node()];
+    let mut matches = Vec::new();
+    while let Some(syntax) = stack.pop() {
+        if syntax.start_position().row + 1 > start || syntax.end_position().row + 1 < start {
+            continue;
+        }
+        if syntax.start_position().row + 1 == start
+            && profile.symbol_with_source(syntax, text) == Some(kind)
+        {
+            let candidate = profile
+                .symbol_name(syntax, text)
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    format!("anonymous@{}:{}", start, syntax.start_position().column + 1)
+                });
+            if candidate == name {
+                matches.push(syntax.byte_range());
+            }
+        }
+        let mut cursor = syntax.walk();
+        stack.extend(syntax.named_children(&mut cursor));
+    }
+    matches.sort_by_key(|range| range.start);
+    Ok(matches)
+}
 /// Returns the [`LanguageLinker`] registered for `id`, or [`GENERIC_LINKER`].
 pub fn linker_for(id: &str) -> &'static dyn LanguageLinker {
     by_id(id).map_or(&GENERIC_LINKER, LanguageProfile::linker)

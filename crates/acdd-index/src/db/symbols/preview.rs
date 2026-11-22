@@ -415,34 +415,7 @@ fn symbol_range(node: &Value, text: &str) -> Result<Option<std::ops::Range<usize
     let profile = crate::languages::require(language)?;
     let start = node["line"].as_u64().context("invalid start line")? as usize;
     let name = node["name"].as_str().context("invalid node name")?;
-    let mut parser = profile.create_parser(path)?;
-    parser.set_timeout_micros(2_000_000);
-    let tree = parser
-        .parse(text, None)
-        .context("source preview parse exceeds time budget")?;
-    let mut stack = vec![tree.root_node()];
-    let mut matches = Vec::new();
-    while let Some(syntax) = stack.pop() {
-        if syntax.start_position().row + 1 > start || syntax.end_position().row + 1 < start {
-            continue;
-        }
-        if syntax.start_position().row + 1 == start
-            && profile.symbol_with_source(syntax, text) == Some(kind)
-        {
-            let candidate = profile
-                .symbol_name(syntax, text)
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    format!("anonymous@{}:{}", start, syntax.start_position().column + 1)
-                });
-            if candidate == name {
-                matches.push(syntax.byte_range());
-            }
-        }
-        let mut cursor = syntax.walk();
-        stack.extend(syntax.named_children(&mut cursor));
-    }
-    matches.sort_by_key(|range| range.start);
+    let matches = crate::languages::find_symbol_byte_ranges(profile, path, text, kind, start, name)?;
     let qualname = node["qualname"].as_str().unwrap_or(name);
     let base = format!("{}:{path}:{start}:{name}", profile.node_prefix(kind));
     let field_base = format!("field:{path}:{start}:{qualname}");

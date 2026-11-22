@@ -16,21 +16,6 @@ pub enum Ecosystem {
 }
 
 impl Ecosystem {
-    /// Returns the primary `LanguageFamily` associated with this ecosystem.
-    pub const fn family(self) -> LanguageFamily {
-        match self {
-            Self::Rust => LanguageFamily("rust"),
-            Self::JavaScript => LanguageFamily("javascript"),
-            Self::Python => LanguageFamily("python"),
-            Self::Go => LanguageFamily("go"),
-            Self::Jvm => LanguageFamily("java"),
-            Self::Php => LanguageFamily("php"),
-            Self::CSharp => LanguageFamily("csharp"),
-            Self::Ruby => LanguageFamily("ruby"),
-            Self::CCpp => LanguageFamily("c"),
-        }
-    }
-
     /// Resolves a canonical `LanguageFamily` name into its governing `Ecosystem`.
     pub fn from_family(family: &str) -> Option<Self> {
         match family {

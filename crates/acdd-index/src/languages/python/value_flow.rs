@@ -998,11 +998,11 @@ impl<'a, 'tree> Collector<'a, 'tree> {
             return;
         }
         if is_body {
-            self.body_depth = Some(self.core.scope_state().len());
+            self.body_depth = Some(self.core.scope_state().depth());
         }
         let is_direct_child = self
             .body_depth
-            .is_some_and(|d| self.core.scope_state().len() == d + 1);
+            .is_some_and(|d| self.core.scope_state().depth() == d + 1);
         if is_direct_child && node.kind() != "comment" {
             if let Some(previous) = self.return_last {
                 self.return_prefix_valid &= valid_return_prefix(previous);

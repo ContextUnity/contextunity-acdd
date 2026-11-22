@@ -222,6 +222,14 @@ pub(super) async fn acdd_read(server: &Server, mut p: Snippet) -> CallToolResult
             p.normalize(&server.root)?;
             let page = p.page.resolve(policy)?;
             let source = p.source(policy)?;
+            let node_ctx = crate::state_bridge::active_node_context(
+                &server.root,
+                adapter,
+                server.state_db(),
+                Some(&server.db),
+            )
+            .ok()
+            .flatten();
             let read = |conn: Option<&rusqlite::Connection>| {
                 crate::engine::reader::acdd_read_tool(
                     &server.root,
@@ -230,8 +238,7 @@ pub(super) async fn acdd_read(server: &Server, mut p: Snippet) -> CallToolResult
                     &page,
                     &source,
                     conn,
-                    server.state_db(),
-                    Some(&server.db),
+                    node_ctx.as_ref(),
                 )
             };
             let structural = p.read.requires_index(adapter)?;
