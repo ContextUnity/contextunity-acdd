@@ -56,6 +56,13 @@ response:
     max_body_lines: 35
 
 architecture:
+  complexity:
+    max_cognitive_complexity: 50
+    max_nesting_depth: 6
+    max_fanout: 40
+    severity: warn
+    invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
+
   zones:
     core:
       - "crates/acdd-core/src/**"
@@ -259,3 +266,74 @@ architecture:
       from:
         paths: ["docs/adr/**", "docs/architecture/**"]
       message: "Canonical ADR and architecture docs must have zero orphan invariants or stale symbol ranges"
+
+    - id: ARCH-INDEX-DB-ISOLATION
+      severity: error
+      kind: forbid_dependency
+      from:
+        zones: [index_db]
+      to:
+        zones: [state, host_engine, host_state_bridge, host_format, host_cli, host_mcp, host_telemetry]
+        paths: ["crates/acdd-index/src/linker/**"]
+        external_symbols: ["acdd_state", "tokio", "rmcp", "clap"]
+      message: "crates/acdd-index/src/db must not depend on linker, acdd-state, or host layers"
+
+    - id: ARCH-INDEX-DB-BOUNDARY-ENTRY
+      severity: error
+      kind: boundary_entry
+      to:
+        zones: [index_db]
+      entrypoints:
+        - "crates/acdd-index/src/db/mod.rs"
+        - "crates/acdd-index/src/db/reader/*.rs"
+        - "crates/acdd-index/src/db/symbols/*.rs"
+        - "crates/acdd-index/src/db/traversal/*.rs"
+        - "crates/acdd-index/src/db/lint/mod.rs"
+        - "crates/acdd-index/src/db/lint/rules.rs"
+        - "crates/acdd-index/src/db/lint/syntax.rs"
+        - "crates/acdd-index/src/db/writer/mod.rs"
+        - "crates/acdd-index/src/db/writer/cache.rs"
+        - "crates/acdd-index/src/db/writer/delta.rs"
+        - "crates/acdd-index/src/db/writer/ingest.rs"
+        - "crates/acdd-index/src/db/writer/payload_store.rs"
+        - "crates/acdd-index/src/db/writer/temp_table.rs"
+        - "crates/acdd-index/src/db/commitments.rs"
+        - "crates/acdd-index/src/db/commitments/mod.rs"
+        - "crates/acdd-index/src/db/cycles.rs"
+        - "crates/acdd-index/src/db/paging.rs"
+        - "crates/acdd-index/src/db/schema.rs"
+        - "crates/acdd-index/src/db/cache.rs"
+      message: "External callers must enter crates/acdd-index/src/db through its public surface modules"
+
+    - id: ARCH-INDEX-DB-NO-WRITER-IN-TRANSPORT
+      severity: error
+      kind: forbid_dependency
+      from:
+        zones: [host_cli, host_mcp, host_format, host_telemetry]
+      to:
+        paths: ["crates/acdd-index/src/db/writer/**"]
+      message: "Transport and presentation zones must not depend on crates/acdd-index/src/db/writer"
+
+    - id: ARCH-TELEMETRY-CONFINED
+      severity: error
+      kind: forbid_dependency
+      from:
+        zones: [host_telemetry]
+      to:
+        zones: [index, index_db, host_format, host_engine, host_cli, host_mcp]
+        external_symbols: ["rusqlite", "tree_sitter", "rmcp", "clap"]
+      message: "src/telemetry.rs must stay decoupled from index, db, and transport layers"
+
+    - id: ARCH-ZONE-DAG-ACYCLIC
+      severity: error
+      kind: forbid_cycles
+      zones: [core, index, state, host_format, host_engine, host_state_bridge, host_telemetry, host_cli, host_mcp]
+      message: "Architectural workspace zones must remain an acyclic DAG"
+
+    - id: ARCH-ACYCLIC-HOST-LEAF-ZONES
+      severity: error
+      kind: forbid_cycles
+      from:
+        zones: [host_format, host_telemetry]
+      depth: 2
+      message: "Acyclic host leaf zones must remain free of module dependency cycles"

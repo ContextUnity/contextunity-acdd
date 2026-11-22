@@ -50,3 +50,30 @@ Supporting multi-language imports, third-party package classification, template 
 - Adding or overriding framework conventions (Django, HTMX, Nuxt, GridViewSpec, custom internal packs) requires zero Rust code changes in extractors or linkers.
 - Invalid workspace manifests fail closed prior to SQLite publication.
 - Third-party dependencies never pollute project-internal `unresolved` or `code_map_prove_removal` diagnostics.
+
+## Executable Manifest and Parser Rules
+
+```acdd-rule
+- id: ARCH-MANIFEST-PARSER-MUST-IMPLEMENT
+  severity: error
+  kind: must_implement
+  from:
+    paths: ["crates/acdd-index/src/languages/dependency_registry/parsers/*.rs"]
+    exclude_paths: ["crates/acdd-index/src/languages/dependency_registry/parsers/mod.rs"]
+  to:
+    paths: ["crates/acdd-index/src/languages/dependency_registry/parser.rs"]
+    symbols: ["ManifestParser"]
+  message: "Every ecosystem parser module must implement ManifestParser"
+
+- id: ARCH-MANIFEST-NO-DB-OR-LINKER-RES
+  severity: error
+  kind: forbid_dependency
+  from:
+    paths:
+      - "crates/acdd-index/src/languages/manifests/**"
+      - "crates/acdd-index/src/languages/dependency_registry/**"
+  to:
+    zones: [index_db]
+    paths: ["crates/acdd-index/src/linker/resolution/**"]
+  message: "Framework manifests and dependency parsers must remain decoupled from db and linker/resolution"
+```

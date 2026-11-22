@@ -156,3 +156,67 @@ Body edits refresh the changed owner's facts, call edges, coverage, and commitme
 `ACDD_PROFILE_LINKER=1` writes phase timings to stderr for namespace/export indexing, inheritance, semantic admission, value flow, reference linking, and graph sorting. It leaves graph facts and commitments unchanged.
 
 Manifest `call_to_file` rules reuse the Python lexical import/literal owners and the shared linker composition pass. Core-owned semantic DTOs remain native in the owner-indexed `SemanticStore` during typed extraction and linking. Serialization overlays the existing `details.semantic_facts` slot; public extraction materializes that same representation. Compact navigation metadata omits parser-only flow and semantic payloads while full-facts serialization retains them. Legacy payloads hydrate at the compatibility boundary, retaining original values and invalid raw evidence. Actual module providers and call consumers share a typed project/path/projection identity, whose opaque dependency key feeds existing delta owner invalidation. Exact promotion aggregates every matching rule and namespace and requires one actual target plus canonical external-import proof.
+
+## Executable Layer 2 and Hot-Path Rules
+
+```acdd-rule
+- id: ARCH-L2-LINKER-BOUNDARY-ENTRY
+  severity: error
+  kind: boundary_entry
+  from:
+    paths: ["src/**"]
+  to:
+    paths: ["crates/acdd-index/src/linker/**"]
+  entrypoints:
+    - "crates/acdd-index/src/linker/mod.rs"
+    - "crates/acdd-index/src/linker/contracts.rs"
+  message: "Host callers in src/** must enter crates/acdd-index/src/linker through its canonical facade entrypoints"
+
+- id: ARCH-L2-LINKER-NO-DB
+  severity: error
+  kind: forbid_dependency
+  from:
+    paths: ["crates/acdd-index/src/linker/**"]
+  to:
+    zones: [index_db]
+  message: "crates/acdd-index/src/linker must remain decoupled from SQLite db persistence"
+
+- id: ARCH-L2-EXTRACTOR-NO-LINKER-RESOLUTION
+  severity: error
+  kind: forbid_dependency
+  from:
+    paths: ["crates/acdd-index/src/languages/**"]
+  to:
+    paths: ["crates/acdd-index/src/linker/resolution/**"]
+  message: "Language extractors must not depend on internal linker/resolution phases"
+
+- id: ARCH-L2-HOTPATH-NO-REGEX-NEW
+  severity: error
+  kind: ast_pattern
+  from:
+    zones: [index]
+    languages: ["rust"]
+  ast_pattern: "Regex::new($PAT)"
+  include_tests: false
+  message: "Ban Regex::new allocations in crates/acdd-index production code"
+
+- id: ARCH-L2-HOTPATH-NO-SHRINK-TO-FIT
+  severity: warn
+  kind: ast_pattern
+  from:
+    zones: [index]
+    languages: ["rust"]
+  ast_pattern: "$VEC.shrink_to_fit()"
+  include_tests: false
+  message: "Avoid shrink_to_fit reallocations on indexed fact buffers"
+
+- id: ARCH-L2-NO-RAW-NODE-DETAILS-INDEX
+  severity: warn
+  kind: ast_pattern
+  from:
+    zones: [index]
+    languages: ["rust"]
+  ast_pattern: "$NODE.details[$KEY]"
+  include_tests: false
+  message: "Prefer typed TypedFacts / NodeSemanticEntry / NodeDetailKey projections over raw node.details[key] indexing"
+```

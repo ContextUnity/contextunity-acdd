@@ -21,9 +21,11 @@ where
     output
 }
 
-pub(crate) fn collect_cycle_components(
+fn collect_cycle_components_filtered(
     conn: &Connection,
     filter_path: Option<&str>,
+    kinds_sql: &str,
+    min_component_len: usize,
 ) -> Result<Vec<Vec<i64>>> {
     let budget = QueryBudget::new(conn);
     let selected = if let Some(path) = filter_path.filter(|p| !p.is_empty()) {
@@ -46,9 +48,8 @@ pub(crate) fn collect_cycle_components(
         None
     };
 
-    let mut statement = conn.prepare(
-        "SELECT src_hash,dst_hash FROM edges WHERE kind IN('calls','imports') LIMIT 500001",
-    )?;
+    let sql = format!("SELECT src_hash,dst_hash FROM edges WHERE kind IN {kinds_sql} LIMIT 500001");
+    let mut statement = conn.prepare(&sql)?;
     let edges = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
     let mut graph = DiGraphMap::<i64, ()>::new();
     for (count, edge) in edges.enumerate() {
@@ -64,6 +65,9 @@ pub(crate) fn collect_cycle_components(
     let mut output = Vec::new();
     for component in components {
         budget.check()?;
+        if component.len() < min_component_len {
+            continue;
+        }
         if selected
             .as_ref()
             .is_some_and(|scope| !component.iter().any(|n| scope.contains(n)))
@@ -75,12 +79,26 @@ pub(crate) fn collect_cycle_components(
     Ok(output)
 }
 
+pub(crate) fn collect_cycle_components(
+    conn: &Connection,
+    filter_path: Option<&str>,
+) -> Result<Vec<Vec<i64>>> {
+    collect_cycle_components_filtered(conn, filter_path, "('calls','imports')", 1)
+}
+
+pub(crate) fn collect_import_cycle_components(
+    conn: &Connection,
+    filter_path: Option<&str>,
+) -> Result<Vec<Vec<i64>>> {
+    collect_cycle_components_filtered(conn, filter_path, "('imports')", 2)
+}
+
 pub(super) fn collect_cycle_violations(
     conn: &Connection,
     scope: &LintScope,
     violations: &mut Vec<LintViolation>,
 ) -> Result<()> {
-    let components = collect_cycle_components(conn, scope.exact_prefix())?;
+    let components = collect_import_cycle_components(conn, scope.exact_prefix())?;
     if components.is_empty() {
         return Ok(());
     }

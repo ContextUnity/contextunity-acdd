@@ -52,3 +52,28 @@ In [`crates/acdd-index/src/linker/value_flow/mod.rs`](../../crates/acdd-index/sr
 
 - Exact call counts (`calls`) remain strictly separated from bounded candidate navigation (`possible_calls`), while impact and removal analyses conservatively follow both.
 - Static analysis terminates deterministically without executing repository code.
+
+## Executable Boundary Rules
+
+```acdd-rule
+- id: ARCH-L2-SUPPORT-BOUNDARY-ENTRY
+  severity: error
+  kind: boundary_entry
+  to:
+    paths: ["crates/acdd-index/src/languages/support/**"]
+  entrypoints:
+    - "crates/acdd-index/src/languages/support/mod.rs"
+    - "crates/acdd-index/src/languages/support/value_flow_core.rs"
+    - "crates/acdd-index/src/languages/support/c_family.rs"
+  message: "Callers must enter languages/support through its public facade modules"
+
+- id: ARCH-L2-SUPPORT-NO-DB-OR-LINKER
+  severity: error
+  kind: forbid_dependency
+  from:
+    paths: ["crates/acdd-index/src/languages/support/**"]
+  to:
+    zones: [index_db]
+    paths: ["crates/acdd-index/src/linker/**"]
+  message: "Shared extractor support must not depend on db or linker layers"
+```

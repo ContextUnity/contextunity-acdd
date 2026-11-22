@@ -700,3 +700,353 @@ fn dead_helper() -> i32 {
     let analyzed_ws = analyze_paged(&conn, "", Some(true), &opts).unwrap();
     assert!(analyzed_ws["cycles"]["total"].as_u64().unwrap() >= 1);
 }
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn ast_clone_coalescing_and_import_cycle_separation_contract_matrix() {
+    let ws = Workspace::new();
+    // 1. Closing-brace blocks and wrapped single-statement calls must produce 0 duplicates.
+    // 2. 8-statement shared block across distinct functions must coalesce into 1 maximal span.
+    // 3. 1-node self-recursion and 2-node call-only recursion must produce 0 cycles.scc warnings,
+    //    while 2-node module import SCC emits 1 cycles.scc warning.
+    ws.write(
+        "src/lib.rs",
+        r#"pub mod imp_a;
+pub mod imp_b;
+
+pub fn braces_alpha() {
+    if true {
+        if true {
+            if true {
+                if true {
+                    let _ = 1;
+                }
+            }
+        }
+    }
+}
+
+pub fn braces_beta() {
+    if false {
+        if false {
+            if false {
+                if false {
+                    let _ = 2;
+                }
+            }
+        }
+    }
+}
+
+pub fn wrapped_alpha(a: i32, b: i32, c: i32, d: i32) -> i32 {
+    helper_sum(
+        a, // first
+        b, // second
+        c, // third
+        d, // fourth
+    )
+}
+
+pub fn wrapped_beta(a: i32, b: i32, c: i32, d: i32) -> i32 {
+    helper_sum(
+        a,
+        b,
+        c,
+        d,
+    )
+}
+
+fn helper_sum(a: i32, b: i32, c: i32, d: i32) -> i32 { a + b + c + d }
+
+pub fn clone_host_one(v: i32) -> i32 {
+    let preamble = v + 100;
+    let s1 = preamble + 1;
+    let s2 = s1 + 2;
+    let s3 = s2 + 3;
+    let s4 = s3 + 4;
+    let s5 = s4 + 5;
+    let s6 = s5 + 6;
+    let s7 = s6 + 7;
+    let s8 = s7 + 8;
+    s8 + 11
+}
+
+pub fn clone_host_two(v: i32) -> i32 {
+    let other_preamble = v + 200;
+    let s1 = preamble + 1;
+    let s2 = s1 + 2;
+    let s3 = s2 + 3;
+    let s4 = s3 + 4;
+    let s5 = s4 + 5;
+    let s6 = s5 + 6;
+    let s7 = s6 + 7;
+    let s8 = s7 + 8;
+    s8 + 22
+}
+
+pub fn self_recursive(n: u32) -> u32 {
+    if n == 0 { 0 } else { self_recursive(n - 1) }
+}
+
+pub fn mutual_ping(n: u32) -> u32 {
+    if n == 0 { 0 } else { mutual_pong(n - 1) }
+}
+
+pub fn mutual_pong(n: u32) -> u32 {
+    if n == 0 { 0 } else { mutual_ping(n - 1) }
+}
+"#,
+    );
+    ws.write("src/imp_a.rs", "use crate::imp_b;\npub fn fa() { imp_b::fb(); }\n");
+    ws.write("src/imp_b.rs", "use crate::imp_a;\npub fn fb() { imp_a::fa(); }\n");
+
+    ws.build();
+    let conn = ws.open();
+    let opts = page(100, 0, None);
+
+    let dup_res = duplicates_paged(&conn, None, None, None, Some(5), &opts).unwrap();
+    let dup_items = dup_res["items"].as_array().unwrap();
+    assert_eq!(
+        dup_items.len(),
+        1,
+        "closing braces & wrapped single-stmt calls must produce 0 duplicates, and 8-stmt clone must coalesce into 1 group: {dup_res}"
+    );
+    assert_eq!(dup_items[0]["match_type"], "block");
+    assert_eq!(dup_items[0]["line_count"], 8);
+
+    let lint_res = run_lint(
+        &conn,
+        &LintRequest {
+            target: None,
+            paths: None,
+            categories: Some(&[LintCategory::Duplicates, LintCategory::Cycles]),
+            rule_ids: None,
+            minimum_severity: None,
+            architecture: None,
+            workspace_root: Some(ws.root()),
+            page: &opts,
+        },
+    )
+    .unwrap();
+    let items = lint_res["items"].as_array().unwrap();
+    let cycle_items: Vec<&Value> = items.iter().filter(|v| v["category"] == "cycles").collect();
+    assert_eq!(
+        cycle_items.len(),
+        1,
+        "only the multi-node module import SCC should emit cycles.scc, never self/mutual call recursion: {cycle_items:?}"
+    );
+    assert_eq!(cycle_items[0]["rule_id"], "cycles.scc");
+    assert!(
+        cycle_items[0]["symbol"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("module:src/imp_")),
+        "{cycle_items:?}"
+    );
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn structural_complexity_homonym_unused_zone_and_enforced_invariant_contract_matrix() {
+    let ws = Workspace::new();
+    ws.write(
+        "acdd.yaml",
+        r#"roots: [.]
+architecture:
+  complexity:
+    max_cognitive_complexity: 4
+    max_nesting_depth: 2
+    max_fanout: 3
+    severity: warn
+    invariant: INV-BOUNDED-STRUCTURAL-COMPLEXITY
+  zones:
+    used_zone: ["src/clean/**"]
+    unused_zone: ["src/unused/**"]
+  rules:
+    - id: INV-USED-ONLY
+      invariant: INV-USED-ONLY
+      severity: error
+      kind: forbid_dependency
+      from: { zones: ["used_zone"] }
+      to: { external_symbols: ["rusqlite"] }
+"#,
+    );
+    ws.write(
+        "src/clean/router.rs",
+        r#"pub enum Code { A, B, C, D, E, F }
+pub fn flat_router(c: Code) -> i32 {
+    match c {
+        Code::A => 1,
+        Code::B => 2,
+        Code::C => 3,
+        Code::D => 4,
+        Code::E => 5,
+        Code::F => 6,
+    }
+}
+"#,
+    );
+    ws.write(
+        "src/complex.rs",
+        r#"pub fn deep_branching(items: &[i32]) -> i32 {
+    let mut total = 0;
+    for item in items {
+        if *item > 0 {
+            if *item % 2 == 0 {
+                total += *item;
+            }
+        }
+    }
+    total
+}
+fn c1() {}
+fn c2() {}
+fn c3() {}
+fn c4() {}
+pub fn high_fanout_fn() {
+    c1();
+    c2();
+    c3();
+    c4();
+}
+pub fn overflow_budget_fn() {}
+"#,
+    );
+    ws.write("src/hom_a.rs", "pub struct SharedType { pub a: i32 }\n");
+    ws.write("src/hom_b.rs", "pub struct SharedType { pub b: i32 }\n");
+    ws.write(
+        "docs/arch.md",
+        r#"---
+title: Structural Bounds
+doc_type: architecture
+---
+# Complexity
+- INV-BOUNDED-STRUCTURAL-COMPLEXITY: Bounded complexity enforced via architecture.complexity.
+- INV-USED-ONLY: Used zone rule.
+"#,
+    );
+
+    ws.build();
+    let conn = ws.open();
+
+    // Verify syntax.fact_budget_exceeded via an in-memory SQLite fixture (< 1 ms, no sealed DB mutation).
+    let mem_conn = rusqlite::Connection::open_in_memory().unwrap();
+    mem_conn
+        .execute_batch(&format!(
+            "{}INSERT INTO metadata(key,value) VALUES ('output_root','mem-gen');
+             INSERT INTO path_dictionary(path_id,path) VALUES (1,'src/complex.rs');
+             INSERT INTO files(path,status,digest,size,language,is_test,generated,path_hash)
+             VALUES ('src/complex.rs','ok','d',1,'rust',0,0,1);
+             INSERT INTO nodes(node_id,id,kind,name,qualname,path_id,line,end_line,is_test,language,generated,details,node_hash,owner_path_id)
+             VALUES (1,'rs:src/complex.rs:1:overflow_budget_fn','function','overflow_budget_fn','overflow_budget_fn',1,1,2,0,'rust',0,'{{\"fact_limit_exceeded\":true}}',100,1);",
+            acdd_index::db::SCHEMA_DDL
+        ))
+        .unwrap();
+    let mem_cfg = acdd_core::lint::ArchitectureConfig {
+        complexity: acdd_core::lint::ComplexityLimits {
+            invariant: Some("INV-BOUNDED-STRUCTURAL-COMPLEXITY".to_owned()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mem_lint = run_lint(
+        &mem_conn,
+        &LintRequest {
+            target: None,
+            paths: None,
+            categories: Some(&[LintCategory::Syntax]),
+            rule_ids: None,
+            minimum_severity: None,
+            architecture: Some(&mem_cfg),
+            workspace_root: None,
+            page: &page(20, 0, None),
+        },
+    )
+    .unwrap();
+    let mem_items = mem_lint["items"].as_array().unwrap();
+    assert!(
+        mem_items.iter().any(|v| {
+            v["rule_id"] == "syntax.fact_budget_exceeded"
+                && v["symbol"] == "overflow_budget_fn"
+                && v["invariant"] == "INV-BOUNDED-STRUCTURAL-COMPLEXITY"
+        }),
+        "expected syntax.fact_budget_exceeded on overflow_budget_fn: {mem_lint}"
+    );
+
+    let adapter = load_adapter(ws.root(), None).unwrap();
+    let enforced = enforced_invariant_ids(&conn, &adapter.architecture.rules).unwrap();
+    assert!(
+        enforced.contains("INV-BOUNDED-STRUCTURAL-COMPLEXITY"),
+        "enforced_invariant_ids must include architecture.complexity.invariant: {enforced:?}"
+    );
+    assert!(enforced.contains("INV-USED-ONLY"));
+
+    let opts = page(100, 0, None);
+    let full = run_lint(
+        &conn,
+        &LintRequest {
+            target: None,
+            paths: None,
+            categories: None,
+            rule_ids: None,
+            minimum_severity: None,
+            architecture: None,
+            workspace_root: Some(ws.root()),
+            page: &opts,
+        },
+    )
+    .unwrap();
+    let items = full["items"].as_array().unwrap();
+    let has = |rule_id: &str, sym_substr: &str| {
+        items.iter().any(|v| {
+            v["rule_id"] == rule_id
+                && (sym_substr.is_empty()
+                    || v["symbol"]
+                        .as_str()
+                        .is_some_and(|s| s.contains(sym_substr)))
+        })
+    };
+
+    assert!(has("syntax.cognitive_complexity", "deep_branching"), "{items:?}");
+    assert!(has("syntax.max_nesting_depth", "deep_branching"), "{items:?}");
+    assert!(!has("syntax.cognitive_complexity", "flat_router"), "{items:?}");
+    assert!(!has("syntax.max_nesting_depth", "flat_router"), "{items:?}");
+    assert!(has("syntax.high_fanout", "high_fanout_fn"), "{items:?}");
+    assert!(has("syntax.intra_crate_type_homonym", "SharedType"), "{items:?}");
+
+    for rule_id in [
+        "syntax.cognitive_complexity",
+        "syntax.max_nesting_depth",
+        "syntax.high_fanout",
+    ] {
+        let matching: Vec<&Value> = items.iter().filter(|v| v["rule_id"] == rule_id).collect();
+        assert!(!matching.is_empty(), "missing {rule_id}");
+        assert!(
+            matching
+                .iter()
+                .all(|v| v["invariant"] == "INV-BOUNDED-STRUCTURAL-COMPLEXITY"),
+            "{rule_id} must bind invariant: {matching:?}"
+        );
+    }
+
+    assert!(
+        items.iter().any(|v| {
+            v["rule_id"] == "docs.unused_arch_zone"
+                && v["severity"] == "warn"
+                && v["target"] == "unused_zone"
+        }),
+        "expected docs.unused_arch_zone for unused_zone: {items:?}"
+    );
+    assert!(
+        !items
+            .iter()
+            .any(|v| v["rule_id"] == "docs.unused_arch_zone" && v["target"] == "used_zone"),
+        "used_zone must not emit docs.unused_arch_zone: {items:?}"
+    );
+    assert!(
+        !items.iter().any(|v| {
+            v["rule_id"] == "docs.orphan_invariant"
+                && v["invariant"] == "INV-BOUNDED-STRUCTURAL-COMPLEXITY"
+        }),
+        "INV-BOUNDED-STRUCTURAL-COMPLEXITY must not be flagged as orphan: {items:?}"
+    );
+}

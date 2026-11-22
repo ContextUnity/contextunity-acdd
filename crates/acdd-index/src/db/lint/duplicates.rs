@@ -1,9 +1,6 @@
 use super::{LintScope, LintViolation};
-use crate::db::{
-    commitments::{read_metadata_optional, MetadataKey},
-    reader, symbols,
-};
-use crate::models::tags::NodeKind;
+use crate::db::reader;
+use crate::models::{tags::NodeKind, StatementFingerprint};
 use acdd_core::lint::{LintCategory, LintSeverity};
 use anyhow::Result;
 use rusqlite::Connection;
@@ -81,120 +78,61 @@ pub(crate) fn format_duplicate_suggestion(name: &str, paths: &[&str]) -> String 
     }
 }
 
-fn compute_line_similarity(a: &[&str], b: &[&str]) -> f64 {
+fn compute_statement_similarity(a: &[StatementFingerprint], b: &[StatementFingerprint]) -> f64 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }
     let min_len = a.len().min(b.len());
-    let matching = (0..min_len).filter(|&i| a[i] == b[i]).count();
+    let matching = (0..min_len)
+        .filter(|&i| a[i].hash == b[i].hash && a[i].token_count == b[i].token_count)
+        .count();
     matching as f64 / a.len().max(b.len()) as f64
 }
 
-fn hash_line_slice(lines: &[&str]) -> String {
+fn hash_statement_slice(stmts: &[StatementFingerprint]) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    for line in lines {
-        hasher.update(line.as_bytes());
-        hasher.update(b"\n");
+    for stmt in stmts {
+        hasher.update(stmt.hash.to_le_bytes());
+        hasher.update(stmt.token_count.to_le_bytes());
     }
-    format!("{:x}", hasher.finalize())
-}
-
-fn normalize_symbol_body_lines<'a>(
-    lines: &[&'a str],
-) -> (Option<String>, Option<Vec<&'a str>>, usize) {
-    let start = lines.iter().position(|l| !l.trim().is_empty());
-    let end = lines.iter().rposition(|l| !l.trim().is_empty());
-    let (Some(start), Some(end)) = (start, end) else {
-        return (None, None, 0);
-    };
-    if start > end {
-        return (None, None, start);
-    }
-    let slice = &lines[start..=end];
-    let hash_hex = hash_line_slice(slice);
-
-    let min_indent = slice
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| l.chars().take_while(|c| c.is_whitespace()).count())
-        .min()
-        .unwrap_or(0);
-
-    let common_indent = if min_indent > 0 {
-        slice
-            .iter()
-            .find(|l| !l.trim().is_empty())
-            .map(|l| {
-                let byte_end = l
-                    .char_indices()
-                    .nth(min_indent)
-                    .map_or(l.len(), |(idx, _)| idx);
-                &l[..byte_end]
-            })
-            .unwrap_or("")
-    } else {
-        ""
-    };
-
-    let normalized = slice
-        .iter()
-        .map(|line| {
-            if !common_indent.is_empty()
-                && !line.trim().is_empty()
-                && line.starts_with(common_indent)
-            {
-                &line[common_indent.len()..]
-            } else {
-                *line
-            }
-        })
-        .collect();
-
-    (Some(hash_hex), Some(normalized), start)
+    hasher.finalize().into()
 }
 
 #[derive(Clone, Copy)]
-struct DuplicateBlockWindow {
+struct StmtSpan {
     candidate_idx: usize,
-    window_start: usize,
-    abs_line: usize,
-    abs_end_line: usize,
+    stmt_start: usize,
+    stmt_end: usize,
 }
 
-fn non_overlapping_block_windows(
-    occs: &[DuplicateBlockWindow],
-    min_lines: usize,
-) -> Vec<DuplicateBlockWindow> {
-    let mut by_candidate: BTreeMap<usize, Vec<DuplicateBlockWindow>> = BTreeMap::new();
-    for &occ in occs {
-        by_candidate.entry(occ.candidate_idx).or_default().push(occ);
+fn non_overlapping_window_occs(occs: &[(usize, usize)], window_size: usize) -> Vec<(usize, usize)> {
+    let mut by_candidate: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for &(candidate_idx, stmt_start) in occs {
+        by_candidate.entry(candidate_idx).or_default().push(stmt_start);
     }
     let mut selected = Vec::new();
-    for (_, mut sym_occs) in by_candidate {
-        sym_occs.sort_by_key(|o| o.window_start);
-        let mut sym_selected: Vec<DuplicateBlockWindow> = Vec::new();
-        for occ in sym_occs {
-            if sym_selected.iter().any(|s| {
-                let (lo, hi) = if s.window_start <= occ.window_start {
-                    (s.window_start, occ.window_start)
-                } else {
-                    (occ.window_start, s.window_start)
-                };
-                hi.saturating_sub(lo) < min_lines
-            }) {
+    for (candidate_idx, mut starts) in by_candidate {
+        starts.sort_unstable();
+        let mut sym_selected: Vec<usize> = Vec::new();
+        for start in starts {
+            if sym_selected
+                .iter()
+                .any(|&s| start.abs_diff(s) < window_size)
+            {
                 continue;
             }
-            sym_selected.push(occ);
+            sym_selected.push(start);
         }
-        selected.extend(sym_selected);
+        for start in sym_selected {
+            selected.push((candidate_idx, start));
+        }
     }
     selected
 }
 
-struct PreparedDupCandidate<'a> {
-    body_hash: Option<String>,
-    normalized_lines: Option<Vec<&'a str>>,
-    body_trim_start: usize,
+struct PreparedDupCandidate {
+    body_hash: Option<[u8; 32]>,
+    statements: Vec<StatementFingerprint>,
 }
 
 fn dedup_sort_and_count_locations(
@@ -314,48 +252,182 @@ pub(crate) fn collect_file_duplicates(
     Ok((file_groups, total_duplicated_bytes))
 }
 
+fn load_statement_fingerprints_in_scope(
+    conn: &Connection,
+    scope: &str,
+    lower: &str,
+    upper: &str,
+    needed_paths: &HashSet<String>,
+) -> Result<HashMap<(String, String), Vec<StatementFingerprint>>> {
+    let mut fp_by_node: HashMap<(String, String), Vec<StatementFingerprint>> = HashMap::new();
+    if needed_paths.is_empty() {
+        return Ok(fp_by_node);
+    }
+    let mut stmt = conn.prepare(
+        "SELECT path, facts_blob
+         FROM local_facts
+         WHERE (?1 = '' OR path = ?1 OR (path >= ?2 AND path < ?3))",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![scope, lower, upper])?;
+    while let Some(row) = rows.next()? {
+        let path: String = row.get(0)?;
+        if !needed_paths.contains(&path) {
+            continue;
+        }
+        let blob: Vec<u8> = row.get(1)?;
+        let Ok(typed) = crate::typed_facts::decode_facts(&blob) else {
+            continue;
+        };
+        for entry in typed.facts.statement_fingerprints {
+            fp_by_node.insert((path.clone(), entry.node_id), entry.statements);
+        }
+    }
+    Ok(fp_by_node)
+}
+
+fn coalesce_block_window_matches(
+    raw_candidates: &[DuplicateCandidate],
+    prepared: &[PreparedDupCandidate],
+    whole_symbol_duplicate_members: &HashSet<usize>,
+    window_size: usize,
+    counted_duplicate_locations: &mut HashSet<(String, usize)>,
+    result_groups: &mut Vec<DuplicateGroup>,
+) {
+    let mut block_hashes: BTreeMap<[u8; 32], Vec<(usize, usize)>> = BTreeMap::new();
+    for (idx, p) in prepared.iter().enumerate() {
+        if p.statements.len() < window_size {
+            continue;
+        }
+        for w_start in 0..=p.statements.len().saturating_sub(window_size) {
+            let hash = hash_statement_slice(&p.statements[w_start..w_start + window_size]);
+            block_hashes.entry(hash).or_default().push((idx, w_start));
+        }
+    }
+
+    let mut buckets: BTreeMap<Vec<usize>, Vec<Vec<StmtSpan>>> = BTreeMap::new();
+    for (_hash, occs) in block_hashes {
+        let filtered = non_overlapping_window_occs(&occs, window_size);
+        if filtered.len() < 2
+            || filtered
+                .iter()
+                .all(|(idx, _)| whole_symbol_duplicate_members.contains(idx))
+        {
+            continue;
+        }
+        let mut seen_locs: HashSet<(&str, usize)> = HashSet::new();
+        let mut spans: Vec<StmtSpan> = Vec::with_capacity(filtered.len());
+        for (candidate_idx, stmt_start) in filtered {
+            let path = raw_candidates[candidate_idx].path.as_str();
+            let line = prepared[candidate_idx].statements[stmt_start].line;
+            if seen_locs.insert((path, line)) {
+                spans.push(StmtSpan {
+                    candidate_idx,
+                    stmt_start,
+                    stmt_end: stmt_start + window_size,
+                });
+            }
+        }
+        if spans.len() < 2 {
+            continue;
+        }
+        spans.sort_by(|a, b| {
+            a.candidate_idx
+                .cmp(&b.candidate_idx)
+                .then_with(|| a.stmt_start.cmp(&b.stmt_start))
+        });
+        let cand_key: Vec<usize> = spans.iter().map(|s| s.candidate_idx).collect();
+        buckets.entry(cand_key).or_default().push(spans);
+    }
+
+    for (_, mut group_list) in buckets {
+        group_list.sort_by(|a, b| {
+            a.iter()
+                .map(|s| s.stmt_start)
+                .cmp(b.iter().map(|s| s.stmt_start))
+        });
+        let mut merged: Vec<Vec<StmtSpan>> = Vec::new();
+        for next in group_list {
+            if let Some(prev) = merged.iter_mut().find(|prev| {
+                prev.len() == next.len()
+                    && prev
+                        .iter()
+                        .zip(&next)
+                        .all(|(p, n)| n.stmt_start == p.stmt_end - window_size + 1)
+            }) {
+                for p in prev.iter_mut() {
+                    p.stmt_end += 1;
+                }
+            } else {
+                merged.push(next);
+            }
+        }
+        for spans in merged {
+            let raw_locs = spans
+                .into_iter()
+                .map(|span| {
+                    let stmts = &prepared[span.candidate_idx].statements;
+                    DuplicateLocation {
+                        candidate_idx: span.candidate_idx,
+                        line: stmts[span.stmt_start].line,
+                        end_line: stmts[span.stmt_end - 1].end_line,
+                    }
+                })
+                .collect();
+            let Some((locations, dup_line_locations)) = dedup_sort_and_count_locations(
+                raw_candidates,
+                raw_locs,
+                counted_duplicate_locations,
+            ) else {
+                continue;
+            };
+            let line_count = locations[0]
+                .end_line
+                .saturating_sub(locations[0].line)
+                .saturating_add(1);
+            result_groups.push(DuplicateGroup {
+                rep_idx: locations[0].candidate_idx,
+                line_count,
+                match_type: "block",
+                locations,
+                duplicated_lines: line_count * dup_line_locations,
+            });
+        }
+    }
+}
+
 pub(crate) fn collect_symbol_duplicates(
     conn: &Connection,
     scope: &str,
     min_lines: usize,
 ) -> Result<SymbolDuplicateReport> {
+    let min_stmts = min_lines.max(1);
     let (lower, upper) = reader::path_bounds(scope);
-    let workspace_root =
-        read_metadata_optional(conn, MetadataKey::WorkspaceRoot)?.map(std::path::PathBuf::from);
 
     let mut stmt = conn.prepare(&format!(
-        "SELECT n.name, n.kind, n.line, n.end_line, p.path
+        "SELECT n.id, n.name, n.kind, n.line, n.end_line, p.path
          FROM nodes n
          JOIN path_dictionary p ON p.path_id = n.path_id
          WHERE n.kind IN ('{function}', '{method}')
-           AND (n.end_line - n.line + 1) >= ?1
-           AND (?2 = '' OR p.path = ?2 OR (p.path >= ?3 AND p.path < ?4))
+           AND (?1 = '' OR p.path = ?1 OR (p.path >= ?2 AND p.path < ?3))
          ORDER BY p.path, n.line",
         function = NodeKind::Function.as_str(),
         method = NodeKind::Method.as_str(),
     ))?;
 
-    let mut file_cache: HashMap<String, Option<String>> = HashMap::new();
-    let mut source_loader = symbols::VerifiedSourceCache::new();
-    let mut stale_files: BTreeSet<String> = BTreeSet::new();
+    let mut needed_paths: HashSet<String> = HashSet::new();
+    let mut node_ids: Vec<String> = Vec::new();
     let mut raw_candidates = Vec::new();
 
-    let mut rows = stmt.query(rusqlite::params![min_lines, scope, lower, upper])?;
+    let mut rows = stmt.query(rusqlite::params![scope, lower, upper])?;
     while let Some(row) = rows.next()? {
-        let name: String = row.get(0)?;
-        let kind: String = row.get(1)?;
-        let line: usize = row.get(2)?;
-        let end_line: usize = row.get(3)?;
-        let path: String = row.get(4)?;
-
-        if let Some(root) = &workspace_root {
-            let content = file_cache
-                .entry(path.clone())
-                .or_insert_with(|| source_loader.read(conn, root, &path).ok());
-            if content.is_none() {
-                stale_files.insert(path.clone());
-            }
-        }
+        let id: String = row.get(0)?;
+        let name: String = row.get(1)?;
+        let kind: String = row.get(2)?;
+        let line: usize = row.get(3)?;
+        let end_line: usize = row.get(4)?;
+        let path: String = row.get(5)?;
+        needed_paths.insert(path.clone());
+        node_ids.push(id);
         raw_candidates.push(DuplicateCandidate {
             name,
             kind,
@@ -367,40 +439,28 @@ pub(crate) fn collect_symbol_duplicates(
     drop(rows);
     drop(stmt);
 
-    let file_lines: HashMap<&str, Vec<&str>> = file_cache
-        .iter()
-        .filter_map(|(path, content)| {
-            content
-                .as_deref()
-                .map(|text| (path.as_str(), text.lines().collect()))
-        })
-        .collect();
+    let mut fp_by_node =
+        load_statement_fingerprints_in_scope(conn, scope, &lower, &upper, &needed_paths)?;
 
-    let prepared: Vec<PreparedDupCandidate<'_>> = raw_candidates
+    let prepared: Vec<PreparedDupCandidate> = raw_candidates
         .iter()
-        .map(|raw| {
-            let mut body_hash = None;
-            let mut normalized_lines = None;
-            let mut body_trim_start = 0;
-            if let Some(lines) = file_lines.get(raw.path.as_str()) {
-                if raw.line > 0 && raw.end_line >= raw.line && raw.line <= lines.len() {
-                    let end_idx = raw.end_line.min(lines.len());
-                    let slice = &lines[(raw.line - 1)..end_idx];
-                    (body_hash, normalized_lines, body_trim_start) =
-                        normalize_symbol_body_lines(slice);
-                }
-            }
+        .zip(node_ids)
+        .map(|(raw, node_id)| {
+            let statements = fp_by_node
+                .remove(&(raw.path.clone(), node_id))
+                .unwrap_or_default();
+            let body_hash =
+                (statements.len() >= min_stmts).then(|| hash_statement_slice(&statements));
             PreparedDupCandidate {
                 body_hash,
-                normalized_lines,
-                body_trim_start,
+                statements,
             }
         })
         .collect();
 
-    let mut exact_groups: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    let mut exact_groups: BTreeMap<[u8; 32], Vec<usize>> = BTreeMap::new();
     for (idx, c) in prepared.iter().enumerate() {
-        if let Some(hash) = c.body_hash.as_deref() {
+        if let Some(hash) = c.body_hash {
             exact_groups.entry(hash).or_default().push(idx);
         }
     }
@@ -424,7 +484,7 @@ pub(crate) fn collect_symbol_duplicates(
 
     let mut by_name: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for (idx, p) in prepared.iter().enumerate() {
-        if p.normalized_lines.is_some() {
+        if p.body_hash.is_some() {
             by_name
                 .entry(raw_candidates[idx].name.as_str())
                 .or_default()
@@ -436,33 +496,30 @@ pub(crate) fn collect_symbol_duplicates(
         if indices.len() < 2 {
             continue;
         }
-        let mut hash_to_candidates: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+        let mut hash_to_candidates: BTreeMap<[u8; 32], Vec<usize>> = BTreeMap::new();
         for &i in &indices {
-            if let Some(h) = prepared[i].body_hash.as_deref() {
+            if let Some(h) = prepared[i].body_hash {
                 hash_to_candidates.entry(h).or_default().push(i);
             }
         }
         if hash_to_candidates.len() < 2 {
             continue;
         }
-        let mut hash_clusters: Vec<Vec<&str>> = Vec::new();
-        for (h, inds) in &hash_to_candidates {
-            let lines_rep = prepared[inds[0]].normalized_lines.as_deref().unwrap();
+        let mut hash_clusters: Vec<Vec<[u8; 32]>> = Vec::new();
+        for (&h, inds) in &hash_to_candidates {
+            let stmts_rep = &prepared[inds[0]].statements;
             let mut clustered = false;
             for cluster in &mut hash_clusters {
-                let cluster_rep_idx = hash_to_candidates[cluster[0]][0];
-                let cluster_rep_lines = prepared[cluster_rep_idx]
-                    .normalized_lines
-                    .as_deref()
-                    .unwrap();
-                if compute_line_similarity(lines_rep, cluster_rep_lines) >= 0.80 {
-                    cluster.push(*h);
+                let cluster_rep_idx = hash_to_candidates[&cluster[0]][0];
+                let cluster_rep_stmts = &prepared[cluster_rep_idx].statements;
+                if compute_statement_similarity(stmts_rep, cluster_rep_stmts) >= 0.80 {
+                    cluster.push(h);
                     clustered = true;
                     break;
                 }
             }
             if !clustered {
-                hash_clusters.push(vec![*h]);
+                hash_clusters.push(vec![h]);
             }
         }
 
@@ -485,60 +542,14 @@ pub(crate) fn collect_symbol_duplicates(
         }
     }
 
-    let mut block_hashes: BTreeMap<String, Vec<DuplicateBlockWindow>> = BTreeMap::new();
-    for (idx, p) in prepared.iter().enumerate() {
-        let Some(lines) = p.normalized_lines.as_deref() else {
-            continue;
-        };
-        if lines.len() < min_lines {
-            continue;
-        }
-        let raw = &raw_candidates[idx];
-        for window_start in 0..=lines.len().saturating_sub(min_lines) {
-            let hash = hash_line_slice(&lines[window_start..window_start + min_lines]);
-            let abs_line = raw.line + p.body_trim_start + window_start;
-            block_hashes
-                .entry(hash)
-                .or_default()
-                .push(DuplicateBlockWindow {
-                    candidate_idx: idx,
-                    window_start,
-                    abs_line,
-                    abs_end_line: abs_line + min_lines - 1,
-                });
-        }
-    }
-
-    for (_hash, occs) in block_hashes {
-        let filtered = non_overlapping_block_windows(&occs, min_lines);
-        if filtered.len() < 2
-            || filtered
-                .iter()
-                .all(|occ| whole_symbol_duplicate_members.contains(&occ.candidate_idx))
-        {
-            continue;
-        }
-        let raw_locs = filtered
-            .into_iter()
-            .map(|occ| DuplicateLocation {
-                candidate_idx: occ.candidate_idx,
-                line: occ.abs_line,
-                end_line: occ.abs_end_line,
-            })
-            .collect();
-        let Some((locations, dup_line_locations)) =
-            dedup_sort_and_count_locations(&raw_candidates, raw_locs, &mut counted_duplicate_locations)
-        else {
-            continue;
-        };
-        result_groups.push(DuplicateGroup {
-            rep_idx: locations[0].candidate_idx,
-            line_count: min_lines,
-            match_type: "block",
-            locations,
-            duplicated_lines: min_lines * dup_line_locations,
-        });
-    }
+    coalesce_block_window_matches(
+        &raw_candidates,
+        &prepared,
+        &whole_symbol_duplicate_members,
+        min_stmts,
+        &mut counted_duplicate_locations,
+        &mut result_groups,
+    );
 
     result_groups.sort_by(|a, b| {
         b.duplicated_lines
@@ -569,7 +580,7 @@ pub(crate) fn collect_symbol_duplicates(
         candidates: raw_candidates,
         groups: result_groups,
         total_duplicated_lines,
-        stale_files,
+        stale_files: BTreeSet::new(),
     })
 }
 

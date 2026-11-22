@@ -161,10 +161,52 @@ pub(super) fn load_all_rules(
         rules.push(LoadedRule { spec, source });
     }
 
+    let mut referenced_zones: BTreeSet<&str> = BTreeSet::new();
+    for loaded in &rules {
+        for zone in &loaded.spec.zones {
+            referenced_zones.insert(zone.as_str());
+        }
+        if let Some(from) = &loaded.spec.from {
+            for zone in &from.zones {
+                referenced_zones.insert(zone.as_str());
+            }
+        }
+        if let Some(to) = &loaded.spec.to {
+            for zone in &to.zones {
+                referenced_zones.insert(zone.as_str());
+            }
+        }
+    }
+    for zone in &known_zones {
+        if !referenced_zones.contains(zone.as_str()) {
+            let source = RuleSource {
+                path: "acdd.yaml".to_owned(),
+                line: 1,
+            };
+            violations.push(LintViolation {
+                category: LintCategory::Docs,
+                rule_id: "docs.unused_arch_zone".to_owned(),
+                severity: LintSeverity::Warn,
+                path: source.path.clone(),
+                line: Some(source.line),
+                message: format!(
+                    "declared architecture zone '{zone}' is not referenced by any rule in acdd.yaml or indexed acdd-rule blocks"
+                ),
+                invariant: None,
+                rule_source: Some(source),
+                symbol: None,
+                target: Some(zone.clone()),
+                suggestion: Some(format!(
+                    "Reference zone '{zone}' in an acdd.yaml or acdd-rule rule, or remove the unused zone."
+                )),
+            });
+        }
+    }
+
     Ok(RuleLoadResult { rules, violations })
 }
 
-/// Returns all invariant IDs backed by `acdd.yaml` `architecture.rules` or indexed `acdd-rule` blocks.
+/// Returns all invariant IDs backed by `acdd.yaml` `architecture.rules`, indexed `acdd-rule` blocks, or `architecture.complexity.invariant`.
 pub fn enforced_invariant_ids(
     conn: &Connection,
     config_rules: &[ArchRuleSpec],
@@ -180,6 +222,13 @@ pub fn enforced_invariant_ids(
             if let Some(inv) = rule_invariant_id(&spec) {
                 ids.insert(inv);
             }
+        }
+    }
+    let arch = resolve_architecture(conn, None)?;
+    if let Some(inv) = arch.complexity.invariant.as_deref() {
+        let trimmed = inv.trim();
+        if !trimmed.is_empty() {
+            ids.insert(trimmed.to_owned());
         }
     }
     Ok(ids)

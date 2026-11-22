@@ -555,7 +555,13 @@ pub fn run_lint(conn: &Connection, request: &LintRequest<'_>) -> Result<Value> {
                 .iter()
                 .any(|r| r.spec.kind == ArchRuleKind::DocIntegrity));
     let scoped_doc_findings = if need_doc_findings {
-        let enforced = docs_lint::enforced_set_from_rules(&loaded_rules);
+        let mut enforced = docs_lint::enforced_set_from_rules(&loaded_rules);
+        if let Some(inv) = arch_cfg.complexity.invariant.as_deref() {
+            let trimmed = inv.trim();
+            if !trimmed.is_empty() {
+                enforced.insert(trimmed.to_owned());
+            }
+        }
         docs_lint::collect_scoped_doc_findings(conn, &index, &enforced, request.workspace_root)?
     } else {
         Vec::new()
@@ -578,7 +584,7 @@ pub fn run_lint(conn: &Connection, request: &LintRequest<'_>) -> Result<Value> {
         docs_lint::evaluate_docs_lint(&scoped_doc_findings, &doc_integrity_covered, &mut violations);
     }
     if categories.contains(&LintCategory::Syntax) {
-        syntax::collect_syntax_violations(conn, &index.scope, &mut violations)?;
+        syntax::collect_syntax_violations(conn, &index, &arch_cfg.complexity, &mut violations)?;
     }
     if categories.contains(&LintCategory::Duplicates) {
         duplicates::collect_duplicate_violations(conn, &index.scope, &mut violations)?;
