@@ -84,8 +84,15 @@ pub(super) fn extract_typed_with_cache(
         return Ok(facts);
     }
     let spec_paths = adapter.spec_paths();
-    let facts =
-        extract_typed_source_with_digest(file, source, &source_digest, dependencies, &spec_paths)?;
+    let zones = adapter.architecture.zone_names();
+    let facts = extract_typed_source_with_digest(
+        file,
+        source,
+        &source_digest,
+        dependencies,
+        &spec_paths,
+        Some(&zones),
+    )?;
     extraction_cache.store(&key, &facts);
     Ok(facts)
 }

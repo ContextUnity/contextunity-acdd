@@ -1,8 +1,8 @@
 use super::super::commitments::{read_metadata, MetadataKey};
 use super::super::{cycles, paging, symbols};
 use super::selectors::path_bounds;
-use super::sql::{rows, QueryBudget};
-use crate::models::tags::{CoverageStatus, EdgeKind, NodeKind};
+use super::sql::rows;
+use crate::models::tags::{CoverageStatus, EdgeKind};
 use acdd_core::response::{Detail, QueryOptions};
 use anyhow::{bail, ensure, Result};
 use rusqlite::{Connection, ToSql};
@@ -165,7 +165,8 @@ pub fn analyze_paged(
         );
     }
     if exact_file && (path.ends_with(".md") || path.ends_with(".mdx")) {
-        result["doc_diagnostics"] = document_diagnostics(conn, path, options, &generation)?;
+        result["doc_diagnostics"] =
+            super::super::lint::document_diagnostics_paged(conn, path, options, &generation)?;
     }
     let compute_cycles = include_cycles.unwrap_or(false);
     result["cycles"] = if compute_cycles {
@@ -267,157 +268,6 @@ fn skip_sql_quoted(sql: &str, mut offset: usize, closing: u8) -> Result<usize> {
         }
     }
     bail!("unterminated quoted value in SQL")
-}
-
-fn document_diagnostics(
-    conn: &Connection,
-    path: &str,
-    options: &QueryOptions,
-    generation: &str,
-) -> Result<Value> {
-    const MAX_DOCUMENT_SECTIONS: usize = 1000;
-    const MAX_DOCUMENT_DIAGNOSTICS: usize = 2000;
-    let section_limit = MAX_DOCUMENT_SECTIONS as i64;
-    let doc_kind = NodeKind::Document.as_str();
-    let inv_kind = NodeKind::Invariant.as_str();
-    let mod_kind = NodeKind::Module.as_str();
-    let mut diagnostics = rows(
-        conn,
-        &format!(
-            "SELECT 'broken_doc_link' AS kind,p.path,CAST(json_extract(c.value,'$.line') AS INTEGER) AS line,json_extract(c.value,'$.target') AS target FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id JOIN json_each(n.details,'$.citations') c WHERE n.kind='{doc_kind}' AND p.path=?1 AND NOT EXISTS(SELECT 1 FROM edges e JOIN coverage_evidence v ON v.evidence_id=e.evidence_id WHERE e.kind='cites_doc' AND e.src_hash=n.node_hash AND e.line=CAST(json_extract(c.value,'$.line') AS INTEGER) AND v.evidence=json_extract(c.value,'$.target')) ORDER BY line,target LIMIT ?2"
-        ),
-        &[&path, &section_limit],
-        MAX_DOCUMENT_SECTIONS,
-    )?;
-    diagnostics.retain(|item| item["target"].as_str().is_some_and(is_document_link_target));
-    let document_rows = rows(
-        conn,
-        &format!(
-            "SELECT n.path_id,n.id,n.details FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE n.kind='{doc_kind}' AND p.path=?1 ORDER BY n.line,n.id LIMIT ?2"
-        ),
-        &[&path, &section_limit],
-        MAX_DOCUMENT_SECTIONS,
-    )?;
-    let workspace_root = read_metadata(conn, MetadataKey::WorkspaceRoot)?;
-    let mut source_loader = symbols::VerifiedSourceCache::new();
-    let _budget = QueryBudget::new(conn);
-    for document in &document_rows {
-        let Some(claims) = document["details"]["symbol_claims"].as_array() else {
-            continue;
-        };
-        for claim in claims {
-            if claim["label_count"]
-                .as_u64()
-                .is_some_and(|count| count != 1)
-            {
-                continue;
-            }
-            let (Some(name), Some(target_path), Some(start), Some(end), Some(source_line)) = (
-                claim["name"].as_str(),
-                claim["target_path"].as_str(),
-                claim["start_line"].as_u64(),
-                claim["end_line"].as_u64(),
-                claim["line"].as_u64(),
-            ) else {
-                continue;
-            };
-            if target_path.split('/').any(|component| component == "..") {
-                continue;
-            }
-            let normalized_name = name.replace("::", ".");
-            let matching = rows(
-                conn,
-                &format!(
-                    "WITH candidates AS (SELECT n.id,n.name,n.kind,n.line,n.end_line,p.path,CASE WHEN n.qualname=?3 THEN 0 WHEN n.name=?2 THEN 1 ELSE 2 END AS priority FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.kind NOT IN('{doc_kind}','{inv_kind}','{mod_kind}','file') AND (n.qualname=?3 OR n.name=?2 OR (substr(n.qualname,-length(?3))=?3 AND substr(n.qualname,-length(?3)-1,1)='.'))), best AS (SELECT MIN(priority) AS priority FROM candidates) SELECT id,name,kind,line,end_line,path FROM candidates WHERE priority=(SELECT priority FROM best) ORDER BY line,id LIMIT 2"
-                ),
-                &[&target_path, &name, &normalized_name],
-                2,
-            )?;
-            if matching.len() > 1 {
-                continue;
-            }
-            if matching.is_empty() {
-                let prefix = format!("{name}%");
-                let suggestion = rows(
-                    conn,
-                    &format!(
-                        "SELECT n.name,n.line,p.path FROM nodes n JOIN path_dictionary p ON p.path_id=n.path_id WHERE p.path=?1 AND n.kind NOT IN('{doc_kind}','{inv_kind}','{mod_kind}','file') AND n.name LIKE ?2 ORDER BY n.name,n.line LIMIT 1"
-                    ),
-                    &[&target_path, &prefix],
-                    1,
-                )?;
-                let mut diagnostic = json!({
-                    "kind":"dead_doc_symbol",
-                    "path":path,
-                    "line":source_line,
-                    "claim":{"name":name,"target_path":target_path,"start_line":start,"end_line":end},
-                });
-                if let Some(candidate) = suggestion.first() {
-                    diagnostic["suggested_symbol"] = json!({
-                        "name":candidate["name"],
-                        "path":candidate["path"],
-                        "line":candidate["line"],
-                    });
-                }
-                diagnostics.push(diagnostic);
-                continue;
-            }
-            let target = &matching[0];
-            let source = match source_loader.read(conn, Path::new(&workspace_root), target_path) {
-                Ok(source) => source,
-                Err(_) => continue,
-            };
-            let source_lines = source.lines().count().max(1) as u64;
-            if start == 0 || end < start || end > source_lines {
-                continue;
-            }
-            let target_start = target["line"].as_u64().unwrap_or(0);
-            let target_end = target["end_line"].as_u64().unwrap_or(target_start);
-            if end < target_start || start > target_end {
-                diagnostics.push(json!({
-                    "kind":"stale_doc_sections",
-                    "reason":"documented_symbol_range_mismatch",
-                    "path":path,
-                    "line":source_line,
-                    "claim":{"name":name,"target_path":target_path,"start_line":start,"end_line":end},
-                    "target":{"id":target["id"],"path":target_path,"line":target_start,"end_line":target_end},
-                    "generation":generation,
-                }));
-            }
-        }
-    }
-    diagnostics.sort_by(|left, right| {
-        left["line"]
-            .as_u64()
-            .cmp(&right["line"].as_u64())
-            .then_with(|| left["kind"].as_str().cmp(&right["kind"].as_str()))
-            .then_with(|| left.to_string().cmp(&right.to_string()))
-    });
-    diagnostics.truncate(MAX_DOCUMENT_DIAGNOSTICS);
-    let total = diagnostics.len();
-    let items = diagnostics
-        .into_iter()
-        .skip(options.offset)
-        .take(options.limit)
-        .collect();
-    Ok(paging::value(items, total, options, generation))
-}
-
-fn is_document_link_target(target: &str) -> bool {
-    if target.starts_with('#') {
-        return true;
-    }
-    if target.contains("://") || target.starts_with("mailto:") {
-        return false;
-    }
-    let linked_path = target.split('#').next().unwrap_or_default();
-    match Path::new(linked_path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-    {
-        Some(extension) => matches!(extension.to_ascii_lowercase().as_str(), "md" | "mdx"),
-        None => true,
-    }
 }
 
 pub(super) fn resolution_cause_sql() -> &'static str {

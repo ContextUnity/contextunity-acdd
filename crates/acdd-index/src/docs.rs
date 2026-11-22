@@ -1,8 +1,10 @@
 use crate::models::DocSection;
+use acdd_core::lint::ArchRuleSpec;
 use anyhow::Result;
-use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 
 #[derive(Default, Deserialize)]
 struct Frontmatter {
@@ -84,6 +86,17 @@ pub fn extract_with_details(
     mtime: f64,
     spec_paths: &[String],
 ) -> Result<Vec<(DocSection, Value)>> {
+    extract_with_details_with_zones(path, source, mtime, spec_paths, None)
+}
+
+/// Source-derived metadata retained on the generic document node with optional known architecture zones.
+pub fn extract_with_details_with_zones(
+    path: &str,
+    source: &str,
+    mtime: f64,
+    spec_paths: &[String],
+    known_zones: Option<&BTreeSet<String>>,
+) -> Result<Vec<(DocSection, Value)>> {
     let (frontmatter_yaml, body, body_offset) = split_frontmatter(source);
     let (meta, frontmatter_error) = match frontmatter_yaml {
         Some(yaml) => match serde_yaml::from_str::<Frontmatter>(yaml) {
@@ -118,6 +131,7 @@ pub fn extract_with_details(
     let line_starts: Vec<usize> = std::iter::once(0)
         .chain(source.match_indices('\n').map(|(i, _)| i + 1))
         .collect();
+    let mut seen_rule_ids = BTreeSet::new();
     let mut output = Vec::new();
     for (index, (start, title)) in headings.iter().enumerate() {
         let end = headings
@@ -138,12 +152,52 @@ pub fn extract_with_details(
         let mut invariants = Vec::new();
         let mut citations = Vec::new();
         let mut symbol_claims: Vec<Value> = Vec::new();
+        let mut arch_rules: Vec<Value> = Vec::new();
+        let mut arch_rule_errors: Vec<Value> = Vec::new();
+        let mut fenced_line_ranges: Vec<(usize, usize)> = Vec::new();
+        let mut active_fenced_block: Option<(usize, usize, bool, String)> = None;
         let mut quote = String::new();
         let mut in_quote = false;
         let mut active_link: Option<ActiveLink> = None;
         let mut next_link_occurrence = 0usize;
         for (event, range) in Parser::new(content).into_offset_iter() {
             match event {
+                Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => {
+                    let is_acdd_rule = info.split_whitespace().next() == Some("acdd-rule");
+                    active_fenced_block = Some((
+                        range.start,
+                        line_at(range.start),
+                        is_acdd_rule,
+                        String::new(),
+                    ));
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    if let Some((block_start, start_line, is_acdd_rule, yaml)) =
+                        active_fenced_block.take()
+                    {
+                        let end_offset = range.end.saturating_sub(1).max(block_start);
+                        let end_line = line_at(end_offset);
+                        fenced_line_ranges.push((start_line, end_line));
+                        if is_acdd_rule {
+                            parse_acdd_rule_block(
+                                &yaml,
+                                start_line,
+                                known_zones,
+                                &mut seen_rule_ids,
+                                &mut arch_rules,
+                                &mut arch_rule_errors,
+                            );
+                        }
+                    }
+                }
+                Event::Text(value) => {
+                    if let Some((_, _, true, ref mut yaml)) = active_fenced_block {
+                        yaml.push_str(&value);
+                    }
+                    if in_quote && active_fenced_block.is_none() {
+                        quote.push_str(&value);
+                    }
+                }
                 Event::Start(Tag::Link { dest_url, .. }) => {
                     let line = line_at(range.start);
                     let target = dest_url.to_string();
@@ -216,7 +270,6 @@ pub fn extract_with_details(
                     }
                     in_quote = false;
                 }
-                Event::Text(value) if in_quote => quote.push_str(&value),
                 Event::SoftBreak | Event::HardBreak if in_quote => quote.push('\n'),
                 _ => {}
             }
@@ -229,10 +282,16 @@ pub fn extract_with_details(
             .lines()
             .enumerate()
             .filter_map(|(offset, line)| {
+                let line_num = section_line + offset;
+                if fenced_line_ranges
+                    .iter()
+                    .any(|&(block_start, block_end)| line_num >= block_start && line_num <= block_end)
+                {
+                    return None;
+                }
                 let id = invariant_id(line)?;
                 let rule = line.trim().trim_start_matches(['-', '*']).trim();
-                (!rule.is_empty())
-                    .then(|| json!({"id":id,"rule":rule,"line":section_line + offset}))
+                (!rule.is_empty()).then(|| json!({"id":id,"rule":rule,"line":line_num}))
             })
             .collect::<Vec<_>>();
         let is_invariant = !invariants.is_empty() || !declared_invariants.is_empty();
@@ -264,9 +323,90 @@ pub fn extract_with_details(
         if let Some(ref error) = frontmatter_error {
             details["frontmatter_error"] = json!(error);
         }
+        if !arch_rules.is_empty() {
+            details["arch_rules"] = json!(arch_rules);
+        }
+        if !arch_rule_errors.is_empty() {
+            details["arch_rule_errors"] = json!(arch_rule_errors);
+        }
         output.push((doc, details));
     }
     Ok(output)
+}
+
+fn parse_acdd_rule_block(
+    yaml: &str,
+    start_line: usize,
+    known_zones: Option<&BTreeSet<String>>,
+    seen_rule_ids: &mut BTreeSet<String>,
+    arch_rules: &mut Vec<Value>,
+    arch_rule_errors: &mut Vec<Value>,
+) {
+    let raw_value = match serde_yaml::from_str::<serde_yaml::Value>(yaml) {
+        Ok(value) => value,
+        Err(err) => {
+            arch_rule_errors.push(json!({
+                "line": start_line,
+                "message": format!("invalid acdd-rule YAML: {err}"),
+            }));
+            return;
+        }
+    };
+    let specs: Vec<ArchRuleSpec> = match raw_value {
+        serde_yaml::Value::Sequence(items) => {
+            if items.is_empty() {
+                arch_rule_errors.push(json!({
+                    "line": start_line,
+                    "message": "invalid acdd-rule YAML: empty rule sequence",
+                }));
+                return;
+            }
+            let mut parsed = Vec::with_capacity(items.len());
+            for item in items {
+                match serde_yaml::from_value::<ArchRuleSpec>(item) {
+                    Ok(spec) => parsed.push(spec),
+                    Err(err) => {
+                        arch_rule_errors.push(json!({
+                            "line": start_line,
+                            "message": format!("invalid acdd-rule schema: {err}"),
+                        }));
+                        return;
+                    }
+                }
+            }
+            parsed
+        }
+        other => match serde_yaml::from_value::<ArchRuleSpec>(other) {
+            Ok(spec) => vec![spec],
+            Err(err) => {
+                arch_rule_errors.push(json!({
+                    "line": start_line,
+                    "message": format!("invalid acdd-rule schema: {err}"),
+                }));
+                return;
+            }
+        },
+    };
+    for spec in specs {
+        if let Err(err) = spec.validate(known_zones) {
+            arch_rule_errors.push(json!({
+                "line": start_line,
+                "message": format!("invalid acdd-rule '{}': {err}", spec.id),
+            }));
+            continue;
+        }
+        if !seen_rule_ids.insert(spec.id.clone()) {
+            arch_rule_errors.push(json!({
+                "line": start_line,
+                "message": format!("duplicate acdd-rule id '{}' in document", spec.id),
+            }));
+            continue;
+        }
+        arch_rules.push(json!({
+            "line": start_line,
+            "rule": spec,
+        }));
+    }
 }
 
 /// Performs extract.

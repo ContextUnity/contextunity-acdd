@@ -26,6 +26,7 @@ impl NodeDetailKey {
     pub const IS_OVERLOAD: &'static str = "is_overload";
     pub const INCLUDED_FROM: &'static str = "included_from";
     pub const SOURCE_PATH: &'static str = "source_path";
+    pub const ARCH_RULES: &'static str = "arch_rules";
 }
 
 /// Boolean properties projected from node details.

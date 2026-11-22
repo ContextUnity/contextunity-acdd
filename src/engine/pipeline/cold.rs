@@ -14,17 +14,16 @@ pub(super) fn extract_typed(
 ) -> Result<TypedFacts> {
     let path = resolve_file_path(root, adapter, &file.path)?;
     let source = fs::read_to_string(&path)?;
-    extract_typed_source(file, &source, dependencies, &adapter.spec_paths())
-}
-
-pub(super) fn extract_typed_source(
-    file: &FileEntry,
-    source: &str,
-    dependencies: &DependencyRegistry,
-    spec_paths: &[String],
-) -> Result<TypedFacts> {
+    let zones = adapter.architecture.zone_names();
     let source_digest = commitments::hash(source.as_bytes());
-    extract_typed_source_with_digest(file, source, &source_digest, dependencies, spec_paths)
+    extract_typed_source_with_digest(
+        file,
+        &source,
+        &source_digest,
+        dependencies,
+        &adapter.spec_paths(),
+        Some(&zones),
+    )
 }
 
 pub(super) fn extract_typed_source_with_digest(
@@ -33,6 +32,7 @@ pub(super) fn extract_typed_source_with_digest(
     source_digest: &str,
     dependencies: &DependencyRegistry,
     spec_paths: &[String],
+    known_zones: Option<&BTreeSet<String>>,
 ) -> Result<TypedFacts> {
     if source_digest != file.digest {
         return Err(SourceSnapshotMismatch(format!(
@@ -42,8 +42,13 @@ pub(super) fn extract_typed_source_with_digest(
         .into());
     }
     let mut typed = if file.is_doc {
-        let parsed =
-            docs::extract_with_details(&file.path, source, file.mtime_ns as f64 / 1e9, spec_paths)?;
+        let parsed = docs::extract_with_details_with_zones(
+            &file.path,
+            source,
+            file.mtime_ns as f64 / 1e9,
+            spec_paths,
+            known_zones,
+        )?;
         let sections = parsed
             .iter()
             .map(|(doc, _)| doc.clone())
@@ -64,6 +69,21 @@ pub(super) fn extract_typed_source_with_digest(
         for (doc, metadata) in &parsed {
             let line = metadata["line"].as_u64().unwrap_or(1) as usize;
             let end_line = metadata["end_line"].as_u64().unwrap_or(line as u64) as usize;
+            if let Some(rule_errors) = metadata
+                .get("arch_rule_errors")
+                .and_then(Value::as_array)
+            {
+                for err in rule_errors {
+                    let err_line = err["line"].as_u64().unwrap_or(line as u64) as usize;
+                    if let Some(msg) = err["message"].as_str() {
+                        errors.push(acdd_index::models::Diagnostic {
+                            path: file.path.clone(),
+                            line: err_line,
+                            message: msg.to_owned(),
+                        });
+                    }
+                }
+            }
             let mut details = json!({
                 "doc_type":doc.doc_type,
                 "is_invariant":doc.is_invariant,
@@ -74,6 +94,15 @@ pub(super) fn extract_typed_source_with_digest(
             });
             if metadata["status"].is_null() {
                 details.as_object_mut().unwrap().remove("status");
+            }
+            if let Some(rules) = metadata
+                .get(acdd_index::models::details::NodeDetailKey::ARCH_RULES)
+                .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+            {
+                details.as_object_mut().unwrap().insert(
+                    acdd_index::models::details::NodeDetailKey::ARCH_RULES.to_owned(),
+                    rules.clone(),
+                );
             }
             nodes.push(Node {
                 native_semantic: None,
@@ -213,8 +242,15 @@ pub(super) fn extract_candidate(
         return Ok((file, facts, true, encoded, components, key));
     }
     let spec_paths = adapter.spec_paths();
-    let facts =
-        extract_typed_source_with_digest(&file, source, &file.digest, dependencies, &spec_paths)?;
+    let zones = adapter.architecture.zone_names();
+    let facts = extract_typed_source_with_digest(
+        &file,
+        source,
+        &file.digest,
+        dependencies,
+        &spec_paths,
+        Some(&zones),
+    )?;
     Ok((file, facts, false, None, None, key))
 }
 

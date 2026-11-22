@@ -1,69 +1,12 @@
-use super::reader::{path_bounds, QueryBudget};
+use super::lint::collect_cycle_components;
+use super::reader::QueryBudget;
 use anyhow::{bail, Result};
-use petgraph::graphmap::DiGraphMap;
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::collections::HashSet;
-
-fn components(conn: &Connection, filter_path: Option<&str>) -> Result<Vec<Vec<i64>>> {
-    let budget = QueryBudget::new(conn);
-    let selected = if let Some(path) = filter_path.filter(|p| !p.is_empty()) {
-        let path = path.trim_end_matches('/');
-        let (prefix, end) = path_bounds(path);
-        let mut statement = conn.prepare(
-            "SELECT n.node_hash FROM path_dictionary p JOIN nodes n ON n.path_id=p.path_id WHERE p.path=?1 OR (p.path>=?2 AND p.path<?3) LIMIT 1000001",
-        )?;
-        let selected = statement
-            .query_map([path, &prefix, &end], |r| r.get::<_, i64>(0))?
-            .collect::<rusqlite::Result<HashSet<_>>>()?;
-        if selected.len() > 1_000_000 {
-            bail!("cycle scope exceeds node budget");
-        }
-        if selected.is_empty() {
-            return Ok(Vec::new());
-        }
-        Some(selected)
-    } else {
-        None
-    };
-
-    // Internal graph data uses integer keys. The response byte budget applies only to output.
-    let mut statement = conn.prepare(
-        "SELECT src_hash,dst_hash FROM edges WHERE kind IN('calls','imports') LIMIT 500001",
-    )?;
-    let edges = statement.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
-    let mut graph = DiGraphMap::<i64, ()>::new();
-    for (count, edge) in edges.enumerate() {
-        if count == 500_000 {
-            bail!("cycle analysis exceeds 500000 edge budget");
-        }
-        let (src, dst) = edge?;
-        graph.add_edge(src, dst, ());
-        budget.check()?;
-    }
-    let components = petgraph::algo::kosaraju_scc(&graph);
-    budget.check()?;
-    let mut output = Vec::new();
-    for mut component in components {
-        budget.check()?;
-        if component.len() == 1 && !graph.contains_edge(component[0], component[0]) {
-            continue;
-        }
-        if selected
-            .as_ref()
-            .is_some_and(|scope| !component.iter().any(|n| scope.contains(n)))
-        {
-            continue;
-        }
-        component.sort_unstable();
-        output.push(component);
-    }
-    Ok(output)
-}
 
 /// Performs cycles.
 pub fn cycles(conn: &Connection, filter_path: Option<&str>) -> Result<Value> {
-    let components = components(conn, filter_path)?;
+    let components = collect_cycle_components(conn, filter_path)?;
     let budget = QueryBudget::new(conn);
     let mut lookup = conn.prepare_cached("SELECT id FROM nodes WHERE node_hash=?1")?;
     let mut output = Vec::new();
@@ -87,7 +30,7 @@ pub fn cycles(conn: &Connection, filter_path: Option<&str>) -> Result<Value> {
 }
 
 pub(super) fn summary(conn: &Connection, filter_path: Option<&str>) -> Result<Value> {
-    let mut components = components(conn, filter_path)?;
+    let mut components = collect_cycle_components(conn, filter_path)?;
     components.sort_unstable_by(|a, b| b.len().cmp(&a.len()).then_with(|| a[0].cmp(&b[0])));
     let total = components.len();
     let total_nodes: usize = components.iter().map(Vec::len).sum();

@@ -1,10 +1,18 @@
-use super::{paging, reader};
+use super::LintScope;
+use crate::db::{paging, reader};
+use acdd_core::lint::{LintCategory, LintSeverity};
 use acdd_core::response::{Detail, QueryOptions};
 use anyhow::{ensure, Result};
 use rusqlite::{Connection, ToSql};
 use serde_json::{json, Value};
 
-/// Performs syntax paged.
+fn supported_language_profiles() -> Vec<&'static str> {
+    crate::languages::profiles()
+        .map(|profile| profile.id())
+        .collect()
+}
+
+/// Returns stored Tree-sitter syntax diagnostics for compiled language profiles.
 pub fn syntax_paged(conn: &Connection, target: &str, options: &QueryOptions) -> Result<Value> {
     let generation = paging::generation(conn, options)?;
     let normalized = target.trim();
@@ -14,9 +22,7 @@ pub fn syntax_paged(conn: &Connection, target: &str, options: &QueryOptions) -> 
         "lint target must be an indexed workspace-relative path or empty for the workspace"
     );
     let (prefix, end) = reader::path_bounds(path);
-    let profiles: Vec<_> = crate::languages::profiles()
-        .map(|profile| profile.id())
-        .collect();
+    let profiles = supported_language_profiles();
     let profiles_json = serde_json::to_string(&profiles)?;
     let params: &[&dyn ToSql] = &[&path, &prefix, &end, &profiles_json];
     let scope = "(?1='' OR f.path=?1 OR (f.path>=?2 AND f.path<?3))";
@@ -67,4 +73,46 @@ pub fn syntax_paged(conn: &Connection, target: &str, options: &QueryOptions) -> 
         },
         "generation": generation,
     }))
+}
+
+pub(super) fn collect_syntax_violations(
+    conn: &Connection,
+    scope: &LintScope,
+    violations: &mut Vec<super::LintViolation>,
+) -> Result<()> {
+    let profiles = supported_language_profiles();
+    let profiles_json = serde_json::to_string(&profiles)?;
+    let prefix_target = scope.exact_prefix().unwrap_or("");
+    let (lower, upper) = reader::path_bounds(prefix_target);
+    let mut stmt = conn.prepare(
+        "SELECT e.path, e.line, e.message
+         FROM errors e
+         JOIN files f ON f.path = e.path
+         WHERE (?1 = '' OR e.path = ?1 OR (e.path >= ?2 AND e.path < ?3))
+           AND f.language IN (SELECT value FROM json_each(?4))
+         ORDER BY e.path, e.line, e.message, e.rowid",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![prefix_target, lower, upper, profiles_json])?;
+    while let Some(row) = rows.next()? {
+        let path: String = row.get(0)?;
+        if !scope.in_scope(&path) {
+            continue;
+        }
+        let line: i64 = row.get(1)?;
+        let message: String = row.get(2)?;
+        violations.push(super::LintViolation {
+            category: LintCategory::Syntax,
+            rule_id: "syntax.parse".to_owned(),
+            severity: LintSeverity::Error,
+            path,
+            line: Some(line.max(1) as usize),
+            message,
+            invariant: None,
+            rule_source: None,
+            symbol: None,
+            target: None,
+            suggestion: None,
+        });
+    }
+    Ok(())
 }
