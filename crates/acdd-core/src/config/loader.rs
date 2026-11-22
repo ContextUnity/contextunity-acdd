@@ -395,6 +395,7 @@ pub fn read_policy_from_value(root: &Path, value: &Value) -> Result<Adapter> {
         .collect::<Result<Vec<_>>>()?;
     let limits: ScannerLimits =
         serde_json::from_value(value["limits"].clone()).context("invalid persisted limits")?;
+    limits.validate()?;
     let ignored_names: BTreeSet<String> = serde_json::from_value(value["ignored_names"].clone())
         .context("invalid persisted ignored names")?;
     let adapter_version = parse_persisted_or(value, "adapter_version", || None)?;

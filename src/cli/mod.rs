@@ -276,7 +276,7 @@ impl Cli {
     ) -> Result<()> {
         if matches!(self.command.as_ref(), Some(Command::Snapshot { .. })) {
             if let Some(root) = self.root.as_deref() {
-                acdd_core::fs::check_ancestors_no_symlinks(root, Path::new(".git"))
+                acdd_core::fs::check_git_entry_no_symlinks(root)
                     .map_err(|e| anyhow::anyhow!(e))?;
             }
         }

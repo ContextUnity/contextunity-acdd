@@ -297,6 +297,8 @@ pub fn base_config(root: &Path) -> StateEngineConfig {
         modules: SubsystemRegistry::default(),
         response_policy: ResponsePolicy::default(),
         retain_traces: 5,
+        max_snapshot_file_bytes: None,
+        allowed_binary_extensions: None,
     }
 }
 

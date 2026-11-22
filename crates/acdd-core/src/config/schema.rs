@@ -357,6 +357,12 @@ pub struct ScannerLimits {
     #[serde(default, skip_serializing)]
     /// Optional transient memory budget in MiB; YAML takes precedence over the environment.
     pub memory_budget_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional maximum snapshot/commit blob size in bytes (`None` disables the ceiling).
+    pub max_snapshot_file_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional allowlist of binary extensions exempt from NUL-byte rejection (`None` disables NUL check).
+    pub allowed_binary_extensions: Option<Vec<String>>,
 }
 
 impl ScannerLimits {
@@ -366,7 +372,29 @@ impl ScannerLimits {
             (1..=MAX_METADATA_BYTES).contains(&self.max_metadata_bytes),
             "limits.max_metadata_bytes must be 1..={MAX_METADATA_BYTES}"
         );
+        if self.max_snapshot_file_bytes == Some(0) {
+            anyhow::bail!("limits.max_snapshot_file_bytes must be >= 1");
+        }
+        if let Some(ref exts) = self.allowed_binary_extensions {
+            crate::path_policy::normalize_binary_extensions(exts).map_err(anyhow::Error::msg)?;
+        }
         Ok(())
+    }
+
+    /// Validate and normalize `allowed_binary_extensions` into a lowercase set, preserving `None`.
+    pub fn normalized_allowed_binary_extensions(
+        &self,
+    ) -> std::result::Result<Option<BTreeSet<String>>, crate::errors::StateError> {
+        self.allowed_binary_extensions
+            .as_ref()
+            .map(crate::path_policy::normalize_binary_extensions)
+            .transpose()
+            .map_err(|msg| {
+                crate::errors::StateError::new(
+                    crate::errors::ErrorCode::ProfileSchemaInvalid,
+                    msg,
+                )
+            })
     }
 }
 
@@ -379,6 +407,8 @@ impl Default for ScannerLimits {
             max_metadata_bytes: DEFAULT_MAX_METADATA_BYTES,
             allow_broad_root: false,
             memory_budget_mb: None,
+            max_snapshot_file_bytes: None,
+            allowed_binary_extensions: None,
         }
     }
 }
@@ -643,10 +673,24 @@ mod tests {
     fn scanner_limits_validate_authoritative_metadata_bounds() {
         let mut limits = ScannerLimits::default();
         assert_eq!(limits.max_metadata_bytes, 2048);
+        assert_eq!(limits.max_snapshot_file_bytes, None);
+        assert_eq!(limits.allowed_binary_extensions, None);
         assert!(limits.validate().is_ok());
 
         limits.max_metadata_bytes = 256;
+        limits.max_snapshot_file_bytes = Some(1024);
+        limits.allowed_binary_extensions = Some(vec![".PNG".to_owned(), "mo".to_owned(), "c++".to_owned()]);
         assert!(limits.validate().is_ok());
+
+        limits.max_snapshot_file_bytes = Some(0);
+        assert!(limits.validate().unwrap_err().to_string().contains("max_snapshot_file_bytes"));
+        limits.max_snapshot_file_bytes = Some(1024);
+
+        for bad_ext in ["", ".", "..png", "png jpg", "*.png", "a/png", "a\\png", "png?"] {
+            limits.allowed_binary_extensions = Some(vec![bad_ext.to_owned()]);
+            assert!(limits.validate().is_err(), "expected invalid extension '{bad_ext}' to fail");
+        }
+        limits.allowed_binary_extensions = None;
 
         limits.max_metadata_bytes = 0;
         let err_zero = limits.validate().unwrap_err();

@@ -25,6 +25,8 @@ pub(crate) fn base_engine_config(workspace_root: &Path) -> StateEngineConfig {
         modules: SubsystemRegistry::default(),
         response_policy: ResponsePolicy::default(),
         retain_traces: 20,
+        max_snapshot_file_bytes: None,
+        allowed_binary_extensions: None,
     }
 }
 

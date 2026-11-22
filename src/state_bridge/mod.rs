@@ -181,6 +181,7 @@ pub fn state_engine_config(
     let code_db_path = (config.modules.is_subsystem_enabled(SubsystemId::Code)
         || config.modules.is_subsystem_enabled(SubsystemId::Docs))
         .then(|| acdd_core::config::resolve_code_db_path(&primary, code_db));
+    let allowed_binary_extensions = config.limits.normalized_allowed_binary_extensions()?;
     Ok(StateEngineConfig {
         workspace_root: primary,
         worktree: worktree.to_path_buf(),
@@ -192,6 +193,8 @@ pub fn state_engine_config(
         modules: config.modules.clone(),
         response_policy: config.response.clone(),
         retain_traces: config.retain_traces,
+        max_snapshot_file_bytes: config.limits.max_snapshot_file_bytes,
+        allowed_binary_extensions,
     })
 }
 
@@ -232,8 +235,9 @@ pub(crate) fn execute_state_command_with_config(
     explicit_config: bool,
 ) -> Result<StateCommandOutput, StateError> {
     if let StateCommand::Snapshot(req) = &cmd {
-        acdd_core::fs::check_ancestors_no_symlinks(root, Path::new(".git")).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
-        let wt = req.worktree.as_deref().unwrap_or(worktree); acdd_core::fs::check_ancestors_no_symlinks(wt, Path::new(".git")).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+        acdd_core::fs::check_git_entry_no_symlinks(root).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+        let wt = req.worktree.as_deref().unwrap_or(worktree);
+        acdd_core::fs::check_git_entry_no_symlinks(wt).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
     }
     let engine_cfg = state_engine_config(root, worktree, state_db, code_db, config)?;
     if let StateCommand::Snapshot(req) = cmd {
@@ -669,6 +673,8 @@ mod tests {
                 modules: adapter.modules.clone(),
                 response_policy: adapter.response.clone(),
                 retain_traces: adapter.retain_traces,
+                max_snapshot_file_bytes: None,
+                allowed_binary_extensions: None,
             },
             Arc::new(CompositeDomainProvider::new(vec![]).unwrap()),
         )

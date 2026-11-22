@@ -26,7 +26,7 @@ use crate::usecases::lifecycle::{
 use crate::usecases::StateEngineConfig;
 use acdd_core::config::SNAPSHOT_REF_PREFIX;
 use acdd_core::errors::{ErrorCode, StateError};
-use acdd_core::fs::check_ancestors_no_symlinks;
+use acdd_core::fs::{check_ancestors_no_symlinks, check_git_entry_no_symlinks};
 use acdd_core::ids::RunId;
 use acdd_core::ports::{CompositeDomainProvider, DomainToolReq};
 use acdd_core::subsystems::SubsystemId;
@@ -38,7 +38,7 @@ pub(crate) fn handle_snapshot_dyn(
 ) -> Result<SnapshotResp, StateError> {
     use SnapshotAction::{Clear, List, Restore, Save};
     let bad = |m: &str| StateError::new(ErrorCode::ProfileSchemaInvalid, m.to_owned());
-    check_ancestors_no_symlinks(&config.workspace_root, Path::new(".git")).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+    check_git_entry_no_symlinks(&config.workspace_root).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
     let primary = primary_workspace_root(config); check_ancestors_no_symlinks(&primary, Path::new(".git/acdd/repo.lock")).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
     let target_str = req.task_ref.as_ref().map(|t| t.as_str().to_owned()).or_else(|| req.name.clone());
     let layout = resolve_repo_layout_optional(&primary)?;
@@ -76,14 +76,14 @@ pub(crate) fn handle_snapshot_dyn(
         let worktree = if let (Some(run), Some(node)) = (&task_run, &task_node) {
             if io && node.isolation == IsolationMode::Worktree && node.worktree.is_none() { return Err(bad("snapshot task has no assigned worktree")); }
             let literal = node.worktree.as_deref().or(run.worktree.as_deref()).map(Path::new).unwrap_or(&config.worktree);
-            check_ancestors_no_symlinks(literal, Path::new(".git")).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
-            if let Some(raw) = req.worktree.as_deref() { check_ancestors_no_symlinks(raw, Path::new(".git")).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?; }
+            check_git_entry_no_symlinks(literal).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+            if let Some(raw) = req.worktree.as_deref() { check_git_entry_no_symlinks(raw).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?; }
             let assigned = resolve_node_worktree(config, run, node, None);
             if req.worktree.as_ref().is_some_and(|path| canonicalize_macos_var(path) != assigned) { return Err(StateError::new(ErrorCode::ExternalGitDrift, "explicit worktree does not match assigned task worktree")); }
             if io || req.action == List { assigned } else { req.worktree.clone().unwrap_or_else(|| config.worktree.clone()) }
         } else {
             let raw = req.worktree.as_deref().map(Path::new).unwrap_or(&config.worktree);
-            check_ancestors_no_symlinks(raw, Path::new(".git")).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?; raw.to_path_buf()
+            check_git_entry_no_symlinks(raw).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?; raw.to_path_buf()
         };
         let target = if (io || req.action == List) && task_node.is_some() { snapshot_worktree_layout(config, layout.as_ref(), &worktree)? } else { resolve_repo_layout(&worktree)? };
         if (req.worktree.is_some() || task_node.is_none()) && canonicalize_macos_var(&worktree) != target.target_worktree {

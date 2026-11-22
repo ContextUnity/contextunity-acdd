@@ -281,7 +281,12 @@ pub fn build_path_policy(
         .map(|p| relativize_db_path(p, &primary, &config.workspace_root, DEFAULT_CODE_DB))
         .unwrap_or_else(|| DEFAULT_CODE_DB.to_owned());
 
-    Ok(WorkspacePathPolicy::new(managed, state_db_rel, code_db_rel))
+    Ok(
+        WorkspacePathPolicy::new(managed, state_db_rel, code_db_rel).with_snapshot_limits(
+            config.max_snapshot_file_bytes,
+            config.allowed_binary_extensions.clone(),
+        ),
+    )
 }
 
 /// Resolve an owned source checkout root for spec/profile IO while keeping state DB anchored on `primary`.
@@ -299,7 +304,7 @@ pub fn resolve_source_checkout(
         primary.join(candidate)
     };
     let drift = |msg: String| StateError::new(ErrorCode::ExternalGitDrift, msg);
-    acdd_core::fs::check_ancestors_no_symlinks(&abs_raw, Path::new(".git"))
+    acdd_core::fs::check_git_entry_no_symlinks(&abs_raw)
         .map_err(|err| drift(err.to_string()))?;
     let canon = canonicalize_macos_var(&abs_raw);
     if !canon.exists() && explicit && layout.is_some() {
@@ -341,7 +346,7 @@ pub fn checkout_config(
     let primary_canon = canonicalize_macos_var(primary);
     let mut checkout = config.clone();
     checkout.worktree = source.clone();
-    let apply_adapter = |target: &mut StateEngineConfig, adapter: &Adapter| {
+    let apply_adapter = |target: &mut StateEngineConfig, adapter: &Adapter| -> Result<(), StateError> {
         target.spec_collections = adapter.specs.clone();
         target.profiles_dirs = adapter.profiles_dirs.clone();
         for lw in &adapter.linked_workspaces {
@@ -350,9 +355,12 @@ pub fn checkout_config(
         target.modules = adapter.modules.clone();
         target.response_policy = adapter.response.clone();
         target.retain_traces = adapter.retain_traces;
+        target.max_snapshot_file_bytes = adapter.limits.max_snapshot_file_bytes;
+        target.allowed_binary_extensions = adapter.limits.normalized_allowed_binary_extensions()?;
+        Ok(())
     };
     if let Some(ad) = source_override {
-        apply_adapter(&mut checkout, ad);
+        apply_adapter(&mut checkout, ad)?;
         return Ok(checkout);
     }
     if source == primary_canon {
@@ -365,7 +373,7 @@ pub fn checkout_config(
                 format!("failed to load {ACDD_CONFIG_FILE} from '{}': {err}", source.display()),
             )
         })?;
-        apply_adapter(&mut checkout, &adapter);
+        apply_adapter(&mut checkout, &adapter)?;
     }
     Ok(checkout)
 }

@@ -618,6 +618,8 @@ mod tests {
             modules: SubsystemRegistry::default(),
             response_policy: ResponsePolicy::default(),
             retain_traces: 5,
+            max_snapshot_file_bytes: None,
+            allowed_binary_extensions: None,
         };
         let s1 = SubtaskRef::new("S1").expect("subtask_ref");
         exec_tx_with(&backend, |tx| {

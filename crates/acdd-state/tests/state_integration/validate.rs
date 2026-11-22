@@ -268,6 +268,8 @@ fn validate_workspace_config_profile_and_spec_matrix() {
         modules: SubsystemRegistry::default(),
         response_policy: ResponsePolicy::default(),
         retain_traces: 5,
+        max_snapshot_file_bytes: None,
+        allowed_binary_extensions: None,
     };
     let resolved_p =
         resolve_optional_profile_ref_with_dirs(None, Some(root), Some(&cfg.modules), None)

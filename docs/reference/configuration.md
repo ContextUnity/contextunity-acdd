@@ -133,6 +133,20 @@ limits:
 
 `memory_budget_mb` must be a positive integer whose MiB-to-byte conversion fits in `u64`. When omitted, `ACDD_MEMORY_BUDGET_MB` supplies the same setting; when both are omitted, the builder chooses an adaptive budget from available memory. The YAML value takes precedence over the environment. The budget controls extraction batch sizing and the SQLite cache. Changing the budget preserves extracted facts and per-domain commitments, but an explicit YAML value is part of the workspace configuration fingerprint and can change the overall output root. An environment-only override is transient and leaves the adapter policy fingerprint unchanged. A single admitted file can exceed the budget because the builder must hold that file while parsing it, but source memory remains bounded by the configured batch and file-size limit.
 
+## Snapshot and commit binary/size limits
+
+Both snapshot/commit candidate guards under `limits` are **disabled by default** when omitted from `acdd.yaml`:
+
+```yaml
+limits:
+  max_snapshot_file_bytes: 16777216
+  allowed_binary_extensions: [mo, png, jpg]
+```
+
+- `limits.max_snapshot_file_bytes`: Optional positive integer (`>= 1`). When set, snapshot/commit candidate paths whose regular-file size exceeds this byte limit fail closed with `EXTERNAL_GIT_DRIFT`. When omitted, no snapshot blob size ceiling is enforced.
+- `limits.allowed_binary_extensions`: Optional list of extensions (normalized case-insensitively with any single leading `.` stripped; ASCII alphanumeric, `+`, `-`, or `_` only, no whitespace, `/`, `\`, `*`, or `?`). When set, regular files whose extension is not in the list are checked for NUL bytes in their leading 8 KiB and fail closed with `EXTERNAL_GIT_DRIFT` if NUL bytes are present (pass `[]` to reject all NUL-containing binaries). When omitted, NUL-byte sniffing is disabled and binary files pass without reading contents.
+- Structural safety guards (`160000` submodule gitlinks, nested `.git` directories, and symlink confinement) remain strictly enforced regardless of `limits`.
+
 ## Repository documentation admission
 
 This repository lists current documentation files and directories explicitly in

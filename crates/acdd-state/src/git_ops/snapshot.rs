@@ -11,7 +11,6 @@ use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-const MAX_SNAPSHOT_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8192;
 
 /// Isolated temporary Git index file (`GIT_INDEX_FILE`) leaving `.git/index` untouched.
@@ -185,9 +184,10 @@ pub(super) fn guard_candidate_path(
     worktree: &Path,
     rel_path: &str,
     index_mode: Option<&str>,
+    path_policy: &WorkspacePathPolicy,
 ) -> Result<(), StateError> {
     let relative = Path::new(rel_path);
-    let invalid = |reason| StateError::new(ErrorCode::ExternalGitDrift, format!("candidate '{rel_path}': {reason}"));
+    let invalid = |reason: &str| StateError::new(ErrorCode::ExternalGitDrift, format!("candidate '{rel_path}': {reason}"));
     if index_mode == Some("160000") {
         return Err(invalid("submodule gitlink is not permitted"));
     }
@@ -207,15 +207,20 @@ pub(super) fn guard_candidate_path(
     let Some(metadata) = metadata.filter(fs::Metadata::is_file) else {
         return Ok(());
     };
-    if metadata.len() > MAX_SNAPSHOT_FILE_BYTES {
-        return Err(invalid("file exceeds 16 MiB snapshot/commit limit"));
+    checked_child(worktree, relative).map_err(|err| snapshot_path_error(rel_path, err))?;
+    if let Some(limit) = path_policy.max_snapshot_file_bytes {
+        if metadata.len() > limit {
+            return Err(invalid(&format!("file exceeds {limit} byte snapshot/commit limit")));
+        }
     }
-    let mut file = open_confined(worktree, relative, OpenOptions::new().read(true))
-        .map_err(|err| snapshot_path_error(rel_path, err))?;
-    let mut buf = [0; BINARY_SNIFF_BYTES];
-    let size = file.read(&mut buf).map_err(|err| snapshot_path_error(rel_path, err))?;
-    if buf[..size].contains(&0) {
-        return Err(invalid("binary file contains NUL bytes"));
+    if !path_policy.is_binary_extension_allowed(rel_path) {
+        let mut file = open_confined(worktree, relative, OpenOptions::new().read(true))
+            .map_err(|err| snapshot_path_error(rel_path, err))?;
+        let mut buf = [0; BINARY_SNIFF_BYTES];
+        let size = file.read(&mut buf).map_err(|err| snapshot_path_error(rel_path, err))?;
+        if buf[..size].contains(&0) {
+            return Err(invalid("binary file contains NUL bytes"));
+        }
     }
     Ok(())
 }
@@ -286,7 +291,7 @@ pub fn current_scope_tree(
                 continue;
             }
         }
-        guard_candidate_path(worktree, &norm, index_mode.as_deref())?;
+        guard_candidate_path(worktree, &norm, index_mode.as_deref(), path_policy)?;
         if let Ok(meta) = fs::symlink_metadata(worktree.join(&norm)) {
             if !meta.is_dir() {
                 existing_paths.push(norm);
@@ -368,7 +373,7 @@ pub(crate) fn restore_task_snapshot(
             continue;
         }
         let path = checked_child(worktree, Path::new(raw)).map_err(|err| snapshot_path_error(raw, err))?;
-        guard_candidate_path(worktree, raw, None)?;
+        guard_candidate_path(worktree, raw, None, policy)?;
         let dest_meta = match fs::symlink_metadata(&path) {
             Ok(meta) => Some(meta),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,

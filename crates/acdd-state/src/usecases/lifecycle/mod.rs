@@ -99,6 +99,8 @@ mod tests {
             modules: SubsystemRegistry::default(),
             response_policy: ResponsePolicy::default(),
             retain_traces: 10,
+            max_snapshot_file_bytes: None,
+            allowed_binary_extensions: None,
         };
 
         // 1. build_path_policy marks active spec_path and derived archive_path as engine-managed,
@@ -368,5 +370,16 @@ mod tests {
         let corrupt_reader = crate::store::sqlite::SqliteStateReader::new(corrupt_db);
         assert!(prune_old_run_trace_dirs(root, &corrupt_reader, 0, Some(0), None).is_err());
         assert!(closed_small.is_dir(), "corrupt reader must fail closed without deleting trace dirs");
+
+        // 7. `checkout_config` overlays `limits.{max_snapshot_file_bytes,allowed_binary_extensions}`.
+        let mut ad = acdd_core::config::Adapter::default();
+        ad.limits.max_snapshot_file_bytes = Some(8192);
+        ad.limits.allowed_binary_extensions = Some(vec![".PNG".to_owned(), "mo".to_owned()]);
+        let overlaid = checkout_config(&cfg, root, root, Some(&ad)).expect("checkout_config");
+        assert_eq!(overlaid.max_snapshot_file_bytes, Some(8192));
+        assert_eq!(
+            overlaid.allowed_binary_extensions,
+            Some(std::collections::BTreeSet::from(["mo".to_owned(), "png".to_owned()]))
+        );
     }
 }

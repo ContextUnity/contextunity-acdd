@@ -23,7 +23,7 @@ use acdd_core::response::ResponsePolicy;
 use acdd_core::subsystems::{SubsystemId, SubsystemRegistry};
 use acdd_core::errors::{ErrorCode, StateError};
 use acdd_core::ports::CompositeDomainProvider;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -50,6 +50,10 @@ pub struct StateEngineConfig {
     pub response_policy: ResponsePolicy,
     /// Number of retained run trace directories under `.acdd/run/`.
     pub retain_traces: usize,
+    /// Optional snapshot/commit blob size limit in bytes (`None` disables ceiling).
+    pub max_snapshot_file_bytes: Option<u64>,
+    /// Optional normalized lowercase binary extensions exempt from NUL-byte rejection (`None` disables NUL check).
+    pub allowed_binary_extensions: Option<BTreeSet<String>>,
 }
 
 impl StateEngineConfig {
@@ -208,8 +212,9 @@ pub fn execute_on<B: StateBackend + Send + Sync>(
 /// Run `snapshot` without creating `.acdd/state.sqlite`.
 pub fn execute_snapshot_readonly(config: &StateEngineConfig, req: SnapshotReq) -> Result<StateCommandOutput, StateError> {
     lifecycle::ensure_state_enabled(config)?;
-    acdd_core::fs::check_ancestors_no_symlinks(&config.workspace_root, std::path::Path::new(".git")).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
-    let wt = req.worktree.as_deref().unwrap_or(&config.worktree); acdd_core::fs::check_ancestors_no_symlinks(wt, std::path::Path::new(".git")).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+    acdd_core::fs::check_git_entry_no_symlinks(&config.workspace_root).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
+    let wt = req.worktree.as_deref().unwrap_or(&config.worktree);
+    acdd_core::fs::check_git_entry_no_symlinks(wt).map_err(|e| StateError::new(ErrorCode::ExternalGitDrift, e.to_string()))?;
     let reader = crate::store::sqlite::SqliteStateReader::new(config.resolved_state_db_path().0);
     commands::task_ops::handle_snapshot_dyn(config, &reader, req).map(StateCommandOutput::Snapshot)
 }

@@ -213,7 +213,7 @@ pub fn create_scoped_commit_with_expected(
         {
             continue;
         }
-        guard_candidate_path(&req.worktree, &norm, index_mode.as_deref())?;
+        guard_candidate_path(&req.worktree, &norm, index_mode.as_deref(), &req.path_policy)?;
         match fs::symlink_metadata(req.worktree.join(&norm)) {
             Ok(meta) => {
                 if !meta.is_dir() {

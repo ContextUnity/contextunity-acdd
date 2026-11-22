@@ -518,6 +518,27 @@ pub fn check_ancestors_no_symlinks(root: &Path, target: &Path) -> std::io::Resul
     check_ancestors_no_symlinks_abs(&abs_target)
 }
 
+/// Verifies that `root` and its `<root>/.git` entry do not traverse or resolve through a
+/// non-system-root symlink, while still permitting a regular-file `.git` pointer in linked
+/// worktrees or an absent `.git` entry (`ADR-0002`).
+pub fn check_git_entry_no_symlinks(root: &Path) -> std::io::Result<()> {
+    let abs_git = resolve_confined_path(root, Path::new(".git"))?;
+    check_ancestors_no_symlinks_abs(&abs_git)?;
+    match fs::symlink_metadata(&abs_git) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(path_error(format!(
+            "git entry must not be a symlink: {}",
+            abs_git.display()
+        ))),
+        Ok(meta) if meta.is_dir() || meta.is_file() => Ok(()),
+        Ok(_) => Err(path_error(format!(
+            "unexpected git entry at '{}'",
+            abs_git.display()
+        ))),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
 /// Creates `dir` (and missing parent directories) confined within `root`, rejecting any
 /// non-system-root symlink or non-directory ancestor (`ADR-0002`).
 pub fn ensure_confined_dir_all(root: &Path, dir: &Path) -> std::io::Result<PathBuf> {
@@ -816,6 +837,26 @@ mod tests {
             check_ancestors_no_symlinks(base, Path::new("../outside.sqlite"))
                 .unwrap_err()
                 .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        // `check_git_entry_no_symlinks`: allows missing, dir, and regular-file `.git`; rejects symlink `.git` and symlink ancestor.
+        check_git_entry_no_symlinks(&real_dir).unwrap();
+        let wt_ptr = base.join("wt_ptr");
+        fs::create_dir_all(&wt_ptr).unwrap();
+        fs::write(wt_ptr.join(".git"), "gitdir: ../real/.git\n").unwrap();
+        check_git_entry_no_symlinks(&wt_ptr).unwrap();
+        let repo_dir = base.join("repo_dir");
+        fs::create_dir_all(repo_dir.join(".git")).unwrap();
+        check_git_entry_no_symlinks(&repo_dir).unwrap();
+        let sym_git = base.join("sym_git");
+        fs::create_dir_all(sym_git.join(".git.real")).unwrap();
+        symlink(".git.real", sym_git.join(".git")).unwrap();
+        assert_eq!(
+            check_git_entry_no_symlinks(&sym_git).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            check_git_entry_no_symlinks(&symlink_dir).unwrap_err().kind(),
             std::io::ErrorKind::InvalidInput
         );
         let created_dir = ensure_confined_dir_all(base, Path::new("real/nested/logs")).unwrap();

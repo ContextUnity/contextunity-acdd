@@ -15,6 +15,12 @@ pub struct WorkspacePathPolicy {
     pub state_db_path: String,
     /// Configured normalized relative path to the code-map SQLite database.
     pub code_db_path: String,
+    /// Optional maximum snapshot/commit blob size in bytes (`None` disables ceiling).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_snapshot_file_bytes: Option<u64>,
+    /// Optional normalized lowercase binary extensions exempt from NUL-byte rejection (`None` disables NUL check).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_binary_extensions: Option<BTreeSet<String>>,
 }
 
 impl Default for WorkspacePathPolicy {
@@ -23,6 +29,8 @@ impl Default for WorkspacePathPolicy {
             engine_managed_paths: BTreeSet::new(),
             state_db_path: ".acdd/state.sqlite".to_owned(),
             code_db_path: ".acdd/code-map.sqlite".to_owned(),
+            max_snapshot_file_bytes: None,
+            allowed_binary_extensions: None,
         }
     }
 }
@@ -56,6 +64,8 @@ impl WorkspacePathPolicy {
             engine_managed_paths: managed,
             state_db_path: state_db,
             code_db_path: code_db,
+            max_snapshot_file_bytes: None,
+            allowed_binary_extensions: None,
         }
     }
 
@@ -70,6 +80,33 @@ impl WorkspacePathPolicy {
             code_db_path.as_ref(),
             engine_managed_paths,
         )
+    }
+
+    /// Configure optional snapshot/commit file size ceiling and binary extension allowlist.
+    pub fn with_snapshot_limits(
+        mut self,
+        max_file_bytes: Option<u64>,
+        allowed_binary_extensions: Option<BTreeSet<String>>,
+    ) -> Self {
+        self.max_snapshot_file_bytes = max_file_bytes;
+        self.allowed_binary_extensions = allowed_binary_extensions.map(|exts| {
+            exts.into_iter()
+                .filter_map(|ext| normalize_binary_extension(&ext).ok())
+                .collect()
+        });
+        self
+    }
+
+    /// Return `true` if `rel_path`'s extension is allowed when `allowed_binary_extensions` is enabled
+    /// (returns `true` for all paths when `allowed_binary_extensions` is `None`).
+    pub fn is_binary_extension_allowed(&self, rel_path: &str) -> bool {
+        let Some(ref allowed) = self.allowed_binary_extensions else {
+            return true;
+        };
+        std::path::Path::new(rel_path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| allowed.contains(&ext.to_ascii_lowercase()))
     }
 
     /// Predicate 1: Return `true` if `rel_path` matches any active `Run`'s `spec_path` or `archive_path`.
@@ -191,6 +228,37 @@ impl WorkspacePathPolicy {
             && !self.is_engine_managed(&norm)
             && !self.is_protected_path(&norm, protected_paths)
     }
+}
+
+/// Validate and normalize a single binary extension entry (`".PNG"` -> `"png"`).
+pub fn normalize_binary_extension(raw: &str) -> Result<String, String> {
+    if raw.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "limits.allowed_binary_extensions entry '{raw}' must not contain whitespace"
+        ));
+    }
+    let stripped = raw.strip_prefix('.').unwrap_or(raw);
+    if stripped.is_empty()
+        || !stripped
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'_'))
+    {
+        return Err(format!(
+            "limits.allowed_binary_extensions entry '{raw}' must be a single extension (ASCII alphanumeric, '+', '-', or '_', optional leading '.')"
+        ));
+    }
+    Ok(stripped.to_ascii_lowercase())
+}
+
+/// Validate and normalize an `allowed_binary_extensions` list into a lowercase [`BTreeSet`].
+pub fn normalize_binary_extensions<I, S>(exts: I) -> Result<BTreeSet<String>, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    exts.into_iter()
+        .map(|ext| normalize_binary_extension(ext.as_ref()))
+        .collect()
 }
 
 /// Normalize a workspace-relative path purely lexically without touching the filesystem.
@@ -873,5 +941,41 @@ mod tests {
             assert!(!policy.is_candidate_included(&format!("{expect_state}-wal")));
             assert!(!policy.is_candidate_included(expect_code));
         }
+    }
+
+    #[test]
+    fn workspace_path_policy_json_backwards_compatibility_and_limits_matrix() {
+        let legacy_json = r#"{
+            "engine_managed_paths": ["docs/milestones/AC-001.md"],
+            "state_db_path": ".acdd/state.sqlite",
+            "code_db_path": ".acdd/code-map.sqlite"
+        }"#;
+        let legacy: WorkspacePathPolicy =
+            serde_json::from_str(legacy_json).expect("deserialize legacy JSON");
+        assert_eq!(legacy.max_snapshot_file_bytes, None);
+        assert_eq!(legacy.allowed_binary_extensions, None);
+        assert!(legacy.is_binary_extension_allowed("src/evil.bin"));
+
+        let default_json =
+            serde_json::to_value(WorkspacePathPolicy::default()).expect("serialize default");
+        assert!(default_json.get("max_snapshot_file_bytes").is_none());
+        assert!(default_json.get("allowed_binary_extensions").is_none());
+
+        let configured = WorkspacePathPolicy::default().with_snapshot_limits(
+            Some(4096),
+            Some(BTreeSet::from([".PNG".to_owned(), "mo".to_owned()])),
+        );
+        let roundtrip: WorkspacePathPolicy =
+            serde_json::from_value(serde_json::to_value(&configured).expect("serialize"))
+                .expect("roundtrip");
+        assert_eq!(roundtrip.max_snapshot_file_bytes, Some(4096));
+        assert_eq!(
+            roundtrip.allowed_binary_extensions,
+            Some(BTreeSet::from(["mo".to_owned(), "png".to_owned()]))
+        );
+        assert!(roundtrip.is_binary_extension_allowed("assets/logo.PNG"));
+        assert!(roundtrip.is_binary_extension_allowed("locale/django.mo"));
+        assert!(!roundtrip.is_binary_extension_allowed("src/evil.bin"));
+        assert!(!roundtrip.is_binary_extension_allowed("no_extension"));
     }
 }

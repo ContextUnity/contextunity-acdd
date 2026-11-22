@@ -1,11 +1,16 @@
-use super::common::{git_ok, init_git_repo};
+use super::common::{base_config, build_provider_with_mock, git_ok, init_git_repo};
+use acdd_core::config::{load_adapter, ACDD_CONFIG_FILE};
 use acdd_core::errors::ErrorCode;
 use acdd_core::format::sha256_hex;
 use acdd_core::ids::{CommitOid, RunId, TaskRef};
-use acdd_core::path_policy::WorkspacePathPolicy;
+use acdd_core::path_policy::{normalize_binary_extensions, WorkspacePathPolicy};
 use acdd_state::git_ops::commit::create_scoped_commit_with_expected;
 use acdd_state::git_ops::*;
+use acdd_state::store::sqlite::SqliteStateReader;
 use acdd_state::types::IsolationMode;
+use acdd_state::usecases::lifecycle::build_path_policy;
+use acdd_state::usecases::{SnapshotAction, SnapshotReq, StateCommand, StateEngine};
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -145,7 +150,10 @@ fn worktree_layout_macos_var_symlink_and_snapshot_guards_matrix() {
     .expect("in_place diff");
     assert_eq!(in_place_changed, vec!["src/task_b.rs".to_owned()]);
 
-    // 3. Table-driven binary / submodule / >16 MiB guards matrix.
+    // 3. Table-driven binary / submodule / >16 MiB guards matrix under configured opt-in limits.
+    let strict_policy = policy
+        .clone()
+        .with_snapshot_limits(Some(16 * 1024 * 1024), Some(BTreeSet::new()));
     enum GuardKind {
         Binary,
         Large,
@@ -176,8 +184,12 @@ fn worktree_layout_macos_var_symlink_and_snapshot_guards_matrix() {
                 fs::write(p.join("x.txt"), "hi").expect("nested file");
             }
         }
-        let err = current_scope_tree(&created_wt.worktree, Some(&["src/**".to_owned()]), &policy)
-            .expect_err(&format!("guard {label} should fail"));
+        let err = current_scope_tree(
+            &created_wt.worktree,
+            Some(&["src/**".to_owned()]),
+            &strict_policy,
+        )
+        .expect_err(&format!("guard {label} should fail"));
         assert_eq!(err.code, ErrorCode::ExternalGitDrift, "{label}: {err}");
         if p.is_dir() {
             fs::remove_dir_all(&p).expect("cleanup dir");
@@ -908,4 +920,280 @@ fn integrate_rebase_ff_conflict_abort_and_completeness_matrix() {
     assert!(!abort_in_progress_git_ops(mrepo).expect("abort check"));
     assert!(m_git_dir.join("SQUASH_MSG").is_file());
     assert!(git_ok(mrepo, &["diff", "--cached", "--name-only"]).contains("src/lib.rs"));
+}
+
+#[test]
+fn binary_files_and_snapshot_guards_matrix() {
+    let tmp = TempDir::new().expect("tempdir");
+    let repo = tmp.path().join("repo");
+    let _init_head = init_test_repo(&repo);
+    git_ok(&repo, &["checkout", "-b", "task/binaries"]);
+
+    fs::create_dir_all(repo.join("assets/locale/uk/LC_MESSAGES")).expect("locale dir");
+    fs::create_dir_all(repo.join("data")).expect("data dir");
+    let initial_mo = b"\xde\x12\x04\x95\x00initial-mo";
+    let initial_png = b"\x89PNG\r\n\x1a\n\x00initial-png";
+    let initial_bin = b"\x00\x01\x02initial-committed-bin";
+    fs::write(
+        repo.join("assets/locale/uk/LC_MESSAGES/django.mo"),
+        initial_mo,
+    )
+    .expect("write mo");
+    fs::write(repo.join("assets/logo.png"), initial_png).expect("write png");
+    fs::write(repo.join("data/committed.bin"), initial_bin).expect("write committed bin");
+    git_ok(
+        &repo,
+        &[
+            "add",
+            "assets/locale/uk/LC_MESSAGES/django.mo",
+            "assets/logo.png",
+            "data/committed.bin",
+        ],
+    );
+    git_ok(&repo, &["commit", "-m", "seed tracked binaries"]);
+
+    let cfg = base_config(&repo);
+    let (_, provider) = build_provider_with_mock(&cfg.modules);
+    let engine = StateEngine::open(cfg, provider).expect("open engine");
+    let policy = WorkspacePathPolicy::default();
+    let run_id = RunId::new("run-bin-01").expect("run_id");
+    let mut head = current_head_commit(&repo).expect("head");
+
+    // 1. Positive contract matrix: tracked (clean + modified) and newly added untracked NUL binaries
+    // succeed across current_scope_tree, create_scoped_commit, and snapshot save/restore.
+    struct BinaryCase {
+        label: &'static str,
+        rel: &'static str,
+        saved_bytes: &'static [u8],
+        mutated_bytes: &'static [u8],
+        scope_pat: &'static str,
+    }
+    let binary_cases = [
+        BinaryCase {
+            label: "tracked_mo_modified",
+            rel: "assets/locale/uk/LC_MESSAGES/django.mo",
+            saved_bytes: b"\xde\x12\x04\x95\x00updated-mo",
+            mutated_bytes: b"\xde\x12\x04\x95\x00mutated-mo",
+            scope_pat: "assets/**",
+        },
+        BinaryCase {
+            label: "tracked_bin_modified",
+            rel: "data/committed.bin",
+            saved_bytes: b"\x00\xffupdated-bin",
+            mutated_bytes: b"\x00\xfeother-bin",
+            scope_pat: "data/**",
+        },
+        BinaryCase {
+            label: "untracked_jpg_added",
+            rel: "assets/photo.jpg",
+            saved_bytes: b"\xff\xd8\xff\xe0\x00\x10JFIF",
+            mutated_bytes: b"\xff\xd8\xff\xe0\x00\x11MUTATED",
+            scope_pat: "assets/**",
+        },
+        BinaryCase {
+            label: "untracked_bin_added",
+            rel: "src/payload.bin",
+            saved_bytes: b"abc\x00def\x00123",
+            mutated_bytes: b"abc\x00mutated",
+            scope_pat: "src/**",
+        },
+    ];
+
+    for (rev, case) in (1_u32..).zip(binary_cases) {
+        let abs = repo.join(case.rel);
+        fs::write(&abs, case.saved_bytes).expect("write saved binary");
+
+        let _full = current_scope_tree(&repo, None, &policy).expect(case.label);
+        let scoped =
+            current_scope_tree(&repo, Some(&[case.scope_pat.to_owned()]), &policy).expect(case.label);
+        assert_ne!(
+            scoped,
+            current_scope_tree(&repo, Some(&["README.md".to_owned()]), &policy).expect(case.label)
+        );
+
+        let snap_name = format!("snap-{rev}");
+        let snapshot_cmd = |action| {
+            engine.execute(StateCommand::Snapshot(SnapshotReq {
+                run: None,
+                action,
+                task_ref: None,
+                all: false,
+                revision: None,
+                name: Some(snap_name.clone()),
+                worktree: Some(repo.clone()),
+                older_than: None,
+            }))
+        };
+        snapshot_cmd(SnapshotAction::Save).expect("save binary snapshot");
+        fs::write(&abs, case.mutated_bytes).expect("mutate binary");
+        snapshot_cmd(SnapshotAction::Restore).expect("restore binary snapshot");
+        assert_eq!(
+            fs::read(&abs).expect("read restored"),
+            case.saved_bytes,
+            "{}",
+            case.label
+        );
+
+        let resp = create_scoped_commit_with_expected(
+            &ScopedCommitReq {
+                worktree: repo.clone(),
+                run_id: run_id.clone(),
+                node_id: format!("task:bin:{rev}"),
+                claim_revision: rev,
+                base_head: head.clone(),
+                admitted_scope: vec![case.scope_pat.to_owned()],
+                path_policy: policy.clone(),
+                message: case.label.to_owned(),
+                allow_main: false,
+            },
+            Some(&scoped),
+        )
+        .expect(case.label);
+        head = resp.committed_oid.expect("committed oid");
+        assert_eq!(
+            git_command_bytes(&repo, head.as_str(), case.rel),
+            case.saved_bytes,
+            "{}",
+            case.label
+        );
+    }
+
+    // 2. Default policy keeps size ceiling disabled (>16 MiB passes), while structural guards always fail.
+    let huge_path = repo.join("src/large_default.bin");
+    {
+        let f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&huge_path)
+            .expect("open large default");
+        f.set_len(16 * 1024 * 1024 + 1).expect("set_len >16 MiB");
+    }
+    current_scope_tree(&repo, Some(&["src/large_default.bin".to_owned()]), &policy)
+        .expect("default policy disables size ceiling");
+    fs::remove_file(&huge_path).expect("cleanup large default");
+
+    // 3. Real `acdd.yaml` opt-in limits (`max_snapshot_file_bytes` + `allowed_binary_extensions`)
+    // plus `Some([])` strict-all-binary mode and unconditional structural guards.
+    fs::write(
+        repo.join(ACDD_CONFIG_FILE),
+        "limits:\n  max_snapshot_file_bytes: 16777216\n  allowed_binary_extensions:\n    - \".PNG\"\n    - mo\n",
+    )
+    .expect("write acdd.yaml");
+    let adapter = load_adapter(&repo, None).expect("load_adapter");
+    let mut cfg = base_config(&repo);
+    cfg.max_snapshot_file_bytes = adapter.limits.max_snapshot_file_bytes;
+    cfg.allowed_binary_extensions = adapter
+        .limits
+        .allowed_binary_extensions
+        .as_ref()
+        .map(normalize_binary_extensions)
+        .transpose()
+        .expect("normalize extensions");
+    let reader = SqliteStateReader::new(cfg.resolved_state_db_path().0);
+    let configured_policy = build_path_policy(&cfg, &reader, &[], None, None).expect("build_path_policy");
+    assert_eq!(configured_policy.max_snapshot_file_bytes, Some(16 * 1024 * 1024));
+    assert_eq!(
+        configured_policy.allowed_binary_extensions,
+        Some(BTreeSet::from(["mo".to_owned(), "png".to_owned()]))
+    );
+
+    // Allowed `.png` & `.mo` pass under configured policy; `.jpg`/`.bin` & `>16 MiB` fail closed.
+    current_scope_tree(
+        &repo,
+        Some(&[
+            "assets/logo.png".to_owned(),
+            "assets/locale/**".to_owned(),
+        ]),
+        &configured_policy,
+    )
+    .expect("allowed .png/.mo pass");
+    let reject_all_policy = policy
+        .clone()
+        .with_snapshot_limits(Some(16 * 1024 * 1024), Some(BTreeSet::new()));
+
+    enum FailKind {
+        DisallowedBin,
+        RejectAllBin,
+        Gt16MibBinary,
+        NestedGit,
+        Gitlink160000,
+        #[cfg(unix)]
+        SymlinkEscape,
+    }
+    let fail_cases = [
+        ("disallowed_bin_extension", "src/payload.bin", FailKind::DisallowedBin),
+        ("empty_allowlist_rejects_png", "assets/logo.png", FailKind::RejectAllBin),
+        ("gt_16mib_binary", "src/huge.bin", FailKind::Gt16MibBinary),
+        ("nested_git", "src/nested_sub", FailKind::NestedGit),
+        ("gitlink_160000", "src/submod", FailKind::Gitlink160000),
+        #[cfg(unix)]
+        ("symlink_escape", "assets/escape_dir/escape.png", FailKind::SymlinkEscape),
+    ];
+    for (label, rel, kind) in fail_cases {
+        let abs = repo.join(rel);
+        let active_policy = match kind {
+            FailKind::DisallowedBin => &configured_policy,
+            FailKind::RejectAllBin => &reject_all_policy,
+            FailKind::Gt16MibBinary => {
+                let f = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&abs)
+                    .expect("open large binary");
+                f.set_len(16 * 1024 * 1024 + 1).expect("set_len >16 MiB");
+                &configured_policy
+            }
+            FailKind::NestedGit => {
+                fs::create_dir_all(&abs).expect("nested dir");
+                git_ok(&abs, &["init"]);
+                fs::write(abs.join("x.txt"), "hi").expect("nested file");
+                &policy
+            }
+            FailKind::Gitlink160000 => {
+                git_ok(
+                    &repo,
+                    &[
+                        "update-index",
+                        "--add",
+                        "--cacheinfo",
+                        &format!("160000,{},{rel}", head.as_str()),
+                    ],
+                );
+                &policy
+            }
+            #[cfg(unix)]
+            FailKind::SymlinkEscape => {
+                let outside = tmp.path().join("outside");
+                fs::create_dir_all(&outside).expect("outside dir");
+                fs::write(outside.join("escape.png"), b"\x89PNG\x00escape").expect("outside png");
+                std::os::unix::fs::symlink(&outside, repo.join("assets/escape_dir"))
+                    .expect("symlink dir");
+                &policy
+            }
+        };
+        let scope = vec![rel.to_owned()];
+        let err = current_scope_tree(&repo, Some(&scope), active_policy).expect_err(label);
+        assert_eq!(err.code, ErrorCode::ExternalGitDrift, "{label}: {err}");
+        match kind {
+            FailKind::DisallowedBin | FailKind::RejectAllBin => {}
+            FailKind::Gt16MibBinary => fs::remove_file(&abs).expect("cleanup huge"),
+            FailKind::NestedGit => fs::remove_dir_all(&abs).expect("cleanup nested"),
+            FailKind::Gitlink160000 => {
+                git_ok(&repo, &["rm", "--cached", "--quiet", rel]);
+            }
+            #[cfg(unix)]
+            FailKind::SymlinkEscape => {
+                fs::remove_file(repo.join("assets/escape_dir")).expect("cleanup symlink")
+            }
+        }
+    }
+}
+
+fn git_command_bytes(repo: &Path, rev: &str, rel_path: &str) -> Vec<u8> {
+    let out = acdd_core::git::git_command(repo, &["show", &format!("{rev}:{rel_path}")])
+        .expect("spawn git show");
+    assert!(out.status.success(), "git show failed for {rev}:{rel_path}");
+    out.stdout
 }
