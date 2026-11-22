@@ -13,6 +13,7 @@ const MAX_TREE_DEPTH: usize = 6;
 enum MacroItemKind {
     Struct,
     Enum,
+    Function,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -91,8 +92,46 @@ fn canonical_derive_trait(raw: &str) -> Option<&'static str> {
         "Hash" => Some("Hash"),
         "Serialize" => Some("Serialize"),
         "Deserialize" => Some("Deserialize"),
+        "Parser" => Some("Parser"),
         _ => None,
     }
+}
+
+fn has_clap_parser_signal(node: TsNode<'_>, source: &str) -> bool {
+    let mut has_explicit_clap = false;
+    let mut has_clap_attr = false;
+    for_each_preceding_attribute(node, |sibling| {
+        let raw = text(sibling, source);
+        let compact: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+        if compact.contains("clap::Parser")
+            || compact.starts_with("#[command(")
+            || compact.starts_with("#[clap(")
+        {
+            has_clap_attr = true;
+            if compact.contains("clap::Parser") {
+                has_explicit_clap = true;
+            }
+        }
+    });
+    if has_explicit_clap || has_clap_attr {
+        return true;
+    }
+    let body_text = text(node, source);
+    if body_text.contains("#[command(") || body_text.contains("#[arg(") || body_text.contains("#[clap(") {
+        return true;
+    }
+    let mut root = node;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    let mut cursor = root.walk();
+    let found = root.named_children(&mut cursor).any(|child| {
+        child.kind() == "use_declaration" && {
+            let txt = text(child, source);
+            txt.contains("clap::") && txt.contains("Parser")
+        }
+    });
+    found
 }
 
 fn parse_derive_inner(inner: &str, out: &mut Vec<&'static str>) {
@@ -149,6 +188,9 @@ pub(super) fn extract_derives(node: TsNode<'_>, source: &str) -> Vec<&'static st
     for_each_preceding_attribute(node, |sibling| {
         parse_derive_attribute_text(text(sibling, source), &mut derives);
     });
+    if derives.contains(&"Parser") && !has_clap_parser_signal(node, source) {
+        derives.retain(|trait_name| *trait_name != "Parser");
+    }
     derives
 }
 
@@ -174,6 +216,14 @@ fn derive_methods(trait_name: &str) -> &'static [(&'static str, bool, Option<&'s
         "Hash" => &[("hash", false, None)],
         "Serialize" => &[("serialize", false, None)],
         "Deserialize" => &[("deserialize", true, Some("Result<Self>"))],
+        "Parser" => &[
+            ("parse", true, Some("Self")),
+            ("try_parse", true, Some("Result<Self>")),
+            ("parse_from", true, Some("Self")),
+            ("try_parse_from", true, Some("Result<Self>")),
+            ("command", true, None),
+            ("update_from_arg_matches", false, Some("Result<Self>")),
+        ],
         _ => &[],
     }
 }
@@ -478,6 +528,116 @@ fn visibility_before(
     MacroVisibility::Private
 }
 
+fn scan_macro_item_header(
+    children: &[TsNode<'_>],
+    source: &str,
+    top_idents: &[String],
+    rep_idents: &[String],
+    vis_params: &[String],
+    derives: &mut Vec<&'static str>,
+) -> Option<(MacroItemKind, String, MacroVisibility, bool)> {
+    let mut item_kind = None;
+    let mut type_param = None;
+    let mut visibility = MacroVisibility::Private;
+    let mut has_variant_repetition = false;
+
+    for (idx, child) in children.iter().enumerate() {
+        let tok = text(*child, source).trim();
+        if tok == "#" {
+            if let Some(attr_tree) = children.get(idx + 1).filter(|n| n.kind() == "token_tree") {
+                let raw_attr = format!("#{}", text(*attr_tree, source));
+                parse_derive_attribute_text(&raw_attr, derives);
+            }
+        }
+        if item_kind.is_some() || !matches!(tok, "struct" | "enum" | "fn") {
+            continue;
+        }
+        let raw_next = token_at_child_is(children, idx + 1, source);
+        let next_tok = raw_next.trim_start_matches('$');
+        if !top_idents.iter().any(|var| var == next_tok) {
+            continue;
+        }
+        item_kind = Some(match tok {
+            "struct" => MacroItemKind::Struct,
+            "enum" => MacroItemKind::Enum,
+            _ => MacroItemKind::Function,
+        });
+        type_param = Some(raw_next.to_owned());
+        visibility = visibility_before(children, idx, source, vis_params);
+        if tok == "enum" {
+            has_variant_repetition = children
+                .get(idx + 2)
+                .filter(|n| n.kind() == "token_tree")
+                .is_some_and(|body| contains_rep_ident(*body, rep_idents, source, 0));
+        }
+    }
+    Some((item_kind?, type_param?, visibility, has_variant_repetition))
+}
+
+fn collect_macro_impl_members(
+    children: &[TsNode<'_>],
+    source: &str,
+    type_param: &str,
+    visibility: MacroVisibility,
+    vis_params: &[String],
+) -> (Vec<MacroMethodSpec>, Vec<MacroConstSpec>, bool) {
+    let mut methods = Vec::new();
+    let mut consts = Vec::new();
+    let mut has_from_str = false;
+
+    for (idx, child) in children.iter().enumerate() {
+        if text(*child, source).trim() != "impl" {
+            continue;
+        }
+        let mut cursor_idx = idx + 1;
+        while cursor_idx < children.len() {
+            let tok = token_at_child_is(children, cursor_idx, source);
+            if tok == type_param {
+                let is_display = children[(idx + 1)..cursor_idx].iter().any(|scan| {
+                    let st = text(*scan, source).trim();
+                    st == "Display" || st.ends_with("::Display") || st == "ToString"
+                });
+                let has_for = children[(idx + 1)..cursor_idx]
+                    .iter()
+                    .any(|scan| text(*scan, source).trim() == "for");
+                if has_for
+                    && is_display
+                    && !methods
+                        .iter()
+                        .any(|existing: &MacroMethodSpec| existing.name == "to_string")
+                {
+                    methods.push(MacroMethodSpec {
+                        name: "to_string".to_owned(),
+                        is_static: false,
+                        visibility,
+                        synth_return: Some("String"),
+                    });
+                }
+                if let Some(body) = children
+                    .get(cursor_idx + 1)
+                    .filter(|n| n.kind() == "token_tree" && text(**n, source).trim().starts_with('{'))
+                {
+                    extract_impl_members(*body, source, vis_params, &mut methods, &mut consts);
+                }
+                break;
+            }
+            if tok == "FromStr" {
+                has_from_str |= ((cursor_idx + 1)..children.len().min(cursor_idx + 6))
+                    .map(|scan| token_at_child_is(children, scan, source))
+                    .take_while(|st| !st.starts_with('{'))
+                    .any(|st| st == type_param);
+            }
+            if children[cursor_idx].kind() == "token_tree"
+                && text(children[cursor_idx], source).trim().starts_with('{')
+            {
+                break;
+            }
+            cursor_idx += 1;
+        }
+    }
+    (methods, consts, has_from_str)
+}
+
 fn parse_macro_rule(
     macro_name: &str,
     left: TsNode<'_>,
@@ -502,113 +662,20 @@ fn parse_macro_rule(
 
     let mut cursor = right.walk();
     let children: Vec<_> = right.children(&mut cursor).collect();
-
-    let mut item_kind = None;
-    let mut type_param = None;
-    let mut visibility = MacroVisibility::Private;
-    let mut has_variant_repetition = false;
     let mut derives = Vec::new();
-    let mut methods = Vec::new();
-    let mut consts = Vec::new();
-    let mut has_from_str = false;
-
-    for (idx, child) in children.iter().enumerate() {
-        let tok = text(*child, source).trim();
-        if tok == "#" {
-            if let Some(attr_tree) = children.get(idx + 1).filter(|n| n.kind() == "token_tree") {
-                let raw_attr = format!("#{}", text(*attr_tree, source));
-                parse_derive_attribute_text(&raw_attr, &mut derives);
-            }
-        }
-        if item_kind.is_some() || (tok != "struct" && tok != "enum") {
-            continue;
-        }
-        let next_tok = token_at_child_is(&children, idx + 1, source).trim_start_matches('$');
-        if !top_idents.iter().any(|var| var == next_tok) {
-            continue;
-        }
-        item_kind = Some(if tok == "struct" {
-            MacroItemKind::Struct
-        } else {
-            MacroItemKind::Enum
-        });
-        type_param = Some(token_at_child_is(&children, idx + 1, source).to_owned());
-        visibility = visibility_before(&children, idx, source, &vis_params);
-        if tok == "enum" {
-            has_variant_repetition = children
-                .get(idx + 2)
-                .filter(|n| n.kind() == "token_tree")
-                .is_some_and(|body| contains_rep_ident(*body, &rep_idents, source, 0));
-        }
-    }
-
-    let item_kind = item_kind?;
-    let type_param = type_param?;
-
-    for (idx, child) in children.iter().enumerate() {
-        if text(*child, source).trim() != "impl" {
-            continue;
-        }
-        let mut cursor_idx = idx + 1;
-        // Skip optional `<'de>` etc. (a `token_tree` or `< ... >`)
-        while cursor_idx < children.len() {
-            let t = token_at_child_is(&children, cursor_idx, source);
-            if t == type_param {
-                let mut has_for = false;
-                let mut is_display = false;
-                for scan in &children[(idx + 1)..cursor_idx] {
-                    let st = text(*scan, source).trim();
-                    if st == "for" {
-                        has_for = true;
-                    } else if st == "Display" || st.ends_with("::Display") || st == "ToString" {
-                        is_display = true;
-                    }
-                }
-                if has_for
-                    && is_display
-                    && !methods
-                        .iter()
-                        .any(|existing: &MacroMethodSpec| existing.name == "to_string")
-                {
-                    methods.push(MacroMethodSpec {
-                        name: "to_string".to_owned(),
-                        is_static: false,
-                        visibility,
-                        synth_return: Some("String"),
-                    });
-                }
-                if let Some(body) = children
-                    .get(cursor_idx + 1)
-                    .filter(|n| n.kind() == "token_tree")
-                {
-                    let body_text = text(*body, source).trim();
-                    if body_text.starts_with('{') {
-                        extract_impl_members(*body, source, &vis_params, &mut methods, &mut consts);
-                    }
-                }
-                break;
-            }
-            if t == "FromStr" {
-                // Check if `for $type_param` follows before `{`
-                for scan in (cursor_idx + 1)..children.len().min(cursor_idx + 6) {
-                    let st = token_at_child_is(&children, scan, source);
-                    if st == type_param {
-                        has_from_str = true;
-                        break;
-                    }
-                    if st.starts_with('{') {
-                        break;
-                    }
-                }
-            }
-            if children[cursor_idx].kind() == "token_tree"
-                && text(children[cursor_idx], source).trim().starts_with('{')
-            {
-                break;
-            }
-            cursor_idx += 1;
-        }
-    }
+    let (item_kind, type_param, visibility, has_variant_repetition) = scan_macro_item_header(
+        &children,
+        source,
+        &top_idents,
+        &rep_idents,
+        &vis_params,
+        &mut derives,
+    )?;
+    let (methods, consts, has_from_str) = if item_kind == MacroItemKind::Function {
+        (Vec::new(), Vec::new(), false)
+    } else {
+        collect_macro_impl_members(&children, source, &type_param, visibility, &vis_params)
+    };
 
     Some(MacroTemplate {
         name: macro_name.to_owned(),
@@ -777,6 +844,27 @@ fn is_plain_ident(tok: &str) -> bool {
         && tok.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
+fn next_macro_token<'a>(
+    children: &[TsNode<'a>],
+    idx: &mut usize,
+    source: &'a str,
+) -> Option<&'a str> {
+    while *idx < children.len() {
+        let child = children[*idx];
+        let kind = child.kind();
+        if kind.contains("comment") || matches!(kind, "(" | ")" | "{" | "}" | "[" | "]") {
+            *idx += 1;
+            continue;
+        }
+        let tok = text(child, source).trim();
+        if skip_attr_token(children, tok, idx) {
+            continue;
+        }
+        return Some(tok);
+    }
+    None
+}
+
 fn extract_invocation_name_and_variants(
     args_tree: TsNode<'_>,
     source: &str,
@@ -787,17 +875,7 @@ fn extract_invocation_name_and_variants(
     let mut item_name = None;
     let mut invocation_public = false;
     let mut idx = 0;
-    while idx < children.len() {
-        let child = children[idx];
-        let kind = child.kind();
-        if kind.contains("comment") || matches!(kind, "(" | ")" | "{" | "}" | "[" | "]") {
-            idx += 1;
-            continue;
-        }
-        let tok = text(child, source).trim();
-        if skip_attr_token(&children, tok, &mut idx) {
-            continue;
-        }
+    while let Some(tok) = next_macro_token(&children, &mut idx, source) {
         if tok == "pub" {
             let scoped = children
                 .get(idx + 1)
@@ -961,6 +1039,31 @@ pub(super) fn extract_macro_impl_traits(tree: TsNode<'_>, source: &str, out: &mu
     push_transcription_impl_traits(tree, source, out);
 }
 
+fn extract_invocation_target_path(args_tree: TsNode<'_>, source: &str) -> Option<String> {
+    let mut cursor = args_tree.walk();
+    let mut path = String::new();
+    let mut idx = 0usize;
+    let children: Vec<_> = args_tree.children(&mut cursor).collect();
+    while let Some(tok) = next_macro_token(&children, &mut idx, source) {
+        if tok == "," || tok == ";" {
+            break;
+        }
+        if matches!(tok, "::" | "crate" | "self" | "super")
+            || (tok.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                && tok.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        {
+            path.push_str(tok);
+            idx += 1;
+            continue;
+        }
+        break;
+    }
+    let last_seg = path.rsplit("::").next()?;
+    last_seg
+        .starts_with(|ch: char| ch.is_ascii_uppercase())
+        .then_some(path)
+}
+
 pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
     let Some(owner) = facts
         .nodes
@@ -976,7 +1079,7 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
     };
     let macro_raw = text(macro_node, ctx.source).trim();
     let macro_name = macro_raw.rsplit("::").next().unwrap_or(macro_raw);
-    let template = FILE_MACRO_TEMPLATES.with(|cell| {
+    let template: Option<MacroTemplate> = FILE_MACRO_TEMPLATES.with(|cell| {
         cell.borrow()
             .as_ref()
             .and_then(|(_, map)| map.get(macro_name).cloned())
@@ -989,18 +1092,14 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
         return;
     };
     let Some(template) = template else {
-        if let Some((target_name, _, _)) =
-            extract_invocation_name_and_variants(args_tree, ctx.source, false)
-        {
-            if target_name.starts_with(|ch: char| ch.is_ascii_uppercase()) {
-                if let Some(owner_node) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
-                    if let Some(arr) = owner_node.details.as_object_mut().and_then(|obj| {
-                        obj.entry("rust_macro_type_invocations")
-                            .or_insert_with(|| json!([]))
-                            .as_array_mut()
-                    }) {
-                        arr.push(json!([macro_raw, target_name]));
-                    }
+        if let Some(target_name) = extract_invocation_target_path(args_tree, ctx.source) {
+            if let Some(owner_node) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
+                if let Some(arr) = owner_node.details.as_object_mut().and_then(|obj| {
+                    obj.entry("rust_macro_type_invocations")
+                        .or_insert_with(|| json!([]))
+                        .as_array_mut()
+                }) {
+                    arr.push(json!([macro_raw, target_name]));
                 }
             }
         }
@@ -1016,10 +1115,15 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
     let item_public = template.visibility.resolve(invocation_public);
 
     let item_qualname = format!("{}.{item_name}", owner.qualname);
+    let item_kind = match template.kind {
+        MacroItemKind::Struct => "struct",
+        MacroItemKind::Enum => "enum",
+        MacroItemKind::Function => "function",
+    };
     if facts
         .nodes
         .iter()
-        .any(|node| node.qualname == item_qualname && matches!(node.kind.as_str(), "struct" | "enum"))
+        .any(|node| node.qualname == item_qualname && node.kind == item_kind)
     {
         return;
     }
@@ -1030,10 +1134,6 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
     if facts.nodes.iter().any(|node| node.id == item_id) {
         return;
     }
-    let item_kind = match template.kind {
-        MacroItemKind::Struct => "struct",
-        MacroItemKind::Enum => "enum",
-    };
     facts.nodes.push(Node {
         native_semantic: None,
         id: item_id.clone(),
@@ -1061,53 +1161,55 @@ pub(super) fn project_macro_invocation(ctx: &SyntaxContext<'_, '_>, facts: &mut 
         confidence: "exact".into(),
     });
 
-    let synth_owner = SyntheticOwner {
-        id: &item_id,
-        qualname: &item_qualname,
-        name: &item_name,
-        path: &owner.path,
-        line,
-        end_line,
-        is_public: item_public,
-        is_test: owner.is_test,
-    };
-    for variant in variants {
-        push_synthetic_constant(facts, &synth_owner, variant, item_public, true);
-    }
+    if template.kind != MacroItemKind::Function {
+        let synth_owner = SyntheticOwner {
+            id: &item_id,
+            qualname: &item_qualname,
+            name: &item_name,
+            path: &owner.path,
+            line,
+            end_line,
+            is_public: item_public,
+            is_test: owner.is_test,
+        };
+        for variant in variants {
+            push_synthetic_constant(facts, &synth_owner, variant, item_public, true);
+        }
 
-    for c in &template.consts {
-        push_synthetic_constant(
-            facts,
-            &synth_owner,
-            &c.name,
-            c.visibility.resolve(invocation_public),
-            false,
-        );
-    }
+        for c in &template.consts {
+            push_synthetic_constant(
+                facts,
+                &synth_owner,
+                &c.name,
+                c.visibility.resolve(invocation_public),
+                false,
+            );
+        }
 
-    for method in &template.methods {
-        push_synthetic_method(
-            facts,
-            &synth_owner,
-            &method.name,
-            method.is_static,
-            method.visibility.resolve(invocation_public),
-            method.synth_return,
-            None,
-        );
+        for method in &template.methods {
+            push_synthetic_method(
+                facts,
+                &synth_owner,
+                &method.name,
+                method.is_static,
+                method.visibility.resolve(invocation_public),
+                method.synth_return,
+                None,
+            );
+        }
+        if template.has_from_str {
+            push_synthetic_method(
+                facts,
+                &synth_owner,
+                "from_str",
+                true,
+                item_public,
+                Some("Result<Self>"),
+                None,
+            );
+        }
+        synthesize_derive_methods(&synth_owner, &template.derives, facts);
     }
-    if template.has_from_str {
-        push_synthetic_method(
-            facts,
-            &synth_owner,
-            "from_str",
-            true,
-            item_public,
-            Some("Result<Self>"),
-            None,
-        );
-    }
-    synthesize_derive_methods(&synth_owner, &template.derives, facts);
 
     if let Some(macro_def) = facts
         .nodes

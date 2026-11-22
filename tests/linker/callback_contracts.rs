@@ -94,3 +94,210 @@ fn callback_param_callable_signature_and_compact_graph_contracts() {
     assert_eq!(edges.len(), 1);
     assert_eq!(edges[0].dst.as_ref(), "fn:b");
 }
+
+#[test]
+fn rust_callable_signature_and_callback_param_extraction_matrix() {
+    let source = r#"
+pub struct Item;
+impl Item {
+    pub fn mark(&mut self) -> bool { true }
+}
+
+pub fn apply_fn_ptr(item: &Item, f: fn(&Item) -> bool) -> bool {
+    f(item)
+}
+
+pub fn apply_impl_fn_mut(item: &mut Item, mut cb: impl FnMut(&mut Item, usize) -> bool) -> bool {
+    cb(item, 1)
+}
+
+pub fn apply_boxed_dyn(item: Item, cb: Box<dyn FnOnce(Item) -> bool>) -> bool {
+    cb(item)
+}
+
+pub struct Runner;
+impl Runner {
+    pub fn run_where<F>(&self, item: &Item, mut f: F) -> bool
+    where
+        F: FnMut(&Item) -> bool,
+    {
+        f(item)
+    }
+
+    pub fn run_inline_bound<G: FnOnce(Item) -> bool>(&self, item: Item, g: G) -> bool {
+        g(item)
+    }
+}
+
+pub fn drive(r: &Runner, mut item: Item) {
+    let _ = apply_fn_ptr(&item, |x| x.mark());
+    let _ = apply_impl_fn_mut(&mut item, |mut_item, _idx| mut_item.mark());
+    let _ = apply_boxed_dyn(Item, Box::new(|owned| owned.mark()));
+    let _ = r.run_where(&item, |elem| elem.mark());
+    let _ = r.run_inline_bound(item, |owned| owned.mark());
+}
+"#;
+    let typed = acdd_index::ast::extract_typed("src/lib.rs", "rust", source)
+        .expect("extract_typed should parse rust callback matrix");
+
+    for (fn_name, expected_has_receiver, expected_param_names, expected_cb_len) in [
+        ("apply_fn_ptr", false, vec!["Item"], 1),
+        ("apply_impl_fn_mut", false, vec!["Item", "usize"], 2),
+        ("apply_boxed_dyn", false, vec!["Item"], 1),
+        ("run_where", true, vec!["Item"], 1),
+        ("run_inline_bound", true, vec!["Item"], 1),
+    ] {
+        let node = typed
+            .facts
+            .nodes
+            .iter()
+            .find(|n| matches!(n.kind.as_str(), "function" | "method") && n.name == fn_name)
+            .unwrap_or_else(|| panic!("missing function/method node {fn_name}"));
+        let flow = typed
+            .flows
+            .get(node)
+            .unwrap_or_else(|| panic!("missing value_flow for {fn_name}"));
+        let sig = flow
+            .callable_signature
+            .as_ref()
+            .unwrap_or_else(|| panic!("missing callable_signature for {fn_name}"));
+        assert_eq!(sig.has_receiver, expected_has_receiver, "fn={fn_name}");
+        let cb_param = sig
+            .params
+            .last()
+            .unwrap_or_else(|| panic!("missing callback param for {fn_name}"));
+        assert_eq!(
+            cb_param.callback_params.len(),
+            expected_cb_len,
+            "fn={fn_name} params={cb_param:?}"
+        );
+        for expected_ty in expected_param_names {
+            assert!(
+                format!("{:?}", cb_param.callback_params).contains(expected_ty),
+                "fn={fn_name} missing callback param type {expected_ty}: {:?}",
+                cb_param.callback_params
+            );
+        }
+    }
+
+    let drive_node = typed
+        .facts
+        .nodes
+        .iter()
+        .find(|n| n.kind == "function" && n.name == "drive")
+        .expect("missing drive node");
+    let drive_flow = typed.flows.get(drive_node).expect("missing drive value_flow");
+    fn unwrap_scoped(v: &ValueExpr) -> &ValueExpr {
+        match v {
+            ValueExpr::Scoped { value, .. } => value.as_ref(),
+            other => other,
+        }
+    }
+    for (binding_name, expected_callee, expected_arg_idx, expected_param_idx) in [
+        ("x", "apply_fn_ptr", 1, 0),
+        ("mut_item", "apply_impl_fn_mut", 1, 0),
+        ("_idx", "apply_impl_fn_mut", 1, 1),
+        ("elem", "run_where", 1, 0),
+        ("owned", "run_inline_bound", 1, 0),
+    ] {
+        assert!(
+            drive_flow.bindings.iter().any(|b| {
+                b.name == binding_name
+                    && matches!(
+                        unwrap_scoped(&b.value),
+                        ValueExpr::CallbackParam { callee, arg_index, param_index }
+                        if *arg_index == expected_arg_idx
+                            && *param_index == expected_param_idx
+                            && matches!(callee.as_ref(), ValueExpr::Call { callee: name, .. } if name == expected_callee)
+                    )
+            }),
+            "missing CallbackParam binding {binding_name}({expected_arg_idx},{expected_param_idx}) on {expected_callee} in {:?}",
+            drive_flow.bindings
+        );
+    }
+}
+
+#[test]
+fn rust_dynamic_callback_and_zero_false_shadowing_matrix() {
+    let workspace = crate::common::Workspace::new();
+    workspace.write(
+        "Cargo.toml",
+        "[package]\nname = \"cb_probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    workspace.write(
+        "src/lib.rs",
+        r#"
+pub struct Item;
+impl Item {
+    pub fn check(&self) -> bool { true }
+}
+
+pub fn invoke_callback(item: &Item, cb: impl Fn(&Item) -> bool) -> bool {
+    cb(item)
+}
+
+pub fn destructured_no_shadowing(
+    left: Option<Item>,
+    right: Option<Item>,
+    nested: Option<(Item, Item)>,
+) -> bool {
+    let (Some(a), Some(b)) = (left, right) else {
+        return false;
+    };
+    let Some((x, y)) = nested else {
+        return false;
+    };
+    a.check() && b.check() && x.check() && y.check()
+}
+"#,
+    );
+    workspace.build();
+    let conn = workspace.open();
+
+    let analysis = acdd_index::db::reader::analyze_paged(
+        &conn,
+        "src/lib.rs",
+        None,
+        &acdd_core::response::QueryOptions {
+            limit: 50,
+            offset: 0,
+            detail: acdd_core::response::Detail::Full,
+            generation: None,
+        },
+    )
+    .expect("analyze_paged should succeed");
+
+    let unresolved_samples = analysis["resolution"]["items"]
+        .as_array()
+        .expect("resolution.items should be an array");
+    assert!(
+        unresolved_samples
+            .iter()
+            .any(|row| row["expression"] == "cb" && row["reason"] == "dynamic_callback"),
+        "expected dynamic_callback diagnostic for cb(item), got: {unresolved_samples:?}"
+    );
+    assert!(
+        !unresolved_samples.iter().any(|row| {
+            matches!(
+                row["expression"].as_str(),
+                Some("a.check" | "b.check" | "x.check" | "y.check")
+            )
+        }),
+        "destructured let-else locals should never produce false-shadowing diagnostics: {unresolved_samples:?}"
+    );
+
+    for expr in ["a.check", "b.check", "x.check", "y.check"] {
+        let status: String = conn
+            .query_row(
+                "SELECT r.status FROM resolution_coverage r
+                 JOIN path_dictionary p ON p.path_id = r.path_id
+                 JOIN coverage_expressions x ON x.expression_id = r.expression_id
+                 WHERE p.path = 'src/lib.rs' AND x.expression = ?1
+                 LIMIT 1",
+                [expr],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|e| panic!("missing coverage row for {expr}: {e}"));
+        assert_eq!(status, "resolved", "expr={expr}");
+    }
+}

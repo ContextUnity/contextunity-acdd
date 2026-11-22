@@ -1498,6 +1498,87 @@ impl<'a> Context<'a> {
     }
 
     #[cfg(feature = "lang-rust")]
+    pub(in crate::linker) fn resolve_rust_imported_call(
+        &self,
+        owner: &'a Node,
+        targets: &[&'a Node],
+        member: &str,
+    ) -> Vec<&'a Node> {
+        match self.resolve_rust_member_path(owner, targets, member, SymbolRole::Callable) {
+            Symbol::Callable(node) => vec![node],
+            _ => Vec::new(),
+        }
+    }
+
+    #[cfg(feature = "lang-rust")]
+    pub(in crate::linker) fn resolve_rust_constant_member(
+        &self,
+        constant: &'a Node,
+        member: &str,
+        owner: &'a Node,
+    ) -> Option<&'a Node> {
+        let alias_ty = self
+            .value_flow(constant)
+            .and_then(|facts| facts.alias_type.as_ref())?;
+        let target_ty = super::super::value_flow::resolve_type(
+            constant,
+            alias_ty,
+            super::super::value_flow::node_position(constant),
+            self,
+            super::super::value_flow::SemanticLimits::default(),
+        );
+        match self.resolve_member(
+            &target_ty,
+            member,
+            owner,
+            super::super::value_flow::node_position(owner),
+        ) {
+            Symbol::Callable(node) => Some(node),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "lang-rust")]
+    fn step_rust_module_member(
+        &self,
+        owner: &'a Node,
+        target: &'a Node,
+        segment: &str,
+        next: &mut Vec<&'a Node>,
+    ) {
+        if let Some(Imported::Nodes(imported, _, _)) = self.imported_alias(target, segment) {
+            if imported.iter().all(|node| node.kind == "module") {
+                next.extend(imported.iter().copied().filter(|node| {
+                    self.rust_forwarding
+                        .module_path_visible(&node.qualname, &owner.qualname)
+                }));
+                return;
+            }
+        }
+        let visible = self.rust_forwarding.targets(target, segment, &owner.qualname);
+        if visible.is_empty() {
+            let sub_qual = format!("{}.{}", target.qualname, segment);
+            let target_pkg = target.path.split_once("/src/").map_or("", |(p, _)| p);
+            if let Some(candidates) = self.by_qual.get(sub_qual.as_str()) {
+                next.extend(candidates.iter().copied().filter(|node| {
+                    node.language == "rust"
+                        && node.kind == "module"
+                        && node.path.split_once("/src/").map_or("", |(p, _)| p) == target_pkg
+                        && self
+                            .rust_forwarding
+                            .module_path_visible(&node.qualname, &owner.qualname)
+                }));
+            }
+            return;
+        }
+        if let Some(Imported::Nodes(imported, _, _)) = self.imported_alias(target, segment) {
+            next.extend(imported.iter().copied());
+        } else {
+            next.extend_from_slice(visible);
+        }
+    }
+
+    #[cfg(feature = "lang-rust")]
     fn resolve_rust_member_path(
         &self,
         owner: &'a Node,
@@ -1514,32 +1595,16 @@ impl<'a> Context<'a> {
             let mut next = Vec::new();
             for target in &current {
                 if target.kind == "module" {
-                    if let Some(Imported::Nodes(imported, _, _)) =
-                        self.imported_alias(target, segment)
-                    {
-                        if imported.iter().all(|node| node.kind == "module") {
-                            next.extend(imported.iter().copied().filter(|node| {
-                                self.rust_forwarding
-                                    .module_path_visible(&node.qualname, &owner.qualname)
-                            }));
-                            continue;
-                        }
-                    }
-                    let visible =
-                        self.rust_forwarding
-                            .targets(target, segment, &owner.qualname);
-                    if visible.is_empty() {
-                        continue;
-                    }
-                    if let Some(Imported::Nodes(imported, _, _)) =
-                        self.imported_alias(target, segment)
-                    {
-                        next.extend(imported.iter().copied());
-                    } else {
-                        next.extend_from_slice(visible);
-                    }
+                    self.step_rust_module_member(owner, target, segment, &mut next);
                 } else if segment_count == index + 1 && matches!(role, SymbolRole::Callable) {
-                    if let Symbol::Callable(method) = self.member(target, segment, true, owner) {
+                    if target.kind == "constant" {
+                        if let Some(method) =
+                            self.resolve_rust_constant_member(target, segment, owner)
+                        {
+                            next.push(method);
+                        }
+                    } else if let Symbol::Callable(method) = self.member(target, segment, true, owner)
+                    {
                         next.push(method);
                     }
                 }

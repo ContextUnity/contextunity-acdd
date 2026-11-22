@@ -126,38 +126,24 @@ pub(in crate::linker) fn external_annotation_type<'a>(
 }
 
 #[cfg(feature = "lang-rust")]
-pub(in crate::linker) fn import_globs<'a>(
-    context: &mut Context<'a>,
-    all: &'a dyn crate::FactsLookup,
-    by_id: &'a HashMap<crate::interner::SymbolId, &'a Node>,
-    normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
-    modules: &'a ModulesByNamespace<'a>,
-    rust_forwarding: &'a languages::rust::linker::RustForwarding<'a>,
-) {
-    let rust_modules: Vec<_> = all
-        .values_facts()
-        .filter_map(|facts| {
-            facts
-                .nodes
-                .iter()
-                .find(|node| node.kind == "module" && node.language == "rust")
-                .map(|module| (facts, module))
-        })
-        .collect();
-
-    fn rust_crate_root_prefix(path: &str) -> Option<&str> {
-        if path.starts_with("src/bin/") || path.contains("/src/bin/") {
-            None
-        } else if path.starts_with("src/") {
-            Some("")
-        } else {
-            path.split_once("/src/").map(|(prefix, _)| prefix)
-        }
+fn rust_crate_root_prefix(path: &str) -> Option<&str> {
+    if path.starts_with("src/bin/") || path.contains("/src/bin/") {
+        None
+    } else if path.starts_with("src/") {
+        Some("")
+    } else {
+        path.split_once("/src/").map(|(prefix, _)| prefix)
     }
+}
 
+#[cfg(feature = "lang-rust")]
+fn register_rust_crate_anchors<'a>(
+    context: &mut Context<'a>,
+    rust_modules: &[(&'a Facts, &'a Node)],
+) {
     let mut module_by_qualname: HashMap<&'a str, &'a Node> = HashMap::new();
     let mut crate_roots: HashMap<&'a str, &'a Node> = HashMap::new();
-    for &(_, module) in &rust_modules {
+    for &(_, module) in rust_modules {
         module_by_qualname.insert(module.qualname.as_str(), module);
         let Some(prefix) = rust_crate_root_prefix(&module.path) else {
             continue;
@@ -171,7 +157,8 @@ pub(in crate::linker) fn import_globs<'a>(
         }
     }
 
-    for &(_, module) in &rust_modules {
+    let zero_pos = crate::semantic::SourcePosition { line: 0, column: 0 };
+    for &(_, module) in rust_modules {
         let Some(module_id) = context.symbol_id(&module.id) else {
             continue;
         };
@@ -185,15 +172,10 @@ pub(in crate::linker) fn import_globs<'a>(
                 } else {
                     format!("{}.src", prefix.replace('/', "."))
                 };
-                if parent == src_ns {
-                    crate_root
-                } else {
-                    None
-                }
+                (parent == src_ns).then_some(crate_root).flatten()
             })
         });
-        let zero_pos = crate::semantic::SourcePosition { line: 0, column: 0 };
-        let anchors: [Option<(crate::interner::SymbolId, &'a Node)>; 3] = [
+        let anchors = [
             ("self", Some(module)),
             ("crate", crate_root),
             ("super", super_module),
@@ -208,8 +190,26 @@ pub(in crate::linker) fn import_globs<'a>(
                 .or_insert_with(|| Imported::Nodes(vec![target], zero_pos, false));
         }
     }
+}
 
-    for &(facts, module) in &rust_modules {
+#[cfg(feature = "lang-rust")]
+fn has_local_scope_member(facts: &Facts, scope_qualname: &str, name: &str, skip_mod_decl: bool) -> bool {
+    facts.nodes.iter().any(|node| {
+        (!skip_mod_decl || node.kind != "module_declaration")
+            && node
+                .qualname
+                .rsplit_once('.')
+                .is_some_and(|(scope, candidate)| scope == scope_qualname && candidate == name)
+    })
+}
+
+#[cfg(feature = "lang-rust")]
+fn apply_forwarded_module_globs<'a>(
+    context: &mut Context<'a>,
+    rust_forwarding: &'a languages::rust::linker::RustForwarding<'a>,
+    rust_modules: &[(&'a Facts, &'a Node)],
+) {
+    for &(facts, module) in rust_modules {
         let Some(reference) = facts.references.iter().find(|reference| {
             reference.kind == "imports"
                 && reference.source == module.id
@@ -226,15 +226,7 @@ pub(in crate::linker) fn import_globs<'a>(
                 continue;
             };
             let aliases = context.imports.entry(module_id).or_default();
-            if facts.nodes.iter().any(|node| {
-                node.kind != "module_declaration"
-                    && node
-                        .qualname
-                        .rsplit_once('.')
-                        .is_some_and(|(scope, candidate)| {
-                            scope == module.qualname && candidate == name
-                        })
-            }) {
+            if has_local_scope_member(facts, &module.qualname, name, true) {
                 aliases.remove(&name_id);
                 continue;
             }
@@ -255,8 +247,73 @@ pub(in crate::linker) fn import_globs<'a>(
             );
         }
     }
+}
 
-    for (facts, module) in rust_modules.clone() {
+#[cfg(feature = "lang-rust")]
+fn insert_nested_glob_binding<'a>(
+    aliases: &mut HashMap<crate::interner::SymbolId, Imported<'a>>,
+    name_id: crate::interner::SymbolId,
+    targets: &[&'a Node],
+    position: crate::semantic::SourcePosition,
+) {
+    match aliases.entry(name_id) {
+        hashbrown::hash_map::Entry::Vacant(entry) => {
+            entry.insert(if targets.is_empty() {
+                Imported::Unknown
+            } else {
+                Imported::Nodes(targets.to_vec(), position, false)
+            });
+        }
+        hashbrown::hash_map::Entry::Occupied(mut entry) => {
+            if let Imported::Nodes(nodes, _, _) = entry.get_mut() {
+                if targets.is_empty() {
+                    entry.insert(Imported::Unknown);
+                } else {
+                    nodes.extend_from_slice(targets);
+                    nodes.sort_by_key(|node| node.id.as_str());
+                    nodes.dedup_by_key(|node| node.id.as_str());
+                }
+            } else {
+                entry.insert(Imported::Unknown);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "lang-rust")]
+fn resolve_single_glob_provider<'a>(
+    imports: &RustGlobImports<'a, '_>,
+    module: &Node,
+    reference: &crate::models::Reference,
+) -> Option<(&'a Node, String)> {
+    let raw = reference.module.as_deref().unwrap_or(&reference.expression);
+    let normalized = imports
+        .normalized_imports
+        .get(&(module.path.as_str(), raw))
+        .and_then(Option::as_ref)?;
+    let providers = languages::rust::linker::modules_at_import(
+        imports.modules,
+        languages::LanguageFamily("rust"),
+        normalized,
+        languages::workspace_path(&module.path).0,
+        |namespace| {
+            imports
+                .rust_forwarding
+                .module_path_visible(namespace, &module.qualname)
+        },
+    );
+    let [(provider, tail)] = providers.as_slice() else {
+        return None;
+    };
+    Some((*provider, tail.clone()))
+}
+
+#[cfg(feature = "lang-rust")]
+fn apply_nested_use_globs<'a>(
+    context: &mut Context<'a>,
+    imports: &RustGlobImports<'a, '_>,
+) {
+    for &(facts, module) in imports.rust_modules {
         for reference in facts.references.iter().filter(|reference| {
             reference.kind == "imports"
                 && reference.source != module.id
@@ -264,25 +321,12 @@ pub(in crate::linker) fn import_globs<'a>(
         }) {
             let Some(owner) = context
                 .symbol_id(&reference.source)
-                .and_then(|id| by_id.get(&id).copied())
+                .and_then(|id| imports.by_id.get(&id).copied())
             else {
                 continue;
             };
-            let raw = reference.module.as_deref().unwrap_or(&reference.expression);
-            let Some(normalized) = normalized_imports
-                .get(&(module.path.as_str(), raw))
-                .and_then(Option::as_ref)
+            let Some((provider, tail)) = resolve_single_glob_provider(imports, module, reference)
             else {
-                continue;
-            };
-            let providers = languages::rust::linker::modules_at_import(
-                modules,
-                languages::LanguageFamily("rust"),
-                normalized,
-                languages::workspace_path(&module.path).0,
-                |namespace| rust_forwarding.module_path_visible(namespace, &module.qualname),
-            );
-            let [(provider, tail)] = providers.as_slice() else {
                 continue;
             };
             if !matches!(tail.as_str(), "" | "*") {
@@ -291,7 +335,10 @@ pub(in crate::linker) fn import_globs<'a>(
             let owner_id = context
                 .symbol_id(&owner.id)
                 .expect("Rust import owner id is interned");
-            for (name, targets) in rust_forwarding.visible_bindings(provider, &module.qualname) {
+            for (name, targets) in imports
+                .rust_forwarding
+                .visible_bindings(provider, &module.qualname)
+            {
                 if facts.references.iter().any(|candidate| {
                     candidate.kind == "imports"
                         && candidate.source == owner.id
@@ -303,43 +350,18 @@ pub(in crate::linker) fn import_globs<'a>(
                     continue;
                 };
                 let aliases = context.imports.entry(owner_id).or_default();
-                if facts.nodes.iter().any(|node| {
-                    node.qualname
-                        .rsplit_once('.')
-                        .is_some_and(|(scope, candidate)| {
-                            scope == owner.qualname && candidate == name
-                        })
-                }) {
+                if has_local_scope_member(facts, &owner.qualname, name, false) {
                     aliases.remove(&name_id);
                     continue;
                 }
-                match aliases.entry(name_id) {
-                    hashbrown::hash_map::Entry::Vacant(entry) => {
-                        entry.insert(if targets.is_empty() {
-                            Imported::Unknown
-                        } else {
-                            Imported::Nodes(targets.to_vec(), reference.position(), false)
-                        });
-                    }
-                    hashbrown::hash_map::Entry::Occupied(mut entry) => {
-                        if let Imported::Nodes(nodes, _, _) = entry.get_mut() {
-                            if targets.is_empty() {
-                                entry.insert(Imported::Unknown);
-                            } else {
-                                nodes.extend_from_slice(targets);
-                                nodes.sort_by_key(|node| node.id.as_str());
-                                nodes.dedup_by_key(|node| node.id.as_str());
-                            }
-                        } else {
-                            entry.insert(Imported::Unknown);
-                        }
-                    }
-                }
+                insert_nested_glob_binding(aliases, name_id, targets, reference.position());
             }
         }
     }
+}
 
-    // Build alias counts per owner across all import references to detect conflicting aliases
+#[cfg(feature = "lang-rust")]
+fn apply_registered_cargo_aliases<'a>(context: &mut Context<'a>, all: &'a dyn crate::FactsLookup) {
     let alias_counts = collect_external_alias_counts(all);
     for facts in all.values_facts() {
         for reference in facts.references.iter().filter(|r| r.kind == "imports") {
@@ -358,21 +380,46 @@ pub(in crate::linker) fn import_globs<'a>(
             }
         }
     }
+}
+
+#[cfg(feature = "lang-rust")]
+pub(in crate::linker) fn import_globs<'a>(
+    context: &mut Context<'a>,
+    all: &'a dyn crate::FactsLookup,
+    by_id: &'a HashMap<crate::interner::SymbolId, &'a Node>,
+    normalized_imports: &'a HashMap<(&'a str, &'a str), Option<ImportPath>>,
+    modules: &'a ModulesByNamespace<'a>,
+    rust_forwarding: &'a languages::rust::linker::RustForwarding<'a>,
+) {
+    let rust_modules: Vec<_> = all
+        .values_facts()
+        .filter_map(|facts| {
+            facts
+                .nodes
+                .iter()
+                .find(|node| node.kind == "module" && node.language == "rust")
+                .map(|module| (facts, module))
+        })
+        .collect();
+
+    register_rust_crate_anchors(context, &rust_modules);
+    apply_forwarded_module_globs(context, rust_forwarding, &rust_modules);
+
+    let glob_imports = RustGlobImports {
+        all,
+        by_id,
+        normalized_imports,
+        modules,
+        rust_forwarding,
+        rust_modules: &rust_modules,
+    };
+    apply_nested_use_globs(context, &glob_imports);
+    apply_registered_cargo_aliases(context, all);
 
     // Carry external provenance through ancestor imports independently of file order.
     // Only ancestor imports can expose private bindings; unrelated glob providers
     // continue to use the public forwarding projection above.
-    propagate_ancestor_external_imports(
-        context,
-        &RustGlobImports {
-            all,
-            by_id,
-            normalized_imports,
-            modules,
-            rust_forwarding,
-            rust_modules: &rust_modules,
-        },
-    );
+    propagate_ancestor_external_imports(context, &glob_imports);
 }
 
 #[cfg(feature = "lang-rust")]
@@ -491,186 +538,206 @@ fn has_conflicting_local_binding(
 }
 
 #[cfg(feature = "lang-rust")]
+type ExternalImportAddition<'a> = (
+    crate::interner::SymbolId,
+    crate::interner::SymbolId,
+    String,
+    crate::semantic::SourcePosition,
+    &'a crate::models::Reference,
+);
+
+#[cfg(feature = "lang-rust")]
+fn collect_super_glob_additions<'a>(
+    context: &Context<'a>,
+    imports: &RustGlobImports<'a, '_>,
+    additions: &mut Vec<ExternalImportAddition<'a>>,
+) {
+    for facts in imports.all.values_facts() {
+        for reference in facts.references.iter().filter(|reference| {
+            reference.kind == "imports"
+                && reference.alias.as_deref() == Some("*")
+                && reference
+                    .module
+                    .as_deref()
+                    .unwrap_or(&reference.expression)
+                    .trim_end_matches("::*")
+                    == "super"
+        }) {
+            let Some(owner_id) = context.symbol_id(&reference.source) else {
+                continue;
+            };
+            let Some(owner) = imports.by_id.get(&owner_id) else {
+                continue;
+            };
+            let Some(module) = find_owner_module(context, owner) else {
+                continue;
+            };
+            let namespace = if module.kind == "module" {
+                module
+                    .qualname
+                    .strip_suffix(".lib")
+                    .or_else(|| module.qualname.strip_suffix(".main"))
+                    .or_else(|| module.qualname.strip_suffix(".mod"))
+                    .unwrap_or(&module.qualname)
+            } else {
+                &module.qualname
+            };
+            let Some((parent, _)) = namespace.rsplit_once('.') else {
+                continue;
+            };
+            let parent_lib = format!("{parent}.lib");
+            let parent_main = format!("{parent}.main");
+            let parent_mod = format!("{parent}.mod");
+            let mut providers: Vec<_> = [
+                parent,
+                parent_lib.as_str(),
+                parent_main.as_str(),
+                parent_mod.as_str(),
+            ]
+            .into_iter()
+            .flat_map(|scope| {
+                context.nodes_in_path(scope, &owner.path).chain(
+                    imports
+                        .modules
+                        .get(&languages::LanguageFamily("rust"))
+                        .and_then(|modules| modules.get(scope))
+                        .into_iter()
+                        .flatten()
+                        .copied(),
+                )
+            })
+            .filter(|node| matches!(node.kind.as_str(), "module" | "module_declaration"))
+            .collect();
+            providers.sort_by_key(|node| node.id.as_str());
+            providers.dedup_by_key(|node| node.id.as_str());
+            let [provider] = providers.as_slice() else {
+                continue;
+            };
+            let Some(provider_id) = context.symbol_id(&provider.id) else {
+                continue;
+            };
+            for (&name, imported) in context.imports.get(&provider_id).into_iter().flatten() {
+                let Imported::External(origin, _, original, _) = imported else {
+                    continue;
+                };
+                if original.alias.as_deref() == Some("*")
+                    && origin.trim_end_matches("::*") == "rayon::prelude"
+                    && !context
+                        .imports
+                        .get(&owner_id)
+                        .is_some_and(|aliases| aliases.contains_key(&name))
+                {
+                    additions.push((
+                        owner_id,
+                        name,
+                        origin.clone(),
+                        reference.position(),
+                        *original,
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "lang-rust")]
+fn collect_scoped_reexport_additions<'a>(
+    context: &Context<'a>,
+    imports: &RustGlobImports<'a, '_>,
+    conflicts: &hashbrown::HashSet<(crate::interner::SymbolId, crate::interner::SymbolId)>,
+    additions: &mut Vec<ExternalImportAddition<'a>>,
+) {
+    for (facts, module) in imports.rust_modules {
+        for reference in facts
+            .references
+            .iter()
+            .filter(|reference| reference.kind == "imports" && reference.alias.is_some())
+        {
+            let glob = reference.alias.as_deref() == Some("*");
+            let Some((provider, tail)) = resolve_single_glob_provider(imports, module, reference)
+            else {
+                continue;
+            };
+            let namespace = provider
+                .qualname
+                .strip_suffix(".lib")
+                .or_else(|| provider.qualname.strip_suffix(".main"))
+                .or_else(|| provider.qualname.strip_suffix(".mod"))
+                .unwrap_or(&provider.qualname);
+            if (glob && !matches!(tail.as_str(), "" | "*"))
+                || (!glob && (tail.is_empty() || tail.contains('.') || tail == "*"))
+                || !module
+                    .qualname
+                    .strip_prefix(namespace)
+                    .is_some_and(|suffix| suffix.starts_with('.'))
+            {
+                continue;
+            }
+            let (Some(owner_id), Some(provider_id)) = (
+                context.symbol_id(&reference.source),
+                context.symbol_id(&provider.id),
+            ) else {
+                continue;
+            };
+            for (&provider_name_id, imported) in
+                context.imports.get(&provider_id).into_iter().flatten()
+            {
+                let Imported::External(origin, _, original, _) = imported else {
+                    continue;
+                };
+                if original.alias.as_deref() == Some("*") {
+                    continue;
+                }
+                let provider_name = context.symbol_name(provider_name_id);
+                if !glob && provider_name != tail {
+                    continue;
+                }
+                let Some(name) = (if glob {
+                    Some(provider_name)
+                } else {
+                    reference.alias.as_deref()
+                }) else {
+                    continue;
+                };
+                let Some(name_id) = context.symbol_id(name) else {
+                    continue;
+                };
+                if conflicts.contains(&(owner_id, name_id))
+                    || has_conflicting_local_binding(facts, &module.qualname, reference, name)
+                {
+                    continue;
+                }
+                let existing = context
+                    .imports
+                    .get(&owner_id)
+                    .and_then(|aliases| aliases.get(&name_id));
+                if matches!(existing, None | Some(Imported::Unknown))
+                    || matches!(existing, Some(Imported::External(existing, ..)) if existing != origin)
+                {
+                    let src_ref = if glob { *original } else { reference };
+                    additions.push((
+                        owner_id,
+                        name_id,
+                        origin.clone(),
+                        reference.position(),
+                        src_ref,
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "lang-rust")]
 fn propagate_ancestor_external_imports<'a>(
     context: &mut Context<'a>,
     imports: &RustGlobImports<'a, '_>,
 ) {
-    let RustGlobImports {
-        all,
-        by_id,
-        normalized_imports,
-        modules,
-        rust_forwarding,
-        rust_modules,
-    } = *imports;
     let mut conflicts = hashbrown::HashSet::new();
     for _ in 0..64 {
         let mut additions = Vec::new();
-        for facts in all.values_facts() {
-            for reference in facts.references.iter().filter(|reference| {
-                reference.kind == "imports"
-                    && reference.alias.as_deref() == Some("*")
-                    && reference
-                        .module
-                        .as_deref()
-                        .unwrap_or(&reference.expression)
-                        .trim_end_matches("::*")
-                        == "super"
-            }) {
-                let Some(owner_id) = context.symbol_id(&reference.source) else {
-                    continue;
-                };
-                let Some(owner) = by_id.get(&owner_id) else {
-                    continue;
-                };
-                let Some(module) = find_owner_module(context, owner) else {
-                    continue;
-                };
-                let namespace = if module.kind == "module" {
-                    module
-                        .qualname
-                        .strip_suffix(".lib")
-                        .or_else(|| module.qualname.strip_suffix(".main"))
-                        .or_else(|| module.qualname.strip_suffix(".mod"))
-                        .unwrap_or(&module.qualname)
-                } else {
-                    &module.qualname
-                };
-                let Some((parent, _)) = namespace.rsplit_once('.') else {
-                    continue;
-                };
-                let parent_lib = format!("{parent}.lib");
-                let parent_main = format!("{parent}.main");
-                let parent_mod = format!("{parent}.mod");
-                let mut providers: Vec<_> = [
-                    parent,
-                    parent_lib.as_str(),
-                    parent_main.as_str(),
-                    parent_mod.as_str(),
-                ]
-                    .into_iter()
-                    .flat_map(|scope| {
-                        context.nodes_in_path(scope, &owner.path).chain(
-                            modules
-                                .get(&languages::LanguageFamily("rust"))
-                                .and_then(|modules| modules.get(scope))
-                                .into_iter()
-                                .flatten()
-                                .copied(),
-                        )
-                    })
-                    .filter(|node| matches!(node.kind.as_str(), "module" | "module_declaration"))
-                    .collect();
-                providers.sort_by_key(|node| node.id.as_str());
-                providers.dedup_by_key(|node| node.id.as_str());
-                let [provider] = providers.as_slice() else {
-                    continue;
-                };
-                let Some(provider_id) = context.symbol_id(&provider.id) else {
-                    continue;
-                };
-                for (&name, imported) in context.imports.get(&provider_id).into_iter().flatten() {
-                    let Imported::External(origin, _, original, _) = imported else {
-                        continue;
-                    };
-                    if original.alias.as_deref() == Some("*")
-                        && origin.trim_end_matches("::*") == "rayon::prelude"
-                        && !context
-                            .imports
-                            .get(&owner_id)
-                            .is_some_and(|aliases| aliases.contains_key(&name))
-                    {
-                        additions.push((owner_id, name, origin.clone(), reference.position(), *original));
-                    }
-                }
-            }
-        }
-        for (facts, module) in rust_modules {
-            for reference in facts
-                .references
-                .iter()
-                .filter(|reference| reference.kind == "imports" && reference.alias.is_some())
-            {
-                let glob = reference.alias.as_deref() == Some("*");
-                let raw = reference.module.as_deref().unwrap_or(&reference.expression);
-                let Some(normalized) = normalized_imports
-                    .get(&(module.path.as_str(), raw))
-                    .and_then(Option::as_ref)
-                else {
-                    continue;
-                };
-                let providers = languages::rust::linker::modules_at_import(
-                    modules,
-                    languages::LanguageFamily("rust"),
-                    normalized,
-                    languages::workspace_path(&module.path).0,
-                    |namespace| rust_forwarding.module_path_visible(namespace, &module.qualname),
-                );
-                let [(provider, tail)] = providers.as_slice() else {
-                    continue;
-                };
-                let namespace = provider
-                    .qualname
-                    .strip_suffix(".lib")
-                    .or_else(|| provider.qualname.strip_suffix(".main"))
-                    .or_else(|| provider.qualname.strip_suffix(".mod"))
-                    .unwrap_or(&provider.qualname);
-                if (glob && !matches!(tail.as_str(), "" | "*"))
-                    || (!glob && (tail.is_empty() || tail.contains('.') || tail == "*"))
-                    || !module
-                        .qualname
-                        .strip_prefix(namespace)
-                        .is_some_and(|suffix| suffix.starts_with('.'))
-                {
-                    continue;
-                }
-                let (Some(owner_id), Some(provider_id)) = (
-                    context.symbol_id(&reference.source),
-                    context.symbol_id(&provider.id),
-                ) else {
-                    continue;
-                };
-                for (&provider_name_id, imported) in
-                    context.imports.get(&provider_id).into_iter().flatten()
-                {
-                    let Imported::External(origin, _, original, _) = imported else {
-                        continue;
-                    };
-                    if original.alias.as_deref() == Some("*") {
-                        continue;
-                    }
-                    let provider_name = context.symbol_name(provider_name_id);
-                    if !glob && provider_name != tail {
-                        continue;
-                    }
-                    let Some(name) = (if glob {
-                        Some(provider_name)
-                    } else {
-                        reference.alias.as_deref()
-                    }) else {
-                        continue;
-                    };
-                    let Some(name_id) = context.symbol_id(name) else {
-                        continue;
-                    };
-                    if conflicts.contains(&(owner_id, name_id))
-                        || has_conflicting_local_binding(facts, &module.qualname, reference, name)
-                    {
-                        continue;
-                    }
-                    let existing = context
-                        .imports
-                        .get(&owner_id)
-                        .and_then(|aliases| aliases.get(&name_id));
-                    if matches!(existing, None | Some(Imported::Unknown))
-                        || matches!(existing, Some(Imported::External(existing, ..)) if existing != origin)
-                    {
-                        let src_ref = if glob { *original } else { reference };
-                        additions.push((owner_id, name_id, origin.clone(), reference.position(), src_ref));
-                    }
-                }
-            }
-        }
+        collect_super_glob_additions(context, imports, &mut additions);
+        collect_scoped_reexport_additions(context, imports, &conflicts, &mut additions);
         if additions.is_empty() {
             break;
         }

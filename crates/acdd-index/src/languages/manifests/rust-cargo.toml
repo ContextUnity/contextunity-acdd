@@ -11,22 +11,22 @@ members = [
     "transaction", "unchecked_transaction", "transaction_with_behavior", "close", "is_autocommit"
 ]
 [class_hierarchy_receivers.returns]
-open = { kind = "self" }
-open_in_memory = { kind = "self" }
-open_with_flags = { kind = "self" }
-prepare = { kind = "receiver", base = "rusqlite::Statement" }
-prepare_cached = { kind = "receiver", base = "rusqlite::Statement" }
-transaction = { kind = "receiver", base = "rusqlite::Transaction" }
-unchecked_transaction = { kind = "receiver", base = "rusqlite::Transaction" }
-transaction_with_behavior = { kind = "receiver", base = "rusqlite::Transaction" }
+open = { kind = "receiver", base = "std::result::Result<rusqlite::Connection, rusqlite::Error>" }
+open_in_memory = { kind = "receiver", base = "std::result::Result<rusqlite::Connection, rusqlite::Error>" }
+open_with_flags = { kind = "receiver", base = "std::result::Result<rusqlite::Connection, rusqlite::Error>" }
+prepare = { kind = "receiver", base = "std::result::Result<rusqlite::Statement, rusqlite::Error>" }
+prepare_cached = { kind = "receiver", base = "std::result::Result<rusqlite::Statement, rusqlite::Error>" }
+transaction = { kind = "receiver", base = "std::result::Result<rusqlite::Transaction, rusqlite::Error>" }
+unchecked_transaction = { kind = "receiver", base = "std::result::Result<rusqlite::Transaction, rusqlite::Error>" }
+transaction_with_behavior = { kind = "receiver", base = "std::result::Result<rusqlite::Transaction, rusqlite::Error>" }
 
 [[class_hierarchy_receivers]]
 bases = ["rusqlite::Transaction", "Transaction"]
 provider = "rusqlite"
 members = ["execute", "execute_batch", "prepare", "prepare_cached", "query_row", "query_row_and_then", "commit", "rollback", "is_autocommit"]
 [class_hierarchy_receivers.returns]
-prepare = { kind = "receiver", base = "rusqlite::Statement" }
-prepare_cached = { kind = "receiver", base = "rusqlite::Statement" }
+prepare = { kind = "receiver", base = "std::result::Result<rusqlite::Statement, rusqlite::Error>" }
+prepare_cached = { kind = "receiver", base = "std::result::Result<rusqlite::Statement, rusqlite::Error>" }
 
 [[class_hierarchy_receivers]]
 bases = ["rusqlite::Statement", "Statement"]
@@ -59,8 +59,8 @@ bases = ["tree_sitter::Parser", "Parser"]
 provider = "tree-sitter"
 members = ["new", "set_language", "language", "parse", "parse_with", "reset", "timeout_micros", "set_timeout_micros"]
 [class_hierarchy_receivers.returns]
-parse = { kind = "receiver", base = "tree_sitter::Tree" }
-parse_with = { kind = "receiver", base = "tree_sitter::Tree" }
+parse = { kind = "receiver", base = "std::option::Option<tree_sitter::Tree>" }
+parse_with = { kind = "receiver", base = "std::option::Option<tree_sitter::Tree>" }
 
 [[class_hierarchy_receivers]]
 bases = ["tree_sitter::Tree", "Tree"]
@@ -83,18 +83,18 @@ members = [
 ]
 [class_hierarchy_receivers.returns]
 kind = { kind = "receiver", base = "str" }
-utf8_text = { kind = "receiver", base = "std::result::Result" }
+utf8_text = { kind = "receiver", base = "std::result::Result<&str, std::str::Utf8Error>" }
 walk = { kind = "receiver", base = "tree_sitter::TreeCursor" }
-child = { kind = "receiver", base = "tree_sitter::Node" }
-named_child = { kind = "receiver", base = "tree_sitter::Node" }
-children = { kind = "receiver", base = "tree_sitter::Node" }
-named_children = { kind = "receiver", base = "tree_sitter::Node" }
-child_by_field_name = { kind = "receiver", base = "tree_sitter::Node" }
-parent = { kind = "receiver", base = "tree_sitter::Node" }
-next_sibling = { kind = "receiver", base = "tree_sitter::Node" }
-prev_sibling = { kind = "receiver", base = "tree_sitter::Node" }
-next_named_sibling = { kind = "receiver", base = "tree_sitter::Node" }
-prev_named_sibling = { kind = "receiver", base = "tree_sitter::Node" }
+child = { kind = "receiver", base = "std::option::Option<tree_sitter::Node>" }
+named_child = { kind = "receiver", base = "std::option::Option<tree_sitter::Node>" }
+children = { kind = "receiver", base = "Iterator<tree_sitter::Node>" }
+named_children = { kind = "receiver", base = "Iterator<tree_sitter::Node>" }
+child_by_field_name = { kind = "receiver", base = "std::option::Option<tree_sitter::Node>" }
+parent = { kind = "receiver", base = "std::option::Option<tree_sitter::Node>" }
+next_sibling = { kind = "receiver", base = "std::option::Option<tree_sitter::Node>" }
+prev_sibling = { kind = "receiver", base = "std::option::Option<tree_sitter::Node>" }
+next_named_sibling = { kind = "receiver", base = "std::option::Option<tree_sitter::Node>" }
+prev_named_sibling = { kind = "receiver", base = "std::option::Option<tree_sitter::Node>" }
 
 [[class_hierarchy_receivers]]
 bases = ["tree_sitter::Query", "Query"]
@@ -127,13 +127,13 @@ members = [
     "to_string"
 ]
 [class_hierarchy_receivers.returns]
-get = { kind = "self" }
-get_mut = { kind = "self" }
-as_str = { kind = "receiver", base = "str" }
-as_array = { kind = "receiver", base = "Vec" }
-as_array_mut = { kind = "receiver", base = "Vec" }
-as_object = { kind = "receiver", base = "serde_json::Map" }
-as_object_mut = { kind = "receiver", base = "serde_json::Map" }
+get = { kind = "receiver", base = "std::option::Option<&serde_json::Value>" }
+get_mut = { kind = "receiver", base = "std::option::Option<&mut serde_json::Value>" }
+as_str = { kind = "receiver", base = "std::option::Option<&str>" }
+as_array = { kind = "receiver", base = "std::option::Option<Vec<serde_json::Value>>" }
+as_array_mut = { kind = "receiver", base = "std::option::Option<Vec<serde_json::Value>>" }
+as_object = { kind = "receiver", base = "std::option::Option<serde_json::Map>" }
+as_object_mut = { kind = "receiver", base = "std::option::Option<serde_json::Map>" }
 
 # tokio
 [[class_hierarchy_receivers]]
@@ -141,14 +141,14 @@ bases = ["serde_json"]
 provider = "serde_json"
 members = ["from_str", "from_slice", "from_reader", "from_value", "to_string", "to_string_pretty", "to_vec", "to_value"]
 [class_hierarchy_receivers.returns]
-from_str = { kind = "receiver", base = "Result" }
-from_slice = { kind = "receiver", base = "Result" }
-from_reader = { kind = "receiver", base = "Result" }
-from_value = { kind = "receiver", base = "Result" }
-to_string = { kind = "receiver", base = "Result" }
-to_string_pretty = { kind = "receiver", base = "Result" }
-to_vec = { kind = "receiver", base = "Result" }
-to_value = { kind = "receiver", base = "Result" }
+from_str = { kind = "receiver", base = "std::result::Result<_, serde_json::Error>" }
+from_slice = { kind = "receiver", base = "std::result::Result<_, serde_json::Error>" }
+from_reader = { kind = "receiver", base = "std::result::Result<_, serde_json::Error>" }
+from_value = { kind = "receiver", base = "std::result::Result<_, serde_json::Error>" }
+to_string = { kind = "receiver", base = "std::result::Result<std::string::String, serde_json::Error>" }
+to_string_pretty = { kind = "receiver", base = "std::result::Result<std::string::String, serde_json::Error>" }
+to_vec = { kind = "receiver", base = "std::result::Result<Vec<u8>, serde_json::Error>" }
+to_value = { kind = "receiver", base = "std::result::Result<serde_json::Value, serde_json::Error>" }
 
 [[class_hierarchy_receivers]]
 bases = ["serde_json::Map", "serde_json::map::Map"]
@@ -157,8 +157,8 @@ members = ["new", "with_capacity", "get", "get_mut", "insert", "remove", "contai
 [class_hierarchy_receivers.returns]
 new = { kind = "self" }
 with_capacity = { kind = "self" }
-get = { kind = "receiver", base = "serde_json::Value" }
-get_mut = { kind = "receiver", base = "serde_json::Value" }
+get = { kind = "receiver", base = "std::option::Option<&serde_json::Value>" }
+get_mut = { kind = "receiver", base = "std::option::Option<&mut serde_json::Value>" }
 
 [[class_hierarchy_receivers]]
 bases = ["anyhow::Context", "Context"]
@@ -298,8 +298,8 @@ members = [
     "persist_noclobber", "close"
 ]
 [class_hierarchy_receivers.returns]
-new = { kind = "self" }
-new_in = { kind = "self" }
+new = { kind = "receiver", base = "std::result::Result<tempfile::NamedTempFile, std::io::Error>" }
+new_in = { kind = "receiver", base = "std::result::Result<tempfile::NamedTempFile, std::io::Error>" }
 path = { kind = "receiver", base = "std::path::Path" }
 
 [[class_hierarchy_receivers]]
@@ -307,18 +307,18 @@ bases = ["tempfile"]
 provider = "tempfile"
 members = ["tempdir", "tempdir_in", "tempfile", "tempfile_in"]
 [class_hierarchy_receivers.returns]
-tempdir = { kind = "receiver", base = "tempfile::TempDir" }
-tempdir_in = { kind = "receiver", base = "tempfile::TempDir" }
-tempfile = { kind = "receiver", base = "tempfile::NamedTempFile" }
-tempfile_in = { kind = "receiver", base = "tempfile::NamedTempFile" }
+tempdir = { kind = "receiver", base = "std::result::Result<tempfile::TempDir, std::io::Error>" }
+tempdir_in = { kind = "receiver", base = "std::result::Result<tempfile::TempDir, std::io::Error>" }
+tempfile = { kind = "receiver", base = "std::result::Result<tempfile::NamedTempFile, std::io::Error>" }
+tempfile_in = { kind = "receiver", base = "std::result::Result<tempfile::NamedTempFile, std::io::Error>" }
 
 [[class_hierarchy_receivers]]
 bases = ["tempfile::TempDir", "TempDir"]
 provider = "tempfile"
 members = ["new", "new_in", "path", "into_path", "close"]
 [class_hierarchy_receivers.returns]
-new = { kind = "self" }
-new_in = { kind = "self" }
+new = { kind = "receiver", base = "std::result::Result<tempfile::TempDir, std::io::Error>" }
+new_in = { kind = "receiver", base = "std::result::Result<tempfile::TempDir, std::io::Error>" }
 path = { kind = "receiver", base = "std::path::Path" }
 
 [[class_hierarchy_receivers]]
@@ -329,10 +329,10 @@ members = ["new", "prefix", "suffix", "rand_bytes", "tempfile", "tempfile_in", "
 new = { kind = "self" }
 prefix = { kind = "self" }
 suffix = { kind = "self" }
-tempdir = { kind = "receiver", base = "tempfile::TempDir" }
-tempdir_in = { kind = "receiver", base = "tempfile::TempDir" }
-tempfile = { kind = "receiver", base = "tempfile::NamedTempFile" }
-tempfile_in = { kind = "receiver", base = "tempfile::NamedTempFile" }
+tempdir = { kind = "receiver", base = "std::result::Result<tempfile::TempDir, std::io::Error>" }
+tempdir_in = { kind = "receiver", base = "std::result::Result<tempfile::TempDir, std::io::Error>" }
+tempfile = { kind = "receiver", base = "std::result::Result<tempfile::NamedTempFile, std::io::Error>" }
+tempfile_in = { kind = "receiver", base = "std::result::Result<tempfile::NamedTempFile, std::io::Error>" }
 
 # regex
 [[class_hierarchy_receivers]]
@@ -343,7 +343,7 @@ members = [
     "split", "replace", "replace_all", "as_str"
 ]
 [class_hierarchy_receivers.returns]
-new = { kind = "self" }
+new = { kind = "receiver", base = "std::result::Result<regex::Regex, regex::Error>" }
 
 [[class_hierarchy_receivers]]
 bases = ["regex::Captures", "Captures"]
@@ -416,7 +416,7 @@ provider = "walkdir"
 members = ["new", "into_iter", "min_depth", "max_depth", "follow_links", "filter_entry", "sort_by", "sort_by_file_name"]
 [class_hierarchy_receivers.returns]
 new = { kind = "self" }
-into_iter = { kind = "receiver", base = "walkdir::DirEntry" }
+into_iter = { kind = "receiver", base = "Iterator<std::result::Result<walkdir::DirEntry, _>>" }
 min_depth = { kind = "self" }
 max_depth = { kind = "self" }
 follow_links = { kind = "self" }
@@ -446,7 +446,7 @@ git_ignore = { kind = "self" }
 git_exclude = { kind = "self" }
 parents = { kind = "self" }
 filter_entry = { kind = "self" }
-build = { kind = "receiver", base = "ignore::DirEntry" }
+build = { kind = "receiver", base = "Iterator<std::result::Result<ignore::DirEntry, ignore::Error>>" }
 
 [[class_hierarchy_receivers]]
 bases = ["ignore::DirEntry", "DirEntry"]
@@ -480,8 +480,8 @@ members = ["new", "with_capacity", "get", "get_mut", "insert", "remove", "contai
 [class_hierarchy_receivers.returns]
 new = { kind = "self" }
 with_capacity = { kind = "self" }
-get = { kind = "receiver", base = "toml::Value" }
-get_mut = { kind = "receiver", base = "toml::Value" }
+get = { kind = "receiver", base = "std::option::Option<&toml::Value>" }
+get_mut = { kind = "receiver", base = "std::option::Option<&mut toml::Value>" }
 
 [[class_hierarchy_receivers]]
 bases = ["toml::Value", "Value"]
@@ -492,11 +492,11 @@ members = [
     "as_datetime", "as_array", "as_table", "to_string"
 ]
 [class_hierarchy_receivers.returns]
-get = { kind = "receiver", base = "toml::Value" }
-get_mut = { kind = "receiver", base = "toml::Value" }
-as_str = { kind = "receiver", base = "str" }
-as_array = { kind = "receiver", base = "Vec" }
-as_table = { kind = "receiver", base = "toml::Table" }
+get = { kind = "receiver", base = "std::option::Option<&toml::Value>" }
+get_mut = { kind = "receiver", base = "std::option::Option<&mut toml::Value>" }
+as_str = { kind = "receiver", base = "std::option::Option<&str>" }
+as_array = { kind = "receiver", base = "std::option::Option<Vec<toml::Value>>" }
+as_table = { kind = "receiver", base = "std::option::Option<toml::Table>" }
 
 # chrono
 [[class_hierarchy_receivers]]
@@ -524,22 +524,22 @@ members = [
     "worktrees", "find_worktree", "index"
 ]
 [class_hierarchy_receivers.returns]
-open = { kind = "self" }
-init = { kind = "self" }
-discover = { kind = "self" }
-head = { kind = "receiver", base = "git2::Reference" }
-find_reference = { kind = "receiver", base = "git2::Reference" }
-find_commit = { kind = "receiver", base = "git2::Commit" }
-find_tree = { kind = "receiver", base = "git2::Tree" }
-index = { kind = "receiver", base = "git2::Index" }
+open = { kind = "receiver", base = "std::result::Result<git2::Repository, git2::Error>" }
+init = { kind = "receiver", base = "std::result::Result<git2::Repository, git2::Error>" }
+discover = { kind = "receiver", base = "std::result::Result<git2::Repository, git2::Error>" }
+head = { kind = "receiver", base = "std::result::Result<git2::Reference, git2::Error>" }
+find_reference = { kind = "receiver", base = "std::result::Result<git2::Reference, git2::Error>" }
+find_commit = { kind = "receiver", base = "std::result::Result<git2::Commit, git2::Error>" }
+find_tree = { kind = "receiver", base = "std::result::Result<git2::Tree, git2::Error>" }
+index = { kind = "receiver", base = "std::result::Result<git2::Index, git2::Error>" }
 
 [[class_hierarchy_receivers]]
 bases = ["git2::Commit", "Commit"]
 provider = "git2"
 members = ["id", "message", "author", "committer", "time", "tree", "parent", "parent_count", "parents"]
 [class_hierarchy_receivers.returns]
-tree = { kind = "receiver", base = "git2::Tree" }
-parent = { kind = "self" }
+tree = { kind = "receiver", base = "std::result::Result<git2::Tree, git2::Error>" }
+parent = { kind = "receiver", base = "std::result::Result<git2::Commit, git2::Error>" }
 
 [[class_hierarchy_receivers]]
 bases = ["git2::Tree", "Tree"]
@@ -556,9 +556,9 @@ bases = ["git2::Reference", "Reference"]
 provider = "git2"
 members = ["name", "shorthand", "target", "symbolic_target", "resolve", "peel_to_commit", "peel_to_tree", "is_branch", "is_tag", "delete"]
 [class_hierarchy_receivers.returns]
-resolve = { kind = "self" }
-peel_to_commit = { kind = "receiver", base = "git2::Commit" }
-peel_to_tree = { kind = "receiver", base = "git2::Tree" }
+resolve = { kind = "receiver", base = "std::result::Result<git2::Reference, git2::Error>" }
+peel_to_commit = { kind = "receiver", base = "std::result::Result<git2::Commit, git2::Error>" }
+peel_to_tree = { kind = "receiver", base = "std::result::Result<git2::Tree, git2::Error>" }
 
 # uuid
 [[class_hierarchy_receivers]]
@@ -639,9 +639,9 @@ bases = ["serde_yaml"]
 provider = "serde_yaml"
 members = ["from_str", "from_slice", "from_reader"]
 [class_hierarchy_receivers.returns]
-from_str = { kind = "receiver", base = "Result" }
-from_slice = { kind = "receiver", base = "Result" }
-from_reader = { kind = "receiver", base = "Result" }
+from_str = { kind = "receiver", base = "std::result::Result<_, serde_yaml::Error>" }
+from_slice = { kind = "receiver", base = "std::result::Result<_, serde_yaml::Error>" }
+from_reader = { kind = "receiver", base = "std::result::Result<_, serde_yaml::Error>" }
 
 [[class_hierarchy_receivers]]
 bases = ["serde_yaml::Value", "Value"]
@@ -670,10 +670,10 @@ members = [
     "serialize_seq", "serialize_tuple", "serialize_tuple_struct", "serialize_map", "serialize_struct"
 ]
 [class_hierarchy_receivers.returns]
-serialize_seq = { kind = "receiver", base = "serde::ser::SerializeSeq" }
-serialize_tuple = { kind = "receiver", base = "serde::ser::SerializeTuple" }
-serialize_map = { kind = "receiver", base = "serde::ser::SerializeMap" }
-serialize_struct = { kind = "receiver", base = "serde::ser::SerializeStruct" }
+serialize_seq = { kind = "receiver", base = "std::result::Result<serde::ser::SerializeSeq, serde::ser::Error>" }
+serialize_tuple = { kind = "receiver", base = "std::result::Result<serde::ser::SerializeTuple, serde::ser::Error>" }
+serialize_map = { kind = "receiver", base = "std::result::Result<serde::ser::SerializeMap, serde::ser::Error>" }
+serialize_struct = { kind = "receiver", base = "std::result::Result<serde::ser::SerializeStruct, serde::ser::Error>" }
 
 [[class_hierarchy_receivers]]
 bases = ["serde::ser::SerializeStruct", "SerializeStruct"]

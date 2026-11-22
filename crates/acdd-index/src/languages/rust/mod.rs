@@ -686,9 +686,57 @@ fn rust_std_members(
     })
 }
 
+static RUST_SPEC: SyntaxGrammarSpec = SyntaxGrammarSpec {
+    declarations: &[("mod_item", "module_declaration")],
+    declaration_roles: &[
+        ("function_item", DeclarationRole::Function),
+        ("function_signature_item", DeclarationRole::Function),
+        ("struct_item", DeclarationRole::Struct),
+        ("enum_item", DeclarationRole::Enum),
+        ("trait_item", DeclarationRole::Trait),
+        ("type_item", DeclarationRole::Type),
+        ("associated_type", DeclarationRole::Type),
+        ("const_item", DeclarationRole::Constant),
+        ("static_item", DeclarationRole::Constant),
+        ("enum_variant", DeclarationRole::Constant),
+        ("impl_item", DeclarationRole::Impl),
+        ("macro_definition", DeclarationRole::Macro),
+    ],
+    references: &[
+        "call_expression",
+        "macro_invocation",
+        "struct_expression",
+        "string_literal",
+        "raw_string_literal",
+    ],
+    call_forms: &[
+        ("call_expression", CallForm::Direct),
+        ("macro_invocation", CallForm::Macro),
+    ],
+    scopes: &[
+        "source_file",
+        "function_item",
+        "function_signature_item",
+        "closure_expression",
+        "impl_item",
+        "trait_item",
+        "mod_item",
+        "struct_item",
+        "enum_item",
+    ],
+    imports: &["use_declaration"],
+    import_forms: &[("use_declaration", ImportKind::Module)],
+    comments: &["line_comment", "block_comment"],
+    visibility_modifiers: &[("visibility_modifier", Visibility::Public)],
+    ..SyntaxGrammarSpec::DEFAULT
+};
+
 impl LanguageProfile for Rust {
     fn id(&self) -> &'static str {
         "rust"
+    }
+    fn syntax_grammar_spec(&self) -> Option<&'static SyntaxGrammarSpec> {
+        Some(&RUST_SPEC)
     }
     fn linker(&self) -> &'static dyn crate::linker::traits::LanguageLinker {
         &linker::RUST_LINKER
@@ -1108,124 +1156,13 @@ impl LanguageProfile for Rust {
         let (workspace, local) = workspace_path(owner);
         let root = root.filter(|root| root.is_absolute() && workspace.is_empty());
         let (namespace, relative) = if module == "crate" || module.starts_with("crate::") {
-            let tail = module.strip_prefix("crate::").unwrap_or("");
-            let crate_prefix = if let Some((before_src, _)) = local.split_once("/src/") {
-                format!("{}.src", before_src.replace('/', "."))
-            } else if local.starts_with("src/") {
-                "src".to_string()
-            } else if local.contains('/') {
-                local
-                    .split_once('/')
-                    .map_or("src", |(first, _)| first)
-                    .replace('/', ".")
-            } else {
-                self.module_name(local)
-            };
-            let ns = if tail.is_empty() || tail == "*" {
-                crate_prefix
-            } else {
-                format!("{crate_prefix}.{}", tail.replace("::", "."))
-            };
-            (ns, true)
+            normalize_crate_relative_import(self, local, module)
         } else if module == "self" || module.starts_with("self::") {
-            let tail = module.strip_prefix("self::").unwrap_or("");
-            let ns = if tail.is_empty() || tail == "*" {
-                self.module_name(local)
-            } else {
-                format!("{}.{}", self.module_name(local), tail.replace("::", "."))
-            };
-            (ns, true)
+            normalize_self_relative_import(self, local, module)
         } else if module == "super" || module.starts_with("super::") {
-            let mut base = self
-                .module_name(local)
-                .split('.')
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-            let mut tail = module;
-            while let Some(rest) = tail.strip_prefix("super::") {
-                base.pop()?;
-                tail = rest;
-            }
-            if tail == "super" {
-                base.pop()?;
-                tail = "";
-            }
-            if !tail.is_empty() && tail != "*" {
-                base.push(tail.replace("::", "."));
-            }
-            (base.join("."), true)
+            normalize_super_relative_import(self, local, module)?
         } else {
-            let (first, tail) = module.split_once("::").unwrap_or((module, ""));
-            let mut resolved_crate = None;
-            let hyphenated = first.contains('_').then(|| first.replace('_', "-"));
-            for prefix in ["crates", "packages", "libs", "modules", ""] {
-                for crate_dir in std::iter::once(first).chain(hyphenated.as_deref()) {
-                    let candidate = if prefix.is_empty() {
-                        std::path::PathBuf::from(crate_dir).join("src")
-                    } else {
-                        std::path::PathBuf::from(prefix).join(crate_dir).join("src")
-                    };
-                    if root.is_some_and(|root| root.join(&candidate).exists()) {
-                        let mod_prefix = candidate
-                            .to_string_lossy()
-                            .replace('\\', "/")
-                            .replace('/', ".");
-                        resolved_crate = Some(mod_prefix);
-                        break;
-                    }
-                }
-                if resolved_crate.is_some() {
-                    break;
-                }
-            }
-            let local_child = || {
-                let Some(root) = root else {
-                    return false;
-                };
-                let owner_path = std::path::Path::new(local);
-                let parent = owner_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new(""));
-                let directory = if matches!(
-                    owner_path.file_name().and_then(|name| name.to_str()),
-                    Some("mod.rs" | "lib.rs" | "main.rs")
-                ) {
-                    parent.to_path_buf()
-                } else {
-                    owner_path.with_extension("")
-                };
-                let directory = root.join(directory);
-                directory.join(format!("{first}.rs")).is_file()
-                    || directory.join(first).join("mod.rs").is_file()
-            };
-            if let Some(crate_mod) = resolved_crate {
-                let full = if tail.is_empty() || tail == "*" {
-                    crate_mod
-                } else {
-                    format!("{crate_mod}.{}", tail.replace("::", "."))
-                };
-                (full, false)
-            } else if local_child() {
-                let owner_module = self.module_name(local);
-                let owner_module = owner_module
-                    .strip_suffix(".lib")
-                    .or_else(|| owner_module.strip_suffix(".main"))
-                    .unwrap_or(&owner_module);
-                let module = module.strip_suffix("::*").unwrap_or(module);
-                (
-                    format!("{owner_module}.{}", module.replace("::", ".")),
-                    true,
-                )
-            } else if self.is_stdlib(first) || self.external_import(first).is_some() {
-                (module.replace("::", "."), false)
-            } else if root.is_none() && !local.contains('/') {
-                (
-                    format!("{}.{}", self.module_name(local), module.replace("::", ".")),
-                    true,
-                )
-            } else {
-                (module.replace("::", "."), false)
-            }
+            normalize_bare_or_crate_import(self, root, local, module)
         };
         Some(ImportPath {
             namespace,
@@ -1234,184 +1171,15 @@ impl LanguageProfile for Rust {
         })
     }
     fn extract_relations(&self, ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
-        if ctx.node.kind() == "mod_item"
-            && ctx.node.child_by_field_name("body").is_none()
-            && ctx
-                .node
-                .parent()
-                .is_some_and(|parent| parent.kind() == "source_file")
-            && !ctx.node.has_error()
-            && static_module_path(ctx.node, ctx.source).is_some()
-        {
-            let Some(declaration) = facts.nodes.iter().find(|node| node.id == ctx.owner) else {
-                return;
-            };
-            let Some(parent) = facts
-                .edges
-                .iter()
-                .find(|edge| edge.kind == "contains" && edge.dst == declaration.id)
-                .map(|edge| edge.src.clone())
-            else {
-                return;
-            };
-            let root = declaration.path.ends_with("/src/lib.rs")
-                || declaration.path.ends_with("/src/main.rs")
-                || matches!(declaration.path.as_str(), "src/lib.rs" | "src/main.rs");
-            let module = format!(
-                "{}::{}",
-                if root { "crate" } else { "self" },
-                declaration.name
-            );
-            facts.references.push(crate::models::Reference {
-                source: parent,
-                expression: module.clone(),
-                kind: "imports".into(),
-                line: ctx.line(),
-                column: ctx.node.start_position().column,
-                alias: Some(declaration.name.clone()),
-                module: Some(module),
-                dynamic: false,
-                receiver_hint: None,
-            });
-        } else if ctx.node.kind() == "impl_item" {
-            if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
-                owner.details["generic_impl"] =
-                    serde_json::json!(has_non_lifetime_type_params(ctx.node, ctx.source));
-                if uniform_generic_impl(ctx.node, ctx.source) {
-                    owner.details["uniform_generic_impl"] = serde_json::json!(true);
-                }
-                if let Some(trait_name) = field(ctx.node, ctx.source, "trait") {
-                    owner.details["impl_trait"] = serde_json::json!(trait_name);
-                    if matches!(
-                        trait_name.trim_start_matches("::"),
-                        "std::ops::Deref" | "core::ops::Deref"
-                    ) || !trait_name.contains("::")
-                    {
-                        let mut ancestor = Some(ctx.node);
-                        let mut attributed = false;
-                        while let Some(node) = ancestor {
-                            attributed |= node
-                                .prev_named_sibling()
-                                .is_some_and(|previous| previous.kind() == "attribute_item");
-                            ancestor = node.parent();
-                        }
-                        if attributed
-                            || ctx.node.has_error()
-                            || has_unproven_bounds(ctx.node, ctx.source)
-                        {
-                            owner.details["deref_unproven"] = serde_json::json!(true);
-                        }
-                    }
-                }
-                if let Some(receiver) = field(ctx.node, ctx.source, "type") {
-                    owner.details["receiver_type"] = serde_json::json!(receiver);
-                }
-            }
-            if let Some(tr) = ctx.node.child_by_field_name("trait") {
-                let tr_text = relations::type_name(tr, ctx.source);
-                let clean = tr_text.split('<').next().unwrap_or(tr_text).trim();
-                relations::reference(facts, ctx.owner, clean, "implements", ctx.line());
-            }
-        } else if matches!(ctx.node.kind(), "function_item" | "function_signature_item") {
-            let unproven = has_unproven_bounds(ctx.node, ctx.source)
-                && !path_reference_parameters(ctx.node, ctx.source, facts);
-            let conversion_bounds_only =
-                unproven && !has_unproven_bounds_with(ctx.node, ctx.source, is_conversion_bound);
-            let trait_default = ctx.node.kind() == "function_item"
-                && method_owner(ctx.node).is_some_and(|owner| owner.kind() == "trait_item");
-            if unproven || trait_default {
-                if let Some(method) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
-                    if unproven {
-                        method.details["unproven_bounds"] = serde_json::json!(true);
-                    }
-                    if conversion_bounds_only {
-                        method.details["conversion_bounds_only"] = serde_json::json!(true);
-                    }
-                    if trait_default {
-                        method.details["trait_default"] = serde_json::json!(true);
-                    }
-                }
-            }
-            if let Some(parameters) = ctx.node.child_by_field_name("parameters") {
-                let mut c = parameters.walk();
-                for param in parameters.named_children(&mut c) {
-                    if let Some(ty) = param.child_by_field_name("type") {
-                        value_flow::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
-                    }
-                }
-            }
-            if let Some(ret) = ctx.node.child_by_field_name("return_type") {
-                value_flow::type_references(facts, ctx.owner, ret, ctx.source, ctx.line());
-            }
-        } else if ctx.node.kind() == "macro_definition" {
-            // Inspect transcription tokens only; matching patterns and metavariables are opaque.
-            let mut impl_traits = Vec::new();
-            let mut cursor = ctx.node.walk();
-            for rule in ctx
-                .node
-                .named_children(&mut cursor)
-                .filter(|node| node.kind() == "macro_rule")
-            {
-                if let Some(body) = rule.child_by_field_name("right") {
-                    macro_transcription_references(body, ctx.source, ctx.owner, facts);
-                    macros::extract_macro_impl_traits(body, ctx.source, &mut impl_traits);
-                }
-            }
-            if !impl_traits.is_empty() {
-                let macro_line = ctx.line();
-                if let Some(macro_node) = facts
-                    .nodes
-                    .iter_mut()
-                    .find(|node| node.kind == "macro" && node.line == macro_line)
-                {
-                    macro_node.details["rust_macro_impl_traits"] = serde_json::json!(impl_traits);
-                }
-            }
-        } else if ctx.node.kind() == "enum_variant" {
-            set_owner_flag(facts, ctx.owner, "rust_enum_variant");
-        } else if ctx.node.kind() == "type_item" {
-            if has_non_lifetime_type_params(ctx.node, ctx.source)
-                || ctx.node.has_error()
-                || ctx
-                    .node
-                    .prev_named_sibling()
-                    .is_some_and(|previous| previous.kind() == "attribute_item")
-            {
-                set_owner_flag(facts, ctx.owner, "deref_unproven");
-            }
-            if let Some(ty) = ctx.node.child_by_field_name("type") {
-                if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
-                    owner.details["alias_target"] = serde_json::json!(text(ty, ctx.source).trim());
-                }
-                value_flow::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
-            }
-        } else if matches!(ctx.node.kind(), "struct_item" | "enum_item") {
-            if ctx.node.kind() == "struct_item"
-                && has_non_lifetime_type_params(ctx.node, ctx.source)
-            {
-                set_owner_flag(facts, ctx.owner, "deref_unproven");
-            }
-            let derives = macros::extract_derives(ctx.node, ctx.source);
-            if !derives.is_empty() {
-                if let Some(owner) = facts
-                    .nodes
-                    .iter()
-                    .find(|node| node.id == ctx.owner)
-                    .cloned()
-                {
-                    let synth_owner = macros::SyntheticOwner {
-                        id: &owner.id,
-                        qualname: &owner.qualname,
-                        name: &owner.name,
-                        path: &owner.path,
-                        line: ctx.line(),
-                        end_line: ctx.line(),
-                        is_public: owner.details["is_public"] == true,
-                        is_test: owner.is_test,
-                    };
-                    macros::synthesize_derive_methods(&synth_owner, &derives, facts);
-                }
-            }
+        match ctx.node.kind() {
+            "mod_item" => relate_mod_item(ctx, facts),
+            "impl_item" => relate_impl_item(ctx, facts),
+            "function_item" | "function_signature_item" => relate_function_item(ctx, facts),
+            "macro_definition" => relate_macro_definition(ctx, facts),
+            "enum_variant" => set_owner_flag(facts, ctx.owner, "rust_enum_variant"),
+            "type_item" => relate_type_item(ctx, facts),
+            "struct_item" | "enum_item" => relate_nominal_item(ctx, facts),
+            _ => {}
         }
     }
     fn metadata(
@@ -1605,6 +1373,345 @@ impl LanguageProfile for Rust {
         } else {
             None
         }
+    }
+}
+
+fn normalize_crate_relative_import(rust: &Rust, local: &str, module: &str) -> (String, bool) {
+    let tail = module.strip_prefix("crate::").unwrap_or("");
+    let crate_prefix = if let Some((before_src, _)) = local.split_once("/src/") {
+        format!("{}.src", before_src.replace('/', "."))
+    } else if local.starts_with("src/") {
+        "src".to_string()
+    } else if local.contains('/') {
+        local
+            .split_once('/')
+            .map_or("src", |(first, _)| first)
+            .replace('/', ".")
+    } else {
+        rust.module_name(local)
+    };
+    let ns = if tail.is_empty() || tail == "*" {
+        crate_prefix
+    } else {
+        format!("{crate_prefix}.{}", tail.replace("::", "."))
+    };
+    (ns, true)
+}
+
+fn normalize_self_relative_import(rust: &Rust, local: &str, module: &str) -> (String, bool) {
+    let tail = module.strip_prefix("self::").unwrap_or("");
+    let ns = if tail.is_empty() || tail == "*" {
+        rust.module_name(local)
+    } else {
+        format!("{}.{}", rust.module_name(local), tail.replace("::", "."))
+    };
+    (ns, true)
+}
+
+fn normalize_super_relative_import(
+    rust: &Rust,
+    local: &str,
+    module: &str,
+) -> Option<(String, bool)> {
+    let mut base = rust
+        .module_name(local)
+        .split('.')
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let mut tail = module;
+    while let Some(rest) = tail.strip_prefix("super::") {
+        base.pop()?;
+        tail = rest;
+    }
+    if tail == "super" {
+        base.pop()?;
+        tail = "";
+    }
+    if !tail.is_empty() && tail != "*" {
+        base.push(tail.replace("::", "."));
+    }
+    Some((base.join("."), true))
+}
+
+fn find_workspace_crate_prefix(root: Option<&Path>, first: &str) -> Option<String> {
+    let root = root?;
+    let hyphenated = first.contains('_').then(|| first.replace('_', "-"));
+    for prefix in ["crates", "packages", "libs", "modules", ""] {
+        for crate_dir in std::iter::once(first).chain(hyphenated.as_deref()) {
+            let candidate = if prefix.is_empty() {
+                std::path::PathBuf::from(crate_dir).join("src")
+            } else {
+                std::path::PathBuf::from(prefix).join(crate_dir).join("src")
+            };
+            if root.join(&candidate).exists() {
+                return Some(
+                    candidate
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .replace('/', "."),
+                );
+            }
+        }
+    }
+    None
+}
+
+fn is_local_child_module(root: Option<&Path>, local: &str, first: &str) -> bool {
+    let Some(root) = root else {
+        return false;
+    };
+    let owner_path = std::path::Path::new(local);
+    let parent = owner_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""));
+    let directory = if matches!(
+        owner_path.file_name().and_then(|name| name.to_str()),
+        Some("mod.rs" | "lib.rs" | "main.rs")
+    ) {
+        parent.to_path_buf()
+    } else {
+        owner_path.with_extension("")
+    };
+    let directory = root.join(directory);
+    directory.join(format!("{first}.rs")).is_file() || directory.join(first).join("mod.rs").is_file()
+}
+
+fn normalize_bare_or_crate_import(
+    rust: &Rust,
+    root: Option<&Path>,
+    local: &str,
+    module: &str,
+) -> (String, bool) {
+    let (first, tail) = module.split_once("::").unwrap_or((module, ""));
+    if let Some(crate_mod) = find_workspace_crate_prefix(root, first) {
+        let full = if tail.is_empty() || tail == "*" {
+            crate_mod
+        } else {
+            format!("{crate_mod}.{}", tail.replace("::", "."))
+        };
+        (full, false)
+    } else if is_local_child_module(root, local, first) {
+        let owner_module = rust.module_name(local);
+        let owner_module = owner_module
+            .strip_suffix(".lib")
+            .or_else(|| owner_module.strip_suffix(".main"))
+            .unwrap_or(&owner_module);
+        let module = module.strip_suffix("::*").unwrap_or(module);
+        (format!("{owner_module}.{}", module.replace("::", ".")), true)
+    } else if rust.is_stdlib(first) || rust.external_import(first).is_some() {
+        (module.replace("::", "."), false)
+    } else if root.is_none() && !local.contains('/') {
+        (
+            format!("{}.{}", rust.module_name(local), module.replace("::", ".")),
+            true,
+        )
+    } else {
+        (module.replace("::", "."), false)
+    }
+}
+
+fn relate_mod_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    if ctx.node.child_by_field_name("body").is_some()
+        || !ctx
+            .node
+            .parent()
+            .is_some_and(|parent| parent.kind() == "source_file")
+        || ctx.node.has_error()
+        || static_module_path(ctx.node, ctx.source).is_none()
+    {
+        return;
+    }
+    let Some(declaration) = facts.nodes.iter().find(|node| node.id == ctx.owner).cloned() else {
+        return;
+    };
+    let Some(parent_id) = facts
+        .edges
+        .iter()
+        .find(|edge| edge.kind == "contains" && edge.dst == declaration.id)
+        .map(|edge| edge.src.clone())
+    else {
+        return;
+    };
+    if let Some(parent_node) = facts.nodes.iter_mut().find(|node| node.id == parent_id) {
+        if let Some(scope) =
+            linker::restricted_scope(text(ctx.node, ctx.source), &parent_node.qualname, &parent_node.path)
+        {
+            let mut exports: Vec<linker::RestrictedExport> = parent_node
+                .details
+                .get("rust_restricted_exports")
+                .and_then(|value| serde_json::from_value(value.clone()).ok())
+                .unwrap_or_default();
+            exports.push(linker::RestrictedExport {
+                module: None,
+                name: declaration.name.clone(),
+                scope,
+            });
+            parent_node.details["rust_restricted_exports"] =
+                serde_json::to_value(exports).expect("Rust export visibility serializes");
+        }
+    }
+    let root = declaration.path.ends_with("/src/lib.rs")
+        || declaration.path.ends_with("/src/main.rs")
+        || matches!(declaration.path.as_str(), "src/lib.rs" | "src/main.rs");
+    let module = format!(
+        "{}::{}",
+        if root { "crate" } else { "self" },
+        declaration.name
+    );
+    facts.references.push(crate::models::Reference {
+        source: parent_id,
+        expression: module.clone(),
+        kind: "imports".into(),
+        line: ctx.line(),
+        column: ctx.node.start_position().column,
+        alias: Some(declaration.name),
+        module: Some(module),
+        dynamic: false,
+        receiver_hint: None,
+    });
+}
+
+fn relate_impl_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
+        owner.details["generic_impl"] =
+            serde_json::json!(has_non_lifetime_type_params(ctx.node, ctx.source));
+        if uniform_generic_impl(ctx.node, ctx.source) {
+            owner.details["uniform_generic_impl"] = serde_json::json!(true);
+        }
+        if let Some(trait_name) = field(ctx.node, ctx.source, "trait") {
+            owner.details["impl_trait"] = serde_json::json!(trait_name);
+            if matches!(
+                trait_name.trim_start_matches("::"),
+                "std::ops::Deref" | "core::ops::Deref"
+            ) || !trait_name.contains("::")
+            {
+                let mut ancestor = Some(ctx.node);
+                let mut attributed = false;
+                while let Some(node) = ancestor {
+                    attributed |= node
+                        .prev_named_sibling()
+                        .is_some_and(|previous| previous.kind() == "attribute_item");
+                    ancestor = node.parent();
+                }
+                if attributed || ctx.node.has_error() || has_unproven_bounds(ctx.node, ctx.source) {
+                    owner.details["deref_unproven"] = serde_json::json!(true);
+                }
+            }
+        }
+        if let Some(receiver) = field(ctx.node, ctx.source, "type") {
+            owner.details["receiver_type"] = serde_json::json!(receiver);
+        }
+    }
+    if let Some(tr) = ctx.node.child_by_field_name("trait") {
+        let tr_text = relations::type_name(tr, ctx.source);
+        let clean = tr_text.split('<').next().unwrap_or(tr_text).trim();
+        relations::reference(facts, ctx.owner, clean, "implements", ctx.line());
+    }
+}
+
+fn relate_function_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    let unproven = has_unproven_bounds(ctx.node, ctx.source)
+        && !path_reference_parameters(ctx.node, ctx.source, facts);
+    let conversion_bounds_only =
+        unproven && !has_unproven_bounds_with(ctx.node, ctx.source, is_conversion_bound);
+    let trait_default = ctx.node.kind() == "function_item"
+        && method_owner(ctx.node).is_some_and(|owner| owner.kind() == "trait_item");
+    if unproven || trait_default {
+        if let Some(method) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
+            if unproven {
+                method.details["unproven_bounds"] = serde_json::json!(true);
+            }
+            if conversion_bounds_only {
+                method.details["conversion_bounds_only"] = serde_json::json!(true);
+            }
+            if trait_default {
+                method.details["trait_default"] = serde_json::json!(true);
+            }
+        }
+    }
+    if let Some(parameters) = ctx.node.child_by_field_name("parameters") {
+        let mut c = parameters.walk();
+        for param in parameters.named_children(&mut c) {
+            if let Some(ty) = param.child_by_field_name("type") {
+                value_flow::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
+            }
+        }
+    }
+    if let Some(ret) = ctx.node.child_by_field_name("return_type") {
+        value_flow::type_references(facts, ctx.owner, ret, ctx.source, ctx.line());
+    }
+}
+
+fn relate_macro_definition(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    // Inspect transcription tokens only; matching patterns and metavariables are opaque.
+    let mut impl_traits = Vec::new();
+    let mut cursor = ctx.node.walk();
+    for rule in ctx
+        .node
+        .named_children(&mut cursor)
+        .filter(|node| node.kind() == "macro_rule")
+    {
+        if let Some(body) = rule.child_by_field_name("right") {
+            macro_transcription_references(body, ctx.source, ctx.owner, facts);
+            macros::extract_macro_impl_traits(body, ctx.source, &mut impl_traits);
+        }
+    }
+    if !impl_traits.is_empty() {
+        let macro_line = ctx.line();
+        if let Some(macro_node) = facts
+            .nodes
+            .iter_mut()
+            .find(|node| node.kind == "macro" && node.line == macro_line)
+        {
+            macro_node.details["rust_macro_impl_traits"] = serde_json::json!(impl_traits);
+            macro_node.details["rust_macro_projected"] = serde_json::json!(true);
+        }
+    }
+}
+
+fn relate_type_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    if has_non_lifetime_type_params(ctx.node, ctx.source)
+        || ctx.node.has_error()
+        || ctx
+            .node
+            .prev_named_sibling()
+            .is_some_and(|previous| previous.kind() == "attribute_item")
+    {
+        set_owner_flag(facts, ctx.owner, "deref_unproven");
+    }
+    if let Some(ty) = ctx.node.child_by_field_name("type") {
+        if let Some(owner) = facts.nodes.iter_mut().find(|node| node.id == ctx.owner) {
+            owner.details["alias_target"] = serde_json::json!(text(ty, ctx.source).trim());
+        }
+        value_flow::type_references(facts, ctx.owner, ty, ctx.source, ctx.line());
+    }
+}
+
+fn relate_nominal_item(ctx: &SyntaxContext<'_, '_>, facts: &mut Facts) {
+    if ctx.node.kind() == "struct_item" && has_non_lifetime_type_params(ctx.node, ctx.source) {
+        set_owner_flag(facts, ctx.owner, "deref_unproven");
+    }
+    let derives = macros::extract_derives(ctx.node, ctx.source);
+    if derives.is_empty() {
+        return;
+    }
+    if let Some(owner) = facts
+        .nodes
+        .iter()
+        .find(|node| node.id == ctx.owner)
+        .cloned()
+    {
+        let synth_owner = macros::SyntheticOwner {
+            id: &owner.id,
+            qualname: &owner.qualname,
+            name: &owner.name,
+            path: &owner.path,
+            line: ctx.line(),
+            end_line: ctx.line(),
+            is_public: owner.details["is_public"] == true,
+            is_test: owner.is_test,
+        };
+        macros::synthesize_derive_methods(&synth_owner, &derives, facts);
     }
 }
 

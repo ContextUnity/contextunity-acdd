@@ -430,6 +430,7 @@ where
     {
         state.rust_explicit_address = resolve_rust_explicit_paths(
             ctx,
+            q.owner,
             q.rust_keyword_explicit,
             q.rust_module_target,
             state,
@@ -618,24 +619,34 @@ where
         }
     }
     if candidates.is_empty() {
-        if let [module] = imported.as_slice() {
-            if module.kind == NodeKind::Module.as_str()
-                && !matches!(
-                    module.language.as_str(),
-                    l if l == LanguageId::Typescript.as_str()
-                        || l == LanguageId::Javascript.as_str()
-                        || l == LanguageId::Vue.as_str()
-                )
-            {
-                candidates.extend(ctx.language_linker.resolve_imported_member(
-                    ctx.input.interner,
-                    module,
-                    q.tail,
-                    ctx.input.by_module,
-                    ctx.input.by_qual,
-                    ctx.language_package_exports(),
-                    lookup_key,
-                ));
+        #[cfg(feature = "lang-rust")]
+        if let Some(owner) = q.owner.filter(|o| o.language == LanguageId::Rust.as_str()) {
+            candidates.extend(
+                ctx.input
+                    .semantic_context
+                    .resolve_rust_imported_call(owner, imported, q.tail),
+            );
+        }
+        if candidates.is_empty() {
+            if let [module] = imported.as_slice() {
+                if module.kind == NodeKind::Module.as_str()
+                    && !matches!(
+                        module.language.as_str(),
+                        l if l == LanguageId::Typescript.as_str()
+                            || l == LanguageId::Javascript.as_str()
+                            || l == LanguageId::Vue.as_str()
+                    )
+                {
+                    candidates.extend(ctx.language_linker.resolve_imported_member(
+                        ctx.input.interner,
+                        module,
+                        q.tail,
+                        ctx.input.by_module,
+                        ctx.input.by_qual,
+                        ctx.language_package_exports(),
+                        lookup_key,
+                    ));
+                }
             }
         }
     }
@@ -702,8 +713,32 @@ fn resolve_lexical_fallback<'a, 'file, 'res>(
 }
 
 #[cfg(feature = "lang-rust")]
+fn push_explicit_constant_member<'a, 'res>(
+    ctx: &'res PhaseContext<'a, '_, 'res>,
+    owner: Option<&'res Node>,
+    namespace: &str,
+    candidates: &mut Vec<&'res Node>,
+) {
+    let (Some(owner), Some((const_qual, member))) = (owner, namespace.rsplit_once('.')) else {
+        return;
+    };
+    candidates.extend(
+        ctx.lookup(const_qual)
+            .iter()
+            .copied()
+            .filter(|node| node.kind == "constant")
+            .filter_map(|node| {
+                ctx.input
+                    .semantic_context
+                    .resolve_rust_constant_member(node, member, owner)
+            }),
+    );
+}
+
+#[cfg(feature = "lang-rust")]
 fn resolve_rust_explicit_paths<'a, 'file, 'res>(
     ctx: &'res PhaseContext<'a, 'file, 'res>,
+    owner: Option<&'res Node>,
     rust_keyword_explicit: bool,
     rust_module_target: Option<&rust::resolution::RustExplicitTarget>,
     state: &ReferenceState<'res>,
@@ -726,6 +761,9 @@ where
                     target,
                     lookup_key,
                 ));
+            }
+            if candidates.is_empty() {
+                push_explicit_constant_member(ctx, owner, &target.namespace, candidates);
             }
         }
     } else if !state.shadowed

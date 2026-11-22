@@ -1720,3 +1720,166 @@ fn check(
         assert_eq!(status, expected_status, "expr={expr} evidence={ev}");
     }
 }
+
+#[test]
+fn rust_precision_destructuring_macro_reexport_and_homonym_matrix() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "Cargo.toml",
+        "[package]\nname = \"precision_probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[dependencies]\nclap = { version = \"4\", features = [\"derive\"] }\n",
+    );
+    workspace.write(
+        "src/models.rs",
+        r#"
+pub struct Store;
+impl Store {
+    pub fn ping(&self) -> bool { true }
+}
+
+pub struct Pair {
+    pub left: Store,
+    pub right: Store,
+}
+
+#[derive(Clone, Copy)]
+pub enum ReceiverHint {
+    Direct,
+    Deref,
+}
+
+pub trait EnumCodec {
+    fn tag_str(&self) -> &'static str;
+}
+
+#[macro_export]
+macro_rules! enum_codec {
+    ($ty:ty, $($var:ident => $lit:literal),+ $(,)?) => {
+        impl $crate::models::EnumCodec for $ty {
+            fn tag_str(&self) -> &'static str { "ok" }
+        }
+    };
+}
+"#,
+    );
+    workspace.write(
+        "src/facade.rs",
+        r#"
+pub(crate) mod inner {
+    pub struct AliasTarget;
+    impl AliasTarget {
+        pub fn ready(&self) -> bool { true }
+    }
+}
+
+pub(crate) use self::inner::AliasTarget as PublicAliasTarget;
+"#,
+    );
+    workspace.write(
+        "src/lib.rs",
+        r#"
+mod models;
+mod facade;
+
+use clap::Parser;
+use crate::enum_codec;
+use crate::models::{EnumCodec, Pair, ReceiverHint, Store};
+use crate::facade::PublicAliasTarget;
+
+macro_rules! target_decoder {
+    ($name:ident) => {
+        pub fn $name() -> bool { true }
+    };
+}
+
+#[derive(clap::Parser)]
+struct Cli {
+    flag: bool,
+}
+
+impl Cli {
+    fn boot() -> bool {
+        let parsed = Self::parse();
+        let _ = Self::try_parse();
+        parsed.flag
+    }
+}
+
+enum_codec!(crate::models::ReceiverHint, Direct => "direct", Deref => "deref");
+target_decoder!(decode_target);
+
+fn exercise(
+    pair: Pair,
+    tup: (Store, Store),
+    opt_store: Option<Store>,
+    match_opt: Option<Store>,
+    res_store: Result<Store, ()>,
+    items: Vec<Store>,
+    hint: ReceiverHint,
+    alias: PublicAliasTarget,
+) -> bool {
+    let Pair { left, right } = pair;
+    let (first, second) = tup;
+    let mut ok = left.ping() && right.ping() && first.ping() && second.ping();
+    if let Some(inner) = opt_store {
+        ok &= inner.ping();
+    }
+    let Ok(unwrapped) = res_store else {
+        return false;
+    };
+    ok &= unwrapped.ping();
+    match match_opt {
+        Some(matched) => ok &= matched.ping(),
+        None => {}
+    }
+    for elem in items {
+        ok &= elem.ping();
+    }
+    ok &= hint.tag_str().is_empty();
+    ok &= alias.ready();
+    ok &= decode_target();
+    let _ = Cli::boot();
+    let _ = fake_unregistered::time::Instant::now();
+    let _ = fake_unregistered::models::Store::ping(&unwrapped);
+    ok
+}
+"#,
+    );
+    workspace.build();
+    let conn = workspace.open();
+
+    let row_status = |expr: &str| -> (String, String) {
+        conn.query_row(
+            "SELECT r.status, e.evidence FROM resolution_coverage r
+             JOIN path_dictionary p ON p.path_id = r.path_id
+             JOIN coverage_expressions x ON x.expression_id = r.expression_id
+             JOIN coverage_evidence e ON e.evidence_id = r.evidence_id
+             WHERE p.path = 'src/lib.rs' AND x.expression = ?1
+             LIMIT 1",
+            [expr],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .unwrap_or_else(|e| panic!("missing coverage row for {expr}: {e}"))
+    };
+
+    for (expr, expected_status) in [
+        ("Self::parse", "resolved"),
+        ("Self::try_parse", "resolved"),
+        ("left.ping", "resolved"),
+        ("right.ping", "resolved"),
+        ("first.ping", "resolved"),
+        ("second.ping", "resolved"),
+        ("inner.ping", "resolved"),
+        ("unwrapped.ping", "resolved"),
+        ("matched.ping", "resolved"),
+        ("elem.ping", "resolved"),
+        ("hint.tag_str", "resolved"),
+        ("alias.ready", "resolved"),
+        ("decode_target", "resolved"),
+        ("Cli::boot", "resolved"),
+        ("fake_unregistered::time::Instant::now", "unresolved"),
+        ("fake_unregistered::models::Store::ping", "unresolved"),
+    ] {
+        let (status, ev) = row_status(expr);
+        assert_eq!(status, expected_status, "expr={expr} evidence={ev}");
+    }
+}

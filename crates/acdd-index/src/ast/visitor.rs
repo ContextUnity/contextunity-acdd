@@ -9,7 +9,7 @@ enum LanguageAnalysis<'source, 'tree> {
     #[cfg(feature = "lang-python")]
     Python(Box<languages::python::value_flow::Collector<'source, 'tree>>),
     #[cfg(feature = "lang-rust")]
-    Rust(Box<languages::rust::value_flow::Collector<'source, 'tree>>),
+    Rust(Box<languages::rust::value_flow::RustValueFlowCollector<'source, 'tree>>),
     #[cfg(feature = "lang-typescript")]
     TypeScript(Box<languages::typescript::value_flow::Collector<'source, 'tree>>),
     Generic(Box<languages::support::value_flow_core::GenericScopeAnalysis<'source, 'tree>>),
@@ -50,7 +50,7 @@ impl<'source, 'tree> ScopeAnalysis<'source, 'tree> {
     pub(crate) fn rust(root: Syntax<'tree>, source: &'source str) -> Self {
         Self {
             state: Some(LanguageAnalysis::Rust(Box::new(
-                languages::rust::value_flow::Collector::new(root, source),
+                languages::rust::value_flow::RustValueFlowCollector::new(root, source),
             ))),
             marker: std::marker::PhantomData,
         }
@@ -2124,6 +2124,10 @@ fn scope_boundary_kind(language: &str, kind: &str) -> bool {
 }
 
 fn syntax_doc(context: &VisitContext<'_>, node: Syntax<'_>) -> String {
+    let doc = context.profile.doc_comment(node, context.source);
+    if !doc.is_empty() {
+        return doc;
+    }
     if let Some(syntax) = &context.syntax {
         node.prev_named_sibling()
             .filter(|comment| {
@@ -2134,7 +2138,7 @@ fn syntax_doc(context: &VisitContext<'_>, node: Syntax<'_>) -> String {
             .map(|comment| text(comment, context.source).to_owned())
             .unwrap_or_default()
     } else {
-        context.profile.doc_comment(node, context.source)
+        String::new()
     }
 }
 

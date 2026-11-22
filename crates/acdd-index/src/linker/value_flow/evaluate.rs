@@ -801,7 +801,9 @@ impl<'a> ValueFlowIndex<'a> {
         arg_index: usize,
         param_index: usize,
     ) -> TypeTarget<'a> {
-        if arg_index != 0 || param_index != 0 {
+        let valid_arg = arg_index == 0
+            || (arg_index == 1 && matches!(method, "map_or" | "map_or_else"));
+        if param_index != 0 || !valid_arg {
             return TypeTarget::Unknown;
         }
         match receiver {
@@ -836,13 +838,36 @@ impl<'a> ValueFlowIndex<'a> {
                 (**item).clone()
             }
             TypeTarget::RustWrapper { ok, .. }
-                if matches!(method, "map" | "and_then" | "inspect" | "filter") =>
+                if matches!(
+                    method,
+                    "map"
+                        | "and_then"
+                        | "inspect"
+                        | "filter"
+                        | "is_some_and"
+                        | "is_none_or"
+                        | "ok_or_else"
+                        | "map_or"
+                        | "map_or_else"
+                ) =>
             {
                 (**ok).clone()
             }
             TypeTarget::RustWrapper {
                 err: Some(err), ..
             } if matches!(method, "map_err" | "or_else" | "inspect_err") => (**err).clone(),
+            TypeTarget::RustDeref {
+                wrapper: "LocalKey",
+                target,
+            } if matches!(method, "with" | "try_with") => match target.as_ref() {
+                TypeTarget::RustTuple(items) => items.first().map_or(TypeTarget::Unknown, |inner| {
+                    TypeTarget::RustReference {
+                        mutable: false,
+                        target: Box::new(inner.clone()),
+                    }
+                }),
+                _ => TypeTarget::Unknown,
+            },
             _ => TypeTarget::Unknown,
         }
     }
