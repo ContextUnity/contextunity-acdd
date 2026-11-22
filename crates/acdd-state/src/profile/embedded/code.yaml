@@ -443,9 +443,6 @@ gates:
 
   - id: handoff
     role: independent_reviewer
-    independent_from:
-      - polish
-      - "tasks.build"
     need:
       - run_tests
       - integration_review

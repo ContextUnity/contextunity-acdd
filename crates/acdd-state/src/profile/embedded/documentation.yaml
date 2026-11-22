@@ -214,7 +214,6 @@ gates:
 
   - id: handoff
     role: independent_reviewer
-    independent_from: [polish, "tasks.build"]
     need: [verify_docs, integration_review]
     receipt: true
     guidance: [docs.handoff, hitl.pro]

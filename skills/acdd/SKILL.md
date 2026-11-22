@@ -73,15 +73,21 @@ and shared locks automatically. CLI `--worktree` takes an explicit directory pat
 ## ACDD profiles and task operations
 
 Embedded profiles (`base`, `code`, `audit`, `documentation`, `spec_planning`) or repository `.acdd/profile.yaml`
-(`version: 2`, validated via `acdd validate`) govern gates, proof schemas,
-contours, isolation (`--in-place` overrides to `git.isolation: in_place`, `save: none`,
+and `.acdd/profiles/<name>.yaml` overlays (`version: 2`, validated via `acdd validate`) govern gates,
+proof schemas, contours, isolation (`--in-place` overrides to `git.isolation: in_place`, `save: none`,
 preserving `save.immutable: true`), and `save.report` (written strictly under
 `.acdd/reports/*.{md,json}` on pass). Do not assume a hardcoded gate sequence:
 
-1. Inspect cross-worktree specs, dependency waves, critical paths, and scope-overlap markers with `acdd_state(action="roadmap")` (`acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]`), then start a run with `acdd start <spec_path>` or `acdd start --goal "..."`
-   (defaults to `code`; select `--profile spec_planning` to synthesize/review specs, milestones, or plans using live `acdd.yaml` collection rules and `docs.specs`, `inherit: audit` for read-only SAST/PR/hygiene audits,
-   `inherit: documentation` / `--profile documentation` for compiler-free doc/invariant authoring,
-   or `inherit: base` for non-code workflows).
+| Profile (`--profile` / `inherit`) | Purpose & Gate Flow | Typical Launch Command |
+|---|---|---|
+| `code` (default) | Full software lifecycle (`blueprint_synthesis` -> `tasks` -> `run_tests` -> `polish` -> `integration_review` -> `handoff`) | `acdd start <spec_path>` or `acdd start --goal "..."` |
+| `base` | Minimal worktree-isolated baseline (`gates: []`, `save: commit`) for custom non-code overlays | `acdd start --goal "..." --profile base` |
+| `audit` | Read-only `in_place` (`save: none`) review/SAST/hygiene (`recon -> analyze -> triage`) writing `.acdd/reports/{run_name}.md` | `acdd start --goal "..." --profile audit` |
+| `documentation` | Compiler-free living docs & `acdd-rule` invariant lifecycle gated on `docs.links` + `code.lint` (`[arch, docs]`) | `acdd start <spec_path> --profile documentation` or `acdd start --goal "..." --profile documentation` |
+| `spec_planning` | Read-only `in_place` synthesis & review (`synthesize -> review`) aware of `acdd.yaml` `specs.*` collections | `acdd start --goal "..." --profile spec_planning` |
+| Custom (`.acdd/profiles/<name>.yaml`, e.g. `hotfix`) | Repo-local workflow overlays (`gates_patch:` / `inherit:`), e.g. `hotfix` (`goal.build -> goal.review -> goal.deliver -> run_tests -> handoff`, skipping `blueprint_synthesis` & `integration_review`) | `acdd start --goal "..." --profile hotfix --scope <path>...` |
+
+1. Inspect cross-worktree specs, dependency waves, critical paths, and scope-overlap markers with `acdd_state(action="roadmap")` (`acdd roadmap [spec_id] [--collection NAME] [--ready] [--active] [--tasks]`), then start a run with one of the profile commands above (adding `--in-place`, `--scope <glob>`, or `--worktree` as needed).
 2. Inspect ready cursors (`acdd_state(action="next")` / `acdd next`). For `mode: subagent` gates, the coordinator dispatches `(run, node_cursor, worker_id)` and the **worker itself** calls `acdd_claim` / `acdd claim` first before editing files (omitting `worktree` under `git.worktrees: managed` so `claim` creates/reuses `.worktrees/<run_name>-<task_ref>`, because passing an explicit `worktree` overrides auto-creation; `session_fingerprint` and full `ClaimResp` bind to the real worker process, which then works strictly inside `ClaimResp.worktree`); the coordinator calls `acdd_claim` directly only for `mode: inline` gates or dead-worker recovery.
 3. Follow `ClaimResp` (`contract`, `guidance`, `unresolved_findings`, `pre_task_slice`
    including `predecessor_proofs`, `blackboard`, and `context_lenses`). Stay within

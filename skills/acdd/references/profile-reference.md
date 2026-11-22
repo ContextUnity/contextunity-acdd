@@ -24,6 +24,19 @@ entry). Passing `--in-place` on `acdd start` overrides isolation to `in_place`,
 `worktrees: manual`, top-level `save: none`, and neutralizes `save.post: commit`
 to `none` while preserving `save.immutable: true`.
 
+### Invoking Embedded & Custom Profiles
+
+`--profile` accepts an embedded baseline name (`base`, `code`, `audit`, `documentation`, `spec_planning`), a custom profile name resolved inside `.acdd/profiles/<name>.yaml`, or a root-confined `.yaml` path:
+
+```sh
+acdd start docs/milestones/<spec>.md                                   # default repo .acdd/profile.yaml (or embedded code)
+acdd start --goal "Localized bugfix" --profile hotfix --scope src/x.rs # repo overlay .acdd/profiles/hotfix.yaml (when present)
+acdd start --goal "Draft AC-010 spec" --profile spec_planning          # in-place planning aware of acdd.yaml specs.* collections
+acdd start --goal "Update architecture docs" --profile documentation   # compiler-free doc/invariant workflow
+acdd start --goal "Audit auth paths" --profile audit --scope src/auth  # read-only report under .acdd/reports/
+acdd validate .acdd/profiles/hotfix.yaml                               # validate any custom overlay standalone
+```
+
 ## 2. Top-Level Policy Keys
 
 | Key | Type / Allowed Values | Purpose & Defaults |

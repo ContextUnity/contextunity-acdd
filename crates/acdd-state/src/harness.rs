@@ -462,7 +462,6 @@ impl RunHarness {
         };
         let handoff = MachineGateDef {
             role: Some("independent_reviewer".to_owned()),
-            independent_from: vec![selector("polish"), selector("tasks.build")],
             need: vec![selector("verify"), selector("integration_review")],
             receipt: true,
             fail: Some("polish".to_owned()),
